@@ -738,6 +738,7 @@ func (u *Users) ActiveSession(ctx context.Context, token string) (Session, User,
 func (u *Users) EndSession(ctx context.Context, token string) error {
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
 	if err != nil || len(raw) != 32 {
+		//nolint:nilerr // Logging out with a malformed token is intentionally idempotent.
 		return nil
 	}
 	sum := sha256.Sum256(raw)

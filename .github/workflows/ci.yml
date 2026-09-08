@@ -76,8 +76,8 @@ jobs:
       # The whatsapp_server2 project rotted when a half-finished migration left
       # API_ttt/ and mongo_ttt/ beside the real packages forever.
       - run: make lint-layout
-      - uses: golangci/golangci-lint-action@v6
-        with: {version: latest}
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with: {version: v2.13.2}
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -110,5 +110,9 @@ jobs:
       # The v1 repo committed cmd/wapanel/config.yaml holding a live api_key
       # and media_signing_key_hex. Configuration here is environment-only, and
       # this job is the backstop.
-      - uses: gitleaks/gitleaks-action@v2
-        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+      # The open-source CLI does not require the commercial organization's action license.
+      - name: Scan source history for secrets
+        run: |
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --config .gitleaks.toml .

@@ -522,12 +522,6 @@ func (c *Client) GetGroupInfo(_ context.Context, jid types.JID) (*types.GroupInf
 	return c.GroupInfo(jid)
 }
 
-// Joined records every invitation this fake was asked to accept.
-//
-// Counted rather than merely allowed, because joining a group is outward
-// facing: it makes the account a member, visible to everyone already there. A
-// test that asserts the ingest path never joins anything needs the absence of a
-// call to be observable, which is the same reason the receipt counters exist.
 // PollVote is one answer this client was asked to build.
 type PollVote struct {
 	Poll    string
@@ -535,6 +529,12 @@ type PollVote struct {
 	Options []string
 }
 
+// Joined records every invitation this fake was asked to accept.
+//
+// Counted rather than merely allowed, because joining a group is outward
+// facing: it makes the account a member, visible to everyone already there. A
+// test that asserts the ingest path never joins anything needs the absence of a
+// call to be observable, which is the same reason the receipt counters exist.
 type Joined struct {
 	Group      types.JID
 	Inviter    types.JID

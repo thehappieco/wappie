@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -155,7 +156,7 @@ func (u *Unread) MarkChatReadAt(ctx context.Context, tenant, device uuid.UUID,
 			 WHERE device_id = $1 AND ($2 IN (chat_key, chat_lid, chat_pn))
 			 LIMIT 1`, device, chatKey).Scan(&resolved)
 		if err != nil {
-			if err == pgx.ErrNoRows {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
 			return err

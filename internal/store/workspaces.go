@@ -29,7 +29,10 @@ func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, 
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() {
+		//nolint:errcheck // Cleanup after commit normally returns ErrTxClosed; preserve the operation error.
+		_ = tx.Rollback(ctx)
+	}()
 	if _, err = tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userID.String()); err != nil {
 		return nil, err
 	}
@@ -68,7 +71,10 @@ func (u *Users) AcceptWorkspaceInvite(ctx context.Context, user User, secret str
 	if err != nil {
 		return uuid.Nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() {
+		//nolint:errcheck // Cleanup after commit normally returns ErrTxClosed; preserve the operation error.
+		_ = tx.Rollback(ctx)
+	}()
 	var tenant uuid.UUID
 	var role string
 	var email *string

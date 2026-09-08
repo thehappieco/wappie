@@ -75,6 +75,7 @@ func TestNothingAnnouncedIsUnimplemented(t *testing.T) {
 func dispatchedFrames(t *testing.T) []string {
 	t.Helper()
 	fset := token.NewFileSet()
+	//nolint:staticcheck // This contract test intentionally scans all source files, independent of build tags.
 	pkg, err := parser.ParseDir(fset, ".", nil, 0)
 	if err != nil {
 		t.Fatalf("parse package: %v", err)

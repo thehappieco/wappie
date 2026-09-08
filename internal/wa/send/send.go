@@ -158,7 +158,6 @@ type ReactRequest struct {
 	Emoji string
 }
 
-// SendReaction reacts to a message, or takes a reaction back.
 // PollVoteRequest answers a poll.
 type PollVoteRequest struct {
 	Chat types.JID

@@ -45,6 +45,7 @@ func TestServesThePage(t *testing.T) {
 	}
 
 	resp := get(t, h, "/")
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / returned %d", resp.StatusCode)
 	}
@@ -66,6 +67,7 @@ func TestServesAssets(t *testing.T) {
 	}
 
 	resp := get(t, h, "/assets/index-abc123.js")
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the script returned %d", resp.StatusCode)
 	}
@@ -87,6 +89,7 @@ func TestAMissingScriptIsNotAnsweredWithThePage(t *testing.T) {
 	// page asks for a script that no longer exists, an SPA fallback hands back
 	// HTML, and the browser reports a syntax error in a file nobody can find.
 	resp := get(t, h, "/assets/index-old.js")
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("a missing script returned %d, want 404", resp.StatusCode)
 	}
@@ -101,6 +104,7 @@ func TestAnUnknownRouteGetsThePage(t *testing.T) {
 	// There is no router yet, but a bookmarked deep link must not 404 the
 	// moment one arrives.
 	resp := get(t, h, "/conversa/qualquer")
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("a deep link returned %d, want the page", resp.StatusCode)
 	}
@@ -116,6 +120,7 @@ func TestItRefusesToEscapeTheDirectory(t *testing.T) {
 	}
 	for _, target := range []string{"/../secret.txt", "/assets/../../secret.txt"} {
 		resp := get(t, h, target)
+		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
 			body := make([]byte, 32)
 			n, _ := resp.Body.Read(body)

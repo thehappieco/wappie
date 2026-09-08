@@ -274,11 +274,6 @@ type actor struct {
 	service bool
 }
 
-// needsGrant reports whether this actor reaches a device only through a grant.
-func (a actor) needsGrant() bool {
-	return (a.person && !a.admin()) || a.service
-}
-
 // admin reports whether this actor may change the tenant's configuration.
 func (a actor) admin() bool {
 	return a.person && (a.role == "owner" || a.role == "admin")

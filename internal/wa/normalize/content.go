@@ -87,7 +87,7 @@ func unclassified(m *waE2E.Message) (string, bool) {
 
 // firstUnknownTag reads the field number of the first unknown field.
 func firstUnknownTag(raw protoreflect.RawFields) (protowire.Number, bool) {
-	for len(raw) > 0 {
+	if len(raw) > 0 {
 		number, _, n := protowire.ConsumeTag(raw)
 		if n < 0 {
 			return 0, false

@@ -40,7 +40,7 @@ func (r *Router) handleJoinedGroup(ctx context.Context, deviceID string, evt *ev
 		return
 	}
 	r.recordGroup(ctx, info.TenantID, device, evt.JID,
-		evt.GroupInfo.GroupName, &evt.GroupInfo.GroupEphemeral, evt.GroupInfo.GroupCreated,
+		evt.GroupName, &evt.GroupEphemeral, evt.GroupCreated,
 		audienceOf(&evt.GroupInfo))
 }
 

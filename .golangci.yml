@@ -36,6 +36,7 @@ linters:
         - respondendo
         - efemera
         - encaminhada
+        - participantes
     errcheck:
       check-type-assertions: true
       check-blank: true

@@ -383,11 +383,14 @@ func insideWrapper(m *waE2E.Message) *waE2E.Message {
 	v := reflect.ValueOf(m).Elem()
 	for i := range v.NumField() {
 		f := v.Field(i)
-		if f.Kind() != reflect.Ptr || f.IsNil() || f.Type() != futureProof {
+		if f.Kind() != reflect.Pointer || f.IsNil() || f.Type() != futureProof {
 			continue
 		}
-		//nolint:forcetypeassert // guarded by the type comparison above
-		if inner := f.Interface().(*waE2E.FutureProofMessage).GetMessage(); inner != nil {
+		wrapper, ok := f.Interface().(*waE2E.FutureProofMessage)
+		if !ok {
+			continue
+		}
+		if inner := wrapper.GetMessage(); inner != nil {
 			return inner
 		}
 	}

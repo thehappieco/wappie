@@ -217,7 +217,7 @@ func seedMedia(ctx context.Context, pipe *ingest.Pipeline, bucket *blob.Store,
 	for i, a := range attachments {
 		key := make([]byte, wamedia.KeyLen)
 		for j := range key {
-			key[j] = byte((i+11)*17 + j)
+			key[j] = byte(((i+11)*17 + j) & 255)
 		}
 		enc, err := wamedia.Encrypt(a.payload, key, a.waType)
 		if err != nil {
@@ -272,8 +272,8 @@ func gradientPNG(w, h int) ([]byte, error) {
 	for y := range h {
 		for x := range w {
 			img.Set(x, y, color.RGBA{
-				R: uint8(255 * x / w),
-				G: uint8(255 * y / h),
+				R: uint8((255 * x / w) & 255),
+				G: uint8((255 * y / h) & 255),
 				B: uint8(160),
 				A: 255,
 			})
@@ -290,7 +290,7 @@ func gradientJPEG(w, h int) ([]byte, error) {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := range h {
 		for x := range w {
-			img.Set(x, y, color.RGBA{R: uint8(255 * x / w), G: uint8(255 * y / h), B: 160, A: 255})
+			img.Set(x, y, color.RGBA{R: uint8((255 * x / w) & 255), G: uint8((255 * y / h) & 255), B: 160, A: 255})
 		}
 	}
 	var out bytes.Buffer

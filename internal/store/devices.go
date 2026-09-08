@@ -54,7 +54,6 @@ type Device struct {
 	Epoch int
 }
 
-// SetStatus records a lifecycle transition.
 // SetReceiptMode records what a device tells the other side.
 //
 // Persisted so the choice survives a restart: the mode is applied on connect,
