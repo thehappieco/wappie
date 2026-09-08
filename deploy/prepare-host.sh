@@ -16,7 +16,7 @@ fi
 for service in db objects; do
  if [ ! -f "certs/$service/server.crt" ]; then
   openssl req -newkey rsa:2048 -nodes -keyout "certs/$service/server.key" -out "certs/$service/request.csr" -subj "/CN=$service" 2>/dev/null
-  printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "$service" > "certs/$service/extensions"
+  printf 'subjectAltName=DNS:%s,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' "$service" > "certs/$service/extensions"
   openssl x509 -req -in "certs/$service/request.csr" -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial -out "certs/$service/server.crt" -days 365 -extfile "certs/$service/extensions" 2>/dev/null
  fi
 done

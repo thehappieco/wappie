@@ -1,0 +1,15 @@
+# Use with compose.yaml: docker compose -f compose.yaml -f compose-native.yaml up -d db objects
+# API and billing run as systemd services; the container profile is rollback only.
+services:
+  db:
+    ports: ["127.0.0.1:15432:5432"]
+  objects:
+    ports: ["127.0.0.1:19000:9000"]
+  api:
+    profiles: [container-runtime]
+  billing:
+    profiles: [container-runtime]
+volumes:
+  objects:
+    name: ${WAPPIE_OBJECTS_VOLUME:-wappie_objects}
+    external: true

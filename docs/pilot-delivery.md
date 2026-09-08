@@ -18,7 +18,7 @@
 - https://github.com/thehappieco/wappie — public core
 - `thehappieco/wappie-cloud` — private commercial module
 
-Two empty workspaces, Piloto A and Piloto B, have two connection slots each. Owner invites are retained privately outside source control. No password or WhatsApp number was supplied or invented for a real user. Sign up with an owner invite, retain the recovery code, then pair the chosen test phones. Existing identities join the other company by accepting an invite in the console.
+Two pilot workspaces, Piloto A and Piloto B, have two connection slots each. The subsequently migrated local workspaces, accounts, grants, API keys, history and attachments are preserved separately alongside them. Owner invites are retained privately outside source control. No password or WhatsApp number was invented for a real user. The existing linked local session was migrated and resumed on the EC2; its local server stays stopped to avoid concurrent use. Sign up with an owner invite, retain the recovery code, then pair the chosen test phones. Existing identities join the other company by accepting an invite in the console.
 
 ## Validation
 
@@ -28,6 +28,7 @@ Two empty workspaces, Piloto A and Piloto B, have two connection slots each. Own
 - Static analysis and reachable-vulnerability scan; secret scan excludes only inspected generated cryptographic fixtures.
 - Running API readiness, unauthorized HTTP/WebSocket rejection, private metrics, and HTTPS responses for product and documentation routes.
 - Successful simulated certificate renewal, including the Nginx reload hook.
+- Local migration verified by archive SHA-256, complete original row fingerprints, attachment reference/size checks, authenticated WebSocket isolation and original encrypted attachment SHA-256 checks over HTTPS. API and billing now run as unprivileged systemd services from compiled ARM64 binaries; database and object storage retain isolated containers.
 - Initial database/object-storage snapshot on the EC2; database restored into a temporary verification database and checked, then that temporary database removed.
 
 ## Operational boundaries
