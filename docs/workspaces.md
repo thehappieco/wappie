@@ -84,3 +84,5 @@ Database tests use isolated test schemas. The official pilot uses a new, indepen
 The hosted build selects a private subscription component. Simulated approvals and declines, idempotency records and capacity changes live in the separate commercial module. Only owners change subscriptions; admins can view them. No card data, prices, provider secrets or live charges are implemented or required for this pilot.
 
 The console uses a fresh document when changing workspaces. Only the target workspace UUID is included in the URL; credentials, keys and messages are never transferred there. The person signs in again, and the server issues a session bound to the selected workspace. This intentionally discards pending work and all in-memory archive state before opening another company.
+
+Legacy API key device allowlists remain restricted even when the last allowed device is removed. Migration 0026 stores that distinction explicitly and versions list changes so existing WebSockets close instead of retaining the earlier subscription scope. Prefer service accounts and the console's per-device permissions for new integrations.

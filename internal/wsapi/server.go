@@ -250,6 +250,7 @@ func (s *Server) BroadcastDeviceStatus(tenantID, deviceID, status, reason string
 // outright. A leaked key that could mint its own successors would survive the
 // revocation of the key that leaked, which makes revocation a formality.
 type actor struct {
+	keyVersion    int64
 	sessionID     uuid.UUID
 	keyID         uuid.UUID
 	accessVersion int64
@@ -523,7 +524,7 @@ func (s *session) credentials(ctx context.Context, hello Hello) (actor, error) {
 	if err != nil {
 		return actor{}, errors.New("invalid api key")
 	}
-	who := actor{tenant: key.TenantID, keyPrefix: key.Prefix, scope: key.Scope, keyID: key.ID}
+	who := actor{tenant: key.TenantID, keyPrefix: key.Prefix, scope: key.Scope, keyID: key.ID, keyVersion: key.AccessVersion}
 	if key.ActsAs != nil {
 		if s.srv.cfg.Accounts == nil {
 			return actor{}, errors.New("service accounts are not configured")

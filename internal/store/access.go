@@ -31,11 +31,11 @@ func (u *Users) ConnectionAccess(ctx context.Context, tenant, user, session uuid
 // ConnectionKey checks the immutable key ID captured after authentication.
 // No secret is kept in memory for revalidation and a reused prefix cannot
 // revive an existing socket.
-func (a *APIKeys) ConnectionKey(ctx context.Context, id uuid.UUID, tenant string, scope KeyScope, actsAs uuid.UUID) error {
+func (a *APIKeys) ConnectionKey(ctx context.Context, id uuid.UUID, tenant string, scope KeyScope, actsAs uuid.UUID, version int64) error {
 	var active bool
 	err := a.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys k JOIN tenants t ON t.id=k.tenant_id
 		WHERE k.id=$1 AND k.tenant_id=$2 AND k.scope=$3 AND k.revoked_at IS NULL AND t.status='active'
-		AND coalesce(k.acts_as,'00000000-0000-0000-0000-000000000000'::uuid)=$4)`, id, tenant, string(scope), actsAs).Scan(&active)
+		AND k.access_version=$5 AND coalesce(k.acts_as,'00000000-0000-0000-0000-000000000000'::uuid)=$4)`, id, tenant, string(scope), actsAs, version).Scan(&active)
 	if err != nil {
 		return err
 	}

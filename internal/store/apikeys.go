@@ -83,10 +83,11 @@ func rank(k KeyScope) int {
 
 // Verified is what a presented key resolves to.
 type Verified struct {
-	ID       uuid.UUID
-	TenantID string
-	Prefix   string
-	Scope    KeyScope
+	AccessVersion int64
+	ID            uuid.UUID
+	TenantID      string
+	Prefix        string
+	Scope         KeyScope
 	// ActsAs is the service account whose grants the key carries. Nil for a
 	// key with no account, which reaches the archive as ciphertext only.
 	ActsAs *uuid.UUID
@@ -217,12 +218,13 @@ func (a *APIKeys) VerifyScoped(ctx context.Context, presented string) (Verified,
 
 	var tenantID, storedHash, scope string
 	var id uuid.UUID
+	var accessVersion int64
 	var actsAs *uuid.UUID
 	err := a.pool.QueryRow(ctx, `
-		SELECT id, tenant_id::text, key_hash, scope, acts_as
+		SELECT id, tenant_id::text, key_hash, scope, acts_as, access_version
 		  FROM api_keys
 		 WHERE prefix = $1 AND revoked_at IS NULL
-		 AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=api_keys.tenant_id AND t.status='active')`, prefix).Scan(&id, &tenantID, &storedHash, &scope, &actsAs)
+		 AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=api_keys.tenant_id AND t.status='active')`, prefix).Scan(&id, &tenantID, &storedHash, &scope, &actsAs, &accessVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Hash anyway so an unknown prefix costs the same time as a known one.
 		// Without this the response time distinguishes the two, which is a free
@@ -251,7 +253,7 @@ func (a *APIKeys) VerifyScoped(ctx context.Context, presented string) (Verified,
 		//nolint:errcheck // a failed timestamp update must not fail a valid request
 		_, _ = a.pool.Exec(ctx, `UPDATE api_keys SET last_used_at = now() WHERE prefix = $1`, prefix)
 	}()
-	return Verified{ID: id, TenantID: tenantID, Prefix: prefix, Scope: KeyScope(scope), ActsAs: actsAs}, nil
+	return Verified{AccessVersion: accessVersion, ID: id, TenantID: tenantID, Prefix: prefix, Scope: KeyScope(scope), ActsAs: actsAs}, nil
 }
 
 // Revoke disables a key by prefix.

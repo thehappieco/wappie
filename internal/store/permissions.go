@@ -109,7 +109,7 @@ func (a *APIKeys) AllowsDevice(ctx context.Context, id, tenant, device uuid.UUID
 	err := pg.InTenantTx(ctx, a.pool, tenant.String(), func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys k JOIN devices d ON d.tenant_id=k.tenant_id
   WHERE k.id=$1 AND d.id=$2 AND k.revoked_at IS NULL AND
-  (NOT EXISTS(SELECT 1 FROM api_key_devices x WHERE x.api_key_id=k.id) OR
+  (NOT k.devices_restricted OR
    EXISTS(SELECT 1 FROM api_key_devices x WHERE x.api_key_id=k.id AND x.device_id=d.id)))`, id, device).Scan(&allowed)
 	})
 	return allowed, err

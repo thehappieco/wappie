@@ -31,7 +31,7 @@ func (s *session) validAccess(ctx context.Context) bool {
 	defer cancel()
 	valid := true
 	if !who.person {
-		valid = s.srv.cfg.Keys != nil && s.srv.cfg.Keys.ConnectionKey(checkCtx, who.keyID, who.tenant, who.scope, who.userID) == nil
+		valid = s.srv.cfg.Keys != nil && s.srv.cfg.Keys.ConnectionKey(checkCtx, who.keyID, who.tenant, who.scope, who.userID, who.keyVersion) == nil
 	}
 	if valid && (who.person || who.service) {
 		accounts := s.srv.cfg.Accounts

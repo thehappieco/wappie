@@ -75,3 +75,43 @@ func TestIndependentDevicePermissions(t *testing.T) {
 		t.Fatal("unknown device accepted")
 	}
 }
+
+func TestEmptyKeyWhitelistDoesNotBecomeUnrestricted(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	keys := store.NewAPIKeys(h.pool)
+	devices := store.NewDevices(h.pool)
+	first, err := devices.Create(ctx, h.tenant.String(), "first", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := devices.Create(ctx, h.tenant.String(), "second", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := keys.Issue(ctx, h.tenant.String(), "restricted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := keys.VerifyScoped(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(ctx, `INSERT INTO api_key_devices(api_key_id,device_id) VALUES($1,$2)`, verified.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = keys.ConnectionKey(ctx, verified.ID, h.tenant.String(), verified.Scope, uuid.Nil, verified.AccessVersion); err == nil {
+		t.Fatal("old unrestricted connection survived restriction")
+	}
+	allowed, err := keys.AllowsDevice(ctx, verified.ID, h.tenant, uuid.MustParse(second.ID))
+	if err != nil || allowed {
+		t.Fatalf("other device allowed=%v err=%v", allowed, err)
+	}
+	if _, err = h.pool.Exec(ctx, `DELETE FROM api_key_devices WHERE api_key_id=$1`, verified.ID); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err = keys.AllowsDevice(ctx, verified.ID, h.tenant, uuid.MustParse(second.ID))
+	if err != nil || allowed {
+		t.Fatalf("empty whitelist expanded access: %v %v", allowed, err)
+	}
+}
