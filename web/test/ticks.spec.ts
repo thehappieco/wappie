@@ -1,7 +1,7 @@
 // What the ticks claim, and what they must refuse to claim.
 //
 // The owner's rule: one grey means sent, two grey means EVERYONE received it,
-// two blue means everyone read it, three blue means everyone played it. The
+// two blue means everyone read it, two blue with an audio-specific label means everyone played it. The
 // word doing the work is "everyone", and it is the reason a denominator is not
 // an implementation detail — two acknowledgements mean everything between two
 // people and almost nothing in a group of forty.

@@ -81,22 +81,25 @@ export async function reproject(
   const p = empty()
   const conn = connection()
   const opener = archiveOpener()
+  const deviceID = state.deviceID
   if (!conn || !opener) {
     p.error = 'o arquivo não está destravado'
     p.done = true
     return p
   }
+  const current = () => connection() === conn && archiveOpener() === opener && state.deviceID === deviceID
 
   let before = 0
   // A bound rather than a while(true). A cursor that failed to advance would
   // otherwise spin against the server for the life of the tab, and the failure
   // would look like a page that had simply stopped responding.
   for (let page = 0; page < 200; page++) {
+    if (!current()) break
     let rows: P.UnsupportedRow[]
     try {
       const reply = await conn.request<P.Unsupported>(
         P.TypeReprojectGet,
-        { device_id: state.deviceID, limit, before_seq: before } satisfies P.ReprojectRequest,
+        { device_id: deviceID, limit, before_seq: before } satisfies P.ReprojectRequest,
         P.TypeUnsupportedRows,
       )
       rows = reply.rows ?? []
@@ -104,6 +107,7 @@ export async function reproject(
       p.error = err instanceof Error ? err.message : String(err)
       break
     }
+    if (!current()) break
     if (rows.length === 0) break
 
     // The cursor is the oldest row of this page. Advancing it is what stops
@@ -114,12 +118,12 @@ export async function reproject(
 
     p.total += rows.length
     onProgress?.({ ...p })
-    await walk(rows, conn, opener, p, onProgress)
+    await walk(rows, conn, opener, deviceID, current, p, onProgress)
     if (rows.length < limit) break
   }
 
   p.done = true
-  onProgress?.({ ...p })
+  if (current()) onProgress?.({ ...p })
   return p
 }
 
@@ -127,11 +131,15 @@ async function walk(
   rows: P.UnsupportedRow[],
   conn: NonNullable<ReturnType<typeof connection>>,
   opener: NonNullable<ReturnType<typeof archiveOpener>>,
+  deviceID: string,
+  current: () => boolean,
   p: ReprojectProgress,
   onProgress?: (p: ReprojectProgress) => void,
 ): Promise<void> {
   for (const row of rows) {
+    if (!current()) return
     const opened = await opener.raw(row.content_key_id, row.uid, Kind.RawProto, row.raw_sealed)
+    if (!current()) return
     if (opened.state !== 'ok') {
       // Not a failure of this feature. A row whose key this account was never
       // granted, or one that really was tampered with, both land here — and
@@ -146,12 +154,13 @@ async function walk(
       const done = await conn.request<P.Reprojected>(
         P.TypeReprojectPut,
         {
-          device_id: state.deviceID,
+          device_id: deviceID,
           uid: row.uid,
           raw: toBase64(opened.value),
         } satisfies P.ReprojectRequest,
         P.TypeReprojected,
       )
+      if (!current()) return
       // Machinery is now retyped as protocol, so it is both: a row that
       // changed, and one that was never a message. Counted as both, because
       // the panel says two different things with the two numbers.
@@ -171,7 +180,7 @@ async function walk(
     } catch (err) {
       p.skipped.push(`${row.wa_id}: ${err instanceof Error ? err.message : String(err)}`)
     }
-    onProgress?.({ ...p })
+    if (current()) onProgress?.({ ...p })
   }
 }
 
@@ -209,7 +218,7 @@ export async function survey(limit = 500): Promise<{ total: number; byField: Rec
   return out
 }
 
-let sweeping = false
+let activeSweep: { deviceID: string; opener: ReturnType<typeof archiveOpener>; conn: ReturnType<typeof connection> } | null = null
 let inflight: Promise<void> | null = null
 
 /**
@@ -232,19 +241,28 @@ export function sweepDone(): Promise<void> {
  * conversation's newest message and would otherwise go on saying "tipo não
  * suportado" about a photograph.
  *
- * One at a time. A second call while one runs — a device switched twice in
- * quick succession — would double-open every row for nothing.
+ * One per current device context. A switch cancels the old pass at its next
+ * asynchronous boundary and lets the newly selected device start immediately.
  */
 export async function sweepUnsupported(): Promise<void> {
-  if (sweeping || !state.deviceID || !connection() || !archiveOpener()) return
-  sweeping = true
+  const deviceID = state.deviceID
+  const conn = connection()
+  const opener = archiveOpener()
+  if (!deviceID || !conn || !opener) return
+  if (activeSweep?.deviceID === deviceID && activeSweep.conn === conn && activeSweep.opener === opener) return
+  const sweep = { deviceID, conn, opener }
+  activeSweep = sweep
+  const current = () => activeSweep === sweep && connection() === conn && archiveOpener() === opener && state.deviceID === deviceID
   let finish!: () => void
   inflight = new Promise<void>((resolve) => (finish = resolve))
   state.unsupported = { ...state.unsupported, running: true, error: undefined }
   try {
     const run = await reproject()
+    if (!current()) return
     if (run.changed) await refreshChats()
+    if (!current()) return
     const left = await survey(1000)
+    if (!current()) return
     state.unsupported = {
       total: left.total,
       byField: left.byField,
@@ -254,14 +272,17 @@ export async function sweepUnsupported(): Promise<void> {
       error: left.error ?? run.error,
     }
   } catch (err) {
+    if (!current()) return
     state.unsupported = {
       ...state.unsupported,
       running: false,
       error: err instanceof Error ? err.message : String(err),
     }
   } finally {
-    sweeping = false
-    inflight = null
+    if (activeSweep === sweep) {
+      activeSweep = null
+      inflight = null
+    }
     finish()
   }
 }

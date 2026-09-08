@@ -94,9 +94,12 @@ export class Opener {
     const pending = ids.filter((id) => this.inFlight.has(id)).map((id) => this.inFlight.get(id)!)
     const fresh = ids.filter((id) => !this.inFlight.has(id))
 
-    if (fresh.length > 0) {
-      const work = this.load(fresh)
-      for (const id of fresh) this.inFlight.set(id, work)
+    // Large chat lists can span more than the protocol's 500 keys per frame.
+    // Keep the same shared in-flight/cache handling for every bounded batch.
+    for (let offset = 0; offset < fresh.length; offset += 500) {
+      const batch = fresh.slice(offset, offset + 500)
+      const work = this.load(batch)
+      for (const id of batch) this.inFlight.set(id, work)
       pending.push(work)
     }
     await Promise.all(pending)

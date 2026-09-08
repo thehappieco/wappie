@@ -29,6 +29,8 @@ import (
 // rewriting the HTML, and it is the only one that applies to responses that are
 // not documents.
 const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"worker-src 'self'; " +
 	"img-src 'self' blob: data:; " +
 	"media-src 'self' blob:; " +
 	"connect-src 'self'; " +
@@ -107,7 +109,9 @@ func (h *Handler) headers(w http.ResponseWriter, clean string) {
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("Cross-Origin-Opener-Policy", "same-origin")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
-	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+	// Voice notes need an explicit browser grant. The policy permits that
+	// prompt only in this origin; it never grants microphone access itself.
+	header.Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=()")
 
 	switch {
 	case clean == "/":

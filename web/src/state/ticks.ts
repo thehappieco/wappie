@@ -8,7 +8,7 @@
  *   ✓ grey     sent, and the server has it
  *   ✓✓ grey    EVERYONE received it
  *   ✓✓ blue    EVERYONE read it
- *   ✓✓✓ blue   EVERYONE played it
+ *   ✓✓ blue    EVERYONE played it (audio-specific accessible label)
  *
  * "Everyone" is why this needs a denominator and why the denominator being
  * unknown is a first-class answer rather than a zero. Two acknowledgements mean

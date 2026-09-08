@@ -8,12 +8,21 @@ import { nowTick } from '../state/actions'
 import { typingIn } from '../state/presence'
 import { forgetSeen, sawMessage } from '../state/reading'
 import { dayLabel, sameDay } from '../ui/format'
+import AppIcon from './AppIcon.vue'
 import AvatarBadge from './AvatarBadge.vue'
 import Composer from './Composer.vue'
 import MessageBubble from './MessageBubble.vue'
 
+const emit = defineEmits<{ back: [] }>()
 const scroller = ref<HTMLElement | null>(null)
 const composer = ref<InstanceType<typeof Composer> | null>(null)
+const pinnedToBottom = ref(true)
+let sizeWatcher: ResizeObserver | null = null
+
+function onScroll() {
+  const el = scroller.value
+  if (el) pinnedToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+}
 
 /**
  * A file dragged onto the conversation.
@@ -88,6 +97,7 @@ const lines = computed<Line[]>(() => {
 watch(
   () => state.openChatKey,
   async () => {
+    pinnedToBottom.value = true
     await nextTick()
     if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
   },
@@ -100,7 +110,7 @@ watch(
   () => state.timeline.length,
   async (now, before) => {
     const el = scroller.value
-    if (!el || now <= before) return
+    if (!el || now <= before || !pinnedToBottom.value) return
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160
     if (!atBottom) return
     await nextTick()
@@ -110,12 +120,18 @@ watch(
 
 async function older() {
   const el = scroller.value
+  const deviceID = state.deviceID
+  const chatKey = state.openChatKey
   const before = el?.scrollHeight ?? 0
+  const previousTop = el?.scrollTop ?? 0
+  pinnedToBottom.value = false
   await loadOlder()
   await nextTick()
   // Hold the reader's place: without this, prepending a page jumps them to the
   // top of a conversation they were reading the middle of.
-  if (el) el.scrollTop = el.scrollHeight - before
+  if (el && scroller.value === el && state.deviceID === deviceID && state.openChatKey === chatKey) {
+    el.scrollTop = previousTop + el.scrollHeight - before
+  }
 }
 
 /**
@@ -136,6 +152,7 @@ let sweep: ReturnType<typeof setInterval> | undefined
 
 function onFocusChange() {
   focused.value = !document.hidden && document.hasFocus()
+  if (!focused.value) forgetSeen()
 }
 
 /** The ids currently intersecting, re-reported on a tick so dwell can elapse. */
@@ -165,23 +182,41 @@ function observe() {
 }
 
 onMounted(() => {
+  if (typeof ResizeObserver !== 'undefined') {
+    sizeWatcher = new ResizeObserver(() => {
+      const el = scroller.value
+      if (el && pinnedToBottom.value) el.scrollTop = el.scrollHeight
+    })
+    if (scroller.value) sizeWatcher.observe(scroller.value)
+  }
+  if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
   window.addEventListener('focus', onFocusChange)
   window.addEventListener('blur', onFocusChange)
   document.addEventListener('visibilitychange', onFocusChange)
   // The dwell clock needs to be revisited while a message sits still, and an
   // IntersectionObserver only speaks when something crosses the boundary.
   sweep = setInterval(() => {
+    // A modal can cover a geometrically visible bubble. Reading pauses while
+    // attention is on details, participants, or another modal layer.
+    if (state.groupPanel || state.selectedUID || document.querySelector('dialog[open], .modal-veil, .sheet-backdrop')) {
+      forgetSeen()
+      return
+    }
     for (const id of onScreen) sawMessage(id, focused.value)
   }, 300)
 })
 
 onBeforeUnmount(() => {
+  forgetSeen()
+  sizeWatcher?.disconnect()
   window.removeEventListener('focus', onFocusChange)
   window.removeEventListener('blur', onFocusChange)
   document.removeEventListener('visibilitychange', onFocusChange)
   watcher?.disconnect()
   if (sweep) clearInterval(sweep)
 })
+
+watch(() => [state.groupPanel, state.selectedUID], () => forgetSeen(), { flush: 'sync' })
 
 // Re-observe whenever the conversation is rebuilt, which is on every live
 // frame: the elements are new objects and the old observer is watching nodes
@@ -235,7 +270,11 @@ async function onTimer(value: string) {
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <div class="topbar" v-if="chat">
+    <div class="topbar conversation-header">
+      <button class="icon-btn mobile-back" type="button" aria-label="Voltar para conversas" @click="emit('back')">
+        <AppIcon name="back" />
+      </button>
+      <template v-if="chat">
       <AvatarBadge
         :contact-key="chat.avatarKey"
         :name="chat.name"
@@ -245,8 +284,9 @@ async function onTimer(value: string) {
       <div class="grow">
         <h2>{{ chat.name }}</h2>
         <div class="sub">
-          {{ chat.key }}
-          <template v-if="chat.isGroup && chat.audience"> · {{ chat.audience }} participantes</template>
+          <template v-if="chat.isGroup && chat.audience">{{ chat.audience }} participantes</template>
+          <template v-else-if="chat.isGroup">Grupo</template>
+          <template v-else>{{ state.quiet ? 'Modo incógnito' : 'Conversa' }}</template>
         </div>
       </div>
 
@@ -256,6 +296,7 @@ async function onTimer(value: string) {
            is announced to everyone in the conversation by WhatsApp itself. -->
       <select
         class="timer"
+        aria-label="Mensagens temporárias"
         :value="chat.ephemeral"
         :title="'Mensagens temporárias: ' + timerLabel(chat.ephemeral) +
           '. Vale para a conversa inteira, e o WhatsApp avisa todo mundo nela.'"
@@ -271,10 +312,13 @@ async function onTimer(value: string) {
         v-if="chat.isGroup"
         class="icon-btn"
         title="Participantes e histórico do grupo"
+        aria-label="Participantes e histórico do grupo"
         @click="openGroup"
       >
         ⋯
       </button>
+      </template>
+      <h2 v-else class="grow">Conversa</h2>
     </div>
 
     <div class="banner" v-if="state.lagged">
@@ -283,7 +327,7 @@ async function onTimer(value: string) {
 
     <div v-if="typingHere" class="typing-line">{{ typingHere }}</div>
 
-    <div class="messages" ref="scroller">
+    <div class="messages" ref="scroller" @scroll.passive="onScroll">
       <div class="centered-row" v-if="state.hasOlder">
         <button class="ghost" @click="older" :disabled="state.loadingOlder">
           {{ state.loadingOlder ? 'Carregando…' : 'Carregar mensagens anteriores' }}

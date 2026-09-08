@@ -11,6 +11,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { MessageAcks, ReceiptEvent } from '../src/api/protocol'
+import { applyReceiptMode } from '../src/state/archive'
 import { absorbReceipts, acksFor, applyReceipt, forgetReceipts } from '../src/state/receipts'
 
 const holding = () => true
@@ -29,7 +30,10 @@ function receipt(over: Partial<ReceiptEvent>): ReceiptEvent {
   } as ReceiptEvent
 }
 
-beforeEach(() => forgetReceipts())
+beforeEach(() => {
+  forgetReceipts()
+  applyReceiptMode('active')
+})
 
 describe('acknowledgements a page carried', () => {
   it('are there before any live frame arrives', () => {
@@ -90,6 +94,13 @@ describe('our own acknowledgements', () => {
     applyReceipt(receipt({ is_from_me: true, kind: 'read' }), holding)
     expect(acksFor('M1').read).toBe(0)
     expect(acksFor('M1').readByUs).toBe(true)
+  })
+
+  it('keeps a phone read even when this browser is incognito', () => {
+    applyReceiptMode('passive')
+    applyReceipt(receipt({ is_from_me: true, kind: 'read' }), holding)
+    expect(acksFor('M1').readByUs).toBe(true)
+    expect(acksFor('M1').read).toBe(0)
   })
 })
 

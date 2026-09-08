@@ -129,9 +129,19 @@ body,
 #app {
   height: 100%;
   margin: 0;
+  overflow: hidden;
+}
+
+#app {
+  position: fixed;
+  inset-inline: 0;
+  top: var(--app-top, 0px);
+  height: var(--app-height, 100dvh);
+  min-width: 0;
 }
 
 body {
+  overscroll-behavior: none;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
@@ -171,6 +181,8 @@ textarea:focus {
   place-items: center;
   height: 100%;
   padding: 24px;
+  overflow-y: auto;
+  align-items: safe center;
 }
 
 .unlock-card {
@@ -282,13 +294,13 @@ textarea:focus {
 
 .shell {
   display: grid;
-  grid-template-columns: var(--sidebar) 1fr;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
   height: 100%;
   background: var(--bg-panel);
 }
 
 .shell.with-panel {
-  grid-template-columns: var(--sidebar) 1fr var(--panel);
+  grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--panel);
 }
 
 /* Three fixed columns need room for three. Below that the conversation is what
@@ -309,34 +321,18 @@ textarea:focus {
   }
 }
 
-@media (max-width: 860px) {
-  .shell.with-panel {
-    grid-template-columns: 1fr var(--panel);
-  }
-
-  .shell.with-panel .sidebar {
-    display: none;
-  }
-}
-
-@media (max-width: 620px) {
-  .shell.with-panel {
-    grid-template-columns: 1fr;
-  }
-
-  .shell.with-panel .conversation {
-    display: none;
-  }
-}
 
 .sidebar {
   border-right: 1px solid var(--line);
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
 .topbar {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -373,6 +369,12 @@ textarea:focus {
   border-radius: 50%;
   color: var(--text-dim);
   line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 40px;
+  min-height: 40px;
 }
 
 .icon-btn:hover {
@@ -443,6 +445,8 @@ textarea:focus {
 }
 
 .chat-row .preview {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -2098,3 +2102,84 @@ select {
   font: inherit;
   font-size: 12.5px;
 }
+
+/* The viewport is fixed; each screen owns its scrolling region. */
+.chat-list, .messages, .panel-body, .modal-body, .console, .sheet, .picker-options {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.messages { overflow-anchor: none; }
+.conversation, .panel { overflow: hidden; }
+.mobile-back { display: none; }
+.device-trigger { padding: 4px 0; text-align: left; border-radius: 6px; }
+.device-trigger-name { display: flex; align-items: center; gap: 6px; font-weight: 650; }
+.device-trigger-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-connection { display: block; margin-top: 3px; }
+.console-link { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 40px; padding: 6px 8px; border-radius: 9px; background: var(--bg-active); color: var(--text); font-size: 12px; font-weight: 600; }
+.list-heading { display: flex; justify-content: space-between; align-items: center; padding: 18px 16px 4px; gap: 10px; }
+.list-heading h1 { font-size: 24px; letter-spacing: -.5px; margin: 0; }
+.quiet-label { color: var(--text-dim); display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.device-picker { color: var(--text); background: var(--bg-panel); border: 1px solid var(--line); border-radius: 18px; width: min(460px, calc(100% - 32px)); max-height: min(620px, calc(var(--app-height, 100dvh) - 40px)); padding: 0; box-shadow: 0 20px 80px #0005; }
+.device-picker[open] { display: flex; flex-direction: column; }
+.device-picker::backdrop { background: #0008; }
+.picker-head { display: flex; align-items: flex-start; gap: 10px; padding: 20px 18px 14px; flex-shrink: 0; }
+.picker-head .grow { flex: 1; min-width: 0; }
+.picker-head h2 { font-size: 20px; margin: 0; }
+.picker-head p { color: var(--text-dim); font-size: 13px; margin: 5px 0 0; }
+.picker-options { overflow-y: auto; min-height: 0; padding: 0 8px 12px; }
+.device-option { display: flex; align-items: center; gap: 12px; width: 100%; border-radius: 10px; padding: 12px 10px; text-align: left; }
+.device-option:hover, .device-option.selected { background: var(--bg-hover); }
+.device-option:disabled { opacity: .55; cursor: default; }
+.device-option .grow { flex: 1; min-width: 0; }
+.device-option strong, .device-option .grow > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-option .grow > span, .device-option small { color: var(--text-dim); font-size: 12px; }
+.device-option.selected > .app-icon { color: var(--accent); }
+.device-option-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: var(--bg-active); }
+.loading-spinner { width: 32px; height: 32px; margin: 0 auto 20px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: loading-spin 1s linear infinite; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+
+@media (min-width: 761px) and (max-width: 1000px) {
+  .shell.with-panel .panel { position: absolute; inset: 0 0 0 auto; width: min(440px, 65vw); z-index: 15; box-shadow: -12px 0 40px #0003; }
+  .shell.with-panel { grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+}
+
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
+  .shell, .shell.with-panel { grid-template-columns: minmax(0, 1fr); }
+  .shell:not(.chat-open) > .conversation { display: none; }
+  .shell.chat-open > .sidebar { display: none; }
+  .shell.with-panel > .conversation { display: none; }
+  .shell > .panel { position: static; width: 100%; border: 0; }
+  .sidebar { border-right: 0; }
+  .mobile-back { display: inline-flex; }
+  .topbar { gap: 6px; min-height: 64px; padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left)); }
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  .console-link { min-height: 44px; }
+  .device-trigger-name { font-size: 15px; }
+  .list-heading { padding-top: 12px; }
+  .search { padding: 10px 14px 12px; }
+  input, textarea, select { font-size: 16px; }
+  .search input { border-radius: 12px; background: var(--bg-hover); border: 0; }
+  .chat-row { min-height: 78px; padding: 12px 16px; }
+  .chat-row .avatar { width: 48px; height: 48px; }
+  .chat-row .name { font-size: 16px; }
+  .chat-list { padding-bottom: env(safe-area-inset-bottom); }
+  .conversation-header .avatar.sm { width: 38px; height: 38px; flex-shrink: 0; }
+  .conversation-header .timer { max-width: 78px; min-height: 40px; font-size: 12px; padding: 4px; }
+  .conversation-header .sub { font-size: 12px; }
+  .messages { padding: 10px 12px 18px; }
+  .msg { max-width: 88%; }
+  .composer { padding: 8px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
+  .composer-row { gap: 4px; align-items: flex-end; }
+  .composer textarea { min-width: 0; min-height: 44px; max-height: 120px; font-size: 16px; padding: 10px 12px; }
+  .composer .send { width: 44px; height: 44px; }
+  .composer .icon-btn { width: 40px; min-width: 40px; }
+  .panel-body { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  .device-picker { width: 100%; max-width: 100%; margin: auto 0 0; border-radius: 20px 20px 0 0; border-bottom: 0; max-height: min(80dvh, var(--app-height, 100dvh)); padding-bottom: env(safe-area-inset-bottom); }
+  .device-picker .picker-head { padding-top: 18px; }
+  .modal-veil { padding: 0; }
+  .modal { width: 100%; height: var(--app-height, 100dvh); max-height: 100%; border-radius: 0; }
+  .modal-body { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .unlock { padding: 16px; }
+  .unlock-card { padding: 22px; }
+}
+@media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }

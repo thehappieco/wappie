@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import { avatarFor, avatars } from '../state/archive'
 import { initials } from '../state/jid'
+import { whenVisible } from '../ui/visible'
 
 const props = defineProps<{
   contactKey: string
@@ -11,13 +12,23 @@ const props = defineProps<{
   isGroup?: boolean
 }>()
 
-// Requested when the row draws rather than with the list: a thousand contacts
-// with a picture each is tens of megabytes, and the list needs the names now.
-onMounted(() => void avatarFor(props.contactKey))
+const element = ref<HTMLElement>()
+let cancelLoad = () => {}
+
+// Mounted rows may still be thousands of pixels below the fold. Fetch only
+// those near the visible area, and cancel an old contact when a row is reused.
 watch(
-  () => props.contactKey,
-  (key) => void avatarFor(key),
+  [element, () => props.contactKey],
+  ([el, key]) => {
+    cancelLoad()
+    if (!el || avatars.has(key)) return
+    cancelLoad = whenVisible(el, () => {
+      if (props.contactKey === key) void avatarFor(key)
+    })
+  },
+  { flush: 'post' },
 )
+onBeforeUnmount(() => cancelLoad())
 
 const url = computed(() => avatars.get(props.contactKey))
 
@@ -54,9 +65,10 @@ const hue = computed(() => {
 </script>
 
 <template>
-  <img v-if="url" class="avatar" :class="{ sm: small }" :src="url" :alt="name" />
+  <img v-if="url" ref="element" class="avatar" :class="{ sm: small }" :src="url" :alt="name" loading="lazy" decoding="async" />
   <div
     v-else
+    ref="element"
     class="avatar tinted"
     :class="{ sm: small }"
     :style="{ '--hue': hue }"

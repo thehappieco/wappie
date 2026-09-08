@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"whatserver2/internal/webui"
@@ -57,6 +58,16 @@ func TestServesThePage(t *testing.T) {
 	}
 	if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
 		t.Errorf("the page is cached as %q, so a deploy would leave old clients running", got)
+	}
+	policy := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(policy, "script-src 'self';") || strings.Contains(policy, "'unsafe-inline'") || strings.Contains(policy, "'unsafe-eval'") {
+		t.Errorf("scripts must remain confined to files from this origin: %q", policy)
+	}
+	if !strings.Contains(policy, "worker-src 'self';") {
+		t.Errorf("the password worker needs an explicit same-origin policy: %q", policy)
+	}
+	if got := resp.Header.Get("Permissions-Policy"); !strings.Contains(got, "microphone=(self)") {
+		t.Errorf("voice notes must be allowed to request microphone permission: %q", got)
 	}
 }
 

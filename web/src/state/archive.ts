@@ -303,6 +303,8 @@ interface State {
   hasRecovery: boolean
   tenantID: string
   connected: boolean
+  /** Handshake and initial device/chat loading must finish before switching. */
+  initializingConnection: boolean
   closedReason: string
   /** Set while waiting to retry. Seconds, counted down for the status line. */
   reconnectIn: number
@@ -364,6 +366,7 @@ export const state = reactive<State>({
   hasRecovery: false,
   tenantID: '',
   connected: false,
+  initializingConnection: false,
   closedReason: '',
   reconnectIn: 0,
 
@@ -415,6 +418,32 @@ let stopped = false
 let attempt = 0
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 let countdown: ReturnType<typeof setInterval> | undefined
+let connectionAttempt = 0
+
+// Requests and decryptions can finish after a device switch or sign-out.
+// Holding the opener and generation together keeps those results out of the
+// next device's directory, pictures and conversation.
+let archiveGeneration = 0
+let chatsGeneration = 0
+let conversationGeneration = 0
+let directoryLoading: number | null = null
+
+interface ArchiveContext {
+  generation: number
+  deviceID: string
+  connection: Connection
+  open: Opener
+}
+
+function archiveContext(): ArchiveContext | null {
+  if (!conn || !opener) return null
+  return { generation: archiveGeneration, deviceID: state.deviceID, connection: conn, open: opener }
+}
+
+function currentArchive(context: ArchiveContext): boolean {
+  return !stopped && context.generation === archiveGeneration &&
+    context.deviceID === state.deviceID && context.connection === conn && context.open === opener
+}
 
 /** Rows for the open conversation, kept so paging older can re-project. */
 let openRows: P.SealedMessage[] = []
@@ -718,28 +747,113 @@ export function recoverySet(): void {
 async function connect(): Promise<void> {
   if (!session || stopped) return
   const open = session
+  const generation = ++archiveGeneration
+  const initializing = ++connectionAttempt
+  state.initializingConnection = true
   const resuming = state.phase === 'ready'
   const reopen = state.openChatKey
+  let openedConnection: Connection | null = null
 
   try {
-    conn = await Connection.connect({
+    const connected = await Connection.connect({
       serverURL: open.serverURL,
       credential: open.credential,
       clientID: 'web',
       onFrame: (frame) => {
-        void handleFrame(frame)
+        if (openedConnection && conn === openedConnection && session === open && !stopped) void handleFrame(frame)
       },
       onClose: (reason) => {
+        if (stopped || session !== open || (openedConnection && conn !== openedConnection)) return
         state.connected = false
         state.closedReason = reason
-        scheduleReconnect()
+        if (state.phase !== 'connecting') scheduleReconnect()
       },
     })
+    if (stopped || session !== open || generation !== archiveGeneration) {
+      connected.close()
+      return
+    }
+    conn = connected
+    openedConnection = connected
+
+    attempt = 0
+    clearCountdown()
+    state.reconnectIn = 0
+    state.tenantID = conn.welcome.tenant_id
+    state.account = conn.welcome.account ?? ''
+    state.role = conn.welcome.role ?? ''
+    state.connected = true
+    state.closedReason = ''
+
+    tenantBytes = parseUUID(conn.welcome.tenant_id)
+    media ??= new Media(open.serverURL, open.credential.token)
+
+    const devices = await conn.request<P.Devices>(P.TypeDevicesList, {}, P.TypeDevices)
+    if (stopped || session !== open || generation !== archiveGeneration) return
+    state.devices = devices.devices ?? []
+    // A running device first: it is the one whose archive is still growing, and
+    // picking a stopped one would look like an empty account.
+    // A device this session can actually open, first. Landing on one it holds no
+    // key for looks like an empty account rather than like a missing grant.
+    const readable = new Set(open.readable.map((r) => r.deviceID))
+    const canOpen = (d: P.DeviceInfo) => open.credential.kind === 'api_key' || readable.has(d.id)
+    const requestedDevice = typeof location === 'undefined' ? '' : new URLSearchParams(location.search).get('device')
+    const preferred =
+      state.devices.find((d) => d.id === requestedDevice && canOpen(d)) ??
+      state.devices.find((d) => d.id === state.deviceID) ??
+      state.devices.find((d) => d.running && canOpen(d)) ??
+      state.devices.find(canOpen) ??
+      state.devices[0]
+    const consoleRoute = typeof location !== 'undefined' && (location.hostname === 'console.wappie.thehappie.co' || location.pathname.startsWith('/console'))
+    if (!preferred || !canOpen(preferred) || consoleRoute) {
+      // Not an error: a tenant with no devices is a tenant that has not paired
+      // one yet, and there is now a screen for doing that.
+      state.phase = 'ready'
+      state.deviceID = ''
+      state.view = 'admin'
+      return
+    }
+
+    state.deviceID = preferred.id
+    // The posture follows the device the moment it is chosen, here as well as
+    // in selectDevice. This call was missing, and the gap showed: `quiet`
+    // starts true so that a device whose posture is not yet known emits nothing,
+    // and nothing here corrected it — so a loud device booted with a dark
+    // palette, a switch drawn from the device row saying the opposite, and gates
+    // that agreed with neither until somebody toggled.
+    applyReceiptMode(preferred.receipt_mode)
+    openerFor(preferred.id)
+    // A large address book must not delay the conversation list. Names enrich
+    // the already-visible rows when their independent request finishes.
+    void loadContacts().catch(() => {})
+    await loadChats()
+    if (stopped || generation !== archiveGeneration) return
+
+    // Live only. Replaying from zero would stream the whole archive down this
+    // socket before the first chat drew, and the pages already have the history.
+    conn.send(P.TypeSubscribe, 'live', { since_seq: 0, live_only: true } satisfies P.Subscribe)
+    state.phase = 'ready'
+
+    // Look again at what an older build could not read, now that the key is in
+    // hand. Not awaited: it is housekeeping, and the conversation list is
+    // already on screen.
+    void sweepUnsupported()
+
+    if (reopen) await openChat(reopen)
   } catch (err) {
-    const message = err instanceof ProtocolError ? err.message : String(err)
-    // A rejected key will be rejected again, however long the wait. Retrying
-    // it forever would hide the one thing the user has to fix. A server that is
-    // merely down is a different case, and reaches here with a different code.
+    if (stopped || session !== open || generation !== archiveGeneration) return
+    // Initialization includes devices, chat pages and content keys. A failure
+    // after welcome must leave the spinner and close this incomplete socket.
+    const message = err instanceof Error ? err.message : String(err)
+    openedConnection?.close()
+    conn = null
+    archiveGeneration++
+    directoryLoading = null
+    state.connected = false
+    if (retryTimer) clearTimeout(retryTimer)
+    retryTimer = undefined
+    clearCountdown()
+    state.reconnectIn = 0
     const refused = err instanceof ProtocolError && err.code === P.ErrUnauthorized
     if (!resuming || refused) {
       state.phase = 'error'
@@ -748,69 +862,9 @@ async function connect(): Promise<void> {
     }
     state.closedReason = message
     scheduleReconnect()
-    return
+  } finally {
+    if (initializing === connectionAttempt) state.initializingConnection = false
   }
-
-  attempt = 0
-  clearCountdown()
-  state.reconnectIn = 0
-  state.tenantID = conn.welcome.tenant_id
-  state.account = conn.welcome.account ?? ''
-  state.role = conn.welcome.role ?? ''
-  state.connected = true
-  state.closedReason = ''
-
-  tenantBytes = parseUUID(conn.welcome.tenant_id)
-  media ??= new Media(open.serverURL, open.credential.token)
-
-  const devices = await conn.request<P.Devices>(P.TypeDevicesList, {}, P.TypeDevices)
-  state.devices = devices.devices ?? []
-  // A running device first: it is the one whose archive is still growing, and
-  // picking a stopped one would look like an empty account.
-  // A device this session can actually open, first. Landing on one it holds no
-  // key for looks like an empty account rather than like a missing grant.
-  const readable = new Set(open.readable.map((r) => r.deviceID))
-  const canOpen = (d: P.DeviceInfo) => open.credential.kind === 'api_key' || readable.has(d.id)
-  const requestedDevice = typeof location === 'undefined' ? '' : new URLSearchParams(location.search).get('device')
-  const preferred =
-    state.devices.find((d) => d.id === requestedDevice && canOpen(d)) ??
-    state.devices.find((d) => d.id === state.deviceID) ??
-    state.devices.find((d) => d.running && canOpen(d)) ??
-    state.devices.find(canOpen) ??
-    state.devices[0]
-  const consoleRoute = typeof location !== 'undefined' && (location.hostname === 'console.wappie.thehappie.co' || location.pathname.startsWith('/console'))
-  if (!preferred || !canOpen(preferred) || consoleRoute) {
-    // Not an error: a tenant with no devices is a tenant that has not paired
-    // one yet, and there is now a screen for doing that.
-    state.phase = 'ready'
-    state.deviceID = ''
-    state.view = 'admin'
-    return
-  }
-
-  state.deviceID = preferred.id
-  // The posture follows the device the moment it is chosen, here as well as
-  // in selectDevice. This call was missing, and the gap showed: `quiet`
-  // starts true so that a device whose posture is not yet known emits nothing,
-  // and nothing here corrected it — so a loud device booted with a dark
-  // palette, a switch drawn from the device row saying the opposite, and gates
-  // that agreed with neither until somebody toggled.
-  applyReceiptMode(preferred.receipt_mode)
-  openerFor(preferred.id)
-  await loadContacts()
-  await loadChats()
-
-  // Live only. Replaying from zero would stream the whole archive down this
-  // socket before the first chat drew, and the pages already have the history.
-  conn.send(P.TypeSubscribe, 'live', { since_seq: 0, live_only: true } satisfies P.Subscribe)
-  state.phase = 'ready'
-
-  // Look again at what an older build could not read, now that the key is in
-  // hand. Not awaited: it is housekeeping, and the conversation list is
-  // already on screen.
-  void sweepUnsupported()
-
-  if (reopen) await openChat(reopen)
 }
 
 /**
@@ -845,6 +899,11 @@ function clearCountdown(): void {
 
 export function stop(): void {
   stopped = true
+  connectionAttempt++
+  archiveGeneration++
+  conversationGeneration++
+  timelineGen++
+  directoryLoading = null
   // Best effort, and not awaited: the session is being torn down either way,
   // and a revocation that fails still expires on its own.
   void session?.close()
@@ -891,13 +950,28 @@ export function stop(): void {
     timeline: [],
     openChatKey: '',
     history: null,
+    contactsLoaded: 0,
+    openChatName: '',
+    loadingChat: false,
+    loadingOlder: false,
+    historyLoading: false,
+    groupPanel: false,
     connected: false,
+    initializingConnection: false,
     closedReason: '',
     reconnectIn: 0,
   })
 }
 
 export async function selectDevice(deviceID: string): Promise<void> {
+  if (!session || !state.devices.some((device) => device.id === deviceID)) return
+  if (state.initializingConnection || !conn?.isOpen) {
+    throw new Error('Aguarde a reconexão antes de trocar de dispositivo.')
+  }
+  if (session.credential.kind === 'session' && !session.readable.some((device) => device.deviceID === deviceID)) return
+  archiveGeneration++
+  conversationGeneration++
+  timelineGen++
   state.deviceID = deviceID
   // The gates follow the device, not the session: two devices of one account
   // can be in different postures, and carrying one's over to the other would
@@ -906,15 +980,45 @@ export async function selectDevice(deviceID: string): Promise<void> {
   state.chats = []
   state.timeline = []
   state.openChatKey = ''
+  state.openChatName = ''
+  state.selectedUID = ''
+  state.history = null
+  state.historyLoading = false
+  state.groupPanel = false
+  state.contactsLoaded = 0
+  state.loadingChat = false
+  state.loadingOlder = false
+  state.hasOlder = false
+  state.actionError = ''
+  state.unsupported = { total: 0, byField: {}, running: false }
+  openRows = []
+  olderCursor = null
+  forgetReceipts()
+  forgetPresence()
+  media?.release()
+  clearPreviews()
+  for (const url of avatars.values()) URL.revokeObjectURL(url)
+  avatars.clear()
   directory.clear()
   avatarsAsked.clear()
   namesAsked.clear()
   pendingNames.clear()
+  if (resolveTimer) clearTimeout(resolveTimer)
+  resolveTimer = undefined
   openerFor(deviceID)
-  void sweepUnsupported()
-
-  await loadContacts()
-  await loadChats()
+  const context = archiveContext()
+  void loadContacts().catch(() => {})
+  try {
+    await loadChats()
+    if (context && currentArchive(context)) void sweepUnsupported()
+  } catch (err) {
+    if (!context || !currentArchive(context)) return
+    state.chats = []
+    state.loadingChat = false
+    state.loadingOlder = false
+    state.actionError = err instanceof Error ? err.message : String(err)
+    throw err
+  }
 }
 
 /**
@@ -951,39 +1055,58 @@ function openerFor(deviceID: string): void {
 // ---------------------------------------------------------------------------
 
 async function loadContacts(): Promise<void> {
-  if (!conn || !opener) return
-  const reply = await conn.request<P.Contacts>(
-    P.TypeContacts,
-    { device_id: state.deviceID },
-    P.TypeContactList,
-  )
-  await absorb(reply.contacts ?? [])
+  const context = archiveContext()
+  if (!context) return
+  directoryLoading = context.generation
+  try {
+    const reply = await context.connection.request<P.Contacts>(
+      P.TypeContacts,
+      { device_id: context.deviceID },
+      P.TypeContactList,
+    )
+    if (!currentArchive(context)) return
+    await absorb(reply.contacts ?? [], context)
+  } finally {
+    if (currentArchive(context)) {
+      directoryLoading = null
+      applyNames()
+      for (const chat of state.chats) if (!chat.isStatus) wantIdentity(chat.key)
+    }
+  }
 }
 
 /** absorb opens a batch of contact rows and files them in the directory. */
-async function absorb(rows: P.ContactSummary[]): Promise<void> {
-  if (!opener || rows.length === 0) return
-  await opener.prefetch(rows.map((c) => c.content_key_id))
+async function absorb(rows: P.ContactSummary[], context = archiveContext()): Promise<void> {
+  if (!context || !currentArchive(context) || rows.length === 0) return
+  await context.open.prefetch(rows.map((c) => c.content_key_id))
 
-  for (const contact of rows) {
-    const names = await opener.contactNames(contact)
-    const person: Person = {
-      key: contact.contact_key,
-      uid: contact.uid,
-      lid: contact.contact_lid,
-      pn: contact.contact_pn,
-      isGroup: Boolean(contact.is_group),
-      full: names.full.state === 'ok' ? names.full.value : '',
-      business: names.business.state === 'ok' ? names.business.value : '',
-      push: names.push.state === 'ok' ? names.push.value : '',
-      hasAvatar: Boolean(contact.has_avatar),
-      avatarKeyID: contact.avatar_key_id,
-      tampered:
-        names.full.state === 'tampered' ||
-        names.business.state === 'tampered' ||
-        names.push.state === 'tampered',
+  // Bounded batches keep WebCrypto busy without queueing thousands of jobs
+  // on a phone. A generation check surrounds every asynchronous batch.
+  for (let offset = 0; offset < rows.length; offset += 24) {
+    if (!currentArchive(context)) return
+    const opened = await Promise.all(rows.slice(offset, offset + 24).map(async (contact) => ({
+      contact, names: await context.open.contactNames(contact),
+    })))
+    if (!currentArchive(context)) return
+    for (const { contact, names } of opened) {
+      const person: Person = {
+        key: contact.contact_key,
+        uid: contact.uid,
+        lid: contact.contact_lid,
+        pn: contact.contact_pn,
+        isGroup: Boolean(contact.is_group),
+        full: names.full.state === 'ok' ? names.full.value : '',
+        business: names.business.state === 'ok' ? names.business.value : '',
+        push: names.push.state === 'ok' ? names.push.value : '',
+        hasAvatar: Boolean(contact.has_avatar),
+        avatarKeyID: contact.avatar_key_id,
+        tampered:
+          names.full.state === 'tampered' ||
+          names.business.state === 'tampered' ||
+          names.push.state === 'tampered',
+      }
+      directory.add(person)
     }
-    directory.add(person)
   }
   state.contactsLoaded = directory.size
 }
@@ -1054,6 +1177,7 @@ function applyNames(): void {
  * conversation that starts after it was permanently nameless.
  */
 export function wantIdentity(primary: string | undefined, ...aliases: (string | undefined)[]): void {
+  if (directoryLoading === archiveGeneration) return
   // Known under any of its identifiers means known. A contact row carries only
   // the half it was learned under, so a person saved by phone number is a miss
   // when looked up by LID, and asking again would be asking about somebody the
@@ -1093,7 +1217,8 @@ async function flushIdentities(): Promise<void> {
   // it here would be the same defect the stamping order below exists to avoid,
   // arriving through the one door that is open precisely when the request
   // cannot be made.
-  if (!conn || !opener) return
+  const context = archiveContext()
+  if (!context) return
 
   const keys = [...pendingNames].slice(0, RESOLVE_MAX)
   if (keys.length === 0) return
@@ -1110,12 +1235,14 @@ async function flushIdentities(): Promise<void> {
   }
   try {
     const before = directory.size
-    const reply = await conn.request<P.Contacts>(
+    const reply = await context.connection.request<P.Contacts>(
       P.TypeResolve,
-      { device_id: state.deviceID, contact_keys: keys } satisfies P.ContactsResolveRequest,
+      { device_id: context.deviceID, contact_keys: keys } satisfies P.ContactsResolveRequest,
       P.TypeContactList,
     )
-    await absorb(reply.contacts ?? [])
+    if (!currentArchive(context)) return
+    await absorb(reply.contacts ?? [], context)
+    if (!currentArchive(context)) return
     if (directory.size !== before || (reply.contacts ?? []).length > 0) applyNames()
   } catch {
     // Nothing to report. The rows are already drawn with the fallback, and a
@@ -1137,21 +1264,34 @@ export async function refreshChats(): Promise<void> {
 }
 
 async function loadChats(): Promise<void> {
-  if (!conn || !opener) return
-  const reply = await conn.request<P.Chats>(
+  const context = archiveContext()
+  if (!context) return
+  const generation = ++chatsGeneration
+  const current = () => currentArchive(context) && generation === chatsGeneration
+  const reply = await context.connection.request<P.Chats>(
     P.TypeChatsList,
-    { device_id: state.deviceID },
+    { device_id: context.deviceID },
     P.TypeChats,
   )
+  if (!current()) return
   const rows = reply.chats ?? []
-  await opener.prefetch(rows.map((c) => c.name_key_id))
+  // Preview bodies often use different keys from group names. Omitting them
+  // made each distinct preview key pay another sequential network round trip.
+  await context.open.prefetch(rows.flatMap((c) => [c.name_key_id, c.last_body_key_id]))
 
-  const views: ChatView[] = []
-  for (const chat of rows) {
-    const [name, preview] = await Promise.all([opener.chatName(chat), opener.chatPreview(chat)])
-    views.push(toChatView(chat, name, preview))
+  const decrypted: Array<{ chat: P.ChatSummary; name: Opened<string>; preview: Opened<string> }> = []
+  for (let offset = 0; offset < rows.length; offset += 24) {
+    if (!current()) return
+    const opened = await Promise.all(rows.slice(offset, offset + 24).map(async (chat) => ({
+      chat, values: await Promise.all([context.open.chatName(chat), context.open.chatPreview(chat)]),
+    })))
+    if (!current()) return
+    for (const { chat, values: [name, preview] } of opened) decrypted.push({ chat, name, preview })
   }
-  state.chats = views.sort(byRecency)
+  if (!current()) return
+  // Contacts can finish between decryption batches. Resolve names and enqueue
+  // unknown identities at publication time, against the current directory.
+  state.chats = decrypted.map(({ chat, name, preview }) => toChatView(chat, name, preview)).sort(byRecency)
 }
 
 function toChatView(
@@ -1242,12 +1382,13 @@ export function byRecency(a: ChatView, b: ChatView): number {
  * faces as it draws them.
  */
 export async function avatarFor(contactKey: string): Promise<void> {
-  if (!conn || !opener || !contactKey) return
+  const context = archiveContext()
+  if (!context || !contactKey) return
   if (avatars.has(contactKey) || askedRecently(avatarsAsked, contactKey, AVATAR_ASK_AGAIN_MS)) {
     return
   }
   avatarsAsked.set(contactKey, Date.now())
-  await avatarQueue(() => fetchAvatar(contactKey))
+  await avatarQueue(() => fetchAvatar(contactKey, context))
 }
 
 /**
@@ -1283,24 +1424,24 @@ async function avatarQueue(work: () => Promise<void>): Promise<void> {
   }
 }
 
-async function fetchAvatar(contactKey: string): Promise<void> {
-  if (!conn || !opener) return
+async function fetchAvatar(contactKey: string, context: ArchiveContext): Promise<void> {
+  if (!currentArchive(context)) return
   try {
-    const frame = await conn.request<P.Avatar>(
+    const frame = await context.connection.request<P.Avatar>(
       P.TypeAvatar,
-      { device_id: state.deviceID, contact_key: contactKey } satisfies P.AvatarRequest,
+      { device_id: context.deviceID, contact_key: contactKey } satisfies P.AvatarRequest,
       P.TypeAvatarFrame,
     )
-    if (!frame.sealed) return
-    const opened = await opener.avatar(frame)
-    if (opened.state !== 'ok') return
+    if (!currentArchive(context) || !frame.sealed) return
+    const opened = await context.open.avatar(frame)
+    if (!currentArchive(context) || opened.state !== 'ok') return
     avatars.set(contactKey, URL.createObjectURL(new Blob([opened.value as BlobPart], { type: 'image/jpeg' })))
   } catch (err) {
     // A contact with no picture answers not_found, which is ordinary. A
     // timeout is not: it means the request never got an answer, and leaving it
     // marked as asked would make a transient failure look like a contact with
     // no face for the next ten minutes. Forgetting it lets the next draw try.
-    if (!(err instanceof ProtocolError)) avatarsAsked.delete(contactKey)
+    if (currentArchive(context) && !(err instanceof ProtocolError)) avatarsAsked.delete(contactKey)
   }
 }
 
@@ -1309,44 +1450,55 @@ async function fetchAvatar(contactKey: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function openChat(chatKey: string): Promise<void> {
-  if (!conn || !opener) return
+  const context = archiveContext()
+  if (!context) return
+  const generation = ++conversationGeneration
+  const current = () => currentArchive(context) && generation === conversationGeneration && state.openChatKey === chatKey
+  timelineGen++
   state.openChatKey = chatKey
   state.openChatName = state.chats.find((c) => c.key === chatKey)?.name ?? chatKey
   state.selectedUID = ''
   state.history = null
   state.loadingChat = true
+  state.loadingOlder = false
+  state.hasOlder = false
   state.timeline = []
   openRows = []
   forgetReceipts()
   olderCursor = null
 
   try {
-    const page = await conn.request<P.Page>(
+    const page = await context.connection.request<P.Page>(
       P.TypeChatPage,
-      { device_id: state.deviceID, chat_key: chatKey, limit: PAGE_SIZE } satisfies P.ChatPageRequest,
+      { device_id: context.deviceID, chat_key: chatKey, limit: PAGE_SIZE } satisfies P.ChatPageRequest,
       P.TypePage,
     )
+    if (!current()) return
     openRows = page.messages ?? []
     absorbReceipts(page.receipts)
     state.hasOlder = page.has_more
     olderCursor = page.next_ts ? { ts: page.next_ts, seq: page.next_seq ?? 0 } : null
     await redraw()
   } catch (err) {
-    state.error = err instanceof Error ? err.message : String(err)
+    if (current()) state.error = err instanceof Error ? err.message : String(err)
   } finally {
-    state.loadingChat = false
+    if (current()) state.loadingChat = false
   }
 }
 
 export async function loadOlder(): Promise<void> {
-  if (!conn || !opener || !state.hasOlder || state.loadingOlder || !olderCursor) return
+  const context = archiveContext()
+  if (!context || !state.hasOlder || state.loadingOlder || !olderCursor) return
+  const generation = conversationGeneration
+  const chatKey = state.openChatKey
+  const current = () => currentArchive(context) && generation === conversationGeneration && state.openChatKey === chatKey
 
   state.loadingOlder = true
   try {
-    const page = await conn.request<P.Page>(
+    const page = await context.connection.request<P.Page>(
       P.TypeChatPage,
       {
-        device_id: state.deviceID,
+        device_id: context.deviceID,
         chat_key: state.openChatKey,
         before_ts: olderCursor.ts,
         before_seq: olderCursor.seq,
@@ -1354,26 +1506,31 @@ export async function loadOlder(): Promise<void> {
       } satisfies P.ChatPageRequest,
       P.TypePage,
     )
+    if (!current()) return
     openRows = [...(page.messages ?? []), ...openRows]
     absorbReceipts(page.receipts)
     state.hasOlder = page.has_more
     olderCursor = page.next_ts ? { ts: page.next_ts, seq: page.next_seq ?? 0 } : null
     await redraw()
   } finally {
-    state.loadingOlder = false
+    if (current()) state.loadingOlder = false
   }
 }
 
 async function buildTimeline(rows: P.SealedMessage[]): Promise<MessageView[]> {
-  if (!opener) return []
+  const context = archiveContext()
+  if (!context) return []
   // Every key the page needs, in one round trip, before anything is opened.
-  await opener.prefetch(rows.map((r) => r.content_key_id))
+  await context.open.prefetch(rows.map((r) => r.content_key_id))
+  if (!currentArchive(context)) return []
 
   const { entries } = project(rows)
   const views: MessageView[] = []
   const archived = new Set<string>()
   for (const entry of entries) {
-    views.push(await toMessageView(entry))
+    const view = await toMessageView(entry, context)
+    if (!currentArchive(context)) return []
+    if (view) views.push(view)
     archived.add(entry.row.wa_id)
   }
 
@@ -1408,8 +1565,9 @@ export async function redrawTimeline(): Promise<void> {
 
 async function redraw(): Promise<void> {
   const gen = ++timelineGen
+  const chatKey = state.openChatKey
   const next = await buildTimeline(openRows)
-  if (gen === timelineGen) state.timeline = next
+  if (gen === timelineGen && state.openChatKey === chatKey) state.timeline = next
 }
 
 /**
@@ -1432,7 +1590,7 @@ function personName(lid: string | undefined, pn: string | undefined, fallbackKey
   // for a LID nobody has named and never reaches pn at all — defeating the
   // "try both identifiers" this function exists for, and, once there was one,
   // making the ask below unreachable.
-  const named = directory.knownName(lid) || directory.knownName(pn)
+  const named = directory.knownName(lid) || directory.knownName(pn) || directory.knownName(fallbackKey)
   if (named) return named
   // About to draw an identifier at somebody. Ask who it is; the row redraws if
   // an answer comes back.
@@ -1479,8 +1637,7 @@ export function revisionsOf(
  * Reporting five voters on a poll six people answered would be a quieter kind
  * of wrong than admitting one answer could not be read.
  */
-async function tallyOf(poll: P.Poll, entry: Entry): Promise<PollView> {
-  const open = opener!
+async function tallyOf(poll: P.Poll, entry: Entry, open: Opener): Promise<PollView> {
   const options = poll.options ?? []
   const hashes = await hashesOf(options)
 
@@ -1508,8 +1665,8 @@ async function tallyOf(poll: P.Poll, entry: Entry): Promise<PollView> {
   return { tally, complete: tally.sealed === 0 && tally.unmatched === 0 }
 }
 
-async function toMessageView(entry: Entry): Promise<MessageView> {
-  const open = opener!
+async function toMessageView(entry: Entry, context: ArchiveContext): Promise<MessageView | null> {
+  const open = context.open
   const row = entry.current
   const original = entry.row
 
@@ -1518,10 +1675,12 @@ async function toMessageView(entry: Entry): Promise<MessageView> {
     row.payload_sealed || original.payload_sealed
       ? await open.payload(row.payload_sealed ? row : original)
       : null
+  if (!currentArchive(context)) return null
 
   const reactions: ReactionView[] = []
   for (const reaction of standing(entry)) {
     const emoji = await open.body(reaction.row)
+    if (!currentArchive(context)) return null
     // WhatsApp withdraws a reaction by sending one with an empty emoji, and
     // empty is a property of the sealed body — so the withdrawal is only
     // visible once it is opened.
@@ -1537,8 +1696,9 @@ async function toMessageView(entry: Entry): Promise<MessageView> {
 
   const poll =
     payload?.state === 'ok' && payload.value.poll
-      ? await tallyOf(payload.value.poll, entry)
+      ? await tallyOf(payload.value.poll, entry, open)
       : undefined
+  if (!currentArchive(context)) return null
 
   return {
     uid: original.uid,
@@ -1558,7 +1718,7 @@ async function toMessageView(entry: Entry): Promise<MessageView> {
     body: body.state === 'ok' ? body.value : '',
     bodyState: stateOf(body),
     payload: payload?.state === 'ok' ? payload.value : undefined,
-    media: await toMediaView(original),
+    media: await toMediaView(original, context),
     reactions,
     poll,
     edited: entry.versions.length > 1,
@@ -1576,11 +1736,12 @@ async function toMessageView(entry: Entry): Promise<MessageView> {
   }
 }
 
-async function toMediaView(row: P.SealedMessage): Promise<MediaView | undefined> {
-  if (!row.media || !opener) return undefined
+async function toMediaView(row: P.SealedMessage, context: ArchiveContext): Promise<MediaView | undefined> {
+  if (!row.media || !currentArchive(context)) return undefined
   const m = row.media
 
-  const [thumb, fileName] = await Promise.all([opener.thumbnail(row), opener.fileName(row)])
+  const [thumb, fileName] = await Promise.all([context.open.thumbnail(row), context.open.fileName(row)])
+  if (!currentArchive(context)) return undefined
   const view: MediaView = {
     type: m.media_type,
     mimetype: m.mimetype ?? '',
@@ -1611,13 +1772,18 @@ async function toMediaView(row: P.SealedMessage): Promise<MediaView | undefined>
 
 /** fetchMedia downloads and decrypts the full attachment behind one message. */
 export async function fetchMedia(view: MessageView): Promise<void> {
-  if (!media || !opener || !view.media) return
+  const context = archiveContext()
+  const downloading = media
+  const target = view.media
+  if (!context || !downloading || !target) return
+  const current = () => currentArchive(context) && downloading === media
   const row = view.entry.row
-  if (!row.media) return
+  if (!row.media || row.device_id !== context.deviceID) return
 
-  const key = await opener.mediaKey(row)
+  const key = await context.open.mediaKey(row)
+  if (!current()) return
   if (key.state !== 'ok') {
-    view.media.full = {
+    target.full = {
       state: 'error',
       message:
         key.state === 'tampered'
@@ -1626,8 +1792,9 @@ export async function fetchMedia(view: MessageView): Promise<void> {
     }
     return
   }
-  view.media.full = { state: 'pending', status: 'baixando' }
-  view.media.full = await media.open(row, key.value)
+  target.full = { state: 'pending', status: 'baixando' }
+  const result = await downloading.open(row, key.value)
+  if (current()) target.full = result
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,28 +1802,31 @@ export async function fetchMedia(view: MessageView): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function loadHistory(view: MessageView): Promise<void> {
-  if (!conn || !opener) return
+  const context = archiveContext()
+  if (!context) return
+  const current = () => currentArchive(context) && state.selectedUID === view.uid
   state.selectedUID = view.uid
   state.history = null
   state.historyError = ''
   state.historyLoading = true
 
   try {
-    const reply = await conn.request<P.History>(
+    const reply = await context.connection.request<P.History>(
       P.TypeHistory,
-      { device_id: state.deviceID, uid: view.uid } satisfies P.HistoryRequest,
+      { device_id: context.deviceID, uid: view.uid } satisfies P.HistoryRequest,
       P.TypeHistoryFrame,
     )
-    state.history = await toHistoryView(reply)
+    if (!current()) return
+    const history = await toHistoryView(reply, context.open)
+    if (current()) state.history = history
   } catch (err) {
-    state.historyError = err instanceof Error ? err.message : String(err)
+    if (current()) state.historyError = err instanceof Error ? err.message : String(err)
   } finally {
-    state.historyLoading = false
+    if (current()) state.historyLoading = false
   }
 }
 
-async function toHistoryView(reply: P.History): Promise<HistoryView> {
-  const open = opener!
+async function toHistoryView(reply: P.History, open: Opener): Promise<HistoryView> {
   await open.prefetch([
     ...(reply.versions ?? []).map((v) => v.message.content_key_id),
     ...(reply.reactions ?? []).map((r) => r.message.content_key_id),
@@ -1800,11 +1970,13 @@ async function handleFrame(frame: P.Frame): Promise<void> {
 
 async function onMessage(row: P.SealedMessage): Promise<void> {
   if (row.device_id !== state.deviceID) return
+  const context = archiveContext()
+  if (!context) return
   state.liveCount += 1
 
   await bumpChat(row)
 
-  if (!inOpenChat(row.chat_key)) return
+  if (!currentArchive(context) || !inOpenChat(row.chat_key)) return
   openRows = [...openRows, row]
   // Re-projected rather than appended: the row may be an edit, a deletion or a
   // reaction, none of which is a new line — and all of which change one that is
@@ -2226,6 +2398,8 @@ export function canSend(): boolean {
 }
 
 async function bumpChat(row: P.SealedMessage): Promise<void> {
+  const context = archiveContext()
+  if (!context) return
   // By key set, not by equality: one conversation can be stored under both a
   // phone number and a LID, and a message naming the half the row is not keyed
   // on would otherwise look like a conversation nobody has seen — reloading
@@ -2246,7 +2420,8 @@ async function bumpChat(row: P.SealedMessage): Promise<void> {
   // The preview is opened here rather than left stale. A list that keeps
   // showing yesterday's line while a message arrives beside it reads as a
   // client that has stopped working.
-  const body = await opener!.body(row)
+  const body = await context.open.body(row)
+  if (!currentArchive(context)) return
   chat.preview = body.state === 'ok' ? body.value : ''
   chat.previewState = stateOf(body)
 }

@@ -8,9 +8,11 @@ import { MAX_BYTES, refuse, type Choice } from '../media/plan'
 import { discard, prepare, type Prepared } from '../media/prepare'
 import { available as canRecord, begin, type Recording } from '../media/record'
 import { bytes } from '../ui/format'
+import { enterSends } from '../ui/composerKeys'
 import AttachSheet from './AttachSheet.vue'
 import { timerLabel } from '../state/ephemeral'
 import SendMarks from './SendMarks.vue'
+import AppIcon from './AppIcon.vue'
 
 // Writing into the archive, rather than only reading it.
 //
@@ -337,10 +339,11 @@ onBeforeUnmount(() => {
 // handled up there and handed down here.
 defineExpose({ take })
 
-// Enter sends, shift-enter breaks the line — what every messaging client does,
-// and what fingers already expect.
+// Desktop keeps Enter to send; touch keyboards use Enter for a new line and
+// the visible send button. An IME's confirmation key must only confirm text.
 function onKey(event: KeyboardEvent) {
-  if (event.key === 'Enter' && !event.shiftKey) {
+  const touchKeyboard = window.matchMedia?.('(hover: none) and (pointer: coarse)').matches ?? false
+  if (enterSends(event, touchKeyboard)) {
     event.preventDefault()
     void submit()
   }
@@ -414,7 +417,7 @@ onBeforeUnmount(stopTyping)
         <div class="quoting-who">{{ quoted.senderName }}</div>
         <div class="quoting-body">{{ quoted.body || '—' }}</div>
       </div>
-      <button class="icon-btn" title="Cancelar resposta" @click="emit('cancel')">✕</button>
+      <button class="icon-btn" type="button" title="Cancelar resposta" aria-label="Cancelar resposta" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <div v-if="target" class="quoting editing-chip">
@@ -425,7 +428,7 @@ onBeforeUnmount(stopTyping)
           <template v-else>a janela de vinte minutos já passou</template>
         </div>
       </div>
-      <button class="icon-btn" title="Cancelar edição" @click="emit('cancel')">✕</button>
+      <button class="icon-btn" type="button" title="Cancelar edição" aria-label="Cancelar edição" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <AttachSheet v-if="picked" :file="picked" @choose="choose" @cancel="clearAttachment" />
@@ -461,7 +464,7 @@ onBeforeUnmount(stopTyping)
           não foi possível ler: {{ attached.missing.join(', ') }}
         </div>
       </div>
-      <button class="icon-btn" title="Tirar o anexo" @click="clearAttachment">✕</button>
+      <button class="icon-btn" type="button" title="Tirar o anexo" aria-label="Tirar o anexo" @click="clearAttachment"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <div v-if="attachError" class="alert">{{ attachError }}</div>
@@ -484,8 +487,8 @@ onBeforeUnmount(stopTyping)
       <span class="rec-dot" />
       <span class="rec-time">{{ clock(recordedFor) }}</span>
       <span class="grow rec-note">gravando — o microfone está aberto</span>
-      <button class="icon-btn" type="button" title="Descartar" @click="cancelRecording">✕</button>
-      <button class="primary send" type="button" title="Parar e anexar" @click="stopRecording">■</button>
+      <button class="icon-btn" type="button" title="Descartar gravação" aria-label="Descartar gravação" @click="cancelRecording"><AppIcon name="trash" /></button>
+      <button class="primary send" type="button" title="Parar e anexar gravação" aria-label="Parar e anexar gravação" @click="stopRecording"><AppIcon name="stop" :size="20" /></button>
     </div>
 
     <form v-else class="composer-row" @submit.prevent="submit">
@@ -502,20 +505,22 @@ onBeforeUnmount(stopTyping)
         class="icon-btn attach"
         type="button"
         title="Anexar um arquivo"
+        aria-label="Anexar um arquivo"
         @click="browse"
       >
-        📎
+        <AppIcon name="paperclip" />
       </button>
       <textarea
         ref="box"
         v-model="draft"
         rows="1"
+        enterkeyhint="enter"
         :placeholder="
           attached
             ? captionAllowed
               ? 'Legenda (opcional)'
               : `${attached.plan.label} não leva legenda`
-            : 'Escreva uma mensagem'
+            : 'Mensagem'
         "
         :disabled="Boolean(attached) && !captionAllowed"
         :aria-label="attached && captionAllowed ? 'Legenda' : 'Escreva uma mensagem'"
@@ -528,27 +533,30 @@ onBeforeUnmount(stopTyping)
         type="button"
         :disabled="opening"
         title="Gravar uma mensagem de voz"
+        aria-label="Gravar uma mensagem de voz"
         @click="startRecording"
       >
-        🎤
+        <AppIcon name="microphone" />
       </button>
       <button
         class="icon-btn detail"
         :class="{ on: showMarks || marksSummary }"
         type="button"
         :title="marksSummary || 'Detalhes desta mensagem'"
+        aria-label="Detalhes desta mensagem"
         :aria-expanded="showMarks"
         @click="showMarks = !showMarks"
       >
-        {{ showMarks ? '⌃' : '⌄' }}
+        <AppIcon :name="showMarks ? 'chevron-up' : 'chevron-down'" :size="18" />
       </button>
       <button
         class="primary send"
         type="submit"
         :disabled="!sendable"
         :title="target ? 'Salvar' : 'Enviar'"
+        :aria-label="target ? 'Salvar edição' : 'Enviar mensagem'"
       >
-        {{ target ? '✓' : '➤' }}
+        <AppIcon :name="target ? 'check' : 'send'" />
       </button>
     </form>
 

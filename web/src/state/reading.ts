@@ -1,21 +1,13 @@
 /**
  * Reporting what has been read.
  *
- * Two different things used to be one thing here, and separating them is what
- * this module is now about. Telling the ARCHIVE what has been read is how a
- * badge clears; telling WHATSAPP is a signal that leaves this machine. They
- * were the same call behind the same switch, so a device in the default
- * discreet mode sent nothing, and therefore cleared nothing: opening a
- * conversation and reading every word in it left the badge exactly where it
- * was, forever.
+ * Incognito viewing preserves unread messages in the archive as well as
+ * withholding WhatsApp receipts. A MarkRead request changes the archive even
+ * when the server suppresses the outgoing receipt, so the client must not send
+ * that request while discreet. Read events from the phone still update the
+ * archive normally; this gate only controls this client's own reports.
  *
- * So the report always goes to our own server, and the server decides
- * separately whether a receipt reaches WhatsApp — ReceiptPolicy.MarkRead
- * refuses in passive mode, which is the gate that actually matters and the one
- * place it can be audited. Nothing new is disclosed by reporting here: the
- * archive already holds every message this is about.
- *
- * Three conditions, all necessary:
+ * In active mode, three further conditions are necessary:
  *
  *   - the message is on screen, not merely loaded. A conversation holds sixty
  *     messages and a reader sees five of them.
@@ -49,16 +41,15 @@ const pending = new Set<string>()
 let timer: ReturnType<typeof setTimeout> | undefined
 
 /**
- * Whether a read reaches WhatsApp. Kept because the UI says so, and because a
- * reader deserves to be told what the switch does.
- *
- * It no longer gates the report to our own server. The server refuses to
- * forward in passive mode — that refusal is the gate — and gating here as well
- * meant the badge could never clear while discreet.
+ * Whether this client may mark anything read. Unknown posture starts quiet.
+ * The server independently controls whether receipts reach WhatsApp.
  */
-let outbound = true
+let outbound = false
 
 export function setReadReceipts(on: boolean): void {
+  // Reading while discreet must not be reported later when active mode is
+  // restored. Entering incognito also cancels a batch waiting to leave.
+  if (on !== outbound || !on) forgetSeen()
   outbound = on
 }
 
@@ -84,10 +75,11 @@ export function queued(): string[] {
  * the one that finds the clock has run sends it.
  */
 export function sawMessage(waID: string, focused: boolean): void {
-  if (!waID || !focused) {
+  if (!outbound || !waID || !focused) {
     // Losing focus discards the clock rather than pausing it: a message
     // glimpsed for a moment before the window went behind another was not read.
     seen.delete(waID)
+    pending.delete(waID)
     return
   }
   const first = seen.get(waID)
@@ -108,13 +100,15 @@ export function sawMessage(waID: string, focused: boolean): void {
 export function forgetSeen(): void {
   seen.clear()
   pending.clear()
+  if (timer) clearTimeout(timer)
+  timer = undefined
 }
 
 async function flush(): Promise<void> {
   const ids = [...pending]
   pending.clear()
   const conn = connection()
-  if (!conn || ids.length === 0 || !state.openChatKey) return
+  if (!outbound || !conn || ids.length === 0 || !state.openChatKey) return
 
   try {
     await conn.request(
@@ -142,7 +136,7 @@ async function flush(): Promise<void> {
  */
 export async function playedMessage(waID: string): Promise<void> {
   const conn = connection()
-  if (!conn || !waID || !state.openChatKey) return
+  if (!outbound || !conn || !waID || !state.openChatKey) return
   try {
     await conn.request(
       P.TypeMarkRead,

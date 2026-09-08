@@ -45,6 +45,8 @@ export class MediaFetchError extends Error {
 export class Media {
   private readonly cache = new Map<string, MediaState>()
   private readonly inFlight = new Map<string, Promise<MediaState>>()
+  private readonly downloads = new Set<AbortController>()
+  private generation = 0
 
   constructor(
     private readonly serverURL: string,
@@ -80,18 +82,32 @@ export class Media {
     const running = this.inFlight.get(message.uid)
     if (running) return running
 
-    const work = this.fetchAndOpen(message, mediaKey)
+    const generation = this.generation
+    const controller = new AbortController()
+    this.downloads.add(controller)
+    const work = this.fetchAndOpen(message, mediaKey, controller.signal)
       .catch((err): MediaState => ({ state: 'error', message: describe(err) }))
-      .then((result) => {
+      .then((result): MediaState => {
+        // A decoder may finish even after fetch has been aborted. Its object
+        // URL must not outlive the device or session that requested it.
+        if (generation !== this.generation || controller.signal.aborted) {
+          if (result.state === 'ready') URL.revokeObjectURL(result.url)
+          return { state: 'error', message: 'o carregamento foi cancelado' }
+        }
         this.remember(message.uid, result)
-        this.inFlight.delete(message.uid)
         return result
+      })
+      .finally(() => {
+        this.downloads.delete(controller)
+        // release() permits an immediate fresh request for the same UID.
+        // An older request finishing now must leave that new request alone.
+        if (this.inFlight.get(message.uid) === work) this.inFlight.delete(message.uid)
       })
     this.inFlight.set(message.uid, work)
     return work
   }
 
-  private async fetchAndOpen(message: P.SealedMessage, mediaKey: Bytes): Promise<MediaState> {
+  private async fetchAndOpen(message: P.SealedMessage, mediaKey: Bytes, signal: AbortSignal): Promise<MediaState> {
     const media = message.media
     if (!media) return { state: 'error', message: 'esta mensagem não tem anexo' }
     // 'gone' is WhatsApp's signed URL having expired before the archive
@@ -103,7 +119,9 @@ export class Media {
     const response = await fetch(this.endpoint(message.uid), {
       headers: { Authorization: `Bearer ${this.token}` },
       cache: 'default',
+      signal,
     })
+    signal.throwIfAborted()
 
     if (response.status === 409) {
       // Distinct from missing on purpose: the attachment exists and is not
@@ -115,6 +133,7 @@ export class Media {
     }
 
     const ciphertext = new Uint8Array(await response.arrayBuffer())
+    signal.throwIfAborted()
 
     // The hash covers the ciphertext, so it can be checked before any key is
     // used — a corrupted download is told apart from a wrong key here rather
@@ -122,12 +141,14 @@ export class Media {
     if (media.file_enc_sha256) {
       const want = media.file_enc_sha256
       const got = await sha256(ciphertext)
+      signal.throwIfAborted()
       if (toHex(got) !== toHex(base64ToBytes(want))) {
         throw new Error('o download não confere com o hash que a mensagem carrega')
       }
     }
 
     const plaintext = await decrypt(ciphertext, mediaKey, mediaTypeOf(media))
+    signal.throwIfAborted()
     const blob = new Blob([plaintext as BlobPart], { type: media.mimetype || 'application/octet-stream' })
     return { state: 'ready', url: URL.createObjectURL(blob), bytes: plaintext.length }
   }
@@ -150,8 +171,12 @@ export class Media {
     }
   }
 
-  /** release revokes every object URL. Called when the session ends. */
+  /** release cancels downloads and revokes every URL on device change or sign-out. */
   release(): void {
+    this.generation++
+    for (const controller of this.downloads) controller.abort()
+    this.downloads.clear()
+    this.inFlight.clear()
     for (const state of this.cache.values()) {
       if (state.state === 'ready') URL.revokeObjectURL(state.url)
     }

@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import { state, type MessageView } from '../state/archive'
 import { acksFor } from '../state/receipts'
 import { denominatorFor, tickReport } from '../state/ticks'
+import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{ message: MessageView }>()
 
@@ -42,11 +43,21 @@ const title = computed(() =>
 </script>
 
 <template>
-  <span v-if="report.tick" class="ticks" :class="report.tick" :title="title">
-    <template v-if="report.tick === 'pending'">🕘</template>
-    <template v-else-if="report.tick === 'sent'">✓</template>
-    <template v-else-if="report.tick === 'delivered'">✓✓</template>
-    <template v-else-if="report.tick === 'read'">✓✓</template>
-    <template v-else>✓✓✓</template>
+  <span v-if="report.tick" class="ticks" :class="report.tick" :title="title" role="img" :aria-label="title">
+    <AppIcon :name="report.tick === 'pending' ? 'clock' : report.tick === 'sent' ? 'check' : 'checks'" :size="18" />
   </span>
 </template>
+
+<style scoped>
+.ticks {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+.ticks.read,
+.ticks.played {
+  color: #53bdeb;
+}
+</style>

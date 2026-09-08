@@ -22,8 +22,6 @@
 // against. An attacker with a dump gets an offline target, and PBKDF2 is what
 // makes that cheap. So one dependency, scoped to this file, doing one thing.
 
-import { argon2id } from '@noble/hashes/argon2.js'
-
 import { concat, encodeUTF8, fromBase64, toBase64, type Bytes } from './bytes'
 import { generateKeyPair } from './hpke'
 
@@ -109,13 +107,17 @@ export async function derive(password: string, salt: Bytes, params: KDFParams): 
  * differently under test than in a browser would be worse than a slow one.
  */
 async function stretch(password: string, salt: Bytes, params: KDFParams): Promise<Bytes> {
-  const direct = () =>
-    argon2id(encodeUTF8(password), salt, {
+  const direct = async () => {
+    // Browsers normally derive in the separate worker. Do not make every
+    // first visit download another copy of Argon2 for this fallback path.
+    const { argon2id } = await import('@noble/hashes/argon2.js')
+    return argon2id(encodeUTF8(password), salt, {
       m: params.m,
       t: params.t,
       p: params.p,
       dkLen: 32,
     }) as Bytes
+  }
 
   if (typeof Worker === 'undefined') return direct()
 

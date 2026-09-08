@@ -3,6 +3,7 @@ import { computed } from 'vue'
 
 import { losesAnimation, offer, planFor, unusualVoiceNote, type Choice } from '../media/plan'
 import { bytes } from '../ui/format'
+import AppIcon, { type IconName } from './AppIcon.vue'
 
 // How to send this file.
 //
@@ -20,6 +21,18 @@ const emit = defineEmits<{
 }>()
 
 const choices = computed(() => offer(props.file).map(planFor))
+
+const choiceIcons: Record<Choice, IconName> = {
+  photo: 'image',
+  photo_hd: 'image',
+  file: 'file',
+  video: 'video',
+  gif: 'video',
+  ptv: 'video',
+  audio: 'audio',
+  voice: 'microphone',
+  sticker: 'sticker',
+}
 
 /** A moving image about to be flattened. Worth saying before, not after. */
 function flattens(choice: Choice): boolean {
@@ -44,16 +57,17 @@ function unusual(choice: Choice): boolean {
         <div class="sheet-name">{{ file.name }}</div>
         <div class="sheet-size">{{ bytes(file.size) || 'arquivo vazio' }}</div>
       </div>
-      <button class="icon-btn" title="Cancelar" @click="emit('cancel')">✕</button>
+      <button class="icon-btn" type="button" title="Cancelar anexo" aria-label="Cancelar anexo" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <button
       v-for="plan in choices"
       :key="plan.choice"
       class="sheet-choice"
+      type="button"
       @click="emit('choose', plan.choice)"
     >
-      <span class="sheet-label">{{ plan.label }}</span>
+      <span class="sheet-label"><AppIcon :name="choiceIcons[plan.choice]" :size="20" /> {{ plan.label }}</span>
       <span class="sheet-note">
         {{ plan.note }}
         <template v-if="flattens(plan.choice)"> · a animação se perde</template>
@@ -62,3 +76,11 @@ function unusual(choice: Choice): boolean {
     </button>
   </div>
 </template>
+
+<style scoped>
+.sheet-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>

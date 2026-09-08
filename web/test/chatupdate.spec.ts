@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { applyChatUpdate, state } from '../src/state/archive'
+import { applyChatUpdate, applyReceiptMode, state } from '../src/state/archive'
 
 // A conversation's badge and its disappearing timer both live on the chat row,
 // and until this frame existed the only thing that carried either was the reply
@@ -24,6 +24,7 @@ function chat(over: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  applyReceiptMode('active')
   state.deviceID = 'dev-1'
   state.chats = [chat()] as never
 })
@@ -37,6 +38,13 @@ describe('a live chat update', () => {
   it('applies a badge of zero, which is the whole point of reading', () => {
     applyChatUpdate({ device_id: 'dev-1', chat_key: state.chats[0].key, unread: 0 })
     expect(state.chats[0].unread).toBe(0)
+  })
+
+  it('still applies actual phone reads while this browser is incognito', () => {
+    applyReceiptMode('passive')
+    applyChatUpdate({ device_id: 'dev-1', chat_key: state.chats[0].key, unread: 0 })
+    expect(state.chats[0].unread).toBe(0)
+    expect(state.quiet).toBe(true)
   })
 
   it('applies a timer of zero, which is how it gets turned off', () => {

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 
 import type { Session } from './state/session'
+import { installMobileNavigation } from './ui/mobileNavigation'
 import { start, state, stop } from './state/archive'
 import AdminView from './components/AdminView.vue'
 import ChatList from './components/ChatList.vue'
@@ -11,6 +12,41 @@ import GroupPanel from './components/GroupPanel.vue'
 import SignInView from './components/SignInView.vue'
 
 const showPanel = computed(() => Boolean(state.selectedUID))
+const mobileQuery = window.matchMedia('(max-width: 760px), (max-height: 500px) and (pointer: coarse)')
+const isMobile = ref(mobileQuery.matches)
+const screenDepth = computed(() => !isMobile.value || state.phase !== 'ready' || state.view !== 'archive'
+  ? 0 : !state.openChatKey ? 0 : showPanel.value || state.groupPanel ? 2 : 1)
+
+function closeTo(depth: number) {
+  if (depth < 1) {
+    state.openChatKey = ''
+    state.openChatName = ''
+  }
+  if (depth < 2) {
+    closePanel()
+    state.groupPanel = false
+  }
+}
+
+const navigation = installMobileNavigation({ getDepth: () => screenDepth.value, closeTo })
+watch(screenDepth, () => navigation.sync(), { flush: 'sync' })
+
+function updateViewport() {
+  isMobile.value = mobileQuery.matches
+  const viewport = window.visualViewport
+  // Respect pinch zoom; the keyboard changes height without changing scale.
+  if (viewport && viewport.scale !== 1) return
+  document.documentElement.style.setProperty('--app-height', `${viewport?.height ?? window.innerHeight}px`)
+  document.documentElement.style.setProperty('--app-top', `${viewport?.offsetTop ?? 0}px`)
+}
+
+onMounted(() => {
+  updateViewport()
+  window.addEventListener('resize', updateViewport)
+  mobileQuery.addEventListener('change', updateViewport)
+  window.visualViewport?.addEventListener('resize', updateViewport)
+  window.visualViewport?.addEventListener('scroll', updateViewport)
+})
 
 async function opened(session: Session) {
   await start(session)
@@ -45,6 +81,13 @@ watchEffect(() => {
 })
 
 onBeforeUnmount(() => {
+  navigation.dispose()
+  window.removeEventListener('resize', updateViewport)
+  mobileQuery.removeEventListener('change', updateViewport)
+  window.visualViewport?.removeEventListener('resize', updateViewport)
+  window.visualViewport?.removeEventListener('scroll', updateViewport)
+  document.documentElement.style.removeProperty('--app-height')
+  document.documentElement.style.removeProperty('--app-top')
   delete document.documentElement.dataset.theme
   stop()
 })
@@ -53,10 +96,11 @@ onBeforeUnmount(() => {
 <template>
   <SignInView v-if="state.phase === 'locked'" @opened="opened" />
 
-  <div v-else-if="state.phase === 'connecting'" class="empty">
+  <div v-else-if="state.phase === 'connecting'" class="empty app-loading" role="status" aria-live="polite">
     <div>
-      <div class="big">Abrindo o arquivo…</div>
-      <div>A chave fica só neste navegador; o servidor nunca a recebe.</div>
+      <div class="loading-spinner" aria-hidden="true" />
+      <div class="big">Abrindo suas conversas…</div>
+      <div>Preparando uma conexão segura.</div>
     </div>
   </div>
 
@@ -70,9 +114,9 @@ onBeforeUnmount(() => {
 
   <AdminView v-else-if="state.view === 'admin'" @read="state.view = 'archive'" />
 
-  <div v-else class="shell" :class="{ 'with-panel': showPanel }">
+  <div v-else class="shell" :class="{ 'with-panel': showPanel, 'chat-open': Boolean(state.openChatKey) }">
     <ChatList />
-    <ConversationView v-if="state.openChatKey" />
+    <ConversationView v-if="state.openChatKey" @back="closeTo(0)" />
     <section v-else class="conversation">
       <div class="empty">
         <div>

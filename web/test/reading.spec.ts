@@ -1,29 +1,40 @@
-// Reporting what has been read.
-//
-// Two different things used to be one thing: telling the ARCHIVE, which is how
-// a badge clears, and telling WHATSAPP, which is a signal that leaves the
-// machine. Behind one switch, a discreet device reported neither — so opening a
-// conversation and reading every word in it left the badge exactly where it
-// was. These tests are about the two staying apart.
-//
-// Every other condition here is a refusal, and each is a way the archive could
-// end up reporting a read that never happened.
+// Incognito viewing must not mark the archive read or send WhatsApp receipts.
+// Merely hiding the badge update would lose that promise after a reload.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as P from '../src/api/protocol'
 import {
   forgetSeen,
+  playedMessage,
   queued,
   readReceiptsEnabled,
   sawMessage,
   setReadReceipts,
 } from '../src/state/reading'
 
+const { request, archive } = vi.hoisted(() => ({
+  request: vi.fn().mockResolvedValue({}),
+  archive: { deviceID: 'device-1', openChatKey: 'chat-1@s.whatsapp.net' },
+}))
+
+vi.mock('../src/state/archive', () => ({
+  connection: () => ({ request }),
+  state: archive,
+}))
+
 const DWELL = 600
+const BATCH = 400
 
 beforeEach(() => {
+  vi.useFakeTimers()
   forgetSeen()
   setReadReceipts(true)
+  request.mockClear()
+})
+
+afterEach(() => {
+  forgetSeen()
   vi.useRealTimers()
 })
 
@@ -34,17 +45,46 @@ function dwell(waID: string) {
   sawMessage(waID, true)
 }
 
-describe('what still gets reported while discreet', () => {
-  it('queues the read anyway, because the badge is ours', () => {
-    // The whole bug. The switch governs what reaches WhatsApp; the server
-    // refuses to forward in passive mode, and that refusal is the gate. Gating
-    // here as well meant a badge could never clear while discreet.
-    vi.useFakeTimers()
+describe('incognito reading', () => {
+  it('does not mark the archive read, preserving unread badges after a reload', async () => {
     setReadReceipts(false)
     dwell('M1')
+    await vi.advanceTimersByTimeAsync(BATCH)
 
-    expect(queued()).toEqual(['M1'])
+    expect(queued()).toEqual([])
+    expect(request).not.toHaveBeenCalled()
     expect(readReceiptsEnabled()).toBe(false)
+  })
+
+  it('does not acknowledge playing a voice note or opening view-once media', async () => {
+    setReadReceipts(false)
+    await playedMessage('M1')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('cancels an active read batch when incognito is enabled before it leaves', async () => {
+    dwell('M1')
+    expect(queued()).toEqual(['M1'])
+
+    setReadReceipts(false)
+    setReadReceipts(true)
+    await vi.advanceTimersByTimeAsync(BATCH)
+    expect(request).not.toHaveBeenCalled()
+    expect(queued()).toEqual([])
+  })
+
+  it('requires a fresh dwell after leaving incognito', async () => {
+    setReadReceipts(false)
+    dwell('M1')
+    setReadReceipts(true)
+    sawMessage('M1', true)
+    await vi.advanceTimersByTimeAsync(BATCH)
+    expect(request).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(DWELL - BATCH)
+    sawMessage('M1', true)
+    await vi.advanceTimersByTimeAsync(BATCH)
+    expect(request).toHaveBeenCalledOnce()
   })
 
   it('still reports the switch honestly, because the UI says what it does', () => {
@@ -55,11 +95,36 @@ describe('what still gets reported while discreet', () => {
   })
 })
 
+describe('active reading', () => {
+  it('reports visible messages as one batch for the current device and chat', async () => {
+    sawMessage('M1', true)
+    sawMessage('M2', true)
+    vi.advanceTimersByTime(DWELL)
+    sawMessage('M1', true)
+    sawMessage('M2', true)
+    await vi.advanceTimersByTimeAsync(BATCH)
+
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      P.TypeMarkRead,
+      { device_id: archive.deviceID, chat: archive.openChatKey, ids: ['M1', 'M2'] },
+      P.TypeSendResult,
+    )
+  })
+
+  it('reports deliberate playback separately', async () => {
+    await playedMessage('M1')
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      P.TypeMarkRead,
+      { device_id: archive.deviceID, chat: archive.openChatKey, ids: ['M1'], played: true },
+      P.TypeSendResult,
+    )
+  })
+})
+
 describe('what stops a read being reported at all', () => {
   it('needs the message to stay on screen, not merely appear', () => {
     // Scrolling past something is not reading it. Without a dwell, dragging
     // the scrollbar through a conversation reports every message in it.
-    vi.useFakeTimers()
     sawMessage('M1', true)
     vi.advanceTimersByTime(100)
     sawMessage('M1', true)
@@ -70,7 +135,6 @@ describe('what stops a read being reported at all', () => {
   it('discards the clock when the tab loses focus rather than pausing it', () => {
     // A message glimpsed for a moment before the window went behind another
     // was not read, and a read receipt cannot be taken back.
-    vi.useFakeTimers()
     sawMessage('M1', true)
     vi.advanceTimersByTime(400)
     sawMessage('M1', false)
@@ -80,23 +144,29 @@ describe('what stops a read being reported at all', () => {
     expect(queued()).toEqual([])
   })
 
+  it('discards a queued read when the message leaves focus before the batch sends', async () => {
+    dwell('M1')
+    sawMessage('M1', false)
+    await vi.advanceTimersByTimeAsync(BATCH)
+    expect(request).not.toHaveBeenCalled()
+  })
+
   it('refuses a message with no id', () => {
-    vi.useFakeTimers()
     dwell('')
     expect(queued()).toEqual([])
   })
 
-  it('forgets everything when the conversation changes', () => {
-    vi.useFakeTimers()
+  it('forgets everything when the conversation changes', async () => {
     dwell('M1')
     expect(queued()).toEqual(['M1'])
 
     forgetSeen()
     expect(queued()).toEqual([])
+    await vi.advanceTimersByTimeAsync(BATCH)
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('reports a message once, not on every sighting', () => {
-    vi.useFakeTimers()
     dwell('M1')
     sawMessage('M1', true)
     sawMessage('M1', true)

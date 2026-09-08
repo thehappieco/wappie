@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 
 import { setReceiptMode, state } from '../state/archive'
+import AppIcon from './AppIcon.vue'
 
 const busy = ref(false)
 
@@ -29,13 +30,15 @@ async function toggle() {
     :class="{ on: quiet }"
     type="button"
     :disabled="busy"
+    :aria-pressed="quiet"
+    :aria-label="quiet ? 'Modo incógnito ativado' : 'Modo incógnito desativado'"
     :title="
       quiet
-        ? 'Discreto: não devolve recibo de leitura, não avisa que você está digitando, e você não vê o “digitando” dos outros. A entrega ainda sai marcada como inativa, que os aparelhos recebem e não exibem.'
-        : 'Normal: devolve recibo de leitura e avisa que você está digitando. Você aparece online.'
+        ? 'Modo incógnito: mantém os indicadores de mensagens não lidas, não envia confirmações de leitura nem mostra que você está digitando. Você também não vê quem está digitando. Clique para desativar.'
+        : 'Modo normal: envia confirmações de leitura e mostra que você está online ou digitando. Clique para ativar o modo incógnito.'
     "
     @click="toggle"
   >
-    {{ quiet ? '🔇' : '🔔' }}
+    <AppIcon :name="quiet ? 'eye-off' : 'eye'" />
   </button>
 </template>
