@@ -41,7 +41,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    sourcemap: process.env.WAPPIE_CLOUD_BUILD !== '1',
   },
   test: {
     environment: 'node',

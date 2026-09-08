@@ -62,19 +62,20 @@ export interface Session {
 
 /** fromAccount builds a session from a completed sign-in. */
 export function fromAccount(signedIn: SignedIn, serverURL: string): Session {
+  const credential: Credential = { kind: 'session', token: signedIn.token }
   const keys = new Map<string, PrivateKey>()
   for (const r of signedIn.readable) keys.set(r.deviceID, r.archive)
 
   return {
     label: signedIn.email,
     serverURL,
-    credential: { kind: 'session', token: signedIn.token },
+    credential,
     archiveFor: (deviceID) => keys.get(deviceID),
     readable: signedIn.readable.map((r) => ({ deviceID: r.deviceID, label: r.label })),
     account: { email: signedIn.email, hasRecovery: signedIn.hasRecovery, tenantID: signedIn.tenantID },
     close: async () => {
       keys.clear()
-      await signOut(serverURL, signedIn.token)
+      await signOut(serverURL, credential.token)
     },
   }
 }

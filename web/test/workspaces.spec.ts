@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { start, state, stop } from '../src/state/archive'
 import { admin } from '../src/state/admin'
-import type { Session } from '../src/state/session'
+import { fromAccount, type Session } from '../src/state/session'
 import { workspaceRequest } from '../src/api/workspaces'
 
 const empty = '00000000-0000-0000-0000-000000000000'
@@ -26,6 +26,13 @@ describe('workspace isolation', () => {
   stop()
   expect(admin.accounts).toEqual([]); expect(admin.keysError).toBe('')
   expect(state.tenantID).toBe(''); expect(state.deviceID).toBe('')
+ })
+ it('logs out the current token after a password change rotated it', async () => {
+  const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, {status: 204}))
+  const session = fromAccount({token: 'old', expiresAt: new Date(), email: 'person@example.com', role: 'owner', tenantID: empty, userID: empty, hasRecovery: true, readable: []}, 'https://test.invalid')
+  session.credential.token = 'rotated'
+  await session.close()
+  expect(fetch).toHaveBeenCalledWith('https://test.invalid/v1/auth/logout', expect.objectContaining({headers: expect.objectContaining({Authorization: 'Bearer rotated'})}))
  })
  it('uses the current session for workspace HTTP requests', async () => {
   await start(identity())
