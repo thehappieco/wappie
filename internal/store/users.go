@@ -383,9 +383,11 @@ func (u *Users) verify(ctx context.Context, tenant, userID uuid.UUID, email, sec
 // optional on a password change and required on a recovery — the old code was
 // just typed into a browser, so it is spent.
 type Rekey struct {
-	AuthKey   string
-	KDFSalt   []byte
-	KDFParams KDFParams
+	// Account recovery invalidates every passkey; ordinary password changes do not.
+	RevokePasskeys bool
+	AuthKey        string
+	KDFSalt        []byte
+	KDFParams      KDFParams
 	// WrappedUSK is the same private key as before, under the new password.
 	// The public key does not change: grants sealed to it keep opening.
 	WrappedUSK    []byte
@@ -434,6 +436,9 @@ func (u *Users) Rekey(ctx context.Context, tenant, userID uuid.UUID, in Rekey) e
 		recoveryHash = &h
 	}
 	err = pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		if err := lockPasskeyRegistration(ctx, tx, userID); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE users
 			   SET auth_hash = $2, kdf_salt = $3, kdf_params = $4, wrapped_usk = $5,
@@ -447,6 +452,17 @@ func (u *Users) Rekey(ctx context.Context, tenant, userID uuid.UUID, in Rekey) e
 		}
 		if tag.RowsAffected() == 0 {
 			return ErrNotFound
+		}
+		if in.RevokePasskeys {
+			if _, err = tx.Exec(ctx, `SELECT set_config('app.user_id',$1,true)`, userID.String()); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `UPDATE user_passkeys SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `DELETE FROM passkey_challenges WHERE user_id=$1`, userID); err != nil {
+				return err
+			}
 		}
 		_, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID)
 		return err
@@ -632,6 +648,7 @@ type Session struct {
 	UserID    uuid.UUID
 	TenantID  uuid.UUID
 	ExpiresAt time.Time
+	PasskeyID uuid.UUID
 }
 
 // SessionTTL is how long a sign-in lasts without further proof.
@@ -639,19 +656,30 @@ const SessionTTL = 14 * 24 * time.Hour
 
 // StartSession issues a token. The token is returned once and stored hashed.
 func (u *Users) StartSession(ctx context.Context, user User, userAgent string) (string, Session, error) {
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL))
+	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil)
+}
+
+func (u *Users) StartPasskeySession(ctx context.Context, user User, userAgent string, passkeyID uuid.UUID) (string, Session, error) {
+	if passkeyID == uuid.Nil {
+		return "", Session{}, ErrNoSession
+	}
+	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), passkeyID)
 }
 
 // StartWorkspaceSession does not extend the authentication lifetime of the
 // source session. Selecting a space is not another proof of the password.
-func (u *Users) StartWorkspaceSession(ctx context.Context, user User, userAgent string, expiresAt time.Time) (string, Session, error) {
+func (u *Users) StartWorkspaceSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, sourcePasskey ...uuid.UUID) (string, Session, error) {
 	if !expiresAt.After(time.Now()) || expiresAt.After(time.Now().Add(SessionTTL)) {
 		return "", Session{}, ErrNoSession
 	}
-	return u.startSession(ctx, user, userAgent, expiresAt)
+	var passkeyID uuid.UUID
+	if len(sourcePasskey) > 0 {
+		passkeyID = sourcePasskey[0]
+	}
+	return u.startSession(ctx, user, userAgent, expiresAt, passkeyID)
 }
 
-func (u *Users) startSession(ctx context.Context, user User, userAgent string, expiresAt time.Time) (string, Session, error) {
+func (u *Users) startSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, passkeyID uuid.UUID) (string, Session, error) {
 	current, err := u.Get(ctx, user.TenantID, user.ID)
 	if errors.Is(err, ErrNotFound) {
 		return "", Session{}, ErrNoSession
@@ -677,11 +705,18 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 	}
 	sum := sha256.Sum256(raw)
 
-	s := Session{UserID: user.ID, TenantID: user.TenantID, ExpiresAt: expiresAt}
-	err = u.pool.QueryRow(ctx, `
-		INSERT INTO sessions (user_id, tenant_id, token_hash, user_agent, expires_at)
-		VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt).Scan(&s.ID)
+	s := Session{UserID: user.ID, TenantID: user.TenantID, ExpiresAt: expiresAt, PasskeyID: passkeyID}
+	err = u.inIdentity(ctx, user.ID, func(tx pgx.Tx) error {
+		if passkeyID != uuid.Nil {
+			var id uuid.UUID
+			// Serialize issuance with revocation, including workspace-derived sessions.
+			if err := tx.QueryRow(ctx, `SELECT id FROM user_passkeys WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL FOR SHARE`, passkeyID, user.ID).Scan(&id); err != nil {
+				return ErrNoSession
+			}
+		}
+		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(passkeyID)).Scan(&s.ID)
+	})
 	if err != nil {
 		return "", Session{}, fmt.Errorf("store: start session: %w", err)
 	}
@@ -701,8 +736,8 @@ func (u *Users) Session(ctx context.Context, token string) (Session, error) {
 		UPDATE sessions SET last_seen_at = now()
 		 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
 		 AND (sessions.tenant_id IS NULL OR EXISTS (SELECT 1 FROM tenants t WHERE t.id=sessions.tenant_id AND t.status='active'))
-		 RETURNING id, user_id, coalesce(tenant_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at`, sum[:]).
-		Scan(&s.ID, &s.UserID, &s.TenantID, &s.ExpiresAt)
+		 RETURNING id, user_id, coalesce(tenant_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid)`, sum[:]).
+		Scan(&s.ID, &s.UserID, &s.TenantID, &s.ExpiresAt, &s.PasskeyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNoSession
 	}

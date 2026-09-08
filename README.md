@@ -12,6 +12,7 @@ shared workspaces, per-number permissions and a messaging client.
 - Hosted API: `https://api.wappie.thehappie.co` (`/v1/ws` for WebSocket)
 - [Workspace model and API contracts](docs/workspaces.md)
 - [Deployment guide](docs/deployment.md)
+- [Passkeys and encrypted login](docs/passkeys-api.md)
 
 The server, CLI, web client and basic administration are Apache-2.0 open source.
 Managed hosting and commercial billing are maintained separately. The hosted

@@ -41,12 +41,14 @@ type Handler struct {
 	// sign-in attempt costs this server an Argon2id derivation, and every
 	// wrong one is a guess; without a limit both are free to whoever asks.
 	// Nil allows everything, for tests.
-	Limits *ratelimit.Auth
-	Log    *slog.Logger
+	Limits   *ratelimit.Auth
+	Log      *slog.Logger
+	Passkeys *PasskeyProvider
 }
 
 // Mount registers the routes on a mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
+	h.mountPasskeys(mux)
 	mux.HandleFunc("POST /v1/auth/challenge", h.challenge)
 	mux.HandleFunc("POST /v1/auth/signup", h.signup)
 	mux.HandleFunc("POST /v1/auth/login", h.login)
@@ -454,7 +456,7 @@ func (h *Handler) recoverFinish(w http.ResponseWriter, r *http.Request) {
 			"a recovery replaces the code that was just used; send a new recovery_wrap and recovery_proof")
 		return
 	}
-	h.rekey(w, r, user, req.New)
+	h.rekey(w, r, user, req.New, true)
 }
 
 // password replaces the password of somebody signed in who still knows it.
@@ -474,12 +476,12 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnauthorized, "bad_credentials", "the current password is wrong")
 		return
 	}
-	h.rekey(w, r, user, req.New)
+	h.rekey(w, r, user, req.New, false)
 }
 
 // rekey applies a replacement and signs the account in again: every session
 // was just revoked, including the one that asked.
-func (h *Handler) rekey(w http.ResponseWriter, r *http.Request, user store.User, in rekeyRequest) {
+func (h *Handler) rekey(w http.ResponseWriter, r *http.Request, user store.User, in rekeyRequest, revokePasskeys bool) {
 	salt, ok1 := unb64(w, in.KDFSalt, "kdf_salt")
 	wrapped, ok2 := unb64(w, in.WrappedUSK, "wrapped_usk")
 	if !ok1 || !ok2 {
@@ -493,7 +495,8 @@ func (h *Handler) rekey(w http.ResponseWriter, r *http.Request, user store.User,
 		}
 	}
 	err := h.Users.Rekey(r.Context(), user.TenantID, user.ID, store.Rekey{
-		AuthKey: in.AuthKey, KDFSalt: salt, KDFParams: in.KDFParams,
+		RevokePasskeys: revokePasskeys,
+		AuthKey:        in.AuthKey, KDFSalt: salt, KDFParams: in.KDFParams,
 		WrappedUSK: wrapped, RecoveryWrap: recovery, RecoveryProof: in.RecoveryProof,
 	})
 	if err != nil {

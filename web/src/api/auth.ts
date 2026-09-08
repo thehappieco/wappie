@@ -48,7 +48,7 @@ interface Account {
   has_recovery: boolean
 }
 
-interface SessionReply {
+export interface SessionReply {
   token: string
   expires_at: string
   user: Account
@@ -61,7 +61,7 @@ interface GrantReply {
   sealed_dsk: string
 }
 
-interface MeReply {
+export interface MeReply {
   user: Account
   grants: GrantReply[]
 }
@@ -536,3 +536,5 @@ async function finish(
     readable,
   }
 }
+
+export { call as authRequest, finish as finishSession }

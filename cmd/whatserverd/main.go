@@ -95,6 +95,7 @@ type app struct {
 	router   *ingest.Router
 	ws       *wsapi.Server
 	web      *webui.Handler
+	passkeys *authapi.PasskeyProvider
 	// limits bounds sign-in attempts, shared by the HTTP auth endpoints and
 	// the websocket hello so a script cannot alternate between the two.
 	limits *ratelimit.Auth
@@ -111,6 +112,10 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, err
+	}
+	passkeys, err := authapi.NewPasskeyProvider(cfg.Passkeys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("passkey configuration: %w", err)
 	}
 	lg := obs.NewLogger(cfg.Log.Level, cfg.Log.Format)
 
@@ -143,7 +148,7 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 	}
 
 	a := &app{
-		cfg: cfg, log: lg, pools: pools,
+		cfg: cfg, log: lg, pools: pools, passkeys: passkeys,
 		devices: store.NewDevices(pools.API),
 		apiKeys: store.NewAPIKeys(pools.API),
 		limits:  ratelimit.DefaultAuth(cfg.TrustedProxies),
@@ -600,7 +605,7 @@ func (a *app) routes() http.Handler {
 	(&authapi.Handler{
 		AccessChanged: a.ws.RevalidateAccess,
 		Users:         store.NewUsers(a.pools.API), Keys: a.keys,
-		Devices: a.devices, Limits: a.limits, Log: a.log,
+		Devices: a.devices, Limits: a.limits, Log: a.log, Passkeys: a.passkeys,
 	}).Mount(mux)
 
 	mux.Handle("/v1/ws", a.ws)

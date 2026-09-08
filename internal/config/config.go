@@ -34,6 +34,7 @@ type Config struct {
 	Postgres       Postgres
 	Storage        Storage
 	Web            Web
+	Passkeys       Passkeys
 	Log            Log
 }
 
@@ -122,6 +123,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
+		Passkeys:       Passkeys{RPID: strings.TrimSpace(os.Getenv("WS_PASSKEY_RP_ID"))},
 		Env:            env,
 		HTTPAddr:       str("WS_HTTP_ADDR", ":8080"),
 		MetricsAddr:    os.Getenv("WS_METRICS_ADDR"),
@@ -155,6 +157,14 @@ func Load() (Config, error) {
 			Format: strings.ToLower(str("WS_LOG_FORMAT", defaultLogFormat(env))),
 			Wire:   boolean("WS_LOG_WIRE", false, &errs),
 		},
+	}
+	for _, origin := range strings.Split(os.Getenv("WS_PASSKEY_ORIGINS"), ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			cfg.Passkeys.Origins = append(cfg.Passkeys.Origins, origin)
+		}
+	}
+	if err := cfg.Passkeys.Validate(env.IsProd()); err != nil {
+		errs = append(errs, err)
 	}
 
 	if cfg.Postgres.DSN == "" {

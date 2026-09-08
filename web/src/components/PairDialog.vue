@@ -82,14 +82,13 @@ function done() {
 <template>
   <section class="console-panel">
     <div class="console-panel-head">
-      <h2>Ligar um número</h2>
-      <button class="primary small" v-if="!open" @click="start">Parear aparelho</button>
+      <h2>Conectar um número</h2>
+      <button class="primary small" v-if="!open" @click="start">Adicionar número</button>
     </div>
 
     <div v-if="!open" class="dim">
-      A chave que abre o arquivo deste número é criada aqui no navegador e selada para as contas que
-      você escolher. O servidor guarda só a metade pública e as cópias seladas — nada que ele
-      consiga abrir.
+      Conecte com um QR code ou um código no celular. Você escolhe quais contas terão acesso às
+      conversas, que permanecem protegidas por criptografia.
     </div>
 
     <form v-else-if="admin.pairing.phase === 'idle' || admin.pairing.phase === 'failed'" @submit.prevent="submit">

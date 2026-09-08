@@ -3,6 +3,8 @@ import { ref } from 'vue'
 
 import { AuthError, changePassword, MinPassword, setRecovery } from '../api/auth'
 import { credential, recoverySet, rotateCredential, state } from '../state/archive'
+import PasswordInput from './PasswordInput.vue'
+import PasskeyPanel from './PasskeyPanel.vue'
 
 // The account: its password, and the one thing that survives forgetting it.
 //
@@ -28,7 +30,12 @@ function describe(err: unknown): string {
   return String(err)
 }
 
-async function rotatePassword() {
+async function rotatePassword(event: SubmitEvent) {
+  if (busy.value) return
+  const fields = new FormData(event.currentTarget as HTMLFormElement)
+  current.value = String(fields.get('password') ?? '')
+  next.value = String(fields.get('new-password') ?? '')
+  confirm.value = String(fields.get('confirm-password') ?? '')
   const cred = credential()
   if (!cred) return
   error.value = ''
@@ -58,7 +65,9 @@ async function rotatePassword() {
   }
 }
 
-async function generateCode() {
+async function generateCode(event: SubmitEvent) {
+  if (busy.value) return
+  forCode.value = String(new FormData(event.currentTarget as HTMLFormElement).get('password') ?? '')
   const cred = credential()
   if (!cred) return
   error.value = ''
@@ -91,65 +100,57 @@ async function copyCode() {
 </script>
 
 <template>
-  <section class="console-panel" v-if="state.account">
-    <h2>Conta</h2>
-    <p class="dim">{{ state.account }}</p>
+  <section class="console-panel account-settings" v-if="state.account">
+    <h2>Acesso e segurança</h2>
+    <p class="dim">Gerencie as formas de entrar na conta {{ state.account }}.</p>
+    <PasskeyPanel />
 
-    <div class="alert" v-if="error">{{ error }}</div>
-    <div class="removed" v-if="done">{{ done }}</div>
+    <div class="alert" v-if="error" role="alert">{{ error }}</div>
+    <div class="removed" v-if="done" role="status">{{ done }}</div>
 
-    <div class="minted" v-if="recoveryCode">
-      <div class="minted-head">Guarde este código. É a única forma de voltar sem a senha.</div>
-      <code class="secret">{{ recoveryCode }}</code>
-      <button class="ghost small" @click="copyCode">Copiar</button>
-      <label class="dim">
-        <input type="checkbox" v-model="acknowledged" style="width: auto; margin-right: 8px" />
-        Anotei em um lugar seguro
-      </label>
-      <button class="ghost small" :disabled="!acknowledged" @click="recoveryCode = ''">Fechar</button>
-    </div>
+    <section class="security-card">
+      <h3>Código de recuperação</h3>
+      <p class="dim">Uma forma de recuperar o acesso caso você perca sua senha e suas passkeys. Guarde-o em um lugar seguro.</p>
+      <div class="minted" v-if="recoveryCode">
+        <div class="minted-head">Anote este código. Ele não será mostrado novamente.</div>
+        <code class="secret">{{ recoveryCode }}</code>
+        <button class="ghost small" type="button" @click="copyCode">Copiar</button>
+        <label class="dim"><input type="checkbox" v-model="acknowledged" style="width: auto; margin-right: 8px" /> Anotei em um lugar seguro</label>
+        <button class="ghost small" type="button" :disabled="!acknowledged" @click="recoveryCode = ''">Fechar</button>
+      </div>
+      <div class="alert" v-else-if="!state.hasRecovery">Sua conta ainda não tem um código de recuperação. Gere um para proteger seu acesso.</div>
+      <form class="security-form" name="wappie-recovery" method="post" autocomplete="on" @submit.prevent="generateCode" v-if="!recoveryCode">
+        <input name="username" :value="state.account" type="email" autocomplete="username" class="account-identifier" readonly tabindex="-1" aria-hidden="true" />
+        <label for="recovery-password">Confirme sua senha atual</label>
+        <PasswordInput id="recovery-password" name="password" v-model="forCode" required autocomplete="current-password" :disabled="busy" />
+        <button class="ghost small" type="submit" :disabled="busy">{{ busy ? 'Aguarde…' : state.hasRecovery ? 'Gerar novo código' : 'Gerar código de recuperação' }}</button>
+      </form>
+    </section>
 
-    <div class="alert" v-else-if="!state.hasRecovery">
-      Esta conta não tem um código de recuperação que funcione. Se a senha for esquecida, o arquivo
-      fica ilegível — para todo mundo, inclusive quem opera o servidor. Gere um agora.
-    </div>
-
-    <form class="inline" @submit.prevent="generateCode" v-if="!recoveryCode">
-      <input
-        v-model="forCode"
-        type="password"
-        autocomplete="current-password"
-        placeholder="Senha atual"
-      />
-      <button class="primary small" type="submit" :disabled="busy || !forCode">
-        {{ state.hasRecovery ? 'Gerar um novo código de recuperação' : 'Gerar código de recuperação' }}
-      </button>
-    </form>
-
-    <h3>Trocar a senha</h3>
-    <p class="dim">
-      Mínimo de {{ MinPassword }} caracteres. A troca encerra toda sessão aberta desta conta, em
-      qualquer navegador, inclusive esta — que é reaberta com a senha nova.
-    </p>
-    <form class="stack" @submit.prevent="rotatePassword">
-      <input v-model="current" type="password" autocomplete="current-password" placeholder="Senha atual" />
-      <input v-model="next" type="password" autocomplete="new-password" placeholder="Nova senha" />
-      <input v-model="confirm" type="password" autocomplete="new-password" placeholder="Repita a nova senha" />
-      <button class="primary small" type="submit" :disabled="busy || !current || !next || !confirm">
-        {{ busy ? 'Derivando…' : 'Trocar a senha' }}
-      </button>
-    </form>
+    <section class="security-card">
+      <h3>Senha</h3>
+      <p class="dim">Use pelo menos {{ MinPassword }} caracteres. Ao trocar a senha, suas outras sessões serão encerradas. As passkeys cadastradas continuam válidas.</p>
+      <form class="security-form" name="wappie-password-change" method="post" autocomplete="on" @submit.prevent="rotatePassword">
+        <input name="username" :value="state.account" type="email" autocomplete="username" class="account-identifier" readonly tabindex="-1" aria-hidden="true" />
+        <label for="current-password">Senha atual</label>
+        <PasswordInput id="current-password" name="password" v-model="current" required autocomplete="current-password" :disabled="busy" />
+        <label for="new-password">Nova senha</label>
+        <PasswordInput id="new-password" name="new-password" v-model="next" required :minlength="MinPassword" autocomplete="new-password" :disabled="busy" />
+        <label for="confirm-password">Repita a nova senha</label>
+        <PasswordInput id="confirm-password" name="confirm-password" v-model="confirm" required autocomplete="new-password" :disabled="busy" />
+        <button class="primary small" type="submit" :disabled="busy">{{ busy ? 'Atualizando…' : 'Atualizar senha' }}</button>
+      </form>
+    </section>
   </section>
 </template>
 
 <style scoped>
-.stack {
-  display: grid;
-  gap: 8px;
-  max-width: 420px;
-}
-h3 {
-  margin: 20px 0 4px;
-  font-size: 1rem;
-}
+.security-card { border: 1px solid var(--line); border-radius: 16px; padding: 22px; margin-top: 20px; }
+.security-card h3 { margin: 0 0 8px; font-size: 1.05rem; }
+.security-card p { line-height: 1.6; margin: 0 0 18px; }
+.security-form { display: grid; gap: 10px; max-width: 480px; }
+.security-form label { font-size: 13px; font-weight: 600; }
+.security-form button { justify-self: start; margin-top: 4px; }
+.account-identifier { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; padding: 0; border: 0; }
+@media (max-width: 600px) { .security-card { padding: 17px; } }
 </style>

@@ -21,6 +21,16 @@ export type IconName =
   | 'file'
   | 'audio'
   | 'sticker'
+  | 'users'
+  | 'key'
+  | 'wallet'
+  | 'building'
+  | 'settings'
+  | 'logout'
+  | 'refresh'
+  | 'plus'
+  | 'message'
+  | 'shield'
 
 const paths: Record<IconName, string> = {
   back: 'M19 12H5m7-7-7 7 7 7',
@@ -44,6 +54,16 @@ const paths: Record<IconName, string> = {
   file: 'M14 3H5v18h14V8l-5-5Zm0 0v5h5M8 12h8m-8 4h6',
   audio: 'M10 17V5l10-2v12M10 9l10-2M10 17a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm10-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   sticker: 'M21 13V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8l8-8Zm-8 8v-8h8M8 8h.01M16 8h.01M8 12c1 2 3 2 4 2',
+  users: 'M15 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM3 21v-2a6 6 0 0 1 12 0v2m3-16a4 4 0 0 1 0 8m1 3a5 5 0 0 1 3 5',
+  key: 'M14 4a6 6 0 1 1-4 10l-7 7H1v-4l7-7a6 6 0 0 1 6-6Zm3 4h.01',
+  wallet: 'M20 7V4H5a3 3 0 0 0 0 6h16v10H5a3 3 0 0 1-3-3V7m19 7h-5v3h5',
+  building: 'M5 21V3h12v18M3 21h18M9 7h1m3 0h1M9 11h1m3 0h1M9 15h1m3 0h1m-3 6v-3h3v3',
+  settings: 'M4 7h16M4 17h16M7 4v6m10 4v6',
+  logout: 'M9 3H4v18h5m5-14 5 5-5 5m-6-5h13',
+  refresh: 'M20 7a9 9 0 0 0-15-2L2 8m0-5v5h5m-3 9a9 9 0 0 0 15 2l3-3m0 5v-5h-5',
+  plus: 'M12 5v14M5 12h14',
+  message: 'M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 2 1.5-6A8.5 8.5 0 1 1 21 11.5ZM7 9h9m-9 5h6',
+  shield: 'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4Zm-4 10 3 3 5-6',
 }
 </script>
 

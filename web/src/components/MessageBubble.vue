@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import { nowTick } from '../state/actions'
 import { discardFailed, loadHistory, people, state, type MessageView } from '../state/archive'
 import { expiryLabel } from '../state/ephemeral'
 import { displayFallback, formatPhone, parseJID, SERVER_LID, SERVER_USER } from '../state/jid'
 import { hhmm, runs, stamp, typeLabel, unmatchedMentions } from '../ui/format'
+import { createMessageGestures, MESSAGE_CONTROLS } from '../ui/messageGestures'
+import AppIcon from './AppIcon.vue'
 import MediaBlock from './MediaBlock.vue'
 import MessageActions from './MessageActions.vue'
 import MessageTicks from './MessageTicks.vue'
@@ -31,6 +33,82 @@ const quoted = computed(() =>
 
 const m = computed(() => props.message)
 const selected = computed(() => state.selectedUID === m.value.uid)
+const bubble = ref<HTMLElement | null>(null)
+const actions = ref<InstanceType<typeof MessageActions> | null>(null)
+const pressing = ref(false)
+const offset = ref(0)
+const actionsOpen = ref(false)
+
+function hasSelection() {
+  return Boolean(window.getSelection()?.toString())
+}
+
+function control(event: Event) {
+  return event.target instanceof Element && Boolean(event.target.closest(MESSAGE_CONTROLS))
+}
+
+function openActions() {
+  if (m.value.pending || hasSelection()) return
+  actions.value?.open()
+}
+
+function feedback() {
+  navigator.vibrate?.(12)
+}
+
+const gestures = createMessageGestures({
+  onHold() { feedback(); openActions() },
+  onReply() { feedback(); emit('reply', m.value.waID) },
+  onOffset(value) { offset.value = value },
+  onPress(value) { pressing.value = value },
+  canReply: () => !m.value.pending && !m.value.deleted && !m.value.isStatus,
+  hasSelection,
+})
+
+function pointerDown(event: PointerEvent) {
+  if (control(event) || m.value.pending) { gestures.cancel(); return }
+  gestures.pointerDown(event)
+}
+
+function pointerMove(event: PointerEvent) {
+  if (gestures.pointerMove(event) && event.cancelable) event.preventDefault()
+}
+
+function click(event: MouseEvent) {
+  if (!control(event) && event.detail !== 0 && gestures.shouldSuppressClick()) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+}
+
+function keydown(event: KeyboardEvent) {
+  if (event.target !== event.currentTarget || event.isComposing) return
+  if (event.key === 'Enter' || event.key === ' ' || event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+    event.preventDefault()
+    openActions()
+  }
+}
+
+function contextMenu(event: MouseEvent) {
+  if (control(event) || hasSelection() || m.value.pending) return
+  event.preventDefault()
+  gestures.cancel()
+  openActions()
+}
+
+async function selectText() {
+  await nextTick()
+  const text = bubble.value?.querySelector('.text')
+  if (!text) return
+  const range = document.createRange()
+  range.selectNodeContents(text)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+watch(() => [m.value.waID, state.openChatKey, state.deviceID], () => gestures.cancel())
+onBeforeUnmount(() => gestures.dispose())
 
 const mentions = computed(() => m.value.payload?.mentions ?? [])
 const textRuns = computed(() => (m.value.body ? runs(m.value.body, mentions.value) : []))
@@ -85,26 +163,39 @@ const forwardedLabel = computed(() =>
 </script>
 
 <template>
-  <div class="msg" :class="m.fromMe ? 'out' : 'in'">
+  <div class="msg" :class="[m.fromMe ? 'out' : 'in', { 'reply-ready': offset >= 64 }]">
+    <span v-if="offset > 0" class="reply-gesture" aria-hidden="true" :style="{ opacity: Math.min(1, offset / 64) }"><AppIcon name="back" :size="20" /></span>
     <!-- A div rather than a button, and not for style: this element already
          contains buttons of its own from MediaBlock, and a button inside a
          button is invalid — browsers recover from it differently, and the inner
          click is the one that gets lost. -->
     <div
       class="bubble"
-      role="button"
+      ref="bubble"
+      role="group"
       tabindex="0"
-      :class="{ on: selected, revoked: m.deleted }"
-      @click="loadHistory(m)"
-      @keydown.enter.prevent="loadHistory(m)"
-      @keydown.space.prevent="loadHistory(m)"
+      :class="{ on: selected, revoked: m.deleted, pressing, 'gesture-open': actionsOpen, swiping: offset > 0 }"
+      :style="{ transform: offset ? `translateX(${Math.min(12, offset / 3)}px)` : undefined }"
+      :aria-label="`Mensagem ${m.fromMe ? 'enviada' : `de ${m.senderName}`}, ${hhmm(m.ts)}`"
+      @click.capture="click"
+      @keydown="keydown"
+      @contextmenu="contextMenu"
+      @pointerdown="pointerDown"
+      @pointermove="pointerMove"
+      @pointerup="gestures.pointerUp"
+      @pointercancel="gestures.cancel"
       :title="stamp(m.ts)"
     >
       <MessageActions
-        v-if="!m.pending && !m.deleted"
+        v-if="!m.pending"
+        ref="actions"
         :message="m"
+        @opened="actionsOpen = true"
+        @closed="actionsOpen = false"
         @reply="emit('reply', $event)"
         @edit="emit('edit', $event)"
+        @info="loadHistory(m)"
+        @select-text="selectText"
       />
 
       <!-- The quoted message. m.replyTo has been on the view all along and
@@ -245,3 +336,17 @@ const forwardedLabel = computed(() =>
     </div>
   </div>
 </template>
+
+<style scoped>
+.msg { position: relative; }
+.bubble { cursor: auto; padding-right: 34px; touch-action: pan-y pinch-zoom; transition: transform 180ms ease-out, box-shadow 180ms ease-out; }
+.bubble:hover:not(.on):not(.gesture-open) { outline: none; }
+.bubble:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bubble.pressing { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.bubble.gesture-open { outline: 2px solid var(--accent); }
+.bubble.swiping { transition: none; }
+.reply-gesture { position: absolute; inset-inline-start: -24px; top: calc(50% - 16px); width: 32px; height: 32px; display: grid; place-items: center; color: var(--text-dim); background: var(--bg-raised); border-radius: 50%; pointer-events: none; transform: rotate(180deg); }
+.msg.in .reply-gesture { inset-inline-start: 0; z-index: 1; }
+.reply-ready .reply-gesture { background: var(--accent); color: white; }
+@media (prefers-reduced-motion: reduce) { .bubble { transition: none; } }
+</style>

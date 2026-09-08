@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { AuthError, recover, registerService, signIn, signUp } from '../api/auth'
 import { loadVault, type StoredVault } from '../crypto/vault'
 import { fromAccount, type Session } from '../state/session'
 import PastedKeyView from './PastedKeyView.vue'
+import PasswordInput from './PasswordInput.vue'
+import AppIcon from './AppIcon.vue'
+import { passkeysAvailable, signInWithPasskey } from '../api/passkeys'
+import { passkeyError } from '../api/webauthn'
 
 const emit = defineEmits<{ opened: [Session] }>()
 
@@ -13,6 +17,9 @@ type Mode = 'sign-in' | 'sign-up' | 'recover' | 'service' | 'pasted-key'
 const mode = ref<Mode>('sign-in')
 const busy = ref(false)
 const error = ref('')
+const passkeyAvailable = ref(false)
+const passkeyBusy = ref(false)
+const passkeyAbort = new AbortController()
 
 const serverURL = ref('')
 const hosted = typeof location !== 'undefined' && ['app.wappie.thehappie.co','console.wappie.thehappie.co'].includes(location.hostname)
@@ -36,6 +43,7 @@ const acknowledged = ref(false)
 const storedKey = ref<StoredVault | null>(null)
 
 onMounted(async () => {
+  void refreshPasskeyAvailability()
   try {
     storedKey.value = await loadVault()
     // A browser that already holds a pasted key goes straight to that screen:
@@ -45,20 +53,24 @@ onMounted(async () => {
     // No vault, or no IndexedDB. Signing in does not need one.
   }
 })
+onBeforeUnmount(() => passkeyAbort.abort())
 
-const canSubmit = computed(() => {
-  if (busy.value) return false
-  if (mode.value === 'sign-up') {
-    return Boolean(invite.value && email.value && password.value && confirm.value)
-  }
-  if (mode.value === 'recover') {
-    return Boolean(code.value && email.value && password.value && confirm.value)
-  }
-  if (mode.value === 'service') {
-    return Boolean(invite.value && serviceName.value && servicePublicKey.value)
-  }
-  return Boolean(email.value && password.value)
-})
+async function refreshPasskeyAvailability() {
+  const server = serverURL.value
+  const available = await passkeysAvailable(server)
+  if (serverURL.value === server) passkeyAvailable.value = available
+}
+
+async function openWithPasskey() {
+  if (busy.value) return
+  busy.value = true; passkeyBusy.value = true; error.value = ''
+  try {
+    const signedIn = await signInWithPasskey({ serverURL: serverURL.value, tenantID: selectedWorkspace, signal: passkeyAbort.signal })
+    password.value = ''
+    emit('opened', fromAccount(signedIn, serverURL.value))
+  } catch (e) { error.value = passkeyError(e) }
+  finally { busy.value = false; passkeyBusy.value = false }
+}
 
 const title = computed(() => {
   switch (mode.value) {
@@ -73,7 +85,15 @@ const title = computed(() => {
   }
 })
 
-function submit() {
+function submit(event: SubmitEvent) {
+  if (busy.value) return
+  // Safari and Chrome can autofill without a Vue input event. Read the named
+  // native fields at submit time, and let native validation handle emptiness.
+  const form = event.currentTarget as HTMLFormElement
+  const values = new FormData(form)
+  if (values.has('username')) email.value = String(values.get('username') ?? '')
+  if (values.has('password')) password.value = String(values.get('password') ?? '')
+  if (values.has('confirm-password')) confirm.value = String(values.get('confirm-password') ?? '')
   if (mode.value === 'sign-up') return doSignUp()
   if (mode.value === 'recover') return doRecover()
   if (mode.value === 'service') return doRegisterService()
@@ -106,6 +126,7 @@ async function doRegisterService() {
 }
 
 function switchTo(next: Mode) {
+  if (busy.value) return
   mode.value = next
   error.value = ''
 }
@@ -220,8 +241,7 @@ function describe(err: unknown): string {
     <div class="unlock-card" v-if="recoveryCode">
       <h1>Guarde este código</h1>
       <p class="sub">
-        É a única forma de voltar à sua conta se você esquecer a senha. Ele não é guardado em lugar
-        nenhum — nem aqui, nem no servidor — e não pode ser mostrado de novo.
+        Use este código para recuperar sua conta se perder a senha e suas passkeys. Ele não pode ser mostrado de novo.
       </p>
 
       <div class="recovery">{{ recoveryCode }}</div>
@@ -240,8 +260,7 @@ function describe(err: unknown): string {
       <button class="primary" :disabled="!acknowledged" @click="enter">Continuar</button>
 
       <p class="note">
-        Sem a senha e sem este código, o arquivo desta conta fica ilegível para sempre — inclusive
-        para quem opera o servidor. Não é uma política; é a ausência da chave.
+        Guarde uma cópia em um lugar seguro, separado dos dispositivos que você usa para entrar.
       </p>
     </div>
 
@@ -265,6 +284,7 @@ function describe(err: unknown): string {
     </div>
 
     <div class="unlock-card" v-else>
+      <div class="auth-wordmark">wappie<span>●</span></div>
       <h1>{{ title }}</h1>
       <p class="sub" v-if="mode === 'service'">
         Um sistema não tem senha: tem um par de chaves. Gere-o com <code>wsctl service-key</code>,
@@ -276,17 +296,15 @@ function describe(err: unknown): string {
         aqui: a conta ganha uma senha nova e um código novo, e toda sessão aberta é encerrada.
       </p>
       <p class="sub" v-else>
-        O servidor guarda tudo selado e não consegue abrir nada. Sua senha nunca chega até ele: o
-        navegador deriva uma chave dela, guarda a metade que abre as coisas e envia só a metade que
-        prova quem você é.
+        Suas conversas e sua empresa, em um só lugar. Entre para continuar com seus dados protegidos.
       </p>
 
       <div class="alert" v-if="error">{{ error }}</div>
 
-      <form @submit.prevent="submit">
+      <form :name="mode === 'sign-in' ? 'wappie-login' : 'wappie-account'" method="post" autocomplete="on" @submit.prevent="submit">
         <div class="field" v-if="mode === 'sign-up' || mode === 'service'">
           <label for="invite">Código de convite</label>
-          <input id="invite" v-model="invite" autocomplete="off" spellcheck="false" />
+          <input id="invite" name="invite" v-model="invite" required autocomplete="off" spellcheck="false" />
           <p class="hint">
             Use o convite que você recebeu do administrador do espaço. Vale uma vez só.
             <template v-if="mode === 'service'"> Para um sistema, emitido com <code>-role service</code>.</template>
@@ -296,55 +314,63 @@ function describe(err: unknown): string {
         <template v-if="mode === 'service'">
           <div class="field">
             <label for="service-name">Nome do sistema</label>
-            <input id="service-name" v-model="serviceName" autocomplete="off" spellcheck="false" placeholder="erp-sync" />
+            <input id="service-name" name="service-name" v-model="serviceName" required autocomplete="off" spellcheck="false" placeholder="erp-sync" />
             <p class="hint">Minúsculas, dígitos, ponto, traço ou sublinhado. É como ele aparece no console.</p>
           </div>
           <div class="field">
             <label for="service-key">Chave pública</label>
-            <input id="service-key" v-model="servicePublicKey" autocomplete="off" spellcheck="false" />
+            <input id="service-key" name="service-key" v-model="servicePublicKey" required autocomplete="off" spellcheck="false" />
             <p class="hint">A linha <code>public</code> que <code>wsctl service-key</code> imprimiu. Nunca a privada.</p>
           </div>
         </template>
 
         <div class="field" v-if="mode !== 'service'">
           <label for="email">E-mail</label>
-          <input id="email" v-model="email" type="email" autocomplete="username" />
+          <input id="email" name="username" v-model="email" type="email" autocomplete="username" required autocapitalize="off" spellcheck="false" inputmode="email" />
         </div>
 
         <div class="field" v-if="mode === 'recover'">
           <label for="code">Código de recuperação</label>
-          <input id="code" v-model="code" autocomplete="one-time-code" spellcheck="false" />
+          <input id="code" name="recovery-code" v-model="code" required autocomplete="one-time-code" spellcheck="false" />
           <p class="hint">Os seis grupos de cinco caracteres. Maiúsculas e traços não importam.</p>
         </div>
 
         <div class="field" v-if="mode !== 'service'">
           <label for="password">{{ mode === 'recover' ? 'Nova senha' : 'Senha' }}</label>
-          <input
+          <PasswordInput
             id="password"
+            name="password"
             v-model="password"
-            type="password"
+            required
+            :minlength="mode === 'sign-in' ? undefined : 10"
             :autocomplete="mode === 'sign-in' ? 'current-password' : 'new-password'"
           />
           <p class="hint" v-if="mode !== 'sign-in'">
-            Mínimo de 10 caracteres. A derivação leva alguns segundos de propósito — é o que torna
-            caro atacar um vazamento do banco.
+            Use pelo menos 10 caracteres.
           </p>
         </div>
 
         <div class="field" v-if="mode !== 'sign-in' && mode !== 'service'">
           <label for="confirm">Repita a senha</label>
-          <input id="confirm" v-model="confirm" type="password" autocomplete="new-password" />
+          <PasswordInput id="confirm" name="confirm-password" v-model="confirm" required autocomplete="new-password" />
         </div>
 
         <div class="field" v-if="!hosted">
           <label for="server">Servidor</label>
-          <input id="server" v-model="serverURL" placeholder="mesma origem desta página" />
+          <input id="server" v-model="serverURL" placeholder="mesma origem desta página" @blur="refreshPasskeyAvailability" />
         </div>
 
-        <button class="primary" type="submit" :disabled="!canSubmit">
-          {{ busy ? (mode === 'service' ? 'Registrando…' : 'Derivando a chave…') : title }}
+        <button class="primary" type="submit" :disabled="busy">
+          {{ busy ? (mode === 'service' ? 'Registrando…' : 'Entrando com segurança…') : title }}
         </button>
       </form>
+
+      <template v-if="mode === 'sign-in' && passkeyAvailable">
+        <div class="auth-divider"><span>ou</span></div>
+        <button class="passkey-login" type="button" :disabled="busy" @click="openWithPasskey">
+          <AppIcon name="key" :size="20" /> {{ passkeyBusy ? 'Confirme no seu dispositivo…' : 'Entrar com passkey' }}
+        </button>
+      </template>
 
       <button class="linkish" @click="switchTo(mode === 'sign-in' ? 'sign-up' : 'sign-in')">
         {{ mode === 'sign-in' ? 'Tenho um código de convite' : 'Já tenho conta' }}
@@ -353,14 +379,22 @@ function describe(err: unknown): string {
       <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('recover')">
         Esqueci a senha, tenho o código de recuperação
       </button>
-      <br v-if="mode === 'sign-in'" />
-      <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('service')">
-        Registrar um sistema com chave pública
-      </button>
-      <br v-if="mode === 'sign-in'" />
-      <button class="linkish" @click="switchTo('pasted-key')">
-        Abrir com uma chave de arquivo, sem conta
-      </button>
+      <details class="auth-options"><summary>Outras formas de acesso</summary>
+        <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('service')">Registrar um sistema com chave pública</button>
+        <button class="linkish" @click="switchTo('pasted-key')">Abrir com uma chave de arquivo, sem conta</button>
+      </details>
     </div>
   </div>
 </template>
+
+<style scoped>
+.auth-wordmark { color: var(--accent); font-size: 25px; font-weight: 800; letter-spacing: -1.1px; margin-bottom: 26px; }
+.auth-wordmark span { font-size: 9px; margin-left: 3px; vertical-align: middle; }
+.auth-divider { display: flex; align-items: center; gap: 12px; color: var(--text-dim); font-size: 12px; margin: 20px 0; }.auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.passkey-login { width: 100%; min-height: 46px; display: flex; align-items: center; justify-content: center; gap: 10px; border: 1px solid var(--line); border-radius: 12px; color: var(--text); background: var(--bg-raised); font-weight: 600; cursor: pointer; }.passkey-login:hover { background: var(--bg-hover); }
+.auth-options { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); color: var(--text-dim); font-size: 12px; }.auth-options summary { cursor: pointer; }.auth-options .linkish { display: block; }
+.unlock-card { border-radius: 22px; box-shadow: 0 18px 70px #0000000d; }
+input:-webkit-autofill { -webkit-text-fill-color: var(--text); box-shadow: 0 0 0 1000px var(--bg-input) inset; caret-color: var(--text); }
+form .primary { min-height: 46px; border-radius: 12px; }
+@media (max-width: 600px) { .unlock-card { padding: 26px 22px; } input { font-size: 16px; } }
+</style>
