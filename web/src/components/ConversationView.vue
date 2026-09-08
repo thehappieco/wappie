@@ -1,0 +1,331 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+import { loadOlder, people, refreshChats, state, type MessageView } from '../state/archive'
+import { loadGroup, setChatTimer } from '../state/groups'
+import { TIMER_PRESETS, timerLabel } from '../state/ephemeral'
+import { nowTick } from '../state/actions'
+import { typingIn } from '../state/presence'
+import { forgetSeen, sawMessage } from '../state/reading'
+import { dayLabel, sameDay } from '../ui/format'
+import AvatarBadge from './AvatarBadge.vue'
+import Composer from './Composer.vue'
+import MessageBubble from './MessageBubble.vue'
+
+const scroller = ref<HTMLElement | null>(null)
+const composer = ref<InstanceType<typeof Composer> | null>(null)
+
+/**
+ * A file dragged onto the conversation.
+ *
+ * Over the whole conversation rather than over the composer, which is a strip
+ * at the bottom that nobody aims at. `dragging` is counted rather than set,
+ * because dragenter and dragleave both fire while crossing between child
+ * elements and a boolean flickers the whole way across.
+ */
+const dragDepth = ref(0)
+const dragging = computed(() => dragDepth.value > 0)
+
+function onDragEnter(event: DragEvent) {
+  if (!Array.from(event.dataTransfer?.types ?? []).includes('Files')) return
+  event.preventDefault()
+  dragDepth.value += 1
+}
+
+function onDragOver(event: DragEvent) {
+  if (!dragging.value) return
+  // Without this the browser navigates to the file instead, which loses the
+  // conversation and everything unsent in it.
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function onDragLeave() {
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+}
+
+function onDrop(event: DragEvent) {
+  dragDepth.value = 0
+  const file = event.dataTransfer?.files?.[0]
+  if (!file) return
+  event.preventDefault()
+  composer.value?.take(file)
+}
+
+const chat = computed(() => state.chats.find((c) => c.key === state.openChatKey))
+
+/** Rows with the day separators worked out once, rather than per bubble. */
+interface Line {
+  message: MessageView
+  day?: string
+  showSender: boolean
+}
+
+/** The message being replied to, if any. Cleared once it is sent. */
+const replyTo = ref('')
+
+/** The message being edited, if any. Mutually exclusive with replying. */
+const editing = ref('')
+
+const lines = computed<Line[]>(() => {
+  const out: Line[] = []
+  let previous: MessageView | undefined
+  for (const message of state.timeline) {
+    out.push({
+      message,
+      day: sameDay(previous?.ts, message.ts) ? undefined : dayLabel(message.ts),
+      // Only the first of a run from the same person is labelled. In the
+      // status feed consecutive posts are usually by different people, so
+      // nearly every one carries a name — which is what makes it readable.
+      showSender: previous?.senderKey !== message.senderKey || !sameDay(previous?.ts, message.ts),
+    })
+    previous = message
+  }
+  return out
+})
+
+// Opening a conversation lands at the bottom, where the newest message is.
+watch(
+  () => state.openChatKey,
+  async () => {
+    await nextTick()
+    if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
+  },
+)
+
+// A live message scrolls into view only if the reader was already at the
+// bottom. Yanking someone away from what they are reading is worse than
+// missing a notification.
+watch(
+  () => state.timeline.length,
+  async (now, before) => {
+    const el = scroller.value
+    if (!el || now <= before) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160
+    if (!atBottom) return
+    await nextTick()
+    el.scrollTop = el.scrollHeight
+  },
+)
+
+async function older() {
+  const el = scroller.value
+  const before = el?.scrollHeight ?? 0
+  await loadOlder()
+  await nextTick()
+  // Hold the reader's place: without this, prepending a page jumps them to the
+  // top of a conversation they were reading the middle of.
+  if (el) el.scrollTop = el.scrollHeight - before
+}
+
+/**
+ * Marking messages read as they are actually looked at.
+ *
+ * On screen, not merely loaded: a conversation holds sixty messages and a
+ * reader sees five. And only while the tab has focus — a window behind another
+ * window is not being read, and an archive that reported otherwise would be
+ * lying on the reader's behalf about the one thing it exists to record
+ * honestly.
+ *
+ * Our own messages carry no marker, so they are never observed: telling
+ * WhatsApp we read what we sent is meaningless and would clear the badge.
+ */
+const focused = ref(!document.hidden && document.hasFocus())
+let watcher: IntersectionObserver | null = null
+let sweep: ReturnType<typeof setInterval> | undefined
+
+function onFocusChange() {
+  focused.value = !document.hidden && document.hasFocus()
+}
+
+/** The ids currently intersecting, re-reported on a tick so dwell can elapse. */
+const onScreen = new Set<string>()
+
+function observe() {
+  watcher?.disconnect()
+  const root = scroller.value
+  if (!root) return
+  watcher = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        const id = (e.target as HTMLElement).dataset.wa
+        if (!id) continue
+        if (e.isIntersecting) onScreen.add(id)
+        else {
+          onScreen.delete(id)
+          sawMessage(id, false)
+        }
+      }
+    },
+    // Half of the bubble, so a message peeking over the edge of the scroller
+    // does not count as read.
+    { root, threshold: 0.5 },
+  )
+  for (const el of root.querySelectorAll<HTMLElement>('[data-wa]')) watcher.observe(el)
+}
+
+onMounted(() => {
+  window.addEventListener('focus', onFocusChange)
+  window.addEventListener('blur', onFocusChange)
+  document.addEventListener('visibilitychange', onFocusChange)
+  // The dwell clock needs to be revisited while a message sits still, and an
+  // IntersectionObserver only speaks when something crosses the boundary.
+  sweep = setInterval(() => {
+    for (const id of onScreen) sawMessage(id, focused.value)
+  }, 300)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', onFocusChange)
+  window.removeEventListener('blur', onFocusChange)
+  document.removeEventListener('visibilitychange', onFocusChange)
+  watcher?.disconnect()
+  if (sweep) clearInterval(sweep)
+})
+
+// Re-observe whenever the conversation is rebuilt, which is on every live
+// frame: the elements are new objects and the old observer is watching nodes
+// that are no longer in the document.
+watch(
+  () => [state.openChatKey, state.timeline.length] as const,
+  async () => {
+    onScreen.clear()
+    forgetSeen()
+    await nextTick()
+    observe()
+  },
+  { immediate: true },
+)
+
+/** Who is typing in this conversation, if anybody. */
+const typingHere = computed(() => {
+  const who = typingIn(state.openChatKey, nowTick.value)
+  if (who.length === 0) return ''
+  const recording = who.some((t) => t.media === 'audio')
+  if (!chat.value?.isGroup) return recording ? 'gravando áudio…' : 'digitando…'
+  const names = who.map((t) =>
+    people().nameFor(t.senderLID || t.senderPN || t.senderKey),
+  )
+  const verb = recording ? 'gravando áudio' : 'digitando'
+  return names.length === 1 ? `${names[0]} está ${verb}…` : `${names.join(', ')} estão ${verb}…`
+})
+
+/** Opening the group panel fetches it, refreshing from WhatsApp on the way. */
+function openGroup() {
+  state.groupPanel = !state.groupPanel
+  if (state.groupPanel) void loadGroup(state.openChatKey)
+}
+
+async function onTimer(value: string) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || !chat.value) return
+  // The reply is applied by setChatTimer itself, so the select settles on the
+  // value WhatsApp accepted without waiting for a re-listing. The refresh still
+  // follows, because the same change can move other things on the row.
+  if (await setChatTimer(chat.value.key, seconds)) await refreshChats()
+}
+</script>
+
+<template>
+  <section
+    class="conversation"
+    :class="{ dropping: dragging }"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
+    <div class="topbar" v-if="chat">
+      <AvatarBadge
+        :contact-key="chat.avatarKey"
+        :name="chat.name"
+        :is-group="chat.isGroup"
+        small
+      />
+      <div class="grow">
+        <h2>{{ chat.name }}</h2>
+        <div class="sub">
+          {{ chat.key }}
+          <template v-if="chat.isGroup && chat.audience"> · {{ chat.audience }} participantes</template>
+        </div>
+      </div>
+
+      <!-- The disappearing timer, shown and editable. A chat setting rather
+           than a message option, because that is all WhatsApp has: there is no
+           way to make one message vanish and leave the next alone. Changing it
+           is announced to everyone in the conversation by WhatsApp itself. -->
+      <select
+        class="timer"
+        :value="chat.ephemeral"
+        :title="'Mensagens temporárias: ' + timerLabel(chat.ephemeral) +
+          '. Vale para a conversa inteira, e o WhatsApp avisa todo mundo nela.'"
+        @change="onTimer(($event.target as HTMLSelectElement).value)"
+      >
+        <option v-for="s in TIMER_PRESETS" :key="s" :value="s">{{ timerLabel(s) }}</option>
+        <option v-if="!TIMER_PRESETS.includes(chat.ephemeral as never)" :value="chat.ephemeral">
+          {{ timerLabel(chat.ephemeral) }}
+        </option>
+      </select>
+
+      <button
+        v-if="chat.isGroup"
+        class="icon-btn"
+        title="Participantes e histórico do grupo"
+        @click="openGroup"
+      >
+        ⋯
+      </button>
+    </div>
+
+    <div class="banner" v-if="state.lagged">
+      A transmissão teve uma lacuna e a conversa foi recarregada do arquivo.
+    </div>
+
+    <div v-if="typingHere" class="typing-line">{{ typingHere }}</div>
+
+    <div class="messages" ref="scroller">
+      <div class="centered-row" v-if="state.hasOlder">
+        <button class="ghost" @click="older" :disabled="state.loadingOlder">
+          {{ state.loadingOlder ? 'Carregando…' : 'Carregar mensagens anteriores' }}
+        </button>
+      </div>
+      <div class="centered-row" v-else-if="state.timeline.length">
+        <span class="sealed">início do que o arquivo tem</span>
+      </div>
+
+      <!-- Keyed on the WhatsApp id, not the uid. The two differ for a message
+           this tab just sent: the optimistic line names itself after the id it
+           minted, and the archived row carries the server's own uid. Keying on
+           the uid destroys and rebuilds the whole bubble at that moment, which
+           for an attachment means throwing away the local preview and drawing a
+           placeholder in its place. -->
+      <template v-for="line in lines" :key="line.message.waID">
+        <div v-if="line.day" class="day">{{ line.day }}</div>
+        <MessageBubble
+          :data-wa="line.message.fromMe ? undefined : line.message.waID"
+          :message="line.message"
+          :show-sender="line.showSender"
+          @reply="editing = ''; replyTo = $event"
+          @edit="replyTo = ''; editing = $event"
+        />
+      </template>
+
+      <div v-if="state.loadingChat" class="empty">Abrindo a conversa…</div>
+      <div v-else-if="!state.timeline.length" class="empty">
+        <div>
+          <div class="big">Nada arquivado nesta conversa</div>
+          <div>O aparelho pode não ter enviado o histórico dela ainda.</div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="dragging" class="drop-veil">Solte para anexar</div>
+
+    <Composer
+      ref="composer"
+      :reply-to="replyTo"
+      :editing="editing"
+      @cancel="replyTo = ''; editing = ''"
+    />
+  </section>
+</template>

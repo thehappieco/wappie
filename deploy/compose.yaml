@@ -1,0 +1,75 @@
+name: wappie
+services:
+  db:
+    image: postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_ROOT_PASSWORD}
+      WAPPIE_DB_PASSWORD: ${DB_APP_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-wappie.sh:ro
+      - ./certs/db:/tls:ro
+    command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/tls/server.crt", "-c", "ssl_key_file=/tls/server.key"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: &logging
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  objects:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    restart: unless-stopped
+    command: ["server", "/data", "--certs-dir", "/certs"]
+    environment:
+      MINIO_ROOT_USER: wappie-storage
+      MINIO_ROOT_PASSWORD: ${STORAGE_PASSWORD}
+    volumes:
+      - objects:/data
+      - ./certs/objects:/certs:ro
+    logging: *logging
+  api:
+    image: wappie:pilot
+    build: ./release
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    environment: &api-env
+      WS_ENV: prod
+      WS_HTTP_ADDR: :8080
+      WS_METRICS_ADDR: :9090
+      WS_POSTGRES_DSN: postgres://wappie:${DB_APP_PASSWORD}@db:5432/wappie?sslmode=verify-full&sslrootcert=/usr/local/share/ca-certificates/wappie.crt
+      WS_WEB_DIR: /app/web
+      WS_TRUSTED_PROXIES: 172.16.0.0/12
+      WS_S3_ENDPOINT: https://objects:9000
+      WS_S3_REGION: us-east-1
+      WS_S3_BUCKET: wappie-media
+      WS_S3_ACCESS_KEY: wappie-storage
+      WS_S3_SECRET_KEY: ${STORAGE_PASSWORD}
+      WS_S3_USE_SSL: "true"
+      WS_PG_LIVE_CONNS: "8"
+      WS_PG_HISTORY_CONNS: "2"
+      WS_PG_API_CONNS: "8"
+    ports: ["127.0.0.1:18090:8080", "127.0.0.1:19090:9090"]
+    read_only: true
+    tmpfs: [/tmp]
+    logging: *logging
+  billing:
+    image: wappie:pilot
+    restart: unless-stopped
+    entrypoint: ["/app/bin/wappie-cloud"]
+    environment:
+      <<: *api-env
+      WS_BILLING_MODE: simulated
+      WS_BILLING_ADDR: :8091
+    depends_on:
+      db: {condition: service_healthy}
+    ports: ["127.0.0.1:18091:8091"]
+    read_only: true
+    tmpfs: [/tmp]
+    logging: *logging
+volumes:
+  postgres:
+  objects:

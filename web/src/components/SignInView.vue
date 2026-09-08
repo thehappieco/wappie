@@ -1,0 +1,366 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+
+import { AuthError, recover, registerService, signIn, signUp } from '../api/auth'
+import { loadVault, type StoredVault } from '../crypto/vault'
+import { fromAccount, type Session } from '../state/session'
+import PastedKeyView from './PastedKeyView.vue'
+
+const emit = defineEmits<{ opened: [Session] }>()
+
+type Mode = 'sign-in' | 'sign-up' | 'recover' | 'service' | 'pasted-key'
+
+const mode = ref<Mode>('sign-in')
+const busy = ref(false)
+const error = ref('')
+
+const serverURL = ref('')
+const hosted = typeof location !== 'undefined' && ['app.wappie.thehappie.co','console.wappie.thehappie.co'].includes(location.hostname)
+const selectedWorkspace = typeof location === 'undefined' ? undefined : new URLSearchParams(location.search).get('workspace') || undefined
+const email = ref('')
+const password = ref('')
+const confirm = ref('')
+const invite = ref('')
+/** The recovery code somebody is typing back, on the way in. */
+const code = ref('')
+/** A system registering: its name and the public half of its keypair. */
+const serviceName = ref('')
+const servicePublicKey = ref('')
+const registered = ref('')
+
+/** Shown once, after signing up, and never retrievable again. */
+const recoveryCode = ref('')
+const pending = ref<Session | null>(null)
+const acknowledged = ref(false)
+
+const storedKey = ref<StoredVault | null>(null)
+
+onMounted(async () => {
+  try {
+    storedKey.value = await loadVault()
+    // A browser that already holds a pasted key goes straight to that screen:
+    // whoever set it up chose it deliberately.
+    if (storedKey.value) mode.value = 'pasted-key'
+  } catch {
+    // No vault, or no IndexedDB. Signing in does not need one.
+  }
+})
+
+const canSubmit = computed(() => {
+  if (busy.value) return false
+  if (mode.value === 'sign-up') {
+    return Boolean(invite.value && email.value && password.value && confirm.value)
+  }
+  if (mode.value === 'recover') {
+    return Boolean(code.value && email.value && password.value && confirm.value)
+  }
+  if (mode.value === 'service') {
+    return Boolean(invite.value && serviceName.value && servicePublicKey.value)
+  }
+  return Boolean(email.value && password.value)
+})
+
+const title = computed(() => {
+  switch (mode.value) {
+    case 'sign-up':
+      return 'Criar conta'
+    case 'recover':
+      return 'Recuperar a conta'
+    case 'service':
+      return 'Registrar um sistema'
+    default:
+      return 'Entrar'
+  }
+})
+
+function submit() {
+  if (mode.value === 'sign-up') return doSignUp()
+  if (mode.value === 'recover') return doRecover()
+  if (mode.value === 'service') return doRegisterService()
+  return doSignIn()
+}
+
+/**
+ * doRegisterService sends a name and a public key, and nothing else. There is
+ * no session to open afterwards: the system reads through an API key an
+ * owner mints for it once the devices have been granted.
+ */
+async function doRegisterService() {
+  busy.value = true
+  error.value = ''
+  try {
+    const result = await registerService({
+      serverURL: serverURL.value,
+      invite: invite.value,
+      name: serviceName.value,
+      publicKey: servicePublicKey.value,
+    })
+    registered.value = result.name
+    invite.value = ''
+    servicePublicKey.value = ''
+  } catch (err) {
+    error.value = describe(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+function switchTo(next: Mode) {
+  mode.value = next
+  error.value = ''
+}
+
+async function doSignIn() {
+  busy.value = true
+  error.value = ''
+  try {
+    const signedIn = await signIn({
+      tenantID: selectedWorkspace,
+      serverURL: serverURL.value,
+      email: email.value,
+      password: password.value,
+    })
+    password.value = ''
+    if (signedIn.readable.length === 0) {
+      // Signing in worked; there is simply nothing granted yet. Saying so here
+      // beats an empty conversation list that looks broken.
+      error.value =
+        'Entrou, mas esta conta ainda não tem acesso a nenhum aparelho. ' +
+        'Quem parear um aparelho precisa conceder o acesso a você.'
+    }
+    emit('opened', fromAccount(signedIn, serverURL.value))
+  } catch (err) {
+    error.value = describe(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function doSignUp() {
+  busy.value = true
+  error.value = ''
+  try {
+    if (password.value !== confirm.value) {
+      throw new AuthError('password', 'as senhas não conferem')
+    }
+    const result = await signUp({
+      serverURL: serverURL.value,
+      invite: invite.value,
+      email: email.value,
+      password: password.value,
+    })
+    password.value = ''
+    confirm.value = ''
+    // Held back until the recovery code has been seen. Handing somebody the
+    // application first is how the code gets closed without being written
+    // down, and that is the failure this whole layer exists to prevent.
+    recoveryCode.value = result.recoveryCode
+    pending.value = fromAccount(result.session, serverURL.value)
+  } catch (err) {
+    error.value = describe(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+/**
+ * doRecover trades a recovery code for a new password.
+ *
+ * The code is spent by being typed here, so a new one comes back and is shown
+ * the same way the first was: before the archive, with nothing else on screen.
+ */
+async function doRecover() {
+  busy.value = true
+  error.value = ''
+  try {
+    if (password.value !== confirm.value) {
+      throw new AuthError('password', 'as senhas não conferem')
+    }
+    const result = await recover({
+      serverURL: serverURL.value,
+      email: email.value,
+      code: code.value,
+      password: password.value,
+    })
+    password.value = ''
+    confirm.value = ''
+    code.value = ''
+    recoveryCode.value = result.recoveryCode
+    pending.value = fromAccount(result.session, serverURL.value)
+  } catch (err) {
+    error.value = describe(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+function enter() {
+  if (!pending.value) return
+  emit('opened', pending.value)
+}
+
+async function copyCode() {
+  try {
+    await navigator.clipboard.writeText(recoveryCode.value)
+  } catch {
+    // Clipboard refused. The code is on screen; it can be typed.
+  }
+}
+
+function describe(err: unknown): string {
+  if (err instanceof AuthError) return err.message
+  if (err instanceof Error) return err.message
+  return String(err)
+}
+</script>
+
+<template>
+  <div class="unlock">
+    <!-- The recovery code. Nothing else is on screen while it is. -->
+    <div class="unlock-card" v-if="recoveryCode">
+      <h1>Guarde este código</h1>
+      <p class="sub">
+        É a única forma de voltar à sua conta se você esquecer a senha. Ele não é guardado em lugar
+        nenhum — nem aqui, nem no servidor — e não pode ser mostrado de novo.
+      </p>
+
+      <div class="recovery">{{ recoveryCode }}</div>
+
+      <button class="ghost" style="width: 100%; margin-bottom: 14px" @click="copyCode">
+        Copiar
+      </button>
+
+      <div class="field">
+        <label>
+          <input type="checkbox" v-model="acknowledged" style="width: auto; margin-right: 8px" />
+          Anotei em um lugar seguro
+        </label>
+      </div>
+
+      <button class="primary" :disabled="!acknowledged" @click="enter">Continuar</button>
+
+      <p class="note">
+        Sem a senha e sem este código, o arquivo desta conta fica ilegível para sempre — inclusive
+        para quem opera o servidor. Não é uma política; é a ausência da chave.
+      </p>
+    </div>
+
+    <div class="unlock-card" v-else-if="mode === 'pasted-key'">
+      <PastedKeyView
+        :stored="storedKey"
+        @opened="(s: Session) => emit('opened', s)"
+        @accounts="mode = 'sign-in'"
+      />
+    </div>
+
+    <div class="unlock-card" v-else-if="registered">
+      <h1>Sistema registrado</h1>
+      <p class="sub">
+        <strong>{{ registered }}</strong> agora existe nesta instalação, com a chave pública que você
+        colou. Ele ainda não lê nada: peça a um administrador que conceda os aparelhos a ele no
+        console e gere uma chave de API que <em>aja como</em> essa conta. As concessões abrem só com
+        a chave privada que ficou no sistema.
+      </p>
+      <button class="primary" @click="((registered = ''), switchTo('sign-in'))">Voltar</button>
+    </div>
+
+    <div class="unlock-card" v-else>
+      <h1>{{ title }}</h1>
+      <p class="sub" v-if="mode === 'service'">
+        Um sistema não tem senha: tem um par de chaves. Gere-o com <code>wsctl service-key</code>,
+        guarde a metade privada onde o sistema guarda segredos, e cole aqui a pública. O servidor
+        sela para ela as chaves dos aparelhos que um administrador conceder.
+      </p>
+      <p class="sub" v-else-if="mode === 'recover'">
+        O código de recuperação abre a mesma chave que a senha abria. Ele é gasto ao ser digitado
+        aqui: a conta ganha uma senha nova e um código novo, e toda sessão aberta é encerrada.
+      </p>
+      <p class="sub" v-else>
+        O servidor guarda tudo selado e não consegue abrir nada. Sua senha nunca chega até ele: o
+        navegador deriva uma chave dela, guarda a metade que abre as coisas e envia só a metade que
+        prova quem você é.
+      </p>
+
+      <div class="alert" v-if="error">{{ error }}</div>
+
+      <form @submit.prevent="submit">
+        <div class="field" v-if="mode === 'sign-up' || mode === 'service'">
+          <label for="invite">Código de convite</label>
+          <input id="invite" v-model="invite" autocomplete="off" spellcheck="false" />
+          <p class="hint">
+            Use o convite que você recebeu do administrador do espaço. Vale uma vez só.
+            <template v-if="mode === 'service'"> Para um sistema, emitido com <code>-role service</code>.</template>
+          </p>
+        </div>
+
+        <template v-if="mode === 'service'">
+          <div class="field">
+            <label for="service-name">Nome do sistema</label>
+            <input id="service-name" v-model="serviceName" autocomplete="off" spellcheck="false" placeholder="erp-sync" />
+            <p class="hint">Minúsculas, dígitos, ponto, traço ou sublinhado. É como ele aparece no console.</p>
+          </div>
+          <div class="field">
+            <label for="service-key">Chave pública</label>
+            <input id="service-key" v-model="servicePublicKey" autocomplete="off" spellcheck="false" />
+            <p class="hint">A linha <code>public</code> que <code>wsctl service-key</code> imprimiu. Nunca a privada.</p>
+          </div>
+        </template>
+
+        <div class="field" v-if="mode !== 'service'">
+          <label for="email">E-mail</label>
+          <input id="email" v-model="email" type="email" autocomplete="username" />
+        </div>
+
+        <div class="field" v-if="mode === 'recover'">
+          <label for="code">Código de recuperação</label>
+          <input id="code" v-model="code" autocomplete="one-time-code" spellcheck="false" />
+          <p class="hint">Os seis grupos de cinco caracteres. Maiúsculas e traços não importam.</p>
+        </div>
+
+        <div class="field" v-if="mode !== 'service'">
+          <label for="password">{{ mode === 'recover' ? 'Nova senha' : 'Senha' }}</label>
+          <input
+            id="password"
+            v-model="password"
+            type="password"
+            :autocomplete="mode === 'sign-in' ? 'current-password' : 'new-password'"
+          />
+          <p class="hint" v-if="mode !== 'sign-in'">
+            Mínimo de 10 caracteres. A derivação leva alguns segundos de propósito — é o que torna
+            caro atacar um vazamento do banco.
+          </p>
+        </div>
+
+        <div class="field" v-if="mode !== 'sign-in' && mode !== 'service'">
+          <label for="confirm">Repita a senha</label>
+          <input id="confirm" v-model="confirm" type="password" autocomplete="new-password" />
+        </div>
+
+        <div class="field" v-if="!hosted">
+          <label for="server">Servidor</label>
+          <input id="server" v-model="serverURL" placeholder="mesma origem desta página" />
+        </div>
+
+        <button class="primary" type="submit" :disabled="!canSubmit">
+          {{ busy ? (mode === 'service' ? 'Registrando…' : 'Derivando a chave…') : title }}
+        </button>
+      </form>
+
+      <button class="linkish" @click="switchTo(mode === 'sign-in' ? 'sign-up' : 'sign-in')">
+        {{ mode === 'sign-in' ? 'Tenho um código de convite' : 'Já tenho conta' }}
+      </button>
+      <br />
+      <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('recover')">
+        Esqueci a senha, tenho o código de recuperação
+      </button>
+      <br v-if="mode === 'sign-in'" />
+      <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('service')">
+        Registrar um sistema com chave pública
+      </button>
+      <br v-if="mode === 'sign-in'" />
+      <button class="linkish" @click="switchTo('pasted-key')">
+        Abrir com uma chave de arquivo, sem conta
+      </button>
+    </div>
+  </div>
+</template>

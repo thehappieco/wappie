@@ -1,0 +1,16 @@
+-- 0018: a recovery code that can actually be used.
+--
+-- users.recovery_wrap has existed since the first migration and was written by
+-- every signup: the account's private key under a printed code. Nothing ever
+-- read it back. There was no endpoint, so a forgotten password lost the
+-- archive — the exact failure the column was added to prevent.
+--
+-- Handing the wrap to anyone who asks would be safe in theory (150 random
+-- bits) and careless in practice: it turns "the database leaked" into "the
+-- database is public". So the code proves itself first. The browser derives
+-- two independent branches from it, the way it does from a password: one
+-- opens the wrap and never leaves the page, the other is sent and stored here
+-- as a slow hash. Null for accounts that signed up before this; they are
+-- asked to generate a new code on their next sign-in, because the old one's
+-- proof cannot be derived from what the server holds.
+ALTER TABLE users ADD COLUMN recovery_hash text;

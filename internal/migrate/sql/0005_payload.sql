@@ -1,0 +1,22 @@
+-- The structured content of a message, sealed.
+--
+-- Locations, polls, contact cards, scheduled events, link previews and the
+-- mention list all arrive as structure rather than as a line of text. The
+-- normaliser has understood them since phase 2, but nothing carried them to
+-- disk except the sealed raw protobuf -- which preserves them and makes them
+-- unreadable without a waE2E parser, a heavy thing to ship to a browser to draw
+-- a map pin.
+--
+-- One column, not one per type. The alternative was latitude, longitude,
+-- poll_options, vcard, event_start and the rest spreading across this table,
+-- each arriving with its own decision about what stays readable, made in
+-- passing, for a field nobody had considered yet. This way the answer is
+-- uniform and already made: structured content is content, so it is sealed
+-- under the row's content key like the body beside it.
+--
+-- Mentions are in here rather than in a readable column. A mention list is the
+-- social graph inside a message -- who tags whom, how often. Readable, it would
+-- let this server count mentions without opening anything, which is convenient
+-- for a notification badge and is precisely the convenience the archive exists
+-- to refuse.
+ALTER TABLE messages ADD COLUMN payload_sealed bytea;

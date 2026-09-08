@@ -1,0 +1,2100 @@
+/* One stylesheet. The app is three columns and a panel; a component library
+   would be more code than the whole client. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f0f2f5;
+  --bg-panel: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-hover: #f5f6f6;
+  --bg-active: #e9edef;
+  --bg-input: #ffffff;
+
+  --bubble-in: #ffffff;
+  --bubble-out: #d9fdd3;
+  --canvas: #efeae2;
+
+  --text: #111b21;
+  --text-dim: #667781;
+  --text-faint: #8696a0;
+  --line: #e9edef;
+
+  --accent: #00a884;
+  --accent-dim: #d1f4cc;
+  --danger: #e5484d;
+  --warn: #d4a017;
+  /* What goes ON a filled accent or danger surface. A token rather than a
+     literal white so a palette that darkens the fill can darken this too —
+     the two whites left in this file sit on a black veil over a photograph
+     and are white in every theme. */
+  --on-accent: #fff;
+  --on-danger: #fff;
+
+  --radius: 8px;
+  --sidebar: 400px;
+  --panel: 380px;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111b21;
+    --bg-panel: #111b21;
+    --bg-raised: #202c33;
+    --bg-hover: #202c33;
+    --bg-active: #2a3942;
+    --bg-input: #2a3942;
+
+    --bubble-in: #202c33;
+    --bubble-out: #005c4b;
+    --canvas: #0b141a;
+
+    --text: #e9edef;
+    --text-dim: #8696a0;
+    --text-faint: #667781;
+    --line: #222d34;
+
+    --accent: #00a884;
+    --accent-dim: #103d33;
+  }
+}
+
+/* Discreet mode, as a palette.
+ *
+ * The switch turns off everything this account emits — read receipts, typing
+ * notifications, presence. None of that is visible from inside the app, and a
+ * posture you cannot see is a posture you forget you are in: the failure mode
+ * is sending a read receipt you meant to withhold because you thought the
+ * switch was on. So the whole surface goes quiet with it, and being in it is
+ * unmistakable at a glance.
+ *
+ * Tokens only, which is what makes this eleven declarations instead of a second
+ * stylesheet. Every colour in this file is named except two whites on a black
+ * veil over a photograph, and one hsl() computed per person, handled below.
+ *
+ * The attribute selector is what makes this win. `:root` in the dark media
+ * query has the same specificity as `:root`, so those two are settled by source
+ * order; `:root[data-theme]` outranks both, in either system setting, wherever
+ * it sits. color-scheme is set explicitly for the same reason — scrollbars and
+ * form controls follow it, not the tokens.
+ */
+:root[data-theme='quiet'] {
+  color-scheme: dark;
+
+  --bg: #0a0a0b;
+  --bg-panel: #0a0a0b;
+  --bg-raised: #17181a;
+  --bg-hover: #17181a;
+  --bg-active: #202225;
+  --bg-input: #17181a;
+
+  /* Both bubbles grey. The green outgoing bubble is the loudest thing on the
+     screen and the one that says "this is WhatsApp, behaving normally". */
+  --bubble-in: #17181a;
+  --bubble-out: #24262a;
+  --canvas: #060607;
+
+  --text: #d6d7d9;
+  --text-dim: #85888d;
+  --text-faint: #5f6367;
+  --line: #1e1f22;
+
+  /* Desaturated, not merely darkened, and chosen to clear 4.5:1 against white
+     text on top and 3:1 as a glyph against the background — the accent is both
+     a filled button and the colour of a tick. */
+  --accent: #55736b;
+  --accent-dim: #1b2320;
+  --danger: #a85055;
+  --warn: #8d7740;
+}
+
+/* The one colour in this file that is computed rather than named: a hue per
+   person, so two unnamed strangers in a group get different badges. Saturation
+   is what carries that, so it is dropped rather than the rule replaced — the
+   badges stay distinguishable by lightness and stop being the brightest thing
+   on a grey screen. */
+:root[data-theme='quiet'] .avatar.tinted {
+  background: hsl(var(--hue) 6% 20%);
+  color: hsl(var(--hue) 10% 72%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  width: 100%;
+}
+
+input:focus,
+textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* --- unlock ------------------------------------------------------------- */
+
+.unlock {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 24px;
+}
+
+.unlock-card {
+  width: min(520px, 100%);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 28px;
+}
+
+.unlock h1 {
+  margin: 0 0 4px;
+  font-size: 21px;
+  font-weight: 600;
+}
+
+.unlock .sub {
+  color: var(--text-dim);
+  margin: 0 0 22px;
+  font-size: 14px;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+/* Direct child only. A nested <label class="choice"> is a checkbox row, not a
+   field caption, and the descendant selector was turning every one of them
+   into uppercase grey small-caps with the control knocked out of line. */
+.field > label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+}
+
+.field .hint {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-top: 5px;
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: var(--radius);
+  padding: 11px 18px;
+  font-weight: 600;
+}
+
+/* Full width in the sign-in card, where it is the only control on its line.
+   Everywhere else a primary button sits in a row beside others, and stretching
+   it pushed its neighbours onto lines of their own. */
+.unlock .primary {
+  width: 100%;
+}
+
+.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.linkish {
+  color: var(--accent);
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+.alert {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+/* The recovery code, shown once. Monospaced and large enough to copy by hand
+   without misreading a character, which is the whole job. */
+.recovery {
+  font-family: var(--mono);
+  font-size: 19px;
+  letter-spacing: 0.06em;
+  text-align: center;
+  background: var(--bg-hover);
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+  padding: 16px 10px;
+  margin: 4px 0 14px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.note {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  background: var(--bg-hover);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 10px 12px;
+  margin-top: 18px;
+}
+
+/* --- shell -------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar) 1fr;
+  height: 100%;
+  background: var(--bg-panel);
+}
+
+.shell.with-panel {
+  grid-template-columns: var(--sidebar) 1fr var(--panel);
+}
+
+/* Three fixed columns need room for three. Below that the conversation is what
+   gets squeezed to nothing, which is the one column that must not: the panel
+   describes a message you can no longer see. So the sides give way first, and
+   then the chat list steps aside entirely. */
+@media (max-width: 1200px) {
+  :root {
+    --sidebar: 320px;
+    --panel: 340px;
+  }
+}
+
+@media (max-width: 1000px) {
+  :root {
+    --sidebar: 280px;
+    --panel: 300px;
+  }
+}
+
+@media (max-width: 860px) {
+  .shell.with-panel {
+    grid-template-columns: 1fr var(--panel);
+  }
+
+  .shell.with-panel .sidebar {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .shell.with-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .shell.with-panel .conversation {
+    display: none;
+  }
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+  min-height: 56px;
+}
+
+.topbar .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.topbar h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar .sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.icon-btn {
+  padding: 7px;
+  border-radius: 50%;
+  color: var(--text-dim);
+  line-height: 0;
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.icon-btn.on {
+  color: var(--accent);
+}
+
+.search {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* --- chat list ---------------------------------------------------------- */
+
+.chat-list {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-row {
+  display: flex;
+  gap: 12px;
+  padding: 10px 14px;
+  width: 100%;
+  text-align: left;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.chat-row:hover {
+  background: var(--bg-hover);
+}
+
+.chat-row.on {
+  background: var(--bg-active);
+}
+
+.chat-row .body {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-row .line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.chat-row .name {
+  font-size: 15px;
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-row .when {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.chat-row .preview {
+  font-size: 13px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+.badge {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+}
+
+/* --- avatar ------------------------------------------------------------- */
+
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: var(--bg-active);
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dim);
+  overflow: hidden;
+  user-select: none;
+}
+
+.avatar.sm {
+  width: 34px;
+  height: 34px;
+  font-size: 12px;
+}
+
+/* --- conversation ------------------------------------------------------- */
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--canvas);
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 6% 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+}
+
+.day {
+  align-self: center;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 5px 12px;
+  margin: 14px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.msg {
+  display: flex;
+  max-width: 78%;
+}
+
+.msg.out {
+  align-self: flex-end;
+}
+
+.msg.in {
+  align-self: flex-start;
+}
+
+.bubble {
+  background: var(--bubble-in);
+  border-radius: 9px;
+  padding: 7px 10px 6px;
+  box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+  position: relative;
+  min-width: 96px;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+}
+
+.msg.out .bubble {
+  background: var(--bubble-out);
+}
+
+.bubble:hover {
+  outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.bubble.on {
+  outline: 2px solid var(--accent);
+}
+
+.bubble.revoked {
+  border-left: 3px solid var(--danger);
+}
+
+.sender {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14.5px;
+}
+
+.text a {
+  color: var(--accent);
+}
+
+/* A mention, drawn in the sentence the way WhatsApp draws it.
+   A button rather than a span because it does something when clicked, and
+   because a reader navigating by keyboard has to be able to reach it. It has to
+   be reset back to looking like text: a button inside a paragraph inherits none
+   of the paragraph's typography. */
+.mention {
+  all: unset;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  position: relative;
+}
+
+.mention:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* What is behind the name: the LID, the phone number, or the absence of one.
+   Positioned above the mention rather than below it, because a mention is
+   usually in the last line of a bubble and a popover under it would be clipped
+   by the message list's own scroll container. */
+.mention-id {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 400;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 25%);
+}
+
+.mentions-extra {
+  font-size: 12px;
+  margin-top: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+}
+
+/* A group invitation. Given more weight than the other cards on purpose: it is
+   the only one carrying an action that reaches outside this archive. */
+.card.invite {
+  border-color: var(--accent-dim);
+}
+
+.invite-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card.invite button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* The ticks. Colour carries the step and the tooltip carries the reason a tick
+   stopped short — a message at one grey in a group of nine is not the same fact
+   as one at one grey in a conversation with one person. */
+/* A person's several devices, folded away until asked for. The times above
+   them are the earliest across the lot, because that is when the person got it;
+   these exist because a second timestamp is the only evidence a second device
+   is there at all. */
+.devices {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.device .dim {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Somebody typing, in the sidebar. Given the accent rather than left as plain
+   preview text, because it is the one line there that is true right now and
+   will not be in a moment. */
+.preview.typing {
+  color: var(--accent);
+  font-style: italic;
+}
+
+.typing-line {
+  padding: 2px 16px 6px;
+  font-size: 12.5px;
+  color: var(--accent);
+  font-style: italic;
+}
+
+/* The disappearing timer, in the conversation header. Small and quiet: it is a
+   setting, not an action, and changing it announces itself to everyone in the
+   conversation. */
+/* A dialog over the page.
+   Panels beside the conversation are part of the layout, so their content
+   competes for height with the message list and moves the composer. Somebody
+   reading a group's history is not writing at that moment. */
+.modal-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgb(0 0 0 / 45%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 40%);
+  width: min(560px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal .topbar {
+  flex: 0 0 auto;
+}
+
+.modal-body {
+  overflow-y: auto;
+  padding: 12px 16px 16px;
+}
+
+@media (max-width: 620px) {
+  .modal-veil {
+    padding: 0;
+  }
+  .modal {
+    width: 100%;
+    max-height: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+}
+
+.timer {
+  background: var(--bg-input);
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 12px;
+  padding: 3px 6px;
+  max-width: 130px;
+}
+
+.ticks {
+  white-space: nowrap;
+  letter-spacing: -2px;
+}
+
+.ticks.read,
+.ticks.played {
+  color: var(--accent);
+}
+
+.ticks.pending {
+  opacity: 0.6;
+  letter-spacing: normal;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.flag {
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.flag.edited {
+  color: var(--accent);
+}
+
+.flag.revoked {
+  color: var(--danger);
+}
+
+.flag.hot {
+  color: var(--warn);
+}
+
+.reactions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.reaction {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 13px;
+}
+
+.sealed {
+  font-style: italic;
+  color: var(--text-faint);
+  font-size: 13.5px;
+}
+
+.tampered {
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 13px;
+  font-family: var(--mono);
+}
+
+/* --- media -------------------------------------------------------------- */
+
+.media {
+  border-radius: 6px;
+  overflow: hidden;
+  margin: -2px -4px 4px;
+  background: var(--bg-active);
+  position: relative;
+}
+
+.media img,
+.media video {
+  display: block;
+  max-width: 100%;
+  max-height: 340px;
+  width: auto;
+  border-radius: 6px;
+}
+
+.media .veil {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 13px;
+  text-align: center;
+  padding: 8px;
+}
+
+.doc {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border-radius: 6px;
+  padding: 9px 11px;
+  margin-bottom: 4px;
+  /* Wide enough that a file name reads as a file name. Without it the flex
+     item collapses and "orçamento.txt" comes out as three lines of syllables. */
+  min-width: min(260px, 60vw);
+}
+
+.doc .name {
+  font-size: 13.5px;
+  /* Break only where there is no alternative, rather than anywhere. */
+  overflow-wrap: break-word;
+}
+
+.doc .size {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 1.5px;
+  height: 26px;
+  margin: 2px 0 4px;
+}
+
+.waveform i {
+  display: block;
+  width: 2px;
+  background: var(--text-faint);
+  border-radius: 1px;
+  min-height: 2px;
+}
+
+/* --- structured content ------------------------------------------------- */
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 5px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  font-size: 13.5px;
+}
+
+.card .title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.card .dim {
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.poll-option {
+  position: relative;
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  overflow: hidden;
+}
+
+.poll-option.votable {
+  cursor: pointer;
+}
+
+.poll-option.votable:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* The bar sits behind the row rather than beside it, so a long option keeps
+   its whole width for the text. */
+.poll-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 0;
+  background: var(--accent);
+  opacity: 0.16;
+  border-radius: 5px;
+  transition: width 160ms ease-out;
+}
+
+.poll-option > i,
+.poll-label,
+.poll-count {
+  position: relative;
+  z-index: 1;
+}
+
+.poll-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.poll-count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+
+.poll-option i {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 50%;
+  display: block;
+  flex-shrink: 0;
+}
+
+/* Round means pick one, square means pick several. The convention is old
+   enough that getting it wrong is a lie about what the poll accepts — and this
+   client used to draw a round dot on every poll while refusing the second
+   tick, which was the same lie told twice. */
+.poll-option.multi i {
+  border-radius: 3px;
+}
+
+.poll-option i.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--bg-panel);
+}
+
+/* The option this account picked. The filled indicator already says so; this
+   is what makes it findable at a glance in a list of eight. */
+.poll-option.chosen .poll-label {
+  font-weight: 600;
+}
+
+/* An option the limit has no room for. Dimmed rather than hidden: it is still
+   part of the poll, and a reader has to be able to see what they did not pick
+   and how many votes it got. */
+.poll-option.votable:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* --- forensic panel ----------------------------------------------------- */
+
+.panel {
+  border-left: 1px solid var(--line);
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel-body {
+  overflow-y: auto;
+  padding: 14px 16px 28px;
+  flex: 1;
+  min-height: 0;
+}
+
+.section {
+  margin-bottom: 22px;
+}
+
+.section > h3 {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.version {
+  border-left: 2px solid var(--line);
+  padding: 0 0 12px 12px;
+  position: relative;
+}
+
+.version:last-child {
+  padding-bottom: 0;
+}
+
+.version::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.version.current::before {
+  background: var(--accent);
+}
+
+.version .rev {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+.version .body {
+  font-size: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 2px 0;
+}
+
+.version .when {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.reader {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.reader:last-child {
+  border-bottom: 0;
+}
+
+.reader .who {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.reader .times {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+.saw {
+  font-size: 11.5px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+}
+
+.saw.sure {
+  color: var(--accent);
+}
+
+.saw.inferred {
+  color: var(--warn);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 3px 10px;
+  font-size: 12.5px;
+}
+
+.kv dt {
+  color: var(--text-dim);
+}
+
+.kv dd {
+  margin: 0;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+/* --- misc --------------------------------------------------------------- */
+
+.empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 40px;
+}
+
+.empty .big {
+  font-size: 17px;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.centered-row {
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+}
+
+.ghost {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.banner {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.dot.live {
+  background: var(--accent);
+}
+
+.dot.off {
+  background: var(--danger);
+}
+
+.dot.warn {
+  background: var(--warn);
+}
+
+.dot.bad {
+  background: var(--danger);
+}
+
+/* The row says online and no process is holding the connection. Not green,
+   because nothing is arriving; not red, because nothing is wrong with the
+   device itself. A hollow ring reads as "claimed, unverified". */
+.dot.stale {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--warn);
+}
+
+/* --- the console -------------------------------------------------------- */
+
+.console {
+  height: 100%;
+  overflow-y: auto;
+  padding: 24px;
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.console-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.console-top h1 {
+  font-size: 22px;
+  margin: 0;
+}
+
+.console-top .sub {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.dim {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.right {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ghost {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  background: var(--bg-raised);
+  font-size: 14px;
+}
+
+.ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.ghost:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.danger {
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  color: var(--on-danger);
+  background: var(--danger);
+  font-weight: 600;
+}
+
+.danger:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.small {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+/* Named apart from .panel on purpose. The forensic panel already owned that
+   name, and sharing it meant the console inherited min-height:0 and collapsed
+   every section to its own padding, while the forensic panel inherited a
+   border-radius and 18px of padding written for a card. One name, two
+   components, both broken. */
+.console-panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* In a flex column with a definite height, a section must keep its own
+     height rather than be squeezed by its siblings. */
+  flex-shrink: 0;
+}
+
+.console-panel h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.console-panel h3 {
+  font-size: 14px;
+  margin: 8px 0 0;
+}
+
+.console-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.console-panel-head h2 {
+  flex: 1;
+}
+
+.cards {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+}
+
+.device {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.device .head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.device .name {
+  font-weight: 600;
+}
+
+.device .sub,
+.device .who {
+  color: var(--text-dim);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.counts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.counts div {
+  min-width: 0;
+}
+
+.counts dt {
+  color: var(--text-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.counts dd {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.pill.locked {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.empty-card {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  grid-column: 1 / -1;
+}
+
+.removed {
+  border: 1px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.choice input {
+  width: auto;
+}
+
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.grid td {
+  border-top: 1px solid var(--line);
+  padding: 8px 6px;
+  vertical-align: top;
+}
+
+.grid tr:first-child td {
+  border-top: 0;
+}
+
+.grid tr.dead {
+  opacity: 0.5;
+}
+
+.pairing {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.pairing .code {
+  font-family: var(--mono);
+  font-size: 30px;
+  letter-spacing: 0.16em;
+  padding: 12px 18px;
+  border: 1px dashed var(--accent);
+  border-radius: 12px;
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.minted {
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.minted-head {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.secret {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  width: 100%;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* --- the device sheet --------------------------------------------------- */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  z-index: 20;
+}
+
+.sheet {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px;
+  width: min(620px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.sheet-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.facts {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.facts div {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.facts dt {
+  color: var(--text-dim);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 620px) {
+  .console {
+    padding: 14px;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+  }
+
+  .facts div {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}
+
+.grant-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+/* The status feed sits above the conversations rather than in them: it is not
+   a conversation, and left in the list it is permanently at the top because
+   status arrives all day. */
+.status-row {
+  border-bottom: 1px solid var(--line);
+}
+
+.status-ring {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  font-size: 20px;
+  color: var(--accent);
+  border: 2px dashed var(--accent);
+}
+
+/* A colour per person, hashed from their identifier. Two people with the same
+   label — two unnamed strangers in one group — must not be the same badge. */
+.avatar.tinted {
+  background: hsl(var(--hue) 45% 88%);
+  color: hsl(var(--hue) 45% 28%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .avatar.tinted {
+    background: hsl(var(--hue) 30% 26%);
+    color: hsl(var(--hue) 45% 82%);
+  }
+}
+
+/* --- the composer ------------------------------------------------------- */
+
+.composer {
+  border-top: 1px solid var(--line);
+  background: var(--bg-panel);
+  padding: 10px 14px;
+  flex-shrink: 0;
+}
+
+.composer-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.composer textarea {
+  resize: none;
+  max-height: 160px;
+  border-radius: 20px;
+  padding: 10px 14px;
+  line-height: 1.4;
+}
+
+.composer .send {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  padding: 0;
+  flex-shrink: 0;
+  font-size: 16px;
+}
+
+.composer-off {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 2px;
+}
+
+.quoting {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-hover);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+
+.quoting-who {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.quoting-body {
+  font-size: 13px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- what to do with a message ------------------------------------------ */
+
+/* Pinned to the bubble's top corner, shown on hover and while its own popover
+   is open. Also shown when the message is selected, because :hover never fires
+   on a touch screen and one tap already selects. */
+.actions {
+  position: absolute;
+  top: -12px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 4px rgba(11, 20, 26, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+  z-index: 2;
+}
+
+.msg.in .actions {
+  right: 6px;
+}
+
+.msg.out .actions {
+  left: 6px;
+}
+
+.bubble:hover .actions,
+.bubble:focus-within .actions,
+.bubble.on .actions,
+.actions.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.act {
+  min-width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+
+.act:hover {
+  background: var(--bg-hover);
+}
+
+.act.emoji {
+  font-size: 16px;
+}
+
+.act.emoji.on {
+  background: var(--accent-dim);
+}
+
+.act.danger-act {
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.act-note {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  padding: 0 6px;
+  align-self: center;
+  white-space: nowrap;
+}
+
+/* --- the quoted message ------------------------------------------------- */
+
+.quote {
+  border-left: 3px solid var(--accent);
+  background: rgba(0, 0, 0, 0.045);
+  border-radius: 5px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+@media (prefers-color-scheme: dark) {
+  .quote {
+    background: rgba(255, 255, 255, 0.06);
+  }
+}
+
+.quote-who {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.quote-body {
+  font-size: 13px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editing-chip {
+  border-left-color: var(--warn);
+}
+
+.editing-chip .quoting-who {
+  color: var(--warn);
+}
+
+/* --- attaching a file --------------------------------------------------- */
+
+/* The picker. A list rather than a row of icons, because each choice needs a
+   sentence: the difference between a photo, an HD photo and a file is not
+   something an icon can carry. */
+.sheet {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-size {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.sheet-choice {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet-choice:last-child {
+  border-bottom: 0;
+}
+
+.sheet-choice:hover {
+  background: var(--bg-hover);
+}
+
+.sheet-label {
+  display: block;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.sheet-note {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* What is about to be sent, shown as it will be sent. */
+.attached-chip {
+  align-items: center;
+}
+
+.attached-thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 5px;
+  flex-shrink: 0;
+  background: var(--bg-active);
+}
+
+.composer .icon-btn.attach,
+.composer .icon-btn.detail {
+  align-self: flex-end;
+  height: 42px;
+  width: 34px;
+  padding: 0;
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* --- what a message says about itself ----------------------------------- */
+
+.marks {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-hover);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.mark {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.mark input {
+  width: auto;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.mark b {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mark em {
+  display: block;
+  font-size: 11.5px;
+  font-style: normal;
+  color: var(--text-dim);
+}
+
+/* Dimmed rather than hidden. A control that vanishes leaves somebody looking
+   for it; one that is visible and disabled explains itself in the line under
+   it. */
+.mark.off {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.marks-summary {
+  font-size: 11.5px;
+  color: var(--accent);
+  padding: 4px 2px 0;
+}
+
+/* --- an attachment on its way out --------------------------------------- */
+
+/* A band across the bottom rather than a veil over the whole thing: the point
+   of drawing the picture while it uploads is that somebody can see what they
+   are sending, and a veil would cover exactly that. */
+.sending {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11.5px;
+}
+
+.sending-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  margin-bottom: 3px;
+  transition: width 0.2s linear;
+}
+
+.sending-line {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-active);
+  margin-top: 5px;
+  overflow: hidden;
+}
+
+/* Dropping a file. The veil sits over the conversation rather than replacing
+   it, so it is obvious what the file is about to be dropped into. */
+.conversation.dropping {
+  position: relative;
+}
+
+.drop-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  font-size: 15px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+}
+
+/* An action inside a line of text, which is what it looks like. Used on the
+   failed-send flag, where a whole button would outweigh the message. */
+.link {
+  padding: 0 0 0 6px;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
+.link:hover {
+  opacity: 1;
+}
+
+/* --- recording ---------------------------------------------------------- */
+
+.recording-row {
+  align-items: center;
+  gap: 8px;
+}
+
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* Tabular figures so the seconds do not shuffle the line every tick. */
+.rec-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+}
+
+.rec-note {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+
+/* A business template's button labels. Not buttons: pressing one sends a reply
+   this archive cannot compose, and a control that does nothing is worse than a
+   list of what was offered. */
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+/* One line of a contact card: label, value, and whatever can be done with it. */
+.card-line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.card-line .dim {
+  font-size: 12.5px;
+  min-width: 54px;
+}
+
+/* The per-message timer, inside the send-marks disclosure. Sized to sit where
+   the other marks' checkboxes sit, so the column stays a column. */
+.timer-select {
+  flex-shrink: 0;
+  max-width: 190px;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}

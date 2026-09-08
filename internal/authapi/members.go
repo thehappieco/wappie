@@ -1,0 +1,93 @@
+package authapi
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/google/uuid"
+	"whatserver2/internal/store"
+)
+
+func (h *Handler) memberError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrMembershipForbidden):
+		fail(w, http.StatusForbidden, "not_authorized", "this action requires a workspace owner or an authorized administrator")
+	case errors.Is(err, store.ErrLastOwner):
+		fail(w, http.StatusConflict, "last_owner", "the workspace must retain an active owner")
+	case errors.Is(err, store.ErrInvalidMembership):
+		fail(w, http.StatusBadRequest, "bad_request", "invalid role, status or invitation address")
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "not_found", "no such member in this workspace")
+	default:
+		h.log().Error("workspace membership operation failed", "error", err)
+		fail(w, http.StatusInternalServerError, "internal", "could not manage workspace members")
+	}
+}
+
+func (h *Handler) members(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	members, err := h.Users.Members(r.Context(), user.TenantID, user.ID)
+	if err != nil {
+		h.memberError(w, err)
+		return
+	}
+	send(w, http.StatusOK, struct {
+		Members []store.Member `json:"members"`
+	}{members})
+}
+
+func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	target, err := uuid.Parse(r.PathValue("userID"))
+	if err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "user id must be a UUID")
+		return
+	}
+	var req struct {
+		Role   string `json:"role"`
+		Status string `json:"status"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := h.Users.UpdateMember(r.Context(), user.TenantID, user.ID, target, req.Role, req.Status); err != nil {
+		h.memberError(w, err)
+		return
+	}
+	h.accessChanged()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Role  string `json:"role"`
+		Email string `json:"email"`
+	}
+	if !decode(w, r, &req) || !h.allow(w, r, user.Email) {
+		return
+	}
+	invite, err := h.Users.InviteMember(r.Context(), user.TenantID, user.ID, req.Role, req.Email)
+	if err != nil {
+		h.memberError(w, err)
+		return
+	}
+	send(w, http.StatusCreated, struct {
+		Invite string `json:"invite"`
+	}{invite})
+}
+
+func (h *Handler) accessChanged() {
+	if h.AccessChanged != nil {
+		h.AccessChanged()
+	}
+}

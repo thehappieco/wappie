@@ -1,0 +1,28 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+
+# Local runtime state — never commit media blobs or databases
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets. The v1 server committed config.yaml with a live api_key and
+# media_signing_key_hex in it; configuration here is env-only for that reason.
+.env
+.env.*
+!.env.example
+*.local.*
+
+# Frontend deps. The v1 repo tracked 3263 files under web/node_modules.
+node_modules/
+/web/dist/
+
+.DS_Store
+
+# Private hosting/billing lives in its own repository.
+/commercial/
+/.claude/

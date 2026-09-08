@@ -1,0 +1,114 @@
+name: ci
+
+on:
+  push: {branches: [main]}
+  pull_request:
+
+env:
+  GO_VERSION: "1.26.7"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # uuidv7() and the RLS behaviour this schema relies on need 18.
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+
+      # A non-superuser, non-BYPASSRLS role. Superusers ignore row-level
+      # security, so running the isolation tests as one would make them pass no
+      # matter how broken the policies were.
+      - name: Create the application role and database
+        env: {PGPASSWORD: postgres}
+        run: |
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -c \
+            "CREATE ROLE whatserver2_app LOGIN PASSWORD 'dev' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;"
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -c \
+            "CREATE DATABASE whatserver2_test OWNER whatserver2_app;"
+
+      - run: go build ./...
+
+      - name: Tests
+        env:
+          WS_TEST_POSTGRES_DSN: postgres://whatserver2_app:dev@localhost:5432/whatserver2_test?sslmode=disable
+          # Turns "no database, skipping" into a failure. Without this the
+          # isolation and migration tests could silently stop running.
+          WS_TEST_POSTGRES_REQUIRED: "1"
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Coverage floor for the domain packages
+        run: |
+          go tool cover -func=coverage.out > cov.txt
+          tail -1 cov.txt
+          fail=0
+          # Packages carrying real business or cryptographic logic. Plumbing is
+          # deliberately not on this list.
+          for pkg in internal/crypto/wamedia internal/config internal/obs; do
+            pct=$(grep "whatserver2/$pkg/" cov.txt | awk '{gsub("%","",$NF); s+=$NF; n++} END {if(n) printf "%.1f", s/n; else print 0}')
+            echo "$pkg: $pct%"
+            awk -v p="$pct" 'BEGIN {exit !(p < 80)}' && { echo "  below the 80% floor"; fail=1; }
+          done
+          exit $fail
+
+      - name: Fuzz smoke
+        run: make fuzz
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - run: make fmt
+      - run: make vet
+      # The whatsapp_server2 project rotted when a half-finished migration left
+      # API_ttt/ and mongo_ttt/ beside the real packages forever.
+      - run: make lint-layout
+      - uses: golangci/golangci-lint-action@v6
+        with: {version: latest}
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # The browser client. Its own job because the Go build must never need a
+  # JavaScript toolchain installed, and because this job is what stops the two
+  # implementations of the sealed archive drifting apart: the TypeScript tests
+  # open vectors that Go sealed, including the ones that must fail.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22", cache: npm, cache-dependency-path: web/package-lock.json}
+      - run: npm ci
+        working-directory: web
+      - run: npm run typecheck
+        working-directory: web
+      - run: npm run test
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      # The v1 repo committed cmd/wapanel/config.yaml holding a live api_key
+      # and media_signing_key_hex. Configuration here is environment-only, and
+      # this job is the backstop.
+      - uses: gitleaks/gitleaks-action@v2
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}

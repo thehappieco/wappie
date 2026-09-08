@@ -1,0 +1,11 @@
+Wappie
+Copyright 2026 The Happie and contributors.
+
+This project includes dependencies distributed under their own licenses.
+Go dependencies and versions are recorded in go.mod/go.sum; frontend dependencies
+are recorded in web/package.json and web/package-lock.json. The WhatsApp client
+library whatsmeow is licensed under MPL-2.0; its upstream source remains available
+at https://github.com/tulir/whatsmeow. Third-party source is not relicensed by this
+project's Apache-2.0 license.
+
+Wappie is independent and is not affiliated with WhatsApp or Meta.

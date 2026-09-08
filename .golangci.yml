@@ -1,0 +1,50 @@
+version: "2"
+
+linters:
+  enable:
+    # errcheck is the reason this file exists. The v1 server dropped errors
+    # with `_ = c.saveCanonical(...)` in Edit, Revoke and React, so a failed
+    # write returned success to the caller and the message silently vanished
+    # from the archive. There is no blanket nolint here: silencing a specific
+    # error requires an inline comment, at the line, saying why.
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose
+    - rowserrcheck    # rows.Err() after a pgx/sql loop
+    - sqlclosecheck
+    - contextcheck
+    - errorlint
+    - nilerr
+    - noctx
+    - gosec
+    - misspell
+    - unconvert
+    - wastedassign
+
+  settings:
+    misspell:
+      # No locale is set on purpose: the comments here use British spellings
+      # consistently, and pinning a locale would flag every one of them.
+      #
+      # The ignore list is Portuguese. misspell only knows English, and these
+      # are real Portuguese words in test fixtures that collide with English
+      # typos.
+      ignore-rules:
+        - respondendo
+        - efemera
+        - encaminhada
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    staticcheck:
+      checks: ["all"]
+
+  exclusions:
+    rules:
+      # Tests may assert on unchecked calls, embed local dev credentials and
+      # build requests without a context. Production code may not.
+      - path: _test\.go
+        linters: [errcheck, gosec, noctx]

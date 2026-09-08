@@ -1,0 +1,16 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated cryptographic interoperability vectors; these test keys protect no real data"
+paths = [
+ '''internal/crypto/seal/testdata/vectors\.json$''',
+ '''internal/crypto/wamedia/testdata/vectors\.json$''',
+ '''internal/wsapi/testdata/frames\.json$''',
+ '''web/testdata/browser-grant\.json$'''
+]
+
+[[allowlists]]
+description = "Deterministic WhatsApp media test key (byte progression), reused by upload fixture"
+regexTarget = "secret"
+regexes = ['''HyIlKCsuMTQ3Oj1AQ0ZJTE9SVVhbXmFkZ2ptcHN2eXw=''']

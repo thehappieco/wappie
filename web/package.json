@@ -1,0 +1,26 @@
+{
+  "name": "whatserver2-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.3.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.5",
+    "vue-tsc": "^2.2.0",
+    "ws": "^8.21.3"
+  }
+}
