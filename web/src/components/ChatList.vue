@@ -97,6 +97,15 @@ function preview(chat: ChatView): string {
   if (chat.preview) return chat.preview
   return typeLabel(chat.lastType)
 }
+function openConsole() {
+  if (location.hostname === 'app.wappie.thehappie.co') {
+    const url = new URL('https://console.wappie.thehappie.co/')
+    url.searchParams.set('workspace', state.tenantID)
+    location.assign(url.toString())
+    return
+  }
+  state.view = 'admin'
+}
 </script>
 
 <template>
@@ -121,7 +130,7 @@ function preview(chat: ChatView): string {
         <div class="sub">{{ openDevice ? deviceIdentity(openDevice) : '' }}</div>
       </div>
         <QuietSwitch />
-      <button class="icon-btn" title="Aparelhos e chaves" @click="state.view = 'admin'">
+      <button class="icon-btn" title="Aparelhos e chaves" @click="openConsole">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="5" y="2" width="14" height="20" rx="2" />
           <path d="M12 18h.01" />

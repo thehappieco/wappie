@@ -69,6 +69,13 @@ function when(iso: string | undefined): Date | undefined {
 
 /** Read opens the archive of a device this session holds a key for. */
 async function read(device: DeviceInfo) {
+  if (location.hostname === 'console.wappie.thehappie.co') {
+    const url = new URL('https://app.wappie.thehappie.co/')
+    url.searchParams.set('workspace', state.tenantID)
+    url.searchParams.set('device', device.id)
+    location.assign(url.toString())
+    return
+  }
   await selectDevice(device.id)
   emit('read', device.id)
 }

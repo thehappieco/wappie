@@ -70,7 +70,7 @@ Members and service accounts see only currently granted devices in the device di
 | 3 — Device/action permissions | Implemented and tested | Independent administration/read/send permissions for people and integrations, with consistent enforcement across HTTP and WebSocket. |
 | 4 — Console and messaging client | Implemented and tested | Workspace/member/integration administration and workspace selection; identity-only onboarding/recovery when no workspace is active; preserve key isolation. |
 | 5 — Pilot subscriptions | Implemented and tested | Contracted connection capacity and payment simulation. Provider, prices and storage/usage quotas remain undecided. |
-| 6 — Publication and deployment | Published; final checks | Homepage, HTTP/WebSocket documentation, license selection and public repository preparation, then EC2/DNS/TLS for the four product addresses. |
+| 6 — Publication and deployment | Published and verified | Homepage, HTTP/WebSocket documentation, license selection and public repository preparation, then EC2/DNS/TLS for the four product addresses. |
 
 Database tests use isolated test schemas. The official pilot uses a new, independent database on the existing EC2; it does not migrate the other services' databases. DNS/TLS activation is tracked separately from code delivery.
 

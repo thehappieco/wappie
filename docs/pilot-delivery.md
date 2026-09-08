@@ -23,10 +23,11 @@ Two empty workspaces, Piloto A and Piloto B, have two connection slots each. Own
 ## Validation
 
 - Full Go checks with race detection and required PostgreSQL isolation tests.
-- Browser client tests, type checking and production builds for OSS and hosted variants.
+- 395 browser client tests, type checking and production builds for OSS and hosted variants.
 - Separate private billing tests for approval/decline, idempotency, forbidden capacity reduction and unauthenticated requests.
 - Static analysis and reachable-vulnerability scan; secret scan excludes only inspected generated cryptographic fixtures.
-- Running API readiness, unauthorized HTTP rejection, private metrics, and HTTPS responses for product and documentation routes.
+- Running API readiness, unauthorized HTTP/WebSocket rejection, private metrics, and HTTPS responses for product and documentation routes.
+- Successful simulated certificate renewal, including the Nginx reload hook.
 - Initial database/object-storage snapshot on the EC2; database restored into a temporary verification database and checked, then that temporary database removed.
 
 ## Operational boundaries

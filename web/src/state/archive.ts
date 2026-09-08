@@ -771,7 +771,9 @@ async function connect(): Promise<void> {
   // key for looks like an empty account rather than like a missing grant.
   const readable = new Set(open.readable.map((r) => r.deviceID))
   const canOpen = (d: P.DeviceInfo) => open.credential.kind === 'api_key' || readable.has(d.id)
+  const requestedDevice = typeof location === 'undefined' ? '' : new URLSearchParams(location.search).get('device')
   const preferred =
+    state.devices.find((d) => d.id === requestedDevice && canOpen(d)) ??
     state.devices.find((d) => d.id === state.deviceID) ??
     state.devices.find((d) => d.running && canOpen(d)) ??
     state.devices.find(canOpen) ??
