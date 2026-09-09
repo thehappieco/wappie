@@ -751,8 +751,10 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 				return err
 			}
 		}
-		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id,family_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(s.PasskeyID), s.FamilyID).Scan(&s.ID)
+		// Return the timestamp actually stored: PostgreSQL preserves microseconds,
+		// while the sign-in clock may supply finer precision.
+		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id,family_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, expires_at`,
+			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(s.PasskeyID), s.FamilyID).Scan(&s.ID, &s.ExpiresAt)
 	})
 	if err != nil {
 		return "", Session{}, fmt.Errorf("store: start session: %w", err)
