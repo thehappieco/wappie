@@ -120,7 +120,7 @@ func frameAction(kind string) store.DeviceAction {
 	switch kind {
 	case TypeSend, TypeSendMedia, TypeEdit, TypeRevoke, TypeReact, TypePollVote, TypeMarkRead, TypeChatTyping, TypeChatTimer:
 		return store.ActionSend
-	case TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke:
+	case TypeDeviceStart, TypeDeviceRename, TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke:
 		return store.ActionManage
 	case TypeDeviceInfo:
 		return store.ActionView

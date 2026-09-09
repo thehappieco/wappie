@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed } from 'vue'
 
 import type { Marks } from '../state/archive'
@@ -76,8 +77,8 @@ function setTimer(value: string) {
         @change="toggleForwarded(($event.target as HTMLInputElement).checked)"
       />
       <span>
-        <b>Encaminhada</b>
-        <em>o destinatário vê o rótulo "encaminhada" acima da mensagem</em>
+        <b>{{ t('Encaminhada') }}</b>
+        <em>{{ t('o destinatário vê o rótulo "encaminhada" acima da mensagem') }}</em>
       </span>
     </label>
 
@@ -89,8 +90,8 @@ function setTimer(value: string) {
         @change="toggleMany(($event.target as HTMLInputElement).checked)"
       />
       <span>
-        <b>Encaminhada muitas vezes</b>
-        <em>a partir de cinco repasses o WhatsApp troca o rótulo e restringe o reenvio</em>
+        <b>{{ t('Encaminhada muitas vezes') }}</b>
+        <em>{{ t('a partir de cinco repasses o WhatsApp troca o rótulo e restringe o reenvio') }}</em>
       </span>
     </label>
 
@@ -105,18 +106,16 @@ function setTimer(value: string) {
         :value="timer"
         @change="setTimer(($event.target as HTMLSelectElement).value)"
       >
-        <option value="">como a conversa ({{ timerLabel(chatTimer) }})</option>
+        <option value="">{{ t('como a conversa ({v0})', { v0: timerLabel(chatTimer) }) }}</option>
         <option v-for="seconds in offered" :key="seconds" :value="String(seconds)">
           {{ timerLabel(seconds) }}
         </option>
       </select>
       <span>
-        <b>Prazo desta mensagem</b>
-        <em v-if="marks.expiration === undefined">segue o temporizador da conversa</em>
-        <em v-else-if="marks.expiration === 0">
-          não expira, mesmo com a conversa temporária
-        </em>
-        <em v-else>some do aparelho do destinatário depois desse prazo — mas fica no arquivo</em>
+        <b>{{ t('Prazo desta mensagem') }}</b>
+        <em v-if="marks.expiration === undefined">{{ t('segue o temporizador da conversa') }}</em>
+        <em v-else-if="marks.expiration === 0"> {{ t('não expira, mesmo com a conversa temporária') }} </em>
+        <em v-else>{{ t('some do aparelho do destinatário depois desse prazo — mas fica no histórico') }}</em>
       </span>
     </label>
 
@@ -128,10 +127,10 @@ function setTimer(value: string) {
         @change="set({ viewOnce: ($event.target as HTMLInputElement).checked })"
       />
       <span>
-        <b>Ver uma vez</b>
-        <em v-if="canViewOnce">some da conversa do destinatário depois de aberta — mas fica no arquivo</em>
-        <em v-else-if="!forMedia">só existe para anexos; em texto o WhatsApp mostra um erro</em>
-        <em v-else>este tipo de anexo não carrega a marcação de forma confiável</em>
+        <b>{{ t('Ver uma vez') }}</b>
+        <em v-if="canViewOnce">{{ t('some da conversa do destinatário depois de aberta — mas fica no histórico') }}</em>
+        <em v-else-if="!forMedia">{{ t('só existe para anexos; em texto o WhatsApp mostra um erro') }}</em>
+        <em v-else>{{ t('este tipo de anexo não carrega a marcação de forma confiável') }}</em>
       </span>
     </label>
   </div>

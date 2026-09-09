@@ -55,6 +55,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/logout", h.logout)
 	mux.HandleFunc("GET /v1/auth/me", h.me)
 	mux.HandleFunc("GET /v1/auth/workspaces", h.workspaces)
+	mux.HandleFunc("PUT /v1/auth/workspaces/current", h.updateWorkspace)
 	mux.HandleFunc("GET /v1/auth/workspaces/capacity", h.capacity)
 	mux.HandleFunc("GET /v1/auth/workspaces/devices/{deviceID}/permissions", h.permissions)
 	mux.HandleFunc("PUT /v1/auth/workspaces/devices/{deviceID}/permissions", h.permissions)

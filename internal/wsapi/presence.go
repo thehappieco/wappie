@@ -89,6 +89,6 @@ func (s *session) handleDeviceMode(ctx context.Context, f Frame) {
 		return
 	}
 	s.reply(TypeDeviceDetail, f.ReqID, DeviceDetail{
-		Device: s.toDeviceInfo(dev), Epoch: dev.Epoch,
+		Device: s.toDeviceInfo(ctx, dev), Epoch: dev.Epoch,
 	})
 }

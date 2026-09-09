@@ -1,0 +1,1586 @@
+{
+  "(você)": [
+    "(you)",
+    "(tú)",
+    "(vous)",
+    "(Sie)"
+  ],
+  "1 pessoa respondeu": [
+    "1 person responded",
+    "1 persona respondió",
+    "1 personne a répondu",
+    "1 Person hat geantwortet"
+  ],
+  "1 vídeo": [
+    "1 video",
+    "1 vídeo",
+    "1 vidéo",
+    "1 Video"
+  ],
+  "A cópia arquivada continuará disponível.": [
+    "The saved copy will remain available.",
+    "La copia guardada seguirá disponible.",
+    "La copie enregistrée restera disponible.",
+    "Die gespeicherte Kopie bleibt verfügbar."
+  ],
+  "A transmissão teve uma lacuna e a conversa foi recarregada do histórico.": [
+    "Some events were missed, so the conversation was reloaded from history.",
+    "Faltaron algunos eventos y se recargó la conversación desde el historial.",
+    "Des événements ont été manqués ; la conversation a été rechargée depuis l’historique.",
+    "Einige Ereignisse fehlten. Das Gespräch wurde aus dem Verlauf neu geladen."
+  ],
+  "A url expirou antes do arquivo chegar.": [
+    "The URL expired before the file arrived.",
+    "La URL caducó antes de que llegara el archivo.",
+    "L’URL a expiré avant l’arrivée du fichier.",
+    "Die URL ist vor dem Eintreffen der Datei abgelaufen."
+  ],
+  "A url expirou antes do arquivo chegar. Só o remetente pode reenviar.": [
+    "The URL expired before the file arrived. Only the sender can resend it.",
+    "La URL caducó antes de que llegara el archivo. Solo quien lo envió puede reenviarlo.",
+    "L’URL a expiré avant l’arrivée du fichier. Seul l’expéditeur peut le renvoyer.",
+    "Die URL ist vor dem Eintreffen der Datei abgelaufen. Nur der Absender kann sie erneut senden."
+  ],
+  "Abrindo a conversa…": [
+    "Opening conversation…",
+    "Abriendo la conversación…",
+    "Ouverture de la conversation…",
+    "Gespräch wird geöffnet…"
+  ],
+  "Abrindo suas conversas…": [
+    "Opening your conversations…",
+    "Abriendo tus conversaciones…",
+    "Ouverture de vos conversations…",
+    "Ihre Gespräche werden geöffnet…"
+  ],
+  "Abrir console de gestão": [
+    "Open management console",
+    "Abrir consola de gestión",
+    "Ouvrir la console de gestion",
+    "Verwaltungskonsole öffnen"
+  ],
+  "Aguardando a conexão para trocar de dispositivo…": [
+    "Waiting for a connection to switch devices…",
+    "Esperando conexión para cambiar de dispositivo…",
+    "En attente de connexion pour changer d’appareil…",
+    "Warten auf eine Verbindung zum Gerätewechsel…"
+  ],
+  "Ainda no servidor: {v0}.": [
+    "Still on the server: {v0}.",
+    "Aún en el servidor: {v0}.",
+    "Encore sur le serveur : {v0}.",
+    "Noch auf dem Server: {v0}."
+  ],
+  "Anexar um arquivo": [
+    "Attach a file",
+    "Adjuntar un archivo",
+    "Joindre un fichier",
+    "Datei anhängen"
+  ],
+  "Apagada": [
+    "Deleted",
+    "Eliminada",
+    "Supprimé",
+    "Gelöscht"
+  ],
+  "Apagada por quem enviou": [
+    "Deleted by the sender",
+    "Eliminada por quien la envió",
+    "Supprimé par l’expéditeur",
+    "Vom Absender gelöscht"
+  ],
+  "Apagada por um administrador do grupo": [
+    "Deleted by a group administrator",
+    "Eliminada por un administrador del grupo",
+    "Supprimé par un administrateur du groupe",
+    "Von einem Gruppenadministrator gelöscht"
+  ],
+  "Apagar esta mensagem para todos?": [
+    "Delete this message for everyone?",
+    "¿Eliminar este mensaje para todos?",
+    "Supprimer ce message pour tout le monde ?",
+    "Diese Nachricht für alle löschen?"
+  ],
+  "Apagar para todos": [
+    "Delete for everyone",
+    "Eliminar para todos",
+    "Supprimer pour tout le monde",
+    "Für alle löschen"
+  ],
+  "Aparência": [
+    "Appearance",
+    "Apariencia",
+    "Apparence",
+    "Darstellung"
+  ],
+  "Aparência e idioma": [
+    "Appearance and language",
+    "Apariencia e idioma",
+    "Apparence et langue",
+    "Darstellung und Sprache"
+  ],
+  "Ações da mensagem": [
+    "Message actions",
+    "Acciones del mensaje",
+    "Actions du message",
+    "Nachrichtenaktionen"
+  ],
+  "Buscar conversa": [
+    "Search conversations",
+    "Buscar conversación",
+    "Rechercher une conversation",
+    "Gespräche suchen"
+  ],
+  "Cada versão é uma mensagem própria no WhatsApp e junta os próprios recibos, então tudo aqui é sobre este texto e não sobre a mensagem. Uma edição volta a marcar a mensagem como não lida, e quem lê de novo confirma o id da edição — por isso \"lido\" costuma vir confirmado, e só aparece como deduzido quando o recibo é de um aparelho seu.": [
+    "Each version is a separate WhatsApp message with its own receipts, so these details describe this version. Editing marks a message as unread again; reading it confirms the edit’s ID. Read status is usually confirmed directly, and is only inferred when the receipt comes from one of your own devices.",
+    "Cada versión es un mensaje independiente en WhatsApp con sus propias confirmaciones; estos datos corresponden a esta versión. Una edición vuelve a marcar el mensaje como no leído, y al leerlo se confirma el ID de la edición. La lectura suele confirmarse directamente y solo se deduce cuando la confirmación proviene de uno de tus dispositivos.",
+    "Chaque version est un message WhatsApp distinct avec ses propres accusés ; ces détails concernent donc cette version. Une modification marque à nouveau le message comme non lu, et sa lecture confirme l’identifiant de la modification. La lecture est généralement confirmée directement et n’est déduite que si l’accusé provient d’un de vos appareils.",
+    "Jede Version ist eine eigene WhatsApp-Nachricht mit eigenen Bestätigungen. Diese Angaben beziehen sich daher auf diese Version. Eine Bearbeitung markiert die Nachricht erneut als ungelesen; beim Lesen wird die ID der Bearbeitung bestätigt. Der Lesestatus wird meist direkt bestätigt und nur abgeleitet, wenn die Bestätigung von einem Ihrer eigenen Geräte stammt."
+  ],
+  "Cancelar anexo": [
+    "Cancel attachment",
+    "Cancelar adjunto",
+    "Annuler la pièce jointe",
+    "Anhang abbrechen"
+  ],
+  "Cancelar edição": [
+    "Cancel editing",
+    "Cancelar edición",
+    "Annuler la modification",
+    "Bearbeitung abbrechen"
+  ],
+  "Cancelar resposta": [
+    "Cancel reply",
+    "Cancelar respuesta",
+    "Annuler la réponse",
+    "Antwort abbrechen"
+  ],
+  "Carregar mensagens anteriores": [
+    "Load earlier messages",
+    "Cargar mensajes anteriores",
+    "Charger les messages précédents",
+    "Ältere Nachrichten laden"
+  ],
+  "Clique em uma mensagem para ver a história dela.": [
+    "Open a message’s information to see its history.",
+    "Abre la información de un mensaje para ver su historial.",
+    "Ouvrez les informations d’un message pour voir son historique.",
+    "Öffnen Sie die Informationen einer Nachricht, um ihren Verlauf zu sehen."
+  ],
+  "Conversa": [
+    "Conversation",
+    "Conversación",
+    "Conversation",
+    "Gespräch"
+  ],
+  "Convite para um grupo": [
+    "Group invitation",
+    "Invitación a un grupo",
+    "Invitation à un groupe",
+    "Gruppeneinladung"
+  ],
+  "Copiar texto": [
+    "Copy text",
+    "Copiar texto",
+    "Copier le texte",
+    "Text kopieren"
+  ],
+  "Da última vez que o aparelho conseguiu perguntar. Ele não está conectado agora.": [
+    "From the last successful check. The device is currently disconnected.",
+    "Datos de la última consulta correcta. El dispositivo está desconectado ahora.",
+    "Données de la dernière vérification réussie. L’appareil est actuellement déconnecté.",
+    "Stand der letzten erfolgreichen Abfrage. Das Gerät ist derzeit nicht verbunden."
+  ],
+  "Descartar gravação": [
+    "Discard recording",
+    "Descartar grabación",
+    "Supprimer l’enregistrement",
+    "Aufnahme verwerfen"
+  ],
+  "Deslize →": [
+    "Swipe →",
+    "Desliza →",
+    "Balayez →",
+    "Wischen →"
+  ],
+  "Detalhes desta mensagem": [
+    "Message details",
+    "Detalles de este mensaje",
+    "Détails de ce message",
+    "Nachrichtendetails"
+  ],
+  "Dispositivo acompanha a aparência do seu sistema.": [
+    "Device follows your system’s appearance setting.",
+    "Dispositivo sigue la apariencia de tu sistema.",
+    "Appareil suit le réglage d’apparence de votre système.",
+    "Gerät übernimmt die Darstellung Ihres Systems."
+  ],
+  "Dá para mandar como áudio.": [
+    "You can send it as an audio file.",
+    "Puedes enviarlo como archivo de audio.",
+    "Vous pouvez l’envoyer comme fichier audio.",
+    "Sie können sie als Audiodatei senden."
+  ],
+  "Editando uma mensagem enviada": [
+    "Editing a sent message",
+    "Editando un mensaje enviado",
+    "Modification d’un message envoyé",
+    "Gesendete Nachricht bearbeiten"
+  ],
+  "Editar": [
+    "Edit",
+    "Editar",
+    "Modifier",
+    "Bearbeiten"
+  ],
+  "Encaminhada": [
+    "Forwarded",
+    "Reenviado",
+    "Transféré",
+    "Weitergeleitet"
+  ],
+  "Encaminhada muitas vezes": [
+    "Forwarded many times",
+    "Reenviado muchas veces",
+    "Transféré de nombreuses fois",
+    "Häufig weitergeleitet"
+  ],
+  "Enviada, mas não entrou no histórico.": [
+    "Sent, but not saved to history.",
+    "Enviado, pero no se guardó en el historial.",
+    "Envoyé, mais pas enregistré dans l’historique.",
+    "Gesendet, aber nicht im Verlauf gespeichert."
+  ],
+  "Enviar mensagem": [
+    "Send message",
+    "Enviar mensaje",
+    "Envoyer le message",
+    "Nachricht senden"
+  ],
+  "Escolha qual WhatsApp abrir neste espaço.": [
+    "Choose which WhatsApp number to open in this workspace.",
+    "Elige qué número de WhatsApp abrir en este espacio de trabajo.",
+    "Choisissez le numéro WhatsApp à ouvrir dans cet espace de travail.",
+    "Wählen Sie die WhatsApp-Nummer, die Sie in diesem Arbeitsbereich öffnen möchten."
+  ],
+  "Escolha uma conversa para começar. As ações da mensagem incluem resposta, reações e informações.": [
+    "Choose a conversation to get started. Message actions include replies, reactions, and information.",
+    "Elige una conversación para empezar. Las acciones del mensaje incluyen respuestas, reacciones e información.",
+    "Choisissez une conversation pour commencer. Les actions du message comprennent les réponses, les réactions et les informations.",
+    "Wählen Sie ein Gespräch aus. Zu den Nachrichtenaktionen gehören Antworten, Reaktionen und Informationen."
+  ],
+  "Escreva uma mensagem": [
+    "Write a message",
+    "Escribe un mensaje",
+    "Écrivez un message",
+    "Nachricht schreiben"
+  ],
+  "Este aparelho não está conectado ao WhatsApp agora.": [
+    "This device is not currently connected to WhatsApp.",
+    "Este dispositivo no está conectado a WhatsApp ahora.",
+    "Cet appareil n’est pas connecté à WhatsApp actuellement.",
+    "Dieses Gerät ist derzeit nicht mit WhatsApp verbunden."
+  ],
+  "Este navegador grava em um formato que o WhatsApp não usa para mensagem de voz. ": [
+    "This browser records in a format WhatsApp does not support for voice messages. ",
+    "Este navegador graba en un formato que WhatsApp no admite para mensajes de voz. ",
+    "Ce navigateur enregistre dans un format que WhatsApp ne prend pas en charge pour les messages vocaux. ",
+    "Dieser Browser zeichnet in einem Format auf, das WhatsApp für Sprachnachrichten nicht unterstützt. "
+  ],
+  "Fechar ações": [
+    "Close actions",
+    "Cerrar acciones",
+    "Fermer les actions",
+    "Aktionen schließen"
+  ],
+  "Fechar dispositivos": [
+    "Close devices",
+    "Cerrar dispositivos",
+    "Fermer les appareils",
+    "Geräte schließen"
+  ],
+  "Gravar uma mensagem de voz": [
+    "Record a voice message",
+    "Grabar un mensaje de voz",
+    "Enregistrer un message vocal",
+    "Sprachnachricht aufnehmen"
+  ],
+  "Grupo": [
+    "Group",
+    "Grupo",
+    "Groupe",
+    "Gruppe"
+  ],
+  "Idioma": [
+    "Language",
+    "Idioma",
+    "Langue",
+    "Sprache"
+  ],
+  "Incógnito": [
+    "Incognito",
+    "Incógnito",
+    "Navigation discrète",
+    "Inkognito"
+  ],
+  "Info da mensagem": [
+    "Message info",
+    "Info. del mensaje",
+    "Infos du message",
+    "Nachrichteninfo"
+  ],
+  "Lendo o arquivo…": [
+    "Reading the file…",
+    "Leyendo el archivo…",
+    "Lecture du fichier…",
+    "Datei wird gelesen…"
+  ],
+  "Localização": [
+    "Location",
+    "Ubicación",
+    "Localisation",
+    "Standort"
+  ],
+  "Localização em tempo real": [
+    "Live location",
+    "Ubicación en tiempo real",
+    "Localisation en direct",
+    "Live-Standort"
+  ],
+  "Mensagem temporária": [
+    "Disappearing message",
+    "Mensaje temporal",
+    "Message éphémère",
+    "Selbstlöschende Nachricht"
+  ],
+  "Mensagens temporárias": [
+    "Disappearing messages",
+    "Mensajes temporales",
+    "Messages éphémères",
+    "Selbstlöschende Nachrichten"
+  ],
+  "Mensagens temporárias: ": [
+    "Disappearing messages: ",
+    "Mensajes temporales: ",
+    "Messages éphémères : ",
+    "Selbstlöschende Nachrichten: "
+  ],
+  "Metadados": [
+    "Metadata",
+    "Metadatos",
+    "Métadonnées",
+    "Metadaten"
+  ],
+  "Modo incógnito": [
+    "Incognito mode",
+    "Modo incógnito",
+    "Mode discret",
+    "Inkognitomodus"
+  ],
+  "Modo incógnito ativado": [
+    "Incognito mode on",
+    "Modo incógnito activado",
+    "Mode discret activé",
+    "Inkognitomodus aktiviert"
+  ],
+  "Modo incógnito desativado": [
+    "Incognito mode off",
+    "Modo incógnito desactivado",
+    "Mode discret désactivé",
+    "Inkognitomodus deaktiviert"
+  ],
+  "Modo incógnito: mantém os indicadores de mensagens não lidas, não envia confirmações de leitura nem mostra que você está digitando. Você também não vê quem está digitando. Clique para desativar.": [
+    "Incognito mode: keeps unread badges, sends no read receipts, and hides your typing status. You also cannot see who is typing. Click to turn off.",
+    "Modo incógnito: conserva los indicadores de mensajes no leídos, no envía confirmaciones de lectura ni muestra que estás escribiendo. Tampoco ves quién está escribiendo. Haz clic para desactivarlo.",
+    "Mode discret : conserve les indicateurs de messages non lus, n’envoie pas de confirmations de lecture et masque votre saisie. Vous ne voyez pas non plus qui écrit. Cliquez pour le désactiver.",
+    "Inkognitomodus: Behält Ungelesen-Markierungen bei, sendet keine Lesebestätigungen und verbirgt Ihren Tippstatus. Sie sehen ebenfalls nicht, wer gerade schreibt. Zum Deaktivieren klicken."
+  ],
+  "Modo normal: envia confirmações de leitura e mostra que você está online ou digitando. Clique para ativar o modo incógnito.": [
+    "Normal mode: sends read receipts and shows when you are online or typing. Click to enable incognito mode.",
+    "Modo normal: envía confirmaciones de lectura y muestra si estás en línea o escribiendo. Haz clic para activar el modo incógnito.",
+    "Mode normal : envoie des confirmations de lecture et indique si vous êtes en ligne ou en train d’écrire. Cliquez pour activer le mode discret.",
+    "Normaler Modus: Sendet Lesebestätigungen und zeigt an, wenn Sie online sind oder schreiben. Zum Aktivieren des Inkognitomodus klicken."
+  ],
+  "Montando a história desta mensagem…": [
+    "Loading this message’s history…",
+    "Cargando el historial de este mensaje…",
+    "Chargement de l’historique de ce message…",
+    "Nachrichtenverlauf wird geladen…"
+  ],
+  "Nada arquivado nesta conversa": [
+    "Nothing saved in this conversation",
+    "No hay nada guardado en esta conversación",
+    "Rien d’enregistré dans cette conversation",
+    "In diesem Gespräch ist nichts gespeichert"
+  ],
+  "Nada com esse nome.": [
+    "No matching name.",
+    "No hay coincidencias con ese nombre.",
+    "Aucun nom correspondant.",
+    "Kein passender Name gefunden."
+  ],
+  "Nada registrado ainda.": [
+    "Nothing recorded yet.",
+    "Aún no hay registros.",
+    "Rien d’enregistré pour le moment.",
+    "Noch keine Einträge vorhanden."
+  ],
+  "Nada sobre este grupo ainda.": [
+    "No group information yet.",
+    "Aún no hay información sobre este grupo.",
+    "Aucune information sur ce groupe pour le moment.",
+    "Noch keine Informationen zu dieser Gruppe."
+  ],
+  "Nenhum dispositivo": [
+    "No devices",
+    "Ningún dispositivo",
+    "Aucun appareil",
+    "Keine Geräte"
+  ],
+  "Nenhum recibo arquivado para esta mensagem. Em modo discreto o aparelho não devolve recibos, e o que os outros mandam só chega enquanto ele está ligado.": [
+    "No receipts saved for this message. In incognito mode the device sends no receipts, and incoming receipts arrive only while it is running.",
+    "No hay confirmaciones guardadas para este mensaje. En modo incógnito el dispositivo no envía confirmaciones y las de otros solo llegan mientras está en funcionamiento.",
+    "Aucun accusé enregistré pour ce message. En mode discret, l’appareil n’envoie pas d’accusés et ne reçoit ceux des autres que lorsqu’il fonctionne.",
+    "Keine Bestätigungen für diese Nachricht gespeichert. Im Inkognitomodus sendet das Gerät keine Bestätigungen. Eingehende Bestätigungen treffen nur ein, solange es läuft."
+  ],
+  "Nenhum recibo arquivado. Em modo discreto o aparelho não devolve recibos, e o que os outros mandam só chega enquanto ele está ligado.": [
+    "No receipts saved. In incognito mode the device sends no receipts, and incoming receipts arrive only while it is running.",
+    "No hay confirmaciones guardadas. En modo incógnito el dispositivo no envía confirmaciones y las de otros solo llegan mientras está en funcionamiento.",
+    "Aucun accusé enregistré. En mode discret, l’appareil n’envoie pas d’accusés et ne reçoit ceux des autres que lorsqu’il fonctionne.",
+    "Keine Bestätigungen gespeichert. Im Inkognitomodus sendet das Gerät keine Bestätigungen. Eingehende Bestätigungen treffen nur ein, solange es läuft."
+  ],
+  "Nenhuma conversa neste aparelho.": [
+    "No conversations on this device.",
+    "No hay conversaciones en este dispositivo.",
+    "Aucune conversation sur cet appareil.",
+    "Keine Gespräche auf diesem Gerät."
+  ],
+  "Ninguém confirmou ter recebido esta versão.": [
+    "No one has confirmed receiving this version.",
+    "Nadie ha confirmado haber recibido esta versión.",
+    "Personne n’a confirmé avoir reçu cette version.",
+    "Niemand hat den Empfang dieser Version bestätigt."
+  ],
+  "Ninguém leu esta versão.": [
+    "No one has read this version.",
+    "Nadie ha leído esta versión.",
+    "Personne n’a lu cette version.",
+    "Niemand hat diese Version gelesen."
+  ],
+  "Ninguém tocou esta versão.": [
+    "No one has played this version.",
+    "Nadie ha reproducido esta versión.",
+    "Personne n’a écouté cette version.",
+    "Niemand hat diese Version abgespielt."
+  ],
+  "Nunca editada.": [
+    "Never edited.",
+    "Nunca se ha editado.",
+    "Jamais modifié.",
+    "Nie bearbeitet."
+  ],
+  "Não deu para conectar": [
+    "Could not connect",
+    "No se pudo conectar",
+    "Connexion impossible",
+    "Verbindung nicht möglich"
+  ],
+  "Não foi possível abrir este dispositivo. Tente novamente.": [
+    "Could not open this device. Try again.",
+    "No se pudo abrir este dispositivo. Inténtalo de nuevo.",
+    "Impossible d’ouvrir cet appareil. Réessayez.",
+    "Dieses Gerät konnte nicht geöffnet werden. Versuchen Sie es erneut."
+  ],
+  "Não foi possível copiar. Use Selecionar texto.": [
+    "Could not copy. Use Select text.",
+    "No se pudo copiar. Usa Seleccionar texto.",
+    "Copie impossible. Utilisez Sélectionner le texte.",
+    "Kopieren nicht möglich. Verwenden Sie Text auswählen."
+  ],
+  "O aparelho pode não ter enviado o histórico dela ainda.": [
+    "The device may not have sent its history yet.",
+    "Puede que el dispositivo aún no haya enviado su historial.",
+    "L’appareil n’a peut-être pas encore envoyé son historique.",
+    "Das Gerät hat den Verlauf möglicherweise noch nicht gesendet."
+  ],
+  "O conteúdo continua acima. O WhatsApp removeu a mensagem; o histórico não.": [
+    "The content remains above. WhatsApp removed the message, but it remains in history.",
+    "El contenido sigue arriba. WhatsApp eliminó el mensaje, pero sigue en el historial.",
+    "Le contenu reste affiché ci-dessus. WhatsApp a supprimé le message, mais il reste dans l’historique.",
+    "Der Inhalt bleibt oben sichtbar. WhatsApp hat die Nachricht entfernt, sie bleibt jedoch im Verlauf."
+  ],
+  "O navegador não liberou o microfone para esta página.": [
+    "The browser did not allow this page to use the microphone.",
+    "El navegador no permitió que esta página usara el micrófono.",
+    "Le navigateur n’a pas autorisé cette page à utiliser le microphone.",
+    "Der Browser hat dieser Seite keinen Mikrofonzugriff erlaubt."
+  ],
+  "O que o WhatsApp esconde": [
+    "What WhatsApp hides",
+    "Lo que WhatsApp oculta",
+    "Ce que WhatsApp masque",
+    "Was WhatsApp verbirgt"
+  ],
+  "O servidor enviou a mensagem mas não conseguiu arquivá-la.": [
+    "The server sent the message but could not save it to history.",
+    "El servidor envió el mensaje pero no pudo guardarlo en el historial.",
+    "Le serveur a envoyé le message mais n’a pas pu l’enregistrer dans l’historique.",
+    "Der Server hat die Nachricht gesendet, konnte sie aber nicht im Verlauf speichern."
+  ],
+  "Parar e anexar gravação": [
+    "Stop and attach recording",
+    "Detener y adjuntar grabación",
+    "Arrêter et joindre l’enregistrement",
+    "Aufnahme beenden und anhängen"
+  ],
+  "Participantes ({v0})": [
+    "Participants ({v0})",
+    "Participantes ({v0})",
+    "Participants ({v0})",
+    "Teilnehmer ({v0})"
+  ],
+  "Participantes e histórico do grupo": [
+    "Group participants and history",
+    "Participantes e historial del grupo",
+    "Participants et historique du groupe",
+    "Gruppenteilnehmer und Verlauf"
+  ],
+  "Perguntando ao WhatsApp…": [
+    "Checking with WhatsApp…",
+    "Consultando WhatsApp…",
+    "Vérification auprès de WhatsApp…",
+    "WhatsApp wird abgefragt…"
+  ],
+  "Prazo desta mensagem": [
+    "Message expiration",
+    "Caducidad de este mensaje",
+    "Expiration de ce message",
+    "Ablauf dieser Nachricht"
+  ],
+  "Preparando uma conexão segura.": [
+    "Preparing a secure connection.",
+    "Preparando una conexión segura.",
+    "Préparation d’une connexion sécurisée.",
+    "Eine sichere Verbindung wird vorbereitet."
+  ],
+  "Quem recebeu e leu": [
+    "Delivery and read receipts",
+    "Quién recibió y leyó",
+    "Réception et lecture",
+    "Empfangs- und Lesebestätigungen"
+  ],
+  "Reagir com {v0}": [
+    "React with {v0}",
+    "Reaccionar con {v0}",
+    "Réagir avec {v0}",
+    "Mit {v0} reagieren"
+  ],
+  "Reações ({v0})": [
+    "Reactions ({v0})",
+    "Reacciones ({v0})",
+    "Réactions ({v0})",
+    "Reaktionen ({v0})"
+  ],
+  "Reações rápidas": [
+    "Quick reactions",
+    "Reacciones rápidas",
+    "Réactions rapides",
+    "Schnelle Reaktionen"
+  ],
+  "Reconectando em {v0}s": [
+    "Reconnecting in {v0}s",
+    "Reconectando en {v0}s",
+    "Reconnexion dans {v0}s",
+    "Erneute Verbindung in {v0}s"
+  ],
+  "Reconectando…": [
+    "Reconnecting…",
+    "Reconectando…",
+    "Reconnexion…",
+    "Verbindung wird wiederhergestellt…"
+  ],
+  "Registrado a partir de {v0}. O WhatsApp não entrega o que aconteceu antes disso, e este histórico não inventa.": [
+    "Recorded since {v0}. WhatsApp does not provide earlier events, so they are not included in this history.",
+    "Registrado desde {v0}. WhatsApp no proporciona eventos anteriores, por lo que no se incluyen en este historial.",
+    "Enregistré depuis {v0}. WhatsApp ne fournit pas les événements antérieurs ; ils ne figurent donc pas dans cet historique.",
+    "Aufgezeichnet seit {v0}. WhatsApp liefert keine früheren Ereignisse. Diese sind daher nicht im Verlauf enthalten."
+  ],
+  "Remover reação {v0}": [
+    "Remove {v0} reaction",
+    "Quitar reacción {v0}",
+    "Retirer la réaction {v0}",
+    "Reaktion {v0} entfernen"
+  ],
+  "Responder": [
+    "Reply",
+    "Responder",
+    "Répondre",
+    "Antworten"
+  ],
+  "Revisão {v0}": [
+    "Revision {v0}",
+    "Revisión {v0}",
+    "Révision {v0}",
+    "Version {v0}"
+  ],
+  "Sair": [
+    "Sign out",
+    "Cerrar sesión",
+    "Se déconnecter",
+    "Abmelden"
+  ],
+  "Salvar edição": [
+    "Save changes",
+    "Guardar edición",
+    "Enregistrer la modification",
+    "Änderung speichern"
+  ],
+  "Selecionar dispositivo": [
+    "Select device",
+    "Seleccionar dispositivo",
+    "Choisir un appareil",
+    "Gerät auswählen"
+  ],
+  "Selecionar texto": [
+    "Select text",
+    "Seleccionar texto",
+    "Sélectionner le texte",
+    "Text auswählen"
+  ],
+  "Sem acesso às mensagens": [
+    "No access to messages",
+    "Sin acceso a los mensajes",
+    "Pas d’accès aux messages",
+    "Kein Zugriff auf Nachrichten"
+  ],
+  "Sem conexão com o servidor.": [
+    "Not connected to the server.",
+    "Sin conexión con el servidor.",
+    "Pas de connexion au serveur.",
+    "Keine Verbindung zum Server."
+  ],
+  "Seus dispositivos": [
+    "Your devices",
+    "Tus dispositivos",
+    "Vos appareils",
+    "Ihre Geräte"
+  ],
+  "Seus outros aparelhos": [
+    "Your other devices",
+    "Tus otros dispositivos",
+    "Vos autres appareils",
+    "Ihre anderen Geräte"
+  ],
+  "Solte para anexar": [
+    "Drop to attach",
+    "Suelta para adjuntar",
+    "Déposez pour joindre",
+    "Zum Anhängen ablegen"
+  ],
+  "Status": [
+    "Status",
+    "Estado",
+    "Statut",
+    "Status"
+  ],
+  "Sua conta não tem a chave deste aparelho, então o conteúdo continua selado. Quem tem acesso a ele precisa conceder o seu.": [
+    "Your account does not have this device’s key, so the content remains encrypted. Someone with access must grant it to you.",
+    "Tu cuenta no tiene la clave de este dispositivo, por lo que el contenido sigue cifrado. Alguien con acceso debe concedértelo.",
+    "Votre compte n’a pas la clé de cet appareil ; le contenu reste donc chiffré. Une personne ayant accès doit vous l’accorder.",
+    "Ihr Konto besitzt den Schlüssel dieses Geräts nicht. Der Inhalt bleibt daher verschlüsselt. Jemand mit Zugriff muss ihn Ihnen gewähren."
+  ],
+  "Sua conta não tem a chave deste aparelho.": [
+    "Your account does not have this device’s key.",
+    "Tu cuenta no tiene la clave de este dispositivo.",
+    "Votre compte n’a pas la clé de cet appareil.",
+    "Ihr Konto besitzt den Schlüssel dieses Geräts nicht."
+  ],
+  "Temporária, prazo de {v0}": [
+    "Disappearing message, expires after {v0}",
+    "Mensaje temporal, caduca después de {v0}",
+    "Message éphémère, expiration après {v0}",
+    "Selbstlöschende Nachricht, Ablauf nach {v0}"
+  ],
+  "Tirar o anexo": [
+    "Remove attachment",
+    "Quitar adjunto",
+    "Retirer la pièce jointe",
+    "Anhang entfernen"
+  ],
+  "Ver uma vez": [
+    "View once",
+    "Ver una vez",
+    "Vue unique",
+    "Einmalansicht"
+  ],
+  "Versões ({v0})": [
+    "Versions ({v0})",
+    "Versiones ({v0})",
+    "Versions ({v0})",
+    "Versionen ({v0})"
+  ],
+  "Voltar para conversas": [
+    "Back to conversations",
+    "Volver a conversaciones",
+    "Retour aux conversations",
+    "Zurück zu den Gesprächen"
+  ],
+  "a descrição mudou": [
+    "the description changed",
+    "cambió la descripción",
+    "la description a changé",
+    "die Beschreibung wurde geändert"
+  ],
+  "a janela de vinte minutos já passou": [
+    "the twenty-minute window has passed",
+    "ya pasó el plazo de veinte minutos",
+    "le délai de vingt minutes est écoulé",
+    "das Zeitfenster von zwanzig Minuten ist abgelaufen"
+  ],
+  "a partir de cinco repasses o WhatsApp troca o rótulo e restringe o reenvio": [
+    "after five forwards, WhatsApp changes the label and limits further forwarding",
+    "a partir de cinco reenvíos, WhatsApp cambia la etiqueta y limita nuevos reenvíos",
+    "après cinq transferts, WhatsApp change le libellé et limite les transferts suivants",
+    "nach fünf Weiterleitungen ändert WhatsApp die Kennzeichnung und beschränkt weitere Weiterleitungen"
+  ],
+  "abrir conversa": [
+    "open conversation",
+    "abrir conversación",
+    "ouvrir la conversation",
+    "Gespräch öffnen"
+  ],
+  "abrir imagem": [
+    "open image",
+    "abrir imagen",
+    "ouvrir l’image",
+    "Bild öffnen"
+  ],
+  "adicionar ao calendário": [
+    "add to calendar",
+    "añadir al calendario",
+    "ajouter au calendrier",
+    "zum Kalender hinzufügen"
+  ],
+  "admin": [
+    "administrator",
+    "administrador",
+    "administrateur",
+    "Administrator"
+  ],
+  "alguém": [
+    "someone",
+    "alguien",
+    "quelqu’un",
+    "jemand"
+  ],
+  "anexo": [
+    "attachment",
+    "adjunto",
+    "pièce jointe",
+    "Anhang"
+  ],
+  "apagada": [
+    "deleted",
+    "eliminada",
+    "supprimé",
+    "gelöscht"
+  ],
+  "aparelho sem nome": [
+    "unnamed device",
+    "dispositivo sin nombre",
+    "appareil sans nom",
+    "unbenanntes Gerät"
+  ],
+  "aparelho sem número": [
+    "device without a number",
+    "dispositivo sin número",
+    "appareil sans numéro",
+    "Gerät ohne Nummer"
+  ],
+  "arquivo vazio": [
+    "empty file",
+    "archivo vacío",
+    "fichier vide",
+    "leere Datei"
+  ],
+  "as mídias chegam como mensagens próprias": [
+    "media arrives as separate messages",
+    "los archivos multimedia llegan como mensajes independientes",
+    "les médias arrivent sous forme de messages distincts",
+    "Medien werden als eigene Nachrichten empfangen"
+  ],
+  "até {v0}": [
+    "until {v0}",
+    "hasta {v0}",
+    "jusqu’à {v0}",
+    "bis {v0}"
+  ],
+  "até {v0} escolhas": [
+    "up to {v0} choices",
+    "hasta {v0} opciones",
+    "jusqu’à {v0} choix",
+    "bis zu {v0} Auswahlmöglichkeiten"
+  ],
+  "baixar": [
+    "download",
+    "descargar",
+    "télécharger",
+    "herunterladen"
+  ],
+  "baixar .vcf": [
+    "download .vcf",
+    "descargar .vcf",
+    "télécharger .vcf",
+    ".vcf herunterladen"
+  ],
+  "botões oferecidos": [
+    "available buttons",
+    "botones disponibles",
+    "boutons proposés",
+    "angebotene Schaltflächen"
+  ],
+  "cancelado": [
+    "cancelled",
+    "cancelado",
+    "annulé",
+    "abgebrochen"
+  ],
+  "como a conversa ({v0})": [
+    "same as conversation ({v0})",
+    "como la conversación ({v0})",
+    "comme la conversation ({v0})",
+    "wie das Gespräch ({v0})"
+  ],
+  "convite de grupo": [
+    "group invitation",
+    "invitación de grupo",
+    "invitation de groupe",
+    "Gruppeneinladung"
+  ],
+  "criador": [
+    "creator",
+    "creador",
+    "créateur",
+    "Ersteller"
+  ],
+  "deduzido: este aparelho marca a linha inteira pelo id original": [
+    "inferred: this device marks all versions using the original ID",
+    "deducido: este dispositivo marca todas las versiones con el ID original",
+    "déduit : cet appareil marque toutes les versions à partir de l’identifiant d’origine",
+    "abgeleitet: Dieses Gerät markiert alle Versionen anhand der ursprünglichen ID"
+  ],
+  "descartar": [
+    "discard",
+    "descartar",
+    "supprimer",
+    "verwerfen"
+  ],
+  "documento sem nome": [
+    "unnamed document",
+    "documento sin nombre",
+    "document sans nom",
+    "unbenanntes Dokument"
+  ],
+  "editada{v0}": [
+    "edited{v0}",
+    "editada{v0}",
+    "modifié{v0}",
+    "bearbeitet{v0}"
+  ],
+  "em {v0}": [
+    "at {v0}",
+    "en {v0}",
+    "le {v0}",
+    "am {v0}"
+  ],
+  "encaminhada muitas vezes": [
+    "forwarded many times",
+    "reenviado muchas veces",
+    "transféré de nombreuses fois",
+    "häufig weitergeleitet"
+  ],
+  "entrar no grupo": [
+    "join group",
+    "unirse al grupo",
+    "rejoindre le groupe",
+    "Gruppe beitreten"
+  ],
+  "entregue {v0}": [
+    "delivered {v0}",
+    "entregado {v0}",
+    "distribué {v0}",
+    "zugestellt {v0}"
+  ],
+  "enviada em": [
+    "sent at",
+    "enviado el",
+    "envoyé le",
+    "gesendet am"
+  ],
+  "enviada, fora do histórico": [
+    "sent, not in history",
+    "enviado, fuera del historial",
+    "envoyé, absent de l’historique",
+    "gesendet, nicht im Verlauf"
+  ],
+  "enviando {v0}%": [
+    "sending {v0}%",
+    "enviando {v0}%",
+    "envoi {v0}%",
+    "wird gesendet {v0}%"
+  ],
+  "enviando…": [
+    "sending…",
+    "enviando…",
+    "envoi…",
+    "wird gesendet…"
+  ],
+  "esta enquete aceita {v0} {v1}": [
+    "this poll allows {v0} {v1}",
+    "esta encuesta admite {v0} {v1}",
+    "ce sondage autorise {v0} {v1}",
+    "diese Umfrage erlaubt {v0} {v1}"
+  ],
+  "esta enquete aceita {v0} {v1}; desmarque uma antes": [
+    "this poll allows {v0} {v1}; deselect one first",
+    "esta encuesta admite {v0} {v1}; desmarca una antes",
+    "ce sondage autorise {v0} {v1} ; désélectionnez-en d’abord une",
+    "diese Umfrage erlaubt {v0} {v1}; wählen Sie zuerst eine ab"
+  ],
+  "esta mensagem ficou só no celular — o WhatsApp não a entregou aos aparelhos vinculados": [
+    "this message stayed on the phone; WhatsApp did not deliver it to linked devices",
+    "este mensaje se quedó en el teléfono; WhatsApp no lo entregó a los dispositivos vinculados",
+    "ce message est resté sur le téléphone ; WhatsApp ne l’a pas transmis aux appareils liés",
+    "diese Nachricht blieb auf dem Telefon; WhatsApp hat sie nicht an verknüpfte Geräte übermittelt"
+  ],
+  "este tipo de anexo não carrega a marcação de forma confiável": [
+    "this attachment type does not reliably preserve the setting",
+    "este tipo de adjunto no conserva la opción de forma fiable",
+    "ce type de pièce jointe ne conserve pas ce réglage de manière fiable",
+    "dieser Anhangstyp übernimmt die Einstellung nicht zuverlässig"
+  ],
+  "expira em": [
+    "expires at",
+    "caduca el",
+    "expire le",
+    "läuft ab am"
+  ],
+  "expirou em": [
+    "expired at",
+    "caducó el",
+    "a expiré le",
+    "abgelaufen am"
+  ],
+  "gravando áudio": [
+    "recording audio",
+    "grabando audio",
+    "enregistre un audio",
+    "nimmt Audio auf"
+  ],
+  "gravando áudio…": [
+    "recording audio…",
+    "grabando audio…",
+    "enregistrement audio…",
+    "Audioaufnahme…"
+  ],
+  "gravando — o microfone está aberto": [
+    "recording — microphone is on",
+    "grabando — el micrófono está activo",
+    "enregistrement — le microphone est actif",
+    "Aufnahme läuft — Mikrofon ist aktiv"
+  ],
+  "id no WhatsApp": [
+    "WhatsApp ID",
+    "ID en WhatsApp",
+    "identifiant WhatsApp",
+    "WhatsApp-ID"
+  ],
+  "início do histórico de conversas": [
+    "start of conversation history",
+    "inicio del historial de conversaciones",
+    "début de l’historique des conversations",
+    "Beginn des Gesprächsverlaufs"
+  ],
+  "início do registro — {v0}": [
+    "start of records — {v0}",
+    "inicio del registro — {v0}",
+    "début de l’enregistrement — {v0}",
+    "Beginn der Aufzeichnung — {v0}"
+  ],
+  "lida {v0}": [
+    "read {v0}",
+    "leído {v0}",
+    "lu {v0}",
+    "gelesen {v0}"
+  ],
+  "menciona": [
+    "mentions",
+    "menciona",
+    "mentionne",
+    "erwähnt"
+  ],
+  "mensagens temporárias: {v0}": [
+    "disappearing messages: {v0}",
+    "mensajes temporales: {v0}",
+    "messages éphémères : {v0}",
+    "selbstlöschende Nachrichten: {v0}"
+  ],
+  "muitas vezes": [
+    "many times",
+    "muchas veces",
+    "de nombreuses fois",
+    "häufig"
+  ],
+  "nenhum recibo para esta versão": [
+    "no receipts for this version",
+    "no hay confirmaciones para esta versión",
+    "aucun accusé pour cette version",
+    "keine Bestätigungen für diese Version"
+  ],
+  "ninguém ainda": [
+    "no one yet",
+    "nadie todavía",
+    "personne pour le moment",
+    "noch niemand"
+  ],
+  "ninguém respondeu ainda": [
+    "no one has responded yet",
+    "nadie ha respondido aún",
+    "personne n’a encore répondu",
+    "noch niemand hat geantwortet"
+  ],
+  "não deu para votar": [
+    "could not vote",
+    "no se pudo votar",
+    "vote impossible",
+    "Abstimmung nicht möglich"
+  ],
+  "não enviou": [
+    "not sent",
+    "no enviado",
+    "non envoyé",
+    "nicht gesendet"
+  ],
+  "não enviou — {v0}": [
+    "not sent — {v0}",
+    "no enviado — {v0}",
+    "non envoyé — {v0}",
+    "nicht gesendet — {v0}"
+  ],
+  "não expira, mesmo com a conversa temporária": [
+    "does not expire, even if disappearing messages are on",
+    "no caduca, aunque estén activados los mensajes temporales",
+    "n’expire pas, même si les messages éphémères sont activés",
+    "läuft auch bei aktivierten selbstlöschenden Nachrichten nicht ab"
+  ],
+  "não foi possível ler: {v0}": [
+    "could not read: {v0}",
+    "no se pudo leer: {v0}",
+    "lecture impossible : {v0}",
+    "konnte nicht gelesen werden: {v0}"
+  ],
+  "não recebeu esta versão": [
+    "did not receive this version",
+    "no recibió esta versión",
+    "n’a pas reçu cette version",
+    "hat diese Version nicht erhalten"
+  ],
+  "o destinatário vê o rótulo \"encaminhada\" acima da mensagem": [
+    "the recipient sees a “forwarded” label above the message",
+    "el destinatario ve la etiqueta «reenviado» encima del mensaje",
+    "le destinataire voit le libellé « transféré » au-dessus du message",
+    "der Empfänger sieht die Kennzeichnung „Weitergeleitet“ über der Nachricht"
+  ],
+  "o nome do grupo mudou": [
+    "the group name changed",
+    "cambió el nombre del grupo",
+    "le nom du groupe a changé",
+    "der Gruppenname wurde geändert"
+  ],
+  "o recibo de leitura nomeia esta versão": [
+    "the read receipt identifies this version",
+    "la confirmación de lectura identifica esta versión",
+    "la confirmation de lecture identifie cette version",
+    "die Lesebestätigung nennt diese Version"
+  ],
+  "peça um convite novo": [
+    "request a new invitation",
+    "pide una nueva invitación",
+    "demandez une nouvelle invitation",
+    "fordern Sie eine neue Einladung an"
+  ],
+  "prévia": [
+    "preview",
+    "vista previa",
+    "aperçu",
+    "Vorschau"
+  ],
+  "publicações de contatos, que somem em 24h no WhatsApp": [
+    "contact updates that disappear after 24 hours on WhatsApp",
+    "publicaciones de contactos que desaparecen a las 24 h en WhatsApp",
+    "publications de contacts qui disparaissent au bout de 24 h sur WhatsApp",
+    "Statusmeldungen von Kontakten, die nach 24 Stunden auf WhatsApp verschwinden"
+  ],
+  "quem edita os dados: {v0}": [
+    "who can edit information: {v0}",
+    "quién puede editar la información: {v0}",
+    "qui peut modifier les informations : {v0}",
+    "wer Informationen bearbeiten darf: {v0}"
+  ],
+  "quem pode enviar: {v0}": [
+    "who can send: {v0}",
+    "quién puede enviar: {v0}",
+    "qui peut envoyer : {v0}",
+    "wer senden darf: {v0}"
+  ],
+  "remetente": [
+    "sender",
+    "remitente",
+    "expéditeur",
+    "Absender"
+  ],
+  "responde a": [
+    "replies to",
+    "responde a",
+    "répond à",
+    "antwortet auf"
+  ],
+  "resposta a uma mensagem de uma página anterior": [
+    "reply to a message from an earlier page",
+    "respuesta a un mensaje de una página anterior",
+    "réponse à un message d’une page précédente",
+    "Antwort auf eine Nachricht einer früheren Seite"
+  ],
+  "revisão {v0}": [
+    "revision {v0}",
+    "revisión {v0}",
+    "révision {v0}",
+    "Version {v0}"
+  ],
+  "segue o temporizador da conversa": [
+    "uses the conversation’s timer",
+    "sigue el temporizador de la conversación",
+    "suit le délai de la conversation",
+    "verwendet den Timer des Gesprächs"
+  ],
+  "selado — chave indisponível": [
+    "encrypted — key unavailable",
+    "cifrado — clave no disponible",
+    "chiffré — clé indisponible",
+    "verschlüsselt — Schlüssel nicht verfügbar"
+  ],
+  "sem data": [
+    "no date",
+    "sin fecha",
+    "sans date",
+    "ohne Datum"
+  ],
+  "sem identidade ainda": [
+    "no identity yet",
+    "sin identidad todavía",
+    "pas encore d’identité",
+    "noch keine Identität"
+  ],
+  "sem prazo": [
+    "no expiration",
+    "sin caducidad",
+    "sans expiration",
+    "ohne Ablauf"
+  ],
+  "sem prévia": [
+    "no preview",
+    "sin vista previa",
+    "sans aperçu",
+    "keine Vorschau"
+  ],
+  "sem telefone": [
+    "no phone number",
+    "sin teléfono",
+    "sans numéro de téléphone",
+    "ohne Telefonnummer"
+  ],
+  "sem texto{v0}": [
+    "no text{v0}",
+    "sin texto{v0}",
+    "sans texte{v0}",
+    "ohne Text{v0}"
+  ],
+  "sequência": [
+    "sequence",
+    "secuencia",
+    "séquence",
+    "Sequenz"
+  ],
+  "some da conversa do destinatário depois de aberta — mas fica no histórico": [
+    "disappears from the recipient’s conversation after opening, but remains in history",
+    "desaparece de la conversación del destinatario al abrirse, pero queda en el historial",
+    "disparaît de la conversation du destinataire après ouverture, mais reste dans l’historique",
+    "verschwindet nach dem Öffnen aus dem Gespräch des Empfängers, bleibt aber im Verlauf"
+  ],
+  "some do aparelho do destinatário depois desse prazo — mas fica no histórico": [
+    "disappears from the recipient’s device after this time, but remains in history",
+    "desaparece del dispositivo del destinatario tras este plazo, pero queda en el historial",
+    "disparaît de l’appareil du destinataire après ce délai, mais reste dans l’historique",
+    "verschwindet nach dieser Frist vom Gerät des Empfängers, bleibt aber im Verlauf"
+  ],
+  "só existe para anexos; em texto o WhatsApp mostra um erro": [
+    "only available for attachments; WhatsApp shows an error for text",
+    "solo está disponible para adjuntos; WhatsApp muestra un error para texto",
+    "uniquement disponible pour les pièces jointes ; WhatsApp affiche une erreur pour le texte",
+    "nur für Anhänge verfügbar; bei Text zeigt WhatsApp einen Fehler"
+  ],
+  "temporária": [
+    "disappearing",
+    "temporal",
+    "éphémère",
+    "selbstlöschend"
+  ],
+  "tipo": [
+    "type",
+    "tipo",
+    "type",
+    "Typ"
+  ],
+  "tocada {v0}": [
+    "played {v0}",
+    "reproducido {v0}",
+    "écouté {v0}",
+    "abgespielt {v0}"
+  ],
+  "todos leram": [
+    "everyone read it",
+    "todos lo leyeron",
+    "tout le monde a lu",
+    "von allen gelesen"
+  ],
+  "todos ouviram": [
+    "everyone listened",
+    "todos lo escucharon",
+    "tout le monde a écouté",
+    "von allen angehört"
+  ],
+  "todos receberam": [
+    "everyone received it",
+    "todos lo recibieron",
+    "tout le monde a reçu",
+    "von allen empfangen"
+  ],
+  "uid": [
+    "uid",
+    "uid",
+    "uid",
+    "UID"
+  ],
+  "vale até": [
+    "valid until",
+    "válido hasta",
+    "valable jusqu’au",
+    "gültig bis"
+  ],
+  "ver no mapa": [
+    "view on map",
+    "ver en el mapa",
+    "voir sur la carte",
+    "auf der Karte ansehen"
+  ],
+  "ver uma vez": [
+    "view once",
+    "ver una vez",
+    "vue unique",
+    "Einmalansicht"
+  ],
+  "você": [
+    "you",
+    "tú",
+    "vous",
+    "Sie"
+  ],
+  "você (outro aparelho)": [
+    "you (another device)",
+    "tú (otro dispositivo)",
+    "vous (autre appareil)",
+    "Sie (anderes Gerät)"
+  ],
+  "várias escolhas": [
+    "multiple choices",
+    "varias opciones",
+    "plusieurs choix",
+    "Mehrfachauswahl"
+  ],
+  "{v0} conversas no histórico": [
+    "{v0} conversations in history",
+    "{v0} conversaciones en el historial",
+    "{v0} conversations dans l’historique",
+    "{v0} Gespräche im Verlauf"
+  ],
+  "{v0} deixou de ser admin": [
+    "{v0} is no longer an administrator",
+    "{v0} dejó de ser administrador",
+    "{v0} n’est plus administrateur",
+    "{v0} ist kein Administrator mehr"
+  ],
+  "{v0} destinatários com recibo": [
+    "{v0} recipients with receipts",
+    "{v0} destinatarios con confirmación",
+    "{v0} destinataires avec accusé",
+    "{v0} Empfänger mit Bestätigung"
+  ],
+  "{v0} está vazio.": [
+    "{v0} is empty.",
+    "{v0} está vacío.",
+    "{v0} est vide.",
+    "{v0} ist leer."
+  ],
+  "{v0} está {v1}…": [
+    "{v0} is {v1}…",
+    "{v0} está {v1}…",
+    "{v0} : {v1}…",
+    "{v0}: {v1}…"
+  ],
+  "{v0} estão {v1}…": [
+    "{v0} are {v1}…",
+    "{v0} están {v1}…",
+    "{v0} : {v1}…",
+    "{v0}: {v1}…"
+  ],
+  "{v0} gravando áudio…": [
+    "{v0} recording audio…",
+    "{v0} grabando audio…",
+    "{v0} enregistre un audio…",
+    "{v0} nimmt Audio auf…"
+  ],
+  "{v0} min": [
+    "{v0} min",
+    "{v0} min",
+    "{v0} min",
+    "{v0} Min."
+  ],
+  "{v0} min restantes": [
+    "{v0} min remaining",
+    "{v0} min restantes",
+    "{v0} min restantes",
+    "noch {v0} Min."
+  ],
+  "{v0} mudou a descrição": [
+    "{v0} changed the description",
+    "{v0} cambió la descripción",
+    "{v0} a modifié la description",
+    "{v0} hat die Beschreibung geändert"
+  ],
+  "{v0} mudou o nome do grupo": [
+    "{v0} changed the group name",
+    "{v0} cambió el nombre del grupo",
+    "{v0} a changé le nom du groupe",
+    "{v0} hat den Gruppennamen geändert"
+  ],
+  "{v0} não leva legenda": [
+    "{v0} does not support captions",
+    "{v0} no admite descripción",
+    "{v0} ne prend pas en charge les légendes",
+    "{v0} unterstützt keine Bildunterschriften"
+  ],
+  "{v0} participantes": [
+    "{v0} participants",
+    "{v0} participantes",
+    "{v0} participants",
+    "{v0} Teilnehmer"
+  ],
+  "{v0} pessoas digitando…": [
+    "{v0} people typing…",
+    "{v0} personas escribiendo…",
+    "{v0} personnes écrivent…",
+    "{v0} Personen schreiben…"
+  ],
+  "{v0} pessoas responderam": [
+    "{v0} people responded",
+    "{v0} personas respondieron",
+    "{v0} personnes ont répondu",
+    "{v0} Personen haben geantwortet"
+  ],
+  "{v0} tem {v1}; o limite é {v2}.": [
+    "{v0} is {v1}; the limit is {v2}.",
+    "{v0} tiene {v1}; el límite es {v2}.",
+    "{v0} fait {v1} ; la limite est {v2}.",
+    "{v0} hat {v1}; das Limit ist {v2}."
+  ],
+  "{v0} tirou o admin de {v1}": [
+    "{v0} removed {v1} as administrator",
+    "{v0} quitó el rol de administrador a {v1}",
+    "{v0} a retiré le rôle d’administrateur à {v1}",
+    "{v0} hat {v1} als Administrator entfernt"
+  ],
+  "{v0} virou admin": [
+    "{v0} became an administrator",
+    "{v0} se convirtió en administrador",
+    "{v0} est devenu administrateur",
+    "{v0} wurde Administrator"
+  ],
+  "{v0} vídeos": [
+    "{v0} videos",
+    "{v0} vídeos",
+    "{v0} vidéos",
+    "{v0} Videos"
+  ],
+  "· a animação se perde": [
+    "· animation will be lost",
+    "· se perderá la animación",
+    "· l’animation sera perdue",
+    "· Animation geht verloren"
+  ],
+  "· atual": [
+    "· current",
+    "· actual",
+    "· actuel",
+    "· aktuell"
+  ],
+  "· em pé": [
+    "· portrait",
+    "· vertical",
+    "· portrait",
+    "· Hochformat"
+  ],
+  "· não é Opus; alguns aparelhos podem não tocar": [
+    "· not Opus; some devices may not play it",
+    "· no es Opus; algunos dispositivos podrían no reproducirlo",
+    "· pas au format Opus ; certains appareils ne pourront peut-être pas le lire",
+    "· kein Opus; einige Geräte können es möglicherweise nicht abspielen"
+  ],
+  "· original": [
+    "· original",
+    "· original",
+    "· original",
+    "· Original"
+  ],
+  "· removida": [
+    "· removed",
+    "· eliminada",
+    "· supprimée",
+    "· entfernt"
+  ],
+  "· retirada (emoji vazio)": [
+    "· withdrawn (empty emoji)",
+    "· retirada (emoji vacío)",
+    "· retirée (emoji vide)",
+    "· zurückgenommen (leeres Emoji)"
+  ],
+  "· trocada": [
+    "· changed",
+    "· cambiada",
+    "· modifiée",
+    "· geändert"
+  ],
+  "· {v0} não {v1} ser {v2}": [
+    "· {v0} cannot {v1} be {v2}",
+    "· {v0} no {v1} ser {v2}",
+    "· {v0} ne peut pas {v1} être {v2}",
+    "· {v0} kann nicht {v1} {v2} sein"
+  ],
+  "· {v0} para uma opção que não está aqui": [
+    "· {v0} for an option not listed here",
+    "· {v0} para una opción que no aparece aquí",
+    "· {v0} pour une option absente de cette liste",
+    "· {v0} für eine hier nicht aufgeführte Option"
+  ],
+  "· {v0}s": [
+    "· {v0}s",
+    "· {v0}s",
+    "· {v0}s",
+    "· {v0}s"
+  ],
+  "· {v0}×{v1}": [
+    "· {v0}×{v1}",
+    "· {v0}×{v1}",
+    "· {v0}×{v1}",
+    "· {v0}×{v1}"
+  ],
+  "· ±{v0} m": [
+    "· ±{v0} m",
+    "· ±{v0} m",
+    "· ±{v0} m",
+    "· ±{v0} m"
+  ],
+  "Álbum": [
+    "Album",
+    "Álbum",
+    "Album",
+    "Album"
+  ],
+  "Álbum com {v0}": [
+    "Album with {v0}",
+    "Álbum con {v0}",
+    "Album avec {v0}",
+    "Album mit {v0}"
+  ],
+  "▶ abrir vídeo": [
+    "▶ open video",
+    "▶ abrir vídeo",
+    "▶ ouvrir la vidéo",
+    "▶ Video öffnen"
+  ],
+  "⚠ ADULTERADO": [
+    "⚠ TAMPERED",
+    "⚠ ALTERADO",
+    "⚠ ALTÉRÉ",
+    "⚠ MANIPULIERT"
+  ],
+  "⚠ ADULTERADO OU CHAVE ERRADA": [
+    "⚠ TAMPERED OR WRONG KEY",
+    "⚠ ALTERADO O CLAVE INCORRECTA",
+    "⚠ ALTÉRÉ OU CLÉ INCORRECTE",
+    "⚠ MANIPULIERT ODER FALSCHER SCHLÜSSEL"
+  ],
+  "Esta enquete aceita uma escolha.": [
+    "This poll allows one choice.",
+    "Esta encuesta admite una opción.",
+    "Ce sondage autorise un choix.",
+    "Diese Umfrage erlaubt eine Auswahl."
+  ],
+  "Esta enquete aceita até {count} escolhas.": [
+    "This poll allows up to {count} choices.",
+    "Esta encuesta admite hasta {count} opciones.",
+    "Ce sondage autorise jusqu’à {count} choix.",
+    "Diese Umfrage erlaubt bis zu {count} Auswahlmöglichkeiten."
+  ],
+  "Esta enquete aceita uma escolha. Desmarque a anterior.": [
+    "This poll allows one choice. Deselect your previous choice.",
+    "Esta encuesta admite una opción. Desmarca la anterior.",
+    "Ce sondage autorise un choix. Désélectionnez le précédent.",
+    "Diese Umfrage erlaubt eine Auswahl. Wählen Sie die vorherige ab."
+  ],
+  "Esta enquete aceita até {count} escolhas. Desmarque uma antes.": [
+    "This poll allows up to {count} choices. Deselect one first.",
+    "Esta encuesta admite hasta {count} opciones. Desmarca una antes.",
+    "Ce sondage autorise jusqu’à {count} choix. Désélectionnez-en d’abord un.",
+    "Diese Umfrage erlaubt bis zu {count} Auswahlmöglichkeiten. Wählen Sie zuerst eine ab."
+  ],
+  "· Um voto não pôde ser aberto": [
+    "· One vote could not be decrypted",
+    "· No se pudo descifrar un voto",
+    "· Un vote n’a pas pu être déchiffré",
+    "· Eine Stimme konnte nicht entschlüsselt werden"
+  ],
+  "· {count} votos não puderam ser abertos": [
+    "· {count} votes could not be decrypted",
+    "· No se pudieron descifrar {count} votos",
+    "· {count} votes n’ont pas pu être déchiffrés",
+    "· {count} Stimmen konnten nicht entschlüsselt werden"
+  ],
+  "Claro": [
+    "Light",
+    "Claro",
+    "Clair",
+    "Hell"
+  ],
+  "Escuro": [
+    "Dark",
+    "Oscuro",
+    "Sombre",
+    "Dunkel"
+  ],
+  "Dispositivo": [
+    "Device",
+    "Dispositivo",
+    "Appareil",
+    "Gerät"
+  ]
+}

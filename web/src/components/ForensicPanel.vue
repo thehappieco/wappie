@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, ref } from 'vue'
 
 import { state } from '../state/archive'
@@ -45,7 +46,7 @@ function receiptLabel(revision: number): string {
   const rows = (history.value?.readers ?? []).filter((r) => !r.fromMe)
   const got = rows.filter((r) => r.revisions.get(revision)?.delivered).length
   const read = rows.filter((r) => r.revisions.get(revision)?.read).length
-  if (!rows.length) return 'nenhum recibo para esta versão'
+  if (!rows.length) return t('nenhum recibo para esta versão')
   return `${got} receberam · ${read} leram`
 }
 /**
@@ -67,10 +68,10 @@ function replacedAt(i: number): Date | undefined {
   <aside class="panel">
     <div class="topbar">
       <div class="grow">
-        <h2>O que o WhatsApp esconde</h2>
+        <h2>{{ t('O que o WhatsApp esconde') }}</h2>
         <div class="sub" v-if="message">{{ typeLabel(message.type) }} · {{ message.senderName }}</div>
       </div>
-      <button class="icon-btn" @click="emit('close')" title="Fechar">
+      <button class="icon-btn" @click="emit('close')" :title="t('Fechar')">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M18 6 6 18M6 6l12 12" />
         </svg>
@@ -78,39 +79,34 @@ function replacedAt(i: number): Date | undefined {
     </div>
 
     <div class="panel-body">
-      <div v-if="state.historyLoading" class="sealed">Montando a história desta mensagem…</div>
+      <div v-if="state.historyLoading" class="sealed">{{ t('Montando a história desta mensagem…') }}</div>
       <div v-else-if="state.historyError" class="alert">{{ state.historyError }}</div>
 
       <template v-else-if="history">
         <!-- Versions. This is the product: an edit does not replace anything
              here, it adds a link to a chain. -->
         <section class="section">
-          <h3>Versões ({{ history.versions.length }})</h3>
+          <h3>{{ t('Versões ({v0})', { v0: history.versions.length }) }}</h3>
           <div
             v-for="version in history.versions"
             :key="version.revision"
             class="version"
             :class="{ current: version.revision === currentRevision }"
           >
-            <div class="rev">
-              revisão {{ version.revision }}
-              <template v-if="version.revision === 0"> · original</template>
-              <template v-else-if="version.revision === currentRevision"> · atual</template>
+            <div class="rev"> {{ t('revisão {v0}', { v0: version.revision }) }} <template v-if="version.revision === 0"> {{ t('· original') }}</template>
+              <template v-else-if="version.revision === currentRevision"> {{ t('· atual') }}</template>
             </div>
             <div class="body" v-if="version.bodyState === 'ok'">{{ version.body || '—' }}</div>
-            <div class="tampered" v-else-if="version.bodyState === 'tampered'">
-              ⚠ ADULTERADO OU CHAVE ERRADA
-            </div>
+            <div class="tampered" v-else-if="version.bodyState === 'tampered'"> {{ t('⚠ ADULTERADO OU CHAVE ERRADA') }} </div>
             <!-- Absent and locked are different facts. A location or a photo
                  simply has no text, and calling that a missing key sends
                  someone hunting for a problem that is not there. -->
-            <div class="sealed" v-else-if="version.bodyState === 'absent'">
-              sem texto{{ message ? ` — ${typeLabel(message.type)}` : '' }}
+            <div class="sealed" v-else-if="version.bodyState === 'absent'"> {{ t('sem texto{v0}', { v0: message ? ` — ${typeLabel(message.type)}` : '' }) }}
             </div>
-            <div class="sealed" v-else>selado — chave indisponível</div>
+            <div class="sealed" v-else>{{ t('selado — chave indisponível') }}</div>
             <div class="when">
               {{ stamp(version.from) }}
-              <template v-if="version.until"> até {{ stamp(version.until) }}</template>
+              <template v-if="version.until"> {{ t('até {v0}', { v0: stamp(version.until) }) }}</template>
             </div>
 
             <!-- Who acknowledged THIS version, in a dialog rather than
@@ -125,26 +121,22 @@ function replacedAt(i: number): Date | undefined {
               {{ receiptLabel(version.revision) }}
             </button>
           </div>
-          <div v-if="history.versions.length === 1" class="sealed" style="font-size: 12.5px">
-            Nunca editada.
-          </div>
+          <div v-if="history.versions.length === 1" class="sealed" style="font-size: 12.5px"> {{ t('Nunca editada.') }} </div>
         </section>
 
         <!-- Deletion. The content above survives it, which is the whole point. -->
         <section class="section" v-if="history.deletion">
-          <h3>Apagada</h3>
+          <h3>{{ t('Apagada') }}</h3>
           <div class="card">
             <div class="title" style="color: var(--danger)">
               {{
                 history.deletion.byAuthor
-                  ? 'Apagada por quem enviou'
-                  : 'Apagada por um administrador do grupo'
+                  ? t('Apagada por quem enviou')
+                  : t('Apagada por um administrador do grupo')
               }}
             </div>
             <div class="dim">{{ stamp(history.deletion.at) }}</div>
-            <div class="dim">
-              O conteúdo continua acima. O WhatsApp removeu a mensagem; o arquivo não.
-            </div>
+            <div class="dim"> {{ t('O conteúdo continua acima. O WhatsApp removeu a mensagem; o histórico não.') }} </div>
           </div>
         </section>
 
@@ -153,7 +145,7 @@ function replacedAt(i: number): Date | undefined {
              the sequence is the part WhatsApp does not show: a heart, changed
              to a laugh an hour later, then taken back. -->
         <section class="section" v-if="history.reactions.length">
-          <h3>Reações ({{ history.reactions.length }})</h3>
+          <h3>{{ t('Reações ({v0})', { v0: history.reactions.length }) }}</h3>
           <div
             v-for="(reaction, i) in history.reactions"
             :key="i"
@@ -165,17 +157,14 @@ function replacedAt(i: number): Date | undefined {
               <div class="who">{{ reaction.who }}</div>
               <div class="times">
                 <template v-if="reaction.at">{{ stamp(reaction.at) }}</template>
-                <template v-else>sem data</template>
-                <template v-if="reaction.revoked">
-                  · removida<template v-if="reaction.revokedAt">
-                    em {{ stamp(reaction.revokedAt) }}</template
+                <template v-else>{{ t('sem data') }}</template>
+                <template v-if="reaction.revoked"> {{ t('· removida') }}<template v-if="reaction.revokedAt"> {{ t('em {v0}', { v0: stamp(reaction.revokedAt) }) }}</template
                   >
                 </template>
-                <template v-else-if="reaction.superseded">
-                  · trocada<template v-if="replacedAt(i)"> em {{ stamp(replacedAt(i)!) }}</template>
+                <template v-else-if="reaction.superseded"> {{ t('· trocada') }}<template v-if="replacedAt(i)"> {{ t('em {v0}', { v0: stamp(replacedAt(i)!) }) }}</template>
                 </template>
-                <template v-else-if="!reaction.emoji">· retirada (emoji vazio)</template>
-                <template v-else>· em pé</template>
+                <template v-else-if="!reaction.emoji">{{ t('· retirada (emoji vazio)') }}</template>
+                <template v-else>{{ t('· em pé') }}</template>
               </div>
             </div>
           </div>
@@ -191,35 +180,32 @@ function replacedAt(i: number): Date | undefined {
           class="sealed"
           v-if="!history.readers.length"
           style="font-size: 12.5px; margin-top: 6px"
-        >
-          Nenhum recibo arquivado. Em modo discreto o aparelho não devolve recibos, e o que os
-          outros mandam só chega enquanto ele está ligado.
-        </div>
+        > {{ t('Nenhum recibo arquivado. Em modo discreto o aparelho não devolve recibos, e o que os outros mandam só chega enquanto ele está ligado.') }} </div>
       </template>
 
       <!-- The routing metadata, which travels readable so the server can
            paginate. Shown plainly rather than hidden, because pretending it is
            private would be the dishonest choice. -->
       <section class="section" v-if="message">
-        <h3>Metadados</h3>
+        <h3>{{ t('Metadados') }}</h3>
         <dl class="kv">
-          <dt>uid</dt>
+          <dt>{{ t('uid') }}</dt>
           <dd>{{ message.uid }}</dd>
-          <dt>id no WhatsApp</dt>
+          <dt>{{ t('id no WhatsApp') }}</dt>
           <dd>{{ message.waID }}</dd>
-          <dt>sequência</dt>
+          <dt>{{ t('sequência') }}</dt>
           <dd>{{ message.seq }}</dd>
-          <dt>tipo</dt>
+          <dt>{{ t('tipo') }}</dt>
           <dd>{{ message.type }}</dd>
-          <dt>remetente</dt>
-          <dd>{{ message.senderKey || '(você)' }}</dd>
-          <dt>enviada em</dt>
+          <dt>{{ t('remetente') }}</dt>
+          <dd>{{ message.senderKey || t('(você)') }}</dd>
+          <dt>{{ t('enviada em') }}</dt>
           <dd>{{ stamp(message.ts) }}</dd>
-          <dt v-if="message.expiresAt">expira em</dt>
+          <dt v-if="message.expiresAt">{{ t('expira em') }}</dt>
           <dd v-if="message.expiresAt">{{ stamp(message.expiresAt) }}</dd>
-          <dt v-if="message.replyTo">responde a</dt>
+          <dt v-if="message.replyTo">{{ t('responde a') }}</dt>
           <dd v-if="message.replyTo">{{ message.replyTo }}</dd>
-          <dt v-if="message.media">anexo</dt>
+          <dt v-if="message.media">{{ t('anexo') }}</dt>
           <dd v-if="message.media">
             {{ message.media.type }} · {{ message.media.status }}
             <template v-if="message.media.mimetype"> · {{ message.media.mimetype }}</template>
@@ -227,9 +213,7 @@ function replacedAt(i: number): Date | undefined {
         </dl>
       </section>
 
-      <div v-if="!message && !state.historyLoading" class="sealed">
-        Clique em uma mensagem para ver a história dela.
-      </div>
+      <div v-if="!message && !state.historyLoading" class="sealed"> {{ t('Clique em uma mensagem para ver a história dela.') }} </div>
     </div>
   </aside>
 

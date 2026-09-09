@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 import { fromBase64, toBase64, type Bytes } from '../crypto/bytes'
 
 export function base64url(bytes: Bytes): string { return toBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') }
@@ -36,7 +37,7 @@ export function requestOptions(wire: RequestJSON, salt: Bytes): PublicKeyCredent
 }
 
 export function publicCredential(credential: Credential | null): PublicKeyCredential {
-  if (!credential || credential.type !== 'public-key' || !('rawId' in credential)) throw new Error('Nenhuma passkey foi selecionada.')
+  if (!credential || credential.type !== 'public-key' || !('rawId' in credential)) throw new Error(t('Nenhuma passkey foi selecionada.'))
   return credential as PublicKeyCredential
 }
 
@@ -66,21 +67,21 @@ export function credentialJSON(credential: PublicKeyCredential): Record<string, 
 export function passkeyError(error: unknown): string {
   if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
     const messages: Record<string, string> = {
-      bad_credentials: 'Não foi possível confirmar sua identidade. Tente novamente ou entre com a senha.',
-      passkeys_disabled: 'Passkeys não estão habilitadas nesta instalação.',
-      origin_not_allowed: 'Passkeys não estão disponíveis neste endereço. Acesse o app ou o console do Wappie.',
-      passkey_limit: 'Sua conta já tem 12 passkeys. Remova uma antes de cadastrar outra.',
-      passkey_not_saved: 'Não foi possível cadastrar a passkey. Ela pode já estar registrada; tente outra.',
-      prf_unsupported: 'Esta passkey não oferece o desbloqueio dos seus dados. Use a senha ou escolha outro autenticador.',
-      rate_limited: 'Muitas tentativas. Aguarde um momento antes de tentar novamente.',
+      bad_credentials: t('Não foi possível confirmar sua identidade. Tente novamente ou entre com a senha.'),
+      passkeys_disabled: t('Passkeys não estão habilitadas nesta instalação.'),
+      origin_not_allowed: t('Passkeys não estão disponíveis neste endereço. Acesse o app ou o console do Wappie.'),
+      passkey_limit: t('Sua conta já tem 12 passkeys. Remova uma antes de cadastrar outra.'),
+      passkey_not_saved: t('Não foi possível cadastrar a passkey. Ela pode já estar registrada; tente outra.'),
+      prf_unsupported: t('Esta passkey não oferece o desbloqueio dos seus dados. Use a senha ou escolha outro autenticador.'),
+      rate_limited: t('Muitas tentativas. Aguarde um momento antes de tentar novamente.'),
     }
     if (messages[error.code]) return messages[error.code]
   }
   if (error instanceof DOMException) {
-    if (error.name === 'NotAllowedError' || error.name === 'AbortError') return 'A solicitação de passkey foi cancelada ou expirou. Você pode tentar novamente.'
-    if (error.name === 'InvalidStateError') return 'Esta passkey já está cadastrada. Escolha outra ou entre com a existente.'
-    if (error.name === 'SecurityError') return 'Passkeys não estão disponíveis neste endereço. Acesse o endereço seguro do Wappie.'
-    if (error.name === 'NotSupportedError') return 'Este navegador ou autenticador não oferece a passkey necessária. Você pode continuar com a senha.'
+    if (error.name === 'NotAllowedError' || error.name === 'AbortError') return t('A solicitação de passkey foi cancelada ou expirou. Você pode tentar novamente.')
+    if (error.name === 'InvalidStateError') return t('Esta passkey já está cadastrada. Escolha outra ou entre com a existente.')
+    if (error.name === 'SecurityError') return t('Passkeys não estão disponíveis neste endereço. Acesse o endereço seguro do Wappie.')
+    if (error.name === 'NotSupportedError') return t('Este navegador ou autenticador não oferece a passkey necessária. Você pode continuar com a senha.')
   }
-  return error instanceof Error ? error.message : 'Não foi possível usar a passkey.'
+  return error instanceof Error ? error.message : t('Não foi possível usar a passkey.')
 }

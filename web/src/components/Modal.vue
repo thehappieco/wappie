@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { onBeforeUnmount, onMounted } from 'vue'
 
 defineProps<{ title: string; subtitle?: string }>()
@@ -27,7 +28,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
           <div class="sub" v-if="subtitle">{{ subtitle }}</div>
         </div>
         <slot name="actions" />
-        <button class="icon-btn" @click="emit('close')" title="Fechar">
+        <button class="icon-btn" @click="emit('close')" :title="t('Fechar')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>

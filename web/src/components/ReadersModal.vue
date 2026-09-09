@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, ref } from 'vue'
 
 import { people, state, type ReaderDeviceView, type ReaderView } from '../state/archive'
@@ -68,7 +69,7 @@ const read = computed(() => others.value.filter((r) => at(r)?.read))
 const played = computed(() => others.value.filter((r) => at(r)?.played))
 
 function nameOf(r: ReaderView): string {
-  return r.fromMe ? 'você (outro aparelho)' : r.name || people().nameFor(r.key)
+  return r.fromMe ? t('você (outro aparelho)') : r.name || people().nameFor(r.key)
 }
 
 function deviceLabel(d: ReaderDeviceView): string {
@@ -86,7 +87,7 @@ function deviceLabel(d: ReaderDeviceView): string {
 const groups = computed(() => {
   const all = [
     { label: 'Recebido', list: delivered.value, at: (r: ReaderView) => at(r)?.delivered, sure: true },
-    { label: 'Lido', list: read.value, at: (r: ReaderView) => at(r)?.read, sure: false },
+    { label: t('Lido'), list: read.value, at: (r: ReaderView) => at(r)?.read, sure: false },
   ]
   if (playedApplies.value) {
     all.push({ label: 'Tocado', list: played.value, at: (r: ReaderView) => at(r)?.played, sure: false })
@@ -112,30 +113,22 @@ const groups = computed(() => {
 const playedApplies = computed(() => props.playable || played.value.length > 0)
 
 const empty = computed(() => ({
-  Recebido: 'Ninguém confirmou ter recebido esta versão.',
-  Lido: 'Ninguém leu esta versão.',
-  Tocado: 'Ninguém tocou esta versão.',
+  Recebido: t('Ninguém confirmou ter recebido esta versão.'),
+  Lido: t('Ninguém leu esta versão.'),
+  Tocado: t('Ninguém tocou esta versão.'),
 }))
 </script>
 
 <template>
   <Modal
-    :title="versions > 1 ? `Revisão ${revision}` : 'Quem recebeu e leu'"
-    :subtitle="`${others.length} destinatários com recibo`"
+    :title="versions > 1 ? t('Revisão {v0}', { v0: revision }) : t('Quem recebeu e leu')"
+    :subtitle="t('{v0} destinatários com recibo', { v0: others.length })"
     @close="emit('close')"
   >
-    <div v-if="readers.length === 0" class="sealed" style="font-size: 12.5px">
-      Nenhum recibo arquivado para esta mensagem. Em modo discreto o aparelho não devolve recibos,
-      e o que os outros mandam só chega enquanto ele está ligado.
-    </div>
+    <div v-if="readers.length === 0" class="sealed" style="font-size: 12.5px"> {{ t('Nenhum recibo arquivado para esta mensagem. Em modo discreto o aparelho não devolve recibos, e o que os outros mandam só chega enquanto ele está ligado.') }} </div>
 
     <template v-else>
-      <div class="note" v-if="versions > 1">
-        Cada versão é uma mensagem própria no WhatsApp e junta os próprios recibos, então tudo aqui
-        é sobre este texto e não sobre a mensagem. Uma edição volta a marcar a mensagem como não
-        lida, e quem lê de novo confirma o id da edição — por isso "lido" costuma vir confirmado, e
-        só aparece como deduzido quando o recibo é de um aparelho seu.
-      </div>
+      <div class="note" v-if="versions > 1"> {{ t('Cada versão é uma mensagem própria no WhatsApp e junta os próprios recibos, então tudo aqui é sobre este texto e não sobre a mensagem. Uma edição volta a marcar a mensagem como não lida, e quem lê de novo confirma o id da edição — por isso "lido" costuma vir confirmado, e só aparece como deduzido quando o recibo é de um aparelho seu.') }} </div>
 
       <section class="section" v-for="group in groups" :key="group.label">
         <h3>{{ group.label }} ({{ group.list.length }})</h3>
@@ -157,7 +150,7 @@ const empty = computed(() => ({
               type="button"
               @click="toggle(r.key + group.label)"
             >
-              {{ open === r.key + group.label ? 'ocultar' : r.devices.length + ' aparelhos' }}
+              {{ open === r.key + group.label ? t('ocultar') : r.devices.length + t(' aparelhos') }}
             </button>
             <div v-if="open === r.key + group.label" class="devices">
               <div v-for="d in r.devices" :key="d.key" class="device">
@@ -166,11 +159,11 @@ const empty = computed(() => ({
                      received the correction shows nothing here, which is the
                      fact, rather than the message's first delivery time. -->
                 <div class="times">
-                  <template v-if="at(d)?.delivered">entregue {{ stamp(at(d)!.delivered) }}</template>
-                  <template v-else>não recebeu esta versão</template>
-                  <template v-if="at(d)?.read"><br />lida {{ stamp(at(d)!.read) }}</template>
+                  <template v-if="at(d)?.delivered">{{ t('entregue {v0}', { v0: stamp(at(d)!.delivered) }) }}</template>
+                  <template v-else>{{ t('não recebeu esta versão') }}</template>
+                  <template v-if="at(d)?.read"><br />{{ t('lida {v0}', { v0: stamp(at(d)!.read) }) }}</template>
                   <template v-if="at(d)?.played">
-                    <br />tocada {{ stamp(at(d)!.played) }}
+                    <br />{{ t('tocada {v0}', { v0: stamp(at(d)!.played) }) }}
                   </template>
                 </div>
               </div>
@@ -179,15 +172,15 @@ const empty = computed(() => ({
           <!-- Only on the read, and only ever on the read: a delivery receipt
                names this version's own stanza, so there is nothing to qualify. -->
           <span
-            v-if="!group.sure && group.label === 'Lido'"
+            v-if="!group.sure && group.label === t('Lido')"
             class="saw"
             :class="at(r)?.confirmed ? 'sure' : 'inferred'"
             :title="
               at(r)?.confirmed
-                ? 'o recibo de leitura nomeia esta versão'
-                : 'deduzido: este aparelho marca a linha inteira pelo id original'
+                ? t('o recibo de leitura nomeia esta versão')
+                : t('deduzido: este aparelho marca a linha inteira pelo id original')
             "
-            >{{ at(r)?.confirmed ? 'confirmado' : 'deduzido' }}</span
+            >{{ at(r)?.confirmed ? t('confirmado') : t('deduzido') }}</span
           >
         </div>
       </section>
@@ -196,14 +189,14 @@ const empty = computed(() => ({
            devices now report reads back into this same projection, and folding
            them in would make "you" look like somebody the message reached. -->
       <section class="section" v-if="ours.length">
-        <h3>Seus outros aparelhos</h3>
+        <h3>{{ t('Seus outros aparelhos') }}</h3>
         <div v-for="r in ours" :key="r.key" class="reader">
           <div style="flex: 1; min-width: 0">
             <div class="who">{{ nameOf(r) }}</div>
             <div class="times">
-              <template v-if="at(r)?.delivered">entregue {{ stamp(at(r)!.delivered) }}</template>
-              <template v-else>não recebeu esta versão</template>
-              <template v-if="at(r)?.read"><br />lida {{ stamp(at(r)!.read) }}</template>
+              <template v-if="at(r)?.delivered">{{ t('entregue {v0}', { v0: stamp(at(r)!.delivered) }) }}</template>
+              <template v-else>{{ t('não recebeu esta versão') }}</template>
+              <template v-if="at(r)?.read"><br />{{ t('lida {v0}', { v0: stamp(at(r)!.read) }) }}</template>
             </div>
           </div>
         </div>

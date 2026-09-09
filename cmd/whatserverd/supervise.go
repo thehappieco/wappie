@@ -117,6 +117,13 @@ func (a *app) claim(ctx context.Context, tenant string, d store.Device, attempts
 	_, err = a.registry.StartExisting(ctx, tenant, d.ID, policy, d.Identity.PN, d.Identity.LID)
 	switch {
 	case err == nil:
+		// A pause can race the network connection after the list was read.
+		// Recheck once connected before considering this device supervised.
+		current, readErr := a.devices.Get(ctx, tenant, d.ID)
+		if readErr != nil || current.Paused {
+			a.registry.Stop(context.WithoutCancel(ctx), d.ID)
+			return
+		}
 		delete(attempts, d.ID)
 		a.log.Info("device picked up", "device", d.ID, "identity", d.Identity.String())
 	case errors.Is(err, wa.ErrAlreadyRunning):

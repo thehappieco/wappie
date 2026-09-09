@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 import { AuthError, authRequest, finishSession, signOut, type MeReply, type SessionReply, type SignedIn } from './auth'
 import { derive, unwrapPrivateKey, type KDFParams } from '../crypto/account'
 import { fromBase64, toBase64, type Bytes } from '../crypto/bytes'
@@ -8,7 +9,7 @@ import { base64url, credentialJSON, creationOptions, prfOutput, publicCredential
 
 export interface PasskeyInfo { id: string; label: string; created_at: string; last_used_at?: string; }
 interface Flow<T> { flow_id: string; rp_id: string; prf_salt: string; publicKey: T; user_id?: string }
-const unsupported = 'Esta passkey não oferece o desbloqueio dos dados criptografados. Use a senha ou escolha outro autenticador.'
+const unsupported = () => t('Esta passkey não oferece o desbloqueio dos dados criptografados. Use a senha ou escolha outro autenticador.')
 
 export async function passkeysAvailable(serverURL: string): Promise<boolean> {
   if (!supportsPasskeys()) return false
@@ -31,7 +32,7 @@ async function passwordProof(serverURL: string, email: string, password: string)
 
 export async function registerPasskey(input: { serverURL: string; token: string; email: string; password: string; label: string; signal?: AbortSignal }): Promise<void> {
   input.signal?.throwIfAborted()
-  if (!supportsPasskeys()) throw new Error('Este navegador não oferece passkeys. Abra o Wappie por HTTPS em um navegador compatível.')
+  if (!supportsPasskeys()) throw new Error(t('Este navegador não oferece passkeys. Abra o Wappie por HTTPS em um navegador compatível.'))
   const derived = await passwordProof(input.serverURL, input.email, input.password)
   const me = await authRequest<MeReply>(input.serverURL, '/v1/auth/me', undefined, input.token)
   const { privateKey } = await unwrapPrivateKey(fromBase64(me.user.wrapped_usk), derived.wrapKey, input.email)
@@ -51,10 +52,10 @@ export async function registerPasskey(input: { serverURL: string; token: string;
         ...requestOptions({ challenge: base64url(crypto.getRandomValues(new Uint8Array(32))), rpId: flow.rp_id,
           userVerification: 'required', allowCredentials: [{ type: 'public-key', id: base64url(new Uint8Array(credential.rawId)) }], timeout: 120000 }, salt),
       } }))
-      if (base64url(new Uint8Array(assertion.rawId)) !== base64url(new Uint8Array(credential.rawId))) throw new Error(unsupported)
+      if (base64url(new Uint8Array(assertion.rawId)) !== base64url(new Uint8Array(credential.rawId))) throw new Error(unsupported())
       prf = prfOutput(assertion)
     }
-    if (!prf) throw new Error(unsupported)
+    if (!prf) throw new Error(unsupported())
     input.signal?.throwIfAborted()
     const wrapped = await wrapPasskey(privateKey, prf, { rpID: flow.rp_id, userID: flow.user_id ?? me.user.id,
       credentialID: base64url(new Uint8Array(credential.rawId)) })
@@ -67,12 +68,12 @@ export async function registerPasskey(input: { serverURL: string; token: string;
 
 export async function signInWithPasskey(input: { serverURL: string; tenantID?: string; signal?: AbortSignal }): Promise<SignedIn> {
   input.signal?.throwIfAborted()
-  if (!supportsPasskeys()) throw new Error('Este navegador não oferece passkeys. Você pode entrar com a senha.')
+  if (!supportsPasskeys()) throw new Error(t('Este navegador não oferece passkeys. Você pode entrar com a senha.'))
   const flow = await authRequest<Flow<RequestJSON>>(input.serverURL, '/v1/auth/passkeys/login/options', {})
   input.signal?.throwIfAborted()
   const credential = publicCredential(await navigator.credentials.get({ publicKey: requestOptions(flow.publicKey, fromBase64(flow.prf_salt)), signal: input.signal }))
   const prf = prfOutput(credential)
-  if (!prf) throw new Error(unsupported)
+  if (!prf) throw new Error(unsupported())
   let reply: SessionReply | undefined
   let privateKey: Bytes | undefined
   try {
@@ -107,6 +108,6 @@ export async function removePasskey(input: { serverURL: string; token: string; e
   })
   if (!response.ok) {
     const error = await response.json().catch(() => ({})) as { code?: string; message?: string }
-    throw new AuthError(error.code ?? 'request_failed', error.message ?? 'Não foi possível remover esta passkey.')
+    throw new AuthError(error.code ?? 'request_failed', error.message ?? t('Não foi possível remover esta passkey.'))
   }
 }

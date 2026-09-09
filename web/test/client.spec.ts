@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocketServer, type WebSocket as ServerSocket } from 'ws'
 import type { AddressInfo } from 'node:net'
 
-import { Connection } from '../src/api/client'
+import { Connection, ProtocolError } from '../src/api/client'
 import * as P from '../src/api/protocol'
+import { locale } from '../src/ui/i18n'
 
 // The client multiplexes one socket between request/response calls and a push
 // stream, and the interesting failures are all about frames going to the wrong
@@ -203,5 +204,32 @@ describe('requests and pushes on one socket', () => {
     // options: nothing on screen and nothing in the log.
     await expect(pending).rejects.toThrow(/fechou/)
     expect(closedWith).not.toBe('')
+  })
+})
+
+
+describe('protocol failure details', () => {
+  it('keeps a specific server reason instead of reducing internal/conflict to a generic error', () => {
+    const original = locale.value
+    try {
+      locale.value = 'fr'
+      for (const code of [P.ErrInternal, P.ErrConflict]) {
+        const reason = 'WhatsApp refused upload: attachment exceeds this number’s limit'
+        const error = new ProtocolError(code, reason)
+        expect(error.code).toBe(code)
+        expect(error.message).toBe(reason)
+        expect(error.rawMessage).toBe(reason)
+      }
+    } finally { locale.value = original }
+  })
+  it('translates a known exact reason while keeping its original diagnostic and code', () => {
+    const original = locale.value
+    try {
+      locale.value = 'en'
+      const error = new ProtocolError(P.ErrNotFound, 'no such device')
+      expect(error.code).toBe(P.ErrNotFound)
+      expect(error.message).toBe('This number was not found in this workspace.')
+      expect(error.rawMessage).toBe('no such device')
+    } finally { locale.value = original }
   })
 })

@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // The application state.
 //
 // One store, no framework beyond Vue's own reactivity. It owns the connection,
@@ -673,8 +674,12 @@ export function readableDevices(): Set<string> {
  * it does on connect.
  */
 export async function refreshDevices(): Promise<void> {
-  if (!conn) return
-  const devices = await conn.request<P.Devices>(P.TypeDevicesList, {}, P.TypeDevices)
+  const capturedConnection = conn
+  const capturedSession = session
+  const capturedTenant = state.tenantID
+  if (!capturedConnection) return
+  const devices = await capturedConnection.request<P.Devices>(P.TypeDevicesList, {}, P.TypeDevices)
+  if (conn !== capturedConnection || session !== capturedSession || state.tenantID !== capturedTenant) return
   state.devices = devices.devices ?? []
   const current = state.devices.find((d) => d.id === state.deviceID)
   if (state.deviceID && !current) {
@@ -966,7 +971,7 @@ export function stop(): void {
 export async function selectDevice(deviceID: string): Promise<void> {
   if (!session || !state.devices.some((device) => device.id === deviceID)) return
   if (state.initializingConnection || !conn?.isOpen) {
-    throw new Error('Aguarde a reconexão antes de trocar de dispositivo.')
+    throw new Error(t('Aguarde a reconexão antes de trocar de dispositivo.'))
   }
   if (session.credential.kind === 'session' && !session.readable.some((device) => device.deviceID === deviceID)) return
   archiveGeneration++
@@ -1651,7 +1656,7 @@ async function tallyOf(poll: P.Poll, entry: Entry, open: Opener): Promise<PollVi
     const vote = payload?.state === 'ok' ? payload.value.poll_vote : undefined
     votes.push({
       who: row.is_from_me
-        ? 'você'
+        ? t('você')
         : personName(row.sender_lid, row.sender_pn, row.sender_key || ''),
       key: row.is_from_me ? '@me' : row.sender_key || row.chat_key,
       fromMe: Boolean(row.is_from_me),
@@ -1711,7 +1716,7 @@ async function toMessageView(entry: Entry, context: ArchiveContext): Promise<Mes
     isStatus: isStatus(original.chat_key),
     senderKey,
     senderName: original.is_from_me
-      ? 'você'
+      ? t('você')
       : personName(original.sender_lid, original.sender_pn, original.sender_key || ''),
     type: original.type,
     unsupported: original.unsupported ?? '',
@@ -1787,8 +1792,8 @@ export async function fetchMedia(view: MessageView): Promise<void> {
       state: 'error',
       message:
         key.state === 'tampered'
-          ? 'a chave da mídia não confere com esta linha'
-          : 'a chave da mídia não abriu',
+          ? t('a chave da mídia não confere com esta linha')
+          : t('a chave da mídia não abriu'),
     }
     return
   }
@@ -1852,7 +1857,7 @@ async function toHistoryView(reply: P.History, open: Opener): Promise<HistoryVie
       // rather than hiding the row.
       emoji: emoji.state === 'ok' ? emoji.value : '',
       who: reaction.message.is_from_me
-        ? 'você'
+        ? t('você')
         : directory.nameFor(reaction.message.sender_key) ||
           displayFallback(reaction.message.sender_key ?? ''),
       superseded: Boolean(reaction.superseded),
@@ -1864,7 +1869,7 @@ async function toHistoryView(reply: P.History, open: Opener): Promise<HistoryVie
 
   const readers: ReaderView[] = (reply.readers ?? []).map((r) => ({
     key: r.key,
-    name: r.is_from_me ? 'você' : personName(r.lid, r.pn, r.key),
+    name: r.is_from_me ? t('você') : personName(r.lid, r.pn, r.key),
     readDevice: r.read_device ?? '',
     revisions: revisionsOf(r.revisions),
     devices: (r.devices ?? []).map((d) => ({
@@ -2159,7 +2164,7 @@ export async function sendMedia(
     // sending it. Said out loud rather than swallowed: the composer has
     // already let go of the attachment by now, so silence here is a file that
     // vanished on its way out.
-    state.actionError = 'A conexão caiu antes do anexo sair. Escolha o arquivo de novo.'
+    state.actionError = t('A conexão caiu antes do anexo sair. Escolha o arquivo de novo.')
     discard(prepared)
     return
   }
@@ -2364,7 +2369,7 @@ function skeleton(
     isGroup: Boolean(row.is_group),
     isStatus: false,
     senderKey: '@me',
-    senderName: 'você',
+    senderName: t('você'),
     type,
     unsupported: '',
     body,
@@ -2486,4 +2491,22 @@ export function applyReceiptMode(mode: string): void {
   state.quiet = !active
   setReadReceipts(active)
   setTypingNotifications(active)
+}
+
+/** Opens a device's own profile picture without changing the selected chat.
+ * Private keys stay inside this module, and results cannot cross a session or
+ * workspace switch while requests and decryptions are in flight. */
+export async function deviceProfilePicture(deviceID: string, contactKey: string): Promise<Blob | null> {
+  const capturedSession = session
+  const capturedConnection = conn
+  const capturedTenant = state.tenantID
+  if (!capturedSession || !capturedConnection || !tenantBytes) return null
+  const key = capturedSession.archiveFor(deviceID)
+  if (!key) return null
+  const profileOpener = new Opener(capturedConnection, tenantBytes, parseUUID(deviceID), deviceID, key)
+  const frame = await capturedConnection.request<P.Avatar>(P.TypeAvatar,
+    { device_id: deviceID, contact_key: contactKey } satisfies P.AvatarRequest, P.TypeAvatarFrame)
+  const picture = await profileOpener.avatar(frame)
+  if (session !== capturedSession || conn !== capturedConnection || state.tenantID !== capturedTenant || picture.state !== 'ok') return null
+  return new Blob([picture.value as BlobPart], { type: 'image/jpeg' })
 }

@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // The websocket client.
 //
 // One read loop owns the connection, and frames are routed by request id and
@@ -24,9 +25,9 @@ export interface ConnectOptions {
 export class ProtocolError extends Error {
   constructor(
     readonly code: string,
-    message: string,
+    readonly rawMessage: string,
   ) {
-    super(message)
+    super(protocolErrorMessage(rawMessage))
     this.name = 'ProtocolError'
   }
 }
@@ -50,8 +51,8 @@ export class Connection {
     private readonly opts: ConnectOptions,
   ) {
     this.socket.onmessage = (event) => this.receive(event)
-    this.socket.onclose = (event) => this.finish(event.reason || `código ${event.code}`)
-    this.socket.onerror = () => this.finish('a conexão falhou')
+    this.socket.onclose = (event) => this.finish(event.code === 1008 ? t('Seu acesso mudou ou expirou. Entre novamente.') : t('A conexão foi interrompida.'))
+    this.socket.onerror = () => this.finish(t('a conexão falhou'))
   }
 
   static connect(opts: ConnectOptions): Promise<Connection> {
@@ -71,9 +72,9 @@ export class Connection {
         reject(new ProtocolError(code, message))
       }
 
-      socket.onerror = () => fail(P.ErrInternal, 'não foi possível abrir a conexão')
-      socket.onclose = (event) =>
-        fail(P.ErrInternal, event.reason || 'a conexão fechou antes do welcome')
+      socket.onerror = () => fail(P.ErrInternal, t('não foi possível abrir a conexão'))
+      socket.onclose = () =>
+        fail(P.ErrInternal, t('A conexão fechou antes de concluir a entrada.'))
 
       socket.onopen = () => {
         const hello: P.Hello =
@@ -90,7 +91,7 @@ export class Connection {
         try {
           frame = JSON.parse(String(event.data)) as P.Frame
         } catch {
-          fail(P.ErrBadRequest, 'o servidor respondeu algo que não é JSON')
+          fail(P.ErrBadRequest, t('O servidor enviou uma resposta inválida.'))
           return
         }
         if (frame.t === P.TypeError) {
@@ -101,7 +102,7 @@ export class Connection {
           return
         }
         if (frame.t !== P.TypeWelcome) {
-          fail(P.ErrBadRequest, `esperava ${P.TypeWelcome}, veio ${frame.t}`)
+          fail(P.ErrBadRequest, t('O servidor enviou uma resposta inesperada.'))
           return
         }
         socket.onopen = socket.onerror = socket.onclose = null
@@ -116,7 +117,7 @@ export class Connection {
 
   /** send fires a frame without waiting for anything. */
   send(type: string, reqID: string, payload: unknown): void {
-    if (!this.isOpen) throw new ProtocolError(P.ErrInternal, 'a conexão está fechada')
+    if (!this.isOpen) throw new ProtocolError(P.ErrInternal, t('a conexão está fechada'))
     this.socket.send(JSON.stringify({ t: type, r: reqID, p: payload }))
   }
 
@@ -133,7 +134,7 @@ export class Connection {
 
     const frame = await new Promise<P.Frame>((resolve, reject) => {
       if (!this.isOpen) {
-        reject(new ProtocolError(P.ErrInternal, 'a conexão está fechada'))
+        reject(new ProtocolError(P.ErrInternal, t('a conexão está fechada')))
         return
       }
       const settle = (fn: () => void) => {
@@ -143,7 +144,7 @@ export class Connection {
         fn()
       }
       const timer = setTimeout(
-        () => settle(() => reject(new ProtocolError(P.ErrInternal, `${type} não respondeu`))),
+        () => settle(() => reject(new ProtocolError(P.ErrInternal, t('O servidor demorou para responder. Tente novamente.')))),
         REQUEST_TIMEOUT,
       )
 
@@ -179,7 +180,7 @@ export class Connection {
    * caller that is cancelling a pairing has to say so on the wire as well.
    */
   stream(type: string, payload: unknown, onFrame: (frame: P.Frame) => void): () => void {
-    if (!this.isOpen) throw new ProtocolError(P.ErrInternal, 'a conexão está fechada')
+    if (!this.isOpen) throw new ProtocolError(P.ErrInternal, t('a conexão está fechada'))
     const reqID = `s${++this.counter}`
     this.streams.set(reqID, onFrame)
     this.socket.send(JSON.stringify({ t: type, r: reqID, p: payload }))
@@ -188,7 +189,7 @@ export class Connection {
     }
   }
 
-  close(reason = 'encerrado pelo cliente'): void {
+  close(reason = 'client closed'): void {
     if (this.closed) return
     this.closed = true
     try {
@@ -222,7 +223,7 @@ export class Connection {
     if (this.closed) return
     this.closed = true
     for (const waiter of this.waiters.values()) {
-      waiter.reject(new ProtocolError(P.ErrInternal, `a conexão fechou: ${reason}`))
+      waiter.reject(new ProtocolError(P.ErrInternal, t('a conexão fechou: {reason}', { reason })))
     }
     this.waiters.clear()
     // A stream has no promise to reject, so its listener is told the same way
@@ -230,7 +231,7 @@ export class Connection {
     for (const stream of this.streams.values()) {
       stream({
         t: P.TypeError,
-        p: { code: P.ErrInternal, message: `a conexão fechou: ${reason}` },
+        p: { code: P.ErrInternal, message: t('a conexão fechou: {reason}', { reason }) },
       })
     }
     this.streams.clear()
@@ -240,4 +241,20 @@ export class Connection {
 
 function routeKey(reqID: string, type: string): string {
   return `${reqID} ${type}`
+}
+
+/** Only exact, known server messages are translated. A broad error code such
+ * as internal/conflict cannot explain the failure and must not erase the
+ * actionable reason supplied by this or a self-hosted server. rawMessage keeps
+ * the original diagnostic available even when its display text is translated. */
+function protocolErrorMessage(message: string): string {
+  switch (message) {
+    case 'no such device': return t('Este número não foi encontrado neste espaço de trabalho.')
+    case 'WhatsApp connection is unavailable': return t('A conexão com o WhatsApp está indisponível no momento.')
+    case 'this number must be linked first': return t('Conecte este número ao WhatsApp antes de retomar a sincronização.')
+    case 'the WhatsApp session is no longer available': return t('A sessão do WhatsApp não está mais disponível. Conecte o número novamente.')
+    case 'pairing is already in progress for this device': return t('Este número já tem uma conexão em andamento. Aguarde ou cancele a tentativa anterior.')
+    case 'device name must contain 1 to 100 characters': return t('O nome do número precisa ter entre 1 e 100 caracteres.')
+    default: return t(message)
+  }
 }

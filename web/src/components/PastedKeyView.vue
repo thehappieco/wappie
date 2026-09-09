@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { ref } from 'vue'
 
 import {
@@ -25,7 +26,7 @@ const busy = ref(false)
 const error = ref('')
 
 // Enrolment
-const label = ref('arquivo')
+const label = ref('')
 const serverURL = ref('')
 const apiKey = ref('')
 const archiveKey = ref('')
@@ -50,7 +51,7 @@ async function doEnrol() {
   error.value = ''
   try {
     if (remember.value && passphrase.value !== confirm.value) {
-      throw new VaultError('as senhas não conferem', 'passphrase')
+      throw new VaultError(t('as senhas não conferem'), 'passphrase')
     }
     const session = remember.value
       ? await createVault({
@@ -78,7 +79,7 @@ async function doEnrol() {
 }
 
 async function forget() {
-  if (!window.confirm('Apagar a chave guardada neste navegador? Você precisará colá-la de novo.')) {
+  if (!window.confirm(t('Apagar a chave guardada neste navegador? Você precisará colá-la de novo.'))) {
     return
   }
   await forgetVault()
@@ -96,13 +97,13 @@ function describe(err: unknown): string {
     <div>
       <template v-if="stored">
         <h1>{{ stored.label }}</h1>
-        <p class="sub">A chave do arquivo está guardada neste navegador, selada por senha.</p>
+        <p class="sub">{{ t('A chave do histórico está guardada neste navegador, selada por senha.') }}</p>
 
         <div class="alert" v-if="error">{{ error }}</div>
 
         <form @submit.prevent="doUnlock">
           <div class="field">
-            <label for="pass">Senha</label>
+            <label for="pass">{{ t('Senha') }}</label>
             <input
               id="pass"
               v-model="passphrase"
@@ -112,87 +113,75 @@ function describe(err: unknown): string {
             />
           </div>
           <button class="primary" type="submit" :disabled="busy || !passphrase">
-            {{ busy ? 'Abrindo…' : 'Abrir o arquivo' }}
+            {{ busy ? t('Abrindo…') : t('Abrir o histórico') }}
           </button>
         </form>
 
-        <button class="linkish" @click="forget">Esquecer esta chave neste navegador</button>
+        <button class="linkish" @click="forget">{{ t('Esquecer esta chave neste navegador') }}</button>
         <br />
-        <button class="linkish" @click="emit('accounts')">Entrar com e-mail e senha</button>
+        <button class="linkish" @click="emit('accounts')">{{ t('Entrar com e-mail e senha') }}</button>
       </template>
 
       <template v-else>
-        <h1>Abrir o arquivo</h1>
-        <p class="sub">
-          O servidor guarda tudo selado e não consegue abrir nada. A chave privada vive aqui, neste
-          navegador, e em nenhum outro lugar.
-        </p>
+        <h1>{{ t('Abrir o histórico') }}</h1>
+        <p class="sub"> {{ t('O servidor guarda tudo selado e não consegue abrir nada. A chave privada vive aqui, neste navegador, e em nenhum outro lugar.') }} </p>
 
         <div class="alert" v-if="error">{{ error }}</div>
 
         <form @submit.prevent="doEnrol">
           <div class="field">
-            <label for="server">Servidor</label>
-            <input id="server" v-model="serverURL" placeholder="mesma origem desta página" />
-            <p class="hint">Deixe vazio para usar o servidor que serviu esta página.</p>
+            <label for="server">{{ t('Servidor') }}</label>
+            <input id="server" v-model="serverURL" :placeholder="t('mesma origem desta página')" />
+            <p class="hint">{{ t('Deixe vazio para usar o servidor que serviu esta página.') }}</p>
           </div>
 
           <div class="field">
-            <label for="apikey">Chave de API</label>
+            <label for="apikey">{{ t('Chave de API') }}</label>
             <input id="apikey" v-model="apiKey" type="password" autocomplete="off" />
           </div>
 
           <div class="field">
-            <label for="archive">Chave do arquivo</label>
+            <label for="archive">{{ t('Chave do histórico') }}</label>
             <textarea
               id="archive"
               v-model="archiveKey"
               rows="2"
               autocomplete="off"
               spellcheck="false"
-              placeholder="base64 ou hexadecimal, 32 bytes"
+              :placeholder="t('base64 ou hexadecimal, 32 bytes')"
             />
-            <p class="hint">
-              É a chave de <strong>um aparelho</strong>, não do tenant: cada conta WhatsApp tem a
-              sua, e quem tem uma não abre a outra. Nada no servidor consegue recuperá-la.
-            </p>
+            <p class="hint"> {{ t('É a chave de') }} <strong>{{ t('um aparelho') }}</strong>{{ t(', não do espaço de trabalho: cada conta WhatsApp tem a sua, e quem tem uma não abre a outra. Nada no servidor consegue recuperá-la.') }} </p>
           </div>
 
           <div class="field">
             <label>
-              <input type="checkbox" v-model="remember" style="width: auto; margin-right: 8px" />
-              Lembrar neste navegador, protegida por senha
-            </label>
+              <input type="checkbox" v-model="remember" style="width: auto; margin-right: 8px" /> {{ t('Lembrar neste navegador, protegida por senha') }} </label>
           </div>
 
           <template v-if="remember">
             <div class="field">
-              <label for="label">Nome deste arquivo</label>
+              <label for="label">{{ t('Nome deste histórico') }}</label>
               <input id="label" v-model="label" />
             </div>
             <div class="field">
-              <label for="new-pass">Senha</label>
+              <label for="new-pass">{{ t('Senha') }}</label>
               <input id="new-pass" v-model="passphrase" type="password" autocomplete="new-password" />
-              <p class="hint">Mínimo de 8 caracteres. É o que protege a chave em repouso.</p>
+              <p class="hint">{{ t('Mínimo de 8 caracteres. É o que protege a chave em repouso.') }}</p>
             </div>
             <div class="field">
-              <label for="confirm">Repita a senha</label>
+              <label for="confirm">{{ t('Repita a senha') }}</label>
               <input id="confirm" v-model="confirm" type="password" autocomplete="new-password" />
             </div>
           </template>
 
           <button class="primary" type="submit" :disabled="busy || !apiKey || !archiveKey">
-            {{ busy ? 'Abrindo…' : remember ? 'Guardar e abrir' : 'Abrir só desta vez' }}
+            {{ busy ? t('Abrindo…') : remember ? t('Guardar e abrir') : t('Abrir só desta vez') }}
           </button>
         </form>
 
-        <button class="linkish" @click="emit('accounts')">Entrar com e-mail e senha</button>
+        <button class="linkish" @click="emit('accounts')">{{ t('Entrar com e-mail e senha') }}</button>
 
-        <p class="note">
-          Perder a chave é perder o arquivo, para todo mundo, inclusive para quem opera o servidor.
-          Uma conta evita isso: a chave do aparelho fica selada para você, e há um código de
-          recuperação atrás dela.
-        </p>
+        <p class="note"> {{ t('Perder a chave é perder o histórico, para todo mundo, inclusive para quem opera o servidor. Uma conta evita isso: a chave do aparelho fica selada para você, e há um código de recuperação atrás dela.') }} </p>
       </template>
     </div>
   </div>

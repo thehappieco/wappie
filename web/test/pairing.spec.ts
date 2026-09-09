@@ -235,7 +235,7 @@ describe('pairing from the browser', () => {
     await pair({ method: 'code', phone: '+5511999999999', label: '', grantTo: [], receiptMode: 'passive' })
 
     expect(admin.pairing.phase).toBe('failed')
-    expect(admin.pairing.error).toMatch(/conta/)
+    expect(admin.pairing.error).toMatch(/membro/)
     // And nothing was started: a device row created here would be one nobody
     // could ever open.
     expect(server.sent.some((f) => f.t === P.TypePair)).toBe(false)

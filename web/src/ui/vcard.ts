@@ -1,3 +1,4 @@
+import { t } from './i18n'
 // Reading a contact card.
 //
 // WhatsApp sends a contact as a vCard: the whole card, as text, inside the
@@ -157,7 +158,7 @@ const labels: Record<string, string> = {
 
 function friendly(type: string): string {
   const key = type.toLowerCase()
-  return key in labels ? labels[key] : type
+  return key in labels ? (labels[key] ? t(labels[key]) : '') : type
 }
 
 /**

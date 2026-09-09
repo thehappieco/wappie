@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // Putting an attachment on WhatsApp's servers.
 //
 // Over HTTP and not the websocket, for the same reason downloads are: a two
@@ -91,19 +92,19 @@ export function describeUploadFailure(status: number, detail: string): UploadErr
   const text = detail.trim()
   switch (status) {
     case 400:
-      return new UploadError(text || 'o servidor recusou o pedido', status, false)
+      return new UploadError(text || t('o servidor recusou o pedido'), status, false)
     case 401:
-      return new UploadError('a credencial foi recusada; entre de novo', status, false)
+      return new UploadError(t('a credencial foi recusada; entre de novo'), status, false)
     case 404:
-      return new UploadError('esse aparelho não existe mais', status, false)
+      return new UploadError(t('esse aparelho não existe mais'), status, false)
     case 409:
-      return new UploadError('esse aparelho não está conectado ao WhatsApp agora', status, true)
+      return new UploadError(t('esse aparelho não está conectado ao WhatsApp agora'), status, true)
     case 413:
-      return new UploadError(text || 'o arquivo passa do limite deste servidor', status, false)
+      return new UploadError(text || t('o arquivo passa do limite deste servidor'), status, false)
     case 502:
-      return new UploadError('o WhatsApp recusou o arquivo: ' + (text || 'sem detalhe'), status, true)
+      return new UploadError(t('o WhatsApp recusou o arquivo: ') + (text || t('sem detalhe')), status, true)
     default:
-      return new UploadError(text || `o servidor respondeu ${status}`, status, status >= 500)
+      return new UploadError(text || t('o servidor respondeu {v0}', { v0: status }), status, status >= 500)
   }
 }
 
@@ -142,9 +143,9 @@ function viaXHR(url: string, request: UploadRequest): Promise<string> {
       }
       reject(describeUploadFailure(xhr.status, xhr.responseText ?? ''))
     }
-    xhr.onerror = () => reject(new UploadError('a conexão caiu durante o envio', 0, true))
-    xhr.ontimeout = () => reject(new UploadError('o envio demorou demais', 0, true))
-    xhr.onabort = () => reject(new UploadError('envio cancelado', 0, false))
+    xhr.onerror = () => reject(new UploadError(t('a conexão caiu durante o envio'), 0, true))
+    xhr.ontimeout = () => reject(new UploadError(t('o envio demorou demais'), 0, true))
+    xhr.onabort = () => reject(new UploadError(t('envio cancelado'), 0, false))
 
     request.signal?.addEventListener('abort', () => xhr.abort(), { once: true })
     // The body is the file itself. A multipart form would be uploaded as the

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { ref } from 'vue'
 
 import { AuthError, changePassword, MinPassword, setRecovery } from '../api/auth'
@@ -41,7 +42,7 @@ async function rotatePassword(event: SubmitEvent) {
   error.value = ''
   done.value = ''
   if (next.value !== confirm.value) {
-    error.value = 'as senhas não conferem'
+    error.value = t('as senhas não conferem')
     return
   }
   busy.value = true
@@ -57,7 +58,7 @@ async function rotatePassword(event: SubmitEvent) {
     current.value = ''
     next.value = ''
     confirm.value = ''
-    done.value = 'Senha trocada. Toda outra sessão desta conta foi encerrada.'
+    done.value = t('Senha trocada. Toda outra sessão desta conta foi encerrada.')
   } catch (err) {
     error.value = describe(err)
   } finally {
@@ -101,44 +102,44 @@ async function copyCode() {
 
 <template>
   <section class="console-panel account-settings" v-if="state.account">
-    <h2>Acesso e segurança</h2>
-    <p class="dim">Gerencie as formas de entrar na conta {{ state.account }}.</p>
+    <h2>{{ t('Acesso e segurança') }}</h2>
+    <p class="dim">{{ t('Gerencie as formas de entrar na conta {v0}.', { v0: state.account }) }}</p>
     <PasskeyPanel />
 
     <div class="alert" v-if="error" role="alert">{{ error }}</div>
     <div class="removed" v-if="done" role="status">{{ done }}</div>
 
     <section class="security-card">
-      <h3>Código de recuperação</h3>
-      <p class="dim">Uma forma de recuperar o acesso caso você perca sua senha e suas passkeys. Guarde-o em um lugar seguro.</p>
+      <h3>{{ t('Código de recuperação') }}</h3>
+      <p class="dim">{{ t('Uma forma de recuperar o acesso caso você perca sua senha e suas passkeys. Guarde-o em um lugar seguro.') }}</p>
       <div class="minted" v-if="recoveryCode">
-        <div class="minted-head">Anote este código. Ele não será mostrado novamente.</div>
+        <div class="minted-head">{{ t('Anote este código. Ele não será mostrado novamente.') }}</div>
         <code class="secret">{{ recoveryCode }}</code>
-        <button class="ghost small" type="button" @click="copyCode">Copiar</button>
-        <label class="dim"><input type="checkbox" v-model="acknowledged" style="width: auto; margin-right: 8px" /> Anotei em um lugar seguro</label>
-        <button class="ghost small" type="button" :disabled="!acknowledged" @click="recoveryCode = ''">Fechar</button>
+        <button class="ghost small" type="button" @click="copyCode">{{ t('Copiar') }}</button>
+        <label class="dim"><input type="checkbox" v-model="acknowledged" style="width: auto; margin-right: 8px" /> {{ t('Anotei em um lugar seguro') }}</label>
+        <button class="ghost small" type="button" :disabled="!acknowledged" @click="recoveryCode = ''">{{ t('Fechar') }}</button>
       </div>
-      <div class="alert" v-else-if="!state.hasRecovery">Sua conta ainda não tem um código de recuperação. Gere um para proteger seu acesso.</div>
+      <div class="alert" v-else-if="!state.hasRecovery">{{ t('Sua conta ainda não tem um código de recuperação. Gere um para proteger seu acesso.') }}</div>
       <form class="security-form" name="wappie-recovery" method="post" autocomplete="on" @submit.prevent="generateCode" v-if="!recoveryCode">
         <input name="username" :value="state.account" type="email" autocomplete="username" class="account-identifier" readonly tabindex="-1" aria-hidden="true" />
-        <label for="recovery-password">Confirme sua senha atual</label>
+        <label for="recovery-password">{{ t('Confirme sua senha atual') }}</label>
         <PasswordInput id="recovery-password" name="password" v-model="forCode" required autocomplete="current-password" :disabled="busy" />
-        <button class="ghost small" type="submit" :disabled="busy">{{ busy ? 'Aguarde…' : state.hasRecovery ? 'Gerar novo código' : 'Gerar código de recuperação' }}</button>
+        <button class="ghost small" type="submit" :disabled="busy">{{ busy ? t('Aguarde…') : state.hasRecovery ? t('Gerar novo código') : t('Gerar código de recuperação') }}</button>
       </form>
     </section>
 
     <section class="security-card">
-      <h3>Senha</h3>
-      <p class="dim">Use pelo menos {{ MinPassword }} caracteres. Ao trocar a senha, suas outras sessões serão encerradas. As passkeys cadastradas continuam válidas.</p>
+      <h3>{{ t('Senha') }}</h3>
+      <p class="dim">{{ t('Use pelo menos {v0} caracteres. Ao trocar a senha, suas outras sessões serão encerradas. As passkeys cadastradas continuam válidas.', { v0: MinPassword }) }}</p>
       <form class="security-form" name="wappie-password-change" method="post" autocomplete="on" @submit.prevent="rotatePassword">
         <input name="username" :value="state.account" type="email" autocomplete="username" class="account-identifier" readonly tabindex="-1" aria-hidden="true" />
-        <label for="current-password">Senha atual</label>
+        <label for="current-password">{{ t('Senha atual') }}</label>
         <PasswordInput id="current-password" name="password" v-model="current" required autocomplete="current-password" :disabled="busy" />
-        <label for="new-password">Nova senha</label>
+        <label for="new-password">{{ t('Nova senha') }}</label>
         <PasswordInput id="new-password" name="new-password" v-model="next" required :minlength="MinPassword" autocomplete="new-password" :disabled="busy" />
-        <label for="confirm-password">Repita a nova senha</label>
+        <label for="confirm-password">{{ t('Repita a nova senha') }}</label>
         <PasswordInput id="confirm-password" name="confirm-password" v-model="confirm" required autocomplete="new-password" :disabled="busy" />
-        <button class="primary small" type="submit" :disabled="busy">{{ busy ? 'Atualizando…' : 'Atualizar senha' }}</button>
+        <button class="primary small" type="submit" :disabled="busy">{{ busy ? t('Atualizando…') : t('Atualizar senha') }}</button>
       </form>
     </section>
   </section>

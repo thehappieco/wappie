@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // An account: what a password turns into, and what that opens.
 //
 // The password never leaves this file. Argon2id turns it into a master key,
@@ -67,7 +68,7 @@ export interface Derived {
  */
 export async function derive(password: string, salt: Bytes, params: KDFParams): Promise<Derived> {
   if (params.alg !== 'argon2id') {
-    throw new AccountError(`derivação desconhecida: ${params.alg}`, 'kdf')
+    throw new AccountError(t('Esta conta usa uma proteção que esta versão ainda não reconhece.'), 'kdf')
   }
   const master = await stretch(password, salt, params)
 
@@ -127,9 +128,9 @@ async function stretch(password: string, salt: Bytes, params: KDFParams): Promis
       return await new Promise<Bytes>((resolve, reject) => {
         worker.onmessage = (event: MessageEvent<{ ok: boolean; master?: Bytes; error?: string }>) => {
           if (event.data.ok && event.data.master) resolve(event.data.master)
-          else reject(new AccountError(event.data.error ?? 'a derivação falhou', 'kdf'))
+          else reject(new AccountError(t('Não foi possível preparar a proteção da conta. Tente novamente.'), 'kdf'))
         }
-        worker.onerror = () => reject(new AccountError('a derivação falhou', 'kdf'))
+        worker.onerror = () => reject(new AccountError(t('Não foi possível preparar a proteção da conta. Tente novamente.'), 'kdf'))
         worker.postMessage({ password, salt, m: params.m, t: params.t, p: params.p })
       })
     } finally {
@@ -237,7 +238,7 @@ export async function unwrapPrivateKey(
       // Not a v2 blob for this account, or the wrong key. Try v1 below.
     }
   }
-  if (blob.length <= NONCE_LEN) throw new AccountError('a chave guardada está truncada', 'wrap')
+  if (blob.length <= NONCE_LEN) throw new AccountError(t('a chave guardada está truncada'), 'wrap')
   try {
     const plain = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: blob.subarray(0, NONCE_LEN) },
@@ -246,7 +247,7 @@ export async function unwrapPrivateKey(
     )
     return { privateKey: new Uint8Array(plain) as Bytes, stale: true }
   } catch {
-    throw new AccountError('senha incorreta', 'wrap')
+    throw new AccountError(t('senha incorreta'), 'wrap')
   }
 }
 
@@ -290,7 +291,7 @@ export function normaliseRecoveryCode(code: string): string {
     .replace(/U/g, 'V')
   if (cleaned.length !== CODE_GROUPS * GROUP_LEN) {
     throw new AccountError(
-      `um código de recuperação tem ${CODE_GROUPS * GROUP_LEN} caracteres`,
+      t('um código de recuperação tem {count} caracteres', { count: CODE_GROUPS * GROUP_LEN }),
       'recovery',
     )
   }

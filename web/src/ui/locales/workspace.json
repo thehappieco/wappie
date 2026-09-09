@@ -1,0 +1,1190 @@
+{
+  ", por campo do protobuf:": [
+    ", by protobuf field:",
+    ", por campo de protobuf:",
+    ", par champ protobuf :",
+    ", nach Protobuf-Feld:"
+  ],
+  ", {v0} convertidas nessa passada": [
+    ", {v0} converted in this pass",
+    ", {v0} convertidos en esta pasada",
+    ", {v0} convertis lors de ce passage",
+    ", {v0} in diesem Durchlauf konvertiert"
+  ],
+  "A conta da integração precisa ter permissão para cada número. Para ler as mensagens, também precisa da chave do histórico concedida a ela.": [
+    "The integration account needs permission for each number. To read messages, it also needs access to the history key.",
+    "La cuenta de integración necesita permisos para cada número. Para leer los mensajes, también necesita que se le conceda la clave del historial.",
+    "Le compte d’intégration doit disposer des autorisations pour chaque numéro. Pour lire les messages, il doit aussi avoir accès à la clé de l’historique.",
+    "Das Integrationskonto benötigt Berechtigungen für jede Nummer. Zum Lesen von Nachrichten muss ihm auch der Schlüssel für den Verlauf gewährt werden."
+  ],
+  "A leitura de um número precisa estar liberada para sua conta": [
+    "Your account needs read access to a number",
+    "Tu cuenta necesita acceso de lectura a un número",
+    "Votre compte doit avoir accès à la lecture d’un numéro",
+    "Ihr Konto benötigt Lesezugriff auf eine Nummer"
+  ],
+  "Abra as conversas de um número primeiro.": [
+    "Open a number’s conversations first.",
+    "Abre primero las conversaciones de un número.",
+    "Ouvrez d’abord les conversations d’un numéro.",
+    "Öffnen Sie zuerst die Chats einer Nummer."
+  ],
+  "Abrir espaço": [
+    "Open workspace",
+    "Abrir espacio",
+    "Ouvrir l’espace",
+    "Arbeitsbereich öffnen"
+  ],
+  "Abrir o aplicativo de mensagens": [
+    "Open the messaging app",
+    "Abrir la aplicación de mensajes",
+    "Ouvrir l’application de messagerie",
+    "Nachrichten-App öffnen"
+  ],
+  "Aceitar convite": [
+    "Accept invitation",
+    "Aceptar invitación",
+    "Accepter l’invitation",
+    "Einladung annehmen"
+  ],
+  "Acessar conversas. Exige também a chave concedida em Detalhes do número.": [
+    "Access conversations. Also requires the key granted in Number details.",
+    "Acceder a las conversaciones. También requiere la clave concedida en Detalles del número.",
+    "Accéder aux conversations. Nécessite aussi la clé accordée dans Détails du numéro.",
+    "Auf Chats zugreifen. Erfordert auch den unter Nummerndetails gewährten Schlüssel."
+  ],
+  "Acesso": [
+    "Access",
+    "Acceso",
+    "Accès",
+    "Zugriff"
+  ],
+  "Acesso ao console": [
+    "Console access",
+    "Acceso a la consola",
+    "Accès à la console",
+    "Konsolenzugriff"
+  ],
+  "Acesso atualizado. Sessões anteriores deste membro foram encerradas.": [
+    "Access updated. This member’s previous sessions have ended.",
+    "Acceso actualizado. Se cerraron las sesiones anteriores de este miembro.",
+    "Accès mis à jour. Les sessions précédentes de ce membre ont été fermées.",
+    "Zugriff aktualisiert. Frühere Sitzungen dieses Mitglieds wurden beendet."
+  ],
+  "Acesso de {name}": [
+    "Access for {name}",
+    "Acceso de {name}",
+    "Accès de {name}",
+    "Zugriff für {name}"
+  ],
+  "Acessos por número": [
+    "Access by number",
+    "Accesos por número",
+    "Accès par numéro",
+    "Zugriff je Nummer"
+  ],
+  "Acompanhe a capacidade do espaço e o histórico da assinatura.": [
+    "Track workspace capacity and subscription history.",
+    "Consulta la capacidad del espacio y el historial de la suscripción.",
+    "Consultez la capacité de l’espace et l’historique de l’abonnement.",
+    "Verfolgen Sie die Kapazität des Arbeitsbereichs und den Abonnementverlauf."
+  ],
+  "Administrador": [
+    "Administrator",
+    "Administrador",
+    "Administrateur",
+    "Administrator"
+  ],
+  "Ambiente de simulação. Nenhum cartão é solicitado e nenhum valor é cobrado.": [
+    "Simulation environment. No card is required and nothing is charged.",
+    "Entorno de simulación. No se solicita ninguna tarjeta ni se realiza ningún cobro.",
+    "Environnement de simulation. Aucune carte n’est demandée et aucun montant n’est facturé.",
+    "Simulationsumgebung. Es wird keine Karte benötigt und nichts berechnet."
+  ],
+  "Anexos": [
+    "Attachments",
+    "Archivos adjuntos",
+    "Pièces jointes",
+    "Anhänge"
+  ],
+  "Ao revogar um token, as conexões que o utilizam são encerradas imediatamente.": [
+    "Revoking a token immediately closes connections that use it.",
+    "Al revocar un token, las conexiones que lo utilizan se cierran inmediatamente.",
+    "La révocation d’un jeton ferme immédiatement les connexions qui l’utilisent.",
+    "Beim Widerrufen eines Tokens werden alle damit verbundenen Verbindungen sofort beendet."
+  ],
+  "Ao trocar de espaço de trabalho, confirme sua entrada para acessar as conversas dele.": [
+    "When switching workspaces, sign in again to access its conversations.",
+    "Al cambiar de espacio de trabajo, confirma tu acceso para abrir sus conversaciones.",
+    "Lorsque vous changez d’espace de travail, confirmez votre connexion pour accéder à ses conversations.",
+    "Bestätigen Sie beim Wechsel des Arbeitsbereichs Ihre Anmeldung, um auf dessen Chats zuzugreifen."
+  ],
+  "Aprovada": [
+    "Approved",
+    "Aprobada",
+    "Approuvée",
+    "Genehmigt"
+  ],
+  "Aprovar (simulação)": [
+    "Approve (simulation)",
+    "Aprobar (simulación)",
+    "Approuver (simulation)",
+    "Genehmigen (Simulation)"
+  ],
+  "As permissões aparecerão aqui depois de selecionar um número.": [
+    "Permissions will appear here after you select a number.",
+    "Los permisos aparecerán aquí al seleccionar un número.",
+    "Les autorisations apparaîtront ici après la sélection d’un numéro.",
+    "Nach Auswahl einer Nummer werden hier die Berechtigungen angezeigt."
+  ],
+  "Assinatura": [
+    "Subscription",
+    "Suscripción",
+    "Abonnement",
+    "Abonnement"
+  ],
+  "Assinatura indisponível.": [
+    "Subscription unavailable.",
+    "Suscripción no disponible.",
+    "Abonnement indisponible.",
+    "Abonnement nicht verfügbar."
+  ],
+  "Assinatura · piloto gratuito": [
+    "Subscription · free pilot",
+    "Suscripción · piloto gratuito",
+    "Abonnement · pilote gratuit",
+    "Abonnement · kostenloser Pilotbetrieb"
+  ],
+  "Atividade": [
+    "Activity",
+    "Actividad",
+    "Activité",
+    "Aktivität"
+  ],
+  "Ativo": [
+    "Active",
+    "Activo",
+    "Actif",
+    "Aktiv"
+  ],
+  "Atualizar": [
+    "Refresh",
+    "Actualizar",
+    "Actualiser",
+    "Aktualisieren"
+  ],
+  "Avatar do espaço de trabalho": [
+    "Workspace avatar",
+    "Avatar del espacio de trabajo",
+    "Avatar de l’espace de travail",
+    "Avatar des Arbeitsbereichs"
+  ],
+  "Ação": [
+    "Action",
+    "Acción",
+    "Action",
+    "Aktion"
+  ],
+  "Capacidade do espaço": [
+    "Workspace capacity",
+    "Capacidad del espacio",
+    "Capacité de l’espace",
+    "Kapazität des Arbeitsbereichs"
+  ],
+  "Carregando membros…": [
+    "Loading members…",
+    "Cargando miembros…",
+    "Chargement des membres…",
+    "Mitglieder werden geladen…"
+  ],
+  "Carregando números…": [
+    "Loading numbers…",
+    "Cargando números…",
+    "Chargement des numéros…",
+    "Nummern werden geladen…"
+  ],
+  "Carregando permissões…": [
+    "Loading permissions…",
+    "Cargando permisos…",
+    "Chargement des autorisations…",
+    "Berechtigungen werden geladen…"
+  ],
+  "Chave": [
+    "Key",
+    "Clave",
+    "Clé",
+    "Schlüssel"
+  ],
+  "Cole o código recebido para participar de outro espaço de trabalho.": [
+    "Paste the code you received to join another workspace.",
+    "Pega el código recibido para unirte a otro espacio de trabajo.",
+    "Collez le code reçu pour rejoindre un autre espace de travail.",
+    "Fügen Sie den erhaltenen Code ein, um einem anderen Arbeitsbereich beizutreten."
+  ],
+  "Cole seu código de convite": [
+    "Paste your invitation code",
+    "Pega tu código de invitación",
+    "Collez votre code d’invitation",
+    "Einladungscode einfügen"
+  ],
+  "Concedida": [
+    "Granted",
+    "Concedida",
+    "Accordée",
+    "Gewährt"
+  ],
+  "Conectados agora": [
+    "Connected now",
+    "Conectados ahora",
+    "Connectés actuellement",
+    "Jetzt verbunden"
+  ],
+  "Conecte e acompanhe os números do WhatsApp do seu espaço de trabalho.": [
+    "Connect and monitor your workspace’s WhatsApp numbers.",
+    "Conecta y supervisa los números de WhatsApp de tu espacio de trabajo.",
+    "Connectez et suivez les numéros WhatsApp de votre espace de travail.",
+    "Verbinden und überwachen Sie die WhatsApp-Nummern Ihres Arbeitsbereichs."
+  ],
+  "Conecte seu primeiro número": [
+    "Connect your first number",
+    "Conecta tu primer número",
+    "Connectez votre premier numéro",
+    "Erste Nummer verbinden"
+  ],
+  "Conecte seus sistemas ao Wappie com acessos separados. Escolha o que cada token poderá fazer. O conteúdo das conversas continua protegido pelas chaves concedidas à conta da integração.": [
+    "Connect your systems to Wappie with separate access. Choose what each token can do. Conversation content remains protected by the keys granted to the integration account.",
+    "Conecta tus sistemas a Wappie con accesos separados. Elige qué puede hacer cada token. El contenido de las conversaciones sigue protegido por las claves concedidas a la cuenta de integración.",
+    "Connectez vos systèmes à Wappie avec des accès distincts. Choisissez les actions permises pour chaque jeton. Le contenu des conversations reste protégé par les clés accordées au compte d’intégration.",
+    "Verbinden Sie Ihre Systeme mit Wappie über getrennte Zugänge. Legen Sie fest, was jeder Token tun darf. Die Chatinhalte bleiben durch die dem Integrationskonto gewährten Schlüssel geschützt."
+  ],
+  "Conectou {v0}": [
+    "Connected {v0}",
+    "Se conectó {v0}",
+    "Connecté {v0}",
+    "Verbunden {v0}"
+  ],
+  "Console": [
+    "Console",
+    "Consola",
+    "Console",
+    "Konsole"
+  ],
+  "Consulta e acompanha o histórico cifrado dos números permitidos.": [
+    "Read and monitor the encrypted history of authorized numbers.",
+    "Consulta y supervisa el historial cifrado de los números autorizados.",
+    "Consulter et suivre l’historique chiffré des numéros autorisés.",
+    "Verschlüsselten Verlauf der erlaubten Nummern abrufen und verfolgen."
+  ],
+  "Consulte o processamento e a compatibilidade do histórico de conversas.": [
+    "Check processing and compatibility of conversation history.",
+    "Consulta el procesamiento y la compatibilidad del historial de conversaciones.",
+    "Consultez le traitement et la compatibilité de l’historique des conversations.",
+    "Prüfen Sie die Verarbeitung und Kompatibilität des Chatverlaufs."
+  ],
+  "Conta": [
+    "Account",
+    "Cuenta",
+    "Compte",
+    "Konto"
+  ],
+  "Conta da integração": [
+    "Integration account",
+    "Cuenta de integración",
+    "Compte d’intégration",
+    "Integrationskonto"
+  ],
+  "Conta de serviço cujas concessões a chave carrega": [
+    "Service account whose grants this key uses",
+    "Cuenta de servicio cuyos permisos utiliza esta clave",
+    "Compte de service dont cette clé utilise les autorisations",
+    "Dienstkonto, dessen Zugriffsrechte dieser Schlüssel verwendet"
+  ],
+  "Controla o espaço e pode definir outros proprietários e administradores. É necessário manter ao menos um proprietário ativo.": [
+    "Controls the workspace and can appoint other owners and administrators. At least one active owner is required.",
+    "Controla el espacio y puede designar otros propietarios y administradores. Debe mantenerse al menos un propietario activo.",
+    "Contrôle l’espace et peut désigner d’autres propriétaires et administrateurs. Au moins un propriétaire actif est nécessaire.",
+    "Verwaltet den Arbeitsbereich und kann weitere Inhaber und Administratoren bestimmen. Mindestens ein aktiver Inhaber muss erhalten bleiben."
+  ],
+  "Conversas": [
+    "Chats",
+    "Chats",
+    "Conversations",
+    "Chats"
+  ],
+  "Convidar uma pessoa": [
+    "Invite someone",
+    "Invitar a una persona",
+    "Inviter une personne",
+    "Person einladen"
+  ],
+  "Convide pessoas e organize os papéis da sua equipe.": [
+    "Invite people and organize your team’s roles.",
+    "Invita a personas y organiza los roles de tu equipo.",
+    "Invitez des personnes et organisez les rôles de votre équipe.",
+    "Laden Sie Personen ein und organisieren Sie die Rollen Ihres Teams."
+  ],
+  "Convite aceito. Selecione o espaço e confirme sua senha para abri-lo.": [
+    "Invitation accepted. Select the workspace and confirm your password to open it.",
+    "Invitación aceptada. Selecciona el espacio y confirma tu contraseña para abrirlo.",
+    "Invitation acceptée. Sélectionnez l’espace et confirmez votre mot de passe pour l’ouvrir.",
+    "Einladung angenommen. Wählen Sie den Arbeitsbereich und bestätigen Sie Ihr Passwort, um ihn zu öffnen."
+  ],
+  "Convite criado": [
+    "Invitation created",
+    "Invitación creada",
+    "Invitation créée",
+    "Einladung erstellt"
+  ],
+  "Convite de uso único, válido por sete dias. Copie e compartilhe com a pessoa.": [
+    "Single-use invitation, valid for seven days. Copy it and share it with the person.",
+    "Invitación de un solo uso, válida durante siete días. Cópiala y compártela con la persona.",
+    "Invitation à usage unique, valable sept jours. Copiez-la et partagez-la avec la personne.",
+    "Einmalige Einladung, sieben Tage gültig. Kopieren Sie sie und teilen Sie sie mit der Person."
+  ],
+  "Copie agora. Esta é a única vez que a chave aparece.": [
+    "Copy it now. This is the only time the key is shown.",
+    "Cópiala ahora. Esta es la única vez que se muestra la clave.",
+    "Copiez-la maintenant. La clé ne sera affichée qu’une seule fois.",
+    "Jetzt kopieren. Der Schlüssel wird nur dieses eine Mal angezeigt."
+  ],
+  "Copie o código e compartilhe com a pessoa convidada.": [
+    "Copy the code and share it with the invited person.",
+    "Copia el código y compártelo con la persona invitada.",
+    "Copiez le code et partagez-le avec la personne invitée.",
+    "Kopieren Sie den Code und teilen Sie ihn mit der eingeladenen Person."
+  ],
+  "Criar convite": [
+    "Create invitation",
+    "Crear invitación",
+    "Créer une invitation",
+    "Einladung erstellen"
+  ],
+  "Crie e acompanhe as chaves de acesso dos seus sistemas.": [
+    "Create and manage access keys for your systems.",
+    "Crea y administra las claves de acceso de tus sistemas.",
+    "Créez et gérez les clés d’accès de vos systèmes.",
+    "Erstellen und verwalten Sie die Zugriffsschlüssel Ihrer Systeme."
+  ],
+  "Data": [
+    "Date",
+    "Fecha",
+    "Date",
+    "Datum"
+  ],
+  "Defina quem pode ler, enviar ou gerenciar cada número.": [
+    "Choose who can read, send, or manage each number.",
+    "Define quién puede leer, enviar o gestionar cada número.",
+    "Définissez qui peut lire, envoyer ou gérer chaque numéro.",
+    "Legen Sie fest, wer jede Nummer lesen, Nachrichten senden oder verwalten darf."
+  ],
+  "Desativado": [
+    "Disabled",
+    "Desactivado",
+    "Désactivé",
+    "Deaktiviert"
+  ],
+  "Desligar": [
+    "Disconnect",
+    "Desconectar",
+    "Déconnecter",
+    "Trennen"
+  ],
+  "Detalhes": [
+    "Details",
+    "Detalles",
+    "Détails",
+    "Details"
+  ],
+  "Diagnóstico": [
+    "Diagnostics",
+    "Diagnóstico",
+    "Diagnostic",
+    "Diagnose"
+  ],
+  "Email": [
+    "Email",
+    "Correo electrónico",
+    "E-mail",
+    "E-Mail"
+  ],
+  "Entre com sua conta.": [
+    "Sign in to your account.",
+    "Inicia sesión con tu cuenta.",
+    "Connectez-vous à votre compte.",
+    "Melden Sie sich mit Ihrem Konto an."
+  ],
+  "Enviar": [
+    "Send",
+    "Enviar",
+    "Envoyer",
+    "Senden"
+  ],
+  "Enviar mensagens por este número.": [
+    "Send messages from this number.",
+    "Enviar mensajes desde este número.",
+    "Envoyer des messages depuis ce numéro.",
+    "Nachrichten über diese Nummer senden."
+  ],
+  "Escolha um espaço": [
+    "Choose a workspace",
+    "Elige un espacio",
+    "Choisissez un espace",
+    "Arbeitsbereich auswählen"
+  ],
+  "Escolha um número": [
+    "Choose a number",
+    "Elige un número",
+    "Choisissez un numéro",
+    "Nummer auswählen"
+  ],
+  "Escolha um número e defina o que cada pessoa pode fazer.": [
+    "Choose a number and set what each person can do.",
+    "Elige un número y define qué puede hacer cada persona.",
+    "Choisissez un numéro et définissez ce que chaque personne peut faire.",
+    "Wählen Sie eine Nummer und legen Sie die Rechte jeder Person fest."
+  ],
+  "Escolher avatar": [
+    "Choose avatar",
+    "Elegir avatar",
+    "Choisir un avatar",
+    "Avatar auswählen"
+  ],
+  "Espaço compartilhado": [
+    "Shared workspace",
+    "Espacio compartido",
+    "Espace partagé",
+    "Gemeinsamer Arbeitsbereich"
+  ],
+  "Espaço de trabalho": [
+    "Workspace",
+    "Espacio de trabajo",
+    "Espace de travail",
+    "Arbeitsbereich"
+  ],
+  "Espaço de trabalho atualizado.": [
+    "Workspace updated.",
+    "Espacio de trabajo actualizado.",
+    "Espace de travail mis à jour.",
+    "Arbeitsbereich aktualisiert."
+  ],
+  "Ex.: integração de atendimento": [
+    "E.g. support integration",
+    "Ej.: integración de atención al cliente",
+    "Ex. : intégration du support",
+    "Z. B. Support-Integration"
+  ],
+  "Gerar": [
+    "Generate",
+    "Generar",
+    "Générer",
+    "Erstellen"
+  ],
+  "Gerencia números, integrações, permissões e membros. Não pode alterar proprietários nem outros administradores.": [
+    "Manages numbers, integrations, permissions, and members. Cannot modify owners or other administrators.",
+    "Gestiona números, integraciones, permisos y miembros. No puede modificar propietarios ni otros administradores.",
+    "Gère les numéros, les intégrations, les autorisations et les membres. Ne peut pas modifier les propriétaires ni les autres administrateurs.",
+    "Verwaltet Nummern, Integrationen, Berechtigungen und Mitglieder. Kann Inhaber und andere Administratoren nicht ändern."
+  ],
+  "Gerenciar": [
+    "Manage",
+    "Gestionar",
+    "Gérer",
+    "Verwalten"
+  ],
+  "Gerenciar o vínculo, a conexão e as configurações deste número. Proprietários e administradores já têm esse acesso.": [
+    "Manage this number’s pairing, connection, and settings. Owners and administrators already have this access.",
+    "Gestionar la vinculación, la conexión y la configuración de este número. Los propietarios y administradores ya tienen este acceso.",
+    "Gérer l’association, la connexion et les paramètres de ce numéro. Les propriétaires et administrateurs disposent déjà de cet accès.",
+    "Kopplung, Verbindung und Einstellungen dieser Nummer verwalten. Inhaber und Administratoren haben diesen Zugriff bereits."
+  ],
+  "Inclui leitura e envio; também permite vincular, pausar números e solicitar histórico. Não administra membros nem pagamentos.": [
+    "Includes reading and sending; also allows pairing, pausing numbers, and requesting history. Does not manage members or payments.",
+    "Incluye lectura y envío; también permite vincular, pausar números y solicitar el historial. No administra miembros ni pagos.",
+    "Inclut la lecture et l’envoi ; permet aussi d’associer, de mettre en pause les numéros et de demander l’historique. Ne gère ni les membres ni les paiements.",
+    "Umfasst Lesen und Senden sowie das Koppeln und Pausieren von Nummern und das Anfordern des Verlaufs. Erlaubt keine Verwaltung von Mitgliedern oder Zahlungen."
+  ],
+  "Inclui leitura e permite enviar mensagens e anexos pelos números autorizados.": [
+    "Includes reading and allows sending messages and attachments from authorized numbers.",
+    "Incluye lectura y permite enviar mensajes y archivos adjuntos desde los números autorizados.",
+    "Inclut la lecture et permet l’envoi de messages et de pièces jointes depuis les numéros autorisés.",
+    "Umfasst Lesen und das Senden von Nachrichten und Anhängen über erlaubte Nummern."
+  ],
+  "Integração": [
+    "Integration",
+    "Integración",
+    "Intégration",
+    "Integration"
+  ],
+  "Integrações": [
+    "Integrations",
+    "Integraciones",
+    "Intégrations",
+    "Integrationen"
+  ],
+  "JPG, PNG ou WebP. A imagem será ajustada ao formato quadrado.": [
+    "JPG, PNG, or WebP. The image will be cropped to a square.",
+    "JPG, PNG o WebP. La imagen se ajustará a un formato cuadrado.",
+    "JPG, PNG ou WebP. L’image sera recadrée au format carré.",
+    "JPG, PNG oder WebP. Das Bild wird quadratisch zugeschnitten."
+  ],
+  "Já copiei": [
+    "I’ve copied it",
+    "Ya la copié",
+    "C’est copié",
+    "Bereits kopiert"
+  ],
+  "Ler": [
+    "Read",
+    "Leer",
+    "Lire",
+    "Lesen"
+  ],
+  "Membro": [
+    "Member",
+    "Miembro",
+    "Membre",
+    "Mitglied"
+  ],
+  "Membros": [
+    "Members",
+    "Miembros",
+    "Membres",
+    "Mitglieder"
+  ],
+  "Membros do espaço de trabalho": [
+    "Workspace members",
+    "Miembros del espacio de trabajo",
+    "Membres de l’espace de travail",
+    "Mitglieder des Arbeitsbereichs"
+  ],
+  "Membros são as pessoas que participam deste espaço. O papel define o que podem administrar; o acesso às conversas é definido em Permissões.": [
+    "Members are the people in this workspace. Their role determines what they can manage; conversation access is set in Permissions.",
+    "Los miembros son las personas que participan en este espacio. El rol define qué pueden administrar; el acceso a las conversaciones se configura en Permisos.",
+    "Les membres sont les personnes qui participent à cet espace. Leur rôle définit ce qu’ils peuvent administrer ; l’accès aux conversations se règle dans Autorisations.",
+    "Mitglieder sind die Personen in diesem Arbeitsbereich. Ihre Rolle bestimmt, was sie verwalten dürfen; der Zugriff auf Chats wird unter Berechtigungen festgelegt."
+  ],
+  "Mensagens": [
+    "Messages",
+    "Mensajes",
+    "Messages",
+    "Nachrichten"
+  ],
+  "Mensagens no histórico": [
+    "Messages in history",
+    "Mensajes en el historial",
+    "Messages dans l’historique",
+    "Nachrichten im Verlauf"
+  ],
+  "Mensagens que esta versão ainda não lê": [
+    "Messages this version cannot read yet",
+    "Mensajes que esta versión aún no puede leer",
+    "Messages que cette version ne peut pas encore lire",
+    "Nachrichten, die diese Version noch nicht lesen kann"
+  ],
+  "Minha conta": [
+    "My account",
+    "Mi cuenta",
+    "Mon compte",
+    "Mein Konto"
+  ],
+  "Navegação do console": [
+    "Console navigation",
+    "Navegación de la consola",
+    "Navigation de la console",
+    "Konsolennavigation"
+  ],
+  "Nenhum membro encontrado.": [
+    "No members found.",
+    "No se encontraron miembros.",
+    "Aucun membre trouvé.",
+    "Keine Mitglieder gefunden."
+  ],
+  "Nenhum token criado. Gere um para conectar seu primeiro sistema.": [
+    "No tokens yet. Generate one to connect your first system.",
+    "Aún no hay tokens. Genera uno para conectar tu primer sistema.",
+    "Aucun jeton créé. Générez-en un pour connecter votre premier système.",
+    "Noch keine Tokens erstellt. Erstellen Sie einen, um Ihr erstes System zu verbinden."
+  ],
+  "Nenhuma permissão cadastrada para este número.": [
+    "No permissions set for this number.",
+    "No hay permisos configurados para este número.",
+    "Aucune autorisation définie pour ce numéro.",
+    "Für diese Nummer sind keine Berechtigungen festgelegt."
+  ],
+  "Nenhuma.": [
+    "None.",
+    "Ninguna.",
+    "Aucune.",
+    "Keine."
+  ],
+  "Nome do espaço de trabalho": [
+    "Workspace name",
+    "Nombre del espacio de trabajo",
+    "Nom de l’espace de travail",
+    "Name des Arbeitsbereichs"
+  ],
+  "Nome do token": [
+    "Token name",
+    "Nombre del token",
+    "Nom du jeton",
+    "Token-Name"
+  ],
+  "Não": [
+    "No",
+    "No",
+    "Non",
+    "Nein"
+  ],
+  "Não foi possível abrir as conversas. Tente novamente.": [
+    "Could not open conversations. Try again.",
+    "No se pudieron abrir las conversaciones. Inténtalo de nuevo.",
+    "Impossible d’ouvrir les conversations. Réessayez.",
+    "Die Chats konnten nicht geöffnet werden. Versuchen Sie es erneut."
+  ],
+  "Número ainda não conectado": [
+    "Number not connected yet",
+    "Número aún no conectado",
+    "Numéro pas encore connecté",
+    "Nummer noch nicht verbunden"
+  ],
+  "Número do WhatsApp": [
+    "WhatsApp number",
+    "Número de WhatsApp",
+    "Numéro WhatsApp",
+    "WhatsApp-Nummer"
+  ],
+  "Número removido: {v0} mensagens, {v1} conversas e {v2} anexos apagados.": [
+    "Number removed: {v0} messages, {v1} chats, and {v2} attachments deleted.",
+    "Número eliminado: se borraron {v0} mensajes, {v1} chats y {v2} archivos adjuntos.",
+    "Numéro supprimé : {v0} messages, {v1} conversations et {v2} pièces jointes supprimés.",
+    "Nummer entfernt: {v0} Nachrichten, {v1} Chats und {v2} Anhänge gelöscht."
+  ],
+  "Número sem nome": [
+    "Unnamed number",
+    "Número sin nombre",
+    "Numéro sans nom",
+    "Unbenannte Nummer"
+  ],
+  "Números": [
+    "Numbers",
+    "Números",
+    "Numéros",
+    "Nummern"
+  ],
+  "Números cadastrados": [
+    "Registered numbers",
+    "Números registrados",
+    "Numéros enregistrés",
+    "Registrierte Nummern"
+  ],
+  "Números do WhatsApp": [
+    "WhatsApp numbers",
+    "Números de WhatsApp",
+    "Numéros WhatsApp",
+    "WhatsApp-Nummern"
+  ],
+  "O convite poderá ser usado uma vez e será válido por sete dias.": [
+    "The invitation can be used once and is valid for seven days.",
+    "La invitación se puede usar una vez y es válida durante siete días.",
+    "L’invitation est à usage unique et valable sept jours.",
+    "Die Einladung ist einmal verwendbar und sieben Tage gültig."
+  ],
+  "Online": [
+    "Online",
+    "En línea",
+    "En ligne",
+    "Online"
+  ],
+  "Os números do WhatsApp do seu espaço de trabalho aparecerão aqui.": [
+    "Your workspace’s WhatsApp numbers will appear here.",
+    "Los números de WhatsApp de tu espacio de trabajo aparecerán aquí.",
+    "Les numéros WhatsApp de votre espace de travail apparaîtront ici.",
+    "Hier werden die WhatsApp-Nummern Ihres Arbeitsbereichs angezeigt."
+  ],
+  "Papel": [
+    "Role",
+    "Rol",
+    "Rôle",
+    "Rolle"
+  ],
+  "Papel de {name}": [
+    "Role for {name}",
+    "Rol de {name}",
+    "Rôle de {name}",
+    "Rolle von {name}"
+  ],
+  "Para desativar ou mudar o papel do último proprietário, primeiro convide outra pessoa e torne-a proprietária. Isso evita que o espaço fique sem alguém responsável.": [
+    "To disable or change the last owner’s role, first invite someone else and make them an owner. This keeps someone responsible for the workspace.",
+    "Para desactivar o cambiar el rol del último propietario, primero invita a otra persona y conviértela en propietaria. Así el espacio siempre tendrá una persona responsable.",
+    "Pour désactiver le dernier propriétaire ou modifier son rôle, invitez d’abord une autre personne et attribuez-lui ce rôle. L’espace garde ainsi toujours un responsable.",
+    "Um den letzten Inhaber zu deaktivieren oder seine Rolle zu ändern, laden Sie zuerst eine weitere Person ein und machen Sie sie zum Inhaber. So bleibt immer jemand für den Arbeitsbereich verantwortlich."
+  ],
+  "Pendente": [
+    "Pending",
+    "Pendiente",
+    "En attente",
+    "Ausstehend"
+  ],
+  "Permissão": [
+    "Permission",
+    "Permiso",
+    "Autorisation",
+    "Berechtigung"
+  ],
+  "Permissões": [
+    "Permissions",
+    "Permisos",
+    "Autorisations",
+    "Berechtigungen"
+  ],
+  "Permissões salvas. Para liberar leitura, conceda também a chave em Detalhes do número.": [
+    "Permissions saved. To enable reading, also grant the key in Number details.",
+    "Permisos guardados. Para habilitar la lectura, concede también la clave en Detalles del número.",
+    "Autorisations enregistrées. Pour permettre la lecture, accordez aussi la clé dans Détails du numéro.",
+    "Berechtigungen gespeichert. Gewähren Sie zum Lesen auch den Schlüssel unter Nummerndetails."
+  ],
+  "Permitir envio para {name}": [
+    "Allow sending for {name}",
+    "Permitir envío a {name}",
+    "Autoriser l’envoi pour {name}",
+    "Senden für {name} erlauben"
+  ],
+  "Permitir gerenciamento para {name}": [
+    "Allow management for {name}",
+    "Permitir gestión a {name}",
+    "Autoriser la gestion pour {name}",
+    "Verwaltung für {name} erlauben"
+  ],
+  "Permitir leitura para {name}": [
+    "Allow reading for {name}",
+    "Permitir lectura a {name}",
+    "Autoriser la lecture pour {name}",
+    "Lesen für {name} erlauben"
+  ],
+  "Personalize seu espaço de trabalho e participe de outros espaços.": [
+    "Customize your workspace and join other workspaces.",
+    "Personaliza tu espacio de trabajo y participa en otros espacios.",
+    "Personnalisez votre espace de travail et rejoignez d’autres espaces.",
+    "Passen Sie Ihren Arbeitsbereich an und treten Sie weiteren Arbeitsbereichen bei."
+  ],
+  "Proprietário": [
+    "Owner",
+    "Propietario",
+    "Propriétaire",
+    "Inhaber"
+  ],
+  "Proteja sua conta e gerencie suas formas de acesso.": [
+    "Protect your account and manage how you sign in.",
+    "Protege tu cuenta y administra tus formas de acceso.",
+    "Protégez votre compte et gérez vos moyens de connexion.",
+    "Schützen Sie Ihr Konto und verwalten Sie Ihre Anmeldemöglichkeiten."
+  ],
+  "Recebeu um convite?": [
+    "Received an invitation?",
+    "¿Recibiste una invitación?",
+    "Vous avez reçu une invitation ?",
+    "Einladung erhalten?"
+  ],
+  "Recusada": [
+    "Declined",
+    "Rechazada",
+    "Refusée",
+    "Abgelehnt"
+  ],
+  "Recusar (simulação)": [
+    "Decline (simulation)",
+    "Rechazar (simulación)",
+    "Refuser (simulation)",
+    "Ablehnen (Simulation)"
+  ],
+  "Remover avatar": [
+    "Remove avatar",
+    "Eliminar avatar",
+    "Supprimer l’avatar",
+    "Avatar entfernen"
+  ],
+  "Resultado do pagamento": [
+    "Payment result",
+    "Resultado del pago",
+    "Résultat du paiement",
+    "Zahlungsergebnis"
+  ],
+  "Revogar": [
+    "Revoke",
+    "Revocar",
+    "Révoquer",
+    "Widerrufen"
+  ],
+  "Revogar a leitura não apaga dados que a pessoa já recebeu.": [
+    "Revoking read access does not erase data the person has already received.",
+    "Revocar el acceso de lectura no borra los datos que la persona ya recibió.",
+    "Révoquer la lecture n’efface pas les données déjà reçues par la personne.",
+    "Der Widerruf des Lesezugriffs löscht keine Daten, die die Person bereits erhalten hat."
+  ],
+  "Revogar mesmo": [
+    "Confirm revocation",
+    "Confirmar revocación",
+    "Confirmer la révocation",
+    "Widerruf bestätigen"
+  ],
+  "Sair da conta": [
+    "Sign out",
+    "Cerrar sesión",
+    "Se déconnecter",
+    "Abmelden"
+  ],
+  "Salvar": [
+    "Save",
+    "Guardar",
+    "Enregistrer",
+    "Speichern"
+  ],
+  "Salvar alterações": [
+    "Save changes",
+    "Guardar cambios",
+    "Enregistrer les modifications",
+    "Änderungen speichern"
+  ],
+  "Sem conexão ao servidor": [
+    "Disconnected from server",
+    "Sin conexión al servidor",
+    "Déconnecté du serveur",
+    "Keine Serververbindung"
+  ],
+  "Sem conta (dados cifrados)": [
+    "No account (encrypted data)",
+    "Sin cuenta (datos cifrados)",
+    "Sans compte (données chiffrées)",
+    "Ohne Konto (verschlüsselte Daten)"
+  ],
+  "Servidor conectado": [
+    "Connected to server",
+    "Conectado al servidor",
+    "Connecté au serveur",
+    "Mit Server verbunden"
+  ],
+  "Seu espaço de trabalho": [
+    "Your workspace",
+    "Tu espacio de trabajo",
+    "Votre espace de travail",
+    "Ihr Arbeitsbereich"
+  ],
+  "Seus espaços de trabalho": [
+    "Your workspaces",
+    "Tus espacios de trabajo",
+    "Vos espaces de travail",
+    "Ihre Arbeitsbereiche"
+  ],
+  "Seus números": [
+    "Your numbers",
+    "Tus números",
+    "Vos numéros",
+    "Ihre Nummern"
+  ],
+  "Seções": [
+    "Sections",
+    "Secciones",
+    "Sections",
+    "Bereiche"
+  ],
+  "Simular alteração": [
+    "Simulate change",
+    "Simular cambio",
+    "Simuler une modification",
+    "Änderung simulieren"
+  ],
+  "Simulação": [
+    "Simulation",
+    "Simulación",
+    "Simulation",
+    "Simulation"
+  ],
+  "Simulação aprovada. Capacidade atualizada. Nenhum valor foi cobrado.": [
+    "Simulation approved. Capacity updated. Nothing was charged.",
+    "Simulación aprobada. Capacidad actualizada. No se realizó ningún cobro.",
+    "Simulation approuvée. Capacité mise à jour. Aucun montant n’a été facturé.",
+    "Simulation genehmigt. Kapazität aktualisiert. Es wurde nichts berechnet."
+  ],
+  "Simulação recusada. Sua capacidade continua igual.": [
+    "Simulation declined. Your capacity is unchanged.",
+    "Simulación rechazada. Tu capacidad no ha cambiado.",
+    "Simulation refusée. Votre capacité reste inchangée.",
+    "Simulation abgelehnt. Ihre Kapazität bleibt unverändert."
+  ],
+  "Sua conta ainda não tem acesso à leitura.": [
+    "Your account does not have read access yet.",
+    "Tu cuenta aún no tiene acceso de lectura.",
+    "Votre compte n’a pas encore accès à la lecture.",
+    "Ihr Konto hat noch keinen Lesezugriff."
+  ],
+  "Tentar novamente": [
+    "Try again",
+    "Intentar de nuevo",
+    "Réessayer",
+    "Erneut versuchen"
+  ],
+  "Token": [
+    "Token",
+    "Token",
+    "Jeton",
+    "Token"
+  ],
+  "Tokens de API": [
+    "API tokens",
+    "Tokens de API",
+    "Jetons d’API",
+    "API-Tokens"
+  ],
+  "Tudo que chegou tem um tipo que esta versão entende.": [
+    "Every received message has a type this version supports.",
+    "Todos los mensajes recibidos tienen un tipo compatible con esta versión.",
+    "Tous les messages reçus ont un type pris en charge par cette version.",
+    "Alle empfangenen Nachrichten haben einen von dieser Version unterstützten Typ."
+  ],
+  "Um espaço reúne números do WhatsApp, pessoas e integrações. Sua conta pode participar de vários espaços.": [
+    "A workspace brings together WhatsApp numbers, people, and integrations. Your account can belong to several workspaces.",
+    "Un espacio reúne números de WhatsApp, personas e integraciones. Tu cuenta puede participar en varios espacios.",
+    "Un espace regroupe des numéros WhatsApp, des personnes et des intégrations. Votre compte peut participer à plusieurs espaces.",
+    "Ein Arbeitsbereich vereint WhatsApp-Nummern, Personen und Integrationen. Ihr Konto kann mehreren Arbeitsbereichen angehören."
+  ],
+  "Uma mensagem é classificada quando chega. Uma que entrou antes do seu tipo ser implementado fica como “não suportada” — mas o protobuf foi guardado selado, e toda vez que o histórico abre esta aba olha de novo, com a chave que só ela tem, e converte o que a versão atual já entende. O que sobra está aqui, pelo nome do campo: é ele que diz o que implementar em seguida.": [
+    "A message is classified when it arrives. If its type was not supported then, it stays marked as unsupported. Its protobuf data is stored encrypted. Each time the history opens, this tab uses its local key to retry conversion with the current version. Remaining types are listed here by field name to help identify what needs support next.",
+    "Los mensajes se clasifican al llegar. Si su tipo aún no estaba implementado, quedan marcados como no compatibles. Sus datos protobuf se guardan cifrados. Cada vez que se abre el historial, esta pestaña usa su clave local para intentar convertirlos con la versión actual. Los tipos pendientes aparecen aquí por nombre de campo para identificar qué falta implementar.",
+    "Un message est classé à son arrivée. Si son type n’était pas encore pris en charge, il reste marqué comme non pris en charge. Ses données protobuf sont conservées chiffrées. À chaque ouverture de l’historique, cet onglet utilise sa clé locale pour réessayer la conversion avec la version actuelle. Les types restants sont listés ici par nom de champ pour identifier les prochains à prendre en charge.",
+    "Nachrichten werden beim Empfang eingeordnet. War ihr Typ damals noch nicht unterstützt, bleiben sie entsprechend markiert. Die Protobuf-Daten werden verschlüsselt gespeichert. Bei jedem Öffnen des Verlaufs versucht dieser Tab mit seinem lokalen Schlüssel erneut, sie mit der aktuellen Version zu verarbeiten. Verbleibende Typen stehen hier nach Feldnamen, um die als Nächstes benötigte Unterstützung zu erkennen."
+  ],
+  "Usa os números e recursos liberados para sua conta. Não administra o espaço de trabalho.": [
+    "Uses the numbers and features allowed for their account. Does not administer the workspace.",
+    "Usa los números y recursos habilitados para su cuenta. No administra el espacio de trabajo.",
+    "Utilise les numéros et fonctions autorisés pour son compte. N’administre pas l’espace de travail.",
+    "Nutzt die für sein Konto freigegebenen Nummern und Funktionen. Verwaltet den Arbeitsbereich nicht."
+  ],
+  "Vagas": [
+    "Slots",
+    "Plazas",
+    "Emplacements",
+    "Plätze"
+  ],
+  "Vagas contratadas": [
+    "Subscribed slots",
+    "Plazas contratadas",
+    "Emplacements souscrits",
+    "Gebuchte Plätze"
+  ],
+  "Verificado às {v0}": [
+    "Checked at {v0}",
+    "Verificado a las {v0}",
+    "Vérifié à {v0}",
+    "Geprüft um {v0}"
+  ],
+  "Verificando…": [
+    "Checking…",
+    "Verificando…",
+    "Vérification…",
+    "Wird geprüft…"
+  ],
+  "Voltar ao app": [
+    "Back to app",
+    "Volver a la app",
+    "Retour à l’application",
+    "Zurück zur App"
+  ],
+  "Wappie": [
+    "Wappie",
+    "Wappie",
+    "Wappie",
+    "Wappie"
+  ],
+  "Wappie, página do produto": [
+    "Wappie product page",
+    "Página del producto Wappie",
+    "Page du produit Wappie",
+    "Wappie-Produktseite"
+  ],
+  "age como {v0}": [
+    "acts as {v0}",
+    "actúa como {v0}",
+    "agit en tant que {v0}",
+    "handelt als {v0}"
+  ],
+  "bloqueado pelo WhatsApp": [
+    "blocked by WhatsApp",
+    "bloqueado por WhatsApp",
+    "bloqué par WhatsApp",
+    "von WhatsApp gesperrt"
+  ],
+  "criada {v0}": [
+    "created {v0}",
+    "creada {v0}",
+    "créée {v0}",
+    "erstellt {v0}"
+  ],
+  "desconectado no celular": [
+    "disconnected on phone",
+    "desconectado en el teléfono",
+    "déconnecté sur le téléphone",
+    "auf dem Telefon getrennt"
+  ],
+  "marcado como online, mas ninguém está conectado": [
+    "marked online, but no client is connected",
+    "marcado en línea, pero no hay ningún cliente conectado",
+    "indiqué en ligne, mais aucun client n’est connecté",
+    "als online markiert, aber kein Client ist verbunden"
+  ],
+  "no espaço de trabalho": [
+    "in the workspace",
+    "en el espacio de trabajo",
+    "dans l’espace de travail",
+    "im Arbeitsbereich"
+  ],
+  "nos números disponíveis": [
+    "across available numbers",
+    "en los números disponibles",
+    "sur les numéros disponibles",
+    "bei den verfügbaren Nummern"
+  ],
+  "nunca pareado": [
+    "never paired",
+    "nunca vinculado",
+    "jamais associé",
+    "nie gekoppelt"
+  ],
+  "nunca usada": [
+    "never used",
+    "nunca usada",
+    "jamais utilisée",
+    "nie verwendet"
+  ],
+  "ocupadas por números do WhatsApp.": [
+    "used by WhatsApp numbers.",
+    "ocupadas por números de WhatsApp.",
+    "utilisés par des numéros WhatsApp.",
+    "durch WhatsApp-Nummern belegt."
+  ],
+  "pessoa@exemplo.com": [
+    "person@example.com",
+    "persona@ejemplo.com",
+    "personne@exemple.com",
+    "person@beispiel.de"
+  ],
+  "por {v0}": [
+    "by {v0}",
+    "por {v0}",
+    "par {v0}",
+    "von {v0}"
+  ],
+  "revogada": [
+    "revoked",
+    "revocada",
+    "révoquée",
+    "widerrufen"
+  ],
+  "sincronizando com o WhatsApp": [
+    "syncing with WhatsApp",
+    "sincronizando con WhatsApp",
+    "synchronisation avec WhatsApp",
+    "Synchronisierung mit WhatsApp"
+  ],
+  "usada {v0}": [
+    "used {v0}",
+    "usada {v0}",
+    "utilisée {v0}",
+    "verwendet {v0}"
+  ],
+  "{v0} de {v1} vagas": [
+    "{v0} of {v1} slots",
+    "{v0} de {v1} plazas",
+    "{v0} sur {v1} emplacements",
+    "{v0} von {v1} Plätzen"
+  ],
+  "{v0} não abriram com esta chave.": [
+    "{v0} could not be opened with this key.",
+    "{v0} no se pudieron abrir con esta clave.",
+    "{v0} n’ont pas pu être ouverts avec cette clé.",
+    "{v0} konnten mit diesem Schlüssel nicht geöffnet werden."
+  ],
+  "{v0} números cadastrados · {v1}": [
+    "{v0} registered numbers · {v1}",
+    "{v0} números registrados · {v1}",
+    "{v0} numéros enregistrés · {v1}",
+    "{v0} registrierte Nummern · {v1}"
+  ],
+  "Última mensagem": [
+    "Last message",
+    "Último mensaje",
+    "Dernier message",
+    "Letzte Nachricht"
+  ],
+  "Único proprietário ativo": [
+    "Only active owner",
+    "Único propietario activo",
+    "Seul propriétaire actif",
+    "Einziger aktiver Inhaber"
+  ],
+  "Entre com sua conta para gerenciar o espaço.": [
+    "Sign in to manage the workspace.",
+    "Inicia sesión para gestionar el espacio.",
+    "Connectez-vous pour gérer l’espace.",
+    "Melden Sie sich an, um den Arbeitsbereich zu verwalten."
+  ],
+  "O espaço de trabalho precisa manter um proprietário ativo. Promova outra pessoa antes de alterar este acesso.": [
+    "The workspace must keep an active owner. Promote someone else before changing this access.",
+    "El espacio debe mantener un propietario activo. Promueve a otra persona antes de cambiar este acceso.",
+    "L’espace doit garder un propriétaire actif. Promouvez une autre personne avant de modifier cet accès.",
+    "Der Arbeitsbereich benötigt einen aktiven Inhaber. Ernennen Sie eine andere Person, bevor Sie diesen Zugriff ändern."
+  ],
+  "Use um nome de até 80 caracteres e escolha uma imagem válida para o avatar.": [
+    "Use a name of up to 80 characters and choose a valid avatar image.",
+    "Usa un nombre de hasta 80 caracteres y elige una imagen válida para el avatar.",
+    "Utilisez un nom de 80 caractères maximum et choisissez une image d’avatar valide.",
+    "Verwenden Sie einen Namen mit höchstens 80 Zeichen und wählen Sie ein gültiges Avatarbild."
+  ],
+  "Você não tem permissão para fazer esta alteração neste espaço de trabalho.": [
+    "You do not have permission to make this change in this workspace.",
+    "No tienes permiso para hacer este cambio en este espacio.",
+    "Vous n’avez pas l’autorisation d’effectuer cette modification dans cet espace.",
+    "Sie haben keine Berechtigung für diese Änderung in diesem Arbeitsbereich."
+  ],
+  "Este convite não é válido, já foi utilizado ou expirou.": [
+    "This invitation is invalid, has already been used, or has expired.",
+    "Esta invitación no es válida, ya se utilizó o ha caducado.",
+    "Cette invitation est invalide, a déjà été utilisée ou a expiré.",
+    "Diese Einladung ist ungültig, wurde bereits verwendet oder ist abgelaufen."
+  ],
+  "Não foi possível concluir ({status}).": [
+    "Could not complete the action ({status}).",
+    "No se pudo completar la acción ({status}).",
+    "Impossible de terminer l’action ({status}).",
+    "Die Aktion konnte nicht abgeschlossen werden ({status})."
+  ],
+  "Escolha uma imagem JPG, PNG ou WebP de até 8 MB.": [
+    "Choose a JPG, PNG, or WebP image up to 8 MB.",
+    "Elige una imagen JPG, PNG o WebP de hasta 8 MB.",
+    "Choisissez une image JPG, PNG ou WebP de 8 Mo maximum.",
+    "Wählen Sie ein JPG-, PNG- oder WebP-Bild mit höchstens 8 MB."
+  ],
+  "Esta imagem é muito grande. Escolha uma imagem menor.": [
+    "This image is too large. Choose a smaller image.",
+    "Esta imagen es demasiado grande. Elige una más pequeña.",
+    "Cette image est trop grande. Choisissez une image plus petite.",
+    "Dieses Bild ist zu groß. Wählen Sie ein kleineres Bild."
+  ],
+  "Não foi possível preparar o avatar.": [
+    "Could not prepare the avatar.",
+    "No se pudo preparar el avatar.",
+    "Impossible de préparer l’avatar.",
+    "Der Avatar konnte nicht vorbereitet werden."
+  ],
+  "Não foi possível reduzir a imagem. Escolha outra imagem.": [
+    "Could not resize the image. Choose another image.",
+    "No se pudo reducir la imagen. Elige otra.",
+    "Impossible de réduire l’image. Choisissez une autre image.",
+    "Das Bild konnte nicht verkleinert werden. Wählen Sie ein anderes Bild."
+  ],
+  "Não foi possível abrir esta imagem. Escolha outra imagem.": [
+    "Could not open this image. Choose another image.",
+    "No se pudo abrir esta imagen. Elige otra.",
+    "Impossible d’ouvrir cette image. Choisissez une autre image.",
+    "Dieses Bild konnte nicht geöffnet werden. Wählen Sie ein anderes Bild."
+  ]
+}

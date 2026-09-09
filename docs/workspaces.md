@@ -27,9 +27,12 @@ All routes below require `Authorization: Bearer <session-token>`. An API key can
 
 | Method and path | Request | Response |
 | --- | --- | --- |
-| `GET /v1/auth/workspaces` | None | `{"workspaces":[{"id":"UUID","name":"Company","role":"member","status":"active","created_at":"RFC3339"}]}` |
+| `GET /v1/auth/workspaces` | None | `{"workspaces":[{"id":"UUID","name":"Workspace","avatar":"","role":"member","status":"active","created_at":"RFC3339"}]}` |
+| `PUT /v1/auth/workspaces/current` | `{"name":"Support team","avatar":"data:image/jpeg;base64,..."}` | Updated workspace metadata. Owner/admin only; the session selects the workspace. |
 | `POST /v1/auth/workspaces/accept-invite` | `{"invite":"one-time-code"}` | `{"tenant_id":"UUID"}` |
 | `POST /v1/auth/workspaces/session` | `{"tenant_id":"UUID"}` | Existing login response: token, expiry and account with the selected workspace/role. |
+
+Workspace profiles use names of 1–80 Unicode characters. `avatar` is an optional image represented as a data URL; send an empty string to remove it. The server accepts only PNG/JPEG, limits the decoded file to 32 KiB and each dimension to 512 pixels, and decodes/re-encodes the pixels to strip metadata and trailing payloads. It never fetches remote profile URLs. The browser crops JPG/PNG/WebP uploads locally to a compact square thumbnail. Profile changes serialize with membership changes and re-check the manager’s authority in the transaction. Invalid profiles return `400 invalid_workspace_profile`.
 
 Workspace listing includes suspended spaces but excludes disabled memberships. Selecting a suspended space or one without membership returns `403 not_authorized`; malformed UUIDs return `400 bad_request`. Invalid, expired, consumed, wrong-recipient, service or duplicate-membership invitations return `403 invite_invalid`.
 
@@ -45,13 +48,13 @@ The authenticated session selects the workspace for these routes. They accept no
 
 | Method and path | Request | Response |
 | --- | --- | --- |
-| `GET /v1/auth/workspaces/members` | None | `{"members":[{"id":"UUID","email":"person@example.com","role":"member","status":"active","created_at":"RFC3339"}]}`; disabled memberships are included. No password or key envelopes are returned. |
+| `GET /v1/auth/workspaces/members` | None | `{"members":[{"id":"UUID","email":"person@example.com","role":"member","status":"active","last_owner":false,"created_at":"RFC3339"}]}`; disabled memberships are included. No password or key envelopes are returned. |
 | `PUT /v1/auth/workspaces/members/{userID}` | `{"role":"member","status":"disabled"}`; both fields required | `204` |
 | `POST /v1/auth/workspaces/invites` | `{"role":"member","email":"person@example.com"}`; email optional | `201 {"invite":"one-use-code"}`; expires in seven days. No email is sent. |
 
 Owners can manage all roles. Administrators can manage members and service accounts, but cannot modify administrators/owners or invite/promote somebody to those roles. Members and service accounts cannot manage memberships. Service accounts cannot be converted into people or vice versa.
 
-At least one active owner must remain: attempting to demote or disable the last owner returns `409 last_owner`. Changes serialize on the workspace row and re-read the actor's permissions within that transaction, including concurrent self-demotions. Transfer ownership by first promoting another active person, then demoting the original owner.
+The member directory marks the sole active owner with `last_owner:true`, allowing clients to disable role/status controls and explain how to add a backup. This is informational; the mutation endpoint independently enforces the invariant. At least one active owner must remain: attempting to demote or disable the last owner returns `409 last_owner`. Changes serialize on the workspace row and re-read the actor's permissions within that transaction, including concurrent self-demotions. Transfer ownership by first promoting another active person, then demoting the original owner.
 
 Changing a role/status revokes that person's sessions in this workspace and expires their outstanding invitations here. Disabling additionally deletes all their device grants in the workspace and revokes tokens acting as that service account. Re-enabling restores the membership only: previous sessions, tokens and grants remain revoked. Other workspaces are unaffected. No-op updates preserve existing sessions.
 
@@ -83,6 +86,6 @@ Database tests use isolated test schemas. The official pilot uses a new, indepen
 
 The hosted build selects a private subscription component. Simulated approvals and declines, idempotency records and capacity changes live in the separate commercial module. Only owners change subscriptions; admins can view them. No card data, prices, provider secrets or live charges are implemented or required for this pilot.
 
-The console uses a fresh document when changing workspaces. Only the target workspace UUID is included in the URL; credentials, keys and messages are never transferred there. The person signs in again, and the server issues a session bound to the selected workspace. This intentionally discards pending work and all in-memory archive state before opening another company.
+The console uses a fresh document when changing workspaces. Only the target workspace UUID is included in the URL; credentials, keys and messages are never transferred there. The person signs in again, and the server issues a session bound to the selected workspace. This intentionally discards pending work and all in-memory archive state before opening another workspace.
 
 Legacy API key device allowlists remain restricted even when the last allowed device is removed. Migration 0026 stores that distinction explicitly and versions list changes so existing WebSockets close instead of retaining the earlier subscription scope. Prefer service accounts and the console's per-device permissions for new integrations.

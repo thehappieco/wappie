@@ -300,6 +300,15 @@ func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 		return fail(err)
 	}
 
+	// Existing sessions already know their own profile. Waiting for a later
+	// PushNameSetting event would leave the console unnamed after every restart.
+	if real, ok := client.(*whatsmeow.Client); ok && real.Store != nil {
+		identity := Identity{LID: real.Store.GetLID(), PushName: real.Store.PushName}
+		if real.Store.ID != nil {
+			identity.PN = *real.Store.ID
+		}
+		dev.identity.merge(identity)
+	}
 	r.mu.Lock()
 	r.devices[deviceID] = &entry{device: dev, release: release}
 	r.mu.Unlock()

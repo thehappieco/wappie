@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, ref, useId } from 'vue'
 
 import { canSend, type MessageView } from '../state/archive'
@@ -37,7 +38,7 @@ const timerNote = computed(() => {
   if (m.value.expiresAt) {
     return `${hasExpired(m.value, nowTick.value) ? 'Expirou' : 'Expira'} em ${stamp(m.value.expiresAt)}`
   }
-  return m.value.expiration > 0 ? `Temporária, prazo de ${timerLabel(m.value.expiration)}` : 'Mensagem temporária'
+  return m.value.expiration > 0 ? t('Temporária, prazo de {v0}', { v0: timerLabel(m.value.expiration) }) : t('Mensagem temporária')
 })
 
 async function open() {
@@ -74,7 +75,7 @@ async function copy() {
     await navigator.clipboard.writeText(text.value)
     close()
   } catch {
-    copyError.value = 'Não foi possível copiar. Use Selecionar texto.'
+    copyError.value = t('Não foi possível copiar. Use Selecionar texto.')
   }
 }
 
@@ -98,7 +99,7 @@ onBeforeUnmount(close)
 
 <template>
   <div class="message-actions" @pointerdown.stop @click.stop @keydown.stop @contextmenu.stop>
-    <button class="action-trigger" type="button" title="Ações da mensagem" aria-label="Ações da mensagem"
+    <button class="action-trigger" type="button" :title="t('Ações da mensagem')" :aria-label="t('Ações da mensagem')"
       aria-haspopup="dialog" :aria-expanded="menuOpen" @click="open">
       <AppIcon name="chevron-down" :size="18" />
     </button>
@@ -111,43 +112,43 @@ onBeforeUnmount(close)
       <div class="menu-handle" aria-hidden="true" />
       <header class="menu-heading">
         <div>
-          <h2 :id="titleID">Ações da mensagem</h2>
+          <h2 :id="titleID">{{ t('Ações da mensagem') }}</h2>
           <p>{{ text || typeLabel(m.type) }}</p>
         </div>
-        <button class="menu-close" type="button" aria-label="Fechar ações" @click="close"><AppIcon name="close" :size="20" /></button>
+        <button class="menu-close" type="button" :aria-label="t('Fechar ações')" @click="close"><AppIcon name="close" :size="20" /></button>
       </header>
 
-      <div v-if="mutable && !confirming" class="quick-reactions" aria-label="Reações rápidas">
+      <div v-if="mutable && !confirming" class="quick-reactions" :aria-label="t('Reações rápidas')">
         <button v-for="emoji in QUICK" :key="emoji" class="quick-reaction" type="button"
           :class="{ chosen: mine === emoji }" :aria-pressed="mine === emoji"
-          :aria-label="mine === emoji ? `Remover reação ${emoji}` : `Reagir com ${emoji}`"
+          :aria-label="mine === emoji ? t('Remover reação {v0}', { v0: emoji }) : t('Reagir com {v0}', { v0: emoji })"
           :disabled="!connected" @click="pick(emoji)">{{ emoji }}</button>
       </div>
 
       <div v-if="confirming" class="delete-confirmation">
-        <p>Apagar esta mensagem para todos?</p>
-        <p class="menu-note">A cópia arquivada continuará disponível.</p>
-        <button class="menu-action danger" type="button" :disabled="!connected" @click="destroy"><AppIcon name="trash" /> Apagar para todos</button>
-        <button class="menu-action" type="button" @click="confirming = false"><AppIcon name="back" /> Voltar</button>
+        <p>{{ t('Apagar esta mensagem para todos?') }}</p>
+        <p class="menu-note">{{ t('A cópia arquivada continuará disponível.') }}</p>
+        <button class="menu-action danger" type="button" :disabled="!connected" @click="destroy"><AppIcon name="trash" /> {{ t('Apagar para todos') }}</button>
+        <button class="menu-action" type="button" @click="confirming = false"><AppIcon name="back" /> {{ t('Voltar') }}</button>
       </div>
       <div v-else class="menu-options">
         <button v-if="mutable" class="menu-action" type="button" @click="reply">
-          <AppIcon name="back" /> <span>Responder</span><span class="action-hint">Deslize →</span>
+          <AppIcon name="back" /> <span>{{ t('Responder') }}</span><span class="action-hint">{{ t('Deslize →') }}</span>
         </button>
         <button v-if="text" class="menu-action" type="button" @click="copy">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M16 8V3H3v13h5" /></svg><span>Copiar texto</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M16 8V3H3v13h5" /></svg><span>{{ t('Copiar texto') }}</span>
         </button>
         <button v-if="text" class="menu-action" type="button" @click="selectText">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M12 4v16m-4 0h8M3 2v4m18-4v4" /></svg><span>Selecionar texto</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M12 4v16m-4 0h8M3 2v4m18-4v4" /></svg><span>{{ t('Selecionar texto') }}</span>
         </button>
         <button v-if="canEdit(m)" class="menu-action" type="button" :disabled="!connected" @click="edit">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6M3 21l5-1L21 7l-5-5L3 15v6Z" /></svg><span>Editar</span><span class="action-hint">{{ minutesLeft }} min</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6M3 21l5-1L21 7l-5-5L3 15v6Z" /></svg><span>{{ t('Editar') }}</span><span class="action-hint">{{ t('{v0} min', { v0: minutesLeft }) }}</span>
         </button>
         <button class="menu-action" type="button" @click="info">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10h.01" /></svg><span>Info da mensagem</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10h.01" /></svg><span>{{ t('Info da mensagem') }}</span>
         </button>
         <button v-if="canDelete(m)" class="menu-action danger" type="button" :disabled="!connected" @click="confirming = true">
-          <AppIcon name="trash" /><span>Apagar para todos</span>
+          <AppIcon name="trash" /><span>{{ t('Apagar para todos') }}</span>
         </button>
       </div>
       <p v-if="timerNote" class="menu-note timer-note"><AppIcon name="clock" :size="16" /> {{ timerNote }}</p>

@@ -67,6 +67,13 @@ func (a *app) resumeDevices(ctx context.Context) error {
 			_, err = a.registry.StartExisting(ctx, tenant, d.ID, policy, d.Identity.PN, d.Identity.LID)
 			switch {
 			case err == nil:
+				// A pause can race the network connection after the list was read.
+				// Recheck once connected before considering this device supervised.
+				current, readErr := a.devices.Get(ctx, tenant, d.ID)
+				if readErr != nil || current.Paused {
+					a.registry.Stop(context.WithoutCancel(ctx), d.ID)
+					continue
+				}
 				resumed++
 				a.log.Info("resumed device", "device", d.ID, "identity", d.Identity.String())
 			case errors.Is(err, wa.ErrNoSession):
@@ -102,7 +109,7 @@ func (a *app) resumeDevices(ctx context.Context) error {
 // connection attempts against a server that has already refused. A device that
 // was never paired has no session to resume.
 func shouldResume(d store.Device) bool {
-	if !d.Identity.Known() {
+	if d.Paused || !d.Identity.Known() {
 		return false
 	}
 	switch d.Status {

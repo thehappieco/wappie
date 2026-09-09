@@ -33,6 +33,8 @@ export const TypeDevicesStats = 'devices.stats'
 export const TypeDeviceInfo = 'device.info'
 export const TypeDeviceDelete = 'device.delete'
 export const TypeDeviceStop = 'device.stop'
+export const TypeDeviceStart = 'device.start'
+export const TypeDeviceRename = 'device.rename'
 export const TypePair = 'pair'
 export const TypePairCancel = 'pair.cancel'
 export const TypeKeysList = 'apikeys.list'
@@ -131,6 +133,9 @@ export interface DeviceInfo {
   created_at: string
   /** When it last reached "online" — not when it went offline. */
   last_connected_at?: string
+  paused?: boolean
+  can_manage?: boolean
+  profile_key?: string
 }
 
 export interface Devices {
@@ -288,6 +293,16 @@ export interface PairRequest {
   /** base64. The private half is generated here and never sent. */
   archive_public_key: string
   grants: KeyGrant[]
+  resume?: boolean
+}
+
+/** Retry a pending device without generating or replacing encryption material. */
+export interface PairResumeRequest {
+  device_id: string
+  resume: true
+  method: 'qr' | 'code'
+  phone?: string
+  display_name?: string
 }
 
 export interface PairCode {

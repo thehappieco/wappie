@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // Attachments.
 //
 // The server streams ciphertext and nothing else: it never held the plaintext
@@ -92,7 +93,7 @@ export class Media {
         // URL must not outlive the device or session that requested it.
         if (generation !== this.generation || controller.signal.aborted) {
           if (result.state === 'ready') URL.revokeObjectURL(result.url)
-          return { state: 'error', message: 'o carregamento foi cancelado' }
+          return { state: 'error', message: t('o carregamento foi cancelado') }
         }
         this.remember(message.uid, result)
         return result
@@ -109,7 +110,7 @@ export class Media {
 
   private async fetchAndOpen(message: P.SealedMessage, mediaKey: Bytes, signal: AbortSignal): Promise<MediaState> {
     const media = message.media
-    if (!media) return { state: 'error', message: 'esta mensagem não tem anexo' }
+    if (!media) return { state: 'error', message: t('esta mensagem não tem anexo') }
     // 'gone' is WhatsApp's signed URL having expired before the archive
     // reached it — a history sync replays months-old messages with the address
     // minted back then. Nothing about it changes until the sender re-uploads,
@@ -143,7 +144,7 @@ export class Media {
       const got = await sha256(ciphertext)
       signal.throwIfAborted()
       if (toHex(got) !== toHex(base64ToBytes(want))) {
-        throw new Error('o download não confere com o hash que a mensagem carrega')
+        throw new Error(t('o download não confere com o hash que a mensagem carrega'))
       }
     }
 
@@ -215,11 +216,10 @@ function base64ToBytes(s: string): Bytes {
 }
 
 async function describeResponse(response: Response): Promise<string> {
-  const text = (await response.text().catch(() => '')).trim()
-  if (response.status === 404) return text || 'o anexo não está no armazenamento'
-  if (response.status === 401) return 'a credencial foi recusada'
-  if (response.status === 503) return 'o armazenamento de objetos não está configurado no servidor'
-  return text || `o servidor respondeu ${response.status}`
+  if (response.status === 404) return t('O anexo não está disponível no armazenamento.')
+  if (response.status === 401 || response.status === 403) return t('Sua conta não tem acesso a este anexo. Entre novamente ou peça acesso.')
+  if (response.status === 503) return t('O armazenamento está indisponível. Tente novamente mais tarde.')
+  return t('Não foi possível baixar o anexo ({status}).', { status: response.status })
 }
 
 function describe(err: unknown): string {

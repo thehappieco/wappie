@@ -25,6 +25,7 @@ type Member struct {
 	Email     string    `json:"email"`
 	Role      string    `json:"role"`
 	Status    string    `json:"status"`
+	LastOwner bool      `json:"last_owner"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -62,7 +63,10 @@ func (u *Users) Members(ctx context.Context, tenant, actor uuid.UUID) ([]Member,
 		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT u.id,u.email,m.role,m.status,m.created_at
+		rows, err := tx.Query(ctx, `SELECT u.id,u.email,m.role,m.status,m.created_at,
+			m.role='owner' AND m.status='active' AND u.status='active' AND
+			(SELECT count(*) FROM workspace_memberships owners JOIN users identities ON identities.id=owners.user_id
+			 WHERE owners.tenant_id=$1 AND owners.role='owner' AND owners.status='active' AND identities.status='active') <= 1
 			FROM workspace_memberships m JOIN users u ON u.id = m.user_id
 			WHERE m.tenant_id = $1 ORDER BY m.created_at,u.id`, tenant)
 		if err != nil {
@@ -71,7 +75,7 @@ func (u *Users) Members(ctx context.Context, tenant, actor uuid.UUID) ([]Member,
 		defer rows.Close()
 		for rows.Next() {
 			var member Member
-			if err := rows.Scan(&member.ID, &member.Email, &member.Role, &member.Status, &member.CreatedAt); err != nil {
+			if err := rows.Scan(&member.ID, &member.Email, &member.Role, &member.Status, &member.CreatedAt, &member.LastOwner); err != nil {
 				return err
 			}
 			if member.Role == RoleService {

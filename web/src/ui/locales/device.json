@@ -1,0 +1,470 @@
+{
+  "Detalhes do número": [
+    "Number details",
+    "Detalles del número",
+    "Détails du numéro",
+    "Nummerdetails"
+  ],
+  "Fechar": [
+    "Close",
+    "Cerrar",
+    "Fermer",
+    "Schließen"
+  ],
+  "Nome interno": [
+    "Internal name",
+    "Nombre interno",
+    "Nom interne",
+    "Interner Name"
+  ],
+  "Nome do número": [
+    "Number name",
+    "Nombre del número",
+    "Nom du numéro",
+    "Name der Nummer"
+  ],
+  "Esse nome aparece no Wappie e não altera seu perfil no WhatsApp.": [
+    "This name appears in Wappie and does not change your WhatsApp profile.",
+    "Este nombre aparece en Wappie y no modifica tu perfil de WhatsApp.",
+    "Ce nom apparaît dans Wappie et ne modifie pas votre profil WhatsApp.",
+    "Dieser Name wird in Wappie angezeigt und ändert Ihr WhatsApp-Profil nicht."
+  ],
+  "Salvar nome": [
+    "Save name",
+    "Guardar nombre",
+    "Enregistrer le nom",
+    "Namen speichern"
+  ],
+  "Número": [
+    "Number",
+    "Número",
+    "Numéro",
+    "Nummer"
+  ],
+  "Nome no WhatsApp": [
+    "WhatsApp name",
+    "Nombre en WhatsApp",
+    "Nom sur WhatsApp",
+    "WhatsApp-Name"
+  ],
+  "Conexão": [
+    "Connection",
+    "Conexión",
+    "Connexion",
+    "Verbindung"
+  ],
+  "Aguardando conexão": [
+    "Waiting to connect",
+    "Esperando conexión",
+    "En attente de connexion",
+    "Warten auf Verbindung"
+  ],
+  "Sincronização pausada": [
+    "Sync paused",
+    "Sincronización pausada",
+    "Synchronisation en pause",
+    "Synchronisierung pausiert"
+  ],
+  "Conectado": [
+    "Connected",
+    "Conectado",
+    "Connecté",
+    "Verbunden"
+  ],
+  "Desconectado": [
+    "Disconnected",
+    "Desconectado",
+    "Déconnecté",
+    "Getrennt"
+  ],
+  "Modo de leitura": [
+    "Reading mode",
+    "Modo de lectura",
+    "Mode de lecture",
+    "Lesemodus"
+  ],
+  "Confirmações ativadas": [
+    "Receipts enabled",
+    "Confirmaciones activadas",
+    "Confirmations activées",
+    "Bestätigungen aktiviert"
+  ],
+  "Conectado pela última vez": [
+    "Last connected",
+    "Última conexión",
+    "Dernière connexion",
+    "Zuletzt verbunden"
+  ],
+  "Histórico": [
+    "History",
+    "Historial",
+    "Historique",
+    "Verlauf"
+  ],
+  "{messages} mensagens · {chats} conversas · {media} anexos": [
+    "{messages} messages · {chats} chats · {media} attachments",
+    "{messages} mensajes · {chats} conversaciones · {media} adjuntos",
+    "{messages} messages · {chats} conversations · {media} pièces jointes",
+    "{messages} Nachrichten · {chats} Chats · {media} Anhänge"
+  ],
+  "Este número ainda não foi vinculado. Gere um novo código para concluir a conexão ou exclua este cadastro.": [
+    "This number has not been linked yet. Generate a new code to finish connecting or delete this entry.",
+    "Este número aún no se ha vinculado. Genera un nuevo código para completar la conexión o elimina este registro.",
+    "Ce numéro n’est pas encore associé. Générez un nouveau code pour terminer la connexion ou supprimez cette entrée.",
+    "Diese Nummer ist noch nicht verknüpft. Erstellen Sie einen neuen Code, um die Verbindung abzuschließen, oder löschen Sie diesen Eintrag."
+  ],
+  "Conectar número": [
+    "Connect number",
+    "Conectar número",
+    "Connecter le numéro",
+    "Nummer verbinden"
+  ],
+  "Pausar interrompe a sincronização e o envio pelo Wappie. O número continua em Aparelhos conectados no WhatsApp e o histórico permanece aqui.": [
+    "Pausing stops syncing and sending through Wappie. The number stays in Linked devices on WhatsApp and its history remains here.",
+    "Pausar detiene la sincronización y el envío desde Wappie. El número permanece en Dispositivos vinculados de WhatsApp y su historial sigue aquí.",
+    "La pause interrompt la synchronisation et l’envoi via Wappie. Le numéro reste dans les appareils connectés de WhatsApp et son historique est conservé ici.",
+    "Beim Pausieren werden die Synchronisierung und das Senden über Wappie unterbrochen. Die Nummer bleibt in WhatsApp unter Verknüpfte Geräte und der Verlauf bleibt hier erhalten."
+  ],
+  "Pausar sincronização": [
+    "Pause sync",
+    "Pausar sincronización",
+    "Mettre la synchronisation en pause",
+    "Synchronisierung pausieren"
+  ],
+  "Retomar sincronização": [
+    "Resume sync",
+    "Reanudar sincronización",
+    "Reprendre la synchronisation",
+    "Synchronisierung fortsetzen"
+  ],
+  "Acesso às conversas": [
+    "Chat access",
+    "Acceso a las conversaciones",
+    "Accès aux conversations",
+    "Zugriff auf Chats"
+  ],
+  "Estes membros possuem a chave para abrir as conversas deste número. As permissões de enviar e gerenciar são ajustadas na seção Permissões.": [
+    "These members have the key to open this number’s chats. Sending and management permissions are set in the Permissions section.",
+    "Estos miembros tienen la clave para abrir las conversaciones de este número. Los permisos para enviar y gestionar se ajustan en la sección Permisos.",
+    "Ces membres disposent de la clé permettant d’ouvrir les conversations de ce numéro. Les droits d’envoi et de gestion se règlent dans la section Autorisations.",
+    "Diese Mitglieder besitzen den Schlüssel zum Öffnen der Chats dieser Nummer. Sende- und Verwaltungsrechte werden im Bereich Berechtigungen festgelegt."
+  ],
+  "Acesso desde {date}": [
+    "Access since {date}",
+    "Acceso desde {date}",
+    "Accès depuis le {date}",
+    "Zugriff seit {date}"
+  ],
+  "Remover acesso": [
+    "Remove access",
+    "Quitar acceso",
+    "Retirer l’accès",
+    "Zugriff entfernen"
+  ],
+  "Cancelar": [
+    "Cancel",
+    "Cancelar",
+    "Annuler",
+    "Abbrechen"
+  ],
+  "Remover": [
+    "Remove",
+    "Quitar",
+    "Retirer",
+    "Entfernen"
+  ],
+  "Nenhum membro possui acesso às conversas deste número.": [
+    "No members have access to this number’s chats.",
+    "Ningún miembro tiene acceso a las conversaciones de este número.",
+    "Aucun membre n’a accès aux conversations de ce numéro.",
+    "Kein Mitglied hat Zugriff auf die Chats dieser Nummer."
+  ],
+  "Revogar acesso impede novas consultas. Conteúdo já aberto ou salvo por esse membro não pode ser apagado remotamente.": [
+    "Revoking access prevents new requests. Content this member has already opened or saved cannot be erased remotely.",
+    "Revocar el acceso impide nuevas consultas. El contenido que este miembro ya haya abierto o guardado no se puede borrar de forma remota.",
+    "La révocation de l’accès empêche les nouvelles consultations. Le contenu déjà ouvert ou enregistré par ce membre ne peut pas être effacé à distance.",
+    "Der Entzug des Zugriffs verhindert neue Abfragen. Bereits von diesem Mitglied geöffnete oder gespeicherte Inhalte können nicht aus der Ferne gelöscht werden."
+  ],
+  "Dar acesso a um membro": [
+    "Give a member access",
+    "Dar acceso a un miembro",
+    "Donner accès à un membre",
+    "Einem Mitglied Zugriff geben"
+  ],
+  "Confirme sua senha": [
+    "Confirm your password",
+    "Confirma tu contraseña",
+    "Confirmez votre mot de passe",
+    "Passwort bestätigen"
+  ],
+  "Concedendo acesso…": [
+    "Granting access…",
+    "Concediendo acceso…",
+    "Attribution de l’accès…",
+    "Zugriff wird gewährt…"
+  ],
+  "Conceder acesso": [
+    "Grant access",
+    "Conceder acceso",
+    "Accorder l’accès",
+    "Zugriff gewähren"
+  ],
+  "Excluir número": [
+    "Delete number",
+    "Eliminar número",
+    "Supprimer le numéro",
+    "Nummer löschen"
+  ],
+  "Remove este número do Wappie e apaga definitivamente suas conversas e anexos. A desconexão no WhatsApp é solicitada automaticamente.": [
+    "Removes this number from Wappie and permanently deletes its chats and attachments. Disconnection from WhatsApp is requested automatically.",
+    "Elimina este número de Wappie y borra permanentemente sus conversaciones y adjuntos. La desconexión de WhatsApp se solicita automáticamente.",
+    "Retire ce numéro de Wappie et supprime définitivement ses conversations et pièces jointes. La déconnexion de WhatsApp est demandée automatiquement.",
+    "Entfernt diese Nummer aus Wappie und löscht ihre Chats und Anhänge endgültig. Die Trennung von WhatsApp wird automatisch angefordert."
+  ],
+  "Se o WhatsApp estiver indisponível, pode ser necessário remover a sessão também em Aparelhos conectados no celular.": [
+    "If WhatsApp is unavailable, you may also need to remove the session from Linked devices on your phone.",
+    "Si WhatsApp no está disponible, es posible que también debas eliminar la sesión de Dispositivos vinculados en el celular.",
+    "Si WhatsApp est indisponible, vous devrez peut-être également supprimer la session dans Appareils connectés sur votre téléphone.",
+    "Wenn WhatsApp nicht verfügbar ist, müssen Sie die Sitzung möglicherweise auch unter Verknüpfte Geräte auf Ihrem Telefon entfernen."
+  ],
+  "Excluir número…": [
+    "Delete number…",
+    "Eliminar número…",
+    "Supprimer le numéro…",
+    "Nummer löschen…"
+  ],
+  "Digite {code} para confirmar a exclusão": [
+    "Type {code} to confirm deletion",
+    "Escribe {code} para confirmar la eliminación",
+    "Saisissez {code} pour confirmer la suppression",
+    "Geben Sie {code} ein, um das Löschen zu bestätigen"
+  ],
+  "Esta ação não pode ser desfeita.": [
+    "This action cannot be undone.",
+    "Esta acción no se puede deshacer.",
+    "Cette action est irréversible.",
+    "Diese Aktion kann nicht rückgängig gemacht werden."
+  ],
+  "Carregando…": [
+    "Loading…",
+    "Cargando…",
+    "Chargement…",
+    "Wird geladen…"
+  ],
+  "Excluindo…": [
+    "Deleting…",
+    "Eliminando…",
+    "Suppression…",
+    "Wird gelöscht…"
+  ],
+  "Excluir definitivamente": [
+    "Delete permanently",
+    "Eliminar definitivamente",
+    "Supprimer définitivement",
+    "Endgültig löschen"
+  ],
+  "Concluir conexão": [
+    "Finish connecting",
+    "Completar conexión",
+    "Terminer la connexion",
+    "Verbindung abschließen"
+  ],
+  "Conectar um número": [
+    "Connect a number",
+    "Conectar un número",
+    "Connecter un numéro",
+    "Eine Nummer verbinden"
+  ],
+  "Adicionar número": [
+    "Add number",
+    "Añadir número",
+    "Ajouter un numéro",
+    "Nummer hinzufügen"
+  ],
+  "Conecte seu WhatsApp com um QR code ou um código no celular. Você escolhe quais membros poderão acessar as conversas.": [
+    "Connect your WhatsApp using a QR code or a code on your phone. You choose which members can access the chats.",
+    "Conecta tu WhatsApp con un código QR o un código en el celular. Tú eliges qué miembros podrán acceder a las conversaciones.",
+    "Connectez votre WhatsApp à l’aide d’un QR code ou d’un code sur votre téléphone. Vous choisissez les membres pouvant accéder aux conversations.",
+    "Verbinden Sie Ihr WhatsApp mit einem QR-Code oder einem Code auf Ihrem Telefon. Sie wählen aus, welche Mitglieder auf die Chats zugreifen können."
+  ],
+  "A conexão será retomada com o nome, a chave e os acessos que já foram definidos para este número.": [
+    "Connecting will resume with the name, key and access already defined for this number.",
+    "La conexión se retomará con el nombre, la clave y los accesos ya definidos para este número.",
+    "La connexion reprendra avec le nom, la clé et les accès déjà définis pour ce numéro.",
+    "Die Verbindung wird mit dem bereits für diese Nummer festgelegten Namen, Schlüssel und den Zugriffsrechten fortgesetzt."
+  ],
+  "Como conectar": [
+    "How to connect",
+    "Cómo conectar",
+    "Comment se connecter",
+    "Verbindungsart"
+  ],
+  "QR code — escaneie com o celular": [
+    "QR code — scan with your phone",
+    "Código QR — escanéalo con el celular",
+    "QR code — scannez avec votre téléphone",
+    "QR-Code — mit dem Telefon scannen"
+  ],
+  "Código — digite no celular": [
+    "Code — enter on your phone",
+    "Código — introdúcelo en el celular",
+    "Code — saisissez-le sur votre téléphone",
+    "Code — auf dem Telefon eingeben"
+  ],
+  "Número com código do país": [
+    "Number with country code",
+    "Número con código de país",
+    "Numéro avec indicatif du pays",
+    "Nummer mit Ländervorwahl"
+  ],
+  "Nome interno (opcional)": [
+    "Internal name (optional)",
+    "Nombre interno (opcional)",
+    "Nom interne (facultatif)",
+    "Interner Name (optional)"
+  ],
+  "Ex.: Atendimento": [
+    "E.g. Support",
+    "Ej.: Atención al cliente",
+    "Ex. : Assistance",
+    "Z. B. Kundenservice"
+  ],
+  "Você pode editar esse nome depois. O perfil do WhatsApp permanece igual.": [
+    "You can edit this name later. Your WhatsApp profile stays the same.",
+    "Puedes editar este nombre después. Tu perfil de WhatsApp no cambia.",
+    "Vous pourrez modifier ce nom plus tard. Votre profil WhatsApp reste inchangé.",
+    "Sie können diesen Namen später bearbeiten. Ihr WhatsApp-Profil bleibt unverändert."
+  ],
+  "Quem poderá acessar as conversas": [
+    "Who can access the chats",
+    "Quién podrá acceder a las conversaciones",
+    "Qui peut accéder aux conversations",
+    "Wer auf die Chats zugreifen darf"
+  ],
+  "Os membros selecionados recebem acesso às conversas protegidas deste número. Outros acessos podem ser concedidos depois.": [
+    "Selected members receive access to this number’s protected chats. You can grant more access later.",
+    "Los miembros seleccionados reciben acceso a las conversaciones protegidas de este número. Puedes conceder otros accesos después.",
+    "Les membres sélectionnés reçoivent l’accès aux conversations protégées de ce numéro. Vous pourrez accorder d’autres accès plus tard.",
+    "Ausgewählte Mitglieder erhalten Zugriff auf die geschützten Chats dieser Nummer. Weitere Zugriffe können später gewährt werden."
+  ],
+  "Privacidade da leitura": [
+    "Reading privacy",
+    "Privacidad de lectura",
+    "Confidentialité de lecture",
+    "Datenschutz beim Lesen"
+  ],
+  "Enviar confirmações de leitura": [
+    "Send read receipts",
+    "Enviar confirmaciones de lectura",
+    "Envoyer les confirmations de lecture",
+    "Lesebestätigungen senden"
+  ],
+  "Ao abrir mensagens no Wappie, o WhatsApp poderá mostrar as confirmações azuis e sua presença online. Essa escolha vale para todos os usuários deste número.": [
+    "When you open messages in Wappie, WhatsApp may show blue read receipts and your online presence. This choice applies to everyone using this number.",
+    "Al abrir mensajes en Wappie, WhatsApp podrá mostrar las confirmaciones azules y tu presencia en línea. Esta opción se aplica a todos los usuarios de este número.",
+    "Lorsque vous ouvrez des messages dans Wappie, WhatsApp peut afficher les confirmations bleues et votre présence en ligne. Ce choix s’applique à tous les utilisateurs de ce numéro.",
+    "Beim Öffnen von Nachrichten in Wappie kann WhatsApp blaue Lesebestätigungen und Ihren Online-Status anzeigen. Diese Einstellung gilt für alle Nutzer dieser Nummer."
+  ],
+  "Gerar QR code": [
+    "Generate QR code",
+    "Generar código QR",
+    "Générer un QR code",
+    "QR-Code erstellen"
+  ],
+  "Gerar código": [
+    "Generate code",
+    "Generar código",
+    "Générer un code",
+    "Code erstellen"
+  ],
+  "Preparando conexão segura…": [
+    "Preparing secure connection…",
+    "Preparando conexión segura…",
+    "Préparation de la connexion sécurisée…",
+    "Sichere Verbindung wird vorbereitet…"
+  ],
+  "No WhatsApp do celular, abra Configurações → Aparelhos conectados → Conectar um aparelho → Conectar com número de telefone.": [
+    "On WhatsApp on your phone, open Settings → Linked devices → Link a device → Link with phone number.",
+    "En WhatsApp del celular, abre Ajustes → Dispositivos vinculados → Vincular un dispositivo → Vincular con el número de teléfono.",
+    "Dans WhatsApp sur votre téléphone, ouvrez Paramètres → Appareils connectés → Connecter un appareil → Connecter avec le numéro de téléphone.",
+    "Öffnen Sie WhatsApp auf Ihrem Telefon: Einstellungen → Verknüpfte Geräte → Gerät hinzufügen → Mit Telefonnummer verknüpfen."
+  ],
+  "No WhatsApp do celular, abra Configurações → Aparelhos conectados → Conectar um aparelho e escaneie o QR code.": [
+    "On WhatsApp on your phone, open Settings → Linked devices → Link a device and scan the QR code.",
+    "En WhatsApp del celular, abre Ajustes → Dispositivos vinculados → Vincular un dispositivo y escanea el código QR.",
+    "Dans WhatsApp sur votre téléphone, ouvrez Paramètres → Appareils connectés → Connecter un appareil, puis scannez le QR code.",
+    "Öffnen Sie WhatsApp auf Ihrem Telefon: Einstellungen → Verknüpfte Geräte → Gerät hinzufügen, und scannen Sie den QR-Code."
+  ],
+  "Solicitando código ao WhatsApp…": [
+    "Requesting a code from WhatsApp…",
+    "Solicitando código a WhatsApp…",
+    "Demande de code à WhatsApp…",
+    "Code wird von WhatsApp angefordert…"
+  ],
+  "A conexão só é concluída depois da confirmação no celular. Se você cancelar ou o código expirar, o cadastro incompleto será removido.": [
+    "The connection is only completed after confirmation on your phone. If you cancel or the code expires, the incomplete entry will be removed.",
+    "La conexión solo se completa después de confirmar en el celular. Si cancelas o el código caduca, se eliminará el registro incompleto.",
+    "La connexion n’est finalisée qu’après confirmation sur votre téléphone. Si vous annulez ou si le code expire, l’entrée incomplète sera supprimée.",
+    "Die Verbindung wird erst nach der Bestätigung auf Ihrem Telefon abgeschlossen. Wenn Sie abbrechen oder der Code abläuft, wird der unvollständige Eintrag entfernt."
+  ],
+  "Cancelar conexão": [
+    "Cancel connection",
+    "Cancelar conexión",
+    "Annuler la connexion",
+    "Verbindung abbrechen"
+  ],
+  "Número conectado!": [
+    "Number connected!",
+    "¡Número conectado!",
+    "Numéro connecté !",
+    "Nummer verbunden!"
+  ],
+  "As novas mensagens já podem começar a chegar. O histórico anterior é sincronizado aos poucos, conforme o WhatsApp disponibiliza.": [
+    "New messages can now start arriving. Older history syncs gradually as WhatsApp makes it available.",
+    "Los nuevos mensajes ya pueden empezar a llegar. El historial anterior se sincroniza poco a poco, según lo facilite WhatsApp.",
+    "Les nouveaux messages peuvent maintenant commencer à arriver. L’historique précédent se synchronise progressivement, à mesure que WhatsApp le rend disponible.",
+    "Neue Nachrichten können jetzt eintreffen. Ältere Verläufe werden schrittweise synchronisiert, sobald WhatsApp sie bereitstellt."
+  ],
+  "Concluir": [
+    "Done",
+    "Listo",
+    "Terminer",
+    "Fertig"
+  ],
+  "Escolha ao menos um membro para acessar as conversas deste número.": [
+    "Select at least one member to access this number’s chats.",
+    "Selecciona al menos un miembro para acceder a las conversaciones de este número.",
+    "Sélectionnez au moins un membre pour accéder aux conversations de ce numéro.",
+    "Wählen Sie mindestens ein Mitglied aus, das auf die Chats dieser Nummer zugreifen darf."
+  ],
+  "Número do WhatsApp": [
+    "WhatsApp number",
+    "Número de WhatsApp",
+    "Numéro WhatsApp",
+    "WhatsApp-Nummer"
+  ],
+  "O código expirou. Você pode conectar o número novamente.": [
+    "The code expired. You can connect the number again.",
+    "El código caducó. Puedes conectar el número de nuevo.",
+    "Le code a expiré. Vous pouvez connecter le numéro à nouveau.",
+    "Der Code ist abgelaufen. Sie können die Nummer erneut verbinden."
+  ],
+  "Este cadastro não possui a chave necessária para proteger as conversas. Um proprietário ou administrador deve excluí-lo e conectar o número novamente.": [
+    "This entry is missing the key needed to protect chats. An owner or administrator must delete it and connect the number again.",
+    "A este registro le falta la clave necesaria para proteger las conversaciones. Un propietario o administrador debe eliminarlo y conectar el número de nuevo.",
+    "Il manque à cette entrée la clé nécessaire pour protéger les conversations. Un propriétaire ou administrateur doit la supprimer et connecter le numéro à nouveau.",
+    "Diesem Eintrag fehlt der Schlüssel zum Schutz der Chats. Ein Eigentümer oder Administrator muss ihn löschen und die Nummer erneut verbinden."
+  ],
+  "Modo incógnito": [
+    "Incognito mode",
+    "Modo incógnito",
+    "Mode incognito",
+    "Inkognito-Modus"
+  ],
+  "Modo incógnito: ler no Wappie não envia confirmação de leitura nem mostra presença online. Você pode mudar esse modo depois no app.": [
+    "Incognito mode: reading in Wappie does not send read receipts or show online presence. You can change this mode later in the app.",
+    "Modo incógnito: leer en Wappie no envía confirmaciones de lectura ni muestra presencia en línea. Puedes cambiarlo después en la app.",
+    "Mode incognito : lire dans Wappie n’envoie pas de confirmations de lecture et n’affiche pas votre présence en ligne. Vous pouvez changer ce mode dans l’app.",
+    "Inkognito-Modus: Lesen in Wappie sendet keine Lesebestätigungen und zeigt keinen Online-Status an. Du kannst den Modus später in der App ändern."
+  ]
+}

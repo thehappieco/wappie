@@ -45,6 +45,7 @@ type Device struct {
 	Status       wa.Status
 	StatusReason string
 	ReceiptMode  wa.ReceiptMode
+	Paused       bool
 	CreatedAt    time.Time
 	// LastConnectedAt is when this device last reached "online", not when it
 	// went offline. Zero for a device that has never connected.
@@ -271,7 +272,7 @@ func (d *Devices) Delete(ctx context.Context, tenantID, deviceID string) error {
 const selectDevices = `
 	SELECT id::text, tenant_id::text, coalesce(lid,''), coalesce(pn,''),
 	       push_name, label, status, status_reason, receipt_mode,
-	       created_at, last_connected_at, current_epoch
+	       created_at, last_connected_at, current_epoch, paused
 	  FROM devices`
 
 // scanner is satisfied by both pgx.Row and pgx.Rows.
@@ -282,7 +283,7 @@ func scanDevice(s scanner, dev *Device) error {
 	var connected *time.Time
 	if err := s.Scan(&dev.ID, &dev.TenantID, &lid, &pn,
 		&dev.Identity.PushName, &dev.Label, &dev.Status, &dev.StatusReason,
-		&dev.ReceiptMode, &dev.CreatedAt, &connected, &dev.Epoch); err != nil {
+		&dev.ReceiptMode, &dev.CreatedAt, &connected, &dev.Epoch, &dev.Paused); err != nil {
 		return err
 	}
 	if connected != nil {
@@ -293,4 +294,45 @@ func scanDevice(s scanner, dev *Device) error {
 	dev.Identity.LID = parseJID(lid)
 	dev.Identity.PN = parseJID(pn)
 	return nil
+}
+
+// Rename updates the internal label without changing the WhatsApp profile.
+func (d *Devices) Rename(ctx context.Context, tenantID, deviceID, label string) error {
+	label = strings.TrimSpace(label)
+	if label == "" || len([]rune(label)) > 100 {
+		return errors.New("device name must contain 1 to 100 characters")
+	}
+	return pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE devices SET label=$2 WHERE id=$1`, deviceID, label)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// SetPaused is durable: automatic supervision and restart both respect it.
+func (d *Devices) SetPaused(ctx context.Context, tenantID, deviceID string, paused bool) error {
+	return pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE devices SET paused=$2 WHERE id=$1`, deviceID, paused)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// DeleteUnpaired never destroys a device that managed to pair while its browser
+// cancelled. It also makes cleanup safe when a timeout event was not delivered.
+func (d *Devices) DeleteUnpaired(ctx context.Context, tenantID, deviceID string) error {
+	return pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM devices WHERE id=$1 AND lid IS NULL AND pn IS NULL AND last_connected_at IS NULL`, deviceID)
+		return err
+	})
 }

@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 /**
  * Looking again at messages the archive could not classify when they arrived.
  *
@@ -83,7 +84,7 @@ export async function reproject(
   const opener = archiveOpener()
   const deviceID = state.deviceID
   if (!conn || !opener) {
-    p.error = 'o arquivo não está destravado'
+    p.error = t('o histórico não está destravado')
     p.done = true
     return p
   }
@@ -198,7 +199,7 @@ export async function survey(limit = 500): Promise<{ total: number; byField: Rec
   }
   const conn = connection()
   if (!conn || !state.deviceID) {
-    out.error = 'nenhum aparelho selecionado'
+    out.error = t('nenhum aparelho selecionado')
     return out
   }
   try {
@@ -209,7 +210,7 @@ export async function survey(limit = 500): Promise<{ total: number; byField: Rec
     )
     for (const row of reply.rows ?? []) {
       out.total++
-      const f = row.field || '(sem nome)'
+      const f = row.field || t('(sem nome)')
       out.byField[f] = (out.byField[f] ?? 0) + 1
     }
   } catch (err) {

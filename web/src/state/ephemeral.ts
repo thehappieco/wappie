@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 /**
  * Disappearing messages, as a reader sees them.
  *
@@ -46,7 +47,7 @@ export function hasExpired(m: Ephemeral, now: number): boolean {
  */
 export function expiryLabel(m: Ephemeral, now: number): string {
   if (!isEphemeral(m)) return ''
-  return hasExpired(m, now) ? 'expirada' : 'temporária'
+  return hasExpired(m, now) ? t('expirada') : t('temporária')
 }
 
 /** WhatsApp's own presets, in seconds. */
@@ -63,16 +64,16 @@ export const TIMER_PRESETS = [0, 86_400, 604_800, 7_776_000] as const
 export function timerLabel(seconds: number): string {
   switch (seconds) {
     case 0:
-      return 'desativadas'
+      return t('desativadas')
     case 86_400:
-      return '24 horas'
+      return t('24 horas')
     case 604_800:
-      return '7 dias'
+      return t('7 dias')
     case 7_776_000:
-      return '90 dias'
+      return t('90 dias')
   }
-  if (seconds % 86_400 === 0) return `${seconds / 86_400} dias`
-  if (seconds % 3_600 === 0) return `${seconds / 3_600} horas`
+  if (seconds % 86_400 === 0) return t('{count} dias', { count: seconds / 86_400 })
+  if (seconds % 3_600 === 0) return t('{count} horas', { count: seconds / 3_600 })
   if (seconds % 60 === 0) return `${seconds / 60} min`
   return `${seconds} s`
 }

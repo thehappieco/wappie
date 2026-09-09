@@ -1,13 +1,73 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Wappie: API, espaços compartilhados e cliente web para seus números do WhatsApp. Hospede você mesmo ou participe do piloto hospedado."><title>Wappie — WhatsApp para suas integrações</title><link rel="stylesheet" href="/style.css"></head><body><a class="skip" href="#main">Pular para o conteúdo</a><header><a class="brand" href="/"><i>w</i>wappie</a><nav aria-label="Principal"><a href="/docs/">Documentação</a><a href="https://github.com/thehappieco/wappie">GitHub ↗</a><a href="https://console.wappie.thehappie.co">Entrar</a></nav></header><main id="main"><section class="hero"><div><div class="eyebrow">Uma API. Seus números.</div><h1>Conecte o WhatsApp ao que sua empresa faz.</h1><p>Integre mensagens aos seus sistemas, organize números por empresa e defina quem pode ler, enviar ou administrar cada um.</p><div class="actions"><a class="button" href="/docs/">Conhecer a API →</a><a class="button secondary" href="https://console.wappie.thehappie.co">Acessar o piloto</a></div><p class="fine">Piloto por convite · gratuito · pagamentos simulados</p></div><div class="code" aria-label="Exemplo de uma conexão WebSocket"><div class="code-title">api.wappie.thehappie.co / v1 / ws</div><pre><code><em>// Uma conexão, eventos em tempo real.</em>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Wappie: API, espaços de trabalho e cliente web para seus números do WhatsApp. Hospede você mesmo ou participe do piloto hospedado." data-i18n="description">
+  <title data-i18n="title">Wappie — WhatsApp para suas integrações</title>
+  <script src="/preferences.js"></script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <a class="skip" href="#main" data-i18n="skip">Pular para o conteúdo</a>
+  <header>
+    <a class="brand" href="/"><i>w</i>wappie</a>
+    <div class="header-tools">
+      <nav aria-label="Principal" data-i18n-aria="navigation">
+        <a href="/docs/" data-i18n="documentation">Documentação</a>
+        <a href="https://github.com/thehappieco/wappie">GitHub ↗</a>
+        <a href="https://console.wappie.thehappie.co" data-i18n="signIn">Entrar</a>
+      </nav>
+      <details class="preferences">
+        <summary aria-label="Aparência e idioma" title="Aparência e idioma" data-i18n-aria="preferences" data-i18n-title="preferences"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg></summary>
+        <div class="preferences-panel">
+          <label for="theme" data-i18n="appearance">Aparência</label>
+          <select id="theme" data-theme-picker><option value="system" data-i18n="system">Seguir dispositivo</option><option value="light" data-i18n="light">Claro</option><option value="dark" data-i18n="dark">Escuro</option></select>
+          <label for="language" data-i18n="language">Idioma</label>
+          <select id="language" data-language-picker><option value="pt" lang="pt">Português</option><option value="en" lang="en">English</option><option value="es" lang="es">Español</option><option value="fr" lang="fr">Français</option><option value="de" lang="de">Deutsch</option></select>
+        </div>
+      </details>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div>
+        <div class="eyebrow" data-i18n="heroEyebrow">Uma API. Seus números.</div>
+        <h1 data-i18n="heroTitle">Conecte o WhatsApp ao seu jeito de trabalhar.</h1>
+        <p data-i18n="heroBody">Integre mensagens aos seus sistemas, organize números em espaços de trabalho e defina quem pode ler, enviar ou gerenciar cada um.</p>
+        <div class="actions"><a class="button" href="/docs/" data-i18n="exploreAPI">Conhecer a API →</a><a class="button secondary" href="https://console.wappie.thehappie.co" data-i18n="openPilot">Acessar o piloto</a></div>
+        <p class="fine" data-i18n="pilotNotice">Piloto por convite · gratuito · pagamentos simulados</p>
+      </div>
+      <div class="code" aria-label="Exemplo de uma conexão WebSocket" data-i18n-aria="example">
+        <div class="code-title">api.wappie.thehappie.co / v1 / ws</div>
+        <pre><code><em data-i18n="exampleConnect">// Uma conexão, eventos em tempo real.</em>
 {
   "t": "hello",
   "r": "connect",
-  "p": { "api_key": "SEU_TOKEN" }
+  "p": { "api_key": "YOUR_TOKEN" }
 }
 
-<em>// Descubra seus números autorizados.</em>
+<em data-i18n="exampleDevices">// Descubra seus números autorizados.</em>
 {
   "t": "devices.list",
   "r": "devices",
   "p": {}
-}</code></pre></div></section><section class="section"><div class="eyebrow">Seu espaço, seus acessos</div><h2>Uma conta para participar.<br>Um espaço para cada empresa.</h2><div class="columns"><article><span class="number">01 / INTEGRAÇÕES</span><h3>Permissões para cada tarefa</h3><p>Contas de serviço e tokens para seus sistemas. Separe envio, leitura e operação por número e revogue acessos quando precisar.</p></article><article><span class="number">02 / CONVERSAS</span><h3>Um cliente para o dia a dia</h3><p>Abra as conversas dos números aos quais você tem acesso. O console cuida dos membros, aparelhos, tokens e capacidade do espaço.</p><a href="https://app.wappie.thehappie.co">Abrir mensagens →</a></article></div></section><section class="section columns"><article><div class="eyebrow">Open source</div><h2>Rode na sua infraestrutura.</h2><p>Servidor, CLI, cliente web e administração básica disponíveis no GitHub. Controle a instalação e as atualizações.</p><a class="button secondary" href="https://github.com/thehappieco/wappie">Ver o repositório ↗</a></article><article><div class="eyebrow">Wappie Cloud</div><h2>Ou deixe a hospedagem conosco.</h2><p>A mesma base, com operação gerenciada e capacidade por espaço. O piloto é gratuito; preços e cobrança real serão definidos antes do lançamento comercial.</p><a href="https://console.wappie.thehappie.co">Entrar com meu convite →</a></article></section></main><footer><span>Wappie · The Happie</span><span>Projeto independente, sem afiliação com WhatsApp ou Meta.</span><a href="/docs/">Documentação da API</a></footer></body></html>
+}</code></pre>
+      </div>
+    </section>
+    <section class="section">
+      <div class="eyebrow" data-i18n="workspaceEyebrow">Seu espaço, seus acessos</div>
+      <h2 data-i18n="workspaceTitle">Uma conta. Espaços para cada equipe.</h2>
+      <div class="columns">
+        <article><span class="number" data-i18n="integrationsNumber">01 / INTEGRAÇÕES</span><h3 data-i18n="permissionsTitle">Permissões para cada tarefa</h3><p data-i18n="permissionsBody">Contas de serviço e tokens para seus sistemas. Separe leitura, envio e gerenciamento por número e revogue acessos quando precisar.</p></article>
+        <article><span class="number" data-i18n="conversationsNumber">02 / CONVERSAS</span><h3 data-i18n="conversationsTitle">Um cliente para o dia a dia</h3><p data-i18n="conversationsBody">Abra as conversas dos números aos quais você tem acesso. O console cuida dos membros, dispositivos, tokens e capacidade do espaço de trabalho.</p><a href="https://app.wappie.thehappie.co" data-i18n="openMessages">Abrir mensagens →</a></article>
+      </div>
+    </section>
+    <section class="section columns">
+      <article><div class="eyebrow">Open source</div><h2 data-i18n="selfhostTitle">Rode na sua infraestrutura.</h2><p data-i18n="selfhostBody">Servidor, CLI, cliente web e administração básica disponíveis no GitHub. Controle a instalação e as atualizações.</p><a class="button secondary" href="https://github.com/thehappieco/wappie" data-i18n="repository">Ver o repositório ↗</a></article>
+      <article><div class="eyebrow">Wappie Cloud</div><h2 data-i18n="cloudTitle">Ou deixe a hospedagem conosco.</h2><p data-i18n="cloudBody">A mesma base, com operação gerenciada e capacidade por espaço de trabalho. O piloto é gratuito; preços e cobrança real serão definidos antes do lançamento comercial.</p><a href="https://console.wappie.thehappie.co" data-i18n="invitation">Entrar com meu convite →</a></article>
+    </section>
+  </main>
+  <footer><span>Wappie · The Happie</span><span data-i18n="independent">Projeto independente, sem afiliação com WhatsApp ou Meta.</span><a href="/docs/" data-i18n="apiDocs">Documentação da API</a></footer>
+</body>
+</html>

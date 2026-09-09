@@ -63,6 +63,13 @@ func (s *session) handleAvatar(ctx context.Context, f Frame) {
 	if !ok {
 		return
 	}
+	// A device's own profile is an encrypted contact too. Seed only its
+	// server-known identity, never an arbitrary identifier supplied by a caller.
+	if dev, err := s.srv.cfg.Devices.Get(ctx, tenant.String(), device.String()); err == nil && dev.Identity.Known() && req.ContactKey == dev.Identity.Primary().ToNonAD().String() {
+		if err := s.srv.cfg.Contacts.Upsert(ctx, store.ContactName{TenantID: tenant, DeviceID: device, ContactKey: req.ContactKey}); err == nil && s.srv.cfg.Avatars != nil {
+			s.srv.cfg.Avatars.Nudge(tenant, device, []string{req.ContactKey})
+		}
+	}
 	sealed, keyID, uid, err := s.srv.cfg.Contacts.Avatar(ctx, tenant, device, req.ContactKey)
 	if err != nil {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such contact")

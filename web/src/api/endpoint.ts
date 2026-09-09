@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // Where the server is.
 //
 // An empty address means this page's own origin, which is what the development
@@ -14,7 +15,7 @@ export function origin(serverURL: string): URL {
   if (typeof location !== 'undefined' && ['app.wappie.thehappie.co', 'console.wappie.thehappie.co'].includes(location.hostname)) return new URL(location.origin)
   const raw = serverURL.trim()
   if (raw) return new URL(raw, here)
-  if (!here) throw new Error('sem endereço de servidor e sem página para herdar um')
+  if (!here) throw new Error(t('Informe o endereço do servidor para continuar.'))
   return new URL(here)
 }
 

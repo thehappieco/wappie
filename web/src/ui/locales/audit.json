@@ -1,0 +1,476 @@
+{
+  " e ": [
+    " and ",
+    " y ",
+    " et ",
+    " und "
+  ],
+  "1 foto": [
+    "1 photo",
+    "1 foto",
+    "1 photo",
+    "1 Foto"
+  ],
+  "A chave deste conteúdo não está disponível.": [
+    "The key for this content is unavailable.",
+    "La clave de este contenido no está disponible.",
+    "La clé de ce contenu est indisponible.",
+    "Der Schlüssel für diesen Inhalt ist nicht verfügbar."
+  ],
+  "A conexão fechou antes de concluir a entrada.": [
+    "The connection closed before sign-in was complete.",
+    "La conexión se cerró antes de completar el acceso.",
+    "La connexion a été fermée avant la fin de l’authentification.",
+    "Die Verbindung wurde vor Abschluss der Anmeldung geschlossen."
+  ],
+  "A conexão foi interrompida.": [
+    "The connection was interrupted.",
+    "La conexión se interrumpió.",
+    "La connexion a été interrompue.",
+    "Die Verbindung wurde unterbrochen."
+  ],
+  "Arquivo": [
+    "File",
+    "Archivo",
+    "Fichier",
+    "Datei"
+  ],
+  "Conectando…": [
+    "Connecting…",
+    "Conectando…",
+    "Connexion…",
+    "Verbindung wird hergestellt…"
+  ],
+  "Esta versão precisa ser atualizada. Recarregue a página.": [
+    "This version needs an update. Reload the page.",
+    "Esta versión necesita actualizarse. Recarga la página.",
+    "Cette version doit être mise à jour. Rechargez la page.",
+    "Diese Version muss aktualisiert werden. Laden Sie die Seite neu."
+  ],
+  "Este conteúdo tem um identificador inválido.": [
+    "This content has an invalid identifier.",
+    "Este contenido tiene un identificador inválido.",
+    "Ce contenu possède un identifiant invalide.",
+    "Dieser Inhalt hat eine ungültige Kennung."
+  ],
+  "Este item não está disponível ou sua conta não tem acesso a ele.": [
+    "This item is unavailable or your account cannot access it.",
+    "Este elemento no está disponible o tu cuenta no tiene acceso.",
+    "Cet élément est indisponible ou votre compte n’y a pas accès.",
+    "Dieses Element ist nicht verfügbar oder Ihr Konto hat keinen Zugriff darauf."
+  ],
+  "Figurinha": [
+    "Sticker",
+    "Sticker",
+    "Autocollant",
+    "Sticker"
+  ],
+  "Foto": [
+    "Photo",
+    "Foto",
+    "Photo",
+    "Foto"
+  ],
+  "GIF": [
+    "GIF",
+    "GIF",
+    "GIF",
+    "GIF"
+  ],
+  "Informe o endereço do servidor para continuar.": [
+    "Enter the server address to continue.",
+    "Introduce la dirección del servidor para continuar.",
+    "Saisissez l’adresse du serveur pour continuer.",
+    "Geben Sie die Serveradresse ein, um fortzufahren."
+  ],
+  "Muitas tentativas. Aguarde um pouco e tente novamente.": [
+    "Too many attempts. Wait a moment and try again.",
+    "Demasiados intentos. Espera un momento e inténtalo de nuevo.",
+    "Trop de tentatives. Patientez un instant et réessayez.",
+    "Zu viele Versuche. Warten Sie einen Moment und versuchen Sie es erneut."
+  ],
+  "Não foi possível baixar o anexo ({status}).": [
+    "Could not download the attachment ({status}).",
+    "No se pudo descargar el archivo adjunto ({status}).",
+    "Impossible de télécharger la pièce jointe ({status}).",
+    "Der Anhang konnte nicht heruntergeladen werden ({status})."
+  ],
+  "Não foi possível concluir no estado atual. Atualize e tente novamente.": [
+    "Cannot complete this in the current state. Refresh and try again.",
+    "No se puede completar en el estado actual. Actualiza e inténtalo de nuevo.",
+    "Impossible de terminer dans l’état actuel. Actualisez et réessayez.",
+    "Die Aktion ist im aktuellen Zustand nicht möglich. Aktualisieren Sie die Ansicht und versuchen Sie es erneut."
+  ],
+  "Não foi possível identificar a chave deste conteúdo.": [
+    "Could not identify the key for this content.",
+    "No se pudo identificar la clave de este contenido.",
+    "Impossible d’identifier la clé de ce contenu.",
+    "Der Schlüssel für diesen Inhalt konnte nicht ermittelt werden."
+  ],
+  "Não foi possível interpretar este conteúdo.": [
+    "Could not read this content.",
+    "No se pudo interpretar este contenido.",
+    "Impossible de lire ce contenu.",
+    "Dieser Inhalt konnte nicht gelesen werden."
+  ],
+  "O anexo ainda está sendo preparado. Tente novamente em instantes.": [
+    "The attachment is still being prepared. Try again shortly.",
+    "El archivo adjunto aún se está preparando. Inténtalo de nuevo en un momento.",
+    "La pièce jointe est encore en préparation. Réessayez dans un instant.",
+    "Der Anhang wird noch vorbereitet. Versuchen Sie es gleich noch einmal."
+  ],
+  "O anexo não está disponível no armazenamento.": [
+    "The attachment is unavailable in storage.",
+    "El archivo adjunto no está disponible en el almacenamiento.",
+    "La pièce jointe est indisponible dans le stockage.",
+    "Der Anhang ist im Speicher nicht verfügbar."
+  ],
+  "O armazenamento está indisponível. Tente novamente mais tarde.": [
+    "Storage is unavailable. Try again later.",
+    "El almacenamiento no está disponible. Inténtalo más tarde.",
+    "Le stockage est indisponible. Réessayez plus tard.",
+    "Der Speicher ist nicht verfügbar. Versuchen Sie es später erneut."
+  ],
+  "O servidor demorou para responder. Tente novamente.": [
+    "The server took too long to respond. Try again.",
+    "El servidor tardó demasiado en responder. Inténtalo de nuevo.",
+    "Le serveur a mis trop de temps à répondre. Réessayez.",
+    "Der Server hat zu lange für die Antwort gebraucht. Versuchen Sie es erneut."
+  ],
+  "O servidor enviou uma resposta inesperada.": [
+    "The server sent an unexpected response.",
+    "El servidor envió una respuesta inesperada.",
+    "Le serveur a envoyé une réponse inattendue.",
+    "Der Server hat eine unerwartete Antwort gesendet."
+  ],
+  "O servidor enviou uma resposta inválida.": [
+    "The server sent an invalid response.",
+    "El servidor envió una respuesta inválida.",
+    "Le serveur a envoyé une réponse invalide.",
+    "Der Server hat eine ungültige Antwort gesendet."
+  ],
+  "O servidor não conseguiu concluir esta ação. Tente novamente.": [
+    "The server could not complete this action. Try again.",
+    "El servidor no pudo completar esta acción. Inténtalo de nuevo.",
+    "Le serveur n’a pas pu terminer cette action. Réessayez.",
+    "Der Server konnte diese Aktion nicht abschließen. Versuchen Sie es erneut."
+  ],
+  "Recuperar a conta": [
+    "Recover account",
+    "Recuperar la cuenta",
+    "Récupérer le compte",
+    "Konto wiederherstellen"
+  ],
+  "Seu acesso mudou ou expirou. Entre novamente.": [
+    "Your access changed or expired. Sign in again.",
+    "Tu acceso cambió o caducó. Inicia sesión de nuevo.",
+    "Votre accès a changé ou a expiré. Reconnectez-vous.",
+    "Ihr Zugriff wurde geändert oder ist abgelaufen. Melden Sie sich erneut an."
+  ],
+  "Sua conta não tem acesso a este anexo. Entre novamente ou peça acesso.": [
+    "Your account cannot access this attachment. Sign in again or request access.",
+    "Tu cuenta no tiene acceso a este archivo adjunto. Inicia sesión de nuevo o solicita acceso.",
+    "Votre compte n’a pas accès à cette pièce jointe. Reconnectez-vous ou demandez l’accès.",
+    "Ihr Konto hat keinen Zugriff auf diesen Anhang. Melden Sie sich erneut an oder bitten Sie um Zugriff."
+  ],
+  "Sua sessão expirou ou o acesso foi recusado. Entre novamente.": [
+    "Your session expired or access was denied. Sign in again.",
+    "Tu sesión caducó o se denegó el acceso. Inicia sesión de nuevo.",
+    "Votre session a expiré ou l’accès a été refusé. Reconnectez-vous.",
+    "Ihre Sitzung ist abgelaufen oder der Zugriff wurde verweigert. Melden Sie sich erneut an."
+  ],
+  "Verifique os dados informados e tente novamente.": [
+    "Check the information you entered and try again.",
+    "Revisa los datos introducidos e inténtalo de nuevo.",
+    "Vérifiez les informations saisies et réessayez.",
+    "Prüfen Sie Ihre Eingaben und versuchen Sie es erneut."
+  ],
+  "Você não tem permissão para realizar esta ação.": [
+    "You do not have permission to do this.",
+    "No tienes permiso para realizar esta acción.",
+    "Vous n’avez pas l’autorisation d’effectuer cette action.",
+    "Sie haben keine Berechtigung für diese Aktion."
+  ],
+  "a conexão está fechada": [
+    "the connection is closed",
+    "la conexión está cerrada",
+    "la connexion est fermée",
+    "die Verbindung ist geschlossen"
+  ],
+  "a conexão falhou": [
+    "the connection failed",
+    "la conexión falló",
+    "la connexion a échoué",
+    "die Verbindung ist fehlgeschlagen"
+  ],
+  "a conexão fechou: {reason}": [
+    "the connection closed: {reason}",
+    "la conexión se cerró: {reason}",
+    "la connexion a été fermée : {reason}",
+    "die Verbindung wurde geschlossen: {reason}"
+  ],
+  "adulterado": [
+    "tampered",
+    "alterado",
+    "altéré",
+    "manipuliert"
+  ],
+  "arquivo": [
+    "file",
+    "archivo",
+    "fichier",
+    "Datei"
+  ],
+  "canal": [
+    "channel",
+    "canal",
+    "chaîne",
+    "Kanal"
+  ],
+  "casa": [
+    "home",
+    "casa",
+    "domicile",
+    "privat"
+  ],
+  "celular": [
+    "mobile",
+    "móvil",
+    "mobile",
+    "Mobiltelefon"
+  ],
+  "esta mensagem não tem anexo": [
+    "this message has no attachment",
+    "este mensaje no tiene archivos adjuntos",
+    "ce message ne contient aucune pièce jointe",
+    "diese Nachricht hat keinen Anhang"
+  ],
+  "fax": [
+    "fax",
+    "fax",
+    "fax",
+    "Fax"
+  ],
+  "grupo sem nome": [
+    "unnamed group",
+    "grupo sin nombre",
+    "groupe sans nom",
+    "unbenannte Gruppe"
+  ],
+  "lista de transmissão": [
+    "broadcast list",
+    "lista de difusión",
+    "liste de diffusion",
+    "Broadcast-Liste"
+  ],
+  "não foi possível abrir a conexão": [
+    "could not open the connection",
+    "no se pudo abrir la conexión",
+    "impossible d’ouvrir la connexion",
+    "die Verbindung konnte nicht hergestellt werden"
+  ],
+  "o carregamento foi cancelado": [
+    "loading was cancelled",
+    "se canceló la carga",
+    "le chargement a été annulé",
+    "das Laden wurde abgebrochen"
+  ],
+  "o download não confere com o hash que a mensagem carrega": [
+    "the download does not match the message’s verification hash",
+    "la descarga no coincide con el hash de verificación del mensaje",
+    "le téléchargement ne correspond pas à l’empreinte de vérification du message",
+    "der Download stimmt nicht mit dem Prüfwert der Nachricht überein"
+  ],
+  "prazo {duration}": [
+    "expires after {duration}",
+    "caduca en {duration}",
+    "expire après {duration}",
+    "läuft nach {duration} ab"
+  ],
+  "principal": [
+    "main",
+    "principal",
+    "principal",
+    "primär"
+  ],
+  "sem identificação": [
+    "unidentified",
+    "sin identificar",
+    "non identifié",
+    "nicht identifiziert"
+  ],
+  "status": [
+    "status",
+    "estado",
+    "statut",
+    "Status"
+  ],
+  "trabalho": [
+    "work",
+    "trabajo",
+    "travail",
+    "geschäftlich"
+  ],
+  "{count} fotos": [
+    "{count} photos",
+    "{count} fotos",
+    "{count} photos",
+    "{count} Fotos"
+  ],
+  "{names} estão digitando…": [
+    "{names} are typing…",
+    "{names} están escribiendo…",
+    "{names} sont en train d’écrire…",
+    "{names} schreiben…"
+  ],
+  "{names} estão gravando áudio…": [
+    "{names} are recording audio…",
+    "{names} están grabando audio…",
+    "{names} enregistrent un message audio…",
+    "{names} nehmen eine Audionachricht auf…"
+  ],
+  "{name} digitando…": [
+    "{name} is typing…",
+    "{name} está escribiendo…",
+    "{name} écrit…",
+    "{name} schreibt…"
+  ],
+  "{name} está digitando…": [
+    "{name} is typing…",
+    "{name} está escribiendo…",
+    "{name} est en train d’écrire…",
+    "{name} schreibt…"
+  ],
+  "{name} está gravando áudio…": [
+    "{name} is recording audio…",
+    "{name} está grabando audio…",
+    "{name} enregistre un message audio…",
+    "{name} nimmt eine Audionachricht auf…"
+  ],
+  "Último uso em {date}": [
+    "Last used on {date}",
+    "Último uso el {date}",
+    "Dernière utilisation le {date}",
+    "Zuletzt verwendet am {date}"
+  ],
+  "A passkey não forneceu uma chave de desbloqueio válida.": [
+    "The passkey did not provide a valid unlock key.",
+    "La passkey no proporcionó una clave de desbloqueo válida.",
+    "La clé d’accès n’a pas fourni de clé de déverrouillage valide.",
+    "Der Passkey hat keinen gültigen Entsperrschlüssel geliefert."
+  ],
+  "Chave da conta inválida.": [
+    "Invalid account key.",
+    "Clave de cuenta inválida.",
+    "Clé de compte invalide.",
+    "Ungültiger Kontoschlüssel."
+  ],
+  "O registro desta passkey está inválido. Entre com sua senha.": [
+    "This passkey’s record is invalid. Sign in with your password.",
+    "El registro de esta passkey es inválido. Inicia sesión con tu contraseña.",
+    "L’enregistrement de cette clé d’accès est invalide. Connectez-vous avec votre mot de passe.",
+    "Der Eintrag dieses Passkeys ist ungültig. Melden Sie sich mit Ihrem Passwort an."
+  ],
+  "Esta passkey não conseguiu abrir seus dados. Entre com sua senha e cadastre uma passkey compatível.": [
+    "This passkey could not unlock your data. Sign in with your password and register a compatible passkey.",
+    "Esta passkey no pudo desbloquear tus datos. Inicia sesión con tu contraseña y registra una passkey compatible.",
+    "Cette clé d’accès n’a pas pu déverrouiller vos données. Connectez-vous avec votre mot de passe et enregistrez une clé d’accès compatible.",
+    "Dieser Passkey konnte Ihre Daten nicht entsperren. Melden Sie sich mit Ihrem Passwort an und registrieren Sie einen kompatiblen Passkey."
+  ],
+  "Esta conta usa uma proteção que esta versão ainda não reconhece.": [
+    "This account uses protection that this version does not recognize yet.",
+    "Esta cuenta usa una protección que esta versión aún no reconoce.",
+    "Ce compte utilise une protection que cette version ne reconnaît pas encore.",
+    "Dieses Konto verwendet einen Schutz, den diese Version noch nicht erkennt."
+  ],
+  "Não foi possível preparar a proteção da conta. Tente novamente.": [
+    "Could not prepare account protection. Try again.",
+    "No se pudo preparar la protección de la cuenta. Inténtalo de nuevo.",
+    "Impossible de préparer la protection du compte. Réessayez.",
+    "Der Kontoschutz konnte nicht vorbereitet werden. Versuchen Sie es erneut."
+  ],
+  "a chave guardada está truncada": [
+    "the saved key is incomplete",
+    "la clave guardada está incompleta",
+    "la clé enregistrée est incomplète",
+    "der gespeicherte Schlüssel ist unvollständig"
+  ],
+  "um código de recuperação tem {count} caracteres": [
+    "a recovery code has {count} characters",
+    "un código de recuperación tiene {count} caracteres",
+    "un code de récupération comporte {count} caractères",
+    "ein Wiederherstellungscode hat {count} Zeichen"
+  ],
+  "Os dados de acesso não conferem. Verifique sua senha, passkey ou código de recuperação.": [
+    "Your sign-in details do not match. Check your password, passkey, or recovery code.",
+    "Los datos de acceso no coinciden. Revisa tu contraseña, passkey o código de recuperación.",
+    "Les données d’accès ne correspondent pas. Vérifiez votre mot de passe, votre clé d’accès ou votre code de récupération.",
+    "Ihre Anmeldedaten stimmen nicht überein. Prüfen Sie Ihr Passwort, Ihren Passkey oder Ihren Wiederherstellungscode."
+  ],
+  "Sua sessão expirou. Entre novamente.": [
+    "Your session expired. Sign in again.",
+    "Tu sesión caducó. Inicia sesión de nuevo.",
+    "Votre session a expiré. Reconnectez-vous.",
+    "Ihre Sitzung ist abgelaufen. Melden Sie sich erneut an."
+  ],
+  "Este email já tem uma conta. Entre com ela ou recupere o acesso.": [
+    "This email already has an account. Sign in or recover access.",
+    "Este correo ya tiene una cuenta. Inicia sesión o recupera el acceso.",
+    "Cet e-mail possède déjà un compte. Connectez-vous ou récupérez l’accès.",
+    "Für diese E-Mail-Adresse gibt es bereits ein Konto. Melden Sie sich an oder stellen Sie den Zugriff wieder her."
+  ],
+  "Este servidor ainda não oferece passkeys. Use sua senha.": [
+    "This server does not support passkeys yet. Use your password.",
+    "Este servidor aún no ofrece passkeys. Usa tu contraseña.",
+    "Ce serveur ne propose pas encore de clés d’accès. Utilisez votre mot de passe.",
+    "Dieser Server unterstützt noch keine Passkeys. Verwenden Sie Ihr Passwort."
+  ],
+  "Você atingiu o limite de passkeys. Remova uma antiga antes de adicionar outra.": [
+    "You reached the passkey limit. Remove an old one before adding another.",
+    "Has alcanzado el límite de passkeys. Elimina una antigua antes de añadir otra.",
+    "Vous avez atteint la limite de clés d’accès. Supprimez-en une ancienne avant d’en ajouter une autre.",
+    "Sie haben die maximale Anzahl an Passkeys erreicht. Entfernen Sie einen alten, bevor Sie einen weiteren hinzufügen."
+  ],
+  "A passkey não foi salva. Entre novamente e repita o cadastro.": [
+    "The passkey was not saved. Sign in again and repeat registration.",
+    "La passkey no se guardó. Inicia sesión de nuevo y repite el registro.",
+    "La clé d’accès n’a pas été enregistrée. Reconnectez-vous et recommencez l’enregistrement.",
+    "Der Passkey wurde nicht gespeichert. Melden Sie sich erneut an und wiederholen Sie die Registrierung."
+  ],
+  "Este número não foi encontrado neste espaço de trabalho.": [
+    "This number was not found in this workspace.",
+    "No se encontró este número en este espacio de trabajo.",
+    "Ce numéro est introuvable dans cet espace de travail.",
+    "Diese Nummer wurde in diesem Arbeitsbereich nicht gefunden."
+  ],
+  "A conexão com o WhatsApp está indisponível no momento.": [
+    "The WhatsApp connection is currently unavailable.",
+    "La conexión con WhatsApp no está disponible en este momento.",
+    "La connexion à WhatsApp est actuellement indisponible.",
+    "Die WhatsApp-Verbindung ist derzeit nicht verfügbar."
+  ],
+  "Conecte este número ao WhatsApp antes de retomar a sincronização.": [
+    "Link this number to WhatsApp before resuming synchronization.",
+    "Vincula este número a WhatsApp antes de reanudar la sincronización.",
+    "Associez ce numéro à WhatsApp avant de reprendre la synchronisation.",
+    "Verknüpfen Sie diese Nummer mit WhatsApp, bevor Sie die Synchronisierung fortsetzen."
+  ],
+  "A sessão do WhatsApp não está mais disponível. Conecte o número novamente.": [
+    "The WhatsApp session is no longer available. Link the number again.",
+    "La sesión de WhatsApp ya no está disponible. Vincula el número de nuevo.",
+    "La session WhatsApp n’est plus disponible. Associez à nouveau le numéro.",
+    "Die WhatsApp-Sitzung ist nicht mehr verfügbar. Verknüpfen Sie die Nummer erneut."
+  ],
+  "Este número já tem uma conexão em andamento. Aguarde ou cancele a tentativa anterior.": [
+    "This number already has a connection in progress. Wait or cancel the previous attempt.",
+    "Este número ya tiene una conexión en curso. Espera o cancela el intento anterior.",
+    "Une connexion est déjà en cours pour ce numéro. Patientez ou annulez la tentative précédente.",
+    "Für diese Nummer läuft bereits ein Verbindungsvorgang. Warten Sie oder brechen Sie den vorherigen Versuch ab."
+  ],
+  "O nome do número precisa ter entre 1 e 100 caracteres.": [
+    "The number’s name must contain 1 to 100 characters.",
+    "El nombre del número debe tener entre 1 y 100 caracteres.",
+    "Le nom du numéro doit comporter entre 1 et 100 caractères.",
+    "Der Name der Nummer muss 1 bis 100 Zeichen enthalten."
+  ]
+}

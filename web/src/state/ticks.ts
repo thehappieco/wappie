@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 /**
  * What the ticks on a message mean.
  *
@@ -109,22 +110,22 @@ export function tickReport(
   // Nothing is drawn on somebody else's message. The ticks are a statement
   // about what happened to something we sent.
   if (!m.fromMe) return { tick: '', caveat: '' }
-  if (m.pending === 'sending') return { tick: 'pending', caveat: 'ainda enviando' }
-  if (m.pending === 'failed') return { tick: '', caveat: 'não foi enviada' }
+  if (m.pending === 'sending') return { tick: 'pending', caveat: t('ainda enviando') }
+  if (m.pending === 'failed') return { tick: '', caveat: t('não foi enviada') }
 
   if (acks.failed) {
-    return { tick: 'sent', caveat: 'o servidor do WhatsApp recusou esta mensagem' }
+    return { tick: 'sent', caveat: t('o servidor do WhatsApp recusou esta mensagem') }
   }
   if (acks.retrying) {
     // Named, and deliberately not promoted. A message being retried looks
     // delivered from every angle except the one that matters.
-    return { tick: 'sent', caveat: 'entrega sendo tentada de novo' }
+    return { tick: 'sent', caveat: t('entrega sendo tentada de novo') }
   }
 
   if (denominator === undefined || denominator <= 0) {
     return {
       tick: 'sent',
-      caveat: 'não dá para dizer "todos" sem saber quantos são nesta conversa',
+      caveat: t('não dá para dizer "todos" sem saber quantos são nesta conversa'),
     }
   }
 
@@ -136,8 +137,8 @@ export function tickReport(
   if (tooMany) {
     return {
       tick: 'sent',
-      caveat: `${acks.delivered} confirmações para ${denominator} destinatários — ` +
-        'a composição do grupo mudou desde então',
+      caveat: t('{v0} confirmações para {v1} destinatários — ', { v0: acks.delivered, v1: denominator }) +
+        t('a composição do grupo mudou desde então'),
     }
   }
 
@@ -148,8 +149,8 @@ export function tickReport(
   if (denominator > 1) {
     return {
       tick: 'sent',
-      caveat: `${acks.delivered} de ${denominator} receberam, ${acks.read} leram`,
+      caveat: t('{delivered} de {total} receberam, {read} leram', { delivered: acks.delivered, total: denominator, read: acks.read }),
     }
   }
-  return { tick: 'sent', caveat: 'entregue ao servidor do WhatsApp' }
+  return { tick: 'sent', caveat: t('entregue ao servidor do WhatsApp') }
 }

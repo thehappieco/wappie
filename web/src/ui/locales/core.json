@@ -1,0 +1,248 @@
+{
+  "Aguarde…": [
+    "Please wait…",
+    "Espera…",
+    "Veuillez patienter…",
+    "Bitte warten…"
+  ],
+  "Atualizando…": [
+    "Updating…",
+    "Actualizando…",
+    "Mise à jour…",
+    "Wird aktualisiert…"
+  ],
+  "Vínculo pendente": [
+    "Link pending",
+    "Vinculación pendiente",
+    "Association en attente",
+    "Verknüpfung ausstehend"
+  ],
+  "Aguardando vínculo": [
+    "Waiting to link",
+    "Esperando vinculación",
+    "En attente d’association",
+    "Warten auf Verknüpfung"
+  ],
+  "O vínculo não foi concluído. Gere outro QR code ou exclua este número em Detalhes.": [
+    "Linking was not completed. Generate another QR code or delete this number in Details.",
+    "La vinculación no se completó. Genera otro código QR o elimina este número en Detalles.",
+    "L’association n’a pas été terminée. Générez un autre code QR ou supprimez ce numéro dans Détails.",
+    "Die Verknüpfung wurde nicht abgeschlossen. Erstelle einen neuen QR-Code oder lösche diese Nummer unter Details."
+  ],
+  "Vincular número": [
+    "Link number",
+    "Vincular número",
+    "Associer un numéro",
+    "Nummer verknüpfen"
+  ],
+  "digitando…": [
+    "typing…",
+    "escribiendo…",
+    "écrit…",
+    "schreibt…"
+  ],
+  "Abrindo…": [
+    "Opening…",
+    "Abriendo…",
+    "Ouverture…",
+    "Wird geöffnet…"
+  ],
+  "encaminhada": [
+    "forwarded",
+    "reenviado",
+    "transféré",
+    "weitergeleitet"
+  ],
+  "Legenda (opcional)": [
+    "Caption (optional)",
+    "Texto (opcional)",
+    "Légende (facultative)",
+    "Beschriftung (optional)"
+  ],
+  "Mensagem": [
+    "Message",
+    "Mensaje",
+    "Message",
+    "Nachricht"
+  ],
+  "Legenda": [
+    "Caption",
+    "Texto",
+    "Légende",
+    "Beschriftung"
+  ],
+  "digitando": [
+    "typing",
+    "escribiendo",
+    "écrit",
+    "schreibt"
+  ],
+  ". Vale para a conversa inteira, e o WhatsApp avisa todo mundo nela.": [
+    ". This applies to the whole conversation, and WhatsApp notifies everyone in it.",
+    ". Esto se aplica a toda la conversación y WhatsApp avisa a todos los participantes.",
+    ". Cela s’applique à toute la conversation et WhatsApp en informe tous les participants.",
+    ". Das gilt für das gesamte Gespräch. WhatsApp informiert alle Teilnehmer."
+  ],
+  "▶ ouvir": [
+    "▶ listen",
+    "▶ escuchar",
+    "▶ écouter",
+    "▶ anhören"
+  ],
+  "▶ tocar": [
+    "▶ play",
+    "▶ reproducir",
+    "▶ lire",
+    "▶ abspielen"
+  ],
+  "abrir": [
+    "open",
+    "abrir",
+    "ouvrir",
+    "öffnen"
+  ],
+  "enviada": [
+    "sent",
+    "enviado",
+    "envoyé",
+    "gesendet"
+  ],
+  "enviando": [
+    "sending",
+    "enviando",
+    "envoi en cours",
+    "wird gesendet"
+  ],
+  "Último uso em ": [
+    "Last used ",
+    "Último uso el ",
+    "Dernière utilisation le ",
+    "Zuletzt verwendet am "
+  ],
+  "Guardar e abrir": [
+    "Save and open",
+    "Guardar y abrir",
+    "Enregistrer et ouvrir",
+    "Speichern und öffnen"
+  ],
+  "Enquete": [
+    "Poll",
+    "Encuesta",
+    "Sondage",
+    "Umfrage"
+  ],
+  "Contato": [
+    "Contact",
+    "Contacto",
+    "Contact",
+    "Kontakt"
+  ],
+  "Evento": [
+    "Event",
+    "Evento",
+    "Événement",
+    "Termin"
+  ],
+  "entrou": [
+    "joined",
+    "te uniste",
+    "rejoint",
+    "beigetreten"
+  ],
+  "entrando…": [
+    "joining…",
+    "uniéndote…",
+    "en cours…",
+    "Beitritt…"
+  ],
+  "Código QR para conectar o aparelho": [
+    "QR code to link the device",
+    "Código QR para vincular el dispositivo",
+    "Code QR pour associer l’appareil",
+    "QR-Code zum Verknüpfen des Geräts"
+  ],
+  "Lido": [
+    "Read",
+    "Leído",
+    "Lu",
+    "Gelesen"
+  ],
+  "ocultar": [
+    "hide",
+    "ocultar",
+    "masquer",
+    "ausblenden"
+  ],
+  " aparelhos": [
+    " devices",
+    " dispositivos",
+    " appareils",
+    " Geräte"
+  ],
+  "confirmado": [
+    "confirmed",
+    "confirmado",
+    "confirmé",
+    "bestätigt"
+  ],
+  "deduzido": [
+    "inferred",
+    "deducido",
+    "déduit",
+    "abgeleitet"
+  ],
+  "Registrando…": [
+    "Registering…",
+    "Registrando…",
+    "Enregistrement…",
+    "Wird registriert…"
+  ],
+  "sem limite configurado": [
+    "no limit configured",
+    "sin límite configurado",
+    "aucune limite définie",
+    "kein Limit konfiguriert"
+  ],
+  "Histórico de conversas": [
+    "Conversation history",
+    "Historial de conversaciones",
+    "Historique des conversations",
+    "Gesprächsverlauf"
+  ],
+  "24 horas": [
+    "24 hours",
+    "24 horas",
+    "24 heures",
+    "24 Stunden"
+  ],
+  "7 dias": [
+    "7 days",
+    "7 días",
+    "7 jours",
+    "7 Tage"
+  ],
+  "90 dias": [
+    "90 days",
+    "90 días",
+    "90 jours",
+    "90 Tage"
+  ],
+  "{count} dias": [
+    "{count} days",
+    "{count} días",
+    "{count} jours",
+    "{count} Tage"
+  ],
+  "{count} horas": [
+    "{count} hours",
+    "{count} horas",
+    "{count} heures",
+    "{count} Stunden"
+  ],
+  "{delivered} de {total} receberam, {read} leram": [
+    "{delivered} of {total} received, {read} read",
+    "{delivered} de {total} recibidos, {read} leídos",
+    "{delivered} reçus sur {total}, {read} lus",
+    "{delivered} von {total} empfangen, {read} gelesen"
+  ]
+}

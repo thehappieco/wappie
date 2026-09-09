@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { loadOlder, people, refreshChats, state, type MessageView } from '../state/archive'
@@ -237,12 +238,12 @@ const typingHere = computed(() => {
   const who = typingIn(state.openChatKey, nowTick.value)
   if (who.length === 0) return ''
   const recording = who.some((t) => t.media === 'audio')
-  if (!chat.value?.isGroup) return recording ? 'gravando áudio…' : 'digitando…'
+  if (!chat.value?.isGroup) return recording ? t('gravando áudio…') : t('digitando…')
   const names = who.map((t) =>
     people().nameFor(t.senderLID || t.senderPN || t.senderKey),
   )
-  const verb = recording ? 'gravando áudio' : 'digitando'
-  return names.length === 1 ? `${names[0]} está ${verb}…` : `${names.join(', ')} estão ${verb}…`
+  if (names.length === 1) return recording ? t('{name} está gravando áudio…', { name: names[0] }) : t('{name} está digitando…', { name: names[0] })
+  return recording ? t('{names} estão gravando áudio…', { names: names.join(', ') }) : t('{names} estão digitando…', { names: names.join(', ') })
 })
 
 /** Opening the group panel fetches it, refreshing from WhatsApp on the way. */
@@ -271,7 +272,7 @@ async function onTimer(value: string) {
     @drop="onDrop"
   >
     <div class="topbar conversation-header">
-      <button class="icon-btn mobile-back" type="button" aria-label="Voltar para conversas" @click="emit('back')">
+      <button class="icon-btn mobile-back" type="button" :aria-label="t('Voltar para conversas')" @click="emit('back')">
         <AppIcon name="back" />
       </button>
       <template v-if="chat">
@@ -284,9 +285,9 @@ async function onTimer(value: string) {
       <div class="grow">
         <h2>{{ chat.name }}</h2>
         <div class="sub">
-          <template v-if="chat.isGroup && chat.audience">{{ chat.audience }} participantes</template>
-          <template v-else-if="chat.isGroup">Grupo</template>
-          <template v-else>{{ state.quiet ? 'Modo incógnito' : 'Conversa' }}</template>
+          <template v-if="chat.isGroup && chat.audience">{{ t('{v0} participantes', { v0: chat.audience }) }}</template>
+          <template v-else-if="chat.isGroup">{{ t('Grupo') }}</template>
+          <template v-else>{{ state.quiet ? t('Modo incógnito') : t('Conversa') }}</template>
         </div>
       </div>
 
@@ -296,10 +297,10 @@ async function onTimer(value: string) {
            is announced to everyone in the conversation by WhatsApp itself. -->
       <select
         class="timer"
-        aria-label="Mensagens temporárias"
+        :aria-label="t('Mensagens temporárias')"
         :value="chat.ephemeral"
-        :title="'Mensagens temporárias: ' + timerLabel(chat.ephemeral) +
-          '. Vale para a conversa inteira, e o WhatsApp avisa todo mundo nela.'"
+        :title="t('Mensagens temporárias: ') + timerLabel(chat.ephemeral) +
+          t('. Vale para a conversa inteira, e o WhatsApp avisa todo mundo nela.')"
         @change="onTimer(($event.target as HTMLSelectElement).value)"
       >
         <option v-for="s in TIMER_PRESETS" :key="s" :value="s">{{ timerLabel(s) }}</option>
@@ -311,30 +312,28 @@ async function onTimer(value: string) {
       <button
         v-if="chat.isGroup"
         class="icon-btn"
-        title="Participantes e histórico do grupo"
-        aria-label="Participantes e histórico do grupo"
+        :title="t('Participantes e histórico do grupo')"
+        :aria-label="t('Participantes e histórico do grupo')"
         @click="openGroup"
       >
         ⋯
       </button>
       </template>
-      <h2 v-else class="grow">Conversa</h2>
+      <h2 v-else class="grow">{{ t('Conversa') }}</h2>
     </div>
 
-    <div class="banner" v-if="state.lagged">
-      A transmissão teve uma lacuna e a conversa foi recarregada do arquivo.
-    </div>
+    <div class="banner" v-if="state.lagged"> {{ t('A transmissão teve uma lacuna e a conversa foi recarregada do histórico.') }} </div>
 
     <div v-if="typingHere" class="typing-line">{{ typingHere }}</div>
 
     <div class="messages" ref="scroller" @scroll.passive="onScroll">
       <div class="centered-row" v-if="state.hasOlder">
         <button class="ghost" @click="older" :disabled="state.loadingOlder">
-          {{ state.loadingOlder ? 'Carregando…' : 'Carregar mensagens anteriores' }}
+          {{ state.loadingOlder ? t('Carregando…') : t('Carregar mensagens anteriores') }}
         </button>
       </div>
       <div class="centered-row" v-else-if="state.timeline.length">
-        <span class="sealed">início do que o arquivo tem</span>
+        <span class="sealed">{{ t('início do histórico de conversas') }}</span>
       </div>
 
       <!-- Keyed on the WhatsApp id, not the uid. The two differ for a message
@@ -354,16 +353,16 @@ async function onTimer(value: string) {
         />
       </template>
 
-      <div v-if="state.loadingChat" class="empty">Abrindo a conversa…</div>
+      <div v-if="state.loadingChat" class="empty">{{ t('Abrindo a conversa…') }}</div>
       <div v-else-if="!state.timeline.length" class="empty">
         <div>
-          <div class="big">Nada arquivado nesta conversa</div>
-          <div>O aparelho pode não ter enviado o histórico dela ainda.</div>
+          <div class="big">{{ t('Nada arquivado nesta conversa') }}</div>
+          <div>{{ t('O aparelho pode não ter enviado o histórico dela ainda.') }}</div>
         </div>
       </div>
     </div>
 
-    <div v-if="dragging" class="drop-veil">Solte para anexar</div>
+    <div v-if="dragging" class="drop-veil">{{ t('Solte para anexar') }}</div>
 
     <Composer
       ref="composer"

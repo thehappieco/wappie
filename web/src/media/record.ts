@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // Recording a voice note.
 //
 // A voice note is not an audio file with a different label: WhatsApp draws a
@@ -60,7 +61,7 @@ export function available(): boolean {
  * made.
  */
 export async function begin(): Promise<Recording> {
-  if (!available()) throw new Error('este navegador não grava áudio')
+  if (!available()) throw new Error(t('este navegador não grava áudio'))
 
   const stream = await navigator.mediaDevices.getUserMedia({
     // What a voice note is for. Left to the browser's own processing rather

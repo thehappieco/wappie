@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed } from 'vue'
 
 import { losesAnimation, offer, planFor, unusualVoiceNote, type Choice } from '../media/plan'
@@ -55,9 +56,9 @@ function unusual(choice: Choice): boolean {
     <div class="sheet-head">
       <div class="grow">
         <div class="sheet-name">{{ file.name }}</div>
-        <div class="sheet-size">{{ bytes(file.size) || 'arquivo vazio' }}</div>
+        <div class="sheet-size">{{ bytes(file.size) || t('arquivo vazio') }}</div>
       </div>
-      <button class="icon-btn" type="button" title="Cancelar anexo" aria-label="Cancelar anexo" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
+      <button class="icon-btn" type="button" :title="t('Cancelar anexo')" :aria-label="t('Cancelar anexo')" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <button
@@ -70,8 +71,8 @@ function unusual(choice: Choice): boolean {
       <span class="sheet-label"><AppIcon :name="choiceIcons[plan.choice]" :size="20" /> {{ plan.label }}</span>
       <span class="sheet-note">
         {{ plan.note }}
-        <template v-if="flattens(plan.choice)"> · a animação se perde</template>
-        <template v-if="unusual(plan.choice)"> · não é Opus; alguns aparelhos podem não tocar</template>
+        <template v-if="flattens(plan.choice)"> {{ t('· a animação se perde') }}</template>
+        <template v-if="unusual(plan.choice)"> {{ t('· não é Opus; alguns aparelhos podem não tocar') }}</template>
       </span>
     </button>
   </div>

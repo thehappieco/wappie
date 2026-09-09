@@ -141,7 +141,7 @@ var features = []string{
 	"message.get", "message.history",
 	"message.send", "message.send.media", "message.edit", "message.revoke",
 	"message.react", "message.read", "message.poll.vote",
-	"chat.timer", "chat.presence", "device.mode", "device.stop",
+	"chat.timer", "chat.presence", "device.mode", "device.stop", "device.start", "device.rename",
 	"group.join", "group.info", "reproject.list", "reproject.apply", "media.retry", "media.expired", "history.backfill",
 	"devices.stats", "device.info", "device.delete",
 	"apikeys.list", "apikeys.create", "apikeys.revoke",
@@ -630,6 +630,10 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleReprojectApply(ctx, f)
 	case TypeMarkRead:
 		go s.handleMarkRead(ctx, f)
+	case TypeDeviceStart:
+		go s.handleDeviceStart(ctx, f)
+	case TypeDeviceRename:
+		go s.handleDeviceRename(ctx, f)
 	case TypeDeviceStop:
 		go s.handleDeviceStop(ctx, f)
 	case TypeDevicesStats:

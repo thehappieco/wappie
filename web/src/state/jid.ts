@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // WhatsApp identifiers.
 //
 // An identity here is a pair, (lid, pn), with LID primary. A phone number is not
@@ -62,11 +63,11 @@ export function displayFallback(raw: string): string {
   const jid = parseJID(raw)
   switch (jid.server) {
     case SERVER_GROUP:
-      return 'grupo sem nome'
+      return t('grupo sem nome')
     case SERVER_BROADCAST:
-      return jid.user === 'status' ? 'status' : 'lista de transmissão'
+      return jid.user === 'status' ? t('status') : t('lista de transmissão')
     case SERVER_NEWSLETTER:
-      return 'canal'
+      return t('canal')
     case SERVER_LID:
       // The digits, not a constant. Every unnamed person used to render as the
       // same string, so ten strangers in one group were one indistinguishable
@@ -78,7 +79,7 @@ export function displayFallback(raw: string): string {
       // which would put the bug straight back. Prefixed so it is never mistaken
       // for a phone number, which it is not — hiding the number is what a LID
       // is for.
-      return jid.user ? `LID ${jid.user}` : 'sem identificação'
+      return jid.user ? `LID ${jid.user}` : t('sem identificação')
     default:
       return formatPhone(jid.user)
   }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { ref } from 'vue'
 
 import { computed } from 'vue'
@@ -30,11 +31,11 @@ const confirming = ref('')
 // archive — not a device key sent by hand.
 const services = computed(() => admin.accounts.filter((a) => a.role === 'service'))
 
-const scopes: { value: KeyScope; label: string; hint: string }[] = [
-  { value: 'read', label: 'ler', hint: 'lista, acompanha e baixa o arquivo cifrado' },
-  { value: 'send', label: 'enviar', hint: 'e também envia mensagens e anexos como o número' },
-  { value: 'full', label: 'operar', hint: 'e também pareia, para aparelhos e pede histórico' },
-]
+const scopes = computed<{ value: KeyScope; label: string; hint: string }[]>(() => [
+  { value: 'read', label: t('Ler'), hint: t('Consulta e acompanha o histórico cifrado dos números permitidos.') },
+  { value: 'send', label: t('Enviar'), hint: t('Inclui leitura e permite enviar mensagens e anexos pelos números autorizados.') },
+  { value: 'full', label: t('Gerenciar'), hint: t('Inclui leitura e envio; também permite vincular, pausar números e solicitar histórico. Não administra membros nem pagamentos.') },
+])
 
 async function mint() {
   const wanted = name.value.trim()
@@ -46,7 +47,7 @@ async function mint() {
 }
 
 function scopeLabel(s: string | undefined) {
-  return scopes.find((x) => x.value === s)?.label ?? s ?? ''
+  return scopes.value.find((x) => x.value === s)?.label ?? s ?? ''
 }
 
 function when(iso: string | undefined) {
@@ -61,35 +62,29 @@ async function revoke(prefix: string) {
 
 <template>
   <section class="console-panel">
-    <h2>Tokens de API</h2>
-    <p class="dim">
-      Conecte seus sistemas ao Wappie com acessos separados. Escolha o que cada token poderá fazer.
-      O conteúdo das conversas continua protegido pelas chaves concedidas à conta da integração.
-    </p>
+    <h2>{{ t('Tokens de API') }}</h2>
+    <p class="dim"> {{ t('Conecte seus sistemas ao Wappie com acessos separados. Escolha o que cada token poderá fazer. O conteúdo das conversas continua protegido pelas chaves concedidas à conta da integração.') }} </p>
 
     <div class="alert" v-if="admin.keysError">{{ admin.keysError }}</div>
 
     <div class="minted" v-if="admin.minted">
-      <div class="minted-head">Copie agora. Esta é a única vez que a chave aparece.</div>
+      <div class="minted-head">{{ t('Copie agora. Esta é a única vez que a chave aparece.') }}</div>
       <code class="secret">{{ admin.minted.key }}</code>
-      <button class="ghost" @click="dismissMintedKey">Já copiei</button>
+      <button class="ghost" @click="dismissMintedKey">{{ t('Já copiei') }}</button>
     </div>
 
     <form class="token-form" @submit.prevent="mint">
-      <label class="token-name">Nome do token<input v-model="name" placeholder="Ex.: integração de atendimento" /></label>
-      <label>Permissão<select v-model="scope" :title="scopes.find((s) => s.value === scope)?.hint">
+      <label class="token-name">{{ t('Nome do token') }}<input v-model="name" :placeholder="t('Ex.: integração de atendimento')" /></label>
+      <label>{{ t('Permissão') }}<select v-model="scope" :title="scopes.find((s) => s.value === scope)?.hint">
         <option v-for="s in scopes" :key="s.value" :value="s.value">{{ s.label }}</option>
       </select></label>
-      <label v-if="services.length">Conta da integração<select v-model="actsAs" title="Conta de serviço cujas concessões a chave carrega">
-        <option value="">Sem conta (dados cifrados)</option>
-        <option v-for="s in services" :key="s.id" :value="s.id">age como {{ s.email }}</option>
+      <label v-if="services.length">{{ t('Conta da integração') }}<select v-model="actsAs" :title="t('Conta de serviço cujas concessões a chave carrega')">
+        <option value="">{{ t('Sem conta (dados cifrados)') }}</option>
+        <option v-for="s in services" :key="s.id" :value="s.id">{{ t('age como {v0}', { v0: s.email }) }}</option>
       </select></label>
-      <button class="primary small" type="submit" :disabled="!name.trim()">Gerar</button>
+      <button class="primary small" type="submit" :disabled="!name.trim()">{{ t('Gerar') }}</button>
     </form>
-    <p class="dim" v-if="services.length">
-      Uma chave que <strong>age como</strong> uma conta de serviço carrega as concessões dela: o
-      sistema abre os aparelhos concedidos com a chave privada que registrou, e nenhum outro.
-    </p>
+    <p class="dim" v-if="services.length">{{ t('A conta da integração precisa ter permissão para cada número. Para ler as mensagens, também precisa da chave do histórico concedida a ela.') }}</p>
     <p class="dim">
       <template v-for="s in scopes" :key="s.value">
         <strong>{{ s.label }}</strong>: {{ s.hint }}.
@@ -97,35 +92,33 @@ async function revoke(prefix: string) {
     </p>
 
     <div v-if="admin.keys.length" class="token-table"><table class="grid">
-      <thead><tr><th>Token</th><th>Atividade</th><th>Acesso</th></tr></thead>
+      <thead><tr><th>{{ t('Token') }}</th><th>{{ t('Atividade') }}</th><th>{{ t('Acesso') }}</th></tr></thead>
       <tbody>
         <tr v-for="k in admin.keys" :key="k.prefix" :class="{ dead: k.revoked_at }">
-          <td data-label="Token">
+          <td :data-label="t('Token')">
             <div>
               {{ k.name }} <span class="pill">{{ scopeLabel(k.scope) }}</span>
-              <span class="pill" v-if="k.acts_as">age como {{ k.acts_as }}</span>
+              <span class="pill" v-if="k.acts_as">{{ t('age como {v0}', { v0: k.acts_as }) }}</span>
             </div>
             <div class="dim mono">{{ k.prefix }}</div>
           </td>
-          <td class="dim" data-label="Atividade">
-            criada {{ stamp(when(k.created_at)) }}
-            <template v-if="k.created_by"> por {{ k.created_by }}</template>
-            <div v-if="k.last_used_at">usada {{ stamp(when(k.last_used_at)) }}</div>
-            <div v-else>nunca usada</div>
+          <td class="dim" :data-label="t('Atividade')"> {{ t('criada {v0}', { v0: stamp(when(k.created_at)) }) }} <template v-if="k.created_by"> {{ t('por {v0}', { v0: k.created_by }) }}</template>
+            <div v-if="k.last_used_at">{{ t('usada {v0}', { v0: stamp(when(k.last_used_at)) }) }}</div>
+            <div v-else>{{ t('nunca usada') }}</div>
           </td>
-          <td class="right" data-label="Acesso">
-            <span v-if="k.revoked_at" class="pill">revogada</span>
+          <td class="right" :data-label="t('Acesso')">
+            <span v-if="k.revoked_at" class="pill">{{ t('revogada') }}</span>
             <template v-else-if="confirming === k.prefix">
-              <button class="danger small" @click="revoke(k.prefix)">Revogar mesmo</button>
-              <button class="ghost small" @click="confirming = ''">Não</button>
+              <button class="danger small" @click="revoke(k.prefix)">{{ t('Revogar mesmo') }}</button>
+              <button class="ghost small" @click="confirming = ''">{{ t('Não') }}</button>
             </template>
-            <button v-else class="ghost small" @click="confirming = k.prefix">Revogar</button>
+            <button v-else class="ghost small" @click="confirming = k.prefix">{{ t('Revogar') }}</button>
           </td>
         </tr>
       </tbody>
     </table></div>
-    <div v-else class="tokens-empty">Nenhum token criado. Gere um para conectar seu primeiro sistema.</div>
-    <p class="dim">Ao revogar um token, as conexões que o utilizam são encerradas imediatamente.</p>
+    <div v-else class="tokens-empty">{{ t('Nenhum token criado. Gere um para conectar seu primeiro sistema.') }}</div>
+    <p class="dim">{{ t('Ao revogar um token, as conexões que o utilizam são encerradas imediatamente.') }}</p>
   </section>
 </template>
 

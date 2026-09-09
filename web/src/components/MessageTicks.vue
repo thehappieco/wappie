@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed } from 'vue'
 
 import { state, type MessageView } from '../state/archive'
@@ -22,15 +23,15 @@ const report = computed(() => {
 const label = computed(() => {
   switch (report.value.tick) {
     case 'pending':
-      return 'enviando'
+      return t('enviando')
     case 'sent':
-      return 'enviada'
+      return t('enviada')
     case 'delivered':
-      return 'todos receberam'
+      return t('todos receberam')
     case 'read':
-      return 'todos leram'
+      return t('todos leram')
     case 'played':
-      return 'todos ouviram'
+      return t('todos ouviram')
     default:
       return ''
   }

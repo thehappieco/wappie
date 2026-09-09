@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // What a person can do to a message that is already sent.
 //
 // All four verbs exist on the server and are archived through the same pipeline
@@ -90,7 +91,7 @@ export function myReaction(m: MessageView): string {
 
 function socket() {
   const conn = connection()
-  if (!conn) throw new Error('sem conexão com o servidor')
+  if (!conn) throw new Error(t('sem conexão com o servidor'))
   return conn
 }
 
@@ -143,7 +144,7 @@ export async function openConversation(jid: string): Promise<boolean> {
     [c.key, ...c.keys].some((k) => !c.isGroup && k.split('@')[0] === user),
   )
   if (!chat) {
-    state.actionError = 'não há conversa com esse número neste arquivo'
+    state.actionError = t('não há conversa com esse número neste histórico')
     return false
   }
   await openChat(chat.key)
@@ -172,7 +173,7 @@ export async function vote(m: MessageView, options: string[]): Promise<boolean> 
   state.actionError = ''
   if (!m.payload?.poll) return false
   if (m.fromMe && !ownKey()) {
-    state.actionError = 'este dispositivo ainda não sabe a própria identidade'
+    state.actionError = t('este dispositivo ainda não sabe a própria identidade')
     return false
   }
   try {
@@ -209,7 +210,7 @@ export async function edit(m: MessageView, body: string): Promise<void> {
   const text = body.trim()
   if (!text) return
   if (!canEdit(m)) {
-    state.actionError = 'a janela de vinte minutos para editar já passou'
+    state.actionError = t('a janela de vinte minutos para editar já passou')
     return
   }
   try {
@@ -279,11 +280,11 @@ export async function joinGroup(m: MessageView): Promise<boolean> {
   // against the pair, so a missing sender is a refusal rather than a guess.
   const inviter = m.senderKey
   if (!inviter) {
-    state.actionError = 'não dá para saber quem enviou o convite'
+    state.actionError = t('não dá para saber quem enviou o convite')
     return false
   }
   if (invite.expiration && invite.expiration * 1000 <= Date.now()) {
-    state.actionError = 'esse convite expirou; peça outro'
+    state.actionError = t('esse convite expirou; peça outro')
     return false
   }
 

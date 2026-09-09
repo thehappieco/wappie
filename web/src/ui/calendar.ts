@@ -1,3 +1,4 @@
+import { t } from './i18n'
 // Turning an event message into a calendar file.
 //
 // Generated here rather than fetched, and that is the whole point: the event's
@@ -67,7 +68,7 @@ export function filename(event: EventLike): string {
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 60)
-  return `${base || 'evento'}.ics`
+  return `${base || t('evento')}.ics`
 }
 
 function description(event: EventLike): string {

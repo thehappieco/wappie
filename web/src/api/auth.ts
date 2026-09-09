@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // Signing up and signing in, and turning what that returns into archive keys.
 //
 // The shape of the exchange matters more than the endpoints. The server is
@@ -103,11 +104,11 @@ async function call<T>(serverURL: string, path: string, body: unknown, token?: s
   try {
     parsed = text ? JSON.parse(text) : {}
   } catch {
-    throw new AuthError('internal', `o servidor respondeu ${response.status}`)
+    throw new AuthError('internal', t('o servidor respondeu {v0}', { v0: response.status }))
   }
   if (!response.ok) {
     const err = parsed as { code?: string; message?: string }
-    throw new AuthError(err.code ?? 'internal', err.message ?? `erro ${response.status}`)
+    throw new AuthError(err.code ?? 'internal', authErrorMessage(err.code) ?? err.message ?? t('Não foi possível concluir ({status}).', { status: response.status }))
   }
   return parsed as T
 }
@@ -125,7 +126,7 @@ export async function signUp(input: {
   password: string
 }): Promise<{ session: SignedIn; recoveryCode: string }> {
   if (input.password.length < MinPassword) {
-    throw new AuthError('weak_password', `a senha precisa de pelo menos ${MinPassword} caracteres`)
+    throw new AuthError('weak_password', t('a senha precisa de pelo menos {v0} caracteres', { v0: MinPassword }))
   }
 
   const salt = freshSalt()
@@ -176,7 +177,7 @@ export async function registerService(input: {
 }): Promise<{ id: string; name: string }> {
   const raw = fromBase64(input.publicKey.trim())
   if (raw.length !== 32) {
-    throw new AuthError('bad_key', `uma chave pública X25519 tem 32 bytes, esta tem ${raw.length}`)
+    throw new AuthError('bad_key', t('uma chave pública X25519 tem 32 bytes, esta tem {v0}', { v0: raw.length }))
   }
   const reply = await call<SessionReply>(input.serverURL, '/v1/auth/signup', {
     invite: input.invite.trim(),
@@ -256,7 +257,7 @@ async function rekeyed(
   withRecovery: boolean,
 ): Promise<{ body: Record<string, unknown>; recoveryCode: string }> {
   if (password.length < MinPassword) {
-    throw new AuthError('weak_password', `a senha precisa de pelo menos ${MinPassword} caracteres`)
+    throw new AuthError('weak_password', t('a senha precisa de pelo menos {v0} caracteres', { v0: MinPassword }))
   }
   const salt = freshSalt()
   const params: KDFParams = { alg: 'argon2id', m: 64 * 1024, t: 3, p: 1 }
@@ -307,7 +308,7 @@ export async function recover(input: {
   } catch {
     // The server accepted the proof and the wrap still did not open: the
     // stored wrap is not the one this code made. Corruption, or a swap.
-    throw new AuthError('recovery', 'o código foi aceito, mas a chave guardada não abriu com ele')
+    throw new AuthError('recovery', t('o código foi aceito, mas a chave guardada não abriu com ele'))
   }
   try {
     const next = await rekeyed(privateKey, email, input.password, true)
@@ -461,7 +462,7 @@ export async function withDeviceKey<T>(
     if (!grant) {
       throw new AuthError(
         'no_grant',
-        'sua conta não tem a chave deste aparelho, então não há o que conceder',
+        t('sua conta não tem a chave deste aparelho, então não há o que conceder'),
       )
     }
     const account = await importArchiveKey(accountPrivate)
@@ -538,3 +539,20 @@ async function finish(
 }
 
 export { call as authRequest, finish as finishSession }
+
+function authErrorMessage(code?: string): string | undefined {
+  switch (code) {
+    case 'bad_credentials': return t('Os dados de acesso não conferem. Verifique sua senha, passkey ou código de recuperação.')
+    case 'unauthorized': return t('Sua sessão expirou. Entre novamente.')
+    case 'email_taken': return t('Este email já tem uma conta. Entre com ela ou recupere o acesso.')
+    case 'invite_invalid': return t('Este convite não é válido, já foi utilizado ou expirou.')
+    case 'not_authorized': return t('Você não tem permissão para realizar esta ação.')
+    case 'rate_limited': return t('Muitas tentativas. Aguarde um pouco e tente novamente.')
+    case 'passkeys_disabled': return t('Este servidor ainda não oferece passkeys. Use sua senha.')
+    case 'origin_not_allowed': return t('Passkeys não estão disponíveis neste endereço. Acesse o endereço seguro do Wappie.')
+    case 'prf_unsupported': return t('Esta passkey não oferece o desbloqueio dos dados criptografados. Use a senha ou escolha outro autenticador.')
+    case 'passkey_limit': return t('Você atingiu o limite de passkeys. Remova uma antiga antes de adicionar outra.')
+    case 'passkey_not_saved': return t('A passkey não foi salva. Entre novamente e repita o cadastro.')
+    default: return undefined
+  }
+}

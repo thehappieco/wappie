@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed } from 'vue'
 
 import { encode, svgPath } from '../ui/qr'
@@ -29,7 +30,7 @@ const drawn = computed(() => {
       :height="props.size ?? 260"
       shape-rendering="crispEdges"
       role="img"
-      aria-label="Código QR para conectar o aparelho"
+      :aria-label="t('Código QR para conectar o aparelho')"
     >
       <rect :width="drawn.extent" :height="drawn.extent" fill="#fff" />
       <path :d="drawn.path" fill="#000" />

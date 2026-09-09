@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, ref } from 'vue'
 
 import type { Payload } from '../api/protocol'
@@ -51,13 +52,13 @@ function share(option: string): string {
 /** voterList names who chose an option, for the hover. */
 function voterList(option: string): string {
   const who = votersFor(option).map((v) => v.who)
-  return who.length ? who.join(', ') : 'ninguém ainda'
+  return who.length ? who.join(', ') : t('ninguém ainda')
 }
 
 const answered = computed(() => {
   const n = tally.value?.voters ?? 0
-  if (n === 0) return 'ninguém respondeu ainda'
-  return n === 1 ? '1 pessoa respondeu' : `${n} pessoas responderam`
+  if (n === 0) return t('ninguém respondeu ainda')
+  return n === 1 ? t('1 pessoa respondeu') : t('{v0} pessoas responderam', { v0: n })
 })
 
 // Voting needs the message, because the vote is keyed to the poll's own id and
@@ -83,7 +84,7 @@ const multiple = computed(() => limit.value > 1)
 const chosenCount = computed(() => (p.value.poll?.options ?? []).filter(chose).length)
 
 const atLimit = computed(
-  () => `esta enquete aceita ${limit.value} ${limit.value === 1 ? 'escolha' : 'escolhas'}`,
+  () => limit.value === 1 ? t('Esta enquete aceita uma escolha.') : t('Esta enquete aceita até {count} escolhas.', { count: limit.value }),
 )
 
 /**
@@ -111,7 +112,7 @@ async function pick(option: string) {
   const mine = (p.value.poll?.options ?? []).filter(chose)
   const next = nextSelection(mine, option, limit.value)
   if (next.refused) {
-    voteError.value = `esta enquete aceita ${limit.value} ${limit.value === 1 ? 'escolha' : 'escolhas'}; desmarque uma antes`
+    voteError.value = limit.value === 1 ? t('Esta enquete aceita uma escolha. Desmarque a anterior.') : t('Esta enquete aceita até {count} escolhas. Desmarque uma antes.', { count: limit.value })
     return
   }
 
@@ -120,7 +121,7 @@ async function pick(option: string) {
   // The archive is what says the vote happened: the row comes back over the
   // socket and the tally is recomputed from it. Nothing is drawn optimistically
   // here, so a vote that did not leave never looks like one that did.
-  if (!(await vote(props.message, next.options))) voteError.value = 'não deu para votar'
+  if (!(await vote(props.message, next.options))) voteError.value = t('não deu para votar')
   voting.value = false
 }
 
@@ -129,12 +130,12 @@ const albumLine = computed(() => {
   const images = p.value.album?.images ?? 0
   const videos = p.value.album?.videos ?? 0
   const parts: string[] = []
-  if (images) parts.push(images === 1 ? '1 foto' : `${images} fotos`)
-  if (videos) parts.push(videos === 1 ? '1 vídeo' : `${videos} vídeos`)
+  if (images) parts.push(images === 1 ? t('1 foto') : t('{count} fotos', { count: images }))
+  if (videos) parts.push(videos === 1 ? t('1 vídeo') : t('{v0} vídeos', { v0: videos }))
   // An album that declares nothing is still an album. WhatsApp sends the
   // header before it knows the counts, and "Álbum com 0 fotos" would be a
   // sentence about a bug rather than about the message.
-  return parts.length ? `Álbum com ${parts.join(' e ')}` : 'Álbum'
+  return parts.length ? t('Álbum com {v0}', { v0: parts.join(t(' e ')) }) : t('Álbum')
 })
 
 type JoinState = 'idle' | 'joining' | 'joined'
@@ -171,7 +172,7 @@ const cards = computed(() =>
       raw,
       card,
       href: raw.vcard ? blobHref(raw.vcard, 'text/vcard') : '',
-      filename: `${(card.name || raw.display_name || 'contato').replace(/[^\p{L}\p{N}]+/gu, '-')}.vcf`,
+      filename: `${(card.name || raw.display_name || t('contato')).replace(/[^\p{L}\p{N}]+/gu, '-')}.vcf`,
     }
   }),
 )
@@ -212,24 +213,24 @@ function openChat(waid: string) {
   <div>
     <div v-if="p.location" class="card">
       <div class="title">
-        {{ p.location.name || (p.location.seq ? 'Localização em tempo real' : 'Localização') }}
+        {{ p.location.name || (p.location.seq ? t('Localização em tempo real') : t('Localização')) }}
       </div>
       <div v-if="p.location.address" class="dim">{{ p.location.address }}</div>
       <div class="dim">
         {{ p.location.lat.toFixed(5) }}, {{ p.location.lon.toFixed(5) }}
-        <template v-if="p.location.accuracy_m"> · ±{{ p.location.accuracy_m }} m</template>
+        <template v-if="p.location.accuracy_m"> {{ t('· ±{v0} m', { v0: p.location.accuracy_m }) }}</template>
       </div>
       <a
         class="linkish"
         :href="mapLink(p.location.lat, p.location.lon)"
         target="_blank"
         rel="noreferrer noopener"
-        >ver no mapa</a
+        >{{ t('ver no mapa') }}</a
       >
     </div>
 
     <div v-if="p.poll" class="card poll">
-      <div class="title">{{ p.poll.question || 'Enquete' }}</div>
+      <div class="title">{{ p.poll.question || t('Enquete') }}</div>
       <!-- The count is drawn here and nowhere else: the server holds the poll
            and every vote and can match neither to the other, because both are
            sealed. This client opens them, hashes each option and looks for the
@@ -255,8 +256,8 @@ function openChat(waid: string) {
       <div class="dim" v-if="multiple">
         {{
           limit >= (p.poll.options?.length ?? 0)
-            ? 'várias escolhas'
-            : `até ${limit} escolhas`
+            ? t('várias escolhas')
+            : t('até {v0} escolhas', { v0: limit })
         }}
       </div>
       <div class="dim">
@@ -264,19 +265,15 @@ function openChat(waid: string) {
         <!-- Said out loud rather than folded into the numbers. A vote nobody
              could open is still somebody having answered, and a tally that
              quietly left it out would report fewer people than voted. -->
-        <template v-if="tally && tally.sealed > 0">
-          · {{ tally.sealed }} não {{ tally.sealed === 1 ? 'pôde' : 'puderam' }} ser
-          {{ tally.sealed === 1 ? 'aberto' : 'abertos' }}
+        <template v-if="tally && tally.sealed > 0"> {{ tally.sealed === 1 ? t('· Um voto não pôde ser aberto') : t('· {count} votos não puderam ser abertos', { count: tally.sealed }) }}
         </template>
-        <template v-if="tally && tally.unmatched > 0">
-          · {{ tally.unmatched }} para uma opção que não está aqui
-        </template>
+        <template v-if="tally && tally.unmatched > 0"> {{ t('· {v0} para uma opção que não está aqui', { v0: tally.unmatched }) }} </template>
       </div>
       <div class="dim" v-if="voteError">{{ voteError }}</div>
     </div>
 
     <div v-for="(contact, i) in cards" :key="i" class="card">
-      <div class="title">{{ contact.card.name || contact.raw.display_name || 'Contato' }}</div>
+      <div class="title">{{ contact.card.name || contact.raw.display_name || t('Contato') }}</div>
       <div class="dim" v-if="contact.card.title || contact.card.organisation">
         {{ [contact.card.title, contact.card.organisation].filter(Boolean).join(' · ') }}
       </div>
@@ -286,9 +283,7 @@ function openChat(waid: string) {
         <!-- Only where the card names a WhatsApp account. The printed number is
              written however the sender's phone felt like writing it; the waid
              parameter is the one thing here that resolves to a conversation. -->
-        <button v-if="tel.waid" class="linkish" type="button" @click.stop="openChat(tel.waid)">
-          abrir conversa
-        </button>
+        <button v-if="tel.waid" class="linkish" type="button" @click.stop="openChat(tel.waid)"> {{ t('abrir conversa') }} </button>
       </div>
       <div v-for="(mail, j) in contact.card.emails" :key="`e${j}`" class="card-line">
         <span class="dim" v-if="mail.label">{{ mail.label }}</span>
@@ -304,28 +299,26 @@ function openChat(waid: string) {
         :href="contact.href"
         :download="contact.filename"
         @click.stop
-        >baixar .vcf</a
+        >{{ t('baixar .vcf') }}</a
       >
     </div>
 
     <div v-if="p.event" class="card">
-      <div class="title">{{ p.event.name || 'Evento' }}</div>
+      <div class="title">{{ p.event.name || t('Evento') }}</div>
       <div class="dim" v-if="p.event.start_time">
         {{ stamp(new Date(p.event.start_time)) }}
-        <template v-if="p.event.end_time"> até {{ stamp(new Date(p.event.end_time)) }}</template>
+        <template v-if="p.event.end_time"> {{ t('até {v0}', { v0: stamp(new Date(p.event.end_time)) }) }}</template>
       </div>
       <div v-if="p.event.description">{{ p.event.description }}</div>
       <div class="dim" v-if="p.event.location?.name">{{ p.event.location.name }}</div>
-      <div class="flag revoked" v-if="p.event.is_canceled" style="display: inline-block">
-        cancelado
-      </div>
+      <div class="flag revoked" v-if="p.event.is_canceled" style="display: inline-block"> {{ t('cancelado') }} </div>
       <a
         v-if="eventFile"
         class="linkish"
         :href="eventFile.href"
         :download="eventFile.name"
         @click.stop
-        >adicionar ao calendário</a
+        >{{ t('adicionar ao calendário') }}</a
       >
     </div>
 
@@ -333,15 +326,15 @@ function openChat(waid: string) {
       <div class="invite-head">
         <img v-if="inviteThumb" class="avatar sm" :src="inviteThumb" alt="" />
         <div>
-          <div class="title">{{ invite.name || 'Convite para um grupo' }}</div>
-          <div class="dim">convite de grupo</div>
+          <div class="title">{{ invite.name || t('Convite para um grupo') }}</div>
+          <div class="dim">{{ t('convite de grupo') }}</div>
         </div>
       </div>
       <div v-if="invite.caption">{{ invite.caption }}</div>
       <!-- The expiry is stated rather than left to the button failing. A code
            that has run out needs a new invitation, not another press. -->
       <div class="dim" v-if="invite.expiration">
-        {{ inviteExpired ? 'expirou em' : 'vale até' }}
+        {{ inviteExpired ? t('expirou em') : t('vale até') }}
         {{ stamp(new Date(invite.expiration * 1000)) }}
       </div>
       <!-- Nothing here is automatic. Joining makes this account a member,
@@ -354,9 +347,9 @@ function openChat(waid: string) {
         :disabled="joining !== 'idle'"
         @click.stop="accept"
       >
-        {{ joining === 'joined' ? 'entrou' : joining === 'joining' ? 'entrando…' : 'entrar no grupo' }}
+        {{ joining === 'joined' ? t('entrou') : joining === 'joining' ? t('entrando…') : t('entrar no grupo') }}
       </button>
-      <div class="dim" v-else-if="inviteExpired">peça um convite novo</div>
+      <div class="dim" v-else-if="inviteExpired">{{ t('peça um convite novo') }}</div>
     </div>
 
     <!-- A header and nothing else. It says how many pictures and videos follow
@@ -365,14 +358,14 @@ function openChat(waid: string) {
          as what it says rather than as a grid somebody guessed at. -->
     <div v-if="p.album" class="card">
       <div class="title">{{ albumLine }}</div>
-      <div class="dim">as mídias chegam como mensagens próprias</div>
+      <div class="dim">{{ t('as mídias chegam como mensagens próprias') }}</div>
     </div>
 
     <!-- A business template's buttons. Labels only: pressing one sends a reply
          this archive has no way to compose, and a button that does nothing is
          worse than a list of what was offered. -->
     <div v-if="(p.buttons ?? []).length" class="card">
-      <div class="dim">botões oferecidos</div>
+      <div class="dim">{{ t('botões oferecidos') }}</div>
       <div class="buttons">
         <span v-for="(label, i) in p.buttons ?? []" :key="i" class="flag">{{ label }}</span>
       </div>

@@ -5,7 +5,7 @@ import * as P from '../src/api/protocol'
 import { Opener } from '../src/api/opener'
 import { Media, type MediaState } from '../src/api/media'
 import { importArchiveKey } from '../src/crypto/hpke'
-import { avatars, connection, fetchMedia, loadOlder, openChat, people, refreshChats, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
+import { avatars, connection, fetchMedia, loadOlder, openChat, people, refreshChats, refreshDevices, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
 import { fromPastedKey } from '../src/state/session'
 import { sweepDone, sweepUnsupported } from '../src/state/reproject'
 
@@ -428,4 +428,17 @@ describe('changing devices while requests are outstanding', () => {
     expect(state.unsupported.total).toBe(0)
     expect(state.unsupported.lastRun?.unreadable).toBe(0)
   })
+})
+
+it('ignores a devices refresh that belongs to the previous workspace', async () => {
+  const fake = await serve()
+  await boot(fake)
+  fake.held.add(key(P.TypeDevicesList, ''))
+  const refresh = refreshDevices()
+  const respond = await pending(fake, P.TypeDevicesList, '')
+  state.tenantID = '018f3a2b-2222-7000-8000-00000000eeee'
+  state.devices = []
+  respond({devices:[{id:FIRST,label:'Previous workspace',status:'online',receipt_mode:'passive',running:true,created_at:new Date().toISOString()}]})
+  await refresh
+  expect(state.devices).toEqual([])
 })

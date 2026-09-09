@@ -123,6 +123,33 @@ func TestConcurrentOwnerDemotionsLeaveOneOwner(t *testing.T) {
 	}
 }
 
+func TestSoleMemberOwnerProtectionIsVisibleAndEnforced(t *testing.T) {
+	h := newHarness(t)
+	owner, token := memberAccount(t, h, "only@example.com", "owner")
+	var result struct {
+		Members []store.Member `json:"members"`
+	}
+	if code := h.get(t, "/v1/auth/workspaces/members", &result, token); code != 200 || len(result.Members) != 1 || !result.Members[0].LastOwner {
+		t.Fatalf("sole owner was not identified: %d %+v", code, result)
+	}
+	if code := setMember(t, h, token, owner.ID, "owner", "disabled"); code != 409 {
+		t.Fatalf("sole owner disabled: %d", code)
+	}
+	if code := setMember(t, h, token, owner.ID, "member", "active"); code != 409 {
+		t.Fatalf("sole owner demoted: %d", code)
+	}
+	backup, _ := memberAccount(t, h, "backup@example.com", "owner")
+	if code := h.get(t, "/v1/auth/workspaces/members", &result, token); code != 200 || len(result.Members) != 2 || result.Members[0].LastOwner || result.Members[1].LastOwner {
+		t.Fatalf("backup did not lift UI protection: %d %+v", code, result)
+	}
+	if code := setMember(t, h, token, backup.ID, "owner", "disabled"); code != 204 {
+		t.Fatalf("could not disable backup: %d", code)
+	}
+	if code := h.get(t, "/v1/auth/workspaces/members", &result, token); code != 200 || !result.Members[0].LastOwner || result.Members[1].LastOwner {
+		t.Fatalf("disabled backup counted as active owner: %d %+v", code, result)
+	}
+}
+
 func TestDisableMemberIsWorkspaceScopedAndStripsAccess(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

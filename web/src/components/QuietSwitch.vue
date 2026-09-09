@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, ref } from 'vue'
 
 import { setReceiptMode, state } from '../state/archive'
@@ -31,11 +32,11 @@ async function toggle() {
     type="button"
     :disabled="busy"
     :aria-pressed="quiet"
-    :aria-label="quiet ? 'Modo incógnito ativado' : 'Modo incógnito desativado'"
+    :aria-label="quiet ? t('Modo incógnito ativado') : t('Modo incógnito desativado')"
     :title="
       quiet
-        ? 'Modo incógnito: mantém os indicadores de mensagens não lidas, não envia confirmações de leitura nem mostra que você está digitando. Você também não vê quem está digitando. Clique para desativar.'
-        : 'Modo normal: envia confirmações de leitura e mostra que você está online ou digitando. Clique para ativar o modo incógnito.'
+        ? t('Modo incógnito: mantém os indicadores de mensagens não lidas, não envia confirmações de leitura nem mostra que você está digitando. Você também não vê quem está digitando. Clique para desativar.')
+        : t('Modo normal: envia confirmações de leitura e mostra que você está online ou digitando. Clique para ativar o modo incógnito.')
     "
     @click="toggle"
   >

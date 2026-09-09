@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, ref } from 'vue'
 
 import { fetchMedia, type MessageView } from '../state/archive'
@@ -38,17 +39,17 @@ const percent = computed(() => {
 
 const trouble = computed(() => {
   const full = media.value.full
-  if (props.message.pending === 'failed') return props.message.failure || 'não enviou'
-  if (props.message.pending === 'unarchived') return 'Enviada, mas não entrou no arquivo.'
+  if (props.message.pending === 'failed') return props.message.failure || t('não enviou')
+  if (props.message.pending === 'unarchived') return t('Enviada, mas não entrou no histórico.')
   if (media.value.status === 'gone') {
-    return 'A url expirou antes do arquivo chegar. Só o remetente pode reenviar.'
+    return t('A url expirou antes do arquivo chegar. Só o remetente pode reenviar.')
   }
   if (!full) return ''
   switch (full.state) {
     case 'pending':
-      return `Ainda no servidor: ${full.status}.`
+      return t('O anexo ainda está sendo preparado. Tente novamente em instantes.')
     case 'expired':
-      return 'A url expirou antes do arquivo chegar.'
+      return t('A url expirou antes do arquivo chegar.')
     case 'error':
       return full.message
     default:
@@ -107,14 +108,14 @@ async function onPlayed() {
         :loop="media.isGIF"
         :muted="media.isGIF"
       />
-      <img v-else-if="openedURL" :src="openedURL" :alt="media.fileName || 'anexo'" />
-      <img v-else-if="media.thumbURL" :src="media.thumbURL" alt="prévia" @click.stop="reveal" />
+      <img v-else-if="openedURL" :src="openedURL" :alt="media.fileName || t('anexo')" />
+      <img v-else-if="media.thumbURL" :src="media.thumbURL" :alt="t('prévia')" @click.stop="reveal" />
       <div
         v-else
         style="height: 140px; width: 220px; display: grid; place-items: center"
         @click.stop="reveal"
       >
-        <span class="sealed">sem prévia</span>
+        <span class="sealed">{{ t('sem prévia') }}</span>
       </div>
 
       <!-- Leaving this tab. Its own band rather than the veil, so the picture
@@ -122,11 +123,11 @@ async function onPlayed() {
            somebody can see what they are sending. -->
       <div v-if="sending" class="sending">
         <div class="sending-bar" :style="{ width: `${percent}%` }" />
-        <span>enviando {{ percent }}%</span>
+        <span>{{ t('enviando {v0}%', { v0: percent }) }}</span>
       </div>
       <div v-else-if="trouble" class="veil">{{ trouble }}</div>
       <div v-else-if="!openedURL" class="veil" @click.stop="reveal">
-        {{ busy ? 'Abrindo…' : isVideo ? '▶ abrir vídeo' : 'abrir imagem' }}
+        {{ busy ? t('Abrindo…') : isVideo ? t('▶ abrir vídeo') : t('abrir imagem') }}
         <template v-if="media.fileLength"> · {{ bytes(media.fileLength) }}</template>
       </div>
     </div>
@@ -146,10 +147,10 @@ async function onPlayed() {
         @ended="onPlayed"
       />
       <button v-else class="ghost" @click.stop="reveal" :disabled="Boolean(trouble)">
-        {{ busy ? 'Abrindo…' : media.type === 'ptt' ? '▶ ouvir' : '▶ tocar' }}
+        {{ busy ? t('Abrindo…') : media.type === 'ptt' ? t('▶ ouvir') : t('▶ tocar') }}
         <template v-if="media.seconds"> · {{ duration(media.seconds) }}</template>
       </button>
-      <div v-if="sending" class="sealed" style="margin-top: 4px">enviando {{ percent }}%</div>
+      <div v-if="sending" class="sealed" style="margin-top: 4px">{{ t('enviando {v0}%', { v0: percent }) }}</div>
       <div v-else-if="trouble" class="sealed" style="margin-top: 4px">{{ trouble }}</div>
     </div>
 
@@ -160,7 +161,7 @@ async function onPlayed() {
         <path d="M14 2v6h6" />
       </svg>
       <div style="flex: 1; min-width: 0">
-        <div class="name">{{ media.fileName || 'documento sem nome' }}</div>
+        <div class="name">{{ media.fileName || t('documento sem nome') }}</div>
         <div class="size">
           {{ bytes(media.fileLength) }}
           <template v-if="media.mimetype"> · {{ media.mimetype }}</template>
@@ -171,11 +172,9 @@ async function onPlayed() {
         <div v-else-if="trouble" class="sealed">{{ trouble }}</div>
       </div>
       <span v-if="sending" class="sealed">{{ percent }}%</span>
-      <a v-else-if="openedURL" class="ghost" :href="openedURL" :download="media.fileName || 'anexo'">
-        baixar
-      </a>
+      <a v-else-if="openedURL" class="ghost" :href="openedURL" :download="media.fileName || t('anexo')"> {{ t('baixar') }} </a>
       <button v-else class="ghost" @click.stop="reveal" :disabled="Boolean(trouble)">
-        {{ busy ? '…' : 'abrir' }}
+        {{ busy ? '…' : t('abrir') }}
       </button>
     </div>
   </div>

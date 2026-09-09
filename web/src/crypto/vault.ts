@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // The vault: where the archive key lives in this browser.
 //
 // The key is the whole product. Whoever holds it reads everything; whoever
@@ -75,7 +76,7 @@ export class VaultError extends Error {
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
-      reject(new VaultError('este navegador não tem IndexedDB', 'unsupported'))
+      reject(new VaultError(t('este navegador não tem IndexedDB'), 'unsupported'))
       return
     }
     const request = indexedDB.open(DB_NAME, DB_VERSION)
@@ -140,7 +141,7 @@ async function wrappingKey(
  */
 export function parseArchiveKey(input: string): Bytes {
   const text = input.trim()
-  if (!text) throw new VaultError('cole a chave do arquivo', 'key_format')
+  if (!text) throw new VaultError(t('cole a chave do histórico'), 'key_format')
 
   let raw: Bytes | null = null
   if (/^[0-9a-fA-F\s:-]+$/.test(text)) {
@@ -154,11 +155,11 @@ export function parseArchiveKey(input: string): Bytes {
     try {
       raw = fromBase64(text.replace(/\s+/g, ''))
     } catch {
-      throw new VaultError('a chave não é base64 nem hexadecimal', 'key_format')
+      throw new VaultError(t('a chave não é base64 nem hexadecimal'), 'key_format')
     }
   }
   if (raw.length !== 32) {
-    throw new VaultError(`a chave tem ${raw.length} bytes, e uma chave X25519 tem 32`, 'key_format')
+    throw new VaultError(t('a chave tem {v0} bytes, e uma chave X25519 tem 32', { v0: raw.length }), 'key_format')
   }
   return raw
 }
@@ -178,7 +179,7 @@ export async function createVault(input: {
 }): Promise<Session> {
   const raw = parseArchiveKey(input.archiveKey)
   if (input.passphrase.length < 8) {
-    throw new VaultError('a senha precisa de pelo menos 8 caracteres', 'passphrase')
+    throw new VaultError(t('a senha precisa de pelo menos 8 caracteres'), 'passphrase')
   }
 
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LEN))
@@ -197,7 +198,7 @@ export async function createVault(input: {
   const record: StoredVault = {
     id: RECORD_ID,
     version: 1,
-    label: input.label || 'arquivo',
+    label: input.label || t('Histórico de conversas'),
     serverURL: input.serverURL,
     iterations: ITERATIONS,
     salt,
@@ -219,7 +220,7 @@ export async function createVault(input: {
 /** unlock opens a stored vault. A wrong passphrase fails authentication, nothing more specific. */
 export async function unlock(passphrase: string): Promise<Session> {
   const record = await loadVault()
-  if (!record) throw new VaultError('não há chave guardada neste navegador', 'no_vault')
+  if (!record) throw new VaultError(t('não há chave guardada neste navegador'), 'no_vault')
 
   const key = await wrappingKey(passphrase, record.salt, record.iterations)
   let secrets: Secrets
@@ -231,7 +232,7 @@ export async function unlock(passphrase: string): Promise<Session> {
     )
     secrets = JSON.parse(new TextDecoder().decode(plaintext)) as Secrets
   } catch {
-    throw new VaultError('senha incorreta', 'passphrase')
+    throw new VaultError(t('senha incorreta'), 'passphrase')
   }
 
   return fromPastedKey({
@@ -253,7 +254,7 @@ export async function openOnce(input: {
 }): Promise<Session> {
   const raw = parseArchiveKey(input.archiveKey)
   return fromPastedKey({
-    label: 'sessão temporária',
+    label: t('sessão temporária'),
     serverURL: input.serverURL,
     apiKey: input.apiKey,
     archive: await importArchiveKey(raw),

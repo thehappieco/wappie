@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import {
@@ -7,37 +8,43 @@ import {
   load,
   openDetail,
   stopDevice,
+  startDevice,
+  preparePairing,
 } from '../state/admin'
 import { archiveOpener, credential, readableDevices, selectDevice, state, stop } from '../state/archive'
 import type { DeviceInfo } from '../api/protocol'
 import { bytes, count, since, stamp } from '../ui/format'
 import DeviceSheet from './DeviceSheet.vue'
+import DeviceAvatar from './DeviceAvatar.vue'
+import { formatPhone, parseJID } from '../state/jid'
 import Reproject from './Reproject.vue'
 import PairDialog from './PairDialog.vue'
 import AccountPanel from './AccountPanel.vue'
 import TokenPanel from './TokenPanel.vue'
 import WorkspacePanel from './WorkspacePanel.vue'
 import SubscriptionPanel from '@subscription'
+import AppearanceMenu from './AppearanceMenu.vue'
 import AppIcon, { type IconName } from './AppIcon.vue'
 
 const readable = computed(() => readableDevices())
-const workspaceName = ref('Seu espaço de trabalho')
+const workspaceName = ref('')
+const workspaceAvatar = ref('')
 const section = ref('devices')
 const visited = ref(new Set(['devices']))
 const content = ref<HTMLElement>()
 const appError = ref('')
 const openingApp = ref(false)
-const roleLabels: Record<string, string> = { owner: 'Proprietário', admin: 'Administrador', member: 'Membro', service: 'Integração' }
+const roleLabels = computed<Record<string, string>>(() => ({ owner: t('Proprietário'), admin: t('Administrador'), member: t('Membro'), service: t('Integração') }))
 interface Section { id: string; label: string; description: string; icon: IconName; visible: boolean }
 const sections = computed<Section[]>(() => [
-  { id: 'devices', label: 'Números', description: 'Conecte e acompanhe os números do WhatsApp da sua empresa.', icon: 'devices', visible: true },
-  { id: 'workspace', label: 'Empresa', description: 'Gerencie seu espaço de trabalho e participe de outras empresas.', icon: 'building', visible: credential()?.kind === 'session' },
-  { id: 'members', label: 'Membros', description: 'Convide pessoas e organize os papéis da sua equipe.', icon: 'users', visible: canAdminister() && credential()?.kind === 'session' },
-  { id: 'permissions', label: 'Permissões', description: 'Defina quem pode ler, enviar ou gerenciar cada número.', icon: 'shield', visible: canAdminister() && credential()?.kind === 'session' },
-  { id: 'tokens', label: 'Integrações', description: 'Crie e acompanhe as chaves de acesso dos seus sistemas.', icon: 'key', visible: canAdminister() },
-  { id: 'billing', label: 'Assinatura', description: 'Acompanhe a capacidade do espaço e o histórico da assinatura.', icon: 'wallet', visible: canAdminister() },
-  { id: 'account', label: 'Minha conta', description: 'Proteja sua conta e gerencie suas formas de acesso.', icon: 'settings', visible: Boolean(state.account) },
-  { id: 'diagnostics', label: 'Diagnóstico', description: 'Consulte o processamento e a compatibilidade do arquivo.', icon: 'clock', visible: true },
+  { id: 'devices', label: t('Números'), description: t('Conecte e acompanhe os números do WhatsApp do seu espaço de trabalho.'), icon: 'devices', visible: true },
+  { id: 'workspace', label: t('Espaço de trabalho'), description: t('Personalize seu espaço de trabalho e participe de outros espaços.'), icon: 'building', visible: credential()?.kind === 'session' },
+  { id: 'members', label: t('Membros'), description: t('Convide pessoas e organize os papéis da sua equipe.'), icon: 'users', visible: canAdminister() && credential()?.kind === 'session' },
+  { id: 'permissions', label: t('Permissões'), description: t('Defina quem pode ler, enviar ou gerenciar cada número.'), icon: 'shield', visible: canAdminister() && credential()?.kind === 'session' },
+  { id: 'tokens', label: t('Integrações'), description: t('Crie e acompanhe as chaves de acesso dos seus sistemas.'), icon: 'key', visible: canAdminister() },
+  { id: 'billing', label: t('Assinatura'), description: t('Acompanhe a capacidade do espaço e o histórico da assinatura.'), icon: 'wallet', visible: canAdminister() },
+  { id: 'account', label: t('Minha conta'), description: t('Proteja sua conta e gerencie suas formas de acesso.'), icon: 'settings', visible: Boolean(state.account) },
+  { id: 'diagnostics', label: t('Diagnóstico'), description: t('Consulte o processamento e a compatibilidade do histórico de conversas.'), icon: 'clock', visible: true },
 ].filter((item) => item.visible) as Section[])
 const current = computed(() => sections.value.find((item) => item.id === section.value) ?? sections.value[0]!)
 const workspaceSection = computed(() => ['workspace', 'members', 'permissions'].includes(section.value)
@@ -66,7 +73,7 @@ async function returnToApp() {
   openingApp.value = true
   appError.value = ''
   try { await read(appDevice.value) }
-  catch { appError.value = 'Não foi possível abrir as conversas. Tente novamente.' }
+  catch { appError.value = t('Não foi possível abrir as conversas. Tente novamente.') }
   finally { openingApp.value = false }
 }
 
@@ -76,20 +83,28 @@ onMounted(() => {
   if (state.connected) void load()
 })
 
+function pendingDevice(device: DeviceInfo): boolean { return !device.pn && !device.lid && !device.last_connected_at }
+
+function deviceIdentity(device: DeviceInfo): string {
+  return device.pn ? formatPhone(parseJID(device.pn).user) : device.lid || t('Número ainda não conectado')
+}
+
 function statusLabel(device: DeviceInfo): string {
+  if (device.paused) return t('Sincronização pausada')
+  if (pendingDevice(device)) return t('Vínculo pendente')
   switch (device.status) {
     case 'online':
-      return device.running ? 'conectado' : 'marcado como online, mas ninguém está conectado'
+      return device.running ? t('Conectado') : t('Reconectando…')
     case 'offline':
-      return 'desligado'
+      return t('Desconectado')
     case 'pairing':
-      return 'pareando'
+      return t('Aguardando vínculo')
     case 'new':
-      return 'nunca pareado'
+      return t('nunca pareado')
     case 'logged_out':
-      return 'desconectado no celular'
+      return t('desconectado no celular')
     case 'banned':
-      return 'bloqueado pelo WhatsApp'
+      return t('bloqueado pelo WhatsApp')
     default:
       return device.status
   }
@@ -105,6 +120,8 @@ function statusLabel(device: DeviceInfo): string {
  * used for a device WhatsApp has thrown out, which reads as far worse than it is.
  */
 function statusTone(device: DeviceInfo): string {
+  if (device.paused) return 'off'
+  if (pendingDevice(device)) return 'warn'
   if (device.status === 'online' && device.running) return 'live'
   if (device.status === 'online') return 'stale'
   if (device.status === 'banned' || device.status === 'logged_out') return 'bad'
@@ -138,23 +155,23 @@ async function read(device: DeviceInfo) {
     }
     emit('read', device.id)
   } catch (err) {
-    appError.value = err instanceof Error ? err.message : 'Não foi possível abrir as conversas. Tente novamente.'
+    appError.value = err instanceof Error ? err.message : t('Não foi possível abrir as conversas. Tente novamente.')
   }
 }
 </script>
 
 <template>
   <div class="console console-app">
-    <aside class="console-sidebar" aria-label="Navegação do console">
-      <a class="console-brand" href="https://wappie.thehappie.co/" aria-label="Wappie, página do produto">
+    <aside class="console-sidebar" :aria-label="t('Navegação do console')">
+      <a class="console-brand" href="https://wappie.thehappie.co/" :aria-label="t('Wappie, página do produto')">
         <span class="brand-mark"><AppIcon name="message" :size="25" /></span>
-        <span><strong>Wappie</strong><small>Console</small></span>
+        <span><strong>{{ t('Wappie') }}</strong><small>{{ t('Console') }}</small></span>
       </a>
       <div class="workspace-context">
-        <AppIcon name="building" :size="19" />
-        <div><strong>{{ workspaceName }}</strong><span>{{ roleLabels[state.role] || 'Espaço compartilhado' }}</span></div>
+        <img v-if="workspaceAvatar" class="workspace-avatar" :src="workspaceAvatar" alt="" /><AppIcon v-else name="building" :size="19" />
+        <div><strong>{{ workspaceName || t('Seu espaço de trabalho') }}</strong><span>{{ roleLabels[state.role] || t('Espaço compartilhado') }}</span></div>
       </div>
-      <nav class="console-nav" aria-label="Seções">
+      <nav class="console-nav" :aria-label="t('Seções')">
         <button v-for="item in sections" :key="item.id" type="button" class="console-nav-item"
           :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined"
           @click="show(item.id)">
@@ -163,57 +180,63 @@ async function read(device: DeviceInfo) {
         </button>
       </nav>
       <div class="console-profile">
-        <div><strong>{{ state.account || state.label }}</strong><span>{{ roleLabels[state.role] || 'Acesso ao console' }}</span></div>
-        <button class="icon-btn" type="button" title="Sair da conta" aria-label="Sair da conta" @click="stop"><AppIcon name="logout" :size="20" /></button>
+        <div><strong>{{ state.account || state.label }}</strong><span>{{ roleLabels[state.role] || t('Acesso ao console') }}</span></div>
+        <button class="icon-btn" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop"><AppIcon name="logout" :size="20" /></button>
       </div>
     </aside>
 
     <div class="console-main">
       <header class="console-header">
-        <div class="grow"><div class="console-breadcrumb">Console <span>/</span> {{ workspaceName }}</div><h1>{{ current.label }}</h1></div>
+        <div class="grow"><div class="console-breadcrumb">{{ t('Console') }} <span>/</span> {{ workspaceName || t('Seu espaço de trabalho') }}</div><h1>{{ current.label }}</h1></div>
+        <AppearanceMenu />
         <button class="ghost console-app-link" type="button" :disabled="!appDevice || openingApp"
-          :title="appDevice ? 'Abrir o aplicativo de mensagens' : 'A leitura de um número precisa estar liberada para sua conta'" @click="returnToApp">
-          <AppIcon name="back" :size="18" /><span>Voltar ao app</span>
+          :title="appDevice ? t('Abrir o aplicativo de mensagens') : t('A leitura de um número precisa estar liberada para sua conta')" @click="returnToApp">
+          <AppIcon name="back" :size="18" /><span>{{ t('Voltar ao app') }}</span>
         </button>
-        <button class="icon-btn mobile-signout" type="button" title="Sair da conta" aria-label="Sair da conta" @click="stop"><AppIcon name="logout" :size="20" /></button>
+        <button class="icon-btn mobile-signout" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop"><AppIcon name="logout" :size="20" /></button>
       </header>
 
       <main ref="content" class="console-content" :aria-label="current.label">
-        <div class="console-section-intro"><p>{{ current.description }}</p><span class="connection-label" :class="{ connected: state.connected }"><i />{{ state.connected ? 'Servidor conectado' : 'Sem conexão ao servidor' }}</span></div>
+        <div class="console-section-intro"><p>{{ current.description }}</p><span class="connection-label" :class="{ connected: state.connected }"><i />{{ state.connected ? t('Servidor conectado') : t('Sem conexão ao servidor') }}</span></div>
         <div v-if="admin.error || appError" class="alert" role="alert">{{ appError || admin.error }}</div>
-        <div v-if="admin.removed" class="removed" role="status">
-          Número removido: {{ count(admin.removed.messages) }} mensagens, {{ count(admin.removed.chats) }} conversas e {{ count(admin.removed.media) }} anexos apagados.
-          <template v-if="admin.removed.note"> {{ admin.removed.note }}.</template>
+        <div v-if="admin.removed" class="removed" role="status"> {{ t('Número removido: {v0} mensagens, {v1} conversas e {v2} anexos apagados.', { v0: count(admin.removed.messages), v1: count(admin.removed.chats), v2: count(admin.removed.media) }) }} <template v-if="admin.removed.note"> {{ admin.removed.note }}.</template>
         </div>
 
         <div v-show="section === 'devices'" class="console-section">
           <div class="console-overview">
-            <article><span>Números cadastrados</span><strong>{{ state.devices.length }}</strong><small>no espaço de trabalho</small></article>
-            <article><span>Conectados agora</span><strong>{{ online }}<i class="summary-status" :class="{ live: online > 0 }" /></strong><small>sincronizando com o WhatsApp</small></article>
-            <article><span>Mensagens arquivadas</span><strong>{{ admin.statsLoaded ? count(totalMessages) : '—' }}</strong><small>nos números disponíveis</small></article>
+            <article><span>{{ t('Números cadastrados') }}</span><strong>{{ state.devices.length }}</strong><small>{{ t('no espaço de trabalho') }}</small></article>
+            <article><span>{{ t('Conectados agora') }}</span><strong>{{ online }}<i class="summary-status" :class="{ live: online > 0 }" /></strong><small>{{ t('sincronizando com o WhatsApp') }}</small></article>
+            <article><span>{{ t('Mensagens no histórico') }}</span><strong>{{ admin.statsLoaded ? count(totalMessages) : '—' }}</strong><small>{{ t('nos números disponíveis') }}</small></article>
           </div>
-          <div class="device-section-title"><h2>Seus números</h2><button class="ghost small" type="button" :disabled="admin.loading || !state.connected" @click="load"><AppIcon name="refresh" :size="16" /> Atualizar</button></div>
-          <p v-if="admin.loading && !state.devices.length" class="dim" role="status">Carregando números…</p>
-          <section class="cards" aria-label="Números do WhatsApp">
+          <div class="device-section-title"><h2>{{ t('Seus números') }}</h2><button class="ghost small" type="button" :disabled="admin.loading || !state.connected" @click="load"><AppIcon name="refresh" :size="16" /> {{ t('Atualizar') }}</button></div>
+          <p v-if="admin.loading && !state.devices.length" class="dim" role="status">{{ t('Carregando números…') }}</p>
+          <section class="cards" :aria-label="t('Números do WhatsApp')">
             <article v-for="device in state.devices" :key="device.id" class="device">
-              <div class="head"><span class="device-card-icon"><AppIcon name="devices" :size="23" /></span><div class="grow"><div class="name">{{ device.label || 'Número sem nome' }}</div><div class="sub">{{ device.pn || device.lid || 'Número ainda não conectado' }}</div></div><span class="device-status" :class="statusTone(device)"><i />{{ device.running ? 'Online' : statusLabel(device) }}</span></div>
+              <div class="head"><DeviceAvatar :device="device" /><div class="grow"><div class="name">{{ device.label || device.push_name || t('Número sem nome') }}</div><div class="sub">{{ deviceIdentity(device) }}</div></div><span class="device-status" :class="statusTone(device)"><i />{{ device.running ? t('Online') : statusLabel(device) }}</span></div>
               <div v-if="device.push_name" class="who">{{ device.push_name }}</div>
               <dl class="counts">
-                <div><dt>Conversas</dt><dd>{{ admin.statsLoaded ? count(admin.stats[device.id]?.chats) : '…' }}</dd></div>
-                <div><dt>Mensagens</dt><dd>{{ admin.statsLoaded ? count(admin.stats[device.id]?.messages) : '…' }}</dd></div>
-                <div><dt>Anexos</dt><dd>{{ admin.statsLoaded ? count(admin.stats[device.id]?.media) : '…' }}<span v-if="admin.stats[device.id]?.media_bytes" class="dim"> · {{ bytes(admin.stats[device.id].media_bytes) }}</span></dd></div>
-                <div><dt>Última mensagem</dt><dd>{{ stamp(when(admin.stats[device.id]?.last_at)) }}</dd></div>
+                <div><dt>{{ t('Conversas') }}</dt><dd>{{ admin.statsLoaded ? count(admin.stats[device.id]?.chats) : '…' }}</dd></div>
+                <div><dt>{{ t('Mensagens') }}</dt><dd>{{ admin.statsLoaded ? count(admin.stats[device.id]?.messages) : '…' }}</dd></div>
+                <div><dt>{{ t('Anexos') }}</dt><dd>{{ admin.statsLoaded ? count(admin.stats[device.id]?.media) : '…' }}<span v-if="admin.stats[device.id]?.media_bytes" class="dim"> · {{ bytes(admin.stats[device.id].media_bytes) }}</span></dd></div>
+                <div><dt>{{ t('Última mensagem') }}</dt><dd>{{ stamp(when(admin.stats[device.id]?.last_at)) }}</dd></div>
               </dl>
-              <p v-if="!canRead(device)" class="device-access-note"><AppIcon name="shield" :size="15" />Sua conta ainda não tem acesso à leitura.</p>
-              <p v-else-if="device.last_connected_at" class="device-access-note">Conectou {{ since(when(device.last_connected_at)) }}</p>
-              <div class="row-actions"><button class="ghost device-read" :disabled="!canRead(device)" @click="read(device)"><AppIcon name="message" :size="16" /> Conversas</button><button class="ghost" @click="openDetail(device.id)">Detalhes</button><button v-if="device.running" class="ghost device-stop" @click="stopDevice(device.id)">Desligar</button></div>
+              <p v-if="!canRead(device)" class="device-access-note"><AppIcon name="shield" :size="15" />{{ t('Sua conta ainda não tem acesso à leitura.') }}</p>
+              <p v-else-if="device.last_connected_at" class="device-access-note">{{ t('Conectou {v0}', { v0: since(when(device.last_connected_at)) }) }}</p>
+              <p v-if="pendingDevice(device)" class="device-access-note">{{ t('O vínculo não foi concluído. Gere outro QR code ou exclua este número em Detalhes.') }}</p>
+              <div class="row-actions">
+                <button v-if="!pendingDevice(device)" class="ghost device-read" :disabled="!canRead(device)" @click="read(device)"><AppIcon name="message" :size="16" /> {{ t('Conversas') }}</button>
+                <button class="ghost" :disabled="admin.deviceBusy" @click="openDetail(device.id)">{{ t('Detalhes') }}</button>
+                <button v-if="device.can_manage && pendingDevice(device)" class="ghost" :disabled="admin.deviceBusy || !state.connected" @click="preparePairing(device)">{{ t('Vincular número') }}</button>
+                <button v-else-if="device.can_manage && device.running" class="ghost device-stop" :disabled="admin.deviceBusy || !state.connected" @click="stopDevice(device.id)">{{ t('Pausar sincronização') }}</button>
+                <button v-else-if="device.can_manage" class="ghost" :disabled="admin.deviceBusy || !state.connected" @click="startDevice(device.id)">{{ t('Retomar sincronização') }}</button>
+              </div>
             </article>
-            <div v-if="!state.devices.length && !admin.loading" class="empty-card"><AppIcon name="devices" :size="32" /><h3>Conecte seu primeiro número</h3><p class="dim">Os números do WhatsApp da sua empresa aparecerão aqui.</p></div>
+            <div v-if="!state.devices.length && !admin.loading" class="empty-card"><AppIcon name="devices" :size="32" /><h3>{{ t('Conecte seu primeiro número') }}</h3><p class="dim">{{ t('Os números do WhatsApp do seu espaço de trabalho aparecerão aqui.') }}</p></div>
           </section>
           <PairDialog />
         </div>
 
-        <WorkspacePanel v-show="['workspace', 'members', 'permissions'].includes(section)" :section="workspaceSection" @workspace-name="workspaceName = $event" />
+        <WorkspacePanel v-show="['workspace', 'members', 'permissions'].includes(section)" :section="workspaceSection" @workspace-name="workspaceName = $event" @workspace-avatar="workspaceAvatar = $event" />
         <TokenPanel v-if="canAdminister() && visited.has('tokens')" v-show="section === 'tokens'" />
         <SubscriptionPanel v-if="canAdminister() && visited.has('billing')" v-show="section === 'billing'" />
         <AccountPanel v-if="state.account && visited.has('account')" v-show="section === 'account'" />
@@ -312,8 +335,8 @@ async function read(device: DeviceInfo) {
 .console-app :deep(.grid th) { font-size: 10px; font-weight: 600; color: var(--text-dim); padding: 12px 10px; text-align: left; border-bottom: 1px solid var(--console-border); }
 .console-app :deep(.grid td) { padding: 14px 10px; border-color: var(--console-border); }
 .console-app :deep(.console-panel button) { min-height: 36px; }
-@media (prefers-color-scheme: dark) { .console-app { --console-accent: #52d4ae; --console-tint: #173b32; } }
-:global(:root[data-theme='quiet'] .console-app) { --console-accent: #82b7a6; --console-tint: #1b2d27; }
+:global(:root[data-theme='dark'] .console-app) { --console-accent: #52d4ae; --console-tint: #173b32; }
+.workspace-avatar { width: 34px; height: 34px; border-radius: 10px; object-fit: cover; flex-shrink: 0; }
 @media (max-width: 1020px) {
   .console-app { grid-template-columns: 208px minmax(0, 1fr); }
   .console-sidebar { padding: 22px 12px 16px; }

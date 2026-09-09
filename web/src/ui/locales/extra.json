@@ -1,0 +1,560 @@
+{
+  "(sem nome)": [
+    "(unnamed)",
+    "(sin nombre)",
+    "(sans nom)",
+    "(ohne Namen)"
+  ],
+  "A conexão caiu antes do anexo sair. Escolha o arquivo de novo.": [
+    "The connection dropped before the attachment was sent. Select the file again.",
+    "La conexión se interrumpió antes de enviar el adjunto. Selecciona el archivo de nuevo.",
+    "La connexion a été interrompue avant l’envoi de la pièce jointe. Sélectionnez à nouveau le fichier.",
+    "Die Verbindung brach vor dem Versand des Anhangs ab. Wähle die Datei erneut aus."
+  ],
+  "Aguarde a reconexão antes de trocar de dispositivo.": [
+    "Wait for reconnection before switching devices.",
+    "Espera a que se restablezca la conexión antes de cambiar de dispositivo.",
+    "Attendez la reconnexion avant de changer d’appareil.",
+    "Warte auf die erneute Verbindung, bevor du das Gerät wechselst."
+  ],
+  "Arquivo de {v0} MB; o limite é {v1} MB.": [
+    "File size: {v0} MB; the limit is {v1} MB.",
+    "Archivo de {v0} MB; el límite es {v1} MB.",
+    "Fichier de {v0} Mo ; la limite est de {v1} Mo.",
+    "Dateigröße: {v0} MB; das Limit beträgt {v1} MB."
+  ],
+  "Entre com sua conta para gerenciar o espaço.": [
+    "Sign in to manage the workspace.",
+    "Inicia sesión para gestionar el espacio de trabajo.",
+    "Connectez-vous pour gérer l’espace de travail.",
+    "Melde dich an, um den Arbeitsbereich zu verwalten."
+  ],
+  "Escolha uma imagem JPG, PNG ou WebP de até 8 MB.": [
+    "Choose a JPG, PNG or WebP image up to 8 MB.",
+    "Elige una imagen JPG, PNG o WebP de hasta 8 MB.",
+    "Choisissez une image JPG, PNG ou WebP de 8 Mo maximum.",
+    "Wähle ein JPG-, PNG- oder WebP-Bild bis zu 8 MB."
+  ],
+  "Esta imagem é muito grande. Escolha uma imagem menor.": [
+    "This image is too large. Choose a smaller one.",
+    "Esta imagen es demasiado grande. Elige una más pequeña.",
+    "Cette image est trop grande. Choisissez-en une plus petite.",
+    "Dieses Bild ist zu groß. Wähle ein kleineres."
+  ],
+  "Este arquivo está vazio.": [
+    "This file is empty.",
+    "Este archivo está vacío.",
+    "Ce fichier est vide.",
+    "Diese Datei ist leer."
+  ],
+  "Foto HD": [
+    "HD photo",
+    "Foto HD",
+    "Photo HD",
+    "HD-Foto"
+  ],
+  "Mensagem de voz": [
+    "Voice message",
+    "Mensaje de voz",
+    "Message vocal",
+    "Sprachnachricht"
+  ],
+  "Não foi possível abrir esta imagem. Escolha outra imagem.": [
+    "Could not open this image. Choose another.",
+    "No se pudo abrir esta imagen. Elige otra.",
+    "Impossible d’ouvrir cette image. Choisissez-en une autre.",
+    "Dieses Bild konnte nicht geöffnet werden. Wähle ein anderes."
+  ],
+  "Não foi possível concluir ({status}).": [
+    "Could not complete the request ({status}).",
+    "No se pudo completar la solicitud ({status}).",
+    "Impossible de terminer la demande ({status}).",
+    "Die Anfrage konnte nicht abgeschlossen werden ({status})."
+  ],
+  "Não foi possível preparar o avatar.": [
+    "Could not prepare the avatar.",
+    "No se pudo preparar el avatar.",
+    "Impossible de préparer l’avatar.",
+    "Der Avatar konnte nicht vorbereitet werden."
+  ],
+  "Não foi possível reduzir a imagem. Escolha outra imagem.": [
+    "Could not resize the image. Choose another.",
+    "No se pudo reducir la imagen. Elige otra.",
+    "Impossible de réduire l’image. Choisissez-en une autre.",
+    "Das Bild konnte nicht verkleinert werden. Wähle ein anderes."
+  ],
+  "Um documento precisa de um nome, senão chega como um download sem título.": [
+    "Give the document a name so it does not arrive as an untitled download.",
+    "Pon un nombre al documento para que no llegue como una descarga sin título.",
+    "Donnez un nom au document pour éviter un téléchargement sans titre.",
+    "Gib dem Dokument einen Namen, damit es nicht als unbenannter Download ankommt."
+  ],
+  "Vídeo": [
+    "Video",
+    "Vídeo",
+    "Vidéo",
+    "Video"
+  ],
+  "Vídeo redondo": [
+    "Video message",
+    "Videomensaje",
+    "Message vidéo",
+    "Videonachricht"
+  ],
+  "WebP de {v0}×{v1}; a legenda seria descartada": [
+    "{v0}×{v1} WebP; the caption would be discarded",
+    "WebP de {v0}×{v1}; se descartaría el texto",
+    "WebP de {v0}×{v1} ; la légende serait supprimée",
+    "WebP mit {v0}×{v1}; die Beschriftung würde entfallen"
+  ],
+  "a chave da mídia não abriu": [
+    "the media key could not be unlocked",
+    "no se pudo desbloquear la clave del contenido multimedia",
+    "la clé du média n’a pas pu être déverrouillée",
+    "der Medienschlüssel konnte nicht entsperrt werden"
+  ],
+  "a chave da mídia não confere com esta linha": [
+    "the media key does not match this record",
+    "la clave del contenido multimedia no coincide con este registro",
+    "la clé du média ne correspond pas à cet enregistrement",
+    "der Medienschlüssel passt nicht zu diesem Datensatz"
+  ],
+  "a composição do grupo mudou desde então": [
+    "the group membership has changed since then",
+    "los miembros del grupo han cambiado desde entonces",
+    "la composition du groupe a changé depuis",
+    "seitdem hat sich die Gruppenzusammensetzung geändert"
+  ],
+  "a conexão caiu durante o envio": [
+    "the connection dropped while sending",
+    "la conexión se interrumpió durante el envío",
+    "la connexion a été interrompue pendant l’envoi",
+    "die Verbindung brach während des Sendens ab"
+  ],
+  "a credencial foi recusada; entre de novo": [
+    "your credentials were rejected; sign in again",
+    "tus credenciales fueron rechazadas; inicia sesión de nuevo",
+    "vos identifiants ont été refusés ; reconnectez-vous",
+    "deine Zugangsdaten wurden abgelehnt; melde dich erneut an"
+  ],
+  "a janela de vinte minutos para editar já passou": [
+    "the twenty-minute editing window has expired",
+    "el plazo de veinte minutos para editar ha terminado",
+    "le délai de modification de vingt minutes a expiré",
+    "das Zeitfenster von zwanzig Minuten zum Bearbeiten ist abgelaufen"
+  ],
+  "agora há pouco": [
+    "just now",
+    "hace un momento",
+    "à l’instant",
+    "gerade eben"
+  ],
+  "ainda enviando": [
+    "still sending",
+    "enviando todavía",
+    "envoi en cours",
+    "wird noch gesendet"
+  ],
+  "apagou": [
+    "deleted",
+    "eliminó",
+    "a supprimé",
+    "gelöscht"
+  ],
+  "até {v0} px, com menos compressão": [
+    "up to {v0} px, with less compression",
+    "hasta {v0} px, con menos compresión",
+    "jusqu’à {v0} px, avec moins de compression",
+    "bis zu {v0} px, mit weniger Komprimierung"
+  ],
+  "aviso do sistema": [
+    "system notice",
+    "aviso del sistema",
+    "avis système",
+    "Systemhinweis"
+  ],
+  "com legenda e controles": [
+    "with a caption and controls",
+    "con texto y controles",
+    "avec légende et commandes",
+    "mit Beschriftung und Steuerung"
+  ],
+  "contato": [
+    "contact",
+    "contacto",
+    "contact",
+    "Kontakt"
+  ],
+  "desativadas": [
+    "off",
+    "desactivados",
+    "désactivés",
+    "deaktiviert"
+  ],
+  "dimensões": [
+    "dimensions",
+    "dimensiones",
+    "dimensions",
+    "Abmessungen"
+  ],
+  "documento": [
+    "document",
+    "documento",
+    "document",
+    "Dokument"
+  ],
+  "duração": [
+    "duration",
+    "duración",
+    "durée",
+    "Dauer"
+  ],
+  "duração e dimensões": [
+    "duration and dimensions",
+    "duración y dimensiones",
+    "durée et dimensions",
+    "Dauer und Abmessungen"
+  ],
+  "duração e onda sonora": [
+    "duration and waveform",
+    "duración y forma de onda",
+    "durée et forme d’onde",
+    "Dauer und Wellenform"
+  ],
+  "editou": [
+    "edited",
+    "editó",
+    "a modifié",
+    "bearbeitet"
+  ],
+  "enquete": [
+    "poll",
+    "encuesta",
+    "sondage",
+    "Umfrage"
+  ],
+  "entrega sendo tentada de novo": [
+    "retrying delivery",
+    "reintentando la entrega",
+    "nouvelle tentative de livraison",
+    "erneuter Zustellversuch"
+  ],
+  "entregue ao servidor do WhatsApp": [
+    "delivered to the WhatsApp server",
+    "entregado al servidor de WhatsApp",
+    "remis au serveur WhatsApp",
+    "an den WhatsApp-Server übermittelt"
+  ],
+  "envio cancelado": [
+    "sending cancelled",
+    "envío cancelado",
+    "envoi annulé",
+    "Versand abgebrochen"
+  ],
+  "esse aparelho não está conectado ao WhatsApp agora": [
+    "this device is not connected to WhatsApp right now",
+    "este dispositivo no está conectado a WhatsApp ahora",
+    "cet appareil n’est pas connecté à WhatsApp actuellement",
+    "dieses Gerät ist derzeit nicht mit WhatsApp verbunden"
+  ],
+  "esse aparelho não existe mais": [
+    "this device no longer exists",
+    "este dispositivo ya no existe",
+    "cet appareil n’existe plus",
+    "dieses Gerät existiert nicht mehr"
+  ],
+  "esse convite expirou; peça outro": [
+    "this invitation expired; request a new one",
+    "esta invitación ha caducado; pide otra",
+    "cette invitation a expiré ; demandez-en une autre",
+    "diese Einladung ist abgelaufen; bitte um eine neue"
+  ],
+  "este dispositivo ainda não sabe a própria identidade": [
+    "this device’s identity is not available yet",
+    "la identidad de este dispositivo aún no está disponible",
+    "l’identité de cet appareil n’est pas encore disponible",
+    "die Identität dieses Geräts ist noch nicht verfügbar"
+  ],
+  "este navegador não grava áudio": [
+    "this browser cannot record audio",
+    "este navegador no puede grabar audio",
+    "ce navigateur ne peut pas enregistrer d’audio",
+    "dieser Browser kann kein Audio aufnehmen"
+  ],
+  "evento": [
+    "event",
+    "evento",
+    "événement",
+    "Termin"
+  ],
+  "expirada": [
+    "expired",
+    "caducado",
+    "expiré",
+    "abgelaufen"
+  ],
+  "figurinha": [
+    "sticker",
+    "sticker",
+    "autocollant",
+    "Sticker"
+  ],
+  "foto": [
+    "photo",
+    "foto",
+    "photo",
+    "Foto"
+  ],
+  "hoje": [
+    "today",
+    "hoy",
+    "aujourd’hui",
+    "heute"
+  ],
+  "lista de opções": [
+    "options list",
+    "lista de opciones",
+    "liste d’options",
+    "Optionsliste"
+  ],
+  "localização": [
+    "location",
+    "ubicación",
+    "position",
+    "Standort"
+  ],
+  "localização em tempo real": [
+    "live location",
+    "ubicación en tiempo real",
+    "position en direct",
+    "Live-Standort"
+  ],
+  "mensagem com botões": [
+    "message with buttons",
+    "mensaje con botones",
+    "message avec boutons",
+    "Nachricht mit Schaltflächen"
+  ],
+  "mensagem de voz": [
+    "voice message",
+    "mensaje de voz",
+    "message vocal",
+    "Sprachnachricht"
+  ],
+  "mensagem interativa": [
+    "interactive message",
+    "mensaje interactivo",
+    "message interactif",
+    "interaktive Nachricht"
+  ],
+  "mensagem só no celular": [
+    "message available only on the phone",
+    "mensaje disponible solo en el teléfono",
+    "message disponible uniquement sur le téléphone",
+    "Nachricht nur auf dem Telefon verfügbar"
+  ],
+  "nenhum aparelho selecionado": [
+    "no device selected",
+    "ningún dispositivo seleccionado",
+    "aucun appareil sélectionné",
+    "kein Gerät ausgewählt"
+  ],
+  "não dá para dizer \"todos\" sem saber quantos são nesta conversa": [
+    "cannot confirm “everyone” without knowing the number of participants",
+    "no se puede confirmar «todos» sin saber cuántos participantes hay",
+    "impossible de confirmer « tous » sans connaître le nombre de participants",
+    "„alle“ kann ohne die Anzahl der Teilnehmer nicht bestätigt werden"
+  ],
+  "não dá para saber quem enviou o convite": [
+    "the invitation sender could not be identified",
+    "no se pudo identificar quién envió la invitación",
+    "l’expéditeur de l’invitation n’a pas pu être identifié",
+    "der Absender der Einladung konnte nicht ermittelt werden"
+  ],
+  "não foi enviada": [
+    "not sent",
+    "no enviado",
+    "non envoyé",
+    "nicht gesendet"
+  ],
+  "não foi possível decifrar": [
+    "could not decrypt",
+    "no se pudo descifrar",
+    "déchiffrement impossible",
+    "konnte nicht entschlüsselt werden"
+  ],
+  "não foi possível redimensionar; vai como está": [
+    "could not resize; sending as is",
+    "no se pudo redimensionar; se enviará tal cual",
+    "redimensionnement impossible ; envoi en l’état",
+    "Größenänderung nicht möglich; wird unverändert gesendet"
+  ],
+  "o WhatsApp recusou o arquivo: ": [
+    "WhatsApp rejected the file: ",
+    "WhatsApp rechazó el archivo: ",
+    "WhatsApp a refusé le fichier : ",
+    "WhatsApp hat die Datei abgelehnt: "
+  ],
+  "o arquivo passa do limite deste servidor": [
+    "the file exceeds this server’s limit",
+    "el archivo supera el límite de este servidor",
+    "le fichier dépasse la limite de ce serveur",
+    "die Datei überschreitet das Limit dieses Servers"
+  ],
+  "o envio demorou demais": [
+    "sending timed out",
+    "el envío tardó demasiado",
+    "le délai d’envoi a expiré",
+    "Zeitüberschreitung beim Senden"
+  ],
+  "o servidor do WhatsApp recusou esta mensagem": [
+    "the WhatsApp server rejected this message",
+    "el servidor de WhatsApp rechazó este mensaje",
+    "le serveur WhatsApp a refusé ce message",
+    "der WhatsApp-Server hat diese Nachricht abgelehnt"
+  ],
+  "o servidor recusou o pedido": [
+    "the server rejected the request",
+    "el servidor rechazó la solicitud",
+    "le serveur a refusé la demande",
+    "der Server hat die Anfrage abgelehnt"
+  ],
+  "onda sonora": [
+    "waveform",
+    "forma de onda",
+    "forme d’onde",
+    "Wellenform"
+  ],
+  "onda sonora, e conta como ouvida e não como lida": [
+    "waveform, with played receipts instead of read receipts",
+    "forma de onda, con confirmaciones de reproducción en lugar de lectura",
+    "forme d’onde, avec confirmations d’écoute plutôt que de lecture",
+    "Wellenform mit Wiedergabe- statt Lesebestätigungen"
+  ],
+  "ontem": [
+    "yesterday",
+    "ayer",
+    "hier",
+    "gestern"
+  ],
+  "os bytes originais, sem recompressão": [
+    "original bytes, without recompression",
+    "bytes originales, sin recompresión",
+    "octets d’origine, sans recompression",
+    "Originaldaten ohne erneute Komprimierung"
+  ],
+  "reagiu": [
+    "reacted",
+    "reaccionó",
+    "a réagi",
+    "reagiert"
+  ],
+  "reação": [
+    "reaction",
+    "reacción",
+    "réaction",
+    "Reaktion"
+  ],
+  "recortado em círculo pelo destinatário; não aceita legenda": [
+    "cropped to a circle for the recipient; captions are not supported",
+    "recortado en círculo para el destinatario; no admite texto",
+    "recadré en cercle pour le destinataire ; légende non prise en charge",
+    "beim Empfänger rund zugeschnitten; keine Beschriftung möglich"
+  ],
+  "reduzida para {v0} px no lado maior": [
+    "resized to {v0} px on the longest side",
+    "reducida a {v0} px en el lado más largo",
+    "réduite à {v0} px sur le côté le plus long",
+    "auf {v0} px an der längsten Seite verkleinert"
+  ],
+  "resposta por botão": [
+    "button reply",
+    "respuesta con botón",
+    "réponse par bouton",
+    "Schaltflächenantwort"
+  ],
+  "roda em loop, sem som": [
+    "loops without sound",
+    "se reproduce en bucle, sin sonido",
+    "lecture en boucle sans son",
+    "Endlosschleife ohne Ton"
+  ],
+  "sem conexão com o servidor": [
+    "no server connection",
+    "sin conexión con el servidor",
+    "pas de connexion au serveur",
+    "keine Serververbindung"
+  ],
+  "sem detalhe": [
+    "no details",
+    "sin detalles",
+    "sans détails",
+    "keine Details"
+  ],
+  "tipo não suportado": [
+    "unsupported type",
+    "tipo no compatible",
+    "type non pris en charge",
+    "nicht unterstützter Typ"
+  ],
+  "toca como arquivo de música; não aceita legenda": [
+    "plays as a music file; captions are not supported",
+    "se reproduce como archivo de música; no admite texto",
+    "lu comme un fichier musical ; légende non prise en charge",
+    "wird als Musikdatei abgespielt; keine Beschriftung möglich"
+  ],
+  "voto": [
+    "vote",
+    "voto",
+    "vote",
+    "Stimme"
+  ],
+  "vídeo": [
+    "video",
+    "vídeo",
+    "vidéo",
+    "Video"
+  ],
+  "vídeo redondo": [
+    "video message",
+    "videomensaje",
+    "message vidéo",
+    "Videonachricht"
+  ],
+  "{v0} confirmações para {v1} destinatários — ": [
+    "{v0} receipts for {v1} recipients — ",
+    "{v0} confirmaciones para {v1} destinatarios — ",
+    "{v0} confirmations pour {v1} destinataires — ",
+    "{v0} Bestätigungen für {v1} Empfänger — "
+  ],
+  "{v0} não leva legenda — o WhatsApp não tem campo para ela.": [
+    "{v0} cannot have a caption — WhatsApp has no field for it.",
+    "{v0} no admite texto: WhatsApp no tiene un campo para ello.",
+    "{v0} ne peut pas avoir de légende : WhatsApp ne prévoit pas ce champ.",
+    "{v0} unterstützt keine Beschriftung – WhatsApp hat dafür kein Feld."
+  ],
+  "Áudio": [
+    "Audio",
+    "Audio",
+    "Audio",
+    "Audio"
+  ],
+  "áudio": [
+    "audio",
+    "audio",
+    "audio",
+    "Audio"
+  ],
+  "não há conversa com esse número neste histórico": [
+    "there is no conversation with this number in the history",
+    "no hay conversaciones con este número en el historial",
+    "aucune conversation avec ce numéro dans l’historique",
+    "mit dieser Nummer gibt es kein Gespräch im Verlauf"
+  ],
+  "o histórico não está destravado": [
+    "the conversation history is locked",
+    "el historial de conversaciones está bloqueado",
+    "l’historique des conversations est verrouillé",
+    "der Gesprächsverlauf ist gesperrt"
+  ]
+}

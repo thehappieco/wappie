@@ -1,183 +1,58 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { admin, cancelPairing, pair } from '../state/admin'
 import { state } from '../state/archive'
+import { t } from '../ui/i18n'
 import QRCode from './QRCode.vue'
-
-// Linking a WhatsApp number, from the browser.
-//
-// The screen is mostly one decision: who gets the key. It is asked before the
-// pairing starts because the answer has to be sealed into the request — the
-// grants exist before the device row does — and because it cannot be quietly
-// defaulted to "everybody". A key per device buys separation between operators,
-// and handing every account a copy at pairing time would spend it.
-
 const open = ref(false)
-const method = ref<'code' | 'qr'>('code')
+const method = ref<'code' | 'qr'>('qr')
 const phone = ref('')
 const label = ref('')
 const active = ref(false)
 const grantTo = ref<string[]>([])
-
-/** The signed-in account starts selected: pairing a device you cannot read is rare. */
+const retry = computed(() => admin.pairingTarget)
 function reset() {
-  method.value = 'code'
-  phone.value = ''
-  label.value = ''
-  active.value = false
-  const me = admin.accounts.find((a) => a.email === state.account)
+  method.value = 'qr'; phone.value = ''; label.value = retry.value?.label || ''; active.value = false
+  const me = admin.accounts.find(a => a.email === state.account)
   grantTo.value = me ? [me.id] : []
 }
-
-function start() {
-  open.value = true
-  reset()
-}
-
-function close() {
-  if (admin.pairing.phase === 'waiting') cancelPairing()
-  open.value = false
-}
-
-const busy = computed(
-  () => admin.pairing.phase === 'starting' || admin.pairing.phase === 'waiting',
-)
-
-// WhatsApp wants the number in full international form. Checked here only to
-// catch the obvious slip — a missing country code, a phone typed as a name.
-// The server validates properly.
-const phoneLooksRight = computed(() => {
-  const digits = phone.value.replace(/\D/g, '')
-  return digits.length >= 10 && digits.length <= 15
-})
-
-const canStart = computed(
-  () =>
-    (method.value === 'qr' || phoneLooksRight.value) && grantTo.value.length > 0 && !busy.value,
-)
-
-function toggle(id: string) {
-  const at = grantTo.value.indexOf(id)
-  if (at >= 0) grantTo.value.splice(at, 1)
-  else grantTo.value.push(id)
-}
-
+function start() { admin.pairingTarget = null; open.value = true; reset() }
+function close() { cancelPairing(); admin.pairingTarget = null; open.value = false }
+watch(() => admin.pairingTarget, target => { if (target) { open.value = true; reset() } })
+onBeforeUnmount(() => { if (admin.pairing.phase === 'waiting') cancelPairing() })
+const busy = computed(() => admin.pairing.phase === 'starting' || admin.pairing.phase === 'waiting')
+const phoneLooksRight = computed(() => { const digits = phone.value.replace(/\D/g, ''); return digits.length >= 10 && digits.length <= 15 })
+const canStart = computed(() => (method.value === 'qr' || phoneLooksRight.value) && (retry.value || grantTo.value.length > 0) && !busy.value)
+function toggle(id: string) { grantTo.value = grantTo.value.includes(id) ? grantTo.value.filter(x => x !== id) : [...grantTo.value, id] }
 async function submit() {
-  await pair({
-    method: method.value,
-    phone: phone.value.trim(),
-    label: label.value.trim(),
-    grantTo: grantTo.value,
-    receiptMode: active.value ? 'active' : 'passive',
-  })
-}
-
-function done() {
-  open.value = false
-  cancelPairing()
+  await pair({ method: method.value, phone: phone.value.trim(), label: label.value.trim(), grantTo: grantTo.value,
+    receiptMode: active.value ? 'active' : 'passive', existingDeviceID: retry.value?.id })
 }
 </script>
 
 <template>
-  <section class="console-panel">
-    <div class="console-panel-head">
-      <h2>Conectar um número</h2>
-      <button class="primary small" v-if="!open" @click="start">Adicionar número</button>
-    </div>
-
-    <div v-if="!open" class="dim">
-      Conecte com um QR code ou um código no celular. Você escolhe quais contas terão acesso às
-      conversas, que permanecem protegidas por criptografia.
-    </div>
-
+  <section class="console-panel" id="connect-number">
+    <div class="console-panel-head"><h2>{{ retry ? t('Concluir conexão') : t('Conectar um número') }}</h2><button class="primary small" v-if="!open" @click="start">{{ t('Adicionar número') }}</button></div>
+    <p v-if="!open" class="dim">{{ t('Conecte seu WhatsApp com um QR code ou um código no celular. Você escolhe quais membros poderão acessar as conversas.') }}</p>
     <form v-else-if="admin.pairing.phase === 'idle' || admin.pairing.phase === 'failed'" @submit.prevent="submit">
-      <div class="alert" v-if="admin.pairing.error">{{ admin.pairing.error }}</div>
-
-      <div class="field">
-        <label>Como conectar</label>
-        <div class="choices">
-          <label class="choice">
-            <input type="radio" value="code" v-model="method" />
-            <span>Código de 8 caracteres (digitado no celular)</span>
-          </label>
-          <label class="choice">
-            <input type="radio" value="qr" v-model="method" />
-            <span>QR code (lido pela câmera do celular)</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="field" v-if="method === 'code'">
-        <label for="pair-phone">Número, com país e DDD</label>
-        <input id="pair-phone" v-model="phone" placeholder="+5511999999999" autocomplete="off" />
-        <div class="hint">É o número do celular que vai aparecer em Aparelhos conectados.</div>
-      </div>
-
-      <div class="field">
-        <label for="pair-label">Nome interno (opcional)</label>
-        <input id="pair-label" v-model="label" placeholder="Comercial" autocomplete="off" />
-      </div>
-
-      <div class="field">
-        <label>Quem poderá ler este arquivo</label>
-        <div class="choices">
-          <label v-for="a in admin.accounts" :key="a.id" class="choice">
-            <input type="checkbox" :checked="grantTo.includes(a.id)" @change="toggle(a.id)" />
-            <span>{{ a.email }}</span>
-            <span class="dim">{{ a.role }}</span>
-          </label>
-        </div>
-        <div class="hint">
-          Só quem estiver marcado recebe a chave. Dá para conceder depois, mas para isso alguém
-          precisa já ter a chave — se ninguém tiver, o arquivo fica ilegível para sempre.
-        </div>
-      </div>
-
-      <label class="choice">
-        <input type="checkbox" v-model="active" />
-        <span>Confirmar leitura no WhatsApp (sai do modo discreto)</span>
-      </label>
-
-      <div class="row-actions">
-        <button class="primary" type="submit" :disabled="!canStart">Gerar código</button>
-        <button class="ghost" type="button" @click="close">Cancelar</button>
-      </div>
+      <div class="alert" role="alert" v-if="admin.pairing.error">{{ admin.pairing.error }}</div>
+      <p v-if="retry" class="hint">{{ t('A conexão será retomada com o nome, a chave e os acessos que já foram definidos para este número.') }}</p>
+      <div class="field"><label>{{ t('Como conectar') }}</label><div class="choices"><label class="choice"><input type="radio" value="qr" v-model="method" /><span>{{ t('QR code — escaneie com o celular') }}</span></label><label class="choice"><input type="radio" value="code" v-model="method" /><span>{{ t('Código — digite no celular') }}</span></label></div></div>
+      <div class="field" v-if="method === 'code'"><label for="pair-phone">{{ t('Número com código do país') }}</label><input id="pair-phone" v-model="phone" placeholder="+5511999999999" type="tel" autocomplete="tel" inputmode="tel" /></div>
+      <div class="field" v-if="!retry"><label for="pair-label">{{ t('Nome interno (opcional)') }}</label><input id="pair-label" v-model="label" :placeholder="t('Ex.: Atendimento')" maxlength="100" autocomplete="off" /><span class="hint">{{ t('Você pode editar esse nome depois. O perfil do WhatsApp permanece igual.') }}</span></div>
+      <div class="field" v-if="!retry"><label>{{ t('Quem poderá acessar as conversas') }}</label><div class="choices"><label v-for="a in admin.accounts" :key="a.id" class="choice"><input type="checkbox" :checked="grantTo.includes(a.id)" @change="toggle(a.id)" /><span>{{ a.email }}</span></label></div><span class="hint">{{ t('Os membros selecionados recebem acesso às conversas protegidas deste número. Outros acessos podem ser concedidos depois.') }}</span></div>
+      <fieldset v-if="!retry" class="reading-mode"><legend>{{ t('Privacidade da leitura') }}</legend><label class="choice"><input type="checkbox" v-model="active" /><span>{{ t('Enviar confirmações de leitura') }}</span></label><p class="hint">{{ active ? t('Ao abrir mensagens no Wappie, o WhatsApp poderá mostrar as confirmações azuis e sua presença online. Essa escolha vale para todos os usuários deste número.') : t('Modo incógnito: ler no Wappie não envia confirmação de leitura nem mostra presença online. Você pode mudar esse modo depois no app.') }}</p></fieldset>
+      <div class="row-actions"><button class="primary" type="submit" :disabled="!canStart">{{ method === 'qr' ? t('Gerar QR code') : t('Gerar código') }}</button><button class="ghost" type="button" @click="close">{{ t('Cancelar') }}</button></div>
     </form>
-
-    <div v-else-if="admin.pairing.phase === 'starting'" class="dim">Criando a chave…</div>
-
+    <p v-else-if="admin.pairing.phase === 'starting'" class="dim">{{ t('Preparando conexão segura…') }}</p>
     <div v-else-if="admin.pairing.phase === 'waiting'" class="pairing">
-      <p v-if="method === 'code'">
-        No celular: <b>Configurações → Aparelhos conectados → Conectar um aparelho →
-        Conectar com número de telefone</b>.
-      </p>
-      <p v-else>
-        No celular: <b>Configurações → Aparelhos conectados → Conectar um aparelho</b>, e aponte a
-        câmera aqui.
-      </p>
-
-      <div class="code" v-if="admin.pairing.code">{{ admin.pairing.code }}</div>
-      <QRCode v-else-if="admin.pairing.qr" :text="admin.pairing.qr" />
-      <div class="dim" v-else>Pedindo o código ao WhatsApp…</div>
-
-      <div class="dim" v-if="admin.pairing.qr">
-        O código se renova sozinho a cada poucos segundos até alguém ler.
-      </div>
-
-      <p class="dim">
-        A chave deste aparelho já foi selada para
-        {{ admin.pairing.grantedTo.join(', ') }} e não existe mais neste navegador.
-      </p>
-      <button class="ghost" @click="close">Cancelar</button>
+      <p>{{ method === 'code' ? t('No WhatsApp do celular, abra Configurações → Aparelhos conectados → Conectar um aparelho → Conectar com número de telefone.') : t('No WhatsApp do celular, abra Configurações → Aparelhos conectados → Conectar um aparelho e escaneie o QR code.') }}</p>
+      <div class="code" v-if="admin.pairing.code">{{ admin.pairing.code }}</div><QRCode v-else-if="admin.pairing.qr" :text="admin.pairing.qr" /><p class="dim" v-else>{{ t('Solicitando código ao WhatsApp…') }}</p>
+      <p class="hint">{{ t('A conexão só é concluída depois da confirmação no celular. Se você cancelar ou o código expirar, o cadastro incompleto será removido.') }}</p><button class="ghost" @click="close">{{ t('Cancelar conexão') }}</button>
     </div>
-
-    <div v-else-if="admin.pairing.phase === 'done'" class="pairing">
-      <p><b>Conectado.</b> As mensagens começam a chegar seladas a partir de agora.</p>
-      <p class="dim">
-        O histórico anterior vem aos poucos, conforme o WhatsApp entrega — pode levar horas.
-      </p>
-      <button class="primary" @click="done">Pronto</button>
-    </div>
+    <div v-else-if="admin.pairing.phase === 'done'" class="pairing"><p><strong>{{ t('Número conectado!') }}</strong></p><p class="dim">{{ t('As novas mensagens já podem começar a chegar. O histórico anterior é sincronizado aos poucos, conforme o WhatsApp disponibiliza.') }}</p><button class="primary" @click="close">{{ t('Concluir') }}</button></div>
   </section>
 </template>
+<style scoped>
+.reading-mode { border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 18px 0; }.reading-mode legend { padding: 0 6px; font-weight: 600; }.hint { color: var(--text-dim); font-size: 13px; line-height: 1.6; }.field { margin: 18px 0; }.choices { gap: 10px; }.pairing { overflow-wrap: anywhere; }.pairing :deep(svg), .pairing :deep(canvas) { max-width: 100%; }.row-actions { flex-wrap: wrap; }
+</style>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import { nowTick } from '../state/actions'
@@ -145,7 +146,7 @@ function mentionIdentity(jid: string): string[] {
   const pn = known?.pn || (server === SERVER_USER ? jid : '')
   const out: string[] = []
   if (lid) out.push(lid)
-  out.push(pn ? formatPhone(pn) : 'sem telefone')
+  out.push(pn ? formatPhone(pn) : t('sem telefone'))
   return out
 }
 
@@ -158,7 +159,7 @@ function mentionIdentity(jid: string): string[] {
 const expiry = computed(() => expiryLabel(m.value, nowTick.value))
 
 const forwardedLabel = computed(() =>
-  m.value.forwardingScore >= 5 ? 'encaminhada muitas vezes' : 'encaminhada',
+  m.value.forwardingScore >= 5 ? t('encaminhada muitas vezes') : 'encaminhada',
 )
 </script>
 
@@ -176,7 +177,7 @@ const forwardedLabel = computed(() =>
       tabindex="0"
       :class="{ on: selected, revoked: m.deleted, pressing, 'gesture-open': actionsOpen, swiping: offset > 0 }"
       :style="{ transform: offset ? `translateX(${Math.min(12, offset / 3)}px)` : undefined }"
-      :aria-label="`Mensagem ${m.fromMe ? 'enviada' : `de ${m.senderName}`}, ${hhmm(m.ts)}`"
+      :aria-label="`Mensagem ${m.fromMe ? t('enviada') : `de ${m.senderName}`}, ${hhmm(m.ts)}`"
       @click.capture="click"
       @keydown="keydown"
       @contextmenu="contextMenu"
@@ -201,7 +202,7 @@ const forwardedLabel = computed(() =>
       <!-- The quoted message. m.replyTo has been on the view all along and
            nothing drew it, so a reply looked like an unrelated remark. -->
       <div v-if="quoted" class="quote">
-        <div class="quote-who">{{ quoted.fromMe ? 'você' : quoted.senderName }}</div>
+        <div class="quote-who">{{ quoted.fromMe ? t('você') : quoted.senderName }}</div>
         <div class="quote-body" v-if="quoted.bodyState === 'ok' && quoted.body">
           {{ quoted.body }}
         </div>
@@ -210,7 +211,7 @@ const forwardedLabel = computed(() =>
       <!-- Honest about the limit: the quoted message may be older than the page
            that is loaded, and saying so beats drawing nothing. -->
       <div v-else-if="m.replyTo" class="quote">
-        <div class="quote-body sealed">resposta a uma mensagem de uma página anterior</div>
+        <div class="quote-body sealed">{{ t('resposta a uma mensagem de uma página anterior') }}</div>
       </div>
       <!-- In the status feed the author is the whole point: consecutive posts
            are by different people, and unlabelled they read as one rambling
@@ -250,16 +251,12 @@ const forwardedLabel = computed(() =>
           <template v-else>{{ run.text }}</template>
         </template>
       </div>
-      <div v-else-if="m.bodyState === 'tampered'" class="tampered">
-        ⚠ ADULTERADO OU CHAVE ERRADA
-      </div>
-      <div v-else-if="m.bodyState === 'locked'" class="sealed">selado — chave indisponível</div>
+      <div v-else-if="m.bodyState === 'tampered'" class="tampered"> {{ t('⚠ ADULTERADO OU CHAVE ERRADA') }} </div>
+      <div v-else-if="m.bodyState === 'locked'" class="sealed">{{ t('selado — chave indisponível') }}</div>
       <!-- A slot where a message should be. The phone masked this one from
            linked devices, so it is on the handset and will never be here — and
            an archive that promises completeness owes the reader the hole. -->
-      <div v-else-if="m.type === 'placeholder'" class="sealed">
-        esta mensagem ficou só no celular — o WhatsApp não a entregou aos aparelhos vinculados
-      </div>
+      <div v-else-if="m.type === 'placeholder'" class="sealed"> {{ t('esta mensagem ficou só no celular — o WhatsApp não a entregou aos aparelhos vinculados') }} </div>
       <!-- An unsupported message names the protobuf field it carried. It is
            the only clue there is: the payload is sealed, so without the name
            nobody can say what this build would need to learn to read it. -->
@@ -269,9 +266,7 @@ const forwardedLabel = computed(() =>
 
       <!-- Only the ones the text could not hold. Repeating every mention below
            a message that already highlights them is noise. -->
-      <div v-if="trailing.length" class="dim mentions-extra">
-        menciona
-        <button
+      <div v-if="trailing.length" class="dim mentions-extra"> {{ t('menciona') }} <button
           v-for="jid in trailing"
           :key="jid"
           class="mention"
@@ -294,13 +289,11 @@ const forwardedLabel = computed(() =>
       <!-- A message that has left this tab and not come back from the archive
            yet. It is shown because waiting for a round trip before drawing what
            somebody just typed reads as the message being lost. -->
-      <div v-if="m.pending === 'sending'" class="flag">enviando…</div>
+      <div v-if="m.pending === 'sending'" class="flag">{{ t('enviando…') }}</div>
       <!-- With a way out of it. A line that never went holds on to whatever it
            was going to send — for an attachment, the whole file — and without
            this there is nothing to do about it but reload the tab. -->
-      <div v-else-if="m.pending === 'failed'" class="flag hot" :title="m.failure">
-        não enviou — {{ m.failure }}
-        <button class="link" @click.stop="discardFailed(m.waID)">descartar</button>
+      <div v-else-if="m.pending === 'failed'" class="flag hot" :title="m.failure"> {{ t('não enviou — {v0}', { v0: m.failure }) }} <button class="link" @click.stop="discardFailed(m.waID)">{{ t('descartar') }}</button>
       </div>
       <!-- Sent and not written down. The message is on the recipient's phone;
            this archive will never have a row for it, and saying so is the whole
@@ -308,28 +301,25 @@ const forwardedLabel = computed(() =>
       <div
         v-else-if="m.pending === 'unarchived'"
         class="flag hot"
-        title="O servidor enviou a mensagem mas não conseguiu arquivá-la."
-      >
-        enviada, fora do arquivo
-      </div>
+        :title="t('O servidor enviou a mensagem mas não conseguiu arquivá-la.')"
+      > {{ t('enviada, fora do histórico') }} </div>
 
       <div class="meta">
-        <span v-if="m.viewOnce" class="flag hot">ver uma vez</span>
+        <span v-if="m.viewOnce" class="flag hot">{{ t('ver uma vez') }}</span>
         <!-- Amber while it is still coming, plain once it has passed: an
              expired message is a statement about the past, not a warning. -->
         <span
           v-if="expiry"
           class="flag"
-          :class="{ hot: expiry === 'temporária' }"
+          :class="{ hot: expiry === t('temporária') }"
           :title="m.expiresAt ? stamp(m.expiresAt) : ''"
           >{{ expiry }}</span
         >
         <!-- Both of these are the point of the archive, so they are stated on
              the message itself rather than only in the panel. -->
-        <span v-if="m.edited" class="flag edited">
-          editada{{ m.versionCount > 2 ? ` ${m.versionCount - 1}×` : '' }}
+        <span v-if="m.edited" class="flag edited"> {{ t('editada{v0}', { v0: m.versionCount > 2 ? ` ${m.versionCount - 1}×` : '' }) }}
         </span>
-        <span v-if="m.deleted" class="flag revoked">apagada</span>
+        <span v-if="m.deleted" class="flag revoked">{{ t('apagada') }}</span>
         <span>{{ hhmm(m.ts) }}</span>
         <MessageTicks :message="m" />
       </div>

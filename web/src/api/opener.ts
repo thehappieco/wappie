@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // The opener: sealed bytes in, readable content out.
 //
 // This is the only place in the client that holds the archive key, and the only
@@ -149,17 +150,17 @@ export class Opener {
     sealed: string | undefined,
   ): Promise<Opened<Bytes>> {
     if (!sealed) return absent
-    if (!keyID) return { state: 'locked', reason: 'a linha não diz qual chave abre isto' }
+    if (!keyID) return { state: 'locked', reason: t('Não foi possível identificar a chave deste conteúdo.') }
 
     let row: Bytes
     try {
       row = parseUUID(rowUID)
     } catch {
-      return { state: 'locked', reason: 'identificador de linha inválido' }
+      return { state: 'locked', reason: t('Este conteúdo tem um identificador inválido.') }
     }
 
     const key = await this.key(keyID)
-    if (!key) return { state: 'locked', reason: `chave de conteúdo ${keyID} indisponível` }
+    if (!key) return { state: 'locked', reason: t('A chave deste conteúdo não está disponível.') }
 
     try {
       return { state: 'ok', value: await key.open(kind, this.tenant, row, fromBase64(sealed)) }
@@ -193,7 +194,7 @@ export class Opener {
     try {
       return { state: 'ok', value: JSON.parse(new TextDecoder().decode(opened.value)) as P.Payload }
     } catch {
-      return { state: 'locked', reason: 'o conteúdo estruturado não é JSON válido' }
+      return { state: 'locked', reason: t('Não foi possível interpretar este conteúdo.') }
     }
   }
 

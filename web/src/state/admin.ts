@@ -11,6 +11,7 @@
 // all: anywhere else, the private half would have to travel.
 
 import { reactive, watch } from 'vue'
+import { t } from '../ui/i18n'
 
 import { ProtocolError } from '../api/client'
 import * as P from '../api/protocol'
@@ -48,6 +49,8 @@ interface AdminState {
   detail: P.DeviceDetail | null
   detailError: string
   detailLoading: boolean
+  deviceBusy: boolean
+  pairingTarget: P.DeviceInfo | null
 
   accounts: P.UserSummary[]
 
@@ -72,6 +75,8 @@ const freshAdmin = (): AdminState => ({
   detail: null,
   detailError: '',
   detailLoading: false,
+  deviceBusy: false,
+  pairingTarget: null,
   accounts: [],
   keys: [],
   keysError: '',
@@ -82,8 +87,18 @@ const freshAdmin = (): AdminState => ({
   grantError: '',
 })
 
+let adminGeneration = 0
+let detailGeneration = 0
 export const admin = reactive<AdminState>(freshAdmin())
-watch(() => state.tenantID, () => Object.assign(admin, freshAdmin()), { flush: 'sync' })
+watch([() => state.tenantID, () => state.account, () => state.phase === 'locked'], () => {
+  adminGeneration++; detailGeneration++; pairingGeneration++; release(); Object.assign(admin, freshAdmin())
+}, { flush: 'sync' })
+function currentAdmin(): () => boolean {
+  const generation = adminGeneration
+  const workspace = state.tenantID
+  const account = state.account
+  return () => generation === adminGeneration && state.tenantID === workspace && state.account === account
+}
 
 /** canAdminister mirrors the server's rule, so the UI offers what will work. */
 export function canAdminister(): boolean {
@@ -109,98 +124,126 @@ function say(err: unknown): string {
  * arrive after, rather than the whole screen waiting on them.
  */
 export async function load(): Promise<void> {
-  admin.loading = true
-  admin.error = ''
+  const current = currentAdmin()
+  admin.loading = true; admin.error = ''
   try {
     await refreshDevices()
-    const users = await socket().request<P.Users>(P.TypeUsersList, {}, P.TypeUsers)
-    admin.accounts = users.users ?? []
-  } catch (err) {
-    admin.error = say(err)
-  } finally {
-    admin.loading = false
-  }
+    if (!current()) return
+    if (canAdminister()) {
+      const users = await socket().request<P.Users>(P.TypeUsersList, {}, P.TypeUsers)
+      if (!current()) return
+      admin.accounts = users.users ?? []
+    } else { admin.accounts = [] }
+  } catch (err) { if (current()) admin.error = say(err) }
+  finally { if (current()) admin.loading = false }
+  if (!current()) return
   void loadStats()
   if (canAdminister()) void loadKeys()
 }
 
 export async function loadStats(): Promise<void> {
+  const current = currentAdmin()
   try {
-    const reply = await socket().request<P.DeviceStats>(
-      P.TypeDevicesStats,
-      {},
-      P.TypeDeviceStats,
-    )
+    const reply = await socket().request<P.DeviceStats>(P.TypeDevicesStats, {}, P.TypeDeviceStats)
+    if (!current()) return
     const byID: Record<string, P.DeviceStat> = {}
     for (const s of reply.stats ?? []) byID[s.device_id] = s
-    admin.stats = byID
-    admin.statsLoaded = true
-  } catch {
-    // Counters are decoration. A device list without them is still the list,
-    // and an error banner over "how many messages" would bury the real state.
-  }
+    admin.stats = byID; admin.statsLoaded = true
+  } catch { /* Counters are optional; do not hide the usable device list. */ }
 }
 
 export async function openDetail(deviceID: string): Promise<void> {
-  admin.detail = null
-  admin.detailError = ''
-  admin.removed = null
-  // Set before the request, so the sheet opens saying "loading" rather than the
-  // click appearing to do nothing while a count runs.
-  admin.detailLoading = true
+  const active = currentAdmin()
+  const generation = ++detailGeneration
+  const current = () => active() && generation === detailGeneration
+  admin.detail = null; admin.detailError = ''; admin.removed = null; admin.detailLoading = true
   try {
-    admin.detail = await socket().request<P.DeviceDetail>(
-      P.TypeDeviceInfo,
-      { device_id: deviceID } satisfies P.DeviceRef,
-      P.TypeDeviceDetail,
-    )
-  } catch (err) {
-    admin.detailError = say(err)
-  } finally {
-    admin.detailLoading = false
-  }
+    const detail = await socket().request<P.DeviceDetail>(P.TypeDeviceInfo,
+      { device_id: deviceID } satisfies P.DeviceRef, P.TypeDeviceDetail)
+    if (current() && detail.device.id === deviceID) admin.detail = detail
+  } catch (err) { if (current()) admin.detailError = say(err) }
+  finally { if (current()) admin.detailLoading = false }
 }
 
 export function closeDetail(): void {
-  admin.detail = null
-  admin.detailError = ''
-  admin.detailLoading = false
+  detailGeneration++
+  admin.detail = null; admin.detailError = ''; admin.detailLoading = false
 }
 
-/**
- * removeDevice deletes a device and everything it archived.
- *
- * The confirm repeats the id because the server insists on it, and the server
- * insists because this is the one call with no way back.
- */
-export async function removeDevice(deviceID: string, unlink: boolean): Promise<void> {
-  admin.detailError = ''
+/** Permanently deletes a device after the caller has confirmed the full id. */
+export async function removeDevice(deviceID: string, unlink = true): Promise<boolean> {
+  if (admin.deviceBusy) return false
+  const current = currentAdmin()
+  admin.deviceBusy = true; admin.detailError = ''
   try {
-    const gone = await socket().request<P.DeviceDeleted>(
-      P.TypeDeviceDelete,
-      { device_id: deviceID, confirm: deviceID, unlink } satisfies P.DeleteRequest,
-      P.TypeDeviceGone,
-    )
+    const gone = await socket().request<P.DeviceDeleted>(P.TypeDeviceDelete,
+      { device_id: deviceID, confirm: deviceID, unlink } satisfies P.DeleteRequest, P.TypeDeviceGone)
+    if (!current()) return true
     admin.removed = gone
-    admin.detail = null
+    if (admin.detail?.device.id === deviceID) closeDetail()
     delete admin.stats[deviceID]
-    await refreshDevices()
+    // Deletion is already committed. A refresh failure must not invite a
+    // second destructive operation by pretending the delete itself failed.
+    try { await refreshDevices() } catch (err) { if (current()) admin.error = say(err) }
+    return true
   } catch (err) {
-    admin.detailError = say(err)
-  }
+    if (current()) {
+      if (admin.detail?.device.id === deviceID) admin.detailError = say(err)
+      else admin.error = say(err)
+    }
+    return false
+  } finally { if (current()) admin.deviceBusy = false }
 }
 
-export async function stopDevice(deviceID: string): Promise<void> {
+export async function renameDevice(deviceID: string, label: string): Promise<boolean> {
+  if (admin.deviceBusy) return false
+  const current = currentAdmin()
+  admin.deviceBusy = true; admin.detailError = ''
   try {
-    await socket().request(
-      P.TypeDeviceStop,
-      { device_id: deviceID } satisfies P.DeviceRef,
-      P.TypeDeviceStatus,
-    )
-    await refreshDevices()
+    const detail = await socket().request<P.DeviceDetail>(P.TypeDeviceRename, { device_id: deviceID, label }, P.TypeDeviceDetail)
+    if (!current()) return true
+    if (admin.detail?.device.id === deviceID) admin.detail = detail
+    try { await refreshDevices() } catch (err) { if (current()) admin.error = say(err) }
+    return true
   } catch (err) {
-    admin.error = say(err)
-  }
+    if (current()) {
+      if (admin.detail?.device.id === deviceID) admin.detailError = say(err)
+      else admin.error = say(err)
+    }
+    return false
+  } finally { if (current()) admin.deviceBusy = false }
+}
+
+export async function stopDevice(deviceID: string): Promise<void> { await setDeviceRunning(deviceID, false) }
+export async function startDevice(deviceID: string): Promise<void> { await setDeviceRunning(deviceID, true) }
+
+async function setDeviceRunning(deviceID: string, running: boolean): Promise<void> {
+  if (admin.deviceBusy) return
+  const current = currentAdmin()
+  admin.deviceBusy = true; admin.error = ''; admin.detailError = ''
+  try {
+    await socket().request(running ? P.TypeDeviceStart : P.TypeDeviceStop,
+      { device_id: deviceID } satisfies P.DeviceRef, P.TypeDeviceStatus)
+    if (!current()) return
+    await refreshDevices()
+    if (!current()) return
+    if (admin.detail?.device.id === deviceID) {
+      const updated = state.devices.find(d => d.id === deviceID)
+      if (updated) admin.detail.device = updated
+    }
+  } catch (err) {
+    if (current()) {
+      if (admin.detail?.device.id === deviceID) admin.detailError = say(err)
+      else admin.error = say(err)
+    }
+  } finally { if (current()) admin.deviceBusy = false }
+}
+
+/** Opens pairing for a pending row, keeping its original key and readers. */
+export function preparePairing(device: P.DeviceInfo): void {
+  cancelPairing()
+  closeDetail()
+  admin.pairingTarget = device
 }
 
 // ---------------------------------------------------------------------------
@@ -300,12 +343,13 @@ export async function revokeAccess(deviceID: string, userID: string): Promise<vo
 // ---------------------------------------------------------------------------
 
 export async function loadKeys(): Promise<void> {
+  const current = currentAdmin()
   admin.keysError = ''
   try {
     const reply = await socket().request<P.APIKeys>(P.TypeKeysList, {}, P.TypeAPIKeys)
-    admin.keys = reply.keys ?? []
+    if (current()) admin.keys = reply.keys ?? []
   } catch (err) {
-    admin.keysError = say(err)
+    if (current()) admin.keysError = say(err)
   }
 }
 
@@ -346,6 +390,7 @@ export async function revokeKey(prefix: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 let stopPairing: (() => void) | null = null
+let pairingGeneration = 0
 
 export interface PairInput {
   /** "code" types eight characters on the phone; "qr" is scanned from it. */
@@ -356,6 +401,7 @@ export interface PairInput {
   /** Account ids that should be able to read this device. At least one. */
   grantTo: string[]
   receiptMode: 'passive' | 'active'
+  existingDeviceID?: string
 }
 
 /**
@@ -378,6 +424,9 @@ export interface PairInput {
  * exactly how the first archive of this project was lost.
  */
 export async function pair(input: PairInput): Promise<void> {
+  const generation = ++pairingGeneration
+  const workspace = state.tenantID
+  const current = () => generation === pairingGeneration && workspace === state.tenantID
   admin.pairing = {
     phase: 'starting',
     deviceID: '',
@@ -387,20 +436,33 @@ export async function pair(input: PairInput): Promise<void> {
     grantedTo: [],
   }
 
+  if (input.existingDeviceID) {
+    admin.pairing.deviceID = input.existingDeviceID
+    admin.pairing.phase = 'waiting'
+    try {
+      stopPairing = socket().stream(P.TypePair, {
+        device_id: input.existingDeviceID, resume: true, method: input.method,
+        phone: input.method === 'code' ? input.phone : '', display_name: 'Chrome (Linux)',
+      } satisfies P.PairResumeRequest, frame => { void handlePairFrame(frame, generation) })
+    } catch (err) { admin.pairing.phase = 'failed'; admin.pairing.error = say(err) }
+    return
+  }
   const chosen = admin.accounts.filter((a) => input.grantTo.includes(a.id))
   if (chosen.length === 0) {
     admin.pairing.phase = 'failed'
     admin.pairing.error =
-      'Escolha ao menos uma conta. Sem isso o aparelho arquiva mensagens que ninguém consegue abrir.'
+      t('Escolha ao menos um membro para acessar as conversas deste número.')
     return
   }
 
   const deviceID = newUUIDv7()
   const tenant = parseUUID(state.tenantID)
   const device = parseUUID(deviceID)
-  const keys = await generateKeyPair()
+  let keys: Awaited<ReturnType<typeof generateKeyPair>> | undefined
 
   try {
+    keys = await generateKeyPair()
+    if (!current()) return
     const grants: P.KeyGrant[] = []
     for (const account of chosen) {
       const row = await grantRow(tenant, device, parseUUID(account.id), 1)
@@ -412,11 +474,12 @@ export async function pair(input: PairInput): Promise<void> {
         1,
         keys.privateKey,
       )
+      if (!current()) return
       grants.push({ user_id: account.id, sealed_dsk: toBase64(sealed) })
     }
 
     const request: P.PairRequest = {
-      label: input.label || input.phone || 'aparelho',
+      label: input.label || input.phone || t('Número do WhatsApp'),
       method: input.method,
       phone: input.method === 'code' ? input.phone : '',
       display_name: 'Chrome (Linux)',
@@ -431,16 +494,19 @@ export async function pair(input: PairInput): Promise<void> {
     admin.pairing.phase = 'waiting'
 
     stopPairing = socket().stream(P.TypePair, request, (frame) => {
-      void handlePairFrame(frame)
+      void handlePairFrame(frame, generation)
     })
+  } catch (err) {
+    if (current()) { admin.pairing.phase = 'failed'; admin.pairing.error = say(err) }
   } finally {
     // Whatever happened above, the private half does not outlive this call.
     // It exists in the sealed blobs and nowhere else.
-    keys.privateKey.fill(0)
+    keys?.privateKey.fill(0)
   }
 }
 
-async function handlePairFrame(frame: P.Frame): Promise<void> {
+async function handlePairFrame(frame: P.Frame, generation: number): Promise<void> {
+  if (generation !== pairingGeneration) return
   switch (frame.t) {
     case P.TypePairCode: {
       const code = frame.p as P.PairCode
@@ -465,9 +531,10 @@ async function handlePairFrame(frame: P.Frame): Promise<void> {
       void loadStats()
       break
     case P.TypePairTimeout:
+      admin.pairingTarget = null
       admin.pairing.phase = 'failed'
       admin.pairing.error =
-        'O tempo acabou sem o código ser digitado. Nada foi criado; pode tentar de novo.'
+        t('O código expirou. Você pode conectar o número novamente.')
       release()
       await refreshDevices()
       break
@@ -490,7 +557,8 @@ async function handlePairFrame(frame: P.Frame): Promise<void> {
  * nobody can account for.
  */
 export function cancelPairing(): void {
-  const id = admin.pairing.deviceID
+  pairingGeneration++
+  const id = admin.pairing.phase === 'waiting' ? admin.pairing.deviceID : ''
   if (id) {
     try {
       socket().send(P.TypePairCancel, '', { device_id: id } satisfies P.DeviceRef)

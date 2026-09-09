@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 
@@ -24,7 +25,7 @@ function toggle() {
   <span class="password-control">
     <input ref="input" v-bind="$attrs" v-model="model" :type="visible ? 'text' : 'password'"
       autocapitalize="off" :spellcheck="false" @change="sync" />
-    <button class="password-toggle" type="button" :aria-label="visible ? 'Ocultar senha' : 'Mostrar senha'"
+    <button class="password-toggle" type="button" :aria-label="visible ? t('Ocultar senha') : t('Mostrar senha')"
       :aria-pressed="visible" :disabled="Boolean($attrs.disabled)" @click="toggle">
       <AppIcon :name="visible ? 'eye-off' : 'eye'" :size="20" />
     </button>

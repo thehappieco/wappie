@@ -23,6 +23,30 @@ func (h *Handler) workspaces(w http.ResponseWriter, r *http.Request) {
 	}{spaces})
 }
 
+func (h *Handler) updateWorkspace(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Name   string `json:"name"`
+		Avatar string `json:"avatar"`
+	}
+	if !decode(w, r, &req) || !h.allow(w, r, user.Email) {
+		return
+	}
+	space, err := h.Users.UpdateWorkspaceProfile(r.Context(), user.TenantID, user.ID, req.Name, req.Avatar)
+	if errors.Is(err, store.ErrInvalidWorkspaceProfile) {
+		fail(w, http.StatusBadRequest, "invalid_workspace_profile", "use a name of 1 to 80 characters and a PNG or JPEG avatar of at most 32 KiB and 512 pixels")
+		return
+	}
+	if err != nil {
+		h.memberError(w, err)
+		return
+	}
+	send(w, http.StatusOK, space)
+}
+
 func (h *Handler) acceptWorkspaceInvite(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {

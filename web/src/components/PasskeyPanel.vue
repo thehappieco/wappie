@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, intlLocale } from '../ui/i18n'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { listPasskeys, passkeysAvailable, registerPasskey, removePasskey, type PasskeyInfo } from '../api/passkeys'
 import { passkeyError } from '../api/webauthn'
@@ -11,7 +12,7 @@ const available = ref(false)
 const loaded = ref(false)
 const adding = ref(false)
 const removing = ref<PasskeyInfo | null>(null)
-const label = ref('Minha passkey')
+const label = ref(t('Minha passkey'))
 const password = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -52,11 +53,11 @@ async function submit(event: SubmitEvent) {
     if (removing.value) {
       await removePasskey({ serverURL: c.serverURL, token: c.token, email: state.account, password: password.value, id: removing.value.id })
       keys.value = keys.value.filter(k => k.id !== removing.value!.id)
-      done.value = 'Passkey removida. As sessões abertas com ela foram encerradas.'
+      done.value = t('Passkey removida. As sessões abertas com ela foram encerradas.')
     } else {
       await registerPasskey({ serverURL: c.serverURL, token: c.token, email: state.account, password: password.value,
         label: label.value, signal: abort.signal })
-      done.value = 'Passkey cadastrada. Na próxima entrada, escolha Entrar com passkey.'
+      done.value = t('Passkey cadastrada. Na próxima entrada, escolha Entrar com passkey.')
       await refresh()
     }
     adding.value = false; removing.value = null
@@ -64,36 +65,36 @@ async function submit(event: SubmitEvent) {
   finally { password.value = ''; busy.value = false }
 }
 
-function date(value?: string) { return value ? new Date(value).toLocaleDateString('pt-BR') : 'Ainda não utilizada' }
+function date(value?: string) { return value ? new Date(value).toLocaleDateString(intlLocale()) : t('Ainda não utilizada') }
 </script>
 
 <template>
   <section class="passkey-card" aria-labelledby="passkey-title">
     <div class="passkey-heading">
       <span class="passkey-emblem"><AppIcon name="key" :size="23" /></span>
-      <div><h3 id="passkey-title">Passkeys</h3><p>Entre com sua biometria ou PIN, mantendo seus dados protegidos.</p></div>
+      <div><h3 id="passkey-title">{{ t('Passkeys') }}</h3><p>{{ t('Entre com sua biometria ou PIN, mantendo seus dados protegidos.') }}</p></div>
     </div>
-    <div v-if="!loaded" class="dim" role="status">Verificando disponibilidade…</div>
-    <p v-else-if="!available" class="dim">O cadastro de passkeys não está disponível neste navegador ou instalação. A entrada por senha continua disponível.</p>
+    <div v-if="!loaded" class="dim" role="status">{{ t('Verificando disponibilidade…') }}</div>
+    <p v-else-if="!available" class="dim">{{ t('O cadastro de passkeys não está disponível neste navegador ou instalação. A entrada por senha continua disponível.') }}</p>
     <ul v-if="keys.length" class="passkey-list">
       <li v-for="key in keys" :key="key.id">
-        <div><strong>{{ key.label }}</strong><small>Criada em {{ date(key.created_at) }} · {{ key.last_used_at ? 'Último uso em ' + date(key.last_used_at) : 'Ainda não utilizada' }}</small></div>
-        <button class="ghost small" type="button" :disabled="busy" :aria-label="'Remover passkey ' + key.label" @click="edit(key)">Remover</button>
+        <div><strong>{{ key.label }}</strong><small>{{ t('Criada em {v0} · {v1}', { v0: date(key.created_at), v1: key.last_used_at ? t('Último uso em {date}', { date: date(key.last_used_at) }) : t('Ainda não utilizada') }) }}</small></div>
+        <button class="ghost small" type="button" :disabled="busy" :aria-label="t('Remover passkey ') + key.label" @click="edit(key)">{{ t('Remover') }}</button>
       </li>
     </ul>
-    <p v-else-if="loaded && available && !adding" class="dim">Nenhuma passkey cadastrada. Adicione sua primeira para entrar com mais facilidade.</p>
+    <p v-else-if="loaded && available && !adding" class="dim">{{ t('Nenhuma passkey cadastrada. Adicione sua primeira para entrar com mais facilidade.') }}</p>
     <div v-if="error" class="alert" role="alert">{{ error }}</div>
     <div v-if="done" class="passkey-success" role="status">{{ done }}</div>
     <form v-if="adding || removing" class="passkey-form" name="wappie-passkey" autocomplete="on" method="post" @submit.prevent="submit">
       <input name="username" :value="state.account" type="email" autocomplete="username" class="account-identifier" readonly tabindex="-1" aria-hidden="true" />
-      <template v-if="adding"><label for="passkey-label">Nome da passkey</label><input id="passkey-label" name="passkey-label" v-model="label" required maxlength="80" autocomplete="off" placeholder="Ex.: Meu iPhone" /></template>
-      <p v-if="removing" class="dim">Remover “{{ removing.label }}”? Você poderá continuar entrando com a senha ou outra passkey.</p>
-      <label for="passkey-password">Confirme sua senha atual</label>
+      <template v-if="adding"><label for="passkey-label">{{ t('Nome da passkey') }}</label><input id="passkey-label" name="passkey-label" v-model="label" required maxlength="80" autocomplete="off" :placeholder="t('Ex.: Meu iPhone')" /></template>
+      <p v-if="removing" class="dim">{{ t('Remover “{v0}”? Você poderá continuar entrando com a senha ou outra passkey.', { v0: removing.label }) }}</p>
+      <label for="passkey-password">{{ t('Confirme sua senha atual') }}</label>
       <PasswordInput id="passkey-password" name="password" v-model="password" required autocomplete="current-password" :disabled="busy" />
-      <p v-if="adding" class="dim">Confirme sua identidade para vincular a passkey à sua conta. Seu dispositivo pode solicitar duas confirmações.</p>
-      <div class="passkey-buttons"><button type="submit" class="primary small" :disabled="busy">{{ busy ? 'Aguarde…' : removing ? 'Remover passkey' : 'Continuar no dispositivo' }}</button><button class="ghost small" type="button" :disabled="busy" @click="cancel">Cancelar</button></div>
+      <p v-if="adding" class="dim">{{ t('Confirme sua identidade para vincular a passkey à sua conta. Seu dispositivo pode solicitar duas confirmações.') }}</p>
+      <div class="passkey-buttons"><button type="submit" class="primary small" :disabled="busy">{{ busy ? t('Aguarde…') : removing ? t('Remover passkey') : t('Continuar no dispositivo') }}</button><button class="ghost small" type="button" :disabled="busy" @click="cancel">{{ t('Cancelar') }}</button></div>
     </form>
-    <button v-else-if="available" type="button" class="ghost small passkey-add" @click="edit()"><AppIcon name="plus" :size="17" /> Adicionar passkey</button>
+    <button v-else-if="available" type="button" class="ghost small passkey-add" @click="edit()"><AppIcon name="plus" :size="17" /> {{ t('Adicionar passkey') }}</button>
   </section>
 </template>
 

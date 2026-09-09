@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/access"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -71,7 +73,7 @@ func (s *session) handleDeviceInfo(ctx context.Context, f Frame) {
 		return
 	}
 	tenant := s.tenantID()
-	dev, err := s.srv.cfg.Devices.Get(ctx, tenant, ref.DeviceID)
+	dev, err := s.srv.cfg.Devices.Resolve(ctx, tenant, ref.DeviceID)
 	if err != nil {
 		// Row-level security answers a cross-tenant lookup with "not found",
 		// so this both authorises and validates in one step.
@@ -79,7 +81,7 @@ func (s *session) handleDeviceInfo(ctx context.Context, f Frame) {
 		return
 	}
 
-	detail := DeviceDetail{Device: s.toDeviceInfo(dev), Epoch: dev.Epoch}
+	detail := DeviceDetail{Device: s.toDeviceInfo(ctx, dev), Epoch: dev.Epoch}
 
 	tenantUUID, err := uuid.Parse(tenant)
 	if err != nil {
@@ -194,18 +196,32 @@ func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 	}
 	var notes []string
 
-	if req.Unlink && s.srv.cfg.Registry != nil {
-		if running, ok := s.srv.cfg.Registry.Get(dev.ID); ok {
-			if err := running.Client().Logout(ctx); err != nil {
-				notes = append(notes, "WhatsApp did not accept the unlink ("+
-					err.Error()+"); remove it under Linked devices on the phone")
-			} else {
+	// Persist the pause before stopping or reconnecting for logout, so the
+	// background supervisor cannot claim a device being removed.
+	if err := s.srv.cfg.Devices.SetPaused(ctx, tenant, dev.ID, true); err != nil {
+		s.replyError(f.ReqID, ErrCodeInternal, "could not prepare the device for removal")
+		return
+	}
+	s.srv.cancelDevicePairing(tenant, dev.ID)
+	if req.Unlink && s.srv.cfg.Registry != nil && dev.Identity.Known() {
+		unlinkCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		running, held := s.srv.cfg.Registry.Get(dev.ID)
+		if !held {
+			// A paused number still has a WhatsApp session. Reconnect briefly to
+			// remove that session on the phone instead of silently leaving it linked.
+			running, err = s.srv.cfg.Registry.StartExisting(unlinkCtx, tenant, dev.ID,
+				wa.ReceiptPolicy{Mode: wa.ModePassive}, dev.Identity.PN, dev.Identity.LID)
+		}
+		if running != nil && err == nil {
+			if logoutErr := running.Client().Logout(unlinkCtx); logoutErr == nil {
 				out.Unlinked = true
+			} else {
+				s.log.Warn("WhatsApp logout was not acknowledged", "device", dev.ID, "error", logoutErr)
 			}
-		} else {
-			notes = append(notes,
-				"the device was not connected, so it could not be unlinked; "+
-					"remove it under Linked devices on the phone")
+		}
+		cancel()
+		if !out.Unlinked {
+			notes = append(notes, "WhatsApp could not confirm disconnection; remove this session under Linked devices on the phone")
 		}
 	}
 
@@ -617,11 +633,14 @@ func (s *session) replyReaders(ctx context.Context, reqID string,
 
 // toDeviceInfo converts a row for the wire, filling in what only this process
 // knows: whether the device is actually running here.
-func (s *session) toDeviceInfo(d store.Device) DeviceInfo {
+func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 	info := DeviceInfo{
 		ID: d.ID, Label: d.Label, PushName: d.Identity.PushName,
 		Status: string(d.Status), StatusReason: d.StatusReason,
-		ReceiptMode: string(d.ReceiptMode), CreatedAt: d.CreatedAt,
+		ReceiptMode: string(d.ReceiptMode), CreatedAt: d.CreatedAt, Paused: d.Paused,
+	}
+	if d.Identity.Known() {
+		info.ProfileKey = d.Identity.Primary().ToNonAD().String()
 	}
 	if !d.Identity.LID.IsEmpty() {
 		info.LID = d.Identity.LID.String()
@@ -632,6 +651,17 @@ func (s *session) toDeviceInfo(d store.Device) DeviceInfo {
 	if !d.LastConnectedAt.IsZero() {
 		at := d.LastConnectedAt
 		info.LastConnectedAt = &at
+	}
+	who := s.actor()
+	if tenant, err := uuid.Parse(d.TenantID); err == nil {
+		if device, err := uuid.Parse(d.ID); err == nil {
+			allowed, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionManage, s.srv.cfg.Keys, s.accountStore())
+			if err != nil {
+				s.log.Warn("could not load device management permission", "device", d.ID, "error", err)
+			} else {
+				info.CanManage = allowed
+			}
+		}
 	}
 	info.Running = s.running(d.ID)
 	return info
@@ -647,4 +677,21 @@ func (s *session) running(deviceID string) bool {
 	}
 	_, ok := s.srv.cfg.Registry.Get(deviceID)
 	return ok
+}
+
+// Cancel a pending pairing even when another browser initiated it.
+func (s *Server) cancelDevicePairing(tenant, device string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for sess := range s.sessions {
+		if sess.tenantID() != tenant {
+			continue
+		}
+		sess.pairMu.Lock()
+		pair := sess.pairings[device]
+		sess.pairMu.Unlock()
+		if pair != nil {
+			pair.Cancel()
+		}
+	}
 }

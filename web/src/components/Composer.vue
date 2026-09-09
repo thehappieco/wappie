@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import { canSend, noMarks, sendMedia, sendText, state, type Marks } from '../state/archive'
@@ -81,15 +82,15 @@ const canViewOnce = computed(() => attached.value?.plan.viewOnceAllowed ?? false
 /** Set when the flags say something, so the disclosure can say so while closed. */
 const marksSummary = computed(() => {
   const said: string[] = []
-  if (marks.value.forwarded) said.push(marks.value.score >= 5 ? 'muitas vezes' : 'encaminhada')
-  if (marks.value.viewOnce && canViewOnce.value) said.push('ver uma vez')
+  if (marks.value.forwarded) said.push(marks.value.score >= 5 ? t('muitas vezes') : t('encaminhada'))
+  if (marks.value.viewOnce && canViewOnce.value) said.push(t('ver uma vez'))
   // The timer is a mark like the others and belongs in the closed summary: it
   // is the one that changes what happens to the message on somebody else's
   // phone, and leaving it hidden is how a message goes out with a prazo
   // nobody meant to set.
   if (marks.value.expiration !== undefined) {
     said.push(
-      marks.value.expiration === 0 ? 'sem prazo' : `prazo ${timerLabel(marks.value.expiration)}`,
+      marks.value.expiration === 0 ? t('sem prazo') : t('prazo {duration}', { duration: timerLabel(marks.value.expiration) }),
     )
   }
   return said.join(' · ')
@@ -102,10 +103,10 @@ const marksSummary = computed(() => {
  * only one of them is something the person can act on here.
  */
 const reason = computed(() => {
-  if (state.unreadable) return 'Sua conta não tem a chave deste aparelho.'
-  if (!state.connected) return 'Sem conexão com o servidor.'
+  if (state.unreadable) return t('Sua conta não tem a chave deste aparelho.')
+  if (!state.connected) return t('Sem conexão com o servidor.')
   const device = state.devices.find((d) => d.id === state.deviceID)
-  if (!device?.running) return 'Este aparelho não está conectado ao WhatsApp agora.'
+  if (!device?.running) return t('Este aparelho não está conectado ao WhatsApp agora.')
   return ''
 })
 
@@ -193,11 +194,11 @@ function take(file: File) {
   // as a new message.
   if (props.editing) emit('cancel')
   if (file.size === 0) {
-    attachError.value = `${file.name} está vazio.`
+    attachError.value = t('{v0} está vazio.', { v0: file.name })
     return
   }
   if (file.size > MAX_BYTES) {
-    attachError.value = `${file.name} tem ${bytes(file.size)}; o limite é ${bytes(MAX_BYTES)}.`
+    attachError.value = t('{v0} tem {v1}; o limite é {v2}.', { v0: file.name, v1: bytes(file.size), v2: bytes(MAX_BYTES) })
     return
   }
   attachError.value = ''
@@ -276,7 +277,7 @@ async function startRecording() {
     // rather than a failure. Saying nothing looks like a broken button.
     attachError.value =
       err instanceof Error && err.name === 'NotAllowedError'
-        ? 'O navegador não liberou o microfone para esta página.'
+        ? t('O navegador não liberou o microfone para esta página.')
         : err instanceof Error
           ? err.message
           : String(err)
@@ -316,8 +317,8 @@ async function stopRecording() {
   // not a voice note: sending it as one produces a bubble some phones refuse to
   // play. So it is offered as what it is.
   attachError.value =
-    'Este navegador grava em um formato que o WhatsApp não usa para mensagem de voz. ' +
-    'Dá para mandar como áudio.'
+    t('Este navegador grava em um formato que o WhatsApp não usa para mensagem de voz. ') +
+    t('Dá para mandar como áudio.')
   picked.value = taken.file
 }
 
@@ -417,23 +418,23 @@ onBeforeUnmount(stopTyping)
         <div class="quoting-who">{{ quoted.senderName }}</div>
         <div class="quoting-body">{{ quoted.body || '—' }}</div>
       </div>
-      <button class="icon-btn" type="button" title="Cancelar resposta" aria-label="Cancelar resposta" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
+      <button class="icon-btn" type="button" :title="t('Cancelar resposta')" :aria-label="t('Cancelar resposta')" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <div v-if="target" class="quoting editing-chip">
       <div class="grow">
-        <div class="quoting-who">Editando uma mensagem enviada</div>
+        <div class="quoting-who">{{ t('Editando uma mensagem enviada') }}</div>
         <div class="quoting-body">
-          <template v-if="minutesLeft > 0">{{ minutesLeft }} min restantes</template>
-          <template v-else>a janela de vinte minutos já passou</template>
+          <template v-if="minutesLeft > 0">{{ t('{v0} min restantes', { v0: minutesLeft }) }}</template>
+          <template v-else>{{ t('a janela de vinte minutos já passou') }}</template>
         </div>
       </div>
-      <button class="icon-btn" type="button" title="Cancelar edição" aria-label="Cancelar edição" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
+      <button class="icon-btn" type="button" :title="t('Cancelar edição')" :aria-label="t('Cancelar edição')" @click="emit('cancel')"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <AttachSheet v-if="picked" :file="picked" @choose="choose" @cancel="clearAttachment" />
 
-    <div v-if="measuring" class="composer-off">Lendo o arquivo…</div>
+    <div v-if="measuring" class="composer-off">{{ t('Lendo o arquivo…') }}</div>
 
     <!-- What is about to go, as it will go. The preview is the file itself,
          already resized if it is going to be resized, so what is on screen is
@@ -443,7 +444,7 @@ onBeforeUnmount(stopTyping)
         v-if="attached.previewKind === 'image'"
         class="attached-thumb"
         :src="attached.previewURL"
-        alt="prévia"
+        :alt="t('prévia')"
       />
       <video
         v-else-if="attached.previewKind === 'video'"
@@ -457,14 +458,13 @@ onBeforeUnmount(stopTyping)
         <div class="quoting-who">{{ attached.plan.label }}</div>
         <div class="quoting-body">
           {{ attached.fileName }} · {{ bytes(attached.blob.size) }}
-          <template v-if="attached.width"> · {{ attached.width }}×{{ attached.height }}</template>
-          <template v-if="attached.seconds"> · {{ attached.seconds }}s</template>
+          <template v-if="attached.width"> {{ t('· {v0}×{v1}', { v0: attached.width, v1: attached.height }) }}</template>
+          <template v-if="attached.seconds"> {{ t('· {v0}s', { v0: attached.seconds }) }}</template>
         </div>
-        <div v-if="attached.missing.length" class="quoting-body sealed">
-          não foi possível ler: {{ attached.missing.join(', ') }}
+        <div v-if="attached.missing.length" class="quoting-body sealed"> {{ t('não foi possível ler: {v0}', { v0: attached.missing.join(', ') }) }}
         </div>
       </div>
-      <button class="icon-btn" type="button" title="Tirar o anexo" aria-label="Tirar o anexo" @click="clearAttachment"><AppIcon name="close" :size="20" /></button>
+      <button class="icon-btn" type="button" :title="t('Tirar o anexo')" :aria-label="t('Tirar o anexo')" @click="clearAttachment"><AppIcon name="close" :size="20" /></button>
     </div>
 
     <div v-if="attachError" class="alert">{{ attachError }}</div>
@@ -486,9 +486,9 @@ onBeforeUnmount(stopTyping)
     <div v-else-if="recording" class="composer-row recording-row">
       <span class="rec-dot" />
       <span class="rec-time">{{ clock(recordedFor) }}</span>
-      <span class="grow rec-note">gravando — o microfone está aberto</span>
-      <button class="icon-btn" type="button" title="Descartar gravação" aria-label="Descartar gravação" @click="cancelRecording"><AppIcon name="trash" /></button>
-      <button class="primary send" type="button" title="Parar e anexar gravação" aria-label="Parar e anexar gravação" @click="stopRecording"><AppIcon name="stop" :size="20" /></button>
+      <span class="grow rec-note">{{ t('gravando — o microfone está aberto') }}</span>
+      <button class="icon-btn" type="button" :title="t('Descartar gravação')" :aria-label="t('Descartar gravação')" @click="cancelRecording"><AppIcon name="trash" /></button>
+      <button class="primary send" type="button" :title="t('Parar e anexar gravação')" :aria-label="t('Parar e anexar gravação')" @click="stopRecording"><AppIcon name="stop" :size="20" /></button>
     </div>
 
     <form v-else class="composer-row" @submit.prevent="submit">
@@ -504,8 +504,8 @@ onBeforeUnmount(stopTyping)
         v-if="!target"
         class="icon-btn attach"
         type="button"
-        title="Anexar um arquivo"
-        aria-label="Anexar um arquivo"
+        :title="t('Anexar um arquivo')"
+        :aria-label="t('Anexar um arquivo')"
         @click="browse"
       >
         <AppIcon name="paperclip" />
@@ -518,12 +518,12 @@ onBeforeUnmount(stopTyping)
         :placeholder="
           attached
             ? captionAllowed
-              ? 'Legenda (opcional)'
-              : `${attached.plan.label} não leva legenda`
-            : 'Mensagem'
+              ? t('Legenda (opcional)')
+              : t('{v0} não leva legenda', { v0: attached.plan.label })
+            : t('Mensagem')
         "
         :disabled="Boolean(attached) && !captionAllowed"
-        :aria-label="attached && captionAllowed ? 'Legenda' : 'Escreva uma mensagem'"
+        :aria-label="attached && captionAllowed ? t('Legenda') : t('Escreva uma mensagem')"
         @keydown="onKey"
         @paste="onPaste"
       />
@@ -532,8 +532,8 @@ onBeforeUnmount(stopTyping)
         class="icon-btn attach"
         type="button"
         :disabled="opening"
-        title="Gravar uma mensagem de voz"
-        aria-label="Gravar uma mensagem de voz"
+        :title="t('Gravar uma mensagem de voz')"
+        :aria-label="t('Gravar uma mensagem de voz')"
         @click="startRecording"
       >
         <AppIcon name="microphone" />
@@ -542,8 +542,8 @@ onBeforeUnmount(stopTyping)
         class="icon-btn detail"
         :class="{ on: showMarks || marksSummary }"
         type="button"
-        :title="marksSummary || 'Detalhes desta mensagem'"
-        aria-label="Detalhes desta mensagem"
+        :title="marksSummary || t('Detalhes desta mensagem')"
+        :aria-label="t('Detalhes desta mensagem')"
         :aria-expanded="showMarks"
         @click="showMarks = !showMarks"
       >
@@ -553,8 +553,8 @@ onBeforeUnmount(stopTyping)
         class="primary send"
         type="submit"
         :disabled="!sendable"
-        :title="target ? 'Salvar' : 'Enviar'"
-        :aria-label="target ? 'Salvar edição' : 'Enviar mensagem'"
+        :title="target ? t('Salvar') : t('Enviar')"
+        :aria-label="target ? t('Salvar edição') : t('Enviar mensagem')"
       >
         <AppIcon :name="target ? 'check' : 'send'" />
       </button>

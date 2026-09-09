@@ -1,29 +1,34 @@
 // Rendering helpers.
 
-const time = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' })
-const dayLong = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })
-const dayShort = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit' })
-const full = new Intl.DateTimeFormat('pt-BR', {
-  dateStyle: 'short',
-  timeStyle: 'medium',
-})
+import { t, intlLocale } from './i18n'
+
+const formatters = new Map<string, Intl.DateTimeFormat>()
+function dateFormat(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = intlLocale() + JSON.stringify(options)
+  if (!formatters.has(key)) formatters.set(key, new Intl.DateTimeFormat(intlLocale(), options))
+  return formatters.get(key)!
+}
+const time = () => dateFormat({ hour: '2-digit', minute: '2-digit' })
+const dayLong = () => dateFormat({ day: '2-digit', month: 'long', year: 'numeric' })
+const dayShort = () => dateFormat({ day: '2-digit', month: '2-digit' })
+const full = () => dateFormat({ dateStyle: 'short', timeStyle: 'medium' })
 
 export function hhmm(at: Date | undefined): string {
-  return at ? time.format(at) : ''
+  return at ? time().format(at) : ''
 }
 
 export function stamp(at: Date | undefined): string {
-  return at ? full.format(at) : '—'
+  return at ? full().format(at) : '—'
 }
 
 export function dayLabel(at: Date | undefined): string {
-  if (!at) return 'sem data'
+  if (!at) return t('sem data')
   const today = startOfDay(new Date())
   const that = startOfDay(at)
   const days = Math.round((today.getTime() - that.getTime()) / 86_400_000)
-  if (days === 0) return 'hoje'
-  if (days === 1) return 'ontem'
-  return dayLong.format(at)
+  if (days === 0) return t('hoje')
+  if (days === 1) return t('ontem')
+  return dayLong().format(at)
 }
 
 /** listStamp is the right-hand column of the chat list: time today, date before. */
@@ -32,9 +37,9 @@ export function listStamp(at: Date | undefined): string {
   const today = startOfDay(new Date())
   const that = startOfDay(at)
   const days = Math.round((today.getTime() - that.getTime()) / 86_400_000)
-  if (days === 0) return time.format(at)
-  if (days === 1) return 'ontem'
-  return dayShort.format(at)
+  if (days === 0) return time().format(at)
+  if (days === 1) return t('ontem')
+  return dayShort().format(at)
 }
 
 export function sameDay(a: Date | undefined, b: Date | undefined): boolean {
@@ -55,21 +60,21 @@ function startOfDay(at: Date): Date {
 export function since(at: Date | undefined): string {
   if (!at) return ''
   const seconds = Math.max(0, Math.round((Date.now() - at.getTime()) / 1000))
-  if (seconds < 60) return 'agora há pouco'
+  if (seconds < 60) return t('agora há pouco')
   const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `há ${minutes} min`
+  if (minutes < 60) return new Intl.RelativeTimeFormat(intlLocale(), { style: 'short' }).format(-minutes, 'minute')
   const hours = Math.round(minutes / 60)
-  if (hours < 24) return `há ${hours} h`
+  if (hours < 24) return new Intl.RelativeTimeFormat(intlLocale(), { style: 'short' }).format(-hours, 'hour')
   const days = Math.round(hours / 24)
-  if (days < 30) return `há ${days} d`
-  return dayLong.format(at)
+  if (days < 30) return new Intl.RelativeTimeFormat(intlLocale(), { style: 'short' }).format(-days, 'day')
+  return dayLong().format(at)
 }
 
 /** count formats a number the way a Brazilian reader expects it. */
-const decimal = new Intl.NumberFormat('pt-BR')
+const decimal = () => new Intl.NumberFormat(intlLocale())
 
 export function count(n: number | undefined): string {
-  return decimal.format(n ?? 0)
+  return decimal().format(n ?? 0)
 }
 
 export function bytes(n: number): string {
@@ -81,7 +86,7 @@ export function bytes(n: number): string {
     value /= 1024
     unit += 1
   }
-  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`
+  return `${value < 10 && unit > 0 ? new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 1 }).format(value) : Math.round(value)} ${units[unit]}`
 }
 
 export function duration(seconds: number): string {
@@ -99,52 +104,52 @@ export function typeLabel(type: string): string {
       // bubble whose body is already on screen does not need naming.
       return ''
     case 'image':
-      return 'foto'
+      return t('foto')
     case 'video':
-      return 'vídeo'
+      return t('vídeo')
     case 'ptv':
-      return 'vídeo redondo'
+      return t('vídeo redondo')
     case 'audio':
-      return 'áudio'
+      return t('áudio')
     case 'ptt':
-      return 'mensagem de voz'
+      return t('mensagem de voz')
     case 'document':
-      return 'documento'
+      return t('documento')
     case 'sticker':
-      return 'figurinha'
+      return t('figurinha')
     case 'location':
-      return 'localização'
+      return t('localização')
     case 'live_location':
-      return 'localização em tempo real'
+      return t('localização em tempo real')
     case 'contact':
     case 'contact_array':
-      return 'contato'
+      return t('contato')
     case 'poll':
-      return 'enquete'
+      return t('enquete')
     case 'poll_vote':
-      return 'voto'
+      return t('voto')
     case 'event':
-      return 'evento'
+      return t('evento')
     case 'group_invite':
-      return 'convite de grupo'
+      return t('convite de grupo')
     case 'reaction':
-      return 'reação'
+      return t('reação')
     case 'interactive':
-      return 'mensagem interativa'
+      return t('mensagem interativa')
     case 'buttons':
-      return 'mensagem com botões'
+      return t('mensagem com botões')
     case 'list':
-      return 'lista de opções'
+      return t('lista de opções')
     case 'button_reply':
-      return 'resposta por botão'
+      return t('resposta por botão')
     case 'placeholder':
-      return 'mensagem só no celular'
+      return t('mensagem só no celular')
     case 'protocol':
-      return 'aviso do sistema'
+      return t('aviso do sistema')
     case 'unsupported':
-      return 'tipo não suportado'
+      return t('tipo não suportado')
     case 'undecryptable':
-      return 'não foi possível decifrar'
+      return t('não foi possível decifrar')
     default:
       return type
   }
@@ -153,11 +158,11 @@ export function typeLabel(type: string): string {
 export function kindLabel(kind: string): string {
   switch (kind) {
     case 'edit':
-      return 'editou'
+      return t('editou')
     case 'delete':
-      return 'apagou'
+      return t('apagou')
     case 'reaction':
-      return 'reagiu'
+      return t('reagiu')
     default:
       return ''
   }

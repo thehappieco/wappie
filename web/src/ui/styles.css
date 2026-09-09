@@ -2,7 +2,7 @@
    would be more code than the whole client. */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
   --bg: #f0f2f5;
   --bg-panel: #ffffff;
@@ -17,10 +17,10 @@
 
   --text: #111b21;
   --text-dim: #667781;
-  --text-faint: #8696a0;
+  --text-faint: #657983;
   --line: #e9edef;
 
-  --accent: #00a884;
+  --accent: #00836a;
   --accent-dim: #d1f4cc;
   --danger: #e5484d;
   --warn: #d4a017;
@@ -38,86 +38,43 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111b21;
-    --bg-panel: #111b21;
-    --bg-raised: #202c33;
-    --bg-hover: #202c33;
-    --bg-active: #2a3942;
-    --bg-input: #2a3942;
-
-    --bubble-in: #202c33;
-    --bubble-out: #005c4b;
-    --canvas: #0b141a;
-
-    --text: #e9edef;
-    --text-dim: #8696a0;
-    --text-faint: #667781;
-    --line: #222d34;
-
-    --accent: #00a884;
-    --accent-dim: #103d33;
-  }
-}
-
-/* Discreet mode, as a palette.
- *
- * The switch turns off everything this account emits — read receipts, typing
- * notifications, presence. None of that is visible from inside the app, and a
- * posture you cannot see is a posture you forget you are in: the failure mode
- * is sending a read receipt you meant to withhold because you thought the
- * switch was on. So the whole surface goes quiet with it, and being in it is
- * unmistakable at a glance.
- *
- * Tokens only, which is what makes this eleven declarations instead of a second
- * stylesheet. Every colour in this file is named except two whites on a black
- * veil over a photograph, and one hsl() computed per person, handled below.
- *
- * The attribute selector is what makes this win. `:root` in the dark media
- * query has the same specificity as `:root`, so those two are settled by source
- * order; `:root[data-theme]` outranks both, in either system setting, wherever
- * it sits. color-scheme is set explicitly for the same reason — scrollbars and
- * form controls follow it, not the tokens.
- */
-:root[data-theme='quiet'] {
+:root[data-theme='dark'] {
   color-scheme: dark;
+  --bg: #111b21;
+  --bg-panel: #111b21;
+  --bg-raised: #202c33;
+  --bg-hover: #202c33;
+  --bg-active: #2a3942;
+  --bg-input: #2a3942;
 
-  --bg: #0a0a0b;
-  --bg-panel: #0a0a0b;
-  --bg-raised: #17181a;
-  --bg-hover: #17181a;
-  --bg-active: #202225;
-  --bg-input: #17181a;
+  --bubble-in: #202c33;
+  --bubble-out: #005c4b;
+  --canvas: #0b141a;
 
-  /* Both bubbles grey. The green outgoing bubble is the loudest thing on the
-     screen and the one that says "this is WhatsApp, behaving normally". */
-  --bubble-in: #17181a;
-  --bubble-out: #24262a;
-  --canvas: #060607;
+  --text: #e9edef;
+  --text-dim: #8696a0;
+  --text-faint: #94a5ae;
+  --line: #222d34;
 
-  --text: #d6d7d9;
-  --text-dim: #85888d;
-  --text-faint: #5f6367;
-  --line: #1e1f22;
-
-  /* Desaturated, not merely darkened, and chosen to clear 4.5:1 against white
-     text on top and 3:1 as a glyph against the background — the accent is both
-     a filled button and the colour of a tick. */
-  --accent: #55736b;
-  --accent-dim: #1b2320;
-  --danger: #a85055;
-  --warn: #8d7740;
+  --accent: #00a884;
+  --accent-dim: #103d33;
+  --on-accent: #062b22;
 }
 
-/* The one colour in this file that is computed rather than named: a hue per
-   person, so two unnamed strangers in a group get different badges. Saturation
-   is what carries that, so it is dropped rather than the rule replaced — the
-   badges stay distinguishable by lightness and stop being the brightest thing
-   on a grey screen. */
-:root[data-theme='quiet'] .avatar.tinted {
-  background: hsl(var(--hue) 6% 20%);
-  color: hsl(var(--hue) 10% 72%);
+/* Privacy state is independent of the chosen appearance. Its visible labels,
+   icon and muted outgoing bubbles distinguish it in both palettes. */
+:root[data-incognito='true'] {
+  --bubble-out: #e5eeeb;
+}
+:root[data-theme='dark'][data-incognito='true'] {
+  --bubble-out: #293b36;
+}
+:root[data-incognito='true'] .quiet-label {
+  background: var(--accent-dim);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  padding: 4px 8px;
+  border-radius: 999px;
 }
 
 * {
@@ -1638,11 +1595,9 @@ select {
   color: hsl(var(--hue) 45% 28%);
 }
 
-@media (prefers-color-scheme: dark) {
-  .avatar.tinted {
-    background: hsl(var(--hue) 30% 26%);
-    color: hsl(var(--hue) 45% 82%);
-  }
+:root[data-theme='dark'] .avatar.tinted {
+  background: hsl(var(--hue) 30% 26%);
+  color: hsl(var(--hue) 45% 82%);
 }
 
 /* --- the composer ------------------------------------------------------- */
@@ -1793,11 +1748,7 @@ select {
   overflow: hidden;
 }
 
-@media (prefers-color-scheme: dark) {
-  .quote {
-    background: rgba(255, 255, 255, 0.06);
-  }
-}
+.quote { background: color-mix(in srgb, var(--text) 6%, transparent); }
 
 .quote-who {
   font-size: 12.5px;

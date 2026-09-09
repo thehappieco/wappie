@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
+import AppearanceMenu from './AppearanceMenu.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { AuthError, recover, registerService, signIn, signUp } from '../api/auth'
@@ -75,13 +77,13 @@ async function openWithPasskey() {
 const title = computed(() => {
   switch (mode.value) {
     case 'sign-up':
-      return 'Criar conta'
+      return t('Criar conta')
     case 'recover':
-      return 'Recuperar a conta'
+      return t('Recuperar a conta')
     case 'service':
-      return 'Registrar um sistema'
+      return t('Registrar um sistema')
     default:
-      return 'Entrar'
+      return t('Entrar')
   }
 })
 
@@ -146,8 +148,8 @@ async function doSignIn() {
       // Signing in worked; there is simply nothing granted yet. Saying so here
       // beats an empty conversation list that looks broken.
       error.value =
-        'Entrou, mas esta conta ainda não tem acesso a nenhum aparelho. ' +
-        'Quem parear um aparelho precisa conceder o acesso a você.'
+        t('Entrou, mas esta conta ainda não tem acesso a nenhum aparelho. ') +
+        t('Quem parear um aparelho precisa conceder o acesso a você.')
     }
     emit('opened', fromAccount(signedIn, serverURL.value))
   } catch (err) {
@@ -162,7 +164,7 @@ async function doSignUp() {
   error.value = ''
   try {
     if (password.value !== confirm.value) {
-      throw new AuthError('password', 'as senhas não conferem')
+      throw new AuthError('password', t('as senhas não conferem'))
     }
     const result = await signUp({
       serverURL: serverURL.value,
@@ -195,7 +197,7 @@ async function doRecover() {
   error.value = ''
   try {
     if (password.value !== confirm.value) {
-      throw new AuthError('password', 'as senhas não conferem')
+      throw new AuthError('password', t('as senhas não conferem'))
     }
     const result = await recover({
       serverURL: serverURL.value,
@@ -239,29 +241,21 @@ function describe(err: unknown): string {
   <div class="unlock">
     <!-- The recovery code. Nothing else is on screen while it is. -->
     <div class="unlock-card" v-if="recoveryCode">
-      <h1>Guarde este código</h1>
-      <p class="sub">
-        Use este código para recuperar sua conta se perder a senha e suas passkeys. Ele não pode ser mostrado de novo.
-      </p>
+      <h1>{{ t('Guarde este código') }}</h1>
+      <p class="sub"> {{ t('Use este código para recuperar sua conta se perder a senha e suas passkeys. Ele não pode ser mostrado de novo.') }} </p>
 
       <div class="recovery">{{ recoveryCode }}</div>
 
-      <button class="ghost" style="width: 100%; margin-bottom: 14px" @click="copyCode">
-        Copiar
-      </button>
+      <button class="ghost" style="width: 100%; margin-bottom: 14px" @click="copyCode"> {{ t('Copiar') }} </button>
 
       <div class="field">
         <label>
-          <input type="checkbox" v-model="acknowledged" style="width: auto; margin-right: 8px" />
-          Anotei em um lugar seguro
-        </label>
+          <input type="checkbox" v-model="acknowledged" style="width: auto; margin-right: 8px" /> {{ t('Anotei em um lugar seguro') }} </label>
       </div>
 
-      <button class="primary" :disabled="!acknowledged" @click="enter">Continuar</button>
+      <button class="primary" :disabled="!acknowledged" @click="enter">{{ t('Continuar') }}</button>
 
-      <p class="note">
-        Guarde uma cópia em um lugar seguro, separado dos dispositivos que você usa para entrar.
-      </p>
+      <p class="note"> {{ t('Guarde uma cópia em um lugar seguro, separado dos dispositivos que você usa para entrar.') }} </p>
     </div>
 
     <div class="unlock-card" v-else-if="mode === 'pasted-key'">
@@ -273,70 +267,56 @@ function describe(err: unknown): string {
     </div>
 
     <div class="unlock-card" v-else-if="registered">
-      <h1>Sistema registrado</h1>
+      <h1>{{ t('Sistema registrado') }}</h1>
       <p class="sub">
-        <strong>{{ registered }}</strong> agora existe nesta instalação, com a chave pública que você
-        colou. Ele ainda não lê nada: peça a um administrador que conceda os aparelhos a ele no
-        console e gere uma chave de API que <em>aja como</em> essa conta. As concessões abrem só com
-        a chave privada que ficou no sistema.
-      </p>
-      <button class="primary" @click="((registered = ''), switchTo('sign-in'))">Voltar</button>
+        <strong>{{ registered }}</strong> {{ t('agora existe nesta instalação, com a chave pública que você colou. Ele ainda não lê nada: peça a um administrador que conceda os aparelhos a ele no console e gere uma chave de API que') }} <em>{{ t('aja como') }}</em> {{ t('essa conta. As concessões abrem só com a chave privada que ficou no sistema.') }} </p>
+      <button class="primary" @click="((registered = ''), switchTo('sign-in'))">{{ t('Voltar') }}</button>
     </div>
 
     <div class="unlock-card" v-else>
-      <div class="auth-wordmark">wappie<span>●</span></div>
+      <div class="auth-appearance"><AppearanceMenu /></div>
+      <div class="auth-wordmark">{{ t('wappie') }}<span>●</span></div>
       <h1>{{ title }}</h1>
-      <p class="sub" v-if="mode === 'service'">
-        Um sistema não tem senha: tem um par de chaves. Gere-o com <code>wsctl service-key</code>,
-        guarde a metade privada onde o sistema guarda segredos, e cole aqui a pública. O servidor
-        sela para ela as chaves dos aparelhos que um administrador conceder.
-      </p>
-      <p class="sub" v-else-if="mode === 'recover'">
-        O código de recuperação abre a mesma chave que a senha abria. Ele é gasto ao ser digitado
-        aqui: a conta ganha uma senha nova e um código novo, e toda sessão aberta é encerrada.
-      </p>
-      <p class="sub" v-else>
-        Suas conversas e sua empresa, em um só lugar. Entre para continuar com seus dados protegidos.
-      </p>
+      <p class="sub" v-if="mode === 'service'"> {{ t('Um sistema não tem senha: tem um par de chaves. Gere-o com') }} <code>wsctl service-key</code>{{ t(', guarde a metade privada onde o sistema guarda segredos, e cole aqui a pública. O servidor sela para ela as chaves dos aparelhos que um administrador conceder.') }} </p>
+      <p class="sub" v-else-if="mode === 'recover'"> {{ t('O código de recuperação abre a mesma chave que a senha abria. Ele é gasto ao ser digitado aqui: a conta ganha uma senha nova e um código novo, e toda sessão aberta é encerrada.') }} </p>
+      <p class="sub" v-else> {{ t('Suas conversas e seus espaços de trabalho, em um só lugar. Entre para continuar com seus dados protegidos.') }} </p>
 
       <div class="alert" v-if="error">{{ error }}</div>
 
       <form :name="mode === 'sign-in' ? 'wappie-login' : 'wappie-account'" method="post" autocomplete="on" @submit.prevent="submit">
         <div class="field" v-if="mode === 'sign-up' || mode === 'service'">
-          <label for="invite">Código de convite</label>
+          <label for="invite">{{ t('Código de convite') }}</label>
           <input id="invite" name="invite" v-model="invite" required autocomplete="off" spellcheck="false" />
-          <p class="hint">
-            Use o convite que você recebeu do administrador do espaço. Vale uma vez só.
-            <template v-if="mode === 'service'"> Para um sistema, emitido com <code>-role service</code>.</template>
+          <p class="hint"> {{ t('Use o convite que você recebeu do administrador do espaço. Vale uma vez só.') }} <template v-if="mode === 'service'"> {{ t('Para um sistema, emitido com') }} <code>-role service</code>.</template>
           </p>
         </div>
 
         <template v-if="mode === 'service'">
           <div class="field">
-            <label for="service-name">Nome do sistema</label>
-            <input id="service-name" name="service-name" v-model="serviceName" required autocomplete="off" spellcheck="false" placeholder="erp-sync" />
-            <p class="hint">Minúsculas, dígitos, ponto, traço ou sublinhado. É como ele aparece no console.</p>
+            <label for="service-name">{{ t('Nome do sistema') }}</label>
+            <input id="service-name" name="service-name" v-model="serviceName" required autocomplete="off" spellcheck="false" :placeholder="t('erp-sync')" />
+            <p class="hint">{{ t('Minúsculas, dígitos, ponto, traço ou sublinhado. É como ele aparece no console.') }}</p>
           </div>
           <div class="field">
-            <label for="service-key">Chave pública</label>
+            <label for="service-key">{{ t('Chave pública') }}</label>
             <input id="service-key" name="service-key" v-model="servicePublicKey" required autocomplete="off" spellcheck="false" />
-            <p class="hint">A linha <code>public</code> que <code>wsctl service-key</code> imprimiu. Nunca a privada.</p>
+            <p class="hint">{{ t('A linha') }} <code>public</code> {{ t('que') }} <code>wsctl service-key</code> {{ t('imprimiu. Nunca a privada.') }}</p>
           </div>
         </template>
 
         <div class="field" v-if="mode !== 'service'">
-          <label for="email">E-mail</label>
+          <label for="email">{{ t('E-mail') }}</label>
           <input id="email" name="username" v-model="email" type="email" autocomplete="username" required autocapitalize="off" spellcheck="false" inputmode="email" />
         </div>
 
         <div class="field" v-if="mode === 'recover'">
-          <label for="code">Código de recuperação</label>
+          <label for="code">{{ t('Código de recuperação') }}</label>
           <input id="code" name="recovery-code" v-model="code" required autocomplete="one-time-code" spellcheck="false" />
-          <p class="hint">Os seis grupos de cinco caracteres. Maiúsculas e traços não importam.</p>
+          <p class="hint">{{ t('Os seis grupos de cinco caracteres. Maiúsculas e traços não importam.') }}</p>
         </div>
 
         <div class="field" v-if="mode !== 'service'">
-          <label for="password">{{ mode === 'recover' ? 'Nova senha' : 'Senha' }}</label>
+          <label for="password">{{ mode === 'recover' ? t('Nova senha') : t('Senha') }}</label>
           <PasswordInput
             id="password"
             name="password"
@@ -345,49 +325,46 @@ function describe(err: unknown): string {
             :minlength="mode === 'sign-in' ? undefined : 10"
             :autocomplete="mode === 'sign-in' ? 'current-password' : 'new-password'"
           />
-          <p class="hint" v-if="mode !== 'sign-in'">
-            Use pelo menos 10 caracteres.
-          </p>
+          <p class="hint" v-if="mode !== 'sign-in'"> {{ t('Use pelo menos 10 caracteres.') }} </p>
         </div>
 
         <div class="field" v-if="mode !== 'sign-in' && mode !== 'service'">
-          <label for="confirm">Repita a senha</label>
+          <label for="confirm">{{ t('Repita a senha') }}</label>
           <PasswordInput id="confirm" name="confirm-password" v-model="confirm" required autocomplete="new-password" />
         </div>
 
         <div class="field" v-if="!hosted">
-          <label for="server">Servidor</label>
-          <input id="server" v-model="serverURL" placeholder="mesma origem desta página" @blur="refreshPasskeyAvailability" />
+          <label for="server">{{ t('Servidor') }}</label>
+          <input id="server" v-model="serverURL" :placeholder="t('mesma origem desta página')" @blur="refreshPasskeyAvailability" />
         </div>
 
         <button class="primary" type="submit" :disabled="busy">
-          {{ busy ? (mode === 'service' ? 'Registrando…' : 'Entrando com segurança…') : title }}
+          {{ busy ? (mode === 'service' ? t('Registrando…') : t('Entrando com segurança…')) : title }}
         </button>
       </form>
 
       <template v-if="mode === 'sign-in' && passkeyAvailable">
-        <div class="auth-divider"><span>ou</span></div>
+        <div class="auth-divider"><span>{{ t('ou') }}</span></div>
         <button class="passkey-login" type="button" :disabled="busy" @click="openWithPasskey">
-          <AppIcon name="key" :size="20" /> {{ passkeyBusy ? 'Confirme no seu dispositivo…' : 'Entrar com passkey' }}
+          <AppIcon name="key" :size="20" /> {{ passkeyBusy ? t('Confirme no seu dispositivo…') : t('Entrar com passkey') }}
         </button>
       </template>
 
       <button class="linkish" @click="switchTo(mode === 'sign-in' ? 'sign-up' : 'sign-in')">
-        {{ mode === 'sign-in' ? 'Tenho um código de convite' : 'Já tenho conta' }}
+        {{ mode === 'sign-in' ? t('Tenho um código de convite') : t('Já tenho conta') }}
       </button>
       <br />
-      <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('recover')">
-        Esqueci a senha, tenho o código de recuperação
-      </button>
-      <details class="auth-options"><summary>Outras formas de acesso</summary>
-        <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('service')">Registrar um sistema com chave pública</button>
-        <button class="linkish" @click="switchTo('pasted-key')">Abrir com uma chave de arquivo, sem conta</button>
+      <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('recover')"> {{ t('Esqueci a senha, tenho o código de recuperação') }} </button>
+      <details class="auth-options"><summary>{{ t('Outras formas de acesso') }}</summary>
+        <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('service')">{{ t('Registrar um sistema com chave pública') }}</button>
+        <button class="linkish" @click="switchTo('pasted-key')">{{ t('Abrir com uma chave do histórico, sem conta') }}</button>
       </details>
     </div>
   </div>
 </template>
 
 <style scoped>
+.auth-appearance { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .auth-wordmark { color: var(--accent); font-size: 25px; font-weight: 800; letter-spacing: -1.1px; margin-bottom: 26px; }
 .auth-wordmark span { font-size: 9px; margin-left: 3px; vertical-align: middle; }
 .auth-divider { display: flex; align-items: center; gap: 12px; color: var(--text-dim); font-size: 12px; margin: 20px 0; }.auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }

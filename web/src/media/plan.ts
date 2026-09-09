@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // How a file is going to be sent, decided before anything is read.
 //
 // WhatsApp has one file and several ways of carrying it, and they are not
@@ -127,8 +128,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'photo',
     kind: 'image',
-    label: 'Foto',
-    note: `reduzida para ${PHOTO_LONG_SIDE} px no lado maior`,
+    get label() { return t('Foto') },
+    get note() { return t('reduzida para {v0} px no lado maior', { v0: PHOTO_LONG_SIDE }) },
     encodeTo: 'image/jpeg',
     maxLongSide: PHOTO_LONG_SIDE,
     quality: 0.72,
@@ -140,8 +141,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'photo_hd',
     kind: 'image',
-    label: 'Foto HD',
-    note: `até ${HD_LONG_SIDE} px, com menos compressão`,
+    get label() { return t('Foto HD') },
+    get note() { return t('até {v0} px, com menos compressão', { v0: HD_LONG_SIDE }) },
     encodeTo: 'image/jpeg',
     maxLongSide: HD_LONG_SIDE,
     quality: 0.9,
@@ -153,8 +154,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'file',
     kind: 'document',
-    label: 'Arquivo',
-    note: 'os bytes originais, sem recompressão',
+    get label() { return t('Arquivo') },
+    get note() { return t('os bytes originais, sem recompressão') },
     needsFileName: true,
     wantsThumbnail: true,
   },
@@ -162,8 +163,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'video',
     kind: 'video',
-    label: 'Vídeo',
-    note: 'com legenda e controles',
+    get label() { return t('Vídeo') },
+    get note() { return t('com legenda e controles') },
     viewOnceAllowed: true,
     wantsDuration: true,
     wantsDimensions: true,
@@ -173,8 +174,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'gif',
     kind: 'video',
-    label: 'GIF',
-    note: 'roda em loop, sem som',
+    get label() { return t('GIF') },
+    get note() { return t('roda em loop, sem som') },
     isGIF: true,
     viewOnceAllowed: true,
     wantsDuration: true,
@@ -185,10 +186,10 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'ptv',
     kind: 'ptv',
-    label: 'Vídeo redondo',
+    get label() { return t('Vídeo redondo') },
     // Refused by the server, not dropped: a caption on a round video note is an
     // error, because there is no field for it to travel in.
-    note: 'recortado em círculo pelo destinatário; não aceita legenda',
+    get note() { return t('recortado em círculo pelo destinatário; não aceita legenda') },
     captionAllowed: false,
     viewOnceAllowed: true,
     wantsDuration: true,
@@ -199,8 +200,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'audio',
     kind: 'audio',
-    label: 'Áudio',
-    note: 'toca como arquivo de música; não aceita legenda',
+    get label() { return t('Áudio') },
+    get note() { return t('toca como arquivo de música; não aceita legenda') },
     captionAllowed: false,
     viewOnceAllowed: true,
     wantsDuration: true,
@@ -209,8 +210,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'voice',
     kind: 'ptt',
-    label: 'Mensagem de voz',
-    note: 'onda sonora, e conta como ouvida e não como lida',
+    get label() { return t('Mensagem de voz') },
+    get note() { return t('onda sonora, e conta como ouvida e não como lida') },
     captionAllowed: false,
     viewOnceAllowed: true,
     wantsDuration: true,
@@ -220,8 +221,8 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'sticker',
     kind: 'sticker',
-    label: 'Figurinha',
-    note: `WebP de ${STICKER_SIDE}×${STICKER_SIDE}; a legenda seria descartada`,
+    get label() { return t('Figurinha') },
+    get note() { return t('WebP de {v0}×{v1}; a legenda seria descartada', { v0: STICKER_SIDE, v1: STICKER_SIDE }) },
     encodeTo: 'image/webp',
     maxLongSide: STICKER_SIDE,
     quality: 0.9,
@@ -378,7 +379,7 @@ export function sourceMime(file: { name: string; type: string }): string {
  * open in some readers.
  */
 export function nameFor(plan: Plan, name: string): string {
-  if (!plan.encodeTo) return name || 'arquivo'
+  if (!plan.encodeTo) return name || t('arquivo')
   const stem = name.replace(/\.[^.]+$/, '') || 'imagem'
   return `${stem}.${plan.encodeTo === 'image/webp' ? 'webp' : 'jpg'}`
 }
@@ -458,10 +459,10 @@ export function animatedWebP(bytes: Uint8Array): boolean {
  */
 export function refuse(plan: Plan, file: { name: string; size: number }, caption: string): string {
   if (file.size === 0) {
-    return 'Este arquivo está vazio.'
+    return t('Este arquivo está vazio.')
   }
   if (file.size > MAX_BYTES) {
-    return `Arquivo de ${Math.round(file.size / 1024 / 1024)} MB; o limite é ${MAX_BYTES / 1024 / 1024} MB.`
+    return t('Arquivo de {v0} MB; o limite é {v1} MB.', { v0: Math.round(file.size / 1024 / 1024), v1: MAX_BYTES / 1024 / 1024 })
   }
   if (caption.trim() && !plan.captionAllowed) {
     // Refused here for all of them, though the wire treats them differently:
@@ -469,10 +470,10 @@ export function refuse(plan: Plan, file: { name: string; size: number }, caption
     // sticker's caption is simply dropped on the floor with nothing said. The
     // second is the worse one to inherit — text somebody typed disappearing
     // between here and the recipient is indistinguishable from a lost message.
-    return `${plan.label} não leva legenda — o WhatsApp não tem campo para ela.`
+    return t('{v0} não leva legenda — o WhatsApp não tem campo para ela.', { v0: plan.label })
   }
   if (plan.needsFileName && !nameFor(plan, file.name).trim()) {
-    return 'Um documento precisa de um nome, senão chega como um download sem título.'
+    return t('Um documento precisa de um nome, senão chega como um download sem título.')
   }
   return ''
 }

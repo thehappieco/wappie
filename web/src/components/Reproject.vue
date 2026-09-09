@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../ui/i18n'
 import { computed } from 'vue'
 
 import { state } from '../state/archive'
@@ -18,33 +19,25 @@ const fields = computed(() => Object.entries(u.value.byField).sort((a, b) => b[1
 
 <template>
   <div class="console-panel">
-    <h3>Mensagens que esta versão ainda não lê</h3>
-    <p class="dim">
-      Uma mensagem é classificada quando chega. Uma que entrou antes do seu tipo ser implementado
-      fica como “não suportada” — mas o protobuf foi guardado selado, e toda vez que o arquivo abre
-      esta aba olha de novo, com a chave que só ela tem, e converte o que a versão atual já entende.
-      O que sobra está aqui, pelo nome do campo: é ele que diz o que implementar em seguida.
-    </p>
+    <h3>{{ t('Mensagens que esta versão ainda não lê') }}</h3>
+    <p class="dim"> {{ t('Uma mensagem é classificada quando chega. Uma que entrou antes do seu tipo ser implementado fica como “não suportada” — mas o protobuf foi guardado selado, e toda vez que o histórico abre esta aba olha de novo, com a chave que só ela tem, e converte o que a versão atual já entende. O que sobra está aqui, pelo nome do campo: é ele que diz o que implementar em seguida.') }} </p>
 
-    <div v-if="!state.deviceID" class="dim">Abra um aparelho no arquivo primeiro.</div>
-    <div v-else-if="u.running" class="dim">Verificando…</div>
+    <div v-if="!state.deviceID" class="dim">{{ t('Abra as conversas de um número primeiro.') }}</div>
+    <div v-else-if="u.running" class="dim">{{ t('Verificando…') }}</div>
     <div v-else-if="u.error" class="alert">{{ u.error }}</div>
     <template v-else-if="u.sweptAt">
-      <div class="dim" style="margin-bottom: 8px">
-        Verificado às {{ stamp(u.sweptAt) }}<template v-if="u.lastRun?.changed"
-          >, {{ u.lastRun.changed }} convertidas nessa passada</template
+      <div class="dim" style="margin-bottom: 8px"> {{ t('Verificado às {v0}', { v0: stamp(u.sweptAt) }) }}<template v-if="u.lastRun?.changed"
+          >{{ t(', {v0} convertidas nessa passada', { v0: u.lastRun.changed }) }}</template
         >.
       </div>
       <div v-if="u.total === 0">
-        <strong>Nenhuma.</strong> Tudo que chegou tem um tipo que esta versão entende.
-      </div>
+        <strong>{{ t('Nenhuma.') }}</strong> {{ t('Tudo que chegou tem um tipo que esta versão entende.') }} </div>
       <template v-else>
-        <div><strong>{{ u.total }}</strong>, por campo do protobuf:</div>
+        <div><strong>{{ u.total }}</strong>{{ t(', por campo do protobuf:') }}</div>
         <div v-for="[field, n] in fields" :key="field" class="dim">· {{ field }}: {{ n }}</div>
       </template>
       <div v-if="u.lastRun?.unreadable" class="alert" style="margin-top: 6px">
-        {{ u.lastRun.unreadable }} não abriram com esta chave.
-      </div>
+        {{ t('{v0} não abriram com esta chave.', { v0: u.lastRun.unreadable }) }} </div>
     </template>
   </div>
 </template>

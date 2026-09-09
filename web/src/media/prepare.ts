@@ -1,3 +1,4 @@
+import { t } from '../ui/i18n'
 // Turning a file somebody picked into an attachment WhatsApp will render.
 //
 // One rule runs through all of it: the kind is decided once and used
@@ -110,7 +111,7 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0): Pro
         // their own type is honest; claiming they are a JPEG would not be.
         mimetype = file.type || 'application/octet-stream'
         fileName = file.name
-        missing.push('não foi possível redimensionar; vai como está')
+        missing.push(t('não foi possível redimensionar; vai como está'))
       }
     }
   }
@@ -124,7 +125,7 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0): Pro
         height = height || video.height
         if (video.poster) thumb = video.poster
       } else {
-        missing.push('duração e dimensões')
+        missing.push(t('duração e dimensões'))
       }
     } else {
       const audio = await sound(blob)
@@ -138,9 +139,9 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0): Pro
         // better than nothing: without a duration the recipient's player shows
         // no length at all until the whole file has arrived.
         seconds = knownSeconds
-        if (plan.wantsWaveform) missing.push('onda sonora')
+        if (plan.wantsWaveform) missing.push(t('onda sonora'))
       } else {
-        missing.push(plan.wantsWaveform ? 'duração e onda sonora' : 'duração')
+        missing.push(plan.wantsWaveform ? t('duração e onda sonora') : t('duração'))
       }
     }
   }
@@ -155,7 +156,7 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0): Pro
       width = picture.width
       height = picture.height
     } else {
-      missing.push('dimensões')
+      missing.push(t('dimensões'))
     }
   }
 

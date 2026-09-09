@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, intlLocale } from '../ui/i18n'
 import { computed, ref } from 'vue'
 
 import type { DeviceInfo } from '../api/protocol'
@@ -9,7 +10,9 @@ import { formatPhone, parseJID } from '../state/jid'
 import { kindLabel, listStamp, typeLabel } from '../ui/format'
 import AppIcon from './AppIcon.vue'
 import AvatarBadge from './AvatarBadge.vue'
+import DeviceAvatar from './DeviceAvatar.vue'
 import QuietSwitch from './QuietSwitch.vue'
+import AppearanceMenu from './AppearanceMenu.vue'
 
 /**
  * What to call one device.
@@ -23,8 +26,8 @@ function deviceName(device: DeviceInfo): string {
   if (device.label) return device.label
   if (device.push_name) return device.push_name
   if (device.pn) return formatPhone(parseJID(device.pn).user)
-  if (device.lid) return 'aparelho sem número'
-  return 'aparelho sem nome'
+  if (device.lid) return t('aparelho sem número')
+  return t('aparelho sem nome')
 }
 
 /**
@@ -47,7 +50,7 @@ const openDevice = computed(() => state.devices.find((d) => d.id === state.devic
 function deviceIdentity(device: DeviceInfo): string {
   if (device.pn) return formatPhone(parseJID(device.pn).user)
   if (device.lid) return `LID ${parseJID(device.lid).user}`
-  return 'sem identidade ainda'
+  return t('sem identidade ainda')
 }
 
 /**
@@ -61,10 +64,10 @@ const statusFeed = computed(() => state.chats.find((c) => c.isStatus))
 
 const visible = computed(() => {
   const conversations = state.chats.filter((c) => !c.isStatus)
-  const needle = state.chatFilter.trim().toLocaleLowerCase('pt-BR')
+  const needle = state.chatFilter.trim().toLocaleLowerCase(intlLocale())
   if (!needle) return conversations
   return conversations.filter(
-    (c) => c.name.toLocaleLowerCase('pt-BR').includes(needle) || c.key.includes(needle),
+    (c) => c.name.toLocaleLowerCase(intlLocale()).includes(needle) || c.key.includes(needle),
   )
 })
 
@@ -85,16 +88,16 @@ function typingLine(chat: ChatView): string {
   const who = typingIn(chat.key, nowTick.value)
   if (who.length === 0) return ''
   const recording = who.some((t) => t.media === 'audio')
-  if (!chat.isGroup) return recording ? 'gravando áudio…' : 'digitando…'
-  if (who.length > 1) return `${who.length} pessoas digitando…`
+  if (!chat.isGroup) return recording ? t('gravando áudio…') : t('digitando…')
+  if (who.length > 1) return t('{v0} pessoas digitando…', { v0: who.length })
   const name = people().nameFor(who[0].senderLID || who[0].senderPN || who[0].senderKey)
-  return recording ? `${name} gravando áudio…` : `${name} digitando…`
+  return recording ? t('{v0} gravando áudio…', { v0: name }) : t('{name} digitando…', { name })
 }
 
 function preview(chat: ChatView): string {
   const acted = kindLabel(chat.lastKind)
   if (acted) return acted
-  if (chat.previewState === 'tampered') return '⚠ adulterado'
+  if (chat.previewState === 'tampered') return '⚠ ' + t('adulterado')
   if (chat.preview) return chat.preview
   return typeLabel(chat.lastType)
 }
@@ -111,9 +114,10 @@ function canRead(device: DeviceInfo): boolean {
 }
 
 function deviceStatus(device: DeviceInfo): string {
-  if (device.status === 'online') return 'Online'
-  if (device.status === 'connecting') return 'Conectando…'
-  return 'Desconectado'
+  if (device.paused) return t('Sincronização pausada')
+  if (device.status === 'online' && device.running) return t('Online')
+  if (device.status === 'connecting') return t('Conectando…')
+  return t('Desconectado')
 }
 
 function openPicker() {
@@ -131,7 +135,7 @@ async function chooseDevice(device: DeviceInfo) {
     await selectDevice(device.id)
     picker.value?.close()
   } catch {
-    switchError.value = 'Não foi possível abrir este dispositivo. Tente novamente.'
+    switchError.value = t('Não foi possível abrir este dispositivo. Tente novamente.')
   } finally {
     switching.value = ''
   }
@@ -154,29 +158,29 @@ function openConsole() {
       <button
         class="device-trigger grow"
         type="button"
-        aria-label="Selecionar dispositivo"
+        :aria-label="t('Selecionar dispositivo')"
         aria-haspopup="dialog"
         :aria-expanded="pickerOpen"
         :disabled="!state.devices.length"
         @click="openPicker"
       >
         <span class="device-trigger-name">
-          <span>{{ openDevice ? deviceName(openDevice) : 'Nenhum dispositivo' }}</span>
+          <span>{{ openDevice ? deviceName(openDevice) : t('Nenhum dispositivo') }}</span>
           <AppIcon name="chevron-down" :size="18" />
         </span>
         <span class="sub device-connection">
           <span class="dot" :class="state.connected ? 'live' : 'off'" />
-          <template v-if="state.connected">{{ openDevice ? deviceIdentity(openDevice) : 'Conectado' }}</template>
-          <template v-else-if="state.reconnectIn > 0">Reconectando em {{ state.reconnectIn }}s</template>
-          <template v-else>Reconectando…</template>
+          <template v-if="state.connected">{{ openDevice ? deviceIdentity(openDevice) : t('Conectado') }}</template>
+          <template v-else-if="state.reconnectIn > 0">{{ t('Reconectando em {v0}s', { v0: state.reconnectIn }) }}</template>
+          <template v-else>{{ t('Reconectando…') }}</template>
         </span>
       </button>
       <QuietSwitch />
-      <button class="console-link" type="button" title="Abrir console de gestão" aria-label="Abrir console de gestão" @click="openConsole">
+      <button class="console-link" type="button" :title="t('Abrir console de gestão')" :aria-label="t('Abrir console de gestão')" @click="openConsole">
         <AppIcon name="console" :size="20" />
-        <span>Console</span>
+        <span>{{ t('Console') }}</span>
       </button>
-      <button class="icon-btn" title="Sair" aria-label="Sair da conta" @click="stop">
+      <button class="icon-btn" :title="t('Sair')" :aria-label="t('Sair da conta')" @click="stop">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
         </svg>
@@ -184,20 +188,17 @@ function openConsole() {
     </div>
 
     <div class="list-heading">
-      <h1>Conversas</h1>
-      <span v-if="state.quiet" class="quiet-label"><AppIcon name="eye-off" :size="15" /> Incógnito</span>
+      <h1>{{ t('Conversas') }}</h1><AppearanceMenu />
+      <span v-if="state.quiet" class="quiet-label"><AppIcon name="eye-off" :size="15" /> {{ t('Incógnito') }}</span>
     </div>
 
-    <div class="banner" v-if="state.unreadable">
-      Sua conta não tem a chave deste aparelho, então o conteúdo continua selado. Quem tem acesso a
-      ele precisa conceder o seu.
-    </div>
+    <div class="banner" v-if="state.unreadable"> {{ t('Sua conta não tem a chave deste aparelho, então o conteúdo continua selado. Quem tem acesso a ele precisa conceder o seu.') }} </div>
 
     <div class="search">
-      <input v-model="state.chatFilter" placeholder="Buscar conversa" aria-label="Buscar conversa" />
+      <input v-model="state.chatFilter" :placeholder="t('Buscar conversa')" :aria-label="t('Buscar conversa')" />
     </div>
 
-    <div class="chat-list" aria-label="Conversas">
+    <div class="chat-list" :aria-label="t('Conversas')">
     <button
       v-if="statusFeed"
       class="chat-row status-row"
@@ -207,11 +208,11 @@ function openConsole() {
       <div class="status-ring">◔</div>
       <div class="body">
         <div class="line">
-          <span class="name">Status</span>
+          <span class="name">{{ t('Status') }}</span>
           <span class="when">{{ listStamp(statusFeed.lastTS) }}</span>
         </div>
         <div class="line">
-          <span class="preview">publicações de contatos, que somem em 24h no WhatsApp</span>
+          <span class="preview">{{ t('publicações de contatos, que somem em 24h no WhatsApp') }}</span>
         </div>
       </div>
     </button>
@@ -228,7 +229,7 @@ function openConsole() {
           <div class="line">
             <span class="name">
               {{ chat.name }}
-              <span v-if="chat.nameState === 'tampered'" class="tampered">⚠ ADULTERADO</span>
+              <span v-if="chat.nameState === 'tampered'" class="tampered">{{ t('⚠ ADULTERADO') }}</span>
             </span>
             <span class="when">{{ listStamp(chat.lastTS) }}</span>
           </div>
@@ -241,29 +242,29 @@ function openConsole() {
       </button>
 
       <div v-if="!visible.length" class="empty" style="height: auto; padding: 30px">
-        {{ state.chats.length ? 'Nada com esse nome.' : 'Nenhuma conversa neste aparelho.' }}
+        {{ state.chats.length ? t('Nada com esse nome.') : t('Nenhuma conversa neste aparelho.') }}
       </div>
     </div>
     <dialog ref="picker" class="device-picker" aria-labelledby="device-picker-title"
       @close="pickerOpen = false" @click="($event.target === $event.currentTarget) && picker?.close()">
       <header class="picker-head">
         <div class="grow">
-          <h2 id="device-picker-title">Seus dispositivos</h2>
-          <p>Escolha qual WhatsApp abrir neste espaço.</p>
+          <h2 id="device-picker-title">{{ t('Seus dispositivos') }}</h2>
+          <p>{{ t('Escolha qual WhatsApp abrir neste espaço.') }}</p>
         </div>
-        <button class="icon-btn" type="button" aria-label="Fechar dispositivos" @click="picker?.close()"><AppIcon name="close" /></button>
+        <button class="icon-btn" type="button" :aria-label="t('Fechar dispositivos')" @click="picker?.close()"><AppIcon name="close" /></button>
       </header>
-      <p v-if="!canSwitch" class="alert" role="status">Aguardando a conexão para trocar de dispositivo…</p>
+      <p v-if="!canSwitch" class="alert" role="status">{{ t('Aguardando a conexão para trocar de dispositivo…') }}</p>
       <div class="picker-options">
         <button v-for="device in state.devices" :key="device.id" class="device-option" type="button"
           :class="{ selected: device.id === state.deviceID }"
           :disabled="Boolean(switching) || !canSwitch || !canRead(device)"
           :aria-pressed="device.id === state.deviceID" @click="chooseDevice(device)">
-          <span class="device-option-icon"><AppIcon name="devices" /></span>
+          <DeviceAvatar :device="device" />
           <span class="grow">
             <strong>{{ deviceName(device) }}</strong>
             <span>{{ deviceIdentity(device) }}</span>
-            <small>{{ !canRead(device) ? 'Sem acesso às mensagens' : switching === device.id ? 'Abrindo…' : deviceStatus(device) }}</small>
+            <small>{{ !canRead(device) ? t('Sem acesso às mensagens') : switching === device.id ? t('Abrindo…') : deviceStatus(device) }}</small>
           </span>
           <AppIcon v-if="device.id === state.deviceID" name="check" :size="20" />
         </button>

@@ -17,6 +17,7 @@ import (
 type Workspace struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
+	Avatar    string    `json:"avatar"`
 	Role      string    `json:"role"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
@@ -36,7 +37,7 @@ func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, 
 	if _, err = tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userID.String()); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT t.id, t.name, m.role, t.status, m.created_at
+	rows, err := tx.Query(ctx, `SELECT t.id, t.name, t.avatar, m.role, t.status, m.created_at
 		FROM workspace_memberships m JOIN tenants t ON t.id = m.tenant_id
 		WHERE m.user_id = $1 AND m.status = 'active' ORDER BY m.created_at, t.id`, userID)
 	if err != nil {
@@ -45,7 +46,7 @@ func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, 
 	out := []Workspace{}
 	for rows.Next() {
 		var w Workspace
-		if err := rows.Scan(&w.ID, &w.Name, &w.Role, &w.Status, &w.CreatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Avatar, &w.Role, &w.Status, &w.CreatedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
