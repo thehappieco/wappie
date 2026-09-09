@@ -29,51 +29,52 @@ type Frame struct {
 
 // Client-to-server frame types.
 const (
-	TypeHello        = "hello"
-	TypePair         = "pair"
-	TypePairCancel   = "pair.cancel"
-	TypeDevicesList  = "devices.list"
-	TypeUsersList    = "users.list"
-	TypeSubscribe    = "subscribe"
-	TypeChatsList    = "chats.list"
-	TypeContacts     = "contacts.list"
-	TypeResolve      = "contacts.resolve"
-	TypeAvatar       = "contacts.avatar"
-	TypeChatPage     = "chat.page"
-	TypeHistory      = "message.history"
-	TypeMessageGet   = "message.get"
-	TypeKeysGet      = "keys.get"
-	TypeSend         = "message.send"
-	TypeSendMedia    = "message.send.media"
-	TypeEdit         = "message.edit"
-	TypeRevoke       = "message.revoke"
-	TypeReact        = "message.react"
-	TypeMarkRead     = "message.read"
-	TypePollVote     = "message.poll.vote"
-	TypeChatTimer    = "chat.timer"
-	TypeGroupJoin    = "group.join"
-	TypeGroupGet     = "group.info"
-	TypeChatTyping   = "chat.presence"
-	TypeDeviceMode   = "device.mode"
-	TypeReprojectGet = "reproject.list"
-	TypeReprojectPut = "reproject.apply"
-	TypeMediaRetry   = "media.retry"
-	TypeMediaExpired = "media.expired"
-	TypeBackfill     = "history.backfill"
-	TypeDeviceStop   = "device.stop"
-	TypeDeviceStart  = "device.start"
-	TypeDeviceRename = "device.rename"
-	TypeDevicesStats = "devices.stats"
-	TypeDeviceInfo   = "device.info"
-	TypeDeviceDelete = "device.delete"
-	TypeKeysList     = "apikeys.list"
-	TypeKeyCreate    = "apikeys.create"
-	TypeKeyRevoke    = "apikeys.revoke"
-	TypeGrantAdd     = "grant.add"
-	TypeGrantRevoke  = "grant.revoke"
-	TypeGrantsList   = "grants.list"
-	TypeGrants       = "grants"
-	TypePing         = "ping"
+	TypeHello         = "hello"
+	TypePair          = "pair"
+	TypePairCancel    = "pair.cancel"
+	TypeDevicesList   = "devices.list"
+	TypeUsersList     = "users.list"
+	TypeSubscribe     = "subscribe"
+	TypeChatsList     = "chats.list"
+	TypeContacts      = "contacts.list"
+	TypeResolve       = "contacts.resolve"
+	TypeAvatar        = "contacts.avatar"
+	TypeChatPage      = "chat.page"
+	TypeHistory       = "message.history"
+	TypeMessageGet    = "message.get"
+	TypeKeysGet       = "keys.get"
+	TypeSend          = "message.send"
+	TypeSendMedia     = "message.send.media"
+	TypeEdit          = "message.edit"
+	TypeRevoke        = "message.revoke"
+	TypeReact         = "message.react"
+	TypeMarkRead      = "message.read"
+	TypePollVote      = "message.poll.vote"
+	TypeChatTimer     = "chat.timer"
+	TypeGroupJoin     = "group.join"
+	TypeGroupGet      = "group.info"
+	TypeChatTyping    = "chat.presence"
+	TypePresenceWatch = "presence.subscribe"
+	TypeDeviceMode    = "device.mode"
+	TypeReprojectGet  = "reproject.list"
+	TypeReprojectPut  = "reproject.apply"
+	TypeMediaRetry    = "media.retry"
+	TypeMediaExpired  = "media.expired"
+	TypeBackfill      = "history.backfill"
+	TypeDeviceStop    = "device.stop"
+	TypeDeviceStart   = "device.start"
+	TypeDeviceRename  = "device.rename"
+	TypeDevicesStats  = "devices.stats"
+	TypeDeviceInfo    = "device.info"
+	TypeDeviceDelete  = "device.delete"
+	TypeKeysList      = "apikeys.list"
+	TypeKeyCreate     = "apikeys.create"
+	TypeKeyRevoke     = "apikeys.revoke"
+	TypeGrantAdd      = "grant.add"
+	TypeGrantRevoke   = "grant.revoke"
+	TypeGrantsList    = "grants.list"
+	TypeGrants        = "grants"
+	TypePing          = "ping"
 )
 
 // Server-to-client frame types.
@@ -975,13 +976,26 @@ type ChatPresenceRequest struct {
 // few seconds and then it is not. A client that was not connected missed
 // nothing worth having.
 type PresenceEvent struct {
-	DeviceID  string `json:"device_id"`
-	ChatKey   string `json:"chat_key"`
-	SenderKey string `json:"sender_key,omitempty"`
-	SenderLID string `json:"sender_lid,omitempty"`
-	SenderPN  string `json:"sender_pn,omitempty"`
-	State     string `json:"state"`
-	Media     string `json:"media,omitempty"`
+	DeviceID  string     `json:"device_id"`
+	ChatKey   string     `json:"chat_key"`
+	SenderKey string     `json:"sender_key,omitempty"`
+	SenderLID string     `json:"sender_lid,omitempty"`
+	SenderPN  string     `json:"sender_pn,omitempty"`
+	State     string     `json:"state"`
+	Media     string     `json:"media,omitempty"`
+	LastSeen  *time.Time `json:"last_seen,omitempty"`
+}
+
+type PresenceSubscribeRequest struct {
+	DeviceID string `json:"device_id"`
+	Chat     string `json:"chat"`
+}
+
+type PresenceSubscription struct {
+	DeviceID   string `json:"device_id"`
+	Chat       string `json:"chat"`
+	Subscribed bool   `json:"subscribed"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // ChatUpdateEvent is a change to a conversation itself, pushed as it happens.
@@ -1386,6 +1400,7 @@ type MessageDeletion struct {
 	// ByAuthor separates an author deleting their own message from a group
 	// admin removing someone else's.
 	ByAuthor bool       `json:"by_author"`
+	ByAdmin  bool       `json:"by_admin,omitempty"`
 	At       *time.Time `json:"at,omitempty"`
 }
 

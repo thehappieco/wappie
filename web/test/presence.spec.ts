@@ -9,8 +9,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { PresenceEvent } from '../src/api/protocol'
-import { state } from '../src/state/archive'
-import { applyPresence, forgetPresence, typingIn } from '../src/state/presence'
+import { people, state } from '../src/state/archive'
+import { applyPresence, availabilityIn, forgetPresence, typingIn } from '../src/state/presence'
 
 const CHAT = '120363000000000000@g.us'
 
@@ -27,7 +27,55 @@ function event(over: Partial<PresenceEvent>): PresenceEvent {
 
 beforeEach(() => {
   forgetPresence()
+  people().clear()
   state.deviceID = 'dev'
+  state.connected = true
+  state.quiet = false
+})
+
+describe('a contact online state', () => {
+  const peer = '123@lid'
+  it('distinguishes unavailable information from a reported offline state', () => {
+    expect(availabilityIn(peer)).toBe('unknown')
+    applyPresence(event({ chat_key: peer, state: 'available' }))
+    expect(availabilityIn(peer)).toBe('online')
+    expect(typingIn(peer)).toEqual([])
+    applyPresence(event({ chat_key: peer, state: 'unavailable' }))
+    expect(availabilityIn(peer)).toBe('offline')
+  })
+  it('does not leak presence across devices or retain stale online claims', () => {
+    applyPresence(event({ chat_key: peer, device_id: 'different', state: 'available' }))
+    expect(availabilityIn(peer)).toBe('unknown')
+    applyPresence(event({ chat_key: peer, state: 'available' }))
+    expect(availabilityIn(peer, Date.now() + 90_001)).toBe('unknown')
+  })
+  it('matches the phone and LID only through explicit event aliases', () => {
+    applyPresence(event({ chat_key: peer, sender_lid: peer, sender_pn: '555@s.whatsapp.net', state: 'available' }))
+    expect(availabilityIn('555@s.whatsapp.net')).toBe('online')
+    expect(availabilityIn('555@lid')).toBe('unknown')
+  })
+  it('does not mistake matching phone and LID digits for a known identity mapping', () => {
+    people().add({ key: '666@s.whatsapp.net', uid: 'test', pn: '666@s.whatsapp.net', isGroup: false,
+      full: 'Example', business: '', push: '', hasAvatar: false })
+    applyPresence(event({ chat_key: '666@lid', sender_key: '666@lid', sender_lid: '666@lid', state: 'available' }))
+    expect(availabilityIn('666@s.whatsapp.net')).toBe('unknown')
+    expect(availabilityIn('666@lid')).toBe('online')
+  })
+  it('hides prior state while incognito or disconnected and clears on logout', () => {
+    applyPresence(event({ chat_key: peer, state: 'available' }))
+    state.quiet = true
+    expect(availabilityIn(peer)).toBe('unknown')
+    state.quiet = false
+    state.connected = false
+    expect(availabilityIn(peer)).toBe('unknown')
+    state.connected = true
+    forgetPresence()
+    expect(availabilityIn(peer)).toBe('unknown')
+  })
+  it('does not interpret new or malformed event states as typing', () => {
+    applyPresence(event({ state: 'future-status' }))
+    expect(typingIn(CHAT)).toEqual([])
+  })
 })
 
 describe('a typing notification', () => {

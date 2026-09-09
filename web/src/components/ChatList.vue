@@ -180,7 +180,7 @@ function openConsole() {
         <AppIcon name="console" :size="20" />
         <span>{{ t('Console') }}</span>
       </button>
-      <button class="icon-btn" :title="t('Sair')" :aria-label="t('Sair da conta')" @click="stop">
+      <button class="icon-btn" :title="t('Sair')" :aria-label="t('Sair da conta')" @click="stop()">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
         </svg>
@@ -189,7 +189,6 @@ function openConsole() {
 
     <div class="list-heading">
       <h1>{{ t('Conversas') }}</h1><AppearanceMenu />
-      <span v-if="state.quiet" class="quiet-label"><AppIcon name="eye-off" :size="15" /> {{ t('Incógnito') }}</span>
     </div>
 
     <div class="banner" v-if="state.unreadable"> {{ t('Sua conta não tem a chave deste aparelho, então o conteúdo continua selado. Quem tem acesso a ele precisa conceder o seu.') }} </div>

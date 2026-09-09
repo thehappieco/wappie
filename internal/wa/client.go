@@ -71,6 +71,7 @@ type Client interface {
 	MarkRead(ctx context.Context, ids []types.MessageID, timestamp time.Time,
 		chat, sender types.JID, receiptTypeExtra ...types.ReceiptType) error
 	SendPresence(ctx context.Context, state types.Presence) error
+	SubscribePresence(ctx context.Context, jid types.JID) error
 	SendChatPresence(ctx context.Context, jid types.JID, state types.ChatPresence,
 		media types.ChatPresenceMedia) error
 	SetForceActiveDeliveryReceipts(active bool)

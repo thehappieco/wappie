@@ -138,6 +138,9 @@ func (u *Users) UpdatePasskey(ctx context.Context, p Passkey, credential json.Ra
 
 func (u *Users) RevokePasskey(ctx context.Context, userID, id uuid.UUID) error {
 	return u.inIdentity(ctx, userID, func(tx pgx.Tx) error {
+		if err := lockPasskeyRegistration(ctx, tx, userID); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `UPDATE user_passkeys SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL`, id, userID)
 		if err != nil {
 			return err

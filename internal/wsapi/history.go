@@ -147,6 +147,7 @@ func historyFrame(h store.MessageHistory) History {
 		out.Deletion = &MessageDeletion{
 			Message:  sealedMessage(h.Deletion.Row),
 			ByAuthor: h.Deletion.ByAuthor,
+			ByAdmin:  h.Deletion.ByAdmin,
 			At:       h.Deletion.At,
 		}
 	}

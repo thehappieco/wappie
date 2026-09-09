@@ -158,6 +158,8 @@ func (r *Router) Handle(ctx context.Context, deviceID string, evt any) {
 
 	case *events.ChatPresence:
 		r.handleChatPresence(ctx, deviceID, v)
+	case *events.Presence:
+		r.handlePresence(ctx, deviceID, v)
 		r.handled(name)
 
 	case *events.GroupInfo:

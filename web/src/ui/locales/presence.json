@@ -1,0 +1,7 @@
+{
+  "online": ["online", "en línea", "en ligne", "online"],
+  "offline": ["offline", "sin conexión", "hors ligne", "offline"],
+  "Status indisponível": ["Status unavailable", "Estado no disponible", "Statut indisponible", "Status nicht verfügbar"],
+  "O modo incógnito mantém sua presença oculta. O status dos contatos pode ficar indisponível.": ["Incognito mode hides your presence. Contacts’ status may be unavailable.", "El modo incógnito oculta tu presencia. El estado de los contactos puede no estar disponible.", "Le mode incognito masque votre présence. Le statut des contacts peut être indisponible.", "Der Inkognitomodus verbirgt Ihren Onlinestatus. Der Status Ihrer Kontakte ist möglicherweise nicht verfügbar."],
+  "O status depende da conexão e das configurações de privacidade do contato.": ["Status depends on the connection and the contact’s privacy settings.", "El estado depende de la conexión y de la configuración de privacidad del contacto.", "Le statut dépend de la connexion et des paramètres de confidentialité du contact.", "Der Status hängt von der Verbindung und den Datenschutzeinstellungen des Kontakts ab."]
+}

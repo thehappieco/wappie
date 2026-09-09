@@ -3,11 +3,48 @@ package wsapi
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/wa"
 )
+
+// handlePresenceSubscribe only observes a peer. Read authorization is still
+// required, and this must never announce the device online to obtain a result.
+func (s *session) handlePresenceSubscribe(ctx context.Context, f Frame) {
+	var req PresenceSubscribeRequest
+	if err := json.Unmarshal(f.Payload, &req); err != nil {
+		s.replyError(f.ReqID, ErrCodeBadRequest, "invalid presence request")
+		return
+	}
+	jid, err := types.ParseJID(req.Chat)
+	if err != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer) {
+		s.replyError(f.ReqID, ErrCodeBadRequest, "presence is available only for individual chats")
+		return
+	}
+	_, id, ok := s.resolveDevice(ctx, f, req.DeviceID)
+	if !ok {
+		return
+	}
+	result := PresenceSubscription{DeviceID: id.String(), Chat: jid.ToNonAD().String()}
+	if s.srv.cfg.Registry == nil {
+		result.Reason = "disconnected"
+	} else if dev, running := s.srv.cfg.Registry.Get(id.String()); !running || !dev.Client().IsConnected() {
+		result.Reason = "disconnected"
+	} else if dev.Policy().Mode != wa.ModeActive {
+		result.Reason = "incognito"
+	} else {
+		requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		if err := dev.Client().SubscribePresence(requestCtx, jid.ToNonAD()); err != nil {
+			result.Reason = "unavailable"
+		} else {
+			result.Subscribed = true
+		}
+	}
+	s.reply(TypePresenceWatch, f.ReqID, result)
+}
 
 // handleChatPresence tells a conversation we are typing, or have stopped.
 //

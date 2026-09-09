@@ -80,7 +80,7 @@ function switchSpace() {
   // writing another workspace's content into the next session.
   const target = new URL('/console', location.origin)
   target.searchParams.set('workspace', selected.value)
-  stop()
+  stop({ logout: false })
   location.assign(target.toString())
 }
 async function update(member: Member) {
@@ -101,7 +101,7 @@ async function join() {
   await run(async () => {
     const result = await workspaceRequest<{ tenant_id: string }>('/accept-invite', 'POST', { invite: joinCode.value })
     joinCode.value = ''; selected.value = result.tenant_id
-    await load(); notice.value = t('Convite aceito. Selecione o espaço e confirme sua senha para abri-lo.')
+    await load(); notice.value = t('Convite aceito. Selecione o espaço para abri-lo.')
   })
 }
 async function savePermission(p: Permission) {

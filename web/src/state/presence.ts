@@ -14,7 +14,8 @@
 import { reactive } from 'vue'
 
 import * as P from '../api/protocol'
-import { connection, state } from './archive'
+import { connection, people, state } from './archive'
+import { parseJID, SERVER_LID, SERVER_USER } from './jid'
 
 /**
  * How long a typing notification is believed.
@@ -39,11 +40,61 @@ export interface Typing {
 /** Keyed on the chat, then on the person: a group can have several at once. */
 export const typing = reactive(new Map<string, Map<string, Typing>>())
 
+const availability = reactive(new Map<string, { online: boolean; at: number; lastSeen?: string }>())
+const AVAILABILITY_MS = 90_000
+
+function aliases(key: string): string[] {
+  const jid = parseJID(key)
+  const canonical = jid.server ? `${jid.user}@${jid.server}` : key
+  const person = people().find(key)
+  const known = [person?.key, person?.lid, person?.pn].filter((k): k is string => Boolean(k))
+  // A phone number and LID can coincidentally have the same digits. Only
+  // explicit aliases connect their live status; Directory's display fallback
+  // alone is not enough evidence that they are the same contact.
+  return known.includes(canonical) ? [key, canonical, ...known] : [key, canonical]
+}
+
+export function availabilityIn(chatKey: string, now = Date.now()): 'online' | 'offline' | 'unknown' {
+  if (state.quiet || !state.connected) return 'unknown'
+  const candidates = aliases(chatKey).map(key => availability.get(key)).filter(item => item !== undefined)
+  const latest = candidates.sort((a, b) => b.at - a.at)[0]
+  if (!latest || now - latest.at >= AVAILABILITY_MS) return 'unknown'
+  return latest.online ? 'online' : 'offline'
+}
+
+/** Ask only about the visible direct conversation. Never change receipt mode. */
+export async function watchPresence(chat: string): Promise<void> {
+  const { server } = parseJID(chat)
+  const conn = connection()
+  if (!conn || !state.connected || state.quiet || ![SERVER_LID, SERVER_USER].includes(server)) return
+  const device = state.deviceID
+  try {
+    const result = await conn.request<P.PresenceSubscription>(P.TypePresenceWatch,
+      { device_id: device, chat }, P.TypePresenceWatch)
+    if (device !== state.deviceID || connection() !== conn) return
+    if (!result.subscribed) for (const alias of aliases(chat)) availability.delete(alias)
+  } catch {
+    if (device === state.deviceID && connection() === conn) {
+      for (const alias of aliases(chat)) availability.delete(alias)
+    }
+  }
+}
+
 /** applyPresence folds one notification in, or takes it back. */
 export function applyPresence(ev: P.PresenceEvent): void {
   if (ev.device_id !== state.deviceID) return
   const chat = ev.chat_key
   if (!chat) return
+
+  if (ev.state === 'available' || ev.state === 'unavailable') {
+    const status = { online: ev.state === 'available', at: Date.now(), lastSeen: ev.last_seen }
+    for (const key of [chat, ev.sender_key, ev.sender_lid, ev.sender_pn]) {
+      if (!key) continue
+      for (const alias of aliases(key)) availability.set(alias, status)
+    }
+    return
+  }
+  if (ev.state !== 'composing' && ev.state !== 'paused') return
 
   const who = ev.sender_key || chat
   const inChat = typing.get(chat) ?? new Map<string, Typing>()
@@ -84,6 +135,7 @@ export function typingIn(chatKey: string, now = Date.now()): Typing[] {
 /** forgetPresence drops everything, when the device or session changes. */
 export function forgetPresence(): void {
   typing.clear()
+  availability.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +151,7 @@ let enabled = true
 
 export function setTypingNotifications(on: boolean): void {
   enabled = on
-  if (!on) stopTyping()
+  if (!on) { stopTyping(); forgetPresence() }
 }
 
 let sending = ''

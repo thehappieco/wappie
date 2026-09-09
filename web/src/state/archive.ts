@@ -262,7 +262,7 @@ export interface HistoryView {
   uid: string
   waID: string
   versions: VersionView[]
-  deletion?: { byAuthor: boolean; at?: Date }
+  deletion?: { byAuthor: boolean; byAdmin?: boolean; at?: Date }
   /**
    * Every reaction row, in the order they happened.
    *
@@ -729,9 +729,10 @@ export async function start(open: Session): Promise<void> {
  * next reconnect, the media endpoint — has to use it. The socket already open
  * stays open: it was authenticated when it was opened.
  */
-export function rotateCredential(token: string): void {
+export async function rotateCredential(token: string, expiresAt?: Date): Promise<void> {
   if (!session || session.credential.kind !== 'session') return
   session.credential.token = token
+  if (expiresAt) await session.rotate?.(token, expiresAt)
 }
 
 /** recoverySet records that the account now holds a redeemable code. */
@@ -770,6 +771,7 @@ async function connect(): Promise<void> {
       onClose: (reason) => {
         if (stopped || session !== open || (openedConnection && conn !== openedConnection)) return
         state.connected = false
+        forgetPresence()
         state.closedReason = reason
         if (state.phase !== 'connecting') scheduleReconnect()
       },
@@ -902,7 +904,7 @@ function clearCountdown(): void {
   countdown = undefined
 }
 
-export function stop(): void {
+export function stop(options?: { logout?: boolean }): void {
   stopped = true
   connectionAttempt++
   archiveGeneration++
@@ -911,7 +913,8 @@ export function stop(): void {
   directoryLoading = null
   // Best effort, and not awaited: the session is being torn down either way,
   // and a revocation that fails still expires on its own.
-  void session?.close()
+  if (options?.logout !== false) void session?.close()
+  else session?.dispose?.()
   session = null
   if (retryTimer) clearTimeout(retryTimer)
   retryTimer = undefined
@@ -1900,6 +1903,7 @@ async function toHistoryView(reply: P.History, open: Opener): Promise<HistoryVie
     deletion: reply.deletion
       ? {
           byAuthor: reply.deletion.by_author,
+          byAdmin: reply.deletion.by_admin,
           at: reply.deletion.at ? new Date(reply.deletion.at) : undefined,
         }
       : undefined,

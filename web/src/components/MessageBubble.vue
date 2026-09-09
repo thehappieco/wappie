@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import { nowTick } from '../state/actions'
 import { discardFailed, loadHistory, people, state, type MessageView } from '../state/archive'
-import { expiryLabel } from '../state/ephemeral'
+import { expiryLabel, hasExpired } from '../state/ephemeral'
 import { displayFallback, formatPhone, parseJID, SERVER_LID, SERVER_USER } from '../state/jid'
 import { hhmm, runs, stamp, typeLabel, unmatchedMentions } from '../ui/format'
 import { createMessageGestures, MESSAGE_CONTROLS } from '../ui/messageGestures'
@@ -157,9 +157,15 @@ function mentionIdentity(jid: string): string[] {
  * from one to the other on screen rather than at the next reload.
  */
 const expiry = computed(() => expiryLabel(m.value, nowTick.value))
+const expiryTitle = computed(() => m.value.expiresAt
+  ? hasExpired(m.value, nowTick.value)
+    ? t('Mensagem temporária expirada em {time}', { time: stamp(m.value.expiresAt) })
+    : t('Mensagem temporária até {time}', { time: stamp(m.value.expiresAt) })
+  : t('Mensagem temporária'))
+const editedTitle = computed(() => t('Mensagem editada · {count} versões', { count: m.value.versionCount }))
 
 const forwardedLabel = computed(() =>
-  m.value.forwardingScore >= 5 ? t('encaminhada muitas vezes') : 'encaminhada',
+  m.value.forwardingScore >= 5 ? t('encaminhada muitas vezes') : t('encaminhada'),
 )
 </script>
 
@@ -177,7 +183,7 @@ const forwardedLabel = computed(() =>
       tabindex="0"
       :class="{ on: selected, revoked: m.deleted, pressing, 'gesture-open': actionsOpen, swiping: offset > 0 }"
       :style="{ transform: offset ? `translateX(${Math.min(12, offset / 3)}px)` : undefined }"
-      :aria-label="`Mensagem ${m.fromMe ? t('enviada') : `de ${m.senderName}`}, ${hhmm(m.ts)}`"
+      :aria-label="m.fromMe ? t('Mensagem enviada às {time}', { time: hhmm(m.ts) }) : t('Mensagem de {sender}, {time}', { sender: m.senderName, time: hhmm(m.ts) })"
       @click.capture="click"
       @keydown="keydown"
       @contextmenu="contextMenu"
@@ -224,6 +230,7 @@ const forwardedLabel = computed(() =>
         ↪ {{ forwardedLabel }}
       </div>
 
+      <div class="message-content">
       <MediaBlock v-if="m.media" :message="m" />
       <PayloadBlock v-if="m.payload" :payload="m.payload" :message="m" />
 
@@ -279,6 +286,7 @@ const forwardedLabel = computed(() =>
           </span>
         </button>
       </div>
+      </div>
 
       <div class="reactions" v-if="m.reactions.length">
         <span v-for="(r, i) in m.reactions" :key="i" class="reaction" :title="r.who">
@@ -305,21 +313,10 @@ const forwardedLabel = computed(() =>
       > {{ t('enviada, fora do histórico') }} </div>
 
       <div class="meta">
-        <span v-if="m.viewOnce" class="flag hot">{{ t('ver uma vez') }}</span>
-        <!-- Amber while it is still coming, plain once it has passed: an
-             expired message is a statement about the past, not a warning. -->
-        <span
-          v-if="expiry"
-          class="flag"
-          :class="{ hot: expiry === t('temporária') }"
-          :title="m.expiresAt ? stamp(m.expiresAt) : ''"
-          >{{ expiry }}</span
-        >
-        <!-- Both of these are the point of the archive, so they are stated on
-             the message itself rather than only in the panel. -->
-        <span v-if="m.edited" class="flag edited"> {{ t('editada{v0}', { v0: m.versionCount > 2 ? ` ${m.versionCount - 1}×` : '' }) }}
-        </span>
-        <span v-if="m.deleted" class="flag revoked">{{ t('apagada') }}</span>
+        <span v-if="m.viewOnce" class="message-mark" role="img" :title="t('Mensagem de visualização única')" :aria-label="t('Mensagem de visualização única')"><AppIcon name="view-once" :size="14" /></span>
+        <span v-if="expiry" class="message-mark" role="img" :title="expiryTitle" :aria-label="expiryTitle"><AppIcon name="timer" :size="14" /></span>
+        <span v-if="m.edited" class="message-mark" role="img" :title="editedTitle" :aria-label="editedTitle"><AppIcon name="pencil" :size="14" /></span>
+        <span v-if="m.deleted" class="message-mark" role="img" :title="t('Mensagem apagada')" :aria-label="t('Mensagem apagada')"><AppIcon name="trash" :size="14" /></span>
         <span>{{ hhmm(m.ts) }}</span>
         <MessageTicks :message="m" />
       </div>
@@ -335,8 +332,11 @@ const forwardedLabel = computed(() =>
 .bubble.pressing { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .bubble.gesture-open { outline: 2px solid var(--accent); }
 .bubble.swiping { transition: none; }
+.bubble.revoked .message-content { opacity: .6; }
+.bubble.revoked .text, .bubble.revoked .text a, .bubble.revoked .text .mention { text-decoration: line-through; text-decoration-thickness: 1px; }
+.message-mark { display: inline-flex; align-items: center; color: var(--text-faint); cursor: help; }
 .reply-gesture { position: absolute; inset-inline-start: -24px; top: calc(50% - 16px); width: 32px; height: 32px; display: grid; place-items: center; color: var(--text-dim); background: var(--bg-raised); border-radius: 50%; pointer-events: none; transform: rotate(180deg); }
 .msg.in .reply-gesture { inset-inline-start: 0; z-index: 1; }
-.reply-ready .reply-gesture { background: var(--accent); color: white; }
+.reply-ready .reply-gesture { background: var(--accent); color: var(--on-accent); }
 @media (prefers-reduced-motion: reduce) { .bubble { transition: none; } }
 </style>

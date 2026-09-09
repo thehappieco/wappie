@@ -6,7 +6,7 @@ import { loadOlder, people, refreshChats, state, type MessageView } from '../sta
 import { loadGroup, setChatTimer } from '../state/groups'
 import { TIMER_PRESETS, timerLabel } from '../state/ephemeral'
 import { nowTick } from '../state/actions'
-import { typingIn } from '../state/presence'
+import { availabilityIn, typingIn, watchPresence } from '../state/presence'
 import { forgetSeen, sawMessage } from '../state/reading'
 import { dayLabel, sameDay } from '../ui/format'
 import AppIcon from './AppIcon.vue'
@@ -150,10 +150,16 @@ async function older() {
 const focused = ref(!document.hidden && document.hasFocus())
 let watcher: IntersectionObserver | null = null
 let sweep: ReturnType<typeof setInterval> | undefined
+let presenceRefresh: ReturnType<typeof setInterval> | undefined
+
+function refreshPresence() {
+  if (focused.value) void watchPresence(state.openChatKey)
+}
 
 function onFocusChange() {
   focused.value = !document.hidden && document.hasFocus()
   if (!focused.value) forgetSeen()
+  else refreshPresence()
 }
 
 /** The ids currently intersecting, re-reported on a tick so dwell can elapse. */
@@ -183,6 +189,8 @@ function observe() {
 }
 
 onMounted(() => {
+  refreshPresence()
+  presenceRefresh = setInterval(refreshPresence, 45_000)
   if (typeof ResizeObserver !== 'undefined') {
     sizeWatcher = new ResizeObserver(() => {
       const el = scroller.value
@@ -215,9 +223,18 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onFocusChange)
   watcher?.disconnect()
   if (sweep) clearInterval(sweep)
+  if (presenceRefresh) clearInterval(presenceRefresh)
 })
 
 watch(() => [state.groupPanel, state.selectedUID], () => forgetSeen(), { flush: 'sync' })
+watch(() => [state.openChatKey, state.deviceID, state.connected, state.quiet], refreshPresence)
+
+const availabilityHere = computed(() => availabilityIn(state.openChatKey, nowTick.value))
+const presenceLabel = computed(() => availabilityHere.value === 'online' ? t('online')
+  : availabilityHere.value === 'offline' ? t('offline') : t('Status indisponível'))
+const presenceHint = computed(() => state.quiet
+  ? t('O modo incógnito mantém sua presença oculta. O status dos contatos pode ficar indisponível.')
+  : t('O status depende da conexão e das configurações de privacidade do contato.'))
 
 // Re-observe whenever the conversation is rebuilt, which is on every live
 // frame: the elements are new objects and the old observer is watching nodes
@@ -287,7 +304,10 @@ async function onTimer(value: string) {
         <div class="sub">
           <template v-if="chat.isGroup && chat.audience">{{ t('{v0} participantes', { v0: chat.audience }) }}</template>
           <template v-else-if="chat.isGroup">{{ t('Grupo') }}</template>
-          <template v-else>{{ state.quiet ? t('Modo incógnito') : t('Conversa') }}</template>
+          <span v-else-if="typingHere" class="contact-presence">{{ typingHere }}</span>
+          <span v-else class="contact-presence" :class="{ online: availabilityHere === 'online' }" :title="presenceHint">
+            <span v-if="availabilityHere !== 'unknown'" class="presence-dot" aria-hidden="true" />{{ presenceLabel }}
+          </span>
         </div>
       </div>
 
@@ -372,3 +392,9 @@ async function onTimer(value: string) {
     />
   </section>
 </template>
+
+<style scoped>
+.contact-presence { display: inline-flex; align-items: center; gap: 5px; }
+.contact-presence.online { color: var(--accent); }
+.presence-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+</style>

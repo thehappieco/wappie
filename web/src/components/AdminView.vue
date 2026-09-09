@@ -82,7 +82,7 @@ const emit = defineEmits<{ (e: 'read', deviceID: string): void }>()
 onMounted(() => {
   if (state.connected) void load()
   const billingReturn = new URLSearchParams(window.location.search).get('billing')
-  if (billingReturn && ['success', 'cancel', 'portal'].includes(billingReturn)) show('billing')
+  if (billingReturn && ['success', 'cancel', 'portal', 'change'].includes(billingReturn)) show('billing')
 })
 
 function pendingDevice(device: DeviceInfo): boolean { return !device.pn && !device.lid && !device.last_connected_at }
@@ -183,7 +183,7 @@ async function read(device: DeviceInfo) {
       </nav>
       <div class="console-profile">
         <div><strong>{{ state.account || state.label }}</strong><span>{{ roleLabels[state.role] || t('Acesso ao console') }}</span></div>
-        <button class="icon-btn" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop"><AppIcon name="logout" :size="20" /></button>
+        <button class="icon-btn" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop()"><AppIcon name="logout" :size="20" /></button>
       </div>
     </aside>
 
@@ -195,7 +195,7 @@ async function read(device: DeviceInfo) {
           :title="appDevice ? t('Abrir o aplicativo de mensagens') : t('A leitura de um número precisa estar liberada para sua conta')" @click="returnToApp">
           <AppIcon name="back" :size="18" /><span>{{ t('Voltar ao app') }}</span>
         </button>
-        <button class="icon-btn mobile-signout" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop"><AppIcon name="logout" :size="20" /></button>
+        <button class="icon-btn mobile-signout" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop()"><AppIcon name="logout" :size="20" /></button>
       </header>
 
       <main ref="content" class="console-content" :aria-label="current.label">

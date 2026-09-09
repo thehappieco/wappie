@@ -54,7 +54,7 @@ async function rotatePassword(event: SubmitEvent) {
       current: current.value,
       next: next.value,
     })
-    rotateCredential(fresh.token)
+    await rotateCredential(fresh.token, fresh.expiresAt)
     current.value = ''
     next.value = ''
     confirm.value = ''

@@ -5,7 +5,9 @@ import { computed, ref } from 'vue'
 import { state } from '../state/archive'
 import { playable as isPlayable } from '../state/ticks'
 import ReadersModal from './ReadersModal.vue'
+import AppIcon from './AppIcon.vue'
 import { stamp, typeLabel } from '../ui/format'
+import { deletionLabel } from '../ui/deletionLabel'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -47,7 +49,7 @@ function receiptLabel(revision: number): string {
   const got = rows.filter((r) => r.revisions.get(revision)?.delivered).length
   const read = rows.filter((r) => r.revisions.get(revision)?.read).length
   if (!rows.length) return t('nenhum recibo para esta versão')
-  return `${got} receberam · ${read} leram`
+  return t('{delivered} receberam · {read} leram', { delivered: got, read })
 }
 /**
  * replacedAt is when the reaction at i was superseded.
@@ -71,10 +73,8 @@ function replacedAt(i: number): Date | undefined {
         <h2>{{ t('O que o WhatsApp esconde') }}</h2>
         <div class="sub" v-if="message">{{ typeLabel(message.type) }} · {{ message.senderName }}</div>
       </div>
-      <button class="icon-btn" @click="emit('close')" :title="t('Fechar')">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M18 6 6 18M6 6l12 12" />
-        </svg>
+      <button class="icon-btn" type="button" @click="emit('close')" :title="t('Fechar')" :aria-label="t('Fechar')">
+        <AppIcon name="close" :size="20" />
       </button>
     </div>
 
@@ -93,9 +93,9 @@ function replacedAt(i: number): Date | undefined {
             class="version"
             :class="{ current: version.revision === currentRevision }"
           >
-            <div class="rev"> {{ t('revisão {v0}', { v0: version.revision }) }} <template v-if="version.revision === 0"> {{ t('· original') }}</template>
+            <div class="version-heading"><div class="rev"> {{ t('revisão {v0}', { v0: version.revision }) }} <template v-if="version.revision === 0"> {{ t('· original') }}</template>
               <template v-else-if="version.revision === currentRevision"> {{ t('· atual') }}</template>
-            </div>
+            </div><button class="version-info" type="button" aria-haspopup="dialog" :title="t('Confirmações da versão {revision}: {summary}', { revision: version.revision, summary: receiptLabel(version.revision) })" :aria-label="t('Confirmações da versão {revision}: {summary}', { revision: version.revision, summary: receiptLabel(version.revision) })" @click="readersFor = version.revision"><AppIcon name="info" :size="18" /></button></div>
             <div class="body" v-if="version.bodyState === 'ok'">{{ version.body || '—' }}</div>
             <div class="tampered" v-else-if="version.bodyState === 'tampered'"> {{ t('⚠ ADULTERADO OU CHAVE ERRADA') }} </div>
             <!-- Absent and locked are different facts. A location or a photo
@@ -117,9 +117,6 @@ function replacedAt(i: number): Date | undefined {
                  having done so. Every version is a stanza with a WhatsApp id
                  of its own and collects its own delivery receipts, and that is
                  the number worth showing. -->
-            <button class="link" type="button" @click="readersFor = version.revision">
-              {{ receiptLabel(version.revision) }}
-            </button>
           </div>
           <div v-if="history.versions.length === 1" class="sealed" style="font-size: 12.5px"> {{ t('Nunca editada.') }} </div>
         </section>
@@ -130,9 +127,7 @@ function replacedAt(i: number): Date | undefined {
           <div class="card">
             <div class="title" style="color: var(--danger)">
               {{
-                history.deletion.byAuthor
-                  ? t('Apagada por quem enviou')
-                  : t('Apagada por um administrador do grupo')
+                deletionLabel(message?.isGroup ?? false, history.deletion)
               }}
             </div>
             <div class="dim">{{ stamp(history.deletion.at) }}</div>
@@ -224,3 +219,11 @@ function replacedAt(i: number): Date | undefined {
     @close="readersFor = undefined"
   />
 </template>
+
+<style scoped>
+.version-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -4px 0 2px; }
+.version-info { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; color: var(--message-info); background: transparent; }
+.version-info:hover { background: color-mix(in srgb, var(--message-info) 12%, transparent); }
+.version-info:focus-visible { outline: 2px solid var(--message-info); outline-offset: 2px; }
+@media (pointer: coarse) { .version-info { width: 44px; height: 44px; } }
+</style>

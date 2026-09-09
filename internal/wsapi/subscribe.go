@@ -258,6 +258,7 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 			SenderPN:  ev.Presence.SenderPN,
 			State:     ev.Presence.State,
 			Media:     ev.Presence.Media,
+			LastSeen:  ev.Presence.LastSeen,
 		})
 		return
 	}

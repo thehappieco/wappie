@@ -2,6 +2,7 @@ package webui_test
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -161,4 +162,119 @@ func TestNoClientBuilt(t *testing.T) {
 	if _, err := webui.New("", nil); !errors.Is(err, webui.ErrNotBuilt) {
 		t.Fatalf("an unset directory gave %v, want ErrNotBuilt", err)
 	}
+}
+
+func TestSessionBridgeOnlyAllowsTheHostedClientsToFrameIt(t *testing.T) {
+	dir := build(t)
+	write(t, filepath.Join(dir, "session-bridge.html"), "<!doctype html><title>session bridge</title>")
+	h, err := webui.New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(method, "https://api.wappie.thehappie.co/session-bridge.html", nil))
+			resp := rec.Result()
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("bridge returned %d", resp.StatusCode)
+			}
+			policy := resp.Header.Get("Content-Security-Policy")
+			for name, want := range map[string]string{
+				"default-src": "'self'", "script-src": "'self'", "worker-src": "'self'", "connect-src": "'self'",
+				"frame-src": "'none'", "base-uri": "'none'", "object-src": "'none'", "form-action": "'none'",
+				"frame-ancestors": "https://app.wappie.thehappie.co https://console.wappie.thehappie.co",
+			} {
+				if got := directive(policy, name); got != want {
+					t.Errorf("%s = %q, want %q", name, got, want)
+				}
+			}
+			for name, want := range map[string]string{
+				"X-Frame-Options": "", "Cross-Origin-Resource-Policy": "same-site", "Referrer-Policy": "no-referrer",
+				"Cache-Control": "no-cache, no-store", "X-Content-Type-Options": "nosniff",
+				"Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+			} {
+				if got := resp.Header.Get(name); got != want {
+					t.Errorf("%s = %q, want %q", name, got, want)
+				}
+			}
+			body, _ := io.ReadAll(resp.Body)
+			if method == http.MethodGet && !strings.Contains(string(body), "session bridge") {
+				t.Errorf("bridge served another page: %s", body)
+			}
+		})
+	}
+}
+
+func TestSessionBridgeDoesNotRelaxOtherHostsOrFallbackPages(t *testing.T) {
+	dir := build(t)
+	write(t, filepath.Join(dir, "session-bridge.html"), "session bridge")
+	h, err := webui.New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{
+		"https://app.wappie.thehappie.co/session-bridge.html",
+		"https://console.wappie.thehappie.co/session-bridge.html",
+		"https://localhost/session-bridge.html",
+		"https://api.wappie.thehappie.co.example.com/session-bridge.html",
+		"https://api.wappie.thehappie.co/session-bridge.html/",
+		"https://api.wappie.thehappie.co//session-bridge.html",
+	} {
+		t.Run(target, func(t *testing.T) {
+			resp := get(t, h, target)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("bridge alias returned %d, want 404", resp.StatusCode)
+			}
+			if resp.Header.Get("X-Frame-Options") != "DENY" || directive(resp.Header.Get("Content-Security-Policy"), "frame-ancestors") != "'none'" {
+				t.Errorf("bridge alias became frameable: %v", resp.Header)
+			}
+		})
+	}
+	if err := os.Remove(filepath.Join(dir, "session-bridge.html")); err != nil {
+		t.Fatal(err)
+	}
+	resp := get(t, h, "https://api.wappie.thehappie.co/session-bridge.html")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || resp.Header.Get("X-Frame-Options") != "DENY" {
+		t.Errorf("missing bridge must not become a frameable SPA fallback: %d %v", resp.StatusCode, resp.Header)
+	}
+}
+
+func TestOnlyHostedApplicationPagesCanLoadTheSessionBridge(t *testing.T) {
+	h, err := webui.New(build(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"app.wappie.thehappie.co", "console.wappie.thehappie.co", "api.wappie.thehappie.co", "localhost", "app.wappie.thehappie.co.example.com"} {
+		for _, route := range []string{"/", "/index.html", "/settings/security"} {
+			t.Run(host+route, func(t *testing.T) {
+				resp := get(t, h, "https://"+host+route)
+				defer resp.Body.Close()
+				want := "'none'"
+				if host == "app.wappie.thehappie.co" || host == "console.wappie.thehappie.co" {
+					want = "https://api.wappie.thehappie.co/session-bridge.html"
+				}
+				policy := resp.Header.Get("Content-Security-Policy")
+				if got := directive(policy, "frame-src"); got != want {
+					t.Errorf("frame-src = %q, want %q", got, want)
+				}
+				if directive(policy, "frame-ancestors") != "'none'" || resp.Header.Get("X-Frame-Options") != "DENY" || resp.Header.Get("Cross-Origin-Resource-Policy") != "same-origin" {
+					t.Errorf("main application became frameable: %v", resp.Header)
+				}
+			})
+		}
+	}
+}
+
+func directive(policy, name string) string {
+	for _, part := range strings.Split(policy, ";") {
+		fields := strings.Fields(part)
+		if len(fields) > 0 && fields[0] == name {
+			return strings.Join(fields[1:], " ")
+		}
+	}
+	return ""
 }

@@ -4,8 +4,9 @@
 //
 // An account is the ordinary way. The password derives the key that unwraps the
 // account's own private key, which opens a grant per device, and each grant is
-// that device's archive key. Nothing is written down, a forgotten password has
-// a recovery code behind it, and access can be granted and revoked per WhatsApp
+// that device's archive key. An authorized browser remembers a non-extractable
+// account CryptoKey and an encrypted session token until logout or expiration.
+// A forgotten password has a recovery code behind it, and access can be granted and revoked per WhatsApp
 // account without anybody re-keying anything.
 //
 // A pasted key is the escape hatch: an API key and one device's archive key,
@@ -14,7 +15,10 @@
 // how the first archive of this project was lost, so it is not the default.
 
 import type { PrivateKey } from '../crypto/hpke'
-import { signOut, type SignedIn } from '../api/auth'
+import { AuthError, restoreSignIn, signOut, type SignedIn } from '../api/auth'
+import { origin } from '../api/endpoint'
+import { beginBrowserSessionEpoch, bridgeOrigin, browserSessionWasCleared, forgetBrowserSession, readBrowserSession, rememberBrowserSession, sharedBrowserOrigin } from './sessionBridge'
+import type { BrowserLogin } from './sessionVault'
 
 /** Credential is what the websocket and the media endpoint authenticate with. */
 export interface Credential {
@@ -58,13 +62,28 @@ export interface Session {
   account?: { email: string; hasRecovery: boolean; tenantID?: string }
 
   close(): Promise<void>
+  /** Dispose memory and connections without signing out on normal navigation. */
+  dispose?(): void
+  persistenceID?: string
+  persistenceEpoch?: string
+  expiresAt?: Date
+  notice?: string
+  remember?(): Promise<void>
+  rotate?(token: string, expiresAt: Date): Promise<void>
 }
 
 /** fromAccount builds a session from a completed sign-in. */
 export function fromAccount(signedIn: SignedIn, serverURL: string): Session {
   const credential: Credential = { kind: 'session', token: signedIn.token }
   const keys = new Map<string, PrivateKey>()
+  const tenantID = signedIn.tenantID
   for (const r of signedIn.readable) keys.set(r.deviceID, r.archive)
+  let saved: BrowserLogin | undefined = signedIn.browserLogin ?? (signedIn.accountKey ? {
+    id: crypto.randomUUID(), realm: sharedBrowserOrigin() ? bridgeOrigin : origin(serverURL).origin,
+    serverURL: sharedBrowserOrigin() ? '' : serverURL, token: signedIn.token, expiresAt: signedIn.expiresAt.getTime(),
+    userID: signedIn.userID, tenantID: signedIn.tenantID, accountKey: signedIn.accountKey, epoch: beginBrowserSessionEpoch(),
+  } : undefined)
+  let closed = false
 
   return {
     label: signedIn.email,
@@ -73,10 +92,53 @@ export function fromAccount(signedIn: SignedIn, serverURL: string): Session {
     archiveFor: (deviceID) => keys.get(deviceID),
     readable: signedIn.readable.map((r) => ({ deviceID: r.deviceID, label: r.label })),
     account: { email: signedIn.email, hasRecovery: signedIn.hasRecovery, tenantID: signedIn.tenantID },
-    close: async () => {
-      keys.clear()
-      await signOut(serverURL, credential.token)
+    persistenceID: saved?.id,
+    persistenceEpoch: saved?.epoch,
+    expiresAt: signedIn.expiresAt,
+    notice: signedIn.notice,
+    remember: async () => { if (!closed && saved) await rememberBrowserSession(saved) },
+    rotate: async (token, expiresAt) => {
+      credential.token = token
+      if (!closed && saved) {
+        // Password rotation authenticates a new family in the current space.
+        saved = { ...saved, token, expiresAt: expiresAt.getTime(), tenantID }
+        await rememberBrowserSession(saved)
+      }
     },
+    dispose: () => { closed = true; keys.clear(); saved = undefined },
+    close: async () => {
+      closed = true
+      keys.clear()
+      const savedID = saved?.id
+      const epoch = saved?.epoch
+      saved = undefined
+      await Promise.allSettled([...(savedID ? [forgetBrowserSession(savedID, epoch)] : []), signOut(serverURL, credential.token, true)])
+    },
+  }
+}
+
+/** Missing or revoked sessions lock the page; transient outages preserve the vault for retry. */
+export async function restoreAccountSession(workspace?: string, pending?: (id: string) => void): Promise<Session | null> {
+  let login: BrowserLogin | null
+  try { login = await readBrowserSession() } catch { return null }
+  if (!login) return null
+  if (browserSessionWasCleared(login.id, login.epoch)) return null
+  pending?.(login.id)
+  const expectedRealm = sharedBrowserOrigin() ? bridgeOrigin : origin(login.serverURL).origin
+  if (login.realm !== expectedRealm) { await forgetBrowserSession(login.id); return null }
+  try {
+    const signed = await restoreSignIn(login, workspace)
+    // Logout or another account may have won while authorization/grants loaded.
+    const current = await readBrowserSession()
+    if (current?.id !== login.id || browserSessionWasCleared(login.id, login.epoch)) return null
+    return fromAccount(signed, login.serverURL)
+  }
+  catch (error) {
+    if (error instanceof AuthError && ['unauthorized', 'bad_credentials'].includes(error.code)) {
+      await forgetBrowserSession(login.id, login.epoch)
+      return null
+    }
+    throw error
   }
 }
 

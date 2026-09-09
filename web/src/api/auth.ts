@@ -23,6 +23,7 @@ import { fromBase64, parseUUID, toBase64, type Bytes } from '../crypto/bytes'
 import { importArchiveKey, type PrivateKey } from '../crypto/hpke'
 import { grantRow, Kind, openDirect } from '../crypto/seal'
 import { endpoint } from './endpoint'
+import type { BrowserLogin } from '../state/sessionVault'
 
 export class AuthError extends Error {
   constructor(
@@ -65,6 +66,7 @@ interface GrantReply {
 export interface MeReply {
   user: Account
   grants: GrantReply[]
+  expires_at?: string
 }
 
 /** Readable is one WhatsApp account this person may open, and the key for it. */
@@ -86,9 +88,14 @@ export interface SignedIn {
   hasRecovery: boolean
   /** Devices with a grant. An empty list means an account that can read nothing. */
   readable: Readable[]
+  /** A non-extractable key handle; raw account key bytes are wiped after sign-in. */
+  accountKey?: PrivateKey
+  /** Restoration keeps the base login while each tab selects its own workspace. */
+  browserLogin?: BrowserLogin
+  notice?: string
 }
 
-async function call<T>(serverURL: string, path: string, body: unknown, token?: string): Promise<T> {
+async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(endpoint(serverURL, path), {
     method: body === undefined ? 'GET' : 'POST',
     headers: {
@@ -97,6 +104,7 @@ async function call<T>(serverURL: string, path: string, body: unknown, token?: s
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store',
+    ...(signal ? { signal } : {}),
   })
   if (response.status === 204) return undefined as T
   const text = await response.text()
@@ -406,9 +414,9 @@ export async function setRecovery(input: {
 }
 
 /** signOut revokes the session server-side. Best effort: the tab is closing. */
-export async function signOut(serverURL: string, token: string): Promise<void> {
+export async function signOut(serverURL: string, token: string, allRelated = false): Promise<void> {
   try {
-    await call<void>(serverURL, '/v1/auth/logout', {}, token)
+    await call<void>(serverURL, '/v1/auth/logout', allRelated ? { all_related: true } : {}, token)
   } catch {
     // A session that cannot be revoked still expires, and there is nothing
     // useful to show somebody who is already leaving.
@@ -502,11 +510,49 @@ async function finish(
   reply: SessionReply,
   accountPrivate: Bytes,
 ): Promise<SignedIn> {
-  const me = await call<MeReply>(serverURL, '/v1/auth/me', undefined, reply.token)
+  return finishWithKey(serverURL, reply, await importArchiveKey(accountPrivate))
+}
 
-  const tenant = parseUUID(reply.user.tenant_id)
-  const user = parseUUID(reply.user.id)
-  const account = await importArchiveKey(accountPrivate)
+/** Validates authorization again before opening any persisted key or grant. */
+export async function restoreSignIn(login: BrowserLogin, workspace?: string): Promise<SignedIn> {
+  if (login.expiresAt <= Date.now()) throw new AuthError('unauthorized', t('Sua sessão expirou. Entre novamente.'))
+  const controller = new AbortController()
+  const deadline = setTimeout(() => controller.abort(), 15_000)
+  try {
+    const me = await call<MeReply>(login.serverURL, '/v1/auth/me', undefined, login.token, controller.signal)
+    if (me.user.id !== login.userID || me.user.tenant_id !== login.tenantID) {
+      throw new AuthError('unauthorized', t('Sua sessão expirou. Entre novamente.'))
+    }
+    let reply: SessionReply = { token: login.token, expires_at: me.expires_at ?? new Date(login.expiresAt).toISOString(), user: me.user }
+    let grants = me
+    let notice = ''
+    if (workspace && workspace !== me.user.tenant_id) {
+      try {
+        const selected = await call<SessionReply>(login.serverURL, '/v1/auth/workspaces/session', { tenant_id: workspace }, login.token, controller.signal)
+        grants = await call<MeReply>(login.serverURL, '/v1/auth/me', undefined, selected.token, controller.signal)
+        reply = selected
+      } catch (error) {
+        if (!(error instanceof AuthError) || !['bad_request', 'not_authorized', 'not_found'].includes(error.code)) throw error
+        notice = t('Este espaço não está disponível. Abrimos seu espaço atual para você escolher outro.')
+      }
+    }
+    const signed = await finishWithKey(login.serverURL, reply, login.accountKey, grants)
+    signed.browserLogin = login
+    signed.notice = notice
+    return signed
+  } finally { clearTimeout(deadline) }
+}
+
+async function finishWithKey(serverURL: string, reply: SessionReply, account: PrivateKey, supplied?: MeReply): Promise<SignedIn> {
+  const me = supplied ?? await call<MeReply>(serverURL, '/v1/auth/me', undefined, reply.token)
+  const publicKey = fromBase64(me.user.public_key)
+  if (me.user.id !== reply.user.id || me.user.tenant_id !== reply.user.tenant_id
+    || publicKey.length !== account.publicRaw.length || !publicKey.every((byte, index) => byte === account.publicRaw[index])) {
+    throw new AuthError('unauthorized', t('Sua sessão expirou. Entre novamente.'))
+  }
+
+  const tenant = parseUUID(me.user.tenant_id)
+  const user = parseUUID(me.user.id)
 
   const readable: Readable[] = []
   for (const g of me.grants ?? []) {
@@ -514,12 +560,9 @@ async function finish(
       const device = parseUUID(g.device_id)
       const row = await grantRow(tenant, device, user, g.epoch)
       const raw = await openDirect(account, Kind.DeviceGrant, tenant, row, fromBase64(g.sealed_dsk))
-      readable.push({
-        deviceID: g.device_id,
-        label: g.label || g.device_id.slice(0, 8),
-        epoch: g.epoch,
-        archive: await importArchiveKey(raw),
-      })
+      try {
+        readable.push({ deviceID: g.device_id, label: g.label || g.device_id.slice(0, 8), epoch: g.epoch, archive: await importArchiveKey(raw) })
+      } finally { raw.fill(0) }
     } catch {
       // Not readable. Said plainly by its absence rather than by a warning
       // nobody can act on.
@@ -529,12 +572,12 @@ async function finish(
   return {
     token: reply.token,
     expiresAt: new Date(reply.expires_at),
-    email: reply.user.email,
-    role: reply.user.role,
-    tenantID: reply.user.tenant_id,
-    userID: reply.user.id,
-    hasRecovery: reply.user.has_recovery,
-    readable,
+    email: me.user.email,
+    role: me.user.role,
+    tenantID: me.user.tenant_id,
+    userID: me.user.id,
+    hasRecovery: me.user.has_recovery,
+    readable, accountKey: account,
   }
 }
 

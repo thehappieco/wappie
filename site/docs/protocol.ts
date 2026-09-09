@@ -53,6 +53,7 @@ export const TypeGroupJoin = 'group.join'
 export const TypeGroupGet = 'group.info'
 export const TypeChatTimer = 'chat.timer'
 export const TypeChatTyping = 'chat.presence'
+export const TypePresenceWatch = 'presence.subscribe'
 export const TypeDeviceMode = 'device.mode'
 export const TypeReprojectGet = 'reproject.list'
 export const TypeReprojectPut = 'reproject.apply'
@@ -745,6 +746,7 @@ export interface MessageVersion {
 export interface MessageDeletion {
   message: SealedMessage
   by_author: boolean
+  by_admin?: boolean
   at?: string
 }
 
@@ -1129,6 +1131,14 @@ export interface PresenceEvent {
   sender_pn?: string
   state: string
   media?: string
+  last_seen?: string
+}
+
+export interface PresenceSubscription {
+  device_id: string
+  chat: string
+  subscribed: boolean
+  reason?: 'incognito' | 'disconnected' | 'unavailable'
 }
 
 /** Changing what a device tells the other side, while it runs. */

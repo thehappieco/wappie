@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -108,10 +109,11 @@ type Presence struct {
 	SenderKey string
 	SenderLID string
 	SenderPN  string
-	// State is "composing" or "paused"; Media is "audio" while recording a
+	// State is "available", "unavailable", "composing" or "paused"; Media is "audio" while recording a
 	// voice note and empty while typing.
-	State string
-	Media string
+	State    string
+	Media    string
+	LastSeen *time.Time
 }
 
 // Class distinguishes what an event announces.

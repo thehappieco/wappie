@@ -1,0 +1,104 @@
+{
+  "A assinatura continua ativa até {date}. Você pode retomar a renovação antes dessa data.": [
+    "The subscription remains active until {date}. You can resume renewal before that date.",
+    "La suscripción sigue activa hasta el {date}. Puedes reactivar la renovación antes de esa fecha.",
+    "L’abonnement reste actif jusqu’au {date}. Vous pouvez réactiver le renouvellement avant cette date.",
+    "Das Abonnement bleibt bis zum {date} aktiv. Sie können die Verlängerung vorher wieder aufnehmen."
+  ],
+  "A mudança mantém sua assinatura. Confira o preço e confirme a alteração na Stripe.": [
+    "The change keeps your existing subscription. Review the price and confirm the change in Stripe.",
+    "El cambio mantiene tu suscripción actual. Revisa el precio y confirma el cambio en Stripe.",
+    "Le changement conserve votre abonnement actuel. Vérifiez le tarif et confirmez la modification sur Stripe.",
+    "Die Änderung behält Ihr bestehendes Abonnement bei. Prüfen Sie den Preis und bestätigen Sie die Änderung in Stripe."
+  ],
+  "As vagas de operação nesta fase de testes são separadas da quantidade contratada.": [
+    "Operational capacity during this test phase is separate from the subscribed quantity.",
+    "La capacidad operativa durante esta fase de pruebas es independiente de la cantidad contratada.",
+    "La capacité opérationnelle de cette phase de test est distincte de la quantité souscrite.",
+    "Die Betriebskapazität in dieser Testphase ist unabhängig von der gebuchten Anzahl."
+  ],
+  "Assinatura existente": [
+    "Existing subscription",
+    "Suscripción existente",
+    "Abonnement existant",
+    "Bestehendes Abonnement"
+  ],
+  "Cancelamento agendado": [
+    "Cancellation scheduled",
+    "Cancelación programada",
+    "Résiliation programmée",
+    "Kündigung vorgemerkt"
+  ],
+  "Capacidade operacional": [
+    "Operational capacity",
+    "Capacidad operativa",
+    "Capacité opérationnelle",
+    "Betriebskapazität"
+  ],
+  "Contratar plano {plan}": [
+    "Subscribe to {plan}",
+    "Contratar el plan {plan}",
+    "Souscrire l’offre {plan}",
+    "Tarif {plan} buchen"
+  ],
+  "Esta alteração de plano não está disponível. Atualize a situação.": [
+    "This plan change is not available. Refresh the status.",
+    "Este cambio de plan no está disponible. Actualiza el estado.",
+    "Ce changement d’offre n’est pas disponible. Actualisez l’état.",
+    "Diese Tarifänderung ist nicht verfügbar. Aktualisieren Sie den Status."
+  ],
+  "Esta assinatura foi encerrada. Escolha um plano abaixo para contratar novamente.": [
+    "This subscription has ended. Choose a plan below to subscribe again.",
+    "Esta suscripción ha finalizado. Elige un plan abajo para contratar de nuevo.",
+    "Cet abonnement est terminé. Choisissez une offre ci-dessous pour vous réabonner.",
+    "Dieses Abonnement ist beendet. Wählen Sie unten einen Tarif, um erneut zu abonnieren."
+  ],
+  "Gerenciar assinatura": [
+    "Manage subscription",
+    "Gestionar suscripción",
+    "Gérer l’abonnement",
+    "Abonnement verwalten"
+  ],
+  "Gerencie a assinatura atual": [
+    "Manage the current subscription",
+    "Gestiona la suscripción actual",
+    "Gérez l’abonnement actuel",
+    "Aktuelles Abonnement verwalten"
+  ],
+  "Mudar para Equipe": [
+    "Switch to Team",
+    "Cambiar a Equipo",
+    "Passer à Équipe",
+    "Zu Team wechseln"
+  ],
+  "Plano atual": [
+    "Current plan",
+    "Plan actual",
+    "Offre actuelle",
+    "Aktueller Tarif"
+  ],
+  "Plano {plan}": [
+    "{plan} plan",
+    "Plan {plan}",
+    "Offre {plan}",
+    "Tarif {plan}"
+  ],
+  "Retomar assinatura": [
+    "Resume subscription",
+    "Reanudar suscripción",
+    "Reprendre l’abonnement",
+    "Abonnement fortsetzen"
+  ],
+  "Você confirma a retomada no portal da Stripe. Nenhuma alteração é feita ao abrir a página.": [
+    "You confirm resuming in the Stripe portal. Opening the page does not make any changes.",
+    "Confirmas la reanudación en el portal de Stripe. Abrir la página no realiza ningún cambio.",
+    "Vous confirmez la reprise sur le portail Stripe. L’ouverture de la page n’effectue aucune modification.",
+    "Sie bestätigen die Fortsetzung im Stripe-Portal. Das Öffnen der Seite nimmt keine Änderungen vor."
+  ],
+  "Última assinatura": [
+    "Previous subscription",
+    "Última suscripción",
+    "Dernier abonnement",
+    "Vorheriges Abonnement"
+  ]
+}

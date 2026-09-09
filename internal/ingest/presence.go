@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow/types"
@@ -9,6 +10,45 @@ import (
 
 	"whatserver2/internal/domain"
 )
+
+// handlePresence relays a contact's reported online state, never recording it
+// in the archive. Missing events are not evidence that someone is offline.
+func (r *Router) handlePresence(ctx context.Context, deviceID string, evt *events.Presence) {
+	if r.cfg.Bus == nil || evt == nil || evt.From.IsEmpty() {
+		return
+	}
+	info, ok := r.cfg.Lookup(deviceID)
+	if !ok {
+		return
+	}
+	device, err := uuid.Parse(deviceID)
+	if err != nil {
+		return
+	}
+	peer := domain.AddressOf(evt.From.ToNonAD())
+	if peer.Primary().Server != types.DefaultUserServer && peer.Primary().Server != types.HiddenUserServer {
+		return
+	}
+	if r.cfg.Phones != nil && !peer.LID.IsEmpty() {
+		if pn, found := r.cfg.Phones.PhoneFor(ctx, peer.LID); found {
+			peer = peer.Merge(domain.AddressOf(pn))
+		}
+	}
+	status := "available"
+	if evt.Unavailable {
+		status = "unavailable"
+	}
+	var lastSeen *time.Time
+	if evt.Unavailable && !evt.LastSeen.IsZero() {
+		lastSeen = &evt.LastSeen
+	}
+	r.cfg.Bus.Publish(info.TenantID, Event{
+		Class: ClassPresence, TenantID: info.TenantID, DeviceID: device,
+		ChatKey: peer.Primary().String(), Ephemeral: true,
+		Presence: &Presence{ChatKey: peer.Primary().String(), SenderKey: peer.Primary().String(),
+			SenderLID: jidString(peer.LID), SenderPN: jidString(peer.PN), State: status, LastSeen: lastSeen},
+	})
+}
 
 // handleChatPresence forwards "somebody is typing" and stores nothing.
 //

@@ -1,0 +1,92 @@
+{
+  "Mensagem temporária expirada em {time}": [
+    "Disappearing message expired at {time}",
+    "Mensaje temporal caducado el {time}",
+    "Message éphémère expiré le {time}",
+    "Selbstlöschende Nachricht am {time} abgelaufen"
+  ],
+  "Mensagem temporária até {time}": [
+    "Disappearing message until {time}",
+    "Mensaje temporal hasta el {time}",
+    "Message éphémère jusqu’au {time}",
+    "Selbstlöschende Nachricht bis {time}"
+  ],
+  "Mensagem editada · {count} versões": [
+    "Edited message · {count} versions",
+    "Mensaje editado · {count} versiones",
+    "Message modifié · {count} versions",
+    "Bearbeitete Nachricht · {count} Versionen"
+  ],
+  "Mensagem enviada às {time}": [
+    "Message sent at {time}",
+    "Mensaje enviado a las {time}",
+    "Message envoyé à {time}",
+    "Nachricht um {time} gesendet"
+  ],
+  "Mensagem de {sender}, {time}": [
+    "Message from {sender}, {time}",
+    "Mensaje de {sender}, {time}",
+    "Message de {sender}, {time}",
+    "Nachricht von {sender}, {time}"
+  ],
+  "Mensagem de visualização única": [
+    "View-once message",
+    "Mensaje de visualización única",
+    "Message à vue unique",
+    "Nachricht zur einmaligen Ansicht"
+  ],
+  "Mensagem apagada": [
+    "Deleted message",
+    "Mensaje eliminado",
+    "Message supprimé",
+    "Gelöschte Nachricht"
+  ],
+  "Citar esta mensagem na conversa": [
+    "Quote this message in the conversation",
+    "Citar este mensaje en la conversación",
+    "Citer ce message dans la conversation",
+    "Diese Nachricht im Gespräch zitieren"
+  ],
+  "Copiar o conteúdo da mensagem": [
+    "Copy the message content",
+    "Copiar el contenido del mensaje",
+    "Copier le contenu du message",
+    "Den Inhalt der Nachricht kopieren"
+  ],
+  "Selecionar o conteúdo para copiar um trecho": [
+    "Select the content to copy a passage",
+    "Seleccionar el contenido para copiar un fragmento",
+    "Sélectionner le contenu pour copier un passage",
+    "Den Inhalt auswählen, um einen Abschnitt zu kopieren"
+  ],
+  "Alterar o texto enviado": [
+    "Change the sent text",
+    "Modificar el texto enviado",
+    "Modifier le texte envoyé",
+    "Den gesendeten Text ändern"
+  ],
+  "Ver versões e confirmações de leitura": [
+    "View versions and read receipts",
+    "Ver versiones y confirmaciones de lectura",
+    "Voir les versions et les confirmations de lecture",
+    "Versionen und Lesebestätigungen anzeigen"
+  ],
+  "Remover a mensagem do WhatsApp": [
+    "Remove the message from WhatsApp",
+    "Eliminar el mensaje de WhatsApp",
+    "Supprimer le message de WhatsApp",
+    "Die Nachricht aus WhatsApp entfernen"
+  ],
+  "{delivered} receberam · {read} leram": [
+    "{delivered} received · {read} read",
+    "{delivered} recibieron · {read} leyeron",
+    "{delivered} ont reçu · {read} ont lu",
+    "{delivered} zugestellt · {read} gelesen"
+  ],
+  "Confirmações da versão {revision}: {summary}": [
+    "Receipts for version {revision}: {summary}",
+    "Confirmaciones de la versión {revision}: {summary}",
+    "Confirmations de la version {revision} : {summary}",
+    "Bestätigungen für Version {revision}: {summary}"
+  ]
+}

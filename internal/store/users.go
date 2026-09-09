@@ -547,9 +547,13 @@ func (u *Users) SetRecovery(ctx context.Context, tenant, userID uuid.UUID, wrap 
 
 // RevokeAllSessions signs an account out everywhere.
 func (u *Users) RevokeAllSessions(ctx context.Context, userID uuid.UUID) error {
-	if _, err := u.pool.Exec(ctx,
-		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
-		userID); err != nil {
+	if err := pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+		if err := lockPasskeyRegistration(ctx, tx, userID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, userID)
+		return err
+	}); err != nil {
 		return fmt.Errorf("store: revoke sessions: %w", err)
 	}
 	return nil
@@ -649,6 +653,7 @@ type Session struct {
 	TenantID  uuid.UUID
 	ExpiresAt time.Time
 	PasskeyID uuid.UUID
+	FamilyID  uuid.UUID
 }
 
 // SessionTTL is how long a sign-in lasts without further proof.
@@ -656,30 +661,28 @@ const SessionTTL = 14 * 24 * time.Hour
 
 // StartSession issues a token. The token is returned once and stored hashed.
 func (u *Users) StartSession(ctx context.Context, user User, userAgent string) (string, Session, error) {
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil)
+	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil, nil)
 }
 
 func (u *Users) StartPasskeySession(ctx context.Context, user User, userAgent string, passkeyID uuid.UUID) (string, Session, error) {
 	if passkeyID == uuid.Nil {
 		return "", Session{}, ErrNoSession
 	}
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), passkeyID)
+	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), passkeyID, nil)
 }
 
 // StartWorkspaceSession does not extend the authentication lifetime of the
 // source session. Selecting a space is not another proof of the password.
-func (u *Users) StartWorkspaceSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, sourcePasskey ...uuid.UUID) (string, Session, error) {
-	if !expiresAt.After(time.Now()) || expiresAt.After(time.Now().Add(SessionTTL)) {
+func (u *Users) StartWorkspaceSession(ctx context.Context, user User, userAgent string, source Session) (string, Session, error) {
+	if source.ID == uuid.Nil || source.UserID != user.ID {
 		return "", Session{}, ErrNoSession
 	}
-	var passkeyID uuid.UUID
-	if len(sourcePasskey) > 0 {
-		passkeyID = sourcePasskey[0]
-	}
-	return u.startSession(ctx, user, userAgent, expiresAt, passkeyID)
+	// The source is re-read while locked. A previously authenticated request
+	// cannot mint a new token after another tab has finished signing out.
+	return u.startSession(ctx, user, userAgent, time.Time{}, uuid.Nil, &source)
 }
 
-func (u *Users) startSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, passkeyID uuid.UUID) (string, Session, error) {
+func (u *Users) startSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, passkeyID uuid.UUID, source *Session) (string, Session, error) {
 	current, err := u.Get(ctx, user.TenantID, user.ID)
 	if errors.Is(err, ErrNotFound) {
 		return "", Session{}, ErrNoSession
@@ -707,15 +710,49 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 
 	s := Session{UserID: user.ID, TenantID: user.TenantID, ExpiresAt: expiresAt, PasskeyID: passkeyID}
 	err = u.inIdentity(ctx, user.ID, func(tx pgx.Tx) error {
-		if passkeyID != uuid.Nil {
+		// Recovery uses this same user lock before touching credentials or
+		// sessions. Keep the order user -> family -> passkey -> source session.
+		if err := lockPasskeyRegistration(ctx, tx, user.ID); err != nil {
+			return err
+		}
+		if source == nil {
+			var err error
+			s.FamilyID, err = uuid.NewV7()
+			if err != nil {
+				return err
+			}
+		} else {
+			if err := tx.QueryRow(ctx, `SELECT family_id, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at
+				FROM sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, source.ID, user.ID).
+				Scan(&s.FamilyID, &s.PasskeyID, &s.ExpiresAt); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNoSession
+				}
+				return err
+			}
+		}
+		if err := lockSessionFamily(ctx, tx, s.FamilyID); err != nil {
+			return err
+		}
+		if s.PasskeyID != uuid.Nil {
 			var id uuid.UUID
 			// Serialize issuance with revocation, including workspace-derived sessions.
-			if err := tx.QueryRow(ctx, `SELECT id FROM user_passkeys WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL FOR SHARE`, passkeyID, user.ID).Scan(&id); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT id FROM user_passkeys WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL FOR SHARE`, s.PasskeyID, user.ID).Scan(&id); err != nil {
 				return ErrNoSession
 			}
 		}
-		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(passkeyID)).Scan(&s.ID)
+		if source != nil {
+			var id uuid.UUID
+			if err := tx.QueryRow(ctx, `SELECT id FROM sessions WHERE id=$1 AND user_id=$2 AND family_id=$3
+				AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR SHARE`, source.ID, user.ID, s.FamilyID).Scan(&id); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNoSession
+				}
+				return err
+			}
+		}
+		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id,family_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(s.PasskeyID), s.FamilyID).Scan(&s.ID)
 	})
 	if err != nil {
 		return "", Session{}, fmt.Errorf("store: start session: %w", err)
@@ -736,8 +773,8 @@ func (u *Users) Session(ctx context.Context, token string) (Session, error) {
 		UPDATE sessions SET last_seen_at = now()
 		 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
 		 AND (sessions.tenant_id IS NULL OR EXISTS (SELECT 1 FROM tenants t WHERE t.id=sessions.tenant_id AND t.status='active'))
-		 RETURNING id, user_id, coalesce(tenant_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid)`, sum[:]).
-		Scan(&s.ID, &s.UserID, &s.TenantID, &s.ExpiresAt, &s.PasskeyID)
+		 RETURNING id, user_id, coalesce(tenant_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), family_id`, sum[:]).
+		Scan(&s.ID, &s.UserID, &s.TenantID, &s.ExpiresAt, &s.PasskeyID, &s.FamilyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNoSession
 	}
@@ -771,15 +808,59 @@ func (u *Users) ActiveSession(ctx context.Context, token string) (Session, User,
 
 // EndSession revokes one token.
 func (u *Users) EndSession(ctx context.Context, token string) error {
+	return u.endSession(ctx, token, false)
+}
+
+// EndSessionFamily revokes the browser login and all tokens derived from it
+// across workspaces. An unexpired token remains usable for this operation
+// after token-only logout, so switching spaces cannot leave a hidden login.
+// Unknown, malformed, and expired tokens all have the same idempotent result.
+func (u *Users) EndSessionFamily(ctx context.Context, token string) error {
+	return u.endSession(ctx, token, true)
+}
+
+func lockSessionFamily(ctx context.Context, tx pgx.Tx, familyID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "session-family/"+familyID.String())
+	return err
+}
+
+func (u *Users) endSession(ctx context.Context, token string, allRelated bool) error {
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
 	if err != nil || len(raw) != 32 {
 		//nolint:nilerr // Logging out with a malformed token is intentionally idempotent.
 		return nil
 	}
 	sum := sha256.Sum256(raw)
-	_, err = u.pool.Exec(ctx,
-		`UPDATE sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL`, sum[:])
-	return err
+	var userID, familyID uuid.UUID
+	err = u.pool.QueryRow(ctx, `SELECT user_id, family_id FROM sessions WHERE token_hash=$1 AND expires_at>now()`, sum[:]).Scan(&userID, &familyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+		if err := lockPasskeyRegistration(ctx, tx, userID); err != nil {
+			return err
+		}
+		if err := lockSessionFamily(ctx, tx, familyID); err != nil {
+			return err
+		}
+		// Re-check expiry after waiting for issuance/revocation to finish.
+		var id uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT id FROM sessions WHERE token_hash=$1 AND user_id=$2 AND family_id=$3 AND expires_at>clock_timestamp() FOR UPDATE`, sum[:], userID, familyID).Scan(&id); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if allRelated {
+			_, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND family_id=$2 AND revoked_at IS NULL`, userID, familyID)
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL`, id)
+		return err
+	})
 }
 
 // ---------------------------------------------------------------------------

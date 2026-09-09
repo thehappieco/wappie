@@ -107,7 +107,7 @@ func (h *Handler) workspaceSession(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, space := range spaces {
 		if space.ID == tenant && space.Status == "active" {
-			token, session, err := h.Users.StartWorkspaceSession(r.Context(), member, r.UserAgent(), source.ExpiresAt, source.PasskeyID)
+			token, session, err := h.Users.StartWorkspaceSession(r.Context(), member, r.UserAgent(), source)
 			if errors.Is(err, store.ErrNoSession) {
 				fail(w, http.StatusForbidden, "not_authorized", "workspace is unavailable")
 				return

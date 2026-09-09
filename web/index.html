@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <!-- The archive private key lives in this page: nothing may be loaded from
-         elsewhere. frame-ancestors is deliberately absent — a browser ignores it
+    <!-- The archive private key lives in this page. Hosted builds permit only
+         the dedicated session bridge frame. frame-ancestors is absent — a browser ignores it
          in a meta element and warns — so the server sets it, together with
          X-Frame-Options, in internal/webui. -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; worker-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; object-src 'none'" />
+          content="default-src 'self'; script-src 'self'; worker-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; frame-src 'none'; base-uri 'none'; object-src 'none'" />
     <meta name="referrer" content="no-referrer" />
     <title>Wappie</title>
   </head>

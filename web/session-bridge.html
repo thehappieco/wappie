@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Embedding is restricted by the HTTP frame-ancestors policy. A meta
+         element cannot impose that policy, so it is intentionally absent. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; worker-src 'self'; connect-src 'self'; frame-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Wappie</title>
+  </head>
+  <body>
+    <script type="module" src="/src/sessionBridge.ts"></script>
+  </body>
+</html>

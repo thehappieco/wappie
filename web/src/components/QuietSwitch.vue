@@ -31,6 +31,7 @@ async function toggle() {
     :class="{ on: quiet }"
     type="button"
     :disabled="busy"
+    :aria-busy="busy"
     :aria-pressed="quiet"
     :aria-label="quiet ? t('Modo incógnito ativado') : t('Modo incógnito desativado')"
     :title="

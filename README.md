@@ -391,12 +391,17 @@ is.
   seal — it is a party, a message id and a time — and it is what makes "who saw
   which version" answerable at all. Worth knowing it is there.
 
-- **The browser holds the key while it is open.** Anything that can execute
-  script in that origin can ask the unlocked session for plaintext. The client
-  ships a content security policy, no third-party JavaScript at all, and no
-  crypto dependency from npm — the archive key is behind about sixty lines of
-  HPKE over WebCrypto rather than behind a package that could be replaced in a
-  supply-chain attack. That is the mitigation; it is not the same as immunity.
+- **An authorized browser remembers its session until logout or expiration.**
+  IndexedDB stores a non-extractable account CryptoKey and an encrypted bearer
+  token; passwords and raw private keys are not persisted. Each restoration
+  validates the session and current device grants with the server. Hosted app
+  and console use a narrowly restricted same-site bridge to share that browser
+  session; self-hosted clients use their own origin's storage. Anything that can execute
+  script in an authorized origin can still use these keys to obtain plaintext. The client
+  ships a content security policy, loads no third-party hosted JavaScript, and
+  implements HPKE over WebCrypto. Non-extractable WebCrypto keys are not a promise of
+  hardware-backed storage or protection from a compromised browser profile.
+  See [browser session lifecycle](docs/browser-sessions.md) for persistence and logout behavior.
 
 - **The password is what protects an account, and the wrapped key is on the
   server.** Argon2id at 64 MiB and three passes, derived in a worker so the tab

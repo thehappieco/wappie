@@ -78,7 +78,10 @@ type Deletion struct {
 	// admin deleting someone else's. WhatsApp shows different text for each
 	// and the difference matters to anyone reading the archive later.
 	ByAuthor bool
-	At       *time.Time
+	// ByAdmin requires evidence of a different sender in a group. If neither
+	// attribution is known, clients should display a neutral deletion label.
+	ByAdmin bool
+	At      *time.Time
 }
 
 // Reaction is one reaction row and what later became of it.
@@ -271,7 +274,7 @@ func (m *Messages) History(ctx context.Context, tenant, device uuid.UUID,
 	}
 
 	out.Versions = versionsOf(*rootRow, byTarget[root])
-	out.Deletion = deletionOf(byTarget[root])
+	out.Deletion = deletionOf(*rootRow, byTarget[root])
 	out.Reactions = reactionsOf(byTarget)
 
 	if receipts != nil {
@@ -398,7 +401,7 @@ func versionsOf(root Row, children []Row) []Version {
 // whose target turned out to be a reaction is a withdrawn reaction, and
 // reporting it here is precisely the bug that made v1 show "message deleted"
 // where someone had taken back a thumbs-up.
-func deletionOf(children []Row) *Deletion {
+func deletionOf(root Row, children []Row) *Deletion {
 	var found *Row
 	for i := range children {
 		c := children[i]
@@ -412,14 +415,45 @@ func deletionOf(children []Row) *Deletion {
 	if found == nil {
 		return nil
 	}
-	return &Deletion{
-		Row: *found,
-		// A revoke sent by us against our own message, or by the author of a
-		// received one. The alternative is a group admin removing someone
-		// else's, which reads differently to anyone looking at this later.
-		ByAuthor: found.IsFromMe || found.SenderKey == "",
-		At:       found.TS,
+	author, admin := deletionAttribution(root, *found)
+	return &Deletion{Row: *found, ByAuthor: author, ByAdmin: admin, At: found.TS}
+}
+
+func deletionAttribution(root, revoke Row) (author, admin bool) {
+	if !root.IsGroup {
+		return true, false
 	}
+	if root.IsFromMe && revoke.IsFromMe {
+		return true, false
+	}
+	ids := func(row Row) []types.JID {
+		var out []types.JID
+		for _, raw := range []string{row.SenderKey, row.SenderLID, row.SenderPN} {
+			if jid, err := types.ParseJID(raw); err == nil && jid.User != "" && jid.Server != "" {
+				out = append(out, jid.ToNonAD())
+			}
+		}
+		return out
+	}
+	left, right := ids(root), ids(revoke)
+	for _, a := range left {
+		for _, b := range right {
+			if a == b {
+				return true, false
+			}
+		}
+	}
+	if root.IsFromMe != revoke.IsFromMe && len(left) > 0 && len(right) > 0 {
+		return false, true
+	}
+	for _, a := range left {
+		for _, b := range right {
+			if a.Server == b.Server {
+				return false, true
+			}
+		}
+	}
+	return false, false
 }
 
 // reactionsOf collects the reactions and works out which still stand.

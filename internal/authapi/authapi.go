@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -216,8 +217,10 @@ type grant struct {
 }
 
 type meReply struct {
-	User   account `json:"user"`
-	Grants []grant `json:"grants"`
+	User      account   `json:"user"`
+	Grants    []grant   `json:"grants"`
+	ExpiresAt time.Time `json:"expires_at"`
+	SessionID string    `json:"session_id"`
 }
 
 // ---------------------------------------------------------------------------
@@ -586,8 +589,32 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err := h.Users.EndSession(r.Context(), token); err != nil {
+	var req struct {
+		AllRelated bool `json:"all_related"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec.DisallowUnknownFields()
+	decodeErr := dec.Decode(&req)
+	if decodeErr == nil {
+		var trailing any
+		if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+			fail(w, http.StatusBadRequest, "bad_request", "malformed logout request")
+			return
+		}
+	} else if !errors.Is(decodeErr, io.EOF) {
+		fail(w, http.StatusBadRequest, "bad_request", "malformed logout request")
+		return
+	}
+	var err error
+	if req.AllRelated {
+		err = h.Users.EndSessionFamily(r.Context(), token)
+	} else {
+		err = h.Users.EndSession(r.Context(), token)
+	}
+	if err != nil {
 		h.log().Warn("could not end a session", "error", err)
+		fail(w, http.StatusInternalServerError, "internal", "could not end session")
+		return
 	}
 	h.accessChanged()
 	w.WriteHeader(http.StatusNoContent)
@@ -618,7 +645,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := meReply{User: toAccount(user), Grants: make([]grant, 0, len(grants))}
+	out := meReply{User: toAccount(user), Grants: make([]grant, 0, len(grants)), ExpiresAt: session.ExpiresAt, SessionID: session.ID.String()}
 	for _, g := range grants {
 		out.Grants = append(out.Grants, grant{
 			DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],

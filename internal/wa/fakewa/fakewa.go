@@ -452,6 +452,9 @@ func (c *Client) SendPresence(_ context.Context, state types.Presence) error {
 	return nil
 }
 
+// SubscribePresence observes a contact without announcing our own presence.
+func (c *Client) SubscribePresence(_ context.Context, _ types.JID) error { return nil }
+
 func (c *Client) SendChatPresence(_ context.Context, _ types.JID,
 	state types.ChatPresence, _ types.ChatPresenceMedia) error {
 	c.mu.Lock()

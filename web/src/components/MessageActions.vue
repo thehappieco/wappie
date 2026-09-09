@@ -36,7 +36,9 @@ const QUICK = ['👍', '❤️', '😂', '😮', '😢', '🙏']
 const timerNote = computed(() => {
   if (!isEphemeral(m.value)) return ''
   if (m.value.expiresAt) {
-    return `${hasExpired(m.value, nowTick.value) ? 'Expirou' : 'Expira'} em ${stamp(m.value.expiresAt)}`
+    return hasExpired(m.value, nowTick.value)
+      ? t('Mensagem temporária expirada em {time}', { time: stamp(m.value.expiresAt) })
+      : t('Mensagem temporária até {time}', { time: stamp(m.value.expiresAt) })
   }
   return m.value.expiration > 0 ? t('Temporária, prazo de {v0}', { v0: timerLabel(m.value.expiration) }) : t('Mensagem temporária')
 })
@@ -113,7 +115,7 @@ onBeforeUnmount(close)
       <header class="menu-heading">
         <div>
           <h2 :id="titleID">{{ t('Ações da mensagem') }}</h2>
-          <p>{{ text || typeLabel(m.type) }}</p>
+          <p :class="{ 'revoked-preview': m.deleted }">{{ text || typeLabel(m.type) }}</p>
         </div>
         <button class="menu-close" type="button" :aria-label="t('Fechar ações')" @click="close"><AppIcon name="close" :size="20" /></button>
       </header>
@@ -133,25 +135,30 @@ onBeforeUnmount(close)
       </div>
       <div v-else class="menu-options">
         <button v-if="mutable" class="menu-action" type="button" @click="reply">
-          <AppIcon name="back" /> <span>{{ t('Responder') }}</span><span class="action-hint">{{ t('Deslize →') }}</span>
+          <AppIcon name="back" /><span class="action-copy"><strong>{{ t('Responder') }}</strong><small>{{ t('Citar esta mensagem na conversa') }}</small></span><span class="action-hint">{{ t('Deslize →') }}</span>
         </button>
         <button v-if="text" class="menu-action" type="button" @click="copy">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M16 8V3H3v13h5" /></svg><span>{{ t('Copiar texto') }}</span>
+          <AppIcon name="copy" /><span class="action-copy"><strong>{{ t('Copiar texto') }}</strong><small>{{ t('Copiar o conteúdo da mensagem') }}</small></span>
         </button>
         <button v-if="text" class="menu-action" type="button" @click="selectText">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M12 4v16m-4 0h8M3 2v4m18-4v4" /></svg><span>{{ t('Selecionar texto') }}</span>
+          <AppIcon name="select-text" /><span class="action-copy"><strong>{{ t('Selecionar texto') }}</strong><small>{{ t('Selecionar o conteúdo para copiar um trecho') }}</small></span>
         </button>
         <button v-if="canEdit(m)" class="menu-action" type="button" :disabled="!connected" @click="edit">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6M3 21l5-1L21 7l-5-5L3 15v6Z" /></svg><span>{{ t('Editar') }}</span><span class="action-hint">{{ t('{v0} min', { v0: minutesLeft }) }}</span>
+          <AppIcon name="pencil" /><span class="action-copy"><strong>{{ t('Editar') }}</strong><small>{{ t('Alterar o texto enviado') }}</small></span><span class="action-hint">{{ t('{v0} min', { v0: minutesLeft }) }}</span>
         </button>
         <button class="menu-action" type="button" @click="info">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10h.01" /></svg><span>{{ t('Info da mensagem') }}</span>
+          <AppIcon name="info" class="message-info-icon" /><span class="action-copy"><strong>{{ t('Info da mensagem') }}</strong><small>{{ t('Ver versões e confirmações de leitura') }}</small></span>
         </button>
         <button v-if="canDelete(m)" class="menu-action danger" type="button" :disabled="!connected" @click="confirming = true">
-          <AppIcon name="trash" /><span>{{ t('Apagar para todos') }}</span>
+          <AppIcon name="trash" /><span class="action-copy"><strong>{{ t('Apagar para todos') }}</strong><small>{{ t('Remover a mensagem do WhatsApp') }}</small></span>
         </button>
       </div>
-      <p v-if="timerNote" class="menu-note timer-note"><AppIcon name="clock" :size="16" /> {{ timerNote }}</p>
+      <div v-if="m.viewOnce || timerNote || m.edited || m.deleted" class="message-facts">
+        <p v-if="m.viewOnce" class="menu-note"><AppIcon name="view-once" :size="16" />{{ t('Mensagem de visualização única') }}</p>
+        <p v-if="timerNote" class="menu-note"><AppIcon name="timer" :size="16" />{{ timerNote }}</p>
+        <p v-if="m.edited" class="menu-note"><AppIcon name="pencil" :size="16" />{{ t('Mensagem editada · {count} versões', { count: m.versionCount }) }}</p>
+        <p v-if="m.deleted" class="menu-note"><AppIcon name="trash" :size="16" />{{ t('Mensagem apagada') }}</p>
+      </div>
       <p v-if="copyError" class="copy-error" role="alert">{{ copyError }}</p>
       </template>
     </dialog>
@@ -171,6 +178,7 @@ onBeforeUnmount(close)
 .menu-heading > div { flex: 1; min-width: 0; }
 .menu-heading h2 { font-size: 16px; margin: 0; }
 .menu-heading p { margin: 6px 0 0; color: var(--text-dim); font-size: 13px; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
+.menu-heading p.revoked-preview { opacity: .6; text-decoration: line-through; }
 .menu-close { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; background: var(--bg-hover); }
 .quick-reactions { display: flex; justify-content: space-between; gap: 3px; padding: 10px 2px 14px; border-bottom: 1px solid var(--line); }
 .quick-reaction { display: grid; place-items: center; flex: 1; height: 44px; font-size: 28px; padding: 0; border-radius: 50%; transition: transform 120ms ease-out, background 120ms; }
@@ -181,10 +189,16 @@ onBeforeUnmount(close)
 .menu-action:hover { background: var(--bg-hover); }
 .menu-action svg { width: 22px; height: 22px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .menu-action > span:first-of-type { flex: 1; }
+.action-copy { min-width: 0; }
+.action-copy strong { display: block; font-size: 14px; font-weight: 550; }
+.action-copy small { display: block; margin-top: 3px; color: var(--text-dim); font-size: 11px; line-height: 1.4; }
 .action-hint { font-size: 12px; color: var(--text-dim); }
-.danger { color: var(--danger); }
+.menu-action.danger { color: var(--danger); background: transparent; border: 0; font-weight: inherit; }
+.menu-action.danger:hover { background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.message-info-icon { color: var(--message-info); }
 .menu-note { font-size: 12px; color: var(--text-dim); margin: 10px; }
-.timer-note { display: flex; gap: 6px; align-items: center; }
+.message-facts { border-top: 1px solid var(--line); margin: 6px 10px 2px; padding-top: 4px; }
+.message-facts .menu-note { display: flex; gap: 8px; align-items: center; font-size: 11px; margin: 8px 0; }
 .delete-confirmation > p:first-child { margin: 14px 10px 0; font-weight: 600; }
 .copy-error { margin: 8px 10px; color: var(--danger); font-size: 13px; }
 button:disabled { opacity: .4; cursor: default; }

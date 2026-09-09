@@ -31,6 +31,12 @@ export type IconName =
   | 'plus'
   | 'message'
   | 'shield'
+  | 'info'
+  | 'pencil'
+  | 'copy'
+  | 'select-text'
+  | 'timer'
+  | 'view-once'
 
 const paths: Record<IconName, string> = {
   back: 'M19 12H5m7-7-7 7 7 7',
@@ -64,6 +70,12 @@ const paths: Record<IconName, string> = {
   plus: 'M12 5v14M5 12h14',
   message: 'M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 2 1.5-6A8.5 8.5 0 1 1 21 11.5ZM7 9h9m-9 5h6',
   shield: 'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4Zm-4 10 3 3 5-6',
+  info: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-1v6m0-10h.01',
+  pencil: 'm14 4 6 6M3 21l5-1L21 7l-5-5L3 15v6Z',
+  copy: 'M10 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Zm6 0V3H3v13h5',
+  'select-text': 'M5 4h14M12 4v16m-4 0h8M3 2v4m18-4v4',
+  timer: 'M20 13a8 8 0 1 1-16 0 8 8 0 0 1 16 0ZM9 2h6m-3 0v3m6.5 1.5 1-1M12 9v4l3 2',
+  'view-once': 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM10 9l2-2v10m-2 0h4',
 }
 </script>
 

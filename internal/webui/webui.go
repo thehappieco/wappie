@@ -34,9 +34,22 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"img-src 'self' blob: data:; " +
 	"media-src 'self' blob:; " +
 	"connect-src 'self'; " +
+	"frame-src 'none'; " +
 	"frame-ancestors 'none'; " +
 	"base-uri 'none'; " +
 	"object-src 'none'"
+
+const sessionBridgePath = "/session-bridge.html"
+const sessionBridgeHost = "api.wappie.thehappie.co"
+const sessionBridgeURL = "https://" + sessionBridgeHost + sessionBridgePath
+
+// The session bridge has no application UI. Only these two hosted clients
+// may embed it; its messages are independently authenticated by the bridge.
+const sessionBridgePolicy = "default-src 'self'; " +
+	"script-src 'self'; worker-src 'self'; connect-src 'self'; " +
+	"frame-src 'none'; " +
+	"frame-ancestors https://app.wappie.thehappie.co https://console.wappie.thehappie.co; " +
+	"base-uri 'none'; object-src 'none'; form-action 'none'"
 
 // Handler serves a built single-page client out of a directory.
 type Handler struct {
@@ -81,9 +94,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clean := path.Clean("/" + r.URL.Path)
+	if clean == sessionBridgePath {
+		// This exception must never turn an SPA fallback or another host's
+		// application page into a frameable document.
+		if r.Host != sessionBridgeHost || r.URL.Path != sessionBridgePath || !hasAsset(h.dir, clean) {
+			h.headers(w, "/", r.Host)
+			http.NotFound(w, r)
+			return
+		}
+		h.headers(w, clean, r.Host)
+		h.files.ServeHTTP(w, r)
+		return
+	}
 
 	if clean != "/" && hasAsset(h.dir, clean) {
-		h.headers(w, clean)
+		h.headers(w, clean, r.Host)
 		h.files.ServeHTTP(w, r)
 		return
 	}
@@ -93,30 +118,40 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// reports that as a syntax error in a file that does not exist — an hour of
 	// confusion for a one-word cause.
 	if clean != "/" && path.Ext(clean) != "" {
-		h.headers(w, clean)
+		h.headers(w, clean, r.Host)
 		http.NotFound(w, r)
 		return
 	}
 
-	h.headers(w, "/")
+	h.headers(w, "/", r.Host)
 	http.ServeFile(w, r, path.Join(h.dir, "index.html"))
 }
 
 // headers sets what protects a page holding the archive key.
-func (h *Handler) headers(w http.ResponseWriter, clean string) {
+func (h *Handler) headers(w http.ResponseWriter, clean, host string) {
 	header := w.Header()
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("Cross-Origin-Opener-Policy", "same-origin")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
+	header.Set("X-Frame-Options", "DENY")
 	// Voice notes need an explicit browser grant. The policy permits that
 	// prompt only in this origin; it never grants microphone access itself.
 	header.Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=()")
 
 	switch {
-	case clean == "/":
-		header.Set("Content-Security-Policy", contentSecurityPolicy)
-		header.Set("X-Frame-Options", "DENY")
+	case clean == sessionBridgePath && host == sessionBridgeHost:
+		header.Set("Content-Security-Policy", sessionBridgePolicy)
+		header.Del("X-Frame-Options")
+		header.Set("Cross-Origin-Resource-Policy", "same-site")
+		header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		header.Set("Cache-Control", "no-cache, no-store")
+	case clean == "/" || clean == "/index.html":
+		policy := contentSecurityPolicy
+		if host == "app.wappie.thehappie.co" || host == "console.wappie.thehappie.co" {
+			policy = strings.Replace(policy, "frame-src 'none';", "frame-src "+sessionBridgeURL+";", 1)
+		}
+		header.Set("Content-Security-Policy", policy)
 		// The page is a shell around live data. Caching it means a client
 		// speaking an older protocol version after a deploy.
 		header.Set("Cache-Control", "no-cache")

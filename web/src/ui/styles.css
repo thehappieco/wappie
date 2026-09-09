@@ -24,6 +24,7 @@
   --accent-dim: #d1f4cc;
   --danger: #e5484d;
   --warn: #d4a017;
+  --message-info: #087f67;
   /* What goes ON a filled accent or danger surface. A token rather than a
      literal white so a palette that darkens the fill can darken this too —
      the two whites left in this file sit on a black veil over a photograph
@@ -59,24 +60,31 @@
   --accent: #00a884;
   --accent-dim: #103d33;
   --on-accent: #062b22;
+  --message-info: #4bd0a0;
 }
 
-/* Privacy state is independent of the chosen appearance. Its visible labels,
-   icon and muted outgoing bubbles distinguish it in both palettes. */
+/* Incognito keeps the dark reading surface but removes the green accents.
+   The selected appearance resumes when the privacy mode is turned off. */
 :root[data-incognito='true'] {
-  --bubble-out: #e5eeeb;
+  color-scheme: dark;
+  --bg: #151515;
+  --bg-panel: #171717;
+  --bg-raised: #242424;
+  --bg-hover: #292929;
+  --bg-active: #353535;
+  --bg-input: #2d2d2d;
+  --bubble-in: #262626;
+  --bubble-out: #343434;
+  --canvas: #101010;
+  --text: #ededed;
+  --text-dim: #a0a0a0;
+  --text-faint: #ababab;
+  --line: #333333;
+  --accent: #b7b7b7;
+  --accent-dim: #343434;
+  --on-accent: #181818;
+  --message-info: #4bd0a0;
 }
-:root[data-theme='dark'][data-incognito='true'] {
-  --bubble-out: #293b36;
-}
-:root[data-incognito='true'] .quiet-label {
-  background: var(--accent-dim);
-  color: var(--text);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
-  padding: 4px 8px;
-  border-radius: 999px;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -514,10 +522,6 @@ textarea:focus {
 
 .bubble.on {
   outline: 2px solid var(--accent);
-}
-
-.bubble.revoked {
-  border-left: 3px solid var(--danger);
 }
 
 .sender {
@@ -1598,6 +1602,11 @@ select {
 :root[data-theme='dark'] .avatar.tinted {
   background: hsl(var(--hue) 30% 26%);
   color: hsl(var(--hue) 45% 82%);
+}
+
+:root[data-incognito='true'] .avatar.tinted {
+  background: #363636;
+  color: #dddddd;
 }
 
 /* --- the composer ------------------------------------------------------- */
