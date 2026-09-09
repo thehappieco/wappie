@@ -81,6 +81,8 @@ const emit = defineEmits<{ (e: 'read', deviceID: string): void }>()
 
 onMounted(() => {
   if (state.connected) void load()
+  const billingReturn = new URLSearchParams(window.location.search).get('billing')
+  if (billingReturn && ['success', 'cancel', 'portal'].includes(billingReturn)) show('billing')
 })
 
 function pendingDevice(device: DeviceInfo): boolean { return !device.pn && !device.lid && !device.last_connected_at }
@@ -360,7 +362,8 @@ async function read(device: DeviceInfo) {
   .console-nav-item { width: auto; min-height: 40px; padding: 9px 12px; gap: 7px; font-size: 12px; flex-shrink: 0; }
   .console-nav-item .app-icon { width: 17px; height: 17px; }
   .nav-count { display: none; }
-  .console-header { min-height: 84px; padding: 16px; gap: 8px; }
+  .console-header { min-height: 84px; padding: 16px; gap: 8px; flex-wrap: wrap; }
+  .console-header > .grow { flex: 1 0 100%; }
   .console-header h1 { font-size: 22px; }
   .console-breadcrumb { font-size: 10px; }
   .console-app-link { gap: 5px; min-height: 38px; padding: 7px 9px; font-size: 11px; }

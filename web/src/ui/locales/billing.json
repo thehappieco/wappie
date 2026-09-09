@@ -1,0 +1,350 @@
+{
+  "A configuração e o preço de teste ainda estão pendentes. O piloto continua disponível normalmente.": [
+    "Test setup and pricing are still pending. Your pilot remains available as usual.",
+    "La configuración y el precio de prueba aún están pendientes. El piloto sigue disponible con normalidad.",
+    "La configuration et le tarif de test sont encore en attente. Votre pilote reste disponible normalement.",
+    "Testkonfiguration und Testpreis stehen noch aus. Ihr Pilot bleibt wie gewohnt verfügbar."
+  ],
+  "A consulta demorou mais que o esperado. Tente atualizar.": [
+    "This is taking longer than expected. Try refreshing.",
+    "La consulta tardó más de lo esperado. Intenta actualizar.",
+    "La consultation prend plus de temps que prévu. Essayez d’actualiser.",
+    "Die Abfrage dauert länger als erwartet. Bitte aktualisieren Sie die Ansicht."
+  ],
+  "A situação exibida é confirmada pelo servidor, inclusive após voltar da Stripe.": [
+    "The server confirms the displayed status, including after returning from Stripe.",
+    "El servidor confirma el estado mostrado, incluso después de volver de Stripe.",
+    "Le serveur confirme l’état affiché, y compris après votre retour de Stripe.",
+    "Der Server bestätigt den angezeigten Status, auch nach der Rückkehr von Stripe."
+  ],
+  "Aguardando pagamento (teste)": [
+    "Awaiting payment (test)",
+    "Pendiente de pago (prueba)",
+    "En attente de paiement (test)",
+    "Zahlung ausstehend (Test)"
+  ],
+  "Anulada (teste)": [
+    "Void (test)",
+    "Anulada (prueba)",
+    "Annulée (test)",
+    "Storniert (Test)"
+  ],
+  "Assinatura de teste": [
+    "Test subscription",
+    "Suscripción de prueba",
+    "Abonnement de test",
+    "Testabonnement"
+  ],
+  "Ativa (teste)": [
+    "Active (test)",
+    "Activa (prueba)",
+    "Actif (test)",
+    "Aktiv (Test)"
+  ],
+  "Atualizar situação": [
+    "Refresh status",
+    "Actualizar estado",
+    "Actualiser l’état",
+    "Status aktualisieren"
+  ],
+  "Cancelada (teste)": [
+    "Canceled (test)",
+    "Cancelada (prueba)",
+    "Résilié (test)",
+    "Gekündigt (Test)"
+  ],
+  "Cancelamento agendado para o fim do período de teste.": [
+    "Cancellation is scheduled for the end of the test period.",
+    "La cancelación está programada para el final del período de prueba.",
+    "La résiliation est prévue à la fin de la période de test.",
+    "Die Kündigung ist zum Ende des Testzeitraums vorgemerkt."
+  ],
+  "Carregando assinatura…": [
+    "Loading subscription…",
+    "Cargando suscripción…",
+    "Chargement de l’abonnement…",
+    "Abonnement wird geladen…"
+  ],
+  "Consultando a situação do pagamento…": [
+    "Checking payment status…",
+    "Consultando el estado del pago…",
+    "Vérification de l’état du paiement…",
+    "Zahlungsstatus wird geprüft…"
+  ],
+  "Consulte faturas de teste, atualize o método de pagamento ou gerencie o cancelamento na Stripe.": [
+    "View test invoices, update the payment method, or manage cancellation in Stripe.",
+    "Consulta facturas de prueba, actualiza el método de pago o gestiona la cancelación en Stripe.",
+    "Consultez les factures de test, modifiez le moyen de paiement ou gérez la résiliation sur Stripe.",
+    "Testrechnungen ansehen, die Zahlungsmethode ändern oder die Kündigung in Stripe verwalten."
+  ],
+  "Continuar pagamento de teste": [
+    "Continue test payment",
+    "Continuar pago de prueba",
+    "Reprendre le paiement de test",
+    "Testzahlung fortsetzen"
+  ],
+  "Em preparação (teste)": [
+    "Draft (test)",
+    "En preparación (prueba)",
+    "Brouillon (test)",
+    "Entwurf (Test)"
+  ],
+  "Encerramento previsto": [
+    "Scheduled end date",
+    "Finalización prevista",
+    "Fin prévue",
+    "Geplantes Enddatum"
+  ],
+  "Escolha de 1 a 20 números inteiros.": [
+    "Choose a whole number from 1 to 20.",
+    "Elige un número entero del 1 al 20.",
+    "Choisissez un nombre entier de 1 à 20.",
+    "Wählen Sie eine ganze Zahl zwischen 1 und 20."
+  ],
+  "Esta é a capacidade disponível para vincular seus números agora.": [
+    "This is the capacity currently available for linking your numbers.",
+    "Esta es la capacidad disponible para vincular tus números ahora.",
+    "Voici la capacité actuellement disponible pour associer vos numéros.",
+    "Diese Kapazität steht derzeit zum Verknüpfen Ihrer Nummern zur Verfügung."
+  ],
+  "Existe um pagamento de teste em andamento. A situação será atualizada após a confirmação da Stripe.": [
+    "A test payment is in progress. The status will update after confirmation from Stripe.",
+    "Hay un pago de prueba en curso. El estado se actualizará cuando Stripe lo confirme.",
+    "Un paiement de test est en cours. L’état sera actualisé après confirmation par Stripe.",
+    "Eine Testzahlung ist in Bearbeitung. Der Status wird nach Bestätigung durch Stripe aktualisiert."
+  ],
+  "Experimentar assinatura": [
+    "Try a subscription",
+    "Probar suscripción",
+    "Essayer un abonnement",
+    "Abonnement testen"
+  ],
+  "Fatura mais recente": [
+    "Latest invoice",
+    "Última factura",
+    "Dernière facture",
+    "Letzte Rechnung"
+  ],
+  "Fim do período atual": [
+    "Current period ends",
+    "Fin del período actual",
+    "Fin de la période en cours",
+    "Ende des aktuellen Zeitraums"
+  ],
+  "Gerenciar na Stripe (teste)": [
+    "Manage in Stripe (test)",
+    "Gestionar en Stripe (prueba)",
+    "Gérer sur Stripe (test)",
+    "In Stripe verwalten (Test)"
+  ],
+  "Gerencie a assinatura deste espaço de trabalho.": [
+    "Manage this workspace’s subscription.",
+    "Gestiona la suscripción de este espacio de trabajo.",
+    "Gérez l’abonnement de cet espace de travail.",
+    "Verwalten Sie das Abonnement dieses Arbeitsbereichs."
+  ],
+  "Histórico de simulações do piloto": [
+    "Pilot simulation history",
+    "Historial de simulaciones del piloto",
+    "Historique des simulations du pilote",
+    "Verlauf der Pilotsimulationen"
+  ],
+  "Impostos incluídos no preço.": [
+    "Taxes included in the price.",
+    "Impuestos incluidos en el precio.",
+    "Taxes comprises dans le prix.",
+    "Steuern im Preis enthalten."
+  ],
+  "Impostos, quando aplicáveis, são apresentados na Stripe.": [
+    "Applicable taxes are shown in Stripe.",
+    "Los impuestos aplicables se muestran en Stripe.",
+    "Les taxes applicables sont affichées sur Stripe.",
+    "Anfallende Steuern werden in Stripe angezeigt."
+  ],
+  "Não foi possível abrir a página de pagamento.": [
+    "The payment page could not be opened.",
+    "No se pudo abrir la página de pago.",
+    "Impossible d’ouvrir la page de paiement.",
+    "Die Zahlungsseite konnte nicht geöffnet werden."
+  ],
+  "Não paga (teste)": [
+    "Unpaid (test)",
+    "Impagada (prueba)",
+    "Impayé (test)",
+    "Unbezahlt (Test)"
+  ],
+  "Não recebida (teste)": [
+    "Uncollectible (test)",
+    "Incobrable (prueba)",
+    "Irrécouvrable (test)",
+    "Uneinbringlich (Test)"
+  ],
+  "Números na assinatura de teste": [
+    "Numbers in the test subscription",
+    "Números en la suscripción de prueba",
+    "Numéros de l’abonnement de test",
+    "Nummern im Testabonnement"
+  ],
+  "Números para testar": [
+    "Numbers to test",
+    "Números para probar",
+    "Numéros à tester",
+    "Nummern zum Testen"
+  ],
+  "O total final de teste será apresentado na Stripe.": [
+    "The final test total will be shown in Stripe.",
+    "El total final de prueba se mostrará en Stripe.",
+    "Le total final de test sera affiché sur Stripe.",
+    "Der endgültige Testgesamtbetrag wird in Stripe angezeigt."
+  ],
+  "Paga (teste)": [
+    "Paid (test)",
+    "Pagada (prueba)",
+    "Payée (test)",
+    "Bezahlt (Test)"
+  ],
+  "Pagamento em atraso (teste)": [
+    "Past due (test)",
+    "Pago atrasado (prueba)",
+    "Paiement en retard (test)",
+    "Zahlung überfällig (Test)"
+  ],
+  "Pagamento expirado (teste)": [
+    "Payment expired (test)",
+    "Pago caducado (prueba)",
+    "Paiement expiré (test)",
+    "Zahlung abgelaufen (Test)"
+  ],
+  "Pagamento pendente (teste)": [
+    "Payment pending (test)",
+    "Pago pendiente (prueba)",
+    "Paiement en attente (test)",
+    "Zahlung ausstehend (Test)"
+  ],
+  "Pagamentos em preparação": [
+    "Payments are being set up",
+    "Pagos en preparación",
+    "Paiements en préparation",
+    "Zahlungen werden eingerichtet"
+  ],
+  "Pausada (teste)": [
+    "Paused (test)",
+    "Pausada (prueba)",
+    "En pause (test)",
+    "Pausiert (Test)"
+  ],
+  "Período de avaliação (teste)": [
+    "Trial period (test)",
+    "Período de evaluación (prueba)",
+    "Période d’essai (test)",
+    "Probezeitraum (Test)"
+  ],
+  "Piloto gratuito": [
+    "Free pilot",
+    "Piloto gratuito",
+    "Pilote gratuit",
+    "Kostenloser Pilot"
+  ],
+  "Plano mensal por número": [
+    "Monthly plan per number",
+    "Plan mensual por número",
+    "Forfait mensuel par numéro",
+    "Monatstarif pro Nummer"
+  ],
+  "Remova os números excedentes antes de reduzir as vagas do piloto.": [
+    "Remove the extra numbers before reducing the pilot capacity.",
+    "Elimina los números sobrantes antes de reducir la capacidad del piloto.",
+    "Retirez les numéros en trop avant de réduire la capacité du pilote.",
+    "Entfernen Sie überzählige Nummern, bevor Sie die Pilotkapazität verringern."
+  ],
+  "Sem assinatura de teste": [
+    "No test subscription",
+    "Sin suscripción de prueba",
+    "Aucun abonnement de test",
+    "Kein Testabonnement"
+  ],
+  "Sem fatura de teste": [
+    "No test invoice",
+    "Sin factura de prueba",
+    "Aucune facture de test",
+    "Keine Testrechnung"
+  ],
+  "Simular capacidade": [
+    "Simulate capacity",
+    "Simular capacidad",
+    "Simuler la capacité",
+    "Kapazität simulieren"
+  ],
+  "Somente o proprietário pode alterar a assinatura.": [
+    "Only the owner can change the subscription.",
+    "Solo el propietario puede cambiar la suscripción.",
+    "Seul le propriétaire peut modifier l’abonnement.",
+    "Nur der Eigentümer kann das Abonnement ändern."
+  ],
+  "Somente testes. Não há cobranças reais. A assinatura de teste não altera as vagas nem o acesso aos números do piloto.": [
+    "Test mode only. No real charges. The test subscription does not change the pilot capacity or access to its numbers.",
+    "Solo pruebas. No hay cargos reales. La suscripción de prueba no cambia la capacidad ni el acceso a los números del piloto.",
+    "Mode test uniquement. Aucun débit réel. L’abonnement de test ne modifie ni la capacité du pilote ni l’accès à ses numéros.",
+    "Nur Testbetrieb. Keine echten Abbuchungen. Das Testabonnement ändert weder die Pilotkapazität noch den Zugriff auf die Nummern."
+  ],
+  "Teste Stripe": [
+    "Stripe test",
+    "Prueba de Stripe",
+    "Test Stripe",
+    "Stripe-Test"
+  ],
+  "Total mensal de teste": [
+    "Monthly test total",
+    "Total mensual de prueba",
+    "Total mensuel de test",
+    "Monatlicher Testgesamtbetrag"
+  ],
+  "Vagas do piloto": [
+    "Pilot capacity",
+    "Capacidad del piloto",
+    "Capacité du pilote",
+    "Pilotkapazität"
+  ],
+  "Você poderá experimentar a contratação e o gerenciamento de pagamentos aqui.": [
+    "You can try subscribing and managing payments here.",
+    "Aquí podrás probar la contratación y la gestión de pagos.",
+    "Vous pourrez essayer la souscription et la gestion des paiements ici.",
+    "Hier können Sie den Abschluss eines Abonnements und die Zahlungsverwaltung testen."
+  ],
+  "{amount} por número / mês": [
+    "{amount} per number / month",
+    "{amount} por número / mes",
+    "{amount} par numéro / mois",
+    "{amount} pro Nummer / Monat"
+  ],
+  "A integração com a Stripe está aguardando configuração.": [
+    "The Stripe integration is waiting to be configured.",
+    "La integración con Stripe está pendiente de configuración.",
+    "L’intégration Stripe est en attente de configuration.",
+    "Die Stripe-Integration wartet auf die Konfiguration."
+  ],
+  "A simulação manual não está disponível no modo Stripe.": [
+    "Manual simulation is not available in Stripe mode.",
+    "La simulación manual no está disponible en el modo Stripe.",
+    "La simulation manuelle n’est pas disponible en mode Stripe.",
+    "Die manuelle Simulation ist im Stripe-Modus nicht verfügbar."
+  ],
+  "Confira a assinatura atual ou retome o pagamento pendente antes de tentar novamente.": [
+    "Check the current subscription or resume the pending payment before trying again.",
+    "Revisa la suscripción actual o retoma el pago pendiente antes de volver a intentarlo.",
+    "Vérifiez l’abonnement actuel ou reprenez le paiement en attente avant de réessayer.",
+    "Prüfen Sie das aktuelle Abonnement oder setzen Sie die ausstehende Zahlung fort, bevor Sie es erneut versuchen."
+  ],
+  "Não foi possível acessar a Stripe. Tente novamente em instantes.": [
+    "Stripe could not be reached. Please try again shortly.",
+    "No se pudo acceder a Stripe. Inténtalo de nuevo en unos instantes.",
+    "Impossible de joindre Stripe. Réessayez dans quelques instants.",
+    "Stripe konnte nicht erreicht werden. Bitte versuchen Sie es in Kürze erneut."
+  ],
+  "Solicitação de assinatura inválida.": [
+    "Invalid subscription request.",
+    "Solicitud de suscripción no válida.",
+    "Demande d’abonnement non valide.",
+    "Ungültige Abonnementanfrage."
+  ]
+}
