@@ -346,5 +346,221 @@
     "Solicitud de suscripción no válida.",
     "Demande d’abonnement non valide.",
     "Ungültige Abonnementanfrage."
+  ],
+  "/ mês": [
+    "/ month",
+    "/ mes",
+    "/ mois",
+    "/ Monat"
+  ],
+  "1 número": [
+    "1 number",
+    "1 número",
+    "1 numéro",
+    "1 Nummer"
+  ],
+  "Capacidade atual": [
+    "Current capacity",
+    "Capacidad actual",
+    "Capacité actuelle",
+    "Aktuelle Kapazität"
+  ],
+  "Conheça os planos para continuar. Nesta fase de testes, seus acessos permanecem disponíveis.": [
+    "Explore the plans to continue. During this test phase, your access remains available.",
+    "Conoce los planes para continuar. Durante esta fase de pruebas, tus accesos siguen disponibles.",
+    "Découvrez les offres pour continuer. Pendant cette phase de test, vos accès restent disponibles.",
+    "Sehen Sie sich die Tarife zur weiteren Nutzung an. Während dieser Testphase bleiben Ihre Zugriffe verfügbar."
+  ],
+  "Contratação em preparação": [
+    "Subscriptions are being prepared",
+    "Contratación en preparación",
+    "Souscription en préparation",
+    "Buchung wird vorbereitet"
+  ],
+  "Disponível até": [
+    "Available until",
+    "Disponible hasta",
+    "Disponible jusqu’au",
+    "Verfügbar bis"
+  ],
+  "Encerrado em": [
+    "Ended on",
+    "Finalizó el",
+    "Terminé le",
+    "Beendet am"
+  ],
+  "Equipe": [
+    "Team",
+    "Equipo",
+    "Équipe",
+    "Team"
+  ],
+  "Escolha a capacidade que combina com seu espaço de trabalho.": [
+    "Choose the capacity that fits your workspace.",
+    "Elige la capacidad que se adapte a tu espacio de trabajo.",
+    "Choisissez la capacité adaptée à votre espace de travail.",
+    "Wählen Sie die passende Kapazität für Ihren Arbeitsbereich."
+  ],
+  "Escolha um plano disponível.": [
+    "Choose an available plan.",
+    "Elige un plan disponible.",
+    "Choisissez une offre disponible.",
+    "Wählen Sie einen verfügbaren Tarif."
+  ],
+  "Esta ferramenta altera somente as vagas da simulação. Ela não contrata um plano nem reinicia o teste gratuito.": [
+    "This tool only changes the simulation’s capacity. It does not subscribe to a plan or restart the free trial.",
+    "Esta herramienta solo cambia la capacidad de la simulación. No contrata un plan ni reinicia la prueba gratuita.",
+    "Cet outil modifie uniquement la capacité de la simulation. Il ne souscrit aucune offre et ne relance pas l’essai gratuit.",
+    "Dieses Werkzeug ändert nur die Kapazität der Simulation. Es bucht keinen Tarif und startet den kostenlosen Test nicht neu."
+  ],
+  "Este espaço de trabalho faz parte do piloto original. Ele continua gratuito, sem contagem de dias.": [
+    "This workspace is part of the original pilot. It remains free, with no countdown.",
+    "Este espacio de trabajo forma parte del piloto original. Sigue siendo gratuito, sin cuenta atrás.",
+    "Cet espace de travail fait partie du pilote initial. Il reste gratuit, sans décompte des jours.",
+    "Dieser Arbeitsbereich gehört zum ursprünglichen Pilotprojekt. Er bleibt kostenlos, ohne Tageszählung."
+  ],
+  "Explore seus números e integrações até o fim do teste. Você não precisa cadastrar um cartão.": [
+    "Explore your numbers and integrations until the trial ends. No card is required.",
+    "Explora tus números e integraciones hasta que termine la prueba. No necesitas registrar una tarjeta.",
+    "Explorez vos numéros et intégrations jusqu’à la fin de l’essai. Aucune carte n’est requise.",
+    "Testen Sie Ihre Nummern und Integrationen bis zum Ende des Testzeitraums. Eine Karte ist nicht erforderlich."
+  ],
+  "Início": [
+    "Start",
+    "Inicio",
+    "Début",
+    "Beginn"
+  ],
+  "O teste começa quando seu primeiro número é vinculado com sucesso. Gerar o QR code ainda não inicia a contagem.": [
+    "The trial starts when your first number is successfully linked. Generating a QR code does not start the countdown.",
+    "La prueba empieza cuando vinculas tu primer número correctamente. Generar un código QR no inicia la cuenta atrás.",
+    "L’essai commence lorsque votre premier numéro est associé avec succès. La génération d’un QR code ne lance pas le décompte.",
+    "Der Test beginnt, sobald Ihre erste Nummer erfolgreich verknüpft wurde. Das Erzeugen eines QR-Codes startet die Zählung noch nicht."
+  ],
+  "Os planos estão em preparação. Seus acessos atuais continuam disponíveis.": [
+    "The plans are being prepared. Your current access remains available.",
+    "Los planes están en preparación. Tus accesos actuales siguen disponibles.",
+    "Les offres sont en préparation. Vos accès actuels restent disponibles.",
+    "Die Tarife werden vorbereitet. Ihre aktuellen Zugriffe bleiben verfügbar."
+  ],
+  "Para começar com um número do WhatsApp.": [
+    "Start with one WhatsApp number.",
+    "Para empezar con un número de WhatsApp.",
+    "Pour commencer avec un numéro WhatsApp.",
+    "Zum Einstieg mit einer WhatsApp-Nummer."
+  ],
+  "Para equipes que trabalham com vários números.": [
+    "For teams working with multiple numbers.",
+    "Para equipos que trabajan con varios números.",
+    "Pour les équipes qui utilisent plusieurs numéros.",
+    "Für Teams, die mit mehreren Nummern arbeiten."
+  ],
+  "Planos mensais": [
+    "Monthly plans",
+    "Planes mensuales",
+    "Offres mensuelles",
+    "Monatstarife"
+  ],
+  "Preço mensal de teste confirmado pelo provedor.": [
+    "Monthly test price confirmed by the provider.",
+    "Precio mensual de prueba confirmado por el proveedor.",
+    "Tarif mensuel de test confirmé par le prestataire.",
+    "Vom Anbieter bestätigter monatlicher Testpreis."
+  ],
+  "Preço proposto para o lançamento. A contratação ainda não está disponível.": [
+    "Proposed launch price. Subscriptions are not yet available.",
+    "Precio propuesto para el lanzamiento. La contratación aún no está disponible.",
+    "Tarif proposé pour le lancement. La souscription n’est pas encore disponible.",
+    "Vorgeschlagener Preis zum Start. Die Buchung ist noch nicht verfügbar."
+  ],
+  "Seu piloto continua gratuito": [
+    "Your pilot remains free",
+    "Tu piloto sigue siendo gratuito",
+    "Votre pilote reste gratuit",
+    "Ihr Pilotprojekt bleibt kostenlos"
+  ],
+  "Seu teste gratuito está em andamento": [
+    "Your free trial is active",
+    "Tu prueba gratuita está en curso",
+    "Votre essai gratuit est en cours",
+    "Ihr kostenloser Test läuft"
+  ],
+  "Seu teste gratuito terminou": [
+    "Your free trial has ended",
+    "Tu prueba gratuita ha terminado",
+    "Votre essai gratuit est terminé",
+    "Ihr kostenloser Test ist beendet"
+  ],
+  "Solo": [
+    "Solo",
+    "Solo",
+    "Solo",
+    "Solo"
+  ],
+  "Somente testes. Não há cobranças reais. A assinatura de teste não altera suas vagas nem bloqueia o acesso aos números.": [
+    "Test mode only. No real charges. The test subscription does not change your capacity or block access to your numbers.",
+    "Solo pruebas. No hay cargos reales. La suscripción de prueba no cambia tu capacidad ni bloquea el acceso a tus números.",
+    "Mode test uniquement. Aucun débit réel. L’abonnement de test ne modifie pas votre capacité et ne bloque pas l’accès à vos numéros.",
+    "Nur Testbetrieb. Keine echten Abbuchungen. Das Testabonnement ändert Ihre Kapazität nicht und sperrt keinen Zugriff auf Ihre Nummern."
+  ],
+  "Testar plano {plan}": [
+    "Try the {plan} plan",
+    "Probar el plan {plan}",
+    "Tester l’offre {plan}",
+    "Tarif {plan} testen"
+  ],
+  "Teste gratuito": [
+    "Free trial",
+    "Prueba gratuita",
+    "Essai gratuit",
+    "Kostenloser Test"
+  ],
+  "Vagas da simulação": [
+    "Simulation capacity",
+    "Capacidad de la simulación",
+    "Capacité de la simulation",
+    "Simulationskapazität"
+  ],
+  "{count} números": [
+    "{count} numbers",
+    "{count} números",
+    "{count} numéros",
+    "{count} Nummern"
+  ],
+  "{days} dias gratuitos, sem cartão": [
+    "{days} days free, no card required",
+    "{days} días gratis, sin tarjeta",
+    "{days} jours gratuits, sans carte",
+    "{days} Tage kostenlos, ohne Karte"
+  ],
+  "{days} dias restantes": [
+    "{days} days left",
+    "{days} días restantes",
+    "{days} jours restants",
+    "Noch {days} Tage"
+  ],
+  "Último dia": [
+    "Last day",
+    "Último día",
+    "Dernier jour",
+    "Letzter Tag"
+  ],
+  "Gerencie sua assinatura abaixo": [
+    "Manage your subscription below",
+    "Gestiona tu suscripción abajo",
+    "Gérez votre abonnement ci-dessous",
+    "Verwalten Sie Ihr Abonnement unten"
+  ],
+  "Preço indisponível no momento.": [
+    "Price currently unavailable.",
+    "Precio no disponible en este momento.",
+    "Tarif indisponible pour le moment.",
+    "Preis derzeit nicht verfügbar."
+  ],
+  "Preço de teste antes de impostos.": [
+    "Test price before taxes.",
+    "Precio de prueba antes de impuestos.",
+    "Tarif de test hors taxes.",
+    "Testpreis vor Steuern."
   ]
 }
