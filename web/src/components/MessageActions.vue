@@ -38,10 +38,11 @@ const mine = computed(() => normalizeReactionEmoji(myReaction(m.value)) ?? myRea
 const minutesLeft = computed(() => Math.ceil(editableFor(m.value) / 60_000))
 const QUICK = ['👍', '❤️', '😂', '😮', '😢', '🙏']
 
+const expired = computed(() => hasExpired(m.value, nowTick.value))
 const timerNote = computed(() => {
   if (!isEphemeral(m.value)) return ''
   if (m.value.expiresAt) {
-    return hasExpired(m.value, nowTick.value)
+    return expired.value
       ? t('Mensagem temporária expirada em {time}', { time: stamp(m.value.expiresAt) })
       : t('Mensagem temporária até {time}', { time: stamp(m.value.expiresAt) })
   }
@@ -123,7 +124,7 @@ onBeforeUnmount(close)
       <header class="menu-heading">
         <div>
           <h2 :id="titleID">{{ pickingEmoji ? t('Escolher reação') : t('Ações da mensagem') }}</h2>
-          <p :class="{ 'revoked-preview': m.deleted }">{{ text || typeLabel(m.type) }}</p>
+          <p :class="{ 'revoked-preview': m.deleted, 'expired-preview': expired }">{{ text || typeLabel(m.type) }}</p>
         </div>
         <button class="menu-close" type="button" :aria-label="t('Fechar ações')" @click="close"><AppIcon name="close" :size="20" /></button>
       </header>
@@ -169,7 +170,7 @@ onBeforeUnmount(close)
       </div>
       <div v-if="m.viewOnce || timerNote || m.edited || m.deleted" class="message-facts">
         <p v-if="m.viewOnce" class="menu-note"><AppIcon name="view-once" class="mark-once" :size="16" />{{ t('Mensagem de visualização única') }}</p>
-        <p v-if="timerNote" class="menu-note"><AppIcon name="timer" class="mark-temporary" :size="16" />{{ timerNote }}</p>
+        <p v-if="timerNote" class="menu-note"><AppIcon name="timer" :class="expired ? 'mark-expired' : 'mark-temporary'" :size="16" />{{ timerNote }}</p>
         <p v-if="m.edited" class="menu-note"><AppIcon name="pencil" class="mark-edited" :size="16" />{{ t('Mensagem editada · {count} versões', { count: m.versionCount }) }}</p>
         <p v-if="m.deleted" class="menu-note"><AppIcon name="trash" class="mark-deleted" :size="16" />{{ t('Mensagem apagada') }}</p>
       </div>
@@ -193,18 +194,18 @@ onBeforeUnmount(close)
 .menu-heading > div { flex: 1; min-width: 0; }
 .menu-heading h2 { font-size: 16px; margin: 0; }
 .menu-heading p { margin: 6px 0 0; color: var(--text-dim); font-size: 13px; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
-.menu-heading p.revoked-preview { opacity: .6; text-decoration: line-through; }
+.menu-heading p:is(.revoked-preview, .expired-preview) { opacity: .6; text-decoration: line-through; }
 .menu-close { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; background: var(--bg-hover); }
 .quick-reactions { display: flex; justify-content: space-between; gap: 3px; padding: 10px 2px 14px; border-bottom: 1px solid var(--line); }
 .quick-reaction { display: grid; place-items: center; flex: 1; height: 44px; font-size: 28px; padding: 0; border-radius: 50%; transition: transform 120ms ease-out, background 120ms; }
 .quick-reaction:hover { background: var(--bg-hover); transform: scale(1.13); }
 .quick-reaction.chosen { background: var(--bg-active); box-shadow: inset 0 0 0 2px var(--accent); }
 .quick-reaction.all-emoji { flex: 0 0 38px; height: 38px; align-self: center; background: var(--bg-hover); color: var(--text-dim); }
-.mark-once { color: #83baff; } .mark-temporary { color: #f0bd55; } .mark-edited { color: #65d6a2; } .mark-deleted { color: #ff939b; }
-:global(html[data-theme='light']:not([data-incognito='true'])) .mark-once { color: #2463b9; }
-:global(html[data-theme='light']:not([data-incognito='true'])) .mark-temporary { color: #916400; }
-:global(html[data-theme='light']:not([data-incognito='true'])) .mark-edited { color: #08704b; }
-:global(html[data-theme='light']:not([data-incognito='true'])) .mark-deleted { color: #b32732; }
+.mark-once { color: #83baff; } .mark-temporary { color: #f0bd55; } .mark-edited { color: #65d6a2; } .mark-deleted, .mark-expired { color: #ff939b; }
+:global(html[data-theme='light']:not([data-incognito='true']) .mark-once) { color: #2463b9; }
+:global(html[data-theme='light']:not([data-incognito='true']) .mark-temporary) { color: #916400; }
+:global(html[data-theme='light']:not([data-incognito='true']) .mark-edited) { color: #08704b; }
+:global(html[data-theme='light']:not([data-incognito='true']) :is(.mark-deleted, .mark-expired)) { color: #b32732; }
 .menu-options { padding-top: 6px; }
 .menu-action { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 48px; padding: 10px 12px; border-radius: 11px; text-align: left; font-size: 15px; }
 .menu-action:hover { background: var(--bg-hover); }

@@ -192,8 +192,9 @@ function mentionIdentity(jid: string): string[] {
  * from one to the other on screen rather than at the next reload.
  */
 const expiry = computed(() => expiryLabel(m.value, nowTick.value))
+const expired = computed(() => hasExpired(m.value, nowTick.value))
 const expiryTitle = computed(() => m.value.expiresAt
-  ? hasExpired(m.value, nowTick.value)
+  ? expired.value
     ? t('Mensagem temporária expirada em {time}', { time: stamp(m.value.expiresAt) })
     : t('Mensagem temporária até {time}', { time: stamp(m.value.expiresAt) })
   : t('Mensagem temporária'))
@@ -224,7 +225,7 @@ const forwardedLabel = computed(() =>
       ref="bubble"
       role="group"
       tabindex="0"
-      :class="{ on: selected, revoked: m.deleted, pressing, 'gesture-open': actionsOpen, swiping }"
+      :class="{ on: selected, revoked: m.deleted, expired, pressing, 'gesture-open': actionsOpen, swiping }"
       :style="{ transform: offset ? `translate3d(${offset}px, 0, 0)` : undefined }"
       :aria-label="m.fromMe ? t('Mensagem enviada às {time}', { time: hhmm(m.ts) }) : t('Mensagem de {sender}, {time}', { sender: m.senderName, time: hhmm(m.ts) })"
       @click.capture="click"
@@ -353,7 +354,7 @@ const forwardedLabel = computed(() =>
 
       <div class="meta">
         <span v-if="m.viewOnce" class="message-mark mark-once" role="img" :title="t('Mensagem de visualização única')" :aria-label="t('Mensagem de visualização única')"><AppIcon name="view-once" :size="14" /></span>
-        <span v-if="expiry" class="message-mark mark-timer" role="img" :title="expiryTitle" :aria-label="expiryTitle"><AppIcon name="timer" :size="14" /></span>
+        <span v-if="expiry" class="message-mark" :class="expired ? 'mark-expired' : 'mark-timer'" role="img" :title="expiryTitle" :aria-label="expiryTitle"><AppIcon name="timer" :size="14" /></span>
         <span v-if="m.edited" class="message-mark mark-edited" role="img" :title="editedTitle" :aria-label="editedTitle"><AppIcon name="pencil" :size="14" /></span>
         <span v-if="m.deleted" class="message-mark mark-deleted" role="img" :title="t('Mensagem apagada')" :aria-label="t('Mensagem apagada')"><AppIcon name="trash" :size="14" /></span>
         <span>{{ hhmm(m.ts) }}</span>
@@ -383,14 +384,14 @@ const forwardedLabel = computed(() =>
 .bubble.pressing { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .bubble.gesture-open { outline: 2px solid var(--accent); }
 .bubble.swiping { transition: none; will-change: transform; user-select: none; -webkit-user-select: none; }
-.bubble.revoked .message-content { opacity: .6; }
-.bubble.revoked .text, .bubble.revoked .text a, .bubble.revoked .text .mention { text-decoration: line-through; text-decoration-thickness: 1px; }
+.bubble:is(.revoked, .expired) .message-content { opacity: .6; }
+.bubble:is(.revoked, .expired) .text, .bubble:is(.revoked, .expired) .text a, .bubble:is(.revoked, .expired) .text .mention { text-decoration: line-through; text-decoration-thickness: 1px; }
 .message-mark { display: inline-flex; align-items: center; color: var(--text-faint); cursor: help; }
-.mark-timer { color: #916400; }.mark-edited { color: #08704b; }.mark-deleted { color: #b32732; }.mark-once { color: #2463b9; }
-:root[data-theme='dark'] .mark-timer, :root[data-surface='chat'][data-incognito='true'] .mark-timer { color: #f0bd55; }
-:root[data-theme='dark'] .mark-edited, :root[data-surface='chat'][data-incognito='true'] .mark-edited { color: #65d6a2; }
-:root[data-theme='dark'] .mark-deleted, :root[data-surface='chat'][data-incognito='true'] .mark-deleted { color: #ff939b; }
-:root[data-theme='dark'] .mark-once, :root[data-surface='chat'][data-incognito='true'] .mark-once { color: #83baff; }
+.mark-timer { color: #916400; }.mark-edited { color: #08704b; }.mark-deleted, .mark-expired { color: #b32732; }.mark-once { color: #2463b9; }
+:global(html[data-theme='dark'] .mark-timer), :global(html[data-surface='chat'][data-incognito='true'] .mark-timer) { color: #f0bd55; }
+:global(html[data-theme='dark'] .mark-edited), :global(html[data-surface='chat'][data-incognito='true'] .mark-edited) { color: #65d6a2; }
+:global(html[data-theme='dark'] :is(.mark-deleted, .mark-expired)), :global(html[data-surface='chat'][data-incognito='true'] :is(.mark-deleted, .mark-expired)) { color: #ff939b; }
+:global(html[data-theme='dark'] .mark-once), :global(html[data-surface='chat'][data-incognito='true'] .mark-once) { color: #83baff; }
 .msg:has(.reaction-summary) { margin-bottom: 22px; }
 .reaction-summary { position: absolute; inset-inline-start: 7px; bottom: -19px; z-index: 1; display: flex; gap: 3px; width: max-content; max-width: calc(100vw - 44px); }
 .out .reaction-summary { inset-inline-start: auto; inset-inline-end: 7px; }
