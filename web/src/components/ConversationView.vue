@@ -13,6 +13,8 @@ import AppIcon from './AppIcon.vue'
 import AvatarBadge from './AvatarBadge.vue'
 import Composer from './Composer.vue'
 import MessageBubble from './MessageBubble.vue'
+import ForwardDialog from './ForwardDialog.vue'
+import { canForward } from '../state/forwarding'
 
 const emit = defineEmits<{ back: [] }>()
 const scroller = ref<HTMLElement | null>(null)
@@ -76,6 +78,12 @@ const replyTo = ref('')
 
 /** The message being edited, if any. Mutually exclusive with replying. */
 const editing = ref('')
+const forwarding = ref<MessageView>()
+function forward(uid: string) {
+  const message = state.timeline.find(value => value.uid === uid)
+  if (message && canForward(message)) { forgetSeen(); forwarding.value = message }
+}
+watch(() => [state.openChatKey, state.deviceID, state.tenantID], () => { replyTo.value = ''; editing.value = ''; forwarding.value = undefined }, { flush: 'sync' })
 
 const lines = computed<Line[]>(() => {
   const out: Line[] = []
@@ -370,6 +378,7 @@ async function onTimer(value: string) {
           :show-sender="line.showSender"
           @reply="editing = ''; replyTo = $event"
           @edit="replyTo = ''; editing = $event"
+          @forward="forward"
         />
       </template>
 
@@ -390,6 +399,7 @@ async function onTimer(value: string) {
       :editing="editing"
       @cancel="replyTo = ''; editing = ''"
     />
+    <ForwardDialog v-if="forwarding" :message="forwarding" @close="forwarding = undefined" />
   </section>
 </template>
 

@@ -1,6 +1,9 @@
 <script lang="ts">
 export type IconName =
   | 'back'
+  | 'reply'
+  | 'forward'
+  | 'search'
   | 'chevron-down'
   | 'chevron-up'
   | 'console'
@@ -40,6 +43,9 @@ export type IconName =
 
 const paths: Record<IconName, string> = {
   back: 'M19 12H5m7-7-7 7 7 7',
+  reply: 'm10 5-7 6 7 6v-4c5 0 8 1 11 6-1-7-4-10-11-10V5Z',
+  forward: 'm14 5 7 6-7 6v-4c-5 0-8 1-11 6 1-7 4-10 11-10V5Z',
+  search: 'M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Zm-2 5 6 6',
   'chevron-down': 'm6 9 6 6 6-6',
   'chevron-up': 'm6 15 6-6 6 6',
   console: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',

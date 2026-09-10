@@ -2,7 +2,7 @@
 import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
-import { canSend, noMarks, sendMedia, sendText, state, type Marks } from '../state/archive'
+import { canSend, connection, noMarks, sendMedia, sendText, state, type Marks } from '../state/archive'
 import { startTyping, stopTyping } from '../state/presence'
 import { edit, editableFor } from '../state/actions'
 import { canConversationAction } from '../state/conversationActions'
@@ -17,6 +17,7 @@ import { timerLabel } from '../state/ephemeral'
 import SendMarks from './SendMarks.vue'
 import AppIcon from './AppIcon.vue'
 import PollDialog from './PollDialog.vue'
+import VideoRecorderDialog from './VideoRecorderDialog.vue'
 
 // Writing into the archive, rather than only reading it.
 //
@@ -39,6 +40,16 @@ const draft = ref('')
 const box = ref<HTMLTextAreaElement>()
 const chooser = ref<HTMLInputElement>()
 const pollOpen = ref(false)
+const videoOpen = ref(false)
+const attachmentMenu = ref(false)
+const preparationProgress = ref(0)
+const convertingVideo = ref(false)
+let preparation: AbortController | null = null
+let preparationID = 0, microphoneID = 0
+function captureContext() { return { chat: state.openChatKey, device: state.deviceID, tenant: state.tenantID, connection: connection() } }
+function sameContext(context: ReturnType<typeof captureContext>) {
+  return !gone && context.chat === state.openChatKey && context.device === state.deviceID && context.tenant === state.tenantID && context.connection === connection()
+}
 
 /** A file somebody picked, waiting to be told how it should be sent. */
 const picked = ref<File | null>(null)
@@ -173,14 +184,22 @@ async function submit() {
 
 function browse() {
   attachError.value = ''
+  attachmentMenu.value = false
   chooser.value?.click()
 }
 
 function openPoll() {
   if (!allowed.value || !pollAvailable.value || props.editing || recording.value || opening.value || measuring.value || picked.value || attached.value) return
   stopTyping()
+  attachmentMenu.value = false
   pollOpen.value = true
 }
+
+function openVideo() {
+  if (!allowed.value || recording.value || opening.value || props.editing) return
+  attachmentMenu.value = false; stopTyping(); videoOpen.value = true
+}
+function recordedVideo(file: File, choice: Choice, seconds: number) { void prepareFile(file, choice, seconds) }
 
 function onPicked(event: Event) {
   const input = event.target as HTMLInputElement
@@ -219,33 +238,39 @@ function take(file: File) {
 
 async function choose(choice: Choice) {
   const file = picked.value
-  if (!file) return
-  picked.value = null
-  measuring.value = true
-  // Reading a video's duration and first frame takes real time, and the reader
-  // can open another conversation while it happens. The watcher that drops an
-  // unsent attachment on that switch cannot help here — this assignment comes
-  // after it — so the conversation is remembered and checked.
-  const forChat = state.openChatKey
+  if (file) await prepareFile(file, choice)
+}
+
+async function prepareFile(file: File, choice: Choice, knownSeconds = 0) {
+  if (!allowed.value) return
+  clearAttachment()
+  const current = preparationID, context = captureContext()
+  preparation = new AbortController()
+  const signal = preparation.signal
+  measuring.value = true; preparationProgress.value = 0; convertingVideo.value = false; attachError.value = ''
   try {
-    const ready = await prepare(file, choice)
-    if (forChat !== state.openChatKey) {
-      discard(ready)
-      return
-    }
+    const ready = await prepare(file, choice, knownSeconds, { signal, onProgress: progress => {
+      if (current !== preparationID || !sameContext(context)) return
+      preparationProgress.value = Math.round(progress.fraction * 100); convertingVideo.value = progress.converting
+    } })
+    if (signal.aborted || current !== preparationID || !sameContext(context)) { discard(ready); return }
     attached.value = ready
     if (!ready.plan.captionAllowed) draft.value = ''
     if (!ready.plan.viewOnceAllowed) marks.value = { ...marks.value, viewOnce: false }
     await nextTick(() => box.value?.focus())
   } catch (err) {
-    attachError.value = err instanceof Error ? err.message : String(err)
+    if (current === preparationID && sameContext(context) && !signal.aborted) {
+      attachError.value = err instanceof Error ? err.message : String(err)
+      picked.value = file // Keep the original available for another format.
+    }
   } finally {
-    measuring.value = false
+    if (current === preparationID) { measuring.value = false; preparation = null }
   }
 }
 
 /** clearAttachment drops what is held and releases the preview it made. */
 function clearAttachment() {
+  preparationID++; preparation?.abort(); preparation = null; measuring.value = false
   picked.value = null
   if (attached.value) discard(attached.value)
   attached.value = null
@@ -266,17 +291,18 @@ async function startRecording() {
   // WhatsApp draws a different bubble for a voice note being recorded, and
   // it is worth the distinction: 'typing' on a message that arrives as audio
   // reads as the client having lied.
-  startTyping('audio')
   // The permission prompt sits inside this await, and the button is still on
   // screen behind it. Two clicks would open two microphones, of which only the
   // second could ever be stopped.
-  if (opening.value || recording.value) return
+  if (!allowed.value || opening.value || recording.value || videoOpen.value || measuring.value) return
+  startTyping('audio')
+  const context = captureContext(), current = ++microphoneID
   opening.value = true
   attachError.value = ''
   clearAttachment()
   try {
     const open = await begin()
-    if (gone) {
+    if (!sameContext(context) || current !== microphoneID) {
       // The conversation was closed, or the tab moved on, while the person was
       // deciding whether to allow the microphone. Nothing would hold this.
       open.cancel()
@@ -284,6 +310,7 @@ async function startRecording() {
     }
     recording.value = open
   } catch (err) {
+    if (!sameContext(context) || current !== microphoneID) return
     // Almost always a refused permission, which is a decision somebody made
     // rather than a failure. Saying nothing looks like a broken button.
     attachError.value =
@@ -294,8 +321,9 @@ async function startRecording() {
           : String(err)
     return
   } finally {
-    opening.value = false
+    if (current === microphoneID) opening.value = false
   }
+  if (!sameContext(context) || current !== microphoneID) return
   recordedFor.value = 0
   clearInterval(ticker)
   ticker = setInterval(() => (recordedFor.value += 1), 1000)
@@ -305,35 +333,21 @@ async function stopRecording() {
   stopTyping()
   const open = recording.value
   if (!open) return
-  clearInterval(ticker)
-  recording.value = null
-  const taken = await open.stop()
-  if (!taken) return
-
-  if (taken.asVoiceNote) {
-    try {
-      // The recording's own length is passed in: the microphone was open for
-      // exactly that long, and it is the answer when decoding the result to
-      // time it does not work.
-      attached.value = await prepare(taken.file, 'voice', taken.seconds)
-    } catch (err) {
-      // Said out loud. A recording that fails to measure silently is a minute
-      // of somebody's speech that disappeared with no explanation.
-      attachError.value = err instanceof Error ? err.message : String(err)
-    }
-    return
+  const context = captureContext(), current = microphoneID
+  clearInterval(ticker); recording.value = null
+  try {
+    const taken = await open.stop()
+    if (!taken || current !== microphoneID || !sameContext(context)) return
+    if (taken.asVoiceNote) { await prepareFile(taken.file, 'voice', taken.seconds); return }
+    attachError.value = t('Este navegador grava em um formato que o WhatsApp não usa para mensagem de voz. ') + t('Dá para mandar como áudio.')
+    picked.value = taken.file
+  } catch (err) {
+    if (current === microphoneID && sameContext(context)) attachError.value = err instanceof Error ? err.message : String(err)
   }
-  // The browser recorded something that is not Opus in an Ogg container —
-  // Safari records AAC and cannot be asked otherwise. Perfectly good audio, and
-  // not a voice note: sending it as one produces a bubble some phones refuse to
-  // play. So it is offered as what it is.
-  attachError.value =
-    t('Este navegador grava em um formato que o WhatsApp não usa para mensagem de voz. ') +
-    t('Dá para mandar como áudio.')
-  picked.value = taken.file
 }
 
 function cancelRecording() {
+  microphoneID++; opening.value = false
   stopTyping()
   clearInterval(ticker)
   recording.value?.cancel()
@@ -411,14 +425,16 @@ watch(
 // somebody sends a photograph to the wrong person. A recording in progress goes
 // with it: the microphone should not stay open for a conversation nobody is
 // looking at.
-watch(() => state.openChatKey, () => {
+watch(() => [state.openChatKey, state.deviceID, state.tenantID, state.connected], () => {
   // Leaving a conversation takes the bubble down with us. Without this the
   // other side sees us typing in a chat we have closed, until it expires.
   stopTyping()
   cancelRecording()
   clearAttachment()
   pollOpen.value = false
-})
+  videoOpen.value = false
+  attachmentMenu.value = false
+}, { flush: 'sync' })
 
 onBeforeUnmount(stopTyping)
 </script>
@@ -446,8 +462,17 @@ onBeforeUnmount(stopTyping)
 
     <AttachSheet v-if="picked" :file="picked" @choose="choose" @cancel="clearAttachment" />
     <PollDialog v-if="pollOpen" @close="pollOpen = false" />
+    <VideoRecorderDialog v-if="videoOpen" @close="videoOpen = false" @recorded="recordedVideo" @native="take" />
+    <div v-if="attachmentMenu" class="composer-attachment-menu" @keydown.esc="attachmentMenu = false">
+      <button type="button" @click="browse"><AppIcon name="paperclip" :size="20" />{{ t('Fotos, vídeos e documentos') }}</button>
+      <button type="button" @click="openVideo"><AppIcon name="video" :size="20" />{{ t('Gravar vídeo') }}</button>
+      <button v-if="pollAvailable" type="button" @click="openPoll"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 19V5m0 14h16M9 15v-4m5 4V5m5 10V8" /></svg>{{ t('Criar enquete') }}</button>
+    </div>
 
-    <div v-if="measuring" class="composer-off">{{ t('Lendo o arquivo…') }}</div>
+    <div v-if="measuring" class="composer-preparing" role="status">
+      <div><span>{{ convertingVideo ? t('Preparando vídeo… {percent}%', { percent: preparationProgress }) : t('Lendo o arquivo…') }}</span><small v-if="convertingVideo">{{ t('A conversão pode levar o tempo do vídeo. Mantenha esta página aberta.') }}</small><progress v-if="convertingVideo" :value="preparationProgress" max="100" /></div>
+      <button type="button" @click="clearAttachment">{{ t('Cancelar') }}</button>
+    </div>
 
     <!-- What is about to go, as it will go. The preview is the file itself,
          already resized if it is going to be resized, so what is on screen is
@@ -462,6 +487,7 @@ onBeforeUnmount(stopTyping)
       <video
         v-else-if="attached.previewKind === 'video'"
         class="attached-thumb"
+        :class="{ circular: attached.kind === 'ptv' }"
         :src="attached.previewURL"
         preload="metadata"
         muted
@@ -517,15 +543,13 @@ onBeforeUnmount(stopTyping)
         v-if="!target"
         class="icon-btn attach"
         type="button"
-        :title="t('Anexar um arquivo')"
-        :aria-label="t('Anexar um arquivo')"
-        @click="browse"
+        :title="t('Anexar')"
+        :aria-label="t('Anexar')"
+        :aria-expanded="attachmentMenu"
+        :disabled="opening || measuring"
+        @click="attachmentMenu = !attachmentMenu"
       >
         <AppIcon name="paperclip" />
-      </button>
-      <button v-if="pollAvailable && !editing && !target && !attached && !picked && !measuring && !opening" class="icon-btn attach" type="button"
-        :title="t('Criar enquete')" :aria-label="t('Criar enquete')" aria-haspopup="dialog" :aria-expanded="pollOpen" @click="openPoll">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 19V5m0 14h16M9 15v-4m5 4V5m5 10V8" /></svg>
       </button>
       <textarea
         ref="box"
@@ -548,7 +572,7 @@ onBeforeUnmount(stopTyping)
         v-if="micAvailable && !attached && !target"
         class="icon-btn attach"
         type="button"
-        :disabled="opening"
+        :disabled="opening || measuring || Boolean(picked)"
         :title="t('Gravar uma mensagem de voz')"
         :aria-label="t('Gravar uma mensagem de voz')"
         @click="startRecording"
@@ -580,3 +604,7 @@ onBeforeUnmount(stopTyping)
     <div v-if="marksSummary && !showMarks" class="marks-summary">↪ {{ marksSummary }}</div>
   </div>
 </template>
+
+<style scoped>
+.composer-attachment-menu{display:flex;flex-wrap:wrap;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--bg-panel)}.composer-attachment-menu button{display:flex;align-items:center;gap:8px;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;color:var(--text);background:var(--bg-input);font-size:13px}.composer-preparing{display:flex;align-items:center;gap:14px;padding:12px 16px;color:var(--text-dim);font-size:13px}.composer-preparing>div{flex:1;min-width:0}.composer-preparing small{display:block;margin-top:4px}.composer-preparing progress{display:block;width:100%;height:5px;margin-top:9px;accent-color:var(--accent)}.attached-thumb.circular{border-radius:50%;object-fit:cover}
+</style>

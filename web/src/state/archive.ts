@@ -12,6 +12,9 @@ import { t } from '../ui/i18n'
 
 import { reactive, shallowReactive } from 'vue'
 
+import { origin } from '../api/endpoint'
+import { readLastDevice, rememberLastDevice, type DevicePreferenceScope } from '../ui/lastDevice'
+import { clearWorkspaceDeviceURL, setWorkspaceDeviceURL } from '../ui/workspaceNavigation'
 import { Connection, ProtocolError } from '../api/client'
 import { applyPresence, forgetPresence, setTypingNotifications } from './presence'
 import { setReadReceipts } from './reading'
@@ -663,6 +666,34 @@ export function readableDevices(): Set<string> {
   return new Set(session?.readable.map((r) => r.deviceID) ?? [])
 }
 
+function devicePreferenceScope(): DevicePreferenceScope | null {
+  const account = session?.account
+  if (!session || session.credential.kind !== 'session' || !account?.userID || account.tenantID !== state.tenantID) return null
+  try { return { serverOrigin: origin(session.serverURL).origin, userID: account.userID, workspaceID: state.tenantID } }
+  catch { return null }
+}
+
+/** Preference is only a hint within the latest server list and readable grants. */
+export function preferredReadableDevice(currentFirst = false): P.DeviceInfo | undefined {
+  if (!session) return undefined
+  const readable = readableDevices()
+  const canOpen = (device: P.DeviceInfo) => session?.credential.kind === 'api_key' || readable.has(device.id)
+  const candidates = state.devices.filter(canOpen)
+  const query = typeof location === 'undefined' ? null : new URLSearchParams(location.search)
+  const requested = !query?.get('workspace') || query.get('workspace') === state.tenantID ? query?.get('device') : null
+  const remembered = readLastDevice(devicePreferenceScope())
+  const current = candidates.find(device => device.id === state.deviceID)
+  const linked = candidates.find(device => device.id === requested)
+  return (currentFirst ? current ?? linked : linked ?? current) ??
+    candidates.find(device => device.id === remembered) ??
+    candidates.find(device => device.running) ?? candidates[0]
+}
+
+function rememberCurrentDevice(): void {
+  rememberLastDevice(devicePreferenceScope(), state.deviceID)
+  setWorkspaceDeviceURL(state.tenantID, state.deviceID)
+}
+
 /**
  * refreshDevices re-reads the device list without reconnecting.
  *
@@ -795,29 +826,23 @@ async function connect(): Promise<void> {
     const devices = await conn.request<P.Devices>(P.TypeDevicesList, {}, P.TypeDevices)
     if (stopped || session !== open || generation !== archiveGeneration) return
     state.devices = devices.devices ?? []
-    // A running device first: it is the one whose archive is still growing, and
-    // picking a stopped one would look like an empty account.
-    // A device this session can actually open, first. Landing on one it holds no
-    // key for looks like an empty account rather than like a missing grant.
-    const readable = new Set(open.readable.map((r) => r.deviceID))
-    const canOpen = (d: P.DeviceInfo) => open.credential.kind === 'api_key' || readable.has(d.id)
-    const requestedDevice = typeof location === 'undefined' ? '' : new URLSearchParams(location.search).get('device')
-    const preferred =
-      state.devices.find((d) => d.id === requestedDevice && canOpen(d)) ??
-      state.devices.find((d) => d.id === state.deviceID) ??
-      state.devices.find((d) => d.running && canOpen(d)) ??
-      state.devices.find(canOpen) ??
-      state.devices[0]
+    const previousDevice = state.deviceID
+    const preferred = preferredReadableDevice(resuming)
     const consoleRoute = typeof location !== 'undefined' && (location.hostname === 'console.wappie.thehappie.co' || location.pathname.startsWith('/console'))
-    if (!preferred || !canOpen(preferred) || consoleRoute) {
+    if (!preferred || consoleRoute) {
       // Not an error: a tenant with no devices is a tenant that has not paired
       // one yet, and there is now a screen for doing that.
+      clearDeviceState()
+      opener = null; openerDeviceID = ''
       state.phase = 'ready'
       state.deviceID = ''
       state.view = 'admin'
       return
     }
 
+    if (previousDevice && previousDevice !== preferred.id) {
+      conversationGeneration++; timelineGen++; clearDeviceState()
+    }
     state.deviceID = preferred.id
     // The posture follows the device the moment it is chosen, here as well as
     // in selectDevice. This call was missing, and the gap showed: `quiet`
@@ -837,13 +862,14 @@ async function connect(): Promise<void> {
     // socket before the first chat drew, and the pages already have the history.
     conn.send(P.TypeSubscribe, 'live', { since_seq: 0, live_only: true } satisfies P.Subscribe)
     state.phase = 'ready'
+    rememberCurrentDevice()
 
     // Look again at what an older build could not read, now that the key is in
     // hand. Not awaited: it is housekeeping, and the conversation list is
     // already on screen.
     void sweepUnsupported()
 
-    if (reopen) await openChat(reopen)
+    if (reopen && previousDevice === preferred.id) await openChat(reopen)
   } catch (err) {
     if (stopped || session !== open || generation !== archiveGeneration) return
     // Initialization includes devices, chat pages and content keys. A failure
@@ -910,7 +936,7 @@ export function stop(options?: { logout?: boolean }): void {
   directoryLoading = null
   // Best effort, and not awaited: the session is being torn down either way,
   // and a revocation that fails still expires on its own.
-  if (options?.logout !== false) void session?.close()
+  if (options?.logout !== false) { clearWorkspaceDeviceURL(); void session?.close() }
   else session?.dispose?.()
   session = null
   if (retryTimer) clearTimeout(retryTimer)
@@ -982,6 +1008,24 @@ export async function selectDevice(deviceID: string): Promise<void> {
   // can be in different postures, and carrying one's over to the other would
   // start emitting receipts from a device somebody had set to stay quiet.
   applyReceiptMode(state.devices.find((d) => d.id === deviceID)?.receipt_mode ?? 'passive')
+  clearDeviceState()
+  openerFor(deviceID)
+  const context = archiveContext()
+  void loadContacts().catch(() => {})
+  try {
+    await loadChats()
+    if (context && currentArchive(context)) { rememberCurrentDevice(); void sweepUnsupported() }
+  } catch (err) {
+    if (!context || !currentArchive(context)) return
+    state.chats = []
+    state.loadingChat = false
+    state.loadingOlder = false
+    state.actionError = err instanceof Error ? err.message : String(err)
+    throw err
+  }
+}
+
+function clearDeviceState(): void {
   state.chats = []
   state.timeline = []
   state.openChatKey = ''
@@ -1010,20 +1054,6 @@ export async function selectDevice(deviceID: string): Promise<void> {
   pendingNames.clear()
   if (resolveTimer) clearTimeout(resolveTimer)
   resolveTimer = undefined
-  openerFor(deviceID)
-  const context = archiveContext()
-  void loadContacts().catch(() => {})
-  try {
-    await loadChats()
-    if (context && currentArchive(context)) void sweepUnsupported()
-  } catch (err) {
-    if (!context || !currentArchive(context)) return
-    state.chats = []
-    state.loadingChat = false
-    state.loadingOlder = false
-    state.actionError = err instanceof Error ? err.message : String(err)
-    throw err
-  }
 }
 
 /**
@@ -1803,6 +1833,17 @@ export async function fetchMedia(view: MessageView): Promise<void> {
   if (current()) target.full = result
 }
 
+/** A forwarding action reads the verified bytes directly, without fetching a blob URL through CSP. */
+export async function readMediaBlob(view: MessageView): Promise<Blob | undefined> {
+  const context = archiveContext()
+  const source = media
+  const uid = view.entry.row.uid
+  if (!context || !source || view.entry.row.device_id !== context.deviceID) return
+  await fetchMedia(view)
+  if (!currentArchive(context) || media !== source || view.entry.row.uid !== uid || view.media?.full?.state !== 'ready') return
+  return source.peekBlob(uid)
+}
+
 // ---------------------------------------------------------------------------
 // The history of one message: what WhatsApp hides
 // ---------------------------------------------------------------------------
@@ -2318,6 +2359,7 @@ function pendingMediaLine(
     status: 'local',
     waveform: prepared.waveform ? unpackWaveform(prepared.waveform) : undefined,
     localURL: prepared.previewURL,
+    thumbURL: prepared.thumbnail ? `data:image/jpeg;base64,${prepared.thumbnail}` : undefined,
     upload: { sent: 0, total: prepared.blob.size },
   }
   return line

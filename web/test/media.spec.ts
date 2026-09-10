@@ -50,11 +50,30 @@ describe('attachment download lifetime', () => {
     expect(result.state).toBe('ready')
     if (result.state !== 'ready') throw new Error('fixture failed to decrypt')
     expect(result.bytes).toBe(fromBase64(vector.plaintext).length)
+    expect(new Uint8Array(await media.peekBlob(message.uid)!.arrayBuffer())).toEqual(fromBase64(vector.plaintext))
+    expect('blob' in result).toBe(false)
     expect(await media.open(message, key)).toEqual(result)
     expect(fetcher).toHaveBeenCalledOnce()
     media.release()
     expect(media.peek(message.uid)).toBeUndefined()
+    expect(media.peekBlob(message.uid)).toBeUndefined()
     expect(revoke).toHaveBeenCalledWith(result.url)
+  })
+
+  it('releases private plaintext with the bounded URL cache, even while a view retains the old state', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => response()))
+    const media = new Media('https://fixture.invalid', 'fixture-token', 1)
+    clients.push(media)
+    const retainedByView = await media.open(message, key)
+    expect(retainedByView.state).toBe('ready')
+    expect(media.peekBlob(message.uid)).toBeInstanceOf(Blob)
+    const second = { ...message, uid: 'another-message' }
+    expect((await media.open(second, key)).state).toBe('ready')
+    expect(media.peekBlob(message.uid)).toBeUndefined()
+    expect(media.peekBlob(second.uid)).toBeInstanceOf(Blob)
+    expect('blob' in retainedByView).toBe(false)
+    media.release()
+    expect(media.peekBlob(second.uid)).toBeUndefined()
   })
 
   it('aborts the previous device download without replacing or removing a fresh request for the same message', async () => {
@@ -99,5 +118,6 @@ describe('attachment download lifetime', () => {
     expect(await media.open(message, key)).toEqual({ state: 'error', message: 'o carregamento foi cancelado' })
     expect(revoke).toHaveBeenCalledWith(lateURL)
     expect(media.peek(message.uid)).toBeUndefined()
+    expect(media.peekBlob(message.uid)).toBeUndefined()
   })
 })

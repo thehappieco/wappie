@@ -668,8 +668,9 @@ type SendMediaRequest struct {
 	// FileName is required for a document and is what the download is called.
 	FileName string `json:"filename,omitempty"`
 
-	Width   uint32 `json:"width,omitempty"`
-	Height  uint32 `json:"height,omitempty"`
+	Width  uint32 `json:"width,omitempty"`
+	Height uint32 `json:"height,omitempty"`
+	// Seconds is the actual duration. Round video notes accept at most 60.
 	Seconds uint32 `json:"seconds,omitempty"`
 
 	// Waveform and Thumbnail come from the client. Computing either means

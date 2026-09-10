@@ -86,6 +86,9 @@ func Media(chat types.JID, a Attachment, opts Options) (*waE2E.Message, error) {
 		return nil, errors.New("send: an attachment needs a mime type; the recipient " +
 			"decides how to render it from that alone")
 	}
+	if err := ValidateVideo(a); err != nil {
+		return nil, err
+	}
 
 	ctx := buildContext(chat, opts)
 	// WhatsApp stamps when the key was minted. Clients use it to decide
@@ -121,9 +124,6 @@ func Media(chat types.JID, a Attachment, opts Options) (*waE2E.Message, error) {
 			// and clients render it as a circle, so putting one in the video
 			// field instead would change how it looks on the recipient's
 			// screen.
-			if a.Caption != "" {
-				return nil, errors.New("send: a round video note carries no caption")
-			}
 			msg = &waE2E.Message{PtvMessage: video}
 			break
 		}

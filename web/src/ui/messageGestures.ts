@@ -12,8 +12,18 @@ interface Options {
   onReply: () => void
   onOffset: (px: number) => void
   onPress: (pressed: boolean) => void
+  onReady?: () => void
+  onSwipe?: (active: boolean) => void
   canReply: () => boolean
   hasSelection: () => boolean
+}
+
+export const REPLY_THRESHOLD = 64
+
+/** Follow the finger, then add resistance instead of stopping abruptly. */
+export function replyOffset(distance: number): number {
+  const positive = Math.max(0, distance)
+  return positive <= REPLY_THRESHOLD ? positive : REPLY_THRESHOLD + 32 * (1 - Math.exp(-(positive - REPLY_THRESHOLD) / 64))
 }
 
 /** Touch gestures only. Taps, mouse selection and vertical scrolling stay native. */
@@ -24,6 +34,7 @@ export function createMessageGestures(options: Options) {
   let distance = 0
   let suppressUntil = 0
   let disposed = false
+  let signaled = false
 
   function clearTimer() {
     if (timer) clearTimeout(timer)
@@ -37,6 +48,7 @@ export function createMessageGestures(options: Options) {
     swiping = false
     distance = 0
     options.onOffset(0)
+    options.onSwipe?.(false)
   }
 
   function pointerDown(event: MessagePointer) {
@@ -47,6 +59,7 @@ export function createMessageGestures(options: Options) {
     // Leave the operating system's edge-back gesture alone.
     if (event.clientX < 24) return
     suppressUntil = 0
+    signaled = false
     // Native PointerEvent fields are inherited getters, not enumerable own
     // properties. Spreading the event would silently lose the gesture origin.
     pointer = {
@@ -83,16 +96,19 @@ export function createMessageGestures(options: Options) {
       }
       if (dx < 12) return false
       swiping = true
+      options.onSwipe?.(true)
     }
     if (Math.abs(dy) > Math.max(40, Math.abs(dx))) { cancel(); return false }
-    distance = Math.max(0, Math.min(96, dx))
-    options.onOffset(distance)
+    distance = Math.max(0, dx)
+    options.onOffset(replyOffset(distance))
+    if (distance >= REPLY_THRESHOLD && !signaled) { signaled = true; options.onReady?.() }
     return true
   }
 
   function pointerUp(event: MessagePointer) {
     if (!pointer || event.pointerId !== pointer.pointerId) return
-    const reply = swiping && distance >= 64 && options.canReply() && !options.hasSelection()
+    if (swiping) pointerMove(event)
+    const reply = swiping && distance >= REPLY_THRESHOLD && options.canReply() && !options.hasSelection()
     if (swiping) suppressUntil = Date.now() + 1000
     cancel()
     if (reply) options.onReply()

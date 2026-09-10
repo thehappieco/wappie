@@ -3,11 +3,11 @@ import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import { nowTick } from '../state/actions'
-import { discardFailed, loadHistory, people, state, type MessageView } from '../state/archive'
+import { canSend, discardFailed, loadHistory, people, state, type MessageView } from '../state/archive'
 import { expiryLabel, hasExpired } from '../state/ephemeral'
 import { displayFallback, formatPhone, parseJID, SERVER_LID, SERVER_USER } from '../state/jid'
 import { hhmm, runs, stamp, typeLabel, unmatchedMentions } from '../ui/format'
-import { createMessageGestures, MESSAGE_CONTROLS } from '../ui/messageGestures'
+import { createMessageGestures, MESSAGE_CONTROLS, REPLY_THRESHOLD } from '../ui/messageGestures'
 import AppIcon from './AppIcon.vue'
 import MediaBlock from './MediaBlock.vue'
 import MessageActions from './MessageActions.vue'
@@ -18,6 +18,7 @@ const props = defineProps<{ message: MessageView; showSender: boolean }>()
 const emit = defineEmits<{
   (e: 'reply', waID: string): void
   (e: 'edit', uid: string): void
+  (e: 'forward', uid: string): void
 }>()
 
 /**
@@ -38,6 +39,7 @@ const bubble = ref<HTMLElement | null>(null)
 const actions = ref<InstanceType<typeof MessageActions> | null>(null)
 const pressing = ref(false)
 const offset = ref(0)
+const swiping = ref(false)
 const actionsOpen = ref(false)
 
 function hasSelection() {
@@ -59,10 +61,13 @@ function feedback() {
 
 const gestures = createMessageGestures({
   onHold() { feedback(); openActions() },
-  onReply() { feedback(); emit('reply', m.value.waID) },
+  onReply() { emit('reply', m.value.waID) },
+  onReady: feedback,
+  onSwipe(value) { swiping.value = value },
   onOffset(value) { offset.value = value },
   onPress(value) { pressing.value = value },
-  canReply: () => !m.value.pending && !m.value.deleted && !m.value.isStatus,
+  canReply: () => !m.value.pending && !m.value.deleted && !m.value.isStatus && canSend()
+    && state.devices.find(device => device.id === state.deviceID)?.can_send === true,
   hasSelection,
 })
 
@@ -72,7 +77,16 @@ function pointerDown(event: PointerEvent) {
 }
 
 function pointerMove(event: PointerEvent) {
-  if (gestures.pointerMove(event) && event.cancelable) event.preventDefault()
+  if (!gestures.pointerMove(event)) return
+  if (event.cancelable) event.preventDefault()
+  // Retain the gesture when the finger passes the edge of a short bubble.
+  const target = event.currentTarget as HTMLElement | null
+  try { if (target && !target.hasPointerCapture(event.pointerId)) target.setPointerCapture(event.pointerId) } catch { /* A canceled pointer no longer exists. */ }
+}
+
+function lostPointerCapture(event: PointerEvent) {
+  // Moving implicit capture from a child to the bubble also bubbles this event.
+  if (event.target === event.currentTarget) gestures.cancel()
 }
 
 function click(event: MouseEvent) {
@@ -170,8 +184,8 @@ const forwardedLabel = computed(() =>
 </script>
 
 <template>
-  <div class="msg" :class="[m.fromMe ? 'out' : 'in', { 'reply-ready': offset >= 64 }]">
-    <span v-if="offset > 0" class="reply-gesture" aria-hidden="true" :style="{ opacity: Math.min(1, offset / 64) }"><AppIcon name="back" :size="20" /></span>
+  <div class="msg" :class="[m.fromMe ? 'out' : 'in', { 'reply-ready': offset >= REPLY_THRESHOLD }]">
+    <span class="reply-gesture" aria-hidden="true" :style="{ opacity: Math.min(1, offset / REPLY_THRESHOLD), transform: `translateX(${Math.min(20, offset / 3)}px) scale(${.65 + .35 * Math.min(1, offset / REPLY_THRESHOLD)})` }"><AppIcon name="reply" :size="20" /></span>
     <!-- A div rather than a button, and not for style: this element already
          contains buttons of its own from MediaBlock, and a button inside a
          button is invalid — browsers recover from it differently, and the inner
@@ -181,8 +195,8 @@ const forwardedLabel = computed(() =>
       ref="bubble"
       role="group"
       tabindex="0"
-      :class="{ on: selected, revoked: m.deleted, pressing, 'gesture-open': actionsOpen, swiping: offset > 0 }"
-      :style="{ transform: offset ? `translateX(${Math.min(12, offset / 3)}px)` : undefined }"
+      :class="{ on: selected, revoked: m.deleted, pressing, 'gesture-open': actionsOpen, swiping }"
+      :style="{ transform: offset ? `translate3d(${offset}px, 0, 0)` : undefined }"
       :aria-label="m.fromMe ? t('Mensagem enviada às {time}', { time: hhmm(m.ts) }) : t('Mensagem de {sender}, {time}', { sender: m.senderName, time: hhmm(m.ts) })"
       @click.capture="click"
       @keydown="keydown"
@@ -191,6 +205,7 @@ const forwardedLabel = computed(() =>
       @pointermove="pointerMove"
       @pointerup="gestures.pointerUp"
       @pointercancel="gestures.cancel"
+      @lostpointercapture="lostPointerCapture"
       :title="stamp(m.ts)"
     >
       <MessageActions
@@ -201,6 +216,7 @@ const forwardedLabel = computed(() =>
         @closed="actionsOpen = false"
         @reply="emit('reply', $event)"
         @edit="emit('edit', $event)"
+        @forward="emit('forward', $event)"
         @info="loadHistory(m)"
         @select-text="selectText"
       />
@@ -326,17 +342,16 @@ const forwardedLabel = computed(() =>
 
 <style scoped>
 .msg { position: relative; }
-.bubble { cursor: auto; padding-right: 34px; touch-action: pan-y pinch-zoom; transition: transform 180ms ease-out, box-shadow 180ms ease-out; }
+.bubble { cursor: auto; padding-right: 34px; touch-action: pan-y pinch-zoom; transition: transform 260ms cubic-bezier(.2,.85,.25,1.15), box-shadow 180ms ease-out; }
 .bubble:hover:not(.on):not(.gesture-open) { outline: none; }
 .bubble:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .bubble.pressing { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .bubble.gesture-open { outline: 2px solid var(--accent); }
-.bubble.swiping { transition: none; }
+.bubble.swiping { transition: none; will-change: transform; user-select: none; -webkit-user-select: none; }
 .bubble.revoked .message-content { opacity: .6; }
 .bubble.revoked .text, .bubble.revoked .text a, .bubble.revoked .text .mention { text-decoration: line-through; text-decoration-thickness: 1px; }
 .message-mark { display: inline-flex; align-items: center; color: var(--text-faint); cursor: help; }
-.reply-gesture { position: absolute; inset-inline-start: -24px; top: calc(50% - 16px); width: 32px; height: 32px; display: grid; place-items: center; color: var(--text-dim); background: var(--bg-raised); border-radius: 50%; pointer-events: none; transform: rotate(180deg); }
-.msg.in .reply-gesture { inset-inline-start: 0; z-index: 1; }
+.reply-gesture { position: absolute; inset-inline-start: 0; top: calc(50% - 16px); width: 32px; height: 32px; display: grid; place-items: center; color: var(--text-dim); background: var(--bg-raised); border-radius: 50%; pointer-events: none; }
 .reply-ready .reply-gesture { background: var(--accent); color: var(--on-accent); }
 @media (prefers-reduced-motion: reduce) { .bubble { transition: none; } }
 </style>

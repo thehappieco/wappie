@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { showWorkspaceView, workspaceViewURL } from '../src/ui/workspaceNavigation'
+import { clearWorkspaceDeviceURL, setWorkspaceDeviceURL, showWorkspaceView, workspaceViewURL } from '../src/ui/workspaceNavigation'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -48,4 +48,16 @@ describe('workspace screen navigation', () => {
     expect(assign).toHaveBeenCalledExactlyOnceWith('https://app.wappie.thehappie.co/?locale=es&workspace=space&device=phone')
     expect(replaceState).not.toHaveBeenCalled()
   })
+})
+
+
+it('updates a selected number without discarding route, locale, or browser history state', () => {
+  const state = { unrelated: 123 }
+  const replaceState = vi.fn()
+  vi.stubGlobal('location', new URL('https://app.wappie.thehappie.co/console?workspace=old&device=old&locale=de&billing=change#anchor'))
+  vi.stubGlobal('history', { state, replaceState })
+  setWorkspaceDeviceURL('current-workspace', 'current-device')
+  expect(replaceState).toHaveBeenCalledWith(state, '', 'https://app.wappie.thehappie.co/console?workspace=current-workspace&device=current-device&locale=de&billing=change#anchor')
+  clearWorkspaceDeviceURL()
+  expect(replaceState).toHaveBeenLastCalledWith(state, '', 'https://app.wappie.thehappie.co/console?workspace=old&locale=de&billing=change#anchor')
 })

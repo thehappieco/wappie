@@ -183,6 +183,13 @@ func (s *session) handleSendMedia(ctx context.Context, f Frame) {
 			req.Upload.Type, req.Type, req.Type))
 		return
 	}
+	if err := send.ValidateVideo(send.Attachment{
+		Type: domain.Type(req.Type), MimeType: req.MimeType,
+		Caption: req.Caption, Seconds: req.Seconds, IsGIF: req.IsGIF,
+	}); err != nil {
+		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())
+		return
+	}
 
 	t, ok := s.resolveSend(ctx, f, req.DeviceID, req.Chat)
 	if !ok {
@@ -216,7 +223,7 @@ func (s *session) handleSendMedia(ctx context.Context, f Frame) {
 			IsGIF: req.IsGIF, IsAnimated: req.IsAnimated,
 		},
 	})
-	if errors.Is(err, send.ErrNoAttachment) || errors.Is(err, send.ErrCaptionOnAudio) {
+	if errors.Is(err, send.ErrNoAttachment) || errors.Is(err, send.ErrCaptionOnAudio) || errors.Is(err, send.ErrInvalidVideo) {
 		// The caller asked for something WhatsApp does not do. Retrying never
 		// helps, so this is a bad request rather than an internal failure.
 		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())

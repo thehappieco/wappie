@@ -45,6 +45,7 @@ export class MediaFetchError extends Error {
  */
 export class Media {
   private readonly cache = new Map<string, MediaState>()
+  private readonly blobs = new Map<string, Blob>()
   private readonly inFlight = new Map<string, Promise<MediaState>>()
   private readonly downloads = new Set<AbortController>()
   private generation = 0
@@ -58,6 +59,12 @@ export class Media {
 
   peek(uid: string): MediaState | undefined {
     return this.cache.get(uid)
+  }
+
+  /** Share the verified plaintext only while its bounded cache entry is alive. */
+  peekBlob(uid: string): Blob | undefined {
+    const cached = this.cache.get(uid)
+    return cached?.state === 'ready' ? this.blobs.get(cached.url) : undefined
   }
 
   /**
@@ -92,7 +99,7 @@ export class Media {
         // A decoder may finish even after fetch has been aborted. Its object
         // URL must not outlive the device or session that requested it.
         if (generation !== this.generation || controller.signal.aborted) {
-          if (result.state === 'ready') URL.revokeObjectURL(result.url)
+          if (result.state === 'ready') { this.blobs.delete(result.url); URL.revokeObjectURL(result.url) }
           return { state: 'error', message: t('o carregamento foi cancelado') }
         }
         this.remember(message.uid, result)
@@ -151,7 +158,9 @@ export class Media {
     const plaintext = await decrypt(ciphertext, mediaKey, mediaTypeOf(media))
     signal.throwIfAborted()
     const blob = new Blob([plaintext as BlobPart], { type: media.mimetype || 'application/octet-stream' })
-    return { state: 'ready', url: URL.createObjectURL(blob), bytes: plaintext.length }
+    const url = URL.createObjectURL(blob)
+    this.blobs.set(url, blob)
+    return { state: 'ready', url, bytes: plaintext.length }
   }
 
   private endpoint(uid: string): string {
@@ -168,7 +177,7 @@ export class Media {
       if (oldest.done) break
       const evicted = this.cache.get(oldest.value)
       this.cache.delete(oldest.value)
-      if (evicted?.state === 'ready') URL.revokeObjectURL(evicted.url)
+      if (evicted?.state === 'ready') { this.blobs.delete(evicted.url); URL.revokeObjectURL(evicted.url) }
     }
   }
 
@@ -182,6 +191,7 @@ export class Media {
       if (state.state === 'ready') URL.revokeObjectURL(state.url)
     }
     this.cache.clear()
+    this.blobs.clear()
   }
 }
 

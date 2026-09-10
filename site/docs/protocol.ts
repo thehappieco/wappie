@@ -424,6 +424,7 @@ export interface SendMediaRequest extends SendOptions {
   filename?: string
   width?: number
   height?: number
+  /** Actual duration. Round video notes (type=ptv) accept at most 60 seconds. */
   seconds?: number
   /** Base64. The 64-bar sketch behind a voice note; audio only. */
   waveform?: string

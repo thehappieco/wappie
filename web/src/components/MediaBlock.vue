@@ -5,6 +5,7 @@ import { computed, ref } from 'vue'
 import { fetchMedia, type MessageView } from '../state/archive'
 import { playedMessage } from '../state/reading'
 import { bytes, duration } from '../ui/format'
+import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{ message: MessageView }>()
 
@@ -13,7 +14,25 @@ const busy = ref(false)
 
 const isPicture = computed(() => ['image', 'sticker'].includes(media.value.type))
 const isVideo = computed(() => ['video', 'ptv'].includes(media.value.type))
+const isRoundVideo = computed(() => media.value.type === 'ptv')
+const videoSize = computed(() => {
+  const width = media.value.width || 320, height = media.value.height || 180
+  const scale = Math.min(1, 320 / width, 340 / height)
+  return { width: `${Math.round(width * scale)}px`, aspectRatio: `${width} / ${height}` }
+})
+const video = ref<HTMLVideoElement>()
+const videoPlaying = ref(false)
+const videoError = ref('')
 const isSound = computed(() => ['audio', 'ptt'].includes(media.value.type))
+
+async function toggleVideo() {
+  const player = video.value
+  if (!isRoundVideo.value || !player) return
+  videoError.value = ''
+  if (!player.paused) { player.pause(); return }
+  try { await player.play() }
+  catch { videoError.value = t('Não foi possível reproduzir este vídeo.') }
+}
 
 /**
  * The URL of the attachment, once there is one to draw.
@@ -100,23 +119,39 @@ async function onPlayed() {
     <!-- A picture or a video: the sealed inline preview draws immediately, and
          the full attachment is fetched only when asked for. Fetching every one
          while scrolling would download the conversation. -->
-    <div v-if="isPicture || isVideo" class="media">
+    <div v-if="isPicture || isVideo" class="media" :class="{ 'video-media': isVideo, 'round-video': isRoundVideo }" :style="isVideo && !isRoundVideo ? videoSize : undefined">
       <video
         v-if="openedURL && isVideo"
+        ref="video"
         :src="openedURL"
-        controls
+        :poster="media.thumbURL"
+        :controls="!isRoundVideo"
+        playsinline
         :loop="media.isGIF"
         :muted="media.isGIF"
+        @play="videoPlaying = true"
+        @pause="videoPlaying = false"
+        @ended="videoPlaying = false"
+        @click.stop="isRoundVideo && toggleVideo()"
       />
       <img v-else-if="openedURL" :src="openedURL" :alt="media.fileName || t('anexo')" />
       <img v-else-if="media.thumbURL" :src="media.thumbURL" :alt="t('prévia')" @click.stop="reveal" />
       <div
         v-else
-        style="height: 140px; width: 220px; display: grid; place-items: center"
+        class="media-placeholder"
         @click.stop="reveal"
       >
-        <span class="sealed">{{ t('sem prévia') }}</span>
+        <AppIcon :name="isVideo ? 'video' : 'image'" :size="42" />
       </div>
+
+      <button v-if="isRoundVideo && openedURL && !sending && !trouble" class="round-video-toggle" :class="{ playing: videoPlaying }"
+        type="button" :aria-label="videoPlaying ? t('Pausar vídeo') : t('Reproduzir vídeo')" @click.stop="toggleVideo">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path v-if="videoPlaying" d="M6 4h4v16H6zm8 0h4v16h-4z" />
+          <path v-else d="M7 3v18l15-9z" />
+        </svg>
+      </button>
+      <span v-if="isRoundVideo && openedURL && media.seconds" class="round-video-duration" aria-hidden="true">{{ duration(media.seconds) }}</span>
 
       <!-- Leaving this tab. Its own band rather than the veil, so the picture
            stays visible underneath: the whole reason to draw it now is that
@@ -177,5 +212,21 @@ async function onPlayed() {
         {{ busy ? '…' : t('abrir') }}
       </button>
     </div>
+    <p v-if="videoError" role="alert" class="sealed">{{ videoError }}</p>
   </div>
 </template>
+
+<style scoped>
+.media-placeholder { height: 140px; width: 220px; display: grid; place-items: center; color: var(--text-dim); }
+.media-placeholder .app-icon { opacity: .15; }
+.media.video-media { max-width: 100%; margin: 0 0 4px; }
+.video-media video, .video-media img, .video-media .media-placeholder { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; object-fit: contain; }
+.media.round-video { width: 220px; max-width: 100%; aspect-ratio: 1; margin: 0 0 4px; border-radius: 50%; overflow: hidden; }
+.round-video video, .round-video img, .round-video .media-placeholder { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; max-height: none; }
+.round-video-toggle { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 50px; height: 50px; border: 0; border-radius: 50%; display: grid; place-items: center; background: #0008; color: white; cursor: pointer; transition: opacity 120ms ease; }
+.round-video-toggle.playing { opacity: 0; }
+.round-video:hover .round-video-toggle.playing, .round-video-toggle:focus-visible { opacity: 1; }
+.round-video-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.round-video-duration { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); padding: 2px 7px; border-radius: 10px; color: white; background: #0008; font-size: 11px; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .round-video-toggle { transition: none; } }
+</style>

@@ -1,0 +1,5 @@
+{
+  "Reproduzir vídeo": ["Play video", "Reproducir video", "Lire la vidéo", "Video abspielen"],
+  "Pausar vídeo": ["Pause video", "Pausar video", "Mettre la vidéo en pause", "Video pausieren"],
+  "Não foi possível reproduzir este vídeo.": ["This video could not be played.", "No se pudo reproducir este video.", "Cette vidéo n’a pas pu être lue.", "Dieses Video konnte nicht abgespielt werden."]
+}

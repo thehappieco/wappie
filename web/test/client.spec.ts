@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer, type WebSocket as ServerSocket } from 'ws'
 import type { AddressInfo } from 'node:net'
 
@@ -78,6 +78,7 @@ async function serve(answer: (frame: P.Frame, send: (f: P.Frame) => void) => voi
 }
 
 afterEach(async () => {
+  vi.useRealTimers()
   while (servers.length) await servers.pop()!.close()
 })
 
@@ -232,4 +233,26 @@ describe('protocol failure details', () => {
       expect(error.rawMessage).toBe('no such device')
     } finally { locale.value = original }
   })
+})
+
+
+it('rejects pending work immediately on intentional close without asking for a reconnect', async () => {
+  const server = await serve(() => {})
+  const onClose = vi.fn(), onFrame = vi.fn(), stream = vi.fn()
+  const conn = await Connection.connect({ serverURL: server.url, credential: { kind: 'api_key', token: 'synthetic' }, onClose, onFrame })
+  vi.useFakeTimers()
+  const pending = [conn.request(P.TypeChatsList, {}, P.TypeChats), conn.request(P.TypeContacts, {}, P.TypeContactList)]
+  conn.stream(P.TypeDevicesList, {}, stream)
+  expect(vi.getTimerCount()).toBe(2)
+  const settled = Promise.allSettled(pending)
+  conn.close('signed out')
+  expect(conn.isOpen).toBe(false)
+  expect(vi.getTimerCount()).toBe(0)
+  expect((await settled).map(result => result.status)).toEqual(['rejected', 'rejected'])
+  expect(stream).toHaveBeenCalledOnce()
+  expect(stream.mock.calls[0][0]).toMatchObject({ t: P.TypeError, p: { code: P.ErrInternal } })
+  expect(onClose).not.toHaveBeenCalled()
+  conn.close()
+  expect(stream).toHaveBeenCalledOnce()
+  expect(onFrame).not.toHaveBeenCalled()
 })

@@ -27,3 +27,23 @@ export function showWorkspaceView(view: 'archive' | 'admin', workspace: string, 
   return true
 }
 import { replaceNavigationURL } from './mobileNavigation'
+
+/** A changed number must replace a stale deep link without losing mobile Back state. */
+export function setWorkspaceDeviceURL(workspace: string, device: string): void {
+  try {
+    const url = new URL(location.href)
+    url.searchParams.set('workspace', workspace)
+    url.searchParams.set('device', device)
+    replaceNavigationURL(url.toString())
+  } catch { /* Non-browser clients and disabled history still open normally. */ }
+}
+
+/** Signing out leaves no previous account's device selection on the login URL. */
+export function clearWorkspaceDeviceURL(): void {
+  try {
+    const url = new URL(location.href)
+    if (!url.searchParams.has('device')) return
+    url.searchParams.delete('device')
+    replaceNavigationURL(url.toString())
+  } catch { /* History is not required to clear authorization. */ }
+}

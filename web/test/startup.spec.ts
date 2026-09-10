@@ -5,7 +5,8 @@ import * as P from '../src/api/protocol'
 import { Opener } from '../src/api/opener'
 import { Media, type MediaState } from '../src/api/media'
 import { importArchiveKey } from '../src/crypto/hpke'
-import { avatars, connection, fetchMedia, loadOlder, openChat, people, refreshChats, refreshDevices, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
+import { avatars, connection, fetchMedia, loadOlder, openChat, people, preferredReadableDevice, refreshChats, refreshDevices, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
+import { readLastDevice, rememberLastDevice } from '../src/ui/lastDevice'
 import { fromPastedKey } from '../src/state/session'
 import { sweepDone, sweepUnsupported } from '../src/state/reproject'
 
@@ -18,6 +19,8 @@ const UID = '018f3a2b-2222-7000-8000-00000000dddd'
 
 type Respond = (payload: unknown, type?: string) => void
 interface Fake {
+  tenant: string
+  devices: P.DeviceInfo[]
   url: string
   requests: P.Frame[]
   hold: Map<string, Respond[]>
@@ -34,6 +37,7 @@ async function serve(): Promise<Fake> {
   const wss = new WebSocketServer({ port: 0 })
   await new Promise<void>((resolve) => wss.on('listening', resolve))
   const fake: Fake = {
+    tenant: TENANT, devices: [FIRST, SECOND].map(id => ({ id, label: id, status: 'online', receipt_mode: 'passive', running: true, created_at: new Date().toISOString() })),
     url: `http://127.0.0.1:${(wss.address() as { port: number }).port}`,
     requests: [], hold: new Map(), held: new Set(), errors: new Map(),
     chats: new Map([
@@ -66,13 +70,10 @@ async function serve(): Promise<Fake> {
     }
     switch (frame.t) {
       case P.TypeHello:
-        respond(P.TypeWelcome, { version: P.VERSION, tenant_id: TENANT, features: [], server_ts: 0 })
+        respond(P.TypeWelcome, { version: P.VERSION, tenant_id: fake.tenant, features: [], server_ts: 0 })
         break
       case P.TypeDevicesList:
-        respond(P.TypeDevices, { devices: [FIRST, SECOND].map((id) => ({
-          id, label: id, status: 'online', receipt_mode: 'passive', running: true,
-          created_at: new Date().toISOString(),
-        })) })
+        respond(P.TypeDevices, { devices: fake.devices })
         break
       case P.TypeContacts:
       case P.TypeResolve:
@@ -121,6 +122,7 @@ afterEach(async () => {
   stop()
   while (servers.length) await servers.pop()!.close()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('opening a large archive', () => {
@@ -441,4 +443,146 @@ it('ignores a devices refresh that belongs to the previous workspace', async () 
   respond({devices:[{id:FIRST,label:'Previous workspace',status:'online',receipt_mode:'passive',running:true,created_at:new Date().toISOString()}]})
   await refresh
   expect(state.devices).toEqual([])
+})
+
+
+const USER = '018f3a2b-2222-7000-8000-000000001111'
+const OTHER_USER = '018f3a2b-2222-7000-8000-000000002222'
+const OTHER_TENANT = '018f3a2b-2222-7000-8000-000000003333'
+function deviceStorage() {
+  const saved = new Map<string, string>()
+  vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) })
+  vi.stubGlobal('location', new URL('https://client.example.test/'))
+  vi.stubGlobal('history', { state: { retained: 'browser-state' }, replaceState: vi.fn((_state, _title, url: string) => { vi.stubGlobal('location', new URL(url)) }) })
+  return saved
+}
+function scope(fake: Fake, userID = USER, workspaceID = fake.tenant) {
+  return { serverOrigin: fake.url, userID, workspaceID }
+}
+async function accountBoot(fake: Fake, userID = USER, readable = [FIRST, SECOND], workspace = fake.tenant) {
+  const session = fromPastedKey({ label: 'Synthetic account', serverURL: fake.url, apiKey: 'synthetic-bearer',
+    archive: await importArchiveKey(new Uint8Array(32).fill(7) as Uint8Array<ArrayBuffer>) })
+  session.credential.kind = 'session'
+  session.account = { userID, email: 'person@example.test', tenantID: workspace, hasRecovery: true }
+  session.readable = readable.map(deviceID => ({ deviceID, label: deviceID }))
+  await start(session)
+  return session
+}
+
+describe('remembering an account number within its workspace', () => {
+  it('restores the last successfully opened number after logout and a fresh sign-in', async () => {
+    const saved = deviceStorage(), fake = await serve()
+    await accountBoot(fake)
+    await selectDevice(SECOND)
+    expect(readLastDevice(scope(fake))).toBe(SECOND)
+    expect(new URLSearchParams(location.search).get('device')).toBe(SECOND)
+    expect([...saved.values()]).toEqual([SECOND])
+    expect(JSON.stringify([...saved])).not.toMatch(/person@example|synthetic-bearer/)
+    stop()
+    expect(new URLSearchParams(location.search).has('device')).toBe(false)
+    expect(readLastDevice(scope(fake))).toBe(SECOND)
+    await accountBoot(fake)
+    expect(state.deviceID).toBe(SECOND)
+  })
+  it('keeps different users, workspaces and servers independent', async () => {
+    deviceStorage(); const fake = await serve()
+    await accountBoot(fake); await selectDevice(SECOND); stop()
+    await accountBoot(fake, OTHER_USER); expect(state.deviceID).toBe(FIRST); stop()
+    fake.tenant = OTHER_TENANT
+    await accountBoot(fake); expect(state.deviceID).toBe(FIRST); stop()
+    fake.tenant = TENANT
+    await accountBoot(fake); expect(state.deviceID).toBe(SECOND); stop()
+    const other = await serve()
+    await accountBoot(other); expect(state.deviceID).toBe(FIRST)
+  })
+  it('gives an explicitly linked authorized number priority over the saved choice', async () => {
+    deviceStorage(); const fake = await serve()
+    rememberLastDevice(scope(fake), SECOND)
+    vi.stubGlobal('location', new URL(`https://client.example.test/?workspace=${TENANT}&device=${FIRST}`))
+    await accountBoot(fake)
+    expect(state.deviceID).toBe(FIRST)
+    expect(readLastDevice(scope(fake))).toBe(FIRST)
+  })
+  it.each(['missing', 'unauthorized', 'other-workspace'])('ignores a %s linked number and restores the allowed saved choice', async kind => {
+    deviceStorage(); const fake = await serve()
+    rememberLastDevice(scope(fake), FIRST)
+    const workspace = kind === 'other-workspace' ? OTHER_TENANT : TENANT
+    const device = kind === 'missing' ? '018f3a2b-2222-7000-8000-000000009999' : SECOND
+    vi.stubGlobal('location', new URL(`https://client.example.test/?workspace=${workspace}&device=${device}`))
+    await accountBoot(fake, USER, kind === 'unauthorized' ? [FIRST] : [FIRST, SECOND])
+    expect(state.deviceID).toBe(FIRST)
+    expect(fake.requests.filter(frame => frame.t === P.TypeChatsList).map(frame => (frame.p as {device_id:string}).device_id)).toEqual([FIRST])
+  })
+  it('ignores a revoked saved choice and a revoked retained choice instead of opening an unreadable device', async () => {
+    deviceStorage(); const fake = await serve()
+    rememberLastDevice(scope(fake), SECOND)
+    state.deviceID = SECOND
+    await accountBoot(fake, USER, [FIRST])
+    expect(state.deviceID).toBe(FIRST)
+    expect(readLastDevice(scope(fake))).toBe(FIRST)
+    await selectDevice(SECOND)
+    expect(state.deviceID).toBe(FIRST)
+    expect(readLastDevice(scope(fake))).toBe(FIRST)
+  })
+  it('opens the console when there are no readable devices and never stores an unauthorized choice', async () => {
+    const saved = deviceStorage(), fake = await serve()
+    await accountBoot(fake, USER, [])
+    expect(state.view).toBe('admin'); expect(state.deviceID).toBe('')
+    expect(fake.requests.some(frame => frame.t === P.TypeChatsList)).toBe(false)
+    expect(saved.size).toBe(0)
+  })
+  it('uses the same preferred number when returning from a freshly loaded console', async () => {
+    deviceStorage(); const fake = await serve()
+    rememberLastDevice(scope(fake), SECOND)
+    vi.stubGlobal('location', new URL('https://client.example.test/console'))
+    await accountBoot(fake)
+    expect(state.view).toBe('admin'); expect(state.deviceID).toBe('')
+    expect(preferredReadableDevice()?.id).toBe(SECOND)
+    expect(fake.requests.some(frame => frame.t === P.TypeChatsList)).toBe(false)
+  })
+  it('does not write preferences for pasted keys or a mismatched authenticated workspace', async () => {
+    const saved = deviceStorage(), fake = await serve()
+    await boot(fake); await selectDevice(SECOND)
+    expect(saved.size).toBe(0); stop()
+    await accountBoot(fake, USER, [FIRST, SECOND], OTHER_TENANT)
+    expect(saved.size).toBe(0)
+  })
+  it('retains the current authorized choice on reconnect even if browser history cannot replace an old link', async () => {
+    deviceStorage(); const fake = await serve()
+    vi.stubGlobal('location', new URL(`https://client.example.test/?device=${FIRST}`))
+    vi.stubGlobal('history', { state: null, replaceState() { throw new Error('history denied') } })
+    await accountBoot(fake); await selectDevice(SECOND)
+    expect(new URLSearchParams(location.search).get('device')).toBe(FIRST)
+    fake.disconnect()
+    await until(() => !state.connected)
+    await until(() => state.connected && !state.initializingConnection, 5000)
+    expect(state.deviceID).toBe(SECOND)
+  })
+  it('clears the previous conversation and device data when reconnect falls back from a removed number', async () => {
+    deviceStorage(); const fake = await serve()
+    await accountBoot(fake); await openChat(FIRST_CHAT)
+    expect(state.openChatKey).toBe(FIRST_CHAT)
+    fake.devices = fake.devices.filter(device => device.id === SECOND)
+    fake.requests = []
+    fake.disconnect(); await until(() => !state.connected)
+    await until(() => state.connected && !state.initializingConnection, 5000)
+    expect(state.deviceID).toBe(SECOND); expect(state.openChatKey).toBe('')
+    expect(fake.requests.some(frame => frame.t === P.TypeChatPage)).toBe(false)
+    expect(state.chats[0]?.key).toBe(SECOND_CHAT)
+  })
+  it('does not remember a late device response after logout', async () => {
+    deviceStorage(); const fake = await serve()
+    await accountBoot(fake)
+    fake.held.add(key(P.TypeChatsList, SECOND))
+    const switching = selectDevice(SECOND)
+    const response = await pending(fake, P.TypeChatsList, SECOND)
+    // Keep the synthetic transport alive so an already in-flight response can
+    // arrive after local logout; production disconnect may discard it sooner.
+    vi.spyOn(connection()!, 'close').mockImplementation(() => {})
+    stop(); response({ device_id: SECOND, chats: [] })
+    await switching
+    expect(readLastDevice(scope(fake))).toBe(FIRST)
+    expect(state.phase).toBe('locked')
+    expect(new URLSearchParams(location.search).has('device')).toBe(false)
+  })
 })

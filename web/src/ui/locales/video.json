@@ -1,0 +1,344 @@
+{
+  "A conversão pode levar o tempo do vídeo. Mantenha esta página aberta.": [
+    "Conversion may take as long as the video. Keep this page open.",
+    "La conversión puede durar lo mismo que el vídeo. Mantén esta página abierta.",
+    "La conversion peut durer aussi longtemps que la vidéo. Gardez cette page ouverte.",
+    "Die Umwandlung kann so lange wie das Video dauern. Lass diese Seite geöffnet."
+  ],
+  "A câmera foi encerrada. Abra novamente para gravar.": [
+    "The camera was closed. Open it again to record.",
+    "Se cerró la cámara. Ábrela de nuevo para grabar.",
+    "La caméra a été fermée. Rouvrez-la pour enregistrer.",
+    "Die Kamera wurde geschlossen. Öffne sie zum Aufnehmen erneut."
+  ],
+  "A câmera não ficou pronta. Tente abrir novamente.": [
+    "The camera did not become ready. Try opening it again.",
+    "La cámara no estuvo lista. Intenta abrirla de nuevo.",
+    "La caméra n’est pas prête. Essayez de la rouvrir.",
+    "Die Kamera ist nicht bereit. Versuche, sie erneut zu öffnen."
+  ],
+  "A câmera ou o microfone foi desconectado.": [
+    "The camera or microphone was disconnected.",
+    "Se desconectó la cámara o el micrófono.",
+    "La caméra ou le microphone a été déconnecté.",
+    "Die Kamera oder das Mikrofon wurde getrennt."
+  ],
+  "A câmera ou o microfone não está disponível.": [
+    "The camera or microphone is unavailable.",
+    "La cámara o el micrófono no está disponible.",
+    "La caméra ou le microphone est indisponible.",
+    "Die Kamera oder das Mikrofon ist nicht verfügbar."
+  ],
+  "A gravação integrada não está disponível neste navegador. Use a câmera do aparelho e escolha como enviar depois.": [
+    "Recording within the app is unavailable in this browser. Use your device’s camera, then choose how to send it.",
+    "La grabación integrada no está disponible en este navegador. Usa la cámara del dispositivo y después elige cómo enviarlo.",
+    "L’enregistrement intégré est indisponible dans ce navigateur. Utilisez la caméra de l’appareil, puis choisissez le mode d’envoi.",
+    "Die integrierte Aufnahme ist in diesem Browser nicht verfügbar. Nutze die Gerätekamera und wähle danach die Versandart."
+  ],
+  "A gravação não foi finalizada. Tente novamente.": [
+    "The recording could not be finalized. Try again.",
+    "No se pudo finalizar la grabación. Inténtalo de nuevo.",
+    "L’enregistrement n’a pas pu être finalisé. Réessayez.",
+    "Die Aufnahme konnte nicht abgeschlossen werden. Versuche es erneut."
+  ],
+  "A gravação ultrapassou 64 MB. Grave um vídeo mais curto.": [
+    "The recording exceeded 64 MB. Record a shorter video.",
+    "La grabación superó los 64 MB. Graba un vídeo más corto.",
+    "L’enregistrement dépasse 64 Mo. Enregistrez une vidéo plus courte.",
+    "Die Aufnahme überschreitet 64 MB. Nimm ein kürzeres Video auf."
+  ],
+  "A resolução da câmera mudou. Grave o vídeo novamente.": [
+    "The camera resolution changed. Record the video again.",
+    "Cambió la resolución de la cámara. Vuelve a grabar el vídeo.",
+    "La résolution de la caméra a changé. Enregistrez à nouveau la vidéo.",
+    "Die Kameraauflösung hat sich geändert. Nimm das Video erneut auf."
+  ],
+  "Abrindo câmera…": [
+    "Opening camera…",
+    "Abriendo cámara…",
+    "Ouverture de la caméra…",
+    "Kamera wird geöffnet…"
+  ],
+  "Abrir câmera": [
+    "Open camera",
+    "Abrir cámara",
+    "Ouvrir la caméra",
+    "Kamera öffnen"
+  ],
+  "Alternar câmera": [
+    "Switch camera",
+    "Cambiar cámara",
+    "Changer de caméra",
+    "Kamera wechseln"
+  ],
+  "Anexar": [
+    "Attach",
+    "Adjuntar",
+    "Joindre",
+    "Anhängen"
+  ],
+  "Circular (TVP)": [
+    "Circular (PTV)",
+    "Circular (PTV)",
+    "Circulaire (PTV)",
+    "Rund (PTV)"
+  ],
+  "Câmera do aparelho": [
+    "Device camera",
+    "Cámara del dispositivo",
+    "Caméra de l’appareil",
+    "Gerätekamera"
+  ],
+  "Esta câmera não oferece HD nesta configuração. Será usada a resolução disponível, sem ampliação.": [
+    "This camera cannot provide HD with these settings. Its available resolution will be used without upscaling.",
+    "Esta cámara no ofrece HD con esta configuración. Se usará su resolución disponible, sin ampliarla.",
+    "Cette caméra ne propose pas la HD avec ces réglages. La résolution disponible sera utilisée, sans agrandissement.",
+    "Diese Kamera bietet mit diesen Einstellungen kein HD. Die verfügbare Auflösung wird ohne Hochskalierung verwendet."
+  ],
+  "Este navegador não consegue converter o vídeo para MP4. Use outro navegador ou envie como documento.": [
+    "This browser cannot convert the video to MP4. Use another browser or send it as a document.",
+    "Este navegador no puede convertir el vídeo a MP4. Usa otro navegador o envíalo como documento.",
+    "Ce navigateur ne peut pas convertir la vidéo en MP4. Utilisez un autre navigateur ou envoyez-la comme document.",
+    "Dieser Browser kann das Video nicht in MP4 umwandeln. Nutze einen anderen Browser oder sende es als Dokument."
+  ],
+  "Este navegador não conseguiu preparar a gravação de vídeo.": [
+    "This browser could not prepare the video recording.",
+    "Este navegador no pudo preparar la grabación de vídeo.",
+    "Ce navigateur n’a pas pu préparer l’enregistrement vidéo.",
+    "Dieser Browser konnte die Videoaufnahme nicht vorbereiten."
+  ],
+  "Este navegador não grava vídeo no formato necessário. Use a câmera do celular para anexar um vídeo.": [
+    "This browser cannot record the required video format. Use your phone’s camera to attach a video.",
+    "Este navegador no graba el formato de vídeo necesario. Usa la cámara del móvil para adjuntar un vídeo.",
+    "Ce navigateur ne peut pas enregistrer au format requis. Utilisez la caméra du téléphone pour joindre une vidéo.",
+    "Dieser Browser kann nicht im benötigten Videoformat aufnehmen. Nutze die Handykamera, um ein Video anzuhängen."
+  ],
+  "Este vídeo tem resolução inferior a HD. Escolha a qualidade normal.": [
+    "This video’s resolution is below HD. Choose normal quality.",
+    "La resolución de este vídeo es inferior a HD. Elige la calidad normal.",
+    "La résolution de cette vidéo est inférieure à la HD. Choisissez la qualité normale.",
+    "Die Auflösung dieses Videos liegt unter HD. Wähle normale Qualität."
+  ],
+  "Formato": [
+    "Format",
+    "Formato",
+    "Format",
+    "Format"
+  ],
+  "Fotos, vídeos e documentos": [
+    "Photos, videos and documents",
+    "Fotos, vídeos y documentos",
+    "Photos, vidéos et documents",
+    "Fotos, Videos und Dokumente"
+  ],
+  "Gravar novamente": [
+    "Record again",
+    "Volver a grabar",
+    "Enregistrer à nouveau",
+    "Erneut aufnehmen"
+  ],
+  "Gravar vídeo": [
+    "Record video",
+    "Grabar vídeo",
+    "Enregistrer une vidéo",
+    "Video aufnehmen"
+  ],
+  "HD · até 720p": [
+    "HD · up to 720p",
+    "HD · hasta 720p",
+    "HD · jusqu’à 720p",
+    "HD · bis zu 720p"
+  ],
+  "Iniciar gravação": [
+    "Start recording",
+    "Iniciar grabación",
+    "Démarrer l’enregistrement",
+    "Aufnahme starten"
+  ],
+  "Normal · até 480p": [
+    "Normal · up to 480p",
+    "Normal · hasta 480p",
+    "Normale · jusqu’à 480p",
+    "Normal · bis zu 480p"
+  ],
+  "Não foi possível abrir a câmera.": [
+    "Could not open the camera.",
+    "No se pudo abrir la cámara.",
+    "Impossible d’ouvrir la caméra.",
+    "Die Kamera konnte nicht geöffnet werden."
+  ],
+  "Não foi possível abrir a imagem da câmera.": [
+    "Could not open the camera preview.",
+    "No se pudo abrir la vista previa de la cámara.",
+    "Impossible d’afficher l’aperçu de la caméra.",
+    "Die Kameravorschau konnte nicht geöffnet werden."
+  ],
+  "Não foi possível gravar o vídeo.": [
+    "Could not record the video.",
+    "No se pudo grabar el vídeo.",
+    "Impossible d’enregistrer la vidéo.",
+    "Das Video konnte nicht aufgenommen werden."
+  ],
+  "Não foi possível gravar o vídeo. Tente novamente.": [
+    "Could not record the video. Try again.",
+    "No se pudo grabar el vídeo. Inténtalo de nuevo.",
+    "Impossible d’enregistrer la vidéo. Réessayez.",
+    "Das Video konnte nicht aufgenommen werden. Versuche es erneut."
+  ],
+  "Não foi possível identificar o tamanho da câmera.": [
+    "Could not determine the camera resolution.",
+    "No se pudo determinar la resolución de la cámara.",
+    "Impossible de déterminer la résolution de la caméra.",
+    "Die Kameraauflösung konnte nicht ermittelt werden."
+  ],
+  "Não foi possível ler este vídeo.": [
+    "Could not read this video.",
+    "No se pudo leer este vídeo.",
+    "Impossible de lire cette vidéo.",
+    "Dieses Video konnte nicht gelesen werden."
+  ],
+  "Não foi possível preparar o vídeo.": [
+    "Could not prepare the video.",
+    "No se pudo preparar el vídeo.",
+    "Impossible de préparer la vidéo.",
+    "Das Video konnte nicht vorbereitet werden."
+  ],
+  "O enquadramento da câmera será preservado.": [
+    "The camera framing will be preserved.",
+    "Se conservará el encuadre de la cámara.",
+    "Le cadrage de la caméra sera conservé.",
+    "Der Bildausschnitt der Kamera bleibt erhalten."
+  ],
+  "O navegador não liberou o áudio para converter este vídeo. Tente novamente.": [
+    "The browser did not allow audio for this conversion. Try again.",
+    "El navegador no permitió el audio para esta conversión. Inténtalo de nuevo.",
+    "Le navigateur n’a pas autorisé l’audio pour cette conversion. Réessayez.",
+    "Der Browser hat Audio für diese Umwandlung nicht freigegeben. Versuche es erneut."
+  ],
+  "O navegador não produziu um vídeo MP4 compatível.": [
+    "The browser did not produce a compatible MP4 video.",
+    "El navegador no produjo un vídeo MP4 compatible.",
+    "Le navigateur n’a pas produit de vidéo MP4 compatible.",
+    "Der Browser hat kein kompatibles MP4-Video erzeugt."
+  ],
+  "O vídeo circular pode ter no máximo 60 segundos.": [
+    "A circular video can be up to 60 seconds long.",
+    "Un vídeo circular puede durar hasta 60 segundos.",
+    "Une vidéo circulaire peut durer jusqu’à 60 secondes.",
+    "Ein rundes Video darf höchstens 60 Sekunden lang sein."
+  ],
+  "O vídeo circular recorta o centro da imagem e não aceita legenda.": [
+    "Circular video crops the center of the image and cannot have a caption.",
+    "El vídeo circular recorta el centro de la imagen y no admite leyenda.",
+    "La vidéo circulaire recadre le centre de l’image et ne peut pas avoir de légende.",
+    "Runde Videos zeigen den mittleren Bildausschnitt und können keine Bildunterschrift haben."
+  ],
+  "O vídeo preparado ultrapassou o limite de tamanho.": [
+    "The prepared video exceeded the size limit.",
+    "El vídeo preparado superó el límite de tamaño.",
+    "La vidéo préparée dépasse la limite de taille.",
+    "Das vorbereitete Video überschreitet die Größenbegrenzung."
+  ],
+  "Parar gravação": [
+    "Stop recording",
+    "Detener grabación",
+    "Arrêter l’enregistrement",
+    "Aufnahme beenden"
+  ],
+  "Permita o acesso à câmera e ao microfone para gravar.": [
+    "Allow access to the camera and microphone to record.",
+    "Permite el acceso a la cámara y al micrófono para grabar.",
+    "Autorisez l’accès à la caméra et au microphone pour enregistrer.",
+    "Erlaube den Zugriff auf Kamera und Mikrofon, um aufzunehmen."
+  ],
+  "Preparando vídeo… {percent}%": [
+    "Preparing video… {percent}%",
+    "Preparando vídeo… {percent}%",
+    "Préparation de la vidéo… {percent}%",
+    "Video wird vorbereitet… {percent}%"
+  ],
+  "Prévia antes de enviar. Até 60 segundos por gravação.": [
+    "Preview before sending. Up to 60 seconds per recording.",
+    "Vista previa antes de enviar. Hasta 60 segundos por grabación.",
+    "Aperçu avant l’envoi. Jusqu’à 60 secondes par enregistrement.",
+    "Vorschau vor dem Senden. Bis zu 60 Sekunden pro Aufnahme."
+  ],
+  "Prévia do vídeo": [
+    "Video preview",
+    "Vista previa del vídeo",
+    "Aperçu de la vidéo",
+    "Videovorschau"
+  ],
+  "Qualidade": [
+    "Quality",
+    "Calidad",
+    "Qualité",
+    "Qualität"
+  ],
+  "Usar vídeo": [
+    "Use video",
+    "Usar vídeo",
+    "Utiliser la vidéo",
+    "Video verwenden"
+  ],
+  "Vídeo HD": [
+    "HD video",
+    "Vídeo HD",
+    "Vidéo HD",
+    "HD-Video"
+  ],
+  "Vídeo circular": [
+    "Circular video",
+    "Vídeo circular",
+    "Vidéo circulaire",
+    "Rundes Video"
+  ],
+  "Vídeo circular HD": [
+    "HD circular video",
+    "Vídeo circular HD",
+    "Vidéo circulaire HD",
+    "Rundes HD-Video"
+  ],
+  "até 480p, mantendo o enquadramento": [
+    "up to 480p, preserving the framing",
+    "hasta 480p, conservando el encuadre",
+    "jusqu’à 480p, en conservant le cadrage",
+    "bis zu 480p, mit unverändertem Bildausschnitt"
+  ],
+  "até 60 segundos e 480×480; sem legenda": [
+    "up to 60 seconds and 480×480; no caption",
+    "hasta 60 segundos y 480×480; sin leyenda",
+    "jusqu’à 60 secondes et 480×480 ; sans légende",
+    "bis zu 60 Sekunden und 480×480; ohne Bildunterschrift"
+  ],
+  "até 60 segundos e 720×720; sem legenda": [
+    "up to 60 seconds and 720×720; no caption",
+    "hasta 60 segundos y 720×720; sin leyenda",
+    "jusqu’à 60 secondes et 720×720 ; sans légende",
+    "bis zu 60 Sekunden und 720×720; ohne Bildunterschrift"
+  ],
+  "resolução original, a partir de 720p; pode ocupar mais espaço": [
+    "original resolution, from 720p; may use more space",
+    "resolución original, a partir de 720p; puede ocupar más espacio",
+    "résolution d’origine, à partir de 720p ; peut prendre plus de place",
+    "Originalauflösung ab 720p; benötigt möglicherweise mehr Speicher"
+  ],
+  "Não foi possível preservar o áudio deste vídeo. Envie o original em HD ou como documento.": [
+    "The audio in this video could not be preserved. Send the original in HD or as a document.",
+    "No se pudo conservar el audio de este vídeo. Envía el original en HD o como documento.",
+    "Le son de cette vidéo n’a pas pu être conservé. Envoyez l’original en HD ou comme document.",
+    "Der Ton dieses Videos konnte nicht erhalten werden. Sende das Original in HD oder als Dokument."
+  ],
+  "O áudio deste vídeo é muito grande para converter neste dispositivo. Envie o original em HD ou como documento.": [
+    "The audio in this video is too large to convert on this device. Send the original in HD or as a document.",
+    "El audio de este vídeo es demasiado grande para convertirlo en este dispositivo. Envía el original en HD o como documento.",
+    "Le son de cette vidéo est trop volumineux pour être converti sur cet appareil. Envoyez l’original en HD ou comme document.",
+    "Der Ton dieses Videos ist zu groß, um ihn auf diesem Gerät umzuwandeln. Sende das Original in HD oder als Dokument."
+  ],
+  "Mantenha esta aba visível até terminar a preparação do vídeo.": [
+    "Keep this tab visible until the video is ready.",
+    "Mantén esta pestaña visible hasta que el vídeo esté listo.",
+    "Gardez cet onglet visible jusqu’à ce que la vidéo soit prête.",
+    "Lass diesen Tab sichtbar, bis das Video fertig vorbereitet ist."
+  ]
+}

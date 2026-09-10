@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'v
 
 import { restoreAccountSession, type Session } from './state/session'
 import { browserSessionWasCleared, observeBrowserSession } from './state/sessionBridge'
+import { clearWorkspaceDeviceURL } from './ui/workspaceNavigation'
 import { installMobileNavigation } from './ui/mobileNavigation'
 import { applyPrivacyAppearance } from './ui/preferences'
 import { start, state, stop } from './state/archive'
@@ -26,6 +27,7 @@ let restoreAttempt = 0
 let disposed = false
 const unobserveSession = observeBrowserSession(change => {
   if (change.id !== activePersistenceID && change.id !== pendingPersistenceID) return
+  clearWorkspaceDeviceURL()
   restoreAttempt++
   pendingPersistenceID = undefined
   activePersistenceID = undefined
@@ -126,6 +128,7 @@ async function restore() {
 
 function checkRememberedSession() {
   if (!activePersistenceID || !browserSessionWasCleared(activePersistenceID, activePersistenceEpoch)) return
+  clearWorkspaceDeviceURL()
   restoreAttempt++
   activePersistenceID = undefined
   pendingPersistenceID = undefined

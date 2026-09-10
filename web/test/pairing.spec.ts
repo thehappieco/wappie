@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer, type WebSocket as ServerSocket } from 'ws'
 import type { AddressInfo } from 'node:net'
 
@@ -7,8 +7,8 @@ import { generateAccountKeys } from '../src/crypto/account'
 import { fromBase64, parseUUID, toBase64 } from '../src/crypto/bytes'
 import { importArchiveKey, publicFromPrivate } from '../src/crypto/hpke'
 import { grantRow, Kind, openDirect } from '../src/crypto/seal'
-import { admin, load, pair } from '../src/state/admin'
-import { start, stop } from '../src/state/archive'
+import { admin, cancelPairing, load, pair } from '../src/state/admin'
+import { connection, start, state, stop } from '../src/state/archive'
 import { fromPastedKey } from '../src/state/session'
 
 // Pairing is the one place this client produces key material instead of
@@ -25,6 +25,9 @@ const TENANT = '018f3a2b-1111-7000-8000-00000000aaaa'
 interface Fake {
   url: string
   sent: P.Frame[]
+  holdDevices: boolean
+  deviceError: boolean
+  heldDevices: (() => void)[]
   close: () => Promise<void>
   push: (frame: P.Frame) => void
 }
@@ -59,7 +62,9 @@ async function serve(accounts: P.UserSummary[]): Promise<Fake> {
           })
           break
         case P.TypeDevicesList:
-          send({ t: P.TypeDevices, r: frame.r, p: { devices: [] } })
+          if (fake.deviceError) send({ t: P.TypeError, r: frame.r, p: { code: P.ErrInternal, message: 'synthetic refresh failure' } })
+          else if (fake.holdDevices) fake.heldDevices.push(() => send({ t: P.TypeDevices, r: frame.r, p: { devices: [] } }))
+          else send({ t: P.TypeDevices, r: frame.r, p: { devices: [] } })
           break
         case P.TypeUsersList:
           send({ t: P.TypeUsers, r: frame.r, p: { users: accounts } })
@@ -91,7 +96,7 @@ async function serve(accounts: P.UserSummary[]): Promise<Fake> {
   const { port } = wss.address() as AddressInfo
   const fake: Fake = {
     url: `http://127.0.0.1:${port}`,
-    sent,
+    sent, holdDevices: false, deviceError: false, heldDevices: [],
     push: (frame) => live?.send(JSON.stringify(frame)),
     close: () =>
       new Promise<void>((resolve) => {
@@ -106,6 +111,7 @@ async function serve(accounts: P.UserSummary[]): Promise<Fake> {
 afterEach(async () => {
   stop()
   while (servers.length) await servers.pop()!.close()
+  vi.restoreAllMocks()
 })
 
 /** An account as the server reports it: an address and a public key. */
@@ -323,5 +329,57 @@ describe('pairing from the browser', () => {
     })
     await waitFor(() => admin.pairing.phase === 'failed')
     expect(admin.pairing.error).toContain('supervisionado')
+  })
+})
+
+
+async function waitingPair() {
+  const alice = await account('alice@acme.test')
+  const server = await serve([alice.summary])
+  await open(server)
+  await pair({ method: 'qr', phone: '', label: 'test', grantTo: [alice.summary.id], receiptMode: 'passive' })
+  await waitFor(() => admin.pairing.code !== '')
+  return server
+}
+
+describe('pairing work during logout and refresh failures', () => {
+  it('does not request another device list when logout closes the pairing stream', async () => {
+    await waitingPair()
+    const request = vi.spyOn(connection()!, 'request')
+    stop()
+    await Promise.resolve(); await Promise.resolve()
+    expect(request).not.toHaveBeenCalled()
+    expect(state.phase).toBe('locked')
+    expect(admin.pairing.phase).toBe('idle')
+    expect(admin.error).toBe('')
+  })
+  it('ignores a rejected post-success refresh after logout without requesting stats on another session', async () => {
+    const server = await waitingPair()
+    server.holdDevices = true
+    const reqID = server.sent.find(frame => frame.t === P.TypePair)!.r
+    server.push({ t: P.TypePairSuccess, r: reqID, p: { device_id: pairRequest(server).device_id } })
+    await waitFor(() => server.heldDevices.length === 1)
+    expect(admin.pairing.phase).toBe('done')
+    const requests = vi.spyOn(connection()!, 'request')
+    stop()
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(requests).not.toHaveBeenCalled()
+    expect(admin.pairing.phase).toBe('idle'); expect(admin.error).toBe('')
+  })
+  it('keeps a confirmed pairing result when the following device refresh fails', async () => {
+    const server = await waitingPair()
+    server.deviceError = true
+    const reqID = server.sent.find(frame => frame.t === P.TypePair)!.r
+    server.push({ t: P.TypePairSuccess, r: reqID, p: { device_id: pairRequest(server).device_id } })
+    await waitFor(() => admin.error === 'synthetic refresh failure')
+    expect(admin.pairing.phase).toBe('done')
+  })
+  it('handles a refresh failure after canceling a pairing without restarting it', async () => {
+    const server = await waitingPair()
+    server.deviceError = true
+    cancelPairing()
+    await waitFor(() => admin.error === 'synthetic refresh failure')
+    expect(admin.pairing.phase).toBe('idle')
+    expect(server.sent.filter(frame => frame.t === P.TypePairCancel)).toHaveLength(1)
   })
 })

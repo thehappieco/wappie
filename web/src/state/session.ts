@@ -59,7 +59,7 @@ export interface Session {
    * before that was possible holds a wrap nothing can hand back, and is
    * nudged to generate a new code.
    */
-  account?: { email: string; hasRecovery: boolean; tenantID?: string }
+  account?: { email: string; hasRecovery: boolean; tenantID?: string; userID?: string }
 
   close(): Promise<void>
   /** Dispose memory and connections without signing out on normal navigation. */
@@ -92,7 +92,7 @@ export function fromAccount(signedIn: SignedIn, serverURL: string): Session {
     credential,
     archiveFor: (deviceID) => keys.get(deviceID),
     readable: signedIn.readable.map((r) => ({ deviceID: r.deviceID, label: r.label })),
-    account: { email: signedIn.email, hasRecovery: signedIn.hasRecovery, tenantID: signedIn.tenantID },
+    account: { email: signedIn.email, hasRecovery: signedIn.hasRecovery, tenantID: signedIn.tenantID, userID: signedIn.userID },
     persistenceID: saved?.id,
     persistenceEpoch: saved?.epoch,
     expiresAt: signedIn.expiresAt,

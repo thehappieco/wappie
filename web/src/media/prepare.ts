@@ -21,6 +21,7 @@ import {
   type Plan,
 } from './plan'
 import { fitted, moving, sound, thumbnail } from './probe'
+import { isVideoChoice, prepareVideo, type VideoPreparation } from './videoPrepare'
 
 /** Prepared is an attachment with everything measured, ready to upload. */
 export interface Prepared {
@@ -61,7 +62,7 @@ export interface Prepared {
  * the result to time it does not work. Absent for a file somebody chose, where
  * there is nothing to know it from.
  */
-export async function prepare(file: File, choice: Choice, knownSeconds = 0): Promise<Prepared> {
+export async function prepare(file: File, choice: Choice, knownSeconds = 0, options: VideoPreparation = {}): Promise<Prepared> {
   const plan = planFor(choice)
   const missing: string[] = []
 
@@ -74,6 +75,13 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0): Pro
   let waveform: string | undefined
   let thumb: Bytes | null = null
   let isAnimated = false
+
+  if (isVideoChoice(choice)) {
+    const video = await prepareVideo(file, choice, { ...options, knownSeconds })
+    blob = video.blob; mimetype = 'video/mp4'
+    fileName = file.name.replace(/\.[^.]+$/, '') + '.mp4'
+    width = video.width; height = video.height; seconds = video.seconds
+  }
 
   if (plan.encodeTo) {
     const keep = plan.choice === 'sticker' && (await passThroughSticker(file, plan))
@@ -120,12 +128,12 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0): Pro
     if (plan.kind === 'video' || plan.kind === 'ptv') {
       const video = await moving(blob)
       if (video) {
-        seconds = video.seconds
+        seconds = seconds || video.seconds
         width = width || video.width
         height = height || video.height
         if (video.poster) thumb = video.poster
       } else {
-        missing.push(t('duração e dimensões'))
+        if (!seconds || !width) missing.push(t('duração e dimensões'))
       }
     } else {
       const audio = await sound(blob)
@@ -167,6 +175,7 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0): Pro
     if (blob.type.startsWith('image/')) thumb = await thumbnail(blob)
   }
 
+  if (options.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
   return {
     plan,
     kind: plan.kind,

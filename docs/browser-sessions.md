@@ -79,6 +79,27 @@ ends; browsers may also evict inactive website data.
 See WebKit's [cross-origin storage policy](https://webkit.org/blog/14403/updates-to-storage-policy/)
 and [same-site subdomain partitioning report](https://bugs.webkit.org/show_bug.cgi?id=225297).
 
+## Last opened number
+
+The app remembers the last successfully opened number in this browser, scoped
+by server origin, the authenticated user's stable ID, and the authorized
+workspace ID. The separate localStorage preference contains only a device UUID;
+it contains no phone number, email, token, or encryption key. It survives logout
+so the same person can return to that number on a later sign-in. It does not
+synchronize between computers, browser profiles, or separate self-hosted origins.
+If browser storage is unavailable, the app still works with its ordinary fallback.
+
+On a fresh opening, a valid explicit device link takes priority. Otherwise the
+app restores the remembered number if it still appears in the current server
+list and the account still has a readable grant. The fallback is an authorized
+running number, then another authorized number; with none, it opens the console.
+The console's return-to-app action follows the same preference. Reconnecting an
+already open tab keeps its current authorized number. A successful device switch
+updates the route so reload cannot return to an earlier link, and logout clears
+the device selection from the login URL without removing the scoped preference.
+Pasted API/archive keys have no stable account user identity and do not persist
+this preference. There is no workspace-wide default or fixed primary number.
+
 ## Restoration and revocation
 
 Before opening grants, restoration verifies the current bearer token through

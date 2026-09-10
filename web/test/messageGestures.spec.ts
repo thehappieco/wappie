@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createMessageGestures, type MessagePointer } from '../src/ui/messageGestures'
+import { createMessageGestures, replyOffset, REPLY_THRESHOLD, type MessagePointer } from '../src/ui/messageGestures'
 
 function pointer(over: Partial<MessagePointer> = {}): MessagePointer {
   return { pointerId: 1, clientX: 100, clientY: 200, pointerType: 'touch', isPrimary: true, button: 0, ...over }
@@ -11,15 +11,17 @@ function setup() {
   const onReply = vi.fn()
   const onOffset = vi.fn()
   const onPress = vi.fn()
+  const onReady = vi.fn()
+  const onSwipe = vi.fn()
   let selected = false
   let allowed = true
   const gestures = createMessageGestures({
-    onHold, onReply, onOffset, onPress,
+    onHold, onReply, onOffset, onPress, onReady, onSwipe,
     canReply: () => allowed,
     hasSelection: () => selected,
   })
   return {
-    gestures, onHold, onReply, onOffset, onPress,
+    gestures, onHold, onReply, onOffset, onPress, onReady, onSwipe,
     select: () => { selected = true },
     disallow: () => { allowed = false },
   }
@@ -206,9 +208,36 @@ describe('message touch gestures', () => {
     const ui = setup()
     ui.gestures.pointerDown(pointer())
     ui.gestures.pointerMove(pointer({ clientX: 450 }))
-    expect(ui.onOffset).toHaveBeenLastCalledWith(96)
+    expect(ui.onOffset).toHaveBeenLastCalledWith(replyOffset(350))
     ui.gestures.pointerUp(pointer({ clientX: 450 }))
     vi.advanceTimersByTime(1001)
     expect(ui.gestures.shouldSuppressClick()).toBe(false)
+  })
+
+  it('follows the finger up to the reply threshold and adds smooth resistance afterwards', () => {
+    expect(replyOffset(0)).toBe(0)
+    expect(replyOffset(32)).toBe(32)
+    expect(replyOffset(REPLY_THRESHOLD)).toBe(REPLY_THRESHOLD)
+    expect(replyOffset(100)).toBeGreaterThan(REPLY_THRESHOLD)
+    expect(replyOffset(100)).toBeLessThan(100)
+    expect(replyOffset(500)).toBeLessThan(96)
+    expect(replyOffset(-20)).toBe(0)
+  })
+
+  it('signals readiness once per gesture while allowing a retreat before release', () => {
+    const ui = setup()
+    ui.gestures.pointerDown(pointer())
+    ui.gestures.pointerMove(pointer({ clientX: 170 }))
+    expect(ui.onReady).toHaveBeenCalledOnce()
+    expect(ui.onSwipe).toHaveBeenLastCalledWith(true)
+    ui.gestures.pointerMove(pointer({ clientX: 125 }))
+    ui.gestures.pointerMove(pointer({ clientX: 175 }))
+    expect(ui.onReady).toHaveBeenCalledOnce()
+    ui.gestures.pointerUp(pointer({ clientX: 125 }))
+    expect(ui.onReply).not.toHaveBeenCalled()
+    expect(ui.onSwipe).toHaveBeenLastCalledWith(false)
+    ui.gestures.pointerDown(pointer())
+    ui.gestures.pointerMove(pointer({ clientX: 180 }))
+    expect(ui.onReady).toHaveBeenCalledTimes(2)
   })
 })

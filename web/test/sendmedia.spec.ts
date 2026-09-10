@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer } from 'ws'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -8,6 +8,13 @@ import { importArchiveKey } from '../src/crypto/hpke'
 import { discardFailed, openChat, sendMedia, state, start, stop } from '../src/state/archive'
 import { prepare } from '../src/media/prepare'
 import { fromPastedKey } from '../src/state/session'
+
+// The real MP4 codec path is exercised in browser media QA; this Node suite
+// keeps the browser-only conversion at its boundary and verifies upload/send.
+vi.mock('../src/media/videoPrepare', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/media/videoPrepare')>(),
+  prepareVideo: async (file: File) => ({ blob: file, width: 640, height: 480, seconds: 2, hd: false }),
+}))
 
 // Sending an attachment, end to end, minus the parts only a browser has.
 //

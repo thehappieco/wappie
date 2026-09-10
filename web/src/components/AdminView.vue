@@ -11,7 +11,7 @@ import {
   startDevice,
   preparePairing,
 } from '../state/admin'
-import { archiveOpener, credential, readableDevices, selectDevice, state, stop } from '../state/archive'
+import { archiveOpener, credential, preferredReadableDevice, readableDevices, selectDevice, state, stop } from '../state/archive'
 import type { DeviceInfo } from '../api/protocol'
 import { bytes, count, since, stamp } from '../ui/format'
 import { showWorkspaceView } from '../ui/workspaceNavigation'
@@ -52,7 +52,7 @@ const workspaceSection = computed(() => ['workspace', 'members', 'permissions'].
   ? section.value as 'workspace' | 'members' | 'permissions' : 'workspace')
 const online = computed(() => state.devices.filter((device) => device.running).length)
 const totalMessages = computed(() => Object.values(admin.stats).reduce((total, stat) => total + (stat.messages ?? 0), 0))
-const appDevice = computed(() => state.devices.find((device) => device.id === state.deviceID && canRead(device)) ?? state.devices.find(canRead))
+const appDevice = computed(() => preferredReadableDevice(true))
 
 function canRead(device: DeviceInfo): boolean {
   return credential()?.kind === 'api_key' || readable.value.has(device.id)

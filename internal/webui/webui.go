@@ -158,9 +158,9 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host string) {
 	header.Set("Cross-Origin-Opener-Policy", "same-origin")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 	header.Set("X-Frame-Options", "DENY")
-	// Voice notes need an explicit browser grant. The policy permits that
-	// prompt only in this origin; it never grants microphone access itself.
-	header.Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=()")
+	// Audio and video recording need explicit browser grants. This permits
+	// prompts only in this origin; it never grants camera or microphone access.
+	header.Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(), payment=()")
 
 	switch {
 	case clean == sessionBridgePath && host == sessionBridgeHost:

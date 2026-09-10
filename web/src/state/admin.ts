@@ -527,8 +527,7 @@ async function handlePairFrame(frame: P.Frame, generation: number): Promise<void
       admin.pairing.code = ''
       admin.pairing.qr = ''
       release()
-      await refreshDevices()
-      void loadStats()
+      await refreshPairingDevices(generation, true)
       break
     case P.TypePairTimeout:
       admin.pairingTarget = null
@@ -536,14 +535,14 @@ async function handlePairFrame(frame: P.Frame, generation: number): Promise<void
       admin.pairing.error =
         t('O código expirou. Você pode conectar o número novamente.')
       release()
-      await refreshDevices()
+      await refreshPairingDevices(generation)
       break
     case P.TypeError: {
       const err = frame.p as P.WireError
       admin.pairing.phase = 'failed'
       admin.pairing.error = err.message
       release()
-      await refreshDevices()
+      await refreshPairingDevices(generation)
       break
     }
   }
@@ -568,7 +567,23 @@ export function cancelPairing(): void {
   }
   release()
   admin.pairing = { phase: 'idle', deviceID: '', code: '', qr: '', error: '', grantedTo: [] }
-  void refreshDevices()
+  void refreshPairingDevices(pairingGeneration)
+}
+
+/** Pairing may finish just as logout/reconnect closes its shared socket. */
+async function refreshPairingDevices(generation: number, stats = false): Promise<void> {
+  const captured = connection()
+  const active = currentAdmin()
+  const current = () => generation === pairingGeneration && active() && connection() === captured
+  if (!captured || !current()) return
+  try {
+    await refreshDevices()
+    if (stats && current()) await loadStats()
+  } catch (error) {
+    // Keep the actual pairing outcome. Refresh failures belong to the console
+    // and must not be published into another account or pairing attempt.
+    if (current()) admin.error = say(error)
+  }
 }
 
 function release(): void {

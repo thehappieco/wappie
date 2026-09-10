@@ -2,10 +2,11 @@
 import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, ref, useId } from 'vue'
 
-import { canSend, type MessageView } from '../state/archive'
+import { canSend, state, type MessageView } from '../state/archive'
 import { canDelete, canEdit, editableFor, myReaction, nowTick, react, revoke } from '../state/actions'
 import { hasExpired, isEphemeral, timerLabel } from '../state/ephemeral'
 import { forgetSeen } from '../state/reading'
+import { canForward, forwardableContent } from '../state/forwarding'
 import { stamp, typeLabel } from '../ui/format'
 import AppIcon from './AppIcon.vue'
 
@@ -13,6 +14,7 @@ const props = defineProps<{ message: MessageView }>()
 const emit = defineEmits<{
   reply: [waID: string]
   edit: [uid: string]
+  forward: [uid: string]
   info: []
   selectText: []
   opened: []
@@ -27,7 +29,7 @@ const copyError = ref('')
 const titleID = useId()
 let backdropPressed = false
 const mutable = computed(() => !m.value.pending && !m.value.deleted && !m.value.isStatus)
-const connected = computed(() => canSend())
+const connected = computed(() => canSend() && state.devices.find(device => device.id === state.deviceID)?.can_send === true)
 const text = computed(() => m.value.bodyState === 'ok' ? m.value.body ?? '' : '')
 const mine = computed(() => myReaction(m.value))
 const minutesLeft = computed(() => Math.ceil(editableFor(m.value) / 60_000))
@@ -69,6 +71,7 @@ function closed() {
 
 function reply() { close(); emit('reply', m.value.waID) }
 function edit() { close(); emit('edit', m.value.uid) }
+function forward() { if (!canForward(m.value)) return; close(); emit('forward', m.value.uid) }
 function info() { close(); emit('info') }
 function selectText() { close(); emit('selectText') }
 
@@ -134,8 +137,11 @@ onBeforeUnmount(close)
         <button class="menu-action" type="button" @click="confirming = false"><AppIcon name="back" /> {{ t('Voltar') }}</button>
       </div>
       <div v-else class="menu-options">
-        <button v-if="mutable" class="menu-action" type="button" @click="reply">
-          <AppIcon name="back" /><span class="action-copy"><strong>{{ t('Responder') }}</strong><small>{{ t('Citar esta mensagem na conversa') }}</small></span><span class="action-hint">{{ t('Deslize →') }}</span>
+        <button v-if="mutable" class="menu-action" type="button" :disabled="!connected" @click="reply">
+          <AppIcon name="reply" /><span class="action-copy"><strong>{{ t('Responder') }}</strong><small>{{ t('Citar esta mensagem na conversa') }}</small></span><span class="action-hint">{{ t('Deslize →') }}</span>
+        </button>
+        <button v-if="forwardableContent(m)" class="menu-action" type="button" :disabled="!canForward(m)" @click="forward">
+          <AppIcon name="forward" /><span class="action-copy"><strong>{{ t('Reencaminhar') }}</strong><small>{{ t('Enviar esta mensagem para outra conversa') }}</small></span>
         </button>
         <button v-if="text" class="menu-action" type="button" @click="copy">
           <AppIcon name="copy" /><span class="action-copy"><strong>{{ t('Copiar texto') }}</strong><small>{{ t('Copiar o conteúdo da mensagem') }}</small></span>

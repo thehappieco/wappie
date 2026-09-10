@@ -126,3 +126,26 @@ func TestAnIncompleteUploadIsRefusedBeforeTheDevice(t *testing.T) {
 		t.Errorf("error = %q %q, want a bad request naming the upload", e.Code, e.Message)
 	}
 }
+
+func TestInvalidRoundVideoIsRefusedBeforeDeviceLookup(t *testing.T) {
+	conn, _ := handshake(t)
+	for _, scenario := range []string{"long", "caption", "gif", "mimetype"} {
+		req := mediaFrame("ptv", "video")
+		req.MimeType = "video/mp4"
+		switch scenario {
+		case "long":
+			req.Seconds = 61
+		case "caption":
+			req.Caption = "unsupported"
+		case "gif":
+			req.IsGIF = true
+		case "mimetype":
+			req.MimeType = "audio/ogg"
+		}
+		send(t, conn, wsapi.TypeSendMedia, req)
+		e := errorOf(t, read(t, conn))
+		if e.Code != wsapi.ErrCodeBadRequest || !strings.Contains(e.Message, "video") {
+			t.Fatalf("%s was not a video request error: %+v", scenario, e)
+		}
+	}
+}

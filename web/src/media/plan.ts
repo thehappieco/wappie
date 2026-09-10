@@ -33,10 +33,12 @@ export type Choice =
   /** The bytes untouched, as a document. What "enviar como arquivo" means. */
   | 'file'
   | 'video'
+  | 'video_hd'
   /** A video that loops silently. WhatsApp has no GIF type, only this flag. */
   | 'gif'
   /** A round video note. */
   | 'ptv'
+  | 'ptv_hd'
   /** An audio file, with an ordinary player. */
   | 'audio'
   /** A voice note: waveform, play button, and "ouvida" instead of "lida". */
@@ -164,11 +166,17 @@ const PLANS: Record<Choice, Plan> = {
     choice: 'video',
     kind: 'video',
     get label() { return t('Vídeo') },
-    get note() { return t('com legenda e controles') },
+    get note() { return t('até 480p, mantendo o enquadramento') },
     viewOnceAllowed: true,
     wantsDuration: true,
     wantsDimensions: true,
     wantsThumbnail: true,
+  },
+  video_hd: {
+    ...base, choice: 'video_hd', kind: 'video',
+    get label() { return t('Vídeo HD') },
+    get note() { return t('resolução original, a partir de 720p; pode ocupar mais espaço') },
+    viewOnceAllowed: true, wantsDuration: true, wantsDimensions: true, wantsThumbnail: true,
   },
   gif: {
     ...base,
@@ -186,15 +194,21 @@ const PLANS: Record<Choice, Plan> = {
     ...base,
     choice: 'ptv',
     kind: 'ptv',
-    get label() { return t('Vídeo redondo') },
+    get label() { return t('Vídeo circular') },
     // Refused by the server, not dropped: a caption on a round video note is an
     // error, because there is no field for it to travel in.
-    get note() { return t('recortado em círculo pelo destinatário; não aceita legenda') },
+    get note() { return t('até 60 segundos e 480×480; sem legenda') },
     captionAllowed: false,
     viewOnceAllowed: true,
     wantsDuration: true,
     wantsDimensions: true,
     wantsThumbnail: true,
+  },
+  ptv_hd: {
+    ...base, choice: 'ptv_hd', kind: 'ptv',
+    get label() { return t('Vídeo circular HD') },
+    get note() { return t('até 60 segundos e 720×720; sem legenda') },
+    captionAllowed: false, viewOnceAllowed: true, wantsDuration: true, wantsDimensions: true, wantsThumbnail: true,
   },
   audio: {
     ...base,
@@ -256,7 +270,7 @@ export function offer(file: { name: string; type: string }): Choice[] {
       // most people mean by "mandar a foto".
       return ['photo', 'photo_hd', 'sticker', 'file']
     case 'video':
-      return ['video', 'gif', 'ptv', 'file']
+      return ['video', 'video_hd', 'ptv', 'ptv_hd', 'gif', 'file']
     case 'audio':
       // The voice note first only when the file is what WhatsApp records one
       // as. Anything else can still be sent as one — it is offered second, and

@@ -191,7 +191,9 @@ export class Connection {
 
   close(reason = 'client closed'): void {
     if (this.closed) return
-    this.closed = true
+    // Settle local work immediately, without reporting an intentional close as
+    // a transport failure that the caller should reconnect.
+    this.finish(reason, false)
     try {
       this.socket.close(1000, reason)
     } catch {
@@ -200,6 +202,7 @@ export class Connection {
   }
 
   private receive(event: MessageEvent): void {
+    if (this.closed) return
     let frame: P.Frame
     try {
       frame = JSON.parse(String(event.data)) as P.Frame
@@ -219,7 +222,7 @@ export class Connection {
     this.opts.onFrame?.(frame)
   }
 
-  private finish(reason: string): void {
+  private finish(reason: string, notifyClose = true): void {
     if (this.closed) return
     this.closed = true
     for (const waiter of this.waiters.values()) {
@@ -235,7 +238,7 @@ export class Connection {
       })
     }
     this.streams.clear()
-    this.opts.onClose?.(reason)
+    if (notifyClose) this.opts.onClose?.(reason)
   }
 }
 

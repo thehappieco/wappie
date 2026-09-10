@@ -70,6 +70,9 @@ func TestServesThePage(t *testing.T) {
 	if got := resp.Header.Get("Permissions-Policy"); !strings.Contains(got, "microphone=(self)") {
 		t.Errorf("voice notes must be allowed to request microphone permission: %q", got)
 	}
+	if got := resp.Header.Get("Permissions-Policy"); !strings.Contains(got, "camera=(self)") {
+		t.Errorf("video recording must be allowed to request camera permission: %q", got)
+	}
 }
 
 func TestServesAssets(t *testing.T) {
