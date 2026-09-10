@@ -9,6 +9,7 @@ import { limitOf, nextSelection, type Vote } from '../state/polls'
 import { filename as icsName, ics } from '../ui/calendar'
 import { stamp } from '../ui/format'
 import { parse as parseCard } from '../ui/vcard'
+import MapLinks from './MapLinks.vue'
 
 // Cards only. Mentions used to be drawn here too, as a "menciona Fulano"
 // footnote, because there was nowhere else to put them — the body is plain text
@@ -152,15 +153,6 @@ const inviteThumb = computed(() =>
   invite.value?.thumbnail ? `data:image/jpeg;base64,${invite.value.thumbnail}` : '',
 )
 
-/**
- * A map link rather than an embedded map. Embedding one would load a tile
- * server, which means telling a third party every coordinate in the archive —
- * and the content security policy refuses the request anyway.
- */
-function mapLink(lat: number, lon: number): string {
-  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=16/${lat}/${lon}`
-}
-
 // Contact cards, parsed. The vCard arrives as text inside the sealed payload
 // and is opened here — the shapes phones actually send need real parsing, not a
 // regular expression: folded lines, quoted-printable for every accented name,
@@ -220,13 +212,7 @@ function openChat(waid: string) {
         {{ p.location.lat.toFixed(5) }}, {{ p.location.lon.toFixed(5) }}
         <template v-if="p.location.accuracy_m"> {{ t('· ±{v0} m', { v0: p.location.accuracy_m }) }}</template>
       </div>
-      <a
-        class="linkish"
-        :href="mapLink(p.location.lat, p.location.lon)"
-        target="_blank"
-        rel="noreferrer noopener"
-        >{{ t('ver no mapa') }}</a
-      >
+      <MapLinks :lat="p.location.lat" :lon="p.location.lon" :name="p.location.name" />
     </div>
 
     <div v-if="p.poll" class="card poll">

@@ -37,10 +37,23 @@ describe('message reaction presentation', () => {
   it('keeps distinguishable icons and accessible meanings for every colored message mark', async () => {
     const Bubble = (await import('../src/components/MessageBubble.vue')).default
     const html = await renderToString(createSSRApp(Bubble, { message: message(), showSender: false }))
-    expect(html).toMatch(/message-mark mark-once[^>]*role="img"[^>]*aria-label="Mensagem de visualização única"/)
-    expect(html).toMatch(/message-mark mark-timer[^>]*aria-label="Mensagem temporária até/)
-    expect(html).toMatch(/message-mark mark-edited[^>]*aria-label="Mensagem editada · 2 versões"/)
-    expect(html).toMatch(/message-mark mark-deleted[^>]*aria-label="Mensagem apagada"/)
+    const marks = [...html.matchAll(/<span\b[^>]*>/g)].map(([tag]) => ({
+      tag, classes: tag.match(/\bclass="([^"]*)"/)?.[1]?.split(/\s+/) ?? [],
+      label: tag.match(/\baria-label="([^"]*)"/)?.[1],
+    }))
+    const marker = (name: string) => {
+      const mark = marks.find(value => value.classes.includes(name))
+      expect(mark, `missing ${name}`).toBeDefined()
+      // Vue may put dynamic classes before static ones; their order is not
+      // part of the icon's meaning or accessibility contract.
+      expect(mark!.classes).toContain('message-mark')
+      expect(mark!.tag).toContain('role="img"')
+      return mark!.label
+    }
+    expect(marker('mark-once')).toBe('Mensagem de visualização única')
+    expect(marker('mark-timer')).toMatch(/^Mensagem temporária até/)
+    expect(marker('mark-edited')).toBe('Mensagem editada · 2 versões')
+    expect(marker('mark-deleted')).toBe('Mensagem apagada')
   })
   it('shows current participants separately and preserves historical removals and replacements', async () => {
     mocks.state.history = { uid: 'message', waID: 'wa-message', versions: [{ revision: 0, body: 'Original', bodyState: 'ok' }], readers: [], reactions: [

@@ -6,6 +6,7 @@ import { TypeLocationSend } from '../api/protocol'
 import { coordinate, readPosition } from '../ui/location'
 import { t } from '../ui/i18n'
 import AppIcon from './AppIcon.vue'
+import MapLinks from './MapLinks.vue'
 
 const emit = defineEmits<{ close: [] }>()
 const dialog = ref<HTMLDialogElement>()
@@ -73,7 +74,14 @@ onBeforeUnmount(() => { disposed = true; positionRequest?.abort(); dialog.value?
         <label>{{ t('Nome do local (opcional)') }}<input v-model="name" type="text" maxlength="100" autocomplete="off" /></label>
         <label>{{ t('Endereço (opcional)') }}<textarea v-model="address" rows="2" maxlength="500" /></label>
       </fieldset>
-      <div v-if="valid" class="location-confirmation"><AppIcon name="location" :size="22" /><div><strong>{{ name.trim() || t('Localização') }}</strong><span>{{ input.lat.toFixed(6) }}, {{ input.lon.toFixed(6) }}</span><a :href="`https://www.openstreetmap.org/?mlat=${input.lat}&mlon=${input.lon}#map=16/${input.lat}/${input.lon}`" target="_blank" rel="noopener noreferrer">{{ t('Conferir no mapa') }} ↗</a></div></div>
+      <div v-if="valid" class="location-confirmation">
+        <AppIcon name="location" :size="22" />
+        <div>
+          <strong>{{ name.trim() || t('Localização') }}</strong>
+          <span>{{ input.lat.toFixed(6) }}, {{ input.lon.toFixed(6) }}</span>
+          <MapLinks :lat="input.lat" :lon="input.lon" :name="name" />
+        </div>
+      </div>
       <p v-if="error" class="alert" role="alert">{{ error }}</p>
       <p v-if="uncertain" class="location-note" role="status">{{ t('A localização pode ter sido enviada. Verifique a conversa antes de tentar novamente.') }}</p>
       <p v-if="busy" class="location-note" role="status">{{ t('Aguarde a confirmação do envio.') }}</p>
@@ -88,7 +96,7 @@ header { display: flex; align-items: center; gap: 10px; } header h2 { flex: 1; m
 .locate-button { display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; min-height: 48px; margin: 16px 0; background: var(--bg-active); color: var(--text); border: 1px solid var(--line); border-radius: 12px; }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; } label { display: grid; gap: 7px; margin-top: 13px; font-size: 13px; color: var(--text-dim); }.coordinates { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.coordinates label { min-width: 0; }
 input, textarea { width: 100%; min-width: 0; font-size: 16px; padding: 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-input); color: var(--text); } textarea { resize: vertical; max-height: 160px; }
-.location-confirmation { display: flex; gap: 10px; margin-top: 18px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-hover); }.location-confirmation svg { flex-shrink: 0; color: var(--accent); }.location-confirmation > div { min-width: 0; }.location-confirmation strong, .location-confirmation span, .location-confirmation a { display: block; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }.location-confirmation span { color: var(--text-dim); }.location-confirmation a { color: var(--accent); margin-top: 4px; }
+.location-confirmation { display: flex; gap: 10px; margin-top: 18px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-hover); }.location-confirmation > svg { flex-shrink: 0; color: var(--accent); }.location-confirmation > div { min-width: 0; }.location-confirmation > div > strong, .location-confirmation > div > span { display: block; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }.location-confirmation > div > span { color: var(--text-dim); }
 footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; } footer button { min-height: 44px; border-radius: 10px; padding: 10px 14px; }button:disabled { opacity: .45; cursor: default; }button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 359px) { .location-dialog { padding: 16px; }.coordinates { grid-template-columns: 1fr; gap: 0; } }
 </style>

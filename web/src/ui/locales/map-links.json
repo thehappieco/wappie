@@ -1,0 +1,14 @@
+{
+  "Abrir localização no mapa": [
+    "Open location on a map",
+    "Abrir ubicación en un mapa",
+    "Ouvrir la position sur une carte",
+    "Standort auf einer Karte öffnen"
+  ],
+  "Abrir no {provider} (nova aba)": [
+    "Open in {provider} (new tab)",
+    "Abrir en {provider} (nueva pestaña)",
+    "Ouvrir dans {provider} (nouvel onglet)",
+    "In {provider} öffnen (neuer Tab)"
+  ]
+}
