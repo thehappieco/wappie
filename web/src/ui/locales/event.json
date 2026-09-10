@@ -1,0 +1,20 @@
+{
+  "Criar evento": ["Create event", "Crear evento", "Créer un événement", "Termin erstellen"],
+  "Combine uma data e compartilhe o evento na conversa.": ["Set a date and share the event in this conversation.", "Elige una fecha y comparte el evento en esta conversación.", "Fixez une date et partagez l’événement dans cette conversation.", "Lege einen Termin fest und teile ihn in diesem Chat."],
+  "Nome do evento": ["Event name", "Nombre del evento", "Nom de l’événement", "Name des Termins"],
+  "Ex.: reunião da equipe": ["E.g. team meeting", "Ej.: reunión del equipo", "Ex. : réunion d’équipe", "Z. B. Teambesprechung"],
+  "Data e horário": ["Date and time", "Fecha y hora", "Date et heure", "Datum und Uhrzeit"],
+  "Início": ["Start", "Inicio", "Début", "Beginn"],
+  "Fuso horário: {zone}": ["Time zone: {zone}", "Zona horaria: {zone}", "Fuseau horaire : {zone}", "Zeitzone: {zone}"],
+  "Definir término": ["Set an end time", "Definir la hora de fin", "Définir une heure de fin", "Endzeit festlegen"],
+  "Término": ["End", "Fin", "Fin", "Ende"],
+  "Descrição (opcional)": ["Description (optional)", "Descripción (opcional)", "Description (facultative)", "Beschreibung (optional)"],
+  "Local (opcional)": ["Place (optional)", "Lugar (opcional)", "Lieu (facultatif)", "Ort (optional)"],
+  "Link de chamada do WhatsApp (opcional)": ["WhatsApp call link (optional)", "Enlace de llamada de WhatsApp (opcional)", "Lien d’appel WhatsApp (facultatif)", "WhatsApp-Anruflink (optional)"],
+  "Cole um link de chamada existente. Outros links podem ser incluídos na descrição.": ["Paste an existing call link. You can include other links in the description.", "Pega un enlace de llamada existente. Puedes incluir otros enlaces en la descripción.", "Collez un lien d’appel existant. Vous pouvez ajouter d’autres liens dans la description.", "Füge einen vorhandenen Anruflink ein. Andere Links kannst du in die Beschreibung einfügen."],
+  "Escolha uma data e hora válidas no seu fuso horário.": ["Choose a valid date and time in your time zone.", "Elige una fecha y hora válidas en tu zona horaria.", "Choisissez une date et une heure valides dans votre fuseau horaire.", "Wähle ein gültiges Datum und eine gültige Uhrzeit in deiner Zeitzone."],
+  "Não foi possível criar o evento. Tente novamente.": ["Could not create the event. Try again.", "No se pudo crear el evento. Inténtalo de nuevo.", "Impossible de créer l’événement. Réessayez.", "Der Termin konnte nicht erstellt werden. Versuche es erneut."],
+  "O evento pode ter sido enviado. Feche esta janela e verifique a conversa antes de criar outro.": ["The event may have been sent. Close this window and check the conversation before creating another.", "Es posible que el evento se haya enviado. Cierra esta ventana y revisa la conversación antes de crear otro.", "L’événement a peut-être été envoyé. Fermez cette fenêtre et vérifiez la conversation avant d’en créer un autre.", "Der Termin wurde möglicherweise gesendet. Schließe dieses Fenster und prüfe den Chat, bevor du einen weiteren erstellst."],
+  "Enviando evento…": ["Sending event…", "Enviando evento…", "Envoi de l’événement…", "Termin wird gesendet…"],
+  "Enviar evento": ["Send event", "Enviar evento", "Envoyer l’événement", "Termin senden"]
+}

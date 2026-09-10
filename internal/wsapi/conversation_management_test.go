@@ -57,7 +57,7 @@ func TestGroupAuthorityRequiresCurrentOwnIdentity(t *testing.T) {
 	}
 }
 func TestNewCommandsUseRequiredDevicePermissions(t *testing.T) {
-	for _, frame := range []string{TypeChatStart, TypePollCreate, TypeLocationSend} {
+	for _, frame := range []string{TypeChatStart, TypePollCreate, TypeLocationSend, TypeEventCreate} {
 		if frameAction(frame) != store.ActionSend {
 			t.Errorf("%s must require send", frame)
 		}

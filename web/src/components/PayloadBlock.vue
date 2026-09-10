@@ -6,9 +6,9 @@ import type { Payload } from '../api/protocol'
 import { joinGroup, openConversation, vote } from '../state/actions'
 import { type MessageView } from '../state/archive'
 import { limitOf, nextSelection, type Vote } from '../state/polls'
-import { filename as icsName, ics } from '../ui/calendar'
 import { stamp } from '../ui/format'
 import { parse as parseCard } from '../ui/vcard'
+import EventCard from './EventCard.vue'
 import MapLinks from './MapLinks.vue'
 
 // Cards only. Mentions used to be drawn here too, as a "menciona Fulano"
@@ -169,18 +169,10 @@ const cards = computed(() =>
   }),
 )
 
-/** eventFile is the .ics, built in this browser out of what it opened. */
-const eventFile = computed(() => {
-  const event = p.value.event
-  if (!event) return null
-  const uid = props.message ? `${props.message.uid}@whatserver2` : `evento@whatserver2`
-  return { href: blobHref(ics(event, uid, new Date()), 'text/calendar'), name: icsName(event) }
-})
-
 /**
  * blobHref makes a file the browser can save.
  *
- * The URLs are deliberately not revoked. A card or an event is a few hundred
+ * The URLs are deliberately not revoked. A contact card is a few hundred
  * bytes, the alternative is revoking one while somebody is mid-click, and the
  * whole set goes when the tab does.
  */
@@ -289,24 +281,7 @@ function openChat(waid: string) {
       >
     </div>
 
-    <div v-if="p.event" class="card">
-      <div class="title">{{ p.event.name || t('Evento') }}</div>
-      <div class="dim" v-if="p.event.start_time">
-        {{ stamp(new Date(p.event.start_time)) }}
-        <template v-if="p.event.end_time"> {{ t('até {v0}', { v0: stamp(new Date(p.event.end_time)) }) }}</template>
-      </div>
-      <div v-if="p.event.description">{{ p.event.description }}</div>
-      <div class="dim" v-if="p.event.location?.name">{{ p.event.location.name }}</div>
-      <div class="flag revoked" v-if="p.event.is_canceled" style="display: inline-block"> {{ t('cancelado') }} </div>
-      <a
-        v-if="eventFile"
-        class="linkish"
-        :href="eventFile.href"
-        :download="eventFile.name"
-        @click.stop
-        >{{ t('adicionar ao calendário') }}</a
-      >
-    </div>
+    <EventCard v-if="p.event" :event="p.event" :uid="message?.uid" />
 
     <div v-if="invite" class="card invite">
       <div class="invite-head">

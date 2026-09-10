@@ -1295,6 +1295,21 @@ export const TypeGroupLeave = 'group.leave'
 export const TypeGroupChanged = 'group.changed'
 export const TypePollCreate = 'message.poll.create'
 export const TypeLocationSend = 'message.send.location'
+export const TypeEventCreate = 'message.event.create'
+
+/** A native WhatsApp event. Timestamps include an explicit UTC offset. */
+export interface EventCreateRequest {
+  device_id: string
+  chat: string
+  id?: string
+  name: string
+  description?: string
+  start_time: string
+  end_time?: string
+  location_name?: string
+  /** An existing https://call.whatsapp.com/ link; other links go in description. */
+  join_link?: string
+}
 
 /** A fixed position, not a live location sharing session. Explicit zero is valid. */
 export interface LocationSendRequest {

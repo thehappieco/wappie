@@ -1,0 +1,6 @@
+{
+  "Início do evento": ["Event starts", "Inicio del evento", "Début de l’événement", "Beginn des Termins"],
+  "Fim do evento": ["Event ends", "Fin del evento", "Fin de l’événement", "Ende des Termins"],
+  "Evento cancelado": ["Event canceled", "Evento cancelado", "Événement annulé", "Termin abgesagt"],
+  "Abrir link do evento": ["Open event link", "Abrir enlace del evento", "Ouvrir le lien de l’événement", "Terminlink öffnen"]
+}

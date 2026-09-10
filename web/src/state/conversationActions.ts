@@ -49,7 +49,7 @@ export function canConversationAction(action: string): boolean {
   const device = state.devices.find(device => device.id === state.deviceID)
   if (!conn || !state.connected || state.initializingConnection || state.unreadable || !device?.running || !credential()) return false
   if (!conn.welcome.features.includes(action)) return false
-  return action === P.TypeChatStart || action === P.TypePollCreate || action === P.TypeLocationSend ? device.can_send === true : device.can_manage === true
+  return [P.TypeChatStart, P.TypePollCreate, P.TypeLocationSend, P.TypeEventCreate].includes(action) ? device.can_send === true : device.can_manage === true
 }
 function context() {
   return { conn: connection(), token: credential()?.token, tenant: state.tenantID, device: state.deviceID, chat: state.openChatKey, view: state.view }
@@ -77,7 +77,7 @@ async function perform<T>(action: string, payload: Record<string, unknown>, resp
   } catch (error) {
     if (!current(captured)) return { outcome: { ok: false, stale: true } }
     const uncertain = !(error instanceof ProtocolError) || ['internal', 'timeout', 'unavailable'].includes(error.code)
-      || error.code === P.ErrConflict && [P.TypeGroupCreate, P.TypeGroupParticipants, P.TypeGroupLeave, P.TypePollCreate, P.TypeLocationSend].includes(action)
+      || error.code === P.ErrConflict && [P.TypeGroupCreate, P.TypeGroupParticipants, P.TypeGroupLeave, P.TypePollCreate, P.TypeLocationSend, P.TypeEventCreate].includes(action)
     return { outcome: { ok: false, uncertain, error: uncertain
       ? t('A confirmação não chegou. A ação pode ter sido concluída no WhatsApp. Verifique antes de tentar novamente.')
       : error instanceof Error ? error.message : String(error) } }
@@ -162,4 +162,57 @@ export async function sendLocation(input: LocationInput): Promise<ActionOutcome>
   if (!state.openChatKey) return { ok: false, error: t('Abra uma conversa para enviar a localização.') }
   return (await perform<P.SendResult>(P.TypeLocationSend, { chat: state.openChatKey, id: crypto.randomUUID(), lat: input.lat, lon: input.lon,
     name: input.name?.trim() || undefined, address: input.address?.trim() || undefined, accuracy_m: input.accuracy_m }, P.TypeSendResult)).outcome
+}
+
+export type EventInput = Omit<P.EventCreateRequest, 'device_id' | 'chat' | 'id'>
+
+/** RFC3339 instants only: Date.parse alone silently accepts impossible days. */
+function eventInstant(value: string): number {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value)
+  if (!parts) return NaN
+  const [, year, month, day, hour, minute, second, zone] = parts
+  const calendar = new Date(`${year}-${month}-${day}T00:00:00Z`)
+  if (!Number.isFinite(calendar.getTime()) || calendar.getUTCFullYear() !== Number(year)
+    || calendar.getUTCMonth() + 1 !== Number(month) || calendar.getUTCDate() !== Number(day)
+    || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59
+    || zone !== 'Z' && (Number(zone!.slice(1, 3)) > 23 || Number(zone!.slice(4)) > 59)) return NaN
+  // WhatsApp timestamps use whole Unix seconds.
+  return Math.floor(Date.parse(value) / 1000) * 1000
+}
+
+export function eventValidation(input: EventInput, now = Date.now()): string {
+  if (!input.name.trim() || size(input.name.trim()) > 100) return t('O nome do evento deve ter de 1 a 100 caracteres.')
+  if (size(input.description?.trim() ?? '') > 2048) return t('A descrição do evento permite até 2048 caracteres.')
+  if (size(input.location_name?.trim() ?? '') > 500) return t('O local do evento permite até 500 caracteres.')
+  const start = eventInstant(input.start_time)
+  const limit = Date.UTC(2200, 0, 1)
+  if (!Number.isFinite(start) || start >= limit) return t('Informe uma data e hora de início válidas, anteriores ao ano 2200.')
+  if (start <= now) return t('Escolha uma data e hora de início no futuro.')
+  if (input.end_time) {
+    const end = eventInstant(input.end_time)
+    if (!Number.isFinite(end) || end >= limit || end <= start) return t('O término deve ser posterior ao início e anterior ao ano 2200.')
+  }
+  const link = input.join_link?.trim()
+  if (link) {
+    let valid = false
+    try {
+      const url = new URL(link)
+      valid = new TextEncoder().encode(link).length <= 2048 && !/[\s\u0000-\u001f\u007f\\]/u.test(link)
+        && url.protocol === 'https:' && url.hostname === 'call.whatsapp.com' && !url.port
+        && !url.username && !url.password && url.pathname.replace(/^\/+|\/+$/g, '').length > 0
+    } catch { /* Keep malformed links in the form instead of sending them. */ }
+    if (!valid) return t('Use um link de chamada https://call.whatsapp.com/. Outros links podem ser incluídos na descrição.')
+  }
+  return ''
+}
+
+export async function createEvent(input: EventInput): Promise<ActionOutcome> {
+  const error = eventValidation(input)
+  if (error) return { ok: false, error }
+  if (!state.openChatKey) return { ok: false, error: t('Abra uma conversa para criar o evento.') }
+  return (await perform<P.SendResult>(P.TypeEventCreate, { chat: state.openChatKey, id: crypto.randomUUID(),
+    name: input.name.trim(), description: input.description?.trim() || undefined,
+    start_time: input.start_time, end_time: input.end_time || undefined,
+    location_name: input.location_name?.trim() || undefined, join_link: input.join_link?.trim() || undefined,
+  }, P.TypeSendResult)).outcome
 }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProtocolError } from '../src/api/client'
 import * as P from '../src/api/protocol'
+import { createEvent, eventValidation } from '../src/state/conversationActions'
 const fixture = vi.hoisted(() => {
   const request = vi.fn()
   const conn = { request, welcome: { features: ['chat.start', 'group.create', 'group.participants.update', 'group.leave', 'message.poll.create'] } }
@@ -21,6 +22,7 @@ beforeEach(() => {
   fixture.openChat.mockImplementation(async (chat: string) => { fixture.state.openChatKey = chat })
 })
 const poll = { question: 'Qual horário?', options: ['Manhã', 'Tarde'], multiple: true }
+const event = { name: 'Planning', start_time: '2090-06-15T12:00:00-03:00', end_time: '2090-06-15T16:00:00Z' }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 
 describe('conversation forms', () => {
@@ -184,5 +186,58 @@ describe('fixed location sending', () => {
     const first = sendLocation({lat:1,lon:2})
     fixture.state.tenantID='another-space';pending.resolve({})
     expect(await first).toMatchObject({ok:false,stale:true})
+  })
+})
+
+describe('calendar event sending', () => {
+  beforeEach(() => { fixture.conn.welcome.features.push(P.TypeEventCreate) })
+  it('validates real dates with offsets, chronology and Unicode field limits', () => {
+    expect(eventValidation({ ...event, name: '😀'.repeat(100), description: 'é'.repeat(2048), location_name: '😀'.repeat(500) })).toBe('')
+    for (const input of [
+      { ...event, name: '  ' }, { ...event, name: '😀'.repeat(101) }, { ...event, description: 'a'.repeat(2049) },
+      { ...event, location_name: 'a'.repeat(501) }, { ...event, start_time: '2090-02-30T12:00:00Z' },
+      { ...event, start_time: '2090-06-15T12:00:00' }, { ...event, start_time: '2090-06-15T24:00:00Z' },
+      { ...event, start_time: '2090-06-15T12:00:00+24:00' }, { ...event, start_time: '2000-01-01T00:00:00Z' },
+      { ...event, start_time: '2200-01-01T00:00:00Z' }, { ...event, end_time: '2090-06-15T15:00:00Z' },
+      { ...event, end_time: '2200-01-01T00:00:00Z' },
+    ]) expect(eventValidation(input)).not.toBe('')
+    expect(eventValidation({ ...event, start_time: '2088-02-29T10:30:00.000Z' })).toBe('')
+    expect(eventValidation({ name: 'Now', start_time: '2090-06-15T15:00:00Z' }, Date.parse('2090-06-15T15:00:00Z'))).not.toBe('')
+  })
+  it('accepts existing native call links and rejects unsafe or unrelated destinations', () => {
+    expect(eventValidation({ ...event, join_link: ' https://call.whatsapp.com/video/Example123 ' })).toBe('')
+    for (const link of ['javascript:alert(1)', 'https://meet.google.com/test', 'https://call.whatsapp.com/',
+      'https://call.whatsapp.com.evil.test/video/x', 'https://me:secret@call.whatsapp.com/video/x',
+      'https://call.whatsapp.com:8443/video/x', 'https://call.whatsapp.com/video/\nx', 'https://call.whatsapp.com/\\x']) {
+      expect(eventValidation({ ...event, join_link: link })).not.toBe('')
+    }
+  })
+  it('requires send access and advertized capability, including for managers', async () => {
+    fixture.state.devices[0]!.can_manage = false
+    expect(canConversationAction(P.TypeEventCreate)).toBe(true)
+    fixture.state.devices[0]!.can_send = false
+    expect((await createEvent(event)).ok).toBe(false)
+    fixture.state.devices[0]!.can_send = true; fixture.conn.welcome.features = []
+    expect((await createEvent(event)).ok).toBe(false)
+    expect(fixture.conn.request).not.toHaveBeenCalled()
+  })
+  it('sends one structured event preserving instants and trims only text fields', async () => {
+    fixture.conn.request.mockResolvedValue({ id: 'event-a' })
+    expect(await createEvent({ ...event, name: ' Planning ', description: ' Agenda ', location_name: ' Office ' })).toMatchObject({ ok: true })
+    expect(fixture.conn.request).toHaveBeenCalledExactlyOnceWith(P.TypeEventCreate, {
+      ...event, device_id: 'phone-a', chat: 'chat-a', id: expect.any(String), description: 'Agenda', location_name: 'Office', join_link: undefined,
+    }, P.TypeSendResult)
+  })
+  it('does not retry an uncertain send or apply its result in another workspace', async () => {
+    const pending = deferred<unknown>(); fixture.conn.request.mockReturnValue(pending.promise)
+    const first = createEvent(event)
+    expect((await createEvent(event)).ok).toBe(false)
+    pending.reject(new ProtocolError(P.ErrConflict, 'send event: disconnected'))
+    expect(await first).toMatchObject({ ok: false, uncertain: true })
+    expect(fixture.conn.request).toHaveBeenCalledTimes(1)
+    const late = deferred<unknown>(); fixture.conn.request.mockReturnValue(late.promise)
+    const second = createEvent(event)
+    fixture.state.tenantID = 'other-space'; late.resolve({})
+    expect(await second).toMatchObject({ ok: false, stale: true })
   })
 })

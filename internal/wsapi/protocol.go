@@ -1608,6 +1608,7 @@ const (
 	TypeGroupChanged      = "group.changed"
 	TypePollCreate        = "message.poll.create"
 	TypeLocationSend      = "message.send.location"
+	TypeEventCreate       = "message.event.create"
 )
 
 type ChatStartRequest struct {
@@ -1662,4 +1663,18 @@ type LocationSendRequest struct {
 	Name           string   `json:"name,omitempty"`
 	Address        string   `json:"address,omitempty"`
 	AccuracyMeters uint32   `json:"accuracy_m,omitempty"`
+}
+
+// EventCreateRequest creates a native WhatsApp event. Timestamps must be
+// RFC3339 with a time zone. location_name is a venue label, not coordinates.
+type EventCreateRequest struct {
+	DeviceID     string    `json:"device_id"`
+	Chat         string    `json:"chat"`
+	ID           string    `json:"id,omitempty"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description,omitempty"`
+	StartTime    time.Time `json:"start_time"`
+	EndTime      time.Time `json:"end_time,omitzero"`
+	LocationName string    `json:"location_name,omitempty"`
+	JoinLink     string    `json:"join_link,omitempty"`
 }

@@ -148,6 +148,9 @@ onBeforeUnmount(() => gestures.dispose())
 
 const mentions = computed(() => m.value.payload?.mentions ?? [])
 const textRuns = computed(() => (m.value.body ? runs(m.value.body, mentions.value) : []))
+// Keep the event title in the archive for previews and quotes, but show it
+// only once in the bubble, in the event card. A different body stays visible.
+const bodyIsEventTitle = computed(() => Boolean(m.value.payload?.event && m.value.body === m.value.payload.event.name))
 
 /**
  * Mentions the text has no place for, shown as a footnote below it.
@@ -282,7 +285,7 @@ const forwardedLabel = computed(() =>
 
       <!-- The body. Four different things can be true of it and a reader has to
            be able to tell them apart. -->
-      <div v-if="m.bodyState === 'ok' && m.body" class="text">
+      <div v-if="m.bodyState === 'ok' && m.body && !bodyIsEventTitle" class="text">
         <template v-for="(run, i) in textRuns" :key="i">
           <a v-if="run.href" :href="run.href" target="_blank" rel="noreferrer noopener">{{
             run.text

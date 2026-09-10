@@ -6,7 +6,7 @@ import { canSend, connection, noMarks, sendMedia, sendText, state, type Marks } 
 import { startTyping, stopTyping } from '../state/presence'
 import { edit, editableFor } from '../state/actions'
 import { canConversationAction } from '../state/conversationActions'
-import { TypePollCreate, TypeLocationSend } from '../api/protocol'
+import { TypePollCreate, TypeLocationSend, TypeEventCreate } from '../api/protocol'
 import { MAX_BYTES, refuse, type Choice } from '../media/plan'
 import { discard, prepare, type Prepared } from '../media/prepare'
 import { available as canRecord, begin, type Recording } from '../media/record'
@@ -18,6 +18,7 @@ import SendMarks from './SendMarks.vue'
 import AppIcon from './AppIcon.vue'
 import PollDialog from './PollDialog.vue'
 import LocationDialog from './LocationDialog.vue'
+import EventDialog from './EventDialog.vue'
 import VideoRecorderDialog from './VideoRecorderDialog.vue'
 import AttachmentPreview from './AttachmentPreview.vue'
 
@@ -43,6 +44,7 @@ const box = ref<HTMLTextAreaElement>()
 const chooser = ref<HTMLInputElement>()
 const pollOpen = ref(false)
 const locationOpen = ref(false)
+const eventOpen = ref(false)
 const videoOpen = ref(false)
 const attachmentMenu = ref(false)
 const preparationProgress = ref(0)
@@ -95,6 +97,7 @@ const minutesLeft = computed(() => (target.value ? Math.ceil(editableFor(target.
 const allowed = computed(() => canSend())
 const pollAvailable = computed(() => canConversationAction(TypePollCreate))
 const locationAvailable = computed(() => canConversationAction(TypeLocationSend))
+const eventAvailable = computed(() => canConversationAction(TypeEventCreate))
 
 /** Whether a caption is even a thing for what is attached. */
 const captionAllowed = computed(() => attached.value?.plan.captionAllowed ?? true)
@@ -206,6 +209,13 @@ function openLocation() {
   stopTyping()
   attachmentMenu.value = false
   locationOpen.value = true
+}
+
+function openEvent() {
+  if (!allowed.value || !eventAvailable.value || props.editing || recording.value || opening.value || measuring.value || picked.value || attached.value) return
+  stopTyping()
+  attachmentMenu.value = false
+  eventOpen.value = true
 }
 
 function openVideo() {
@@ -445,6 +455,7 @@ watch(() => [state.openChatKey, state.deviceID, state.tenantID, state.connected]
   clearAttachment()
   pollOpen.value = false
   locationOpen.value = false
+  eventOpen.value = false
   videoOpen.value = false
   attachmentMenu.value = false
 }, { flush: 'sync' })
@@ -476,12 +487,14 @@ onBeforeUnmount(stopTyping)
     <AttachSheet v-if="picked" :file="picked" @choose="choose" @cancel="clearAttachment" />
     <PollDialog v-if="pollOpen" @close="pollOpen = false" />
     <LocationDialog v-if="locationOpen" @close="locationOpen = false" />
+    <EventDialog v-if="eventOpen" @close="eventOpen = false" />
     <VideoRecorderDialog v-if="videoOpen" @close="videoOpen = false" @recorded="recordedVideo" @native="take" />
     <div v-if="attachmentMenu" class="composer-attachment-menu" @keydown.esc="attachmentMenu = false">
       <button type="button" @click="browse"><AppIcon name="paperclip" :size="20" />{{ t('Fotos, vídeos e documentos') }}</button>
       <button type="button" @click="openVideo"><AppIcon name="video" :size="20" />{{ t('Gravar vídeo') }}</button>
       <button v-if="locationAvailable" type="button" @click="openLocation"><AppIcon name="location" :size="20" />{{ t('Enviar localização') }}</button>
       <button v-if="pollAvailable" type="button" @click="openPoll"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 19V5m0 14h16M9 15v-4m5 4V5m5 10V8" /></svg>{{ t('Criar enquete') }}</button>
+      <button v-if="eventAvailable" type="button" @click="openEvent"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 11h18m-13 5h3" /></svg>{{ t('Criar evento') }}</button>
     </div>
 
     <div v-if="measuring" class="composer-preparing" role="status">
