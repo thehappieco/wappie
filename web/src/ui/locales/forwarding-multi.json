@@ -1,0 +1,20 @@
+{
+  "Selecione de 1 a {max} destinatários.": ["Select 1 to {max} recipients.", "Selecciona de 1 a {max} destinatarios.", "Sélectionnez de 1 à {max} destinataires.", "Wähle 1 bis {max} Empfänger."],
+  "{count} de {max} destinatários selecionados": ["{count} of {max} recipients selected", "{count} de {max} destinatarios seleccionados", "{count} destinataires sélectionnés sur {max}", "{count} von {max} Empfängern ausgewählt"],
+  "Destinatários": ["Recipients", "Destinatarios", "Destinataires", "Empfänger"],
+  "Confirmar destinatários": ["Confirm recipients", "Confirmar destinatarios", "Confirmer les destinataires", "Empfänger bestätigen"],
+  "Remover {name}": ["Remove {name}", "Quitar a {name}", "Retirer {name}", "{name} entfernen"],
+  "Resultados por destinatário": ["Results by recipient", "Resultados por destinatario", "Résultats par destinataire", "Ergebnisse nach Empfänger"],
+  "Enviadas com confirmação": ["Sent and confirmed", "Enviados con confirmación", "Envoyés et confirmés", "Gesendet und bestätigt"],
+  "Falha no envio": ["Sending failed", "Error de envío", "Échec de l’envoi", "Senden fehlgeschlagen"],
+  "Envio sem confirmação": ["Sending not confirmed", "Envío sin confirmar", "Envoi non confirmé", "Versand nicht bestätigt"],
+  "Destinatários repetidos": ["Duplicate recipients", "Destinatarios repetidos", "Destinataires en double", "Doppelte Empfänger"],
+  "Não enviadas": ["Not sent", "No enviados", "Non envoyés", "Nicht gesendet"],
+  "Enviando agora": ["Sending now", "Enviando ahora", "Envoi en cours", "Wird gerade gesendet"],
+  "Aguardando envio": ["Waiting to send", "Esperando envío", "En attente d’envoi", "Warten auf Versand"],
+  "Este destinatário foi incluído uma única vez.": ["This recipient was included only once.", "Este destinatario se incluyó una sola vez.", "Ce destinataire n’a été inclus qu’une seule fois.", "Dieser Empfänger wurde nur einmal aufgenommen."],
+  "Verifique as conversas sem confirmação antes de tentar novamente.": ["Check conversations without confirmation before trying again.", "Revisa las conversaciones sin confirmación antes de intentarlo de nuevo.", "Vérifiez les conversations sans confirmation avant de réessayer.", "Prüfe Chats ohne Bestätigung, bevor du es erneut versuchst."],
+  "Fechar interrompe os próximos envios. Uma mensagem já enviada pode chegar mesmo assim.": ["Closing stops the remaining sends. A message already sent may still arrive.", "Cerrar detiene los próximos envíos. Un mensaje ya enviado puede llegar de todos modos.", "Fermer interrompt les envois restants. Un message déjà envoyé peut tout de même arriver.", "Schließen stoppt die übrigen Sendungen. Eine bereits gesendete Nachricht kann trotzdem ankommen."],
+  "Escolher outros destinatários": ["Choose other recipients", "Elegir otros destinatarios", "Choisir d’autres destinataires", "Andere Empfänger wählen"],
+  "Reencaminhar para {count}": ["Forward to {count}", "Reenviar a {count}", "Transférer à {count}", "An {count} weiterleiten"]
+}

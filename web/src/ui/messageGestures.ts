@@ -14,6 +14,8 @@ interface Options {
   onPress: (pressed: boolean) => void
   onReady?: () => void
   onSwipe?: (active: boolean) => void
+  onCapture?: (pointerId: number) => void
+  onRelease?: (pointerId: number) => void
   canReply: () => boolean
   hasSelection: () => boolean
 }
@@ -44,11 +46,13 @@ export function createMessageGestures(options: Options) {
 
   function cancel() {
     clearTimer()
+    const captured = pointer?.pointerId
     pointer = undefined
     swiping = false
     distance = 0
     options.onOffset(0)
     options.onSwipe?.(false)
+    if (captured !== undefined) options.onRelease?.(captured)
   }
 
   function pointerDown(event: MessagePointer) {
@@ -70,6 +74,9 @@ export function createMessageGestures(options: Options) {
       isPrimary: event.isPrimary,
       button: event.button,
     }
+    // The first move can already be outside a short bubble. Capture before
+    // it moves; capture does not prevent native vertical scrolling or zoom.
+    options.onCapture?.(pointer.pointerId)
     options.onPress(true)
     timer = setTimeout(() => {
       if (!pointer || options.hasSelection()) { cancel(); return }
@@ -118,6 +125,9 @@ export function createMessageGestures(options: Options) {
     pointerDown,
     pointerMove,
     pointerUp,
+    pointerCancel(event: Pick<MessagePointer, 'pointerId'>) {
+      if (pointer?.pointerId === event.pointerId) cancel()
+    },
     cancel,
     shouldSuppressClick() {
       const suppress = Date.now() < suppressUntil

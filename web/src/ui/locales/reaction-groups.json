@@ -1,0 +1,86 @@
+{
+  "Reações da mensagem: {count}. Ver participantes e histórico.": [
+    "Message reactions: {count}. View participants and history.",
+    "Reacciones al mensaje: {count}. Ver participantes e historial.",
+    "Réactions au message : {count}. Voir les participants et l’historique.",
+    "Reaktionen auf die Nachricht: {count}. Personen und Verlauf ansehen."
+  ],
+  "{emoji}: uma reação. Ver participante.": [
+    "{emoji}: one reaction. View participant.",
+    "{emoji}: una reacción. Ver participante.",
+    "{emoji} : une réaction. Voir le participant.",
+    "{emoji}: eine Reaktion. Person ansehen."
+  ],
+  "{emoji}: {count} reações. Ver participantes.": [
+    "{emoji}: {count} reactions. View participants.",
+    "{emoji}: {count} reacciones. Ver participantes.",
+    "{emoji} : {count} réactions. Voir les participants.",
+    "{emoji}: {count} Reaktionen. Personen ansehen."
+  ],
+  "Inclui sua reação.": [
+    "Includes your reaction.",
+    "Incluye tu reacción.",
+    "Votre réaction est incluse.",
+    "Enthält deine Reaktion."
+  ],
+  "Mais {count} tipos de reação. Ver todas.": [
+    "{count} more reaction types. View all.",
+    "{count} tipos de reacción más. Ver todas.",
+    "{count} autres types de réaction. Tout afficher.",
+    "{count} weitere Reaktionsarten. Alle ansehen."
+  ],
+  "Reações atuais": [
+    "Current reactions",
+    "Reacciones actuales",
+    "Réactions actuelles",
+    "Aktuelle Reaktionen"
+  ],
+  "Quem está reagindo agora. As alterações anteriores continuam no histórico abaixo.": [
+    "People currently reacting. Earlier changes remain in the history below.",
+    "Personas que mantienen una reacción. Los cambios anteriores siguen en el historial de abajo.",
+    "Les personnes ayant une réaction active. Les modifications précédentes restent dans l’historique ci-dessous.",
+    "Personen mit einer aktuellen Reaktion. Frühere Änderungen bleiben im Verlauf unten erhalten."
+  ],
+  "Nenhuma reação ativa.": [
+    "No active reactions.",
+    "No hay reacciones activas.",
+    "Aucune réaction active.",
+    "Keine aktiven Reaktionen."
+  ],
+  "Uma reação": [
+    "One reaction",
+    "Una reacción",
+    "Une réaction",
+    "Eine Reaktion"
+  ],
+  "{count} reações": [
+    "{count} reactions",
+    "{count} reacciones",
+    "{count} réactions",
+    "{count} Reaktionen"
+  ],
+  "Participante não identificado": [
+    "Unidentified participant",
+    "Participante sin identificar",
+    "Participant non identifié",
+    "Nicht identifizierte Person"
+  ],
+  "Sua reação": [
+    "Your reaction",
+    "Tu reacción",
+    "Votre réaction",
+    "Deine Reaktion"
+  ],
+  "Histórico de reações ({count})": [
+    "Reaction history ({count})",
+    "Historial de reacciones ({count})",
+    "Historique des réactions ({count})",
+    "Reaktionsverlauf ({count})"
+  ],
+  "Você": [
+    "You",
+    "Tú",
+    "Vous",
+    "Du"
+  ]
+}

@@ -8,6 +8,7 @@ import { expiryLabel, hasExpired } from '../state/ephemeral'
 import { displayFallback, formatPhone, parseJID, SERVER_LID, SERVER_USER } from '../state/jid'
 import { hhmm, runs, stamp, typeLabel, unmatchedMentions } from '../ui/format'
 import { createMessageGestures, MESSAGE_CONTROLS, REPLY_THRESHOLD } from '../ui/messageGestures'
+import { reactionSummary } from '../ui/reactionGroups'
 import AppIcon from './AppIcon.vue'
 import MediaBlock from './MediaBlock.vue'
 import MessageActions from './MessageActions.vue'
@@ -66,6 +67,11 @@ const gestures = createMessageGestures({
   onSwipe(value) { swiping.value = value },
   onOffset(value) { offset.value = value },
   onPress(value) { pressing.value = value },
+  onCapture: capturePointer,
+  onRelease(pointerId) {
+    const target = bubble.value
+    try { if (target?.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId) } catch { /* The browser may already have canceled this pointer. */ }
+  },
   canReply: () => !m.value.pending && !m.value.deleted && !m.value.isStatus && canSend()
     && state.devices.find(device => device.id === state.deviceID)?.can_send === true,
   hasSelection,
@@ -79,14 +85,17 @@ function pointerDown(event: PointerEvent) {
 function pointerMove(event: PointerEvent) {
   if (!gestures.pointerMove(event)) return
   if (event.cancelable) event.preventDefault()
-  // Retain the gesture when the finger passes the edge of a short bubble.
-  const target = event.currentTarget as HTMLElement | null
-  try { if (target && !target.hasPointerCapture(event.pointerId)) target.setPointerCapture(event.pointerId) } catch { /* A canceled pointer no longer exists. */ }
+  capturePointer(event.pointerId)
+}
+
+function capturePointer(pointerId: number) {
+  const target = bubble.value
+  try { if (target && !target.hasPointerCapture(pointerId)) target.setPointerCapture(pointerId) } catch { /* A canceled pointer no longer exists. */ }
 }
 
 function lostPointerCapture(event: PointerEvent) {
   // Moving implicit capture from a child to the bubble also bubbles this event.
-  if (event.target === event.currentTarget) gestures.cancel()
+  if (event.target === event.currentTarget) gestures.pointerCancel(event)
 }
 
 function click(event: MouseEvent) {
@@ -177,6 +186,14 @@ const expiryTitle = computed(() => m.value.expiresAt
     : t('Mensagem temporária até {time}', { time: stamp(m.value.expiresAt) })
   : t('Mensagem temporária'))
 const editedTitle = computed(() => t('Mensagem editada · {count} versões', { count: m.value.versionCount }))
+const groupedReactions = computed(() => reactionSummary(m.value.reactions))
+const reactionsTitle = computed(() => t('Reações da mensagem: {count}. Ver participantes e histórico.', { count: groupedReactions.value.total }))
+function reactionTitle(group: { emoji: string; count: number; mine: boolean }): string {
+  const label = group.count === 1
+    ? t('{emoji}: uma reação. Ver participante.', { emoji: group.emoji })
+    : t('{emoji}: {count} reações. Ver participantes.', { emoji: group.emoji, count: group.count })
+  return group.mine ? `${label} ${t('Inclui sua reação.')}` : label
+}
 
 const forwardedLabel = computed(() =>
   m.value.forwardingScore >= 5 ? t('encaminhada muitas vezes') : t('encaminhada'),
@@ -204,7 +221,7 @@ const forwardedLabel = computed(() =>
       @pointerdown="pointerDown"
       @pointermove="pointerMove"
       @pointerup="gestures.pointerUp"
-      @pointercancel="gestures.cancel"
+      @pointercancel="gestures.pointerCancel"
       @lostpointercapture="lostPointerCapture"
       :title="stamp(m.ts)"
     >
@@ -304,12 +321,6 @@ const forwardedLabel = computed(() =>
       </div>
       </div>
 
-      <div class="reactions" v-if="m.reactions.length">
-        <span v-for="(r, i) in m.reactions" :key="i" class="reaction" :title="r.who">
-          {{ r.emoji }}
-        </span>
-      </div>
-
       <!-- A message that has left this tab and not come back from the archive
            yet. It is shown because waiting for a round trip before drawing what
            somebody just typed reads as the message being lost. -->
@@ -329,12 +340,21 @@ const forwardedLabel = computed(() =>
       > {{ t('enviada, fora do histórico') }} </div>
 
       <div class="meta">
-        <span v-if="m.viewOnce" class="message-mark" role="img" :title="t('Mensagem de visualização única')" :aria-label="t('Mensagem de visualização única')"><AppIcon name="view-once" :size="14" /></span>
-        <span v-if="expiry" class="message-mark" role="img" :title="expiryTitle" :aria-label="expiryTitle"><AppIcon name="timer" :size="14" /></span>
-        <span v-if="m.edited" class="message-mark" role="img" :title="editedTitle" :aria-label="editedTitle"><AppIcon name="pencil" :size="14" /></span>
-        <span v-if="m.deleted" class="message-mark" role="img" :title="t('Mensagem apagada')" :aria-label="t('Mensagem apagada')"><AppIcon name="trash" :size="14" /></span>
+        <span v-if="m.viewOnce" class="message-mark mark-once" role="img" :title="t('Mensagem de visualização única')" :aria-label="t('Mensagem de visualização única')"><AppIcon name="view-once" :size="14" /></span>
+        <span v-if="expiry" class="message-mark mark-timer" role="img" :title="expiryTitle" :aria-label="expiryTitle"><AppIcon name="timer" :size="14" /></span>
+        <span v-if="m.edited" class="message-mark mark-edited" role="img" :title="editedTitle" :aria-label="editedTitle"><AppIcon name="pencil" :size="14" /></span>
+        <span v-if="m.deleted" class="message-mark mark-deleted" role="img" :title="t('Mensagem apagada')" :aria-label="t('Mensagem apagada')"><AppIcon name="trash" :size="14" /></span>
         <span>{{ hhmm(m.ts) }}</span>
         <MessageTicks :message="m" />
+      </div>
+      <div v-if="groupedReactions.total" class="reaction-summary" role="group" :aria-label="reactionsTitle">
+        <button v-for="group in groupedReactions.visible" :key="group.key" class="reaction-group" :class="{ mine: group.mine }" type="button"
+          :title="reactionTitle(group)" :aria-label="reactionTitle(group)" @click.stop="loadHistory(m)">
+          <span class="reaction-emoji" aria-hidden="true">{{ group.emoji }}</span><span class="reaction-count" aria-hidden="true">{{ group.count }}</span>
+        </button>
+        <button v-if="groupedReactions.hiddenGroups" class="reaction-group reaction-more" type="button"
+          :title="t('Mais {count} tipos de reação. Ver todas.', { count: groupedReactions.hiddenGroups })"
+          :aria-label="t('Mais {count} tipos de reação. Ver todas.', { count: groupedReactions.hiddenGroups })" @click.stop="loadHistory(m)">+{{ groupedReactions.hiddenGroups }}</button>
       </div>
     </div>
   </div>
@@ -351,6 +371,20 @@ const forwardedLabel = computed(() =>
 .bubble.revoked .message-content { opacity: .6; }
 .bubble.revoked .text, .bubble.revoked .text a, .bubble.revoked .text .mention { text-decoration: line-through; text-decoration-thickness: 1px; }
 .message-mark { display: inline-flex; align-items: center; color: var(--text-faint); cursor: help; }
+.mark-timer { color: #916400; }.mark-edited { color: #08704b; }.mark-deleted { color: #b32732; }.mark-once { color: #2463b9; }
+:root[data-theme='dark'] .mark-timer, :root[data-surface='chat'][data-incognito='true'] .mark-timer { color: #f0bd55; }
+:root[data-theme='dark'] .mark-edited, :root[data-surface='chat'][data-incognito='true'] .mark-edited { color: #65d6a2; }
+:root[data-theme='dark'] .mark-deleted, :root[data-surface='chat'][data-incognito='true'] .mark-deleted { color: #ff939b; }
+:root[data-theme='dark'] .mark-once, :root[data-surface='chat'][data-incognito='true'] .mark-once { color: #83baff; }
+.msg:has(.reaction-summary) { margin-bottom: 22px; }
+.reaction-summary { position: absolute; inset-inline-start: 7px; bottom: -19px; z-index: 1; display: flex; gap: 3px; width: max-content; max-width: calc(100vw - 44px); }
+.out .reaction-summary { inset-inline-start: auto; inset-inline-end: 7px; }
+.reaction-group { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 34px; min-height: 27px; max-width: 62px; padding: 3px 6px; background: var(--bg-raised); color: var(--text-dim); border: 2px solid var(--canvas); border-radius: 999px; box-shadow: 0 1px 3px #0002; font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.reaction-group::before { content: ''; position: absolute; inset: -6px -1px; }
+.reaction-group:hover { background: var(--bg-hover); color: var(--text); }
+.reaction-group:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reaction-group.mine { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent), 0 1px 3px #0002; }
+.reaction-emoji { font-size: 15px; line-height: 18px; }.reaction-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; }.reaction-more { padding-inline: 8px; font-weight: 650; }
 .reply-gesture { position: absolute; inset-inline-start: 0; top: calc(50% - 16px); width: 32px; height: 32px; display: grid; place-items: center; color: var(--text-dim); background: var(--bg-raised); border-radius: 50%; pointer-events: none; }
 .reply-ready .reply-gesture { background: var(--accent); color: var(--on-accent); }
 @media (prefers-reduced-motion: reduce) { .bubble { transition: none; } }

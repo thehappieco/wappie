@@ -65,6 +65,12 @@ account, workspace, connection and device, and asks for confirmation before
 the send. A lost acknowledgement is reported as uncertain, never as a reason
 to resend automatically.
 
+The web client supports up to 10 recipients in one confirmation. It resolves
+new phone numbers before sending, deduplicates equivalent destinations, and
+sends sequentially with a separate message ID and result for each recipient.
+Closing stops the remaining sends; a message already submitted can still arrive.
+Confirmed or uncertain sends are never retried automatically.
+
 References: [WhatsApp video notes](https://faq.whatsapp.com/993629751672762/),
 [MediaRecorder format detection](https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/isTypeSupported_static),
 and the pinned [whatsmeow message schema](https://github.com/tulir/whatsmeow/tree/33cfac511629/proto/waE2E).

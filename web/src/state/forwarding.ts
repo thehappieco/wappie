@@ -4,7 +4,7 @@ import { ProtocolError } from '../api/client'
 import { uploadAttachment } from '../api/upload'
 import { toBase64 } from '../crypto/bytes'
 import { animatedWebP, MAX_BYTES } from '../media/plan'
-import { connection, credential, readMediaBlob, state, type MessageView } from './archive'
+import { connection, credential, people, readMediaBlob, state, type MessageView } from './archive'
 import { normalizePhone } from './conversationActions'
 import { t } from '../ui/i18n'
 
@@ -132,4 +132,125 @@ export function createForwarder(source: MessageView) {
     } finally { busy = false; running.delete(key) }
   }
   return { forward, dispose() { disposed = true; controller.abort(); stop() } }
+}
+
+export const MAX_FORWARD_RECIPIENTS = 10
+export interface ForwardRecipient { key: string; name: string }
+export type ForwardRecipientState = 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'duplicate' | 'cancelled'
+export interface ForwardRecipientResult { recipient: ForwardRecipient; chat?: string; state: ForwardRecipientState; outcome?: ForwardOutcome }
+export interface ForwardBatchOutcome { results: ForwardRecipientResult[]; error?: string; stale?: boolean }
+
+/** Match exact, recorded aliases. Equal digits alone never prove a PN and a LID are the same person. */
+export function forwardRecipientResolver(): (value: string) => string {
+  const parents = new Map<string, string>()
+  function root(key: string): string {
+    const parent = parents.get(key)
+    if (!parent || parent === key) return key
+    const canonical = root(parent); parents.set(key, canonical); return canonical
+  }
+  function join(values: (string | undefined)[]) {
+    const keys = values.filter((value): value is string => Boolean(value && destinationJID(value)))
+    if (!keys.length) return
+    // Group identities and individual identities can never be aliases.
+    for (const group of [false, true]) {
+      const set = keys.filter(key => key.endsWith('@g.us') === group).map(root)
+      const canonical = set.sort((a, b) => Number(b.endsWith('@s.whatsapp.net')) - Number(a.endsWith('@s.whatsapp.net')) || a.localeCompare(b))[0]
+      if (canonical) for (const key of set) parents.set(key, canonical)
+    }
+  }
+  for (const person of people().all()) join([person.key, person.pn, person.lid])
+  for (const chat of state.chats) if (!chat.isStatus) join([chat.key, ...chat.keys])
+  return value => {
+    const phone = normalizePhone(value)
+    const jid = phone ? phone.slice(1) + '@s.whatsapp.net' : destinationJID(value.trim())
+    return jid ? root(jid) : ''
+  }
+}
+
+const batches = new Set<string>()
+
+/** A confirmed batch is immutable and is attempted once. Each destination owns its own message ID. */
+export function createForwardBatch(source: MessageView) {
+  const captured = { conn: connection(), credential: credential(), tenant: state.tenantID, device: state.deviceID, chat: state.openChatKey, view: state.view }
+  const key = `${captured.tenant}:${captured.device}:${source.uid}`
+  const controller = new AbortController()
+  let disposed = false
+  let work: Promise<ForwardBatchOutcome> | undefined
+  let active: ReturnType<typeof createForwarder> | undefined
+  const current = () => !disposed && connection() === captured.conn && credential()?.token === captured.credential?.token
+    && credential()?.serverURL === captured.credential?.serverURL && state.tenantID === captured.tenant && state.deviceID === captured.device
+    && state.openChatKey === captured.chat && state.view === captured.view && state.connected && canForward(source)
+  const stop = watch(() => [state.tenantID, state.deviceID, state.openChatKey, state.view, state.connected], () => {
+    if (!current()) { controller.abort(); active?.dispose() }
+  }, { flush: 'sync' })
+
+  function forward(recipients: ForwardRecipient[], mark: ForwardMark, onUpdate?: (results: ForwardRecipientResult[]) => void): Promise<ForwardBatchOutcome> {
+    if (work) return work
+    if (!current() || !captured.conn || !captured.credential) return Promise.resolve({ results: [], stale: true })
+    if (!recipients.length || recipients.length > MAX_FORWARD_RECIPIENTS) return Promise.resolve({ results: [], error: t('Selecione de 1 a {max} destinatários.', { max: MAX_FORWARD_RECIPIENTS }) })
+    if (!['forwarded', 'many', 'none'].includes(mark)) return Promise.resolve({ results: [], error: t('Escolha como a mensagem será identificada.') })
+    if (batches.has(key)) return Promise.resolve({ results: [], error: t('Esta ação já está em andamento.') })
+    const results: ForwardRecipientResult[] = recipients.map(recipient => ({ recipient: { ...recipient }, state: 'pending' }))
+    const snapshot = () => results.map(row => ({ ...row, recipient: { ...row.recipient } }))
+    const publish = () => onUpdate?.(snapshot())
+    const stopped = (): ForwardBatchOutcome => {
+      for (const row of results) if (row.state === 'pending') row.state = 'cancelled'
+      publish()
+      return { results: snapshot(), stale: true }
+    }
+    batches.add(key)
+    work = (async (): Promise<ForwardBatchOutcome> => {
+      try {
+        const identity = forwardRecipientResolver()
+        const original = new Set<string>()
+        const destinations = new Set<string>()
+        publish()
+        // Resolve every phone before sending any copy. This catches aliases in the confirmed list.
+        for (const row of results) {
+          if (!current() || controller.signal.aborted) return stopped()
+          const canonical = identity(row.recipient.key)
+          if (!canonical) { row.state = 'failed'; row.outcome = { ok: false, error: t('Escolha uma conversa ou informe um número com código do país.') }; continue }
+          if (original.has(canonical)) { row.state = 'duplicate'; continue }
+          original.add(canonical)
+          try {
+            const phone = normalizePhone(row.recipient.key)
+            let chat = destinationJID(row.recipient.key.trim())
+            if (!chat && phone && captured.conn!.welcome.features.includes(P.TypeChatStart)) {
+              const result = await abortable(captured.conn!.request<P.ChatStarted>(P.TypeChatStart, { device_id: captured.device, phone }, P.TypeChatStarted), controller.signal)
+              if (!current() || controller.signal.aborted) return stopped()
+              chat = destinationJID(result.chat)
+            }
+            if (!chat) throw new Error(t('O servidor não confirmou um destinatário válido.'))
+            row.chat = chat
+            const target = identity(chat)
+            if (destinations.has(target)) row.state = 'duplicate'
+            else destinations.add(target)
+          } catch (error) {
+            if (!current() || controller.signal.aborted) return stopped()
+            row.state = 'failed'; row.outcome = { ok: false, error: error instanceof Error ? error.message : String(error) }
+          }
+        }
+        publish()
+        for (const row of results) {
+          if (row.state !== 'pending' || !row.chat) continue
+          if (!current() || controller.signal.aborted) return stopped()
+          active = createForwarder(source)
+          row.state = 'sending'; publish()
+          try {
+            const outcome = await active.forward(row.chat, mark)
+            row.outcome = outcome
+            row.state = outcome.ok ? 'sent' : outcome.uncertain ? 'uncertain' : outcome.stale ? 'cancelled' : 'failed'
+          } catch {
+            // A surprising failure after entering the sender must not invite a duplicate copy.
+            row.state = 'uncertain'; row.outcome = { ok: false, uncertain: true, error: t('A confirmação não chegou. Verifique a conversa de destino antes de reencaminhar novamente.') }
+          } finally { active.dispose(); active = undefined }
+          publish()
+          if (!current() || controller.signal.aborted) return stopped()
+        }
+        return { results: snapshot() }
+      } finally { batches.delete(key) }
+    })()
+    return work
+  }
+  return { forward, dispose() { disposed = true; controller.abort(); active?.dispose(); stop() } }
 }

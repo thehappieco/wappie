@@ -11,6 +11,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/domain"
+	"whatserver2/internal/emoji"
 )
 
 // Client is the slice of whatsmeow this package needs.
@@ -29,6 +30,9 @@ type Client interface {
 // server would reject into an error the caller can show, and saves a round trip
 // that was never going to work.
 var ErrEditWindowExpired = errors.New("send: the twenty-minute edit window has passed")
+
+// ErrInvalidReaction rejects text or multiple emoji before reaching WhatsApp.
+var ErrInvalidReaction = errors.New("send: a reaction must be one complete emoji, or empty to remove it")
 
 // Sent describes what left.
 type Sent struct {
@@ -218,6 +222,11 @@ func SendReaction(ctx context.Context, c Client, req ReactRequest) (Sent, error)
 	if req.TargetID == "" {
 		return Sent{}, errors.New("send: a reaction needs a target")
 	}
+	canonical, valid := emoji.Normalize(req.Emoji)
+	if !valid {
+		return Sent{}, ErrInvalidReaction
+	}
+	req.Emoji = canonical
 	resp, err := c.SendMessage(ctx, req.Chat,
 		c.BuildReaction(req.Chat, req.Sender, req.TargetID, req.Emoji))
 	if err != nil {

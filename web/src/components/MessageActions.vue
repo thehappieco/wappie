@@ -9,6 +9,8 @@ import { forgetSeen } from '../state/reading'
 import { canForward, forwardableContent } from '../state/forwarding'
 import { stamp, typeLabel } from '../ui/format'
 import AppIcon from './AppIcon.vue'
+import EmojiPicker from './EmojiPicker.vue'
+import { normalizeReactionEmoji } from '../ui/emoji'
 
 const props = defineProps<{ message: MessageView }>()
 const emit = defineEmits<{
@@ -25,13 +27,14 @@ const m = computed(() => props.message)
 const menu = ref<HTMLDialogElement | null>(null)
 const menuOpen = ref(false)
 const confirming = ref(false)
+const pickingEmoji = ref(false)
 const copyError = ref('')
 const titleID = useId()
 let backdropPressed = false
 const mutable = computed(() => !m.value.pending && !m.value.deleted && !m.value.isStatus)
 const connected = computed(() => canSend() && state.devices.find(device => device.id === state.deviceID)?.can_send === true)
 const text = computed(() => m.value.bodyState === 'ok' ? m.value.body ?? '' : '')
-const mine = computed(() => myReaction(m.value))
+const mine = computed(() => normalizeReactionEmoji(myReaction(m.value)) ?? myReaction(m.value))
 const minutesLeft = computed(() => Math.ceil(editableFor(m.value) / 60_000))
 const QUICK = ['👍', '❤️', '😂', '😮', '😢', '🙏']
 
@@ -48,6 +51,7 @@ const timerNote = computed(() => {
 async function open() {
   if (!menu.value || menu.value.open || menuOpen.value) return
   confirming.value = false
+  pickingEmoji.value = false
   copyError.value = ''
   forgetSeen()
   backdropPressed = false
@@ -66,6 +70,7 @@ function close() {
 function closed() {
   menuOpen.value = false
   confirming.value = false
+  pickingEmoji.value = false
   emit('closed')
 }
 
@@ -85,7 +90,7 @@ async function copy() {
 }
 
 async function pick(emoji: string) {
-  if (!mutable.value || !connected.value) return
+  if (!mutable.value || !connected.value || normalizeReactionEmoji(emoji) === null) return
   const message = m.value
   close()
   await react(message, emoji)
@@ -117,17 +122,20 @@ onBeforeUnmount(close)
       <div class="menu-handle" aria-hidden="true" />
       <header class="menu-heading">
         <div>
-          <h2 :id="titleID">{{ t('Ações da mensagem') }}</h2>
+          <h2 :id="titleID">{{ pickingEmoji ? t('Escolher reação') : t('Ações da mensagem') }}</h2>
           <p :class="{ 'revoked-preview': m.deleted }">{{ text || typeLabel(m.type) }}</p>
         </div>
         <button class="menu-close" type="button" :aria-label="t('Fechar ações')" @click="close"><AppIcon name="close" :size="20" /></button>
       </header>
 
+      <EmojiPicker v-if="pickingEmoji && mutable" :current="mine" :disabled="!connected" @choose="pick" @back="pickingEmoji = false" />
+      <template v-else>
       <div v-if="mutable && !confirming" class="quick-reactions" :aria-label="t('Reações rápidas')">
         <button v-for="emoji in QUICK" :key="emoji" class="quick-reaction" type="button"
           :class="{ chosen: mine === emoji }" :aria-pressed="mine === emoji"
           :aria-label="mine === emoji ? t('Remover reação {v0}', { v0: emoji }) : t('Reagir com {v0}', { v0: emoji })"
           :disabled="!connected" @click="pick(emoji)">{{ emoji }}</button>
+        <button class="quick-reaction all-emoji" type="button" :disabled="!connected" :aria-label="t('Escolher qualquer emoji')" @click="pickingEmoji = true"><AppIcon name="plus" :size="22" /></button>
       </div>
 
       <div v-if="confirming" class="delete-confirmation">
@@ -141,7 +149,7 @@ onBeforeUnmount(close)
           <AppIcon name="reply" /><span class="action-copy"><strong>{{ t('Responder') }}</strong><small>{{ t('Citar esta mensagem na conversa') }}</small></span><span class="action-hint">{{ t('Deslize →') }}</span>
         </button>
         <button v-if="forwardableContent(m)" class="menu-action" type="button" :disabled="!canForward(m)" @click="forward">
-          <AppIcon name="forward" /><span class="action-copy"><strong>{{ t('Reencaminhar') }}</strong><small>{{ t('Enviar esta mensagem para outra conversa') }}</small></span>
+          <AppIcon name="forward" /><span class="action-copy"><strong>{{ t('Reencaminhar') }}</strong><small>{{ t('Escolher uma ou mais conversas') }}</small></span>
         </button>
         <button v-if="text" class="menu-action" type="button" @click="copy">
           <AppIcon name="copy" /><span class="action-copy"><strong>{{ t('Copiar texto') }}</strong><small>{{ t('Copiar o conteúdo da mensagem') }}</small></span>
@@ -160,12 +168,13 @@ onBeforeUnmount(close)
         </button>
       </div>
       <div v-if="m.viewOnce || timerNote || m.edited || m.deleted" class="message-facts">
-        <p v-if="m.viewOnce" class="menu-note"><AppIcon name="view-once" :size="16" />{{ t('Mensagem de visualização única') }}</p>
-        <p v-if="timerNote" class="menu-note"><AppIcon name="timer" :size="16" />{{ timerNote }}</p>
-        <p v-if="m.edited" class="menu-note"><AppIcon name="pencil" :size="16" />{{ t('Mensagem editada · {count} versões', { count: m.versionCount }) }}</p>
-        <p v-if="m.deleted" class="menu-note"><AppIcon name="trash" :size="16" />{{ t('Mensagem apagada') }}</p>
+        <p v-if="m.viewOnce" class="menu-note"><AppIcon name="view-once" class="mark-once" :size="16" />{{ t('Mensagem de visualização única') }}</p>
+        <p v-if="timerNote" class="menu-note"><AppIcon name="timer" class="mark-temporary" :size="16" />{{ timerNote }}</p>
+        <p v-if="m.edited" class="menu-note"><AppIcon name="pencil" class="mark-edited" :size="16" />{{ t('Mensagem editada · {count} versões', { count: m.versionCount }) }}</p>
+        <p v-if="m.deleted" class="menu-note"><AppIcon name="trash" class="mark-deleted" :size="16" />{{ t('Mensagem apagada') }}</p>
       </div>
       <p v-if="copyError" class="copy-error" role="alert">{{ copyError }}</p>
+      </template>
       </template>
     </dialog>
   </div>
@@ -190,6 +199,12 @@ onBeforeUnmount(close)
 .quick-reaction { display: grid; place-items: center; flex: 1; height: 44px; font-size: 28px; padding: 0; border-radius: 50%; transition: transform 120ms ease-out, background 120ms; }
 .quick-reaction:hover { background: var(--bg-hover); transform: scale(1.13); }
 .quick-reaction.chosen { background: var(--bg-active); box-shadow: inset 0 0 0 2px var(--accent); }
+.quick-reaction.all-emoji { flex: 0 0 38px; height: 38px; align-self: center; background: var(--bg-hover); color: var(--text-dim); }
+.mark-once { color: #83baff; } .mark-temporary { color: #f0bd55; } .mark-edited { color: #65d6a2; } .mark-deleted { color: #ff939b; }
+:global(html[data-theme='light']:not([data-incognito='true'])) .mark-once { color: #2463b9; }
+:global(html[data-theme='light']:not([data-incognito='true'])) .mark-temporary { color: #916400; }
+:global(html[data-theme='light']:not([data-incognito='true'])) .mark-edited { color: #08704b; }
+:global(html[data-theme='light']:not([data-incognito='true'])) .mark-deleted { color: #b32732; }
 .menu-options { padding-top: 6px; }
 .menu-action { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 48px; padding: 10px 12px; border-radius: 11px; text-align: left; font-size: 15px; }
 .menu-action:hover { background: var(--bg-hover); }

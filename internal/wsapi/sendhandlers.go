@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"whatserver2/internal/domain"
+	"whatserver2/internal/emoji"
 	"whatserver2/internal/ingest"
 	"whatserver2/internal/wa"
 	"whatserver2/internal/wa/send"
@@ -466,6 +467,10 @@ func (s *session) handleReact(ctx context.Context, f Frame) {
 	var req ReactRequest
 	if err := json.Unmarshal(f.Payload, &req); err != nil {
 		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())
+		return
+	}
+	if _, valid := emoji.Normalize(req.Emoji); !valid {
+		s.replyError(f.ReqID, ErrCodeBadRequest, send.ErrInvalidReaction.Error())
 		return
 	}
 	t, ok := s.resolveSend(ctx, f, req.DeviceID, req.Chat)

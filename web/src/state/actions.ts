@@ -13,6 +13,7 @@ import { t } from '../ui/i18n'
 // is a worse answer than one the client never sent.
 
 import { ref } from 'vue'
+import { normalizeReactionEmoji } from '../ui/emoji'
 
 import * as P from '../api/protocol'
 import {
@@ -108,7 +109,13 @@ function say(err: unknown): string {
  */
 export async function react(m: MessageView, emoji: string): Promise<void> {
   state.actionError = ''
-  const wanted = myReaction(m) === emoji ? '' : emoji
+  const canonical = normalizeReactionEmoji(emoji)
+  if (canonical === null) {
+    state.actionError = t('Escolha apenas um emoji completo.')
+    return
+  }
+  const current = normalizeReactionEmoji(myReaction(m)) ?? myReaction(m)
+  const wanted = current === canonical ? '' : canonical
   try {
     await socket().request(
       P.TypeReact,

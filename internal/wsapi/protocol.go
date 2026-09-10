@@ -724,7 +724,9 @@ type RevokeRequest struct {
 	Sender string `json:"sender,omitempty"`
 }
 
-// ReactRequest adds or removes a reaction. An empty emoji removes.
+// ReactRequest adds one complete Unicode 17 emoji or removes a reaction with
+// an empty emoji. Presentation aliases normalize to fully-qualified emoji;
+// text, multiple emoji and standalone components return bad_request.
 type ReactRequest struct {
 	DeviceID string `json:"device_id"`
 	Chat     string `json:"chat"`

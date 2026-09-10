@@ -13,15 +13,17 @@ function setup() {
   const onPress = vi.fn()
   const onReady = vi.fn()
   const onSwipe = vi.fn()
+  const onCapture = vi.fn()
+  const onRelease = vi.fn()
   let selected = false
   let allowed = true
   const gestures = createMessageGestures({
-    onHold, onReply, onOffset, onPress, onReady, onSwipe,
+    onHold, onReply, onOffset, onPress, onReady, onSwipe, onCapture, onRelease,
     canReply: () => allowed,
     hasSelection: () => selected,
   })
   return {
-    gestures, onHold, onReply, onOffset, onPress, onReady, onSwipe,
+    gestures, onHold, onReply, onOffset, onPress, onReady, onSwipe, onCapture, onRelease,
     select: () => { selected = true },
     disallow: () => { allowed = false },
   }
@@ -31,6 +33,59 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
 
 describe('message touch gestures', () => {
+  it('captures on press before a first move can leave the bubble, retaining it until release', () => {
+    const ui = setup()
+    ui.gestures.pointerDown(pointer({ pointerType: 'pen', clientX: 241 }))
+    expect(ui.onCapture).toHaveBeenCalledExactlyOnceWith(1)
+    expect(ui.onRelease).not.toHaveBeenCalled()
+    expect(ui.gestures.pointerMove(pointer({ pointerType: 'pen', clientX: 256 }))).toBe(true)
+    expect(ui.gestures.pointerMove(pointer({ pointerType: 'pen', clientX: 420 }))).toBe(true)
+    expect(ui.onRelease).not.toHaveBeenCalled()
+    expect(ui.onReply).not.toHaveBeenCalled()
+    ui.gestures.pointerUp(pointer({ pointerType: 'pen', clientX: 420 }))
+    expect(ui.onRelease).toHaveBeenCalledExactlyOnceWith(1)
+    expect(ui.onReply).toHaveBeenCalledOnce()
+    ui.gestures.pointerUp(pointer({ pointerType: 'pen', clientX: 420 }))
+    vi.advanceTimersByTime(500)
+    expect(ui.onHold).not.toHaveBeenCalled()
+    expect(ui.onReply).toHaveBeenCalledOnce()
+  })
+
+  it('releases a canceled swipe once and ignores its late capture loss during the next gesture', () => {
+    const ui = setup()
+    // Browsers can deliver lostpointercapture while releasing it.
+    ui.onRelease.mockImplementation(pointerId => ui.gestures.pointerCancel({ pointerId }))
+    ui.gestures.pointerDown(pointer())
+    ui.gestures.pointerMove(pointer({ clientX: 180 }))
+    ui.gestures.pointerCancel(pointer())
+    expect(ui.onRelease).toHaveBeenCalledExactlyOnceWith(1)
+    ui.gestures.pointerUp(pointer({ clientX: 180 }))
+    expect(ui.onReply).not.toHaveBeenCalled()
+    ui.gestures.pointerDown(pointer({ pointerId: 2 }))
+    ui.gestures.pointerCancel(pointer())
+    expect(ui.gestures.pointerMove(pointer({ pointerId: 2, clientX: 180 }))).toBe(true)
+    ui.gestures.pointerUp(pointer({ pointerId: 2, clientX: 180 }))
+    expect(ui.onRelease).toHaveBeenCalledTimes(2)
+    expect(ui.onRelease).toHaveBeenLastCalledWith(2)
+    expect(ui.onReply).toHaveBeenCalledOnce()
+  })
+
+  it('releases capture on a hold or disposal without leaving a delayed reply behind', () => {
+    const ui = setup()
+    ui.gestures.pointerDown(pointer())
+    vi.advanceTimersByTime(450)
+    expect(ui.onRelease).toHaveBeenCalledExactlyOnceWith(1)
+    expect(ui.onHold).toHaveBeenCalledOnce()
+    ui.gestures.pointerDown(pointer({ pointerId: 2 }))
+    ui.gestures.pointerMove(pointer({ pointerId: 2, clientX: 180 }))
+    ui.gestures.dispose()
+    expect(ui.onRelease).toHaveBeenCalledTimes(2)
+    ui.gestures.pointerUp(pointer({ pointerId: 2, clientX: 180 }))
+    vi.advanceTimersByTime(500)
+    expect(ui.onHold).toHaveBeenCalledOnce()
+    expect(ui.onReply).not.toHaveBeenCalled()
+  })
+
   it('a regular tap neither opens information nor starts a reply', () => {
     const ui = setup()
     ui.gestures.pointerDown(pointer())
@@ -60,6 +115,7 @@ describe('message touch gestures', () => {
     const ui = setup()
     ui.gestures.pointerDown(pointer())
     expect(ui.gestures.pointerMove(pointer({ clientY: 216 }))).toBe(false)
+    expect(ui.onRelease).toHaveBeenCalledExactlyOnceWith(1)
     expect(ui.gestures.pointerMove(pointer({ clientX: 185, clientY: 219 }))).toBe(false)
     vi.advanceTimersByTime(500)
     ui.gestures.pointerUp(pointer({ clientX: 185, clientY: 219 }))
@@ -130,6 +186,7 @@ describe('message touch gestures', () => {
   it('preserves mouse selection and existing touch selections', () => {
     const ui = setup()
     ui.gestures.pointerDown(pointer({ pointerType: 'mouse' }))
+    expect(ui.onCapture).not.toHaveBeenCalled()
     vi.advanceTimersByTime(500)
     expect(ui.onHold).not.toHaveBeenCalled()
     ui.select()
@@ -188,6 +245,7 @@ describe('message touch gestures', () => {
   it('leaves edge-back swipes to the operating system', () => {
     const ui = setup()
     ui.gestures.pointerDown(pointer({ clientX: 12 }))
+    expect(ui.onCapture).not.toHaveBeenCalled()
     expect(ui.gestures.pointerMove(pointer({ clientX: 90 }))).toBe(false)
     vi.advanceTimersByTime(500)
     expect(ui.onHold).not.toHaveBeenCalled()

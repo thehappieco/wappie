@@ -1,0 +1,122 @@
+{
+  "Escolher reação": [
+    "Choose a reaction",
+    "Elegir una reacción",
+    "Choisir une réaction",
+    "Reaktion auswählen"
+  ],
+  "Escolher qualquer emoji": [
+    "Choose any emoji",
+    "Elegir cualquier emoji",
+    "Choisir un autre emoji",
+    "Beliebiges Emoji auswählen"
+  ],
+  "Escolha apenas um emoji completo.": [
+    "Choose just one complete emoji.",
+    "Elige un solo emoji completo.",
+    "Choisissez un seul emoji complet.",
+    "Wähle genau ein vollständiges Emoji."
+  ],
+  "Digite ou cole um emoji": [
+    "Type or paste an emoji",
+    "Escribe o pega un emoji",
+    "Saisissez ou collez un emoji",
+    "Emoji eingeben oder einfügen"
+  ],
+  "Um emoji, como 👩🏽‍💻": [
+    "One emoji, such as 👩🏽‍💻",
+    "Un emoji, como 👩🏽‍💻",
+    "Un emoji, comme 👩🏽‍💻",
+    "Ein Emoji, z. B. 👩🏽‍💻"
+  ],
+  "Reagir": [
+    "React",
+    "Reaccionar",
+    "Réagir",
+    "Reagieren"
+  ],
+  "Use o teclado de emojis do dispositivo ou escolha abaixo.": [
+    "Use your device’s emoji keyboard or choose below.",
+    "Usa el teclado de emojis del dispositivo o elige abajo.",
+    "Utilisez le clavier emoji de votre appareil ou choisissez ci-dessous.",
+    "Nutze die Emoji-Tastatur deines Geräts oder wähle unten aus."
+  ],
+  "Categoria": [
+    "Category",
+    "Categoría",
+    "Catégorie",
+    "Kategorie"
+  ],
+  "Mostrar mais emojis": [
+    "Show more emoji",
+    "Mostrar más emojis",
+    "Afficher plus d’emojis",
+    "Weitere Emojis anzeigen"
+  ],
+  "Remover minha reação": [
+    "Remove my reaction",
+    "Eliminar mi reacción",
+    "Retirer ma réaction",
+    "Meine Reaktion entfernen"
+  ],
+  "Escolher uma ou mais conversas": [
+    "Choose one or more conversations",
+    "Elegir una o más conversaciones",
+    "Choisir une ou plusieurs conversations",
+    "Eine oder mehrere Unterhaltungen auswählen"
+  ],
+  "Rostos e emoções": [
+    "Faces and emotions",
+    "Caras y emociones",
+    "Visages et émotions",
+    "Gesichter und Emotionen"
+  ],
+  "Pessoas e gestos": [
+    "People and gestures",
+    "Personas y gestos",
+    "Personnes et gestes",
+    "Menschen und Gesten"
+  ],
+  "Animais e natureza": [
+    "Animals and nature",
+    "Animales y naturaleza",
+    "Animaux et nature",
+    "Tiere und Natur"
+  ],
+  "Comidas e bebidas": [
+    "Food and drinks",
+    "Comida y bebida",
+    "Nourriture et boissons",
+    "Essen und Trinken"
+  ],
+  "Viagens e lugares": [
+    "Travel and places",
+    "Viajes y lugares",
+    "Voyages et lieux",
+    "Reisen und Orte"
+  ],
+  "Atividades": [
+    "Activities",
+    "Actividades",
+    "Activités",
+    "Aktivitäten"
+  ],
+  "Objetos": [
+    "Objects",
+    "Objetos",
+    "Objets",
+    "Objekte"
+  ],
+  "Símbolos": [
+    "Symbols",
+    "Símbolos",
+    "Symboles",
+    "Symbole"
+  ],
+  "Bandeiras": [
+    "Flags",
+    "Banderas",
+    "Drapeaux",
+    "Flaggen"
+  ]
+}

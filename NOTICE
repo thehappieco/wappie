@@ -9,3 +9,8 @@ at https://github.com/tulir/whatsmeow. Third-party source is not relicensed by t
 project's Apache-2.0 license.
 
 Wappie is independent and is not affiliated with WhatsApp or Meta.
+
+The emoji catalogue in internal/emoji/emoji.json is derived from Unicode 17.0
+emoji-test.txt (Copyright 2025 Unicode, Inc.) under Unicode License V3.
+The license is included at internal/emoji/LICENSE-UNICODE.txt. The generated
+catalogue is shared by the API and browser; see internal/emoji/generate.py.

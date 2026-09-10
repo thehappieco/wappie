@@ -9,11 +9,13 @@ import ReadersModal from './ReadersModal.vue'
 import AppIcon from './AppIcon.vue'
 import { stamp, typeLabel } from '../ui/format'
 import { deletionLabel } from '../ui/deletionLabel'
+import { reactionSummary } from '../ui/reactionGroups'
 
 const emit = defineEmits<{ close: [] }>()
 
 const message = computed(() => state.timeline.find((m) => m.uid === state.selectedUID))
 const history = computed(() => state.history)
+const currentReactions = computed(() => reactionSummary(message.value?.reactions ?? []))
 
 /** The revision on screen, so the panel can mark which of the versions it is. */
 const currentRevision = computed(() => {
@@ -73,6 +75,20 @@ function replacedAt(i: number): Date | undefined {
     </div>
 
     <div class="panel-body">
+      <section v-if="message && (currentReactions.total || history?.reactions.length)" class="section current-reactions" aria-labelledby="current-reactions-title">
+        <div class="reaction-section-heading"><h3 id="current-reactions-title">{{ t('Reações atuais') }}</h3><span class="reaction-total">{{ currentReactions.total }}</span></div>
+        <p class="reaction-explanation">{{ t('Quem está reagindo agora. As alterações anteriores continuam no histórico abaixo.') }}</p>
+        <div v-if="!currentReactions.total" class="sealed">{{ t('Nenhuma reação ativa.') }}</div>
+        <div v-for="group in currentReactions.groups" :key="group.key" class="current-reaction-group">
+          <div class="current-reaction-heading"><span class="current-reaction-emoji" aria-hidden="true">{{ group.emoji }}</span><strong>{{ group.count === 1 ? t('Uma reação') : t('{count} reações', { count: group.count }) }}</strong><span class="reaction-group-description">{{ group.emoji }}</span></div>
+          <ul class="current-reactors">
+            <li v-for="(reaction, index) in group.reactions" :key="index" :class="{ self: reaction.fromMe }">
+              <AppIcon name="users" :size="16" /><span>{{ reaction.fromMe ? t('Você') : reaction.who || t('Participante não identificado') }}</span><small v-if="reaction.fromMe">{{ t('Sua reação') }}</small>
+            </li>
+          </ul>
+        </div>
+      </section>
+
       <div v-if="state.historyLoading" class="sealed">{{ t('Montando a história desta mensagem…') }}</div>
       <div v-else-if="state.historyError" class="alert">{{ state.historyError }}</div>
 
@@ -80,7 +96,7 @@ function replacedAt(i: number): Date | undefined {
         <!-- Versions. This is the product: an edit does not replace anything
              here, it adds a link to a chain. -->
         <section class="section">
-          <h3>{{ t('Versões ({v0})', { v0: history.versions.length }) }}</h3>
+          <h3 class="history-heading"><AppIcon name="pencil" :size="16" class="history-edited" />{{ t('Versões ({v0})', { v0: history.versions.length }) }}</h3>
           <div
             v-for="version in history.versions"
             :key="version.revision"
@@ -117,7 +133,7 @@ function replacedAt(i: number): Date | undefined {
 
         <!-- Deletion. The content above survives it, which is the whole point. -->
         <section class="section" v-if="history.deletion">
-          <h3>{{ t('Apagada') }}</h3>
+          <h3 class="history-heading"><AppIcon name="trash" :size="16" class="history-deleted" />{{ t('Apagada') }}</h3>
           <div class="card">
             <div class="title" style="color: var(--danger)">
               {{
@@ -134,7 +150,7 @@ function replacedAt(i: number): Date | undefined {
              the sequence is the part WhatsApp does not show: a heart, changed
              to a laugh an hour later, then taken back. -->
         <section class="section" v-if="history.reactions.length">
-          <h3>{{ t('Reações ({v0})', { v0: history.reactions.length }) }}</h3>
+          <h3>{{ t('Histórico de reações ({count})', { count: history.reactions.length }) }}</h3>
           <div
             v-for="(reaction, i) in history.reactions"
             :key="i"
@@ -215,6 +231,11 @@ function replacedAt(i: number): Date | undefined {
 </template>
 
 <style scoped>
+.reaction-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.reaction-section-heading h3 { margin-bottom: 0; }.reaction-total { display: grid; place-items: center; min-width: 26px; height: 24px; padding-inline: 6px; border-radius: 8px; background: var(--bg-active); color: var(--text); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }.reaction-explanation { color: var(--text-dim); font-size: 12px; line-height: 1.5; margin: 8px 0 14px; }
+.current-reaction-group { margin-top: 9px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }.current-reaction-heading { display: flex; align-items: center; gap: 9px; padding: 10px 12px; background: var(--bg-raised); font-size: 12px; }.current-reaction-emoji { display: inline-flex; justify-content: center; min-width: 26px; font-size: 21px; line-height: 1.2; }.reaction-group-description { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }.current-reactors { margin: 0; padding: 3px 12px; list-style: none; }.current-reactors li { display: flex; align-items: center; gap: 9px; min-height: 39px; padding-block: 7px; color: var(--text); font-size: 13px; }.current-reactors li+li { border-top: 1px solid var(--line); }.current-reactors svg { color: var(--text-dim); flex-shrink: 0; }.current-reactors span { min-width: 0; overflow-wrap: anywhere; }.current-reactors small { margin-inline-start: auto; color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+.history-heading { display: flex; align-items: center; gap: 7px; }.history-edited { color: #08704b; }.history-deleted { color: #b32732; }
+:root[data-theme='dark'] .history-edited, :root[data-surface='chat'][data-incognito='true'] .history-edited { color: #65d6a2; }
+:root[data-theme='dark'] .history-deleted, :root[data-surface='chat'][data-incognito='true'] .history-deleted { color: #ff939b; }
 .version-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -4px 0 2px; }
 .version-info { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; color: var(--message-info); background: transparent; }
 .version-info:hover { background: color-mix(in srgb, var(--message-info) 12%, transparent); }

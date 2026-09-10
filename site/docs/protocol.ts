@@ -460,7 +460,8 @@ export interface ReactRequest {
   chat: string
   target_id: string
   sender?: string
-  /** Empty removes. Not an empty reaction — a withdrawal. */
+  /** One complete Unicode 17 emoji, including composed sequences; empty removes.
+   * Presentation aliases normalize; text, multiple emoji and components are invalid. */
   emoji: string
 }
 
