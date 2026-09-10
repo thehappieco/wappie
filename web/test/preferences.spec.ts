@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { initializeTheme, readPreference, setTheme, theme, writePreference } from '../src/ui/preferences'
+import { reactive, watchEffect } from 'vue'
+import { applyPrivacyAppearance, initializeTheme, readPreference, setTheme, theme, writePreference } from '../src/ui/preferences'
 let cleanup: (() => void) | undefined
 let cookies: Map<string, string>
 let saved: Map<string, string>
@@ -31,6 +32,42 @@ describe('appearance preferences', () => {
   it('does not override independent incognito state', () => {
     doc.documentElement.dataset.incognito = 'true'; cleanup = initializeTheme(); setTheme('light')
     expect(doc.documentElement.dataset).toEqual({ incognito: 'true', theme: 'light' })
+  })
+  it('returns to the selected console theme while its device stays discreet', () => {
+    cookies.set('wappie_theme', 'light'); cleanup = initializeTheme()
+    const device = reactive({ phase: 'ready', view: 'archive' as 'archive' | 'admin', quiet: true })
+    const stop = watchEffect(() => applyPrivacyAppearance(device), { flush: 'sync' })
+    try {
+      expect(doc.documentElement.dataset).toEqual({ theme: 'light', surface: 'chat', incognito: 'true' })
+      device.view = 'admin'
+      expect(doc.documentElement.dataset).toEqual({ theme: 'light', surface: 'console' })
+      setTheme('dark')
+      expect(doc.documentElement.dataset).toEqual({ theme: 'dark', surface: 'console' })
+      setTheme('light')
+      expect(doc.documentElement.dataset).toEqual({ theme: 'light', surface: 'console' })
+      device.view = 'archive'
+      expect(doc.documentElement.dataset).toEqual({ theme: 'light', surface: 'chat', incognito: 'true' })
+      expect(device.quiet).toBe(true)
+    } finally { stop() }
+  })
+  it('follows system changes in the console without changing device privacy', () => {
+    cleanup = initializeTheme()
+    const device = { phase: 'ready', view: 'admin' as const, quiet: true }
+    applyPrivacyAppearance(device)
+    expect(doc.documentElement.dataset).toEqual({ theme: 'dark', surface: 'console' })
+    media.matches = false; media.dispatchEvent(new Event('change'))
+    expect(doc.documentElement.dataset).toEqual({ theme: 'light', surface: 'console' })
+    expect(device.quiet).toBe(true)
+  })
+  it('removes the discreet palette during sign-out and connection transitions', () => {
+    cleanup = initializeTheme()
+    for (const phase of ['locked', 'connecting', 'error']) {
+      applyPrivacyAppearance({ phase: 'ready', view: 'archive', quiet: true })
+      applyPrivacyAppearance({ phase, view: 'archive', quiet: true })
+      expect(doc.documentElement.dataset).toEqual({ theme: 'dark' })
+    }
+    applyPrivacyAppearance({ phase: 'ready', view: 'archive', quiet: false })
+    expect(doc.documentElement.dataset).toEqual({ theme: 'dark', surface: 'chat' })
   })
   it('shares preferences only within the Wappie product domain', () => {
     writePreference('theme', 'dark'); expect(writes[0]).toContain('SameSite=Lax; Domain=wappie.thehappie.co; Secure'); expect(saved.get('wappie_theme')).toBe('dark')

@@ -26,6 +26,16 @@ export const theme = ref<ThemePreference>('system')
 let media: MediaQueryList | null = null
 let stopListening: (() => void) | null = null
 
+/** A device's discreet reading palette applies only while its chat is visible. */
+export function applyPrivacyAppearance(state: { phase: string; view: 'archive' | 'admin'; quiet: boolean }): void {
+  if (typeof document === 'undefined') return
+  const root = document.documentElement
+  if (state.phase === 'ready') root.dataset.surface = state.view === 'archive' ? 'chat' : 'console'
+  else delete root.dataset.surface
+  if (root.dataset.surface === 'chat' && state.quiet) root.dataset.incognito = 'true'
+  else delete root.dataset.incognito
+}
+
 function isTheme(value: string | null): value is ThemePreference {
   return value === 'light' || value === 'dark' || value === 'system'
 }

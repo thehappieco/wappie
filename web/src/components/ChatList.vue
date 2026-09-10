@@ -8,6 +8,7 @@ import { credential, openChat, people, readableDevices, selectDevice, state, sto
 import { typingIn } from '../state/presence'
 import { formatPhone, parseJID } from '../state/jid'
 import { kindLabel, listStamp, typeLabel } from '../ui/format'
+import { showWorkspaceView } from '../ui/workspaceNavigation'
 import AppIcon from './AppIcon.vue'
 import AvatarBadge from './AvatarBadge.vue'
 import DeviceAvatar from './DeviceAvatar.vue'
@@ -142,13 +143,7 @@ async function chooseDevice(device: DeviceInfo) {
 }
 
 function openConsole() {
-  if (location.hostname === 'app.wappie.thehappie.co') {
-    const url = new URL('https://console.wappie.thehappie.co/')
-    url.searchParams.set('workspace', state.tenantID)
-    location.assign(url.toString())
-    return
-  }
-  state.view = 'admin'
+  if (showWorkspaceView('admin', state.tenantID, state.deviceID)) state.view = 'admin'
 }
 </script>
 

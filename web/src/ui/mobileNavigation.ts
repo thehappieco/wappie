@@ -11,6 +11,14 @@ interface Entry {
   original?: unknown
 }
 
+let replaceActiveURL: ((url: string) => void) | undefined
+
+/** Keep an intentional route change through any pending mobile Back traversal. */
+export function replaceNavigationURL(url: string): void {
+  if (replaceActiveURL) replaceActiveURL(url)
+  else history.replaceState(history.state, '', url)
+}
+
 /**
  * Add browser Back support to the mobile screens without changing the URL.
  *
@@ -30,6 +38,7 @@ export function installMobileNavigation({ getDepth, closeTo }: MobileNavigationO
   let disposed = false
   let handlingPop = false
   let pending: { target: number; syncAgain: boolean } | undefined
+  let pendingURL: string | undefined
 
   function depth(): number {
     const value = getDepth()
@@ -88,6 +97,14 @@ export function installMobileNavigation({ getDepth, closeTo }: MobileNavigationO
     reconcile(true)
   }
 
+  function replaceURL(url: string): void {
+    // Changing screens can synchronously lower the mobile depth after this
+    // call. Keep the new route until our entries have finished unwinding;
+    // replacing only the current entry would restore its predecessor's URL.
+    pendingURL = ownEntry() || pending ? url : undefined
+    history.replaceState(history.state, '', url)
+  }
+
   function onPop(): void {
     if (disposed) return
     const landed = ownEntry()?.depth ?? 0
@@ -111,10 +128,17 @@ export function installMobileNavigation({ getDepth, closeTo }: MobileNavigationO
     // browser Back just removed. Forward cannot reopen a screen either; an
     // entry ahead of the visible state is safely traversed back again.
     reconcile(false)
+    if (pendingURL) {
+      history.replaceState(history.state, '', pendingURL)
+      // A retained chat layer still has an older base entry underneath it.
+      // Carry the current route all the way back to that base as well.
+      if (!pending && !ownEntry()) pendingURL = undefined
+    }
     if (internal && requested?.syncAgain) queueMicrotask(sync)
   }
 
   browser.addEventListener('popstate', onPop)
+  replaceActiveURL = replaceURL
   sync()
 
   return {
@@ -122,6 +146,7 @@ export function installMobileNavigation({ getDepth, closeTo }: MobileNavigationO
     dispose() {
       if (disposed) return
       disposed = true
+      if (replaceActiveURL === replaceURL) replaceActiveURL = undefined
       browser.removeEventListener('popstate', onPop)
       if (ownEntry()) history.replaceState(originalState(), '')
     },

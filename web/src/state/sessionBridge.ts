@@ -93,16 +93,24 @@ async function requestBridge(operation: Operation, input: { login?: BrowserLogin
 export async function rememberBrowserSession(login: BrowserLogin): Promise<'shared' | 'local'> {
   if (browserSessionWasCleared(login.id, login.epoch)) throw new Error('browser session was cleared')
   if (sharedBrowserOrigin() && login.epoch) writeBrowserEpoch(login.epoch, Math.max(1, Math.min(1209600, Math.floor((login.expiresAt - Date.now()) / 1000))))
+  let shared = false
   if (sharedBrowserOrigin() && login.epoch) {
     try {
       await requestBridge('save', { login })
-      if (browserSessionWasCleared(login.id, login.epoch)) throw new Error('browser session was cleared')
-      return 'shared'
+      shared = true
     } catch { /* Browser policies may block iframe storage. */ }
   }
   if (browserSessionWasCleared(login.id, login.epoch)) throw new Error('browser session was cleared')
-  await saveLocalSession(login)
-  return 'local'
+  // Successful iframe writes do not imply durable, shared storage. WebKit can
+  // partition or discard it even between these same-site subdomains. Keep an
+  // origin-local copy for reload/payment returns, with the same logout fences.
+  try { await saveLocalSession(login) }
+  catch (error) { if (!shared) throw error }
+  if (browserSessionWasCleared(login.id, login.epoch)) {
+    await clearLocalSession(login.id).catch(() => {})
+    throw new Error('browser session was cleared')
+  }
+  return shared ? 'shared' : 'local'
 }
 
 export async function readBrowserSession(): Promise<BrowserLogin | null> {

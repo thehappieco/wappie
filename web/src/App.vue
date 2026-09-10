@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'v
 import { restoreAccountSession, type Session } from './state/session'
 import { browserSessionWasCleared, observeBrowserSession } from './state/sessionBridge'
 import { installMobileNavigation } from './ui/mobileNavigation'
+import { applyPrivacyAppearance } from './ui/preferences'
 import { start, state, stop } from './state/archive'
 import AdminView from './components/AdminView.vue'
 import ChatList from './components/ChatList.vue'
@@ -70,6 +71,10 @@ onMounted(() => {
 
 async function opened(session: Session) {
   const attempt = ++restoreAttempt
+  // The previous logout may still be clearing persistent storage. Its late
+  // notification cannot cancel the different login now being opened.
+  activePersistenceID = undefined
+  activePersistenceEpoch = undefined
   pendingPersistenceID = session.persistenceID
   persistenceNotice.value = session.notice ?? ''
   try { await session.remember?.() }
@@ -136,12 +141,8 @@ function closePanel() {
   state.history = null
 }
 
-// Privacy is a device mode; appearance remains the reader's explicit preference.
-watchEffect(() => {
-  const root = document.documentElement
-  if (state.phase === 'ready' && state.quiet) root.dataset.incognito = 'true'
-  else delete root.dataset.incognito
-})
+// A discreet device changes the chat palette, never the workspace console.
+watchEffect(() => applyPrivacyAppearance(state))
 
 onBeforeUnmount(() => {
   disposed = true
@@ -157,6 +158,7 @@ onBeforeUnmount(() => {
   document.documentElement.style.removeProperty('--app-height')
   document.documentElement.style.removeProperty('--app-top')
   delete document.documentElement.dataset.incognito
+  delete document.documentElement.dataset.surface
   stop({ logout: false })
 })
 </script>

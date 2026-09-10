@@ -63,9 +63,9 @@
   --message-info: #4bd0a0;
 }
 
-/* Incognito keeps the dark reading surface but removes the green accents.
-   The selected appearance resumes when the privacy mode is turned off. */
-:root[data-incognito='true'] {
+/* Only the chat uses the discreet reading palette. The console and account
+   screens always use the selected light, dark, or system appearance. */
+:root[data-surface='chat'][data-incognito='true'] {
   color-scheme: dark;
   --bg: #151515;
   --bg-panel: #171717;
@@ -1604,7 +1604,7 @@ select {
   color: hsl(var(--hue) 45% 82%);
 }
 
-:root[data-incognito='true'] .avatar.tinted {
+:root[data-surface='chat'][data-incognito='true'] .avatar.tinted {
   background: #363636;
   color: #dddddd;
 }

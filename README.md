@@ -392,11 +392,12 @@ is.
   which version" answerable at all. Worth knowing it is there.
 
 - **An authorized browser remembers its session until logout or expiration.**
-  IndexedDB stores a non-extractable account CryptoKey and an encrypted bearer
-  token; passwords and raw private keys are not persisted. Each restoration
-  validates the session and current device grants with the server. Hosted app
-  and console use a narrowly restricted same-site bridge to share that browser
-  session; self-hosted clients use their own origin's storage. Anything that can execute
+  IndexedDB stores the account key and bearer token as ciphertext protected by
+  non-extractable AES-GCM keys; passwords and plaintext private keys are not
+  persisted. Each restoration validates the session and current device grants
+  with the server. Hosted messages and console share one browser origin, with
+  a narrowly restricted bridge for compatible older hosted sessions;
+  self-hosted clients use their own origin's storage. Anything that can execute
   script in an authorized origin can still use these keys to obtain plaintext. The client
   ships a content security policy, loads no third-party hosted JavaScript, and
   implements HPKE over WebCrypto. Non-extractable WebCrypto keys are not a promise of

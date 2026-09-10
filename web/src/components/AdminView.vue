@@ -14,6 +14,7 @@ import {
 import { archiveOpener, credential, readableDevices, selectDevice, state, stop } from '../state/archive'
 import type { DeviceInfo } from '../api/protocol'
 import { bytes, count, since, stamp } from '../ui/format'
+import { showWorkspaceView } from '../ui/workspaceNavigation'
 import DeviceSheet from './DeviceSheet.vue'
 import DeviceAvatar from './DeviceAvatar.vue'
 import { formatPhone, parseJID } from '../state/jid'
@@ -140,22 +141,12 @@ async function read(device: DeviceInfo) {
   if (!canRead(device)) return
   appError.value = ''
   if (location.hostname === 'console.wappie.thehappie.co') {
-    const url = new URL('https://app.wappie.thehappie.co/')
-    url.searchParams.set('workspace', state.tenantID)
-    url.searchParams.set('device', device.id)
-    location.assign(url.toString())
+    showWorkspaceView('archive', state.tenantID, device.id)
     return
   }
   try {
     if (device.id !== state.deviceID || !archiveOpener() || state.actionError) await selectDevice(device.id)
-    // A local /console route would otherwise open the console again on the
-    // next reconnect, despite the reader having returned to conversations.
-    if (location.pathname.startsWith('/console')) {
-      const url = new URL(location.href)
-      url.pathname = '/'
-      history.replaceState(history.state, '', url.toString())
-    }
-    emit('read', device.id)
+    if (showWorkspaceView('archive', state.tenantID, device.id)) emit('read', device.id)
   } catch (err) {
     appError.value = err instanceof Error ? err.message : t('Não foi possível abrir as conversas. Tente novamente.')
   }

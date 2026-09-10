@@ -6,14 +6,24 @@ server's existing expiration, explicit logout, password/recovery changes, or
 another applicable server-side revocation. No password is remembered.
 
 The browser imports the account's private key as a non-extractable X25519
-`CryptoKey`. IndexedDB structured-clones that handle; it does not store exported
-private-key bytes. A second non-extractable AES-GCM key encrypts the persisted
+`CryptoKey` for use in memory. Before sign-in wipes the decrypted private bytes,
+it seals them with a fresh non-extractable AES-GCM-256 key, a random 12-byte
+nonce, and an AAD binding of `['wappie/browser-account-key',1,userID,publicKey]`.
+IndexedDB stores that AES handle and ciphertext, never plaintext private bytes.
+Restoration decrypts the local envelope, imports X25519 as non-extractable, and
+wipes the temporary bytes. A second non-extractable AES-GCM key encrypts the persisted
 bearer token with account, workspace, server, expiration and browser generation
 bound as additional authenticated data. The token is not placed in cookies,
 URLs, localStorage or sessionStorage. The server continues to receive only the
 encrypted account envelope and public authentication material.
 This uses the standardized [Web Crypto serialization model](https://www.w3.org/TR/webcrypto-2/),
 which permits non-extractable CryptoKeys in IndexedDB and origin-checked postMessage exchanges.
+The version-two record deliberately omits the X25519 handle because
+[WebKit bug 312279](https://bugs.webkit.org/show_bug.cgi?id=312279) makes a
+successful write of that handle return a null record on subsequent reads.
+Existing version-one records remain readable on browsers where they work; no
+existing non-extractable key is exported to migrate it. Browser algorithm
+availability errors preserve the encrypted record for retry.
 
 This deliberately changes browser trust: an authorized browser profile can
 reopen its session without a password or biometric prompt. A non-extractable
@@ -23,8 +33,17 @@ against malware, malicious extensions or a compromised browser profile.
 
 ## Hosted app and console
 
-An invisible page at `https://api.wappie.thehappie.co/session-bridge.html` owns
-the shared IndexedDB record. Its `frame-ancestors` allowlist contains only the
+The interactive application uses `https://app.wappie.thehappie.co/` for messages
+and `/console` for account/workspace management. The separate
+`https://console.wappie.thehappie.co/` address remains a public entry point and
+redirects HTML navigation to that canonical console route, preserving the
+workspace and payment-return parameters. API requests keep their existing
+addresses. This puts both screens in the same first-party storage origin,
+including browsers that partition storage even between same-site subdomains.
+
+Each successful login writes an origin-local IndexedDB record. An invisible
+page at `https://api.wappie.thehappie.co/session-bridge.html` additionally stores
+a shared copy where browser policy permits it. Its `frame-ancestors` allowlist contains only the
 HTTPS app and console origins. Those UIs permit only this exact bridge URL in
 `frame-src`; their own documents remain unframeable. The bridge checks both the
 actual parent window and exact message origin. Requests and replies use exact
@@ -40,13 +59,18 @@ the Wappie subdomain, Secure, SameSite=Strict and the session's maximum lifetime
 Durable per-login tombstones also prevent late writes and pending restores
 from resurrecting a logged-out or replaced account.
 
-The hosted origins are same-site. Browser privacy settings may still block
-iframe storage; the client then uses origin-local IndexedDB so refresh and
-payment returns can continue to work. If the browser refuses all persistence,
+The local copy is written even if the iframe acknowledged its write: a
+successful iframe write does not establish that its partition is shared or
+durable. WebKit can partition IndexedDB by the embedding origin and discard
+iframe data on navigation. It reproduces as successful initial login followed
+by an empty vault on refresh, without a CSP error. The canonical first-party
+route and local copy avoid relying on that iframe behavior for refresh,
+app/console navigation or payment returns. If the browser refuses all persistence,
 sign-in still works for the current page and the UI says it could not save the
 session. Private browsing storage may disappear when that browsing session
 ends; browsers may also evict inactive website data.
-WebKit documents both its [same-site storage rules and eviction/privacy limits](https://webkit.org/tracking-prevention/).
+See WebKit's [cross-origin storage policy](https://webkit.org/blog/14403/updates-to-storage-policy/)
+and [same-site subdomain partitioning report](https://bugs.webkit.org/show_bug.cgi?id=225297).
 
 ## Restoration and revocation
 
@@ -76,3 +100,31 @@ workspace token cannot escape revocation.
 Migration 30 adds session-family identifiers without changing existing tokens
 or requiring secret cookie configuration. Self-hosted deployments use their
 own origin's IndexedDB and do not enable the hosted iframe bridge.
+
+## Optional browser regression
+
+`web/test/browser/session.mjs` exercises the actual built Vue application and
+login form in a fresh Playwright Chromium or WebKit profile. It generates a
+synthetic account with real Argon2id, account-key wrapping and encrypted device
+grants; all API and WebSocket traffic is intercepted, so no production account
+or data is used. It verifies initial login, a readable device, refresh,
+app/console navigation, the console entry redirect, an external payment return,
+logout and another login. It prints only success flags and counts.
+
+Playwright and its browsers are optional external QA dependencies, not required
+for the normal Vitest suite. Run from `web/`, using a previously built hosted
+client in `QA_DIST`:
+
+```sh
+QA_DIST=/absolute/path/to/hosted-dist \
+QA_PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core/index.mjs \
+PLAYWRIGHT_BROWSERS_PATH=/absolute/path/to/browsers \
+QA_BROWSER=webkit node test/browser/session.mjs
+```
+
+Use `QA_BROWSER=chromium` for Chromium; `QA_BROWSER_EXECUTABLE` optionally points
+to an installed Chrome binary. Without `QA_DIST`, the runner uses the deployed
+HTML/assets as well. With `QA_DIST`, it uses local assets and live document
+security headers; the console redirect is simulated according to the separate
+Go handler tests. The shared iframe document remains live in both modes, so
+the test includes its real deployed CSP and postMessage transport.

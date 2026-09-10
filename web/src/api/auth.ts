@@ -24,6 +24,7 @@ import { importArchiveKey, type PrivateKey } from '../crypto/hpke'
 import { grantRow, Kind, openDirect } from '../crypto/seal'
 import { endpoint } from './endpoint'
 import type { BrowserLogin } from '../state/sessionVault'
+import { sealBrowserAccountKey, type BrowserKeyEnvelope } from '../crypto/browserAccount'
 
 export class AuthError extends Error {
   constructor(
@@ -90,6 +91,7 @@ export interface SignedIn {
   readable: Readable[]
   /** A non-extractable key handle; raw account key bytes are wiped after sign-in. */
   accountKey?: PrivateKey
+  accountEnvelope?: BrowserKeyEnvelope
   /** Restoration keeps the base login while each tab selects its own workspace. */
   browserLogin?: BrowserLogin
   notice?: string
@@ -510,7 +512,10 @@ async function finish(
   reply: SessionReply,
   accountPrivate: Bytes,
 ): Promise<SignedIn> {
-  return finishWithKey(serverURL, reply, await importArchiveKey(accountPrivate))
+  const account = await importArchiveKey(accountPrivate)
+  const signed = await finishWithKey(serverURL, reply, account)
+  signed.accountEnvelope = await sealBrowserAccountKey(accountPrivate, account.publicRaw, signed.userID)
+  return signed
 }
 
 /** Validates authorization again before opening any persisted key or grant. */

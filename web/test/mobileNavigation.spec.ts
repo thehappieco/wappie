@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { installMobileNavigation } from '../src/ui/mobileNavigation'
+import { showWorkspaceView } from '../src/ui/workspaceNavigation'
 
 /** A history stack whose traversals, like a browser's, complete asynchronously. */
 class Browser extends EventTarget {
   entries: unknown[]
+  urls = ['https://outside.example/', 'https://app.wappie.thehappie.co/']
   index = 1
   traversals: number[] = []
   history: {
@@ -13,18 +15,27 @@ class Browser extends EventTarget {
     replaceState: ReturnType<typeof vi.fn>
     go: ReturnType<typeof vi.fn>
   }
+  location: { readonly href: string; readonly origin: string; assign: ReturnType<typeof vi.fn> }
 
   constructor(initial: unknown = { router: 'messages', draft: { text: 'keep me' } }) {
     super()
     this.entries = [{ page: 'outside the app' }, initial]
     const browser = this
+    this.location = {
+      get href() { return browser.urls[browser.index]! },
+      get origin() { return new URL(browser.urls[browser.index]!).origin },
+      assign: vi.fn(),
+    }
     this.history = {
       get state() { return browser.entries[browser.index] },
-      pushState: vi.fn((state: unknown) => {
+      pushState: vi.fn((state: unknown, _unused?: string, url?: string) => {
+        const nextURL = url ? new URL(url, this.location.href).toString() : this.location.href
         this.entries.splice(++this.index, this.entries.length, structuredClone(state))
+        this.urls.splice(this.index, this.urls.length, nextURL)
       }),
-      replaceState: vi.fn((state: unknown) => {
+      replaceState: vi.fn((state: unknown, _unused?: string, url?: string) => {
         this.entries[this.index] = structuredClone(state)
+        if (url) this.urls[this.index] = new URL(url, this.location.href).toString()
       }),
       go: vi.fn((delta: number) => this.move(delta)),
     }
@@ -53,6 +64,8 @@ const cleanups: (() => void)[] = []
 function setup(initialDepth = 0, initialState?: unknown) {
   const browser = new Browser(initialState)
   vi.stubGlobal('window', browser)
+  vi.stubGlobal('history', browser.history)
+  vi.stubGlobal('location', browser.location)
   let depth = initialDepth
   let nav: ReturnType<typeof installMobileNavigation> | undefined
   const closeTo = vi.fn((target: number) => {
@@ -134,6 +147,58 @@ describe('mobile browser navigation', () => {
     ui.nav.sync()
     expect(ui.browser.index).toBe(1)
     expect(ui.browser.history.go).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([1, 2])('keeps the console URL when mobile depth %i unwinds asynchronously', initialDepth => {
+    const ui = setup(initialDepth)
+    expect(showWorkspaceView('admin', 'workspace-a', 'phone-a')).toBe(true)
+    ui.setDepth(0)
+    ui.browser.flushAll()
+    expect(ui.browser.location.href).toBe('https://app.wappie.thehappie.co/console?workspace=workspace-a&device=phone-a')
+    expect(ui.browser.index).toBe(1)
+    expect(ui.browser.location.assign).not.toHaveBeenCalled()
+  })
+
+  it('keeps the console route when another mobile close was already in progress', async () => {
+    const ui = setup(2)
+    ui.setDepth(1)
+    showWorkspaceView('admin', 'workspace-b', 'phone-b')
+    ui.setDepth(0)
+    ui.browser.flushAll()
+    await Promise.resolve()
+    expect(ui.browser.location.href).toBe('https://app.wappie.thehappie.co/console?workspace=workspace-b&device=phone-b')
+    expect(ui.browser.index).toBe(1)
+    expect(ui.depth()).toBe(0)
+  })
+
+  it('keeps the latest route when the user returns to chat before traversal completes', async () => {
+    const ui = setup(1)
+    showWorkspaceView('admin', 'workspace-a', 'phone-a')
+    ui.setDepth(0)
+    showWorkspaceView('archive', 'workspace-a', 'phone-b')
+    ui.setDepth(1)
+    ui.browser.flushAll()
+    await Promise.resolve()
+    expect(ui.browser.location.href).toBe('https://app.wappie.thehappie.co/?workspace=workspace-a&device=phone-b')
+    expect(ui.depth()).toBe(1)
+    expect(ui.browser.index).toBe(2)
+    ui.browser.move(-1)
+    ui.browser.flushAll()
+    expect(ui.depth()).toBe(0)
+    expect(ui.browser.location.href).toBe('https://app.wappie.thehappie.co/?workspace=workspace-a&device=phone-b')
+    expect(ui.browser.location.assign).not.toHaveBeenCalled()
+  })
+
+  it('keeps updated device context through a later Back from a retained chat layer', () => {
+    const ui = setup(2)
+    ui.setDepth(1)
+    showWorkspaceView('archive', 'workspace-a', 'phone-b')
+    ui.browser.flushAll()
+    expect(ui.depth()).toBe(1)
+    ui.browser.move(-1)
+    ui.browser.flushAll()
+    expect(ui.depth()).toBe(0)
+    expect(ui.browser.location.href).toBe('https://app.wappie.thehappie.co/?workspace=workspace-a&device=phone-b')
   })
 
   it('never traverses unrelated history when the UI closes a screen', () => {

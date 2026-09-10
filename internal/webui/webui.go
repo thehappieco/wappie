@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -106,6 +107,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.files.ServeHTTP(w, r)
 		return
 	}
+	if clean == "/index.html" && h.redirectConsoleDocument(w, r) {
+		return
+	}
 
 	if clean != "/" && hasAsset(h.dir, clean) {
 		h.headers(w, clean, r.Host)
@@ -122,9 +126,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// API routes belong to the API mux, even if an unknown path reaches this
+	// fallback. Never redirect requests for API endpoints or static assets.
+	if clean != "/v1" && !strings.HasPrefix(clean, "/v1/") &&
+		clean != "/assets" && !strings.HasPrefix(clean, "/assets/") && h.redirectConsoleDocument(w, r) {
+		return
+	}
 
 	h.headers(w, "/", r.Host)
 	http.ServeFile(w, r, path.Join(h.dir, "index.html"))
+}
+
+// The console remains a public entry point, but its document shares the app's
+// origin so browser storage survives navigation and payment returns in Safari.
+func (h *Handler) redirectConsoleDocument(w http.ResponseWriter, r *http.Request) bool {
+	if r.Host != "console.wappie.thehappie.co" {
+		return false
+	}
+	target := url.URL{Scheme: "https", Host: "app.wappie.thehappie.co", Path: "/console", RawQuery: r.URL.RawQuery}
+	h.headers(w, "/", r.Host)
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
+	return true
 }
 
 // headers sets what protects a page holding the archive key.

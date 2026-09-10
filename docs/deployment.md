@@ -13,9 +13,16 @@ Follow README for database bootstrap, a workspace, an owner invite, storage and 
 | Address | Destination |
 | --- | --- |
 | wappie.thehappie.co | Static homepage and `/docs/` |
-| console.wappie.thehappie.co | Client in administration mode; same-origin `/v1` proxy |
-| app.wappie.thehappie.co | Messaging client; same-origin `/v1` proxy |
+| console.wappie.thehappie.co | Public console entry; HTML redirects to `https://app.wappie.thehappie.co/console` |
+| app.wappie.thehappie.co | Messaging at `/`, administration at `/console`; same-origin `/v1` proxy |
 | api.wappie.thehappie.co | HTTP and `/v1/ws` API |
+
+Both interactive screens use the app origin so the browser's encrypted session
+survives navigation in Safari as well as Chromium. The console entry preserves
+workspace, device and Stripe-return query parameters. Its existing API and asset
+routes remain available; only HTML navigation redirects. The API's web handler
+implements this temporary redirect, so the existing four-name Nginx and TLS
+configuration stays valid. See [browser session lifecycle](browser-sessions.md).
 
 The EC2 runs the compiled ARM64 API and private simulated billing binaries directly under systemd (`wappie-api` and `wappie-billing`). The unit files in `deploy/` use a dedicated unprivileged `wappie` user, a read-only filesystem and `/opt/wappie/release` as their working directory. Runtime configuration is `/opt/wappie/runtime.env`, owned by root with mode 0600; systemd reads it before dropping privileges. No application source or build toolchain is needed on the host.
 

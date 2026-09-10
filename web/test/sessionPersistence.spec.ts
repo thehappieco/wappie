@@ -2,6 +2,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { generateAccountKeys } from '../src/crypto/account'
 import { importArchiveKey } from '../src/crypto/hpke'
+import { sealBrowserAccountKey } from '../src/crypto/browserAccount'
 import { parseUUID, toBase64 } from '../src/crypto/bytes'
 import { grantRow, Kind, sealDirect } from '../src/crypto/seal'
 import { fromAccount, restoreAccountSession } from '../src/state/session'
@@ -24,10 +25,11 @@ afterEach(() => { stop({ logout: false }); vi.useRealTimers(); vi.restoreAllMock
 async function fixture() {
   const keys = await generateAccountKeys()
   const accountKey = await importArchiveKey(keys.privateKey)
+  const accountEnvelope = await sealBrowserAccountKey(keys.privateKey, keys.publicKey, USER)
   keys.privateKey.fill(0)
   const expiresAt = Date.now() + 60_000
   const login: BrowserLogin = { id: crypto.randomUUID(), realm: SERVER, serverURL: SERVER, token: 'synthetic-base-session',
-    expiresAt, userID: USER, tenantID: TENANT, accountKey }
+    expiresAt, userID: USER, tenantID: TENANT, accountKey, accountEnvelope }
   const user = { id: USER, tenant_id: TENANT, email: 'browser@example.test', role: 'owner', has_recovery: true,
     public_key: toBase64(keys.publicKey), wrapped_usk: 'opaque-password-wrap' }
   const deviceRaw = crypto.getRandomValues(new Uint8Array(32))
@@ -59,6 +61,8 @@ describe('persistent browser authorization', () => {
     const { login } = await fixture()
     await saveLocalSession(login)
     const raw = await rawRecord()
+    expect(raw.version).toBe(2)
+    expect(raw).not.toHaveProperty('accountKey')
     expect(raw).not.toHaveProperty('token')
     expect(JSON.stringify(raw)).not.toContain(login.token)
     expect((raw.wrappingKey as CryptoKey).extractable).toBe(false)
@@ -67,6 +71,28 @@ describe('persistent browser authorization', () => {
     expect(restored?.accountKey.key).not.toBe(login.accountKey.key)
     expect(restored?.accountKey.key.extractable).toBe(false)
     await expect(crypto.subtle.exportKey('pkcs8', restored!.accountKey.key)).rejects.toThrow()
+  })
+
+  it('continues to read existing version-one records without exporting their X25519 key', async () => {
+    const { login } = await fixture()
+    delete login.accountEnvelope
+    const exportKey = vi.spyOn(crypto.subtle, 'exportKey')
+    await saveLocalSession(login)
+    expect((await rawRecord()).version).toBe(1)
+    expect((await loadLocalSession())?.accountKey.key.extractable).toBe(false)
+    expect(exportKey).not.toHaveBeenCalled()
+  })
+
+  it('retains encrypted account material when the browser cannot import its algorithm', async () => {
+    const { login } = await fixture()
+    await saveLocalSession(login)
+    const importKey = crypto.subtle.importKey.bind(crypto.subtle)
+    vi.spyOn(crypto.subtle, 'importKey').mockImplementation((...args: Parameters<typeof crypto.subtle.importKey>) => {
+      if ((args[2] as Algorithm).name === 'X25519') return Promise.reject(new DOMException('unavailable', 'NotSupportedError'))
+      return importKey(...args)
+    })
+    await expect(loadLocalSession()).rejects.toMatchObject({ name: 'NotSupportedError' })
+    expect((await rawRecord()).version).toBe(2)
   })
 
   it('restores after losing page memory and reopens grants using the stored CryptoKey', async () => {

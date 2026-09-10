@@ -5,7 +5,7 @@
 // An account is the ordinary way. The password derives the key that unwraps the
 // account's own private key, which opens a grant per device, and each grant is
 // that device's archive key. An authorized browser remembers a non-extractable
-// account CryptoKey and an encrypted session token until logout or expiration.
+// AES CryptoKey protecting the account key and session token until logout or expiration.
 // A forgotten password has a recovery code behind it, and access can be granted and revoked per WhatsApp
 // account without anybody re-keying anything.
 //
@@ -81,7 +81,8 @@ export function fromAccount(signedIn: SignedIn, serverURL: string): Session {
   let saved: BrowserLogin | undefined = signedIn.browserLogin ?? (signedIn.accountKey ? {
     id: crypto.randomUUID(), realm: sharedBrowserOrigin() ? bridgeOrigin : origin(serverURL).origin,
     serverURL: sharedBrowserOrigin() ? '' : serverURL, token: signedIn.token, expiresAt: signedIn.expiresAt.getTime(),
-    userID: signedIn.userID, tenantID: signedIn.tenantID, accountKey: signedIn.accountKey, epoch: beginBrowserSessionEpoch(),
+    userID: signedIn.userID, tenantID: signedIn.tenantID, accountKey: signedIn.accountKey,
+    accountEnvelope: signedIn.accountEnvelope, epoch: beginBrowserSessionEpoch(),
   } : undefined)
   let closed = false
 

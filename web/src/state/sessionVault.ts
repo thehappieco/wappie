@@ -1,5 +1,6 @@
 import type { PrivateKey } from '../crypto/hpke'
 import { encodeUTF8 } from '../crypto/bytes'
+import { openBrowserAccountKey, validBrowserKeyEnvelope, type BrowserKeyEnvelope } from '../crypto/browserAccount'
 
 /** An authorized browser session, never a password or an exportable private key. */
 export interface BrowserLogin {
@@ -11,16 +12,18 @@ export interface BrowserLogin {
   userID: string
   tenantID: string
   accountKey: PrivateKey
+  accountEnvelope?: BrowserKeyEnvelope
   /** Public browser generation; it grants no authorization. */
   epoch?: string
 }
 
-interface StoredLogin extends Omit<BrowserLogin, 'token'> {
-  version: 1
+interface StoredToken {
   wrappingKey: CryptoKey
   nonce: Uint8Array<ArrayBuffer>
   ciphertext: ArrayBuffer
 }
+type StoredLogin = StoredToken & (Omit<BrowserLogin, 'token'> & { version: 1 }
+  | Omit<BrowserLogin, 'token' | 'accountKey' | 'accountEnvelope'> & { version: 2; accountEnvelope: BrowserKeyEnvelope })
 
 export interface SessionChange { id: string; kind: 'cleared' }
 const database = 'wappie-browser-session'
@@ -86,18 +89,22 @@ export function validBrowserLogin(value: unknown): value is BrowserLogin {
     && login.accountKey.publicRaw instanceof Uint8Array && login.accountKey.publicRaw.length === 32
 }
 
-function aad(login: Omit<BrowserLogin, 'token'>): Uint8Array<ArrayBuffer> {
+function aad(login: Pick<BrowserLogin, 'id' | 'realm' | 'serverURL' | 'userID' | 'tenantID' | 'expiresAt' | 'epoch'>): Uint8Array<ArrayBuffer> {
   return encodeUTF8(JSON.stringify(['wappie/browser-session', 1, login.id, login.realm, login.serverURL, login.userID, login.tenantID, login.expiresAt, login.epoch ?? '']))
 }
 
-/** IndexedDB structured-clones the non-extractable keys; no raw private bytes are stored. */
+/** New records contain AES CryptoKeys and ciphertext only. Keep version 1
+ * readable for browsers that already persisted X25519 handles successfully. */
 export async function saveLocalSession(login: BrowserLogin): Promise<void> {
   if (!validBrowserLogin(login) || login.expiresAt <= Date.now()) throw new Error('invalid browser session')
+  if (login.accountEnvelope && !validBrowserKeyEnvelope(login.accountEnvelope)) throw new Error('invalid browser account key')
   const wrappingKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
   const nonce = crypto.getRandomValues(new Uint8Array(12))
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad(login) }, wrappingKey, encodeUTF8(login.token))
-  const { token: _token, ...metadata } = login
-  const stored: StoredLogin = { ...metadata, version: 1, wrappingKey, nonce, ciphertext }
+  const { token: _token, accountKey, accountEnvelope, ...metadata } = login
+  const stored: StoredLogin = accountEnvelope
+    ? { ...metadata, accountEnvelope, version: 2, wrappingKey, nonce, ciphertext }
+    : { ...metadata, accountKey, version: 1, wrappingKey, nonce, ciphertext }
   let replaced: string | undefined
   const saved = await transaction<boolean>('readwrite', (store, done) => {
     // A delayed write must not restore a login that logout already cleared.
@@ -127,15 +134,20 @@ export async function loadLocalSession(): Promise<BrowserLogin | null> {
   })
   if (!stored) return null
   try {
-    if (stored.version !== 1 || stored.expiresAt <= Date.now() || stored.wrappingKey.extractable) throw new Error('expired or invalid browser session')
+    if (![1, 2].includes(stored.version) || stored.expiresAt <= Date.now() || stored.wrappingKey.extractable) throw new Error('expired or invalid browser session')
     const bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: stored.nonce, additionalData: aad(stored) }, stored.wrappingKey, stored.ciphertext)
     const token = new TextDecoder().decode(bytes)
     new Uint8Array(bytes).fill(0)
+    const accountKey = stored.version === 2 ? await openBrowserAccountKey(stored.accountEnvelope, stored.userID) : stored.accountKey
     const login: BrowserLogin = { id: stored.id, realm: stored.realm, serverURL: stored.serverURL, userID: stored.userID,
-      tenantID: stored.tenantID, expiresAt: stored.expiresAt, accountKey: stored.accountKey, token, epoch: stored.epoch }
+      tenantID: stored.tenantID, expiresAt: stored.expiresAt, accountKey, token, epoch: stored.epoch,
+      accountEnvelope: stored.version === 2 ? stored.accountEnvelope : undefined }
     if (!validBrowserLogin(login) || await localSessionWasCleared(login.id)) throw new Error('invalid browser session')
     return login
-  } catch {
+  } catch (error) {
+    // A browser/provider lacking an algorithm cannot establish corruption.
+    // Keep the ciphertext for a compatible browser version or a later retry.
+    if (error instanceof DOMException && ['NotSupportedError', 'InvalidAccessError', 'UnknownError'].includes(error.name)) throw error
     await clearLocalSession(stored.id)
     return null
   }

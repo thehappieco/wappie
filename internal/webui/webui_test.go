@@ -122,6 +122,82 @@ func TestAnUnknownRouteGetsThePage(t *testing.T) {
 	}
 }
 
+func TestConsoleDocumentsUseTheAppOriginWithoutLosingReturnContext(t *testing.T) {
+	h, err := webui.New(build(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := "workspace=11111111-1111-4111-8111-111111111111&device=22222222-2222-4222-8222-222222222222&billing=change&locale=pt-BR&extra=a%2Bb%26c"
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		for _, route := range []string{"/", "/index.html", "/console", "/console/", "/settings/security"} {
+			t.Run(method+route, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(method, "https://console.wappie.thehappie.co"+route+"?"+query, nil))
+				if rec.Code != http.StatusTemporaryRedirect {
+					t.Fatalf("console document returned %d, want 307", rec.Code)
+				}
+				if got, want := rec.Header().Get("Location"), "https://app.wappie.thehappie.co/console?"+query; got != want {
+					t.Errorf("Location = %q, want %q", got, want)
+				}
+				if rec.Header().Get("Cache-Control") != "no-store" {
+					t.Error("temporary migration must not be cached")
+				}
+				if method == http.MethodHead && rec.Body.Len() != 0 {
+					t.Error("HEAD must not return an HTML body")
+				}
+			})
+		}
+	}
+	for _, host := range []string{"app.wappie.thehappie.co", "api.wappie.thehappie.co", "console.wappie.thehappie.co.example.com", "localhost"} {
+		resp := get(t, h, "https://"+host+"/console?"+query)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Location") != "" {
+			t.Errorf("%s redirected or failed: %d", host, resp.StatusCode)
+		}
+	}
+}
+
+func TestConsoleRedirectLeavesAssetsBridgeAndAPIRoutesAlone(t *testing.T) {
+	dir := build(t)
+	write(t, filepath.Join(dir, "session-bridge.html"), "session bridge")
+	h, err := webui.New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	mux.Handle("/", h)
+	for _, test := range []struct {
+		method, route string
+		status        int
+	}{
+		{http.MethodGet, "/assets/index-abc123.js", http.StatusOK},
+		{http.MethodHead, "/assets/index-abc123.css", http.StatusOK},
+		{http.MethodGet, "/assets/missing.js", http.StatusNotFound},
+		{http.MethodGet, "/session-bridge.html", http.StatusNotFound},
+		{http.MethodGet, "/v1/billing", http.StatusUnauthorized},
+		{http.MethodPost, "/v1/auth/login", http.StatusUnauthorized},
+		{http.MethodPost, "/console", http.StatusMethodNotAllowed},
+	} {
+		t.Run(test.method+test.route, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(test.method, "https://console.wappie.thehappie.co"+test.route, nil))
+			if rec.Code != test.status || rec.Header().Get("Location") != "" {
+				t.Errorf("got %d and Location %q, want %d without a redirect", rec.Code, rec.Header().Get("Location"), test.status)
+			}
+		})
+	}
+	for _, route := range []string{"/v1", "/v1/unknown", "/assets", "/assets/unknown"} {
+		// Unknown API/asset paths must not become migration redirects even
+		// when the UI fallback receives them directly.
+		resp := get(t, h, "https://console.wappie.thehappie.co"+route)
+		resp.Body.Close()
+		if resp.Header.Get("Location") != "" {
+			t.Errorf("fallback redirected %s", route)
+		}
+	}
+}
+
 func TestItRefusesToEscapeTheDirectory(t *testing.T) {
 	dir := build(t)
 	write(t, filepath.Join(dir, "..", "secret.txt"), "not for the browser")
