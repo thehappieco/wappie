@@ -29,7 +29,7 @@ const backdropPressed = ref(false)
 const initial = { tenant: state.tenantID, device: state.deviceID, chat: state.openChatKey, token: credential()?.token, view: state.view }
 
 interface Recipient { key: string; name: string; group: boolean; avatar: string }
-const recipients = computed<Recipient[]>(() => {
+const recipientDirectory = computed<Recipient[]>(() => {
   // Directory itself is not reactive; the published count signals newly opened names.
   void state.contactsLoaded
   const rows: Recipient[] = []
@@ -51,8 +51,19 @@ const recipients = computed<Recipient[]>(() => {
     const key = person.pn || person.lid || person.key
     add({ key, name: people().nameFor(key), group: false, avatar: person.key }, [person.key, person.pn, person.lid])
   }
+  return rows
+})
+const recipients = computed(() => {
   const term = query.value.trim().toLocaleLowerCase()
-  return rows.filter(row => !term || row.name.toLocaleLowerCase().includes(term) || row.key.includes(term.replace(/[\s()+.-]/g, ''))).slice(0, 80)
+  return recipientDirectory.value.filter(row => !term || row.name.toLocaleLowerCase().includes(term) || row.key.includes(term.replace(/[\s()+.-]/g, ''))).slice(0, 80)
+})
+const selectedRecipients = computed<Recipient[]>(() => {
+  const directory = new Map(recipientDirectory.value.map(row => [identity.value(row.key), row]))
+  return selected.value.map(recipient => {
+    const key = identity.value(recipient.key)
+    const person = directory.get(key)
+    return { ...recipient, avatar: person?.avatar || key, group: person?.group ?? key.endsWith('@g.us') }
+  })
 })
 const phone = computed(() => connection()?.welcome.features.includes(TypeChatStart) ? normalizePhone(query.value) : '')
 
@@ -153,7 +164,13 @@ onBeforeUnmount(() => { disposed = true; sender.dispose(); dialog.value?.close()
           </fieldset>
           <section v-if="selected.length" class="selected-list" :aria-label="t('Confirmar destinatários')">
             <strong>{{ t('Confirmar destinatários') }}</strong>
-            <ul><li v-for="recipient in selected" :key="recipient.key"><span>{{ recipient.name }}</span><button type="button" class="icon-btn" :aria-label="t('Remover {name}', { name: recipient.name })" @click="choose(recipient.key, recipient.name)"><AppIcon name="close" :size="16" /></button></li></ul>
+            <ul>
+              <li v-for="recipient in selectedRecipients" :key="recipient.key">
+                <AvatarBadge :contact-key="recipient.avatar" :name="recipient.name" :is-group="recipient.group" small />
+                <span>{{ recipient.name }}</span>
+                <button type="button" class="icon-btn" :aria-label="t('Remover {name}', { name: recipient.name })" @click="choose(recipient.key, recipient.name)"><AppIcon name="close" :size="16" /></button>
+              </li>
+            </ul>
           </section>
           <p v-if="!allowed" class="note">{{ t('Seu acesso ou a conexão atual não permite esta ação.') }}</p>
         </template>
@@ -205,8 +222,8 @@ button:disabled { opacity: .45; cursor: default; } button:focus-visible, input:f
 .selection-count { font-size: 12px; color: var(--text-dim); margin: 10px 0 0; }
 .selected-list { margin-top: 16px; font-size: 13px; } .selected-list > strong { display: block; margin-bottom: 6px; }
 .selected-list ul, .forward-results ul { list-style: none; padding: 0; margin: 0; }
-.selected-list li { display: flex; align-items: center; gap: 8px; min-height: 36px; border-bottom: 1px solid var(--line); }
-.selected-list li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; } .selected-list li button { width: 36px; height: 36px; }
+.selected-list li { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.selected-list li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; } .selected-list li button { width: 36px; height: 36px; flex-shrink: 0; }
 .forward-results section + section { margin-top: 18px; } .forward-results h3 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0 0 8px; }
 .forward-results li { padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; overflow-wrap: anywhere; }
 .forward-results li p { color: var(--text-dim); font-size: 12px; line-height: 1.5; margin: 5px 0 0; }
