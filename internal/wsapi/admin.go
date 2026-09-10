@@ -661,6 +661,10 @@ func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 			} else {
 				info.CanManage = allowed
 			}
+			allowed, err = access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionSend, s.srv.cfg.Keys, s.accountStore())
+			if err == nil {
+				info.CanSend = allowed
+			}
 		}
 	}
 	info.Running = s.running(d.ID)

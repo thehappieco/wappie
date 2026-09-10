@@ -15,6 +15,7 @@ const appOrigin = 'https://app.wappie.thehappie.co'
 const consoleOrigin = 'https://console.wappie.thehappie.co'
 const apiOrigin = 'https://api.wappie.thehappie.co'
 const localBuild = process.env.QA_DIST && resolve(process.env.QA_DIST)
+const testProgress = process.env.QA_PROGRESS === '1'
 const deviceID = '018f3a2b-2222-7000-8000-00000000dddd'
 const compiled = await build({ entryPoints: [fileURLToPath(new URL('./sessionFixture.ts', import.meta.url))],
   write: false, bundle: true, format: 'esm', plugins: [{ name: 'qa-locales', setup(builder) {
@@ -23,6 +24,26 @@ const compiled = await build({ entryPoints: [fileURLToPath(new URL('./sessionFix
   } }] })
 try {
   const context = await browser.newContext({ serviceWorkers: 'block', locale: 'pt-BR' })
+  if (testProgress) await context.addInitScript(() => {
+    window.qaLoginTimeline = []
+    let began = 0
+    function begin() { began = performance.now(); window.qaLoginTimeline = [] }
+    document.addEventListener('submit', begin, true)
+    document.addEventListener('click', event => { if (event.target.closest?.('.passkey-login')) begin() }, true)
+    new MutationObserver(() => {
+      if (!began) return
+      const step = document.querySelector('.auth-progress')?.getAttribute('data-step')
+        || (document.querySelector('.sidebar') ? 'ready' : document.querySelector('.app-loading') ? 'preparing' : undefined)
+      if (step && window.qaLoginTimeline.at(-1)?.step !== step) window.qaLoginTimeline.push({ step, ms: Math.round(performance.now() - began) })
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-step'] })
+    // Exercise the actual passkey UI while the platform prompt is pending,
+    // then its ordinary cancellation path; never enroll a real credential.
+    Object.defineProperty(navigator, 'credentials', { configurable: true, value: {
+      get: () => new Promise((_resolve, reject) => {
+        window.qaCancelPasskey = () => reject(new DOMException('Synthetic cancellation', 'NotAllowedError'))
+      }),
+    } })
+  })
   if (process.env.QA_DEBUG) await context.addInitScript(() => {
     window.qaStorageErrors = []
     const put = IDBObjectStore.prototype.put
@@ -72,8 +93,13 @@ try {
   // an application component adds another API request in the future.
   await context.route('**/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/auth/passkeys/config') return route.fulfill({ json: { enabled: false } })
-    if (path === '/v1/auth/challenge') return route.fulfill({ json: fixture.challenge })
+    if (path === '/v1/auth/passkeys/config') return route.fulfill({ json: { enabled: testProgress, origins: [appOrigin] } })
+    if (path === '/v1/auth/passkeys/login/options') return route.fulfill({ json: { flow_id: 'synthetic-flow', rp_id: 'wappie.thehappie.co',
+      prf_salt: Buffer.alloc(32, 7).toString('base64'), publicKey: { challenge: 'AQIDBA', rpId: 'wappie.thehappie.co', userVerification: 'required' } } })
+    if (path === '/v1/auth/challenge') {
+      if (testProgress) await new Promise(resolve => setTimeout(resolve, 400))
+      return route.fulfill({ json: fixture.challenge })
+    }
     if (path === '/v1/auth/login') {
       loginRequests++
       signed = route.request().postDataJSON().auth_key === fixture.authKey
@@ -134,13 +160,30 @@ try {
   await page.addScriptTag({ type: 'module', url: appOrigin + '/qa-fixture.js' })
   await page.waitForFunction(() => typeof window.prepareLoginFixture === 'function')
   fixture = await page.evaluate(() => window.prepareLoginFixture())
+  let passkeyTimeline
+  if (testProgress) {
+    await page.locator('.passkey-login').click()
+    await page.locator('.auth-progress[data-step=passkey]').waitFor()
+    if (process.env.QA_DEBUG) console.log(JSON.stringify({ stage: 'passkey-pending', errors, progress: await page.locator('.auth-progress').allTextContents(),
+      alerts: await page.locator('.alert').allTextContents(), canCancel: await page.evaluate(() => typeof window.qaCancelPasskey === 'function') }))
+    assert.equal(await page.locator('form[name=wappie-login]').count(), 0)
+    passkeyTimeline = await page.evaluate(() => window.qaLoginTimeline)
+    await page.evaluate(() => window.qaCancelPasskey())
+    await page.locator('input[name=username]').waitFor()
+    assert.match(await page.locator('.alert').innerText(), /cancelada|expirou/)
+  }
   async function login() {
     await page.locator('input[name=username]').fill(fixture.email)
     await page.locator('input[name=password]').fill(fixture.password)
     await page.locator('form[name=wappie-login] button[type=submit]').click()
   }
   await login()
+  if (testProgress) {
+    await page.locator('.auth-progress[data-step=checking]').waitFor()
+    assert.equal(await page.locator('form[name=wappie-login]').count(), 0)
+  }
   await inApp()
+  const passwordTimeline = testProgress ? await page.evaluate(() => window.qaLoginTimeline) : undefined
   const persisted = await storageState()
   assert.equal(persisted.present, true, 'an acknowledged write must also be readable')
   assert.equal(persisted.version, 2)
@@ -168,6 +211,7 @@ try {
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ browser: engine, actualApp: true, realCryptography: true, readableDevice: true,
     persistedAES: true, persistedX25519: false, nonExtractable: true,
-    firstLogin: true, refresh: true, consoleEntry: true, navigation: true, paymentReturn: true, relogin: true, pageErrors: 0 }))
+    firstLogin: true, refresh: true, consoleEntry: true, navigation: true, paymentReturn: true, relogin: true, pageErrors: 0,
+    ...(testProgress ? { passkeyTimeline, passwordTimeline, passkeyCancellation: true } : {}) }))
   await context.close()
 } finally { await browser.close() }

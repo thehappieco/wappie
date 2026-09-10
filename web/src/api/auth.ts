@@ -97,6 +97,8 @@ export interface SignedIn {
   notice?: string
 }
 
+export type SignInStep = 'checking' | 'unlocking' | 'authenticating' | 'passkey' | 'opening'
+
 async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(endpoint(serverURL, path), {
     method: body === undefined ? 'GET' : 'POST',
@@ -203,16 +205,21 @@ export async function signIn(input: {
   email: string
   password: string
   tenantID?: string
+  onProgress?: (step: SignInStep) => void
 }): Promise<SignedIn> {
+  input.onProgress?.('checking')
   const challenge = await call<ChallengeReply>(input.serverURL, '/v1/auth/challenge', {
     email: input.email.trim(),
   })
+  input.onProgress?.('unlocking')
   const derived = await derive(input.password, fromBase64(challenge.salt), challenge.params)
 
+  input.onProgress?.('authenticating')
   let reply = await call<SessionReply>(input.serverURL, '/v1/auth/login', {
     email: input.email.trim(),
     auth_key: derived.authKey,
   })
+  input.onProgress?.('opening')
 
   // The account's own key, opened with the branch that never left this page.
   const email = input.email.trim()

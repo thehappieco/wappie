@@ -105,6 +105,10 @@ type Client struct {
 	OwnID  types.JID
 	OwnLID types.JID
 
+	CreateGroupFunc        func(whatsmeow.ReqCreateGroup) (*types.GroupInfo, error)
+	UpdateParticipantsFunc func(types.JID, []types.JID, whatsmeow.ParticipantChange) ([]types.GroupParticipant, error)
+	LeaveGroupFunc         func(types.JID) error
+	CheckPhoneFunc         func([]string) ([]types.IsOnWhatsAppResponse, error)
 	// Injectable behaviour.
 	JoinErr      error
 	PollVoteErr  error
@@ -658,3 +662,32 @@ func (c *Client) PollVotesMade() []PollVote {
 }
 
 func (c *Client) StoreLIDPNMapping(context.Context, types.JID, types.JID) {}
+
+func (c *Client) CreateGroup(_ context.Context, req whatsmeow.ReqCreateGroup) (*types.GroupInfo, error) {
+	if c.CreateGroupFunc != nil {
+		return c.CreateGroupFunc(req)
+	}
+	return nil, errors.New("fake: no group creation response configured")
+}
+func (c *Client) UpdateGroupParticipants(_ context.Context, jid types.JID, participants []types.JID, action whatsmeow.ParticipantChange) ([]types.GroupParticipant, error) {
+	if c.UpdateParticipantsFunc != nil {
+		return c.UpdateParticipantsFunc(jid, participants, action)
+	}
+	return nil, errors.New("fake: no participant response configured")
+}
+func (c *Client) LeaveGroup(_ context.Context, jid types.JID) error {
+	if c.LeaveGroupFunc != nil {
+		return c.LeaveGroupFunc(jid)
+	}
+	return errors.New("fake: no leave response configured")
+}
+func (c *Client) IsOnWhatsApp(_ context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error) {
+	if c.CheckPhoneFunc != nil {
+		return c.CheckPhoneFunc(phones)
+	}
+	return nil, errors.New("fake: no phone response configured")
+}
+func (c *Client) BuildPollCreation(name string, options []string, count int) *waE2E.Message {
+	// The upstream builder is pure; exercise its actual message secret format.
+	return (*whatsmeow.Client)(nil).BuildPollCreation(name, options, count)
+}

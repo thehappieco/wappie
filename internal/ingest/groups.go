@@ -120,7 +120,7 @@ func (r *Router) recordGroup(ctx context.Context, tenant, device uuid.UUID,
 // been quiet since is reached by neither.
 //
 // Idempotent, so it runs at every boot: names are upserted and nothing
-// overwrites a known value with an empty one. Reports how many groups it saw.
+// overwrites a known value with an empty one. Counts successfully stored snapshots.
 func (r *Router) SyncGroups(ctx context.Context, tenant, device uuid.UUID,
 	groups []*types.GroupInfo) int {
 	var n int
@@ -135,6 +135,7 @@ func (r *Router) SyncGroups(ctx context.Context, tenant, device uuid.UUID,
 			g.GroupCreated, audienceOf(g))
 		if err := r.SnapshotGroup(ctx, tenant, device, g); err != nil {
 			r.log.Debug("could not snapshot a group", "chat", g.JID, "error", err)
+			continue
 		}
 		n++
 	}
@@ -259,14 +260,22 @@ func (r *Router) handleGroupInfo(ctx context.Context, deviceID string, evt *even
 	}
 }
 
-// SnapshotGroup records a group's composition as WhatsApp reports it now.
+// SnapshotGroup records a complete composition. Missing or partial responses
+// must not remove members from the previous snapshot or report a refresh.
 func (r *Router) SnapshotGroup(ctx context.Context, tenant, device uuid.UUID,
 	g *types.GroupInfo) error {
-	if r.cfg.Groups == nil || g == nil || g.JID.IsEmpty() {
-		return nil
+	if r.cfg.Groups == nil {
+		return fmt.Errorf("ingest: group membership store is not configured")
+	}
+	if g == nil || g.JID.User == "" || g.JID.Server != types.GroupServer {
+		return fmt.Errorf("ingest: group snapshot has no group identity")
 	}
 	members := make([]store.Participant, 0, len(g.Participants))
+	seen := make(map[string]struct{}, len(g.Participants))
 	for _, p := range g.Participants {
+		if p.Error != 0 {
+			return fmt.Errorf("ingest: group snapshot includes a failed participant")
+		}
 		addr := domain.AddressOf(p.JID)
 		if !p.LID.IsEmpty() {
 			addr = addr.Merge(domain.AddressOf(p.LID))
@@ -275,14 +284,21 @@ func (r *Router) SnapshotGroup(ctx context.Context, tenant, device uuid.UUID,
 			addr = addr.Merge(domain.AddressOf(p.PhoneNumber))
 		}
 		key := addr.Primary()
-		if key.IsEmpty() {
-			continue
+		if key.User == "" || (key.Server != types.DefaultUserServer && key.Server != types.HiddenUserServer) {
+			return fmt.Errorf("ingest: group snapshot includes an unidentified participant")
 		}
+		if _, duplicate := seen[key.ToNonAD().String()]; duplicate {
+			return fmt.Errorf("ingest: group snapshot includes duplicate participants")
+		}
+		seen[key.ToNonAD().String()] = struct{}{}
 		members = append(members, store.Participant{
 			Key: key.ToNonAD().String(),
 			LID: jidString(addr.LID), PN: jidString(addr.PN),
 			IsAdmin: p.IsAdmin || p.IsSuperAdmin, IsSuperAdmin: p.IsSuperAdmin,
 		})
+	}
+	if len(members) == 0 || g.ParticipantCount > len(members) {
+		return fmt.Errorf("ingest: group snapshot has an incomplete participant list")
 	}
 	_, err := r.cfg.Groups.Snapshot(ctx, tenant, device, g.JID.ToNonAD().String(),
 		members, time.Now())

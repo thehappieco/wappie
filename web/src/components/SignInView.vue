@@ -3,7 +3,7 @@ import { t } from '../ui/i18n'
 import AppearanceMenu from './AppearanceMenu.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { AuthError, recover, registerService, signIn, signUp } from '../api/auth'
+import { AuthError, recover, registerService, signIn, signUp, type SignInStep } from '../api/auth'
 import { loadVault, type StoredVault } from '../crypto/vault'
 import { fromAccount, type Session } from '../state/session'
 import PastedKeyView from './PastedKeyView.vue'
@@ -22,6 +22,16 @@ const error = ref('')
 const passkeyAvailable = ref(false)
 const passkeyBusy = ref(false)
 const passkeyAbort = new AbortController()
+const loginStep = ref<SignInStep>('checking')
+const loginDetail = computed(() => {
+  switch (loginStep.value) {
+    case 'checking': return t('Conectando à sua conta…')
+    case 'unlocking': return t('Desbloqueando sua conta…')
+    case 'authenticating': return t('Confirmando seu acesso…')
+    case 'passkey': return t('Confirme no seu dispositivo…')
+    case 'opening': return t('Preparando sua sessão…')
+  }
+})
 
 const serverURL = ref('')
 const hosted = typeof location !== 'undefined' && ['app.wappie.thehappie.co','console.wappie.thehappie.co'].includes(location.hostname)
@@ -66,8 +76,10 @@ async function refreshPasskeyAvailability() {
 async function openWithPasskey() {
   if (busy.value) return
   busy.value = true; passkeyBusy.value = true; error.value = ''
+  loginStep.value = 'checking'
   try {
-    const signedIn = await signInWithPasskey({ serverURL: serverURL.value, tenantID: selectedWorkspace, signal: passkeyAbort.signal })
+    const signedIn = await signInWithPasskey({ serverURL: serverURL.value, tenantID: selectedWorkspace, signal: passkeyAbort.signal,
+      onProgress: step => { loginStep.value = step } })
     password.value = ''
     emit('opened', fromAccount(signedIn, serverURL.value))
   } catch (e) { error.value = passkeyError(e) }
@@ -135,6 +147,7 @@ function switchTo(next: Mode) {
 
 async function doSignIn() {
   busy.value = true
+  loginStep.value = 'checking'
   error.value = ''
   try {
     const signedIn = await signIn({
@@ -142,15 +155,9 @@ async function doSignIn() {
       serverURL: serverURL.value,
       email: email.value,
       password: password.value,
+      onProgress: step => { loginStep.value = step },
     })
     password.value = ''
-    if (signedIn.readable.length === 0) {
-      // Signing in worked; there is simply nothing granted yet. Saying so here
-      // beats an empty conversation list that looks broken.
-      error.value =
-        t('Entrou, mas esta conta ainda não tem acesso a nenhum aparelho. ') +
-        t('Quem parear um aparelho precisa conceder o acesso a você.')
-    }
     emit('opened', fromAccount(signedIn, serverURL.value))
   } catch (err) {
     error.value = describe(err)
@@ -239,8 +246,13 @@ function describe(err: unknown): string {
 
 <template>
   <div class="unlock">
+    <div v-if="busy && mode === 'sign-in'" class="unlock-card auth-progress" role="status" aria-live="polite" :data-step="loginStep">
+      <div class="loading-spinner" aria-hidden="true" />
+      <h1>{{ t('Entrando com segurança…') }}</h1>
+      <p class="sub">{{ loginDetail }}</p>
+    </div>
     <!-- The recovery code. Nothing else is on screen while it is. -->
-    <div class="unlock-card" v-if="recoveryCode">
+    <div class="unlock-card" v-else-if="recoveryCode">
       <h1>{{ t('Guarde este código') }}</h1>
       <p class="sub"> {{ t('Use este código para recuperar sua conta se perder a senha e suas passkeys. Ele não pode ser mostrado de novo.') }} </p>
 
@@ -364,6 +376,9 @@ function describe(err: unknown): string {
 </template>
 
 <style scoped>
+.auth-progress { text-align: center; }
+.auth-progress .loading-spinner { margin: 8px auto 24px; }
+.auth-progress .sub { margin-bottom: 0; }
 .auth-appearance { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .auth-wordmark { color: var(--accent); font-size: 25px; font-weight: 800; letter-spacing: -1.1px; margin-bottom: 26px; }
 .auth-wordmark span { font-size: 9px; margin-left: 3px; vertical-align: middle; }

@@ -43,7 +43,14 @@ including browsers that partition storage even between same-site subdomains.
 
 Each successful login writes an origin-local IndexedDB record. An invisible
 page at `https://api.wappie.thehappie.co/session-bridge.html` additionally stores
-a shared copy where browser policy permits it. Its `frame-ancestors` allowlist contains only the
+a shared copy in the background where browser policy permits it. The app can
+open as soon as the local record is durable; an optional bridge timeout does
+not delay this path. Bridge writes from each page are serialized so a slow
+earlier token cannot overwrite a subsequent password rotation. Restoration
+also reads the local record first. A legacy shared-only record is copied into
+local storage when recovered, and a new browser without a generation marker
+does not contact the bridge before showing sign-in.
+Its `frame-ancestors` allowlist contains only the
 HTTPS app and console origins. Those UIs permit only this exact bridge URL in
 `frame-src`; their own documents remain unframeable. The bridge checks both the
 actual parent window and exact message origin. Requests and replies use exact
@@ -80,6 +87,12 @@ the grants returned now. Expired, revoked or mismatched authorization removes
 the stored login. A network outage retains it and offers retry; restoration
 requests have a fifteen-second deadline. A requested unavailable workspace
 falls back to the base session's workspace with a visible notice.
+
+The sign-in form switches immediately to visible progress while contacting the
+server, deriving the password key, confirming access or awaiting the passkey
+prompt. Account and grant preparation then hand off to the session and
+conversation loading indicators. This is feedback for the actual operations;
+password derivation parameters and access checks are unchanged.
 
 Each tab may derive a token for its requested workspace while preserving the
 base browser login. Workspace links and payment return URLs retain their
@@ -128,3 +141,7 @@ HTML/assets as well. With `QA_DIST`, it uses local assets and live document
 security headers; the console redirect is simulated according to the separate
 Go handler tests. The shared iframe document remains live in both modes, so
 the test includes its real deployed CSP and postMessage transport.
+Add `QA_PROGRESS=1` to assert immediate password/passkey progress, simulate an
+ordinary cancelled platform passkey prompt, and report stage timings. That
+mode adds 400 ms to the synthetic challenge response so the initial loading
+state is observable independently of the real Argon2 worker duration.

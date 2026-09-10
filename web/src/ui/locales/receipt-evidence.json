@@ -1,0 +1,10 @@
+{
+  "Recebido": ["Delivered", "Entregado", "Distribué", "Zugestellt"],
+  "Tocado": ["Played", "Reproducido", "Lu (média)", "Abgespielt"],
+  "Aparelho {device}": ["Device {device}", "Dispositivo {device}", "Appareil {device}", "Gerät {device}"],
+  "Sem confirmação de entrega desta versão.": ["No delivery confirmation for this version.", "Sin confirmación de entrega de esta versión.", "Aucune confirmation de distribution pour cette version.", "Keine Zustellbestätigung für diese Version."],
+  "Sem confirmação de leitura desta versão.": ["No read confirmation for this version.", "Sin confirmación de lectura de esta versión.", "Aucune confirmation de lecture pour cette version.", "Keine Lesebestätigung für diese Version."],
+  "Sem confirmação de reprodução desta versão.": ["No playback confirmation for this version.", "Sin confirmación de reproducción de esta versión.", "Aucune confirmation de lecture du média pour cette version.", "Keine Wiedergabebestätigung für diese Version."],
+  "Mostramos apenas confirmações recebidas para esta versão. Sem recibo, não é possível saber se a pessoa leu.": ["Only confirmations received for this version are shown. Without a receipt, we cannot tell whether the person read it.", "Solo mostramos confirmaciones recibidas para esta versión. Sin recibo, no es posible saber si la persona la leyó.", "Seules les confirmations reçues pour cette version sont affichées. Sans reçu, il est impossible de savoir si la personne l’a lue.", "Es werden nur Bestätigungen für diese Version angezeigt. Ohne Lesebestätigung lässt sich nicht feststellen, ob die Person sie gelesen hat."],
+  "Há um recibo de leitura da mensagem, sem confirmação desta versão.": ["There is a read receipt for the message, but this version is unconfirmed.", "Hay un recibo de lectura del mensaje, pero esta versión no está confirmada.", "Un reçu confirme la lecture du message, mais pas celle de cette version.", "Für die Nachricht liegt eine Lesebestätigung vor, für diese Version jedoch nicht."]
+}

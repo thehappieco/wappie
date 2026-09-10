@@ -114,6 +114,16 @@ func TestAGroupReceiptKeepsTheParticipantAsTheReader(t *testing.T) {
 	}
 }
 
+func TestGroupReceiptRequiresAnIndividualReader(t *testing.T) {
+	for _, sender := range []types.JID{{}, group} {
+		evt := receipt(types.ReceiptTypeRead, "A1")
+		evt.MessageSource = types.MessageSource{Chat: group, Sender: sender, IsGroup: true}
+		if got, err := normalize.ReceiptFrom(evt, normalize.Options{}); err == nil {
+			t.Fatalf("group without individual reader was accepted: %+v", got)
+		}
+	}
+}
+
 // TestAReceiptWithNoSenderFallsBackToTheChat. Direct chats sometimes omit the
 // sender because it can only be the peer; dropping the acknowledgement would
 // lose a real fact over a field WhatsApp considered redundant.

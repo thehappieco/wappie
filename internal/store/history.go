@@ -118,15 +118,12 @@ type Reader struct {
 	Read      *time.Time
 	Played    *time.Time
 
-	// SawRevision is the revision this party most plausibly had on screen when
-	// they read. Zero when they never read.
+	// SawRevision identifies the stanza named by the earliest read receipt.
+	// Meaningful only when Confirmed is true.
 	SawRevision int
-	// ConfirmedRevision is the newest revision this party's own device
-	// acknowledged receiving before the read. It is a floor, not a guess.
+	// ConfirmedRevision equals SawRevision when the receipt identifies a version.
 	ConfirmedRevision int
-	// Confirmed reports whether the two agree. When they do not, SawRevision
-	// is inferred from two clocks that were never synchronised with each
-	// other and the reader may still have been looking at the older text.
+	// Confirmed is false when no read names a version unambiguously.
 	Confirmed bool
 
 	// ReadDevice names which of this person's devices produced the read the
@@ -188,43 +185,10 @@ type ReaderDevice struct {
 	Revisions []ReaderRevision
 }
 
-// ReaderRevision is what one party acknowledged about ONE version of a message.
-//
-// The distinction the flat fields above cannot make. Delivered there is the
-// earliest across every version — which on a message edited twice answers "when
-// did this reach them at all", and is silent on the question somebody opening
-// a revision is actually asking: did they get THIS text.
-//
-// The two halves have different evidential weight, and it is not a nicety:
-//
-//   - Delivered is exact. Every version is a stanza with a WhatsApp id of its
-//     own and collects its own delivery receipts, so a receipt naming this
-//     version's id is the reader's own device stating that this text arrived.
-//     That is the whole reason edits are stored as rows rather than folded into
-//     the original.
-//
-//   - Read and Played are usually exact too, and for a reason that is easy to
-//     miss: editing a message makes it unread again on the recipient's phone,
-//     and reading it afresh sends a read receipt naming the EDIT's own stanza.
-//     So a read receipt does not merely say somebody was looking at the
-//     conversation around then — it names the revision they read.
-//
-//     They fall back to inference in one case, and it is our own: this client
-//     folds every version into one line and marks it read under the ORIGINAL's
-//     id, whatever text is on screen. Our other devices therefore say nothing
-//     about revisions by their ids, and are attributed from what they had been
-//     delivered instead. Confirmed distinguishes the two.
-//
-// A read is placed on exactly one revision. A party who read twice — before and
-// after a correction — appears on two, which is the situation this type exists
-// for and is exactly what the unread-again behaviour produces: two receipts
-// naming two stanzas, which the receipts table keeps as two rows because it is
-// keyed on (device, wa_id, reader, kind).
-//
-// One place none of this works: in a newsletter, whatsmeow reuses the
-// original's id for the edit stanza (its send.go overrides req.ID when the
-// server is NewsletterServer), so there are no per-version ids for receipts to
-// arrive under. Newsletters do not report per-reader receipts anyway.
+// ReaderRevision contains explicit receipts naming one version's stanza.
+// Delivery never proves reading or playback. Own-device receipts naming the
+// original of an edited message remain at message level because they do not
+// identify which text was shown. No receipt is assigned by comparing clocks.
 type ReaderRevision struct {
 	Revision int
 
@@ -232,16 +196,14 @@ type ReaderRevision struct {
 	// Exact, per the above.
 	Delivered *time.Time
 
-	// Read and Played are set only on the revision they were attributed to.
+	// Read and Played require a receipt naming this revision.
 	Read   *time.Time
 	Played *time.Time
 
-	// Confirmed reports whether the attribution above is proof: the device
-	// acknowledged receiving this exact version before it reported reading.
-	// False means it was inferred by comparing clocks, and a UI that renders
-	// it as fact is claiming somebody read a correction they may never have
-	// been shown.
+	// Confirmed is true only when Read names this revision explicitly.
 	Confirmed bool
+	// PlayedConfirmed means a played receipt names this exact version.
+	PlayedConfirmed bool
 }
 
 // History assembles everything known about one message.
@@ -493,23 +455,8 @@ func reactionsOf(byTarget map[string][]Row) []Reaction {
 	return out
 }
 
-// readersOf turns raw acknowledgements into one entry per PERSON, each carrying
-// what each of their devices did.
-//
-// Two passes, and the order is the whole correctness argument.
-//
-// The first pass is per device, exactly as this always worked: one
-// deliveredPer map and one AttributeRead call per handset. That is what
-// separates proof from inference. An edit is a stanza with an id of its own, so
-// a delivery receipt naming it is that specific device stating that specific
-// text arrived — a floor nothing can argue with. Merging the deliveries of a
-// person's devices BEFORE attributing would let a delivery to their laptop
-// confirm a read on their phone, and the answer would come back Confirmed with
-// nothing on the wire saying so. It is the one mistake here that produces a
-// stronger claim rather than a weaker one.
-//
-// The second pass folds devices into people, and copies the revision fields
-// from the device whose read became the person's — never recomputes them.
+// readersOf groups explicit receipts by device, then folds linked devices into
+// people. Version claims follow receipt IDs, never delivery or message times.
 func readersOf(versions []Version, acks []ReceiptRow) []Reader {
 	type agg struct {
 		ReaderDevice
@@ -530,6 +477,13 @@ func readersOf(versions []Version, acks []ReceiptRow) []Reader {
 	link := newAliases()
 
 	for _, a := range acks {
+		if a.Kind != domain.ReceiptDelivered && a.Kind != domain.ReceiptRead && a.Kind != domain.ReceiptPlayed {
+			continue
+		}
+		jid, err := types.ParseJID(a.ReaderKey)
+		if err != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer) {
+			continue
+		}
 		g, ok := byKey[a.ReaderKey]
 		if !ok {
 			agent, dev := deviceAxis(a.ReaderKey)
@@ -558,20 +512,20 @@ func readersOf(versions []Version, acks []ReceiptRow) []Reader {
 		}
 	}
 
-	// Pass one: attribute per device, against that device's own deliveries.
+	// Pass one: only a receipt naming the version can establish a read.
 	times := versionTimes(versions)
 	for _, k := range order {
 		g := byKey[k]
-		if g.Read != nil {
-			g.SawRevision, g.ConfirmedRevision, g.Confirmed =
-				AttributeRead(times, g.deliveredPer, *g.Read)
-		} else {
-			g.Confirmed = true
-		}
 		// Our own devices are the exception: this client marks a whole line
 		// read under the original's id, whatever version is on screen, so its
 		// ids carry no revision at all.
 		g.Revisions = perRevision(times, g.deliveredPer, g.reads, g.plays, !g.isFromMe)
+		for _, revision := range g.Revisions {
+			if g.Read != nil && revision.Read != nil && revision.Read.Equal(*g.Read) && revision.Confirmed {
+				g.SawRevision, g.ConfirmedRevision, g.Confirmed = revision.Revision, revision.Revision, true
+				break
+			}
+		}
 	}
 
 	// Pass two: fold devices into people.
@@ -582,7 +536,7 @@ func readersOf(versions []Version, acks []ReceiptRow) []Reader {
 		person := link.find(PersonKey(k, g.lid))
 		r, ok := people[person]
 		if !ok {
-			r = &Reader{Key: person, IsFromMe: g.isFromMe, Confirmed: true}
+			r = &Reader{Key: person, IsFromMe: g.isFromMe}
 			people[person] = r
 			peopleOrder = append(peopleOrder, person)
 		}
@@ -673,7 +627,9 @@ func versionTimes(versions []Version) []VersionTime {
 	return out
 }
 
-// AttributeRead decides which revision of a message a reader had on screen.
+// AttributeRead is the legacy clock-based estimate, retained for compatibility.
+// Deprecated: delivery and timestamps cannot establish which version was read.
+// Receipt projections must use the named stanza via perRevision instead.
 //
 // Two sources of evidence, and the difference between them is the whole point
 // of returning three values instead of one.
@@ -725,35 +681,9 @@ func earliest(cur *time.Time, next time.Time) *time.Time {
 	return cur
 }
 
-// perRevision tells one device's acknowledgements version by version.
-//
-// Delivery is copied straight across: a delivery receipt names the version's
-// own stanza id, so it is that device stating that exact text arrived.
-//
-// Reads and plays are placed by the id they name, and that is the strongest
-// evidence in this whole projection. Editing a message makes it unread again on
-// the recipient's phone; reading it afresh sends a read receipt naming the
-// EDIT's stanza. So a read receipt is not a vague "they were looking at the
-// conversation around then" — it names the revision, and the revision it names
-// is the one they read.
-//
-// AttributeRead survives as the fallback, for a receipt whose id belongs to no
-// version here. That is not a hypothetical: this client's OWN reads always name
-// the original, because the browser folds every version into one line and marks
-// that line's id read. Our other devices therefore say nothing about revisions
-// by their ids, and get the older treatment — the revision worked out from what
-// that device had been delivered, reported as inferred.
-//
-// Each receipt is placed separately rather than only the earliest, because
-// somebody who read before a correction and again after it belongs on two
-// revisions. Whether one device produces two read rows depends on the peer:
-// the receipts table is keyed on (device, wa_id, reader, kind), so a second
-// read is a second row exactly when it names a different stanza — which, per
-// the rule above, is what an edit causes.
-//
-// One place it cannot work at all: in a newsletter, whatsmeow reuses the
-// original's id for the edit stanza, so there are no per-version ids for
-// receipts to arrive under.
+// perRevision accepts only receipts that identify a version. A read for an
+// unknown stanza or an ambiguous own-device original remains unattributed;
+// delivery times cannot fill that gap.
 func perRevision(versions []VersionTime, delivered map[string]time.Time,
 	reads, plays []ack, named bool) []ReaderRevision {
 	if len(versions) == 0 {
@@ -778,16 +708,17 @@ func perRevision(versions []VersionTime, delivered map[string]time.Time,
 	}
 
 	place := func(a ack) (int, bool, bool) {
-		if named {
-			if rev, ok := revisionOf[a.WAID]; ok {
-				// The receipt names this stanza. Nothing beats that.
-				i, ok := index[rev]
-				return i, true, ok
-			}
+		rev, exists := revisionOf[a.WAID]
+		if !exists {
+			return 0, false, false
 		}
-		saw, _, certain := AttributeRead(versions, delivered, a.TS)
-		i, ok := index[saw]
-		return i, certain, ok
+		// Our clients acknowledge the whole edited line under its original ID.
+		// Keep that real receipt at message level without guessing which text was read.
+		if !named && len(versions) > 1 && rev == versions[0].Revision {
+			return 0, false, false
+		}
+		i, ok := index[rev]
+		return i, true, ok
 	}
 
 	for _, a := range reads {
@@ -813,6 +744,7 @@ func perRevision(versions []VersionTime, delivered map[string]time.Time,
 		if out[i].Played == nil || a.TS.Before(*out[i].Played) {
 			t := a.TS
 			out[i].Played = &t
+			out[i].PlayedConfirmed = true
 		}
 	}
 	return out
@@ -854,7 +786,10 @@ func foldRevisions(into, from []ReaderRevision) []ReaderRevision {
 			continue
 		}
 		into[i].Delivered = earlier(into[i].Delivered, r.Delivered)
-		into[i].Played = earlier(into[i].Played, r.Played)
+		if r.Played != nil && (into[i].Played == nil || r.Played.Before(*into[i].Played)) {
+			into[i].Played = r.Played
+			into[i].PlayedConfirmed = r.PlayedConfirmed
+		}
 		if r.Read != nil && (into[i].Read == nil || r.Read.Before(*into[i].Read)) {
 			into[i].Read = r.Read
 			into[i].Confirmed = r.Confirmed

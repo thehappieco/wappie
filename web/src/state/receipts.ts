@@ -17,6 +17,7 @@
 import { shallowReactive } from 'vue'
 
 import * as P from '../api/protocol'
+import { parseJID, SERVER_LID, SERVER_USER } from './jid'
 import { noAcks, type Acks } from './ticks'
 
 /**
@@ -39,6 +40,44 @@ interface Entry {
 }
 
 const entries = shallowReactive(new Map<string, Entry>())
+const aliases = new Map<string, string>()
+
+function identity(raw: string | undefined): string {
+  const jid = parseJID(raw ?? '')
+  if (!jid.user || ![SERVER_LID, SERVER_USER].includes(jid.server)) return ''
+  return `${jid.user.replace(/\.\d+$/, '')}@${jid.server}`
+}
+
+function canonical(key: string): string {
+  const parent = aliases.get(key)
+  if (!parent || parent === key) return key
+  const root = canonical(parent)
+  aliases.set(key, root)
+  return root
+}
+
+function receiptPerson(ev: P.ReceiptEvent): string {
+  // Only an explicit PN/LID pair links namespaces; matching digits do not.
+  const ids = [ev.reader_person || ev.reader_key, ev.reader_lid, ev.reader_pn].map(identity).filter(Boolean)
+  const first = ids[0]
+  if (!first) return ''
+  let merged = false
+  for (const id of ids.slice(1)) {
+    const left = canonical(first), right = canonical(id)
+    if (left !== right) { aliases.set(right, left); merged = true }
+  }
+  if (merged) {
+    // A late identity link also corrects earlier messages and other receipt kinds.
+    for (const [waID, entry] of entries) {
+      entries.set(waID, { ...entry,
+        delivered: new Set([...entry.delivered].map(canonical)),
+        read: new Set([...entry.read].map(canonical)),
+        played: new Set([...entry.played].map(canonical)),
+      })
+    }
+  }
+  return canonical(first)
+}
 
 function entryFor(waID: string): Entry {
   let e = entries.get(waID)
@@ -69,19 +108,17 @@ export function acksFor(waID: string): Acks {
 /**
  * absorbReceipts takes the counts a page carried.
  *
- * Order-independent: a page that arrives after a live receipt must not undo it,
- * and a count never goes down. Receipts are facts that accumulate — nothing
- * un-receives a message — so the merge is a maximum and needs no generation
- * counter to be safe against either arriving first.
+ * The server snapshot may correct a count downwards after linking PN and LID.
+ * Keep live evidence separately so an older snapshot cannot erase those events.
  */
 export function absorbReceipts(rows: P.MessageAcks[] | undefined): void {
   for (const r of rows ?? []) {
     const e = entryFor(r.wa_id)
     const base = e.base
     e.base = {
-      delivered: Math.max(base.delivered, r.delivered ?? 0),
-      read: Math.max(base.read, r.read ?? 0),
-      played: Math.max(base.played, r.played ?? 0),
+      delivered: r.delivered ?? 0,
+      read: r.read ?? 0,
+      played: r.played ?? 0,
       deliveredAt: earliest(base.deliveredAt, r.delivered_at),
       readAt: earliest(base.readAt, r.read_at),
       playedAt: earliest(base.playedAt, r.played_at),
@@ -119,7 +156,7 @@ export function applyReceipt(ev: P.ReceiptEvent, holding: (waID: string) => bool
   }
 
   // The person, not the device.
-  const person = ev.reader_person || ev.reader_key
+  const person = receiptPerson(ev)
   if (!person) return
 
   for (const waID of ev.wa_ids ?? []) {
@@ -154,6 +191,7 @@ export function applyReceipt(ev: P.ReceiptEvent, holding: (waID: string) => bool
 /** forgetReceipts drops everything, when the conversation or device changes. */
 export function forgetReceipts(): void {
   entries.clear()
+  aliases.clear()
 }
 
 function earliest(have: Date | undefined, incoming: string | undefined): Date | undefined {

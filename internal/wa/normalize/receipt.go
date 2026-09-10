@@ -53,10 +53,16 @@ func ReceiptFrom(evt *events.Receipt, opts Options) (domain.Receipt, error) {
 
 	reader := addressFor(evt.Sender, evt.SenderAlt, true)
 	if reader.Empty() {
+		if chat.Primary().Server != types.DefaultUserServer && chat.Primary().Server != types.HiddenUserServer {
+			return domain.Receipt{}, errors.New("normalize: receipt with no individual participant")
+		}
 		// Direct chats sometimes omit the sender because it can only be the
 		// peer. Falling back to the chat keeps the row keyable; guessing
 		// nothing would drop a real acknowledgement.
 		reader = chat
+	}
+	if reader.Primary().Server != types.DefaultUserServer && reader.Primary().Server != types.HiddenUserServer {
+		return domain.Receipt{}, errors.New("normalize: receipt reader is not an individual")
 	}
 
 	// evt.IsFromMe is set when the acknowledgement came from one of our own

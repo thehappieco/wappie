@@ -194,6 +194,7 @@ func readerRevisions(in []store.ReaderRevision) []ReaderRevision {
 		out = append(out, ReaderRevision{
 			Revision: r.Revision, Delivered: r.Delivered,
 			Read: r.Read, Played: r.Played, Confirmed: r.Confirmed,
+			PlayedConfirmed: r.PlayedConfirmed,
 		})
 	}
 	return out

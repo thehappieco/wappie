@@ -268,7 +268,7 @@ func TestReadersReportWhichVersionTheySaw(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The original arrived; the edit did too, and only then did they read.
+	// The original and edit arrived, but the read names only the original.
 	ack(domain.ReceiptDelivered, now.Add(time.Second), "M1")
 	ack(domain.ReceiptDelivered, now.Add(6*time.Minute), "E1")
 	ack(domain.ReceiptRead, now.Add(10*time.Minute), "M1")
@@ -278,18 +278,19 @@ func TestReadersReportWhichVersionTheySaw(t *testing.T) {
 		t.Fatalf("got %d readers, want 1", len(h.Readers))
 	}
 	r := h.Readers[0]
-	if r.SawRevision != 1 || r.ConfirmedRevision != 1 || !r.Confirmed {
-		t.Fatalf("got saw=%d confirmed=%d certain=%v, want 1/1/true: their own device "+
-			"acknowledged the edit before they read", r.SawRevision, r.ConfirmedRevision, r.Confirmed)
+	if r.SawRevision != 0 || r.ConfirmedRevision != 0 || !r.Confirmed {
+		t.Fatalf("got saw=%d confirmed=%d certain=%v, want the original named by the read receipt", r.SawRevision, r.ConfirmedRevision, r.Confirmed)
+	}
+	if r.Revisions[1].Read != nil {
+		t.Fatal("delivery of an edit must not become evidence that it was read")
 	}
 	if r.Read == nil || r.Delivered == nil {
 		t.Fatal("the reader has no delivery or read time")
 	}
 }
 
-// TestAnUnconfirmedEditIsReportedAsInferred: same shape, but nothing says the
-// edit ever reached them.
-func TestAnUnconfirmedEditIsReportedAsInferred(t *testing.T) {
+// A later read of the original must not infer that the edit was seen.
+func TestAnUnconfirmedEditIsNotReportedAsRead(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	now := time.Now().Add(-time.Hour).Truncate(time.Second)
@@ -310,11 +311,11 @@ func TestAnUnconfirmedEditIsReportedAsInferred(t *testing.T) {
 
 	h := f.history(t, "M1")
 	r := h.Readers[0]
-	if r.SawRevision != 1 {
-		t.Fatalf("saw = %d, want 1: the timestamps do point at the edit", r.SawRevision)
+	if r.SawRevision != 0 {
+		t.Fatalf("saw = %d, want the original named by the receipt", r.SawRevision)
 	}
-	if r.Confirmed {
-		t.Fatal("reported as confirmed; only the clock says they saw the correction")
+	if !r.Confirmed || r.Revisions[1].Read != nil {
+		t.Fatal("confirm only the original; the correction has no read receipt")
 	}
 	if r.ConfirmedRevision != 0 {
 		t.Fatalf("confirmed = %d, want 0", r.ConfirmedRevision)

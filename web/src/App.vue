@@ -16,6 +16,7 @@ import SignInView from './components/SignInView.vue'
 
 const showPanel = computed(() => Boolean(state.selectedUID))
 const restoring = ref(true)
+const opening = ref(false)
 const restoreError = ref('')
 const persistenceNotice = ref('')
 let activePersistenceID: string | undefined
@@ -29,6 +30,7 @@ const unobserveSession = observeBrowserSession(change => {
   pendingPersistenceID = undefined
   activePersistenceID = undefined
   restoring.value = false
+  opening.value = false
   restoreError.value = ''
   stop({ logout: false })
 })
@@ -71,6 +73,7 @@ onMounted(() => {
 
 async function opened(session: Session) {
   const attempt = ++restoreAttempt
+  opening.value = true
   // The previous logout may still be clearing persistent storage. Its late
   // notification cannot cancel the different login now being opened.
   activePersistenceID = undefined
@@ -79,15 +82,21 @@ async function opened(session: Session) {
   persistenceNotice.value = session.notice ?? ''
   try { await session.remember?.() }
   catch { persistenceNotice.value = t('Este navegador não permitiu guardar a sessão. Você poderá precisar entrar novamente ao recarregar a página.') }
-  if (disposed || attempt !== restoreAttempt || session.persistenceID && browserSessionWasCleared(session.persistenceID, session.persistenceEpoch)) { session.dispose?.(); return }
+  if (disposed || attempt !== restoreAttempt || session.persistenceID && browserSessionWasCleared(session.persistenceID, session.persistenceEpoch)) {
+    if (attempt === restoreAttempt) opening.value = false
+    session.dispose?.(); return
+  }
   pendingPersistenceID = undefined
   activePersistenceID = session.persistenceID
   activePersistenceEpoch = session.persistenceEpoch
-  await start(session)
+  const starting = start(session)
+  opening.value = false
+  await starting
 }
 
 async function restore() {
   const attempt = ++restoreAttempt
+  opening.value = false
   restoring.value = true
   restoreError.value = ''
   try {
@@ -121,6 +130,7 @@ function checkRememberedSession() {
   activePersistenceID = undefined
   pendingPersistenceID = undefined
   restoring.value = false
+  opening.value = false
   restoreError.value = ''
   stop({ logout: false })
 }
@@ -164,7 +174,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="restoring || restoreError" class="empty app-loading" role="status" aria-live="polite">
+  <div v-if="opening" class="empty app-loading" role="status" aria-live="polite">
+    <div><div class="loading-spinner" aria-hidden="true" /><div class="big">{{ t('Preparando sua sessão…') }}</div></div>
+  </div>
+  <div v-else-if="restoring || restoreError" class="empty app-loading" role="status" aria-live="polite">
     <div>
       <template v-if="restoring"><div class="loading-spinner" aria-hidden="true" /><div class="big">{{ t('Restaurando sua sessão…') }}</div></template>
       <template v-else><p class="alert">{{ restoreError }}</p><button class="primary" @click="restore">{{ t('Tentar novamente') }}</button></template>

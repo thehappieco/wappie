@@ -3,34 +3,13 @@ import { t } from '../ui/i18n'
 import { computed, ref } from 'vue'
 
 import { people, state, type ReaderDeviceView, type ReaderView } from '../state/archive'
+import { receiptEvidence } from '../state/receiptEvidence'
 import { stamp } from '../ui/format'
 import AvatarBadge from './AvatarBadge.vue'
 import Modal from './Modal.vue'
 
-// Who acknowledged ONE version of a message.
-//
-// Always one version, never the message as a whole, and that is the change this
-// file exists to record. The panel used to offer both, and the general list was
-// the one that lied: `delivered` on a reader is the earliest across every
-// version — the answer to "did this reach them at all" — so a message edited
-// twice showed the correction as delivered on the strength of the original
-// having been. Under a revision heading that is not a rounding error, it is the
-// opposite of what the archive knows.
-//
-// The three lists have different evidential weight and are drawn differently:
-//
-//   - Recebido is exact. Every version is a stanza with a WhatsApp id of its
-//     own and collects its own delivery receipts, which is the whole reason
-//     edits are stored as rows rather than folded into the original.
-//   - Lido is usually exact too. Editing a message makes it unread again on the
-//     recipient's phone, and reading it afresh sends a receipt naming the
-//     edit's own stanza — so the receipt names the revision. The chip hedges
-//     only where the archive genuinely had to infer, which is our own devices:
-//     this client marks a whole line read under the original's id whatever
-//     text is on screen.
-//   - Tocado only appears when there is a third step to report. Drawing an
-//     empty "Tocado" under a sentence invites the reading that nobody played
-//     it, when nothing ever could have.
+// Only explicit per-version evidence enters these lists. A receipt absent from
+// the archive does not establish whether somebody read or received the message.
 
 const props = defineProps<{
   revision: number
@@ -57,7 +36,7 @@ function toggle(key: string) {
 
 /** What one party acknowledged about this revision, or nothing. */
 function at(r: ReaderView | ReaderDeviceView) {
-  return r.revisions.get(props.revision)
+  return receiptEvidence(r.revisions.get(props.revision))
 }
 
 /** Our own devices, kept apart: "you" is not somebody the message reached. */
@@ -73,7 +52,7 @@ function nameOf(r: ReaderView): string {
 }
 
 function deviceLabel(d: ReaderDeviceView): string {
-  return d.agent > 0 ? `aparelho ${d.agent}.${d.device}` : `aparelho ${d.device}`
+  return t('Aparelho {device}', { device: d.agent > 0 ? `${d.agent}.${d.device}` : d.device })
 }
 
 /**
@@ -86,11 +65,11 @@ function deviceLabel(d: ReaderDeviceView): string {
  */
 const groups = computed(() => {
   const all = [
-    { label: 'Recebido', list: delivered.value, at: (r: ReaderView) => at(r)?.delivered, sure: true },
-    { label: t('Lido'), list: read.value, at: (r: ReaderView) => at(r)?.read, sure: false },
+    { key: 'delivered', label: t('Recebido'), empty: t('Sem confirmação de entrega desta versão.'), list: delivered.value, at: (r: ReaderView) => at(r).delivered },
+    { key: 'read', label: t('Lido'), empty: t('Sem confirmação de leitura desta versão.'), list: read.value, at: (r: ReaderView) => at(r).read },
   ]
   if (playedApplies.value) {
-    all.push({ label: 'Tocado', list: played.value, at: (r: ReaderView) => at(r)?.played, sure: false })
+    all.push({ key: 'played', label: t('Tocado'), empty: t('Sem confirmação de reprodução desta versão.'), list: played.value, at: (r: ReaderView) => at(r).played })
   }
   return all
 })
@@ -112,11 +91,6 @@ const groups = computed(() => {
  */
 const playedApplies = computed(() => props.playable || played.value.length > 0)
 
-const empty = computed(() => ({
-  Recebido: t('Ninguém confirmou ter recebido esta versão.'),
-  Lido: t('Ninguém leu esta versão.'),
-  Tocado: t('Ninguém tocou esta versão.'),
-}))
 </script>
 
 <template>
@@ -128,12 +102,12 @@ const empty = computed(() => ({
     <div v-if="readers.length === 0" class="sealed" style="font-size: 12.5px"> {{ t('Nenhum recibo arquivado para esta mensagem. Em modo discreto o aparelho não devolve recibos, e o que os outros mandam só chega enquanto ele está ligado.') }} </div>
 
     <template v-else>
-      <div class="note" v-if="versions > 1"> {{ t('Cada versão é uma mensagem própria no WhatsApp e junta os próprios recibos, então tudo aqui é sobre este texto e não sobre a mensagem. Uma edição volta a marcar a mensagem como não lida, e quem lê de novo confirma o id da edição — por isso "lido" costuma vir confirmado, e só aparece como deduzido quando o recibo é de um aparelho seu.') }} </div>
+      <div class="note">{{ t('Mostramos apenas confirmações recebidas para esta versão. Sem recibo, não é possível saber se a pessoa leu.') }}</div>
 
-      <section class="section" v-for="group in groups" :key="group.label">
+      <section class="section" v-for="group in groups" :key="group.key">
         <h3>{{ group.label }} ({{ group.list.length }})</h3>
         <div class="sealed" v-if="!group.list.length" style="font-size: 12.5px">
-          {{ empty[group.label as keyof typeof empty] }}
+          {{ group.empty }}
         </div>
         <div v-for="r in group.list" :key="r.key" class="reader">
           <AvatarBadge small :contact-key="r.key" :name="nameOf(r)" />
@@ -160,7 +134,7 @@ const empty = computed(() => ({
                      fact, rather than the message's first delivery time. -->
                 <div class="times">
                   <template v-if="at(d)?.delivered">{{ t('entregue {v0}', { v0: stamp(at(d)!.delivered) }) }}</template>
-                  <template v-else>{{ t('não recebeu esta versão') }}</template>
+                  <template v-else>{{ t('Sem confirmação de entrega desta versão.') }}</template>
                   <template v-if="at(d)?.read"><br />{{ t('lida {v0}', { v0: stamp(at(d)!.read) }) }}</template>
                   <template v-if="at(d)?.played">
                     <br />{{ t('tocada {v0}', { v0: stamp(at(d)!.played) }) }}
@@ -169,19 +143,7 @@ const empty = computed(() => ({
               </div>
             </div>
           </div>
-          <!-- Only on the read, and only ever on the read: a delivery receipt
-               names this version's own stanza, so there is nothing to qualify. -->
-          <span
-            v-if="!group.sure && group.label === t('Lido')"
-            class="saw"
-            :class="at(r)?.confirmed ? 'sure' : 'inferred'"
-            :title="
-              at(r)?.confirmed
-                ? t('o recibo de leitura nomeia esta versão')
-                : t('deduzido: este aparelho marca a linha inteira pelo id original')
-            "
-            >{{ at(r)?.confirmed ? t('confirmado') : t('deduzido') }}</span
-          >
+          <span v-if="group.key === 'read'" class="saw sure" :title="t('o recibo de leitura nomeia esta versão')">{{ t('confirmado') }}</span>
         </div>
       </section>
 
@@ -195,8 +157,9 @@ const empty = computed(() => ({
             <div class="who">{{ nameOf(r) }}</div>
             <div class="times">
               <template v-if="at(r)?.delivered">{{ t('entregue {v0}', { v0: stamp(at(r)!.delivered) }) }}</template>
-              <template v-else>{{ t('não recebeu esta versão') }}</template>
+              <template v-else>{{ t('Sem confirmação de entrega desta versão.') }}</template>
               <template v-if="at(r)?.read"><br />{{ t('lida {v0}', { v0: stamp(at(r)!.read) }) }}</template>
+              <template v-else-if="r.read"><br />{{ t('Há um recibo de leitura da mensagem, sem confirmação desta versão.') }}</template>
             </div>
           </div>
         </div>

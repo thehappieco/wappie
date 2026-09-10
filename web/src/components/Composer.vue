@@ -5,6 +5,8 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { canSend, noMarks, sendMedia, sendText, state, type Marks } from '../state/archive'
 import { startTyping, stopTyping } from '../state/presence'
 import { edit, editableFor } from '../state/actions'
+import { canConversationAction } from '../state/conversationActions'
+import { TypePollCreate } from '../api/protocol'
 import { MAX_BYTES, refuse, type Choice } from '../media/plan'
 import { discard, prepare, type Prepared } from '../media/prepare'
 import { available as canRecord, begin, type Recording } from '../media/record'
@@ -14,6 +16,7 @@ import AttachSheet from './AttachSheet.vue'
 import { timerLabel } from '../state/ephemeral'
 import SendMarks from './SendMarks.vue'
 import AppIcon from './AppIcon.vue'
+import PollDialog from './PollDialog.vue'
 
 // Writing into the archive, rather than only reading it.
 //
@@ -35,6 +38,7 @@ const emit = defineEmits<{ (e: 'cancel'): void }>()
 const draft = ref('')
 const box = ref<HTMLTextAreaElement>()
 const chooser = ref<HTMLInputElement>()
+const pollOpen = ref(false)
 
 /** A file somebody picked, waiting to be told how it should be sent. */
 const picked = ref<File | null>(null)
@@ -74,6 +78,7 @@ const target = computed(() =>
 const minutesLeft = computed(() => (target.value ? Math.ceil(editableFor(target.value) / 60_000) : 0))
 
 const allowed = computed(() => canSend())
+const pollAvailable = computed(() => canConversationAction(TypePollCreate))
 
 /** Whether a caption is even a thing for what is attached. */
 const captionAllowed = computed(() => attached.value?.plan.captionAllowed ?? true)
@@ -169,6 +174,12 @@ async function submit() {
 function browse() {
   attachError.value = ''
   chooser.value?.click()
+}
+
+function openPoll() {
+  if (!allowed.value || !pollAvailable.value || props.editing || recording.value || opening.value || measuring.value || picked.value || attached.value) return
+  stopTyping()
+  pollOpen.value = true
 }
 
 function onPicked(event: Event) {
@@ -406,6 +417,7 @@ watch(() => state.openChatKey, () => {
   stopTyping()
   cancelRecording()
   clearAttachment()
+  pollOpen.value = false
 })
 
 onBeforeUnmount(stopTyping)
@@ -433,6 +445,7 @@ onBeforeUnmount(stopTyping)
     </div>
 
     <AttachSheet v-if="picked" :file="picked" @choose="choose" @cancel="clearAttachment" />
+    <PollDialog v-if="pollOpen" @close="pollOpen = false" />
 
     <div v-if="measuring" class="composer-off">{{ t('Lendo o arquivo…') }}</div>
 
@@ -509,6 +522,10 @@ onBeforeUnmount(stopTyping)
         @click="browse"
       >
         <AppIcon name="paperclip" />
+      </button>
+      <button v-if="pollAvailable && !editing && !target && !attached && !picked && !measuring && !opening" class="icon-btn attach" type="button"
+        :title="t('Criar enquete')" :aria-label="t('Criar enquete')" aria-haspopup="dialog" :aria-expanded="pollOpen" @click="openPoll">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 19V5m0 14h16M9 15v-4m5 4V5m5 10V8" /></svg>
       </button>
       <textarea
         ref="box"

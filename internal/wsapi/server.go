@@ -140,7 +140,8 @@ var features = []string{
 	"contacts.list", "contacts.resolve", "contacts.avatar",
 	"message.get", "message.history",
 	"message.send", "message.send.media", "message.edit", "message.revoke",
-	"message.react", "message.read", "message.poll.vote",
+	"message.react", "message.read", "message.poll.vote", "message.poll.create",
+	"chat.start", "group.create", "group.participants.update", "group.leave",
 	"chat.timer", "chat.presence", "presence.subscribe", "device.mode", "device.stop", "device.start", "device.rename",
 	"group.join", "group.info", "reproject.list", "reproject.apply", "media.retry", "media.expired", "history.backfill",
 	"devices.stats", "device.info", "device.delete",
@@ -618,6 +619,16 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleChatTimer(ctx, f)
 	case TypeGroupJoin:
 		go s.handleGroupJoin(ctx, f)
+	case TypeChatStart:
+		go s.handleChatStart(ctx, f)
+	case TypeGroupCreate:
+		go s.handleGroupCreate(ctx, f)
+	case TypeGroupParticipants:
+		go s.handleGroupParticipants(ctx, f)
+	case TypeGroupLeave:
+		go s.handleGroupLeave(ctx, f)
+	case TypePollCreate:
+		go s.handlePollCreate(ctx, f)
 	case TypeGroupGet:
 		go s.handleGroupInfo(ctx, f)
 	case TypeChatTyping:

@@ -118,9 +118,9 @@ func (s *session) accountStore() *store.Users {
 
 func frameAction(kind string) store.DeviceAction {
 	switch kind {
-	case TypeSend, TypeSendMedia, TypeEdit, TypeRevoke, TypeReact, TypePollVote, TypeMarkRead, TypeChatTyping, TypeChatTimer:
+	case TypeChatStart, TypePollCreate, TypeSend, TypeSendMedia, TypeEdit, TypeRevoke, TypeReact, TypePollVote, TypeMarkRead, TypeChatTyping, TypeChatTimer:
 		return store.ActionSend
-	case TypeDeviceStart, TypeDeviceRename, TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke:
+	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceStart, TypeDeviceRename, TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke:
 		return store.ActionManage
 	case TypeDeviceInfo:
 		return store.ActionView

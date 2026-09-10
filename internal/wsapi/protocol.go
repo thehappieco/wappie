@@ -263,6 +263,7 @@ type DeviceInfo struct {
 	Running      bool   `json:"running"`
 	Paused       bool   `json:"paused"`
 	CanManage    bool   `json:"can_manage"`
+	CanSend      bool   `json:"can_send"`
 	ProfileKey   string `json:"profile_key,omitempty"`
 	// CreatedAt is when the row was made, LastConnectedAt when the device last
 	// reached "online" — not when it went offline. A device that is running now
@@ -866,9 +867,12 @@ type GroupChange struct {
 
 // Group is who is in a conversation and what has happened to it.
 type Group struct {
-	ChatKey string        `json:"chat_key"`
-	Members []GroupMember `json:"members"`
-	Changes []GroupChange `json:"changes,omitempty"`
+	PermissionsKnown bool          `json:"permissions_known"`
+	CanManage        bool          `json:"can_manage"`
+	IsMember         bool          `json:"is_member"`
+	ChatKey          string        `json:"chat_key"`
+	Members          []GroupMember `json:"members"`
+	Changes          []GroupChange `json:"changes,omitempty"`
 	// Since is when this archive's record of the group begins. Before it,
 	// nothing is known and nothing is claimed: WhatsApp does not deliver a
 	// group's past, so an empty history is not a peaceful one and a reader has
@@ -1428,14 +1432,8 @@ type MessageReader struct {
 	Read      *time.Time `json:"read,omitempty"`
 	Played    *time.Time `json:"played,omitempty"`
 
-	// SawRevision is the revision this party most plausibly had on screen when
-	// they read, and ConfirmedRevision the newest one their own device
-	// acknowledged receiving beforehand.
-	//
-	// Confirmed reports whether those two agree. When they do not, the higher
-	// number is inferred by comparing clocks that were never synchronised with
-	// each other, and a UI that renders it as fact is claiming someone read a
-	// correction they may never have been shown.
+	// Revision fields identify the stanza named by the earliest read receipt.
+	// They are meaningful only when Confirmed is true; no clock estimate is sent.
 	SawRevision       int  `json:"saw_revision"`
 	ConfirmedRevision int  `json:"confirmed_revision"`
 	Confirmed         bool `json:"confirmed"`
@@ -1467,27 +1465,16 @@ type MessageReader struct {
 	Revisions []ReaderRevision `json:"revisions,omitempty"`
 }
 
-// ReaderRevision is what one party acknowledged about ONE version.
-//
-// The two halves are not equally strong and the client draws them differently:
-//
-//   - Delivered is exact. Each version is a stanza with a WhatsApp id of its
-//     own and collects its own delivery receipts.
-//   - Read and Played are usually exact as well: editing a message makes it
-//     unread again on the recipient's phone, and reading it afresh sends a
-//     receipt naming the edit's own stanza. Confirmed is true for those.
-//   - They fall back to inference for OUR OWN devices, which mark a whole line
-//     read under the original's id whatever version is on screen. Confirmed is
-//     false there, and the revision was worked out from what that device had
-//     been delivered — two clocks that were never synchronised agreeing.
-//
-// Confirmed is meaningless without Read and is false when there is none.
+// ReaderRevision contains receipts naming one version's stanza. Confirmed and
+// PlayedConfirmed qualify Read and Played independently. Neither is inferred
+// from delivery or timestamps; ambiguous receipts remain at message level.
 type ReaderRevision struct {
-	Revision  int        `json:"revision"`
-	Delivered *time.Time `json:"delivered,omitempty"`
-	Read      *time.Time `json:"read,omitempty"`
-	Played    *time.Time `json:"played,omitempty"`
-	Confirmed bool       `json:"confirmed,omitempty"`
+	Revision        int        `json:"revision"`
+	Delivered       *time.Time `json:"delivered,omitempty"`
+	Read            *time.Time `json:"read,omitempty"`
+	Played          *time.Time `json:"played,omitempty"`
+	Confirmed       bool       `json:"confirmed,omitempty"`
+	PlayedConfirmed bool       `json:"played_confirmed,omitempty"`
 }
 
 // ReaderDevice is one handset's acknowledgements.
@@ -1606,4 +1593,56 @@ func (r *DeleteRequest) UnmarshalJSON(data []byte) error {
 	}
 	*r = DeleteRequest(value)
 	return nil
+}
+
+// Conversation creation and explicit group management.
+const (
+	TypeChatStart         = "chat.start"
+	TypeChatStarted       = "chat.started"
+	TypeGroupCreate       = "group.create"
+	TypeGroupParticipants = "group.participants.update"
+	TypeGroupLeave        = "group.leave"
+	TypeGroupChanged      = "group.changed"
+	TypePollCreate        = "message.poll.create"
+)
+
+type ChatStartRequest struct {
+	DeviceID string `json:"device_id"`
+	Phone    string `json:"phone"`
+}
+type ChatStarted struct {
+	Chat string `json:"chat"`
+}
+type GroupCreateRequest struct {
+	DeviceID     string   `json:"device_id"`
+	Name         string   `json:"name"`
+	Participants []string `json:"participants"`
+}
+type GroupParticipantsRequest struct {
+	DeviceID     string   `json:"device_id"`
+	Chat         string   `json:"chat"`
+	Action       string   `json:"action"`
+	Participants []string `json:"participants"`
+}
+type GroupLeaveRequest struct {
+	DeviceID string `json:"device_id"`
+	Chat     string `json:"chat"`
+}
+type ParticipantResult struct {
+	JID   string `json:"jid"`
+	Error int    `json:"error,omitempty"`
+}
+type GroupChanged struct {
+	Chat         string              `json:"chat"`
+	Action       string              `json:"action"`
+	Participants []ParticipantResult `json:"participants,omitempty"`
+	Refreshed    bool                `json:"refreshed"`
+}
+type PollCreateRequest struct {
+	DeviceID        string   `json:"device_id"`
+	Chat            string   `json:"chat"`
+	ID              string   `json:"id,omitempty"`
+	Question        string   `json:"question"`
+	Options         []string `json:"options"`
+	SelectableCount int      `json:"selectable_count"`
 }

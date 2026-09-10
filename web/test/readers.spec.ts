@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ReaderRevision } from '../src/api/protocol'
 import { revisionsOf } from '../src/state/archive'
+import { receiptEvidence } from '../src/state/receiptEvidence'
 
 // The reader mapping had no test at all, and it is the kind of code that fails
 // without saying anything: a missing revision reads as "nobody received this
@@ -56,6 +57,25 @@ describe('a reader per-version record', () => {
 
     expect(revs.get(0)?.confirmed).toBe(true)
     expect(revs.get(1)?.confirmed).toBe(false)
+    expect(receiptEvidence(revs.get(0)).read?.toISOString()).toBe('2026-09-03T10:05:00.000Z')
+    expect(receiptEvidence(revs.get(1)).read).toBeUndefined()
+  })
+
+  it('requires separate evidence of playback and never promotes delivery to read', () => {
+    const revs = revisionsOf([
+      row({ revision: 0, delivered: '2026-09-03T10:01:00Z' }),
+      row({ revision: 1, played: '2026-09-03T10:12:00Z', confirmed: true }),
+      row({ revision: 2, played: '2026-09-03T10:12:00Z', played_confirmed: true }),
+    ])
+    expect(receiptEvidence(revs.get(0)).read).toBeUndefined()
+    expect(receiptEvidence(revs.get(1)).played).toBeUndefined()
+    expect(receiptEvidence(revs.get(2)).played).toBeDefined()
+    expect(receiptEvidence(revs.get(2)).read).toBeUndefined()
+  })
+
+  it('never renders a malformed timestamp as a confirmed read', () => {
+    const revs = revisionsOf([row({ revision: 0, read: 'invalid', confirmed: true })])
+    expect(receiptEvidence(revs.get(0)).read).toBeUndefined()
   })
 
   it('survives a reader the server sent no revisions for', () => {

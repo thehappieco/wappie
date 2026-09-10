@@ -21,6 +21,22 @@ func ack(tenant, device uuid.UUID, reader, lid, pn string, fromMe bool,
 	}
 }
 
+func TestAGroupIdentifierNeverCountsAsAPersonReading(t *testing.T) {
+	_, tenant, device, receipts := receiptFixture(t)
+	ctx := context.Background()
+	if _, err := receipts.Insert(ctx, ack(tenant, device, "123@g.us", "", "", false,
+		domain.ReceiptRead, time.Now(), "M1")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := receipts.AcksForPage(ctx, tenant, device, []string{"M1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["M1"].Read != 0 || got["M1"].ReadAt != nil {
+		t.Fatalf("group became a reader: %+v", got["M1"])
+	}
+}
+
 // TestOurOwnAcknowledgementIsNotSomebodyElseReceivingIt is the bug that is on
 // screen right now.
 //

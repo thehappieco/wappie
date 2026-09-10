@@ -57,13 +57,54 @@ describe('hosted browser storage transport', () => {
   it('keeps first-party authorization when an acknowledged iframe store later disappears', async () => {
     const bridge = await import('../src/state/sessionBridge')
     const login = await loginFixture()
-    expect(await bridge.rememberBrowserSession(login)).toBe('shared')
-    expect(remote?.id).toBe(login.id)
+    expect(await bridge.rememberBrowserSession(login)).toBe('local')
+    await vi.waitFor(() => expect(remote?.id).toBe(login.id))
     expect((await loadLocalSession())?.id).toBe(login.id)
     remote = null
     const restored = await bridge.readBrowserSession()
     expect(restored?.id).toBe(login.id)
     expect(restored?.accountKey.key.extractable).toBe(false)
+  })
+
+  it('opens and restores the durable local login while the optional bridge is still connecting', async () => {
+    const bridge = await import('../src/state/sessionBridge')
+    const login = await loginFixture()
+    const deliver = post
+    const pending: Record<string, unknown>[] = []
+    post = message => { pending.push(message) }
+    expect(await bridge.rememberBrowserSession(login)).toBe('local')
+    expect(remote).toBeNull()
+    expect((await bridge.readBrowserSession())?.id).toBe(login.id)
+    expect(pending.some(message => message.hello)).toBe(true)
+    post = deliver
+    pending.forEach(deliver)
+    await vi.waitFor(() => expect(remote?.id).toBe(login.id))
+  })
+
+  it('shows a fresh sign-in without contacting a bridge that has no generation marker', async () => {
+    const bridge = await import('../src/state/sessionBridge')
+    const delivery = vi.fn(post)
+    post = delivery
+    expect(await bridge.readBrowserSession()).toBeNull()
+    expect(delivery).not.toHaveBeenCalled()
+  })
+
+  it('keeps a rotated token last when an earlier bridge save is delayed', async () => {
+    const bridge = await import('../src/state/sessionBridge')
+    const first = await loginFixture()
+    const next = { ...first, token: 'synthetic-rotated-token', expiresAt: first.expiresAt + 1000 }
+    const deliver = post
+    const pending: Record<string, unknown>[] = []
+    post = message => { if (message.operation === 'save') pending.push(message); else deliver(message) }
+    await bridge.rememberBrowserSession(first)
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
+    await bridge.rememberBrowserSession(next)
+    expect((await bridge.readBrowserSession())?.token).toBe(next.token)
+    expect(pending).toHaveLength(1)
+    deliver(pending.shift()!)
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
+    deliver(pending.shift()!)
+    await vi.waitFor(() => expect(remote?.token).toBe(next.token))
   })
 
   it('clears both acknowledged and local copies on logout', async () => {

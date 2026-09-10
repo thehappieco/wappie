@@ -110,6 +110,12 @@ type Client interface {
 	// exchange — the same shape media retry uses for a media key.
 	JoinGroupWithInvite(ctx context.Context, jid, inviter types.JID, code string, expiration int64) error
 
+	CreateGroup(ctx context.Context, req whatsmeow.ReqCreateGroup) (*types.GroupInfo, error)
+	UpdateGroupParticipants(ctx context.Context, jid types.JID, participants []types.JID, action whatsmeow.ParticipantChange) ([]types.GroupParticipant, error)
+	LeaveGroup(ctx context.Context, jid types.JID) error
+	IsOnWhatsApp(ctx context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error)
+	BuildPollCreation(name string, options []string, selectableCount int) *waE2E.Message
+
 	// Chat settings.
 	SetDisappearingTimer(ctx context.Context, chat types.JID, timer time.Duration, settingTS time.Time) error
 

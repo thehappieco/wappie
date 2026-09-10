@@ -8,6 +8,7 @@ interface BridgeRequest { channel: string; request: string; operation: Operation
 const changes = new Set<(change: SessionChange) => void>()
 const clearedLogins = new Set<string>()
 let bridge: Promise<HTMLIFrameElement> | undefined
+let bridgeSaves: Promise<void> = Promise.resolve()
 
 function browserEpoch(): string | undefined {
   if (typeof document === 'undefined') return undefined
@@ -73,6 +74,7 @@ function connectBridge(): Promise<HTMLIFrameElement> {
 
 async function requestBridge(operation: Operation, input: { login?: BrowserLogin; id?: string } = {}): Promise<BrowserLogin | null> {
   const iframe = await connectBridge()
+  if (operation === 'save' && input.login && browserSessionWasCleared(input.login.id, input.login.epoch)) throw new Error('browser session was cleared')
   const request = crypto.randomUUID()
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => { cleanup(); reject(new Error('session bridge timed out')) }, 6000)
@@ -90,31 +92,54 @@ async function requestBridge(operation: Operation, input: { login?: BrowserLogin
   })
 }
 
+function saveToBridge(login: BrowserLogin): Promise<BrowserLogin | null> {
+  // A later password rotation must remain the last copy in the bridge even
+  // when encryption or transport of an earlier token is slower.
+  const pending = bridgeSaves.then(() => {
+    if (browserSessionWasCleared(login.id, login.epoch)) throw new Error('browser session was cleared')
+    return requestBridge('save', { login })
+  })
+  bridgeSaves = pending.then(() => {}, () => {})
+  return pending
+}
+
 export async function rememberBrowserSession(login: BrowserLogin): Promise<'shared' | 'local'> {
   if (browserSessionWasCleared(login.id, login.epoch)) throw new Error('browser session was cleared')
   if (sharedBrowserOrigin() && login.epoch) writeBrowserEpoch(login.epoch, Math.max(1, Math.min(1209600, Math.floor((login.expiresAt - Date.now()) / 1000))))
-  let shared = false
-  if (sharedBrowserOrigin() && login.epoch) {
-    try {
-      await requestBridge('save', { login })
-      shared = true
-    } catch { /* Browser policies may block iframe storage. */ }
-  }
-  if (browserSessionWasCleared(login.id, login.epoch)) throw new Error('browser session was cleared')
   // Successful iframe writes do not imply durable, shared storage. WebKit can
   // partition or discard it even between these same-site subdomains. Keep an
   // origin-local copy for reload/payment returns, with the same logout fences.
-  try { await saveLocalSession(login) }
-  catch (error) { if (!shared) throw error }
+  let local = false
+  let storageError: unknown
+  try { await saveLocalSession(login); local = true }
+  catch (error) { storageError = error }
   if (browserSessionWasCleared(login.id, login.epoch)) {
     await clearLocalSession(login.id).catch(() => {})
     throw new Error('browser session was cleared')
   }
-  return shared ? 'shared' : 'local'
+  if (local) {
+    // App and console now share this first-party origin. An optional bridge
+    // outage must not add its network timeout to an already durable login.
+    if (sharedBrowserOrigin() && login.epoch) void saveToBridge(login).catch(() => {})
+    return 'local'
+  }
+  if (sharedBrowserOrigin() && login.epoch) {
+    await saveToBridge(login)
+    if (browserSessionWasCleared(login.id, login.epoch)) throw new Error('browser session was cleared')
+    return 'shared'
+  }
+  throw storageError
 }
 
 export async function readBrowserSession(): Promise<BrowserLogin | null> {
-  if (sharedBrowserOrigin()) {
+  try {
+    const local = await loadLocalSession()
+    if (local && !browserSessionWasCleared(local.id, local.epoch)) return local
+    if (local) await clearLocalSession(local.id)
+  } catch { /* A legacy shared copy may still be readable. */ }
+  // With no generation cookie there cannot be an accepted shared login.
+  // Fresh visits need no iframe/network round trip to display the sign-in form.
+  if (sharedBrowserOrigin() && browserEpoch()) {
     try {
       const login = await requestBridge('read')
       if (login) {
@@ -125,6 +150,10 @@ export async function readBrowserSession(): Promise<BrowserLogin | null> {
           void requestBridge('clear', { id: login.id }).catch(() => {})
           return loadLocalSession()
         }
+        // Upgrade a legacy shared-only login to the canonical first-party
+        // storage path; no key export or new authorization is involved.
+        await saveLocalSession(login).catch(() => {})
+        if (browserSessionWasCleared(login.id, login.epoch)) return null
         return login
       }
     } catch { /* Same-origin fallback still survives refresh and payment returns. */ }

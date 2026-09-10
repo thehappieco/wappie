@@ -28,18 +28,21 @@ export const loadingGroup = reactive({ key: '' })
 export async function loadGroup(chatKey: string, refresh = true): Promise<void> {
   const conn = connection()
   if (!conn || !chatKey) return
+  const deviceID = state.deviceID
+  const tenantID = state.tenantID
+  const stillCurrent = () => connection() === conn && state.deviceID === deviceID && state.tenantID === tenantID
   loadingGroup.key = chatKey
   try {
     const g = await conn.request<P.Group>(
       P.TypeGroupGet,
-      { device_id: state.deviceID, chat: chatKey, refresh } satisfies P.GroupRequest,
+      { device_id: deviceID, chat: chatKey, refresh } satisfies P.GroupRequest,
       P.TypeGroupFrame,
     )
-    groups.set(chatKey, g)
+    if (stillCurrent()) groups.set(chatKey, g)
   } catch (err) {
-    state.actionError = err instanceof Error ? err.message : String(err)
+    if (stillCurrent()) state.actionError = err instanceof Error ? err.message : String(err)
   } finally {
-    if (loadingGroup.key === chatKey) loadingGroup.key = ''
+    if (stillCurrent() && loadingGroup.key === chatKey) loadingGroup.key = ''
   }
 }
 

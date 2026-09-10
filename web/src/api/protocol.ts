@@ -136,6 +136,7 @@ export interface DeviceInfo {
   last_connected_at?: string
   paused?: boolean
   can_manage?: boolean
+  can_send?: boolean
   profile_key?: string
 }
 
@@ -760,8 +761,8 @@ export interface MessageReaction {
 /**
  * MessageReader is one party's acknowledgements and which revision they saw.
  *
- * `confirmed` is the part a UI must not round off: when it is false the higher
- * revision was inferred by comparing clocks that were never synchronised, and
+ * `confirmed` is the part a UI must not round off: when it is false the
+ * receipt does not identify a version unambiguously, and
  * rendering it as fact claims someone read a correction they may never have
  * been shown.
  */
@@ -798,23 +799,14 @@ export interface MessageReader {
   revisions?: ReaderRevision[]
 }
 
-/**
- * ReaderRevision is what one party acknowledged about ONE version.
- *
- * `delivered` is exact: each version is a stanza with a WhatsApp id of its own
- * and collects its own delivery receipts. `read` and `played` are usually exact
- * too — editing a message makes it unread again, and reading it afresh sends a
- * receipt naming the edit's own stanza. They fall back to inference only for
- * our own devices, which mark a line read under the original's id whatever
- * version is on screen; `confirmed` is what tells the two apart, and means
- * nothing without `read`.
- */
+/** Explicit receipts for one version. Reading and playback have independent evidence flags. */
 export interface ReaderRevision {
   revision: number
   delivered?: string
   read?: string
   played?: string
   confirmed?: boolean
+  played_confirmed?: boolean
 }
 
 export interface ReaderDevice {
@@ -1184,6 +1176,9 @@ export interface GroupChange {
 }
 
 export interface Group {
+  permissions_known?: boolean
+  can_manage?: boolean
+  is_member?: boolean
   chat_key: string
   members: GroupMember[]
   changes?: GroupChange[]
@@ -1289,3 +1284,18 @@ export interface Payload {
   buttons?: string[]
   poll_vote?: PollVote
 }
+
+export const TypeChatStart = 'chat.start'
+export const TypeChatStarted = 'chat.started'
+export const TypeGroupCreate = 'group.create'
+export const TypeGroupParticipants = 'group.participants.update'
+export const TypeGroupLeave = 'group.leave'
+export const TypeGroupChanged = 'group.changed'
+export const TypePollCreate = 'message.poll.create'
+export interface ChatStartRequest { device_id: string; phone: string }
+export interface ChatStarted { chat: string }
+export interface GroupCreateRequest { device_id: string; name: string; participants: string[] }
+export interface GroupParticipantsRequest { device_id: string; chat: string; action: 'add' | 'remove'; participants: string[] }
+export interface GroupLeaveRequest { device_id: string; chat: string }
+export interface GroupChanged { chat: string; action: 'create' | 'add' | 'remove' | 'leave'; participants?: { jid: string; error?: number }[]; refreshed: boolean }
+export interface PollCreateRequest { device_id: string; chat: string; id?: string; question: string; options: string[]; selectable_count: number }

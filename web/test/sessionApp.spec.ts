@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   state: {} as Record<string, unknown>, start: vi.fn(), stop: vi.fn(), restore: vi.fn(),
   opened: undefined as ((session: Session) => void) | undefined,
   cleared: undefined as ((change: { id: string; kind: 'cleared' }) => void) | undefined,
+  isOpening: undefined as (() => boolean) | undefined,
 }))
 vi.mock('../src/ui/i18n', () => ({ t: (value: string) => value }))
 vi.mock('../src/ui/preferences', () => ({ applyPrivacyAppearance() {} }))
@@ -59,8 +60,9 @@ async function mount() {
   // lifecycle with a no-op renderer. The fence lives in App, not its children.
   const app = renderer.createApp({ ...App, render: () => null })
   app.provide(ssrContextKey, {})
-  const instance = app.mount(node()) as unknown as { $: { setupState: { opened: (session: Session) => void } } }
+  const instance = app.mount(node()) as unknown as { $: { setupState: { opened: (session: Session) => void; opening: boolean } } }
   mocks.opened = instance.$.setupState.opened
+  mocks.isOpening = () => instance.$.setupState.opening
   unmount = () => app.unmount()
   await settle()
 }
@@ -78,10 +80,12 @@ describe('application login lifetime', () => {
     let release!: () => void
     const fresh = session(crypto.randomUUID(), () => new Promise<void>(resolve => { release = resolve }))
     mocks.opened!(fresh)
+    expect(mocks.isOpening!()).toBe(true)
     mocks.cleared!({ id: old.persistenceID!, kind: 'cleared' })
     release()
     await settle()
     expect(mocks.start).toHaveBeenCalledWith(fresh)
+    expect(mocks.isOpening!()).toBe(false)
     expect(fresh.dispose).not.toHaveBeenCalled()
   })
 
@@ -90,10 +94,12 @@ describe('application login lifetime', () => {
     let release!: () => void
     const fresh = session(crypto.randomUUID(), () => new Promise<void>(resolve => { release = resolve }))
     mocks.opened!(fresh)
+    expect(mocks.isOpening!()).toBe(true)
     mocks.cleared!({ id: fresh.persistenceID!, kind: 'cleared' })
     release()
     await settle()
     expect(mocks.start).not.toHaveBeenCalled()
+    expect(mocks.isOpening!()).toBe(false)
     expect(fresh.dispose).toHaveBeenCalledOnce()
   })
 })

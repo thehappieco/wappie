@@ -14,6 +14,9 @@ import AvatarBadge from './AvatarBadge.vue'
 import DeviceAvatar from './DeviceAvatar.vue'
 import QuietSwitch from './QuietSwitch.vue'
 import AppearanceMenu from './AppearanceMenu.vue'
+import NewConversationDialog from './NewConversationDialog.vue'
+import { canConversationAction } from '../state/conversationActions'
+import { TypeChatStart, TypeGroupCreate } from '../api/protocol'
 
 /**
  * What to call one device.
@@ -108,6 +111,8 @@ const pickerOpen = ref(false)
 const switching = ref('')
 const switchError = ref('')
 const canSwitch = computed(() => state.connected && !state.initializingConnection)
+const creatingConversation = ref(false)
+const canCreateConversation = computed(() => canConversationAction(TypeChatStart) || canConversationAction(TypeGroupCreate))
 
 function canRead(device: DeviceInfo): boolean {
   return credential()?.kind === 'api_key' || readableDevices().has(device.id) ||
@@ -183,7 +188,11 @@ function openConsole() {
     </div>
 
     <div class="list-heading">
-      <h1>{{ t('Conversas') }}</h1><AppearanceMenu />
+      <h1>{{ t('Conversas') }}</h1>
+      <button v-if="canCreateConversation" type="button" class="icon-btn" :aria-label="t('Nova conversa ou grupo')" :title="t('Nova conversa ou grupo')" @click="creatingConversation = true">
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11v6a3 3 0 0 1-3 3H8l-5 2V6a3 3 0 0 1 3-3h7M19 2v6m-3-3h6" /></svg>
+      </button>
+      <AppearanceMenu />
     </div>
 
     <div class="banner" v-if="state.unreadable"> {{ t('Sua conta não tem a chave deste aparelho, então o conteúdo continua selado. Quem tem acesso a ele precisa conceder o seu.') }} </div>
@@ -265,5 +274,6 @@ function openConsole() {
       </div>
       <p v-if="switchError" class="alert" role="alert">{{ switchError }}</p>
     </dialog>
+    <NewConversationDialog v-if="creatingConversation" @close="creatingConversation = false" />
   </aside>
 </template>

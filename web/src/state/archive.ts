@@ -221,12 +221,8 @@ export interface ReaderView {
 /**
  * What one party acknowledged about ONE version of a message.
  *
- * `delivered` is exact — each version is a stanza with a WhatsApp id of its own
- * and collects its own delivery receipts. `read` and `played` are usually exact
- * too: editing a message makes it unread again, and reading it afresh sends a
- * receipt naming the edit's own stanza. They are inferred only for our own
- * devices, which mark a line read under the original's id whatever version is
- * on screen. `confirmed` tells the two apart and means nothing without `read`.
+ * Receipt IDs establish per-version delivery, reading and playback. Ambiguous
+ * receipts are not shown as evidence for a version.
  */
 export interface ReaderRevisionView {
   revision: number
@@ -234,6 +230,7 @@ export interface ReaderRevisionView {
   read?: Date
   played?: Date
   confirmed: boolean
+  playedConfirmed?: boolean
 }
 
 export interface ReaderDeviceView {
@@ -1271,7 +1268,7 @@ export async function refreshChats(): Promise<void> {
   await loadChats()
 }
 
-async function loadChats(): Promise<void> {
+export async function loadChats(): Promise<void> {
   const context = archiveContext()
   if (!context) return
   const generation = ++chatsGeneration
@@ -1628,6 +1625,7 @@ export function revisionsOf(
       read: r.read ? new Date(r.read) : undefined,
       played: r.played ? new Date(r.played) : undefined,
       confirmed: Boolean(r.confirmed),
+      playedConfirmed: Boolean(r.played_confirmed),
     })
   }
   return out

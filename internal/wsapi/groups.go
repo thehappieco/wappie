@@ -117,14 +117,18 @@ func (s *session) handleGroupInfo(ctx context.Context, f Frame) {
 	}
 	key := chat.ToNonAD().String()
 
-	out := Group{ChatKey: key}
+	out := Group{ChatKey: key, Members: []GroupMember{}}
 	if req.Refresh {
 		// Best effort. A device that is not connected, or a group WhatsApp
 		// declines to describe, still gets whatever the archive holds — which
 		// is the whole point of holding it.
 		if dev, running := s.srv.cfg.Registry.Get(device.String()); running {
 			if info, err := dev.Client().GetGroupInfo(ctx, chat); err == nil && info != nil {
-				if err := s.srv.cfg.Router.SnapshotGroup(ctx, tenant, device, info); err != nil {
+				out.PermissionsKnown = dev.Identity().Known()
+				out.IsMember, out.CanManage = groupMembership(info, dev.Identity())
+				if s.srv.cfg.Router == nil {
+					out.Refreshed = false
+				} else if err := s.srv.cfg.Router.SnapshotGroup(ctx, tenant, device, info); err != nil {
 					s.log.Debug("could not snapshot a group", "chat", key, "error", err)
 				} else {
 					out.Refreshed = true

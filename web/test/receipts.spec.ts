@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { MessageAcks, ReceiptEvent } from '../src/api/protocol'
 import { applyReceiptMode } from '../src/state/archive'
 import { absorbReceipts, acksFor, applyReceipt, forgetReceipts } from '../src/state/receipts'
+import { tickReport } from '../src/state/ticks'
 
 const holding = () => true
 
@@ -60,6 +61,55 @@ describe('acknowledgements a page carried', () => {
 })
 
 describe('counting people rather than events', () => {
+  it.each([false, true])('unifies explicit phone and LID evidence in either arrival order (%s)', (reverse) => {
+    const pn = '5511999999999@s.whatsapp.net'
+    const lid = '91938170638392@lid'
+    const events = [
+      receipt({ kind: 'read', reader_key: pn, reader_person: pn }),
+      receipt({ kind: 'read', reader_key: `${lid.split('@')[0]}:2@lid`, reader_person: lid, reader_lid: lid, reader_pn: pn }),
+    ]
+    for (const event of reverse ? events.reverse() : events) applyReceipt(event, holding)
+    absorbReceipts([{ wa_id: 'M1', read: 1, delivered: 2 }])
+    expect(acksFor('M1').read).toBe(1)
+    expect(tickReport({ fromMe: true, type: 'text', viewOnce: false }, acksFor('M1'), 2).tick).toBe('delivered')
+  })
+
+  it('corrects earlier messages when another receipt links aliases later', () => {
+    const pn = '5511999999999@s.whatsapp.net'
+    const lid = '91938170638392@lid'
+    applyReceipt(receipt({ kind: 'read', reader_person: pn }), holding)
+    applyReceipt(receipt({ kind: 'read', reader_person: lid }), holding)
+    expect(acksFor('M1').read).toBe(2)
+    applyReceipt(receipt({ wa_ids: ['M2'], reader_person: lid, reader_lid: lid, reader_pn: pn }), holding)
+    expect(acksFor('M1').read).toBe(1)
+    expect(acksFor('M2').read).toBe(0)
+  })
+
+  it('accepts a corrected server total instead of retaining a previously duplicated count', () => {
+    absorbReceipts([{ wa_id: 'M1', delivered: 2, read: 2 }])
+    absorbReceipts([{ wa_id: 'M1', delivered: 1, read: 1 }])
+    expect(acksFor('M1').read).toBe(1)
+    expect(acksFor('M1').delivered).toBe(1)
+  })
+
+  it('does not join unrelated namespaces merely because their digits match', () => {
+    applyReceipt(receipt({ kind: 'read', reader_person: '111@lid' }), holding)
+    applyReceipt(receipt({ kind: 'read', reader_person: '111@s.whatsapp.net' }), holding)
+    expect(acksFor('M1').read).toBe(2)
+  })
+
+  it('normalizes device suffixes even if reader_person was omitted', () => {
+    applyReceipt(receipt({ kind: 'read', reader_person: undefined, reader_key: '111:2@lid' }), holding)
+    applyReceipt(receipt({ kind: 'read', reader_person: undefined, reader_key: '111:4@lid' }), holding)
+    expect(acksFor('M1').read).toBe(1)
+  })
+
+  it('does not count a group or a missing reader as a person', () => {
+    applyReceipt(receipt({ kind: 'read', reader_person: '12036300000@g.us', reader_key: '12036300000@g.us' }), holding)
+    applyReceipt(receipt({ kind: 'read', reader_person: '', reader_key: '' }), holding)
+    expect(acksFor('M1').read).toBe(0)
+  })
+
   // The same person's phone and laptop both acknowledge. Counting the frames
   // would make a group of eight report eleven readers, and a tick waiting for
   // everyone would wait on a number that does not exist.

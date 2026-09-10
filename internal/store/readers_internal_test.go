@@ -71,15 +71,11 @@ func TestOneDevicesDeliveryIsNotProofAboutAnother(t *testing.T) {
 			"a 1 here means the laptop's delivery was folded in before attribution",
 			r.ConfirmedRevision)
 	}
-	if r.Confirmed {
-		t.Error("Confirmed is true. The reader is being told, as fact, that this person " +
-			"had the correction on screen. Nothing in the archive says that: their " +
-			"phone acknowledged only the original, and the claim came from a delivery " +
-			"to a different device.")
+	if !r.Confirmed || r.SawRevision != 0 {
+		t.Errorf("confirmed=%v revision=%d, want only the original named by the phone's receipt", r.Confirmed, r.SawRevision)
 	}
-	if r.SawRevision != 1 {
-		t.Errorf("SawRevision = %d, want 1 — by the clock the edit was current when "+
-			"they read, which is the inference, reported as one", r.SawRevision)
+	if r.Revisions[1].Read != nil {
+		t.Fatal("the laptop's delivery invented a read of the correction")
 	}
 }
 
@@ -299,8 +295,7 @@ func TestOurOwnDevicesIdsSayNothingAboutRevisions(t *testing.T) {
 	// reading them as "you read the original" would be reading our own
 	// simplification back as a fact about what somebody looked at.
 	//
-	// So our devices keep the older treatment: attributed from what they had
-	// been delivered, and reported as inferred.
+	// Preserve the message-level read, without assigning it to a version by time.
 	const mine = "224437861388494:9@lid"
 
 	readers := readersOf(editedTwice(), []ReceiptRow{
@@ -316,12 +311,54 @@ func TestOurOwnDevicesIdsSayNothingAboutRevisions(t *testing.T) {
 		t.Errorf("our own read was placed on revision 0 at %v because the id said "+
 			"ORIG — but this client always says ORIG", revs[0].Read)
 	}
-	if revs[1].Read == nil {
-		t.Fatal("our own read landed nowhere; it should have been attributed")
+	if revs[1].Read != nil {
+		t.Fatal("delivery of the correction does not establish that it was read")
 	}
-	if !revs[1].Confirmed {
-		t.Error("the attribution is hedged, but this device acknowledged " +
-			"receiving the correction before it reported reading")
+	if readers[0].Read == nil || readers[0].Confirmed || revs[1].Confirmed {
+		t.Error("keep the real read receipt without claiming a confirmed version")
+	}
+}
+
+func TestUnknownReceiptStanzaNeverMarksAnyVersionReadOrPlayed(t *testing.T) {
+	got := perRevision(versionTimes(editedTwice()), map[string]time.Time{"EDIT": at(11)},
+		[]ack{{WAID: "UNRELATED", TS: at(12)}}, []ack{{WAID: "UNRELATED", TS: at(13)}}, true)
+	for _, revision := range got {
+		if revision.Read != nil || revision.Played != nil || revision.Confirmed || revision.PlayedConfirmed {
+			t.Fatalf("unknown receipt invented evidence: %+v", revision)
+		}
+	}
+}
+
+func TestDeliveryAndPlaybackAreNotReadReceipts(t *testing.T) {
+	readers := readersOf(editedTwice(), []ReceiptRow{
+		{ReaderKey: "111@lid", WAID: "EDIT", Kind: domain.ReceiptDelivered, TS: at(11)},
+		{ReaderKey: "222@lid", WAID: "EDIT", Kind: domain.ReceiptPlayed, TS: at(12)},
+	})
+	if len(readers) != 2 {
+		t.Fatalf("readers=%d, want two different people", len(readers))
+	}
+	for _, reader := range readers {
+		if reader.Read != nil || reader.Confirmed {
+			t.Fatalf("non-read receipt became a read: %+v", reader)
+		}
+		for _, revision := range reader.Revisions {
+			if revision.Read != nil || revision.Confirmed {
+				t.Fatalf("non-read receipt became a version read: %+v", revision)
+			}
+		}
+	}
+	if !readers[1].Revisions[1].PlayedConfirmed || readers[1].Revisions[1].Played == nil {
+		t.Fatal("the explicit playback receipt was lost")
+	}
+}
+
+func TestAGroupIdentifierAndRetryCannotBecomeReaders(t *testing.T) {
+	readers := readersOf(editedTwice(), []ReceiptRow{
+		{ReaderKey: "123@g.us", WAID: "ORIG", Kind: domain.ReceiptRead, TS: at(1)},
+		{ReaderKey: "111@lid", WAID: "ORIG", Kind: domain.ReceiptRetry, TS: at(1)},
+	})
+	if len(readers) != 0 {
+		t.Fatalf("invalid reader evidence survived: %+v", readers)
 	}
 }
 

@@ -2,6 +2,7 @@ package ingest_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 
 	"whatserver2/internal/crypto/seal"
+	"whatserver2/internal/ingest"
 	"whatserver2/internal/store"
 )
 
@@ -88,10 +90,11 @@ func TestQuietGroupsAreFoundAndNamed(t *testing.T) {
 
 	quiet := types.JID{User: "120363428763643519", Server: types.GroupServer}
 	named := types.JID{User: "120363401443932789", Server: types.GroupServer}
+	participants := []types.GroupParticipant{{JID: types.NewJID("111", types.HiddenUserServer)}}
 
 	n := r.SyncGroups(ctx, f.tenant, f.device, []*types.GroupInfo{
-		{JID: quiet, GroupName: types.GroupName{Name: "Vizinhos"}},
-		{JID: named, GroupName: types.GroupName{Name: "Trabalho"}},
+		{JID: quiet, GroupName: types.GroupName{Name: "Vizinhos"}, Participants: participants},
+		{JID: named, GroupName: types.GroupName{Name: "Trabalho"}, Participants: participants},
 		nil, // a nil in the list must not take the pass down with it
 		{},  // nor an entry with no JID
 	})
@@ -132,9 +135,85 @@ func TestQuietGroupsAreFoundAndNamed(t *testing.T) {
 
 	// Idempotent: it runs at every boot.
 	if again := r.SyncGroups(ctx, f.tenant, f.device, []*types.GroupInfo{
-		{JID: quiet, GroupName: types.GroupName{Name: "Vizinhos"}},
+		{JID: quiet, GroupName: types.GroupName{Name: "Vizinhos"}, Participants: participants},
 	}); again != 1 {
 		t.Errorf("a second pass recorded %d, want 1", again)
+	}
+}
+
+func TestGroupSnapshotWithoutAStoreDoesNotReportRefreshed(t *testing.T) {
+	f := newFixture(t)
+	r, err := ingest.NewRouter(ingest.RouterConfig{
+		Lookup: func(string) (ingest.DeviceInfo, bool) { return ingest.DeviceInfo{TenantID: f.tenant}, true },
+		Keys:   f.keys, KeyStore: f.keys, Messages: store.NewMessages(f.pool), Log: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := &types.GroupInfo{JID: types.NewJID("120363111", types.GroupServer),
+		Participants: []types.GroupParticipant{{JID: types.NewJID("111", types.HiddenUserServer)}}}
+	if err := r.SnapshotGroup(context.Background(), f.tenant, f.device, group); err == nil {
+		t.Fatal("missing store reported a successful composition snapshot")
+	}
+	if got := r.SyncGroups(context.Background(), f.tenant, f.device, []*types.GroupInfo{group}); got != 0 {
+		t.Fatalf("refreshed=%d, want zero without a store", got)
+	}
+}
+
+func TestPartialGroupSnapshotsPreserveMembersAndTheirHistory(t *testing.T) {
+	f := newFixture(t)
+	r := f.router(t)
+	ctx := context.Background()
+	group := types.NewJID("120363111", types.GroupServer)
+	participants := []types.GroupParticipant{
+		{JID: types.NewJID("111", types.HiddenUserServer), IsAdmin: true},
+		{JID: types.NewJID("222", types.HiddenUserServer)},
+		{JID: types.NewJID("333", types.HiddenUserServer)},
+	}
+	complete := &types.GroupInfo{JID: group, ParticipantCount: 3, Participants: participants}
+	if got := r.SyncGroups(ctx, f.tenant, f.device, []*types.GroupInfo{complete}); got != 1 {
+		t.Fatalf("complete snapshot count=%d, want one", got)
+	}
+	groups := store.NewGroups(f.pool)
+	before, err := groups.Changes(ctx, f.tenant, f.device, group.String(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		info *types.GroupInfo
+	}{
+		{"nil", nil},
+		{"empty", &types.GroupInfo{JID: group}},
+		{"missing participant", &types.GroupInfo{JID: group, ParticipantCount: 3, Participants: participants[:2]}},
+		{"failed addition", &types.GroupInfo{JID: group, Participants: []types.GroupParticipant{participants[0], {JID: participants[1].JID, Error: 403}}}},
+		{"unknown participant", &types.GroupInfo{JID: group, Participants: []types.GroupParticipant{participants[0], {}}}},
+		{"duplicate participant", &types.GroupInfo{JID: group, ParticipantCount: 3, Participants: []types.GroupParticipant{participants[0], participants[1], participants[1]}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := r.SnapshotGroup(ctx, f.tenant, f.device, tc.info); err == nil {
+				t.Fatal("partial composition was accepted")
+			}
+			if got := r.SyncGroups(ctx, f.tenant, f.device, []*types.GroupInfo{tc.info}); got != 0 {
+				t.Fatalf("refreshed=%d for a partial composition", got)
+			}
+			current, err := groups.Participants(ctx, f.tenant, f.device, group.String())
+			if err != nil || len(current) != 3 {
+				t.Fatalf("members were removed: %+v err=%v", current, err)
+			}
+			changes, err := groups.Changes(ctx, f.tenant, f.device, group.String(), 20)
+			if err != nil || len(changes) != len(before) {
+				t.Fatalf("partial data invented membership changes: %+v err=%v", changes, err)
+			}
+		})
+	}
+	// A complete smaller composition is a real removal and must still apply.
+	if got := r.SyncGroups(ctx, f.tenant, f.device, []*types.GroupInfo{{JID: group, ParticipantCount: 2, Participants: participants[:2]}}); got != 1 {
+		t.Fatalf("complete removal snapshot count=%d, want one", got)
+	}
+	current, err := groups.Participants(ctx, f.tenant, f.device, group.String())
+	if err != nil || len(current) != 2 {
+		t.Fatalf("complete composition was not persisted: %+v err=%v", current, err)
 	}
 }
 

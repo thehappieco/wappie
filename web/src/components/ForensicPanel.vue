@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 
 import { state } from '../state/archive'
 import { playable as isPlayable } from '../state/ticks'
+import { receiptEvidence } from '../state/receiptEvidence'
 import ReadersModal from './ReadersModal.vue'
 import AppIcon from './AppIcon.vue'
 import { stamp, typeLabel } from '../ui/format'
@@ -36,18 +37,11 @@ const readersFor = ref<number | undefined>(undefined)
 /** Whether this message can produce a played receipt at all. */
 const playable = computed(() => (message.value ? isPlayable(message.value) : false))
 
-/**
- * receiptLabel summarises one version's receipts, on the button that opens them.
- *
- * Delivery leads, because it is the exact half: every version is a stanza with
- * a WhatsApp id of its own and collects its own delivery receipts. The read
- * count is attributed — a read receipt names the thread, not the revision — and
- * the dialog is where that distinction is drawn out.
- */
+/** Per-version totals count explicit evidence only, matching the readers dialog. */
 function receiptLabel(revision: number): string {
   const rows = (history.value?.readers ?? []).filter((r) => !r.fromMe)
   const got = rows.filter((r) => r.revisions.get(revision)?.delivered).length
-  const read = rows.filter((r) => r.revisions.get(revision)?.read).length
+  const read = rows.filter((r) => receiptEvidence(r.revisions.get(revision)).read).length
   if (!rows.length) return t('nenhum recibo para esta versão')
   return t('{delivered} receberam · {read} leram', { delivered: got, read })
 }

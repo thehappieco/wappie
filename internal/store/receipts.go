@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/domain"
 	"whatserver2/internal/pg"
@@ -430,6 +431,10 @@ func (r *Receipts) AcksForPage(ctx context.Context, tenant, device uuid.UUID,
 					acks.ReadByUs = true
 					out[row.WAID] = acks
 				}
+				continue
+			}
+			jid, err := types.ParseJID(row.ReaderKey)
+			if err != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer) {
 				continue
 			}
 

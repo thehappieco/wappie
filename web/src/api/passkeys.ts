@@ -1,5 +1,5 @@
 import { t } from '../ui/i18n'
-import { AuthError, authRequest, finishSession, signOut, type MeReply, type SessionReply, type SignedIn } from './auth'
+import { AuthError, authRequest, finishSession, signOut, type MeReply, type SessionReply, type SignedIn, type SignInStep } from './auth'
 import { derive, unwrapPrivateKey, type KDFParams } from '../crypto/account'
 import { fromBase64, toBase64, type Bytes } from '../crypto/bytes'
 import { unwrapPasskey, wrapPasskey } from '../crypto/passkey'
@@ -66,11 +66,13 @@ export async function registerPasskey(input: { serverURL: string; token: string;
   } finally { privateKey.fill(0); prf?.fill(0) }
 }
 
-export async function signInWithPasskey(input: { serverURL: string; tenantID?: string; signal?: AbortSignal }): Promise<SignedIn> {
+export async function signInWithPasskey(input: { serverURL: string; tenantID?: string; signal?: AbortSignal; onProgress?: (step: SignInStep) => void }): Promise<SignedIn> {
   input.signal?.throwIfAborted()
   if (!supportsPasskeys()) throw new Error(t('Este navegador não oferece passkeys. Você pode entrar com a senha.'))
+  input.onProgress?.('checking')
   const flow = await authRequest<Flow<RequestJSON>>(input.serverURL, '/v1/auth/passkeys/login/options', {})
   input.signal?.throwIfAborted()
+  input.onProgress?.('passkey')
   const credential = publicCredential(await navigator.credentials.get({ publicKey: requestOptions(flow.publicKey, fromBase64(flow.prf_salt)), signal: input.signal }))
   const prf = prfOutput(credential)
   if (!prf) throw new Error(unsupported())
@@ -78,10 +80,12 @@ export async function signInWithPasskey(input: { serverURL: string; tenantID?: s
   let privateKey: Bytes | undefined
   try {
     input.signal?.throwIfAborted()
+    input.onProgress?.('authenticating')
     const login = await authRequest<SessionReply & { passkey: { wrapped_usk: string } }>(input.serverURL, '/v1/auth/passkeys/login/finish',
       { flow_id: flow.flow_id, credential: credentialJSON(credential) })
     reply = login
     input.signal?.throwIfAborted()
+    input.onProgress?.('opening')
     privateKey = await unwrapPasskey(fromBase64(login.passkey.wrapped_usk), prf, { rpID: flow.rp_id, userID: login.user.id,
       credentialID: base64url(new Uint8Array(credential.rawId)) })
     input.signal?.throwIfAborted()

@@ -1,0 +1,20 @@
+{
+  "Criar enquete": ["Create poll", "Crear encuesta", "Créer un sondage", "Umfrage erstellen"],
+  "Faça uma pergunta e deixe a conversa escolher.": ["Ask a question and let the conversation decide.", "Haz una pregunta y deja que la conversación decida.", "Posez une question et laissez la conversation décider.", "Stellen Sie eine Frage und lassen Sie den Chat entscheiden."],
+  "Pergunta da enquete": ["Poll question", "Pregunta de la encuesta", "Question du sondage", "Umfragefrage"],
+  "O que você quer perguntar?": ["What would you like to ask?", "¿Qué quieres preguntar?", "Que souhaitez-vous demander ?", "Was möchten Sie fragen?"],
+  "Opções de resposta": ["Answer options", "Opciones de respuesta", "Choix de réponse", "Antwortmöglichkeiten"],
+  "Adicione de 2 a 12 opções diferentes, com até 100 caracteres cada.": ["Add 2 to 12 different options, up to 100 characters each.", "Añade entre 2 y 12 opciones diferentes, de hasta 100 caracteres cada una.", "Ajoutez de 2 à 12 choix différents, de 100 caractères maximum chacun.", "Fügen Sie 2 bis 12 unterschiedliche Optionen mit jeweils bis zu 100 Zeichen hinzu."],
+  "Opção {number}": ["Option {number}", "Opción {number}", "Choix {number}", "Option {number}"],
+  "Remover opção {number}": ["Remove option {number}", "Eliminar opción {number}", "Supprimer le choix {number}", "Option {number} entfernen"],
+  "Adicionar opção": ["Add option", "Añadir opción", "Ajouter un choix", "Option hinzufügen"],
+  "Permitir várias respostas": ["Allow multiple answers", "Permitir varias respuestas", "Autoriser plusieurs réponses", "Mehrere Antworten erlauben"],
+  "Cada pessoa pode escolher mais de uma opção.": ["Each person can choose more than one option.", "Cada persona puede elegir más de una opción.", "Chaque personne peut choisir plusieurs réponses.", "Jede Person kann mehrere Optionen auswählen."],
+  "Cada pessoa pode escolher apenas uma opção.": ["Each person can choose only one option.", "Cada persona puede elegir solo una opción.", "Chaque personne ne peut choisir qu’une seule réponse.", "Jede Person kann nur eine Option auswählen."],
+  "Confirmação pendente": ["Confirmation pending", "Confirmación pendiente", "Confirmation en attente", "Bestätigung ausstehend"],
+  "A enquete pode ter sido enviada. Feche esta janela e verifique a conversa antes de criar outra.": ["The poll may have been sent. Close this window and check the conversation before creating another.", "Puede que la encuesta se haya enviado. Cierra esta ventana y revisa la conversación antes de crear otra.", "Le sondage a peut-être été envoyé. Fermez cette fenêtre et vérifiez la conversation avant d’en créer un autre.", "Die Umfrage wurde möglicherweise gesendet. Schließen Sie dieses Fenster und prüfen Sie den Chat, bevor Sie eine weitere erstellen."],
+  "Aguarde a confirmação do envio.": ["Please wait for sending confirmation.", "Espera la confirmación del envío.", "Veuillez attendre la confirmation de l’envoi.", "Bitte warten Sie auf die Sendebestätigung."],
+  "Enviando enquete…": ["Sending poll…", "Enviando encuesta…", "Envoi du sondage…", "Umfrage wird gesendet…"],
+  "Enviar enquete": ["Send poll", "Enviar encuesta", "Envoyer le sondage", "Umfrage senden"],
+  "Não foi possível enviar a enquete. Tente novamente.": ["Could not send the poll. Try again.", "No se pudo enviar la encuesta. Inténtalo de nuevo.", "Impossible d’envoyer le sondage. Réessayez.", "Die Umfrage konnte nicht gesendet werden. Versuchen Sie es erneut."]
+}
