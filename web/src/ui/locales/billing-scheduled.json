@@ -1,0 +1,158 @@
+{
+  "Agendar mudança para Solo": [
+    "Schedule a switch to Solo",
+    "Programar el cambio a Solo",
+    "Planifier le passage à Solo",
+    "Wechsel zu Solo planen"
+  ],
+  "Mudança agendada": [
+    "Change scheduled",
+    "Cambio programado",
+    "Changement planifié",
+    "Wechsel geplant"
+  ],
+  "Mudança para Solo agendada. O plano Equipe continua até a data indicada.": [
+    "Your switch to Solo is scheduled. Team stays active until the date shown.",
+    "El cambio a Solo está programado. Equipo continúa hasta la fecha indicada.",
+    "Le passage à Solo est planifié. Équipe reste actif jusqu’à la date indiquée.",
+    "Der Wechsel zu Solo ist geplant. Team bleibt bis zum angegebenen Datum aktiv."
+  ],
+  "Mudança desfeita. O plano Equipe continua na próxima renovação.": [
+    "Change undone. Team continues at the next renewal.",
+    "Cambio deshecho. Equipo continúa en la próxima renovación.",
+    "Changement annulé. Équipe continue lors du prochain renouvellement.",
+    "Wechsel rückgängig gemacht. Team bleibt bei der nächsten Verlängerung bestehen."
+  ],
+  "Não foi possível confirmar a alteração. Atualize a situação antes de tentar novamente.": [
+    "The change could not be confirmed. Refresh the status before trying again.",
+    "No se pudo confirmar el cambio. Actualiza el estado antes de volver a intentarlo.",
+    "Le changement n’a pas pu être confirmé. Actualisez la situation avant de réessayer.",
+    "Der Wechsel konnte nicht bestätigt werden. Aktualisieren Sie den Status, bevor Sie es erneut versuchen."
+  ],
+  "Próximo plano": [
+    "Next plan",
+    "Próximo plan",
+    "Prochain forfait",
+    "Nächster Tarif"
+  ],
+  "Plano Solo a partir de {date}": [
+    "Solo plan from {date}",
+    "Plan Solo a partir del {date}",
+    "Forfait Solo à partir du {date}",
+    "Solo-Tarif ab {date}"
+  ],
+  "O plano Equipe continua até essa data. A mudança não remove números automaticamente.": [
+    "Team stays active until that date. The change does not remove numbers automatically.",
+    "Equipo continúa hasta esa fecha. El cambio no elimina números automáticamente.",
+    "Équipe reste actif jusqu’à cette date. Le changement ne supprime aucun numéro automatiquement.",
+    "Team bleibt bis zu diesem Datum aktiv. Beim Wechsel werden keine Nummern automatisch entfernt."
+  ],
+  "Desfazer mudança": [
+    "Undo change",
+    "Deshacer cambio",
+    "Annuler le changement",
+    "Wechsel rückgängig machen"
+  ],
+  "Alteração aguardando confirmação": [
+    "Change awaiting confirmation",
+    "Cambio pendiente de confirmación",
+    "Changement en attente de confirmation",
+    "Wechsel wartet auf Bestätigung"
+  ],
+  "A assinatura atual continua exibida até a confirmação. Continuar repete a mesma solicitação com segurança.": [
+    "Your current subscription is shown until confirmation. Continuing safely retries the same request.",
+    "Se muestra tu suscripción actual hasta la confirmación. Continuar repite la misma solicitud de forma segura.",
+    "Votre abonnement actuel reste affiché jusqu’à la confirmation. Continuer relance la même demande en toute sécurité.",
+    "Bis zur Bestätigung wird Ihr aktuelles Abonnement angezeigt. Fortfahren wiederholt dieselbe Anfrage sicher."
+  ],
+  "Continuar alteração": [
+    "Continue change",
+    "Continuar cambio",
+    "Continuer le changement",
+    "Wechsel fortsetzen"
+  ],
+  "Mantenha no máximo um número no espaço de trabalho para mudar para Solo. Nenhum número é removido automaticamente.": [
+    "Keep at most one number in the workspace to switch to Solo. No number is removed automatically.",
+    "Mantén como máximo un número en el espacio de trabajo para cambiar a Solo. No se elimina ningún número automáticamente.",
+    "Conservez au maximum un numéro dans l’espace de travail pour passer à Solo. Aucun numéro n’est supprimé automatiquement.",
+    "Für den Wechsel zu Solo darf höchstens eine Nummer im Arbeitsbereich verbleiben. Es wird keine Nummer automatisch entfernt."
+  ],
+  "A mudança começa em {date}, no fim do período já contratado.": [
+    "The change starts on {date}, at the end of your current billing period.",
+    "El cambio empieza el {date}, al finalizar el período ya contratado.",
+    "Le changement commence le {date}, à la fin de la période déjà souscrite.",
+    "Der Wechsel beginnt am {date}, zum Ende Ihres aktuellen Abrechnungszeitraums."
+  ],
+  "Desfazer mudança para Solo": [
+    "Undo the switch to Solo",
+    "Deshacer el cambio a Solo",
+    "Annuler le passage à Solo",
+    "Wechsel zu Solo rückgängig machen"
+  ],
+  "Seu plano Equipe continua até {date}. Depois, o plano Solo terá um número por {price} por mês.": [
+    "Your Team plan continues until {date}. After that, Solo includes one number for {price} per month.",
+    "Tu plan Equipo continúa hasta el {date}. Después, Solo incluye un número por {price} al mes.",
+    "Votre forfait Équipe continue jusqu’au {date}. Ensuite, Solo inclut un numéro pour {price} par mois.",
+    "Ihr Team-Tarif läuft bis zum {date}. Danach umfasst Solo eine Nummer für {price} pro Monat."
+  ],
+  "Nenhum número é removido automaticamente. Você pode desfazer o agendamento antes dessa data.": [
+    "No number is removed automatically. You can undo the scheduled change before that date.",
+    "No se elimina ningún número automáticamente. Puedes deshacer el cambio programado antes de esa fecha.",
+    "Aucun numéro n’est supprimé automatiquement. Vous pouvez annuler le changement planifié avant cette date.",
+    "Es wird keine Nummer automatisch entfernt. Sie können den geplanten Wechsel vor diesem Datum rückgängig machen."
+  ],
+  "Concordo em substituir o cancelamento agendado pela renovação no plano Solo.": [
+    "I agree to replace the scheduled cancellation with renewal on Solo.",
+    "Acepto sustituir la cancelación programada por la renovación en Solo.",
+    "J’accepte de remplacer la résiliation planifiée par le renouvellement du forfait Solo.",
+    "Ich stimme zu, die geplante Kündigung durch eine Verlängerung im Solo-Tarif zu ersetzen."
+  ],
+  "O plano Solo não será iniciado. Seu plano Equipe continuará por {price} por mês na próxima renovação.": [
+    "Solo will not start. Your Team plan will continue for {price} per month at the next renewal.",
+    "El plan Solo no comenzará. Tu plan Equipo continuará por {price} al mes en la próxima renovación.",
+    "Le forfait Solo ne commencera pas. Votre forfait Équipe continuera pour {price} par mois lors du prochain renouvellement.",
+    "Der Solo-Tarif wird nicht aktiviert. Ihr Team-Tarif läuft bei der nächsten Verlängerung für {price} pro Monat weiter."
+  ],
+  "Somente testes. Não há cobranças reais.": [
+    "Testing only. No real charges.",
+    "Solo pruebas. No hay cobros reales.",
+    "Tests uniquement. Aucun prélèvement réel.",
+    "Nur Tests. Keine echten Abbuchungen."
+  ],
+  "Confirmando alteração…": [
+    "Confirming change…",
+    "Confirmando cambio…",
+    "Confirmation du changement…",
+    "Wechsel wird bestätigt…"
+  ],
+  "Confirmar agendamento": [
+    "Confirm scheduled change",
+    "Confirmar cambio programado",
+    "Confirmer la planification",
+    "Geplanten Wechsel bestätigen"
+  ],
+  "Confirmar e manter Equipe": [
+    "Confirm and keep Team",
+    "Confirmar y mantener Equipo",
+    "Confirmer et conserver Équipe",
+    "Bestätigen und Team behalten"
+  ],
+  "Mantenha no máximo um número no espaço de trabalho antes de agendar o plano Solo. Nenhum número é removido automaticamente.": [
+    "Keep at most one number in the workspace before scheduling Solo. No number is removed automatically.",
+    "Mantén como máximo un número en el espacio de trabajo antes de programar Solo. No se elimina ningún número automáticamente.",
+    "Conservez au maximum un numéro dans l’espace de travail avant de planifier Solo. Aucun numéro n’est supprimé automatiquement.",
+    "Vor dem Planen von Solo darf höchstens eine Nummer im Arbeitsbereich verbleiben. Es wird keine Nummer automatisch entfernt."
+  ],
+  "A alteração não foi aplicada. Atualize a situação antes de tentar novamente.": [
+    "The change was not applied. Refresh the status before trying again.",
+    "El cambio no se aplicó. Actualiza el estado antes de volver a intentarlo.",
+    "Le changement n’a pas été appliqué. Actualisez la situation avant de réessayer.",
+    "Der Wechsel wurde nicht angewendet. Aktualisieren Sie den Status, bevor Sie es erneut versuchen."
+  ],
+  "Para cancelar a assinatura no portal, desfaça primeiro a mudança agendada.": [
+    "To cancel the subscription in the portal, first undo the scheduled change.",
+    "Para cancelar la suscripción en el portal, deshaz primero el cambio programado.",
+    "Pour résilier l’abonnement dans le portail, annulez d’abord le changement planifié.",
+    "Um das Abonnement im Portal zu kündigen, machen Sie zuerst den geplanten Wechsel rückgängig."
+  ]
+}

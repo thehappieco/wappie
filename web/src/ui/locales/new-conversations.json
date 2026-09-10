@@ -49,5 +49,6 @@
   "{whom} saiu": ["{whom} left", "{whom} salió", "{whom} a quitté le groupe", "{whom} hat die Gruppe verlassen"],
   "{who} adicionou {whom}": ["{who} added {whom}", "{who} añadió a {whom}", "{who} a ajouté {whom}", "{who} hat {whom} hinzugefügt"],
   "{who} retirou {whom}": ["{who} removed {whom}", "{who} eliminó a {whom}", "{who} a retiré {whom}", "{who} hat {whom} entfernt"],
-  "{who} tornou {whom} administrador": ["{who} made {whom} an admin", "{who} nombró administrador a {whom}", "{who} a nommé {whom} administrateur", "{who} hat {whom} zum Administrator gemacht"]
+  "{who} tornou {whom} administrador": ["{who} made {whom} an admin", "{who} nombró administrador a {whom}", "{who} a nommé {whom} administrateur", "{who} hat {whom} zum Administrator gemacht"],
+  "Última composição salva. Não foi possível confirmar a lista atual no WhatsApp.": ["Last saved membership. The current list could not be confirmed with WhatsApp.", "Última composición guardada. No se pudo confirmar la lista actual con WhatsApp.", "Dernière composition enregistrée. La liste actuelle n’a pas pu être confirmée auprès de WhatsApp.", "Zuletzt gespeicherte Mitgliederliste. Die aktuelle Liste konnte nicht bei WhatsApp bestätigt werden."]
 }

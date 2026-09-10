@@ -143,7 +143,7 @@ function describe(c: GroupChange): string {
           <small>{{ t('Adicione até 32 participantes por vez.') }}</small>
           <div class="group-action-buttons"><button class="ghost" type="button" :disabled="changing" @click="adding = false">{{ t('Cancelar') }}</button><button class="primary" type="submit" :disabled="changing || uncertain">{{ changing ? t('Aguarde a confirmação…') : t('Adicionar participantes') }}</button></div>
         </form>
-        <div class="sealed" v-if="!group.refreshed" style="font-size: 12px"> {{ t('Da última vez que o aparelho conseguiu perguntar. Ele não está conectado agora.') }} </div>
+        <div class="sealed" v-if="!group.refreshed" style="font-size: 12px"> {{ t('Última composição salva. Não foi possível confirmar a lista atual no WhatsApp.') }} </div>
         <div v-for="m in group.members" :key="m.key" class="reader">
           <AvatarBadge small :contact-key="m.key" :name="memberName(m)" />
           <div style="flex: 1; min-width: 0">
