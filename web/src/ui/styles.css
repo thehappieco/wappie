@@ -467,6 +467,8 @@ textarea:focus {
 
 .messages {
   flex: 1;
+  /* A right-aligned reply swipe may leave the viewport, never scroll it sideways. */
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 16px 6% 24px;
   display: flex;

@@ -1294,6 +1294,19 @@ export const TypeGroupParticipants = 'group.participants.update'
 export const TypeGroupLeave = 'group.leave'
 export const TypeGroupChanged = 'group.changed'
 export const TypePollCreate = 'message.poll.create'
+export const TypeLocationSend = 'message.send.location'
+
+/** A fixed position, not a live location sharing session. Explicit zero is valid. */
+export interface LocationSendRequest {
+  device_id: string
+  chat: string
+  id?: string
+  lat: number
+  lon: number
+  name?: string
+  address?: string
+  accuracy_m?: number
+}
 export interface ChatStartRequest { device_id: string; phone: string }
 export interface ChatStarted { chat: string }
 export interface GroupCreateRequest { device_id: string; name: string; participants: string[] }

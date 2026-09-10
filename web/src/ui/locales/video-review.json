@@ -1,0 +1,4 @@
+{
+  "Posição no vídeo": ["Video position", "Posición en el vídeo", "Position dans la vidéo", "Videoposition"],
+  "{current} de {duration}": ["{current} of {duration}", "{current} de {duration}", "{current} sur {duration}", "{current} von {duration}"]
+}

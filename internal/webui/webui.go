@@ -160,7 +160,7 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host string) {
 	header.Set("X-Frame-Options", "DENY")
 	// Audio and video recording need explicit browser grants. This permits
 	// prompts only in this origin; it never grants camera or microphone access.
-	header.Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(), payment=()")
+	header.Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self), payment=()")
 
 	switch {
 	case clean == sessionBridgePath && host == sessionBridgeHost:

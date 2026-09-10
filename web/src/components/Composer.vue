@@ -6,7 +6,7 @@ import { canSend, connection, noMarks, sendMedia, sendText, state, type Marks } 
 import { startTyping, stopTyping } from '../state/presence'
 import { edit, editableFor } from '../state/actions'
 import { canConversationAction } from '../state/conversationActions'
-import { TypePollCreate } from '../api/protocol'
+import { TypePollCreate, TypeLocationSend } from '../api/protocol'
 import { MAX_BYTES, refuse, type Choice } from '../media/plan'
 import { discard, prepare, type Prepared } from '../media/prepare'
 import { available as canRecord, begin, type Recording } from '../media/record'
@@ -17,7 +17,9 @@ import { timerLabel } from '../state/ephemeral'
 import SendMarks from './SendMarks.vue'
 import AppIcon from './AppIcon.vue'
 import PollDialog from './PollDialog.vue'
+import LocationDialog from './LocationDialog.vue'
 import VideoRecorderDialog from './VideoRecorderDialog.vue'
+import AttachmentPreview from './AttachmentPreview.vue'
 
 // Writing into the archive, rather than only reading it.
 //
@@ -40,6 +42,7 @@ const draft = ref('')
 const box = ref<HTMLTextAreaElement>()
 const chooser = ref<HTMLInputElement>()
 const pollOpen = ref(false)
+const locationOpen = ref(false)
 const videoOpen = ref(false)
 const attachmentMenu = ref(false)
 const preparationProgress = ref(0)
@@ -55,6 +58,7 @@ function sameContext(context: ReturnType<typeof captureContext>) {
 const picked = ref<File | null>(null)
 /** The same file, measured and ready to upload. */
 const attached = ref<Prepared | null>(null)
+const attachmentPreview = ref<{ stop(): void }>()
 const measuring = ref(false)
 const attachError = ref('')
 
@@ -90,6 +94,7 @@ const minutesLeft = computed(() => (target.value ? Math.ceil(editableFor(target.
 
 const allowed = computed(() => canSend())
 const pollAvailable = computed(() => canConversationAction(TypePollCreate))
+const locationAvailable = computed(() => canConversationAction(TypeLocationSend))
 
 /** Whether a caption is even a thing for what is attached. */
 const captionAllowed = computed(() => attached.value?.plan.captionAllowed ?? true)
@@ -155,6 +160,7 @@ async function submit() {
     // Cleared before the await, not after: the upload can take a minute, and
     // leaving the composer holding the file that whole time invites sending it
     // twice. The archive line is already on screen by then.
+    attachmentPreview.value?.stop()
     attached.value = null
     draft.value = ''
     marks.value = noMarks()
@@ -193,6 +199,13 @@ function openPoll() {
   stopTyping()
   attachmentMenu.value = false
   pollOpen.value = true
+}
+
+function openLocation() {
+  if (!allowed.value || !locationAvailable.value || props.editing || recording.value || opening.value || measuring.value || picked.value || attached.value) return
+  stopTyping()
+  attachmentMenu.value = false
+  locationOpen.value = true
 }
 
 function openVideo() {
@@ -272,6 +285,7 @@ async function prepareFile(file: File, choice: Choice, knownSeconds = 0) {
 function clearAttachment() {
   preparationID++; preparation?.abort(); preparation = null; measuring.value = false
   picked.value = null
+  attachmentPreview.value?.stop()
   if (attached.value) discard(attached.value)
   attached.value = null
 }
@@ -338,9 +352,7 @@ async function stopRecording() {
   try {
     const taken = await open.stop()
     if (!taken || current !== microphoneID || !sameContext(context)) return
-    if (taken.asVoiceNote) { await prepareFile(taken.file, 'voice', taken.seconds); return }
-    attachError.value = t('Este navegador grava em um formato que o WhatsApp não usa para mensagem de voz. ') + t('Dá para mandar como áudio.')
-    picked.value = taken.file
+    await prepareFile(taken.file, taken.asVoiceNote ? 'voice' : 'audio', taken.seconds)
   } catch (err) {
     if (current === microphoneID && sameContext(context)) attachError.value = err instanceof Error ? err.message : String(err)
   }
@@ -432,6 +444,7 @@ watch(() => [state.openChatKey, state.deviceID, state.tenantID, state.connected]
   cancelRecording()
   clearAttachment()
   pollOpen.value = false
+  locationOpen.value = false
   videoOpen.value = false
   attachmentMenu.value = false
 }, { flush: 'sync' })
@@ -462,10 +475,12 @@ onBeforeUnmount(stopTyping)
 
     <AttachSheet v-if="picked" :file="picked" @choose="choose" @cancel="clearAttachment" />
     <PollDialog v-if="pollOpen" @close="pollOpen = false" />
+    <LocationDialog v-if="locationOpen" @close="locationOpen = false" />
     <VideoRecorderDialog v-if="videoOpen" @close="videoOpen = false" @recorded="recordedVideo" @native="take" />
     <div v-if="attachmentMenu" class="composer-attachment-menu" @keydown.esc="attachmentMenu = false">
       <button type="button" @click="browse"><AppIcon name="paperclip" :size="20" />{{ t('Fotos, vídeos e documentos') }}</button>
       <button type="button" @click="openVideo"><AppIcon name="video" :size="20" />{{ t('Gravar vídeo') }}</button>
+      <button v-if="locationAvailable" type="button" @click="openLocation"><AppIcon name="location" :size="20" />{{ t('Enviar localização') }}</button>
       <button v-if="pollAvailable" type="button" @click="openPoll"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 19V5m0 14h16M9 15v-4m5 4V5m5 10V8" /></svg>{{ t('Criar enquete') }}</button>
     </div>
 
@@ -477,34 +492,26 @@ onBeforeUnmount(stopTyping)
     <!-- What is about to go, as it will go. The preview is the file itself,
          already resized if it is going to be resized, so what is on screen is
          what the recipient gets. -->
-    <div v-if="attached" class="quoting attached-chip">
-      <img
-        v-if="attached.previewKind === 'image'"
-        class="attached-thumb"
-        :src="attached.previewURL"
-        :alt="t('prévia')"
-      />
-      <video
-        v-else-if="attached.previewKind === 'video'"
-        class="attached-thumb"
-        :class="{ circular: attached.kind === 'ptv' }"
-        :src="attached.previewURL"
-        preload="metadata"
-        muted
-        playsinline
-      />
-      <div class="grow">
-        <div class="quoting-who">{{ attached.plan.label }}</div>
-        <div class="quoting-body">
-          {{ attached.fileName }} · {{ bytes(attached.blob.size) }}
-          <template v-if="attached.width"> {{ t('· {v0}×{v1}', { v0: attached.width, v1: attached.height }) }}</template>
-          <template v-if="attached.seconds"> {{ t('· {v0}s', { v0: attached.seconds }) }}</template>
+    <section v-if="attached" class="composer-attachment" :aria-label="t('Prévia antes de enviar')">
+      <div class="quoting attached-chip">
+        <img v-if="attached.previewKind === 'image'" class="attached-thumb" :src="attached.previewURL" :alt="t('prévia')" />
+        <div class="grow">
+          <div class="quoting-who">{{ attached.plan.label }}</div>
+          <div class="quoting-body">
+            {{ attached.fileName }} · {{ bytes(attached.blob.size) }}
+            <template v-if="attached.width"> {{ t('· {v0}×{v1}', { v0: attached.width, v1: attached.height }) }}</template>
+            <template v-if="attached.seconds"> {{ t('· {v0}s', { v0: attached.seconds }) }}</template>
+          </div>
+          <div v-if="attached.missing.length" class="quoting-body sealed">{{ t('não foi possível ler: {v0}', { v0: attached.missing.join(', ') }) }}</div>
         </div>
-        <div v-if="attached.missing.length" class="quoting-body sealed"> {{ t('não foi possível ler: {v0}', { v0: attached.missing.join(', ') }) }}
-        </div>
+        <button class="icon-btn" type="button" :title="t('Descartar anexo')" :aria-label="t('Descartar anexo')" @click="clearAttachment"><AppIcon name="trash" :size="20" /></button>
       </div>
-      <button class="icon-btn" type="button" :title="t('Tirar o anexo')" :aria-label="t('Tirar o anexo')" @click="clearAttachment"><AppIcon name="close" :size="20" /></button>
-    </div>
+      <div v-if="attached.previewKind === 'audio' || attached.previewKind === 'video'" class="composer-player">
+        <AttachmentPreview :key="attached.previewURL" ref="attachmentPreview" :url="attached.previewURL" :kind="attached.previewKind"
+          :circular="attached.kind === 'ptv'" :seconds="attached.seconds" :poster="attached.thumbnail" :silent="attached.isGIF" />
+        <p>{{ t('Confira a prévia e toque em enviar quando estiver pronto.') }}</p>
+      </div>
+    </section>
 
     <div v-if="attachError" class="alert">{{ attachError }}</div>
     <div v-if="state.actionError" class="alert">{{ state.actionError }}</div>
@@ -527,7 +534,7 @@ onBeforeUnmount(stopTyping)
       <span class="rec-time">{{ clock(recordedFor) }}</span>
       <span class="grow rec-note">{{ t('gravando — o microfone está aberto') }}</span>
       <button class="icon-btn" type="button" :title="t('Descartar gravação')" :aria-label="t('Descartar gravação')" @click="cancelRecording"><AppIcon name="trash" /></button>
-      <button class="primary send" type="button" :title="t('Parar e anexar gravação')" :aria-label="t('Parar e anexar gravação')" @click="stopRecording"><AppIcon name="stop" :size="20" /></button>
+      <button class="primary send" type="button" :title="t('Parar e ouvir gravação')" :aria-label="t('Parar e ouvir gravação')" @click="stopRecording"><AppIcon name="stop" :size="20" /></button>
     </div>
 
     <form v-else class="composer-row" @submit.prevent="submit">
@@ -607,4 +614,8 @@ onBeforeUnmount(stopTyping)
 
 <style scoped>
 .composer-attachment-menu{display:flex;flex-wrap:wrap;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--bg-panel)}.composer-attachment-menu button{display:flex;align-items:center;gap:8px;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;color:var(--text);background:var(--bg-input);font-size:13px}.composer-preparing{display:flex;align-items:center;gap:14px;padding:12px 16px;color:var(--text-dim);font-size:13px}.composer-preparing>div{flex:1;min-width:0}.composer-preparing small{display:block;margin-top:4px}.composer-preparing progress{display:block;width:100%;height:5px;margin-top:9px;accent-color:var(--accent)}.attached-thumb.circular{border-radius:50%;object-fit:cover}
+.composer-attachment { border-top: 1px solid var(--line); background: var(--bg-panel); max-height: min(50dvh, 360px); overflow-y: auto; overscroll-behavior: contain; }
+.composer-attachment .attached-chip { border: 0; }
+.composer-player { padding: 0 16px 12px; }
+.composer-player > p { margin: 8px 0 0; color: var(--text-dim); font-size: 11px; line-height: 1.4; }
 </style>

@@ -119,7 +119,7 @@ async function onPlayed() {
     <!-- A picture or a video: the sealed inline preview draws immediately, and
          the full attachment is fetched only when asked for. Fetching every one
          while scrolling would download the conversation. -->
-    <div v-if="isPicture || isVideo" class="media" :class="{ 'video-media': isVideo, 'round-video': isRoundVideo }" :style="isVideo && !isRoundVideo ? videoSize : undefined">
+    <div v-if="isPicture || isVideo" class="media" data-message-swipe :class="{ 'video-media': isVideo, 'round-video': isRoundVideo }" :style="isVideo && !isRoundVideo ? videoSize : undefined">
       <video
         v-if="openedURL && isVideo"
         ref="video"
@@ -168,9 +168,14 @@ async function onPlayed() {
     </div>
 
     <!-- Voice notes and audio. -->
-    <div v-else-if="isSound">
-      <div class="waveform" v-if="bars.length && !openedURL">
-        <i v-for="(amp, i) in bars" :key="i" :style="{ height: `${Math.max(2, amp / 4)}px` }" />
+    <div v-else-if="isSound" class="audio-message" data-message-swipe>
+      <div class="audio-swipe-body">
+        <AppIcon :name="media.type === 'ptt' ? 'microphone' : 'audio'" :size="22" />
+        <div class="waveform" v-if="bars.length" aria-hidden="true">
+          <i v-for="(amp, i) in bars" :key="i" :style="{ height: `${Math.max(2, amp / 4)}px` }" />
+        </div>
+        <span v-else>{{ media.type === 'ptt' ? t('Mensagem de voz') : t('Áudio') }}</span>
+        <small v-if="media.seconds">{{ duration(media.seconds) }}</small>
       </div>
       <!-- "Played" fires when the note finishes, not when it starts. Starting
            is a click; finishing is the thing the sender is being told about. -->
@@ -217,6 +222,10 @@ async function onPlayed() {
 </template>
 
 <style scoped>
+.audio-swipe-body { display: flex; align-items: center; gap: 9px; min-height: 44px; min-width: 0; color: var(--text-dim); font-size: 12px; }
+.audio-swipe-body > span, .audio-swipe-body .waveform { flex: 1; min-width: 0; }
+.audio-swipe-body .waveform { margin: 0; overflow: hidden; }
+.audio-swipe-body > small { margin-inline-start: auto; font-variant-numeric: tabular-nums; }
 .media-placeholder { height: 140px; width: 220px; display: grid; place-items: center; color: var(--text-dim); }
 .media-placeholder .app-icon { opacity: .15; }
 .media.video-media { max-width: 100%; margin: 0 0 4px; }

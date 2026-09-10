@@ -1,0 +1,9 @@
+{
+  "Prévia do áudio": ["Audio preview", "Vista previa del audio", "Aperçu audio", "Audiovorschau"],
+  "Prévia antes de enviar": ["Preview before sending", "Vista previa antes de enviar", "Aperçu avant l’envoi", "Vorschau vor dem Senden"],
+  "Descartar anexo": ["Discard attachment", "Descartar archivo adjunto", "Supprimer la pièce jointe", "Anhang verwerfen"],
+  "Confira a prévia e toque em enviar quando estiver pronto.": ["Review the preview and tap send when you’re ready.", "Revisa la vista previa y toca enviar cuando estés listo.", "Vérifiez l’aperçu et appuyez sur envoyer quand vous êtes prêt.", "Prüfe die Vorschau und tippe auf Senden, wenn du bereit bist."],
+  "Parar e ouvir gravação": ["Stop and listen to recording", "Detener y escuchar la grabación", "Arrêter et écouter l’enregistrement", "Aufnahme stoppen und anhören"],
+  "Posição na prévia": ["Preview position", "Posición en la vista previa", "Position dans l’aperçu", "Position in der Vorschau"],
+  "Não foi possível reproduzir a prévia neste navegador.": ["This browser could not play the preview.", "Este navegador no pudo reproducir la vista previa.", "Ce navigateur n’a pas pu lire l’aperçu.", "Dieser Browser konnte die Vorschau nicht abspielen."]
+}

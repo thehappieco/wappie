@@ -40,6 +40,7 @@ export type IconName =
   | 'select-text'
   | 'timer'
   | 'view-once'
+  | 'location'
 
 const paths: Record<IconName, string> = {
   back: 'M19 12H5m7-7-7 7 7 7',
@@ -82,6 +83,7 @@ const paths: Record<IconName, string> = {
   'select-text': 'M5 4h14M12 4v16m-4 0h8M3 2v4m18-4v4',
   timer: 'M20 13a8 8 0 1 1-16 0 8 8 0 0 1 16 0ZM9 2h6m-3 0v3m6.5 1.5 1-1M12 9v4l3 2',
   'view-once': 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM10 9l2-2v10m-2 0h4',
+  location: 'M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0ZM15 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
 }
 </script>
 

@@ -7,6 +7,11 @@ export interface MessagePointer {
   button?: number
 }
 
+export interface MessageGestureStart {
+  /** Tappable media must keep its native click until a deliberate swipe wins. */
+  deferCapture?: boolean
+}
+
 interface Options {
   onHold: () => void
   onReply: () => void
@@ -35,8 +40,10 @@ export function createMessageGestures(options: Options) {
   let swiping = false
   let distance = 0
   let suppressUntil = 0
+  let claimedPointer: number | undefined
   let disposed = false
   let signaled = false
+  let deferredCapture = false
 
   function clearTimer() {
     if (timer) clearTimeout(timer)
@@ -45,6 +52,7 @@ export function createMessageGestures(options: Options) {
   }
 
   function cancel() {
+    if (swiping) suppressUntil = Date.now() + 1000
     clearTimer()
     const captured = pointer?.pointerId
     pointer = undefined
@@ -55,7 +63,7 @@ export function createMessageGestures(options: Options) {
     if (captured !== undefined) options.onRelease?.(captured)
   }
 
-  function pointerDown(event: MessagePointer) {
+  function pointerDown(event: MessagePointer, start: MessageGestureStart = {}) {
     if (disposed) return
     if (pointer || event.isPrimary === false) { cancel(); return }
     if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
@@ -63,6 +71,7 @@ export function createMessageGestures(options: Options) {
     // Leave the operating system's edge-back gesture alone.
     if (event.clientX < 24) return
     suppressUntil = 0
+    claimedPointer = undefined
     signaled = false
     // Native PointerEvent fields are inherited getters, not enumerable own
     // properties. Spreading the event would silently lose the gesture origin.
@@ -76,10 +85,12 @@ export function createMessageGestures(options: Options) {
     }
     // The first move can already be outside a short bubble. Capture before
     // it moves; capture does not prevent native vertical scrolling or zoom.
-    options.onCapture?.(pointer.pointerId)
+    deferredCapture = Boolean(start.deferCapture)
+    if (!deferredCapture) options.onCapture?.(pointer.pointerId)
     options.onPress(true)
     timer = setTimeout(() => {
       if (!pointer || options.hasSelection()) { cancel(); return }
+      claimedPointer = pointer.pointerId
       cancel()
       suppressUntil = Date.now() + 1000
       options.onHold()
@@ -102,7 +113,9 @@ export function createMessageGestures(options: Options) {
         return false
       }
       if (dx < 12) return false
+      if (deferredCapture) { deferredCapture = false; options.onCapture?.(pointer.pointerId) }
       swiping = true
+      claimedPointer = pointer.pointerId
       options.onSwipe?.(true)
     }
     if (Math.abs(dy) > Math.max(40, Math.abs(dx))) { cancel(); return false }
@@ -113,6 +126,7 @@ export function createMessageGestures(options: Options) {
   }
 
   function pointerUp(event: MessagePointer) {
+    if (claimedPointer === event.pointerId) { claimedPointer = undefined; suppressUntil = Date.now() + 1000 }
     if (!pointer || event.pointerId !== pointer.pointerId) return
     if (swiping) pointerMove(event)
     const reply = swiping && distance >= REPLY_THRESHOLD && options.canReply() && !options.hasSelection()
@@ -130,7 +144,8 @@ export function createMessageGestures(options: Options) {
     },
     cancel,
     shouldSuppressClick() {
-      const suppress = Date.now() < suppressUntil
+      const suppress = claimedPointer !== undefined || Date.now() < suppressUntil
+      claimedPointer = undefined
       suppressUntil = 0
       return suppress
     },

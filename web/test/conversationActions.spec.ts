@@ -10,7 +10,7 @@ const fixture = vi.hoisted(() => {
 })
 vi.mock('../src/state/archive', () => ({ state: fixture.state, connection: () => fixture.current, credential: () => ({ token: fixture.token }), loadChats: fixture.loadChats, openChat: fixture.openChat }))
 vi.mock('../src/state/groups', () => ({ groups: fixture.groups, loadGroup: fixture.loadGroup }))
-import { canChangeGroup, canConversationAction, changeGroupParticipants, conversationOperations, createGroup, createPoll, groupValidation, leaveGroup, normalizePhone, participantsFromText, participantsValidation, pollValidation, startConversation } from '../src/state/conversationActions'
+import { sendLocation, locationValidation, canChangeGroup, canConversationAction, changeGroupParticipants, conversationOperations, createGroup, createPoll, groupValidation, leaveGroup, normalizePhone, participantsFromText, participantsValidation, pollValidation, startConversation } from '../src/state/conversationActions'
 
 beforeEach(() => {
   vi.clearAllMocks(); fixture.current = fixture.conn; fixture.token = 'session-a'; conversationOperations.clear(); fixture.groups.clear()
@@ -146,5 +146,43 @@ describe('authorized conversation actions', () => {
     fixture.conn.request.mockResolvedValue({ chat: 'chat-a', action: 'leave', refreshed: true })
     expect((await leaveGroup()).ok).toBe(true)
     expect(fixture.groups.get('chat-a').members).toEqual(members)
+  })
+})
+
+
+describe('fixed location sending', () => {
+  beforeEach(() => { fixture.conn.welcome.features.push(P.TypeLocationSend) })
+  it('validates boundaries and never sends missing or nonfinite coordinates', async () => {
+    for (const input of [{lat: NaN, lon: 0}, {lat: 91, lon: 0}, {lat: 0, lon: Infinity}, {lat: 0, lon: -181}, {lat: 0, lon: 0, accuracy_m: -1}, {lat: 0, lon: 0, name: 'a'.repeat(101)}]) {
+      expect(locationValidation(input)).not.toBe('')
+      expect((await sendLocation(input)).ok).toBe(false)
+    }
+    expect(fixture.conn.request).not.toHaveBeenCalled()
+  })
+  it('requires send permission and the advertised capability, not device management', async () => {
+    fixture.state.devices[0]!.can_manage = false
+    expect(canConversationAction(P.TypeLocationSend)).toBe(true)
+    fixture.state.devices[0]!.can_send = false
+    expect((await sendLocation({lat: 0, lon: 0})).ok).toBe(false)
+    expect(fixture.conn.request).not.toHaveBeenCalled()
+  })
+  it('sends a fixed position including zero, with an independent message ID and no live flags', async () => {
+    fixture.conn.request.mockResolvedValue({ id: 'position-a' })
+    expect(await sendLocation({lat: 0, lon: 0, name: '  Home  ', address: ' Road ', accuracy_m: 15})).toMatchObject({ok: true})
+    expect(fixture.conn.request).toHaveBeenCalledExactlyOnceWith(P.TypeLocationSend, {device_id:'phone-a',chat:'chat-a',id:expect.any(String),lat:0,lon:0,name:'Home',address:'Road',accuracy_m:15}, P.TypeSendResult)
+  })
+  it('deduplicates pending confirmations and treats an ambiguous rejection as uncertain', async () => {
+    const pending = deferred<unknown>(); fixture.conn.request.mockReturnValue(pending.promise)
+    const first = sendLocation({lat:1,lon:2})
+    expect((await sendLocation({lat:1,lon:2})).ok).toBe(false)
+    pending.reject(new ProtocolError(P.ErrConflict, 'send location: disconnected'))
+    expect(await first).toMatchObject({ok:false,uncertain:true})
+    expect(fixture.conn.request).toHaveBeenCalledTimes(1)
+  })
+  it('ignores confirmation after changing the active workspace', async () => {
+    const pending = deferred<unknown>(); fixture.conn.request.mockReturnValue(pending.promise)
+    const first = sendLocation({lat:1,lon:2})
+    fixture.state.tenantID='another-space';pending.resolve({})
+    expect(await first).toMatchObject({ok:false,stale:true})
   })
 })

@@ -73,6 +73,9 @@ func TestServesThePage(t *testing.T) {
 	if got := resp.Header.Get("Permissions-Policy"); !strings.Contains(got, "camera=(self)") {
 		t.Errorf("video recording must be allowed to request camera permission: %q", got)
 	}
+	if got := resp.Header.Get("Permissions-Policy"); !strings.Contains(got, "geolocation=(self)") {
+		t.Errorf("location sharing must be allowed to request position permission: %q", got)
+	}
 }
 
 func TestServesAssets(t *testing.T) {

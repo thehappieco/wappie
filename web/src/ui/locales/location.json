@@ -1,0 +1,128 @@
+{
+  "Informe latitude de −90 a 90 e longitude de −180 a 180.": [
+    "Enter latitude from −90 to 90 and longitude from −180 to 180.",
+    "Introduce latitud de −90 a 90 y longitud de −180 a 180.",
+    "Saisissez une latitude de −90 à 90 et une longitude de −180 à 180.",
+    "Gib einen Breitengrad von −90 bis 90 und einen Längengrad von −180 bis 180 ein."
+  ],
+  "Use até 100 caracteres no nome e 500 no endereço.": [
+    "Use up to 100 characters for the name and 500 for the address.",
+    "Usa hasta 100 caracteres para el nombre y 500 para la dirección.",
+    "Utilisez au maximum 100 caractères pour le nom et 500 pour l’adresse.",
+    "Verwende höchstens 100 Zeichen für den Namen und 500 für die Adresse."
+  ],
+  "A precisão da localização é inválida.": [
+    "The location accuracy is invalid.",
+    "La precisión de la ubicación no es válida.",
+    "La précision de la position n’est pas valide.",
+    "Die Genauigkeit des Standorts ist ungültig."
+  ],
+  "Abra uma conversa para enviar a localização.": [
+    "Open a conversation to send a location.",
+    "Abre una conversación para enviar la ubicación.",
+    "Ouvrez une conversation pour envoyer une position.",
+    "Öffne einen Chat, um einen Standort zu senden."
+  ],
+  "Este navegador não disponibiliza a localização. Informe as coordenadas.": [
+    "This browser does not provide location access. Enter the coordinates.",
+    "Este navegador no permite acceder a la ubicación. Introduce las coordenadas.",
+    "Ce navigateur ne fournit pas la position. Saisissez les coordonnées.",
+    "Dieser Browser bietet keinen Standortzugriff. Gib die Koordinaten ein."
+  ],
+  "Não foi possível obter sua posição. Informe as coordenadas.": [
+    "Your position could not be obtained. Enter the coordinates.",
+    "No se pudo obtener tu posición. Introduce las coordenadas.",
+    "Impossible d’obtenir votre position. Saisissez les coordonnées.",
+    "Dein Standort konnte nicht ermittelt werden. Gib die Koordinaten ein."
+  ],
+  "Permissão de localização negada. Você pode informar as coordenadas.": [
+    "Location permission was denied. You can enter the coordinates.",
+    "Se denegó el permiso de ubicación. Puedes introducir las coordenadas.",
+    "L’accès à la position a été refusé. Vous pouvez saisir les coordonnées.",
+    "Der Standortzugriff wurde abgelehnt. Du kannst die Koordinaten eingeben."
+  ],
+  "Não foi possível enviar a localização.": [
+    "The location could not be sent.",
+    "No se pudo enviar la ubicación.",
+    "Impossible d’envoyer la position.",
+    "Der Standort konnte nicht gesendet werden."
+  ],
+  "A confirmação não chegou. Verifique a conversa antes de enviar novamente.": [
+    "Confirmation did not arrive. Check the conversation before sending again.",
+    "No llegó la confirmación. Revisa la conversación antes de volver a enviar.",
+    "La confirmation n’est pas arrivée. Vérifiez la conversation avant de renvoyer.",
+    "Die Bestätigung ist nicht angekommen. Prüfe den Chat vor einem erneuten Senden."
+  ],
+  "Enviar localização": [
+    "Send location",
+    "Enviar ubicación",
+    "Envoyer une position",
+    "Standort senden"
+  ],
+  "Envie um ponto fixo. Use sua posição ou informe outro local pelas coordenadas.": [
+    "Send a fixed point. Use your position or enter another place’s coordinates.",
+    "Envía un punto fijo. Usa tu posición o introduce las coordenadas de otro lugar.",
+    "Envoyez un point fixe. Utilisez votre position ou saisissez les coordonnées d’un autre lieu.",
+    "Sende einen festen Punkt. Verwende deinen Standort oder gib die Koordinaten eines anderen Ortes ein."
+  ],
+  "Buscando sua posição…": [
+    "Finding your position…",
+    "Buscando tu posición…",
+    "Recherche de votre position…",
+    "Standort wird ermittelt…"
+  ],
+  "Usar minha posição atual": [
+    "Use my current position",
+    "Usar mi posición actual",
+    "Utiliser ma position actuelle",
+    "Meinen aktuellen Standort verwenden"
+  ],
+  "Latitude": [
+    "Latitude",
+    "Latitud",
+    "Latitude",
+    "Breitengrad"
+  ],
+  "Longitude": [
+    "Longitude",
+    "Longitud",
+    "Longitude",
+    "Längengrad"
+  ],
+  "Precisão aproximada: ±{meters} m": [
+    "Approximate accuracy: ±{meters} m",
+    "Precisión aproximada: ±{meters} m",
+    "Précision approximative : ±{meters} m",
+    "Ungefähre Genauigkeit: ±{meters} m"
+  ],
+  "Nome do local (opcional)": [
+    "Place name (optional)",
+    "Nombre del lugar (opcional)",
+    "Nom du lieu (facultatif)",
+    "Ortsname (optional)"
+  ],
+  "Endereço (opcional)": [
+    "Address (optional)",
+    "Dirección (opcional)",
+    "Adresse (facultative)",
+    "Adresse (optional)"
+  ],
+  "Conferir no mapa": [
+    "Check on the map",
+    "Ver en el mapa",
+    "Vérifier sur la carte",
+    "Auf der Karte prüfen"
+  ],
+  "A localização pode ter sido enviada. Verifique a conversa antes de tentar novamente.": [
+    "The location may have been sent. Check the conversation before trying again.",
+    "Es posible que la ubicación se haya enviado. Revisa la conversación antes de volver a intentarlo.",
+    "La position a peut-être été envoyée. Vérifiez la conversation avant de réessayer.",
+    "Der Standort wurde möglicherweise gesendet. Prüfe den Chat, bevor du es erneut versuchst."
+  ],
+  "Enviando…": [
+    "Sending…",
+    "Enviando…",
+    "Envoi…",
+    "Wird gesendet…"
+  ]
+}

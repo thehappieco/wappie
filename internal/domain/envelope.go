@@ -415,7 +415,7 @@ type Location struct {
 	Longitude float64 `json:"lon"`
 	Name      string  `json:"name,omitempty"`
 	Address   string  `json:"address,omitempty"`
-	// AccuracyMeters and Speed are only present for live locations.
+	// AccuracyMeters may accompany either a fixed or live location.
 	AccuracyMeters uint32  `json:"accuracy_m,omitempty"`
 	Speed          float32 `json:"speed,omitempty"`
 	// SequenceNumber orders updates within one live-location session.

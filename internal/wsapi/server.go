@@ -139,7 +139,7 @@ var features = []string{
 	"subscribe", "chats.list", "chat.page", "keys.get",
 	"contacts.list", "contacts.resolve", "contacts.avatar",
 	"message.get", "message.history",
-	"message.send", "message.send.media", "message.edit", "message.revoke",
+	"message.send", "message.send.media", "message.send.location", "message.edit", "message.revoke",
 	"message.react", "message.read", "message.poll.vote", "message.poll.create",
 	"chat.start", "group.create", "group.participants.update", "group.leave",
 	"chat.timer", "chat.presence", "presence.subscribe", "device.mode", "device.stop", "device.start", "device.rename",
@@ -629,6 +629,8 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleGroupLeave(ctx, f)
 	case TypePollCreate:
 		go s.handlePollCreate(ctx, f)
+	case TypeLocationSend:
+		go s.handleLocationSend(ctx, f)
 	case TypeGroupGet:
 		go s.handleGroupInfo(ctx, f)
 	case TypeChatTyping:

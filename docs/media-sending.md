@@ -42,6 +42,11 @@ The browser asks for camera/microphone access only when recording is opened.
 Local preparation does not send the video; the user reviews and confirms it.
 Camera and microphone permission remain disabled on the session bridge.
 
+Audio and video, including recordings and media sent as documents, can be
+played, paused and scrubbed in a local preview before confirmation. The preview
+does not upload the file or generate read/play receipts. Discarding it releases
+the local media; confirming transfers the prepared attachment to the outbox.
+
 ## Forwarding labels
 
 Text (`message.send`) and media (`message.send.media`) accept the same options:

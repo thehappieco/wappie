@@ -1607,6 +1607,7 @@ const (
 	TypeGroupLeave        = "group.leave"
 	TypeGroupChanged      = "group.changed"
 	TypePollCreate        = "message.poll.create"
+	TypeLocationSend      = "message.send.location"
 )
 
 type ChatStartRequest struct {
@@ -1648,4 +1649,17 @@ type PollCreateRequest struct {
 	Question        string   `json:"question"`
 	Options         []string `json:"options"`
 	SelectableCount int      `json:"selectable_count"`
+}
+
+// LocationSendRequest sends one fixed location. Both coordinates are required;
+// explicit zero is valid. This command does not start live sharing.
+type LocationSendRequest struct {
+	DeviceID       string   `json:"device_id"`
+	Chat           string   `json:"chat"`
+	ID             string   `json:"id,omitempty"`
+	Latitude       *float64 `json:"lat"`
+	Longitude      *float64 `json:"lon"`
+	Name           string   `json:"name,omitempty"`
+	Address        string   `json:"address,omitempty"`
+	AccuracyMeters uint32   `json:"accuracy_m,omitempty"`
 }

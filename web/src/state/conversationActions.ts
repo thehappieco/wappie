@@ -49,7 +49,7 @@ export function canConversationAction(action: string): boolean {
   const device = state.devices.find(device => device.id === state.deviceID)
   if (!conn || !state.connected || state.initializingConnection || state.unreadable || !device?.running || !credential()) return false
   if (!conn.welcome.features.includes(action)) return false
-  return action === P.TypeChatStart || action === P.TypePollCreate ? device.can_send === true : device.can_manage === true
+  return action === P.TypeChatStart || action === P.TypePollCreate || action === P.TypeLocationSend ? device.can_send === true : device.can_manage === true
 }
 function context() {
   return { conn: connection(), token: credential()?.token, tenant: state.tenantID, device: state.deviceID, chat: state.openChatKey, view: state.view }
@@ -77,7 +77,7 @@ async function perform<T>(action: string, payload: Record<string, unknown>, resp
   } catch (error) {
     if (!current(captured)) return { outcome: { ok: false, stale: true } }
     const uncertain = !(error instanceof ProtocolError) || ['internal', 'timeout', 'unavailable'].includes(error.code)
-      || error.code === P.ErrConflict && [P.TypeGroupCreate, P.TypeGroupParticipants, P.TypeGroupLeave, P.TypePollCreate].includes(action)
+      || error.code === P.ErrConflict && [P.TypeGroupCreate, P.TypeGroupParticipants, P.TypeGroupLeave, P.TypePollCreate, P.TypeLocationSend].includes(action)
     return { outcome: { ok: false, uncertain, error: uncertain
       ? t('A confirmação não chegou. A ação pode ter sido concluída no WhatsApp. Verifique antes de tentar novamente.')
       : error instanceof Error ? error.message : String(error) } }
@@ -144,4 +144,22 @@ export async function createPoll(input: PollInput): Promise<ActionOutcome> {
   if (!state.openChatKey) return { ok: false, error: t('Abra uma conversa para criar a enquete.') }
   return (await perform<P.SendResult>(P.TypePollCreate, { chat: state.openChatKey, question: input.question.trim(),
     options: input.options.map(option => option.trim()), selectable_count: input.multiple ? 0 : 1 }, P.TypeSendResult)).outcome
+}
+
+export interface LocationInput { lat: number; lon: number; name?: string; address?: string; accuracy_m?: number }
+export function locationValidation(input: LocationInput): string {
+  if (!Number.isFinite(input.lat) || input.lat < -90 || input.lat > 90 || !Number.isFinite(input.lon) || input.lon < -180 || input.lon > 180)
+    return t('Informe latitude de −90 a 90 e longitude de −180 a 180.')
+  if (size(input.name?.trim() ?? '') > 100 || size(input.address?.trim() ?? '') > 500)
+    return t('Use até 100 caracteres no nome e 500 no endereço.')
+  if (input.accuracy_m !== undefined && (!Number.isInteger(input.accuracy_m) || input.accuracy_m < 0 || input.accuracy_m > 4294967295))
+    return t('A precisão da localização é inválida.')
+  return ''
+}
+export async function sendLocation(input: LocationInput): Promise<ActionOutcome> {
+  const error = locationValidation(input)
+  if (error) return { ok: false, error }
+  if (!state.openChatKey) return { ok: false, error: t('Abra uma conversa para enviar a localização.') }
+  return (await perform<P.SendResult>(P.TypeLocationSend, { chat: state.openChatKey, id: crypto.randomUUID(), lat: input.lat, lon: input.lon,
+    name: input.name?.trim() || undefined, address: input.address?.trim() || undefined, accuracy_m: input.accuracy_m }, P.TypeSendResult)).outcome
 }

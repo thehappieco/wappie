@@ -20,6 +20,7 @@ const emit = defineEmits<{
   (e: 'reply', waID: string): void
   (e: 'edit', uid: string): void
   (e: 'forward', uid: string): void
+  (e: 'navigate-quote', waID: string): void
 }>()
 
 /**
@@ -78,8 +79,17 @@ const gestures = createMessageGestures({
 })
 
 function pointerDown(event: PointerEvent) {
-  if (control(event) || m.value.pending) { gestures.cancel(); return }
-  gestures.pointerDown(event)
+  // This is a new deliberate interaction, not the click synthesized on release.
+  gestures.shouldSuppressClick()
+  const target = event.target instanceof Element ? event.target : null
+  const mediaSurface = target?.closest('[data-message-swipe]')
+  const nativePlayer = target?.closest('audio, video')
+  // Native seek/volume controls need their own horizontal dragging. Video's
+  // picture and the audio waveform/body remain available for a reply swipe.
+  const nativeControls = nativePlayer instanceof HTMLAudioElement || nativePlayer instanceof HTMLVideoElement
+    && nativePlayer.controls && event.clientY >= nativePlayer.getBoundingClientRect().bottom - 64
+  if (m.value.pending || nativeControls || control(event) && !mediaSurface) { gestures.cancel(); return }
+  gestures.pointerDown(event, { deferCapture: Boolean(mediaSurface) })
 }
 
 function pointerMove(event: PointerEvent) {
@@ -99,7 +109,9 @@ function lostPointerCapture(event: PointerEvent) {
 }
 
 function click(event: MouseEvent) {
-  if (!control(event) && event.detail !== 0 && gestures.shouldSuppressClick()) {
+  // Only a gesture that actually claimed the pointer suppresses its click.
+  // A normal tap on a media preview or play button retains its native action.
+  if (event.detail !== 0 && gestures.shouldSuppressClick()) {
     event.preventDefault()
     event.stopPropagation()
   }
@@ -240,18 +252,18 @@ const forwardedLabel = computed(() =>
 
       <!-- The quoted message. m.replyTo has been on the view all along and
            nothing drew it, so a reply looked like an unrelated remark. -->
-      <div v-if="quoted" class="quote">
-        <div class="quote-who">{{ quoted.fromMe ? t('você') : quoted.senderName }}</div>
-        <div class="quote-body" v-if="quoted.bodyState === 'ok' && quoted.body">
+      <button v-if="quoted" type="button" class="quote quote-link" :title="t('Ir para a mensagem original')" :aria-label="t('Ir para a mensagem original')" @click.stop="emit('navigate-quote', m.replyTo!)">
+        <span class="quote-who">{{ quoted.fromMe ? t('você') : quoted.senderName }}</span>
+        <span class="quote-body" v-if="quoted.bodyState === 'ok' && quoted.body">
           {{ quoted.body }}
-        </div>
-        <div class="quote-body sealed" v-else>{{ typeLabel(quoted.type) }}</div>
-      </div>
+        </span>
+        <span class="quote-body sealed" v-else>{{ typeLabel(quoted.type) }}</span>
+      </button>
       <!-- Honest about the limit: the quoted message may be older than the page
            that is loaded, and saying so beats drawing nothing. -->
-      <div v-else-if="m.replyTo" class="quote">
-        <div class="quote-body sealed">{{ t('resposta a uma mensagem de uma página anterior') }}</div>
-      </div>
+      <button v-else-if="m.replyTo" type="button" class="quote quote-link" :title="t('Ir para a mensagem original')" :aria-label="t('Ir para a mensagem original')" @click.stop="emit('navigate-quote', m.replyTo)">
+        <span class="quote-body sealed">{{ t('resposta a uma mensagem de uma página anterior') }}</span>
+      </button>
       <!-- In the status feed the author is the whole point: consecutive posts
            are by different people, and unlabelled they read as one rambling
            stranger. -->
@@ -361,6 +373,9 @@ const forwardedLabel = computed(() =>
 </template>
 
 <style scoped>
+.quote-link { display: block; width: 100%; text-align: start; color: inherit; font: inherit; border: 0; border-inline-start: 3px solid var(--accent); cursor: pointer; }
+.quote-link > span { display: block; }
+.quote-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .msg { position: relative; }
 .bubble { cursor: auto; padding-right: 34px; touch-action: pan-y pinch-zoom; transition: transform 260ms cubic-bezier(.2,.85,.25,1.15), box-shadow 180ms ease-out; }
 .bubble:hover:not(.on):not(.gesture-open) { outline: none; }

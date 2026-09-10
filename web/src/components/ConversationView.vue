@@ -2,7 +2,7 @@
 import { t } from '../ui/i18n'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { loadOlder, people, refreshChats, state, type MessageView } from '../state/archive'
+import { conversationPagingContext, loadOlder, people, refreshChats, state, type MessageView } from '../state/archive'
 import { loadGroup, setChatTimer } from '../state/groups'
 import { TIMER_PRESETS, timerLabel } from '../state/ephemeral'
 import { nowTick } from '../state/actions'
@@ -15,6 +15,8 @@ import Composer from './Composer.vue'
 import MessageBubble from './MessageBubble.vue'
 import ForwardDialog from './ForwardDialog.vue'
 import { canForward } from '../state/forwarding'
+import { resolveQuotedMessage, type QuoteNavigationResult } from '../state/quoteNavigation'
+import { focusQuotedMessage } from '../ui/quoteFocus'
 
 const emit = defineEmits<{ back: [] }>()
 const scroller = ref<HTMLElement | null>(null)
@@ -79,11 +81,75 @@ const replyTo = ref('')
 /** The message being edited, if any. Mutually exclusive with replying. */
 const editing = ref('')
 const forwarding = ref<MessageView>()
+const quoteBusy = ref(false)
+const quotePages = ref(0)
+const quoteError = ref('')
+const highlightedQuote = ref('')
+let quoteAttempt = 0
+let quoteAbort: AbortController | undefined
+let quoteHighlightTimer: ReturnType<typeof setTimeout> | undefined
+
+function cancelQuoteNavigation() {
+  quoteAttempt++
+  quoteAbort?.abort()
+  quoteAbort = undefined
+  quoteBusy.value = false
+  quotePages.value = 0
+  quoteError.value = ''
+  highlightedQuote.value = ''
+  if (quoteHighlightTimer) clearTimeout(quoteHighlightTimer)
+  quoteHighlightTimer = undefined
+}
+
+function quoteFailure(result: QuoteNavigationResult): string {
+  switch (result.status) {
+    case 'not_found': return t('A mensagem original não está no histórico disponível desta conversa.')
+    case 'limit': return t('A mensagem original ainda não foi encontrada. Toque na citação novamente para continuar a busca.')
+    case 'busy': return t('Aguarde as mensagens terminarem de carregar e tente novamente.')
+    case 'unavailable': return t('Não foi possível continuar a busca nesta conversa. Verifique a conexão e tente novamente.')
+    case 'error': return t('Não foi possível carregar a mensagem original. Tente novamente.')
+    default: return ''
+  }
+}
+
+async function navigateQuote(waID: string) {
+  if (quoteBusy.value) return
+  cancelQuoteNavigation()
+  const attempt = quoteAttempt
+  const context = conversationPagingContext()
+  if (!context) { quoteError.value = quoteFailure({ status: 'unavailable' }); return }
+  const controller = new AbortController()
+  quoteAbort = controller
+  const current = () => attempt === quoteAttempt && !controller.signal.aborted && context.current()
+  quoteBusy.value = true
+  pinnedToBottom.value = false
+  const result = await resolveQuotedMessage(waID, {
+    signal: controller.signal,
+    loadPage: () => older(current),
+    onProgress: pages => { if (current()) quotePages.value = pages },
+  })
+  if (!current()) { if (attempt === quoteAttempt) cancelQuoteNavigation(); return }
+  quoteBusy.value = false
+  quoteAbort = undefined
+  if (result.status !== 'found') { quoteError.value = quoteFailure(result); return }
+  await nextTick()
+  if (!current()) { if (attempt === quoteAttempt) cancelQuoteNavigation(); return }
+  const target = scroller.value && focusQuotedMessage(scroller.value, result.waID)
+  if (!target) { quoteError.value = quoteFailure({ status: 'error' }); return }
+  highlightedQuote.value = result.waID
+  quoteHighlightTimer = setTimeout(() => {
+    if (current()) highlightedQuote.value = ''
+    quoteHighlightTimer = undefined
+  }, 1900)
+}
+
 function forward(uid: string) {
   const message = state.timeline.find(value => value.uid === uid)
   if (message && canForward(message)) { forgetSeen(); forwarding.value = message }
 }
 watch(() => [state.openChatKey, state.deviceID, state.tenantID], () => { replyTo.value = ''; editing.value = ''; forwarding.value = undefined }, { flush: 'sync' })
+watch(() => [state.openChatKey, state.deviceID, state.tenantID, state.view, state.connected, state.selectedUID, state.groupPanel], cancelQuoteNavigation, { flush: 'sync' })
+watch(() => state.loadingChat, loading => { if (loading) cancelQuoteNavigation() }, { flush: 'sync' })
 
 const lines = computed<Line[]>(() => {
   const out: Line[] = []
@@ -127,20 +193,22 @@ watch(
   },
 )
 
-async function older() {
+async function older(holdPosition: () => boolean = () => true) {
   const el = scroller.value
   const deviceID = state.deviceID
   const chatKey = state.openChatKey
+  const tenantID = state.tenantID
   const before = el?.scrollHeight ?? 0
   const previousTop = el?.scrollTop ?? 0
   pinnedToBottom.value = false
-  await loadOlder()
+  const progress = await loadOlder()
   await nextTick()
   // Hold the reader's place: without this, prepending a page jumps them to the
   // top of a conversation they were reading the middle of.
-  if (el && scroller.value === el && state.deviceID === deviceID && state.openChatKey === chatKey) {
+  if (holdPosition() && el && scroller.value === el && state.deviceID === deviceID && state.openChatKey === chatKey && state.tenantID === tenantID) {
     el.scrollTop = previousTop + el.scrollHeight - before
   }
+  return progress
 }
 
 /**
@@ -224,6 +292,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  cancelQuoteNavigation()
   forgetSeen()
   sizeWatcher?.disconnect()
   window.removeEventListener('focus', onFocusChange)
@@ -354,9 +423,15 @@ async function onTimer(value: string) {
 
     <div v-if="typingHere" class="typing-line">{{ typingHere }}</div>
 
+    <div v-if="quoteBusy || quoteError" class="quote-navigation-status" role="status" aria-live="polite">
+      <span v-if="quoteBusy">{{ quotePages ? t('Procurando a mensagem original… {count} páginas carregadas.', { count: quotePages }) : t('Procurando a mensagem original…') }}</span>
+      <span v-else>{{ quoteError }}</span>
+      <button type="button" class="ghost" @click="cancelQuoteNavigation">{{ quoteBusy ? t('Cancelar') : t('Fechar') }}</button>
+    </div>
+
     <div class="messages" ref="scroller" @scroll.passive="onScroll">
       <div class="centered-row" v-if="state.hasOlder">
-        <button class="ghost" @click="older" :disabled="state.loadingOlder">
+        <button class="ghost" @click="older()" :disabled="state.loadingOlder || quoteBusy">
           {{ state.loadingOlder ? t('Carregando…') : t('Carregar mensagens anteriores') }}
         </button>
       </div>
@@ -374,11 +449,14 @@ async function onTimer(value: string) {
         <div v-if="line.day" class="day">{{ line.day }}</div>
         <MessageBubble
           :data-wa="line.message.fromMe ? undefined : line.message.waID"
+          :data-message-id="line.message.waID"
+          :class="{ 'quote-target': highlightedQuote === line.message.waID }"
           :message="line.message"
           :show-sender="line.showSender"
           @reply="editing = ''; replyTo = $event"
           @edit="replyTo = ''; editing = $event"
           @forward="forward"
+          @navigate-quote="navigateQuote"
         />
       </template>
 
@@ -404,6 +482,12 @@ async function onTimer(value: string) {
 </template>
 
 <style scoped>
+.quote-navigation-status { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bg-raised); border-bottom: 1px solid var(--line); color: var(--text-dim); font-size: 12px; line-height: 1.4; }
+.quote-navigation-status span { flex: 1; min-width: 0; }
+.quote-navigation-status button { flex-shrink: 0; min-height: 36px; }
+.quote-target :deep(.bubble) { outline: 2px solid var(--message-info); outline-offset: 3px; animation: quote-arrival 1.8s ease-out; }
+@keyframes quote-arrival { 0%, 45% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--message-info) 22%, transparent); } 25%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--message-info) 5%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .quote-target :deep(.bubble) { animation: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--message-info) 15%, transparent); } }
 .contact-presence { display: inline-flex; align-items: center; gap: 5px; }
 .contact-presence.online { color: var(--accent); }
 .presence-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }

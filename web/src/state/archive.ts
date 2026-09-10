@@ -1484,6 +1484,27 @@ async function fetchAvatar(contactKey: string, context: ArchiveContext): Promise
 // One conversation
 // ---------------------------------------------------------------------------
 
+/** A fence for navigation that may span several older-page requests. */
+export function conversationPagingContext(): { current: () => boolean; cursor: () => string | null } | null {
+  const context = archiveContext()
+  if (!context || !state.openChatKey) return null
+  const generation = conversationGeneration
+  const chatKey = state.openChatKey
+  const view = state.view
+  const tenantID = state.tenantID
+  return {
+    current: () => currentArchive(context) && generation === conversationGeneration &&
+      state.openChatKey === chatKey && state.tenantID === tenantID && state.view === view,
+    cursor: () => olderCursor ? JSON.stringify([olderCursor.ts, olderCursor.seq]) : null,
+  }
+}
+
+export interface OlderPageProgress {
+  status: 'loaded' | 'idle' | 'stale'
+  before?: string
+  after?: string | null
+}
+
 export async function openChat(chatKey: string): Promise<void> {
   const context = archiveContext()
   if (!context) return
@@ -1521,12 +1542,13 @@ export async function openChat(chatKey: string): Promise<void> {
   }
 }
 
-export async function loadOlder(): Promise<void> {
+export async function loadOlder(): Promise<OlderPageProgress> {
   const context = archiveContext()
-  if (!context || !state.hasOlder || state.loadingOlder || !olderCursor) return
+  if (!context || !state.hasOlder || state.loadingOlder || !olderCursor) return { status: 'idle' }
   const generation = conversationGeneration
   const chatKey = state.openChatKey
   const current = () => currentArchive(context) && generation === conversationGeneration && state.openChatKey === chatKey
+  const before = JSON.stringify([olderCursor.ts, olderCursor.seq])
 
   state.loadingOlder = true
   try {
@@ -1541,12 +1563,14 @@ export async function loadOlder(): Promise<void> {
       } satisfies P.ChatPageRequest,
       P.TypePage,
     )
-    if (!current()) return
+    if (!current()) return { status: 'stale' }
     openRows = [...(page.messages ?? []), ...openRows]
     absorbReceipts(page.receipts)
     state.hasOlder = page.has_more
     olderCursor = page.next_ts ? { ts: page.next_ts, seq: page.next_seq ?? 0 } : null
     await redraw()
+    if (!current()) return { status: 'stale' }
+    return { status: 'loaded', before, after: olderCursor ? JSON.stringify([olderCursor.ts, olderCursor.seq]) : null }
   } finally {
     if (current()) state.loadingOlder = false
   }

@@ -190,7 +190,7 @@ export async function prepare(file: File, choice: Choice, knownSeconds = 0, opti
     isGIF: plan.isGIF,
     isAnimated,
     previewURL: previewFor(blob),
-    previewKind: previewKindFor(plan.kind, blob),
+    previewKind: previewKindFor(plan.kind, mimetype),
     missing,
   }
 }
@@ -223,11 +223,14 @@ function previewFor(blob: Blob): string {
   return URL.createObjectURL(blob)
 }
 
-function previewKindFor(kind: Kind, blob: Blob): Prepared['previewKind'] {
+function previewKindFor(kind: Kind, mimetype: string): Prepared['previewKind'] {
   if (kind === 'image' || kind === 'sticker') return 'image'
   if (kind === 'video' || kind === 'ptv') return 'video'
   if (kind === 'audio' || kind === 'ptt') return 'audio'
-  // A document is only previewable when it happens to be a picture, which is
-  // what "enviar como arquivo" produces.
-  return blob.type.startsWith('image/') ? 'image' : 'none'
+  // Sending the original bytes as a document still allows a local preview.
+  // MIME also covers files whose browser File.type was empty.
+  if (mimetype.startsWith('image/')) return 'image'
+  if (mimetype.startsWith('audio/')) return 'audio'
+  if (mimetype.startsWith('video/')) return 'video'
+  return 'none'
 }

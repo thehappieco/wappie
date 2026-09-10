@@ -5,7 +5,7 @@ import * as P from '../src/api/protocol'
 import { Opener } from '../src/api/opener'
 import { Media, type MediaState } from '../src/api/media'
 import { importArchiveKey } from '../src/crypto/hpke'
-import { avatars, connection, fetchMedia, loadOlder, openChat, people, preferredReadableDevice, refreshChats, refreshDevices, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
+import { avatars, connection, conversationPagingContext, fetchMedia, loadOlder, openChat, people, preferredReadableDevice, refreshChats, refreshDevices, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
 import { readLastDevice, rememberLastDevice } from '../src/ui/lastDevice'
 import { fromPastedKey } from '../src/state/session'
 import { sweepDone, sweepUnsupported } from '../src/state/reproject'
@@ -226,6 +226,149 @@ describe('opening a large archive', () => {
   })
 })
 
+describe('conversation paging context and progress', () => {
+  it('requires an open conversation and invalidates its snapshot after sign-out', async () => {
+    expect(conversationPagingContext()).toBeNull()
+    const fake = await serve()
+    await boot(fake)
+    expect(conversationPagingContext()).toBeNull()
+    await openChat(FIRST_CHAT)
+    const context = conversationPagingContext()!
+    expect(context.current()).toBe(true)
+    expect(context.cursor()).toBeNull()
+    stop()
+    expect(context.current()).toBe(false)
+    expect(conversationPagingContext()).toBeNull()
+  })
+
+  it.each([FIRST_CHAT, SECOND_CHAT])('invalidates an earlier snapshot when opening %s, even after returning to the same chat', async nextChat => {
+    const fake = await serve()
+    await boot(fake)
+    await openChat(FIRST_CHAT)
+    const original = conversationPagingContext()!
+    expect(original.current()).toBe(true)
+    const reopening = openChat(nextChat)
+    expect(original.current()).toBe(false)
+    await reopening
+    const replacement = conversationPagingContext()!
+    expect(replacement.current()).toBe(true)
+    await openChat(FIRST_CHAT)
+    expect(original.current()).toBe(false)
+    expect(replacement.current()).toBe(false)
+    expect(conversationPagingContext()!.current()).toBe(true)
+  })
+
+  it('keeps snapshots invalid after changing device and returning to the same device and chat', async () => {
+    const fake = await serve()
+    await boot(fake)
+    await openChat(FIRST_CHAT)
+    const first = conversationPagingContext()!
+    await selectDevice(SECOND)
+    expect(first.current()).toBe(false)
+    expect(conversationPagingContext()).toBeNull()
+    await openChat(FIRST_CHAT)
+    const second = conversationPagingContext()!
+    expect(second.current()).toBe(true)
+    await selectDevice(FIRST)
+    await openChat(FIRST_CHAT)
+    expect(state.deviceID).toBe(FIRST)
+    expect(state.openChatKey).toBe(FIRST_CHAT)
+    expect(first.current()).toBe(false)
+    expect(second.current()).toBe(false)
+    expect(conversationPagingContext()!.current()).toBe(true)
+  })
+
+  it('reports cursor progress on empty metadata-only pages, including changes to sequence alone', async () => {
+    const fake = await serve()
+    await boot(fake)
+    fake.held.add(key(P.TypeChatPage, FIRST))
+    const timestamp = '2026-09-01T00:00:00Z'
+    const opening = openChat(FIRST_CHAT)
+    ;(await pending(fake, P.TypeChatPage, FIRST))({
+      device_id: FIRST, messages: [], has_more: true, next_ts: timestamp, next_seq: 40,
+    })
+    await opening
+    const context = conversationPagingContext()!
+    expect(context.cursor()).toBe(JSON.stringify([timestamp, 40]))
+
+    const older = loadOlder()
+    const reply = await pending(fake, P.TypeChatPage, FIRST)
+    const sent = fake.requests.filter(frame => frame.t === P.TypeChatPage)
+    expect(sent.at(-1)!.p).toMatchObject({ device_id: FIRST, chat_key: FIRST_CHAT, before_ts: timestamp, before_seq: 40 })
+    expect(await loadOlder()).toEqual({ status: 'idle' })
+    expect(fake.requests.filter(frame => frame.t === P.TypeChatPage)).toHaveLength(sent.length)
+    // A page can contain only cursor metadata and no messages property at all.
+    reply({ device_id: FIRST, has_more: true, next_ts: timestamp, next_seq: 25 })
+    expect(await older).toEqual({ status: 'loaded', before: JSON.stringify([timestamp, 40]), after: JSON.stringify([timestamp, 25]) })
+    expect(state.timeline).toEqual([])
+    expect(context.current()).toBe(true)
+    expect(context.cursor()).toBe(JSON.stringify([timestamp, 25]))
+    expect(state.hasOlder).toBe(true)
+
+    const final = loadOlder()
+    ;(await pending(fake, P.TypeChatPage, FIRST))({ device_id: FIRST, messages: [], has_more: false })
+    expect(await final).toEqual({ status: 'loaded', before: JSON.stringify([timestamp, 25]), after: null })
+    expect(context.cursor()).toBeNull()
+    expect(state.hasOlder).toBe(false)
+    expect(state.loadingOlder).toBe(false)
+    expect(await loadOlder()).toEqual({ status: 'idle' })
+  })
+
+  it('returns stale for an older page from a previous opening of the same chat without clearing the new request', async () => {
+    const fake = await serve()
+    await boot(fake)
+    fake.held.add(key(P.TypeChatPage, FIRST))
+    const timestamp = '2026-09-01T00:00:00Z'
+    const first = openChat(FIRST_CHAT)
+    ;(await pending(fake, P.TypeChatPage, FIRST))({ device_id: FIRST, messages: [], has_more: true, next_ts: timestamp, next_seq: 40 })
+    await first
+    const original = conversationPagingContext()!
+    const oldLoading = loadOlder()
+    const oldReply = await pending(fake, P.TypeChatPage, FIRST)
+    const reopening = openChat(FIRST_CHAT)
+    ;(await pending(fake, P.TypeChatPage, FIRST))({ device_id: FIRST, messages: [], has_more: true, next_ts: timestamp, next_seq: 80 })
+    await reopening
+    const replacement = conversationPagingContext()!
+    const newLoading = loadOlder()
+    const newReply = await pending(fake, P.TypeChatPage, FIRST)
+
+    oldReply({ device_id: FIRST, messages: [], has_more: false })
+    expect(await oldLoading).toEqual({ status: 'stale' })
+    expect(original.current()).toBe(false)
+    expect(replacement.current()).toBe(true)
+    expect(replacement.cursor()).toBe(JSON.stringify([timestamp, 80]))
+    expect(state.loadingOlder).toBe(true)
+    expect(state.hasOlder).toBe(true)
+
+    newReply({ device_id: FIRST, messages: [], has_more: true, next_ts: timestamp, next_seq: 60 })
+    expect(await newLoading).toEqual({ status: 'loaded', before: JSON.stringify([timestamp, 80]), after: JSON.stringify([timestamp, 60]) })
+    expect(state.loadingOlder).toBe(false)
+  })
+
+  it('returns stale after a device change and preserves the new conversation’s cursor', async () => {
+    const fake = await serve()
+    await boot(fake)
+    fake.held.add(key(P.TypeChatPage, FIRST))
+    const first = openChat(FIRST_CHAT)
+    ;(await pending(fake, P.TypeChatPage, FIRST))({ device_id: FIRST, messages: [], has_more: true, next_ts: '2026-09-01T00:00:00Z', next_seq: 40 })
+    await first
+    const original = conversationPagingContext()!
+    const older = loadOlder()
+    const oldReply = await pending(fake, P.TypeChatPage, FIRST)
+    await selectDevice(SECOND)
+    await openChat(SECOND_CHAT)
+    const replacement = conversationPagingContext()!
+    oldReply({ device_id: FIRST, messages: [], has_more: true, next_ts: '2026-08-01T00:00:00Z', next_seq: 20 })
+    expect(await older).toEqual({ status: 'stale' })
+    expect(original.current()).toBe(false)
+    expect(replacement.current()).toBe(true)
+    expect(replacement.cursor()).toBeNull()
+    expect(state.openChatKey).toBe(SECOND_CHAT)
+    expect(state.hasOlder).toBe(false)
+    expect(state.loadingOlder).toBe(false)
+  })
+})
+
 describe('changing devices while requests are outstanding', () => {
   it.each([P.TypeHello, P.TypeDevicesList])('keeps reconnect and live subscription intact while %s is pending', async (type) => {
     const fake = await serve()
@@ -273,7 +416,7 @@ describe('changing devices while requests are outstanding', () => {
     })
     await second
     oldReply({ device_id: FIRST, messages: [], has_more: false })
-    await older
+    expect(await older).toEqual({ status: 'stale' })
     expect(state.loadingOlder).toBe(false)
     expect(state.hasOlder).toBe(true)
     const more = loadOlder()
