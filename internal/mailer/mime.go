@@ -81,7 +81,9 @@ func message(from, recipient string, model accountEmail) ([]byte, string, string
 		return nil, "", "", err
 	}
 	domain := strings.SplitN(f.Address, "@", 2)[1]
-	headers := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: <%s@%s>\r\nMIME-Version: 1.0\r\nContent-Type: %s\r\n\r\n",
+	// Identify transactional mail so auto-responders can avoid reply loops.
+	// This header does not certify the sender or bypass spam filtering.
+	headers := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: <%s@%s>\r\nAuto-Submitted: auto-generated\r\nMIME-Version: 1.0\r\nContent-Type: %s\r\n\r\n",
 		f.String(), r.String(), mime.QEncoding.Encode("UTF-8", model.Subject), time.Now().UTC().Format(time.RFC1123Z), rand.Text(), domain,
 		mime.FormatMediaType("multipart/related", map[string]string{"boundary": related.Boundary(), "type": "multipart/alternative"}))
 	return append([]byte(headers), body.Bytes()...), f.Address, r.Address, nil

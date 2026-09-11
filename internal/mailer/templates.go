@@ -30,9 +30,9 @@ func signupEmail(origin, email, token string) (accountEmail, error) {
 		return accountEmail{}, err
 	}
 	return accountEmail{
-		Subject: "Confirm your Wappie account", Preheader: "One step to your Wappie account and personal workspace.",
-		Eyebrow: "WELCOME TO WAPPIE", Title: "Your workspace starts here.",
-		Intro: "Verify your email to create your Wappie account. Your personal workspace will be ready for you, and you can join a team whenever you need.",
+		Subject: "Confirm your Wappie account", Preheader: "Confirm the email address used to register your Wappie account.",
+		Eyebrow: "Wappie account", Title: "Confirm your email address",
+		Intro: "We received a request to create a Wappie account using the email address below. Confirm your email address to complete registration.",
 		Link:  link, HomeURL: origin, Action: "Verify email", Expiry: "This verification link expires in 30 minutes.",
 		Instructions: "This confirmation is for:", Recipient: email, Code: token,
 		CodeLabel: "Prefer to use a code? Paste this into Wappie's email verification field:",
@@ -46,10 +46,10 @@ func invitationEmail(origin, email, code, workspace string) (accountEmail, error
 		return accountEmail{}, err
 	}
 	return accountEmail{
-		Subject: "Wappie workspace invitation", Preheader: "You have been invited to join a workspace on Wappie.",
-		Eyebrow: "YOU'RE INVITED", Title: "A place for you on the team.", Intro: "You have been invited to collaborate in the workspace below. Accept the invitation to join your team on Wappie.",
-		Workspace: workspace, Link: link, HomeURL: origin, Action: "Join workspace", Expiry: "This invitation expires in 7 days.",
-		Instructions: "Sign in or create an account using this email address. A new account includes your own personal workspace:",
+		Subject: "Wappie workspace invitation", Preheader: "A workspace administrator has invited you to join their workspace on Wappie.",
+		Eyebrow: "Wappie workspace", Title: "Workspace invitation", Intro: "A workspace administrator invited this email address to join the workspace below. Use the button to review and accept the invitation in Wappie.",
+		Workspace: workspace, Link: link, HomeURL: origin, Action: "View invitation", Expiry: "This invitation expires in 7 days.",
+		Instructions: "To accept, sign in or create an account with this email address:",
 		Recipient:    email, Code: code, CodeLabel: "Already in Wappie? Open the workspace menu, choose to join a workspace and paste this invitation code:",
 		Footer: "Only the email address above can accept this invitation. If you were not expecting it, you can ignore this message.",
 	}, nil

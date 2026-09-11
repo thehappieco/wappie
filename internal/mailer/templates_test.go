@@ -41,6 +41,9 @@ func TestAllEmailTemplatesHaveSafePublicActionsAndMIMEAlternatives(t *testing.T)
 			if message.Header.Get("Date") == "" || message.Header.Get("Message-ID") == "" {
 				t.Fatal("missing delivery headers")
 			}
+			if message.Header.Get("Auto-Submitted") != "auto-generated" {
+				t.Fatal("transactional mail must identify itself to auto-responders")
+			}
 			kind, params, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
 			if err != nil || kind != "multipart/related" {
 				t.Fatal("missing related image container")
