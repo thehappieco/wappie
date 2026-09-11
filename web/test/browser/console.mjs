@@ -14,11 +14,13 @@ const dist = process.env.QA_DIST && resolve(process.env.QA_DIST)
 const screenshots = process.env.QA_SCREENSHOTS
 const team = '018f3a2b-2222-7000-8000-00000000bbbb', personal = '018f3a2b-2222-7000-8000-00000000cccc', deviceID = '018f3a2b-2222-7000-8000-00000000dddd'
 const otherUser = '018f3a2b-2222-7000-8000-00000000aabb', inviteID = '018f3a2b-2222-7000-8000-00000000aacc'
+const removableUser = '018f3a2b-2222-7000-8000-00000000aadd'
 const fixtureBundle = await build({ entryPoints:[fileURLToPath(new URL('./sessionFixture.ts',import.meta.url))], write:false, bundle:true, format:'esm', plugins:[{name:'test-locales',setup(b){b.onLoad({filter:/ui\/i18n.ts$/},async args=>({loader:'ts',contents:(await readFile(args.path,'utf8')).replace(/^const catalogs =.*$/m,'const catalogs = {}')}))}}] })
 try {
   for (const mobile of [false, true]) {
     const context = await browser.newContext({ serviceWorkers:'block', locale:'pt-BR', colorScheme:'dark', viewport:mobile?{width:390,height:844}:{width:1360,height:900}, isMobile:mobile, hasTouch:mobile, reducedMotion:'reduce' })
     let fixture, signed=false, logins=0, workspace=team
+    let removalAttempts=0, memberRemoved=false
     let profile={name:'Alex Morgan',email:'browser@example.test',avatar:''}
     let spaces=[{id:personal,name:'Alex Morgan',kind:'personal',role:'owner',status:'active',avatar:''},{id:team,name:'Acme Studio',kind:'team',role:'owner',status:'active',avatar:''}]
     let invitations=[{id:inviteID,email:'new@example.test',role:'member',status:'pending',created_at:new Date().toISOString(),expires_at:new Date(Date.now()+604800000).toISOString(),completed_at:null,revoked_at:null,can_reveal:true}]
@@ -53,7 +55,12 @@ try {
       if(path==='/v1/auth/workspaces/current'){spaces=spaces.map(s=>s.id===workspace?{...s,...request.postDataJSON()}:s);return json(spaces.find(s=>s.id===workspace))}
       if(path==='/v1/auth/workspaces')return json({workspaces:spaces})
       if(path==='/v1/auth/workspaces/capacity')return json({max_devices:5,used_devices:workspace===team?1:0})
-      if(path==='/v1/auth/workspaces/members')return json({members:[{id:fixture.reply.user.id,...profile,role:'owner',status:'active',last_owner:true,device_access:[{device_id:deviceID,label:'Support',pn:'15550001111@s.whatsapp.net',has_key:true,read:true,send:true,manage:true}]},{id:otherUser,email:'member@example.test',name:'Jamie Rivera',avatar:'',role:'member',status:'active',device_access:[]}]})
+      if(path===`/v1/auth/workspaces/members/${removableUser}`&&method==='DELETE'){
+        removalAttempts++
+        if(removalAttempts===1)return json({code:'last_device_reader'},409)
+        memberRemoved=true;return route.fulfill({status:204})
+      }
+      if(path==='/v1/auth/workspaces/members')return json({members:[{id:fixture.reply.user.id,...profile,role:'owner',status:'active',last_owner:true,device_access:[{device_id:deviceID,label:'Support',pn:'15550001111@s.whatsapp.net',has_key:true,read:true,send:true,manage:true}]},{id:otherUser,email:'member@example.test',name:'Jamie Rivera',avatar:'',role:'member',status:'active',device_access:[]},...(!memberRemoved?[{id:removableUser,email:'taylor@example.test',name:'Taylor Reed',avatar:'',role:'member',status:'active',device_access:[]}]:[])]})
       if(path.endsWith('/permissions'))return json({permissions:[{device_id:deviceID,user_id:fixture.reply.user.id,read:true,send:true,manage:true,has_key:true},{device_id:deviceID,user_id:otherUser,read:false,send:false,manage:false,has_key:false}]})
       if(path==='/v1/auth/workspaces/invites')return json({invites:invitations})
       if(path.endsWith('/reveal'))return json({invite:'synthetic-shareable-invite'})
@@ -109,6 +116,26 @@ try {
     await page.getByText('Jamie Rivera',{exact:true}).waitFor()
     await page.getByText('new@example.test',{exact:true}).waitFor()
     assert.match(await page.locator('.members-panel').innerText(),/Support/)
+    assert.equal(await page.getByRole('button',{name:'Remover Alex Morgan do workspace',exact:true}).count(),0,'own/final-owner access has no removal action')
+    await page.getByRole('button',{name:'Remover Taylor Reed do workspace',exact:true}).click()
+    let removalDialog=page.getByRole('dialog',{name:'Remover membro',exact:true})
+    await removalDialog.waitFor();assert.equal(removalAttempts,0,'opening confirmation never removes a member')
+    assert.match(await removalDialog.innerText(),/Acme Studio[\s\S]*Taylor Reed[\s\S]*taylor@example.test/)
+    assert.match(await removalDialog.innerText(),/workspace pessoal, os outros workspaces e o histórico de mensagens serão preservados/)
+    assert.match(await removalDialog.innerText(),/novo convite/)
+    await removalDialog.getByRole('button',{name:'Cancelar',exact:true}).click();assert.equal(removalAttempts,0)
+    await page.getByRole('button',{name:'Remover Taylor Reed do workspace',exact:true}).click()
+    removalDialog=page.getByRole('dialog',{name:'Remover membro',exact:true})
+    await removalDialog.getByRole('button',{name:'Remover do workspace',exact:true}).click()
+    await removalDialog.getByRole('alert').filter({hasText:'último membro ativo com a chave'}).waitFor()
+    assert.equal(await page.locator('.member-row').filter({hasText:'Taylor Reed'}).count(),1,'key protection retains the member')
+    if(screenshots&&engine==='chromium')await page.screenshot({path:resolve(screenshots,`member-removal-${mobile?'mobile':'desktop'}.png`)})
+    await removalDialog.getByRole('button',{name:'Remover do workspace',exact:true}).click()
+    await removalDialog.waitFor({state:'hidden'})
+    await page.getByRole('status').filter({hasText:'Taylor Reed foi removido deste workspace.'}).waitFor()
+    assert.equal(await page.locator('.member-row').filter({hasText:'Taylor Reed'}).count(),0)
+    assert.equal(removalAttempts,2,'one protected attempt followed by one confirmed removal')
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'member removal stays within the mobile viewport')
     await page.getByRole('button',{name:'Ver convite',exact:true}).click()
     await page.getByRole('heading',{name:'Convite do workspace',exact:true}).waitFor(); assert.equal(await page.getByRole('textbox',{name:'Código de convite'}).inputValue(),'synthetic-shareable-invite')
     await closeTop()
@@ -167,7 +194,7 @@ try {
     // Known Playwright WebKit screenshot preparation inserts inline styles;
     // screenshots above are Chrome-only to keep this CSP check meaningful.
     assert.deepEqual(errors,[])
-    console.log(JSON.stringify({engine,mobile,logins,apiRequests:requests.length,checks:'workspace/menu/members/invites/security/permissions/restoration',errors}))
+    console.log(JSON.stringify({engine,mobile,logins,apiRequests:requests.length,checks:'workspace/menu/members/removal/invites/security/permissions/restoration',errors}))
     await context.close()
   }
 }catch(error){console.error('Console browser verification failed:',error);throw error}

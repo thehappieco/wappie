@@ -302,11 +302,13 @@ func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, erro
 	var out []APIKeyInfo
 	err := pg.InTenantTx(ctx, a.pool, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT k.prefix, k.name, k.scope, coalesce(u.email, ''), coalesce(s.email, ''),
+			SELECT k.prefix, k.name, k.scope, coalesce(creator.email, u.email, ''), coalesce(service.email, s.email, ''),
 			       k.created_at, k.last_used_at, k.revoked_at
 			  FROM api_keys k
 			  LEFT JOIN users u ON u.id = k.created_by
 			  LEFT JOIN users s ON s.id = k.acts_as
+			  LEFT JOIN workspace_member_history creator ON creator.tenant_id=k.tenant_id AND creator.user_id=k.created_by
+			  LEFT JOIN workspace_member_history service ON service.tenant_id=k.tenant_id AND service.user_id=k.acts_as
 			 WHERE k.tenant_id = $1
 			 ORDER BY (k.revoked_at IS NOT NULL), k.created_at DESC`, tenantID)
 		if err != nil {

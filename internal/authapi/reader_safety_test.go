@@ -87,6 +87,7 @@ func TestRevocationPreservesEveryUnretiredArchiveGeneration(t *testing.T) {
 	ctx := context.Background()
 	a, _ := memberAccount(t, h, "a@epochs.test", "member")
 	b, _ := memberAccount(t, h, "b@epochs.test", "member")
+	owner, _ := memberAccount(t, h, "owner@epochs.test", "owner")
 	device := protectedNumber(t, h, a)
 	pub, _, err := seal.GenerateKeyPair()
 	if err != nil {
@@ -105,6 +106,9 @@ func TestRevocationPreservesEveryUnretiredArchiveGeneration(t *testing.T) {
 	if err := h.keys.RevokeGrant(ctx, h.tenant, device, a.ID); !errors.Is(err, store.ErrLastDeviceReader) {
 		t.Fatalf("old generation stranded: %v", err)
 	}
+	if err := h.users.RemoveMember(ctx, h.tenant, owner.ID, a.ID); !errors.Is(err, store.ErrLastDeviceReader) {
+		t.Fatalf("member removal stranded old generation: %v", err)
+	}
 	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: b.ID, Epoch: 1, SealedDSK: []byte("old backup")}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +118,7 @@ func TestRevocationPreservesEveryUnretiredArchiveGeneration(t *testing.T) {
 }
 
 func TestConcurrentAccessRemovalsAlwaysRetainOneReader(t *testing.T) {
-	for _, pair := range [][2]string{{"disable", "disable"}, {"disable", "revoke"}, {"disable", "permission"}, {"revoke", "revoke"}, {"permission", "permission"}, {"revoke", "permission"}} {
+	for _, pair := range [][2]string{{"disable", "disable"}, {"disable", "revoke"}, {"disable", "permission"}, {"revoke", "revoke"}, {"permission", "permission"}, {"revoke", "permission"}, {"remove", "remove"}, {"remove", "disable"}, {"remove", "revoke"}, {"remove", "permission"}} {
 		t.Run(pair[0]+"/"+pair[1], func(t *testing.T) {
 			h := newHarness(t)
 			ctx := context.Background()
@@ -129,6 +133,8 @@ func TestConcurrentAccessRemovalsAlwaysRetainOneReader(t *testing.T) {
 					<-start
 					var err error
 					switch pair[i] {
+					case "remove":
+						err = h.users.RemoveMember(ctx, h.tenant, owner.ID, user.ID)
 					case "disable":
 						err = h.users.UpdateMember(ctx, h.tenant, owner.ID, user.ID, "member", "disabled")
 					case "revoke":

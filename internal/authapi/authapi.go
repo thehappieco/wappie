@@ -75,6 +75,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/auth/workspaces/devices/{deviceID}/permissions", h.permissions)
 	mux.HandleFunc("GET /v1/auth/workspaces/members", h.members)
 	mux.HandleFunc("PUT /v1/auth/workspaces/members/{userID}", h.updateMember)
+	mux.HandleFunc("DELETE /v1/auth/workspaces/members/{userID}", h.removeMember)
 	mux.HandleFunc("POST /v1/auth/workspaces/invites", h.inviteMember)
 	mux.HandleFunc("POST /v1/auth/workspaces/accept-invite", h.acceptWorkspaceInvite)
 	mux.HandleFunc("POST /v1/auth/workspaces/session", h.workspaceSession)

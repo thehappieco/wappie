@@ -29,7 +29,7 @@ func expectAccessClosed(t *testing.T, conn *websocket.Conn) {
 }
 
 func TestIdleConnectionsRevalidateAuthorization(t *testing.T) {
-	for _, action := range []string{"logout", "expiry", "password", "demotion", "disable", "suspend"} {
+	for _, action := range []string{"logout", "expiry", "password", "demotion", "disable", "remove", "suspend"} {
 		t.Run(action, func(t *testing.T) {
 			c := newConsole(t)
 			ctx := context.Background()
@@ -59,6 +59,8 @@ func TestIdleConnectionsRevalidateAuthorization(t *testing.T) {
 				err = c.users.UpdateMember(ctx, c.tenant, owner.ID, user.ID, "member", "active")
 			case "disable":
 				err = c.users.UpdateMember(ctx, c.tenant, owner.ID, user.ID, "admin", "disabled")
+			case "remove":
+				err = c.users.RemoveMember(ctx, c.tenant, owner.ID, user.ID)
 			case "suspend":
 				_, err = c.pool.Exec(ctx, `UPDATE tenants SET status='suspended' WHERE id=$1`, c.tenant)
 			}

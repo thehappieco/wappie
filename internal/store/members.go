@@ -140,13 +140,8 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 			return nil
 		}
 		if oldRole == "owner" && oldStatus == "active" && (role != "owner" || status != "active") {
-			var owners int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM workspace_memberships m JOIN users u ON u.id=m.user_id
-				WHERE m.tenant_id=$1 AND m.role='owner' AND m.status='active' AND u.status='active'`, tenant).Scan(&owners); err != nil {
+			if err := requireOtherOwner(ctx, tx, tenant, target); err != nil {
 				return err
-			}
-			if owners <= 1 {
-				return ErrLastOwner
 			}
 		}
 		if status == "disabled" {
@@ -175,6 +170,80 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 			}
 		}
 		return nil
+	})
+}
+
+// requireOtherOwner runs under the workspace lock, before access is removed.
+// The personal owner is covered too: a personal space has no other human owner.
+func requireOtherOwner(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID) error {
+	var backup bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN users u ON u.id=m.user_id
+		WHERE m.tenant_id=$1 AND m.user_id<>$2 AND m.role='owner' AND m.status='active' AND u.status='active')`, tenant, target).Scan(&backup); err != nil {
+		return err
+	}
+	if !backup {
+		return ErrLastOwner
+	}
+	return nil
+}
+
+// RemoveMember deletes only this workspace membership. The identity, personal
+// workspace and other memberships remain. Unlike disabling, removal requires a
+// fresh invitation to join again and never restores previous credentials.
+func (u *Users) RemoveMember(ctx context.Context, tenant, actor, target uuid.UUID) error {
+	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		actorRole, err := lockWorkspaceManager(ctx, tx, tenant, actor)
+		if err != nil {
+			return err
+		}
+		var role, status, email string
+		err = tx.QueryRow(ctx, `SELECT m.role,m.status,u.email FROM workspace_memberships m JOIN users u ON u.id=m.user_id
+			WHERE m.tenant_id=$1 AND m.user_id=$2`, tenant, target).Scan(&role, &status, &email)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if actorRole != "owner" && (role == "owner" || role == "admin") {
+			return ErrMembershipForbidden
+		}
+		if role == "owner" && status == "active" {
+			if err := requireOtherOwner(ctx, tx, tenant, target); err != nil {
+				return err
+			}
+		}
+		if err := requireRemainingReader(ctx, tx, tenant, target, nil); err != nil {
+			return err
+		}
+		// Keep attribution for previously issued tokens and other members' key
+		// grants. A snapshot avoids granting access to the former member's profile.
+		if _, err := tx.Exec(ctx, `INSERT INTO workspace_member_history(tenant_id,user_id,email) VALUES($1,$2,$3)
+			ON CONFLICT(tenant_id,user_id) DO UPDATE SET email=excluded.email,removed_at=now()`, tenant, target, email); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE tenant_id=$1 AND user_id=$2 AND revoked_at IS NULL`, tenant, target); err != nil {
+			return err
+		}
+		// An old invitation must not silently undo the removal. Accepted and
+		// unrelated invitations remain historical records, managed separately.
+		if _, err := tx.Exec(ctx, `UPDATE invites SET revoked_at=now() WHERE tenant_id=$1
+			AND (created_by=$2 OR email=$3) AND completed_at IS NULL AND revoked_at IS NULL`, tenant, target, email); err != nil {
+			return err
+		}
+		// Unbound workspace tokens may also have been created by this person.
+		// Revoking only acts_as would leave those known credentials usable.
+		if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE tenant_id=$1
+			AND (acts_as=$2 OR created_by=$2) AND revoked_at IS NULL`, tenant, target); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND user_id=$2`, tenant, target); err != nil {
+			return err
+		}
+		// Membership foreign keys also remove device permissions and reading
+		// preferences; no credentials or settings in another workspace cascade.
+		_, err = tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2`, tenant, target)
+		return err
 	})
 }
 

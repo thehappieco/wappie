@@ -359,11 +359,12 @@ func (k *Keys) Readers(ctx context.Context, tenant, device uuid.UUID) ([]KeyHold
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT u.id, u.email, m.role, g.epoch, g.created_at,
-			       coalesce(b.email, '')
+			       coalesce(former.email, b.email, '')
 			  FROM device_key_grants g
 			  JOIN users u ON u.id = g.user_id
 			  JOIN workspace_memberships m ON m.user_id=g.user_id AND m.tenant_id=g.tenant_id
 			  LEFT JOIN users b ON b.id = g.granted_by
+			  LEFT JOIN workspace_member_history former ON former.tenant_id=g.tenant_id AND former.user_id=g.granted_by
 			 WHERE g.device_id = $1
 			 ORDER BY u.email`, device)
 		if err != nil {

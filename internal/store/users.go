@@ -662,6 +662,25 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 
 	s := Session{UserID: user.ID, TenantID: user.TenantID, ExpiresAt: expiresAt, PasskeyID: passkeyID}
 	err = u.inIdentity(ctx, user.ID, func(tx pgx.Tx) error {
+		// Membership mutations hold this workspace exclusively. Take its shared
+		// lock before user/session locks, then recheck the membership: the earlier
+		// Get may have completed before a removal or suspension committed.
+		if user.TenantID != uuid.Nil {
+			var id uuid.UUID
+			if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 AND status='active' FOR SHARE`, user.TenantID).Scan(&id); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNoSession
+				}
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SELECT user_id FROM workspace_memberships
+				WHERE tenant_id=$1 AND user_id=$2 AND status='active'`, user.TenantID, user.ID).Scan(&id); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNoSession
+				}
+				return err
+			}
+		}
 		// Recovery uses this same user lock before touching credentials or
 		// sessions. Keep the order user -> family -> passkey -> source session.
 		if err := lockPasskeyRegistration(ctx, tx, user.ID); err != nil {

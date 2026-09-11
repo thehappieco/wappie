@@ -72,6 +72,27 @@ func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	target, err := uuid.Parse(r.PathValue("userID"))
+	if err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "user id must be a UUID")
+		return
+	}
+	if !h.allow(w, r, user.Email) {
+		return
+	}
+	if err := h.Users.RemoveMember(r.Context(), user.TenantID, user.ID, target); err != nil {
+		h.memberError(w, err)
+		return
+	}
+	h.accessChanged()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {

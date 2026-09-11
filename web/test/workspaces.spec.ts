@@ -42,4 +42,18 @@ describe('workspace isolation', () => {
   stop()
   await expect(workspaceRequest('')).rejects.toThrow('Entre com sua conta')
  })
+ it('removes only the selected workspace membership with an authenticated bodyless DELETE', async () => {
+  await start(identity())
+  const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, {status: 204}))
+  await expect(workspaceRequest(`/members/${empty}`, 'DELETE')).resolves.toBeUndefined()
+  expect(fetch).toHaveBeenCalledExactlyOnceWith(`https://test.invalid/v1/auth/workspaces/members/${empty}`, expect.objectContaining({method:'DELETE',body:undefined,headers:expect.objectContaining({Authorization:'Bearer test-session'})}))
+ })
+ it.each([
+  ['last_owner', 'proprietário ativo'],
+  ['last_device_reader', 'Conceda acesso a outra pessoa'],
+ ])('explains the %s membership protection returned by the server', async (code, explanation) => {
+  await start(identity())
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({code}), {status:409}))
+  await expect(workspaceRequest(`/members/${empty}`, 'DELETE')).rejects.toMatchObject({code,message:expect.stringContaining(explanation)})
+ })
 })
