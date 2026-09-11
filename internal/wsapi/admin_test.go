@@ -607,7 +607,8 @@ func TestAMemberWithoutAGrantSeesNothingOfADevice(t *testing.T) {
 	wantError(t, ask(t, c, admin, wsapi.TypeChatsList, map[string]string{"device_id": device}), wsapi.ErrCodeNotAuthorized)
 }
 
-// Flipping a device from discreet to loud is visible to everyone it talks to.
+// Changing the legacy receipt policy remains an operator action, even though
+// neither receipt mode announces this device online.
 func TestOnlyAnOperatorCanChangeADevicesPosture(t *testing.T) {
 	c := newConsole(t)
 	device := c.deviceWithKey(t, "phone")

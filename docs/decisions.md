@@ -1131,3 +1131,17 @@ Development runs against local PostgreSQL 18 on 5432 with a non-superuser role
 (`whatserver2_app`); superusers bypass RLS and would make the isolation tests
 pass regardless of the policies. The HTTP port is 8090 in `.env` because 8080 is
 taken on this machine.
+
+
+## Public presence stays unavailable (2026-09-11)
+
+This supersedes the earlier coupling between active receipt mode and public
+online presence. All connected Wappie numbers now announce `unavailable` on
+connection/reconnection, while the connection, ingestion and outbound messaging
+remain active. Existing receipt modes and personal reading preferences are kept.
+Normal read/played/typing actions remain explicit and independent; observing
+other contacts’ presence may be limited by WhatsApp. The active-to-passive
+transition must apply unavailable directly instead of changing the policy first
+and then calling a passive no-op disconnect handler. Phone notification behavior
+is validated by the user; an unavailable connection cannot undo explicit read
+confirmations from the Wappie reader or another linked client.

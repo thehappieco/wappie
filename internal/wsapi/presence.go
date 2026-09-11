@@ -95,12 +95,9 @@ func (s *session) handleChatPresence(ctx context.Context, f Frame) {
 	s.reply(TypeSendResult, f.ReqID, SendResult{ID: req.State})
 }
 
-// handleDeviceMode changes what a device tells the other side, while it runs.
-//
-// Persisted and applied in one call. Persisted because the mode is applied on
-// connect and a device that came back loud because nobody wrote the switch down
-// would be a surprising way to stop being invisible; applied because the point
-// of a switch is that it takes effect when it is flipped.
+// handleDeviceMode changes the default reading policy used by integrations.
+// The setting is persisted, while human sessions keep their own reader.mode.
+// Both modes retain unavailable public presence on connection and mode changes.
 func (s *session) handleDeviceMode(ctx context.Context, f Frame) {
 	var req DeviceModeRequest
 	if err := json.Unmarshal(f.Payload, &req); err != nil {

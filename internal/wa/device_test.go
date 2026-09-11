@@ -65,11 +65,8 @@ func newDevice(t *testing.T, mode wa.ReceiptMode) (*wa.Device, *fakewa.Client, *
 
 // TestIncognitoStaysSilent is the reason the fake exists.
 //
-// A passive device that connects and receives traffic must emit no presence, no
-// read receipts and never force active delivery receipts. Not calling
-// SendPresence is the entire mechanism: it keeps whatsmeow's internal counter at
-// zero, so delivery receipts leave typed "inactive" and official clients do not
-// render them.
+// A passive device explicitly stays unavailable, emits no read receipts and
+// never forces active delivery receipts. Incoming traffic must not change that.
 //
 // The v1 server called SendPresence(available) unconditionally in its Connected
 // handler, with a comment explaining that it made the ticks show up. This test
@@ -86,8 +83,8 @@ func TestIncognitoStaysSilent(t *testing.T) {
 	}
 	fake.Emit(&events.Receipt{})
 
-	if got := fake.SendPresenceCalls(); got != 0 {
-		t.Errorf("presence announced %d times in passive mode; delivery receipts will render", got)
+	if got := fake.Presences(); len(got) != 1 || got[0] != types.PresenceUnavailable {
+		t.Errorf("presences = %v, want exactly [unavailable]", got)
 	}
 	if got := fake.MarkReadCalls(); got != 0 {
 		t.Errorf("MarkRead called %d times without being asked", got)
@@ -100,9 +97,9 @@ func TestIncognitoStaysSilent(t *testing.T) {
 	}
 }
 
-// The complement, so the silence above means "suppressed" rather than "the
-// policy never does anything".
-func TestActiveModeAnnouncesPresence(t *testing.T) {
+// Existing active devices must also withdraw public presence, without changing
+// their permission to send explicit read or played receipts.
+func TestActiveModeStaysUnavailable(t *testing.T) {
 	dev, fake, _ := newDevice(t, wa.ModeActive)
 	if err := dev.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -110,8 +107,8 @@ func TestActiveModeAnnouncesPresence(t *testing.T) {
 	fake.Emit(&events.Connected{})
 
 	got := fake.Presences()
-	if len(got) != 1 || got[0] != types.PresenceAvailable {
-		t.Fatalf("presences = %v, want exactly [available]", got)
+	if len(got) != 1 || got[0] != types.PresenceUnavailable {
+		t.Fatalf("presences = %v, want exactly [unavailable]", got)
 	}
 }
 
@@ -218,11 +215,8 @@ func TestPolicyRecordsEveryDecision(t *testing.T) {
 	_ = policy.MarkRead(ctx, fake, chat, types.EmptyJID, []types.MessageID{"a"}, false)
 	_ = policy.ChatPresence(ctx, fake, chat, types.ChatPresenceComposing, "")
 
-	// Every outbound signal is recorded, sent or not. In the quiet posture only
-	// the suppressed series moves, and that is the property a dashboard is
-	// meant to make obvious: anything landing in "sent" while a device is meant
-	// to be silent is the bug, and it is visible without reading any code.
-	want := []string{"presence:suppressed", "read:suppressed", "typing:suppressed"}
+	// The unavailable announcement is sent; reading and typing stay suppressed.
+	want := []string{"presence:sent", "read:suppressed", "typing:suppressed"}
 	if len(decisions) != len(want) {
 		t.Fatalf("decisions = %v, want %v", decisions, want)
 	}

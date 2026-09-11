@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -127,6 +128,12 @@ type Device struct {
 	running  bool
 	stop     context.CancelFunc
 	done     chan struct{}
+
+	// Presence requests and readiness retries are serialized independently of
+	// state reads, so a slow socket cannot block Policy, Identity or Status.
+	presenceMu     sync.Mutex
+	offlinePending bool
+	offlineRetried offlineReadiness
 }
 
 // NewDevice builds a supervisor. It does not connect; call Start.
@@ -177,19 +184,8 @@ func (d *Device) Policy() ReceiptPolicy {
 	return d.cfg.Policy
 }
 
-// SetReceiptMode changes what this device tells the other side, while it runs.
-//
-// The mode used to be fixed at pairing, which made "go quiet" a thing you could
-// only decide before you had anything to be quiet about. Changing it here means
-// the switch is one call rather than a re-pair.
-//
-// The order of the two upstream calls is not interchangeable, and the asymmetry
-// is upstream's. SetForceActiveDeliveryReceipts(true) stores 2 and presence
-// "unavailable" only moves 1 to 0 — so going quiet needs the setter explicitly,
-// or a device that had ever been forced active would keep sending real delivery
-// receipts while reporting itself silent. Going loud needs the presence
-// announcement, because that is also what makes WhatsApp send us other people's
-// typing notifications at all.
+// SetReceiptMode changes the legacy device reading policy. Neither direction
+// announces public online presence; personal reading policies remain separate.
 func (d *Device) SetReceiptMode(ctx context.Context, mode ReceiptMode) error {
 	d.mu.Lock()
 	if d.cfg.Policy.Mode == mode {
@@ -197,21 +193,52 @@ func (d *Device) SetReceiptMode(ctx context.Context, mode ReceiptMode) error {
 		return nil
 	}
 	d.cfg.Policy.Mode = mode
-	client := d.cfg.Client
+	d.mu.Unlock()
+
+	return d.announceOffline(ctx, 0)
+}
+
+type offlineReadiness uint8
+
+const (
+	offlinePushName offlineReadiness = 1 << iota
+	offlineAppState
+	offlinePresenceTimeout = 3 * time.Second
+)
+
+// announceOffline keeps the transport connected but publicly unavailable. On
+// initial pairing the upstream push name may not exist yet: full sync can omit
+// PushNameSetting, so critical_block completion is also a readiness signal.
+// Retry each of those signals at most once per connection, only after failure.
+// There is no periodic presence traffic or forced reconnect.
+func (d *Device) announceOffline(ctx context.Context, ready offlineReadiness) error {
+	d.presenceMu.Lock()
+	defer d.presenceMu.Unlock()
+
+	d.mu.Lock()
 	running := d.running
 	policy := d.cfg.Policy
 	d.mu.Unlock()
-
-	if !running {
-		// Nothing to tell WhatsApp yet. The mode is what the next connect
-		// will apply, which is what OnConnect is for.
+	if !running || !d.cfg.Client.IsConnected() {
 		return nil
 	}
-	if mode == ModeActive {
-		return policy.OnConnect(ctx, client)
+	if ready != 0 {
+		if !d.offlinePending || d.offlineRetried&ready != 0 {
+			return nil
+		}
+		d.offlineRetried |= ready
+	} else {
+		d.offlineRetried = 0
 	}
-	client.SetForceActiveDeliveryReceipts(false)
-	return policy.OnDisconnect(ctx, client)
+
+	requestCtx, cancel := context.WithTimeout(ctx, offlinePresenceTimeout)
+	defer cancel()
+	err := policy.OnConnect(requestCtx, d.cfg.Client)
+	d.offlinePending = err != nil
+	if err == nil {
+		d.log.Info("public presence set to unavailable", "deferred_retry", ready != 0)
+	}
+	return err
 }
 
 // Start registers the event handler and connects, retrying transient failures
@@ -262,9 +289,12 @@ func (d *Device) Stop(ctx context.Context) {
 	d.cfg.Client.RemoveEventHandler(handle)
 
 	teardown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-	if err := d.cfg.Policy.OnDisconnect(teardown, d.cfg.Client); err != nil {
+	d.presenceMu.Lock()
+	d.offlinePending = false
+	if err := d.Policy().OnDisconnect(teardown, d.cfg.Client); err != nil {
 		d.log.Debug("withdrawing presence on shutdown failed", "error", err)
 	}
+	d.presenceMu.Unlock()
 	cancel()
 
 	d.cfg.Client.Disconnect()
@@ -349,10 +379,8 @@ func (d *Device) handleEvent(ctx context.Context, evt any) {
 		// Identity is only fully known after the post-pairing reconnect.
 		d.persistIdentity(ctx)
 		d.setStatus(ctx, StatusOnline, "")
-		// The one call that decides whether this device is visible. In passive
-		// mode it does nothing, deliberately.
-		if err := d.cfg.Policy.OnConnect(ctx, d.cfg.Client); err != nil {
-			d.log.Warn("receipt policy failed on connect", "error", err)
+		if err := d.announceOffline(ctx, 0); err != nil {
+			d.log.Warn("could not set public presence to unavailable", "error", err)
 		}
 
 	case *events.Disconnected:
@@ -382,6 +410,16 @@ func (d *Device) handleEvent(ctx context.Context, evt any) {
 		if name := v.Action.GetName(); name != "" {
 			d.identity.merge(Identity{PushName: name})
 			d.persistIdentity(ctx)
+			if err := d.announceOffline(ctx, offlinePushName); err != nil {
+				d.log.Warn("could not withdraw presence after push name sync", "error", err)
+			}
+		}
+
+	case *events.AppStateSyncComplete:
+		if v.Name == appstate.WAPatchCriticalBlock {
+			if err := d.announceOffline(ctx, offlineAppState); err != nil {
+				d.log.Warn("could not withdraw presence after settings sync", "error", err)
+			}
 		}
 	}
 

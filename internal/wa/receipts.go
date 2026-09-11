@@ -8,21 +8,17 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
-// ReceiptMode decides what a device tells the other side.
+// ReceiptMode controls explicit reading and typing signals, not public online
+// presence. Every connection stays unavailable in either mode.
 type ReceiptMode string
 
 const (
-	// ModePassive is the default and is what "incognito" means here.
-	//
-	// Presence is never announced, so whatsmeow's internal sendActiveReceipts
-	// counter stays at zero and delivery receipts leave typed "inactive".
-	// Official clients receive those and do not render them, which is exactly
-	// what WhatsApp Web does when it is not in the foreground. Read and played
-	// receipts are only ever sent when something explicitly asks.
+	// ModePassive is the default: suppress explicit read, played and typing
+	// signals. Ingestion and protocol acknowledgments continue normally.
 	ModePassive ReceiptMode = "passive"
 
-	// ModeActive behaves like a normal client: presence is announced on
-	// connect, and delivery receipts render as the usual grey ticks.
+	// ModeActive permits explicit read, played and typing signals while keeping
+	// the connection's public presence unavailable.
 	ModeActive ReceiptMode = "active"
 )
 
@@ -79,41 +75,26 @@ func (p ReceiptPolicy) record(kind string, sent bool) {
 	p.Recorder(kind, decisionSuppressed)
 }
 
-// OnConnect applies the policy right after a connection is established.
-//
-// In passive mode this does nothing at all, and the nothing is the feature:
-// not calling SendPresence is what keeps whatsmeow emitting "inactive" delivery
-// receipts. There is no upstream flag to suppress delivery receipts outright —
-// sendMessageReceipt is called unconditionally on the inbound path — so silence
-// here is the entire mechanism.
+// OnConnect explicitly withdraws public presence in both reading modes. An
+// always-connected linked client must not claim that a person is online merely
+// because the server is ingesting messages: that can suppress phone push alerts.
+// Protocol acknowledgments remain enabled, using upstream's inactive receipts.
 func (p ReceiptPolicy) OnConnect(ctx context.Context, c Client) error {
-	if p.Mode != ModeActive {
-		p.record(KindPresence, false)
-		return nil
-	}
-	p.record(KindPresence, true)
-	if err := c.SendPresence(ctx, types.PresenceAvailable); err != nil {
-		return fmt.Errorf("wa: announce presence: %w", err)
-	}
-	return nil
+	return p.withdrawPresence(ctx, c)
 }
 
-// OnDisconnect returns to invisibility. Sending "unavailable" resets
-// whatsmeow's active-receipt counter from 1 back to 0.
-//
-// Note the asymmetry upstream: SetForceActiveDeliveryReceipts(true) stores 2,
-// and presence "unavailable" only moves 1 to 0. So if anything ever forces
-// active receipts, this alone will not undo it — clearing that requires an
-// explicit SetForceActiveDeliveryReceipts(false), which is why this server
-// never calls the setter with true at all.
-//
-// Returns an error rather than swallowing one: this runs during teardown, where
-// a failure is expected and usually uninteresting, but the caller is the one
-// positioned to decide whether it is worth a log line.
+// OnDisconnect withdraws presence regardless of the current reading mode. The
+// caller bounds teardown and decides how to report an already-closed socket.
 func (p ReceiptPolicy) OnDisconnect(ctx context.Context, c Client) error {
-	if p.Mode != ModeActive {
-		return nil
-	}
+	return p.withdrawPresence(ctx, c)
+}
+
+func (p ReceiptPolicy) withdrawPresence(ctx context.Context, c Client) error {
+	// Unavailable only changes upstream's active counter from 1 to 0; a
+	// previously forced value of 2 needs this explicit reset first. Reset even
+	// if SendPresence cannot run yet because the push name is still syncing.
+	c.SetForceActiveDeliveryReceipts(false)
+	p.record(KindPresence, true)
 	if err := c.SendPresence(ctx, types.PresenceUnavailable); err != nil {
 		return fmt.Errorf("wa: withdraw presence: %w", err)
 	}

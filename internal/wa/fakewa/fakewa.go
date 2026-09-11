@@ -63,14 +63,15 @@ type Client struct {
 
 	qrCh chan whatsmeow.QRChannelItem
 
-	sent         []SentMessage
-	peerSent     []*waE2E.Message
-	readReceipts []ReadReceipt
-	presences    []types.Presence
-	chatPresence []types.ChatPresence
-	forceActive  bool
-	uploads      int
-	disconnects  int
+	sent           []SentMessage
+	peerSent       []*waE2E.Message
+	readReceipts   []ReadReceipt
+	presences      []types.Presence
+	chatPresence   []types.ChatPresence
+	forceActive    bool
+	activeReceipts uint8
+	uploads        int
+	disconnects    int
 
 	// Joins are the group invitations this client was asked to accept.
 	// Recorded because joining is outward facing and a test has to be able to
@@ -143,9 +144,9 @@ func (c *Client) MarkReadCalls() int {
 	return len(c.readReceipts)
 }
 
-// SendPresenceCalls returns how many presence updates were sent. Must be zero
-// in incognito: sending presence "available" is what promotes delivery receipts
-// from "inactive", which official clients ignore, to real ones they render.
+// SendPresenceCalls returns how many presence updates were sent. Tests must
+// distinguish unavailable from available: only the latter promotes delivery
+// receipts or announces that the person is online.
 func (c *Client) SendPresenceCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -158,6 +159,14 @@ func (c *Client) ForceActiveReceipts() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.forceActive
+}
+
+// ActiveDeliveryReceipts reports the current upstream-style delivery policy,
+// unlike ForceActiveReceipts, which records whether forcing was ever requested.
+func (c *Client) ActiveDeliveryReceipts() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeReceipts != 0
 }
 
 // Sent returns a copy of every outbound message.
@@ -453,6 +462,11 @@ func (c *Client) SendPresence(_ context.Context, state types.Presence) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.presences = append(c.presences, state)
+	if state == types.PresenceAvailable && c.activeReceipts == 0 {
+		c.activeReceipts = 1
+	} else if state != types.PresenceAvailable && c.activeReceipts == 1 {
+		c.activeReceipts = 0
+	}
 	return nil
 }
 
@@ -484,6 +498,9 @@ func (c *Client) SetForceActiveDeliveryReceipts(active bool) {
 	defer c.mu.Unlock()
 	if active {
 		c.forceActive = true
+		c.activeReceipts = 2
+	} else {
+		c.activeReceipts = 0
 	}
 }
 

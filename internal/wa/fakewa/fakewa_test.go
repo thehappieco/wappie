@@ -47,10 +47,8 @@ func TestSilenceIsObservable(t *testing.T) {
 	}
 }
 
-// SetForceActiveDeliveryReceipts(false) must not clear the flag once it has
-// been set. Upstream stores 2 for "forced" and only SendPresence(unavailable)
-// resets 1 to 0, so a false call does not undo a previous true — recording it
-// as a latch keeps the fake honest about that asymmetry.
+// ForceActiveReceipts records whether forcing was ever requested. That audit
+// history stays latched even though a later false resets the current policy.
 func TestForceActiveIsALatch(t *testing.T) {
 	fake := fakewa.New()
 	fake.SetForceActiveDeliveryReceipts(false)
@@ -61,6 +59,30 @@ func TestForceActiveIsALatch(t *testing.T) {
 	fake.SetForceActiveDeliveryReceipts(false)
 	if !fake.ForceActiveReceipts() {
 		t.Fatal("a later false must not erase the fact that true was called")
+	}
+}
+
+func TestDeliveryPolicyMatchesUpstreamResetSemantics(t *testing.T) {
+	fake := fakewa.New()
+	ctx := context.Background()
+	if err := fake.SendPresence(ctx, types.PresenceAvailable); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.ActiveDeliveryReceipts() {
+		t.Fatal("available must enable active delivery receipts")
+	}
+	_ = fake.SendPresence(ctx, types.PresenceUnavailable)
+	if fake.ActiveDeliveryReceipts() {
+		t.Fatal("unavailable must reset ordinary active receipts")
+	}
+	fake.SetForceActiveDeliveryReceipts(true)
+	_ = fake.SendPresence(ctx, types.PresenceUnavailable)
+	if !fake.ActiveDeliveryReceipts() {
+		t.Fatal("unavailable alone must not clear forced receipts")
+	}
+	fake.SetForceActiveDeliveryReceipts(false)
+	if fake.ActiveDeliveryReceipts() {
+		t.Fatal("false must reset even forced receipts")
 	}
 }
 

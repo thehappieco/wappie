@@ -616,15 +616,23 @@ deliberate choice and there is a legal dimension to it in some jurisdictions.
 
 ## Incognito
 
-Read receipts, played receipts and presence are fully suppressible with upstream
-whatsmeow: never call `SendPresence(available)`, never call `MarkRead` unless
-asked. Delivery receipts still leave, typed `inactive`, which official clients
-receive but do not render — the same thing WhatsApp Web does when it is in the
-background. Suppressing those on the wire needs a three-line patch to
-`receipt.go`; `internal/wa/forkhooks.go` is where that swap goes.
+The server stays connected while explicitly announcing WhatsApp presence as
+`unavailable`, including after reconnecting. This applies to both `active` and
+`passive` receipt settings, so existing numbers do not remain publicly online
+just because an integration permits read confirmations. Messages, media and
+history continue to be processed, and outgoing messages remain available.
 
-Going invisible costs seeing other people's presence. That is inherent to the
-protocol, not a limitation of this implementation.
+Each person's incognito preference separately suppresses their read/played
+confirmations and typing actions. Normal mode permits those actions without
+announcing the server online. A read confirmation can still clear a phone's
+notification for that message. Other linked clients can also affect the
+number's public presence and unread state.
+
+The normal protocol delivery receipts still leave, using upstream's `inactive`
+behavior. Observing contacts' online state, last seen or typing may be limited
+while our connection is publicly unavailable. The console's connected status
+describes the connection, not public presence. See
+[presence and reading preferences](docs/message-presence.md) for details.
 
 ## Layout
 

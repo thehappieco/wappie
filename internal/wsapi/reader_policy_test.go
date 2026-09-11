@@ -59,6 +59,11 @@ func TestPersonalReadPolicyGatesUnreadPlayedAndTypingBeforeAnyEffects(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
+			// A resumed legacy transport stays offline in either mode. Personal
+			// reading choices must still work after that connection policy runs.
+			if err := live.Policy().OnConnect(ctx, fake); err != nil {
+				t.Fatal(err)
+			}
 			unread := store.NewUnread(pool)
 			srv := &Server{cfg: Config{Sessions: users, Unread: unread}}
 			makeSession := func(user store.User) *session {
@@ -111,11 +116,20 @@ func TestPersonalReadPolicyGatesUnreadPlayedAndTypingBeforeAnyEffects(t *testing
 			if len(receipts) != 2 || len(receipts[1].Types) != 1 || receipts[1].Types[0] != types.ReceiptTypePlayed {
 				t.Fatalf("read/played=%+v", receipts)
 			}
-			if live.Policy().Mode != sharedMode || fake.SendPresenceCalls() != 0 || fake.ForceActiveReceipts() {
+			presences := fake.Presences()
+			if len(presences) != 1 || presences[0] != types.PresenceUnavailable {
+				t.Fatalf("personal actions changed offline presence: %v", presences)
+			}
+			if live.Policy().Mode != sharedMode || fake.ForceActiveReceipts() {
 				t.Fatal("personal actions changed shared availability")
 			}
-			if mode, err := users.ReaderMode(ctx, tenant, discreet.ID, device); err != nil || mode != wa.ModePassive {
-				t.Fatal("teammate changed discreet user's preference")
+			for _, tc := range []struct {
+				user uuid.UUID
+				mode wa.ReceiptMode
+			}{{discreet.ID, wa.ModePassive}, {normal.ID, wa.ModeActive}} {
+				if mode, err := users.ReaderMode(ctx, tenant, tc.user, device); err != nil || mode != tc.mode {
+					t.Fatalf("offline connection or teammate changed reading preference: got=%s want=%s err=%v", mode, tc.mode, err)
+				}
 			}
 		})
 	}
