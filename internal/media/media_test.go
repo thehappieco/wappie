@@ -791,6 +791,10 @@ func TestMediaDownloadRequiresDeviceReadPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(200)
+	// Revoking this reader must retain another recoverable envelope.
+	if err = store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup")}, &owner.ID); err != nil {
+		t.Fatal(err)
+	}
 	p.Read = false
 	if err = users.SetDevicePermission(ctx, f.tenant, owner.ID, p); err != nil {
 		t.Fatal(err)

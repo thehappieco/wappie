@@ -68,6 +68,9 @@ func TestPresenceSubscribeRequiresReadAndCurrentGrant(t *testing.T) {
 	wantPresenceUnavailable(t, ask(t, c, wsapi.Hello{Session: token}, wsapi.TypePresenceWatch, req), device.String(), streamChat)
 	wantError(t, ask(t, c, wsapi.Hello{Session: token}, wsapi.TypePresenceWatch,
 		wsapi.PresenceSubscribeRequest{DeviceID: other, Chat: streamChat}), wsapi.ErrCodeNotAuthorized)
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup")}, nil); err != nil {
+		t.Fatal(err)
+	}
 	permission.Read, permission.Send, permission.Manage = false, true, true
 	if err := c.users.SetDevicePermission(ctx, c.tenant, owner.ID, permission); err != nil {
 		t.Fatal(err)
@@ -183,6 +186,7 @@ func TestPresenceStreamIsFilteredByTenantAndGrantedDevice(t *testing.T) {
 			t.Fatalf("last seen=%v for %s", p.LastSeen, state)
 		}
 	}
+	retainBackupReader(t, c.pool, c.tenant, device)
 	if err := keys.RevokeGrant(ctx, c.tenant, device, member.ID); err != nil {
 		t.Fatal(err)
 	}

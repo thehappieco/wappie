@@ -66,7 +66,7 @@ func TestWorkspaceProfileAuthorizationAndIsolation(t *testing.T) {
 		}
 	}
 	spaces, err := h.users.Workspaces(ctx, owner.ID)
-	if err != nil || len(spaces) != 1 || spaces[0].Name != "São Paulo · Equipe" || spaces[0].Avatar != avatar {
+	if err != nil || len(spaces) != 2 || spaces[0].Name != "São Paulo · Equipe" || spaces[0].Avatar != avatar {
 		t.Fatalf("saved metadata not available to members: %+v %v", spaces, err)
 	}
 	// A client cannot supply another tenant, even while acting as a manager.

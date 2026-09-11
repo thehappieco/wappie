@@ -10,10 +10,18 @@ import (
 
 func (h *Handler) memberError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, store.ErrPersonalWorkspace):
+		fail(w, http.StatusConflict, "personal_workspace", "create a team workspace to invite people")
+	case errors.Is(err, store.ErrInviteInvalid):
+		fail(w, http.StatusConflict, "invite_invalid", "the invitation is expired, revoked or already accepted")
+	case errors.Is(err, store.ErrInviteNotRecoverable):
+		fail(w, http.StatusConflict, "invite_not_recoverable", "the original code cannot be recovered; generate a new invitation")
 	case errors.Is(err, store.ErrMembershipForbidden):
 		fail(w, http.StatusForbidden, "not_authorized", "this action requires a workspace owner or an authorized administrator")
 	case errors.Is(err, store.ErrLastOwner):
 		fail(w, http.StatusConflict, "last_owner", "the workspace must retain an active owner")
+	case errors.Is(err, store.ErrLastDeviceReader):
+		fail(w, http.StatusConflict, "last_device_reader", "give another active member read access to this number before removing its last reader")
 	case errors.Is(err, store.ErrInvalidMembership):
 		fail(w, http.StatusBadRequest, "bad_request", "invalid role, status or invitation address")
 	case errors.Is(err, store.ErrNotFound):
@@ -76,14 +84,12 @@ func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) || !h.allow(w, r, user.Email) {
 		return
 	}
-	invite, err := h.Users.InviteMember(r.Context(), user.TenantID, user.ID, req.Role, req.Email)
+	invite, invitation, err := h.Users.NewMemberInvitation(r.Context(), user.TenantID, user.ID, req.Role, req.Email)
 	if err != nil {
 		h.memberError(w, err)
 		return
 	}
-	send(w, http.StatusCreated, struct {
-		Invite string `json:"invite"`
-	}{invite})
+	send(w, http.StatusCreated, map[string]any{"invite": invite, "invitation": invitation, "email_sent": h.deliverWorkspaceInvite(r, user, invite, invitation.Email)})
 }
 
 func (h *Handler) accessChanged() {

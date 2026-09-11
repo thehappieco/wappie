@@ -15,7 +15,7 @@
 // how the first archive of this project was lost, so it is not the default.
 
 import type { PrivateKey } from '../crypto/hpke'
-import { AuthError, restoreSignIn, signOut, type SignedIn } from '../api/auth'
+import { AuthError, refreshAccountAccess, restoreSignIn, signOut, type SignedIn } from '../api/auth'
 import { origin } from '../api/endpoint'
 import { beginBrowserSessionEpoch, bridgeOrigin, browserSessionWasCleared, forgetBrowserSession, readBrowserSession, rememberBrowserSession, sharedBrowserOrigin } from './sessionBridge'
 import type { BrowserLogin } from './sessionVault'
@@ -59,7 +59,9 @@ export interface Session {
    * before that was possible holds a wrap nothing can hand back, and is
    * nudged to generate a new code.
    */
-  account?: { email: string; hasRecovery: boolean; tenantID?: string; userID?: string }
+  account?: { email: string; name?: string; avatar?: string; hasRecovery: boolean; tenantID?: string; userID?: string }
+
+  refreshAccess?(): Promise<void>
 
   close(): Promise<void>
   /** Dispose memory and connections without signing out on normal navigation. */
@@ -86,13 +88,35 @@ export function fromAccount(signedIn: SignedIn, serverURL: string): Session {
   } : undefined)
   let closed = false
 
+  const readable = signedIn.readable.map((r) => ({ deviceID: r.deviceID, label: r.label }))
+  let refreshing: Promise<void> | undefined
+
   return {
     label: signedIn.email,
     serverURL,
     credential,
     archiveFor: (deviceID) => keys.get(deviceID),
-    readable: signedIn.readable.map((r) => ({ deviceID: r.deviceID, label: r.label })),
-    account: { email: signedIn.email, hasRecovery: signedIn.hasRecovery, tenantID: signedIn.tenantID, userID: signedIn.userID },
+    readable,
+    account: { email: signedIn.email, name: signedIn.name, avatar: signedIn.avatar, hasRecovery: signedIn.hasRecovery, tenantID: signedIn.tenantID, userID: signedIn.userID },
+    refreshAccess: () => {
+      if (refreshing) return refreshing
+      if (closed || !signedIn.accountKey) return Promise.resolve()
+      const token = credential.token
+      refreshing = refreshAccountAccess(serverURL, token, signedIn.accountKey, signedIn.userID, tenantID).then(fresh => {
+        if (closed || credential.token !== token) return
+        const retained = new Map<string, PrivateKey>()
+        for (const r of fresh.readable) {
+          const old = keys.get(r.deviceID)
+          // Preserve live decryptors for an unchanged archive key. A genuinely
+          // new key gets a new handle so the archive can rebuild its opener.
+          retained.set(r.deviceID, old && old.publicRaw.length === r.archive.publicRaw.length && old.publicRaw.every((b, i) => b === r.archive.publicRaw[i]) ? old : r.archive)
+        }
+        keys.clear()
+        for (const [id, key] of retained) keys.set(id, key)
+        readable.splice(0, readable.length, ...fresh.readable.map(r => ({ deviceID: r.deviceID, label: r.label })))
+      }).finally(() => { refreshing = undefined })
+      return refreshing
+    },
     persistenceID: saved?.id,
     persistenceEpoch: saved?.epoch,
     expiresAt: signedIn.expiresAt,

@@ -1,0 +1,506 @@
+{
+  "Workspace": [
+    "Workspace",
+    "Workspace",
+    "Espace de travail",
+    "Workspace"
+  ],
+  "Workspaces": [
+    "Workspaces",
+    "Workspaces",
+    "Espaces de travail",
+    "Workspaces"
+  ],
+  "Pessoal": [
+    "Personal",
+    "Personal",
+    "Personnel",
+    "Persönlich"
+  ],
+  "Team": [
+    "Team",
+    "Team",
+    "Équipe",
+    "Team"
+  ],
+  "Abrir menu": [
+    "Open menu",
+    "Abrir menú",
+    "Ouvrir le menu",
+    "Menü öffnen"
+  ],
+  "Editar {name}": [
+    "Edit {name}",
+    "Editar {name}",
+    "Modifier {name}",
+    "{name} bearbeiten"
+  ],
+  "Criar workspace Team": [
+    "Create Team workspace",
+    "Crear workspace Team",
+    "Créer un espace d’équipe",
+    "Team-Workspace erstellen"
+  ],
+  "Criar workspace": [
+    "Create workspace",
+    "Crear workspace",
+    "Créer un espace de travail",
+    "Workspace erstellen"
+  ],
+  "Entrar com código de convite": [
+    "Join with an invitation code",
+    "Entrar con un código de invitación",
+    "Rejoindre avec un code d’invitation",
+    "Mit Einladungscode beitreten"
+  ],
+  "Entrar em um workspace": [
+    "Join a workspace",
+    "Unirse a un workspace",
+    "Rejoindre un espace de travail",
+    "Einem Workspace beitreten"
+  ],
+  "Editar workspace": [
+    "Edit workspace",
+    "Editar workspace",
+    "Modifier l’espace de travail",
+    "Workspace bearbeiten"
+  ],
+  "Alterar avatar do workspace": [
+    "Change workspace avatar",
+    "Cambiar avatar del workspace",
+    "Changer l’avatar de l’espace",
+    "Workspace-Avatar ändern"
+  ],
+  "Nome do workspace": [
+    "Workspace name",
+    "Nombre del workspace",
+    "Nom de l’espace de travail",
+    "Workspace-Name"
+  ],
+  "Um workspace Team reúne números, membros e uma assinatura própria. Seu workspace pessoal continua separado.": [
+    "A Team workspace brings together numbers, members and its own subscription. Your personal workspace stays separate.",
+    "Un workspace Team reúne números, miembros y una suscripción propia. Tu workspace personal permanece separado.",
+    "Un espace d’équipe regroupe des numéros, des membres et son propre abonnement. Votre espace personnel reste distinct.",
+    "Ein Team-Workspace vereint Nummern, Mitglieder und ein eigenes Abonnement. Dein persönlicher Workspace bleibt getrennt."
+  ],
+  "O nome e a imagem aparecem para os membros deste workspace.": [
+    "The name and image are visible to this workspace’s members.",
+    "El nombre y la imagen son visibles para los miembros de este workspace.",
+    "Le nom et l’image sont visibles par les membres de cet espace.",
+    "Name und Bild sind für die Mitglieder dieses Workspaces sichtbar."
+  ],
+  "Use o código recebido no convite. Você precisa entrar com o mesmo email que foi convidado.": [
+    "Use the code from your invitation. Sign in with the email address that was invited.",
+    "Usa el código de tu invitación. Inicia sesión con el email que recibió la invitación.",
+    "Utilisez le code de votre invitation. Connectez-vous avec l’adresse email invitée.",
+    "Verwende den Code aus deiner Einladung. Melde dich mit der eingeladenen E-Mail-Adresse an."
+  ],
+  "Convite aceito. Atualize a lista para abrir o workspace.": [
+    "Invitation accepted. Refresh the list to open the workspace.",
+    "Invitación aceptada. Actualiza la lista para abrir el workspace.",
+    "Invitation acceptée. Actualisez la liste pour ouvrir l’espace.",
+    "Einladung angenommen. Aktualisiere die Liste, um den Workspace zu öffnen."
+  ],
+  "Conta atual: {email}": [
+    "Current account: {email}",
+    "Cuenta actual: {email}",
+    "Compte actuel : {email}",
+    "Aktuelles Konto: {email}"
+  ],
+  "Convite para: {email}": [
+    "Invitation for: {email}",
+    "Invitación para: {email}",
+    "Invitation pour : {email}",
+    "Einladung für: {email}"
+  ],
+  "Entrar com outro email": [
+    "Sign in with another email",
+    "Entrar con otro email",
+    "Se connecter avec un autre email",
+    "Mit einer anderen E-Mail anmelden"
+  ],
+  "Este convite pertence a outro email. Entre com o email convidado. O convite continua válido.": [
+    "This invitation belongs to another email address. Sign in with the invited email. The invitation is still valid.",
+    "Esta invitación pertenece a otro email. Entra con el email invitado. La invitación sigue siendo válida.",
+    "Cette invitation appartient à une autre adresse email. Connectez-vous avec l’email invité. L’invitation reste valable.",
+    "Diese Einladung gehört zu einer anderen E-Mail-Adresse. Melde dich mit der eingeladenen Adresse an. Die Einladung bleibt gültig."
+  ],
+  "Pessoas, convites e acesso aos números deste workspace.": [
+    "People, invitations and access to this workspace’s numbers.",
+    "Personas, invitaciones y acceso a los números de este workspace.",
+    "Personnes, invitations et accès aux numéros de cet espace.",
+    "Personen, Einladungen und Zugriff auf die Nummern dieses Workspaces."
+  ],
+  "Convidar pessoa": [
+    "Invite someone",
+    "Invitar a alguien",
+    "Inviter une personne",
+    "Person einladen"
+  ],
+  "Entenda os papéis e acessos": [
+    "Understand roles and access",
+    "Entender los roles y accesos",
+    "Comprendre les rôles et les accès",
+    "Rollen und Zugriffsrechte verstehen"
+  ],
+  "Controla o workspace, a assinatura e os administradores. Sempre é necessário manter um proprietário ativo.": [
+    "Controls the workspace, subscription and administrators. An active owner must always remain.",
+    "Controla el workspace, la suscripción y los administradores. Siempre debe quedar un propietario activo.",
+    "Gère l’espace, l’abonnement et les administrateurs. Il faut toujours conserver un propriétaire actif.",
+    "Verwaltet Workspace, Abonnement und Administratoren. Ein aktiver Eigentümer muss immer erhalten bleiben."
+  ],
+  "Gerencia números, membros e integrações. Não altera proprietários nem outros administradores.": [
+    "Manages numbers, members and integrations. Cannot change owners or other administrators.",
+    "Gestiona números, miembros e integraciones. No modifica propietarios ni otros administradores.",
+    "Gère les numéros, les membres et les intégrations. Ne modifie ni les propriétaires ni les autres administrateurs.",
+    "Verwaltet Nummern, Mitglieder und Integrationen. Kann Eigentümer und andere Administratoren nicht ändern."
+  ],
+  "Usa somente os números e recursos que foram liberados. A leitura exige uma chave de acesso.": [
+    "Uses only the numbers and features they have been granted. Reading requires an access key.",
+    "Usa solo los números y funciones autorizados. La lectura requiere una clave de acceso.",
+    "Utilise uniquement les numéros et fonctions autorisés. La lecture nécessite une clé d’accès.",
+    "Verwendet nur freigegebene Nummern und Funktionen. Zum Lesen ist ein Zugriffsschlüssel erforderlich."
+  ],
+  "O workspace pessoal é exclusivo da sua conta. Crie um workspace Team para convidar pessoas.": [
+    "The personal workspace is exclusively for your account. Create a Team workspace to invite people.",
+    "El workspace personal es exclusivo de tu cuenta. Crea un workspace Team para invitar a otras personas.",
+    "L’espace personnel est réservé à votre compte. Créez un espace d’équipe pour inviter d’autres personnes.",
+    "Der persönliche Workspace ist nur für dein Konto. Erstelle einen Team-Workspace, um Personen einzuladen."
+  ],
+  "Números com chave": [
+    "Numbers with a key",
+    "Números con clave",
+    "Numéros avec une clé",
+    "Nummern mit Schlüssel"
+  ],
+  "Nenhum número": [
+    "No numbers",
+    "Ningún número",
+    "Aucun numéro",
+    "Keine Nummern"
+  ],
+  "Convite": [
+    "Invitation",
+    "Invitación",
+    "Invitation",
+    "Einladung"
+  ],
+  "Expira em {date}": [
+    "Expires on {date}",
+    "Caduca el {date}",
+    "Expire le {date}",
+    "Läuft am {date} ab"
+  ],
+  "Ver convite": [
+    "View invitation",
+    "Ver invitación",
+    "Voir l’invitation",
+    "Einladung ansehen"
+  ],
+  "Gerar novo convite": [
+    "Generate a new invitation",
+    "Generar nueva invitación",
+    "Générer une nouvelle invitation",
+    "Neue Einladung erstellen"
+  ],
+  "Histórico de convites": [
+    "Invitation history",
+    "Historial de invitaciones",
+    "Historique des invitations",
+    "Einladungsverlauf"
+  ],
+  "A pessoa entra com este email. Se ainda não tiver uma conta, poderá criá-la e receberá também um workspace pessoal.": [
+    "They sign in with this email. If they do not have an account yet, they can create one and will also get a personal workspace.",
+    "La persona entra con este email. Si aún no tiene cuenta, podrá crearla y recibirá también un workspace personal.",
+    "La personne se connecte avec cet email. Si elle n’a pas encore de compte, elle pourra en créer un et disposera aussi d’un espace personnel.",
+    "Die Person meldet sich mit dieser E-Mail an. Ohne bestehendes Konto kann sie eines erstellen und erhält auch einen persönlichen Workspace."
+  ],
+  "Convite do workspace": [
+    "Workspace invitation",
+    "Invitación al workspace",
+    "Invitation à l’espace de travail",
+    "Workspace-Einladung"
+  ],
+  "Copiar código": [
+    "Copy code",
+    "Copiar código",
+    "Copier le code",
+    "Code kopieren"
+  ],
+  "Copiar link": [
+    "Copy link",
+    "Copiar enlace",
+    "Copier le lien",
+    "Link kopieren"
+  ],
+  "Copiado.": [
+    "Copied.",
+    "Copiado.",
+    "Copié.",
+    "Kopiert."
+  ],
+  "Selecione e copie o código exibido.": [
+    "Select and copy the displayed code.",
+    "Selecciona y copia el código mostrado.",
+    "Sélectionnez et copiez le code affiché.",
+    "Wähle den angezeigten Code aus und kopiere ihn."
+  ],
+  "Convite enviado por email. Você também pode compartilhar o link.": [
+    "Invitation sent by email. You can also share the link.",
+    "Invitación enviada por email. También puedes compartir el enlace.",
+    "Invitation envoyée par email. Vous pouvez aussi partager le lien.",
+    "Einladung per E-Mail gesendet. Du kannst auch den Link teilen."
+  ],
+  "O email não foi enviado. Copie o link ou o código e compartilhe com a pessoa convidada.": [
+    "The email was not sent. Copy the link or code and share it with the person you invited.",
+    "El email no se envió. Copia el enlace o código y compártelo con la persona invitada.",
+    "L’email n’a pas été envoyé. Copiez le lien ou le code et partagez-le avec la personne invitée.",
+    "Die E-Mail wurde nicht gesendet. Kopiere den Link oder Code und teile ihn mit der eingeladenen Person."
+  ],
+  "Revogar convite": [
+    "Revoke invitation",
+    "Revocar invitación",
+    "Révoquer l’invitation",
+    "Einladung widerrufen"
+  ],
+  "O convite para {email} deixará de funcionar.": [
+    "The invitation for {email} will stop working.",
+    "La invitación para {email} dejará de funcionar.",
+    "L’invitation pour {email} ne fonctionnera plus.",
+    "Die Einladung für {email} wird ungültig."
+  ],
+  "Aceito": [
+    "Accepted",
+    "Aceptado",
+    "Acceptée",
+    "Angenommen"
+  ],
+  "Revogado": [
+    "Revoked",
+    "Revocado",
+    "Révoquée",
+    "Widerrufen"
+  ],
+  "Expirado": [
+    "Expired",
+    "Caducado",
+    "Expirée",
+    "Abgelaufen"
+  ],
+  "Seu perfil e suas formas de acesso, em todos os workspaces.": [
+    "Your profile and sign-in methods, across all workspaces.",
+    "Tu perfil y métodos de acceso, en todos los workspaces.",
+    "Votre profil et vos méthodes de connexion, dans tous les espaces.",
+    "Dein Profil und deine Anmeldemethoden in allen Workspaces."
+  ],
+  "Alterar sua foto": [
+    "Change your photo",
+    "Cambiar tu foto",
+    "Changer votre photo",
+    "Dein Foto ändern"
+  ],
+  "Remover foto": [
+    "Remove photo",
+    "Eliminar foto",
+    "Supprimer la photo",
+    "Foto entfernen"
+  ],
+  "Salvar perfil": [
+    "Save profile",
+    "Guardar perfil",
+    "Enregistrer le profil",
+    "Profil speichern"
+  ],
+  "Salvando…": [
+    "Saving…",
+    "Guardando…",
+    "Enregistrement…",
+    "Speichern…"
+  ],
+  "Perfil atualizado.": [
+    "Profile updated.",
+    "Perfil actualizado.",
+    "Profil mis à jour.",
+    "Profil aktualisiert."
+  ],
+  "Não foi possível atualizar o perfil. Confira o nome e a imagem e tente novamente.": [
+    "Could not update the profile. Check the name and image and try again.",
+    "No se pudo actualizar el perfil. Revisa el nombre y la imagen e inténtalo de nuevo.",
+    "Impossible de mettre à jour le profil. Vérifiez le nom et l’image, puis réessayez.",
+    "Das Profil konnte nicht aktualisiert werden. Prüfe Name und Bild und versuche es erneut."
+  ],
+  "Trocar senha": [
+    "Change password",
+    "Cambiar contraseña",
+    "Changer le mot de passe",
+    "Passwort ändern"
+  ],
+  "Trocar sua senha de acesso": [
+    "Change your sign-in password",
+    "Cambiar tu contraseña de acceso",
+    "Changer votre mot de passe de connexion",
+    "Dein Anmeldepasswort ändern"
+  ],
+  "{count} passkeys ativadas": [
+    "{count} active passkeys",
+    "{count} passkeys activas",
+    "{count} passkeys actives",
+    "{count} aktive Passkeys"
+  ],
+  "Chave de recuperação": [
+    "Recovery key",
+    "Clave de recuperación",
+    "Clé de récupération",
+    "Wiederherstellungsschlüssel"
+  ],
+  "Proteção ativada · gerar uma nova chave": [
+    "Protected · generate a new key",
+    "Protección activada · generar una nueva clave",
+    "Protection activée · générer une nouvelle clé",
+    "Geschützt · neuen Schlüssel erstellen"
+  ],
+  "Adicione uma forma de recuperar sua conta": [
+    "Add a way to recover your account",
+    "Añade una forma de recuperar tu cuenta",
+    "Ajoutez un moyen de récupérer votre compte",
+    "Füge eine Kontowiederherstellung hinzu"
+  ],
+  "Ao gerar uma nova chave, a anterior deixa de funcionar.": [
+    "Generating a new key invalidates the previous one.",
+    "Al generar una nueva clave, la anterior deja de funcionar.",
+    "La création d’une nouvelle clé invalide la précédente.",
+    "Ein neuer Schlüssel macht den bisherigen ungültig."
+  ],
+  "Gerar nova chave": [
+    "Generate new key",
+    "Generar nueva clave",
+    "Générer une nouvelle clé",
+    "Neuen Schlüssel erstellen"
+  ],
+  "Gerar chave de recuperação": [
+    "Generate recovery key",
+    "Generar clave de recuperación",
+    "Générer une clé de récupération",
+    "Wiederherstellungsschlüssel erstellen"
+  ],
+  "Membros e permissões": [
+    "Members and permissions",
+    "Miembros y permisos",
+    "Membres et permissions",
+    "Mitglieder und Berechtigungen"
+  ],
+  "Defina quem pode ler, enviar e gerenciar este número. Ao liberar leitura, a chave é entregue de forma protegida ao membro.": [
+    "Choose who can read, send and manage this number. Enabling reading securely gives the member the key.",
+    "Elige quién puede leer, enviar y gestionar este número. Al permitir la lectura, la clave se entrega de forma protegida al miembro.",
+    "Choisissez qui peut lire, envoyer et gérer ce numéro. L’accès en lecture transmet la clé au membre de manière sécurisée.",
+    "Lege fest, wer diese Nummer lesen, verwenden und verwalten darf. Beim Freigeben des Lesens erhält das Mitglied den Schlüssel geschützt."
+  ],
+  "Entre com sua conta para gerenciar os acessos dos membros.": [
+    "Sign in with your account to manage member access.",
+    "Entra con tu cuenta para gestionar los accesos de los miembros.",
+    "Connectez-vous avec votre compte pour gérer les accès des membres.",
+    "Melde dich mit deinem Konto an, um Mitgliederzugriffe zu verwalten."
+  ],
+  "Conversas e histórico": [
+    "Chats and history",
+    "Chats e historial",
+    "Discussions et historique",
+    "Chats und Verlauf"
+  ],
+  "Mensagens e interações": [
+    "Messages and interactions",
+    "Mensajes e interacciones",
+    "Messages et interactions",
+    "Nachrichten und Interaktionen"
+  ],
+  "Conexão e configurações": [
+    "Connection and settings",
+    "Conexión y ajustes",
+    "Connexion et paramètres",
+    "Verbindung und Einstellungen"
+  ],
+  "Com chave": [
+    "Has key",
+    "Con clave",
+    "Avec clé",
+    "Mit Schlüssel"
+  ],
+  "Sem chave": [
+    "No key",
+    "Sin clave",
+    "Sans clé",
+    "Ohne Schlüssel"
+  ],
+  "Nenhum membro disponível.": [
+    "No members available.",
+    "Ningún miembro disponible.",
+    "Aucun membre disponible.",
+    "Keine Mitglieder verfügbar."
+  ],
+  "Para conceder leitura, um membro que já tem a chave deste número precisa liberar o acesso.": [
+    "To enable reading, a member who already has this number’s key must grant access.",
+    "Para permitir la lectura, un miembro que ya tenga la clave de este número debe conceder acceso.",
+    "Pour autoriser la lecture, un membre possédant déjà la clé de ce numéro doit accorder l’accès.",
+    "Um das Lesen freizugeben, muss ein Mitglied mit dem Schlüssel dieser Nummer den Zugriff erteilen."
+  ],
+  "Proprietários e administradores podem gerenciar o número. Para ler as conversas, também precisam da chave. O último membro ativo com acesso é protegido contra remoção.": [
+    "Owners and administrators can manage the number. Reading chats also requires the key. The last active member with access is protected from removal.",
+    "Los propietarios y administradores pueden gestionar el número. Para leer los chats también necesitan la clave. El último miembro activo con acceso está protegido contra su eliminación.",
+    "Les propriétaires et administrateurs peuvent gérer le numéro. La lecture nécessite aussi la clé. Le dernier membre actif disposant d’un accès est protégé contre la suppression.",
+    "Eigentümer und Administratoren können die Nummer verwalten. Zum Lesen benötigen sie ebenfalls den Schlüssel. Das letzte aktive Mitglied mit Zugriff ist vor dem Entfernen geschützt."
+  ],
+  "Liberar leitura": [
+    "Enable reading",
+    "Permitir lectura",
+    "Autoriser la lecture",
+    "Lesen freigeben"
+  ],
+  "A chave deste número será compartilhada com {name}.": [
+    "This number’s key will be shared with {name}.",
+    "La clave de este número se compartirá con {name}.",
+    "La clé de ce numéro sera partagée avec {name}.",
+    "Der Schlüssel dieser Nummer wird mit {name} geteilt."
+  ],
+  "Permissões atualizadas.": [
+    "Permissions updated.",
+    "Permisos actualizados.",
+    "Permissions mises à jour.",
+    "Berechtigungen aktualisiert."
+  ],
+  "A chave foi atualizada, mas a alteração das outras permissões não foi concluída. Confira os acessos e tente novamente.": [
+    "The key was updated, but the other permissions could not be changed. Check access and try again.",
+    "La clave se actualizó, pero no se completó el cambio de los demás permisos. Revisa los accesos e inténtalo de nuevo.",
+    "La clé a été mise à jour, mais les autres permissions n’ont pas pu être modifiées. Vérifiez les accès et réessayez.",
+    "Der Schlüssel wurde aktualisiert, aber die anderen Berechtigungen konnten nicht geändert werden. Prüfe die Zugriffe und versuche es erneut."
+  ],
+  "Este é o último membro ativo com a chave deste número. Conceda acesso a outra pessoa antes de removê-lo.": [
+    "This is the last active member with this number’s key. Grant access to someone else before removing them.",
+    "Este es el último miembro activo con la clave de este número. Concede acceso a otra persona antes de eliminarlo.",
+    "C’est le dernier membre actif possédant la clé de ce numéro. Accordez l’accès à une autre personne avant de le retirer.",
+    "Dies ist das letzte aktive Mitglied mit dem Schlüssel dieser Nummer. Erteile zuerst einer anderen Person Zugriff."
+  ],
+  "Este convite não permite recuperar o código original. Gere um novo convite.": [
+    "The original code cannot be retrieved for this invitation. Generate a new invitation.",
+    "No se puede recuperar el código original de esta invitación. Genera una nueva.",
+    "Le code original de cette invitation ne peut pas être récupéré. Générez une nouvelle invitation.",
+    "Der ursprüngliche Code dieser Einladung kann nicht abgerufen werden. Erstelle eine neue Einladung."
+  ],
+  "Consultar passkeys": [
+    "View passkeys",
+    "Consultar passkeys",
+    "Consulter les passkeys",
+    "Passkeys ansehen"
+  ],
+  "Gerenciar passkeys": [
+    "Manage passkeys",
+    "Gestionar passkeys",
+    "Gérer les passkeys",
+    "Passkeys verwalten"
+  ],
+  "Não foi possível alterar o acesso. Tente novamente.": [
+    "Could not change access. Try again.",
+    "No se pudo cambiar el acceso. Inténtalo de nuevo.",
+    "Impossible de modifier l’accès. Réessayez.",
+    "Der Zugriff konnte nicht geändert werden. Versuche es erneut."
+  ]
+}

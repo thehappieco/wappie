@@ -23,7 +23,7 @@ func (u *Users) identity(ctx context.Context, id uuid.UUID) (User, error) {
 	var raw []byte
 	var role string
 	err = pg.InTenantTx(ctx, u.pool, home.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT email,kdf_salt,kdf_params,public_key,wrapped_usk,recovery_wrap,recovery_hash IS NOT NULL,status,created_at,role FROM users WHERE id=$1`, id).Scan(&out.Email, &out.KDFSalt, &raw, &out.PublicKey, &out.WrappedUSK, &out.RecoveryWrap, &out.RecoveryUsable, &out.Status, &out.CreatedAt, &role)
+		return tx.QueryRow(ctx, `SELECT email,kdf_salt,kdf_params,public_key,wrapped_usk,recovery_wrap,recovery_hash IS NOT NULL,status,created_at,role,name,avatar FROM users WHERE id=$1`, id).Scan(&out.Email, &out.KDFSalt, &raw, &out.PublicKey, &out.WrappedUSK, &out.RecoveryWrap, &out.RecoveryUsable, &out.Status, &out.CreatedAt, &role, &out.Name, &out.Avatar)
 	})
 	if err != nil {
 		return User{}, err

@@ -23,13 +23,19 @@ import PairDialog from './PairDialog.vue'
 import AccountPanel from './AccountPanel.vue'
 import TokenPanel from './TokenPanel.vue'
 import WorkspacePanel from './WorkspacePanel.vue'
+import WorkspaceSwitcher from './WorkspaceSwitcher.vue'
+import ConsoleDialog from './ConsoleDialog.vue'
+import { currentWorkspace, loadWorkspaceContext, workspaceState } from '../state/workspaces'
+import { initials } from '../state/jid'
 import SubscriptionPanel from '@subscription'
 import AppearanceMenu from './AppearanceMenu.vue'
 import AppIcon, { type IconName } from './AppIcon.vue'
 
 const readable = computed(() => readableDevices())
-const workspaceName = ref('')
-const workspaceAvatar = ref('')
+const workspaceName = computed(() => currentWorkspace.value?.name ?? '')
+const mobileNav = ref(false)
+const profileName = computed(() => workspaceState.profile?.name || state.account || state.label)
+const profileAvatar = computed(() => workspaceState.profile?.avatar || '')
 const section = ref('devices')
 const visited = ref(new Set(['devices']))
 const content = ref<HTMLElement>()
@@ -39,17 +45,14 @@ const roleLabels = computed<Record<string, string>>(() => ({ owner: t('Propriet�
 interface Section { id: string; label: string; description: string; icon: IconName; visible: boolean }
 const sections = computed<Section[]>(() => [
   { id: 'devices', label: t('Números'), description: t('Conecte e acompanhe os números do WhatsApp do seu espaço de trabalho.'), icon: 'devices', visible: true },
-  { id: 'workspace', label: t('Espaço de trabalho'), description: t('Personalize seu espaço de trabalho e participe de outros espaços.'), icon: 'building', visible: credential()?.kind === 'session' },
-  { id: 'members', label: t('Membros'), description: t('Convide pessoas e organize os papéis da sua equipe.'), icon: 'users', visible: canAdminister() && credential()?.kind === 'session' },
-  { id: 'permissions', label: t('Permissões'), description: t('Defina quem pode ler, enviar ou gerenciar cada número.'), icon: 'shield', visible: canAdminister() && credential()?.kind === 'session' },
+  { id: 'members', label: t('Membros'), description: t('Convide pessoas e organize os papéis da sua equipe.'), icon: 'users', visible: canAdminister() && credential()?.kind === 'session' && currentWorkspace.value?.kind !== 'personal' },
   { id: 'tokens', label: t('Integrações'), description: t('Crie e acompanhe as chaves de acesso dos seus sistemas.'), icon: 'key', visible: canAdminister() },
   { id: 'billing', label: t('Assinatura'), description: t('Acompanhe a capacidade do espaço e o histórico da assinatura.'), icon: 'wallet', visible: canAdminister() },
   { id: 'account', label: t('Minha conta'), description: t('Proteja sua conta e gerencie suas formas de acesso.'), icon: 'settings', visible: Boolean(state.account) },
   { id: 'diagnostics', label: t('Diagnóstico'), description: t('Consulte o processamento e a compatibilidade do histórico de conversas.'), icon: 'clock', visible: true },
 ].filter((item) => item.visible) as Section[])
 const current = computed(() => sections.value.find((item) => item.id === section.value) ?? sections.value[0]!)
-const workspaceSection = computed(() => ['workspace', 'members', 'permissions'].includes(section.value)
-  ? section.value as 'workspace' | 'members' | 'permissions' : 'workspace')
+const navigationSections = computed(() => sections.value.filter(item => item.id !== 'account'))
 const online = computed(() => state.devices.filter((device) => device.running).length)
 const totalMessages = computed(() => Object.values(admin.stats).reduce((total, stat) => total + (stat.messages ?? 0), 0))
 const appDevice = computed(() => preferredReadableDevice(true))
@@ -61,6 +64,7 @@ function canRead(device: DeviceInfo): boolean {
 function show(id: string) {
   if (!sections.value.some((item) => item.id === id)) return
   section.value = id
+  mobileNav.value = false
   visited.value.add(id)
   void nextTick(() => content.value?.scrollTo({ top: 0 }))
 }
@@ -81,6 +85,7 @@ async function returnToApp() {
 const emit = defineEmits<{ (e: 'read', deviceID: string): void }>()
 
 onMounted(() => {
+  void loadWorkspaceContext()
   if (state.connected) void load()
   const billingReturn = new URLSearchParams(window.location.search).get('billing')
   if (billingReturn && ['success', 'cancel', 'portal', 'change'].includes(billingReturn)) show('billing')
@@ -160,12 +165,9 @@ async function read(device: DeviceInfo) {
         <span class="brand-mark"><AppIcon name="message" :size="25" /></span>
         <span><strong>{{ t('Wappie') }}</strong><small>{{ t('Console') }}</small></span>
       </a>
-      <div class="workspace-context">
-        <img v-if="workspaceAvatar" class="workspace-avatar" :src="workspaceAvatar" alt="" /><AppIcon v-else name="building" :size="19" />
-        <div><strong>{{ workspaceName || t('Seu espaço de trabalho') }}</strong><span>{{ roleLabels[state.role] || t('Espaço compartilhado') }}</span></div>
-      </div>
+      <WorkspaceSwitcher />
       <nav class="console-nav" :aria-label="t('Seções')">
-        <button v-for="item in sections" :key="item.id" type="button" class="console-nav-item"
+        <button v-for="item in navigationSections" :key="item.id" type="button" class="console-nav-item"
           :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined"
           @click="show(item.id)">
           <AppIcon :name="item.icon" :size="20" /><span>{{ item.label }}</span>
@@ -173,20 +175,21 @@ async function read(device: DeviceInfo) {
         </button>
       </nav>
       <div class="console-profile">
-        <div><strong>{{ state.account || state.label }}</strong><span>{{ roleLabels[state.role] || t('Acesso ao console') }}</span></div>
-        <button class="icon-btn" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop()"><AppIcon name="logout" :size="20" /></button>
+        <button type="button" class="profile-trigger" :aria-label="t('Minha conta')" @click="show('account')"><img v-if="profileAvatar" :src="profileAvatar" alt="" /><span v-else class="profile-initials">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ state.account || roleLabels[state.role] }}</small></span><AppIcon name="chevron-down" :size="15" /></button>
+        <button class="profile-signout" type="button" @click="stop()"><AppIcon name="logout" :size="17" /><span>{{ t('Sair da conta') }}</span></button>
       </div>
     </aside>
 
     <div class="console-main">
       <header class="console-header">
+        <button class="icon-btn mobile-menu" type="button" :aria-label="t('Abrir menu')" aria-haspopup="dialog" :aria-expanded="mobileNav" @click="mobileNav = true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
         <div class="grow"><div class="console-breadcrumb">{{ t('Console') }} <span>/</span> {{ workspaceName || t('Seu espaço de trabalho') }}</div><h1>{{ current.label }}</h1></div>
         <AppearanceMenu />
         <button class="ghost console-app-link" type="button" :disabled="!appDevice || openingApp"
           :title="appDevice ? t('Abrir o aplicativo de mensagens') : t('A leitura de um número precisa estar liberada para sua conta')" @click="returnToApp">
-          <AppIcon name="back" :size="18" /><span>{{ t('Voltar ao app') }}</span>
+          <AppIcon name="message" :size="19" /><span>{{ t('Mensagens') }}</span>
         </button>
-        <button class="icon-btn mobile-signout" type="button" :title="t('Sair da conta')" :aria-label="t('Sair da conta')" @click="stop()"><AppIcon name="logout" :size="20" /></button>
+        <button class="mobile-profile" type="button" :aria-label="t('Minha conta')" @click="show('account')"><img v-if="profileAvatar" :src="profileAvatar" alt="" /><span v-else>{{ initials(profileName) }}</span></button>
       </header>
 
       <main ref="content" class="console-content" :aria-label="current.label">
@@ -229,13 +232,16 @@ async function read(device: DeviceInfo) {
           <PairDialog />
         </div>
 
-        <WorkspacePanel v-show="['workspace', 'members', 'permissions'].includes(section)" :section="workspaceSection" @workspace-name="workspaceName = $event" @workspace-avatar="workspaceAvatar = $event" />
+        <WorkspacePanel v-if="visited.has('members')" v-show="section === 'members'" />
         <TokenPanel v-if="canAdminister() && visited.has('tokens')" v-show="section === 'tokens'" />
         <SubscriptionPanel v-if="canAdminister() && visited.has('billing')" v-show="section === 'billing'" />
         <AccountPanel v-if="state.account && visited.has('account')" v-show="section === 'account'" />
         <Reproject v-if="visited.has('diagnostics')" v-show="section === 'diagnostics'" />
       </main>
     </div>
+    <ConsoleDialog v-if="mobileNav" :title="t('Wappie')" drawer @close="mobileNav = false">
+      <div class="mobile-navigation"><WorkspaceSwitcher /><nav class="console-nav" :aria-label="t('Seções')"><button v-for="item in navigationSections" :key="item.id" type="button" class="console-nav-item" :class="{active:section === item.id}" :aria-current="section === item.id ? 'page' : undefined" @click="show(item.id)"><AppIcon :name="item.icon" :size="21" /><span>{{ item.label }}</span><span v-if="item.id === 'devices'" class="nav-count">{{ state.devices.length }}</span></button></nav><div class="mobile-account-area"><button type="button" class="profile-trigger" @click="show('account')"><img v-if="profileAvatar" :src="profileAvatar" alt="" /><span v-else class="profile-initials">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ state.account }}</small></span></button><button class="console-nav-item" type="button" @click="stop()"><AppIcon name="logout" :size="20" />{{ t('Sair da conta') }}</button></div></div>
+    </ConsoleDialog>
     <DeviceSheet v-if="admin.detail || admin.detailError || admin.detailLoading" />
   </div>
 </template>
@@ -255,16 +261,16 @@ async function read(device: DeviceInfo) {
 .console-brand small { font-size: 11px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-dim); }
 .workspace-context { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--console-border); border-radius: 10px; }
 .workspace-context > div, .console-profile > div { min-width: 0; }
-.workspace-context strong, .workspace-context span, .console-profile strong, .console-profile span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.workspace-context strong, .workspace-context span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .workspace-context strong { font-size: 13px; font-weight: 600; }
-.workspace-context span, .console-profile span { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.workspace-context span { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 .console-nav { display: flex; flex-direction: column; gap: 5px; }
 .console-nav-item { display: flex; gap: 12px; align-items: center; width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 9px; color: var(--text-dim); font-size: 13px; font-weight: 550; text-align: left; white-space: nowrap; }
 .console-nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .console-nav-item.active { background: var(--console-tint); color: var(--console-accent); font-weight: 650; }
 .nav-count { margin-left: auto; padding: 1px 6px; font-size: 11px; border-radius: 5px; background: var(--bg-panel); }
-.console-profile { margin-top: auto; padding: 16px 4px 0 10px; border-top: 1px solid var(--console-border); display: flex; gap: 8px; align-items: center; }
-.console-profile > div { flex: 1; }
+.console-profile { margin-top:auto;padding:14px 0 0;border-top:1px solid var(--console-border);display:grid;gap:8px; }.profile-signout { display:flex;align-items:center;gap:10px;min-height:36px;padding:8px 4px;color:var(--text-dim);font-size:11px;text-align:left; }
+
 .console-profile strong { font-size: 12px; font-weight: 500; }
 .console-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .console-header { display: flex; align-items: center; gap: 12px; min-height: 96px; padding: 20px 36px; border-bottom: 1px solid var(--console-border); background: var(--bg-panel); flex-shrink: 0; }
@@ -272,7 +278,8 @@ async function read(device: DeviceInfo) {
 .console-breadcrumb span { margin: 0 7px; color: var(--text-faint); }
 .console-header h1 { margin: 7px 0 0; font-size: 25px; font-weight: 650; letter-spacing: -.7px; line-height: 1.15; }
 .console-app-link { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; font-size: 12px; white-space: nowrap; }
-.mobile-signout { display: none; }
+.mobile-menu,.mobile-profile { display:none; }.mobile-profile { width:36px;height:36px;border-radius:50%;background:var(--accent-dim);color:var(--accent);font-weight:600; }.mobile-profile img { width:100%;height:100%;border-radius:inherit;object-fit:cover; }
+.profile-trigger { display:flex;gap:10px;align-items:center;min-width:0;flex:1;text-align:left;padding:7px 0; }.profile-trigger img,.profile-initials { width:35px;height:35px;border-radius:50%;flex:none;object-fit:cover; }.profile-initials { display:grid;place-items:center;background:var(--accent-dim);color:var(--accent);font-size:13px;font-weight:600; }.profile-text { min-width:0;flex:1; }.profile-text strong,.profile-text small { display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }.profile-text strong { font-size:12px;font-weight:600; }.profile-text small { font-size:10px;color:var(--text-dim);margin-top:4px; }.mobile-navigation { display:flex;flex-direction:column;gap:22px;min-height:70dvh; }.mobile-navigation .console-nav-item { min-height:48px; }.mobile-account-area { margin-top:auto;border-top:1px solid var(--line);padding-top:14px;display:grid;gap:12px; }.mobile-account-area .profile-trigger { padding:10px; }
 .console-content { padding: 28px 36px 48px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .console-content > :not(:first-child) { margin-top: 20px; }
 .console-section-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -339,36 +346,28 @@ async function read(device: DeviceInfo) {
   .connection-label { display: none; }
 }
 @media (max-width: 760px) {
-  .console-app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .console-sidebar { overflow: hidden; padding: 12px 12px 0; border-right: 0; border-bottom: 1px solid var(--console-border); gap: 12px; }
-  .console-brand { padding: 0 4px; gap: 8px; }
-  .brand-mark { width: 30px; height: 30px; border-radius: 9px; }
-  .brand-mark .app-icon { width: 20px; height: 20px; }
-  .console-brand strong { font-size: 18px; }
-  .console-brand > span:last-child { display: flex; align-items: baseline; gap: 8px; }
-  .console-brand small { font-size: 10px; letter-spacing: .7px; }
-  .workspace-context, .console-profile { display: none; }
-  .console-nav { flex-direction: row; overflow-x: auto; gap: 4px; padding-bottom: 10px; scrollbar-width: none; }
-  .console-nav::-webkit-scrollbar { display: none; }
-  .console-nav-item { width: auto; min-height: 40px; padding: 9px 12px; gap: 7px; font-size: 12px; flex-shrink: 0; }
-  .console-nav-item .app-icon { width: 17px; height: 17px; }
-  .nav-count { display: none; }
-  .console-header { min-height: 84px; padding: 16px; gap: 8px; flex-wrap: wrap; }
-  .console-header > .grow { flex: 1 0 100%; }
-  .console-header h1 { font-size: 22px; }
-  .console-breadcrumb { font-size: 10px; }
-  .console-app-link { gap: 5px; min-height: 38px; padding: 7px 9px; font-size: 11px; }
-  .mobile-signout { display: inline-block; }
-  .console-content { padding: 18px 14px calc(28px + env(safe-area-inset-bottom)); scrollbar-gutter: auto; }
-  .console-section-intro p { font-size: 12px; }
-  .console-overview { gap: 8px; }
-  .console-overview article { padding: 13px 10px; }
-  .console-overview span { font-size: 10px; display: block; line-height: 1.4; min-height: 28px; }
-  .console-overview strong { font-size: 23px; gap: 6px; }
-  .console-overview small { display: none; }
-  .device { padding: 17px; }
-  .device-status { max-width: 96px; }
-  .console-app :deep(.console-panel) { padding: 18px 16px; }
-  .console-app :deep(.console-panel input:not([type='checkbox']):not([type='radio'])), .console-app :deep(.console-panel textarea), .console-app :deep(.console-panel select), .console-app :deep(.sheet input:not([type='checkbox']):not([type='radio'])), .console-app :deep(.sheet select) { font-size: 16px; }
+  .console-app { display:flex; }
+  .console-sidebar { display:none; }
+  .console-main { flex:1; }
+  .console-header { min-height:78px;padding:14px;gap:10px; }
+  .console-header h1 { font-size:20px;margin-top:5px; }
+  .console-breadcrumb { font-size:10px;max-width:200px; }
+  .console-breadcrumb > span { margin:0 4px; }
+  .console-app-link { min-height:40px;width:40px;padding:8px;justify-content:center; }
+  .console-app-link span { display:none; }
+  .mobile-menu { display:grid;place-items:center;flex:none; }
+  .mobile-profile { display:grid;place-items:center;flex:none; }
+  .console-header :deep(.appearance-trigger) { padding:8px; }
+  .console-content { padding:18px 14px calc(28px + env(safe-area-inset-bottom));scrollbar-gutter:auto; }
+  .console-section-intro p { font-size:12px; }
+  .console-overview { gap:8px; }
+  .console-overview article { padding:13px 10px; }
+  .console-overview span { font-size:10px;display:block;line-height:1.4;min-height:28px; }
+  .console-overview strong { font-size:23px;gap:6px; }
+  .console-overview small { display:none; }
+  .device { padding:17px; }
+  .device-status { max-width:96px; }
+  .console-app :deep(.console-panel) { padding:18px 16px; }
+  .console-app :deep(.console-panel input:not([type='checkbox']):not([type='radio'])),.console-app :deep(.console-panel textarea),.console-app :deep(.console-panel select) { font-size:16px; }
 }
 </style>

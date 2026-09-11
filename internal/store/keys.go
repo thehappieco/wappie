@@ -241,6 +241,9 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 		return errors.New("store: a grant with no sealed key is not a grant")
 	}
 	return pg.InTenantTx(ctx, k.pool, g.TenantID.String(), func(tx pgx.Tx) error {
+		if err := lockWorkspaceAccess(ctx, tx, g.TenantID); err != nil {
+			return err
+		}
 		var member uuid.UUID
 		if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
 			WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' FOR SHARE OF m`, g.TenantID, g.UserID).Scan(&member); err != nil {
@@ -317,6 +320,12 @@ func (k *Keys) HasGrant(ctx context.Context, tenant, device, user uuid.UUID) (bo
 // RevokeGrant removes one user's access to one device.
 func (k *Keys) RevokeGrant(ctx context.Context, tenant, device, user uuid.UUID) error {
 	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
+			return err
+		}
+		if err := requireRemainingReader(ctx, tx, tenant, user, &device); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx,
 			`DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, device, user)
 		return err

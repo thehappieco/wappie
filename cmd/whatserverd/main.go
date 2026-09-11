@@ -29,6 +29,7 @@ import (
 	"whatserver2/internal/config"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
+	"whatserver2/internal/mailer"
 	"whatserver2/internal/media"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/obs"
@@ -79,6 +80,7 @@ type app struct {
 	pools    *pg.Pools
 	devices  *store.Devices
 	apiKeys  *store.APIKeys
+	users    *store.Users
 	keys     *store.Keys
 	messages *store.Messages
 	receipts *store.Receipts
@@ -151,7 +153,12 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		cfg: cfg, log: lg, pools: pools, passkeys: passkeys,
 		devices: store.NewDevices(pools.API),
 		apiKeys: store.NewAPIKeys(pools.API),
+		users:   store.NewUsers(pools.API),
 		limits:  ratelimit.DefaultAuth(cfg.TrustedProxies),
+	}
+	if err := a.users.SetInviteEncryptionKey(cfg.Signup.InviteEncryptionKey); err != nil {
+		closeAll()
+		return nil, nil, fmt.Errorf("invitation configuration: %w", err)
 	}
 
 	if !withWA {
@@ -602,11 +609,18 @@ func (a *app) routes() http.Handler {
 
 	// Signing up and signing in. Over HTTP because the websocket wants
 	// credentials before it opens, and this is where credentials come from.
-	(&authapi.Handler{
+	authHandler := &authapi.Handler{
 		AccessChanged: a.ws.RevalidateAccess,
-		Users:         store.NewUsers(a.pools.API), Keys: a.keys,
+		Users:         a.users, Keys: a.keys,
 		Devices: a.devices, Limits: a.limits, Log: a.log, Passkeys: a.passkeys,
-	}).Mount(mux)
+		PublicSignup: a.cfg.Signup.Enabled,
+	}
+	if a.cfg.Signup.SMTP.Configured() {
+		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
+		authHandler.SendSignupVerification = sender.SignupVerification
+		authHandler.SendWorkspaceInvite = sender.WorkspaceInvite
+	}
+	authHandler.Mount(mux)
 
 	mux.Handle("/v1/ws", a.ws)
 

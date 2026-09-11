@@ -185,7 +185,7 @@ function replacedAt(i: number): Date | undefined {
           class="sealed"
           v-if="!history.readers.length"
           style="font-size: 12.5px; margin-top: 6px"
-        > {{ t('Nenhum recibo arquivado. Em modo discreto o aparelho não devolve recibos, e o que os outros mandam só chega enquanto ele está ligado.') }} </div>
+        > {{ t('Nenhum recibo arquivado. As confirmações disponíveis dependem da conexão e das configurações de privacidade do WhatsApp.') }} </div>
       </template>
 
       <!-- The routing metadata, which travels readable so the server can

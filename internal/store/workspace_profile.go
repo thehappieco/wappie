@@ -82,8 +82,8 @@ func (u *Users) UpdateWorkspaceProfile(ctx context.Context, tenant, actor uuid.U
 		}
 		space.Role = role
 		return tx.QueryRow(ctx, `UPDATE tenants SET name=$2,avatar=$3 WHERE id=$1
-			RETURNING id,name,avatar,status,created_at`, tenant, name, avatar).
-			Scan(&space.ID, &space.Name, &space.Avatar, &space.Status, &space.CreatedAt)
+			RETURNING id,name,avatar,status,created_at,kind`, tenant, name, avatar).
+			Scan(&space.ID, &space.Name, &space.Avatar, &space.Status, &space.CreatedAt, &space.Kind)
 	})
 	return space, err
 }

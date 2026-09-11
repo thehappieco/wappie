@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { admin, canAdminister, closeDetail, grantAccess, removeDevice, revokeAccess, renameDevice, startDevice, stopDevice, preparePairing } from '../state/admin'
-import { state } from '../state/archive'
+import { admin, canAdminister, closeDetail, removeDevice, renameDevice, startDevice, stopDevice, preparePairing } from '../state/admin'
 import { bytes, count, since, stamp } from '../ui/format'
 import { t } from '../ui/i18n'
-import PasswordInput from './PasswordInput.vue'
+import DevicePermissions from './DevicePermissions.vue'
 import DeviceAvatar from './DeviceAvatar.vue'
 
 const dialog = ref<HTMLDialogElement | null>(null)
@@ -43,26 +42,6 @@ async function destroy() {
 async function saveName() {
   if (device.value) await renameDevice(device.value.id, rename.value.trim())
 }
-const granting = ref(false)
-const password = ref('')
-const chosen = ref<string[]>([])
-const revoking = ref('')
-const readerIDs = computed(() => new Set(admin.detail?.readers?.map(r => r.user_id) ?? []))
-const candidates = computed(() => admin.accounts.filter(a => !readerIDs.value.has(a.id)))
-const myID = computed(() => admin.accounts.find(a => a.email === state.account)?.id ?? '')
-const iCanGrant = computed(() => !!admin.detail && readerIDs.value.has(myID.value) && canAdminister())
-function toggle(id: string) { chosen.value = chosen.value.includes(id) ? chosen.value.filter(x => x !== id) : [...chosen.value, id] }
-async function grant() {
-  if (!device.value) return
-  await grantAccess(device.value.id, chosen.value, password.value)
-  password.value = ''
-  if (!admin.grantError) { granting.value = false; chosen.value = [] }
-}
-async function revoke(userID: string) {
-  if (!device.value) return
-  revoking.value = ''
-  await revokeAccess(device.value.id, userID)
-}
 function dismiss() {
   if (admin.deviceBusy) return
   if (dialog.value?.open) dialog.value.close()
@@ -92,7 +71,6 @@ function dismiss() {
               <div><dt>{{ t('Número') }}</dt><dd>{{ device.pn?.split('@')[0]?.split(':')[0] || '—' }}</dd></div>
               <div><dt>{{ t('Nome no WhatsApp') }}</dt><dd>{{ device.push_name || '—' }}</dd></div>
               <div><dt>{{ t('Conexão') }}</dt><dd>{{ pending ? t('Aguardando conexão') : device.paused ? t('Sincronização pausada') : device.status === 'online' ? t('Conectado') : t('Desconectado') }}</dd></div>
-              <div><dt>{{ t('Modo de leitura') }}</dt><dd>{{ device.receipt_mode === 'active' ? t('Confirmações ativadas') : t('Modo incógnito') }}</dd></div>
               <div><dt>{{ t('Conectado pela última vez') }}</dt><dd>{{ stamp(when(device.last_connected_at)) }}<span class="dim" v-if="device.last_connected_at"> · {{ since(when(device.last_connected_at)) }}</span></dd></div>
               <div><dt>{{ t('Histórico') }}</dt><dd>{{ t('{messages} mensagens · {chats} conversas · {media} anexos', { messages: count(stats?.messages), chats: count(stats?.chats), media: count(stats?.media) }) }}<span v-if="stats?.media_bytes"> · {{ bytes(stats.media_bytes) }}</span></dd></div>
             </dl>
@@ -101,17 +79,7 @@ function dismiss() {
               <div v-else class="connection-action"><p class="dim">{{ t('Pausar interrompe a sincronização e o envio pelo Wappie. O número continua em Aparelhos conectados no WhatsApp e o histórico permanece aqui.') }}</p><button v-if="device.running && !device.paused" class="ghost" :disabled="admin.deviceBusy" @click="stopDevice(device.id)">{{ t('Pausar sincronização') }}</button><button v-else-if="!['logged_out', 'banned'].includes(device.status)" class="primary" :disabled="admin.deviceBusy" @click="startDevice(device.id)">{{ t('Retomar sincronização') }}</button></div>
             </template>
           </section>
-          <section v-if="canAdminister()" class="device-section">
-            <h3>{{ t('Acesso às conversas') }}</h3><p class="dim">{{ t('Estes membros possuem a chave para abrir as conversas deste número. As permissões de enviar e gerenciar são ajustadas na seção Permissões.') }}</p>
-            <div class="alert" v-if="admin.grantError">{{ admin.grantError }}</div>
-            <ul class="readers" v-if="admin.detail?.readers?.length"><li v-for="r in admin.detail.readers" :key="r.user_id"><div class="grow"><strong>{{ r.email }}</strong><small class="dim">{{ t('Acesso desde {date}', { date: stamp(when(r.granted_at)) }) }}</small></div><div class="row-actions"><template v-if="revoking === r.user_id"><button class="danger small" :disabled="admin.grantBusy" @click="revoke(r.user_id)">{{ t('Remover acesso') }}</button><button class="ghost small" @click="revoking = ''">{{ t('Cancelar') }}</button></template><button v-else class="ghost small" @click="revoking = r.user_id">{{ t('Remover') }}</button></div></li></ul>
-            <p v-else class="alert">{{ t('Nenhum membro possui acesso às conversas deste número.') }}</p>
-            <p class="hint">{{ t('Revogar acesso impede novas consultas. Conteúdo já aberto ou salvo por esse membro não pode ser apagado remotamente.') }}</p>
-            <template v-if="candidates.length">
-              <button v-if="!granting" class="ghost" :disabled="!iCanGrant" @click="granting = true">{{ t('Dar acesso a um membro') }}</button>
-              <form v-else class="grant-form" @submit.prevent="grant"><div class="choices"><label v-for="a in candidates" :key="a.id" class="choice"><input type="checkbox" :checked="chosen.includes(a.id)" @change="toggle(a.id)" /><span>{{ a.email }}</span></label></div><div class="field"><label for="grant-password">{{ t('Confirme sua senha') }}</label><PasswordInput id="grant-password" v-model="password" autocomplete="current-password" required /></div><div class="row-actions"><button class="primary" type="submit" :disabled="admin.grantBusy || !chosen.length">{{ admin.grantBusy ? t('Concedendo acesso…') : t('Conceder acesso') }}</button><button class="ghost" type="button" @click="granting = false">{{ t('Cancelar') }}</button></div></form>
-            </template>
-          </section>
+          <section v-if="canAdminister()" class="device-section"><DevicePermissions :device-id="device.id" /></section>
           <section v-if="canAdminister()" class="device-section danger-zone"><h3>{{ t('Excluir número') }}</h3><p>{{ t('Remove este número do Wappie e apaga definitivamente suas conversas e anexos. A desconexão no WhatsApp é solicitada automaticamente.') }}</p><p class="hint">{{ t('Se o WhatsApp estiver indisponível, pode ser necessário remover a sessão também em Aparelhos conectados no celular.') }}</p><button v-if="!confirming" class="danger" @click="confirming = true">{{ t('Excluir número…') }}</button><div v-else class="field"><label for="confirm-id">{{ t('Digite {code} para confirmar a exclusão', { code: fragment }) }}</label><input id="confirm-id" v-model="typed" autocomplete="off" :spellcheck="false" autocapitalize="off" :placeholder="fragment" :disabled="admin.deviceBusy" /><p class="hint">{{ t('Esta ação não pode ser desfeita.') }}</p></div></section>
         </template>
         <p v-else-if="admin.detailLoading" class="dim">{{ t('Carregando…') }}</p>

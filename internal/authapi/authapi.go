@@ -17,6 +17,7 @@
 package authapi
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -34,10 +35,13 @@ import (
 // Handler serves the auth endpoints.
 type Handler struct {
 	// AccessChanged promptly wakes local WebSockets after committed revocations.
-	AccessChanged func()
-	Users         *store.Users
-	Keys          *store.Keys
-	Devices       *store.Devices
+	AccessChanged          func()
+	PublicSignup           bool
+	SendSignupVerification func(context.Context, string, string) error
+	SendWorkspaceInvite    func(context.Context, string, string, string) error
+	Users                  *store.Users
+	Keys                   *store.Keys
+	Devices                *store.Devices
 	// Limits bounds how often an address, and an address, may try. Every
 	// sign-in attempt costs this server an Argon2id derivation, and every
 	// wrong one is a guess; without a limit both are free to whoever asks.
@@ -50,6 +54,15 @@ type Handler struct {
 // Mount registers the routes on a mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	h.mountPasskeys(mux)
+	mux.HandleFunc("GET /v1/auth/signup/config", h.signupConfig)
+	mux.HandleFunc("POST /v1/auth/signup/verification", h.signupVerification)
+	mux.HandleFunc("GET /v1/auth/profile", h.profile)
+	mux.HandleFunc("PUT /v1/auth/profile", h.profile)
+	mux.HandleFunc("POST /v1/auth/workspaces", h.createWorkspace)
+	mux.HandleFunc("GET /v1/auth/workspaces/invites", h.listInvitations)
+	mux.HandleFunc("DELETE /v1/auth/workspaces/invites/{inviteID}", h.invitationAction)
+	mux.HandleFunc("POST /v1/auth/workspaces/invites/{inviteID}/reveal", h.invitationAction)
+	mux.HandleFunc("POST /v1/auth/workspaces/invites/{inviteID}/regenerate", h.invitationAction)
 	mux.HandleFunc("POST /v1/auth/challenge", h.challenge)
 	mux.HandleFunc("POST /v1/auth/signup", h.signup)
 	mux.HandleFunc("POST /v1/auth/login", h.login)
@@ -101,8 +114,10 @@ type challengeReply struct {
 }
 
 type signupRequest struct {
-	Invite string `json:"invite"`
-	Email  string `json:"email"`
+	Invite                 string `json:"invite"`
+	DisplayName            string `json:"display_name"`
+	EmailVerificationToken string `json:"email_verification_token"`
+	Email                  string `json:"email"`
 	// Name is what a service account is registered as. An invite issued for
 	// a service takes a name and a public key and nothing else: the system
 	// keeps its private key and never has a password.
@@ -197,6 +212,8 @@ type account struct {
 	ID       string `json:"id"`
 	TenantID string `json:"tenant_id"`
 	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Avatar   string `json:"avatar"`
 	Role     string `json:"role"`
 	// WrappedUSK is opaque to this server: it is returned exactly as it was
 	// stored, for the browser to open with the half of the derivation that
@@ -254,21 +271,20 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if !h.allow(w, r, "") {
+	if !h.allow(w, r, strings.ToLower(strings.TrimSpace(req.Email))) {
 		return
 	}
 
-	// The body is checked before the invite is spent. An invite is one-time
-	// and marked used in the same statement that reads it, so a request
-	// refused after redeeming it would cost somebody their only way in over
-	// a typo in a base64 field.
+	// Decode the client-generated key material before starting the account
+	// transaction. Recipient checks, identity creation and invite consumption
+	// then either commit together or preserve the original invitation.
 	pub, ok := unb64(w, req.PublicKey, "public_key")
 	if !ok {
 		return
 	}
 	if req.Name != "" {
-		// A service: no password material at all. The invite's role is
-		// checked after it is redeemed; a mismatch is refused there.
+		// A service: no password material. Its invitation role is checked
+		// before registration and consumed only after the account is inserted.
 		h.signupService(w, r, req, pub)
 		return
 	}
@@ -290,41 +306,12 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	invite, err := h.Users.RedeemInvite(r.Context(), req.Invite)
-	if errors.Is(err, store.ErrInviteInvalid) {
-		fail(w, http.StatusForbidden, "invite_invalid",
-			"that invite code is not valid, has been used, or has expired")
+	if strings.TrimSpace(req.Invite) == "" && (!h.PublicSignup || h.SendSignupVerification == nil) {
+		fail(w, http.StatusForbidden, "signup_disabled", "public account registration is unavailable")
 		return
 	}
-	if err != nil {
-		h.log().Error("redeeming an invite failed", "error", err)
-		fail(w, http.StatusInternalServerError, "internal", "could not check the invite")
-		return
-	}
-	if invite.Email != "" && !strings.EqualFold(invite.Email, strings.TrimSpace(req.Email)) {
-		fail(w, http.StatusForbidden, "invite_invalid", "that invite is for a different address")
-		return
-	}
-	if invite.Role == store.RoleService {
-		fail(w, http.StatusForbidden, "invite_invalid",
-			"that invite is for a service account; register with a name and a public key")
-		return
-	}
-
-	user, err := h.Users.Create(r.Context(), store.NewUser{
-		TenantID: invite.TenantID, Email: req.Email, AuthKey: req.AuthKey,
-		KDFSalt: salt, KDFParams: req.KDFParams,
-		PublicKey: pub, WrappedUSK: wrapped,
-		RecoveryWrap: recovery, RecoveryProof: req.RecoveryProof,
-		Role: invite.Role,
-	})
-	if errors.Is(err, store.ErrEmailTaken) {
-		fail(w, http.StatusConflict, "email_taken", "that address already has an account")
-		return
-	}
-	if err != nil {
-		h.log().Warn("could not create an account", "error", err)
-		fail(w, http.StatusBadRequest, "bad_request", err.Error())
+	user, err := h.Users.Signup(r.Context(), store.NewUser{Email: req.Email, Name: req.DisplayName, AuthKey: req.AuthKey, KDFSalt: salt, KDFParams: req.KDFParams, PublicKey: pub, WrappedUSK: wrapped, RecoveryWrap: recovery, RecoveryProof: req.RecoveryProof}, req.Invite, req.EmailVerificationToken)
+	if h.signupError(w, err) {
 		return
 	}
 
@@ -372,33 +359,32 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request, user store.User)
 // What it gets instead is an API key acting as this account, minted by an
 // operator in the console once the devices have been granted.
 func (h *Handler) signupService(w http.ResponseWriter, r *http.Request, req signupRequest, pub []byte) {
-	invite, err := h.Users.RedeemInvite(r.Context(), req.Invite)
-	if errors.Is(err, store.ErrInviteInvalid) {
-		fail(w, http.StatusForbidden, "invite_invalid",
-			"that invite code is not valid, has been used, or has expired")
+
+	user, err := h.Users.SignupService(r.Context(), req.Invite, req.Name, pub)
+	if h.signupError(w, err) {
 		return
 	}
-	if err != nil {
-		h.log().Error("redeeming an invite failed", "error", err)
-		fail(w, http.StatusInternalServerError, "internal", "could not check the invite")
-		return
-	}
-	if invite.Role != store.RoleService {
-		fail(w, http.StatusForbidden, "invite_invalid",
-			"that invite is for a person; a service needs an invite issued with -role service")
-		return
-	}
-	user, err := h.Users.CreateService(r.Context(), invite.TenantID, req.Name, pub)
-	if errors.Is(err, store.ErrEmailTaken) {
-		fail(w, http.StatusConflict, "email_taken", "a service with that name already exists here")
-		return
-	}
-	if err != nil {
-		h.log().Warn("could not create a service account", "error", err)
-		fail(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
+
 	send(w, http.StatusOK, sessionReply{User: toAccount(user)})
+}
+
+func (h *Handler) signupError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, store.ErrInviteEmailMismatch):
+		fail(w, http.StatusForbidden, "invite_email_mismatch", "this invitation belongs to another email address; the code remains valid")
+	case errors.Is(err, store.ErrInviteInvalid):
+		fail(w, http.StatusForbidden, "invite_invalid", "that invite code is not valid, has been used, or has expired")
+	case errors.Is(err, store.ErrVerificationInvalid):
+		fail(w, http.StatusForbidden, "email_verification_invalid", "verify this email address before creating the account")
+	case errors.Is(err, store.ErrEmailTaken):
+		fail(w, http.StatusConflict, "email_taken", "that address already has an account; sign in to accept this invitation")
+	default:
+		fail(w, http.StatusBadRequest, "bad_request", "could not create the account with the supplied information")
+	}
+	return true
 }
 
 // recoverOpen hands back the recovery wrap to whoever proves the code.
@@ -700,7 +686,7 @@ func BearerToken(r *http.Request) (string, bool) {
 
 func toAccount(u store.User) account {
 	return account{
-		ID: u.ID.String(), TenantID: u.TenantID.String(), Email: store.ServiceName(u), Role: u.Role,
+		ID: u.ID.String(), TenantID: u.TenantID.String(), Email: store.ServiceName(u), Name: u.Name, Avatar: u.Avatar, Role: u.Role,
 		WrappedUSK: b64(u.WrappedUSK), PublicKey: b64(u.PublicKey),
 		HasRecovery: len(u.RecoveryWrap) > 0 && u.RecoveryUsable,
 	}

@@ -35,6 +35,7 @@ type Config struct {
 	Storage        Storage
 	Web            Web
 	Passkeys       Passkeys
+	Signup         Signup
 	Log            Log
 }
 
@@ -123,6 +124,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
+		Signup:         loadSignup(&errs),
 		Passkeys:       Passkeys{RPID: strings.TrimSpace(os.Getenv("WS_PASSKEY_RP_ID"))},
 		Env:            env,
 		HTTPAddr:       str("WS_HTTP_ADDR", ":8080"),
@@ -164,6 +166,9 @@ func Load() (Config, error) {
 		}
 	}
 	if err := cfg.Passkeys.Validate(env.IsProd()); err != nil {
+		errs = append(errs, err)
+	}
+	if err := cfg.Signup.Validate(env.IsProd()); err != nil {
 		errs = append(errs, err)
 	}
 

@@ -7,7 +7,7 @@ vi.mock('../src/state/archive', async () => { const { reactive } = await import(
 vi.mock('../src/api/auth', () => ({ withDeviceKey: vi.fn() }))
 vi.mock('../src/crypto/hpke', () => ({ generateKeyPair: mocks.generate }))
 vi.mock('../src/crypto/seal', () => ({ grantRow: vi.fn(async () => new Uint8Array(16)), Kind: { DeviceGrant: 8 }, sealDirect: vi.fn(async () => new Uint8Array(32)) }))
-import { admin, cancelPairing, pair, removeDevice, openDetail, closeDetail } from '../src/state/admin'
+import { admin, cancelPairing, pair, removeDevice, openDetail, closeDetail, revokeAccess } from '../src/state/admin'
 import * as P from '../src/api/protocol'
 import { state } from '../src/state/archive'
 const device = '0194d4a0-0000-7000-8000-000000000002'
@@ -86,5 +86,34 @@ describe('late device responses', () => {
     const pending = openDetail(device); state.account = ''; state.phase = 'locked'
     response.resolve({device:{id:device}} as P.DeviceDetail); await pending
     expect(admin.detail).toBeNull(); expect(admin.detailLoading).toBe(false)
+  })
+})
+
+
+describe('access mutation isolation', () => {
+  it('does not replace another number’s readers after a late revocation', async () => {
+    const waiting = deferred<P.Readers>()
+    mocks.request.mockReturnValueOnce(waiting.promise)
+    admin.detail = { device:{id:device}, readers:[{user_id:'removed-user'}] } as P.DeviceDetail
+    const pending = revokeAccess(device,'removed-user')
+    const another = '0194d4a0-0000-7000-8000-000000000010'
+    admin.detail = { device:{id:another}, readers:[{user_id:'other-reader'}] } as P.DeviceDetail
+    waiting.resolve({device_id:device,readers:[]}); await pending
+    expect(admin.detail.readers).toEqual([{user_id:'other-reader'}])
+  })
+  it('does not recreate a closed number’s reader list', async () => {
+    const waiting = deferred<P.Readers>(); mocks.request.mockReturnValueOnce(waiting.promise)
+    admin.detail = {device:{id:device},readers:[]} as unknown as P.DeviceDetail
+    const pending = revokeAccess(device,'someone'); closeDetail()
+    waiting.resolve({device_id:device,readers:[]}); await pending
+    expect(admin.detail).toBeNull()
+  })
+  it('does not show a previous workspace access error after switching', async () => {
+    let reject!:(error:Error)=>void
+    mocks.request.mockReturnValueOnce(new Promise((_resolve,failed)=>{reject=failed}))
+    const pending = revokeAccess(device,'someone')
+    state.tenantID='0194d4a0-0000-7000-8000-000000000011'
+    reject(new Error('private previous workspace failure')); await pending
+    expect(admin.grantError).toBe(''); expect(admin.grantBusy).toBe(false)
   })
 })

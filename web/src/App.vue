@@ -7,6 +7,7 @@ import { browserSessionWasCleared, observeBrowserSession } from './state/session
 import { clearWorkspaceDeviceURL } from './ui/workspaceNavigation'
 import { installMobileNavigation } from './ui/mobileNavigation'
 import { applyPrivacyAppearance } from './ui/preferences'
+import { signupLink } from './ui/signupLink'
 import { start, state, stop } from './state/archive'
 import AdminView from './components/AdminView.vue'
 import ChatList from './components/ChatList.vue'
@@ -102,6 +103,10 @@ async function restore() {
   restoring.value = true
   restoreError.value = ''
   try {
+    // An email-confirmation link explicitly starts a new account. Let signup
+    // consume it even if this browser remembers a different account. Team
+    // invitations instead keep the session and open the console's join dialog.
+    if (signupLink(location.href).verification) return
     const workspace = new URLSearchParams(location.search).get('workspace') || undefined
     const session = await restoreAccountSession(workspace, id => { if (attempt === restoreAttempt) pendingPersistenceID = id })
     if (disposed || attempt !== restoreAttempt) { session?.dispose?.(); return }

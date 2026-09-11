@@ -55,6 +55,7 @@ export const TypeChatTimer = 'chat.timer'
 export const TypeChatTyping = 'chat.presence'
 export const TypePresenceWatch = 'presence.subscribe'
 export const TypeDeviceMode = 'device.mode'
+export const TypeReaderMode = 'reader.mode'
 export const TypeReprojectGet = 'reproject.list'
 export const TypeReprojectPut = 'reproject.apply'
 export const TypePing = 'ping'
@@ -130,6 +131,8 @@ export interface DeviceInfo {
   status: string
   status_reason?: string
   receipt_mode: string
+  /** This user's preference; absent for legacy API-key sessions. */
+  reader_receipt_mode?: 'passive' | 'active'
   running: boolean
   created_at: string
   /** When it last reached "online" — not when it went offline. */
@@ -1141,6 +1144,9 @@ export interface DeviceModeRequest {
   /** 'passive' (quiet, and what incognito means) or 'active'. */
   receipt_mode: string
 }
+
+/** Personal preference; read access suffices and shared device policy is unchanged. */
+export type ReaderModeRequest = DeviceModeRequest
 
 export interface GroupRequest {
   device_id: string

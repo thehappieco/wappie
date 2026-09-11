@@ -545,7 +545,13 @@ func (s *session) resolveDevice(ctx context.Context, f Frame, deviceID string) (
 		s.replyError(f.ReqID, ErrCodeInternal, "stored device id is unusable")
 		return uuid.Nil, uuid.Nil, false
 	}
-	if !s.authorizeDevice(ctx, f, device, frameAction(f.Type)) {
+	action := frameAction(f.Type)
+	// A person may confirm their own reading with read access. Machine
+	// credentials retain the send permission required by the legacy API.
+	if f.Type == TypeMarkRead && s.actor().person {
+		action = store.ActionRead
+	}
+	if !s.authorizeDevice(ctx, f, device, action) {
 		return uuid.Nil, uuid.Nil, false
 	}
 	return tenant, device, true

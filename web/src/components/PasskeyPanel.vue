@@ -6,10 +6,14 @@ import { passkeyError } from '../api/webauthn'
 import { credential, state } from '../state/archive'
 import AppIcon from './AppIcon.vue'
 import PasswordInput from './PasswordInput.vue'
+import ConsoleDialog from './ConsoleDialog.vue'
+const opened = ref(false)
+function closePanel() { if (!busy.value) { opened.value = false; cancel(); error.value = ''; done.value = '' } }
 
 const keys = ref<PasskeyInfo[]>([])
 const available = ref(false)
 const loaded = ref(false)
+const countKnown = ref(false)
 const adding = ref(false)
 const removing = ref<PasskeyInfo | null>(null)
 const label = ref(t('Minha passkey'))
@@ -23,6 +27,7 @@ async function refresh() {
   const c = credential()
   if (!c || c.kind !== 'session') return
   keys.value = await listPasskeys(c.serverURL, c.token)
+  countKnown.value = true
 }
 
 onMounted(async () => {
@@ -69,20 +74,25 @@ function date(value?: string) { return value ? new Date(value).toLocaleDateStrin
 </script>
 
 <template>
-  <section class="passkey-card" aria-labelledby="passkey-title">
+  <button class="security-summary" type="button" aria-haspopup="dialog" :aria-expanded="opened" @click="opened = true">
+    <span class="summary-icon"><AppIcon name="key" :size="22" /></span><span class="summary-text"><strong>{{ t('Passkeys') }}</strong><small>{{ countKnown ? t('{count} passkeys ativadas', {count:keys.length}) : loaded ? t('Consultar passkeys') : t('Carregando…') }}</small></span><AppIcon name="chevron-down" :size="18" />
+  </button>
+  <ConsoleDialog v-if="opened" :title="t('Passkeys')" :busy="busy" @close="closePanel">
+  <section class="passkey-card" :aria-label="t('Gerenciar passkeys')">
     <div class="passkey-heading">
       <span class="passkey-emblem"><AppIcon name="key" :size="23" /></span>
-      <div><h3 id="passkey-title">{{ t('Passkeys') }}</h3><p>{{ t('Entre com sua biometria ou PIN, mantendo seus dados protegidos.') }}</p></div>
+      <div><p>{{ t('Entre com sua biometria ou PIN, mantendo seus dados protegidos.') }}</p></div>
     </div>
     <div v-if="!loaded" class="dim" role="status">{{ t('Verificando disponibilidade…') }}</div>
     <p v-else-if="!available" class="dim">{{ t('O cadastro de passkeys não está disponível neste navegador ou instalação. A entrada por senha continua disponível.') }}</p>
+    <button v-if="loaded && !countKnown" class="ghost small" type="button" @click="refresh().catch(() => {})">{{ t('Tentar novamente') }}</button>
     <ul v-if="keys.length" class="passkey-list">
       <li v-for="key in keys" :key="key.id">
         <div><strong>{{ key.label }}</strong><small>{{ t('Criada em {v0} · {v1}', { v0: date(key.created_at), v1: key.last_used_at ? t('Último uso em {date}', { date: date(key.last_used_at) }) : t('Ainda não utilizada') }) }}</small></div>
         <button class="ghost small" type="button" :disabled="busy" :aria-label="t('Remover passkey ') + key.label" @click="edit(key)">{{ t('Remover') }}</button>
       </li>
     </ul>
-    <p v-else-if="loaded && available && !adding" class="dim">{{ t('Nenhuma passkey cadastrada. Adicione sua primeira para entrar com mais facilidade.') }}</p>
+    <p v-else-if="loaded && countKnown && available && !adding" class="dim">{{ t('Nenhuma passkey cadastrada. Adicione sua primeira para entrar com mais facilidade.') }}</p>
     <div v-if="error" class="alert" role="alert">{{ error }}</div>
     <div v-if="done" class="passkey-success" role="status">{{ done }}</div>
     <form v-if="adding || removing" class="passkey-form" name="wappie-passkey" autocomplete="on" method="post" @submit.prevent="submit">
@@ -96,10 +106,11 @@ function date(value?: string) { return value ? new Date(value).toLocaleDateStrin
     </form>
     <button v-else-if="available" type="button" class="ghost small passkey-add" @click="edit()"><AppIcon name="plus" :size="17" /> {{ t('Adicionar passkey') }}</button>
   </section>
+  </ConsoleDialog>
 </template>
 
 <style scoped>
-.passkey-card { border: 1px solid var(--line); border-radius: 16px; padding: 22px; margin-top: 22px; }
+.passkey-card { padding: 0; }.security-summary { display:flex;align-items:center;gap:14px;width:100%;padding:18px;text-align:left;border:1px solid var(--line);border-radius:14px;background:var(--bg-panel); }.security-summary:hover { background:var(--bg-hover); }.summary-icon { display:grid;place-items:center;flex:none;width:42px;height:42px;border-radius:12px;color:var(--accent);background:var(--accent-dim); }.summary-text { flex:1;min-width:0; }.summary-text strong { display:block;font-size:14px; }.summary-text small { display:block;font-size:12px;color:var(--text-dim);margin-top:5px; }
 .passkey-heading { display: flex; gap: 13px; align-items: center; }
 .passkey-emblem { display: grid; place-items: center; width: 46px; height: 46px; flex: none; border-radius: 14px; color: var(--accent); background: var(--accent-dim); }
 h3 { margin: 0; font-size: 1.05rem; } p { color: var(--text-dim); line-height: 1.5; font-size: 13px; margin: 6px 0 16px; }
@@ -112,5 +123,5 @@ h3 { margin: 0; font-size: 1.05rem; } p { color: var(--text-dim); line-height: 1
 .passkey-buttons { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }.passkey-add { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; }
 .passkey-success { color: var(--accent); padding: 12px 0; font-size: 13px; }
 .account-identifier { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; padding: 0; border: 0; }
-@media (max-width: 600px) { .passkey-card { padding: 17px; } .passkey-list li { align-items: flex-start; } .passkey-form input { font-size: 16px; } }
+@media (max-width: 600px) { .passkey-card { padding: 0; } .passkey-list li { align-items: flex-start; } .passkey-form input { font-size: 16px; } }
 </style>

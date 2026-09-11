@@ -99,7 +99,7 @@ const playedApplies = computed(() => props.playable || played.value.length > 0)
     :subtitle="t('{v0} destinatários com recibo', { v0: others.length })"
     @close="emit('close')"
   >
-    <div v-if="readers.length === 0" class="sealed" style="font-size: 12.5px"> {{ t('Nenhum recibo arquivado para esta mensagem. Em modo discreto o aparelho não devolve recibos, e o que os outros mandam só chega enquanto ele está ligado.') }} </div>
+    <div v-if="readers.length === 0" class="sealed" style="font-size: 12.5px"> {{ t('Nenhum recibo arquivado. As confirmações disponíveis dependem da conexão e das configurações de privacidade do WhatsApp.') }} </div>
 
     <template v-else>
       <div class="note">{{ t('Mostramos apenas confirmações recebidas para esta versão. Sem recibo, não é possível saber se a pessoa leu.') }}</div>

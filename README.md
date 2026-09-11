@@ -11,12 +11,14 @@ shared workspaces, per-number permissions and a messaging client.
 - [Messaging client](https://app.wappie.thehappie.co)
 - Hosted API: `https://api.wappie.thehappie.co` (`/v1/ws` for WebSocket)
 - [Workspace model and API contracts](docs/workspaces.md)
+- [Personal accounts, Team workspaces and invitations](docs/accounts-workspaces.md)
 - [Deployment guide](docs/deployment.md)
 - [Passkeys and encrypted login](docs/passkeys-api.md)
 
 The server, CLI, web client and basic administration are Apache-2.0 open source.
 Managed hosting and commercial billing are maintained separately. The hosted
-pilot is invitation-only, free, and uses simulated payments. No live charges.
+pilot uses free access and sandbox payments. No live charges. Public signup is
+opt-in and requires email verification; invitation signup also remains available.
 
 ## Status
 
@@ -184,6 +186,20 @@ the server the same way a password is proved, opens the key in the page, and
 sets a new password and a new code. The console's account panel changes the
 password and regenerates the code; both end every other session.
 
+Every human identity receives one Personal workspace. Additional Team workspaces
+support multiple members; number capacity and billing belong to each workspace
+independently of its type. Existing workspaces are preserved as Team, with their
+numbers, memberships, grants and subscriptions unchanged. Account names and
+avatars are shared profile metadata; WhatsApp photos remain encrypted.
+
+To open public signup, configure `WS_APP_URL`, the `WS_SMTP_*` settings and
+`WS_MAIL_FROM`, then set `WS_PUBLIC_SIGNUP=true`. Mail uses verified TLS and signup
+requires an email-bound, expiring proof. Invitations to a specific email can also
+create the Personal workspace and join the invited Team atomically. Failed signup
+does not consume the invitation. `WS_INVITE_ENCRYPTION_KEY_HEX` enables recovery
+of new invitation codes; old hash-only codes must be regenerated. See the account
+guide above for endpoints, migration behavior and deployment checks.
+
 Accounts created before recovery could be redeemed hold a code the server
 cannot hand back. They see a notice on the console and generate a new one.
 
@@ -280,8 +296,12 @@ Who may reach what, on the server side:
 - A **member** reaches only the devices granted to them — content and envelope
   alike. Without a grant the server answers with `not_authorized`, not with a
   chat list they cannot open.
-- An **owner or admin** reaches every device's envelope, pairs, grants, mints
-  keys and flips a device between discreet and loud.
+- An **owner or admin** administers numbers, pairing, grants and API keys. Reading
+  encrypted content still requires a usable grant. Removing the last active
+  reader's usable grant is refused, including disabling the member.
+- A human reader's **discreet mode** is a per-user, per-number preference. The
+  app uses `reader.mode`; automation retains the legacy `device.mode` policy.
+  Badges and the physical WhatsApp connection remain shared by the number.
 - An **API key** does what its scope says, and the server checks it on every
   frame. No scope reaches the tenant's configuration.
 

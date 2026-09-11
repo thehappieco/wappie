@@ -476,13 +476,17 @@ func TestGrantingAndRevoking(t *testing.T) {
 		t.Errorf("granted_by = %q, want whoever asked", readers.Readers[0].GrantedBy)
 	}
 
+	wantError(t, ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeGrantRevoke, wsapi.GrantRevoke{
+		DeviceID: dev, UserID: other.String(),
+	}), "last_device_reader")
+	backup := retainBackupReader(t, c.pool, c.tenant, uuid.MustParse(dev))
 	f = ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeGrantRevoke, wsapi.GrantRevoke{
 		DeviceID: dev, UserID: other.String(),
 	})
 	if f.Type != wsapi.TypeReaders {
 		t.Fatalf("frame = %q: %s", f.Type, f.Payload)
 	}
-	if left := payload[wsapi.Readers](t, f); len(left.Readers) != 0 {
+	if left := payload[wsapi.Readers](t, f); len(left.Readers) != 1 || left.Readers[0].UserID != backup.String() {
 		t.Errorf("readers after revoking = %+v", left.Readers)
 	}
 }
@@ -747,7 +751,10 @@ func TestAServiceAccountReadsOnlyWhatItWasGranted(t *testing.T) {
 	}
 
 	// Revoking the grant is revoking the access.
-	ask(t, c, owner, wsapi.TypeGrantRevoke, wsapi.GrantRevoke{DeviceID: granted, UserID: service.ID.String()})
+	retainBackupReader(t, c.pool, c.tenant, uuid.MustParse(granted))
+	if f := ask(t, c, owner, wsapi.TypeGrantRevoke, wsapi.GrantRevoke{DeviceID: granted, UserID: service.ID.String()}); f.Type != wsapi.TypeReaders {
+		t.Fatalf("revocation failed: %s %s", f.Type, f.Payload)
+	}
 	wantError(t, ask(t, c, asService, wsapi.TypeChatsList, map[string]string{"device_id": granted}),
 		wsapi.ErrCodeNotAuthorized)
 }

@@ -543,6 +543,10 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 		return
 	}
 	if err := s.srv.cfg.Keys2.RevokeGrant(ctx, tenantUUID, deviceUUID, user); err != nil {
+		if errors.Is(err, store.ErrLastDeviceReader) {
+			s.replyError(f.ReqID, ErrCodeLastDeviceReader, "give another active member read access to this number before removing its last reader")
+			return
+		}
 		s.log.Error("revoking a grant failed", "device", dev.ID, "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not revoke the grant")
 		return
@@ -655,6 +659,14 @@ func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 	who := s.actor()
 	if tenant, err := uuid.Parse(d.TenantID); err == nil {
 		if device, err := uuid.Parse(d.ID); err == nil {
+			if who.person {
+				info.ReaderReceiptMode = string(wa.ModePassive)
+				if accounts := s.accountStore(); accounts != nil {
+					if mode, err := accounts.ReaderMode(ctx, tenant, who.userID, device); err == nil {
+						info.ReaderReceiptMode = string(mode)
+					}
+				}
+			}
 			allowed, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionManage, s.srv.cfg.Keys, s.accountStore())
 			if err != nil {
 				s.log.Warn("could not load device management permission", "device", d.ID, "error", err)

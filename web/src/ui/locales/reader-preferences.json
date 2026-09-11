@@ -1,0 +1,26 @@
+{
+  "No modo incógnito, você não consulta a presença dos contatos. A presença do número é compartilhada com outros usuários e o telefone.": [
+    "In incognito, you do not request contacts’ presence. The number’s presence is shared with other users and the phone.",
+    "En modo incógnito no consultas la presencia de los contactos. La presencia del número se comparte con otros usuarios y el teléfono.",
+    "En mode incognito, vous ne consultez pas la présence des contacts. La présence du numéro est partagée avec les autres utilisateurs et le téléphone.",
+    "Im Inkognitomodus fragen Sie den Kontaktstatus nicht ab. Der Onlinestatus der Nummer wird mit anderen Benutzern und dem Telefon geteilt."
+  ],
+  "Nenhum recibo arquivado. As confirmações disponíveis dependem da conexão e das configurações de privacidade do WhatsApp.": [
+    "No receipts saved. Available confirmations depend on the connection and WhatsApp privacy settings.",
+    "No hay confirmaciones guardadas. Las confirmaciones disponibles dependen de la conexión y de la configuración de privacidad de WhatsApp.",
+    "Aucune confirmation enregistrée. Les confirmations disponibles dépendent de la connexion et des paramètres de confidentialité de WhatsApp.",
+    "Keine Bestätigungen gespeichert. Verfügbare Bestätigungen hängen von der Verbindung und den WhatsApp-Datenschutzeinstellungen ab."
+  ],
+  "Modo incógnito para você neste número: sua leitura não limpa os indicadores nem envia confirmações ou digitação. Outras pessoas e o telefone ainda podem confirmar leituras. Clique para desativar.": [
+    "Incognito for you on this number: viewing does not clear unread indicators or send read receipts or typing status. Other people and the phone may still confirm reads. Click to turn off.",
+    "Modo incógnito para ti en este número: leer no borra los indicadores ni envía confirmaciones o estado de escritura. Otras personas y el teléfono aún pueden confirmar lecturas. Pulsa para desactivar.",
+    "Mode incognito pour vous sur ce numéro : la consultation n’efface pas les indicateurs et n’envoie ni confirmation de lecture ni statut de saisie. Les autres personnes et le téléphone peuvent toujours confirmer des lectures. Cliquez pour désactiver.",
+    "Inkognitomodus für Sie bei dieser Nummer: Lesen entfernt keine Ungelesen-Anzeigen und sendet weder Lesebestätigungen noch Tippstatus. Andere Personen und das Telefon können weiterhin Lesebestätigungen senden. Klicken zum Deaktivieren."
+  ],
+  "Modo normal para você neste número: confirma suas leituras e mostra sua digitação. A presença online do número é compartilhada. Clique para ativar o modo incógnito.": [
+    "Normal mode for you on this number: confirms your reads and shows your typing status. The number's online presence is shared. Click to enable incognito.",
+    "Modo normal para ti en este número: confirma tus lecturas y muestra cuando escribes. La presencia en línea del número es compartida. Pulsa para activar el modo incógnito.",
+    "Mode normal pour vous sur ce numéro : confirme vos lectures et affiche votre saisie. La présence en ligne du numéro est partagée. Cliquez pour activer le mode incognito.",
+    "Normaler Modus für Sie bei dieser Nummer: bestätigt Ihre gelesenen Nachrichten und zeigt Ihren Tippstatus. Der Onlinestatus der Nummer wird gemeinsam genutzt. Klicken zum Aktivieren des Inkognitomodus."
+  ]
+}

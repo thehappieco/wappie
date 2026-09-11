@@ -190,6 +190,11 @@ func TestDisableMemberIsWorkspaceScopedAndStripsAccess(t *testing.T) {
 	if err := h.keys.PutGrant(ctx, grant, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
+	backupGrant := grant
+	backupGrant.UserID = owner.ID
+	if err := h.keys.PutGrant(ctx, backupGrant, &owner.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.users.UpdateMember(ctx, h.tenant, owner.ID, member.ID, "member", "disabled"); err != nil {
 		t.Fatal(err)
 	}

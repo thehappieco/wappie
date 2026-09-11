@@ -1,247 +1,120 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { t } from '../ui/i18n'
-import { workspaceAvatar } from '../ui/workspaceAvatar'
+import { computed, ref, watch } from 'vue'
+import { t, intlLocale } from '../ui/i18n'
+import { initials } from '../state/jid'
+import { workspaceRequest, type Member, type Invitation } from '../api/workspaces'
+import { state } from '../state/archive'
+import { currentWorkspace, loadWorkspaceContext, loadWorkspaceMembers, workspaceChanged, workspaceState } from '../state/workspaces'
+import { openDetail } from '../state/admin'
 import AppIcon from './AppIcon.vue'
-import { workspaceRequest, type Workspace, type Member, type Permission } from '../api/workspaces'
-import { credential, state, stop } from '../state/archive'
-import { useWorkspacePermissions } from '../state/workspacePermissions'
-
-withDefaults(defineProps<{ section?: 'workspace' | 'members' | 'permissions' | 'all' }>(), { section: 'all' })
-const emit = defineEmits<{ (event: 'workspace-name', name: string): void; (event: 'workspace-avatar', avatar: string): void }>()
-const spaces = ref<Workspace[]>([])
-const members = ref<Member[]>([])
-const selected = ref(state.tenantID)
-const device = ref('')
-const { permissions, loading: permissionsLoading, error: permissionsError, refresh: refreshPermissions } = useWorkspacePermissions(device)
-const email = ref('')
-const role = ref('member')
-const invitation = ref('')
-const joinCode = ref('')
-const error = ref('')
-const notice = ref('')
-const busy = ref(false)
-const profileName = ref('')
-const profileAvatar = ref('')
-const profileReady = ref(false)
-const currentSpace = computed(() => spaces.value.find(space => space.id === state.tenantID))
-const profileChanged = computed(() => profileReady.value && (profileName.value.trim() !== currentSpace.value?.name || profileAvatar.value !== (currentSpace.value?.avatar || '')))
-const memberOriginals = ref<Record<string, { role: string; status: string }>>({})
-function canEditMember(member: Member) {
-  const original = memberOriginals.value[member.id]
-  return !member.last_owner && !!original && (state.role === 'owner' || !['owner', 'admin'].includes(original.role))
-}
-function memberChanged(member: Member) {
-  const original = memberOriginals.value[member.id]
-  return original && (original.role !== member.role || original.status !== member.status)
-}
-function roleLabel(role: string) { return t(labels[role] || role) }
-async function chooseAvatar(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file || busy.value) return
-  await run(async () => { profileAvatar.value = await workspaceAvatar(file) })
-  input.value = ''
-}
-async function saveProfile() {
-  if (!profileChanged.value || !manager.value) return
-  await run(async () => {
-    const profile = await workspaceRequest<Workspace>('/current', 'PUT', { name: profileName.value.trim(), avatar: profileAvatar.value })
-    spaces.value = spaces.value.map(space => space.id === profile.id ? profile : space)
-    profileName.value = profile.name; profileAvatar.value = profile.avatar || ''
-    emit('workspace-name', profile.name); emit('workspace-avatar', profile.avatar || '')
-    notice.value = t('Espaço de trabalho atualizado.')
-  })
-}
+import ConsoleDialog from './ConsoleDialog.vue'
+const members = ref<Member[]>([]), invites = ref<Invitation[]>([])
+const email = ref(''), role = ref('member'), inviting = ref(false), busy = ref(false), error = ref(''), notice = ref('')
+const originals = ref<Record<string, {role: string; status: string}>>({})
+const shownCode = ref<{ code: string; invitation?: Invitation; emailSent?: boolean } | null>(null), revoking = ref<Invitation | null>(null)
+const showHistory = ref(false), guide = ref(false)
 const manager = computed(() => ['owner', 'admin'].includes(state.role))
+const isTeam = computed(() => currentWorkspace.value?.kind !== 'personal')
 const roles = computed(() => state.role === 'owner' ? ['member', 'admin', 'owner'] : ['member'])
-const labels: Record<string, string> = { owner: 'Proprietário', admin: 'Administrador', member: 'Membro', service: 'Integração' }
-async function run(fn: () => Promise<void>) {
-  if (busy.value) return
-  busy.value = true; error.value = ''; notice.value = ''
-  try { await fn() } catch (e) { error.value = e instanceof Error ? e.message : String(e) }
-  finally { busy.value = false }
+const labels: Record<string,string> = {owner:'Proprietário',admin:'Administrador',member:'Membro',service:'Integração'}
+const pending = computed(() => invites.value.filter(invitation => ['pending', 'expired'].includes(invitation.status)))
+const history = computed(() => invites.value.filter(invitation => ['accepted', 'revoked'].includes(invitation.status)))
+const inviteLink = computed(() => {
+  if (!shownCode.value) return ''
+  const url = new URL('/console?signup=1',location.origin)
+  const fragment = new URLSearchParams({invite:shownCode.value.code})
+  if (shownCode.value.invitation?.email) fragment.set('email',shownCode.value.invitation.email)
+  url.hash = fragment.toString(); return url.toString()
+})
+let generation = 0
+function roleLabel(value: string) { return t(labels[value] ?? value) }
+function date(value: string) { return new Date(value).toLocaleString(intlLocale(), { dateStyle: 'short', timeStyle: 'short' }) }
+function status(value: Invitation['status']) { return t({pending:'Pendente',expired:'Expirado',accepted:'Aceito',revoked:'Revogado'}[value]) }
+function canEdit(member: Member) {
+  const original = originals.value[member.id]
+  return !member.last_owner && !!original && member.role !== 'service' && (state.role === 'owner' || !['owner','admin'].includes(original.role))
 }
+function changed(member: Member) { const old = originals.value[member.id]; return !!old && (old.role !== member.role || old.status !== member.status) }
 async function load() {
-  spaces.value = (await workspaceRequest<{ workspaces: Workspace[] }>('')).workspaces || []
-  profileName.value = currentSpace.value?.name || ''
-  profileAvatar.value = currentSpace.value?.avatar || ''
-  profileReady.value = !!currentSpace.value
-  emit('workspace-name', profileName.value || t('Seu espaço de trabalho'))
-  emit('workspace-avatar', profileAvatar.value)
-  if (manager.value) {
-    members.value = (await workspaceRequest<{ members: Member[] }>('/members')).members || []
-    memberOriginals.value = Object.fromEntries(members.value.map(member => [member.id, { role: member.role, status: member.status }]))
-  }
+  const current = ++generation
+  error.value = ''; busy.value = true
+  try {
+    await loadWorkspaceContext()
+    if (current !== generation || !manager.value) return
+    const replies = await Promise.all([loadWorkspaceMembers(), isTeam.value ? workspaceRequest<{invites: Invitation[]}>('/invites') : Promise.resolve({invites: []})])
+    if (current !== generation) return
+    members.value = replies[0].map(member => ({...member}))
+    originals.value = Object.fromEntries(members.value.map(member => [member.id, {role:member.role,status:member.status}]))
+    invites.value = replies[1].invites ?? []
+  } catch(e) { if (current === generation) error.value = e instanceof Error ? e.message : String(e) }
+  finally { if (current === generation) busy.value = false }
 }
-function switchSpace() {
-  if (!selected.value || busy.value) return
-  // A fresh document prevents any queued decryption or old response from
-  // writing another workspace's content into the next session.
-  const target = new URL('/console', location.origin)
-  target.searchParams.set('workspace', selected.value)
-  stop({ logout: false })
-  location.assign(target.toString())
+async function run(action: () => Promise<void>) {
+  if (busy.value) return
+  const current = generation
+  busy.value = true; error.value = ''; notice.value = ''
+  try { await action() } catch(e) { if (current === generation) error.value = e instanceof Error ? e.message : String(e) }
+  finally { if (current === generation) busy.value = false }
 }
 async function update(member: Member) {
-  if (!canEditMember(member) || !memberChanged(member)) return
+  if (!canEdit(member) || !changed(member)) return
   await run(async () => {
-    await workspaceRequest(`/members/${member.id}`, 'PUT', { role: member.role, status: member.status })
+    await workspaceRequest(`/members/${member.id}`, 'PUT', {role:member.role,status:member.status})
     notice.value = t('Acesso atualizado. Sessões anteriores deste membro foram encerradas.')
-    await load()
+    workspaceChanged()
   })
 }
 async function invite() {
   await run(async () => {
-    invitation.value = (await workspaceRequest<{ invite: string }>('/invites', 'POST', { email: email.value, role: role.value })).invite
-    notice.value = t('Convite de uso único, válido por sete dias. Copie e compartilhe com a pessoa.')
+    const result = await workspaceRequest<{invite:string; invitation:Invitation; email_sent?:boolean}>('/invites', 'POST', {email:email.value.trim(),role:role.value})
+    inviting.value = false; shownCode.value = { code:result.invite, invitation:result.invitation, emailSent:result.email_sent === true }; email.value = ''
+    workspaceChanged()
   })
 }
-async function join() {
+async function reveal(invitation: Invitation) {
+  await run(async () => { const result = await workspaceRequest<{invite:string}>(`/invites/${invitation.id}/reveal`, 'POST'); shownCode.value = {code:result.invite,invitation} })
+}
+async function regenerate(invitation: Invitation) {
   await run(async () => {
-    const result = await workspaceRequest<{ tenant_id: string }>('/accept-invite', 'POST', { invite: joinCode.value })
-    joinCode.value = ''; selected.value = result.tenant_id
-    await load(); notice.value = t('Convite aceito. Selecione o espaço para abri-lo.')
+    const result = await workspaceRequest<{invite:string;invitation:Invitation; email_sent?:boolean}>(`/invites/${invitation.id}/regenerate`, 'POST')
+    shownCode.value = {code:result.invite,invitation:result.invitation,emailSent:result.email_sent === true}; workspaceChanged()
   })
 }
-async function savePermission(p: Permission) {
-  if (!device.value || p.device_id !== device.value || permissionsLoading.value) return
-  await run(async () => {
-    await workspaceRequest(`/devices/${device.value}/permissions`, 'PUT', p)
-    notice.value = t('Permissões salvas. Para liberar leitura, conceda também a chave em Detalhes do número.')
-  })
+async function revoke() {
+  if (!revoking.value) return
+  const invitation = revoking.value
+  await run(async () => { await workspaceRequest(`/invites/${invitation.id}`, 'DELETE'); revoking.value = null; workspaceChanged() })
 }
-onMounted(() => { if (credential()?.kind === 'session') void run(load) })
+async function copy(value: string) {
+  try { await navigator.clipboard.writeText(value); notice.value = t('Copiado.'); }
+  catch { notice.value = t('Selecione e copie o código exibido.'); }
+}
+watch([() => state.tenantID, () => state.account, () => workspaceState.revision], () => { void load() }, { immediate:true })
 </script>
-
 <template>
-  <section v-if="credential()?.kind === 'session'" class="console-panel workspace-panel">
-    <div v-if="error" class="alert" role="alert">{{ error }}</div>
-    <p v-if="notice" class="workspace-notice" role="status">{{ notice }}</p>
-
-    <template v-if="section === 'workspace' || section === 'all'">
-      <div class="workspace-heading"><h2>{{ t('Espaço de trabalho') }}</h2><p class="dim">{{ t('Um espaço reúne números do WhatsApp, pessoas e integrações. Sua conta pode participar de vários espaços.') }}</p></div>
-      <form v-if="profileReady" class="workspace-profile" @submit.prevent="saveProfile">
-        <div class="workspace-avatar" :aria-label="t('Avatar do espaço de trabalho')"><img v-if="profileAvatar" :src="profileAvatar" alt="" /><AppIcon v-else name="building" :size="30" /></div>
-        <div class="profile-fields">
-          <label>{{ t('Nome do espaço de trabalho') }}<input v-model="profileName" maxlength="80" required :readonly="!manager" :disabled="busy" autocomplete="organization" /></label>
-          <div v-if="manager" class="avatar-actions">
-            <label class="avatar-upload ghost"><AppIcon name="image" :size="16" />{{ t('Escolher avatar') }}<input type="file" accept="image/jpeg,image/png,image/webp" :disabled="busy" @change="chooseAvatar" /></label>
-            <button v-if="profileAvatar" class="ghost small" type="button" :disabled="busy" @click="profileAvatar = ''">{{ t('Remover avatar') }}</button>
-          </div>
-          <p v-if="manager" class="dim avatar-hint">{{ t('JPG, PNG ou WebP. A imagem será ajustada ao formato quadrado.') }}</p>
-        </div>
-        <button v-if="manager" class="primary" :disabled="busy || !profileChanged">{{ t('Salvar alterações') }}</button>
-      </form>
-      <div class="workspace-divider" />
-      <div class="workspace-heading"><h3>{{ t('Seus espaços de trabalho') }}</h3></div>
-      <form class="workspace-form" @submit.prevent="switchSpace">
-        <label>{{ t('Espaço de trabalho') }}<select v-model="selected" required :disabled="busy"><option value="" disabled>{{ t('Escolha um espaço') }}</option><option v-for="s in spaces" :key="s.id" :value="s.id" :disabled="s.status !== 'active'">{{ s.name }} · {{ roleLabel(s.role) }}</option></select></label>
-        <button class="primary" :disabled="busy || selected === state.tenantID">{{ t('Abrir espaço') }}</button>
-      </form>
-      <p class="dim">{{ t('Ao trocar de espaço de trabalho, confirme sua entrada para acessar as conversas dele.') }}</p>
-      <div class="workspace-divider" />
-      <div class="workspace-heading"><h3>{{ t('Recebeu um convite?') }}</h3><p class="dim">{{ t('Cole o código recebido para participar de outro espaço de trabalho.') }}</p></div>
-      <form class="workspace-form" @submit.prevent="join"><label>{{ t('Código de convite') }}<input v-model="joinCode" required autocomplete="off" :placeholder="t('Cole seu código de convite')" /></label><button class="ghost" :disabled="busy">{{ t('Aceitar convite') }}</button></form>
-    </template>
-
-    <template v-if="manager && (section === 'members' || section === 'all')">
-      <div class="workspace-heading"><h2>{{ t('Membros do espaço de trabalho') }}</h2><p class="dim">{{ t('Membros são as pessoas que participam deste espaço. O papel define o que podem administrar; o acesso às conversas é definido em Permissões.') }}</p></div>
-      <div class="role-guide">
-        <div><AppIcon name="shield" :size="20" /><h3>{{ t('Proprietário') }}</h3><p>{{ t('Controla o espaço e pode definir outros proprietários e administradores. É necessário manter ao menos um proprietário ativo.') }}</p></div>
-        <div><AppIcon name="settings" :size="20" /><h3>{{ t('Administrador') }}</h3><p>{{ t('Gerencia números, integrações, permissões e membros. Não pode alterar proprietários nem outros administradores.') }}</p></div>
-        <div><AppIcon name="users" :size="20" /><h3>{{ t('Membro') }}</h3><p>{{ t('Usa os números e recursos liberados para sua conta. Não administra o espaço de trabalho.') }}</p></div>
-      </div>
-      <div class="workspace-table">
-        <table class="grid"><thead><tr><th>{{ t('Conta') }}</th><th>{{ t('Papel') }}</th><th>{{ t('Acesso') }}</th><th><span class="table-action-label">{{ t('Ação') }}</span></th></tr></thead><tbody>
-          <tr v-for="m in members" :key="m.id">
-            <td :data-label="t('Conta')"><span class="member-email">{{ m.email }}</span><small v-if="m.last_owner" class="owner-protection">{{ t('Único proprietário ativo') }}</small></td>
-            <td :data-label="t('Papel')"><select v-model="m.role" :disabled="busy || m.role === 'service' || !canEditMember(m)" :aria-label="t('Papel de {name}', { name: m.email })"><option v-if="m.role === 'service'" value="service">{{ t('Integração') }}</option><option v-for="r in ['member','admin','owner']" :key="r" :value="r" :disabled="!roles.includes(r)">{{ roleLabel(r) }}</option></select></td>
-            <td :data-label="t('Acesso')"><select v-model="m.status" :disabled="busy || !canEditMember(m)" :aria-label="t('Acesso de {name}', { name: m.email })"><option value="active">{{ t('Ativo') }}</option><option value="disabled">{{ t('Desativado') }}</option></select></td>
-            <td :data-label="t('Ação')" class="member-actions"><button class="ghost small" :disabled="busy || !canEditMember(m) || !memberChanged(m)" @click="update(m)">{{ t('Salvar') }}</button></td>
-          </tr>
-        </tbody></table>
-        <p v-if="!members.length" class="dim table-empty">{{ busy ? t('Carregando membros…') : t('Nenhum membro encontrado.') }}</p>
-      </div>
-      <p v-if="members.some(member => member.last_owner)" class="permission-explanation">{{ t('Para desativar ou mudar o papel do último proprietário, primeiro convide outra pessoa e torne-a proprietária. Isso evita que o espaço fique sem alguém responsável.') }}</p>
-      <div class="workspace-divider" />
-      <div class="workspace-heading"><h3>{{ t('Convidar uma pessoa') }}</h3><p class="dim">{{ t('O convite poderá ser usado uma vez e será válido por sete dias.') }}</p></div>
-      <form class="workspace-form" @submit.prevent="invite"><label>{{ t('Email') }}<input v-model="email" type="email" required autocomplete="email" :placeholder="t('pessoa@exemplo.com')" /></label><label class="compact-field">{{ t('Papel') }}<select v-model="role"><option v-for="r in roles" :key="r" :value="r">{{ roleLabel(r) }}</option></select></label><button class="primary" :disabled="busy">{{ t('Criar convite') }}</button></form>
-      <label v-if="invitation" class="invitation-result">{{ t('Convite criado') }}<input :value="invitation" readonly @focus="($event.target as HTMLInputElement).select()" /><small>{{ t('Copie o código e compartilhe com a pessoa convidada.') }}</small></label>
-    </template>
-
-    <template v-if="manager && (section === 'permissions' || section === 'all')">
-      <div class="workspace-heading"><h2>{{ t('Acessos por número') }}</h2><p class="dim">{{ t('Escolha um número e defina o que cada pessoa pode fazer.') }}</p></div>
-      <label class="permission-device">{{ t('Número do WhatsApp') }}<select v-model="device" :disabled="busy || permissionsLoading"><option value="">{{ t('Escolha um número') }}</option><option v-for="d in state.devices" :key="d.id" :value="d.id">{{ d.label || d.pn || d.id }}</option></select></label>
-      <div class="permission-guide"><p><strong>{{ t('Ler') }}</strong> {{ t('Acessar conversas. Exige também a chave concedida em Detalhes do número.') }}</p><p><strong>{{ t('Enviar') }}</strong> {{ t('Enviar mensagens por este número.') }}</p><p><strong>{{ t('Gerenciar') }}</strong> {{ t('Gerenciar o vínculo, a conexão e as configurações deste número. Proprietários e administradores já têm esse acesso.') }}</p></div>
-      <p class="dim">{{ t('Revogar a leitura não apaga dados que a pessoa já recebeu.') }}</p>
-      <div v-if="permissionsError" class="alert" role="alert">{{ permissionsError }} <button class="ghost small" type="button" :disabled="permissionsLoading" @click="refreshPermissions">{{ t('Tentar novamente') }}</button></div>
-      <div v-if="device" class="workspace-table"><table v-if="permissions.length" class="grid permission-table"><thead><tr><th>{{ t('Conta') }}</th><th>{{ t('Ler') }}</th><th>{{ t('Enviar') }}</th><th>{{ t('Gerenciar') }}</th><th>{{ t('Chave') }}</th><th>{{ t('Ação') }}</th></tr></thead><tbody><tr v-for="p in permissions" :key="p.user_id"><td :data-label="t('Conta')"><span class="member-email">{{ members.find(m => m.id === p.user_id)?.email || p.user_id }}</span></td><td :data-label="t('Ler')"><input v-model="p.read" type="checkbox" :aria-label="t('Permitir leitura para {name}', { name: members.find(m => m.id === p.user_id)?.email || p.user_id })" /></td><td :data-label="t('Enviar')"><input v-model="p.send" type="checkbox" :aria-label="t('Permitir envio para {name}', { name: members.find(m => m.id === p.user_id)?.email || p.user_id })" /></td><td :data-label="t('Gerenciar')"><input v-model="p.manage" type="checkbox" :aria-label="t('Permitir gerenciamento para {name}', { name: members.find(m => m.id === p.user_id)?.email || p.user_id })" :disabled="['owner','admin'].includes(members.find(m => m.id === p.user_id)?.role || '')" /></td><td :data-label="t('Chave')"><span class="permission-key" :class="{ granted: p.has_key }">{{ p.has_key ? t('Concedida') : t('Pendente') }}</span></td><td :data-label="t('Ação')" class="member-actions"><button class="ghost small" :disabled="busy || permissionsLoading" @click="savePermission(p)">{{ t('Salvar') }}</button></td></tr></tbody></table><p v-else class="dim table-empty">{{ permissionsLoading ? t('Carregando permissões…') : t('Nenhuma permissão cadastrada para este número.') }}</p></div>
-      <p v-else class="dim permission-empty">{{ t('As permissões aparecerão aqui depois de selecionar um número.') }}</p>
-    </template>
+  <section v-if="manager" class="console-panel members-panel">
+    <header class="members-heading"><div><h2>{{ t('Membros') }}</h2><p class="dim">{{ t('Pessoas, convites e acesso aos números deste workspace.') }}</p></div><button v-if="isTeam" class="primary" type="button" @click="inviting = true; error = ''"><AppIcon name="plus" :size="18" />{{ t('Convidar pessoa') }}</button></header>
+    <p v-if="error && !inviting && !revoking" class="alert" role="alert">{{ error }} <button class="ghost small" :disabled="busy" @click="load">{{ t('Tentar novamente') }}</button></p><p v-if="notice" class="member-notice" role="status">{{ notice }}</p>
+    <p v-if="!isTeam" class="dim">{{ t('O workspace pessoal é exclusivo da sua conta. Crie um workspace Team para convidar pessoas.') }}</p>
+    <button class="role-help" type="button" :aria-expanded="guide" @click="guide = !guide"><AppIcon name="info" :size="17" />{{ t('Entenda os papéis e acessos') }}<AppIcon :name="guide ? 'chevron-up' : 'chevron-down'" :size="15" /></button>
+    <div v-if="guide" class="role-guide"><p><strong>{{ t('Proprietário') }}</strong>{{ t('Controla o workspace, a assinatura e os administradores. Sempre é necessário manter um proprietário ativo.') }}</p><p><strong>{{ t('Administrador') }}</strong>{{ t('Gerencia números, membros e integrações. Não altera proprietários nem outros administradores.') }}</p><p><strong>{{ t('Membro') }}</strong>{{ t('Usa somente os números e recursos que foram liberados. A leitura exige uma chave de acesso.') }}</p></div>
+    <div class="member-list" :aria-busy="busy">
+      <article v-for="member in members" :key="member.id" class="member-row" :class="{'member-disabled':member.status !== 'active'}">
+        <div class="member-identity"><img v-if="member.avatar" :src="member.avatar" alt="" /><span v-else class="person-initials">{{ initials(member.name || member.email) }}</span><div><strong>{{ member.name || member.email }}</strong><small>{{ member.email }}</small><span v-if="member.last_owner" class="owner-note">{{ t('Único proprietário ativo') }}</span></div></div>
+        <div class="member-devices"><span class="field-caption">{{ t('Números com chave') }}</span><div class="device-chips"><button v-for="device in (member.device_access || []).filter(access => access.has_key)" :key="device.device_id" type="button" class="device-chip" @click="openDetail(device.device_id)"><AppIcon name="devices" :size="13" />{{ device.label || device.pn?.split('@')[0] || device.device_id.slice(0,8) }}</button><span v-if="!(member.device_access || []).some(access => access.has_key)" class="dim">{{ t('Nenhum número') }}</span></div></div>
+        <div class="member-controls"><label><span>{{ t('Papel') }}</span><select v-model="member.role" :disabled="busy || !canEdit(member)" :aria-label="t('Papel de {name}',{name:member.name || member.email})"><option v-if="member.role === 'service'" value="service">{{ t('Integração') }}</option><option v-for="value in ['member','admin','owner']" :key="value" :value="value" :disabled="!roles.includes(value)">{{ roleLabel(value) }}</option></select></label><label><span>{{ t('Status') }}</span><select v-model="member.status" :disabled="busy || !canEdit(member)" :aria-label="t('Acesso de {name}',{name:member.name || member.email})"><option value="active">{{ t('Ativo') }}</option><option value="disabled">{{ t('Desativado') }}</option></select></label><button class="ghost small" type="button" :disabled="busy || !canEdit(member) || !changed(member)" @click="update(member)">{{ t('Salvar') }}</button></div>
+      </article>
+      <article v-for="invitation in pending" :key="invitation.id" class="member-row pending-row"><div class="member-identity"><span class="person-initials"><AppIcon name="users" :size="21" /></span><div><strong>{{ invitation.email }}</strong><small>{{ roleLabel(invitation.role) }} · {{ t('Convite') }}</small></div></div><div class="invite-status"><span class="status-pill" :class="invitation.status">{{ status(invitation.status) }}</span><small>{{ t('Expira em {date}',{date:date(invitation.expires_at)}) }}</small></div><div class="invite-actions"><button v-if="invitation.status === 'pending' && invitation.can_reveal" type="button" class="ghost small" :disabled="busy" @click="reveal(invitation)"><AppIcon name="key" :size="15" />{{ t('Ver convite') }}</button><button v-if="invitation.status === 'expired' || !invitation.can_reveal" type="button" class="ghost small" :disabled="busy" @click="regenerate(invitation)">{{ t('Gerar novo convite') }}</button><button type="button" class="ghost small revoke-invite" :disabled="busy" @click="revoking = invitation; error = ''">{{ t('Revogar') }}</button></div></article>
+      <p v-if="!members.length && !pending.length" class="dim empty-members">{{ busy ? t('Carregando membros…') : t('Nenhum membro encontrado.') }}</p>
+    </div>
+    <details v-if="history.length" class="invite-history" :open="showHistory" @toggle="showHistory = ($event.target as HTMLDetailsElement).open"><summary>{{ t('Histórico de convites') }} <span>{{ history.length }}</span></summary><div v-for="invitation in history" :key="invitation.id"><span>{{ invitation.email }}<small>{{ date(invitation.completed_at || invitation.revoked_at || invitation.created_at) }}</small></span><span class="status-pill">{{ status(invitation.status) }}</span></div></details>
+    <ConsoleDialog v-if="inviting" :title="t('Convidar pessoa')" :busy="busy" @close="inviting = false"><form class="form-stack" @submit.prevent="invite"><p v-if="error" class="alert" role="alert">{{ error }}</p><p class="dim">{{ t('A pessoa entra com este email. Se ainda não tiver uma conta, poderá criá-la e receberá também um workspace pessoal.') }}</p><label>{{ t('Email') }}<input v-model="email" type="email" required autocomplete="email" :disabled="busy" /></label><label>{{ t('Papel') }}<select v-model="role" :disabled="busy"><option v-for="value in roles" :key="value" :value="value">{{ roleLabel(value) }}</option></select></label><p class="dim">{{ t('O convite poderá ser usado uma vez e será válido por sete dias.') }}</p><div class="dialog-actions"><button class="ghost" type="button" :disabled="busy" @click="inviting = false">{{ t('Cancelar') }}</button><button class="primary" :disabled="busy">{{ busy ? t('Aguarde…') : t('Criar convite') }}</button></div></form></ConsoleDialog>
+    <ConsoleDialog v-if="shownCode" :title="t('Convite do workspace')" @close="shownCode = null"><div class="form-stack"><p class="dim">{{ shownCode.invitation?.email }}<br v-if="shownCode.invitation" />{{ shownCode.invitation ? t('Expira em {date}',{date:date(shownCode.invitation.expires_at)}) : '' }}</p><p v-if="shownCode.emailSent !== undefined" class="dim">{{ shownCode.emailSent ? t('Convite enviado por email. Você também pode compartilhar o link.') : t('O email não foi enviado. Copie o link ou o código e compartilhe com a pessoa convidada.') }}</p><label>{{ t('Código de convite') }}<input :value="shownCode.code" readonly @focus="($event.target as HTMLInputElement).select()" /></label><div class="dialog-actions"><button type="button" class="ghost" @click="copy(shownCode.code)"><AppIcon name="copy" :size="16" /> {{ t('Copiar código') }}</button><button type="button" class="primary" @click="copy(inviteLink)">{{ t('Copiar link') }}</button></div><p v-if="notice" class="dim" role="status">{{ notice }}</p></div></ConsoleDialog>
+    <ConsoleDialog v-if="revoking" :title="t('Revogar convite')" :busy="busy" @close="revoking = null"><form class="form-stack" @submit.prevent="revoke"><p v-if="error" class="alert" role="alert">{{ error }}</p><p>{{ t('O convite para {email} deixará de funcionar.',{email:revoking.email}) }}</p><div class="dialog-actions"><button class="ghost" type="button" :disabled="busy" @click="revoking = null">{{ t('Cancelar') }}</button><button class="danger" :disabled="busy">{{ t('Revogar convite') }}</button></div></form></ConsoleDialog>
   </section>
 </template>
-
 <style scoped>
-.workspace-panel { min-width: 0; }
-.workspace-profile { display: flex; gap: 20px; align-items: center; padding: 22px; background: var(--bg-hover); border: 1px solid var(--console-border, var(--line)); border-radius: 14px; }
-.workspace-avatar { width: 76px; height: 76px; border-radius: 22px; flex-shrink: 0; display: grid; place-items: center; color: var(--console-accent, var(--accent)); background: var(--console-tint, var(--accent-dim)); overflow: hidden; }
-.workspace-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.profile-fields { flex: 1; min-width: 0; display: grid; gap: 10px; }
-.avatar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.workspace-panel .avatar-upload { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; cursor: pointer; position: relative; padding: 9px 12px; border-radius: 8px; }
-.avatar-upload input { position: absolute; width: 1px !important; height: 1px; opacity: 0; overflow: hidden; padding: 0 !important; }
-.avatar-upload:focus-within { outline: 2px solid var(--console-accent, var(--accent)); outline-offset: 2px; }
-.avatar-hint { font-size: 11px; }
-.role-guide { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.role-guide > div { display: grid; align-content: start; gap: 10px; padding: 18px; border: 1px solid var(--console-border, var(--line)); border-radius: 12px; background: var(--bg-hover); }
-.role-guide svg { color: var(--console-accent, var(--accent)); }
-.role-guide h3 { font-size: 13px; margin: 0; }
-.role-guide p, .permission-guide p { font-size: 12px; line-height: 1.6; margin: 0; color: var(--text-dim); }
-.owner-protection { display: block; margin-top: 5px; font-size: 10px; color: var(--console-accent, var(--accent)); }
-.permission-guide { display: grid; gap: 8px; padding: 16px; border-radius: 10px; background: var(--bg-hover); }
-.permission-guide strong { color: var(--text); margin-right: 5px; }
-.workspace-form { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin: 0; }
-.workspace-panel label { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 12px; font-weight: 500; }
-.workspace-form label { flex: 1 1 200px; }
-.workspace-form label.compact-field { flex: 0 1 200px; }
-.workspace-form button { min-height: 42px; flex-shrink: 0; }
-.workspace-panel select, .workspace-panel input:not([type=checkbox]) { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-input); color: var(--text); }
-.workspace-heading { display: grid; gap: 8px; }
-.workspace-heading h3 { margin: 0; font-size: 14px; }
-.workspace-divider { height: 1px; background: var(--line); margin: 10px 0; }
-.workspace-table { min-width: 0; overflow-x: auto; border: 1px solid var(--console-border, var(--line)); border-radius: 10px; }
-.workspace-table .grid { min-width: 540px; }
-.workspace-panel th { text-align: left; }
-.workspace-table .grid th { white-space: nowrap; }
-.workspace-table .grid td { vertical-align: middle; }
-.workspace-table select { min-width: 115px; }
-.member-email { font-size: 12px; overflow-wrap: anywhere; }
-.table-action-label { font-size: 0; }
-.table-empty { padding: 18px; }
-.permission-device { max-width: 440px; }
-.permission-explanation { color: var(--text-dim); font-size: 12px; padding: 14px 16px; background: var(--bg-hover); border-radius: 9px; }
-.permission-explanation strong { color: var(--text); font-weight: 500; }
-.permission-table input[type=checkbox] { width: 17px; height: 17px; margin: 0; accent-color: var(--console-accent, var(--accent)); }
-.permission-key { font-size: 10px; padding: 4px 7px; border-radius: 5px; background: var(--bg-hover); color: var(--text-dim); }
-.permission-key.granted { color: var(--console-accent, var(--accent)); background: var(--console-tint, var(--accent-dim)); }
-.permission-empty { padding: 24px 0; text-align: center; }
-.workspace-notice { font-size: 13px; padding: 12px 14px; background: var(--console-tint, var(--accent-dim)); color: var(--console-accent, var(--text)); border-radius: 8px; }
-.invitation-result { padding: 16px; background: var(--bg-hover); border-radius: 10px; }
-.invitation-result small { color: var(--text-dim); font-weight: 400; font-size: 11px; }
-@media (max-width: 760px) { .role-guide { grid-template-columns: 1fr; } .workspace-profile { flex-wrap: wrap; padding: 16px; gap: 14px; } .profile-fields { flex-basis: calc(100% - 100px); } .workspace-profile > button { width: 100%; } .workspace-form label, .workspace-form label.compact-field { flex-basis: 100%; } .workspace-form button { width: 100%; } .workspace-panel input, .workspace-panel select { font-size: 16px; } }
-@media (max-width: 600px) {
-  .workspace-table { border: 0; border-radius: 0; overflow: visible; }
-  .workspace-table .grid { display: block; min-width: 0; }
-  .workspace-table thead { display: none; }
-  .workspace-table tbody { display: grid; gap: 12px; }
-  .workspace-table tr { display: block; min-width: 0; border: 1px solid var(--console-border, var(--line)); border-radius: 10px; padding: 10px 14px; }
-  .workspace-panel .workspace-table .grid td { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 12px; padding: 8px 0; border: 0; width: 100%; }
-  .workspace-table td::before { content: attr(data-label); font-size: 11px; color: var(--text-dim); }
-  .workspace-table .member-email { font-size: 12px; line-height: 1.5; }
-  .workspace-table select { min-width: 0; font-size: 14px; }
-  .workspace-table .member-actions button { width: 100%; }
-  .workspace-table .permission-key { justify-self: start; }
-  .workspace-table input[type=checkbox] { width: 20px; height: 20px; }
-}
+.members-panel { display:grid;gap:20px; }.members-heading { display:flex;gap:14px;align-items:center;justify-content:space-between; }.members-heading h2 { margin:0 0 6px; }.members-heading button { display:flex;gap:7px;align-items:center;flex:none; }.role-help { display:flex;gap:7px;align-items:center;justify-self:start;color:var(--text-dim);font-size:12px; }.role-guide { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;padding:16px;background:var(--bg-hover);border-radius:12px; }.role-guide p { font-size:12px;color:var(--text-dim); }.role-guide strong { display:block;color:var(--text);margin-bottom:7px; }.member-list { border:1px solid var(--line);border-radius:14px;overflow:hidden; }.member-row { display:grid;grid-template-columns:minmax(200px,1.2fr) minmax(150px,1fr);gap:18px;padding:20px;border-bottom:1px solid var(--line); }.member-row:last-child { border-bottom:0; }.member-identity { display:flex;gap:12px;align-items:center;min-width:0; }.member-identity>div { min-width:0; }.member-identity img,.person-initials { width:42px;height:42px;border-radius:50%;object-fit:cover;flex:none; }.person-initials { display:grid;place-items:center;color:var(--accent);background:var(--accent-dim);font-weight:600; }.member-identity strong { display:block;font-size:14px;overflow-wrap:anywhere; }.member-identity small,.owner-note { display:block;color:var(--text-dim);font-size:11px;line-height:1.4;margin-top:4px; }.owner-note { color:var(--accent); }.member-devices { min-width:0; }.field-caption { display:block;color:var(--text-dim);font-size:10px;margin-bottom:7px; }.device-chips { display:flex;flex-wrap:wrap;gap:5px; }.device-chip { display:flex;gap:5px;align-items:center;border:1px solid var(--line);border-radius:7px;padding:5px 7px;color:var(--text);background:var(--bg-raised);font-size:11px;max-width:100%;overflow-wrap:anywhere; }.device-chip:hover { background:var(--bg-hover); }.member-controls { grid-column:1/-1;display:flex;gap:10px;align-items:end; }.member-controls label { display:grid;gap:6px;flex:1;max-width:185px; }.member-controls label span { font-size:10px;color:var(--text-dim); }.member-controls select { width:100%; }.member-disabled .member-identity { opacity:.65; }.invite-status { display:flex;gap:8px;align-items:flex-start;justify-content:center;flex-direction:column; }.invite-status small { font-size:11px;color:var(--text-dim); }.status-pill { display:inline-flex;align-self:start;border-radius:99px;padding:4px 8px;font-size:10px;background:var(--bg-hover);color:var(--text-dim); }.status-pill.pending { color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--bg-panel)); }.status-pill.expired { color:var(--danger); }.invite-actions { display:flex;gap:8px;grid-column:1/-1; }.invite-actions button { display:flex;align-items:center;gap:6px; }.revoke-invite { color:var(--danger);margin-left:auto; }.pending-row { background:color-mix(in srgb,var(--bg-hover) 30%,var(--bg-panel)); }.member-notice { color:var(--accent);font-size:13px; }.empty-members { padding:20px; }.invite-history summary { display:flex;gap:8px;align-items:center;color:var(--text-dim);font-size:12px;cursor:pointer; }.invite-history>div { display:flex;justify-content:space-between;gap:10px;padding:13px 0;border-bottom:1px solid var(--line);font-size:12px; }.invite-history small { display:block;color:var(--text-dim);margin-top:4px; }
+@media(min-width:1200px) { .member-row { grid-template-columns:minmax(200px,1fr) minmax(150px,1fr) minmax(280px,1fr);align-items:center; }.member-controls,.invite-actions { grid-column:auto; }.member-controls { gap:8px; }.member-controls label { max-width:140px; }.member-controls button { align-self:end; }.invite-actions { justify-content:flex-end; }.revoke-invite { margin:0; } }
+@media(max-width:760px) { .members-heading { align-items:flex-start;flex-wrap:wrap; }.role-guide { grid-template-columns:1fr; }.member-row { grid-template-columns:1fr;padding:16px;gap:14px; }.member-controls { gap:8px;flex-wrap:wrap; }.member-controls label { max-width:none;min-width:110px; }.member-controls button { width:100%; }.member-devices { padding-left:54px; }.invite-actions { grid-column:auto;flex-wrap:wrap; }.invite-status { padding-left:54px; }.device-chip { min-height:34px; } }
 </style>

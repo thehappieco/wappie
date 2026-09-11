@@ -2,15 +2,11 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"whatserver2/internal/pg"
 )
 
 // Workspace is a membership of an authenticated identity, not an archive grant.
@@ -18,6 +14,7 @@ type Workspace struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
 	Avatar    string    `json:"avatar"`
+	Kind      string    `json:"kind"`
 	Role      string    `json:"role"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
@@ -37,7 +34,7 @@ func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, 
 	if _, err = tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userID.String()); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT t.id, t.name, t.avatar, m.role, t.status, m.created_at
+	rows, err := tx.Query(ctx, `SELECT t.id, t.name, t.avatar, m.role, t.status, m.created_at, t.kind
 		FROM workspace_memberships m JOIN tenants t ON t.id = m.tenant_id
 		WHERE m.user_id = $1 AND m.status = 'active' ORDER BY m.created_at, t.id`, userID)
 	if err != nil {
@@ -46,7 +43,7 @@ func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, 
 	out := []Workspace{}
 	for rows.Next() {
 		var w Workspace
-		if err := rows.Scan(&w.ID, &w.Name, &w.Avatar, &w.Role, &w.Status, &w.CreatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Avatar, &w.Role, &w.Status, &w.CreatedAt, &w.Kind); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -63,50 +60,30 @@ func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, 
 // keys or granting access to any device. Validation, insertion and consumption
 // are atomic; an invalid recipient or a duplicate membership does not spend it.
 func (u *Users) AcceptWorkspaceInvite(ctx context.Context, user User, secret string) (uuid.UUID, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(secret))
-	if err != nil || len(raw) != 24 || user.Role == RoleService {
+	if user.Role == RoleService {
 		return uuid.Nil, ErrInviteInvalid
 	}
-	sum := sha256.Sum256(raw)
-	tx, err := u.pool.Begin(ctx)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	defer func() {
-		//nolint:errcheck // Cleanup after commit normally returns ErrTxClosed; preserve the operation error.
-		_ = tx.Rollback(ctx)
-	}()
 	var tenant uuid.UUID
-	var role string
-	var email *string
-	err = tx.QueryRow(ctx, `SELECT i.tenant_id, i.role, i.email FROM invites i
-		JOIN tenants t ON t.id = i.tenant_id
-		WHERE i.invite_id = $1 AND i.completed_at IS NULL AND i.expires_at > now()
-		AND t.status = 'active' FOR UPDATE OF i`, sum[:]).Scan(&tenant, &role, &email)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, ErrInviteInvalid
-	}
-	if err != nil {
-		return uuid.Nil, err
-	}
-	if role == RoleService || (email != nil && *email != normaliseEmail(user.Email)) {
-		return uuid.Nil, ErrInviteInvalid
-	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant.String()); err != nil {
-		return uuid.Nil, err
-	}
-	tag, err := tx.Exec(ctx, `INSERT INTO workspace_memberships (tenant_id, user_id, role)
-		VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, tenant, user.ID, role)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("store: join workspace: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return uuid.Nil, ErrInviteInvalid
-	}
-	if _, err := tx.Exec(ctx, `UPDATE invites SET completed_at = now() WHERE invite_id = $1`, sum[:]); err != nil {
-		return uuid.Nil, err
-	}
-	return tenant, tx.Commit(ctx)
+	err := pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+		inv, digest, e := lockSignupInvite(ctx, tx, secret, user.Email, false)
+		if e != nil {
+			return e
+		}
+		tenant = inv.TenantID
+		if _, e = tx.Exec(ctx, `SELECT set_config('app.tenant_id',$1,true)`, tenant.String()); e != nil {
+			return e
+		}
+		tag, e := tx.Exec(ctx, `INSERT INTO workspace_memberships(tenant_id,user_id,role) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, tenant, user.ID, inv.Role)
+		if e != nil {
+			return e
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrInviteInvalid
+		}
+		_, e = tx.Exec(ctx, `UPDATE invites SET completed_at=now(),claimed_by=$2 WHERE invite_id=$1`, digest, user.ID)
+		return e
+	})
+	return tenant, err
 }
 
 // identityTenant is the legacy storage location of the account's credentials.

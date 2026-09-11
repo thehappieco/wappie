@@ -3,7 +3,7 @@ import { t } from '../ui/i18n'
 import AppearanceMenu from './AppearanceMenu.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { AuthError, recover, registerService, signIn, signUp, type SignInStep } from '../api/auth'
+import { AuthError, joinInvitedWorkspace, recover, registerService, sendSignupVerification, signIn, signOut, signUp, signupConfig, type SignedIn, type SignInStep } from '../api/auth'
 import { loadVault, type StoredVault } from '../crypto/vault'
 import { fromAccount, type Session } from '../state/session'
 import PastedKeyView from './PastedKeyView.vue'
@@ -11,6 +11,7 @@ import PasswordInput from './PasswordInput.vue'
 import AppIcon from './AppIcon.vue'
 import { passkeysAvailable, signInWithPasskey } from '../api/passkeys'
 import { passkeyError } from '../api/webauthn'
+import { signupLink } from '../ui/signupLink'
 
 const emit = defineEmits<{ opened: [Session] }>()
 
@@ -40,6 +41,19 @@ const email = ref('')
 const password = ref('')
 const confirm = ref('')
 const invite = ref('')
+const displayName = ref('')
+const verification = ref('')
+const signupEnabled = ref(false)
+const sendingVerification = ref(false)
+const verificationSent = ref(false)
+if (typeof location !== 'undefined') {
+  const linked = signupLink(location.href)
+  if (linked.signup) mode.value = 'sign-up'
+  invite.value = linked.invite
+  email.value = linked.email
+  verification.value = linked.verification
+  if (linked.invite || linked.verification) history.replaceState(history.state, '', linked.cleanURL)
+}
 /** The recovery code somebody is typing back, on the way in. */
 const code = ref('')
 /** A system registering: its name and the public half of its keypair. */
@@ -56,11 +70,12 @@ const storedKey = ref<StoredVault | null>(null)
 
 onMounted(async () => {
   void refreshPasskeyAvailability()
+  void refreshSignupConfig()
   try {
     storedKey.value = await loadVault()
     // A browser that already holds a pasted key goes straight to that screen:
     // whoever set it up chose it deliberately.
-    if (storedKey.value) mode.value = 'pasted-key'
+    if (storedKey.value && mode.value === 'sign-in') mode.value = 'pasted-key'
   } catch {
     // No vault, or no IndexedDB. Signing in does not need one.
   }
@@ -73,13 +88,37 @@ async function refreshPasskeyAvailability() {
   if (serverURL.value === server) passkeyAvailable.value = available
 }
 
+async function refreshSignupConfig() {
+  const server = serverURL.value
+  try { const config = await signupConfig(server); if (serverURL.value === server) signupEnabled.value = config.enabled }
+  catch { if (serverURL.value === server) signupEnabled.value = false }
+}
+
+async function requestVerification() {
+  if (sendingVerification.value || busy.value) return
+  sendingVerification.value = true; error.value = ''; verificationSent.value = false
+  try { await sendSignupVerification(serverURL.value, email.value); verificationSent.value = true }
+  catch (err) { error.value = describe(err) }
+  finally { sendingVerification.value = false }
+}
+
+async function acceptPendingInvite(signed: SignedIn): Promise<SignedIn> {
+  if (!invite.value.trim()) return signed
+  try {
+    const joined = await joinInvitedWorkspace(serverURL.value, signed, invite.value)
+    invite.value = ''
+    await signOut(serverURL.value, signed.token)
+    return joined
+  } catch (err) { await signOut(serverURL.value, signed.token); throw err }
+}
+
 async function openWithPasskey() {
   if (busy.value) return
   busy.value = true; passkeyBusy.value = true; error.value = ''
   loginStep.value = 'checking'
   try {
-    const signedIn = await signInWithPasskey({ serverURL: serverURL.value, tenantID: selectedWorkspace, signal: passkeyAbort.signal,
-      onProgress: step => { loginStep.value = step } })
+    const signedIn = await acceptPendingInvite(await signInWithPasskey({ serverURL: serverURL.value, tenantID: selectedWorkspace, signal: passkeyAbort.signal,
+      onProgress: step => { loginStep.value = step } }))
     password.value = ''
     emit('opened', fromAccount(signedIn, serverURL.value))
   } catch (e) { error.value = passkeyError(e) }
@@ -108,6 +147,9 @@ function submit(event: SubmitEvent) {
   if (values.has('username')) email.value = String(values.get('username') ?? '')
   if (values.has('password')) password.value = String(values.get('password') ?? '')
   if (values.has('confirm-password')) confirm.value = String(values.get('confirm-password') ?? '')
+  if (values.has('display-name')) displayName.value = String(values.get('display-name') ?? '')
+  if (values.has('email-verification')) verification.value = String(values.get('email-verification') ?? '')
+  if (values.has('invite')) invite.value = String(values.get('invite') ?? '')
   if (mode.value === 'sign-up') return doSignUp()
   if (mode.value === 'recover') return doRecover()
   if (mode.value === 'service') return doRegisterService()
@@ -150,13 +192,13 @@ async function doSignIn() {
   loginStep.value = 'checking'
   error.value = ''
   try {
-    const signedIn = await signIn({
+    const signedIn = await acceptPendingInvite(await signIn({
       tenantID: selectedWorkspace,
       serverURL: serverURL.value,
       email: email.value,
       password: password.value,
       onProgress: step => { loginStep.value = step },
-    })
+    }))
     password.value = ''
     emit('opened', fromAccount(signedIn, serverURL.value))
   } catch (err) {
@@ -178,6 +220,8 @@ async function doSignUp() {
       invite: invite.value,
       email: email.value,
       password: password.value,
+      displayName: displayName.value,
+      emailVerificationToken: verification.value,
     })
     password.value = ''
     confirm.value = ''
@@ -291,14 +335,17 @@ function describe(err: unknown): string {
       <h1>{{ title }}</h1>
       <p class="sub" v-if="mode === 'service'"> {{ t('Um sistema não tem senha: tem um par de chaves. Gere-o com') }} <code>wsctl service-key</code>{{ t(', guarde a metade privada onde o sistema guarda segredos, e cole aqui a pública. O servidor sela para ela as chaves dos aparelhos que um administrador conceder.') }} </p>
       <p class="sub" v-else-if="mode === 'recover'"> {{ t('O código de recuperação abre a mesma chave que a senha abria. Ele é gasto ao ser digitado aqui: a conta ganha uma senha nova e um código novo, e toda sessão aberta é encerrada.') }} </p>
+      <p class="sub" v-else-if="mode === 'sign-up'">{{ t('Sua conta inclui um workspace Pessoal. Depois você pode criar ou participar de workspaces Team.') }}</p>
       <p class="sub" v-else> {{ t('Suas conversas e seus espaços de trabalho, em um só lugar. Entre para continuar com seus dados protegidos.') }} </p>
+      <p v-if="mode === 'sign-in' && invite" class="hint">{{ t('Ao entrar com o email convidado, você também aceita o convite para o workspace Team.') }}</p>
 
       <div class="alert" v-if="error">{{ error }}</div>
 
       <form :name="mode === 'sign-in' ? 'wappie-login' : 'wappie-account'" method="post" autocomplete="on" @submit.prevent="submit">
         <div class="field" v-if="mode === 'sign-up' || mode === 'service'">
           <label for="invite">{{ t('Código de convite') }}</label>
-          <input id="invite" name="invite" v-model="invite" required autocomplete="off" spellcheck="false" />
+          <input id="invite" name="invite" v-model="invite" :required="mode === 'service' || !signupEnabled" autocomplete="off" spellcheck="false" />
+          <p v-if="mode === 'sign-up' && signupEnabled" class="hint">{{ t('Opcional. Um convite vincula também o workspace Team à sua nova conta.') }}</p>
           <p class="hint"> {{ t('Use o convite que você recebeu do administrador do espaço. Vale uma vez só.') }} <template v-if="mode === 'service'"> {{ t('Para um sistema, emitido com') }} <code>-role service</code>.</template>
           </p>
         </div>
@@ -316,9 +363,22 @@ function describe(err: unknown): string {
           </div>
         </template>
 
+        <div class="field" v-if="mode === 'sign-up'">
+          <label for="display-name">{{ t('Seu nome') }}</label>
+          <input id="display-name" name="display-name" v-model="displayName" required maxlength="80" autocomplete="name" />
+        </div>
+
         <div class="field" v-if="mode !== 'service'">
           <label for="email">{{ t('E-mail') }}</label>
           <input id="email" name="username" v-model="email" type="email" autocomplete="username" required autocapitalize="off" spellcheck="false" inputmode="email" />
+        </div>
+
+        <div v-if="mode === 'sign-up' && signupEnabled && !invite.trim()" class="verification-box">
+          <p class="hint">{{ t('Confirme seu email para criar sua conta com segurança.') }}</p>
+          <button type="button" class="ghost" :disabled="sendingVerification || !email.includes('@')" @click="requestVerification">{{ sendingVerification ? t('Enviando…') : t('Enviar código de confirmação') }}</button>
+          <p v-if="verificationSent" class="hint" role="status">{{ t('Se este email puder criar uma conta, você receberá um link e um código. Confira também a pasta de spam. Se já tem conta, entre normalmente.') }}</p>
+          <label for="email-verification">{{ t('Código de confirmação do email') }}</label>
+          <input id="email-verification" name="email-verification" v-model="verification" required autocomplete="one-time-code" autocapitalize="off" spellcheck="false" />
         </div>
 
         <div class="field" v-if="mode === 'recover'">
@@ -347,7 +407,7 @@ function describe(err: unknown): string {
 
         <div class="field" v-if="!hosted">
           <label for="server">{{ t('Servidor') }}</label>
-          <input id="server" v-model="serverURL" :placeholder="t('mesma origem desta página')" @blur="refreshPasskeyAvailability" />
+          <input id="server" v-model="serverURL" :placeholder="t('mesma origem desta página')" @blur="refreshPasskeyAvailability(); refreshSignupConfig()" />
         </div>
 
         <button class="primary" type="submit" :disabled="busy">
@@ -363,7 +423,7 @@ function describe(err: unknown): string {
       </template>
 
       <button class="linkish" @click="switchTo(mode === 'sign-in' ? 'sign-up' : 'sign-in')">
-        {{ mode === 'sign-in' ? t('Tenho um código de convite') : t('Já tenho conta') }}
+        {{ mode === 'sign-in' ? (signupEnabled ? t('Criar conta') : t('Tenho um código de convite')) : t('Já tenho conta') }}
       </button>
       <br />
       <button class="linkish" v-if="mode === 'sign-in'" @click="switchTo('recover')"> {{ t('Esqueci a senha, tenho o código de recuperação') }} </button>
@@ -377,6 +437,7 @@ function describe(err: unknown): string {
 
 <style scoped>
 .auth-progress { text-align: center; }
+.verification-box { display: grid; gap: 12px; padding: 16px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); }
 .auth-progress .loading-spinner { margin: 8px auto 24px; }
 .auth-progress .sub { margin-bottom: 0; }
 .auth-appearance { display: flex; justify-content: flex-end; margin-bottom: 8px; }

@@ -143,6 +143,7 @@ func TestGrantRevocationClosesMemberAndServiceSockets(t *testing.T) {
 			if f := read(t, conn); f.Type != wsapi.TypeWelcome {
 				t.Fatalf("hello: %s", f.Type)
 			}
+			retainBackupReader(t, c.pool, c.tenant, id)
 			if err := keys.RevokeGrant(ctx, c.tenant, id, user.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -215,6 +216,7 @@ func TestMemberSubscriptionFiltersReplayAndLiveDevices(t *testing.T) {
 	if msg.DeviceID != s.device.String() {
 		t.Fatalf("hidden live event delivered: %+v", msg)
 	}
+	retainBackupReader(t, s.pool, s.tenant, s.device)
 	if err := keys.RevokeGrant(ctx, s.tenant, s.device, user.ID); err != nil {
 		t.Fatal(err)
 	}

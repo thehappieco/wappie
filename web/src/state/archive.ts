@@ -302,6 +302,8 @@ interface State {
    * it is an archive nobody can read.
    */
   hasRecovery: boolean
+  /** Invalidates views derived from the session's refreshed key envelopes. */
+  accessRevision: number
   tenantID: string
   connected: boolean
   /** Handshake and initial device/chat loading must finish before switching. */
@@ -337,7 +339,7 @@ interface State {
   historyError: string
   historyLoading: boolean
 
-  /** Whether this device is in the quiet posture. Mirrors the server. */
+  /** Whether this person is discreet on the selected number. Mirrors the server. */
   quiet: boolean
   /**
    * What the archive holds that this build cannot read, counted at connect.
@@ -365,6 +367,7 @@ export const state = reactive<State>({
   account: '',
   role: '',
   hasRecovery: false,
+  accessRevision: 0,
   tenantID: '',
   connected: false,
   initializingConnection: false,
@@ -663,7 +666,36 @@ export function credential(): { serverURL: string; kind: string; token: string }
 
 /** readableDevices is what this session holds a key for, by device id. */
 export function readableDevices(): Set<string> {
+  void state.accessRevision
   return new Set(session?.readable.map((r) => r.deviceID) ?? [])
+}
+
+/** Reloads the current identity's key envelopes without crossing a workspace or
+ * connection change while the HTTP request and decryptions are in flight. */
+export async function refreshCurrentAccess(): Promise<boolean> {
+  const capturedSession = session
+  const capturedConnection = conn
+  const capturedTenant = state.tenantID
+  if (!capturedSession?.refreshAccess) return false
+  const previousKeys = new Map(capturedSession.readable.map(device => [device.deviceID, capturedSession.archiveFor(device.deviceID)]))
+  await capturedSession.refreshAccess()
+  if (session !== capturedSession || conn !== capturedConnection || state.tenantID !== capturedTenant) return false
+  state.accessRevision++
+  if (state.deviceID && !capturedSession.archiveFor(state.deviceID)) {
+    archiveGeneration++; conversationGeneration++; timelineGen++
+    clearDeviceState()
+    opener = null; openerDeviceID = ''
+    state.unreadable = true
+    applyReceiptMode('passive')
+  } else if (state.deviceID && previousKeys.get(state.deviceID) !== capturedSession.archiveFor(state.deviceID)) {
+    // A replacement grant for this same number must replace the opener too;
+    // its cache and archive private key are both bound to the old envelope.
+    opener = null; openerDeviceID = ''
+    openerFor(state.deviceID)
+  } else if (state.deviceID && state.unreadable) {
+    openerFor(state.deviceID)
+  }
+  return true
 }
 
 function devicePreferenceScope(): DevicePreferenceScope | null {
@@ -723,7 +755,7 @@ export async function refreshDevices(): Promise<void> {
   // browser may have changed it since this one asked. The list is where the
   // switch used to read from directly; now it reads the same flag the gates
   // and the palette do, so the listing has to feed that flag.
-  if (current) applyReceiptMode(current.receipt_mode)
+  if (current) applyDeviceReceiptMode(current)
 }
 
 export function currentMedia(): Media | null {
@@ -850,7 +882,7 @@ async function connect(): Promise<void> {
     // and nothing here corrected it — so a loud device booted with a dark
     // palette, a switch drawn from the device row saying the opposite, and gates
     // that agreed with neither until somebody toggled.
-    applyReceiptMode(preferred.receipt_mode)
+    applyDeviceReceiptMode(preferred)
     openerFor(preferred.id)
     // A large address book must not delay the conversation list. Names enrich
     // the already-visible rows when their independent request finishes.
@@ -1007,7 +1039,7 @@ export async function selectDevice(deviceID: string): Promise<void> {
   // The gates follow the device, not the session: two devices of one account
   // can be in different postures, and carrying one's over to the other would
   // start emitting receipts from a device somebody had set to stay quiet.
-  applyReceiptMode(state.devices.find((d) => d.id === deviceID)?.receipt_mode ?? 'passive')
+  applyDeviceReceiptMode(state.devices.find((d) => d.id === deviceID))
   clearDeviceState()
   openerFor(deviceID)
   const context = archiveContext()
@@ -2008,6 +2040,14 @@ export function applyChatUpdate(ev: P.ChatUpdateEvent): void {
 
 async function handleFrame(frame: P.Frame): Promise<void> {
   switch (frame.t) {
+    case P.TypeReaderMode: {
+      const preference = frame.p as P.DeviceModeRequest
+      if (preference.receipt_mode !== 'active' && preference.receipt_mode !== 'passive') break
+      const device = state.devices.find((d) => d.id === preference.device_id)
+      if (device) device.reader_receipt_mode = preference.receipt_mode
+      if (state.deviceID === preference.device_id) applyReceiptMode(preference.receipt_mode)
+      break
+    }
     case P.TypeMessage:
       await onMessage(frame.p as P.SealedMessage)
       break
@@ -2522,30 +2562,39 @@ function holdingMessage(waID: string): boolean {
   return openRows.some((r) => r.wa_id === waID)
 }
 
-/**
- * setReceiptMode flips what this device tells the other side.
- *
- * One switch, three consequences, and they are the whole of the quiet posture:
- * read and played receipts stop leaving, typing notifications stop leaving, and
- * presence is withdrawn — which is also what makes WhatsApp stop sending us
- * other people's typing, a cost of the protocol rather than of this
- * implementation.
- *
- * The server refuses independently of what this tab does. Both, because one of
- * the two being wrong should not be enough to leak a signal somebody asked not
- * to send.
- */
+/** A person's preference never inherits the number's shared/API policy. */
+function applyDeviceReceiptMode(device?: P.DeviceInfo): void {
+  applyReceiptMode(session?.credential.kind === 'session'
+    ? device?.reader_receipt_mode ?? 'passive'
+    : device?.receipt_mode ?? 'passive')
+}
+
+/** Changes this person's reading preference for this number. API-key clients
+ * retain the explicit shared device policy used by the CLI and integrations. */
 export async function setReceiptMode(mode: 'passive' | 'active'): Promise<boolean> {
-  const conn = connection()
-  if (!conn || !state.deviceID) return false
+  const capturedConnection = connection()
+  const capturedSession = session
+  const deviceID = state.deviceID
+  if (!capturedConnection || !deviceID) return false
   try {
-    const detail = await conn.request<{ device: P.DeviceInfo }>(
-      P.TypeDeviceMode,
-      { device_id: state.deviceID, receipt_mode: mode } satisfies P.DeviceModeRequest,
-      P.TypeDeviceDetail,
-    )
-    applyReceiptMode(detail.device?.receipt_mode ?? mode)
-    await refreshDevices()
+    if (capturedSession?.credential.kind === 'session') {
+      const preference = await capturedConnection.request<P.DeviceModeRequest>(
+        P.TypeReaderMode, { device_id: deviceID, receipt_mode: mode } satisfies P.DeviceModeRequest, P.TypeReaderMode,
+      )
+      if (session !== capturedSession || conn !== capturedConnection) return false
+      const device = state.devices.find((d) => d.id === deviceID)
+      const answer = preference.receipt_mode === 'active' ? 'active' : 'passive'
+      if (device) device.reader_receipt_mode = answer
+      if (state.deviceID === deviceID) applyReceiptMode(answer)
+    } else {
+      const detail = await capturedConnection.request<{ device: P.DeviceInfo }>(
+        P.TypeDeviceMode, { device_id: deviceID, receipt_mode: mode } satisfies P.DeviceModeRequest, P.TypeDeviceDetail,
+      )
+      if (session !== capturedSession || conn !== capturedConnection) return false
+      const device = state.devices.find((d) => d.id === deviceID)
+      if (device) device.receipt_mode = detail.device?.receipt_mode ?? mode
+      if (state.deviceID === deviceID) applyReceiptMode(detail.device?.receipt_mode ?? mode)
+    }
     return true
   } catch (err) {
     state.actionError = err instanceof Error ? err.message : String(err)
@@ -2569,6 +2618,10 @@ export async function deviceProfilePicture(deviceID: string, contactKey: string)
   const capturedConnection = conn
   const capturedTenant = state.tenantID
   if (!capturedSession || !capturedConnection || !tenantBytes) return null
+  if (!capturedSession.archiveFor(deviceID)) {
+    await capturedSession.refreshAccess?.()
+    if (session !== capturedSession || conn !== capturedConnection || state.tenantID !== capturedTenant) return null
+  }
   const key = capturedSession.archiveFor(deviceID)
   if (!key) return null
   const profileOpener = new Opener(capturedConnection, tenantBytes, parseUUID(deviceID), deviceID, key)

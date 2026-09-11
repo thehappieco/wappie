@@ -278,5 +278,9 @@ func Housekeeping(ctx context.Context, pool *pgxpool.Pool, grace time.Duration) 
 	if err != nil {
 		return sessions, 0, fmt.Errorf("store: housekeeping invites: %w", err)
 	}
-	return sessions, tag.RowsAffected(), nil
+	invites = tag.RowsAffected()
+	if _, err = pool.Exec(ctx, `DELETE FROM email_signup_verifications WHERE expires_at<$1`, cutoff); err != nil {
+		return sessions, invites, fmt.Errorf("store: housekeeping email verifications: %w", err)
+	}
+	return sessions, invites, nil
 }

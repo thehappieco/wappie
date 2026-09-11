@@ -56,6 +56,7 @@ const (
 	TypeChatTyping    = "chat.presence"
 	TypePresenceWatch = "presence.subscribe"
 	TypeDeviceMode    = "device.mode"
+	TypeReaderMode    = "reader.mode"
 	TypeReprojectGet  = "reproject.list"
 	TypeReprojectPut  = "reproject.apply"
 	TypeMediaRetry    = "media.retry"
@@ -252,19 +253,20 @@ type DeviceStatus struct {
 // identifier; a phone number is not always knowable, because withholding it is
 // what LID is for.
 type DeviceInfo struct {
-	ID           string `json:"id"`
-	Label        string `json:"label"`
-	LID          string `json:"lid,omitempty"`
-	PN           string `json:"pn,omitempty"`
-	PushName     string `json:"push_name,omitempty"`
-	Status       string `json:"status"`
-	StatusReason string `json:"status_reason,omitempty"`
-	ReceiptMode  string `json:"receipt_mode"`
-	Running      bool   `json:"running"`
-	Paused       bool   `json:"paused"`
-	CanManage    bool   `json:"can_manage"`
-	CanSend      bool   `json:"can_send"`
-	ProfileKey   string `json:"profile_key,omitempty"`
+	ID                string `json:"id"`
+	Label             string `json:"label"`
+	LID               string `json:"lid,omitempty"`
+	PN                string `json:"pn,omitempty"`
+	PushName          string `json:"push_name,omitempty"`
+	Status            string `json:"status"`
+	StatusReason      string `json:"status_reason,omitempty"`
+	ReceiptMode       string `json:"receipt_mode"`
+	ReaderReceiptMode string `json:"reader_receipt_mode,omitempty"`
+	Running           bool   `json:"running"`
+	Paused            bool   `json:"paused"`
+	CanManage         bool   `json:"can_manage"`
+	CanSend           bool   `json:"can_send"`
+	ProfileKey        string `json:"profile_key,omitempty"`
 	// CreatedAt is when the row was made, LastConnectedAt when the device last
 	// reached "online" — not when it went offline. A device that is running now
 	// has been up since then; one that is not was last seen then.
@@ -1042,6 +1044,10 @@ type DeviceModeRequest struct {
 	ReceiptMode string `json:"receipt_mode"`
 }
 
+// ReaderModeRequest changes only the authenticated person's preference for a
+// number. Its reply and same-person update events use the same wire shape.
+type ReaderModeRequest = DeviceModeRequest
+
 // MediaRetryRequest asks a sender to upload an attachment again.
 //
 // WhatsApp signs media URLs with an expiry and puts the same signature on the
@@ -1551,14 +1557,15 @@ type DeviceRef struct {
 
 // Error codes. Stable strings so clients can branch on them.
 const (
-	ErrCodeUnauthorized  = "unauthorized"
-	ErrCodeBadRequest    = "bad_request"
-	ErrCodeVersion       = "version_mismatch"
-	ErrCodeNotFound      = "not_found"
-	ErrCodeConflict      = "conflict"
-	ErrCodeInternal      = "internal"
-	ErrCodeRateLimited   = "rate_limited"
-	ErrCodeNotAuthorized = "not_authorized"
+	ErrCodeUnauthorized     = "unauthorized"
+	ErrCodeBadRequest       = "bad_request"
+	ErrCodeVersion          = "version_mismatch"
+	ErrCodeNotFound         = "not_found"
+	ErrCodeConflict         = "conflict"
+	ErrCodeInternal         = "internal"
+	ErrCodeRateLimited      = "rate_limited"
+	ErrCodeNotAuthorized    = "not_authorized"
+	ErrCodeLastDeviceReader = "last_device_reader"
 )
 
 // Error is the failure payload.

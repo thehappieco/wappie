@@ -526,14 +526,25 @@ func (s *session) handleMarkRead(ctx context.Context, f Frame) {
 	}
 	// types.MessageID is an alias for string, so the request ids are already
 	// the right type.
+	s.markRead(ctx, f, t, req, sender)
+}
+
+// markRead applies the reader's policy before any local or WhatsApp effects.
+func (s *session) markRead(ctx context.Context, f Frame, t sendTarget, req MarkReadRequest, sender types.JID) {
 	ids := req.IDs
 
-	// The badge first, and unconditionally. It is a fact about this reader,
-	// not about what was reported to the other side — and the two were tangled
-	// together: the only thing that used to clear a badge was our own read
-	// receipt coming back through ingest, so a device in the default discreet
-	// mode, which sends no read receipts at all, could never clear one. Marking
-	// a conversation read did nothing visible, forever.
+	policy, ok := s.readerPolicy(ctx, f, t.device)
+	if !ok {
+		return
+	}
+	// A discreet person's view is not a read action, even when a stale or
+	// custom client sends it. Stop before both the shared badge and WhatsApp.
+	if s.actor().person && policy.Mode != wa.ModeActive {
+		s.reply(TypeSendResult, f.ReqID, SendResult{ID: req.IDs[0]})
+		return
+	}
+	// Badges reflect the number's shared WhatsApp conversation. An active
+	// teammate or the phone can still read it independently of this viewer.
 	if s.srv.cfg.Unread != nil {
 		if err := s.srv.cfg.Unread.MarkReadThrough(ctx, t.tenant, t.deviceID, ids); err != nil {
 			s.log.Error("could not clear a badge", "chat", t.chat, "error", err)
@@ -542,7 +553,7 @@ func (s *session) handleMarkRead(ctx context.Context, f Frame) {
 		}
 	}
 
-	if err := t.device.Policy().MarkRead(ctx, t.device.Client(), t.chat, sender, ids, req.Played); err != nil {
+	if err := policy.MarkRead(ctx, t.device.Client(), t.chat, sender, ids, req.Played); err != nil {
 		s.replyError(f.ReqID, ErrCodeInternal, err.Error())
 		return
 	}

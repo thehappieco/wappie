@@ -36,7 +36,7 @@ func TestWorkspaceIdentityAndSessionIsolation(t *testing.T) {
 	var spaces struct {
 		Workspaces []store.Workspace `json:"workspaces"`
 	}
-	if code := h.get(t, "/v1/auth/workspaces", &spaces, original.Token); code != http.StatusOK || len(spaces.Workspaces) != 2 {
+	if code := h.get(t, "/v1/auth/workspaces", &spaces, original.Token); code != http.StatusOK || len(spaces.Workspaces) != 3 {
 		t.Fatalf("list: %d %+v", code, spaces)
 	}
 	var switched sessionReply
@@ -190,7 +190,20 @@ func TestWorkspaceIdentitySurvivesOriginalSpaceDeletion(t *testing.T) {
 	if code := h.post(t, "/v1/auth/login", map[string]string{"email": body.Email, "auth_key": body.AuthKey}, &login, ""); code != http.StatusOK {
 		t.Fatalf("login after original deletion: %d", code)
 	}
-	if login.User.ID != signed.User.ID || login.User.PublicKey != signed.User.PublicKey || login.User.TenantID != target.String() || login.User.Role != "member" {
+	var personal string
+	spaces, err := h.users.Workspaces(ctx, uuid.MustParse(signed.User.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, space := range spaces {
+		if space.Kind == "personal" {
+			personal = space.ID.String()
+		}
+	}
+	if personal == "" {
+		t.Fatal("personal workspace missing")
+	}
+	if login.User.ID != signed.User.ID || login.User.PublicKey != signed.User.PublicKey || login.User.TenantID != personal || login.User.Role != "owner" {
 		t.Fatalf("identity/default space changed incorrectly: %+v", login)
 	}
 }

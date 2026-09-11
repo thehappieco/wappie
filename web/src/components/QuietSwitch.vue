@@ -36,8 +36,8 @@ async function toggle() {
     :aria-label="quiet ? t('Modo incógnito ativado') : t('Modo incógnito desativado')"
     :title="
       quiet
-        ? t('Modo incógnito: mantém os indicadores de mensagens não lidas, não envia confirmações de leitura nem mostra que você está digitando. Você também não vê quem está digitando. Clique para desativar.')
-        : t('Modo normal: envia confirmações de leitura e mostra que você está online ou digitando. Clique para ativar o modo incógnito.')
+        ? t('Modo incógnito para você neste número: sua leitura não limpa os indicadores nem envia confirmações ou digitação. Outras pessoas e o telefone ainda podem confirmar leituras. Clique para desativar.')
+        : t('Modo normal para você neste número: confirma suas leituras e mostra sua digitação. A presença online do número é compartilhada. Clique para ativar o modo incógnito.')
     "
     @click="toggle"
   >

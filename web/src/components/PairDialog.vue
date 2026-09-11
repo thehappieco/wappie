@@ -8,11 +8,10 @@ const open = ref(false)
 const method = ref<'code' | 'qr'>('qr')
 const phone = ref('')
 const label = ref('')
-const active = ref(false)
 const grantTo = ref<string[]>([])
 const retry = computed(() => admin.pairingTarget)
 function reset() {
-  method.value = 'qr'; phone.value = ''; label.value = retry.value?.label || ''; active.value = false
+  method.value = 'qr'; phone.value = ''; label.value = retry.value?.label || ''
   const me = admin.accounts.find(a => a.email === state.account)
   grantTo.value = me ? [me.id] : []
 }
@@ -26,7 +25,7 @@ const canStart = computed(() => (method.value === 'qr' || phoneLooksRight.value)
 function toggle(id: string) { grantTo.value = grantTo.value.includes(id) ? grantTo.value.filter(x => x !== id) : [...grantTo.value, id] }
 async function submit() {
   await pair({ method: method.value, phone: phone.value.trim(), label: label.value.trim(), grantTo: grantTo.value,
-    receiptMode: active.value ? 'active' : 'passive', existingDeviceID: retry.value?.id })
+    receiptMode: 'passive', existingDeviceID: retry.value?.id })
 }
 </script>
 
@@ -41,7 +40,7 @@ async function submit() {
       <div class="field" v-if="method === 'code'"><label for="pair-phone">{{ t('Número com código do país') }}</label><input id="pair-phone" v-model="phone" placeholder="+5511999999999" type="tel" autocomplete="tel" inputmode="tel" /></div>
       <div class="field" v-if="!retry"><label for="pair-label">{{ t('Nome interno (opcional)') }}</label><input id="pair-label" v-model="label" :placeholder="t('Ex.: Atendimento')" maxlength="100" autocomplete="off" /><span class="hint">{{ t('Você pode editar esse nome depois. O perfil do WhatsApp permanece igual.') }}</span></div>
       <div class="field" v-if="!retry"><label>{{ t('Quem poderá acessar as conversas') }}</label><div class="choices"><label v-for="a in admin.accounts" :key="a.id" class="choice"><input type="checkbox" :checked="grantTo.includes(a.id)" @change="toggle(a.id)" /><span>{{ a.email }}</span></label></div><span class="hint">{{ t('Os membros selecionados recebem acesso às conversas protegidas deste número. Outros acessos podem ser concedidos depois.') }}</span></div>
-      <fieldset v-if="!retry" class="reading-mode"><legend>{{ t('Privacidade da leitura') }}</legend><label class="choice"><input type="checkbox" v-model="active" /><span>{{ t('Enviar confirmações de leitura') }}</span></label><p class="hint">{{ active ? t('Ao abrir mensagens no Wappie, o WhatsApp poderá mostrar as confirmações azuis e sua presença online. Essa escolha vale para todos os usuários deste número.') : t('Modo incógnito: ler no Wappie não envia confirmação de leitura nem mostra presença online. Você pode mudar esse modo depois no app.') }}</p></fieldset>
+
       <div class="row-actions"><button class="primary" type="submit" :disabled="!canStart">{{ method === 'qr' ? t('Gerar QR code') : t('Gerar código') }}</button><button class="ghost" type="button" @click="close">{{ t('Cancelar') }}</button></div>
     </form>
     <p v-else-if="admin.pairing.phase === 'starting'" class="dim">{{ t('Preparando conexão segura…') }}</p>

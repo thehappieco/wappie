@@ -70,6 +70,11 @@ func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID
 		if !exists {
 			return ErrNotFound
 		}
+		if !p.Read {
+			if err := requireRemainingReader(ctx, tx, tenant, p.UserID, &p.DeviceID); err != nil {
+				return err
+			}
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read,can_send,can_manage)
    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,device_id,user_id) DO UPDATE
    SET can_read=excluded.can_read,can_send=excluded.can_send,can_manage=excluded.can_manage`, tenant, p.DeviceID, p.UserID, p.Read, p.Send, p.Manage)

@@ -19,7 +19,7 @@ import { fromBase64, newUUIDv7, parseUUID, toBase64 } from '../crypto/bytes'
 import { generateKeyPair } from '../crypto/hpke'
 import { grantRow, Kind, sealDirect } from '../crypto/seal'
 import { withDeviceKey } from '../api/auth'
-import { connection, credential, refreshDevices, state } from './archive'
+import { connection, credential, refreshCurrentAccess, refreshDevices, state } from './archive'
 
 /** Pairing is a conversation with a phone, so it has states rather than a result. */
 export interface PairingState {
@@ -112,6 +112,7 @@ function socket() {
 }
 
 function say(err: unknown): string {
+  if (err instanceof ProtocolError && err.code === 'last_device_reader') return t('Este é o último membro ativo com a chave deste número. Conceda acesso a outra pessoa antes de removê-lo.')
   if (err instanceof ProtocolError) return err.message
   return err instanceof Error ? err.message : String(err)
 }
@@ -265,77 +266,55 @@ export async function grantAccess(
   deviceID: string,
   userIDs: string[],
   password: string,
-): Promise<void> {
-  admin.grantError = ''
-  admin.grantBusy = true
+): Promise<boolean> {
+  if (admin.grantBusy) return false
+  const current = currentAdmin()
+  admin.grantError = ''; admin.grantBusy = true
   try {
     const who = credential()
-    if (!who || who.kind !== 'session') {
-      throw new Error('conceder acesso exige uma conta, não uma chave de API')
-    }
+    if (!who || who.kind !== 'session') throw new Error('conceder acesso exige uma conta, não uma chave de API')
     const targets = admin.accounts.filter((a) => userIDs.includes(a.id))
     if (!targets.length) throw new Error('escolha ao menos uma conta')
-
-    const tenant = parseUUID(state.tenantID)
-    const device = parseUUID(deviceID)
-
+    const tenant = parseUUID(state.tenantID), device = parseUUID(deviceID)
+    const myID = admin.accounts.find(account => account.email === state.account)?.id
     const readers = await withDeviceKey(
       { serverURL: who.serverURL, email: state.account, password, token: who.token, deviceID },
       async (deviceKey, epoch) => {
         let last: P.Readers | null = null
         for (const target of targets) {
+          if (!current()) return null
           const row = await grantRow(tenant, device, parseUUID(target.id), epoch)
-          const sealed = await sealDirect(
-            fromBase64(target.public_key),
-            Kind.DeviceGrant,
-            tenant,
-            row,
-            epoch,
-            deviceKey,
-          )
-          last = await socket().request<P.Readers>(
-            P.TypeGrantAdd,
-            {
-              device_id: deviceID,
-              user_id: target.id,
-              epoch,
-              sealed_dsk: toBase64(sealed),
-            } satisfies P.GrantRequest,
-            P.TypeReaders,
-          )
+          const sealed = await sealDirect(fromBase64(target.public_key), Kind.DeviceGrant, tenant, row, epoch, deviceKey)
+          if (!current()) return null
+          last = await socket().request<P.Readers>(P.TypeGrantAdd,
+            { device_id: deviceID, user_id: target.id, epoch, sealed_dsk: toBase64(sealed) } satisfies P.GrantRequest, P.TypeReaders)
         }
         return last
       },
     )
-    if (readers && admin.detail) admin.detail.readers = readers.readers
-  } catch (err) {
-    admin.grantError = say(err)
-  } finally {
-    admin.grantBusy = false
-  }
+    if (!current()) return false
+    if (readers && admin.detail?.device.id === deviceID) admin.detail.readers = readers.readers
+    if (myID && userIDs.includes(myID)) await refreshCurrentAccess()
+    return !!readers
+  } catch (err) { if (current()) admin.grantError = say(err); return false }
+  finally { if (current()) admin.grantBusy = false }
 }
 
-/**
- * revokeAccess removes one account from a device's list.
- *
- * No key is needed: this deletes a row. Which is also the limit of what it
- * does — see the note the sheet shows beside it.
- */
-export async function revokeAccess(deviceID: string, userID: string): Promise<void> {
-  admin.grantError = ''
-  admin.grantBusy = true
+/** A revoked key cannot remove the last active reader, as enforced by the server. */
+export async function revokeAccess(deviceID: string, userID: string): Promise<boolean> {
+  if (admin.grantBusy) return false
+  const current = currentAdmin()
+  const myID = admin.accounts.find(account => account.email === state.account)?.id
+  admin.grantError = ''; admin.grantBusy = true
   try {
-    const readers = await socket().request<P.Readers>(
-      P.TypeGrantRevoke,
-      { device_id: deviceID, user_id: userID } satisfies P.GrantRevoke,
-      P.TypeReaders,
-    )
-    if (admin.detail) admin.detail.readers = readers.readers
-  } catch (err) {
-    admin.grantError = say(err)
-  } finally {
-    admin.grantBusy = false
-  }
+    const readers = await socket().request<P.Readers>(P.TypeGrantRevoke,
+      { device_id: deviceID, user_id: userID } satisfies P.GrantRevoke, P.TypeReaders)
+    if (!current()) return false
+    if (admin.detail?.device.id === deviceID) admin.detail.readers = readers.readers
+    if (userID === myID) await refreshCurrentAccess()
+    return true
+  } catch (err) { if (current()) admin.grantError = say(err); return false }
+  finally { if (current()) admin.grantBusy = false }
 }
 
 // ---------------------------------------------------------------------------

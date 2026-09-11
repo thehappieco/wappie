@@ -2,14 +2,13 @@ package authapi_test
 
 import (
 	"context"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"testing"
 	"time"
 	"whatserver2/internal/pg"
 )
 
-func TestIdentityWithoutWorkspaceCanJoinAgain(t *testing.T) {
+func TestIdentityWithoutTeamFallsBackToPersonalAndCanJoinAgain(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	u, _ := memberAccount(t, h, "identity@test.com", "member")
@@ -23,8 +22,12 @@ func TestIdentityWithoutWorkspaceCanJoinAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.TenantID != uuid.Nil || user.Role != "" {
-		t.Fatal("identity retained workspace authority")
+	spaces, err := h.users.Workspaces(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spaces) != 1 || spaces[0].Kind != "personal" || user.TenantID != spaces[0].ID || user.Role != "owner" {
+		t.Fatalf("identity did not retain its personal workspace: %+v", spaces)
 	}
 	token, _, err := h.users.StartSession(ctx, user, "test")
 	if err != nil {
@@ -33,8 +36,8 @@ func TestIdentityWithoutWorkspaceCanJoinAgain(t *testing.T) {
 	if code := h.get(t, "/v1/auth/me", nil, token); code != 200 {
 		t.Fatalf("me=%d", code)
 	}
-	if code := h.get(t, "/v1/auth/workspaces/members", nil, token); code != 403 {
-		t.Fatalf("identity administered members: %d", code)
+	if code := h.get(t, "/v1/auth/workspaces/members", nil, token); code != 200 {
+		t.Fatalf("personal owner could not view own membership: %d", code)
 	}
 	invite, err := h.users.CreateInvite(ctx, h.tenant, "member", u.Email, nil, time.Hour)
 	if err != nil {

@@ -59,6 +59,10 @@ func (h *Handler) acceptWorkspaceInvite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	tenant, err := h.Users.AcceptWorkspaceInvite(r.Context(), user, req.Invite)
+	if errors.Is(err, store.ErrInviteEmailMismatch) {
+		fail(w, http.StatusForbidden, "invite_email_mismatch", "this invitation belongs to another email address; the code remains valid")
+		return
+	}
 	if errors.Is(err, store.ErrInviteInvalid) {
 		fail(w, http.StatusForbidden, "invite_invalid", "that workspace invite is not valid")
 		return

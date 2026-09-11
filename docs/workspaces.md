@@ -5,13 +5,15 @@
 - Wappie is primarily an API product for businesses, with a simpler messaging client.
 - Server, CLI, messaging client and basic workspace administration will be open source.
 - Commercial hosting/billing will live separately. The core uses Apache-2.0.
-- One identity can belong to several workspaces. Roles, integrations, numbers and subscriptions belong to a workspace.
+- Every human identity has one personal workspace and may create or join team workspaces. Personal workspaces allow their owner and service identities; only teams admit additional people. Workspace type is independent of the subscription plan. Roles, integrations, numbers and subscriptions belong to a workspace.
 - Hosted pricing will be based on contracted WhatsApp connection capacity, with storage/usage limits still to be decided.
 - Pilot: two companies, four test numbers, free access and simulated payments, on the existing EC2. Maintenance interruptions are acceptable.
 - Public repository: https://github.com/thehappieco/wappie
 - Public site and documentation: `wappie.thehappie.co` and `/docs`.
 - Administration: `console.wappie.thehappie.co`; messaging: `app.wappie.thehappie.co`; HTTP/WebSocket: `api.wappie.thehappie.co`.
 - Joining a workspace does not grant archive access. Explicit device key grants unlock all stored history covered by the granted epochs. Revocation cannot erase already obtained keys or content.
+
+The current personal/team signup, account profile and invitation lifecycle contracts are documented in [Accounts and workspaces](accounts-workspaces.md).
 
 ## Implemented server foundation
 
@@ -34,7 +36,7 @@ All routes below require `Authorization: Bearer <session-token>`. An API key can
 
 Workspace profiles use names of 1–80 Unicode characters. `avatar` is an optional image represented as a data URL; send an empty string to remove it. The server accepts only PNG/JPEG, limits the decoded file to 32 KiB and each dimension to 512 pixels, and decodes/re-encodes the pixels to strip metadata and trailing payloads. It never fetches remote profile URLs. The browser crops JPG/PNG/WebP uploads locally to a compact square thumbnail. Profile changes serialize with membership changes and re-check the manager’s authority in the transaction. Invalid profiles return `400 invalid_workspace_profile`.
 
-Workspace listing includes suspended spaces but excludes disabled memberships. Selecting a suspended space or one without membership returns `403 not_authorized`; malformed UUIDs return `400 bad_request`. Invalid, expired, consumed, wrong-recipient, service or duplicate-membership invitations return `403 invite_invalid`.
+Workspace listing includes suspended spaces but excludes disabled memberships. Selecting a suspended space or one without membership returns `403 not_authorized`; malformed UUIDs return `400 bad_request`. Invalid, expired, consumed, service or duplicate-membership invitations return `403 invite_invalid`. A valid invitation addressed to another email returns `403 invite_email_mismatch` without consuming the code.
 
 Invite validation, membership insertion and consumption share one transaction. Rejected acceptance does not spend an otherwise valid invitation or promote an existing member. Accepting does not switch the current session or create device grants.
 
@@ -50,7 +52,7 @@ The authenticated session selects the workspace for these routes. They accept no
 | --- | --- | --- |
 | `GET /v1/auth/workspaces/members` | None | `{"members":[{"id":"UUID","email":"person@example.com","role":"member","status":"active","last_owner":false,"created_at":"RFC3339"}]}`; disabled memberships are included. No password or key envelopes are returned. |
 | `PUT /v1/auth/workspaces/members/{userID}` | `{"role":"member","status":"disabled"}`; both fields required | `204` |
-| `POST /v1/auth/workspaces/invites` | `{"role":"member","email":"person@example.com"}`; email optional | `201 {"invite":"one-use-code"}`; expires in seven days. No email is sent. |
+| `POST /v1/auth/workspaces/invites` | `{"role":"member","email":"person@example.com"}`; email optional | `201 {"invite":"one-use-code","invitation":{...},"email_sent":false}`; expires in seven days. Configured mail delivery sets `email_sent:true`. |
 
 Owners can manage all roles. Administrators can manage members and service accounts, but cannot modify administrators/owners or invite/promote somebody to those roles. Members and service accounts cannot manage memberships. Service accounts cannot be converted into people or vice versa.
 

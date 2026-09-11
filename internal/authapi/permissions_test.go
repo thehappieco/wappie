@@ -55,6 +55,10 @@ func TestIndependentDevicePermissions(t *testing.T) {
 	}
 	check(actor, store.ActionRead, true)
 	check(actor, store.ActionSend, false)
+	// Revocation succeeds only because somebody else can still recover the key.
+	if err = h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup")}, &owner.ID); err != nil {
+		t.Fatal(err)
+	}
 	p.Read = false
 	p.Manage = true
 	if err = h.users.SetDevicePermission(ctx, h.tenant, owner.ID, p); err != nil {

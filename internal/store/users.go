@@ -32,7 +32,10 @@ import (
 // devices. That chain is why losing a password is survivable — the recovery
 // wrap holds the same private key under a printed code — and why losing both is
 // not.
-type Users struct{ pool *pgxpool.Pool }
+type Users struct {
+	pool                *pgxpool.Pool
+	inviteEncryptionKey []byte
+}
 
 func NewUsers(pool *pgxpool.Pool) *Users { return &Users{pool: pool} }
 
@@ -57,6 +60,8 @@ type User struct {
 	ID       uuid.UUID
 	TenantID uuid.UUID
 	Email    string
+	Name     string
+	Avatar   string
 
 	KDFSalt   []byte
 	KDFParams KDFParams
@@ -86,6 +91,7 @@ type User struct {
 type NewUser struct {
 	TenantID  uuid.UUID
 	Email     string
+	Name      string
 	AuthKey   string
 	KDFSalt   []byte
 	KDFParams KDFParams
@@ -171,67 +177,13 @@ func (u *Users) CreateService(ctx context.Context, tenant uuid.UUID, name string
 
 // Create records a new account.
 func (u *Users) Create(ctx context.Context, in NewUser) (User, error) {
-	switch {
-	case !strings.Contains(in.Email, "@"):
-		return User{}, errors.New("store: that is not an email address")
-	case len(in.KDFSalt) != saltLenUser:
-		return User{}, fmt.Errorf("store: kdf salt must be %d bytes", saltLenUser)
-	case len(in.PublicKey) != 32:
-		return User{}, errors.New("store: a public key is 32 bytes")
-	case len(in.WrappedUSK) == 0:
-		return User{}, errors.New("store: an account with no wrapped key can never sign in")
-	case in.AuthKey == "":
-		return User{}, errors.New("store: no auth key")
-	case (len(in.RecoveryWrap) > 0) != (in.RecoveryProof != ""):
-		return User{}, errors.New("store: a recovery wrap and its proof come together or not at all")
-	}
-	role := in.Role
-	if role == "" {
-		role = "member"
-	}
-
-	hash, err := hashSecret(in.AuthKey)
+	prepared, err := prepareUser(in)
 	if err != nil {
 		return User{}, err
 	}
-	var recoveryHash *string
-	if in.RecoveryProof != "" {
-		h, err := hashSecret(in.RecoveryProof)
-		if err != nil {
-			return User{}, err
-		}
-		recoveryHash = &h
-	}
-	params, err := json.Marshal(in.KDFParams)
-	if err != nil {
-		return User{}, err
-	}
-
-	email := normaliseEmail(in.Email)
-	out := User{
-		TenantID: in.TenantID, Email: email,
-		KDFSalt: in.KDFSalt, KDFParams: in.KDFParams,
-		PublicKey: in.PublicKey, WrappedUSK: in.WrappedUSK,
-		RecoveryWrap: in.RecoveryWrap, RecoveryUsable: recoveryHash != nil,
-		Role: role, Status: "active",
-	}
-	err = pg.InTenantTx(ctx, u.pool, in.TenantID.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
-			INSERT INTO users (tenant_id, email, auth_hash, kdf_salt, kdf_params,
-			                   public_key, wrapped_usk, recovery_wrap, recovery_hash, role)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-			RETURNING id, created_at`,
-			in.TenantID, email, hash, in.KDFSalt, params,
-			in.PublicKey, in.WrappedUSK, in.RecoveryWrap, recoveryHash, role).Scan(&out.ID, &out.CreatedAt)
-	})
-	if err != nil {
-		if strings.Contains(err.Error(), "users_email_key") ||
-			strings.Contains(err.Error(), "user_logins_pkey") {
-			return User{}, ErrEmailTaken
-		}
-		return User{}, fmt.Errorf("store: create user: %w", err)
-	}
-	return out, nil
+	var out User
+	err = pg.InTenantTx(ctx, u.pool, in.TenantID.String(), func(tx pgx.Tx) error { var e error; out, e = insertPreparedUser(ctx, tx, prepared); return e })
+	return out, err
 }
 
 // Challenge returns the client-side derivation parameters for an address.
@@ -345,10 +297,10 @@ func (u *Users) verify(ctx context.Context, tenant, userID uuid.UUID, email, sec
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT `+column+`, kdf_salt, kdf_params, public_key, wrapped_usk,
-			       recovery_wrap, recovery_hash IS NOT NULL, role, status, created_at
+			       recovery_wrap, recovery_hash IS NOT NULL, role, status, created_at, name, avatar
 			  FROM users WHERE id = $1`, userID).Scan(&stored, &out.KDFSalt, &raw,
 			&out.PublicKey, &out.WrappedUSK, &out.RecoveryWrap, &out.RecoveryUsable,
-			&out.Role, &out.Status, &out.CreatedAt)
+			&out.Role, &out.Status, &out.CreatedAt, &out.Name, &out.Avatar)
 	})
 	if err != nil {
 		return User{}, fmt.Errorf("store: authenticate: %w", err)
@@ -577,11 +529,11 @@ func (u *Users) Get(ctx context.Context, tenant, id uuid.UUID) (User, error) {
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT u.email, u.kdf_salt, u.kdf_params, u.public_key, u.wrapped_usk,
-			       u.recovery_wrap, u.recovery_hash IS NOT NULL, m.role, u.status, u.created_at
+			       u.recovery_wrap, u.recovery_hash IS NOT NULL, m.role, u.status, u.created_at, u.name, u.avatar
 			  FROM users u JOIN workspace_memberships m ON m.user_id = u.id
 			 WHERE u.id = $1 AND m.tenant_id = $2 AND m.status = 'active'`, id, tenant).Scan(&out.Email, &out.KDFSalt, &raw,
 			&out.PublicKey, &out.WrappedUSK, &out.RecoveryWrap, &out.RecoveryUsable,
-			&out.Role, &out.Status, &out.CreatedAt)
+			&out.Role, &out.Status, &out.CreatedAt, &out.Name, &out.Avatar)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
@@ -877,32 +829,23 @@ type Invite struct {
 	ExpiresAt time.Time
 }
 
-// CreateInvite issues an invite secret. It is returned once.
+// CreateInvite issues an invite secret. Optional encrypted recovery is available
+// only when an invitation encryption key is configured.
 //
 // createdBy is nil for the invite bootstrap prints, which is the only one that
 // can exist without an account behind it: the first person to join a tenant has
 // nobody to be invited by.
-func (u *Users) CreateInvite(ctx context.Context, tenant uuid.UUID, role, email string,
-	createdBy *uuid.UUID, ttl time.Duration) (string, error) {
-	raw := make([]byte, 24)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("store: entropy: %w", err)
-	}
-	sum := sha256.Sum256(raw)
-
-	var mail *string
-	if email != "" {
-		normalised := normaliseEmail(email)
-		mail = &normalised
-	}
-	_, err := u.pool.Exec(ctx, `
-		INSERT INTO invites (invite_id, tenant_id, role, created_by, email, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6)`,
-		sum[:], tenant, role, createdBy, mail, time.Now().Add(ttl))
-	if err != nil {
-		return "", fmt.Errorf("store: create invite: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
+func (u *Users) CreateInvite(ctx context.Context, tenant uuid.UUID, role, email string, createdBy *uuid.UUID, ttl time.Duration) (string, error) {
+	var secret string
+	err := pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+		if e := canInviteHuman(ctx, tx, tenant, role); e != nil {
+			return e
+		}
+		var e error
+		secret, _, e = u.createInviteTx(ctx, tx, tenant, role, email, createdBy, ttl)
+		return e
+	})
+	return secret, err
 }
 
 // RedeemInvite consumes an invite and reports what it grants.
@@ -920,7 +863,7 @@ func (u *Users) RedeemInvite(ctx context.Context, secret string) (Invite, error)
 	var mail *string
 	err = u.pool.QueryRow(ctx, `
 		UPDATE invites SET completed_at = now()
-		 WHERE invite_id = $1 AND completed_at IS NULL AND expires_at > now()
+		 WHERE invite_id = $1 AND completed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
 		 RETURNING tenant_id, role, email, expires_at`, sum[:]).
 		Scan(&inv.TenantID, &inv.Role, &mail, &inv.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {

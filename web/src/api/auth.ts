@@ -45,6 +45,8 @@ interface Account {
   id: string
   tenant_id: string
   email: string
+  name?: string
+  avatar?: string
   role: string
   wrapped_usk: string
   public_key: string
@@ -83,6 +85,8 @@ export interface SignedIn {
   token: string
   expiresAt: Date
   email: string
+  name?: string
+  avatar?: string
   role: string
   tenantID: string
   userID: string
@@ -136,6 +140,8 @@ export async function signUp(input: {
   invite: string
   email: string
   password: string
+  displayName?: string
+  emailVerificationToken?: string
 }): Promise<{ session: SignedIn; recoveryCode: string }> {
   if (input.password.length < MinPassword) {
     throw new AuthError('weak_password', t('a senha precisa de pelo menos {v0} caracteres', { v0: MinPassword }))
@@ -159,6 +165,8 @@ export async function signUp(input: {
   const reply = await call<SessionReply>(input.serverURL, '/v1/auth/signup', {
     invite: input.invite.trim(),
     email,
+    display_name: input.displayName?.trim(),
+    email_verification_token: input.emailVerificationToken?.trim(),
     auth_key: derived.authKey,
     kdf_salt: toBase64(salt),
     kdf_params: params,
@@ -171,6 +179,35 @@ export async function signUp(input: {
   const session = await finish(input.serverURL, reply, keys.privateKey)
   keys.privateKey.fill(0)
   return { session, recoveryCode: code }
+}
+
+export interface SignupConfig { enabled: boolean; email_verification_required: boolean }
+export function signupConfig(serverURL: string): Promise<SignupConfig> {
+  return call(serverURL, '/v1/auth/signup/config', undefined)
+}
+export function sendSignupVerification(serverURL: string, email: string): Promise<{ sent: boolean }> {
+  return call(serverURL, '/v1/auth/signup/verification', { email: email.trim() })
+}
+
+/** Joining retains this identity's key; it does not derive a second account. */
+export async function joinInvitedWorkspace(serverURL: string, signed: SignedIn, invite: string): Promise<SignedIn> {
+  if (!signed.accountKey) throw new AuthError('unauthorized', t('Sua sessão expirou. Entre novamente.'))
+  const accepted = await call<{ tenant_id: string }>(serverURL, '/v1/auth/workspaces/accept-invite', { invite: invite.trim() }, signed.token)
+  const reply = await call<SessionReply>(serverURL, '/v1/auth/workspaces/session', { tenant_id: accepted.tenant_id }, signed.token)
+  try {
+    const selected = await finishWithKey(serverURL, reply, signed.accountKey)
+    selected.accountEnvelope = signed.accountEnvelope
+    // Keep the original login family available across tabs and workspace changes.
+    selected.browserLogin = signed.browserLogin
+    return selected
+  } catch (error) { await signOut(serverURL, reply.token); throw error }
+}
+
+/** Refresh encrypted grants after pairing without asking for the password again. */
+export async function refreshAccountAccess(serverURL: string, token: string, account: PrivateKey, userID: string, tenantID: string): Promise<SignedIn> {
+  const me = await call<MeReply>(serverURL, '/v1/auth/me', undefined, token)
+  if (me.user.id !== userID || me.user.tenant_id !== tenantID) throw new AuthError('unauthorized', t('Sua sessão expirou. Entre novamente.'))
+  return finishWithKey(serverURL, { token, expires_at: me.expires_at ?? new Date().toISOString(), user: me.user }, account, me)
 }
 
 /**
@@ -585,6 +622,8 @@ async function finishWithKey(serverURL: string, reply: SessionReply, account: Pr
     token: reply.token,
     expiresAt: new Date(reply.expires_at),
     email: me.user.email,
+    name: me.user.name,
+    avatar: me.user.avatar,
     role: me.user.role,
     tenantID: me.user.tenant_id,
     userID: me.user.id,
@@ -601,6 +640,10 @@ function authErrorMessage(code?: string): string | undefined {
     case 'unauthorized': return t('Sua sessão expirou. Entre novamente.')
     case 'email_taken': return t('Este email já tem uma conta. Entre com ela ou recupere o acesso.')
     case 'invite_invalid': return t('Este convite não é válido, já foi utilizado ou expirou.')
+    case 'invite_email_mismatch': return t('Este convite pertence a outro email. Use o email convidado. O código continua válido.')
+    case 'signup_disabled': return t('O cadastro público ainda não está disponível neste servidor. Use um convite.')
+    case 'email_verification_required':
+    case 'email_verification_invalid': return t('Confirme seu email com um código válido antes de criar a conta.')
     case 'not_authorized': return t('Você não tem permissão para realizar esta ação.')
     case 'rate_limited': return t('Muitas tentativas. Aguarde um pouco e tente novamente.')
     case 'passkeys_disabled': return t('Este servidor ainda não oferece passkeys. Use sua senha.')

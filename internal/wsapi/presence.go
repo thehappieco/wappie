@@ -32,9 +32,16 @@ func (s *session) handlePresenceSubscribe(ctx context.Context, f Frame) {
 		result.Reason = "disconnected"
 	} else if dev, running := s.srv.cfg.Registry.Get(id.String()); !running || !dev.Client().IsConnected() {
 		result.Reason = "disconnected"
-	} else if dev.Policy().Mode != wa.ModeActive {
-		result.Reason = "incognito"
 	} else {
+		policy, ok := s.readerPolicy(ctx, f, dev)
+		if !ok {
+			return
+		}
+		if policy.Mode != wa.ModeActive {
+			result.Reason = "incognito"
+			s.reply(TypePresenceWatch, f.ReqID, result)
+			return
+		}
 		requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 		if err := dev.Client().SubscribePresence(requestCtx, jid.ToNonAD()); err != nil {
@@ -76,7 +83,11 @@ func (s *session) handleChatPresence(ctx context.Context, f Frame) {
 	// Through the policy, like every other outbound signal. In the quiet
 	// posture this sends nothing and says so to the metrics, which is the only
 	// place the absence of a network call is visible.
-	if err := t.device.Policy().ChatPresence(ctx, t.device.Client(), t.chat, state, media); err != nil {
+	policy, ok := s.readerPolicy(ctx, f, t.device)
+	if !ok {
+		return
+	}
+	if err := policy.ChatPresence(ctx, t.device.Client(), t.chat, state, media); err != nil {
 		s.log.Debug("could not send a typing notification", "error", err)
 		s.replyError(f.ReqID, ErrCodeConflict, err.Error())
 		return

@@ -310,7 +310,7 @@ const availabilityHere = computed(() => availabilityIn(state.openChatKey, nowTic
 const presenceLabel = computed(() => availabilityHere.value === 'online' ? t('online')
   : availabilityHere.value === 'offline' ? t('offline') : t('Status indisponível'))
 const presenceHint = computed(() => state.quiet
-  ? t('O modo incógnito mantém sua presença oculta. O status dos contatos pode ficar indisponível.')
+  ? t('No modo incógnito, você não consulta a presença dos contatos. A presença do número é compartilhada com outros usuários e o telefone.')
   : t('O status depende da conexão e das configurações de privacidade do contato.'))
 
 // Re-observe whenever the conversation is rebuilt, which is on every live
