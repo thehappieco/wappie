@@ -14,7 +14,22 @@ All commands below use WebSocket v1 frames (`t`, `r`, `p`). The session and devi
 
 `device.start` with the same payload resumes an existing stored WhatsApp session. Both commands return `device.status`. A number that has never paired cannot be resumed this way. A logged-out or banned session cannot be resumed.
 
-`devices.list` and `device.info` expose `paused` (durable operator preference), `running` (supervised on this instance), `can_manage` (effective management authorization), and `profile_key` (the device's own contact identifier). A running device can still be connecting, so `status` remains the connection state.
+`devices.list` and `device.info` expose `paused` (durable operator preference), `running` (authenticated, online transport on this instance), `can_manage` (effective management authorization), and `profile_key` (the device's own contact identifier). A registry reservation alone is not a running connection. Connecting, paused and logged-out devices report `running: false`.
+
+## Unlinking from the phone
+
+Removing Wappie under WhatsApp's linked devices deletes its WhatsApp session and
+eventually reports `logged_out`. The supervisor stops without reconnecting that
+invalid session. A paused or disconnected instance may only detect the removal
+on its next connection attempt. Sending and new synchronization stop, while
+authorized readers retain the history and attachments already archived by
+Wappie. Pending downloads may finish while their media URLs remain valid.
+
+This does not remove the Wappie device, free its plan slot or cancel a
+subscription. Resume and pending-pairing retry do not support reconnecting an
+already linked, logged-out record. A workflow for pairing that record again
+while preserving history remains unimplemented; permanent deletion below
+erases history and is not an equivalent recovery operation.
 
 ## Pending pairing
 

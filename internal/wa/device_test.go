@@ -294,6 +294,49 @@ func TestTerminalStatesStopSupervision(t *testing.T) {
 	}
 }
 
+func TestDeviceConnectionBecomesUnavailableAfterPhoneUnlink(t *testing.T) {
+	dev, fake, _ := newDevice(t, wa.ModePassive)
+	if dev.IsConnected() {
+		t.Fatal("an unstarted device cannot be connected")
+	}
+	if err := dev.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if dev.IsConnected() {
+		t.Fatal("an open socket before authentication cannot enable sending")
+	}
+	fake.Emit(&events.Connected{})
+	if !dev.IsConnected() {
+		t.Fatal("an authenticated live device must be connected")
+	}
+	// A transient socket loss can precede the lifecycle event. The connection
+	// flag must still reflect the actual transport when the list is refreshed.
+	fake.Disconnect()
+	if dev.IsConnected() {
+		t.Fatal("the stored online status hid a disconnected socket")
+	}
+	if err := fake.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	fake.Emit(&events.Connected{})
+	if !dev.IsConnected() {
+		t.Fatal("reconnected transport did not recover")
+	}
+	fake.Emit(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
+	if dev.IsConnected() {
+		t.Fatal("phone unlink must disable the connection before teardown completes")
+	}
+	select {
+	case <-dev.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal device did not finish stopping")
+	}
+	// Keeping this object in the registry must not turn it online on reload.
+	if dev.Status() != wa.StatusLoggedOut || dev.IsConnected() {
+		t.Fatalf("stopped device status=%s connected=%v", dev.Status(), dev.IsConnected())
+	}
+}
+
 // Identity is a (lid, pn) pair and either half may be absent. A later event
 // carrying only one half must not erase the other.
 func TestIdentityMergeKeepsBothHalves(t *testing.T) {

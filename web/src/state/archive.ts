@@ -2582,7 +2582,7 @@ function skeleton(
 export function canSend(): boolean {
   if (!state.openChatKey || state.unreadable || !state.connected || state.initializingConnection) return false
   const device = state.devices.find((d) => d.id === state.deviceID)
-  return Boolean(device?.running)
+  return Boolean(device?.running && device.status === 'online' && !device.paused)
 }
 
 async function bumpChat(row: P.SealedMessage): Promise<void> {

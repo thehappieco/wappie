@@ -164,6 +164,16 @@ func (d *Device) Status() Status {
 	return d.status
 }
 
+// IsConnected reports an authenticated, live transport. A stopped device can
+// remain reserved in the registry, so registry membership alone is not enough
+// to enable sending or describe a number as connected.
+func (d *Device) IsConnected() bool {
+	d.mu.Lock()
+	active := d.running && d.status == StatusOnline
+	d.mu.Unlock()
+	return active && d.cfg.Client.IsConnected()
+}
+
 // ID returns the device's stable identifier.
 func (d *Device) ID() string { return d.cfg.ID }
 

@@ -679,7 +679,11 @@ func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 			}
 		}
 	}
-	info.Running = s.running(d.ID)
+	// A terminal device keeps its registry reservation until explicit teardown.
+	// That reservation is not an active WhatsApp connection after phone unlink.
+	if live, held := s.srv.cfg.Registry.Get(d.ID); held {
+		info.Running = d.Status == wa.StatusOnline && !d.Paused && live.IsConnected()
+	}
 	return info
 }
 

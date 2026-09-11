@@ -129,6 +129,23 @@ afterEach(async () => {
 })
 
 describe('opening a large archive', () => {
+  it('refuses sending after phone unlink even if a stale list still says running', async () => {
+    const fake = await serve()
+    await boot(fake)
+    await openChat(FIRST_CHAT)
+    expect(canSend()).toBe(true)
+    const device = state.devices.find(device => device.id === FIRST)!
+    device.status = 'logged_out'
+    device.running = true
+    expect(canSend()).toBe(false)
+    device.status = 'online'
+    device.paused = true
+    expect(canSend()).toBe(false)
+    device.paused = false
+    device.running = false
+    expect(canSend()).toBe(false)
+  })
+
   it('waits for the live subscription watermark before enabling the first send', async () => {
     const fake = await serve()
     fake.held.add(key(P.TypeSubscribe, ''))
