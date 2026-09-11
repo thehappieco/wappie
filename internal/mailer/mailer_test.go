@@ -35,12 +35,21 @@ func TestAccountLinksKeepSecretsOutOfRequests(t *testing.T) {
 }
 
 func TestMessageRejectsHeaderInjection(t *testing.T) {
-	if _, _, _, err := message("a@example.com", "b@example.com\r\nBcc: c@example.com", "Invite", "body"); err == nil {
+	model, err := signupEmail("https://app.example.com", "b@example.com", "test-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := message("a@example.com", "b@example.com\r\nBcc: c@example.com", model); err == nil {
 		t.Fatal("injection accepted")
 	}
-	data, from, to, err := message("Wappie <a@example.com>", "b@example.com", "Confirmação", "Olá\n\nLink")
-	if err != nil || from != "a@example.com" || to != "b@example.com" || !strings.Contains(string(data), "\r\n\r\nOlá\r\n\r\nLink") {
+	model.Subject = "Confirmação"
+	data, from, to, err := message("Wappie <a@example.com>", "b@example.com", model)
+	if err != nil || from != "a@example.com" || to != "b@example.com" || !strings.Contains(string(data), "multipart/related") {
 		t.Fatal("invalid MIME message")
+	}
+	model.Subject = "Invite\r\nBcc: c@example.com"
+	if _, _, _, err := message("a@example.com", "b@example.com", model); err == nil {
+		t.Fatal("subject injection accepted")
 	}
 }
 

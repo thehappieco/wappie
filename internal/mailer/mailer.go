@@ -5,13 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
-	"mime"
 	"net"
-	"net/mail"
 	"net/smtp"
 	"net/url"
-	"strings"
 	"time"
 
 	"whatserver2/internal/config"
@@ -23,49 +19,32 @@ type Sender struct {
 }
 
 func (s Sender) SignupVerification(ctx context.Context, email, token string) error {
-	link, err := accountLink(s.AppURL, url.Values{"email": {email}, "verification": {token}})
+	model, err := signupEmail(s.AppURL, email, token)
 	if err != nil {
 		return err
 	}
-	return s.send(ctx, email, "Confirm your Wappie account", "Confirm your email to create your Wappie account and personal workspace.\n\n"+link+"\n\nOr paste this verification code into Wappie:\n"+token+"\n\nThis link expires in 30 minutes. If you did not request it, ignore this email.\n")
+	return s.send(ctx, email, model)
 }
 
 func (s Sender) WorkspaceInvite(ctx context.Context, email, code, workspace string) error {
-	link, err := accountLink(s.AppURL, url.Values{"invite": {code}, "email": {email}})
+	model, err := invitationEmail(s.AppURL, email, code, workspace)
 	if err != nil {
 		return err
 	}
-	return s.send(ctx, email, "Wappie workspace invitation", "You have been invited to join "+workspace+" on Wappie.\n\n"+link+"\n\nInvitation code:\n"+code+"\n\nSign in with this email address, or create your account. A new account includes a personal workspace. This invitation expires in 7 days.\n")
+	return s.send(ctx, email, model)
 }
 
 func accountLink(base string, values url.Values) (string, error) {
-	u, err := url.Parse(base)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && (u.Scheme != "http" || u.Hostname() != "localhost")) {
+	u, err := config.AccountBrowserOrigin(base, false)
+	if err != nil {
 		return "", errors.New("mailer: invalid browser origin")
 	}
 	u.Path, u.RawPath, u.RawQuery, u.Fragment = "/console", "", "signup=1", values.Encode()
 	return u.String(), nil
 }
 
-func message(from, recipient, subject, body string) ([]byte, string, string, error) {
-	if strings.ContainsAny(from+recipient+subject, "\r\n") {
-		return nil, "", "", errors.New("mailer: invalid header")
-	}
-	f, err := mail.ParseAddress(from)
-	if err != nil {
-		return nil, "", "", errors.New("mailer: invalid sender")
-	}
-	r, err := mail.ParseAddress(recipient)
-	if err != nil {
-		return nil, "", "", errors.New("mailer: invalid recipient")
-	}
-	body = strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\n", "\r\n")
-	data := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s", f.String(), r.String(), mime.QEncoding.Encode("UTF-8", subject), body)
-	return []byte(data), f.Address, r.Address, nil
-}
-
-func (s Sender) send(ctx context.Context, email, subject, body string) error {
-	data, from, to, err := message(s.Config.From, email, subject, body)
+func (s Sender) send(ctx context.Context, email string, model accountEmail) error {
+	data, from, to, err := message(s.Config.From, email, model)
 	if err != nil {
 		return err
 	}

@@ -194,7 +194,10 @@ avatars are shared profile metadata; WhatsApp photos remain encrypted.
 
 To open public signup, configure `WS_APP_URL`, the `WS_SMTP_*` settings and
 `WS_MAIL_FROM`, then set `WS_PUBLIC_SIGNUP=true`. Mail uses verified TLS and signup
-requires an email-bound, expiring proof. Invitations to a specific email can also
+requires an email-bound, expiring proof. All verification and invitation emails
+use `WS_APP_URL` as their HTTPS browser origin; localhost and loopback links are
+rejected even when mail is sent from development. Branded HTML emails include an
+embedded logo, a primary action and plain-text/code alternatives. Invitations to a specific email can also
 create the Personal workspace and join the invited Team atomically. Failed signup
 does not consume the invitation. `WS_INVITE_ENCRYPTION_KEY_HEX` enables recovery
 of new invitation codes; old hash-only codes must be regenerated. See the account

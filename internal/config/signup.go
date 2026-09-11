@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/mail"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -48,9 +49,8 @@ func loadSignup(errs *[]error) Signup {
 func (s Signup) Validate(prod bool) error {
 	var errs []error
 	if s.AppURL != "" {
-		u, err := url.Parse(s.AppURL)
-		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "https" && (prod || u.Scheme != "http" || u.Hostname() != "localhost")) {
-			errs = append(errs, errors.New("WS_APP_URL must be an HTTPS browser origin (localhost HTTP is allowed in development)"))
+		if _, err := AccountBrowserOrigin(s.AppURL, !prod && !s.SMTP.Configured()); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	mailSet := s.SMTP.Address != "" || s.SMTP.From != "" || s.SMTP.Username != "" || s.SMTP.Password != ""
@@ -75,6 +75,52 @@ func (s Signup) Validate(prod bool) error {
 		errs = append(errs, errors.New("WS_PUBLIC_SIGNUP requires a configured verification mail sender"))
 	}
 	return errors.Join(errs...)
+}
+
+// AccountBrowserOrigin is shared by configuration and every email template.
+// Local browser origins are useful without mail in development, but an email
+// recipient must never be sent to their own computer, even by a local sender.
+func AccountBrowserOrigin(raw string, allowLocal bool) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	invalid := errors.New("WS_APP_URL must be an HTTPS browser origin; localhost links cannot be sent by email")
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return nil, invalid
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return nil, invalid
+	}
+	local := host == "localhost" || strings.HasSuffix(host, ".localhost")
+	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
+		local = local || ip.Unmap().IsLoopback() || ip.IsUnspecified()
+	} else if numericHost(host) {
+		// Browsers interpret abbreviated, octal and hexadecimal IPv4 forms
+		// differently from net/url. Require canonical IP literals instead.
+		return nil, invalid
+	}
+	secure := u.Scheme == "https" || allowLocal && local && u.Scheme == "http"
+	if !secure || local && !allowLocal {
+		return nil, invalid
+	}
+	u.Path, u.RawPath = "", ""
+	return u, nil
+}
+
+func numericHost(host string) bool {
+	for _, label := range strings.Split(host, ".") {
+		if label == "" {
+			return false
+		}
+		allowed := "0123456789"
+		if strings.HasPrefix(label, "0x") {
+			label = label[2:]
+			allowed += "abcdef"
+		}
+		if label == "" || strings.Trim(label, allowed) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // String prevents accidental logging of mail credentials or invite secrets.

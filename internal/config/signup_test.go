@@ -58,3 +58,25 @@ func TestSignupRejectsMailDowngradeAndMalformedKey(t *testing.T) {
 		t.Fatal("accepted injected header")
 	}
 }
+
+func TestMailLinksNeverUseLocalOrigins(t *testing.T) {
+	for _, origin := range []string{"http://localhost:5173", "https://localhost", "https://dev.localhost", "https://127.0.0.1", "https://[::1]", "https://0.0.0.0", "https://127.1", "https://0x7f000001"} {
+		for _, prod := range []bool{false, true} {
+			signup := Signup{AppURL: origin, SMTP: SMTP{Address: "smtp.example.com:465", From: "accounts@example.com", TLSMode: "implicit"}}
+			if err := signup.Validate(prod); err == nil {
+				t.Errorf("accepted emailed local origin %s, prod=%v", origin, prod)
+			}
+		}
+	}
+	if err := (Signup{AppURL: "http://localhost:5173"}).Validate(false); err != nil {
+		t.Fatal("mail-free local development rejected:", err)
+	}
+	if err := (Signup{AppURL: "https://localhost"}).Validate(true); err == nil {
+		t.Fatal("production localhost accepted")
+	}
+	for _, origin := range []string{"https://app.wappie.thehappie.co", "https://self-hosted.example.org:8443/"} {
+		if _, err := AccountBrowserOrigin(origin, false); err != nil {
+			t.Fatalf("valid public origin rejected: %v", err)
+		}
+	}
+}
