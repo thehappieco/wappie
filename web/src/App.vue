@@ -197,7 +197,7 @@ onBeforeUnmount(() => {
   <div v-else-if="state.phase === 'connecting'" class="empty app-loading" role="status" aria-live="polite">
     <div>
       <div class="loading-spinner" aria-hidden="true" />
-      <div class="big">{{ t('Abrindo suas conversas…') }}</div>
+      <div class="big">{{ t('Preparando sua sessão…') }}</div>
       <div>{{ t('Preparando uma conexão segura.') }}</div>
     </div>
   </div>

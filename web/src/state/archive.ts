@@ -959,7 +959,7 @@ function clearCountdown(): void {
   countdown = undefined
 }
 
-export function stop(options?: { logout?: boolean }): void {
+export function stop(options?: { logout?: boolean; transitioning?: boolean }): void {
   stopped = true
   connectionAttempt++
   archiveGeneration++
@@ -1000,7 +1000,9 @@ export function stop(options?: { logout?: boolean }): void {
   // conversation nobody is looking at.
   forgetReceipts()
   Object.assign(state, {
-    phase: 'locked',
+    // A workspace navigation disposes this workspace without signing out.
+    // Keep the loading screen visible until the next document restores it.
+    phase: options?.transitioning && options.logout === false ? 'connecting' : 'locked',
     tenantID: '',
     deviceID: '',
     selectedUID: '',

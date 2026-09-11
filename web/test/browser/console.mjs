@@ -95,6 +95,7 @@ try {
     const closeTop=()=>page.locator('dialog[open]').last().getByRole('button',{name:'Fechar',exact:true}).click()
     assert.equal(await page.locator('.console-nav-item').filter({hasText:/^Permissões$|^Espaço de trabalho$/}).count(),0)
     await switcher()
+    assert.match(await page.locator('.workspace-trigger:visible').innerText(),/Team[\s\S]*Proprietário/)
     assert.equal(await page.locator('.space-choice').count(),2)
     assert.match(await page.locator('.workspace-popup').innerText(),/Pessoal/)
     assert.match(await page.locator('.workspace-popup').innerText(),/Proprietário/)
@@ -127,7 +128,29 @@ try {
     await page.keyboard.press('Escape')
     await page.reload();await page.locator('.console-main').waitFor()
     assert.equal(logins,1,'reload retains session')
-    await switcher();await page.locator('.space-choice').filter({hasText:'Pessoal'}).click()
+    let releaseNavigation, navigationRequested
+    const navigationGate=new Promise(resolve=>{releaseNavigation=resolve})
+    const navigationSeen=new Promise(resolve=>{navigationRequested=resolve})
+    await context.route(origin+'/console?workspace='+personal,async route=>{navigationRequested();await navigationGate;await route.fallback()})
+    await switcher()
+    let recordTransition
+    const transitionSeen=new Promise(resolve=>{recordTransition=resolve})
+    await page.exposeFunction('recordWorkspaceTransition',snapshot=>recordTransition(snapshot))
+    await page.evaluate(()=>{
+      const observer=new MutationObserver(()=>{
+        const loading=!!document.querySelector('.app-loading'), login=!!document.querySelector('form[name=wappie-login]')
+        if(loading||login){observer.disconnect();void window.recordWorkspaceTransition({loading,login})}
+      })
+      observer.observe(document.body,{childList:true,subtree:true})
+    })
+    const changing=page.locator('.space-choice').filter({hasText:'Pessoal'}).click({noWaitAfter:true})
+    await navigationSeen
+    let timeout
+    try {
+      const observed=await Promise.race([transitionSeen,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Workspace loading screen was not rendered')),5000)})])
+      assert.deepEqual(observed,{loading:true,login:false},'workspace navigation must never flash login')
+    } finally { clearTimeout(timeout);releaseNavigation() }
+    await changing
     await page.waitForURL('**workspace='+personal);await page.locator('.console-main').waitFor()
     assert.equal(logins,1,'workspace switch retains session')
     await page.getByText('Conecte seu primeiro número',{exact:true}).waitFor()
@@ -146,4 +169,5 @@ try {
     console.log(JSON.stringify({engine,mobile,logins,apiRequests:requests.length,checks:'workspace/menu/members/invites/security/permissions/restoration',errors}))
     await context.close()
   }
-}finally{await browser.close()}
+}catch(error){console.error('Console browser verification failed:',error);throw error}
+finally{for(const context of browser.contexts())await context.unrouteAll({behavior:'ignoreErrors'});await browser.close()}

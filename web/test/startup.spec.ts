@@ -126,6 +126,21 @@ afterEach(async () => {
 })
 
 describe('opening a large archive', () => {
+  it('clears the previous workspace into loading while retaining login during navigation', async () => {
+    const fake = await serve()
+    await boot(fake)
+    expect(state.phase).toBe('ready')
+    expect(state.tenantID).toBe(TENANT)
+    stop({ logout: false, transitioning: true })
+    expect(state.phase).toBe('connecting')
+    expect(state.tenantID).toBe('')
+    expect(state.devices).toEqual([])
+    expect(state.timeline).toEqual([])
+    expect(connection()).toBeNull()
+    stop()
+    expect(state.phase).toBe('locked')
+  })
+
   it.each([P.TypeDevicesList, P.TypeChatsList, P.TypeKeysGet])('reports %s failure instead of keeping the initial spinner', async (type) => {
     const fake = await serve()
     fake.chats.set(FIRST, [{ uid: UID, chat_key: FIRST_CHAT, last_seq: 1,

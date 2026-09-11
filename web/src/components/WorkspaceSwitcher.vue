@@ -14,6 +14,7 @@ const invitationEmail = ref('')
 const emailMismatch = computed(() => !!invitationEmail.value && invitationEmail.value.trim().toLowerCase() !== state.account.trim().toLowerCase())
 const name = ref(''), avatar = ref(''), code = ref(''), busy = ref(false), error = ref(''), notice = ref('')
 const current = currentWorkspace
+const currentRole = computed(() => current.value?.role || state.role)
 const manager = computed(() => ['owner', 'admin'].includes(current.value?.role ?? state.role))
 const labels: Record<string, string> = { owner: 'Proprietário', admin: 'Administrador', member: 'Membro', service: 'Integração' }
 function roleLabel(role: string) { return t(labels[role] ?? role) }
@@ -23,7 +24,7 @@ function switchSpace(space: Workspace, edit = false) {
   const target = new URL('/console', location.origin)
   target.searchParams.set('workspace', space.id)
   if (edit) target.searchParams.set('workspaceEdit', '1')
-  stop({ logout: false }); location.assign(target.toString())
+  stop({ logout: false, transitioning: true }); location.assign(target.toString())
 }
 function open(mode: 'create' | 'edit' | 'join') {
   popup.value = false; error.value = ''; notice.value = ''; code.value = ''; invitationEmail.value = ''
@@ -100,7 +101,7 @@ onBeforeUnmount(() => { disposed = true; window.removeEventListener('hashchange'
     <span class="selector-label">{{ t('Workspace') }}</span>
     <button ref="trigger" type="button" class="workspace-trigger" aria-haspopup="dialog" :aria-expanded="popup" @click="popup = true; void loadWorkspaceContext(true)">
       <img v-if="current?.avatar" :src="current.avatar" alt="" /><span v-else class="workspace-initials">{{ initials(current?.name || state.account || 'Wappie') }}</span>
-      <span class="workspace-trigger-text"><strong>{{ current?.name || t('Seu espaço de trabalho') }}</strong><small>{{ current?.kind === 'personal' ? t('Pessoal') : t('Team') }}</small></span><AppIcon name="chevron-down" :size="17" />
+      <span class="workspace-trigger-text"><strong>{{ current?.name || t('Seu espaço de trabalho') }}</strong><small class="workspace-membership">{{ current?.kind === 'personal' ? t('Pessoal') : t('Team') }}<template v-if="currentRole"> · {{ roleLabel(currentRole) }}</template></small></span><AppIcon name="chevron-down" :size="17" />
     </button>
     <ConsoleDialog v-if="popup" :title="t('Workspaces')" :anchor="trigger" @close="popup = false">
       <div class="workspace-popup">
@@ -133,5 +134,6 @@ onBeforeUnmount(() => { disposed = true; window.removeEventListener('hashchange'
   </div>
 </template>
 <style scoped>
+.workspace-membership { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
 .selector-label { display: block; padding: 0 12px 9px; color: var(--text-dim); font-size: 11px; font-weight: 600; }.workspace-trigger { display: flex; width: 100%; min-height: 68px; padding: 12px; gap: 10px; align-items: center; text-align: left; border: 1px solid var(--line); border-radius: 13px; background: var(--bg-raised); }.workspace-trigger:hover { background: var(--bg-hover); }.workspace-trigger-text { flex: 1; min-width: 0; }.workspace-trigger strong,.space-name strong { display: block; font-size: 13px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }.workspace-trigger small,.space-name small { display: block; font-size: 11px; color: var(--text-dim); margin-top: 4px; }.workspace-trigger img,.workspace-initials,.space-choice img { width: 38px; height: 38px; flex: none; border-radius: 11px; object-fit: cover; }.workspace-initials { display: grid; place-items: center; color: var(--accent); background: var(--accent-dim); font-weight: 650; }.workspace-popup { display: grid; gap: 10px; }.workspace-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 5px; }.workspace-list li { display: flex; gap: 0; border-radius: 12px; align-items: center; }.workspace-list li.selected { background: var(--bg-hover); }.space-choice { display: flex; min-width: 0; flex: 1; gap: 10px; padding: 12px 8px; align-items: center; text-align: left; }.space-name { flex: 1; min-width: 0; }.kind { padding: 4px 6px; background: var(--bg-active); border-radius: 5px; color: var(--text-dim); font-size: 10px; }.kind.team { background: var(--accent-dim); color: var(--accent); }.edit-space { flex: none; width: 32px; }.create-team,.join-workspace { display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; padding: 13px; font-size: 13px; border-radius: 10px; }.create-team { background: var(--text); color: var(--bg-panel); font-weight: 600; }.join-workspace { justify-content: flex-start; border-top: 1px solid var(--line); border-radius: 0; color: var(--text-dim); }.avatar-picker { position: relative; width: 88px; height: 88px; border-radius: 50%; margin: 0 auto; cursor: pointer; display: grid; place-items: center; background: var(--accent-dim); color: var(--accent); font-size: 25px; }.avatar-picker img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }.avatar-picker input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }.avatar-edit { position: absolute; right: 0; bottom: 0; background: var(--bg-panel); border: 1px solid var(--line); border-radius: 50%; width: 29px; height: 29px; display: grid; place-items: center; }.remove-avatar { justify-self: center; }
 </style>
