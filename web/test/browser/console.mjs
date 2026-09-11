@@ -122,7 +122,7 @@ try {
     await nav('Números')
     await page.getByRole('button',{name:'Detalhes',exact:true}).click()
     await page.getByRole('heading',{name:'Membros e permissões',exact:true}).waitFor()
-    assert.equal(await page.getByRole('checkbox',{name:'Permitir leitura para Jamie Rivera',exact:true}).count(),1)
+    await page.getByRole('checkbox',{name:'Permitir leitura para Jamie Rivera',exact:true}).waitFor({state:'visible'})
     assert.equal(await page.getByText('Confirmar leitura no WhatsApp (sai do modo discreto)',{exact:true}).count(),0)
     await page.keyboard.press('Escape')
     await page.reload();await page.locator('.console-main').waitFor()
