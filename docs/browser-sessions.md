@@ -166,3 +166,17 @@ Add `QA_PROGRESS=1` to assert immediate password/passkey progress, simulate an
 ordinary cancelled platform passkey prompt, and report stage timings. That
 mode adds 400 ms to the synthetic challenge response so the initial loading
 state is observable independently of the real Argon2 worker duration.
+
+## First-message confirmation
+
+The reader waits for `replay.end` before enabling sends, including when entering
+Messages from a session initially opened in the console. This is a live-only
+subscription; it does not replay the archive during startup.
+
+An archived `message.sent` acknowledgement immediately clears the outgoing
+message's sending indicator. The reader fetches its UID through `message.get`
+when the separate live event has not arrived, without sending the message again.
+A failed lookup does not undo that acknowledgement; a late acknowledgement can
+also resolve a request that previously timed out. Confirmation means accepted
+by the sending server, not delivered or read by the recipient. Pages and live
+events merge by UID so a delayed initial page cannot remove newer messages.

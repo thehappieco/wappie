@@ -5,7 +5,7 @@ import * as P from '../src/api/protocol'
 import { Opener } from '../src/api/opener'
 import { Media, type MediaState } from '../src/api/media'
 import { importArchiveKey } from '../src/crypto/hpke'
-import { avatars, connection, conversationPagingContext, fetchMedia, loadOlder, openChat, people, preferredReadableDevice, refreshChats, refreshDevices, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
+import { avatars, canSend, connection, conversationPagingContext, fetchMedia, loadOlder, openChat, people, preferredReadableDevice, refreshChats, refreshDevices, selectDevice, start, state, stop, type MessageView } from '../src/state/archive'
 import { readLastDevice, rememberLastDevice } from '../src/ui/lastDevice'
 import { fromPastedKey } from '../src/state/session'
 import { sweepDone, sweepUnsupported } from '../src/state/reproject'
@@ -88,6 +88,9 @@ async function serve(): Promise<Fake> {
       case P.TypeChatPage:
         respond(P.TypePage, { device_id: device, messages: [], has_more: false })
         break
+      case P.TypeSubscribe:
+        respond(P.TypeReplayEnd, { last_seq: 0 })
+        break
       case P.TypeReprojectGet:
         respond(P.TypeUnsupportedRows, { device_id: device, rows: [] })
         break
@@ -126,6 +129,22 @@ afterEach(async () => {
 })
 
 describe('opening a large archive', () => {
+  it('waits for the live subscription watermark before enabling the first send', async () => {
+    const fake = await serve()
+    fake.held.add(key(P.TypeSubscribe, ''))
+    const opening = boot(fake)
+    const subscribed = await pending(fake, P.TypeSubscribe, '')
+    expect(state.phase).toBe('connecting')
+    expect(state.initializingConnection).toBe(true)
+    state.openChatKey = FIRST_CHAT
+    expect(canSend()).toBe(false)
+    subscribed({ last_seq: 42 })
+    await opening
+    expect(state.phase).toBe('ready')
+    expect(state.initializingConnection).toBe(false)
+    expect(canSend()).toBe(true)
+  })
+
   it('clears the previous workspace into loading while retaining login during navigation', async () => {
     const fake = await serve()
     await boot(fake)
@@ -141,12 +160,12 @@ describe('opening a large archive', () => {
     expect(state.phase).toBe('locked')
   })
 
-  it.each([P.TypeDevicesList, P.TypeChatsList, P.TypeKeysGet])('reports %s failure instead of keeping the initial spinner', async (type) => {
+  it.each([P.TypeDevicesList, P.TypeChatsList, P.TypeKeysGet, P.TypeSubscribe])('reports %s failure instead of keeping the initial spinner', async (type) => {
     const fake = await serve()
     fake.chats.set(FIRST, [{ uid: UID, chat_key: FIRST_CHAT, last_seq: 1,
       last_uid: UID, last_body_key_id: 12, last_body_sealed: 'AA==',
     }])
-    fake.errors.set(key(type, type === P.TypeDevicesList ? '' : FIRST), {
+    fake.errors.set(key(type, type === P.TypeDevicesList || type === P.TypeSubscribe ? '' : FIRST), {
       code: P.ErrInternal, message: 'fixture initialization failure',
     })
     await boot(fake)
@@ -697,6 +716,21 @@ describe('remembering an account number within its workspace', () => {
     expect(state.view).toBe('admin'); expect(state.deviceID).toBe('')
     expect(preferredReadableDevice()?.id).toBe(SECOND)
     expect(fake.requests.some(frame => frame.t === P.TypeChatsList)).toBe(false)
+  })
+  it('starts and awaits live updates when Messages is first opened from the console', async () => {
+    deviceStorage(); const fake = await serve()
+    vi.stubGlobal('location', new URL('https://client.example.test/console'))
+    await accountBoot(fake)
+    expect(fake.requests.some(frame => frame.t === P.TypeSubscribe)).toBe(false)
+    fake.held.add(key(P.TypeSubscribe, ''))
+    const opening = selectDevice(FIRST)
+    const subscribed = await pending(fake, P.TypeSubscribe, '')
+    expect(fake.requests.some(frame => frame.t === P.TypeChatsList)).toBe(false)
+    subscribed({ last_seq: 10 })
+    await opening
+    expect(fake.requests.some(frame => frame.t === P.TypeChatsList)).toBe(true)
+    await selectDevice(SECOND)
+    expect(fake.requests.filter(frame => frame.t === P.TypeSubscribe)).toHaveLength(1)
   })
   it('does not write preferences for pasted keys or a mismatched authenticated workspace', async () => {
     const saved = deviceStorage(), fake = await serve()

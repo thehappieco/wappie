@@ -28,6 +28,7 @@ import ConsoleDialog from './ConsoleDialog.vue'
 import { currentWorkspace, loadWorkspaceContext, workspaceState } from '../state/workspaces'
 import { initials } from '../state/jid'
 import SubscriptionPanel from '@subscription'
+import TrialStatus from '@trial-status'
 import AppearanceMenu from './AppearanceMenu.vue'
 import AppIcon, { type IconName } from './AppIcon.vue'
 
@@ -194,6 +195,7 @@ async function read(device: DeviceInfo) {
 
       <main ref="content" class="console-content" :aria-label="current.label">
         <div class="console-section-intro"><p>{{ current.description }}</p><span class="connection-label" :class="{ connected: state.connected }"><i />{{ state.connected ? t('Servidor conectado') : t('Sem conexão ao servidor') }}</span></div>
+        <TrialStatus v-if="canAdminister() && section !== 'billing'" @open="show('billing')" />
         <div v-if="admin.error || appError" class="alert" role="alert">{{ appError || admin.error }}</div>
         <div v-if="admin.removed" class="removed" role="status"> {{ t('Número removido: {v0} mensagens, {v1} conversas e {v2} anexos apagados.', { v0: count(admin.removed.messages), v1: count(admin.removed.chats), v2: count(admin.removed.media) }) }} <template v-if="admin.removed.note"> {{ admin.removed.note }}.</template>
         </div>

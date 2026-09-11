@@ -68,6 +68,7 @@ try {
       const device={id:deviceID,label:'Support',push_name:'Acme Support',pn:'15550001111@s.whatsapp.net',can_send:true,can_manage:true,status:'online',running:true,receipt_mode:'passive',reader_receipt_mode:'passive',created_at:new Date().toISOString()}
       switch(f.t){
         case 'hello':workspace=f.p.session?.includes('personal')?personal:team;return send('welcome',{version:1,tenant_id:workspace,account:fixture.email,role:'owner',features:[],server_ts:Date.now()})
+        case 'subscribe':return send('replay.end',{last_seq:0,count:0})
         case 'devices.list':return send('devices',{devices:workspace===team?[device]:[]})
         case 'devices.stats':return send('devices.stats.result',{stats:[{device_id:deviceID,chats:12,messages:280,media:13,media_bytes:102400}]})
         case 'users.list':return send('users',{users:[{id:fixture.reply.user.id,email:fixture.email,role:'owner',public_key:fixture.reply.user.public_key}]})

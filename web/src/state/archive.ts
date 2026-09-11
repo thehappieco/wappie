@@ -168,8 +168,8 @@ export interface MessageView {
   forwardingScore: number
   replyTo?: string
   /**
-   * Where an outgoing message is in its journey. Absent on everything that came
-   * out of the archive, which is everything except a line this tab just sent.
+   * Where an outgoing message is in its journey. Absent after the server has
+   * acknowledged an archived send, even while its sealed row is being fetched.
    *
    * 'unarchived' is the awkward one and it is real: the server reports a send
    * that reached WhatsApp but could not be written down as a success, because
@@ -423,6 +423,17 @@ let attempt = 0
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 let countdown: ReturnType<typeof setInterval> | undefined
 let connectionAttempt = 0
+const liveSubscriptions = new WeakMap<Connection, Promise<P.ReplayEnd>>()
+
+function subscribeLive(connection: Connection): Promise<P.ReplayEnd> {
+  let ready = liveSubscriptions.get(connection)
+  if (!ready) {
+    ready = connection.request<P.ReplayEnd>(P.TypeSubscribe,
+      { since_seq: 0, live_only: true } satisfies P.Subscribe, P.TypeReplayEnd)
+    liveSubscriptions.set(connection, ready)
+  }
+  return ready
+}
 
 // Requests and decryptions can finish after a device switch or sign-out.
 // Holding the opener and generation together keeps those results out of the
@@ -892,7 +903,10 @@ async function connect(): Promise<void> {
 
     // Live only. Replaying from zero would stream the whole archive down this
     // socket before the first chat drew, and the pages already have the history.
-    conn.send(P.TypeSubscribe, 'live', { since_seq: 0, live_only: true } satisfies P.Subscribe)
+    // Sending and subscribing are independent server tasks. Wait until the
+    // live watermark is installed before the first message can be composed.
+    await subscribeLive(connected)
+    if (stopped || session !== open || generation !== archiveGeneration) return
     state.phase = 'ready'
     rememberCurrentDevice()
 
@@ -1047,6 +1061,10 @@ export async function selectDevice(deviceID: string): Promise<void> {
   const context = archiveContext()
   void loadContacts().catch(() => {})
   try {
+    // A session opened directly in the console has not started its stream.
+    // Install it when Messages first selects a readable number as well.
+    if (context) await subscribeLive(context.connection)
+    if (!context || !currentArchive(context)) return
     await loadChats()
     if (context && currentArchive(context)) { rememberCurrentDevice(); void sweepUnsupported() }
   } catch (err) {
@@ -1564,7 +1582,9 @@ export async function openChat(chatKey: string): Promise<void> {
       P.TypePage,
     )
     if (!current()) return
-    openRows = page.messages ?? []
+    // A live row can arrive while this snapshot is in flight. Keep it when
+    // the older page finishes, and prefer its newer version of a shared UID.
+    openRows = mergeMessageRows(page.messages ?? [], openRows)
     absorbReceipts(page.receipts)
     state.hasOlder = page.has_more
     olderCursor = page.next_ts ? { ts: page.next_ts, seq: page.next_seq ?? 0 } : null
@@ -1598,7 +1618,7 @@ export async function loadOlder(): Promise<OlderPageProgress> {
       P.TypePage,
     )
     if (!current()) return { status: 'stale' }
-    openRows = [...(page.messages ?? []), ...openRows]
+    openRows = mergeMessageRows(page.messages ?? [], openRows)
     absorbReceipts(page.receipts)
     state.hasOlder = page.has_more
     olderCursor = page.next_ts ? { ts: page.next_ts, seq: page.next_seq ?? 0 } : null
@@ -1646,6 +1666,13 @@ async function buildTimeline(rows: P.SealedMessage[]): Promise<MessageView[]> {
     }
   }
   return views
+}
+
+/** Live events, pages and send reconciliation can all carry the same row. */
+function mergeMessageRows(...batches: P.SealedMessage[][]): P.SealedMessage[] {
+  const rows = new Map<string, P.SealedMessage>()
+  for (const batch of batches) for (const row of batch) rows.set(row.uid, row)
+  return [...rows.values()]
 }
 
 /**
@@ -2053,6 +2080,14 @@ async function handleFrame(frame: P.Frame): Promise<void> {
     case P.TypeMessage:
       await onMessage(frame.p as P.SealedMessage)
       break
+    case P.TypeSendResult: {
+      // A response can arrive after its request timed out. Its original ID
+      // still identifies the outbox line; accept the evidence without retry.
+      const result = frame.p as P.SendResult
+      const context = archiveContext()
+      if (context && outbox.has(result.id)) await confirmSent(result.id, result, context)
+      break
+    }
     case P.TypePresence:
       applyPresence(frame.p as P.PresenceEvent)
       break
@@ -2082,16 +2117,16 @@ async function handleFrame(frame: P.Frame): Promise<void> {
   }
 }
 
-async function onMessage(row: P.SealedMessage): Promise<void> {
+async function onMessage(row: P.SealedMessage, live = true): Promise<void> {
   if (row.device_id !== state.deviceID) return
   const context = archiveContext()
   if (!context) return
-  state.liveCount += 1
+  if (live) state.liveCount += 1
 
   await bumpChat(row)
 
   if (!currentArchive(context) || !inOpenChat(row.chat_key)) return
-  openRows = [...openRows, row]
+  openRows = mergeMessageRows(openRows, [row])
   // Re-projected rather than appended: the row may be an edit, a deletion or a
   // reaction, none of which is a new line — and all of which change one that is
   // already on screen.
@@ -2108,12 +2143,13 @@ async function onMessage(row: P.SealedMessage): Promise<void> {
  * BEFORE the reply. Without a shared id there is nothing to match the two on,
  * and the message would appear twice.
  *
- * The optimistic line lives in the outbox and is reaped by buildTimeline the
- * moment the real row shows up.
+ * The ACK confirms the send independently of the live subscription. Fetching
+ * its UID also recovers a row missed while a subscription was starting.
  */
 export async function sendText(body: string, replyTo?: MessageView, marks?: Marks): Promise<void> {
   const text = body.trim()
-  if (!conn || !text || !state.openChatKey) return
+  const context = archiveContext()
+  if (!context || !text || !state.openChatKey) return
   // Cleared on the way in, like every other action. A banner left over from
   // something that failed a minute ago reads as a description of what is
   // happening now.
@@ -2125,7 +2161,7 @@ export async function sendText(body: string, replyTo?: MessageView, marks?: Mark
   await redraw()
 
   const request: P.SendRequest = {
-    device_id: state.deviceID,
+    device_id: context.deviceID,
     chat,
     body: text,
     id,
@@ -2140,10 +2176,8 @@ export async function sendText(body: string, replyTo?: MessageView, marks?: Mark
   applyMarks(request, marks)
 
   try {
-    const result = await conn.request<P.SendResult>(P.TypeSend, request, P.TypeSendResult)
-    // Otherwise nothing to do: either the archived row has already arrived and
-    // reaped the pending line, or it is about to.
-    if (!result.uid) await unarchived(id)
+    const result = await context.connection.request<P.SendResult>(P.TypeSend, request, P.TypeSendResult)
+    await confirmSent(id, result, context)
   } catch (err) {
     failed(id, err)
     await redraw()
@@ -2230,6 +2264,43 @@ async function unarchived(waID: string): Promise<void> {
   await redraw()
 }
 
+/** A successful send never waits on the separate live stream to lose its clock. */
+async function confirmSent(waID: string, result: P.SendResult, context: ArchiveContext): Promise<void> {
+  const line = outbox.get(waID)
+  if (!line) return // The live row already replaced the optimistic copy.
+  if (!result.uid) { await unarchived(waID); return }
+  // Outbox lines are reactive objects, including the one already on screen.
+  // Updating that object also redraws ticks while archive decryption is slow.
+  line.pending = undefined
+  line.failure = undefined
+  line.uid = result.uid
+  line.entry.row.uid = result.uid
+  if (result.seq !== undefined) line.seq = line.entry.row.seq = result.seq
+  if (result.timestamp && Number.isFinite(Date.parse(result.timestamp))) {
+    line.ts = new Date(result.timestamp)
+    line.entry.row.ts = result.timestamp
+  }
+  if (line.media) line.media.upload = undefined
+  // Do not await this lookup as part of sending. A dropped lookup must never
+  // turn WhatsApp's accepted message into a failed send or trigger a resend.
+  if (currentArchive(context) && line.entry.row.device_id === context.deviceID) {
+    void reconcileSent(waID, result.uid, context)
+  }
+}
+
+async function reconcileSent(waID: string, uid: string, context: ArchiveContext): Promise<void> {
+  try {
+    const row = await context.connection.request<P.SealedMessage>(
+      P.TypeMessageGet, { uid }, P.TypeMessageFrame,
+    )
+    if (!currentArchive(context) || row.uid !== uid || row.wa_id !== waID ||
+      row.device_id !== context.deviceID || !row.is_from_me) return
+    await onMessage(row, false)
+  } catch {
+    // The ACK remains valid. A later live event or page can supply the row.
+  }
+}
+
 /** showProgress reports how much of an attachment has left this tab. */
 function showProgress(waID: string, progress: { sent: number; total: number }): void {
   const line = state.timeline.find((view) => view.waID === waID)
@@ -2268,7 +2339,9 @@ export async function sendMedia(
   marks?: Marks,
 ): Promise<void> {
   state.actionError = ''
-  if (!conn || !media || !state.openChatKey) {
+  const context = archiveContext()
+  const uploader = media
+  if (!context || !uploader || !state.openChatKey) {
     // Only reachable if the connection dropped between choosing the file and
     // sending it. Said out loud rather than swallowed: the composer has
     // already let go of the attachment by now, so silence here is a file that
@@ -2281,7 +2354,7 @@ export async function sendMedia(
   // Captured, not read twice. An upload can take a minute, and reading the
   // device again afterwards would let a switch in the meantime send the
   // attachment from an account it was never uploaded for.
-  const device = state.deviceID
+  const device = context.deviceID
   const id = newWAID()
   const text = prepared.plan.captionAllowed ? caption.trim() : ''
   const line = pendingMediaLine(id, chat, prepared, text, replyTo, marks)
@@ -2294,7 +2367,7 @@ export async function sendMedia(
 
   let upload: P.UploadRef
   try {
-    upload = await media.upload({
+    upload = await uploader.upload({
       deviceID: device,
       kind: prepared.kind,
       blob: prepared.blob,
@@ -2349,8 +2422,8 @@ export async function sendMedia(
   applyMarks(request, marks)
 
   try {
-    const result = await conn.request<P.SendResult>(P.TypeSendMedia, request, P.TypeSendResult)
-    if (!result.uid) await unarchived(id)
+    const result = await context.connection.request<P.SendResult>(P.TypeSendMedia, request, P.TypeSendResult)
+    await confirmSent(id, result, context)
   } catch (err) {
     failed(id, err)
     await redraw()
@@ -2507,7 +2580,7 @@ function skeleton(
  * device is not connected to WhatsApp right now.
  */
 export function canSend(): boolean {
-  if (!state.openChatKey || state.unreadable || !state.connected) return false
+  if (!state.openChatKey || state.unreadable || !state.connected || state.initializingConnection) return false
   const device = state.devices.find((d) => d.id === state.deviceID)
   return Boolean(device?.running)
 }

@@ -1,0 +1,23 @@
+{
+  "Teste gratuito encerrado": ["Free trial ended", "Prueba gratuita finalizada", "Essai gratuit terminé", "Kostenlose Testphase beendet"],
+  "Prazo do teste indisponível": ["Trial deadline unavailable", "Plazo de prueba no disponible", "Date de fin de l’essai indisponible", "Enddatum der Testphase nicht verfügbar"],
+  "Teste gratuito de {days} dias": ["{days}-day free trial", "Prueba gratuita de {days} días", "Essai gratuit de {days} jours", "{days} Tage kostenlos testen"],
+  "Menos de 1 minuto": ["Less than 1 minute", "Menos de 1 minuto", "Moins d’une minute", "Weniger als 1 Minute"],
+  "{days} d {hours} h": ["{days}d {hours}h", "{days} d {hours} h", "{days} j {hours} h", "{days} T. {hours} Std."],
+  "{hours} h {minutes} min": ["{hours}h {minutes}m", "{hours} h {minutes} min", "{hours} h {minutes} min", "{hours} Std. {minutes} Min."],
+  "{minutes} min": ["{minutes} min", "{minutes} min", "{minutes} min", "{minutes} Min."],
+  "Sem prazo de expiração neste workspace do piloto.": ["No expiration date for this pilot workspace.", "Este workspace del piloto no tiene fecha de vencimiento.", "Cet espace pilote n’a pas de date d’expiration.", "Dieser Pilot-Workspace hat kein Ablaufdatum."],
+  "A contagem começa ao conectar seu primeiro número.": ["The countdown starts when you connect your first number.", "La cuenta atrás comienza al conectar tu primer número.", "Le compte à rebours commence à la connexion de votre premier numéro.", "Die Zeit beginnt, sobald du deine erste Nummer verbindest."],
+  "Veja os planos disponíveis para este workspace.": ["See the plans available for this workspace.", "Consulta los planes disponibles para este workspace.", "Consultez les offres disponibles pour cet espace.", "Sieh dir die verfügbaren Tarife für diesen Workspace an."],
+  "Atualize a assinatura para consultar o prazo confirmado pelo servidor.": ["Refresh subscription details to check the deadline confirmed by the server.", "Actualiza los datos de la suscripción para consultar el plazo confirmado por el servidor.", "Actualisez l’abonnement pour consulter la date confirmée par le serveur.", "Aktualisiere die Abonnementdaten, um das vom Server bestätigte Enddatum zu sehen."],
+  "Termina em {date}": ["Ends on {date}", "Termina el {date}", "Se termine le {date}", "Endet am {date}"],
+  "Últimas 24 horas": ["Last 24 hours", "Últimas 24 horas", "Dernières 24 heures", "Letzte 24 Stunden"],
+  "Últimos 3 dias": ["Last 3 days", "Últimos 3 días", "Derniers 3 jours", "Letzte 3 Tage"],
+  "Tempo restante: {time}": ["Time remaining: {time}", "Tiempo restante: {time}", "Temps restant : {time}", "Verbleibende Zeit: {time}"],
+  "restantes": ["remaining", "restantes", "restants", "verbleibend"],
+  "dias": ["days", "días", "jours", "Tage"],
+  "horas": ["hours", "horas", "heures", "Stunden"],
+  "minutos": ["minutes", "minutos", "minutes", "Minuten"],
+  "Tempo de teste utilizado": ["Trial time used", "Tiempo de prueba utilizado", "Durée d’essai utilisée", "Verbrauchte Testzeit"],
+  "Ver planos": ["View plans", "Ver planes", "Voir les offres", "Tarife ansehen"]
+}

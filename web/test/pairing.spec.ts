@@ -61,6 +61,9 @@ async function serve(accounts: P.UserSummary[]): Promise<Fake> {
             } satisfies P.Welcome,
           })
           break
+        case P.TypeSubscribe:
+          send({ t: P.TypeReplayEnd, r: frame.r, p: { last_seq: 0, count: 0 } })
+          break
         case P.TypeDevicesList:
           if (fake.deviceError) send({ t: P.TypeError, r: frame.r, p: { code: P.ErrInternal, message: 'synthetic refresh failure' } })
           else if (fake.holdDevices) fake.heldDevices.push(() => send({ t: P.TypeDevices, r: frame.r, p: { devices: [] } }))

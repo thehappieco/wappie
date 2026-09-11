@@ -38,7 +38,7 @@ const hostedSessionFrame = {
 export default defineConfig({
   plugins: [vue(), devStyles, hostedSessionFrame],
   resolve: {
-    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)), '@subscription': fileURLToPath(new URL(process.env.WAPPIE_CLOUD_BUILD === '1' ? '../commercial/SubscriptionPanel.vue' : './src/components/SubscriptionPanel.vue', import.meta.url)) },
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)), '@trial-status': fileURLToPath(new URL(process.env.WAPPIE_CLOUD_BUILD === '1' ? '../commercial/TrialStatus.vue' : './src/components/TrialStatus.vue', import.meta.url)), '@subscription': fileURLToPath(new URL(process.env.WAPPIE_CLOUD_BUILD === '1' ? '../commercial/SubscriptionPanel.vue' : './src/components/SubscriptionPanel.vue', import.meta.url)) },
   },
   server: {
     port: 5173,

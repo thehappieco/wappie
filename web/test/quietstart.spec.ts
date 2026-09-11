@@ -46,6 +46,9 @@ async function serve(mode: 'active' | 'passive', personal?: 'active' | 'passive'
             p: { version: P.VERSION, tenant_id: TENANT, features: [], server_ts: 0 },
           })
           break
+        case P.TypeSubscribe:
+          send({ t: P.TypeReplayEnd, r: frame.r, p: { last_seq: 0, count: 0 } })
+          break
         case P.TypeDevicesList:
           send({
             t: P.TypeDevices,

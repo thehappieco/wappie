@@ -199,6 +199,12 @@ async function serve(): Promise<Fake> {
             },
           })
           break
+        case P.TypeSubscribe:
+          send({ t: P.TypeReplayEnd, r: frame.r, p: { last_seq: 0 } })
+          break
+        case P.TypeMessageGet:
+          send({ t: P.TypeError, r: frame.r, p: { code: P.ErrNotFound, message: 'archive unavailable in this fixture' } })
+          break
         case P.TypeSendMedia:
           if (fake.refuseSend) {
             send({ t: P.TypeError, r: frame.r, p: { code: 'internal', message: 'o aparelho recusou' } })
@@ -307,6 +313,18 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe('sending an attachment', () => {
+  it('clears sending from the ACK even when the live archive event is missed', async () => {
+    const server = await serve()
+    await openConversation(server)
+    await sendMedia(await prepare(pick('nota.txt', 'text/plain'), 'file'), '')
+    await waitFor(() => server.sent.some(frame => frame.t === P.TypeMessageGet))
+    expect(state.timeline[0].pending).toBeUndefined()
+    expect(state.timeline[0].media?.upload).toBeUndefined()
+    expect(state.timeline[0].media?.localURL).toBeTruthy()
+    expect(mediaFrames(server)).toHaveLength(1)
+    expect(server.uploads).toHaveLength(1)
+  })
+
   it('shows it, with the file itself, while it is still uploading', async () => {
     const server = await serve()
     await openConversation(server)

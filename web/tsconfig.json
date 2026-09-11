@@ -17,7 +17,7 @@
     "noEmit": true,
     "jsx": "preserve",
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"], "@subscription": ["src/components/SubscriptionPanel.vue"] }
+    "paths": { "@/*": ["src/*"], "@subscription": ["src/components/SubscriptionPanel.vue"], "@trial-status": ["src/components/TrialStatus.vue"] }
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "test/**/*.ts", "vite.config.ts"]
 }

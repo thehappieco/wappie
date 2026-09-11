@@ -117,6 +117,7 @@ try {
     const device = { device_id: deviceID }
     switch (frame.t) {
       case 'hello': return send('welcome', { version: 1, tenant_id: fixture.reply.user.tenant_id, account: fixture.email, role: 'owner', features: [], server_ts: Date.now() })
+      case 'subscribe': return send('replay.end', { last_seq: 0, count: 0 })
       case 'devices.list': return send('devices', { devices: [{ id: deviceID, label: 'Test number', status: 'online', running: true, receipt_mode: 'passive', created_at: new Date().toISOString() }] })
       case 'contacts.list': case 'contacts.resolve': return send('contacts', { ...device, contacts: [] })
       case 'chats.list': return send('chats', { ...device, chats: [] })
