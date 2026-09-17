@@ -30,7 +30,7 @@ func TestOpenAPIWireSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	defs := map[string]any{}
-	for _, value := range []any{restapi.Devices{}, restapi.Chats{}, restapi.Page{}, restapi.Message{}, restapi.History{}, restapi.Keys{}, restapi.Grants{}} {
+	for _, value := range []any{restapi.Devices{}, restapi.Chats{}, restapi.Page{}, restapi.Message{}, restapi.History{}, restapi.Keys{}, restapi.Grants{}, restapi.Contacts{}, restapi.ScanPage{}} {
 		wireSchema(reflect.TypeOf(value), defs)
 	}
 	components := doc["components"].(map[string]any)
@@ -127,7 +127,7 @@ func TestOpenAPIPublicAndMountedPaths(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil || w.Code != 200 || doc.Version != "3.1.1" || len(doc.Security) != 1 {
 		t.Fatalf("invalid public specification: %v %s", err, w.Body.String())
 	}
-	if len(doc.Paths) != 8 {
+	if len(doc.Paths) != 10 {
 		t.Fatalf("unexpected endpoint count: %d", len(doc.Paths))
 	}
 	for path := range doc.Paths {

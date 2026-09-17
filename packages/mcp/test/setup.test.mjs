@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { loadConfig, loadCredential, readPrivateFile } from '../config.mjs'
+import { hpke } from '@whatserver2/client'
+import { openContactPack, sealContactPack } from '@whatserver2/client/crypto/contactPack'
 
 const run = promisify(execFile)
 const setup = fileURLToPath(new URL('../setup.mjs', import.meta.url))
@@ -52,7 +54,9 @@ test('imports a browser download into private files usable by the existing MCP l
     args: [fileURLToPath(new URL('../cli.mjs', import.meta.url)), '--config', join(f.output, 'config.json')], stderr: 'pipe' })
   try {
     await client.connect(transport)
-    assert.equal((await client.listTools()).tools.length, 5, 'imported config starts the real MCP without any archive request')
+    assert.deepEqual((await client.listTools()).tools.map(tool=>tool.name).sort(),
+      ['activity_summary','get_message','list_chats','list_messages','list_numbers','list_revisions','resolve_contact','search_messages'],
+      'imported config starts the real MCP without any archive request')
   } finally { await client.close() }
   assert.equal((await stat(f.input)).mode & 0o777, 0o644, 'download is retained unchanged')
   assert.deepEqual(JSON.parse(await readFile(f.input, 'utf8')), bundle())
@@ -161,4 +165,65 @@ test('creates exactly owner-readable permissions even with an unusually restrict
   assert.equal((await stat(f.output)).mode & 0o777, 0o700)
   for (const name of ['config.json', 'token.txt']) assert.equal((await stat(join(f.output, name))).mode & 0o777, 0o600)
   assert.equal((await loadCredential(await loadConfig(join(f.output, 'config.json')))).token, token)
+})
+
+async function withContacts(contacts = [{name:'Synthetic private contact',phones:['+5511987654321']}]) {
+  const data = { ...bundle(), allow_plaintext:true, service_user_id:user, service_private_key:key, timezone:'America/Sao_Paulo' }
+  data.contacts = await sealContactPack(await hpke.publicFromPrivate(Buffer.from(key,'base64url')), {
+    server_url:data.server_url,workspace_id:workspace,service_user_id:user,device_ids:[device],
+  }, contacts, '2026-09-17T12:34:56.000Z')
+  return data
+}
+
+test('imports a scoped encrypted contact snapshot without saving or printing plaintext', async t => {
+  const data = await withContacts(), f = await fixture(t, data)
+  const result = await invoke(f.input,f.output)
+  assert.equal(result.status,0,result.stderr)
+  const config = await loadConfig(join(f.output,'config.json'))
+  assert.equal(config.timezone,'America/Sao_Paulo')
+  assert.equal(config.contacts_file,join(f.output,'contacts.enc.json'))
+  const text = await readFile(config.contacts_file,'utf8')
+  assert.equal((await stat(config.contacts_file)).mode & 0o777,0o600)
+  assert.deepEqual(JSON.parse(text),data.contacts)
+  for (const name of await readdir(f.output)) {
+    const content = await readFile(join(f.output,name),'utf8')
+    assert.equal(content.includes('Synthetic private contact'),false)
+    assert.equal(content.includes('+5511987654321'),false)
+  }
+  const document = await openContactPack(await hpke.importArchiveKey(Buffer.from(key,'base64url')),JSON.parse(text),data.contacts)
+  assert.equal(document.created_at,'2026-09-17T12:34:56.000Z')
+  assert.equal(document.contacts[0].name,'Synthetic private contact')
+  assert.doesNotMatch(result.stdout+result.stderr,/Synthetic private contact|5511987654321/)
+  secretsAbsent(result)
+})
+
+test('rejects contact consent, scope, ciphertext, recipient and timezone failures before creating output', async t => {
+  const data = await withContacts(), f = await fixture(t,data)
+  const invalid = [
+    {allow_plaintext:false,service_private_key:undefined}, {service_private_key:Buffer.alloc(32,99).toString('base64url')},
+    {timezone:'not/a/timezone'}, {contacts:{...data.contacts,workspace_id:user}},
+    {contacts:{...data.contacts,device_ids:[user]}}, {contacts:{...data.contacts,server_url:'https://other.example.test'}},
+    {contacts:{...data.contacts,ciphertext:'A'.repeat(40)}}, {contacts:{...data.contacts,version:2}},
+  ]
+  for (const change of invalid) {
+    await writeFile(f.input,JSON.stringify({...data,...change}))
+    const result=await invoke(f.input,f.output)
+    assert.equal(result.status,1)
+    await assert.rejects(lstat(f.output),{code:'ENOENT'})
+    secretsAbsent(result)
+    assert.doesNotMatch(result.stderr,/Synthetic private contact|5511987654321|ZodError|DOMException|node:internal/)
+  }
+})
+
+test('accepts a contact pack larger than the credential limit while retaining the 8 MiB bundle bound', async t => {
+  const data=await withContacts(Array.from({length:5000},(_,i)=>({name:`Synthetic ${i} ${'x'.repeat(190)}`,phones:['+5511987654321']})))
+  const f=await fixture(t,data)
+  assert.ok((await stat(f.input)).size>1024*1024)
+  const result=await invoke(f.input,f.output)
+  assert.equal(result.status,0,result.stderr)
+  assert.ok((await stat(join(f.output,'contacts.enc.json'))).size>1024*1024)
+  const other=join(f.directory,'too-large')
+  await writeFile(f.input,' '.repeat(8*1024*1024+1))
+  assert.equal((await invoke(f.input,other)).status,1)
+  await assert.rejects(lstat(other),{code:'ENOENT'})
 })

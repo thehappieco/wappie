@@ -87,3 +87,34 @@ it('opens a Go-generated ciphertext over REST after a workspace move', async () 
   const body = vector.batch.find((item: { kind: number }) => item.kind === Kind.Body)
   expect(await opener.raw(vector.content_key.id, body.row, Kind.Body, body.sealed)).toEqual({ state: 'ok', value: fromBase64(body.plaintext) })
 })
+
+it('reads bounded encrypted contact pages without starting contact discovery', async () => {
+ const contacts = [{uid,contact_key:'100@lid',content_key_id:1,full_name_sealed:'c2VhbGVk'}]
+ const fetcher=vi.fn<typeof fetch>(async()=>json({device_id:device,contacts,has_more:true,next_key:'100@lid'}))
+ await expect(client(fetcher).listContacts(device,{limit:2,afterKey:'099@lid'})).resolves.toMatchObject({contacts,next_key:'100@lid'})
+ const url=new URL(String(fetcher.mock.calls[0][0]))
+ expect(url.pathname).toBe(`/v1/devices/${device}/contacts`)
+ expect(url.searchParams.get('after_key')).toBe('099@lid')
+ await expect(client(vi.fn(async()=>json({device_id:uid,contacts:[],has_more:false}))).listContacts(device)).rejects.toMatchObject({code:'device_mismatch'})
+ await expect(client(vi.fn(async()=>json({device_id:device,contacts:[{uid,contact_key:'x',content_key_id:-1}],has_more:false}))).listContacts(device)).rejects.toMatchObject({code:'invalid_response'})
+ await expect(client(vi.fn(async()=>json({device_id:device,contacts,has_more:true,next_key:'099@lid'}))).listContacts(device,{afterKey:'099@lid'})).rejects.toMatchObject({code:'invalid_response'})
+})
+const scanFrom='2026-09-17T00:00:00.000000001Z',scanUntil='2026-09-18T00:00:00Z'
+const scanMessage={uid,device_id:device,sender_key:'123@lid',chat_key:'one',wa_id:'wa-one',seq:1,is_from_me:false,kind:'message',type:'text',source:'live',order_ts:scanFrom}
+it('scans a whole device using exact sender aliases and effective timestamp cursors',async()=>{
+ const fetcher=vi.fn<typeof fetch>(async()=>json({device_id:device,from:scanFrom,until:scanUntil,messages:[scanMessage],has_more:true,next_ts:scanFrom,next_seq:1}))
+ const reply=await client(fetcher).scanMessages(device,{from:scanFrom,until:scanUntil,senderKeys:['123@lid','15551234567@s.whatsapp.net'],chatKey:'one',direction:'incoming',type:'text',kind:'message',limit:2})
+ expect(reply.messages[0].ts).toBeUndefined()
+ const url=new URL(String(fetcher.mock.calls[0][0]))
+ expect(url.pathname).toBe(`/v1/devices/${device}/messages/scan`)
+ expect(url.searchParams.get('sender_keys')).toBe('123@lid,15551234567@s.whatsapp.net')
+ expect(url.searchParams.get('from')).toBe(scanFrom)
+})
+it('rejects device scans with invalid bounds and malformed or unrelated results',async()=>{
+ const fetcher=vi.fn<typeof fetch>()
+ const api=client(fetcher)
+ for(const options of [{from:scanUntil,until:scanFrom},{from:scanFrom,until:scanFrom},{from:'today',until:scanUntil},{from:scanFrom,until:scanUntil,senderKeys:['a','b','c','d']},{from:scanFrom,until:scanUntil,senderKeys:['a,b']},{from:scanFrom,until:scanUntil,limit:201}]) await expect(api.scanMessages(device,options)).rejects.toThrow()
+ expect(fetcher).not.toHaveBeenCalled()
+ const base={device_id:device,from:scanFrom,until:scanUntil,messages:[scanMessage],has_more:false}
+ for(const patch of [{device_id:uid},{from:scanUntil},{messages:[{...scanMessage,device_id:uid}]},{messages:[{...scanMessage,order_ts:'2026-09-17T00:00:00Z'}]},{messages:[{...scanMessage,order_ts:scanUntil}]},{messages:[{...scanMessage,ts:scanUntil}]},{has_more:true,next_ts:scanUntil,next_seq:1},{messages:[scanMessage,scanMessage]}]) await expect(client(vi.fn(async()=>json({...base,...patch}))).scanMessages(device,{from:scanFrom,until:scanUntil})).rejects.toThrow()
+})

@@ -11,6 +11,9 @@ const schema = z.strictObject({
   session_file: file.optional(), token_file: file.optional(),
   password_file: file.optional(), service_key_file: file.optional(), service_user_id: id.optional(),
   allow_plaintext: z.boolean().default(false),
+  contacts_file: file.optional(),
+  timezone: z.string().min(1).max(128).default('UTC'),
+  max_scan_messages: z.number().int().min(1).max(2000).default(500),
   device_ids: z.array(id).min(1).max(1000).optional(),
   max_text_chars: z.number().int().min(128).max(8192).default(4096),
 })
@@ -18,15 +21,16 @@ export class LocalConfigError extends Error {
   constructor(code) { super(code); this.name = 'LocalConfigError'; this.code = code }
 }
 /** Private regular files only. Never print paths, bytes or parser diagnostics. */
-export async function readPrivateFile(path) {
+export async function readPrivateFile(path, { maxBytes = 1024 * 1024 } = {}) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024) throw new LocalConfigError('private_file_required')
   let handle
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const stat = await handle.stat()
-    if (!stat.isFile() || stat.size > 1024 * 1024 || (stat.mode & 0o077) !== 0 ||
+    if (!stat.isFile() || stat.size > maxBytes || (stat.mode & 0o077) !== 0 ||
       (typeof process.getuid === 'function' && stat.uid !== process.getuid())) throw new LocalConfigError('private_file_required')
     const data = await handle.readFile()
-    if (data.length > 1024 * 1024) { data.fill(0); throw new LocalConfigError('private_file_required') }
+    if (data.length > maxBytes) { data.fill(0); throw new LocalConfigError('private_file_required') }
     return data
   } catch (error) {
     if (error instanceof LocalConfigError) throw error
@@ -44,7 +48,10 @@ export function validateConfig(value, base = process.cwd()) {
   if (config.service_key_file && !config.service_user_id) throw new LocalConfigError('service_user_required')
   if (config.allow_plaintext && !(config.session_file ? config.password_file : config.service_key_file)) throw new LocalConfigError('unlock_file_required')
   if (!config.allow_plaintext && (config.password_file || config.service_key_file)) throw new LocalConfigError('plaintext_opt_in_required')
-  for (const field of ['session_file', 'token_file', 'password_file', 'service_key_file']) if (config[field]) config[field] = resolve(base, config[field])
+  try { new Intl.DateTimeFormat('en', { timeZone: config.timezone }).format(0) } catch { throw new LocalConfigError('invalid_timezone') }
+  if (config.contacts_file && (!config.allow_plaintext || !config.token_file || !config.service_key_file || !config.service_user_id || !config.device_ids)) throw new LocalConfigError('contact_pack_requires_service_scope')
+  if (config.device_ids && new Set(config.device_ids).size !== config.device_ids.length) throw new LocalConfigError('invalid_config')
+  for (const field of ['session_file', 'token_file', 'password_file', 'service_key_file', 'contacts_file']) if (config[field]) config[field] = resolve(base, config[field])
   if (config.device_ids) Object.freeze(config.device_ids)
   return Object.freeze(config)
 }

@@ -29,3 +29,19 @@ func TestDiscoveryDescribesProtocolWithoutWorkspaceData(t *testing.T) {
 		t.Fatal("clients cannot distinguish atomic device-scoped issuance from legacy servers that ignore device_ids")
 	}
 }
+
+func TestDiscoveryAdvertisesContactPagesAndDeviceScans(t *testing.T) {
+	w := httptest.NewRecorder()
+	discovery(w, httptest.NewRequest("GET", "/v1/discovery", nil))
+	var doc struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"archive.contacts.v1", "archive.scan.v1"} {
+		if !slices.Contains(doc.Capabilities, capability) {
+			t.Fatalf("missing capability %s", capability)
+		}
+	}
+}

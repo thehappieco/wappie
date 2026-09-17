@@ -28,9 +28,15 @@ without the console.
    **Allow the assistant to read message text** and enter your Wappie password
    for that installation. Your account must have archive access to every
    selected number. The browser uses the password locally; it is not exported.
+   Confirm **Timezone for dates in MCP searches**, for example
+   `America/Sao_Paulo`. With text reading enabled, you can separately choose
+   **Include a snapshot of my personal contacts**. This copies the names and
+   phone numbers currently saved in **My contacts**, encrypted for this
+   connection. Matching contact results may be sent to the AI provider.
 3. Create the connection and download `wappie-mcp-setup.json` before closing
    the setup view. This file contains an API token and, when text is enabled,
-   a service account's private key. Keep it out of shared folders and chats.
+   a service account's private key. It can also contain the optional encrypted
+   contact snapshot. Keep it out of shared folders and chats.
 4. On macOS or Linux with Node.js 22 or later, install the public package and
    import the download into a **new** private directory:
 
@@ -45,13 +51,36 @@ node packages/mcp/setup.mjs \
   --output "$HOME/.wappie-mcp"
 ```
 
-If you already have this checkout and its dependencies, run only the import.
+If you already have a checkout, update its code and rebuild the SDK before
+importing a new bundle or using the new tools:
+
+```sh
+git pull --ff-only
+npm --prefix packages/client ci
+npm --prefix packages/client run build
+npm --prefix packages/mcp ci
+```
+
+Restart the MCP connection after updating. Existing configurations work with the
+expanded eight-tool catalog; the connected installation also needs the new
+contact and archive-scan REST endpoints. An old configuration does not gain a
+personal contact snapshot automatically. To include one, create and download a
+new console setup, import it into a new directory such as
+`"$HOME/.wappie-mcp-next"`, and point the host at that directory's `config.json`.
+Do not overwrite an existing profile's files.
+
 Adjust the download path if your browser saved a different filename. The output
 must be an absolute path in an existing directory you own; it must not already
 exist. The importer accepts an ordinary browser download, then creates a `700`
 directory with `600` files: `config.json`, `token.txt` and, when needed,
-`service-key.txt`. It makes no network requests and never replaces existing
-files.
+`service-key.txt` and `contacts.enc.json`. It authenticates an included contact
+snapshot before writing output, makes no network requests and never replaces
+existing files. The contact file remains encrypted on disk.
+
+Earlier version-1 bundles remain compatible with this importer. A bundle without
+`timezone` uses `UTC`; one without `contacts` creates no contact snapshot. The
+browser's contacts are never imported automatically. A snapshot does not update
+when the browser address book changes.
 
 After a successful import, **delete the original download and remove it from the
 trash**. The importer leaves it in place. Keep the generated files private; host
@@ -132,6 +161,7 @@ that its archive grant is available.
 
 To stop access, revoke the connection's token in the console. That blocks future
 Wappie requests; it cannot remove content already shared with an AI provider.
+It also does not delete or invalidate a contact snapshot already copied locally.
 Create another connection for another installation or workspace. After archive
 key changes, a new connection may be needed to grant current keys.
 
@@ -200,6 +230,28 @@ The API key and private key are separate files. An API key without `acts_as` can
 query permitted metadata, but cannot retrieve service account grants. Do not put
 secrets in the MCP host's JSON configuration or in tool arguments.
 
+### Optional encrypted personal contacts
+
+An imported setup with a contact snapshot adds
+`"contacts_file": "./contacts.enc.json"` to its configuration. This requires
+API-key/service-account mode, `allow_plaintext: true`, `service_user_id`,
+`service_key_file` and an explicit `device_ids` list. Session/password mode does
+not accept a contact snapshot.
+
+The snapshot is encrypted to that service account and bound to the server origin,
+workspace, service user and the **exact configured set of numbers**. Changing
+that set, copying the file to another connection or using a different service
+key fails validation. Do not point `contacts_file` at a vCard or a plaintext JSON
+address book. Use a snapshot prepared for this connection.
+
+Only names and normalized phone numbers are included. Resolution combines them
+with archived contact information using exact phone matches and explicit server
+aliases; it does not guess phone numbers from numeric LIDs. No Apple, Google or
+other contact service is contacted. There is no synchronization with the browser.
+To stop using a snapshot, remove `contacts_file` from the private configuration
+and remove the local file. Token revocation cannot retract a copied snapshot or
+its decryption key.
+
 ### Person: existing CLI session and private password file
 
 Sign in with the public CLI, which prompts for the password without displaying it:
@@ -242,6 +294,23 @@ You choose the configuration outside the arguments sent by the model. Configure
 another MCP instance to connect to a different server/workspace. Use HTTPS;
 HTTP is accepted only for `localhost`, `127.0.0.1` or `::1`.
 
+## Search configuration
+
+These optional properties belong in the private configuration, outside tool
+arguments:
+
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `timezone` | `"UTC"` | An Intl-supported timezone, such as `"America/Sao_Paulo"`, for relative calendar periods. |
+| `max_scan_messages` | `500` | Maximum archive rows examined by one search/activity call; integer from 1 to 2000. |
+| `max_text_chars` | `4096` | Maximum characters returned per opened text field; integer from 128 to 8192. |
+| `contacts_file` | Omitted | Private encrypted personal snapshot, subject to the service-account and exact-scope requirements above. |
+
+For example, add `"timezone": "America/Sao_Paulo"` and
+`"max_scan_messages": 1000` to an existing valid configuration. The console
+bundle includes its selected timezone; manual configurations and older bundles
+default to UTC.
+
 ## Tools and limits
 
 | Tool | Purpose |
@@ -251,19 +320,143 @@ HTTP is accepted only for `localhost`, `127.0.0.1` or `::1`.
 | `list_messages` | A page of messages, with a cursor for older messages. |
 | `get_message` | One message by UUID and number. |
 | `list_revisions` | Archived message versions, with truncation reported. |
+| `resolve_contact` | Candidate identities from archived contacts and an explicitly included personal snapshot. |
+| `search_messages` | Bounded lexical search and metadata filtering across a number's archived chats. |
+| `activity_summary` | Page-level counts of archived original message events by chat, sender and direction. |
 
-MCP pages contain up to 100 items, defaulting to 50. For `list_messages`, pass
+`list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
+defaulting to 50. For `list_messages`, pass
 `next` as `before` in the next request, preserving `ts` and `seq`. Chat listing
 has no cursor in this version; `truncated: true` means the list is incomplete.
-Truncated revisions also have no continuation in this first release.
+Truncated revisions also have no continuation.
 `max_text_chars` limits each opened text (128–8192, default 4096); each text
 reports `truncated`. Responses larger than 1 MiB are rejected with
 `result_too_large`; reduce `limit`, `max_text_chars` or the configured number list.
 
+### Resolve a contact without guessing
+
+`resolve_contact` requires `device_id` and a `query` of 2–256 characters. It
+returns up to 20 candidates by default, with a maximum `limit` of 50. Each call
+examines up to 500 archived contacts and the optional personal snapshot. Names
+identify their source; results include explicit phone/JID aliases and
+`ambiguous` when several candidates match. Ask the user which candidate they
+mean before choosing an identity.
+
+Follow the complete returned `next` object as the next call's arguments to scan
+more archived contacts. If `omitted_candidates` is positive, narrow the query;
+there is no separate cursor for omitted matches from the current page or personal
+snapshot. Check `coverage`, including unavailable encrypted names and remaining
+archive pages, before concluding that a contact is absent. A personal-only phone
+candidate does not prove that the archive contains a conversation with it.
+
+### Search across conversations
+
+`search_messages` requires one authorized `device_id`. It searches that number's
+chats together; selecting a contact or listing chats first is unnecessary. For
+several authorized numbers, make a call for each number and keep source labels.
+
+With a `query`, all whitespace-separated terms must occur as case-insensitive,
+accent-insensitive substrings in the locally opened body or attachment filename.
+This is lexical matching: it does not translate queries, infer synonyms, search
+file contents or use a semantic/vector index. Text queries require
+`allow_plaintext: true`; without a query, metadata filters also work with locked
+content. The body is searched before the returned excerpt is shortened.
+
+Optional filters combine with the time interval:
+
+- `chat_key`: restrict to one conversation, including known archive aliases.
+- `sender_keys`: one to three explicit identities, such as aliases returned by
+  `resolve_contact`; no inferred LID or name is accepted as an identity.
+- `direction`: `incoming` or `outgoing`.
+- `type`: an archive message type.
+- `kind`: `message`, `edit`, `delete` or `reaction`; omitted means all kinds.
+- `has_attachment`: presence or absence of archived attachment metadata.
+
+Results arrive newest first, up to `limit` matches (default 20, maximum 50),
+within `max_scan_messages` examined rows. A call can return no matches and still
+have more rows to search. Follow the complete `next` object unchanged while
+`has_more` is true. This is different from `list_messages`, where only the cursor
+is passed as `before`.
+
+Each result includes an authenticated REST source reference and an
+`archive_status`: `latest_archived`, `superseded`, `deleted`, `control_event` or
+`unavailable`. A search can match an old revision or a subsequently deleted
+message. Check this state and use `list_revisions` before presenting a historical
+statement as current. The source URL contains no credential and still requires
+authorized access. To expand context, search the returned `chat_key` with a
+bounded explicit time interval and no text query.
+
+### Calendar periods and continuation
+
+Both `search_messages` and `activity_summary` accept either `period` or the pair
+`from`/`until`, never both forms. Explicit bounds require RFC3339 timestamps with
+an offset; supported fractional seconds, including nanoseconds, are preserved.
+The interval includes `from` and excludes `until`.
+
+| `period` | Interval in the configured timezone |
+| --- | --- |
+| `today` | Start of the current local date until now. |
+| `yesterday` | Start of the preceding local date until the start of today. |
+| `yesterday_evening` | 18:00 on the preceding local date until the start of today. |
+| `last_7_days` | Start of the local date six dates ago until now. |
+| `all` or omitted | Unix epoch until now. |
+
+Calendar boundaries account for timezone changes; a local day need not contain
+24 hours. `range` reports the resolved bounds, timezone and current clock. Inspect
+it when interpreting relative dates. If a row has no original message timestamp,
+filtering and ordering use archive arrival time (`order_ts`); `ts` remains absent,
+and `coverage.missing_sent_time` reports these cases.
+
+A returned `next` contains fixed `from`/`until`, the `before` cursor and the
+original filters. Use it as the full argument object for the same tool. Do not
+recompute “yesterday” on each page: a continuation with `before` requires explicit
+bounds and no `period`. Concurrent ingestion, backfill, deletion and migration
+can change the archive between calls; pagination is a live read, not a snapshot.
+
+### Summarize activity accurately
+
+`activity_summary` uses the same time, chat, sender, direction, type and attachment
+filters. It does not accept a text query, a `kind` override or a result `limit`.
+It scans up to `max_scan_messages` original `message` rows per call and groups
+them by chat, sender and direction. Group conversations and direct chats remain
+separate. It does not need message plaintext to count metadata.
+
+These are **archived original message events**, including originals later edited
+or deleted while still retained in the archive. Edits, deletion controls and
+reactions are not additional original messages. The counts do not represent the
+current nondeleted messages visible in WhatsApp. Each `archived_messages` count
+belongs to this page only: follow `next` and sum matching groups across pages to
+cover the requested interval. Report incomplete coverage whenever continuation
+or errors prevent finishing.
+
+For all search/activity results, inspect `coverage` and `has_more`. Missing keys,
+tampered fields, unsupported structured payloads, scan limits and capture gaps
+affect what can be concluded. Even an exhausted interval covers the stored
+archive, not proof of complete WhatsApp history.
+
+### Example prompts
+
+After choosing an authorized number, examples in Portuguese are:
+
+> Procure “atraso entrega” em todas as conversas desse número ontem à noite.
+> Mostre o fuso, os trechos e as fontes. Continue as páginas e avise se a busca
+> ficar incompleta. Confira se os resultados foram editados ou apagados.
+
+> Mostre a atividade de ontem por conversa, participante e direção. Some as
+> páginas e deixe claro que são eventos originais arquivados.
+
+> Resolva “Ana” nos contatos disponíveis. Se houver mais de uma candidata,
+> mostre as opções antes de escolher.
+
+The proposed persistent encrypted index and semantic retrieval are described
+separately in [Encrypted contextual search](../../docs/encrypted-context-search.md).
+They are future architecture, not capabilities of these tools.
+
 There are no tools to send messages, mark them as read, make calls, download
 media, delete content, grant access, switch workspaces or request phone history.
-Attachments expose metadata only; structured content such as polls/locations is
-marked `unsupported`, without fabricated interpretation.
+Attachments expose metadata and, when authorized, their locally opened filename;
+their file contents are not downloaded or searched. Structured content such as
+polls/locations is marked `unsupported`, without fabricated interpretation.
 
 **`allow_plaintext: true` sends opened text to the MCP host and its model.**
 Decryption happens in this local process. Keys are not sent to Wappie or the
@@ -285,7 +478,10 @@ synthetic local HTTP server. It covers initialization, the tool catalog, calls,
 Go ciphertext, grants, namespaces after migration, cursors, revocation, tampering,
 scope isolation, private files and the absence of secrets in responses.
 Setup tests also cover bundle validation, private output permissions, refusal to
-overwrite destinations and keeping credential values out of diagnostics. These
+overwrite destinations, authenticated contact snapshots and keeping credential
+values out of diagnostics. Time tests cover calendar boundaries, daylight-saving
+changes and nanosecond-preserving explicit bounds. Search tests exercise bounded
+cross-chat scans, continuation, contact ambiguity and historical event counts. These
 local tests do not establish a live ChatGPT or Claude connection; complete the
 host-specific first check above in your own account.
 

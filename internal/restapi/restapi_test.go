@@ -75,7 +75,7 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	f.handler = &restapi.Handler{APIKeys: f.api, Users: f.users, Keys: f.keys, Devices: f.devices, Messages: f.messages, Receipts: f.receipts}
+	f.handler = &restapi.Handler{APIKeys: f.api, Users: f.users, Keys: f.keys, Devices: f.devices, Messages: f.messages, Contacts: store.NewContacts(pool), Receipts: f.receipts}
 	f.handler.Mount(mux)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)

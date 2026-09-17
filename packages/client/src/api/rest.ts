@@ -8,6 +8,28 @@ export type ArchivePage = WorkspaceReply & P.Page
 export type ArchiveMessage = WorkspaceReply & P.SealedMessage
 export type ArchiveHistory = WorkspaceReply & P.History & { requested_uid: string }
 export type ArchiveKeys = WorkspaceReply & P.Keys
+export type ArchiveContacts = WorkspaceReply & P.Contacts & { has_more: boolean; next_key?: string }
+export type ArchiveScanMessage = P.SealedMessage & { order_ts: string }
+export interface ArchiveScanPage extends WorkspaceReply {
+  device_id: string
+  from: string
+  until: string
+  messages: ArchiveScanMessage[]
+  has_more: boolean
+  next_ts?: string
+  next_seq?: number
+}
+export interface ArchiveScanOptions {
+  from: string
+  until: string
+  senderKeys?: string[]
+  chatKey?: string
+  direction?: 'incoming' | 'outgoing'
+  type?: string
+  kind?: 'message' | 'edit' | 'delete' | 'reaction'
+  limit?: number
+  before?: ArchiveCursor
+}
 export interface ArchiveGrants extends WorkspaceReply {
   user_id: string
   grants: { device_id: string; archive_tenant_id?: string; label?: string; epoch: number; sealed_dsk: string }[]
@@ -53,6 +75,33 @@ function valid(condition: unknown): asserts condition {
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function isID(value: unknown): value is string { return typeof value === 'string' && uuid.test(value) }
 function nonnegative(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 }
+function routingKey(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && new TextEncoder().encode(value).length <= 512 && !/[\u0000\r\n]/.test(value)
+}
+// Compare RFC3339 timestamps without losing sub-millisecond cursor precision.
+function timestamp(value: unknown): bigint | undefined {
+  if (typeof value !== 'string') return
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value)
+  if (!match) return
+  const [, y, m, d, h, min, sec, fraction, zone] = match
+  const year = Number(y), month = Number(m), day = Number(d)
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  if (month < 1 || month > 12 || day < 1 || day > days[month - 1] || Number(h) > 23 || Number(min) > 59 || Number(sec) > 59 ||
+    (zone !== 'Z' && (Number(zone.slice(1, 3)) > 23 || Number(zone.slice(4)) > 59))) return
+  const base = Date.parse(`${y}-${m}-${d}T${h}:${min}:${sec}${zone}`)
+  if (!Number.isFinite(base)) return
+  return BigInt(base) * 1_000_000n + BigInt((fraction ?? '').padEnd(9, '0'))
+}
+const contentTypes = new Set(['text', 'image', 'video', 'ptv', 'audio', 'ptt', 'document', 'sticker', 'location', 'live_location', 'contact', 'contact_array', 'poll', 'poll_vote', 'event', 'group_invite', 'album', 'template', 'interactive', 'buttons', 'list', 'button_reply', 'placeholder', 'reaction', 'protocol', 'unsupported', 'undecryptable'])
+const kinds = new Set(['message', 'edit', 'delete', 'reaction'])
+function contactShape(value: unknown): asserts value is P.ContactSummary {
+  valid(record(value) && isID(value.uid) && routingKey(value.contact_key))
+  for (const key of ['contact_lid', 'contact_pn']) valid(value[key] === undefined || routingKey(value[key]))
+  for (const key of ['push_name_sealed', 'full_name_sealed', 'business_name_sealed', 'avatar_id']) valid(value[key] === undefined || typeof value[key] === 'string')
+  for (const key of ['content_key_id', 'avatar_key_id']) valid(value[key] === undefined || (nonnegative(value[key]) && value[key] > 0 && value[key] <= 2147483647))
+  for (const key of ['is_group', 'has_avatar']) valid(value[key] === undefined || typeof value[key] === 'boolean')
+}
 function messageShape(value: unknown): asserts value is P.SealedMessage {
   valid(record(value) && isID(value.uid) && isID(value.device_id) && typeof value.chat_key === 'string' &&
     typeof value.wa_id === 'string' && nonnegative(value.seq) && typeof value.is_from_me === 'boolean' &&
@@ -140,6 +189,91 @@ export class ArchiveClient {
     valid(!result.has_more || (typeof result.next_ts === 'string' && Number.isFinite(Date.parse(result.next_ts)) && nonnegative(result.next_seq) && result.next_seq > 0))
     if (result.messages.some(message => message.device_id !== id)) throw new ArchiveError('device_mismatch')
     if (result.chat_key !== options.chatKey) throw new ArchiveError('chat_mismatch')
+    return result
+  }
+  /** Reads stored encrypted contact names; never starts identity discovery. */
+  async listContacts(deviceID: string, options: { limit?: number; afterKey?: string } = {}): Promise<ArchiveContacts> {
+    const id = identifier(deviceID), count = limit(options.limit, 100, 500)
+    const query: Record<string, string> = { limit: String(count) }
+    if (options.afterKey !== undefined) {
+      if (!routingKey(options.afterKey)) throw new ArchiveError('invalid_cursor')
+      query.after_key = options.afterKey
+    }
+    const result = await this.get<ArchiveContacts>(`/v1/devices/${id}/contacts`, query)
+    valid(isID(result.device_id) && Array.isArray(result.contacts) && result.contacts.length <= count && typeof result.has_more === 'boolean')
+    if (result.device_id !== id) throw new ArchiveError('device_mismatch')
+    const keys = new Set<string>(), ids = new Set<string>()
+    for (const contact of result.contacts) {
+      contactShape(contact)
+      valid(!keys.has(contact.contact_key) && !ids.has(contact.uid) && contact.contact_key !== options.afterKey)
+      keys.add(contact.contact_key); ids.add(contact.uid)
+    }
+    if (result.has_more) valid(routingKey(result.next_key) && result.next_key === result.contacts.at(-1)?.contact_key && result.next_key !== options.afterKey)
+    else valid(result.next_key === undefined)
+    return result
+  }
+  /** Reads archive events in [from, until), including edits and deletions.
+   * Pages are oldest first; the cursor selects the preceding page. Concurrent
+   * backfills may require a rescan. Use history(uid) to interpret current state.
+   */
+  async scanMessages(deviceID: string, options: ArchiveScanOptions): Promise<ArchiveScanPage> {
+    const id = identifier(deviceID), count = limit(options.limit, 50, 200)
+    const from = timestamp(options.from), until = timestamp(options.until)
+    if (from === undefined || until === undefined || from >= until) throw new ArchiveError('invalid_range')
+    const query: Record<string, string> = { from: options.from, until: options.until, limit: String(count) }
+    if (options.senderKeys !== undefined) {
+      if (!Array.isArray(options.senderKeys) || options.senderKeys.length < 1 || options.senderKeys.length > 3 ||
+        options.senderKeys.some(key => !routingKey(key) || key.includes(','))) throw new ArchiveError('invalid_sender')
+      query.sender_keys = [...new Set(options.senderKeys)].join(',')
+    }
+    if (options.chatKey !== undefined) {
+      if (!routingKey(options.chatKey)) throw new ArchiveError('invalid_chat')
+      query.chat_key = options.chatKey
+    }
+    if (options.direction !== undefined) {
+      if (options.direction !== 'incoming' && options.direction !== 'outgoing') throw new ArchiveError('invalid_direction')
+      query.direction = options.direction
+    }
+    if (options.type !== undefined) {
+      if (!contentTypes.has(options.type)) throw new ArchiveError('invalid_type')
+      query.type = options.type
+    }
+    if (options.kind !== undefined) {
+      if (!kinds.has(options.kind)) throw new ArchiveError('invalid_kind')
+      query.kind = options.kind
+    }
+    let before: bigint | undefined
+    if (options.before !== undefined) {
+      before = timestamp(options.before.ts)
+      if (before === undefined || !Number.isSafeInteger(options.before.seq) || options.before.seq < 1) throw new ArchiveError('invalid_cursor')
+      query.before_ts = options.before.ts; query.before_seq = String(options.before.seq)
+    }
+    const result = await this.get<ArchiveScanPage>(`/v1/devices/${id}/messages/scan`, query)
+    valid(isID(result.device_id) && Array.isArray(result.messages) && result.messages.length <= count && typeof result.has_more === 'boolean' &&
+      timestamp(result.from) === from && timestamp(result.until) === until)
+    if (result.device_id !== id) throw new ArchiveError('device_mismatch')
+    let previous: { at: bigint; seq: number } | undefined
+    const ids = new Set<string>()
+    for (const message of result.messages) {
+      messageShape(message)
+      if (message.device_id !== id) throw new ArchiveError('device_mismatch')
+      const at = timestamp(message.order_ts)
+      valid(at !== undefined && at >= from && at < until && message.seq > 0 && !ids.has(message.uid))
+      valid(message.ts === undefined || timestamp(message.ts) === at)
+      valid(!previous || at > previous.at || (at === previous.at && message.seq > previous.seq))
+      valid(before === undefined || at < before || (at === before && message.seq < options.before!.seq))
+      valid(options.direction === undefined || message.is_from_me === (options.direction === 'outgoing'))
+      valid(options.kind === undefined || message.kind === options.kind)
+      valid(options.type === undefined || message.type === options.type)
+      if (options.senderKeys) valid([message.sender_key, message.sender_lid, message.sender_pn].some(key => key !== undefined && options.senderKeys!.includes(key)))
+      // chat_key may include explicitly recorded PN/LID siblings. Their
+      // equivalence is maintained by the server; do not guess it from suffixes.
+      previous = { at, seq: message.seq }; ids.add(message.uid)
+    }
+    if (result.has_more) {
+      const first = result.messages[0]
+      valid(first && timestamp(result.next_ts) === timestamp(first.order_ts) && result.next_seq === first.seq)
+    } else valid(result.next_ts === undefined && result.next_seq === undefined)
     return result
   }
   async getMessage(uid: string): Promise<ArchiveMessage> {

@@ -18,7 +18,7 @@ func discovery(w http.ResponseWriter, r *http.Request) {
 		APIVersion   int               `json:"api_version"`
 		Capabilities []string          `json:"capabilities"`
 		Endpoints    map[string]string `json:"endpoints"`
-	}{"wappie", BuildVersion, 1, []string{"archive.sealed.v1", "archive.rest.v1", "apikeys.device-scope.v1", "workspaces.v1", "auth.password", "external-client.v1"}, map[string]string{"websocket": "/v1/ws", "archive_rest": "/v1", "openapi": "/v1/openapi.json", "auth": "/v1/auth", "media": "/v1/media", "upload": "/v1/upload", "calls_media": "/v1/calls/media"}}); err != nil {
+	}{"wappie", BuildVersion, 1, []string{"archive.sealed.v1", "archive.rest.v1", "archive.contacts.v1", "archive.scan.v1", "apikeys.device-scope.v1", "workspaces.v1", "auth.password", "external-client.v1"}, map[string]string{"websocket": "/v1/ws", "archive_rest": "/v1", "openapi": "/v1/openapi.json", "auth": "/v1/auth", "media": "/v1/media", "upload": "/v1/upload", "calls_media": "/v1/calls/media"}}); err != nil {
 		// A failed response write means the requester disconnected.
 		return
 	}

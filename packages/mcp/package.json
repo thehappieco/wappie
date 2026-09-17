@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "engines": { "node": ">=22" },
   "bin": { "wappie-mcp": "./cli.mjs", "wappie-mcp-setup": "./setup.mjs" },
-  "files": ["cli.mjs", "setup.mjs", "server.mjs", "config.mjs", "reader.mjs", "README.md", "LICENSE"],
+  "files": ["cli.mjs", "setup.mjs", "server.mjs", "config.mjs", "reader.mjs", "contacts.mjs", "time.mjs", "README.md", "LICENSE"],
   "scripts": { "test": "node --test test/*.test.mjs" },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
