@@ -64,10 +64,12 @@ func (f SinkFunc) Handle(ctx context.Context, deviceID string, evt any) { f(ctx,
 
 // DeviceConfig configures a supervised device.
 type DeviceConfig struct {
-	ID       string // our uuid, stable across re-pairings
-	TenantID string
-	Client   Client
-	Store    Store
+	// CheckStart is evaluated immediately before every cold-connect attempt.
+	CheckStart func(context.Context, string) error
+	ID         string // our uuid, stable across re-pairings
+	TenantID   string
+	Client     Client
+	Store      Store
 	// Contacts is whatsmeow's own cached contact list for this device.
 	//
 	// A narrow seam rather than exposing the whole session store. It exists
@@ -332,6 +334,11 @@ func (d *Device) connectWithBackoff(ctx context.Context) error {
 	for attempt := range maxAttempts {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if d.cfg.CheckStart != nil {
+			if err := d.cfg.CheckStart(ctx, d.cfg.TenantID); err != nil {
+				return err
+			}
 		}
 		if err := d.cfg.Client.Connect(); err == nil {
 			return nil

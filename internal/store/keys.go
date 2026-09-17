@@ -34,6 +34,19 @@ var _ seal.KeyStore = (*Keys)(nil)
 // system makes.
 var ErrNoArchiveKey = errors.New("store: device has no archive key")
 
+// ArchiveTenant returns the immutable cryptographic namespace after authorizing
+// the device under its current workspace. It grants no access to that old workspace.
+func (k *Keys) ArchiveTenant(ctx context.Context, tenant, device uuid.UUID) (uuid.UUID, error) {
+	var archive uuid.UUID
+	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT archive_tenant_id FROM devices WHERE id=$1 AND tenant_id=$2`, device, tenant).Scan(&archive)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return archive, err
+}
+
 // ArchiveKey returns a device's current archive public key and epoch.
 func (k *Keys) ArchiveKey(ctx context.Context, tenant, device uuid.UUID) (seal.PublicKey, uint16, error) {
 	var raw []byte
@@ -228,11 +241,12 @@ func (k *Keys) CloseContentKey(ctx context.Context, tenant, device uuid.UUID, id
 // unlocked, because the key was in their browser. Only an epoch rotation plus a
 // re-seal is retroactive.
 type Grant struct {
-	TenantID  uuid.UUID
-	DeviceID  uuid.UUID
-	UserID    uuid.UUID
-	Epoch     uint16
-	SealedDSK []byte
+	ArchiveTenantID uuid.UUID
+	TenantID        uuid.UUID
+	DeviceID        uuid.UUID
+	UserID          uuid.UUID
+	Epoch           uint16
+	SealedDSK       []byte
 }
 
 // PutGrant records a sealed device key for one user.
@@ -271,7 +285,7 @@ func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, 
 	var out []Grant
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT g.device_id, g.epoch, g.sealed_dsk
+			SELECT g.device_id, g.epoch, g.sealed_dsk, d.archive_tenant_id
 			  FROM device_key_grants g
 			  JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch
 			 WHERE g.user_id = $1
@@ -283,7 +297,7 @@ func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, 
 		for rows.Next() {
 			g := Grant{TenantID: tenant, UserID: user}
 			var epoch int32
-			if err := rows.Scan(&g.DeviceID, &epoch, &g.SealedDSK); err != nil {
+			if err := rows.Scan(&g.DeviceID, &epoch, &g.SealedDSK, &g.ArchiveTenantID); err != nil {
 				return err
 			}
 			if epoch < 1 || epoch > maxEpoch {

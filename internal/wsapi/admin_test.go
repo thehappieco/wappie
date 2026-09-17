@@ -433,6 +433,9 @@ func TestStatsCountWhatEachDeviceArchived(t *testing.T) {
 	got := map[string]int64{}
 	for _, s := range stats.Stats {
 		got[s.DeviceID] = s.Messages
+		if s.ArchiveBytes <= 0 || s.UsedBytes != s.ArchiveBytes+s.ObjectBytes || s.MediaBytes != s.ObjectBytes {
+			t.Errorf("device stats omitted canonical storage categories: %+v", s)
+		}
 	}
 	if got[one.ID] != 2 || got[two.ID] != 5 {
 		t.Errorf("messages = %v, want 2 and 5 for %s and %s", got, one.ID, two.ID)

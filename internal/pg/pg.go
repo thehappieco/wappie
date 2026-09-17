@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -158,6 +159,9 @@ func (p *Pools) Ping(ctx context.Context) error {
 // "you asked wrong".
 var ErrNoTenant = errors.New("pg: tenant id is required for a tenant-scoped transaction")
 
+// ErrStoragePaused identifies a write refused by persistent archive policy.
+var ErrStoragePaused = errors.New("workspace storage is paused; restore capacity and explicitly resume capture")
+
 // InTenantTx runs fn inside a transaction scoped to one tenant.
 //
 // The tenant is applied with set_config(..., is_local => true) rather than a
@@ -184,6 +188,21 @@ func InTenantTx(ctx context.Context, pool *pgxpool.Pool, tenantID string, fn fun
 		return fmt.Errorf("pg: set tenant: %w", err)
 	}
 	if err := fn(tx); err != nil {
+		var quota *pgconn.PgError
+		if errors.As(err, &quota) && quota.Code == "WS001" {
+			// Finish the policy transition even if the request disconnected.
+			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if rollbackErr := tx.Rollback(pauseCtx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+				return errors.Join(ErrStoragePaused, rollbackErr)
+			}
+			// The rejected write rolls back; its pause must survive that rollback.
+			_, pauseErr := pool.Exec(pauseCtx, `UPDATE tenants SET storage_paused_at=coalesce(storage_paused_at,clock_timestamp()) WHERE id=$1`, tenantID)
+			if pauseErr != nil {
+				return errors.Join(ErrStoragePaused, pauseErr)
+			}
+			return ErrStoragePaused
+		}
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

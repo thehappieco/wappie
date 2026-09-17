@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.mau.fi/whatsmeow"
 
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/blob"
 	"whatserver2/internal/bus"
+	"whatserver2/internal/calling"
 	"whatserver2/internal/config"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
@@ -56,6 +58,8 @@ func main() {
 		err = issueInvite(os.Args[2:])
 	case len(os.Args) > 1 && os.Args[1] == "reset-archive":
 		err = resetArchive(os.Args[2:])
+	case len(os.Args) > 1 && os.Args[1] == "storage":
+		err = storageAdmin(os.Args[2:])
 	case len(os.Args) > 1 && os.Args[1] == "retention":
 		err = setRetention(os.Args[2:])
 	case len(os.Args) > 1 && os.Args[1] == "erase":
@@ -81,6 +85,7 @@ type app struct {
 	devices  *store.Devices
 	apiKeys  *store.APIKeys
 	users    *store.Users
+	storage  *store.Storage
 	keys     *store.Keys
 	messages *store.Messages
 	receipts *store.Receipts
@@ -96,6 +101,7 @@ type app struct {
 	registry *wa.Registry
 	router   *ingest.Router
 	ws       *wsapi.Server
+	calls    *calling.Service
 	web      *webui.Handler
 	passkeys *authapi.PasskeyProvider
 	// limits bounds sign-in attempts, shared by the HTTP auth endpoints and
@@ -154,6 +160,7 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		devices: store.NewDevices(pools.API),
 		apiKeys: store.NewAPIKeys(pools.API),
 		users:   store.NewUsers(pools.API),
+		storage: store.NewStorage(pools.API),
 		limits:  ratelimit.DefaultAuth(cfg.TrustedProxies),
 	}
 	if err := a.users.SetInviteEncryptionKey(cfg.Signup.InviteEncryptionKey); err != nil {
@@ -294,13 +301,22 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		return nil, nil, err
 	}
 
+	var attachCalls func(string, string, *whatsmeow.Client) func()
+	if cfg.CallsEnabled {
+		a.calls = calling.New()
+		a.calls.BrowserOrigins = cfg.BrowserOrigins
+		attachCalls = a.calls.Attach
+	}
 	registry, err = wa.NewRegistry(wa.RegistryConfig{
-		Container: container,
-		Store:     a.devices,
-		Sink:      router,
-		Locker:    pg.NewLocker(pools.API),
-		Log:       lg,
-		WireLog:   cfg.Log.Wire,
+		LinkedDeviceName: cfg.WADeviceName,
+		CheckStart:       a.checkCapture,
+		OnClient:         attachCalls,
+		Container:        container,
+		Store:            a.devices,
+		Sink:             router,
+		Locker:           pg.NewLocker(pools.API),
+		Log:              lg,
+		WireLog:          cfg.Log.Wire,
 		OnStatus: func(tenantID, deviceID string, status wa.Status, reason string) {
 			if ws != nil {
 				ws.BroadcastDeviceStatus(tenantID, deviceID, string(status), reason)
@@ -344,7 +360,10 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 	}
 
 	ws = wsapi.NewServer(wsapi.Config{
-		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
+		Storage:        a.storage,
+		BrowserOrigins: cfg.BrowserOrigins,
+		Calls:          a.calls,
+		Keys:           a.apiKeys, Sessions: store.NewUsers(a.pools.API),
 		Accounts: store.NewUsers(a.pools.API),
 		Devices:  a.devices, Messages: a.messages, Keys2: a.keys,
 		Receipts: a.receipts, Unread: a.unread,
@@ -382,11 +401,12 @@ func serve() error {
 	web, err := webui.New(a.cfg.Web.Dir, a.log)
 	switch {
 	case err == nil:
+		web.ExternalServers = a.cfg.Web.ExternalServers
 		a.web = web
 		a.log.Info("serving the web client", "dir", web.Dir())
 	case errors.Is(err, webui.ErrNotBuilt):
 		a.log.Info("no web client built; serving the api only",
-			"dir", a.cfg.Web.Dir, "build_with", "cd web && npm install && npm run build")
+			"dir", a.cfg.Web.Dir)
 	default:
 		return err
 	}
@@ -603,6 +623,8 @@ func (a *app) probes(mux *http.ServeMux) {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/discovery", discovery)
+	mux.HandleFunc("GET /.well-known/wappie", discovery)
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
@@ -610,6 +632,7 @@ func (a *app) routes() http.Handler {
 	// Signing up and signing in. Over HTTP because the websocket wants
 	// credentials before it opens, and this is where credentials come from.
 	authHandler := &authapi.Handler{
+		Storage:       a.storage,
 		AccessChanged: a.ws.RevalidateAccess,
 		Users:         a.users, Keys: a.keys,
 		Devices: a.devices, Limits: a.limits, Log: a.log, Passkeys: a.passkeys,
@@ -623,6 +646,9 @@ func (a *app) routes() http.Handler {
 	authHandler.Mount(mux)
 
 	mux.Handle("/v1/ws", a.ws)
+	if a.calls != nil {
+		mux.Handle("/v1/calls/media", a.calls)
+	}
 
 	// Attachments go over HTTP rather than through the websocket. A two
 	// hundred megabyte video framed down the same connection as live messages
@@ -643,6 +669,7 @@ func (a *app) routes() http.Handler {
 	// video framed down the same connection as live messages, stalling
 	// everything behind it and sitting in memory on both ends.
 	mux.Handle("POST /v1/upload", &media.UploadHandler{
+		Storage:  a.storage,
 		Keys:     a.apiKeys,
 		Sessions: store.NewUsers(a.pools.API),
 		Devices:  a.devices,
@@ -662,7 +689,7 @@ func (a *app) routes() http.Handler {
 	if a.web != nil {
 		mux.Handle("/", a.web)
 	}
-	return mux
+	return a.cfg.BrowserOrigins.Wrap(mux)
 }
 
 // listTenants prints the tenants in this database.

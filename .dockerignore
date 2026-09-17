@@ -1,0 +1,13 @@
+.git
+.worktrees
+.superpowers
+commercial
+web
+node_modules
+**/node_modules
+**/dist
+.env
+.env.*
+bin
+data
+*.out

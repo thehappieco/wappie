@@ -31,6 +31,7 @@ type DeviceLookup func(deviceID string) (DeviceInfo, bool)
 
 // ArchiveKeys supplies a device's public key.
 type ArchiveKeys interface {
+	ArchiveTenant(ctx context.Context, tenant, device uuid.UUID) (uuid.UUID, error)
 	ArchiveKey(ctx context.Context, tenant, device uuid.UUID) (seal.PublicKey, uint16, error)
 }
 
@@ -316,7 +317,11 @@ func (r *Router) pipelineFor(ctx context.Context, tenant, device uuid.UUID) (*Pi
 	if err != nil {
 		return nil, fmt.Errorf("ingest: archive key for device %s: %w", device, err)
 	}
-	sealer, err := seal.NewSealer(tenant, device, pub, epoch, r.cfg.KeyStore)
+	archiveTenant, err := r.cfg.Keys.ArchiveTenant(ctx, tenant, device)
+	if err != nil {
+		return nil, err
+	}
+	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, r.cfg.KeyStore)
 	if err != nil {
 		return nil, err
 	}

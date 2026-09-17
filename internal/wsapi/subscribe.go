@@ -367,7 +367,12 @@ func (s *session) handleKeysGet(ctx context.Context, f Frame) {
 		}
 		out = append(out, SealedKey{ID: id, Sealed: sealed})
 	}
-	s.reply(TypeKeys, f.ReqID, Keys{DeviceID: device.String(), Keys: out})
+	archiveTenant, err := s.srv.cfg.Keys2.ArchiveTenant(ctx, tenant, device)
+	if err != nil {
+		s.replyError(f.ReqID, ErrCodeNotFound, "no such device")
+		return
+	}
+	s.reply(TypeKeys, f.ReqID, Keys{ArchiveTenantID: archiveTenant.String(), DeviceID: device.String(), Keys: out})
 }
 
 // chatListLimit is how many conversations one listing carries.

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -84,4 +85,14 @@ func lockKey(name string) int64 {
 	// positive one.
 	//nolint:gosec // G115: intentional bit reinterpretation, not a numeric conversion
 	return int64(h.Sum64())
+}
+
+// TryLockTx uses the same namespace as running WhatsApp supervisors, but the
+// database releases it with the caller's transaction even after a crash.
+func TryLockTx(ctx context.Context, tx interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, key string) (bool, error) {
+	var ok bool
+	err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, lockKey(key)).Scan(&ok)
+	return ok, err
 }

@@ -62,7 +62,8 @@ type PairOptions struct {
 	// zero, no punctuation (punctuation is stripped for you).
 	Phone string
 
-	// DisplayName is what shows up under "Linked devices" on the phone.
+	// DisplayName is the browser descriptor for the code-pairing request.
+	// The installation name in Linked devices comes from RegistryConfig.
 	//
 	// WhatsApp validates the format server-side and rejects anything it does
 	// not recognise with a 400, so this must look like "Browser (OS)" using a
@@ -260,17 +261,25 @@ func (r *Registry) abandon(ctx context.Context, deviceID string) {
 // to call GetQRChannel before Connect.
 func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 	policy ReceiptPolicy, client Client) (*Device, error) {
+	if r.cfg.CheckStart != nil {
+		if err := r.cfg.CheckStart(ctx, tenantID); err != nil {
+			return nil, err
+		}
+	}
 	r.mu.Lock()
 	if _, running := r.devices[deviceID]; running {
 		r.mu.Unlock()
 		return nil, ErrAlreadyRunning
 	}
-	r.devices[deviceID] = &entry{}
+	reserved := &entry{}
+	r.devices[deviceID] = reserved
 	r.mu.Unlock()
 
 	fail := func(err error) (*Device, error) {
 		r.mu.Lock()
-		delete(r.devices, deviceID)
+		if r.devices[deviceID] == reserved {
+			delete(r.devices, deviceID)
+		}
 		r.mu.Unlock()
 		return nil, err
 	}
@@ -290,8 +299,9 @@ func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 	dev, err := NewDevice(DeviceConfig{
 		ID: deviceID, TenantID: tenantID,
 		Client: client, Store: r.cfg.Store, Sink: r.cfg.Sink,
-		Contacts: contactSourceOf(client),
-		Policy:   policy, Log: r.log, OnStatus: r.cfg.OnStatus,
+		Contacts:   contactSourceOf(client),
+		CheckStart: r.cfg.CheckStart,
+		Policy:     policy, Log: r.log, OnStatus: r.cfg.OnStatus,
 	})
 	if err != nil {
 		if release != nil {
@@ -309,8 +319,26 @@ func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 		}
 		dev.identity.merge(identity)
 	}
+	var stopClient func()
+	if real, ok := client.(*whatsmeow.Client); ok && r.cfg.OnClient != nil {
+		stopClient = r.cfg.OnClient(tenantID, deviceID, real)
+	}
+	if real, ok := client.(*whatsmeow.Client); ok {
+		installConnectionPolicy(real, tenantID, r.cfg.CheckStart)
+	}
 	r.mu.Lock()
-	r.devices[deviceID] = &entry{device: dev, release: release}
+	if r.devices[deviceID] != reserved {
+		r.mu.Unlock()
+		if stopClient != nil {
+			stopClient()
+		}
+		dev.Stop(context.WithoutCancel(ctx))
+		if release != nil {
+			release()
+		}
+		return nil, fmt.Errorf("wa: device start was cancelled: %w", context.Canceled)
+	}
+	r.devices[deviceID] = &entry{device: dev, release: release, stopClient: stopClient}
 	r.mu.Unlock()
 	return dev, nil
 }

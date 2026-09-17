@@ -1,49 +1,87 @@
-# Wappie deployment
+# Distribution and deployment
 
-The public core is independent of commercial hosting. Keep the existing module/binary names (`whatserver2`, `whatserverd`, `wsctl`) for compatibility. Build with Go 1.26.7 and PostgreSQL 18; the Vue client builds independently with the package lockfile.
+## Public server
 
-## Self-hosted
+Go 1.26.7 and PostgreSQL 18 build and run the server, API administration and Go
+CLIs. Node is required only for the optional public TypeScript SDK/account CLI.
+The public repository contains no app, console or billing sources. Standalone
+installations require no Wappie subscription. `WS_WEB_DIR` defaults to empty.
 
-Follow README for database bootstrap, a workspace, an owner invite, storage and frontend build. A single origin can serve both the client and `/v1/*`; `/console` starts administration. No commercial module is needed. Workspace capacity is unlimited unless explicitly set by the operator. Use separate non-superuser database roles and backups. Never use a superuser application connection: it bypasses row-level security.
+Follow the README for database bootstrap, an owner invitation and optional S3
+storage. Create the human account with the public CLI before pairing. Keep the
+application database role non-superuser and without BYPASSRLS.
 
-`WS_ENV=prod` requires encrypted database and object-storage connections. Configure `sslmode=verify-full` and a trusted CA for Postgres, and HTTPS for S3-compatible storage. Keep metrics on a private listener using `WS_METRICS_ADDR`. The public reverse proxy must forward WebSocket upgrades and retain the browser's Host header.
+`WS_ENV=prod` requires verified TLS for PostgreSQL and HTTPS for configured object
+storage. Put the API behind an HTTPS proxy that preserves Host and WebSocket
+upgrades. Keep metrics on a private listener with `WS_METRICS_ADDR`.
+`deploy/compose.yaml` builds the public-only image and uses your external
+PostgreSQL/S3 settings from `.env`; `docker-compose.dev.yml` provides local test
+services. These two configurations are independent.
 
-## Official pilot topology
+### Name in WhatsApp's Linked devices
 
-| Address | Destination |
-| --- | --- |
-| wappie.thehappie.co | Static homepage and `/docs/` |
-| console.wappie.thehappie.co | Public console entry; HTML redirects to `https://app.wappie.thehappie.co/console` |
-| app.wappie.thehappie.co | Messaging at `/`, administration at `/console`; same-origin `/v1` proxy |
-| api.wappie.thehappie.co | HTTP and `/v1/ws` API |
+`WS_WA_DEVICE_NAME` defaults to `whappie` for independent installations. Managed
+hosting sets `WS_WA_DEVICE_NAME=whappie cloud` in its runtime environment. These
+are the two supported values. Restart the server after changing the setting.
 
-Both interactive screens use the app origin so the browser's encrypted session
-survives navigation in Safari as well as Chromium. The console entry preserves
-workspace, device and Stripe-return query parameters. Its existing API and asset
-routes remain available; only HTML navigation redirects. The API's web handler
-implements this temporary redirect, so the existing four-name Nginx and TLS
-configuration stays valid. See [browser session lifecycle](browser-sessions.md).
+The name is sent during registration, for both QR and code pairing. The optional
+CLI `-display-name` / API `display_name` is a separate browser descriptor for code
+pairing and keeps its required `Browser (OS)` format, such as `Chrome (Linux)`.
 
-The EC2 runs the compiled ARM64 API and private simulated billing binaries directly under systemd (`wappie-api` and `wappie-billing`). The unit files in `deploy/` use a dedicated unprivileged `wappie` user, a read-only filesystem and `/opt/wappie/release` as their working directory. Runtime configuration is `/opt/wappie/runtime.env`, owned by root with mode 0600; systemd reads it before dropping privileges. No application source or build toolchain is needed on the host.
+Existing links retain their registered name: WhatsApp's reconnect payload does
+not resend these device properties. This update does not unlink or re-pair any
+number. Verify the new name on the phone after a new pairing; do not remove a
+working link solely to apply a cosmetic change. Protocol details are covered by
+the [pinned upstream registration and login payloads](https://github.com/tulir/whatsmeow/blob/33cfac511629/store/clientpayload.go).
 
-Build with `GOOS=linux GOARCH=arm64 CGO_ENABLED=0`; deploy binaries to `/opt/wappie/release/bin` and the hosted frontend to `/opt/wappie/release/web`. Create the system user with `useradd --system --home-dir /opt/wappie --shell /usr/sbin/nologin wappie`. Install the two units in `/etc/systemd/system`, reload systemd, then enable them with `systemctl enable --now wappie-api wappie-billing`. Stop the corresponding container services before starting native services on the same ports. The billing binary and hosted UI come from the private cloud repository; self-hosters omit billing.
+```
+make build
+make client-install client-check
+make public-source
+```
 
-PostgreSQL and MinIO remain in the isolated Compose project `wappie`. Start them with `docker compose -f compose.yaml -f compose-native.yaml up -d db objects`. On a native-only installation, link `compose.override.yaml` to `compose-native.yaml` so ordinary Compose commands also use this configuration. `WAPPIE_OBJECTS_VOLUME` selects an existing migrated volume (default: `wappie_objects`). For a fresh installation, create it first with `docker volume create wappie_objects`. It is declared external so removing the Compose stack does not remove its attachments. The override exposes only loopback ports 15432 and 19000 and places containerized API/billing behind an optional rollback profile. Nginx continues to proxy the native API on loopback 18090, billing on 18091 and does not expose metrics on 19090. Set `WS_TRUSTED_PROXIES=127.0.0.1/32` for the native API. Existing Nginx sites remain independent.
+The source exporter uses explicit public roots, excludes private checkouts,
+dependencies, generated assets and Git history, and refuses UI components or
+secret configuration files. CI extracts that archive and builds it independently.
+The public container copies only server/CLI binaries. Publish the SDK with its
+own package metadata; inspect `npm pack --dry-run` before publishing.
 
-Use `sslmode=verify-full` for PostgreSQL and HTTPS for object storage. Internal certificates must include `localhost` and `127.0.0.1` when accessing the loopback ports; copy the public CA certificate to `/opt/wappie/release/ca.crt` (mode 0644) and reference it in the database DSN and `SSL_CERT_FILE`. Keep private certificate directories restricted. Preserve the CA and credentials outside source control. Bind every application listener explicitly to `127.0.0.1`.
+## Private hosted product
 
-For a migration, pause the source API before taking its database and object-store snapshots. Keep the source stopped while the destination runs the same WhatsApp session. Restore into a separate database and object volume, preserve existing hosted accounts and invites, verify checksums and table counts, then switch services. Keep the original destination database and object volume for rollback. Set `WAPPIE_DATABASE` and `WAPPIE_MEDIA_BUCKET` in the Compose environment to the same migrated database and bucket used by `runtime.env`. If falling back to the container runtime, stop both native services first, then start the `container-runtime` profile; continue using the migrated data so new messages are preserved. Never run both runtimes against the same WhatsApp session. Do not reset or re-pair devices as part of a storage migration.
+The private `wappie-cloud` checkout owns `web/`, UI tests, billing, deployment
+files and the hosted build pipeline. It is developed at `commercial/` inside a
+compatible core checkout; this directory is ignored by public Git. Its own
+Makefile and CI install dependencies, verify Go/UI tests and build the hosted
+app. CI's `WAPPIE_CORE_REF` must identify the matching public core revision.
 
-## DNS and HTTPS
+The private release script accepts only built assets and explicit binaries,
+refuses source maps, and requires a new destination so the previous artifact
+remains available. Existing URLs and archive formats remain unchanged. The
+hosted operations guide is in the private repository's `docs/deployment.md`.
 
-Create A records `wappie`, `console.wappie`, `app.wappie`, and `api.wappie` in the `thehappie.co` zone, pointing to the existing EC2 public address. Verify all four public DNS responses before requesting a certificate. Install only the Wappie Nginx site; validate the complete configuration before reloading. Obtain one certificate with all four names via the webroot `/var/www/wappie-acme`. After issuance, activate `nginx-https.conf`. HTTP only serves ACME until TLS is ready; it does not expose account logins in cleartext.
+## Enabling external clients
 
-## Operations
+Configure each remote installation with the exact allowed app origins:
 
-Pin pulled container images by their verified digest for repeatable releases. Deploy a validated frontend and matching API together. Preserve release artifacts and database backups before updates. SQL migrations are forward-only; roll back application binaries only after checking schema compatibility. Restore a database backup into a separate volume for destructive rollback.
+```
+WS_BROWSER_ORIGINS=https://app.wappie.thehappie.co
+```
 
-Take database dumps using a dedicated backup identity capable of reading all tenants (the isolated pilot uses its database administrator only for backup) and store encrypted backups separately from the EC2; back up the object-store volume as well. A dump without stored media is not a complete attachment backup. Verify restoration before relying on backups. The pilot has one host and is not highly available.
+HTTP, WebSocket, media and calling use the same policy. Non-browser clients still
+use ordinary credentials. Discovery is public, but archive endpoints are not.
+See [external clients](external-clients.md).
 
-Internal leaf certificates expire after one year; rotate them before expiry and restart the database/object store after replacing files. Preserve the CA securely. Public certificate renewal should use the installed Certbot timer and reload Nginx. Test renewal after DNS/TLS activation.
+## Storage rollout
 
-The pilot has no live charging, prices, SLA, automated off-host backup or real WhatsApp test-number pairing configured by the code. Those operational steps must be verified on the running environment; do not infer them from a successful build.
+Migration 0034 introduces versioned persistent accounting with unlimited policy
+by default. Apply and measure existing workspaces before setting a limit. Use
+`whatserverd storage -tenant UUID -reconcile` for a measured baseline. Configure
+hosted packages in the private catalog; an external installation sets its own
+policy and is not charged Wappie storage. See [storage](storage.md).
+
+Retain a matching previous private artifact and database/object backups before
+rollout. Database migrations are forward-only; verify old binary compatibility
+before reverting an executable. Do not restore an older archive over newer
+messages. Restore backups into separate storage when testing rollback. Never
+run two runtimes against the same WhatsApp session. No archive migration or
+re-pairing is necessary for frontend extraction.

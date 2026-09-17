@@ -1,5 +1,5 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
-	web-install web-build web-test web-check
+	client-install client-build client-test client-check public-source
 
 GO      ?= go
 PKGS    := ./...
@@ -36,38 +36,35 @@ vet: ## go vet
 	$(GO) vet $(PKGS)
 
 fmt: ## Check formatting
-	@out=$$(gofmt -l . | grep -v '^web/' || true); \
+	@out=$$(gofmt -l cmd internal);  \
 	if [ -n "$$out" ]; then echo "unformatted:"; echo "$$out"; exit 1; fi
 
 # The whatsapp_server2 project rotted because a half-finished migration left
 # API_ttt/ and mongo_ttt/ beside the real packages and nobody ever removed
 # them. Fail the build rather than let that start.
 lint-layout: ## Reject parallel legacy package copies
-	@bad=$$(find . -type d \( -name '*_ttt' -o -name '*_old' -o -name '*_bak' -o -name '* copy' \) -not -path './web/node_modules/*' -not -path './.git/*'); \
+	@bad=$$(find . -type d \( -name '*_ttt' -o -name '*_old' -o -name '*_bak' -o -name '* copy' \) -not -path '*/node_modules/*' -not -path './commercial/*' -not -path './.git/*'); \
 	if [ -n "$$bad" ]; then echo "legacy package copies are not allowed:"; echo "$$bad"; exit 1; fi
 
-check: fmt vet lint-layout test-race ## Everything CI runs (Go only; see web-check)
+check: fmt vet lint-layout test-race ## Everything CI runs (Go only; see client-check)
 
-# --- the browser client ----------------------------------------------------
-#
-# Kept out of `check` on purpose: the Go build must not need a JavaScript
-# toolchain installed. CI runs both in separate jobs.
-
+# Public SDK and interoperability checks build independently of Go.
 NPM ?= npm
 
-web-install: ## Install the web client's dependencies
-	cd web && $(NPM) install
+client-install: ## Install public SDK dependencies
+	$(NPM) --prefix packages/client ci
 
-web-build: ## Build the web client into web/dist, which whatserverd serves
-	cd web && $(NPM) run build
+client-build: ## Build the public transport/crypto SDK
+	$(NPM) --prefix packages/client run build
 
-# The crypto tests here are the ones that matter most in the repo: they open
-# vectors that Go sealed, so a divergence between the two implementations of
-# the archive format fails on this side rather than on a user's messages.
-web-test: ## Typecheck and test the web client
-	cd web && $(NPM) run typecheck && $(NPM) run test
+client-test: ## Check SDK types and cryptographic interoperability
+	$(NPM) --prefix packages/client run typecheck
+	$(NPM) --prefix packages/client test
 
-web-check: web-test web-build ## Everything CI runs for the web client
+client-check: client-test client-build ## Verify the public SDK
+
+public-source: ## Export an allowlisted public source snapshot without private code
+	python3 scripts/export-public.py --output dist/wappie-source.tar.gz
 
 tidy: ## Tidy modules
 	$(GO) mod tidy

@@ -21,9 +21,10 @@ type DeviceStat struct {
 	Chats    int64
 	Messages int64
 	Media    int64
-	// MediaBytes is the ciphertext size of the attachments, as WhatsApp
-	// reported it. Approximate for anything still downloading.
+	// MediaBytes is the actual unique object bytes attributed exclusively to
+	// this number. Shared objects are reported in the workspace breakdown.
 	MediaBytes int64
+	StorageBytes
 	// LastMessageAt is the newest message this device archived, in its own
 	// clock. Zero for a device that has archived nothing.
 	LastMessageAt time.Time
@@ -48,6 +49,9 @@ func (d *Devices) Stats(ctx context.Context, tenantID string) ([]DeviceStat, err
 	}
 
 	err := pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR SHARE`, tenantID); err != nil {
+			return err
+		}
 		// Chats first, and the newest activity with them: the chat rows already
 		// carry a projection of their last message, so this answers "when did
 		// anything last happen" without touching the messages table.
@@ -99,23 +103,35 @@ func (d *Devices) Stats(ctx context.Context, tenantID string) ([]DeviceStat, err
 		// one join. Media rows are a small fraction of message rows, so it
 		// costs about what the count above already cost.
 		rows, err = tx.Query(ctx, `
-			SELECT m.device_id::text, count(*), coalesce(sum(d.file_length), 0)
+			SELECT m.device_id::text, count(*)
 			  FROM media d JOIN messages m ON m.uid = d.message_uid
 			 GROUP BY m.device_id`)
 		if err != nil {
 			return fmt.Errorf("store: count media: %w", err)
 		}
-		defer rows.Close()
 		for rows.Next() {
 			var id string
-			var n, bytes int64
-			if err := rows.Scan(&id, &n, &bytes); err != nil {
+			var n int64
+			if err := rows.Scan(&id, &n); err != nil {
+				rows.Close()
 				return err
 			}
-			s := at(id)
-			s.Media, s.MediaBytes = n, bytes
+			at(id).Media = n
 		}
-		return rows.Err()
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		usage, err := storageBreakdownTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, device := range usage.Devices {
+			stat := at(device.DeviceID)
+			stat.StorageBytes = device.StorageBytes
+			stat.MediaBytes = device.ObjectBytes
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: device stats: %w", err)

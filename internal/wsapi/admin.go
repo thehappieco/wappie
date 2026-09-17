@@ -57,6 +57,7 @@ func toStat(r store.DeviceStat) DeviceStat {
 	stat := DeviceStat{
 		DeviceID: r.DeviceID, Chats: r.Chats, Messages: r.Messages,
 		Media: r.Media, MediaBytes: r.MediaBytes,
+		ArchiveBytes: r.ArchiveBytes, ObjectBytes: r.ObjectBytes, UsedBytes: r.UsedBytes,
 	}
 	if !r.LastMessageAt.IsZero() {
 		at := r.LastMessageAt
@@ -276,7 +277,11 @@ func (s *session) removeObjects(ctx context.Context, tenant uuid.UUID, keys []st
 		return 0, len(keys)
 	}
 	for _, key := range orphans {
-		if err := s.srv.cfg.Blob.Delete(context.WithoutCancel(ctx), key); err != nil {
+		storage := s.srv.cfg.Storage
+		if storage == nil {
+			storage = store.NewStorage(s.srv.cfg.Pool)
+		}
+		if err := storage.DeleteObject(context.WithoutCancel(ctx), tenant, key, s.srv.cfg.Blob.Delete); err != nil {
 			s.log.Warn("could not remove an attachment object", "key", key, "error", err)
 			failed++
 			continue
@@ -593,7 +598,7 @@ func (s *session) handleGrantsList(ctx context.Context, f Frame) {
 	out := Grants{UserID: who.userID.String(), Grants: make([]GrantEntry, 0, len(grants))}
 	for _, g := range grants {
 		out.Grants = append(out.Grants, GrantEntry{
-			DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
+			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
 			Epoch: int(g.Epoch), SealedDSK: g.SealedDSK,
 		})
 	}
@@ -639,7 +644,7 @@ func (s *session) replyReaders(ctx context.Context, reqID string,
 // knows: whether the device is actually running here.
 func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 	info := DeviceInfo{
-		ID: d.ID, Label: d.Label, PushName: d.Identity.PushName,
+		ArchiveTenantID: d.ArchiveTenantID, ID: d.ID, Label: d.Label, PushName: d.Identity.PushName,
 		Status: string(d.Status), StatusReason: d.StatusReason,
 		ReceiptMode: string(d.ReceiptMode), CreatedAt: d.CreatedAt, Paused: d.Paused,
 	}

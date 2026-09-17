@@ -16,11 +16,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"whatserver2/internal/browserorigin"
 )
 
 type Config struct {
-	Env      Env
-	HTTPAddr string
+	BrowserOrigins browserorigin.Policy
+	Env            Env
+	HTTPAddr       string
+	// CallsEnabled attaches the native WhatsApp calling adapter to each device.
+	CallsEnabled bool
+	// WADeviceName identifies new links in the phone's Linked devices list.
+	// One installation uses one name; changing it requires a server restart.
+	WADeviceName string
 	// MetricsAddr serves /metrics, /healthz and /readyz on a listener of
 	// their own when set, so the public port carries only what clients need
 	// and the probes stay on the private network. Empty keeps them on
@@ -49,7 +57,8 @@ type Web struct {
 	// Dir holds the built client. Empty, or a directory that does not exist,
 	// means the server runs headless and says so once at boot rather than
 	// answering every request with a mystery 404.
-	Dir string
+	Dir             string
+	ExternalServers bool
 }
 
 type Env string
@@ -124,6 +133,8 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
+		CallsEnabled:   boolean("WS_CALLS_ENABLED", true, &errs),
+		WADeviceName:   strings.TrimSpace(str("WS_WA_DEVICE_NAME", "whappie")),
 		Signup:         loadSignup(&errs),
 		Passkeys:       Passkeys{RPID: strings.TrimSpace(os.Getenv("WS_PASSKEY_RP_ID"))},
 		Env:            env,
@@ -152,7 +163,8 @@ func Load() (Config, error) {
 			MaxMediaBytes: bytes("WS_MEDIA_MAX_BYTES", 256<<20, &errs),
 		},
 		Web: Web{
-			Dir: str("WS_WEB_DIR", "web/dist"),
+			Dir:             str("WS_WEB_DIR", ""),
+			ExternalServers: boolean("WS_WEB_EXTERNAL_SERVERS", false, &errs),
 		},
 		Log: Log{
 			Level:  strings.ToLower(str("WS_LOG_LEVEL", "info")),
@@ -160,10 +172,18 @@ func Load() (Config, error) {
 			Wire:   boolean("WS_LOG_WIRE", false, &errs),
 		},
 	}
+	if cfg.WADeviceName != "whappie" && cfg.WADeviceName != "whappie cloud" {
+		bad("WS_WA_DEVICE_NAME: want whappie or whappie cloud, got %q", cfg.WADeviceName)
+	}
 	for _, origin := range strings.Split(os.Getenv("WS_PASSKEY_ORIGINS"), ",") {
 		if origin = strings.TrimSpace(origin); origin != "" {
 			cfg.Passkeys.Origins = append(cfg.Passkeys.Origins, origin)
 		}
+	}
+	var originErr error
+	cfg.BrowserOrigins, originErr = browserorigin.Parse(os.Getenv("WS_BROWSER_ORIGINS"), !env.IsProd())
+	if originErr != nil {
+		bad("WS_BROWSER_ORIGINS: %v", originErr)
 	}
 	if err := cfg.Passkeys.Validate(env.IsProd()); err != nil {
 		errs = append(errs, err)

@@ -281,14 +281,22 @@ type keySlot struct {
 }
 
 type opener struct {
-	c      *client
-	tenant uuid.UUID
-	priv   seal.PrivateKey
-	cache  map[keySlot]*seal.ContentKey
+	c              *client
+	tenant         uuid.UUID
+	priv           seal.PrivateKey
+	cache          map[keySlot]*seal.ContentKey
+	archiveTenants map[uuid.UUID]uuid.UUID
 }
 
 func newOpener(c *client, tenant uuid.UUID, priv seal.PrivateKey) *opener {
-	return &opener{c: c, tenant: tenant, priv: priv, cache: map[keySlot]*seal.ContentKey{}}
+	return &opener{c: c, tenant: tenant, priv: priv, cache: map[keySlot]*seal.ContentKey{}, archiveTenants: map[uuid.UUID]uuid.UUID{}}
+}
+
+func (o *opener) archiveTenant(device uuid.UUID) uuid.UUID {
+	if tenant, ok := o.archiveTenants[device]; ok {
+		return tenant
+	}
+	return o.tenant
 }
 
 // deviceOf reads the device a row belongs to. Every archived row carries it,
@@ -317,7 +325,7 @@ func (o *opener) open(ctx context.Context, deviceID string, keyID uint32, uidStr
 	if err != nil {
 		return "<key unavailable>"
 	}
-	pt, err := ck.Open(kind, o.tenant, uid, sealed)
+	pt, err := ck.Open(kind, o.archiveTenant(device), uid, sealed)
 	if err != nil {
 		// Not a generic failure: authentication failing here means the stored
 		// bytes were altered or moved, which is exactly what the binding
@@ -346,7 +354,7 @@ func (o *opener) payload(ctx context.Context, deviceID string, keyID uint32, uid
 	if err != nil {
 		return domain.Payload{}, false
 	}
-	pt, err := ck.Open(seal.KindPayload, o.tenant, uid, sealed)
+	pt, err := ck.Open(seal.KindPayload, o.archiveTenant(device), uid, sealed)
 	if err != nil {
 		return domain.Payload{}, false
 	}
@@ -382,8 +390,15 @@ func (o *opener) key(ctx context.Context, device uuid.UUID, id uint32) (*seal.Co
 	if err := json.Unmarshal(f.Payload, &reply); err != nil {
 		return nil, err
 	}
+	if reply.ArchiveTenantID != "" {
+		archive, err := uuid.Parse(reply.ArchiveTenantID)
+		if err != nil {
+			return nil, err
+		}
+		o.archiveTenants[device] = archive
+	}
 	for _, k := range reply.Keys {
-		ck, err := seal.OpenContentKey(o.priv, o.tenant, device, k.ID, k.Sealed)
+		ck, err := seal.OpenContentKey(o.priv, o.archiveTenant(device), device, k.ID, k.Sealed)
 		if err != nil {
 			return nil, err
 		}

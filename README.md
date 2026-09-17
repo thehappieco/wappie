@@ -1,7 +1,7 @@
 # Wappie
 
-Multi-tenant WhatsApp API server with a sealed archive, plus a web client that
-consumes the same API.
+Open-source multi-tenant WhatsApp API server with a sealed archive and public
+clients for integration, testing and administration.
 
 Wappie connects business systems to WhatsApp through HTTP and WebSocket, with
 shared workspaces, per-number permissions and a messaging client.
@@ -13,10 +13,14 @@ shared workspaces, per-number permissions and a messaging client.
 - [Workspace model and API contracts](docs/workspaces.md)
 - [Personal accounts, Team workspaces and invitations](docs/accounts-workspaces.md)
 - [Deployment guide](docs/deployment.md)
+- [Publishing public/private releases](docs/publication.md)
 - [Passkeys and encrypted login](docs/passkeys-api.md)
+- [Native WhatsApp audio and video calls](docs/whatsapp-calls.md)
 
-The server, CLI, web client and basic administration are Apache-2.0 open source.
-Managed hosting and commercial billing are maintained separately. The hosted
+The server, API/CLI administration and transport/cryptography SDK are Apache-2.0.
+The app, console, subscriptions and managed-hosting product are private, in
+`wappie-cloud`. Self-hosting and independent API/CLI use require no Wappie subscription.
+Previously released Apache-2.0 web versions retain their existing license rights. The hosted
 pilot uses free access and sandbox payments. No live charges. Public signup is
 opt-in and requires email verification; invitation signup also remains available.
 
@@ -57,13 +61,12 @@ served — never decrypted by this server at all.
 | 5c | On-demand backfill | done |
 | 8 | Web client: reading the archive in a browser | done |
 | 9 | Per-device keys, accounts, key grants, recovery | done |
-| 10 | Admin console: devices, pairing, tokens, grants | next |
+| 10 | Admin console: devices, pairing, tokens, grants | private app |
 | 8b | Web client: sending, editing, reacting, attachments | done |
 | 12 | Conversation layer: unread, ticks, presence, groups, polls | done |
 | 11 | Incognito per device, quotas, hardening | done |
 | 13 | Security audit: recovery, rate limits, key scopes, SSRF, retention | done |
 
-Design and rationale: `~/.claude/plans/meu-objetivo-criar-playful-conway.md`.
 Decisions taken while building, and the invariants that are easy to break:
 [docs/decisions.md](docs/decisions.md).
 
@@ -95,7 +98,7 @@ CREATE DATABASE whatserver2 OWNER whatserver2_app;
 
 ```
 make check           # fmt, vet, layout, tests with -race
-make web-check       # typecheck, tests and build for the browser client
+make client-check    # public SDK, interoperability and build
 make cover
 make fuzz
 ```
@@ -120,7 +123,8 @@ nothing that touches WhatsApp; `send` adds outbound messages and attachments;
 narrowest one that works, because a key is the credential most likely to leak
 and a leaked `send` key is a message to somebody's customers.
 
-Then open the web client and sign up with that code. Do this **before** pairing
+Then use the public account CLI in [packages/cli](packages/cli/README.md) to sign
+up with that code. Do this **before** pairing
 anything: pairing generates the device's archive key and seals it to the
 accounts that exist at that moment, and a device paired with no account behind
 it leaves a key somebody has to keep in a file.
@@ -154,27 +158,33 @@ opaque 400 *after* the window has already started.
 
 Devices default to passive receipts. See below.
 
-## The web client
+## Public clients and private app
 
-The browser is where the archive is actually readable. Everywhere else it is
-ciphertext, including on this server.
+`packages/client` contains the framework-free TypeScript protocol, transport,
+authentication and cryptography library. `packages/cli` provides human login,
+recovery and API administration without the private app. `wsctl` pairs devices
+and exercises the WebSocket protocol. Clients open ciphertext locally; private
+keys are never uploaded to the archive server.
 
 ```
-make web-install    # once
-make web-build      # writes web/dist
-./bin/whatserverd   # serves it at /
+make client-install
+make client-check
 ```
 
-`WS_WEB_DIR` points at the built client and defaults to `web/dist`. Nothing is
-embedded in the binary: `go build` must not need a JavaScript toolchain, and CI
-has none. With no build present the server logs that it is serving the API only
-and carries on.
+App and console source, builds and UI tests live in the private `wappie-cloud`
+repository. The server runs headless by default. `WS_WEB_DIR` may explicitly point
+to a separately distributed frontend; Go builds need no JavaScript toolchain.
+See [distribution and deployment](docs/deployment.md).
 
-For development, `cd web && npm run dev` runs Vite on :5173 and proxies `/v1`
-to :8090. Go through the proxy rather than pointing the client at :8090
-directly — the websocket handler accepts same-origin connections only, and a
-cross-origin attempt is refused at the upgrade, before the app sees an error it
-could report.
+Compatible external Wappie installations can authorize the private app with
+`WS_BROWSER_ORIGINS=https://app.wappie.thehappie.co`. Requests, media and calls then
+travel directly from the browser to that installation. Its credentials and keys
+stay separate from the central commercial session. Discover version/capabilities
+at `GET /v1/discovery`. See [external clients](docs/external-clients.md).
+
+Hosted storage is a separate workspace package; self-hosted policy defaults to
+unlimited. See [accounting and suspension](docs/storage.md). A paid app binding
+never grants operational permission or a decryption key by itself.
 
 Opening it means signing in with an email and a password. The password never
 reaches the server: the browser derives a master key with Argon2id, keeps the
@@ -641,7 +651,7 @@ describes the connection, not public presence. See
 
 ```
 cmd/whatserverd        server
-cmd/wsctl              CLI over the public SDK, dogfooding the protocol
+cmd/wsctl              CLI using the public WebSocket protocol
 internal/config        environment-only configuration
 internal/obs           logging and metrics
 internal/pg            three pools, tenant transactions for RLS
@@ -652,8 +662,9 @@ internal/wa            whatsmeow wrapper; upstream_contract_test.go pins the API
 internal/ingest        the one canonical event pipeline
 internal/store         persistence and projection
 internal/wsapi         websocket sessions, replay, backpressure
-pkg/waclient           public Go SDK
-web/                   Vue 3 client
+packages/client        public TypeScript protocol, transport and crypto SDK
+packages/cli           public human-account/admin CLI
+commercial/            separate PRIVATE checkout; not in public releases
 ```
 
 ## Notes from the previous six attempts

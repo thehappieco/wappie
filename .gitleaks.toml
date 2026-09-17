@@ -7,7 +7,8 @@ paths = [
  '''internal/crypto/seal/testdata/vectors\.json$''',
  '''internal/crypto/wamedia/testdata/vectors\.json$''',
  '''internal/wsapi/testdata/frames\.json$''',
- '''web/testdata/browser-grant\.json$'''
+ '''web/testdata/browser-grant\.json$''',
+ '''packages/client/testdata/browser-grant\.json$'''
 ]
 
 [[allowlists]]

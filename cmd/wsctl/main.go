@@ -167,7 +167,7 @@ func cmdPair(ctx context.Context, args []string) error {
 	phone := fs.String("phone", "", "phone number in full international form, required for -method=code")
 	label := fs.String("label", "", "a name for this device")
 	mode := fs.String("mode", "passive", "receipt mode: passive (incognito) or active")
-	display := fs.String("display-name", "", `name shown under Linked devices, formatted "Browser (OS)"`)
+	display := fs.String("display-name", "", `code pairing browser descriptor, formatted "Browser (OS)"`)
 	orphan := fs.Bool("orphan", false,
 		"pair even though no account can read this device; prints the key once")
 	var grantTo emails

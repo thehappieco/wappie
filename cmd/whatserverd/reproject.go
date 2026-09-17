@@ -107,7 +107,11 @@ func reproject(args []string) error {
 	if err != nil {
 		return err
 	}
-	sealer, err := seal.NewSealer(tenant, device, pub, epoch, a.keys)
+	archiveTenant, err := a.keys.ArchiveTenant(ctx, tenant, device)
+	if err != nil {
+		return err
+	}
+	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, a.keys)
 	if err != nil {
 		return err
 	}
@@ -115,6 +119,7 @@ func reproject(args []string) error {
 	own := domain.Address{LID: dev.Identity.LID, PN: dev.Identity.PN}
 
 	ring := newKeyring(priv, tenant, device, a.keys)
+	ring.archiveTenant = archiveTenant
 
 	var opened, changed, skipped, failed int
 	byType := map[string]int{}
@@ -212,15 +217,16 @@ func reclassify(ctx context.Context, ring *keyring, tenant uuid.UUID,
 // and each unwrap is an HPKE open. The private key stays in this process for
 // the length of the command and is never written down.
 type keyring struct {
-	priv   seal.PrivateKey
-	tenant uuid.UUID
-	device uuid.UUID
-	store  *store.Keys
-	keys   map[uint32]*seal.ContentKey
+	priv          seal.PrivateKey
+	tenant        uuid.UUID
+	archiveTenant uuid.UUID
+	device        uuid.UUID
+	store         *store.Keys
+	keys          map[uint32]*seal.ContentKey
 }
 
 func newKeyring(priv seal.PrivateKey, tenant, device uuid.UUID, ks *store.Keys) *keyring {
-	return &keyring{priv: priv, tenant: tenant, device: device, store: ks,
+	return &keyring{priv: priv, tenant: tenant, archiveTenant: tenant, device: device, store: ks,
 		keys: map[uint32]*seal.ContentKey{}}
 }
 
@@ -228,7 +234,7 @@ func (k *keyring) open(ctx context.Context, id uint32, kind seal.Kind,
 	row uuid.UUID, envelope []byte) ([]byte, error) {
 	if id == 0 {
 		// Sealed straight to the device key, with no content key in between.
-		return seal.OpenDirect(k.priv, kind, k.tenant, row, envelope)
+		return seal.OpenDirect(k.priv, kind, k.archiveTenant, row, envelope)
 	}
 	ck, ok := k.keys[id]
 	if !ok {
@@ -236,13 +242,13 @@ func (k *keyring) open(ctx context.Context, id uint32, kind seal.Kind,
 		if err != nil {
 			return nil, err
 		}
-		ck, err = seal.OpenContentKey(k.priv, k.tenant, k.device, id, sealed)
+		ck, err = seal.OpenContentKey(k.priv, k.archiveTenant, k.device, id, sealed)
 		if err != nil {
 			return nil, err
 		}
 		k.keys[id] = ck
 	}
-	return ck.Open(kind, k.tenant, row, envelope)
+	return ck.Open(kind, k.archiveTenant, row, envelope)
 }
 
 func writeReprojection(ctx context.Context, a *app, sealer *seal.Sealer,

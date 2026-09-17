@@ -18,12 +18,31 @@ type Workspace struct {
 	Role      string    `json:"role"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+	// Present on directory responses only. This counts visible devices rather
+	// than subscriptions or implicit permission to read their archives.
+	DeviceCount *int64 `json:"device_count,omitempty"`
 }
 
 // Workspaces returns only this identity's active memberships. Suspended spaces
 // remain visible so the client can explain why they cannot be opened.
 func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, error) {
-	tx, err := u.pool.Begin(ctx)
+	return u.workspaces(ctx, userID, false)
+}
+
+// WorkspacesWithDeviceCounts adds the same device visibility as devices.list,
+// without issuing a session or changing the caller's selected workspace.
+func (u *Users) WorkspacesWithDeviceCounts(ctx context.Context, userID uuid.UUID) ([]Workspace, error) {
+	return u.workspaces(ctx, userID, true)
+}
+
+func (u *Users) workspaces(ctx context.Context, userID uuid.UUID, withCounts bool) ([]Workspace, error) {
+	options := pgx.TxOptions{}
+	if withCounts {
+		// Memberships and all counts describe one snapshot, including a transfer
+		// between two workspaces while the directory is loading.
+		options = pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+	}
+	tx, err := u.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +71,32 @@ func (u *Users) Workspaces(ctx context.Context, userID uuid.UUID) ([]Workspace, 
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if withCounts {
+		for i := range out {
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, out[i].ID.String()); err != nil {
+				return nil, err
+			}
+			var count int64
+			// RLS stays enabled with each workspace's transaction-local context.
+			// Keep this predicate aligned with DevicePermission.Allows(ActionView).
+			err := tx.QueryRow(ctx, `SELECT count(*)
+				FROM workspace_memberships m
+				JOIN users u ON u.id=m.user_id
+				JOIN tenants t ON t.id=m.tenant_id
+				JOIN devices d ON d.tenant_id=m.tenant_id
+				LEFT JOIN device_permissions p ON p.tenant_id=m.tenant_id AND p.device_id=d.id AND p.user_id=m.user_id
+				WHERE m.tenant_id=$1 AND m.user_id=$2
+				AND m.status='active' AND u.status='active' AND t.status='active'
+				AND (m.role IN ('owner','admin') OR coalesce(p.can_manage,false) OR coalesce(p.can_send,false)
+					OR (coalesce(p.can_read,false) AND EXISTS(
+						SELECT 1 FROM device_key_grants g WHERE g.tenant_id=m.tenant_id
+						AND g.device_id=d.id AND g.user_id=m.user_id AND g.epoch=d.current_epoch)))`, out[i].ID, userID).Scan(&count)
+			if err != nil {
+				return nil, err
+			}
+			out[i].DeviceCount = &count
+		}
 	}
 	return out, tx.Commit(ctx)
 }

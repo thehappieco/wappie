@@ -43,6 +43,10 @@ func (a *app) resumeDevices(ctx context.Context) error {
 
 	var resumed, skipped int
 	for _, tenant := range tenants {
+		if err := a.checkCapture(ctx, tenant); err != nil {
+			a.log.Info("capture unavailable", "tenant", tenant, "error", err)
+			continue
+		}
 		// Per tenant, because devices is under row-level security and a
 		// cross-tenant scan would return nothing.
 		devices, err := a.devices.List(ctx, tenant)

@@ -34,11 +34,16 @@ type Locker interface {
 
 // RegistryConfig configures a Registry.
 type RegistryConfig struct {
-	Container *sqlstore.Container
-	Store     Store
-	Sink      Sink
-	Locker    Locker
-	Log       *slog.Logger
+	// LinkedDeviceName identifies new links on the phone. It defaults to whappie;
+	// managed hosting sets whappie cloud. The name is fixed for this process.
+	LinkedDeviceName string
+	// CheckStart enforces installation storage policy before connecting a device.
+	CheckStart func(context.Context, string) error
+	Container  *sqlstore.Container
+	Store      Store
+	Sink       Sink
+	Locker     Locker
+	Log        *slog.Logger
 	// WireLog passes whatsmeow's debug output — every protocol node, which
 	// is every message in the clear — into the log. Development only; the
 	// configuration loader refuses it in prod.
@@ -46,6 +51,9 @@ type RegistryConfig struct {
 
 	// OnStatus is forwarded to every supervised device.
 	OnStatus func(tenantID, deviceID string, status Status, reason string)
+	// OnClient installs optional protocol handlers before the first Connect.
+	// Its cleanup runs before disconnecting and releasing the device lock.
+	OnClient func(tenantID, deviceID string, client *whatsmeow.Client) func()
 }
 
 // Registry owns every supervised device in this process.
@@ -64,8 +72,9 @@ type Registry struct {
 }
 
 type entry struct {
-	device  *Device
-	release func()
+	device     *Device
+	release    func()
+	stopClient func()
 }
 
 // waLogger picks the adapter the configuration allows.
@@ -80,6 +89,9 @@ func (r *Registry) waLogger(module string) waLog.Logger {
 func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	if cfg.Container == nil {
 		return nil, errors.New("wa: registry needs a whatsmeow container")
+	}
+	if err := configureLinkedDeviceName(cfg.LinkedDeviceName); err != nil {
+		return nil, err
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -233,6 +245,9 @@ func (r *Registry) Stop(ctx context.Context, deviceID string) {
 	r.mu.Unlock()
 	if !ok {
 		return
+	}
+	if e.stopClient != nil {
+		e.stopClient()
 	}
 	if e.device != nil {
 		e.device.Stop(ctx)

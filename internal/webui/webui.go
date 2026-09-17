@@ -21,6 +21,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"whatserver2/internal/browserorigin"
 )
 
 // contentSecurityPolicy is the same policy index.html carries in a meta tag.
@@ -54,9 +56,11 @@ const sessionBridgePolicy = "default-src 'self'; " +
 
 // Handler serves a built single-page client out of a directory.
 type Handler struct {
-	dir   string
-	files http.Handler
-	log   *slog.Logger
+	// ExternalServers permits one validated HTTPS origin selected by the private app.
+	ExternalServers bool
+	dir             string
+	files           http.Handler
+	log             *slog.Logger
 }
 
 // ErrNotBuilt says the directory holds no client.
@@ -99,11 +103,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// This exception must never turn an SPA fallback or another host's
 		// application page into a frameable document.
 		if r.Host != sessionBridgeHost || r.URL.Path != sessionBridgePath || !hasAsset(h.dir, clean) {
-			h.headers(w, "/", r.Host)
+			h.headers(w, "/", r.Host, r.URL.Query().Get("server_origin"))
 			http.NotFound(w, r)
 			return
 		}
-		h.headers(w, clean, r.Host)
+		h.headers(w, clean, r.Host, r.URL.Query().Get("server_origin"))
 		h.files.ServeHTTP(w, r)
 		return
 	}
@@ -112,7 +116,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if clean != "/" && hasAsset(h.dir, clean) {
-		h.headers(w, clean, r.Host)
+		h.headers(w, clean, r.Host, r.URL.Query().Get("server_origin"))
 		h.files.ServeHTTP(w, r)
 		return
 	}
@@ -122,7 +126,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// reports that as a syntax error in a file that does not exist — an hour of
 	// confusion for a one-word cause.
 	if clean != "/" && path.Ext(clean) != "" {
-		h.headers(w, clean, r.Host)
+		h.headers(w, clean, r.Host, r.URL.Query().Get("server_origin"))
 		http.NotFound(w, r)
 		return
 	}
@@ -133,7 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.headers(w, "/", r.Host)
+	h.headers(w, "/", r.Host, r.URL.Query().Get("server_origin"))
 	http.ServeFile(w, r, path.Join(h.dir, "index.html"))
 }
 
@@ -144,14 +148,14 @@ func (h *Handler) redirectConsoleDocument(w http.ResponseWriter, r *http.Request
 		return false
 	}
 	target := url.URL{Scheme: "https", Host: "app.wappie.thehappie.co", Path: "/console", RawQuery: r.URL.RawQuery}
-	h.headers(w, "/", r.Host)
+	h.headers(w, "/", r.Host, r.URL.Query().Get("server_origin"))
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
 	return true
 }
 
 // headers sets what protects a page holding the archive key.
-func (h *Handler) headers(w http.ResponseWriter, clean, host string) {
+func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 	header := w.Header()
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
@@ -171,6 +175,12 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host string) {
 		header.Set("Cache-Control", "no-cache, no-store")
 	case clean == "/" || clean == "/index.html":
 		policy := contentSecurityPolicy
+		if h.ExternalServers && external != "" {
+			if p, err := browserorigin.Parse(external, false); err == nil && len(p.Origins) == 1 {
+				origin := p.Origins[0]
+				policy = strings.Replace(policy, "connect-src 'self';", "connect-src 'self' "+origin+" "+strings.Replace(origin, "https://", "wss://", 1)+";", 1)
+			}
+		}
 		if host == "app.wappie.thehappie.co" || host == "console.wappie.thehappie.co" {
 			policy = strings.Replace(policy, "frame-src 'none';", "frame-src "+sessionBridgeURL+";", 1)
 		}

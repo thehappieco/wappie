@@ -34,6 +34,7 @@ import (
 
 // Handler serves the auth endpoints.
 type Handler struct {
+	Storage *store.Storage
 	// AccessChanged promptly wakes local WebSockets after committed revocations.
 	AccessChanged          func()
 	PublicSignup           bool
@@ -54,6 +55,9 @@ type Handler struct {
 // Mount registers the routes on a mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	h.mountPasskeys(mux)
+	mux.HandleFunc("GET /v1/auth/workspaces/storage", h.storageUsage)
+	mux.HandleFunc("GET /v1/auth/workspaces/storage/{action}", h.storageUsage)
+	mux.HandleFunc("POST /v1/auth/workspaces/storage/{action}", h.storageUsage)
 	mux.HandleFunc("GET /v1/auth/signup/config", h.signupConfig)
 	mux.HandleFunc("POST /v1/auth/signup/verification", h.signupVerification)
 	mux.HandleFunc("GET /v1/auth/profile", h.profile)
@@ -226,9 +230,10 @@ type account struct {
 
 // grant is one device this account may open.
 type grant struct {
-	DeviceID string `json:"device_id"`
-	Label    string `json:"label"`
-	Epoch    int    `json:"epoch"`
+	ArchiveTenantID string `json:"archive_tenant_id,omitempty"`
+	DeviceID        string `json:"device_id"`
+	Label           string `json:"label"`
+	Epoch           int    `json:"epoch"`
 	// SealedDSK is the device's private archive key under this account's
 	// public key. Ciphertext here, and nowhere else.
 	SealedDSK string `json:"sealed_dsk"`
@@ -635,7 +640,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	out := meReply{User: toAccount(user), Grants: make([]grant, 0, len(grants)), ExpiresAt: session.ExpiresAt, SessionID: session.ID.String()}
 	for _, g := range grants {
 		out.Grants = append(out.Grants, grant{
-			DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
+			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
 			Epoch: int(g.Epoch), SealedDSK: b64(g.SealedDSK),
 		})
 	}

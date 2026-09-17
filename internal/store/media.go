@@ -58,6 +58,9 @@ type ObjectRef struct {
 // rest. The claim is the state change: a row in 'downloading' is not offered
 // again until it finishes or the sweeper decides its worker died.
 func (m *Media) Claim(ctx context.Context, tenant uuid.UUID, limit int) ([]Pending, error) {
+	if err := NewStorage(m.pool).Check(ctx, tenant); err != nil {
+		return nil, err
+	}
 	var out []Pending
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
@@ -271,4 +274,39 @@ func (m *Media) Expired(ctx context.Context, tenant, device uuid.UUID, limit int
 		return nil, fmt.Errorf("store: list expired media: %w", err)
 	}
 	return out, nil
+}
+
+// ReserveObject accounts for durable bytes before the worker writes them.
+func (m *Media) ReserveObject(ctx context.Context, tenant uuid.UUID, key string, size int64) error {
+	return NewStorage(m.pool).ReserveObject(ctx, tenant, key, size)
+}
+
+// StoreReservedObject completes a previously charged reservation while holding
+// the workspace lock shared with erasure and object deletion. A failed commit
+// leaves the committed reservation, so uncertain external writes stay counted.
+func (m *Media) StoreReservedObject(ctx context.Context, tenant, uid uuid.UUID, key string, size int64, put func() error) error {
+	return pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR UPDATE`, tenant); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM media WHERE message_uid=$1)`, uid).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNoMedia
+		}
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM storage_objects WHERE tenant_id=$1 AND object_key=$2 AND bytes >= $3)`, tenant, key, size).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return errors.New("storage object reservation missing; retry download")
+		}
+		if err := put(); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE media SET download_status='done',object_key=$2,object_size=$3,
+    download_error='',downloaded_at=now(),next_attempt_at=NULL,claimed_at=NULL WHERE message_uid=$1`, uid, key, size)
+		return err
+	})
 }

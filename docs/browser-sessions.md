@@ -137,7 +137,7 @@ own origin's IndexedDB and do not enable the hosted iframe bridge.
 
 ## Optional browser regression
 
-`web/test/browser/session.mjs` exercises the actual built Vue application and
+`wappie-cloud/web/test/browser/session.mjs` exercises the actual built Vue application and
 login form in a fresh Playwright Chromium or WebKit profile. It generates a
 synthetic account with real Argon2id, account-key wrapping and encrypted device
 grants; all API and WebSocket traffic is intercepted, so no production account
@@ -146,7 +146,7 @@ app/console navigation, the console entry redirect, an external payment return,
 logout and another login. It prints only success flags and counts.
 
 Playwright and its browsers are optional external QA dependencies, not required
-for the normal Vitest suite. Run from `web/`, using a previously built hosted
+for the normal Vitest suite. Run from `wappie-cloud/web/`, using a previously built hosted
 client in `QA_DIST`:
 
 ```sh
