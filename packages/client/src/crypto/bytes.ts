@@ -77,7 +77,7 @@ export function toHex(b: Bytes): string {
 export function fromHex(s: string): Bytes {
   const clean = s.trim().replace(/[\s:-]/g, '')
   if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
-    throw new Error('não é hexadecimal')
+    throw new Error('not hexadecimal')
   }
   const out = new Uint8Array(clean.length / 2)
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16)
@@ -95,12 +95,12 @@ export function fromHex(s: string): Bytes {
 const uuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 
 export function parseUUID(s: string): Bytes {
-  if (!uuidPattern.test(s)) throw new Error(`não é um uuid: ${s}`)
+  if (!uuidPattern.test(s)) throw new Error(`not a UUID: ${s}`)
   return fromHex(s.replace(/-/g, ''))
 }
 
 export function formatUUID(b: Bytes): string {
-  if (b.length !== 16) throw new Error('um uuid tem 16 bytes')
+  if (b.length !== 16) throw new Error('a UUID must contain 16 bytes')
   const h = toHex(b)
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }

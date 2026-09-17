@@ -366,11 +366,15 @@ type APIKeyInfo struct {
 	// Scope is read, send or full. See store.KeyScope.
 	Scope string `json:"scope"`
 	// ActsAs is the service account the key carries, by name; empty for none.
-	ActsAs     string     `json:"acts_as,omitempty"`
-	CreatedBy  string     `json:"created_by,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	ActsAs   string `json:"acts_as,omitempty"`
+	ActsAsID string `json:"acts_as_id,omitempty"`
+	// An empty restricted list means no devices, never all devices.
+	DevicesRestricted bool       `json:"devices_restricted"`
+	DeviceIDs         []string   `json:"device_ids"`
+	CreatedBy         string     `json:"created_by,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
 }
 
 // APIKeys is the response to apikeys.list.
@@ -391,6 +395,10 @@ type APIKeyRequest struct {
 	Name   string `json:"name"`
 	Scope  string `json:"scope"`
 	ActsAs string `json:"acts_as,omitempty"`
+	// Omission preserves legacy unrestricted issuance. A supplied list must
+	// contain distinct, complete, nonzero UUIDs in the current workspace.
+	// omitzero omits nil but preserves an explicitly empty slice for rejection.
+	DeviceIDs []string `json:"device_ids,omitzero"`
 }
 
 // GrantsRequest asks for the grants of the account this connection acts as.

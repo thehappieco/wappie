@@ -122,7 +122,7 @@ const BASE_POINT = new Uint8Array(32)
 BASE_POINT[0] = 9
 
 async function importPrivate(raw: Bytes): Promise<CryptoKey> {
-  if (raw.length !== 32) throw new Error('uma chave privada X25519 tem 32 bytes')
+  if (raw.length !== 32) throw new Error('an X25519 private key must contain 32 bytes')
   return crypto.subtle.importKey(
     'pkcs8',
     concat(PKCS8_X25519_PREFIX, raw),
@@ -133,7 +133,7 @@ async function importPrivate(raw: Bytes): Promise<CryptoKey> {
 }
 
 async function importPublic(raw: Bytes): Promise<CryptoKey> {
-  if (raw.length !== 32) throw new Error('uma chave pública X25519 tem 32 bytes')
+  if (raw.length !== 32) throw new Error('an X25519 public key must contain 32 bytes')
   return crypto.subtle.importKey('raw', raw, { name: 'X25519' }, true, [])
 }
 

@@ -25,4 +25,7 @@ func TestDiscoveryDescribesProtocolWithoutWorkspaceData(t *testing.T) {
 	if !slices.Contains(doc.Capabilities, "archive.rest.v1") || doc.Endpoints["archive_rest"] != "/v1" || doc.Endpoints["openapi"] != "/v1/openapi.json" {
 		t.Fatalf("REST discovery missing: %s", w.Body.String())
 	}
+	if !slices.Contains(doc.Capabilities, "apikeys.device-scope.v1") {
+		t.Fatal("clients cannot distinguish atomic device-scoped issuance from legacy servers that ignore device_ids")
+	}
 }

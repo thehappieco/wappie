@@ -229,6 +229,11 @@ export interface APIKeyInfo {
   name: string
   scope?: KeyScope
   acts_as?: string
+  /** Stable service account identity; absent on older installations. */
+  acts_as_id?: string
+  /** Empty plus restricted means no devices. Absent on older installations. */
+  devices_restricted?: boolean
+  device_ids?: string[]
   created_by?: string
   created_at: string
   last_used_at?: string
@@ -247,6 +252,8 @@ export interface APIKeyRequest {
   scope: KeyScope
   /** A service account the key acts as: it carries that account's grants. */
   acts_as?: string
+  /** Omit for legacy unrestricted issuance; otherwise select distinct devices. */
+  device_ids?: string[]
 }
 
 /** The plaintext key exists in this frame and nowhere else, ever again. */

@@ -23,7 +23,7 @@ export function createServer(config) {
       } catch (error) {
         const safeAuthCode = error instanceof auth.AuthError && ['kdf_cost_exceeded', 'response_too_large', 'not_authorized', 'no_grant', 'unauthorized'].includes(error.code)
         const code = error instanceof ArchiveError || error instanceof LocalConfigError || safeAuthCode ? error.code : 'read_failed'
-        return { isError: true, content: [{ type: 'text', text: `Não foi possível consultar o acervo (${code}). Confira a sessão, as permissões e a configuração local.` }] }
+        return { isError: true, content: [{ type: 'text', text: `Could not read the archive (${code}). Check the session, permissions and local configuration.` }] }
       }
     })
   }

@@ -2,7 +2,7 @@ import { ArchiveClient, ArchiveError, auth, bytes, hpke, seal } from '@whatserve
 import { Opener } from '@whatserver2/client/api/opener'
 import { loadCredential, LocalConfigError, readPrivateFile } from './config.mjs'
 
-const locked = () => ({ state: 'locked', reason: 'Conteúdo criptografado. A leitura local não foi habilitada para este MCP.' })
+const locked = () => ({ state: 'locked', reason: 'Encrypted content. Local reading has not been enabled for this MCP server.' })
 const omitted = () => ({ state: 'absent' })
 const textFields = ['uid', 'device_id', 'wa_id', 'chat_key', 'sender_key', 'sender_lid', 'sender_pn', 'ts', 'kind', 'type', 'source', 'target_uid']
 function metadata(message) {
@@ -19,7 +19,7 @@ function openedText(value, max) {
   if (value.state === 'ok') return { state: 'ok', value: value.value.slice(0, max), truncated: value.value.length > max }
   if (value.state === 'tampered') return { state: 'tampered' }
   if (value.state === 'absent') return omitted()
-  return { state: 'locked', reason: 'A chave autorizada não abriu este conteúdo.' }
+  return { state: 'locked', reason: 'The authorized key could not open this content.' }
 }
 export async function createReader(config) {
   const credential = await loadCredential(config)
@@ -66,7 +66,7 @@ export async function createReader(config) {
     await opener?.prefetch(rows.map(row => row.content_key_id))
     return Promise.all(rows.map(async row => ({ ...metadata(row),
       body: row.body_sealed ? opener ? openedText(await opener.body(row), config.max_text_chars) : locked() : omitted(),
-      structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'Este MCP não abre conteúdo estruturado nesta versão.' } : omitted(),
+      structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
     })))
   }
   return {
@@ -74,7 +74,7 @@ export async function createReader(config) {
       const reply = await api.listDevices()
       return { workspace_id: config.workspace, plaintext_enabled: config.allow_plaintext,
         numbers: reply.devices.filter(device => allowed(device.id)).map(device => ({
-          id: device.id, name: device.label || device.push_name || device.pn || 'Número sem nome',
+          id: device.id, name: device.label || device.push_name || device.pn || 'Unnamed number',
           phone: device.pn, status: device.status, paused: device.paused === true,
         })),
       }

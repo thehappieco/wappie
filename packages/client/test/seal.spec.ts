@@ -151,7 +151,7 @@ describe('what the binding must refuse', () => {
     const notAnEnvelope = new Uint8Array(64)
     await expect(
       contentKey.open(Kind.Body, tenant, parseUUID(vectors.batch[0].row), notAnEnvelope),
-    ).rejects.toThrow(/não é um envelope/)
+    ).rejects.toThrow(/not an envelope/)
   })
 
   it('refuses an envelope from another tenant', async () => {

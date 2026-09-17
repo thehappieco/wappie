@@ -371,7 +371,7 @@ func inviteInto(env domain.Envelope, in *waE2E.GroupInviteMessage) domain.Envelo
 // A header and nothing else: it declares how many pictures and videos follow
 // and carries none of them. The images arrive as ordinary messages of their
 // own, and nothing in the protobuf links a child back to this one — so what is
-// recorded is what the message says, and the client draws "álbum com N fotos"
+// recorded is what the message says, and the client draws "album with N photos"
 // rather than a grid it would have had to guess the contents of.
 func albumInto(env domain.Envelope, a *waE2E.AlbumMessage) domain.Envelope {
 	env.Type = domain.TypeAlbum
@@ -693,7 +693,7 @@ func buttonsInto(env domain.Envelope, bm *waE2E.ButtonsMessage) domain.Envelope 
 
 // listInto reads a list of options. The rows are what was offered, so they go
 // where button labels go, with their section in front when the list has
-// sections — "Horários › Manhã" reads, "Manhã" alone does not.
+// sections — "Schedule › Morning" reads clearly; "Morning" alone does not.
 func listInto(env domain.Envelope, lm *waE2E.ListMessage) domain.Envelope {
 	env.Type = domain.TypeList
 	env.Content.Body = stack(lm.GetTitle(), lm.GetDescription(), lm.GetFooterText())

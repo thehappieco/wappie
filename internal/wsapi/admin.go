@@ -304,21 +304,29 @@ func (s *session) handleAPIKeysList(ctx context.Context, f Frame) {
 	}
 	out := make([]APIKeyInfo, 0, len(rows))
 	for _, k := range rows {
-		info := APIKeyInfo{
-			Prefix: k.Prefix, Name: k.Name, Scope: string(k.Scope), ActsAs: k.ActsAs,
-			CreatedBy: k.CreatedBy, CreatedAt: k.CreatedAt,
-		}
-		if !k.LastUsedAt.IsZero() {
-			at := k.LastUsedAt
-			info.LastUsedAt = &at
-		}
-		if !k.RevokedAt.IsZero() {
-			at := k.RevokedAt
-			info.RevokedAt = &at
-		}
-		out = append(out, info)
+		out = append(out, apiKeyInfo(k))
 	}
 	s.reply(TypeAPIKeys, f.ReqID, APIKeys{Keys: out})
+}
+
+func apiKeyInfo(k store.APIKeyInfo) APIKeyInfo {
+	info := APIKeyInfo{
+		Prefix: k.Prefix, Name: k.Name, Scope: string(k.Scope), ActsAs: k.ActsAs,
+		CreatedBy: k.CreatedBy, CreatedAt: k.CreatedAt,
+		DevicesRestricted: k.DevicesRestricted, DeviceIDs: append([]string{}, k.DeviceIDs...),
+	}
+	if k.ActsAsID != nil {
+		info.ActsAsID = k.ActsAsID.String()
+	}
+	if !k.LastUsedAt.IsZero() {
+		at := k.LastUsedAt
+		info.LastUsedAt = &at
+	}
+	if !k.RevokedAt.IsZero() {
+		at := k.RevokedAt
+		info.RevokedAt = &at
+	}
+	return info
 }
 
 // handleAPIKeyCreate mints a key and returns it once.
@@ -336,6 +344,31 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 	if err := json.Unmarshal(f.Payload, &req); err != nil {
 		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())
 		return
+	}
+	// JSON null is supplied input, not omission. Never turn it into an
+	// unrestricted credential just because a nil slice also means "absent".
+	if req.DeviceIDs == nil {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(f.Payload, &fields); err != nil {
+			s.replyError(f.ReqID, ErrCodeBadRequest, "invalid API key request")
+			return
+		}
+		if _, supplied := fields["device_ids"]; supplied {
+			s.replyError(f.ReqID, ErrCodeBadRequest, "device_ids must be a nonempty array")
+			return
+		}
+	}
+	var deviceIDs []uuid.UUID
+	if req.DeviceIDs != nil {
+		deviceIDs = make([]uuid.UUID, 0, len(req.DeviceIDs))
+		for _, raw := range req.DeviceIDs {
+			id, err := uuid.Parse(raw)
+			if err != nil || len(raw) != 36 || id == uuid.Nil {
+				s.replyError(f.ReqID, ErrCodeBadRequest, "device_ids must contain complete, nonzero UUIDs")
+				return
+			}
+			deviceIDs = append(deviceIDs, id)
+		}
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -389,7 +422,15 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 		actsAs, actsAsName = &id, store.ServiceName(account)
 	}
 	author := who.userID
-	key, err := s.srv.cfg.Keys.IssueActingAs(ctx, tenant, name, scope, &author, actsAs)
+	key, err := s.srv.cfg.Keys.IssueActingAsForDevices(ctx, tenant, name, scope, &author, actsAs, deviceIDs)
+	if errors.Is(err, store.ErrInvalidKeyDevices) {
+		s.replyError(f.ReqID, ErrCodeBadRequest, "device_ids must select distinct devices in this workspace")
+		return
+	}
+	if errors.Is(err, store.ErrMembershipForbidden) {
+		s.replyError(f.ReqID, ErrCodeNotAuthorized, "workspace or service account access changed")
+		return
+	}
 	if err != nil {
 		s.log.Error("issuing an api key failed", "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not issue the key")
@@ -402,11 +443,17 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 	// Looked up rather than assembled, so the timestamps a client shows are the
 	// ones the database recorded.
 	info := APIKeyInfo{Prefix: prefix, Name: name, Scope: string(scope),
-		ActsAs: actsAsName, CreatedBy: who.email}
+		ActsAs: actsAsName, CreatedBy: who.email, DevicesRestricted: deviceIDs != nil, DeviceIDs: []string{}}
+	if actsAs != nil {
+		info.ActsAsID = actsAs.String()
+	}
+	for _, id := range deviceIDs {
+		info.DeviceIDs = append(info.DeviceIDs, id.String())
+	}
 	if rows, err := s.srv.cfg.Keys.List(ctx, tenant); err == nil {
 		for _, k := range rows {
 			if k.Prefix == prefix {
-				info.CreatedAt = k.CreatedAt
+				info = apiKeyInfo(k)
 				break
 			}
 		}
@@ -589,6 +636,11 @@ func (s *session) handleGrantsList(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeInternal, "could not list the grants")
 		return
 	}
+	allowed, err := s.actionDevices(ctx, store.ActionRead)
+	if err != nil {
+		s.replyError(f.ReqID, ErrCodeInternal, "could not check grant permissions")
+		return
+	}
 	labels := map[string]string{}
 	if devices, err := s.srv.cfg.Devices.List(ctx, tenant.String()); err == nil {
 		for _, d := range devices {
@@ -597,6 +649,9 @@ func (s *session) handleGrantsList(ctx context.Context, f Frame) {
 	}
 	out := Grants{UserID: who.userID.String(), Grants: make([]GrantEntry, 0, len(grants))}
 	for _, g := range grants {
+		if _, ok := allowed[g.DeviceID]; !ok {
+			continue
+		}
 		out.Grants = append(out.Grants, GrantEntry{
 			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
 			Epoch: int(g.Epoch), SealedDSK: g.SealedDSK,

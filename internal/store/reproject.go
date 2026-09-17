@@ -124,7 +124,7 @@ func (m *Messages) Reproject(ctx context.Context, tenant, device uuid.UUID, uid 
 
 		// The chat list carries a projection of its newest message, and the
 		// type in it was written when the row was stored. Reclassifying the
-		// message without it leaves the sidebar saying "tipo não suportado"
+		// message without it leaves the sidebar saying "unsupported type"
 		// about a photograph — the row is right and the summary of it is not,
 		// which is the failure mode a projection always has.
 		//

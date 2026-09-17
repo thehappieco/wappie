@@ -40,7 +40,7 @@ reuse the same tuple; a temporarily offline active binding still occupies its
 slot. Reserve/activate, explicit replace and release operations manage capacity.
 External registration never performs a server-side fetch to the supplied URL.
 
-External archives show “Armazenamento gerenciado pelo seu servidor”. This means
+External archives show “Storage managed by your server”. This means
 there is no Wappie commercial storage quota; capacity still depends on the
 external installation. Hosted and external numbers can share the commercial
 workspace while only hosted archive bytes count toward its storage package.

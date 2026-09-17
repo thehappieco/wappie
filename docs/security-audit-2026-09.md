@@ -1,117 +1,120 @@
-# Auditoria de privacidade e segurança — setembro de 2026
+# Privacy and security audit — September 2026
 
-Escopo: o servidor `whatserverd`, o cliente web em `web/`, o CLI `wsctl`, o
-schema Postgres e o deploy local em `localhost:8090`. Método: leitura do código
-com rastreamento de cada ponto de entrada até a persistência, verificação ao
-vivo somente-leitura dos cabeçalhos e endpoints expostos, `govulncheck`,
-`npm audit`, e correção de cada achado com teste de regressão.
+Scope: the `whatserverd` server, the web client in `web/`, the `wsctl` CLI, the
+Postgres schema and the local deployment at `localhost:8090`. Method: code review
+tracing each entry point through persistence, read-only live checks of exposed
+headers and endpoints, `govulncheck`, `npm audit`, and fixes for each finding with
+regression tests.
 
-O modelo de chaves está descrito em `README.md` ("How the archive is
-protected") e as decisões desta auditoria em `decisions.md` ("Phase 13").
+The key model is described in `README.md` ("How the archive is protected") and
+this audit's decisions in `decisions.md` ("Phase 13").
 
-## Resumo
+## Summary
 
-| Severidade | Encontrados | Corrigidos | Backlog |
+| Severity | Found | Fixed | Backlog |
 |---|---|---|---|
-| Alta | 6 | 6 | 0 |
-| Média | 12 | 12 | 0 |
-| Baixa / Info | 8 | 7 | 1 (C4b: ver abaixo) |
+| High | 6 | 6 | 0 |
+| Medium | 12 | 12 | 0 |
+| Low / Info | 8 | 7 | 1 (C4b: see below) |
 
-Nada de crítico na criptografia: o selo HPKE, a ligação de cada blob à sua
-linha (AAD), o armazenamento da mídia como ciphertext da CDN, a derivação da
-senha em duas ramas e o RLS com `FORCE` estão corretos e testados dos dois
-lados. Os achados estão no que fica **ao redor** do selo: autenticação,
-autorização, superfície de rede, logs e retenção.
+No critical cryptographic findings: HPKE sealing, each blob's binding to its row
+(AAD), media storage as CDN ciphertext, two-branch password derivation and RLS
+with `FORCE` are correct and tested on both sides. The findings concern the
+layers **around** the seal: authentication, authorization, network exposure,
+logs and retention.
 
-## Achados e correções
+## Findings and fixes
 
-### Autenticação e chaves
+### Authentication and keys
 
-| # | Sev | Achado | Correção | Teste |
+| # | Severity | Finding | Fix | Test |
 |---|---|---|---|---|
-| A1 | Alta | Código de recuperação era gerado e gravado, mas não existia endpoint nem tela que o usasse. Senha esquecida = arquivo perdido. | `POST /v1/auth/recover/open` e `/finish`: o código deriva uma prova (HKDF, rama separada), guardada como Argon2id em `users.recovery_hash` (migração 0018). O `SignInView` ganhou "Esqueci a senha". A recuperação troca senha e código e encerra toda sessão. Contas antigas sem prova são avisadas no console e geram um novo código. | `authapi_test.go`: `TestARecoveryCodeOpensTheAccountAndReplacesEverything`, `TestAWrongRecoveryCodeAnswersLikeAnUnknownAddress`, `TestAnOldAccountCanSetARecoveryCodeLater`; `wappie-cloud/web/test/account.spec.ts` |
-| A2 | Alta | Sem rate limit em login, challenge e no `hello` do websocket; cada tentativa custa Argon2id 19 MiB. | `internal/ratelimit`: token bucket por IP (60/min) e por sujeito (5/min), com `Retry-After`. `WS_TRUSTED_PROXIES` define quem pode informar `X-Forwarded-For`. | `TestSignInIsRateLimited`, `TestHelloIsRateLimited`, `ratelimit_test.go` |
-| A3 | Média | Sem troca de senha nem re-wrap. | `POST /v1/auth/password` (prova a senha atual, re-deriva, revoga sessões, emite token novo); painel "Conta" no console. `POST /v1/auth/rewrap` para o upgrade silencioso de formato. | `TestChangingThePasswordEndsEveryOtherSession` |
-| A4 | Média | O wrap da chave privada da conta não tinha AAD; qualquer outro selo do sistema tem. | Formato v2: byte de versão + AAD `whatserver2/usk|email`. v1 continua abrindo e é re-wrapado no próximo login. | `account.spec.ts`: "is bound to the address", "still opens a wrap from before the binding" |
-| A5 | Média | Conta desabilitada mantinha sessões por 14 dias. | `Users.ActiveSession` checa `status` em todo ponto que aceita token (HTTP, websocket, mídia). `RevokeAllSessions` na troca de senha e na recuperação. | `TestADisabledAccountsSessionsStopWorking` |
-| A6 | Média | `device-key -print` escrevia a chave privada no terminal sem confirmação. | Exige `-i-understand-this-prints-a-private-key`. | manual |
-| A7 | Baixa | Sessões e convites mortos nunca eram apagados. | `store.Housekeeping` no job horário: 30 dias de carência. | `TestHousekeepingForgetsDeadSessionsAfterAGrace` |
-| A8 | Baixa | Um signup recusado por campo malformado gastava o convite. | O corpo é validado antes de `RedeemInvite`. | `TestAnOldAccountCanSetARecoveryCodeLater` (reusa o convite) |
+| A1 | High | Recovery codes were generated and stored, but no endpoint or screen used them. Forgetting the password meant losing the archive. | `POST /v1/auth/recover/open` and `/finish`: the code derives a proof (HKDF, separate branch), stored as Argon2id in `users.recovery_hash` (migration 0018). `SignInView` gained "Forgot password". Recovery replaces the password and code and ends every session. Older accounts without a proof are notified in the console and generate a new code. | `authapi_test.go`: `TestARecoveryCodeOpensTheAccountAndReplacesEverything`, `TestAWrongRecoveryCodeAnswersLikeAnUnknownAddress`, `TestAnOldAccountCanSetARecoveryCodeLater`; `wappie-cloud/web/test/account.spec.ts` |
+| A2 | High | Login, challenge and WebSocket `hello` had no rate limit; each attempt costs Argon2id 19 MiB. | `internal/ratelimit`: token buckets per IP (60/min) and subject (5/min), with `Retry-After`. `WS_TRUSTED_PROXIES` defines who may supply `X-Forwarded-For`. | `TestSignInIsRateLimited`, `TestHelloIsRateLimited`, `ratelimit_test.go` |
+| A3 | Medium | No password change or key rewrapping. | `POST /v1/auth/password` (proves the current password, derives new keys, revokes sessions, issues a new token); "Account" panel in the console. `POST /v1/auth/rewrap` upgrades the format silently. | `TestChangingThePasswordEndsEveryOtherSession` |
+| A4 | Medium | The account private-key wrap had no AAD, unlike every other seal in the system. | Format v2: version byte + AAD `whatserver2/usk\|email`. v1 still opens and is rewrapped at the next sign-in. | `account.spec.ts`: "is bound to the address", "still opens a wrap from before the binding" |
+| A5 | Medium | Disabled accounts retained sessions for 14 days. | `Users.ActiveSession` checks `status` at every token entry point (HTTP, WebSocket, media). `RevokeAllSessions` runs on password change and recovery. | `TestADisabledAccountsSessionsStopWorking` |
+| A6 | Medium | `device-key -print` wrote the private key to the terminal without confirmation. | Requires `-i-understand-this-prints-a-private-key`. | manual |
+| A7 | Low | Expired sessions and invitations were never deleted. | `store.Housekeeping` in the hourly job, with a 30-day grace period. | `TestHousekeepingForgetsDeadSessionsAfterAGrace` |
+| A8 | Low | A signup rejected for a malformed field consumed the invitation. | The body is validated before `RedeemInvite`. | `TestAnOldAccountCanSetARecoveryCodeLater` (reuses the invitation) |
 
-### Autorização (websocket)
+### Authorization (WebSocket)
 
-| # | Sev | Achado | Correção | Teste |
+| # | Severity | Finding | Fix | Test |
 |---|---|---|---|---|
-| B1 | Alta | API key sem escopo: podia enviar como o número, entrar em grupos, parar devices, fazer upload. | `api_keys.scope` (`read`/`send`/`full`, migração 0017, default `full` para as existentes). `requireScope` em `resolveSend`, `history.backfill`, `group.join`, `device.stop` e `POST /v1/upload`. UI e CLI escolhem o escopo. | `TestAReadKeyCannotSpeakForTheNumber`, `TestASendKeyStopsAtSending`, `TestAKeyIssuedBeforeScopesKeepsWorking`, `TestAKeyNeedsAScope` |
-| B2 | Média | `device.mode` sem gate: qualquer ator desligava o incógnito. | `requireOperator` (owner/admin ou chave `full`). | `TestOnlyAnOperatorCanChangeADevicesPosture` |
-| B3 | Média | `pair` sem gate e aceitava `Grants: []` com aviso. | `requireOperator`; sem grants só com `orphan: true`. `wsctl pair -orphan` envia o campo. | `TestPairingIsAnOperatorsAct` |
-| B4 | Média | Membro sem grant via todo o envelope de todo device; `users.list` e a lista de leitores expostos a qualquer ator. | `resolveDevice` exige grant para pessoa não-admin (`Keys.HasGrant`); `users.list` é de operador; leitores só para admin. | `TestAMemberWithoutAGrantSeesNothingOfADevice` |
+| B1 | High | API keys had no scopes: they could send as the number, join groups, stop devices and upload files. | `api_keys.scope` (`read`/`send`/`full`, migration 0017, existing keys default to `full`). `requireScope` in `resolveSend`, `history.backfill`, `group.join`, `device.stop` and `POST /v1/upload`. UI and CLI select the scope. | `TestAReadKeyCannotSpeakForTheNumber`, `TestASendKeyStopsAtSending`, `TestAKeyIssuedBeforeScopesKeepsWorking`, `TestAKeyNeedsAScope` |
+| B2 | Medium | `device.mode` had no authorization check: any actor could disable incognito mode. | `requireOperator` (owner/admin or `full` key). | `TestOnlyAnOperatorCanChangeADevicesPosture` |
+| B3 | Medium | `pair` had no authorization check and accepted `Grants: []` with a warning. | `requireOperator`; missing grants are allowed only with `orphan: true`. `wsctl pair -orphan` sends the field. | `TestPairingIsAnOperatorsAct` |
+| B4 | Medium | A member without a grant could see every envelope from every device; `users.list` and the reader list were exposed to any actor. | `resolveDevice` requires a grant for non-admin people (`Keys.HasGrant`); `users.list` requires an operator; readers require an admin. | `TestAMemberWithoutAGrantSeesNothingOfADevice` |
 
-### Rede e entrada
+### Network and input
 
-| # | Sev | Achado | Correção | Teste |
+| # | Severity | Finding | Fix | Test |
 |---|---|---|---|---|
-| C1 | Alta | SSRF cego: `media.url` do protobuf recebido era buscado sem checar esquema/host, seguindo redirects. | `media.Origins`: só `https://*.whatsapp.net`, porta padrão, sem credenciais; mesma checagem em cada redirect; dialer resolve o nome e recusa endereços privados/loopback/link-local/CGNAT. | `origin_test.go`: 5 testes, incluindo redirect e resolução para endereço privado |
-| C2 | Baixa | Avatar buscado de URL sem restrição de host. | Mesmo `Origins` no `AvatarWorker`. | coberto por `origin_test.go` |
-| C3 | Info | `/metrics`, `/healthz`, `/readyz` na porta pública. Ao vivo, os labels não expõem tenant/JID. | `WS_METRICS_ADDR` opcional serve os três em listener próprio. | manual |
-| C4 | Info | `docker-compose.dev.yml` publicava Postgres e MinIO em `0.0.0.0` com senha `dev`. | Bind em `127.0.0.1`. | — |
-| C4b | Info | Backlog: as senhas de desenvolvimento do compose continuam fracas por design; não usar o compose fora da máquina local. | não corrigido (documentado) | — |
-| C5 | Info | Backlog: o build do cliente publica o source map (`index-*.js.map`, 1,5 MB) junto com o bundle. Não expõe segredo, mas entrega o código-fonte do cliente a qualquer visitante; decidir se é desejado (`build.sourcemap` no `vite.config.ts`). | não corrigido (decisão de produto) | — |
+| C1 | High | Blind SSRF: `media.url` from incoming protobufs was fetched without checking scheme/host, following redirects. | `media.Origins`: only `https://*.whatsapp.net`, default port, no credentials; the same checks apply to every redirect; the dialer resolves the name and refuses private/loopback/link-local/CGNAT addresses. | `origin_test.go`: 5 tests, including redirects and resolution to a private address |
+| C2 | Low | Avatars were fetched from URLs without host restrictions. | The same `Origins` is used in `AvatarWorker`. | covered by `origin_test.go` |
+| C3 | Info | `/metrics`, `/healthz`, `/readyz` were on the public port. Live labels did not expose tenant/JID values. | Optional `WS_METRICS_ADDR` serves all three on a separate listener. | manual |
+| C4 | Info | `docker-compose.dev.yml` exposed Postgres and MinIO on `0.0.0.0` with password `dev`. | Bind to `127.0.0.1`. | — |
+| C4b | Info | Backlog: compose development passwords remain weak by design; do not use this compose setup outside the local machine. | not fixed (documented) | — |
+| C5 | Info | Backlog: the client build publishes its source map (`index-*.js.map`, 1.5 MB) beside the bundle. It exposes no secret but makes client source available to every visitor; decide whether this is wanted (`build.sourcemap` in `vite.config.ts`). | not fixed (product decision) | — |
 
-### Logs e dados em repouso
+### Logs and data at rest
 
-| # | Sev | Achado | Correção | Teste |
+| # | Severity | Finding | Fix | Test |
 |---|---|---|---|---|
-| D1 | Alta | `WS_LOG_LEVEL=debug` repassava o trace do whatsmeow: texto das mensagens em claro nos logs. | Debug do whatsmeow é descartado; `WS_LOG_WIRE` liga explicitamente e é recusado em `WS_ENV=prod`. | `walog_test.go`, `config_test.go` "rejects the wire log" |
-| D2 | Média | Números, JIDs e e-mails em INFO/WARN/ERROR. | `obs.Redact` via `ReplaceAttr` em todo atributo string e na mensagem: JID vira `…1234@servidor`, e-mail vira `f…@domínio`. | `redact_test.go` |
-| D3 | Média | Sem retenção, expurgo ou eliminação de terceiros. | `tenants.retention_days` (migração 0019), `whatserverd retention`, job horário `maintain`; `whatserverd erase -id` remove uma pessoa em todos os devices. | `TestAPurgeTakesOldRowsAndOnlyTheOrphanedObjects`, `TestErasureRemovesOnePersonAcrossTheArchive` |
-| D4 | Média | Apagar device / `reset-archive` deixava os objetos no bucket. | Objetos órfãos (nenhuma linha `media` do tenant os referencia) são apagados após o delete; `reset-archive` apaga todos os do tenant. | cobertos pelos testes de D3 (cálculo de órfãos) |
-| D5 | Média | Nada verificava que o role do Postgres não tem `SUPERUSER`/`BYPASSRLS`. | `pg.CheckRole` no boot: erro em prod, aviso em dev. | `TestCheckRoleAcceptsTheTestRole` |
-| D6 | Baixa | `.env` local com API key e segredo S3 em claro. | Documentado em `.env.example`; recomenda-se variável de ambiente ou keychain. | — |
-| D7 | Baixa | README e decisions.md descreviam o modelo antigo (chave por tenant; PBKDF2 protegendo a chave em repouso). | Atualizados. | — |
+| D1 | High | `WS_LOG_LEVEL=debug` forwarded whatsmeow traces, putting plaintext messages in logs. | whatsmeow debug output is discarded; `WS_LOG_WIRE` explicitly enables it and is refused in `WS_ENV=prod`. | `walog_test.go`, `config_test.go` "rejects the wire log" |
+| D2 | Medium | Numbers, JIDs and email addresses appeared in INFO/WARN/ERROR output. | `obs.Redact` through `ReplaceAttr` on every string attribute and message: a JID becomes `…1234@server`, an email becomes `f…@domain`. | `redact_test.go` |
+| D3 | Medium | No retention, purging or third-party erasure. | `tenants.retention_days` (migration 0019), `whatserverd retention`, hourly `maintain` job; `whatserverd erase -id` removes one person across all devices. | `TestAPurgeTakesOldRowsAndOnlyTheOrphanedObjects`, `TestErasureRemovesOnePersonAcrossTheArchive` |
+| D4 | Medium | Deleting a device or running `reset-archive` left objects in the bucket. | Orphaned objects (referenced by no tenant `media` row) are removed after deletion; `reset-archive` removes all tenant objects. | covered by D3 tests (orphan calculation) |
+| D5 | Medium | Nothing checked that the Postgres role lacked `SUPERUSER`/`BYPASSRLS`. | `pg.CheckRole` at startup: error in production, warning in development. | `TestCheckRoleAcceptsTheTestRole` |
+| D6 | Low | Local `.env` held plaintext API and S3 credentials. | Documented in `.env.example`; environment variables or a keychain are recommended. | — |
+| D7 | Low | README and decisions.md described the old model (one key per tenant; PBKDF2 protecting the key at rest). | Updated. | — |
 
-### Adicionado depois da auditoria
+### Added after the audit
 
-| # | Item | Correção | Teste |
+| # | Item | Fix | Test |
 |---|---|---|---|
-| E1 | Terceiros recebiam a chave do device em texto, por mão. | Conta de serviço (`role = 'service'`, migração 0020): par de chaves sem senha, registrado por convite `-role service`; grants concedidos no console; API key que "age como" a conta (`api_keys.acts_as`) carrega os grants por `grants.list` e só alcança os devices concedidos. `wsctl service-key` e `wsctl grants`. | `TestAServiceAccountReadsOnlyWhatItWasGranted`, `TestAServiceRegistersWithAPublicKeyOnly` |
+| E1 | Third parties were handed device keys as plaintext. | Service accounts (`role = 'service'`, migration 0020): a key pair without a password, registered through a `-role service` invitation; grants issued in the console; an API key that acts as the account (`api_keys.acts_as`) retrieves grants through `grants.list` and reaches only granted devices. `wsctl service-key` and `wsctl grants`. | `TestAServiceAccountReadsOnlyWhatItWasGranted`, `TestAServiceRegistersWithAPublicKeyOnly` |
 
-### Verificado sem achado
+### Checked without findings
 
-- CSP estrita, `X-Frame-Options: DENY`, COOP/CORP, `Referrer-Policy: no-referrer`,
-  `Permissions-Policy` (confirmados ao vivo em `localhost:8090`).
-- `/v1/media/{uid}` e `/v1/auth/me` exigem Bearer; token nunca vai em URL;
-  mídia servida como `application/octet-stream` com `nosniff` e `attachment`.
-- Sem SQL dinâmico; `set_config` com bind param; RLS com `FORCE` + `NULLIF` em
-  toda tabela por tenant; testes de negação e escopo em `internal/pg`.
-- Buffers de plaintext do whatsmeow desligados e pinados por teste.
-- Sem bypass de autenticação por ambiente, sem credencial hardcoded; `.env`
-  fora do git; gitleaks no CI.
-- `npm audit --omit=dev`: 0 vulnerabilidades. `govulncheck ./...`: 0 alcançáveis.
-- Path traversal: chave de objeto nunca vem do cliente; `webui` limpa o caminho
-  e testa a fuga de diretório.
+- Strict CSP, `X-Frame-Options: DENY`, COOP/CORP, `Referrer-Policy: no-referrer`,
+  `Permissions-Policy` (confirmed live at `localhost:8090`).
+- `/v1/media/{uid}` and `/v1/auth/me` require Bearer credentials; tokens never
+  appear in URLs; media is served as `application/octet-stream` with `nosniff`
+  and `attachment`.
+- No dynamic SQL; `set_config` uses bound parameters; RLS with `FORCE` + `NULLIF`
+  on every tenant table; denial and scope tests in `internal/pg`.
+- whatsmeow plaintext buffers are disabled and pinned by a test.
+- No environment-based authentication bypass or hardcoded credentials; `.env`
+  stays outside Git; gitleaks runs in CI.
+- `npm audit --omit=dev`: 0 vulnerabilities. `govulncheck ./...`: 0 reachable findings.
+- Path traversal: object keys never come from the client; `webui` cleans paths
+  and tests directory escape attempts.
 
-## O que continua fora do alcance do selo
+## What remains outside the seal's protection
 
-Inalterado por esta auditoria e documentado no README: um atacante com código
-no processo vê texto em claro em trânsito; o store de sessão do whatsmeow é
-legível pelo processo e fora do RLS; texto de saída passa em claro; metadados
-de roteamento e recibos são legíveis no banco (e agora mascarados nos logs).
+Unchanged by this audit and documented in the README: an attacker running code
+inside the process can see plaintext in transit; the whatsmeow session store is
+readable by the process and outside RLS; outgoing text passes through in clear;
+routing metadata and receipts are readable in the database (and now masked in
+logs).
 
-## Checklist de deploy
+## Deployment checklist
 
-- `WS_ENV=prod` (recusa `sslmode=disable`, storage sem TLS, `WS_LOG_WIRE`,
-  role com `BYPASSRLS`).
-- Role do Postgres `NOSUPERUSER NOBYPASSRLS`.
-- `WS_TRUSTED_PROXIES` apontando para o reverse proxy, e mais nada.
-- `WS_METRICS_ADDR` em interface privada.
-- Chaves de API com o menor escopo que funciona; `bootstrap` imprime uma `full`.
-- `whatserverd retention -tenant ID -days N` conforme a política do tenant.
-- Cada conta com código de recuperação gerado após esta versão (o console avisa).
-- Backup do banco tratado como dado sensível: contém metadados em claro e
-  material cifrado atacável offline.
+- `WS_ENV=prod` (refuses `sslmode=disable`, storage without TLS, `WS_LOG_WIRE`,
+  and a role with `BYPASSRLS`).
+- Postgres role: `NOSUPERUSER NOBYPASSRLS`.
+- `WS_TRUSTED_PROXIES` points only to the reverse proxy.
+- `WS_METRICS_ADDR` binds to a private interface.
+- API keys use the smallest sufficient scope; `bootstrap` prints a `full` key.
+- `whatserverd retention -tenant ID -days N` follows the tenant's policy.
+- Every account has a recovery code generated after this release (the console
+  displays a notice).
+- Treat database backups as sensitive: they contain plaintext metadata and
+  encrypted material that can be attacked offline.
 
-## Como verificar
+## Verification
 
 ```
 make check && make web-check
@@ -119,6 +122,6 @@ golangci-lint run ./...
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
-Ao vivo: seis `POST /v1/auth/login` errados em um minuto devolvem 429 com
-`Retry-After`; um `hello` com chave `read` seguido de `message.send` devolve
-`not_authorized`; `GET /metrics` não contém números nem e-mails.
+Live checks: six incorrect `POST /v1/auth/login` attempts in one minute return
+429 with `Retry-After`; a `hello` with a `read` key followed by `message.send`
+returns `not_authorized`; `GET /metrics` contains no numbers or email addresses.

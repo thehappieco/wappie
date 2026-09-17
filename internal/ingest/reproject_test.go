@@ -235,7 +235,7 @@ func TestReprojectionAttachesTheMediaItFinds(t *testing.T) {
 //
 // The sidebar shows the type of each conversation's newest message, written
 // when the row was stored. Reclassifying the message and leaving the projection
-// alone produces a list that says "tipo não suportado" about a photograph — the
+// alone produces a list that says "unsupported type" about a photograph — the
 // row right, the summary of it wrong, which is the failure a projection always
 // has and the one nobody thinks to look for.
 func TestReprojectionRefreshesTheChatPreview(t *testing.T) {
