@@ -98,6 +98,10 @@ type Verified struct {
 // caller which one it was hands them a probing oracle.
 var ErrInvalidKey = errors.New("store: invalid api key")
 
+// ErrInvalidKeyDevices covers an empty, duplicate, zero or unavailable selection.
+// Foreign-workspace and missing devices deliberately produce the same error.
+var ErrInvalidKeyDevices = errors.New("store: choose distinct devices in this workspace")
+
 // Argon2id parameters for verifying API keys.
 //
 // Much lighter than the parameters used for a user password, and on purpose:
@@ -147,8 +151,31 @@ func (a *APIKeys) IssueScoped(ctx context.Context, tenantID, name string, scope 
 // refused devices the account has no grant for, exactly like a member.
 func (a *APIKeys) IssueActingAs(ctx context.Context, tenantID, name string, scope KeyScope,
 	createdBy, actsAs *uuid.UUID) (string, error) {
+	return a.IssueActingAsForDevices(ctx, tenantID, name, scope, createdBy, actsAs, nil)
+}
+
+// IssueActingAsForDevices atomically issues the credential and its device list.
+// A nil selection preserves legacy unrestricted issuance. A supplied selection
+// must be nonempty; removing its last device later leaves the key restricted.
+func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name string, scope KeyScope,
+	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID) (string, error) {
 	if _, err := ParseKeyScope(string(scope)); err != nil {
 		return "", err
+	}
+	if deviceIDs != nil {
+		if len(deviceIDs) == 0 {
+			return "", ErrInvalidKeyDevices
+		}
+		selection := make([]uuid.UUID, len(deviceIDs))
+		copy(selection, deviceIDs)
+		deviceIDs = selection
+		seen := make(map[uuid.UUID]bool, len(deviceIDs))
+		for _, id := range deviceIDs {
+			if id == uuid.Nil || seen[id] {
+				return "", ErrInvalidKeyDevices
+			}
+			seen[id] = true
+		}
 	}
 	prefixBytes := make([]byte, prefixLen/2)
 	secret := make([]byte, secretLen)
@@ -190,9 +217,35 @@ func (a *APIKeys) IssueActingAs(ctx context.Context, tenantID, name string, scop
 				return ErrMembershipForbidden
 			}
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, created_by, scope, acts_as)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)`, tenantID, prefix, hash, name, createdBy, string(scope), actsAs)
-		return err
+		if deviceIDs != nil {
+			// Lock ownership until the credential and its whitelist commit. A
+			// concurrent transfer or deletion must not leave a stale selection.
+			rows, err := tx.Query(ctx, `SELECT id FROM devices WHERE tenant_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR SHARE`, tenantID, deviceIDs)
+			if err != nil {
+				return err
+			}
+			count := 0
+			for rows.Next() {
+				count++
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			if count != len(deviceIDs) {
+				return ErrInvalidKeyDevices
+			}
+		}
+		var keyID uuid.UUID
+		if err := tx.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, created_by, scope, acts_as, devices_restricted)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, tenantID, prefix, hash, name, createdBy, string(scope), actsAs, deviceIDs != nil).Scan(&keyID); err != nil {
+			return err
+		}
+		if deviceIDs != nil {
+			_, err := tx.Exec(ctx, `INSERT INTO api_key_devices(api_key_id,device_id) SELECT $1,unnest($2::uuid[])`, keyID, deviceIDs)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return "", fmt.Errorf("store: issue api key: %w", err)
@@ -277,6 +330,12 @@ type APIKeyInfo struct {
 	Scope  KeyScope
 	// ActsAs is the service account's name, empty for a key with none.
 	ActsAs string
+	// ActsAsID identifies the service independently of its display name.
+	ActsAsID *uuid.UUID
+	// DeviceIDs lists remaining devices, including an explicit empty slice
+	// after the final restricted device is deleted or transferred away.
+	DeviceIDs         []string
+	DevicesRestricted bool
 	// CreatedBy is the address of the account that issued it, empty when it
 	// came from the command line.
 	CreatedBy  string
@@ -303,7 +362,9 @@ func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, erro
 	err := pg.InTenantTx(ctx, a.pool, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT k.prefix, k.name, k.scope, coalesce(creator.email, u.email, ''), coalesce(service.email, s.email, ''),
-			       k.created_at, k.last_used_at, k.revoked_at
+			       k.created_at, k.last_used_at, k.revoked_at, k.acts_as, k.devices_restricted,
+			       ARRAY(SELECT x.device_id::text FROM api_key_devices x JOIN devices d ON d.id=x.device_id
+			             WHERE x.api_key_id=k.id AND d.tenant_id=k.tenant_id ORDER BY x.device_id)
 			  FROM api_keys k
 			  LEFT JOIN users u ON u.id = k.created_by
 			  LEFT JOIN users s ON s.id = k.acts_as
@@ -320,11 +381,14 @@ func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, erro
 			var used, revoked *time.Time
 			var actsAs string
 			if err := rows.Scan(&k.Prefix, &k.Name, &k.Scope, &k.CreatedBy, &actsAs,
-				&k.CreatedAt, &used, &revoked); err != nil {
+				&k.CreatedAt, &used, &revoked, &k.ActsAsID, &k.DevicesRestricted, &k.DeviceIDs); err != nil {
 				return err
 			}
 			if actsAs != "" {
 				k.ActsAs = ServiceName(User{Role: RoleService, Email: actsAs})
+			}
+			if k.DeviceIDs == nil {
+				k.DeviceIDs = []string{}
 			}
 			if used != nil {
 				k.LastUsedAt = *used

@@ -31,8 +31,8 @@ func TestSeveralTypesShareOneSetOfKeys(t *testing.T) {
 }
 
 func TestAPhotographAndAFileDoNotShareKeys(t *testing.T) {
-	// The one pair a person thinks of as the same file — "enviar a foto como
-	// arquivo" — and the one where the crypto actually differs.
+	// The one pair a person thinks of as the same file — "send the photo as
+	// a file" — and the one where the crypto actually differs.
 	if domain.KeyClass(domain.TypeImage) == domain.KeyClass(domain.TypeDocument) {
 		t.Fatal("image and document must not share a key class; sending one as the " +
 			"other would seal the bytes under a label the recipient does not derive")

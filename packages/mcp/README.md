@@ -1,10 +1,10 @@
-# Wappie MCP: leitura local autorizada
+# Wappie MCP: authorized local reads
 
-Servidor MCP open source por **stdio**, para consultar uma instalação Wappie e
-um workspace fixos. Usa as APIs REST públicas e a criptografia do SDK público;
-não depende do app privado. Node.js 22 ou mais recente.
+An open source MCP server over **stdio** for querying a fixed Wappie installation
+and workspace. It uses the public REST APIs and public SDK cryptography, without
+depending on the private app. Requires Node.js 22 or later.
 
-## Instalar a partir do repositório
+## Install from the repository
 
 ```sh
 npm --prefix packages/client ci
@@ -13,41 +13,160 @@ npm --prefix packages/mcp ci
 npm --prefix packages/mcp test
 ```
 
-O MCP usa arquivos ESM diretamente, sem etapa de build própria. Dependências
-MCP oficiais fixadas em `2.0.0`; `package-lock.json` registra o grafo instalado.
+The MCP package runs ESM files directly, with no separate build step. Official MCP
+dependencies are pinned to `2.0.0`; `package-lock.json` records the installed graph.
 
-## Configurar
+## Start with a console setup
 
-O host inicia `node /caminho/whatserver2/packages/mcp/cli.mjs --config
-/caminho/privado/mcp.json`. O arquivo JSON e todos os arquivos de credenciais
-devem pertencer ao usuário que executa o processo, com permissão `600` ou `400`.
-Links simbólicos no arquivo final são recusados. Caminhos relativos são
-resolvidos a partir da pasta da configuração.
+The private Wappie console can prepare a connection for a workspace owner or
+administrator. The public MCP package also supports [manual configuration](#manual-configuration)
+without the console.
 
-### Padrão: metadados, conteúdo bloqueado
+1. Select the installation and workspace you intend to share. Open **MCP** in
+   the console, name the connection and select its numbers.
+2. Leave message text disabled for metadata only. To allow text, enable
+   **Allow the assistant to read message text** and enter your Wappie password
+   for that installation. Your account must have archive access to every
+   selected number. The browser uses the password locally; it is not exported.
+3. Create the connection and download `wappie-mcp-setup.json` before closing
+   the setup view. This file contains an API token and, when text is enabled,
+   a service account's private key. Keep it out of shared folders and chats.
+4. On macOS or Linux with Node.js 22 or later, install the public package and
+   import the download into a **new** private directory:
+
+```sh
+git clone https://github.com/thehappieco/wappie.git
+cd wappie
+npm --prefix packages/client ci
+npm --prefix packages/client run build
+npm --prefix packages/mcp ci
+node packages/mcp/setup.mjs \
+  --bundle "$HOME/Downloads/wappie-mcp-setup.json" \
+  --output "$HOME/.wappie-mcp"
+```
+
+If you already have this checkout and its dependencies, run only the import.
+Adjust the download path if your browser saved a different filename. The output
+must be an absolute path in an existing directory you own; it must not already
+exist. The importer accepts an ordinary browser download, then creates a `700`
+directory with `600` files: `config.json`, `token.txt` and, when needed,
+`service-key.txt`. It makes no network requests and never replaces existing
+files.
+
+After a successful import, **delete the original download and remove it from the
+trash**. The importer leaves it in place. Keep the generated files private; host
+configuration below needs only the path to `config.json`, never its credentials.
+
+## Connect to ChatGPT
+
+This package speaks **stdio**. Connect it through OpenAI's Secure MCP Tunnel;
+the Wappie server's REST address is not an MCP endpoint.
+
+1. Follow the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+   to install `tunnel-client`, create a tunnel in the correct organization and
+   associate it with your ChatGPT workspace. Configure its runtime
+   `CONTROL_PLANE_API_KEY` as directed there. This is an OpenAI key, separate from
+   the Wappie token; do not put it in the Wappie setup.
+2. Replace the tunnel ID and every absolute path below, then initialize and
+   check the tunnel. Use paths without spaces for this command example:
+
+```sh
+tunnel-client init \
+  --sample sample_mcp_stdio_local \
+  --profile wappie \
+  --tunnel-id tunnel_REPLACE_ME \
+  --mcp-command "/ABSOLUTE/PATH/node /ABSOLUTE/PATH/wappie/packages/mcp/cli.mjs --config /ABSOLUTE/PATH/.wappie-mcp/config.json"
+tunnel-client doctor --profile wappie --explain
+tunnel-client run --profile wappie
+```
+
+3. Keep the tunnel running and the computer awake. If your account and workspace
+   allow it, enable developer mode in ChatGPT settings. In **Plugins**, add a
+   developer connection, choose **Tunnel**, select your tunnel and review its
+   tools. Enable the connection in a conversation, following the
+   [official ChatGPT connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
+
+If the tunnel is missing, check its workspace association and your **Tunnels
+Read + Use** permissions. Local installation does not establish ChatGPT access
+by itself; discovery and tool calls must still be verified in your workspace.
+
+## Connect to Claude Desktop
+
+The same local stdio server works with Claude Desktop. In the desktop app's
+settings, open **Developer → Edit Config** and merge this entry into
+`claude_desktop_config.json`. Replace all absolute paths, including the Node.js
+executable. The [official MCP local-server guide](https://modelcontextprotocol.io/docs/develop/connect-local-servers)
+describes this configuration flow.
 
 ```json
 {
-  "server": "https://seu-servidor.example",
+  "mcpServers": {
+    "wappie": {
+      "command": "/ABSOLUTE/PATH/node",
+      "args": [
+        "/ABSOLUTE/PATH/wappie/packages/mcp/cli.mjs",
+        "--config",
+        "/ABSOLUTE/PATH/.wappie-mcp/config.json"
+      ]
+    }
+  }
+}
+```
+
+Fully quit and restart Claude Desktop, then review and enable Wappie's tools in
+the conversation's connectors menu. This config is for the local desktop app;
+do not add the Wappie REST address as a remote MCP URL in claude.ai. See also
+[Claude's local MCP support guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
+
+## First check
+
+Ask the connected assistant:
+
+> Use Wappie to list my authorized numbers. Then list the five most recent chats
+> for the number I choose. Do not send messages.
+
+Confirm that only the selected numbers appear. Without text access, encrypted
+content remains `locked`. When enabled, opened text is sent to your chosen AI
+provider on tool calls. Test a recent message from a selected number to check
+that its archive grant is available.
+
+To stop access, revoke the connection's token in the console. That blocks future
+Wappie requests; it cannot remove content already shared with an AI provider.
+Create another connection for another installation or workspace. After archive
+key changes, a new connection may be needed to grant current keys.
+
+## Manual configuration
+
+The host starts `node /path/to/whatserver2/packages/mcp/cli.mjs --config
+/private/path/mcp.json`. The JSON file and all credential files must belong to
+the user running the process, with permissions `600` or `400`. Symlinks at the
+final path component are rejected. Relative paths resolve from the configuration
+file's directory.
+
+### Default: metadata with locked content
+
+```json
+{
+  "server": "https://your-server.example",
   "workspace": "11111111-1111-4111-8111-111111111111",
   "token_file": "./api-token.txt",
   "device_ids": ["22222222-2222-4222-8222-222222222222"]
 }
 ```
 
-`api-token.txt` contém somente uma API key, com quebra de linha final opcional.
-Ela deve pertencer ao workspace informado e ter permissão de leitura para os
-números desejados. A lista `device_ids` restringe o MCP adicionalmente; quando
-omitida, ele aceita todos os números que a credencial pode ler nesse workspace.
-Os nomes cadastrados, números, identificadores, horários e estados são
-metadados. Texto criptografado é apresentado como `body.state: "locked"`; o MCP
-não encaminha os blobs criptografados nem tenta adivinhar seu conteúdo.
+`api-token.txt` contains only an API key, with an optional trailing newline.
+It must belong to the configured workspace and have read access to the desired
+numbers. The `device_ids` list further restricts the MCP server; when omitted,
+it accepts all numbers the credential can read in that workspace. Registered
+names, numbers, identifiers, timestamps and states are metadata. Encrypted text
+is returned as `body.state: "locked"`; the MCP server does not forward encrypted
+blobs or infer their contents.
 
-### Automação: API key associada a uma conta de serviço
+### Automation: API key acting as a service account
 
 ```json
 {
-  "server": "https://seu-servidor.example",
+  "server": "https://your-server.example",
   "workspace": "11111111-1111-4111-8111-111111111111",
   "token_file": "./api-token.txt",
   "service_user_id": "33333333-3333-4333-8333-333333333333",
@@ -57,18 +176,18 @@ não encaminha os blobs criptografados nem tenta adivinhar seu conteúdo.
 }
 ```
 
-1. Gere a conta com o comando Go `wsctl service-key`, guardando sua saída em
-   local privado, fora de logs compartilhados. Registre somente a metade pública
-   em uma conta de serviço.
-2. Um proprietário concede à conta de serviço a chave e a leitura dos números.
-   Crie a API key com `acts_as` dessa conta e a lista de números permitidos.
-3. `service-private.key` contém **somente o valor da linha `private`** produzido
-   por `wsctl service-key`: 32 bytes em base64url sem padding, 43 caracteres.
-   Não use o arquivo completo da saída, a metade pública nem uma chave de número.
-4. Informe o UUID dessa conta em `service_user_id`. O MCP compara esse UUID com
-   o `user_id` de `/v1/grants` em cada operação e abre apenas grants autorizados.
+1. Generate the key pair with the Go command `wsctl service-key`, keeping its
+   output in a private location outside shared logs. Register only the public
+   half with a service account.
+2. An owner grants the service account the key and read access for each number.
+   Create an API key with that account's `acts_as` and the allowed number list.
+3. `service-private.key` contains **only the value from the `private` line**
+   produced by `wsctl service-key`: 32 bytes in unpadded base64url, 43 characters.
+   Do not use the complete output file, the public half or a number's archive key.
+4. Set `service_user_id` to the account's UUID. On each operation, the MCP server
+   compares it with `/v1/grants`'s `user_id` and opens only authorized grants.
 
-Exemplo para preparar arquivos sem colocar valores secretos no comando:
+Example setup without putting secret values in command arguments:
 
 ```sh
 umask 077
@@ -77,112 +196,98 @@ mkdir -p "$HOME/.config/wappie-mcp"
 awk '$1 == "private" {print $2}' "$HOME/.config/wappie-mcp/keypair.private.txt" > "$HOME/.config/wappie-mcp/service-private.key"
 ```
 
-A API key e a chave privada são arquivos diferentes. Uma API key sem `acts_as`
-pode consultar os metadados permitidos, mas não fornece grants de uma conta de
-serviço. Não coloque segredos no JSON do host MCP nem em argumentos de ferramentas.
+The API key and private key are separate files. An API key without `acts_as` can
+query permitted metadata, but cannot retrieve service account grants. Do not put
+secrets in the MCP host's JSON configuration or in tool arguments.
 
-### Pessoa: sessão existente do CLI e senha em arquivo privado
+### Person: existing CLI session and private password file
 
-Faça login pelo CLI público, que pede a senha sem exibi-la:
+Sign in with the public CLI, which prompts for the password without displaying it:
 
 ```sh
-node packages/cli/cli.mjs login --server https://seu-servidor.example --email voce@example.test --workspace 11111111-1111-4111-8111-111111111111
+node packages/cli/cli.mjs login --server https://your-server.example --email you@example.test --workspace 11111111-1111-4111-8111-111111111111
 ```
 
-O CLI grava um JSON privado em `~/.config/whatserver2/`, com nome baseado no SHA-256
-da origem do servidor. Esse JSON guarda a sessão, não a senha ou chaves privadas.
-Selecione seu caminho em `session_file`; origem, workspace, usuário e validade
-serão verificados novamente.
+The CLI writes a private JSON file in `~/.config/whatserver2/`, named from the
+server origin's SHA-256 hash. It stores the session, not passwords or private
+keys. Set `session_file` to its path; origin, workspace, user and expiration are
+checked again.
 
 ```json
 {
-  "server": "https://seu-servidor.example",
+  "server": "https://your-server.example",
   "workspace": "11111111-1111-4111-8111-111111111111",
-  "session_file": "./sessao-do-cli.json",
-  "password_file": "./senha.txt",
+  "session_file": "./cli-session.json",
+  "password_file": "./password.txt",
   "allow_plaintext": true,
   "device_ids": ["22222222-2222-4222-8222-222222222222"]
 }
 ```
 
-O arquivo da senha contém somente a senha, com uma quebra de linha final
-opcional. O MCP consulta o desafio e os grants atuais para abrir a chave local;
-não faz login, cria sessão nem modifica a conta. Sessões vencidas devem ser
-renovadas pelo CLI. Para usar apenas metadados, remova `password_file` e
-`allow_plaintext`. Não misture sessão/senha e API key/chave de serviço.
+The password file contains only the password, with an optional trailing newline.
+The MCP server fetches the challenge and current grants to open the key locally;
+it does not sign in, create a session or change the account. Renew expired
+sessions through the CLI. For metadata only, remove `password_file` and
+`allow_plaintext`. Do not mix session/password credentials with API key/service
+key credentials.
 
-O desbloqueio por senha aceita desafios Argon2id de até **128 MiB**, **5 passagens**
-e **4 vias paralelas**. Custos inválidos ou maiores são recusados antes da
-derivação, sem reduzir a proteção pedida pelo servidor. Os padrões Wappie de
-64 MiB/3/1 cabem nesse limite. Respostas de autenticação são limitadas a 4 MiB e
-as consultas HTTP de desbloqueio têm prazo de 30 segundos. O modo conta de
-serviço não deriva senha e não depende desses limites de Argon2.
+Password unlocking accepts Argon2id challenges up to **128 MiB**, **5 passes** and
+**4 parallel lanes**. Invalid or higher costs are rejected before derivation,
+without lowering the protection requested by the server. Wappie's defaults of
+64 MiB/3/1 fit within these limits. Authentication responses are limited to 4 MiB,
+and unlocking HTTP requests have a 30-second deadline. Service account mode does
+not derive passwords and is not subject to these Argon2 limits.
 
-## Adicionar ao seu host MCP
+You choose the configuration outside the arguments sent by the model. Configure
+another MCP instance to connect to a different server/workspace. Use HTTPS;
+HTTP is accepted only for `localhost`, `127.0.0.1` or `::1`.
 
-Exemplo de configuração de um host que aceita `mcpServers`:
+## Tools and limits
 
-```json
-{
-  "mcpServers": {
-    "wappie": {
-      "command": "node",
-      "args": [
-        "/caminho/whatserver2/packages/mcp/cli.mjs",
-        "--config",
-        "/caminho/privado/mcp.json"
-      ]
-    }
-  }
-}
-```
-
-A configuração é escolhida por você, fora dos argumentos enviados pelo modelo.
-Para conectar outro servidor/workspace, configure outra instância do MCP.
-Use HTTPS; HTTP só é aceito em `localhost`, `127.0.0.1` ou `::1`.
-
-## Ferramentas e limites
-
-| Ferramenta | Uso |
+| Tool | Purpose |
 |---|---|
-| `list_numbers` | Números autorizados no workspace configurado. |
-| `list_chats` | Conversas do número, nomes e prévias quando desbloqueados. |
-| `list_messages` | Página de mensagens, com cursor para as mais antigas. |
-| `get_message` | Uma mensagem por UUID e número. |
-| `list_revisions` | Versões arquivadas da mensagem; informa truncamento. |
+| `list_numbers` | Authorized numbers in the configured workspace. |
+| `list_chats` | A number's chats, with names and previews when unlocked. |
+| `list_messages` | A page of messages, with a cursor for older messages. |
+| `get_message` | One message by UUID and number. |
+| `list_revisions` | Archived message versions, with truncation reported. |
 
-As páginas MCP têm até 100 itens, padrão 50. Em `list_messages`, envie `next`
-como `before` na próxima consulta, preservando `ts` e `seq`. A lista de conversas
-não tem cursor nesta versão; `truncated: true` indica uma lista incompleta. As
-revisões truncadas não têm continuação nesta primeira entrega. `max_text_chars`
-limita cada texto aberto (128–8192, padrão 4096); `truncated` acompanha o texto.
-Respostas acima de 1 MiB são recusadas com `result_too_large`; reduza `limit`,
-`max_text_chars` ou a lista de números configurada.
+MCP pages contain up to 100 items, defaulting to 50. For `list_messages`, pass
+`next` as `before` in the next request, preserving `ts` and `seq`. Chat listing
+has no cursor in this version; `truncated: true` means the list is incomplete.
+Truncated revisions also have no continuation in this first release.
+`max_text_chars` limits each opened text (128–8192, default 4096); each text
+reports `truncated`. Responses larger than 1 MiB are rejected with
+`result_too_large`; reduce `limit`, `max_text_chars` or the configured number list.
 
-Não há ferramentas para enviar, marcar mensagens lidas, ligar, baixar mídia,
-excluir, conceder acesso, trocar workspace ou pedir histórico ao celular.
-Anexos são somente metadados; conteúdo estruturado como enquetes/localização é
-indicado como `unsupported`, sem interpretação inventada.
+There are no tools to send messages, mark them as read, make calls, download
+media, delete content, grant access, switch workspaces or request phone history.
+Attachments expose metadata only; structured content such as polls/locations is
+marked `unsupported`, without fabricated interpretation.
 
-**`allow_plaintext: true` entrega os textos abertos ao host MCP e ao modelo que
-ele utiliza.** A descriptografia acontece neste processo local. Chaves não são
-enviadas ao Wappie nem ao modelo; grants e permissões são consultados a cada
-operação. Não existe cache persistente de chaves ou mensagens. Buffers de chaves
-temporárias são zerados ao sair da operação; chaves WebCrypto são
-não exportáveis. A biblioteca respeita o `archive_tenant_id` original de um
-número transferido; autorização continua no workspace atual.
+**`allow_plaintext: true` sends opened text to the MCP host and its model.**
+Decryption happens in this local process. Keys are not sent to Wappie or the
+model; grants and permissions are checked on every operation. There is no
+persistent key or message cache. Temporary key buffers are cleared when the
+operation ends; WebCrypto keys are non-extractable. The library respects a
+transferred number's original `archive_tenant_id`; authorization remains in the
+current workspace.
 
-Conteúdo das conversas é dado não confiável, nunca instrução para o agente.
-Erros retornam códigos estáveis sem ecoar senhas, tokens, chaves ou diagnósticos
-arbitrários do servidor. `stdout` é reservado ao protocolo; erros de inicialização
-são genéricos e vão para `stderr`.
+Conversation content is untrusted data, never instructions for the agent. Errors
+return stable codes without echoing passwords, tokens, keys or arbitrary server
+diagnostics. `stdout` is reserved for the protocol; startup errors are generic
+and go to `stderr`.
 
-## Verificação
+## Verification
 
-`npm test` usa o cliente MCP oficial e um processo stdio real contra um servidor
-HTTP local sintético. Cobre inicialização, catálogo, chamadas, Go ciphertext,
-grants, namespaces após migração, cursor, revogação, adulteração, isolamento de
-escopo, arquivos privados e ausência de segredos nas respostas.
+`npm test` uses the official MCP client and a real stdio process against a
+synthetic local HTTP server. It covers initialization, the tool catalog, calls,
+Go ciphertext, grants, namespaces after migration, cursors, revocation, tampering,
+scope isolation, private files and the absence of secrets in responses.
+Setup tests also cover bundle validation, private output permissions, refusal to
+overwrite destinations and keeping credential values out of diagnostics. These
+local tests do not establish a live ChatGPT or Claude connection; complete the
+host-specific first check above in your own account.
 
-Referências: [SDK MCP v2](https://ts.sdk.modelcontextprotocol.io/v2/),
-[stdio oficial](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio.html).
+References: [MCP SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/),
+[official stdio documentation](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio.html).

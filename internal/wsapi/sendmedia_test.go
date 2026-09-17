@@ -14,7 +14,7 @@ import (
 // the HKDF label its bytes are encrypted under, and again on the frame that
 // sends it, which picks the protobuf field. Nothing links the two calls.
 //
-// Getting them to disagree is not exotic — "enviar a foto como arquivo" is a
+// Getting them to disagree is not exotic — "send the photo as a file" is a
 // photograph uploaded as an image and sent as a document if a client is not
 // careful. Every step then answers success, the archive stores the row, and the
 // attachment opens for nobody afterwards: not the recipient, and not us either,

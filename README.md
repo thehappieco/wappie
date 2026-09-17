@@ -199,7 +199,7 @@ reaches the server: the browser derives a master key with Argon2id, keeps the
 branch that unwraps your private key, and sends only the branch that proves who
 you are — stored there as a slow hash. A signup prints a recovery code once,
 which wraps the same private key and is the only way back from a forgotten
-password: "Esqueci a senha" on the sign-in screen takes the code, proves it to
+password: "Forgot password" on the sign-in screen takes the code, proves it to
 the server the same way a password is proved, opens the key in the page, and
 sets a new password and a new code. The console's account panel changes the
 password and regenerates the code; both end every other session.

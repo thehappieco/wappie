@@ -54,9 +54,9 @@ export interface MediaKeys {
  */
 export async function deriveKeys(mediaKey: Bytes, type: MediaType): Promise<MediaKeys> {
   const info = infoString[type]
-  if (!info) throw new MediaError(`tipo de mídia desconhecido: ${type}`, 'type')
+  if (!info) throw new MediaError(`unknown media type: ${type}`, 'type')
   if (mediaKey.length !== KEY_LEN) {
-    throw new MediaError(`a mediaKey tem ${mediaKey.length} bytes, esperava ${KEY_LEN}`, 'key_length')
+    throw new MediaError(`mediaKey has ${mediaKey.length} bytes, expected ${KEY_LEN}`, 'key_length')
   }
 
   const key = await crypto.subtle.importKey('raw', mediaKey, 'HKDF', false, ['deriveBits'])
@@ -95,15 +95,15 @@ export async function decrypt(
 ): Promise<Bytes> {
   const k = await deriveKeys(mediaKey, type)
 
-  if (enc.length < MAC_LEN + BLOCK_SIZE) throw new MediaError('cifra curta demais', 'short')
+  if (enc.length < MAC_LEN + BLOCK_SIZE) throw new MediaError('ciphertext is too short', 'short')
   const ciphertext = enc.subarray(0, enc.length - MAC_LEN)
   const mac = enc.subarray(enc.length - MAC_LEN)
   if (ciphertext.length % BLOCK_SIZE !== 0) {
-    throw new MediaError('a cifra não é múltipla do bloco', 'block')
+    throw new MediaError('ciphertext length is not a multiple of the block size', 'block')
   }
 
   if (!(await verifyMAC(k, ciphertext, mac))) {
-    throw new MediaError('MAC não confere', 'mac')
+    throw new MediaError('MAC verification failed', 'mac')
   }
 
   const key = await crypto.subtle.importKey('raw', k.cipher, { name: 'AES-CBC' }, false, ['decrypt'])
@@ -113,7 +113,7 @@ export async function decrypt(
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: k.iv }, key, ciphertext)
     return new Uint8Array(plaintext)
   } catch {
-    throw new MediaError('preenchimento inválido', 'padding')
+    throw new MediaError('invalid padding', 'padding')
   }
 }
 

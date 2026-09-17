@@ -1,28 +1,28 @@
-# Mover um número de Team para Personal
+# Move a number from Team to Personal
 
-No console, abra os detalhes do número e escolha **Migrar para Pessoal**. A prévia informa o destino e o espaço necessário; **Confirmar migração** executa a mudança.
+In the console, open the number's details and choose **Move to Personal**. The preview shows the destination and required space; **Confirm transfer** performs the move.
 
-## Requisitos e resultado
+## Requirements and outcome
 
-- Você precisa ser o único proprietário do Team e ter as chaves de todo o histórico do número.
-- O destino é seu próprio Personal, ativo, com vínculo e armazenamento disponíveis.
-- Histórico, anexos, identidade WhatsApp e chaves são preservados. As permissões dos outros membros e das chaves de API do Team são removidas.
-- O número fica pausado ao concluir. Use **Abrir workspace Pessoal**, confira o histórico e escolha **Retomar sincronização** nos detalhes do número.
-- A assinatura do Team não é transferida: a operação utiliza a capacidade já disponível no Personal. Não há compra automática.
-- Em uma instalação externa, o app tenta substituir o vínculo comercial pelo mesmo número no workspace remoto Personal. Se a atualização da licença falhar, a migração operacional permanece concluída; use **Tentar atualizar licença novamente** ou a substituição de vínculo em **Instalações e licenças**.
+- You must be the Team's sole owner and hold the keys to the number's complete history.
+- The destination is your own active Personal workspace, with an available number binding and storage capacity.
+- History, attachments, WhatsApp identity and keys are preserved. Other members' permissions and the Team's API key permissions are removed.
+- The number is paused when the transfer completes. Select **Open Personal workspace**, check the history, then choose **Resume synchronization** in the number's details.
+- The Team's subscription is not transferred: the operation uses capacity already available in Personal. There is no automatic purchase.
+- For an external installation, the app attempts to replace the commercial binding with the same number in the remote Personal workspace. If the license update fails, the operational transfer remains complete; use **Retry license update** or replace the binding under **Installations and licenses**.
 
-A mudança não apaga conteúdo que alguém já tenha exportado ou chaves que já tenha obtido. Ela encerra o acesso futuro pelo Team.
+The move does not erase content someone has already exported or keys they have already obtained. It ends future access through the Team.
 
-## Garantias do servidor
+## Server guarantees
 
-A troca ocorre em uma transação que bloqueia ambos os workspaces e a supervisão WhatsApp. Verificações de proprietário, capacidade e chaves são repetidas dentro dessa transação. Uma falha mantém o acervo no Team; o número pode permanecer pausado, permitindo nova tentativa ou retomada.
+The transfer runs in a transaction that locks both workspaces and WhatsApp supervision. Owner, capacity and key checks are repeated within that transaction. A failure leaves the archive in the Team; the number may remain paused so you can retry or resume it.
 
-`devices.archive_tenant_id` preserva o domínio criptográfico original. A autorização e o faturamento continuam usando `tenant_id`. Clientes devem utilizar o domínio anunciado em dispositivos, grants e chaves; os SDKs e CLIs desta versão já fazem isso. Atualize clientes antigos antes de abrir arquivos de um número movido.
+`devices.archive_tenant_id` preserves the original cryptographic namespace. Authorization and billing continue to use `tenant_id`. Clients must use the namespace advertised in devices, grants and keys; this release's SDKs and CLIs already do so. Update older clients before opening a transferred number's archive.
 
-Os objetos não são regravados. Cada workspace tem seu próprio registro de uso; um índice interno de proprietários físicos impede a exclusão de um objeto enquanto outro workspace ainda depende dele. O histórico de transferências registra autor, origem, destino e horário. Sequências de mensagens e eventos são realocadas sem modificar identificadores ou envelopes criptografados.
+Objects are not rewritten. Each workspace has its own usage ledger; an internal physical-owner index prevents an object from being deleted while another workspace still depends on it. Transfer history records the actor, source, destination and time. Message and event sequences are reassigned without changing identifiers or encrypted envelopes.
 
-## Atualização e reversão
+## Upgrade and rollback
 
-Pare os processos antigos de API, captura e manutenção antes de aplicar as migrações 36 e 37. Um coletor de objetos antigo não conhece os proprietários físicos compartilhados.
+Stop old API, capture and maintenance processes before applying migrations 36 and 37. An older object collector does not know about shared physical owners.
 
-Mantenha backup do banco, objetos e artefatos anteriores. Depois de uma transferência, uma reversão de frontend pode manter o backend atual; não execute um backend anterior às migrações contra esse banco nem contorne a verificação de versão. Uma restauração completa precisa ser coordenada para preservar também as mensagens recebidas desde o backup.
+Keep backups of the database, objects and previous artifacts. After a transfer, a frontend rollback can keep the current backend; do not run a backend from before these migrations against this database or bypass the version check. A full restore must be coordinated to preserve messages received since the backup as well.

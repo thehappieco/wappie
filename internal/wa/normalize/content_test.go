@@ -14,7 +14,7 @@ import (
 	"whatserver2/internal/wa/normalize"
 )
 
-// Three types that used to reach the archive as "tipo não suportado" — 34
+// Three types that used to reach the archive as "unsupported type" — 34
 // templates and 13 albums in one real archive, plus every poll answer ever
 // cast. Each one is a message somebody sent and a reader could not read.
 //

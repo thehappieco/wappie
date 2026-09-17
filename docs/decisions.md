@@ -190,7 +190,7 @@ can arrive inside it.
 the media key is derived from; the `type` on the send frame picks the protobuf
 field; the `media_type` stored in the archive is what a client later derives its
 decryption keys from. Nothing cross-checks them, and across the image/document
-boundary — which is "enviar a foto como arquivo", the one case a person thinks
+boundary — which is "send the photo as a file", the one case a person thinks
 of as the same file — a mismatch produces an attachment that answers 200 at
 every step and then opens for nobody, including us. The browser derives all
 three from one `plan.kind`.
@@ -282,7 +282,7 @@ copy of a message was strictly poorer than the copy every recipient received: no
 mentions to highlight, no card to draw. Same content, sealed the same way the
 inbound path seals it.
 
-**"Temporária" reads three fields, because one of them is not enough.**
+**"Temporary" reads three fields, because one of them is not enough.**
 `ephemeral` records that a message travelled inside the disappearing envelope;
 `expiration` records the timer it declared. `send.wrap` keeps them in step on the
 way out, and rows from a history sync — or from a client that wrote the timer
@@ -498,7 +498,7 @@ browser already opened and offered as a blob.
 
 **A contact card's `waid` is the only actionable thing in it.** The printed
 number is written however the sender's phone felt like writing it; the `waid`
-parameter is the account. So "abrir conversa" appears only where the card names
+parameter is the account. So "open chat" appears only where the card names
 one, and the value is checked as digits before it becomes a JID — the card is
 text a stranger wrote.
 
@@ -506,7 +506,7 @@ text a stranger wrote.
 disappearing timer travels in every message's context info, so it genuinely is
 per message and can be set when sending. Nothing in the protocol changes it
 afterwards — `KeepInChatMessage` preserves a message rather than rescheduling it
-— so the message menu says "expira em X" and does not offer to edit it.
+— so the message menu says "expires in X" and does not offer to edit it.
 
 **Receipts belong to a version, and there is no longer a general list beside
 them.** A reader's flat `delivered` is the earliest across every version — the

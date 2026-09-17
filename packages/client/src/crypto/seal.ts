@@ -103,9 +103,9 @@ export interface Header {
  * guessed would be the downgrade path the byte exists to close.
  */
 export function parseHeader(envelope: Bytes): Header {
-  if (envelope.length < HEADER_LEN) throw new SealError('envelope curto demais', 'short')
+  if (envelope.length < HEADER_LEN) throw new SealError('envelope is too short', 'short')
   if (envelope[0] !== MAGIC0 || envelope[1] !== MAGIC1) {
-    throw new SealError('não é um envelope', 'magic')
+    throw new SealError('not an envelope', 'magic')
   }
   const h: Header = {
     version: envelope[2],
@@ -113,10 +113,10 @@ export function parseHeader(envelope: Bytes): Header {
     mode: envelope[4],
     epoch: readUint16BE(envelope, 5),
   }
-  if (h.version !== VERSION) throw new SealError(`versão desconhecida: ${h.version}`, 'version')
-  if (h.suite !== SUITE_V1) throw new SealError(`suíte desconhecida: ${h.suite}`, 'suite')
+  if (h.version !== VERSION) throw new SealError(`unknown version: ${h.version}`, 'version')
+  if (h.suite !== SUITE_V1) throw new SealError(`unknown suite: ${h.suite}`, 'suite')
   if (h.mode !== MODE_DIRECT && h.mode !== MODE_BATCH) {
-    throw new SealError(`modo desconhecido: ${h.mode}`, 'mode')
+    throw new SealError(`unknown mode: ${h.mode}`, 'mode')
   }
   return h
 }
@@ -205,9 +205,9 @@ export async function openDirect(
   envelope: Bytes,
 ): Promise<Bytes> {
   const h = parseHeader(envelope)
-  if (h.mode !== MODE_DIRECT) throw new SealError('esperava modo direto', 'mode')
+  if (h.mode !== MODE_DIRECT) throw new SealError('expected direct mode', 'mode')
   if (envelope.length < HEADER_LEN + ENC_LEN + TAG_LEN) {
-    throw new SealError('envelope curto demais', 'short')
+    throw new SealError('envelope is too short', 'short')
   }
 
   const header = envelope.subarray(0, HEADER_LEN)
@@ -226,7 +226,7 @@ export async function openDirect(
     // Deliberately opaque, as on the server: telling "wrong key" apart from
     // "moved row" apart from "tampered" hands an attacker an oracle for
     // probing the binding.
-    throw new SealError('autenticação falhou', 'authentication')
+    throw new SealError('authentication failed', 'authentication')
   }
 }
 
@@ -262,7 +262,7 @@ export class ContentKey {
     const row = await contentKeyRow(tenant, device, id)
     const raw = await openDirect(priv, Kind.ContentKey, tenant, row, sealed)
     if (raw.length !== 32) {
-      throw new SealError(`a chave de conteúdo tem ${raw.length} bytes, esperava 32`, 'short')
+      throw new SealError(`content key has ${raw.length} bytes, expected 32`, 'short')
     }
     const key = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['decrypt'])
     return new ContentKey(id, h.epoch, key)
@@ -275,14 +275,14 @@ export class ContentKey {
     envelope: Bytes,
   ): Promise<Bytes> {
     const h = parseHeader(envelope)
-    if (h.mode !== MODE_BATCH) throw new SealError('esperava modo em lote', 'mode')
+    if (h.mode !== MODE_BATCH) throw new SealError('expected batch mode', 'mode')
     if (envelope.length < HEADER_LEN + 4 + NONCE_LEN + TAG_LEN) {
-      throw new SealError('envelope curto demais', 'short')
+      throw new SealError('envelope is too short', 'short')
     }
     const wants = readUint32BE(envelope, HEADER_LEN)
     if (wants !== this.id) {
       throw new SealError(
-        `o envelope precisa da chave de conteúdo ${wants}, esta é a ${this.id}`,
+        `envelope requires content key ${wants}, this key is ${this.id}`,
         'key_mismatch',
       )
     }
@@ -304,7 +304,7 @@ export class ContentKey {
       )
       return new Uint8Array(plaintext)
     } catch {
-      throw new SealError('autenticação falhou', 'authentication')
+      throw new SealError('authentication failed', 'authentication')
     }
   }
 }

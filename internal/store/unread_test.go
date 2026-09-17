@@ -415,7 +415,7 @@ func TestTheTimerReachesEveryRowOfOneConversation(t *testing.T) {
 // on the row that is NOT the advertised one. A single-row read by the
 // advertised key then answers zero, the message goes out without the
 // disappearing envelope, and the composer has meanwhile been promising the
-// reader "como a conversa: 24 horas".
+// reader "same as the chat: 24 hours".
 func TestAnOutboundMessageSeesATimerLearnedOnTheOtherHalf(t *testing.T) {
 	m, tenant, device := chatFixture(t)
 	ctx := context.Background()

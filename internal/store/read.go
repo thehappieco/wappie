@@ -528,7 +528,7 @@ func derefBool(v *bool) bool {
 // WhatsApp addressed, so the timer can be learned on the row that is NOT the
 // advertised one; a single-row read by the advertised key then answers zero,
 // the envelope is skipped, and the composer has meanwhile been promising the
-// reader "como a conversa: 24 horas".
+// reader "same as the chat: 24 hours".
 //
 // max() rather than a preference between the rows, because the two states a
 // row can be in are "no timer" and "this timer", and any row that knows one
