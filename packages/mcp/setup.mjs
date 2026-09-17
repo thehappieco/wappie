@@ -4,8 +4,10 @@ import { open, mkdir, realpath, stat, chmod } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import * as z from 'zod/v4'
 import { LocalConfigError, validateConfig } from './config.mjs'
+import { hpke } from '@whatserver2/client'
+import { MAX_CONTACT_PACK_BYTES, openContactPack, validateContactPack } from '@whatserver2/client/crypto/contactPack'
 
-const maxBundleBytes = 1024 * 1024
+const maxBundleBytes = MAX_CONTACT_PACK_BYTES
 const id = z.string().uuid().transform(value => value.toLowerCase())
 const bundleSchema = z.strictObject({
   version: z.literal(1),
@@ -13,6 +15,7 @@ const bundleSchema = z.strictObject({
   device_ids: z.array(id).min(1).max(1000),
   token: z.string().length(52), allow_plaintext: z.boolean(),
   service_user_id: id.optional(), service_private_key: z.string().length(43).optional(),
+  timezone: z.string().min(1).max(100).optional(), contacts: z.unknown().optional(),
 })
 const messages = {
   arguments_required: 'Use --bundle /path/to/download.json --output /absolute/new-directory.',
@@ -31,7 +34,7 @@ function canonicalKey(value) {
   try { return decoded.length === 32 && decoded.toString('base64url') === value }
   finally { decoded.fill(0) }
 }
-function validateBundle(value) {
+async function validateBundle(value) {
   const parsed = bundleSchema.safeParse(value)
   if (!parsed.success) fail('invalid_bundle')
   const bundle = parsed.data
@@ -39,17 +42,32 @@ function validateBundle(value) {
     !/^[a-f0-9]{8}\./.test(bundle.token) || !canonicalKey(bundle.token.slice(9)) ||
     (bundle.service_private_key !== undefined && !canonicalKey(bundle.service_private_key)) ||
     (bundle.allow_plaintext && (!bundle.service_user_id || !bundle.service_private_key)) ||
-    (!bundle.allow_plaintext && bundle.service_private_key !== undefined)) fail('invalid_bundle')
+    (!bundle.allow_plaintext && bundle.service_private_key !== undefined) ||
+    (bundle.contacts !== undefined && !bundle.allow_plaintext)) fail('invalid_bundle')
   const output = {
     server: bundle.server_url, workspace: bundle.workspace_id, device_ids: bundle.device_ids,
     token_file: './token.txt', allow_plaintext: bundle.allow_plaintext,
     ...(bundle.service_user_id ? { service_user_id: bundle.service_user_id } : {}),
     ...(bundle.allow_plaintext ? { service_key_file: './service-key.txt' } : {}),
+    ...(bundle.timezone ? { timezone: bundle.timezone } : {}),
+    ...(bundle.contacts !== undefined ? { contacts_file: './contacts.enc.json' } : {}),
   }
   // Reuse the runtime's origin, identity and credential-mixing rules. Keep file
   // references relative in the saved config so the private directory is movable.
   const checked = validateConfig(output)
   output.server = checked.server
+  if (bundle.contacts !== undefined) {
+    const scope = { server_url:checked.server,workspace_id:bundle.workspace_id,service_user_id:bundle.service_user_id,device_ids:bundle.device_ids }
+    let raw
+    try {
+      bundle.contacts = validateContactPack(bundle.contacts,scope)
+      raw = Buffer.from(bundle.service_private_key,'base64url')
+      // Authenticate and validate before creating any output. Names only exist
+      // in memory; the durable file retains the original encrypted snapshot.
+      await openContactPack(await hpke.importArchiveKey(raw),bundle.contacts,scope)
+    } catch { fail('invalid_bundle') }
+    finally { raw?.fill(0) }
+  }
   return { bundle, output }
 }
 async function readBundle(path) {
@@ -70,7 +88,7 @@ async function readBundle(path) {
     if (length > maxBundleBytes) fail('invalid_bundle')
     let value
     try { value = JSON.parse(data.subarray(0, length).toString('utf8')) } catch { fail('invalid_bundle') }
-    return validateBundle(value)
+    return await validateBundle(value)
   } catch (error) {
     if (error instanceof LocalConfigError) throw error
     fail('bundle_unavailable')
@@ -125,6 +143,7 @@ if (argv.length === 1 && argv[0] === '--help') {
     const directory = await createOutput(paths.output)
     await writePrivate(join(directory, 'token.txt'), bundle.token + '\n')
     if (bundle.service_private_key) await writePrivate(join(directory, 'service-key.txt'), bundle.service_private_key + '\n')
+    if (bundle.contacts !== undefined) await writePrivate(join(directory, 'contacts.enc.json'), JSON.stringify(bundle.contacts) + '\n')
     // Publish the runnable configuration last, after every credential is durable.
     await writePrivate(join(directory, 'config.json'), JSON.stringify(output, null, 2) + '\n')
     process.stdout.write('Wappie MCP setup imported. Start the MCP with --config pointing to config.json in the output directory.\nThe original download still contains credentials. After checking the import, delete the original bundle and remove it from the trash.\n')

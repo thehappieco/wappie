@@ -110,13 +110,13 @@ function noSecrets(result, secret) {
   assert.equal(text.includes('sealed_dsk'), false)
 }
 
-test('stdio initializes and lists only five bounded read-only tools; locked metadata never asks for keys', async () => {
+test('stdio initializes and lists eight bounded read-only tools; locked metadata never asks for keys', async () => {
   const f = await fixture()
   try {
     const { client, stderr } = await f.connect()
     assert.equal(client.getServerVersion().name, 'wappie-readonly')
     const listing = await client.listTools()
-    assert.deepEqual(listing.tools.map(tool => tool.name), ['list_numbers', 'list_chats', 'list_messages', 'get_message', 'list_revisions'])
+    assert.deepEqual(listing.tools.map(tool => tool.name), ['list_numbers', 'list_chats', 'list_messages', 'get_message', 'list_revisions', 'resolve_contact', 'search_messages', 'activity_summary'])
     for (const tool of listing.tools) {
       assert.equal(tool.annotations.readOnlyHint, true)
       assert.equal(tool.annotations.destructiveHint, false)

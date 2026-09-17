@@ -647,7 +647,7 @@ func (a *app) routes() http.Handler {
 	authHandler.Mount(mux)
 	(&restapi.Handler{
 		APIKeys: a.apiKeys, Users: a.users, Keys: a.keys, Devices: a.devices,
-		Messages: a.messages, Receipts: a.receipts, Log: a.log,
+		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log,
 		Running: func(deviceID string) bool {
 			device, ok := a.registry.Get(deviceID)
 			return ok && device.Client().IsConnected()

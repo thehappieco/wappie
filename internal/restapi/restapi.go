@@ -28,6 +28,7 @@ type Handler struct {
 	Keys     *store.Keys
 	Devices  *store.Devices
 	Messages *store.Messages
+	Contacts *store.Contacts
 	Receipts *store.Receipts
 	Running  func(deviceID string) bool
 	Log      *slog.Logger
@@ -38,6 +39,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/devices", h.authenticated(h.devices))
 	mux.HandleFunc("GET /v1/devices/{device}/chats", h.authenticated(h.chats))
 	mux.HandleFunc("GET /v1/devices/{device}/messages", h.authenticated(h.page))
+	mux.HandleFunc("GET /v1/devices/{device}/contacts", h.authenticated(h.contacts))
+	mux.HandleFunc("GET /v1/devices/{device}/messages/scan", h.authenticated(h.scan))
 	mux.HandleFunc("GET /v1/devices/{device}/keys", h.authenticated(h.contentKeys))
 	mux.HandleFunc("GET /v1/messages/{uid}", h.authenticated(h.message))
 	mux.HandleFunc("GET /v1/messages/{uid}/history", h.authenticated(h.history))

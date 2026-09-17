@@ -2,6 +2,9 @@ package wsapi
 
 import "whatserver2/internal/store"
 
+// ContactFromRow shares encrypted names without fetching or discovering contacts.
+func ContactFromRow(row store.ContactRow) ContactSummary { return contactSummary(row) }
+
 // SealedMessageFromRow keeps HTTP and WebSocket ciphertext representations equal.
 func SealedMessageFromRow(row store.Row) SealedMessage { return sealedMessage(row) }
 

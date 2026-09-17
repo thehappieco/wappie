@@ -1,10 +1,13 @@
 import { ArchiveClient, ArchiveError, auth, bytes, hpke, seal } from '@whatserver2/client'
+import { openContactPack, MAX_CONTACT_PACK_BYTES } from '@whatserver2/client/crypto/contactPack'
+import { contactCandidates, matchesText, excerpt } from './contacts.mjs'
+import { resolveRange } from './time.mjs'
 import { Opener } from '@whatserver2/client/api/opener'
 import { loadCredential, LocalConfigError, readPrivateFile } from './config.mjs'
 
 const locked = () => ({ state: 'locked', reason: 'Encrypted content. Local reading has not been enabled for this MCP server.' })
 const omitted = () => ({ state: 'absent' })
-const textFields = ['uid', 'device_id', 'wa_id', 'chat_key', 'sender_key', 'sender_lid', 'sender_pn', 'ts', 'kind', 'type', 'source', 'target_uid']
+const textFields = ['uid', 'device_id', 'wa_id', 'chat_key', 'sender_key', 'sender_lid', 'sender_pn', 'ts', 'kind', 'type', 'source', 'target_uid', 'target_rel', 'reply_to', 'order_ts']
 function metadata(message) {
   const result = {}
   for (const key of textFields) if (typeof message[key] === 'string') result[key] = message[key]
@@ -26,9 +29,13 @@ export async function createReader(config) {
   const api = new ArchiveClient({ serverURL: config.server, workspaceID: config.workspace, token: credential.token })
   const allowed = device => !config.device_ids || config.device_ids.includes(device)
   function permit(device) { if (!allowed(device)) throw new ArchiveError('not_authorized', 403) }
-  async function withOpener(device, operation) {
+  async function withOpener(device, operation, revalidate = false) {
     permit(device)
-    if (!config.allow_plaintext) return operation(null)
+    if (!config.allow_plaintext) {
+      const result = await operation(null)
+      if (revalidate) await api.listChats(device, { limit: 1 })
+      return result
+    }
     if (credential.kind === 'session') {
       const password = await readPrivateFile(config.password_file)
       try {
@@ -37,7 +44,11 @@ export async function createReader(config) {
           expectedTenantID: config.workspace, expectedUserID: credential.userID,
           signal: AbortSignal.timeout(30_000),
           maxKDF: { m: 128 * 1024, t: 5, p: 4 }, maxAuthResponseBytes: 4 * 1024 * 1024,
-        }, async (raw, _epoch, namespace) => operation(new Opener(api.keySource(device), bytes.parseUUID(namespace), bytes.parseUUID(device), device, await hpke.importArchiveKey(raw))))
+        }, async (raw, _epoch, namespace) => {
+          const result = await operation(new Opener(api.keySource(device), bytes.parseUUID(namespace), bytes.parseUUID(device), device, await hpke.importArchiveKey(raw)))
+          if (revalidate) await api.listChats(device, { limit: 1 })
+          return result
+        })
       } finally { password.fill(0) }
     }
     // Fetch grants on every operation. A locally held key never bypasses a
@@ -57,8 +68,15 @@ export async function createReader(config) {
       const namespace = bytes.parseUUID(grant.archive_tenant_id || config.workspace)
       const deviceBytes = bytes.parseUUID(device)
       const row = await seal.grantRow(namespace, deviceBytes, bytes.parseUUID(grants.user_id), grant.epoch)
-      archive = await seal.openDirect(await hpke.importArchiveKey(raw), seal.Kind.DeviceGrant, namespace, row, bytes.fromBase64(grant.sealed_dsk))
-      return await operation(new Opener(api.keySource(device), namespace, deviceBytes, device, await hpke.importArchiveKey(archive)))
+      const serviceKey = await hpke.importArchiveKey(raw)
+      archive = await seal.openDirect(serviceKey, seal.Kind.DeviceGrant, namespace, row, bytes.fromBase64(grant.sealed_dsk))
+      const result = await operation(new Opener(api.keySource(device), namespace, deviceBytes, device, await hpke.importArchiveKey(archive)), serviceKey)
+      if (revalidate) {
+        const current = await api.grants()
+        const same = current.grants.find(item => item.device_id === device)
+        if (current.user_id !== grants.user_id || !same || same.epoch !== grant.epoch || same.sealed_dsk !== grant.sealed_dsk || same.archive_tenant_id !== grant.archive_tenant_id) throw new ArchiveError('not_authorized', 403)
+      }
+      return result
     } finally { data.fill(0); raw?.fill(0); archive?.fill(0) }
   }
   async function messages(rows, device, opener) {
@@ -66,13 +84,157 @@ export async function createReader(config) {
     await opener?.prefetch(rows.map(row => row.content_key_id))
     return Promise.all(rows.map(async row => ({ ...metadata(row),
       body: row.body_sealed ? opener ? openedText(await opener.body(row), config.max_text_chars) : locked() : omitted(),
+      ...(row.media ? { attachment: { ...metadata(row).attachment, filename: row.media.filename_sealed ? opener ? openedText(await opener.fileName(row), config.max_text_chars) : locked() : omitted() } } : {}),
       structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
     })))
   }
+  async function personalContacts(serviceKey) {
+    if (!config.contacts_file) return null
+    if (!serviceKey) throw new LocalConfigError('contact_pack_requires_service_scope')
+    const data = await readPrivateFile(config.contacts_file, { maxBytes: MAX_CONTACT_PACK_BYTES })
+    try {
+      return await openContactPack(serviceKey, JSON.parse(data.toString('utf8')), {
+        server_url: config.server, workspace_id: config.workspace, service_user_id: config.service_user_id, device_ids: config.device_ids,
+      })
+    } catch { throw new LocalConfigError('invalid_contact_pack') }
+    finally { data.fill(0) }
+  }
+  async function historyStatus(row, device) {
+    try {
+      const history = await api.history(row.uid)
+      if (history.device_id !== device) throw new ArchiveError('device_mismatch')
+      const version = history.versions.find(item => item.message.uid === row.uid)
+      const latest = history.versions.at(-1)
+      return { state: history.deletion ? 'deleted' : version ? latest?.message.uid === row.uid ? 'latest_archived' : 'superseded' : 'control_event',
+        revision: version?.revision, valid_from: version?.from, valid_until: version?.until,
+        latest_uid: latest?.message.uid, deleted_at: history.deletion?.at }
+    } catch (error) {
+      if (error instanceof ArchiveError && error.status === 404) return { state: 'unavailable' }
+      throw error
+    }
+  }
+  async function archiveRead(capability, operation) {
+    try { return await operation() }
+    catch (error) {
+      if (error instanceof ArchiveError && error.status === 404) throw new ArchiveError(`${capability}_not_found`, 404)
+      throw error
+    }
+  }
+  async function scan(input, activity = false) {
+    const { device_id, query = '', limit = 20, before } = input
+    permit(device_id)
+    if (query && !config.allow_plaintext) throw new LocalConfigError('plaintext_required_for_text_search')
+    if (before && (!input.from || !input.until || input.period)) throw new LocalConfigError('continuation_requires_fixed_range')
+    let range
+    try { range = resolveRange(input, config.timezone) } catch { throw new LocalConfigError('invalid_time_range') }
+    return withOpener(device_id, async opener => {
+      const counters = { examined: 0, matched: 0, locked: 0, tampered: 0, structured_content_unsearched: 0, missing_sent_time: 0 }
+      const hits = [], groups = new Map(), seen = new Set()
+      let cursor = before, hasMore = false, stopped = false
+      const deadline = Date.now() + 45_000
+      const budget = config.max_scan_messages
+      while (counters.examined < budget && !stopped) {
+        const reply = await archiveRead('archive_scan', () => api.scanMessages(device_id, {
+          from: range.from, until: range.until, limit: Math.min(100, budget - counters.examined), before: cursor,
+          chatKey: input.chat_key, senderKeys: input.sender_keys, direction: input.direction, type: input.type,
+          kind: activity ? 'message' : input.kind,
+        }))
+        if (!reply.messages.length && reply.has_more) throw new ArchiveError('invalid_response')
+        const rows = [...reply.messages].reverse()
+        if (!activity) await opener?.prefetch(rows.map(row => row.content_key_id))
+        hasMore = reply.has_more
+        for (let index = 0; index < rows.length; index++) {
+          const row = rows[index]
+          const key = `${row.order_ts}/${row.seq}`
+          if (seen.has(key) || (cursor && cursor.ts === row.order_ts && cursor.seq === row.seq)) throw new ArchiveError('invalid_response')
+          seen.add(key)
+          counters.examined++
+          if (!row.ts) counters.missing_sent_time++
+          if (row.payload_sealed) counters.structured_content_unsearched++
+          cursor = { ts: row.order_ts, seq: row.seq }
+          const hasAttachment = Boolean(row.media)
+          if (input.has_attachment !== undefined && input.has_attachment !== hasAttachment) {
+            if (Date.now() > deadline) { hasMore = index < rows.length - 1 || reply.has_more; stopped = true; break }
+            continue
+          }
+          if (activity) {
+            const groupKey = JSON.stringify([row.chat_key, row.sender_key || row.sender_pn || row.sender_lid || '', row.is_from_me])
+            const item = groups.get(groupKey) || { chat_key: row.chat_key, sender_key: row.sender_key, sender_pn: row.sender_pn, sender_lid: row.sender_lid,
+              is_group: row.is_group === true, direction: row.is_from_me ? 'outgoing' : 'incoming', archived_messages: 0,
+              first_order_ts: row.order_ts, last_order_ts: row.order_ts, sample_uid: row.uid }
+            item.archived_messages++; item.first_order_ts = row.order_ts
+            groups.set(groupKey, item)
+            counters.matched++
+          } else {
+            const body = row.body_sealed ? opener ? await opener.body(row) : locked() : omitted()
+            const filename = row.media?.filename_sealed ? opener ? await opener.fileName(row) : locked() : omitted()
+            for (const value of [body, filename]) if (value.state === 'locked' || value.state === 'tampered') counters[value.state]++
+            const searchable = [body, filename].filter(value => value.state === 'ok').map(value => value.value).join('\n')
+            if (!query || matchesText(searchable, query)) {
+              counters.matched++
+              hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : openedText(body, config.max_text_chars),
+                ...(row.media ? { attachment: { ...metadata(row).attachment, filename: openedText(filename, config.max_text_chars) } } : {}),
+                structured_content: row.payload_sealed ? { state: 'unsupported' } : omitted(),
+                archive_status: await historyStatus(row, device_id),
+                source: { server: config.server, workspace_id: config.workspace, device_id, message_uid: row.uid, chat_key: row.chat_key,
+                  url: `${config.server}/v1/messages/${row.uid}` },
+              })
+            }
+          }
+          if ((!activity && hits.length >= limit) || Date.now() > deadline) {
+            hasMore = index < rows.length - 1 || reply.has_more
+            stopped = true
+            break
+          }
+        }
+        if (!hasMore || stopped) break
+        if (!reply.next_ts || reply.next_seq === undefined) throw new ArchiveError('invalid_response')
+        cursor = { ts: reply.next_ts, seq: reply.next_seq }
+      }
+      const next = hasMore && cursor ? { ...input, period: undefined, from: range.from, until: range.until, before: cursor } : undefined
+      return { workspace_id: config.workspace, device_id, range,
+        ...(activity ? { activity: [...groups.values()], counting: 'Archived original message events in this page only, grouped by chat, sender and direction. Counts are not totals for the full archive.' } : { messages: hits }),
+        coverage: { ...counters, scan_limit: budget, interval_exhausted: !hasMore, live_read: true,
+          ...(query ? { text_search_complete: !hasMore && !counters.locked && !counters.tampered && !counters.structured_content_unsearched } : {}),
+          note: 'This reads the stored archive, not complete WhatsApp history. Concurrent backfills can require a rescan. Missing sent times use archive arrival time. Structured payloads and attachment contents are not searched.' },
+        has_more: hasMore, ...(next ? { next } : {}),
+      }
+    }, true)
+  }
   return {
+    searchMessages(input) { return scan(input) },
+    activitySummary(input) { return scan(input, true) },
+    async resolveContact({ device_id, query, limit = 20, after_key }) {
+      permit(device_id)
+      return withOpener(device_id, async (opener, serviceKey) => {
+        const reply = await archiveRead('archive_contacts', () => api.listContacts(device_id, { limit: 500, afterKey: after_key }))
+        const pack = await personalContacts(serviceKey)
+        await opener?.prefetch(reply.contacts.map(contact => contact.content_key_id))
+        let unavailable = 0
+        const archived = []
+        for (const contact of reply.contacts) {
+          const names = []
+          if (opener) {
+            for (const [kind, value] of Object.entries(await opener.contactNames(contact))) {
+              if (value.state === 'ok') names.push({ name: value.value.slice(0, 256), source: `archive_${kind}` })
+              else if (value.state !== 'absent') unavailable++
+            }
+          } else if (contact.full_name_sealed || contact.push_name_sealed || contact.business_name_sealed) unavailable++
+          archived.push({ ...contact, names })
+        }
+        const result = contactCandidates(archived, pack?.contacts || [], query, limit)
+        return { workspace_id: config.workspace, device_id, ...result,
+          coverage: { archived_contacts_examined: reply.contacts.length, unavailable_names: unavailable,
+            archive_has_more: reply.has_more, personal_snapshot: pack ? { created_at: pack.created_at, contacts: pack.contacts.length } : null,
+            complete: !reply.has_more && !result.omitted_candidates && !unavailable,
+            note: 'Personal contacts are a snapshot, not a synchronized address book. Narrow the query when candidates are omitted. An empty incomplete result does not prove a contact is absent.' },
+          ...(reply.has_more ? { next: { device_id, query, limit, after_key: reply.next_key } } : {}),
+        }
+      }, true)
+    },
     async listNumbers() {
       const reply = await api.listDevices()
-      return { workspace_id: config.workspace, plaintext_enabled: config.allow_plaintext,
+      return { workspace_id: config.workspace, plaintext_enabled: config.allow_plaintext, timezone: config.timezone, now: new Date().toISOString(),
         numbers: reply.devices.filter(device => allowed(device.id)).map(device => ({
           id: device.id, name: device.label || device.push_name || device.pn || 'Unnamed number',
           phone: device.pn, status: device.status, paused: device.paused === true,
@@ -86,7 +248,7 @@ export async function createReader(config) {
         await opener?.prefetch(reply.chats.flatMap(chat => [chat.name_key_id, chat.last_body_key_id]))
         return { workspace_id: config.workspace, device_id, truncated: reply.truncated,
           chats: await Promise.all(reply.chats.map(async chat => ({
-            uid: chat.uid, chat_key: chat.chat_key, is_group: chat.is_group === true, last_ts: chat.last_ts,
+            uid: chat.uid, chat_key: chat.chat_key, chat_pn: chat.chat_pn, chat_lid: chat.chat_lid, keys: chat.keys, is_group: chat.is_group === true, last_ts: chat.last_ts,
             name: chat.name_sealed ? opener ? openedText(await opener.chatName(chat), config.max_text_chars) : locked() : omitted(),
             preview: chat.last_body_sealed ? opener ? openedText(await opener.chatPreview(chat), config.max_text_chars) : locked() : omitted(),
           }))),
