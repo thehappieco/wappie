@@ -94,17 +94,12 @@ returns the reaction rows per party in order and marks the older ones
 superseded; the client, which can open them, sees that the newest is empty.
 Same reasoning as replies needing the quoted text resent.
 
-**Sending an attachment passes its plaintext through the server, and that is
-not fixable without a fork.** whatsmeow's upload takes cleartext and encrypts
-on the way out; there is no exported way to hand it ciphertext somebody else
-produced, and the raw upload path needs an authorisation token the library
-keeps to itself. So outbound media is exposed exactly as outbound text already
-is, and is sealed the moment it is archived. Inbound has no such compromise.
-
-This is worth restating because the earlier draft of the README implied
-otherwise. A client-side encrypting upload is possible and would be strictly
-better; it costs a fork and a standing maintenance burden, and the original
-requirement was about messages and files *received*.
+**Sending an attachment passes its plaintext through server memory.** The
+browser sends prepared bytes over HTTPS. The current whatsmeow `UploadReader`
+call encrypts them into a temporary ciphertext file, then uploads to WhatsApp.
+Outbound media therefore has the same live-server plaintext boundary as text.
+A client-encrypted upload would require a separately reviewed integration; the
+browser's current media preparation and conversion do not implement one.
 
 **The archive fetches back what it just sent.** An outbound attachment is
 stored by the ordinary download worker, from the CDN, as ciphertext — rather
@@ -112,19 +107,16 @@ than by uploading the bytes that were just in hand. One path into object
 storage instead of two, and the archive then holds byte for byte what the
 recipient can fetch.
 
-**Media is never decrypted on this server.** whatsmeow's download helpers
-decrypt on the way past, which would put every photograph and voice note
-through this process in the clear. The CDN serves the ciphertext to a plain
-HTTP client — the URL in the message is a capability — so `internal/media`
-fetches with its own client and stores what it gets, byte for byte. Verified
-empirically before the code was written: a 120,976-byte image came back as
-121,002 bytes of ciphertext, which is the plaintext padded to a block boundary
-plus the ten-byte MAC.
+**The attachment downloader does not decrypt the bytes it fetches.** For
+ordinary encrypted WhatsApp attachments the CDN supplies ciphertext, which
+`internal/media` fetches over HTTPS and preserves byte for byte. This describes
+the normal path, not every media source: keyless/unhashed input is currently
+accepted. The [media security follow-up](media-security.md) records the gap.
 
-**A download is verified without a key.** `fileEncSHA256` is a hash of the
-*ciphertext*, so the fetcher can prove it got the right bytes while remaining
-unable to read them. That is the property that makes the previous decision
-practical rather than an act of faith.
+**A supplied encrypted-file hash verifies download integrity without a key.**
+`fileEncSHA256` is checked against the received bytes when present. A matching
+hash verifies integrity; it does not by itself prove that bytes are encrypted.
+The current fetcher skips this check when the hash is absent.
 
 **Structured content is sealed as one payload, not as columns.** Locations,
 polls, contact cards, events, link previews and the mention list are JSON under
@@ -818,14 +810,11 @@ cache is a type assertion in `contactSourceOf` rather than a method on the
 Client interface, so the contract test can still assert that
 `*whatsmeow.Client` satisfies it directly.
 
-**Profile pictures are the one thing here that arrives unencrypted.** WhatsApp
-serves them over plain HTTP to anyone with the URL — no media key, no
-ciphertext to preserve. So unlike message media, which is stored exactly as the
-CDN served it and never opened, a profile picture is necessarily seen by this
-process and is sealed on the way in. The asymmetry is real and is named rather
-than smoothed over. They live in the contact row rather than object storage:
-tens of kilobytes each, and a second blob path for that would be machinery with
-nothing to buy.
+**WhatsApp profile pictures have no attachment media-key encryption.** They
+arrive as ordinary image bytes over HTTPS, are visible in server memory, and
+are sealed before being written to a contact row. This is separate from Wappie
+account and workspace avatars, which are validated image data URLs stored as
+shared profile metadata without archive encryption.
 
 **A group is an identity too.** Groups never appear in whatsmeow's contact
 cache — that is people — and a group's name lives on the chat, so nothing put
@@ -1083,9 +1072,12 @@ Worth restating because "encrypted at rest" is read as more than it is.
   sealing protects a stolen disk, a leaked backup and a database dump.
 - The whatsmeow session store must stay readable by the process. Whoever steals
   it can impersonate the device and read *new* messages, but not the archive.
-- Outbound **text** passes through in the clear: the Signal session lives here
-  and needs it. Outbound *media* need not, since the browser can produce the
-  ciphertext and hashes itself (phase 4).
+- Outbound **text and media** pass through server memory as plaintext after
+  arriving over HTTPS. The current upload encrypts media before sending it to
+  WhatsApp; it does not accept ciphertext prepared by the browser.
+- The downloader accepts media without a key or encrypted-file hash. See the
+  [current limitation and planned hardening](media-security.md); this prevents
+  a universal claim that every accepted media object is encrypted at rest.
 - Routing metadata is readable so the server can paginate. A dump reveals who
   talks to whom, when, how often, and the type and size of attachments.
 - Receipts are readable, which is the same category but sharper: who read what,
@@ -1097,7 +1089,8 @@ Worth restating because "encrypted at rest" is read as more than it is.
 - Replies need the quoted text resent by the client, because the server cannot
   read the archive to rebuild a quote. That is design, not a workaround.
 - Attachment metadata is readable: type, size, dimensions, duration, and the
-  hashes. The bytes and the file name are not.
+  hashes. File names and embedded thumbnails are sealed; attachment bytes have
+  the storage boundary and missing-key/hash limitation described above.
 - Routing metadata reaches the logs too, masked: enough to match a line to a
   row with the database in hand, not enough to name anyone without it.
 - The browser holds the key while the tab is open. Anything executing script in
