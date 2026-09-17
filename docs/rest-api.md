@@ -1,7 +1,7 @@
 # Sealed archive REST API
 
 Wappie exposes the same sealed archive read models used by WebSocket over HTTP.
-This first REST release covers archived data only. It does not send messages,
+These REST resources cover archived data only. It does not send messages,
 start connections, resume capture, request missing media or run history backfill.
 The server never opens archived content or receives archive private keys.
 
@@ -9,6 +9,8 @@ The installation advertises `archive.rest.v1` in `GET /v1/discovery` and
 `GET /.well-known/wappie`. The public specification is served at
 `GET /v1/openapi.json` and embedded from
 [`internal/restapi/openapi.json`](../internal/restapi/openapi.json).
+Contact pagination and cross-chat scans additionally advertise `archive.contacts.v1`
+and `archive.scan.v1`.
 It uses [OpenAPI 3.1.1](https://spec.openapis.org/oas/v3.1.1.html).
 
 ## Authentication and workspace isolation
@@ -58,6 +60,8 @@ parameters are rejected. Query strings are limited to 8192 bytes. Only GET
 | `/v1/devices` | `{tenant_id, devices: DeviceInfo[]}`. Devices visible through the shared `ActionView` rule. This workspace directory is not paginated. |
 | `/v1/devices/{device}/chats?limit=100` | `{tenant_id, device_id, chats: ChatSummary[], limit, truncated}`. Limit 1–3000, default 100. |
 | `/v1/devices/{device}/messages?chat_key=...&limit=50` | `{tenant_id, chat_key, messages, receipts?, next_ts?, next_seq?, has_more}`. Limit 1–200, default 50. |
+| `/v1/devices/{device}/contacts?limit=100` | `{tenant_id, device_id, contacts: ContactSummary[], has_more, next_key?}`. Limit 1–500, default 100; optional exclusive `after_key`. Stored contact metadata and sealed names only. |
+| `/v1/devices/{device}/messages/scan?from=...&until=...` | `{tenant_id, device_id, from, until, messages, has_more, next_ts?, next_seq?}`. Limit 1–200, default 50. Reads across chats; every row includes `order_ts`. |
 | `/v1/messages/{uid}` | `{tenant_id, ...SealedMessage}`. An individual stored row, including control rows. |
 | `/v1/messages/{uid}/history` | `{tenant_id, requested_uid, device_id, chat_key, wa_id, versions, deletion?, reactions?, readers?}`. Complete existing history projection for one message thread. |
 | `/v1/devices/{device}/keys?ids=1,2` | `{tenant_id, device_id, archive_tenant_id, keys: [{id, sealed}]}`. Between 1 and 500 IDs, each 1–2147483647. Missing IDs are omitted; duplicates are folded. |
@@ -94,6 +98,34 @@ has a 30-second deadline, and failure returns an error rather than a partial
 history. The HTTP server/proxy can impose additional response time/size limits.
 When the requested UID identifies an edit or another control row, `requested_uid`
 still echoes it while the history `wa_id` identifies the resolved original.
+
+### Cross-chat reads and contact pagination
+
+`messages/scan` requires RFC3339 `from` and `until`, covering the half-open
+interval `[from, until)`. Filters are combined: `sender_keys` accepts up to three
+comma-separated exact identifiers matched against the stored sender key, PN or
+LID; `chat_key` includes explicit known chat aliases; `direction` is `incoming`
+or `outgoing`; `type` is an archive content type; `kind` is `message`, `edit`,
+`delete` or `reaction`. The server filters routing metadata only, never plaintext.
+
+Rows are oldest first within each newest-first page. Continue using the returned
+`next_ts` and `next_seq` together as `before_ts` and `before_seq`, retaining the
+same bounds and filters. `order_ts` is the original message timestamp when known,
+or its archive creation time otherwise; a missing `ts` remains missing. The
+sequence breaks timestamp ties. Nanosecond bounds preserve half-open semantics
+when compared with PostgreSQL's microsecond timestamps.
+
+A scan returns stored events, not a projection of the latest conversation state.
+Use the message history endpoint to identify superseded revisions or a later
+deletion, including events outside the scanned time range. Concurrent backfills
+can require a rescan. An empty interval does not prove that WhatsApp had no
+messages; only the persisted archive was queried.
+
+Contacts are ordered by their stored contact key. Pass `next_key` as `after_key`
+while `has_more` is true. This read neither asks WhatsApp for contacts/avatars nor
+creates missing contacts. Names stay sealed; avatar bytes are not returned.
+Local personal-contact snapshots used by MCP are separate from this endpoint
+and are never uploaded to the archive server.
 
 ### Opening content locally
 
