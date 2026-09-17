@@ -19,7 +19,8 @@
 
 # Frontend deps. The v1 repo tracked 3263 files under web/node_modules.
 node_modules/
-/web/dist/
+/packages/client/dist/
+/.superpowers/
 
 .DS_Store
 

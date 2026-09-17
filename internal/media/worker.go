@@ -213,19 +213,15 @@ func (w *Worker) one(ctx context.Context, p store.Pending) {
 		_ = os.Remove(name)
 	}()
 
-	if err := w.cfg.Blob.Put(ctx, key, file, size); err != nil {
-		w.log.Error("could not store an attachment",
-			"message", p.MessageUID, "error", err)
+	if err := w.cfg.Media.ReserveObject(ctx, p.TenantID, key, size); err != nil {
 		w.fail(ctx, p, err)
 		return
 	}
-	if err := w.cfg.Media.MarkDone(ctx, p.TenantID, p.MessageUID, key, size); err != nil {
-		// The bytes are stored and the row still says downloading. The sweeper
-		// returns it to the queue, and the next attempt finds the object
-		// already there — which is why the object key is derived from the
-		// content rather than being random.
-		w.log.Error("stored an attachment but could not record it",
-			"message", p.MessageUID, "object", key, "error", err)
+	if err := w.cfg.Media.StoreReservedObject(ctx, p.TenantID, p.MessageUID, key, size, func() error {
+		return w.cfg.Blob.Put(ctx, key, file, size)
+	}); err != nil {
+		w.log.Error("could not store reserved attachment", "message", p.MessageUID, "error", err)
+		w.fail(ctx, p, err)
 		return
 	}
 	w.count("stored")

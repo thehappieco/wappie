@@ -3,10 +3,10 @@
 ## Product decisions
 
 - Wappie is primarily an API product for businesses, with a simpler messaging client.
-- Server, CLI, messaging client and basic workspace administration will be open source.
-- Commercial hosting/billing will live separately. The core uses Apache-2.0.
+- Server, API/CLI administration and integration/cryptography libraries are open source. App and console development is private.
+- App, console, hosting and billing live in the private `wappie-cloud` repository. The core uses Apache-2.0; previously released web versions retain that license.
 - Every human identity has one personal workspace and may create or join team workspaces. Personal workspaces allow their owner and service identities; only teams admit additional people. Workspace type is independent of the subscription plan. Roles, integrations, numbers and subscriptions belong to a workspace.
-- Hosted pricing will be based on contracted WhatsApp connection capacity, with storage/usage limits still to be decided.
+- Private app subscriptions count commercial number bindings. Hosted storage is a separate package shared by the workspace; externally hosted archives have no Wappie storage charge. See [storage](storage.md) and [external clients](external-clients.md).
 - Pilot: two companies, four test numbers, free access and simulated payments, on the existing EC2. Maintenance interruptions are acceptable.
 - Public repository: https://github.com/thehappieco/wappie
 - Public site and documentation: `wappie.thehappie.co` and `/docs`.
@@ -29,7 +29,7 @@ All routes below require `Authorization: Bearer <session-token>`. An API key can
 
 | Method and path | Request | Response |
 | --- | --- | --- |
-| `GET /v1/auth/workspaces` | None | `{"workspaces":[{"id":"UUID","name":"Workspace","avatar":"","role":"member","status":"active","created_at":"RFC3339"}]}` |
+| `GET /v1/auth/workspaces` | None | `{"workspaces":[{"id":"UUID","name":"Workspace","avatar":"","kind":"team","role":"member","status":"active","device_count":2,"created_at":"RFC3339"}]}` |
 | `PUT /v1/auth/workspaces/current` | `{"name":"Support team","avatar":"data:image/jpeg;base64,..."}` | Updated workspace metadata. Owner/admin only; the session selects the workspace. |
 | `POST /v1/auth/workspaces/accept-invite` | `{"invite":"one-time-code"}` | `{"tenant_id":"UUID"}` |
 | `POST /v1/auth/workspaces/session` | `{"tenant_id":"UUID"}` | Existing login response: token, expiry and account with the selected workspace/role. |
@@ -37,6 +37,8 @@ All routes below require `Authorization: Bearer <session-token>`. An API key can
 Workspace profiles use names of 1–80 Unicode characters. `avatar` is an optional image represented as a data URL; send an empty string to remove it. The server accepts only PNG/JPEG, limits the decoded file to 32 KiB and each dimension to 512 pixels, and decodes/re-encodes the pixels to strip metadata and trailing payloads. It never fetches remote profile URLs. The browser crops JPG/PNG/WebP uploads locally to a compact square thumbnail. Profile changes serialize with membership changes and re-check the manager’s authority in the transaction. Invalid profiles return `400 invalid_workspace_profile`.
 
 Workspace listing includes suspended spaces but excludes disabled memberships. Selecting a suspended space or one without membership returns `403 not_authorized`; malformed UUIDs return `400 bad_request`. Invalid, expired, consumed, service or duplicate-membership invitations return `403 invite_invalid`. A valid invitation addressed to another email returns `403 invite_email_mismatch` without consuming the code.
+
+`device_count` is the number of devices visible to this identity in that workspace, using the same permissions as `devices.list`: owners/admins see all registered numbers; other roles see numbers they can manage or send from, or can read with the current archive key. Disconnected and unpaired registered numbers are included when visible. Suspended workspaces expose no available devices and return zero. The directory and its counts use one database snapshot, do not issue additional sessions, and do not change the selected workspace. This is an operational count for the workspace picker, independent of commercial licenses or storage. Older servers and create/update workspace responses may omit the field; clients must distinguish an unavailable count from zero.
 
 Invite validation, membership insertion and consumption share one transaction. Rejected acceptance does not spend an otherwise valid invitation or promote an existing member. Accepting does not switch the current session or create device grants.
 

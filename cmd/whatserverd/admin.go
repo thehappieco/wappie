@@ -129,7 +129,7 @@ func resetArchive(args []string) error {
 		return err
 	}
 
-	removed, failed := removeObjects(ctx, a, objects)
+	removed, failed := removeObjects(ctx, a, tenant, objects)
 
 	fmt.Printf(`Archive removed for tenant %s.
 
@@ -156,7 +156,7 @@ accounts that may read it, so there is nothing to write down.
 //
 // Opens the object store itself: the command-line setup does not, because
 // most commands never touch it.
-func removeObjects(ctx context.Context, a *app, keys []string) (removed, failed int) {
+func removeObjects(ctx context.Context, a *app, tenant uuid.UUID, keys []string) (removed, failed int) {
 	if len(keys) == 0 {
 		return 0, 0
 	}
@@ -166,7 +166,7 @@ func removeObjects(ctx context.Context, a *app, keys []string) (removed, failed 
 		return 0, len(keys)
 	}
 	for _, key := range keys {
-		if err := store.Delete(ctx, key); err != nil {
+		if err := a.storage.DeleteObject(ctx, tenant, key, store.Delete); err != nil {
 			fmt.Fprintf(os.Stderr, "could not remove %s: %v\n", key, err)
 			failed++
 			continue
@@ -258,7 +258,7 @@ func eraseContact(args []string) error {
 	if err != nil {
 		return fmt.Errorf("erase: %w", err)
 	}
-	removed, failed := removeObjects(ctx, a, counts.ObjectKeys)
+	removed, failed := removeObjects(ctx, a, tenant, counts.ObjectKeys)
 	fmt.Printf(`Erased from tenant %s: %s
 
 messages      %d

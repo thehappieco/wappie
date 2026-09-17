@@ -61,11 +61,12 @@ type KeyStore interface {
 // another's. Rotation happens under the same lock as sealing, so a key can
 // never be used past its limit by a racing caller.
 type Sealer struct {
-	tenant uuid.UUID
-	device uuid.UUID
-	pub    PublicKey
-	epoch  uint16
-	store  KeyStore
+	tenant        uuid.UUID
+	archiveTenant uuid.UUID
+	device        uuid.UUID
+	pub           PublicKey
+	epoch         uint16
+	store         KeyStore
 
 	// now is injectable so the age-based rotation can be tested without
 	// waiting fifteen minutes.
@@ -79,13 +80,22 @@ type Sealer struct {
 
 // NewSealer builds a sealer for one device at one epoch.
 func NewSealer(tenant, device uuid.UUID, pub PublicKey, epoch uint16, store KeyStore) (*Sealer, error) {
+	return NewSealerWithArchiveTenant(tenant, tenant, device, pub, epoch, store)
+}
+
+// NewSealerWithArchiveTenant separates current storage authorization from the
+// immutable cryptographic namespace, preserving ciphertext after a workspace move.
+func NewSealerWithArchiveTenant(tenant, archiveTenant, device uuid.UUID, pub PublicKey, epoch uint16, store KeyStore) (*Sealer, error) {
+	if archiveTenant == uuid.Nil {
+		return nil, fmt.Errorf("seal: archive tenant is required")
+	}
 	if !pub.Valid() {
 		return nil, fmt.Errorf("seal: device %s has no archive key; it must be created before anything can be stored", device)
 	}
 	if store == nil {
 		return nil, fmt.Errorf("seal: sealer needs a key store")
 	}
-	return &Sealer{tenant: tenant, device: device, pub: pub, epoch: epoch, store: store, now: time.Now}, nil
+	return &Sealer{tenant: tenant, archiveTenant: archiveTenant, device: device, pub: pub, epoch: epoch, store: store, now: time.Now}, nil
 }
 
 // Tenant returns the tenant this sealer belongs to.
@@ -109,7 +119,7 @@ func (s *Sealer) Seal(ctx context.Context, kind Kind, row uuid.UUID, plaintext [
 	if err != nil {
 		return nil, err
 	}
-	sealed, err := key.Seal(kind, s.tenant, row, plaintext)
+	sealed, err := key.Seal(kind, s.archiveTenant, row, plaintext)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +142,7 @@ func (s *Sealer) SealAll(ctx context.Context, row uuid.UUID, values map[Kind][]b
 	}
 	out := make(map[Kind][]byte, len(values))
 	for kind, plaintext := range values {
-		sealed, err := key.Seal(kind, s.tenant, row, plaintext)
+		sealed, err := key.Seal(kind, s.archiveTenant, row, plaintext)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -194,7 +204,7 @@ func (s *Sealer) rotateLocked(ctx context.Context) error {
 	// transaction once an id exists to bind it to.
 	var fresh *ContentKey
 	id, err := s.store.CreateContentKey(ctx, s.tenant, s.device, s.epoch, func(id uint32) ([]byte, error) {
-		ck, err := NewContentKey(s.pub, s.tenant, s.device, s.epoch, id)
+		ck, err := NewContentKey(s.pub, s.archiveTenant, s.device, s.epoch, id)
 		if err != nil {
 			return nil, err
 		}

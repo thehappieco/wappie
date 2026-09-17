@@ -100,14 +100,18 @@ func deviceKey(args []string) error {
 	if err != nil {
 		return err
 	}
+	archiveTenant, err := keys.ArchiveTenant(ctx, tenant, deviceID)
+	if err != nil {
+		return err
+	}
 	granted := 0
 	for _, u := range accounts {
 		userPub, err := seal.ParsePublicKey(u.PublicKey)
 		if err != nil {
 			return fmt.Errorf("device-key: account %s has an unusable public key: %w", u.Email, err)
 		}
-		sealed, err := seal.SealDirect(userPub, seal.KindDeviceGrant, tenant,
-			seal.GrantRow(tenant, deviceID, u.ID, epoch), epoch, raw)
+		sealed, err := seal.SealDirect(userPub, seal.KindDeviceGrant, archiveTenant,
+			seal.GrantRow(archiveTenant, deviceID, u.ID, epoch), epoch, raw)
 		if err != nil {
 			return err
 		}

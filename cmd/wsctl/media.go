@@ -182,7 +182,7 @@ func (o *opener) mediaKey(ctx context.Context, msg wsapi.SealedMessage) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	return ck.Open(seal.KindMediaKey, o.tenant, uid, msg.Media.MediaKeySealed)
+	return ck.Open(seal.KindMediaKey, o.archiveTenant(device), uid, msg.Media.MediaKeySealed)
 }
 
 // fetchCiphertext streams an attachment from the media endpoint, with its

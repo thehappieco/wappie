@@ -104,13 +104,20 @@ func cmdGrants(ctx context.Context, args []string) error {
 		if *device != "" && !strings.HasPrefix(g.DeviceID, *device) {
 			continue
 		}
+		archiveTenant := tenant
+		if g.ArchiveTenantID != "" {
+			archiveTenant, err = uuid.Parse(g.ArchiveTenantID)
+			if err != nil {
+				return err
+			}
+		}
 		status := "sealed"
 		var opened []byte
 		if priv.Valid() {
 			//nolint:gosec // G115: an epoch is bounded by the column that stores it
 			epoch := uint16(g.Epoch)
-			opened, err = seal.OpenDirect(priv, seal.KindDeviceGrant, tenant,
-				seal.GrantRow(tenant, dev, user, epoch), g.SealedDSK)
+			opened, err = seal.OpenDirect(priv, seal.KindDeviceGrant, archiveTenant,
+				seal.GrantRow(archiveTenant, dev, user, epoch), g.SealedDSK)
 			if err != nil {
 				status = "does not open with this key"
 			} else {

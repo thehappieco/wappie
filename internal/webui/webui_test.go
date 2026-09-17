@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -359,4 +360,35 @@ func directive(policy, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestExternalDocumentCSPIsOptInAndExact(t *testing.T) {
+	for _, tc := range []struct {
+		enabled bool
+		origin  string
+		want    bool
+	}{
+		{false, "https://remote.example:8443", false},
+		{true, "https://remote.example:8443", true},
+		{true, "http://remote.example", false},
+		{true, "https://user:secret@remote.example", false},
+		{true, "https://remote.example/path", false},
+		{true, "https://remote.example; script-src *", false},
+	} {
+		h, err := webui.New(build(t), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.ExternalServers = tc.enabled
+		resp := get(t, h, "/?server_origin="+url.QueryEscape(tc.origin))
+		resp.Body.Close()
+		csp := resp.Header.Get("Content-Security-Policy")
+		got := strings.Contains(csp, "connect-src 'self' https://remote.example:8443 wss://remote.example:8443;")
+		if got != tc.want {
+			t.Fatalf("enabled=%v origin=%s: %s", tc.enabled, tc.origin, csp)
+		}
+		if strings.Contains(csp, "script-src *") {
+			t.Fatal("policy injected")
+		}
+	}
 }

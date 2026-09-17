@@ -38,6 +38,27 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		a.log.Info("housekeeping", "sessions", sessions, "invites", invites)
 	}
 
+	// Retry confirmed orphan objects even when no new retention purge occurs.
+	// Failed physical deletes retain their storage charge and remain retryable.
+	if a.storage != nil && a.blob.Configured() {
+		ids, err := a.listTenantIDs(ctx)
+		if err != nil {
+			a.log.Warn("could not list storage cleanup workspaces", "error", err)
+		}
+		for _, id := range ids {
+			keys, err := a.storage.UnreferencedObjects(ctx, id, 1000)
+			if err != nil {
+				a.log.Warn("could not list orphan objects", "tenant", id, "error", err)
+				continue
+			}
+			for _, key := range keys {
+				if err := a.storage.DeleteObject(ctx, id, key, a.blob.Delete); err != nil {
+					a.log.Warn("orphan object cleanup failed", "tenant", id, "error", err)
+				}
+			}
+		}
+	}
+
 	tenants, err := store.TenantsWithRetention(ctx, a.pools.API)
 	if err != nil {
 		a.log.Warn("could not list retention windows", "error", err)
@@ -53,7 +74,7 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		removed, failed := 0, 0
 		if a.blob.Configured() {
 			for _, key := range counts.ObjectKeys {
-				if err := a.blob.Delete(ctx, key); err != nil {
+				if err := a.storage.DeleteObject(ctx, t.ID, key, a.blob.Delete); err != nil {
 					failed++
 					continue
 				}

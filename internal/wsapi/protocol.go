@@ -160,8 +160,8 @@ type PairRequest struct {
 	Method string `json:"method"`
 	// Phone is required for code pairing, in full international form.
 	Phone string `json:"phone,omitempty"`
-	// DisplayName shows under "Linked devices" on the phone. WhatsApp
-	// validates the format, so it must look like "Browser (OS)".
+	// DisplayName is code pairing's browser descriptor. WhatsApp validates
+	// the Browser (OS) format. The installation supplies its own device name.
 	DisplayName string `json:"display_name,omitempty"`
 	// ReceiptMode is "passive" (the default, and what incognito means) or
 	// "active".
@@ -253,6 +253,7 @@ type DeviceStatus struct {
 // identifier; a phone number is not always knowable, because withholding it is
 // what LID is for.
 type DeviceInfo struct {
+	ArchiveTenantID   string `json:"archive_tenant_id,omitempty"`
 	ID                string `json:"id"`
 	Label             string `json:"label"`
 	LID               string `json:"lid,omitempty"`
@@ -290,12 +291,15 @@ type Devices struct {
 // every reconnect of every client. This runs when a person opens the console
 // and asks.
 type DeviceStat struct {
-	DeviceID   string     `json:"device_id"`
-	Chats      int64      `json:"chats"`
-	Messages   int64      `json:"messages"`
-	Media      int64      `json:"media"`
-	MediaBytes int64      `json:"media_bytes"`
-	LastAt     *time.Time `json:"last_at,omitempty"`
+	DeviceID     string     `json:"device_id"`
+	Chats        int64      `json:"chats"`
+	Messages     int64      `json:"messages"`
+	Media        int64      `json:"media"`
+	MediaBytes   int64      `json:"media_bytes"`
+	ArchiveBytes int64      `json:"archive_bytes"`
+	ObjectBytes  int64      `json:"object_bytes"`
+	UsedBytes    int64      `json:"used_bytes"`
+	LastAt       *time.Time `json:"last_at,omitempty"`
 }
 
 // DeviceStats is the response to devices.stats.
@@ -399,10 +403,11 @@ type GrantsRequest struct{}
 // account's public key. Ciphertext here, and opened only by whoever holds
 // the account's private key.
 type GrantEntry struct {
-	DeviceID  string `json:"device_id"`
-	Label     string `json:"label,omitempty"`
-	Epoch     int    `json:"epoch"`
-	SealedDSK []byte `json:"sealed_dsk"`
+	ArchiveTenantID string `json:"archive_tenant_id,omitempty"`
+	DeviceID        string `json:"device_id"`
+	Label           string `json:"label,omitempty"`
+	Epoch           int    `json:"epoch"`
+	SealedDSK       []byte `json:"sealed_dsk"`
 }
 
 // Grants answers grants.list.
@@ -1149,8 +1154,9 @@ type SealedKey struct {
 // Keys is the response to keys.get. The device is echoed back because the
 // sealed values bind to it, and a client opening them has to know which.
 type Keys struct {
-	DeviceID string      `json:"device_id"`
-	Keys     []SealedKey `json:"keys"`
+	ArchiveTenantID string      `json:"archive_tenant_id,omitempty"`
+	DeviceID        string      `json:"device_id"`
+	Keys            []SealedKey `json:"keys"`
 }
 
 // ContactSummary is one contact as it leaves the server.

@@ -13,7 +13,7 @@ func (h *Handler) workspaces(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	spaces, err := h.Users.Workspaces(r.Context(), user.ID)
+	spaces, err := h.Users.WorkspacesWithDeviceCounts(r.Context(), user.ID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "could not list workspaces")
 		return

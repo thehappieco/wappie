@@ -83,24 +83,34 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-  # The browser client. Its own job because the Go build must never need a
-  # JavaScript toolchain installed, and because this job is what stops the two
-  # implementations of the sealed archive drifting apart: the TypeScript tests
-  # open vectors that Go sealed, including the ones that must fail.
-  web:
+  client:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: "22", cache: npm, cache-dependency-path: web/package-lock.json}
+        with: {node-version: "22", cache: npm, cache-dependency-path: packages/client/package-lock.json}
       - run: npm ci
-        working-directory: web
-      - run: npm run typecheck
-        working-directory: web
-      - run: npm run test
-        working-directory: web
-      - run: npm run build
-        working-directory: web
+        working-directory: packages/client
+      - run: npm run typecheck && npm test && npm run build
+        working-directory: packages/client
+      - run: npm pack --dry-run
+        working-directory: packages/client
+      - run: npm ci && npm test
+        working-directory: packages/cli
+
+  distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - run: python3 scripts/export-public.py --output /tmp/wappie-source.tar.gz
+      - run: |
+          mkdir /tmp/wappie-source
+          tar -xzf /tmp/wappie-source.tar.gz -C /tmp/wappie-source
+          cd /tmp/wappie-source
+          go build ./...
+          go test ./internal/crypto/...
 
   secrets:
     runs-on: ubuntu-latest

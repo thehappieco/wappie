@@ -46,7 +46,8 @@ type DeviceResolver func(ctx context.Context, tenant uuid.UUID, deviceID string)
 // keeps to itself — a fork, and a standing maintenance cost. It is written down
 // here rather than papered over.
 type UploadHandler struct {
-	Keys *store.APIKeys
+	Keys    *store.APIKeys
+	Storage *store.Storage
 	// Sessions lets a signed-in browser upload with the token it already has.
 	Sessions *store.Users
 	Devices  *store.Devices
@@ -122,6 +123,12 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !allowed {
 		http.Error(w, "this credential cannot send on this number", http.StatusForbidden)
 		return
+	}
+	if h.Storage != nil {
+		if err := h.Storage.Check(r.Context(), tenant); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 	}
 	client, err := h.Resolve(r.Context(), tenant, dev.ID)
 	if err != nil {

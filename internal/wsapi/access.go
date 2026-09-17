@@ -118,6 +118,8 @@ func (s *session) accountStore() *store.Users {
 
 func frameAction(kind string) store.DeviceAction {
 	switch kind {
+	case TypeCallsList, TypeCallStart, TypeCallAnswer, TypeCallReject, TypeCallHangup, TypeCallMedia, TypeCallInvite:
+		return store.ActionSend
 	case TypeChatStart, TypePollCreate, TypeLocationSend, TypeEventCreate, TypeSend, TypeSendMedia, TypeEdit, TypeRevoke, TypeReact, TypePollVote, TypeMarkRead, TypeChatTyping, TypeChatTimer:
 		return store.ActionSend
 	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceStart, TypeDeviceRename, TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke:

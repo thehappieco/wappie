@@ -71,6 +71,14 @@ func (a *app) claimUnheldDevices(ctx context.Context, attempts map[string]int) {
 			a.log.Error("supervise: listing devices failed", "tenant", tenant, "error", err)
 			continue
 		}
+		if err := a.checkCapture(ctx, tenant.String()); err != nil {
+			for _, d := range devices {
+				if held[d.ID] {
+					a.registry.Stop(ctx, d.ID)
+				}
+			}
+			continue
+		}
 		for _, d := range needsClaim(devices, held) {
 			a.claim(ctx, tenant.String(), d, attempts)
 		}

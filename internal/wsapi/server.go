@@ -17,7 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/blob"
+	"whatserver2/internal/browserorigin"
 	"whatserver2/internal/bus"
+	"whatserver2/internal/calling"
 	"whatserver2/internal/ingest"
 	"whatserver2/internal/media"
 	"whatserver2/internal/obs"
@@ -28,9 +30,11 @@ import (
 
 // Config wires the websocket handler to the rest of the server.
 type Config struct {
-	Keys *store.APIKeys
+	BrowserOrigins browserorigin.Policy
+	Keys           *store.APIKeys
 	// Sessions resolves a browser sign-in. Without it only API keys are
 	// accepted, which is a headless deployment rather than a broken one.
+	Storage  *store.Storage
 	Sessions *store.Users
 	Devices  *store.Devices
 	Messages *store.Messages
@@ -66,8 +70,11 @@ type Config struct {
 	// uses, so a message we sent is stored exactly like one we received.
 	Router   *ingest.Router
 	Registry *wa.Registry
-	Bus      *bus.Bus
-	Metrics  *obs.Metrics
+	// Calls bridges individual WhatsApp calls to the authenticated browser.
+	// Nil disables calling while keeping the rest of the protocol available.
+	Calls   *calling.Service
+	Bus     *bus.Bus
+	Metrics *obs.Metrics
 	// Blob is object storage, reached only to remove what a deleted device
 	// held. Optional: without it the bytes stay, inert, as they always did.
 	Blob *blob.Store
@@ -144,17 +151,21 @@ var features = []string{
 	"chat.start", "group.create", "group.participants.update", "group.leave",
 	"chat.timer", "chat.presence", "presence.subscribe", "device.mode", "reader.mode", "device.stop", "device.start", "device.rename",
 	"group.join", "group.info", "reproject.list", "reproject.apply", "media.retry", "media.expired", "history.backfill",
-	"devices.stats", "device.info", "device.delete",
+	"devices.stats", "device.info", "device.delete", "device.transfer.preview", "device.transfer",
 	"apikeys.list", "apikeys.create", "apikeys.revoke",
 	"grant.add", "grant.revoke", "grants.list",
+	"calls.list", "call.start", "call.answer", "call.reject", "call.hangup", "call.media", "call.invite",
 }
 
 // ServeHTTP upgrades and runs one session.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.BrowserOrigins.Allows(r) {
+		http.Error(w, "browser origin is not allowed", http.StatusForbidden)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Same-origin only. The browser client is served from this origin, and
-		// anything else should be using an API key over a non-browser client.
-		OriginPatterns: nil,
+		// Exact origin validation above also checks scheme and port.
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
 		s.log.Debug("websocket upgrade failed", "error", err)
@@ -310,6 +321,10 @@ type session struct {
 	clientID string
 	closed   bool
 
+	callMu        sync.Mutex
+	callOwner     string
+	callsReleased bool
+
 	pairMu   sync.Mutex
 	pairings map[string]*wa.PairSession
 
@@ -385,6 +400,10 @@ func (s *session) run(ctx context.Context) {
 	s.pairings = map[string]*wa.PairSession{}
 
 	defer func() {
+		// Revoke media tickets and stop calls before any potentially slow
+		// pairing, subscription, or websocket cleanup.
+		cancel()
+		s.releaseCallOwner()
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()
@@ -410,6 +429,7 @@ func (s *session) run(ctx context.Context) {
 		s.fail(ctx, code, err)
 		return
 	}
+	s.initCallOwner()
 	s.srv.register(s)
 
 	go s.writeLoop(ctx)
@@ -568,6 +588,12 @@ func (s *session) readLoop(ctx context.Context) {
 }
 
 func (s *session) dispatch(ctx context.Context, f Frame) {
+	if s.initCallOwner() == "" {
+		return
+	}
+	if !s.allowStorageOperation(ctx, f) {
+		return
+	}
 	switch f.Type {
 	case TypePing:
 		s.reply(TypePong, f.ReqID, nil)
@@ -639,6 +665,14 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleChatPresence(ctx, f)
 	case TypePresenceWatch:
 		go s.handlePresenceSubscribe(ctx, f)
+	case TypeCallsList:
+		go s.handleCallsList(ctx, f)
+	case TypeCallStart:
+		go s.handleCallStart(ctx, f)
+	case TypeCallInvite:
+		go s.handleCallInvite(ctx, f)
+	case TypeCallAnswer, TypeCallReject, TypeCallHangup, TypeCallMedia:
+		go s.handleCallAction(ctx, f)
 	case TypeDeviceMode:
 		go s.handleDeviceMode(ctx, f)
 	case TypeReaderMode:
@@ -651,6 +685,10 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleMarkRead(ctx, f)
 	case TypeDeviceStart:
 		go s.handleDeviceStart(ctx, f)
+	case TypeDeviceTransferPreview:
+		go s.handleDeviceTransferPreview(ctx, f)
+	case TypeDeviceTransfer:
+		go s.handleDeviceTransfer(ctx, f)
 	case TypeDeviceRename:
 		go s.handleDeviceRename(ctx, f)
 	case TypeDeviceStop:
@@ -706,6 +744,7 @@ func (s *session) writeLoop(ctx context.Context) {
 				}
 			}
 			if err := s.write(ctx, f); err != nil {
+				s.closeQuietly()
 				return
 			}
 			if s.srv.cfg.Metrics != nil {
@@ -727,6 +766,7 @@ func (s *session) pingLoop(ctx context.Context) {
 			err := s.conn.Ping(pingCtx)
 			cancel()
 			if err != nil {
+				s.closeQuietly()
 				return
 			}
 		}
@@ -805,12 +845,14 @@ func (s *session) fail(ctx context.Context, code string, err error) {
 // not a problem worth surfacing; the alternative is the same nolint comment
 // repeated at every call site.
 func (s *session) closeQuietly() {
+	s.releaseCallOwner()
 	if err := s.conn.CloseNow(); err != nil {
 		s.log.Debug("closing the connection failed", "error", err)
 	}
 }
 
 func (s *session) closeWith(status websocket.StatusCode, reason string) {
+	s.releaseCallOwner()
 	if err := s.conn.Close(status, reason); err != nil {
 		s.log.Debug("closing the connection failed", "reason", reason, "error", err)
 	}

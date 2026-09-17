@@ -247,11 +247,12 @@ func cmdAvatar(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("the server named a device this client cannot parse: %w", err)
 	}
-	ck, err := newOpener(c, tenant, priv).key(ctx, deviceUUID, av.KeyID)
+	opener := newOpener(c, tenant, priv)
+	ck, err := opener.key(ctx, deviceUUID, av.KeyID)
 	if err != nil {
 		return err
 	}
-	picture, err := ck.Open(seal.KindAvatar, tenant, uid, av.Sealed)
+	picture, err := ck.Open(seal.KindAvatar, opener.archiveTenant(deviceUUID), uid, av.Sealed)
 	if err != nil {
 		return fmt.Errorf("could not open the picture: %w", err)
 	}

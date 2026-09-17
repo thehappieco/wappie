@@ -38,15 +38,16 @@ var ErrNotFound = errors.New("store: device not found")
 
 // Device is a row from the devices table.
 type Device struct {
-	ID           string
-	TenantID     string
-	Identity     wa.Identity
-	Label        string
-	Status       wa.Status
-	StatusReason string
-	ReceiptMode  wa.ReceiptMode
-	Paused       bool
-	CreatedAt    time.Time
+	ID              string
+	TenantID        string
+	ArchiveTenantID string
+	Identity        wa.Identity
+	Label           string
+	Status          wa.Status
+	StatusReason    string
+	ReceiptMode     wa.ReceiptMode
+	Paused          bool
+	CreatedAt       time.Time
 	// LastConnectedAt is when this device last reached "online", not when it
 	// went offline. Zero for a device that has never connected.
 	LastConnectedAt time.Time
@@ -140,7 +141,7 @@ func (d *Devices) Create(ctx context.Context, tenantID, label string, mode wa.Re
 // database's own uuidv7.
 func (d *Devices) CreateWithID(ctx context.Context, tenantID, id, label string,
 	mode wa.ReceiptMode) (Device, error) {
-	dev := Device{TenantID: tenantID, Label: label, Status: wa.StatusNew, ReceiptMode: mode}
+	dev := Device{TenantID: tenantID, ArchiveTenantID: tenantID, Label: label, Status: wa.StatusNew, ReceiptMode: mode}
 	var chosen *string
 	if id != "" {
 		if _, err := uuid.Parse(id); err != nil {
@@ -272,7 +273,7 @@ func (d *Devices) Delete(ctx context.Context, tenantID, deviceID string) error {
 const selectDevices = `
 	SELECT id::text, tenant_id::text, coalesce(lid,''), coalesce(pn,''),
 	       push_name, label, status, status_reason, receipt_mode,
-	       created_at, last_connected_at, current_epoch, paused
+	       created_at, last_connected_at, current_epoch, paused, archive_tenant_id::text
 	  FROM devices`
 
 // scanner is satisfied by both pgx.Row and pgx.Rows.
@@ -283,7 +284,7 @@ func scanDevice(s scanner, dev *Device) error {
 	var connected *time.Time
 	if err := s.Scan(&dev.ID, &dev.TenantID, &lid, &pn,
 		&dev.Identity.PushName, &dev.Label, &dev.Status, &dev.StatusReason,
-		&dev.ReceiptMode, &dev.CreatedAt, &connected, &dev.Epoch, &dev.Paused); err != nil {
+		&dev.ReceiptMode, &dev.CreatedAt, &connected, &dev.Epoch, &dev.Paused, &dev.ArchiveTenantID); err != nil {
 		return err
 	}
 	if connected != nil {

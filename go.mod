@@ -12,6 +12,8 @@ require (
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/prometheus/client_golang v1.24.1
+	github.com/purpshell/meowcaller v0.0.0-20260811012811-27a3c6b18657
+	github.com/rs/zerolog v1.35.1
 	go.mau.fi/whatsmeow v0.0.0-20260821141805-33cfac511629
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
@@ -29,6 +31,7 @@ require (
 	github.com/go-webauthn/x v0.3.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
@@ -43,11 +46,17 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/petermattis/goid v0.0.0-20260816044145-ed329add6b1b // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
+	github.com/pion/datachannel v1.6.0 // indirect
+	github.com/pion/dtls/v3 v3.1.4 // indirect
+	github.com/pion/logging v0.2.4 // indirect
+	github.com/pion/opus v0.1.0 // indirect
+	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/sctp v1.9.4 // indirect
+	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

@@ -41,8 +41,13 @@ func lockChats(ctx context.Context, tx pgx.Tx, device uuid.UUID, chatKeys []stri
 	if len(chatKeys) == 0 {
 		return nil
 	}
+	// Storage accounting locks the workspace before archive rows. Match that
+	// order before taking the explicit chat lock used for a fresh recount.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id=NULLIF(current_setting('app.tenant_id',true),'')::uuid FOR UPDATE`); err != nil {
+		return err
+	}
 	_, err := tx.Exec(ctx, `
-		SELECT 1 FROM chats
+        SELECT 1 FROM chats
 		 WHERE device_id = $1 AND chat_key = ANY($2::text[])
 		 ORDER BY chat_key
 		 FOR UPDATE`, device, chatKeys)

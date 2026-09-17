@@ -1,0 +1,11 @@
+{
+  "name": "@whatserver2/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "bin": { "wsctl": "./cli.mjs" },
+  "files": ["cli.mjs", "lib.mjs", "README.md", "LICENSE"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": { "@whatserver2/client": "file:../client" }
+}
