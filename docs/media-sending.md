@@ -1,10 +1,16 @@
 # Sending videos and forwarding messages
 
-Videos use the existing encrypted-media pipeline. Upload the prepared bytes
+Videos use the existing media upload pipeline. Upload the prepared bytes
 with `POST /v1/upload?device=DEVICE_UUID&type=video`, then send a WebSocket
 `message.send.media` frame with the returned `upload` object. The upload and
 message must use compatible media key classes; `video` and `ptv` share theirs.
 Both operations require send permission on the selected device.
+
+The prepared bytes are plaintext carried over HTTPS. The server's WhatsApp
+client reads them in memory and encrypts them into a temporary ciphertext file
+before uploading to WhatsApp. Browser conversion is not client-side encryption.
+The archive then fetches the encrypted CDN copy and seals its media key. See
+[media security boundaries and the current storage limitation](media-security.md).
 
 ```json
 {"t":"message.send.media","r":"video-1","p":{"device_id":"DEVICE_UUID","chat":"RECIPIENT_JID","type":"video","upload":{"type":"video","url":"UPLOAD_URL","direct_path":"UPLOAD_PATH","media_key":"BASE64_KEY","file_sha256":"BASE64_HASH","file_enc_sha256":"BASE64_HASH","file_length":12345},"mimetype":"video/mp4","width":1280,"height":720,"seconds":18,"caption":"Hello"}}

@@ -9,6 +9,11 @@ regression tests.
 The key model is described in `README.md` ("How the archive is protected") and
 this audit's decisions in `decisions.md` ("Phase 13").
 
+Follow-up on 2026-09-17: the media findings below cover ordinary encrypted
+attachments, not keyless/unhashed input. See [the current media limitation and
+pending hardening](media-security.md); this historical audit does not establish
+that every accepted media object is encrypted.
+
 ## Summary
 
 | Severity | Found | Fixed | Backlog |
@@ -96,7 +101,8 @@ logs and retention.
 
 Unchanged by this audit and documented in the README: an attacker running code
 inside the process can see plaintext in transit; the whatsmeow session store is
-readable by the process and outside RLS; outgoing text passes through in clear;
+readable by the process and outside RLS; outgoing text and media pass through
+server memory as plaintext after arriving over HTTPS;
 routing metadata and receipts are readable in the database (and now masked in
 logs).
 
