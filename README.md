@@ -15,6 +15,8 @@ shared workspaces, per-number permissions and a messaging client.
 - [Deployment guide](docs/deployment.md)
 - [Publishing public/private releases](docs/publication.md)
 - [Passkeys and encrypted login](docs/passkeys-api.md)
+- [Read-only REST API and OpenAPI](docs/rest-api.md)
+- [Local MCP for authorized archive reading](docs/mcp.md)
 - [Native WhatsApp audio and video calls](docs/whatsapp-calls.md)
 
 The server, API/CLI administration and transport/cryptography SDK are Apache-2.0.
@@ -99,6 +101,7 @@ CREATE DATABASE whatserver2 OWNER whatserver2_app;
 ```
 make check           # fmt, vet, layout, tests with -race
 make client-check    # public SDK, interoperability and build
+make mcp-check       # local MCP protocol and decryption checks
 make cover
 make fuzz
 ```
@@ -165,6 +168,11 @@ authentication and cryptography library. `packages/cli` provides human login,
 recovery and API administration without the private app. `wsctl` pairs devices
 and exercises the WebSocket protocol. Clients open ciphertext locally; private
 keys are never uploaded to the archive server.
+
+`packages/mcp` provides a local stdio MCP for listing numbers, conversations,
+messages and revisions through the read-only REST API. It starts with encrypted
+content locked; plaintext requires explicit local configuration and authorized
+keys. See the [REST contract](docs/rest-api.md) and [MCP setup](docs/mcp.md).
 
 ```
 make client-install

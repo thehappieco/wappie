@@ -408,18 +408,7 @@ func (s *session) handleChatsList(ctx context.Context, f Frame) {
 	}
 	out := make([]ChatSummary, 0, len(rows))
 	for _, c := range rows {
-		out = append(out, ChatSummary{
-			UID:     c.UID.String(),
-			ChatKey: c.ChatKey, ChatLID: c.ChatLID, ChatPN: c.ChatPN, IsGroup: c.IsGroup,
-			LastSeq: c.LastSeq, LastTS: c.LastTS,
-			CreatedAt: c.CreatedAt, GroupCreatedAt: c.GroupCreatedAt,
-			LastKind: c.LastKind, LastType: c.LastType,
-			Unread: c.Unread, Archived: c.Archived, Pinned: c.Pinned,
-			NameSealed: c.NameSealed, NameKeyID: c.NameKeyID, Keys: c.Keys,
-			Audience: audience(c), Ephemeral: c.Ephemeral,
-			LastUID: lastUID(c), LastBodySealed: c.LastBodySealed,
-			LastBodyKeyID: c.LastBodyKeyID,
-		})
+		out = append(out, ChatFromRow(c))
 	}
 	s.reply(TypeChats, f.ReqID, Chats{DeviceID: device.String(), Chats: out})
 }
@@ -590,20 +579,7 @@ func (s *session) acksFor(ctx context.Context, tenant, device uuid.UUID,
 		s.log.Warn("could not read receipts for a page", "error", err)
 		return nil
 	}
-	out := make([]MessageAcks, 0, len(folded))
-	for _, r := range rows {
-		a, ok := folded[r.WAID]
-		if !ok {
-			continue
-		}
-		out = append(out, MessageAcks{
-			WAID:      r.WAID,
-			Delivered: a.Delivered, Read: a.Read, Played: a.Played,
-			DeliveredAt: a.DeliveredAt, ReadAt: a.ReadAt, PlayedAt: a.PlayedAt,
-			ReadByUs: a.ReadByUs, Retrying: a.Retrying, Failed: a.Failed,
-		})
-	}
-	return out
+	return PageReceipts(rows, folded)
 }
 
 // audience is the denominator a tick needs, or zero for "unknown".

@@ -22,8 +22,8 @@ remain available in repository history with their original license notices.
 
 ## Matching private revision
 
-Publish the validated public revision first. Set the private CI variable
-`WAPPIE_CORE_REF` to its full commit SHA before publishing the matching private
+Publish the validated public revision first. Set `env.WAPPIE_CORE_REF` in the
+private `.github/workflows/ci.yml` to its full commit SHA before publishing the matching private
 revision. The private pipeline checks out that core at `core/` and the private
 repository at `core/commercial/`, preserving its local module and SDK paths.
 Do not rely on a moving branch name for a reproducible release.

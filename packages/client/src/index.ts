@@ -1,5 +1,6 @@
 export * from './api/client.js'
 export * from './api/endpoint.js'
+export * from './api/rest.js'
 export * from './messages.js'
 export * from './session.js'
 export * as protocol from './api/protocol.js'

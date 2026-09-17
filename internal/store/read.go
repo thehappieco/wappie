@@ -34,9 +34,12 @@ type Row struct {
 	SenderLID string
 	SenderPN  string
 
-	TS       *time.Time
-	IsFromMe bool
-	IsGroup  bool
+	TS *time.Time
+	// CreatedAt is the internal ordering fallback when the sender timestamp is
+	// absent. It is used in cursors without inventing a TS on the wire.
+	CreatedAt time.Time
+	IsFromMe  bool
+	IsGroup   bool
 
 	Kind domain.Kind
 	Type domain.Type
@@ -152,7 +155,7 @@ type ChatRow struct {
 const rowColumns = `
 	m.uid, m.seq, m.device_id, m.wa_id, m.chat_key,
 	coalesce(m.sender_key,''), coalesce(m.sender_lid,''), coalesce(m.sender_pn,''),
-	m.ts, m.is_from_me, m.is_group, m.kind, m.type,
+	m.ts, m.created_at, m.is_from_me, m.is_group, m.kind, m.type,
 	coalesce(m.target_wa_id,''), m.target_uid, coalesce(m.target_rel,''), coalesce(m.reply_to,''),
 	m.is_forwarded, m.forwarding_score, m.expiration, m.expires_at,
 	m.view_once, m.ephemeral, m.source,
@@ -180,7 +183,7 @@ func scanRow(rows pgx.Rows) (Row, error) {
 	if err := rows.Scan(
 		&r.UID, &r.Seq, &r.DeviceID, &r.WAID, &r.ChatKey,
 		&r.SenderKey, &r.SenderLID, &r.SenderPN,
-		&r.TS, &r.IsFromMe, &r.IsGroup, &r.Kind, &r.Type,
+		&r.TS, &r.CreatedAt, &r.IsFromMe, &r.IsGroup, &r.Kind, &r.Type,
 		&r.TargetWAID, &r.TargetUID, &rel, &r.ReplyTo,
 		&r.IsForwarded, &r.ForwardingScore, &r.Expiration, &r.ExpiresAt,
 		&r.ViewOnce, &r.Ephemeral, &r.Source,
@@ -258,12 +261,14 @@ type Cursor struct {
 // Before returns the cursor for paging further back from a page.
 //
 // The oldest row of the page, which is the first one: a page comes back oldest
-// first. A row with no timestamp cannot be a cursor -- it would compare as the
-// far past and end the paging early -- so this reports the zero cursor, and the
-// caller stops rather than silently truncating the conversation.
+// first. Missing sender timestamps use the same creation-time fallback as the
+// SQL ordering; omitting this would silently stop paging at an undated row.
 func Before(rows []Row) Cursor {
-	if len(rows) == 0 || rows[0].TS == nil {
+	if len(rows) == 0 {
 		return Cursor{}
+	}
+	if rows[0].TS == nil {
+		return Cursor{TS: rows[0].CreatedAt, Seq: rows[0].Seq}
 	}
 	return Cursor{TS: *rows[0].TS, Seq: rows[0].Seq}
 }
@@ -364,6 +369,28 @@ func (m *Messages) Get(ctx context.Context, tenant, uid uuid.UUID) (Row, error) 
 
 // Chats returns the chat list for one device, most recent first.
 func (m *Messages) Chats(ctx context.Context, tenant, device uuid.UUID, limit int) ([]ChatRow, error) {
+	rows, err := m.chatRows(ctx, tenant, device, limit)
+	if err != nil {
+		return nil, err
+	}
+	return foldChats(rows), nil
+}
+
+// ChatsWithLimit discloses truncation before PN/LID aliases are folded. The
+// limit counts stored chat rows, not distinct people, and is not a page cursor.
+func (m *Messages) ChatsWithLimit(ctx context.Context, tenant, device uuid.UUID, limit int) ([]ChatRow, bool, error) {
+	rows, err := m.chatRows(ctx, tenant, device, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	truncated := len(rows) > limit
+	if truncated {
+		rows = rows[:limit]
+	}
+	return foldChats(rows), truncated, nil
+}
+
+func (m *Messages) chatRows(ctx context.Context, tenant, device uuid.UUID, limit int) ([]ChatRow, error) {
 	var out []ChatRow
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
@@ -439,7 +466,7 @@ func (m *Messages) Chats(ctx context.Context, tenant, device uuid.UUID, limit in
 	// name staying with the row its uid belongs to — are the same rules the
 	// rest of this package states in Go. A window function would state them a
 	// second time, in another language, where the two could drift.
-	return foldChats(out), nil
+	return out, nil
 }
 
 // MaxSeq returns the tenant's current cursor high-water mark.

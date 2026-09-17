@@ -643,24 +643,7 @@ func (s *session) replyReaders(ctx context.Context, reqID string,
 // toDeviceInfo converts a row for the wire, filling in what only this process
 // knows: whether the device is actually running here.
 func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
-	info := DeviceInfo{
-		ArchiveTenantID: d.ArchiveTenantID, ID: d.ID, Label: d.Label, PushName: d.Identity.PushName,
-		Status: string(d.Status), StatusReason: d.StatusReason,
-		ReceiptMode: string(d.ReceiptMode), CreatedAt: d.CreatedAt, Paused: d.Paused,
-	}
-	if d.Identity.Known() {
-		info.ProfileKey = d.Identity.Primary().ToNonAD().String()
-	}
-	if !d.Identity.LID.IsEmpty() {
-		info.LID = d.Identity.LID.String()
-	}
-	if !d.Identity.PN.IsEmpty() {
-		info.PN = d.Identity.PN.String()
-	}
-	if !d.LastConnectedAt.IsZero() {
-		at := d.LastConnectedAt
-		info.LastConnectedAt = &at
-	}
+	info := DeviceFromRow(d)
 	who := s.actor()
 	if tenant, err := uuid.Parse(d.TenantID); err == nil {
 		if device, err := uuid.Parse(d.ID); err == nil {

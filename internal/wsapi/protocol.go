@@ -1,10 +1,7 @@
 // Package wsapi is the websocket protocol clients speak.
 //
-// One transport, deliberately. The v1 server ran server-sent events for the
-// browser and a bespoke msgpack-over-TCP protocol for backend consumers, and
-// the two rendering paths drifted apart until they disagreed about the shape of
-// an edited message. The performance difference never justified maintaining
-// both.
+// The read-only REST API reuses these wire representations and pure read-model
+// conversions, so transports agree about revisions, receipts and ciphertext.
 package wsapi
 
 import (
