@@ -37,6 +37,7 @@ import (
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/restapi"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 	"whatserver2/internal/webui"
@@ -644,6 +645,14 @@ func (a *app) routes() http.Handler {
 		authHandler.SendWorkspaceInvite = sender.WorkspaceInvite
 	}
 	authHandler.Mount(mux)
+	(&restapi.Handler{
+		APIKeys: a.apiKeys, Users: a.users, Keys: a.keys, Devices: a.devices,
+		Messages: a.messages, Receipts: a.receipts, Log: a.log,
+		Running: func(deviceID string) bool {
+			device, ok := a.registry.Get(deviceID)
+			return ok && device.Client().IsConnected()
+		},
+	}).Mount(mux)
 
 	mux.Handle("/v1/ws", a.ws)
 	if a.calls != nil {

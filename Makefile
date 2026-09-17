@@ -1,5 +1,5 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
-	client-install client-build client-test client-check public-source
+	client-install client-build client-test client-check mcp-check public-source
 
 GO      ?= go
 PKGS    := ./...
@@ -62,6 +62,11 @@ client-test: ## Check SDK types and cryptographic interoperability
 	$(NPM) --prefix packages/client test
 
 client-check: client-test client-build ## Verify the public SDK
+
+mcp-check: client-build ## Install and verify the local MCP server
+	$(NPM) --prefix packages/mcp ci
+	$(NPM) --prefix packages/mcp test
+	cd packages/mcp && $(NPM) pack --dry-run
 
 public-source: ## Export an allowlisted public source snapshot without private code
 	python3 scripts/export-public.py --output dist/wappie-source.tar.gz

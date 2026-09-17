@@ -1,0 +1,16 @@
+{
+  "name": "@whatserver2/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "bin": { "wappie-mcp": "./cli.mjs" },
+  "files": ["cli.mjs", "server.mjs", "config.mjs", "reader.mjs", "README.md", "LICENSE"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@whatserver2/client": "file:../client",
+    "zod": "4.6.5"
+  },
+  "devDependencies": { "@modelcontextprotocol/client": "2.0.0" }
+}

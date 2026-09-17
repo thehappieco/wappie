@@ -30,7 +30,7 @@ const devices = await connection.request(protocol.TypeDevicesList, {}, protocol.
 connection.close()
 ```
 
-Subpath exports include `api/auth`, `api/passkeys`, `api/media`, `api/upload`,
+Subpath exports include `api/auth`, `api/rest`, `api/passkeys`, `api/media`, `api/upload`,
 `api/opener`, `api/protocol`, and `crypto/{bytes,hpke,seal,account,passkey,wamedia}`.
 Build output includes types and browser KDF worker source. Applications may call
 `setMessageResolver` from `messages` to translate diagnostics. Error codes and
@@ -40,6 +40,46 @@ An explicit `serverURL` always chooses that installation. An empty URL uses the
 current page's origin. Credential persistence and which credentials to use are
 application responsibilities; the SDK does not share session state between
 installations. Never send credentials for one installation to another.
+
+## Read-only REST client
+
+`ArchiveClient` reads the versioned public archive endpoints without opening a
+WebSocket. Pin the installation and operational workspace when constructing it;
+every successful response must identify that same `tenant_id`. Redirects are
+refused. HTTPS is required except for loopback development servers.
+
+```ts
+import { ArchiveClient } from '@whatserver2/client'
+
+const archive = new ArchiveClient({
+  serverURL: 'https://your-installation.example',
+  workspaceID: workspaceUUID,
+  token: sessionOrAPIKey, // load from your secret store, never a model argument
+})
+const { devices } = await archive.listDevices()
+const chats = await archive.listChats(devices[0].id, { limit: 100 })
+const page = await archive.listMessages(devices[0].id, {
+  chatKey: chats.chats[0].chat_key, limit: 50,
+})
+if (page.has_more && page.next_ts && page.next_seq !== undefined) {
+  const older = await archive.listMessages(devices[0].id, {
+    chatKey: page.chat_key,
+    before: { ts: page.next_ts, seq: page.next_seq },
+  })
+}
+```
+
+The methods are `listDevices`, `listChats`, `listMessages`, `getMessage`,
+`history`, `grants` and `contentKeys`. They preserve the existing sealed protocol
+rows; they do not send messages, mark them read or decrypt on the server. Chat
+listing reports `truncated` and currently has no continuation cursor. Message
+pagination uses the returned timestamp **and** sequence together; do not derive
+a cursor from local ordering.
+
+`archive.keySource(deviceID)` supplies the narrow `keys.get` interface expected
+by `Opener`. Combine it with a locally authorized archive key, never send a
+private key to the REST server. The public [MCP package](../mcp/README.md) is one
+complete implementation, with metadata-only mode as its default.
 
 ## Archives moved between workspaces
 

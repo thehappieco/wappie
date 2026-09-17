@@ -1,0 +1,1536 @@
+{
+  "components": {
+    "responses": {
+      "Error400": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Malformed UUID, cursor, limit, unknown or repeated query parameter.",
+        "headers": {
+          "Cache-Control": {
+            "description": "Archive responses must not be stored.",
+            "schema": {
+              "const": "no-store",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Error401": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Missing, invalid, expired or revoked bearer credential; disabled workspace.",
+        "headers": {
+          "Cache-Control": {
+            "description": "Archive responses must not be stored.",
+            "schema": {
+              "const": "no-store",
+              "type": "string"
+            }
+          },
+          "WWW-Authenticate": {
+            "schema": {
+              "const": "Bearer realm=\"wappie\"",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Error403": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Active credential lacks current device permission/grant or API key scope/whitelist; access changed during the read.",
+        "headers": {
+          "Cache-Control": {
+            "description": "Archive responses must not be stored.",
+            "schema": {
+              "const": "no-store",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Error404": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Archive item absent from the credential’s workspace.",
+        "headers": {
+          "Cache-Control": {
+            "description": "Archive responses must not be stored.",
+            "schema": {
+              "const": "no-store",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Error500": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Archive query or authorization infrastructure failed; no partial result is published.",
+        "headers": {
+          "Cache-Control": {
+            "description": "Archive responses must not be stored.",
+            "schema": {
+              "const": "no-store",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ChatSummary": {
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "audience": {
+            "type": "integer"
+          },
+          "chat_key": {
+            "type": "string"
+          },
+          "chat_lid": {
+            "type": "string"
+          },
+          "chat_pn": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ephemeral": {
+            "type": "integer"
+          },
+          "group_created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "is_group": {
+            "type": "boolean"
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "last_body_key_id": {
+            "type": "integer"
+          },
+          "last_body_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "last_kind": {
+            "type": "string"
+          },
+          "last_seq": {
+            "type": "integer"
+          },
+          "last_ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_type": {
+            "type": "string"
+          },
+          "last_uid": {
+            "type": "string"
+          },
+          "name_key_id": {
+            "type": "integer"
+          },
+          "name_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "uid": {
+            "type": "string"
+          },
+          "unread": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chat_key",
+          "created_at",
+          "last_seq",
+          "uid"
+        ],
+        "type": "object"
+      },
+      "ChatsResponse": {
+        "properties": {
+          "chats": {
+            "items": {
+              "$ref": "#/components/schemas/ChatSummary"
+            },
+            "type": "array"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "chats",
+          "device_id",
+          "limit",
+          "tenant_id",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "DeviceInfo": {
+        "properties": {
+          "archive_tenant_id": {
+            "type": "string"
+          },
+          "can_manage": {
+            "type": "boolean"
+          },
+          "can_send": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "last_connected_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "lid": {
+            "type": "string"
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "pn": {
+            "type": "string"
+          },
+          "profile_key": {
+            "type": "string"
+          },
+          "push_name": {
+            "type": "string"
+          },
+          "reader_receipt_mode": {
+            "type": "string"
+          },
+          "receipt_mode": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "can_manage",
+          "can_send",
+          "created_at",
+          "id",
+          "label",
+          "paused",
+          "receipt_mode",
+          "running",
+          "status"
+        ],
+        "type": "object"
+      },
+      "DevicesResponse": {
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceInfo"
+            },
+            "type": "array"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "devices",
+          "tenant_id"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "code": {
+            "enum": [
+              "bad_request",
+              "unauthorized",
+              "not_authorized",
+              "not_found",
+              "internal"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "GrantEntry": {
+        "properties": {
+          "archive_tenant_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          },
+          "sealed_dsk": {
+            "contentEncoding": "base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "epoch",
+          "sealed_dsk"
+        ],
+        "type": "object"
+      },
+      "GrantsResponse": {
+        "properties": {
+          "grants": {
+            "items": {
+              "$ref": "#/components/schemas/GrantEntry"
+            },
+            "type": "array"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "grants",
+          "tenant_id",
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "HistoryResponse": {
+        "properties": {
+          "chat_key": {
+            "type": "string"
+          },
+          "deletion": {
+            "$ref": "#/components/schemas/MessageDeletion"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "reactions": {
+            "items": {
+              "$ref": "#/components/schemas/MessageReaction"
+            },
+            "type": "array"
+          },
+          "readers": {
+            "items": {
+              "$ref": "#/components/schemas/MessageReader"
+            },
+            "type": "array"
+          },
+          "requested_uid": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/MessageVersion"
+            },
+            "type": "array"
+          },
+          "wa_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_key",
+          "device_id",
+          "requested_uid",
+          "tenant_id",
+          "versions",
+          "wa_id"
+        ],
+        "type": "object"
+      },
+      "KeysResponse": {
+        "properties": {
+          "archive_tenant_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/SealedKey"
+            },
+            "type": "array"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "keys",
+          "tenant_id"
+        ],
+        "type": "object"
+      },
+      "MessageAcks": {
+        "properties": {
+          "delivered": {
+            "type": "integer"
+          },
+          "delivered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "failed": {
+            "type": "boolean"
+          },
+          "played": {
+            "type": "integer"
+          },
+          "played_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "read": {
+            "type": "integer"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "read_by_us": {
+            "type": "boolean"
+          },
+          "retrying": {
+            "type": "boolean"
+          },
+          "wa_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wa_id"
+        ],
+        "type": "object"
+      },
+      "MessageDeletion": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by_admin": {
+            "type": "boolean"
+          },
+          "by_author": {
+            "type": "boolean"
+          },
+          "message": {
+            "$ref": "#/components/schemas/SealedMessage"
+          }
+        },
+        "required": [
+          "by_author",
+          "message"
+        ],
+        "type": "object"
+      },
+      "MessageReaction": {
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/SealedMessage"
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "superseded": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "MessageReader": {
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          },
+          "confirmed_revision": {
+            "type": "integer"
+          },
+          "delivered": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderDevice"
+            },
+            "type": "array"
+          },
+          "is_from_me": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "lid": {
+            "type": "string"
+          },
+          "played": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "pn": {
+            "type": "string"
+          },
+          "read": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "read_device": {
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderRevision"
+            },
+            "type": "array"
+          },
+          "saw_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confirmed",
+          "confirmed_revision",
+          "key",
+          "saw_revision"
+        ],
+        "type": "object"
+      },
+      "MessageResponse": {
+        "properties": {
+          "body_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "chat_key": {
+            "type": "string"
+          },
+          "content_key_id": {
+            "type": "integer"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "ephemeral": {
+            "type": "boolean"
+          },
+          "expiration": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "forwarding_score": {
+            "type": "integer"
+          },
+          "is_forwarded": {
+            "type": "boolean"
+          },
+          "is_from_me": {
+            "type": "boolean"
+          },
+          "is_group": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "media": {
+            "$ref": "#/components/schemas/SealedMedia"
+          },
+          "payload_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "reply_to": {
+            "type": "string"
+          },
+          "sender_key": {
+            "type": "string"
+          },
+          "sender_lid": {
+            "type": "string"
+          },
+          "sender_pn": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target_rel": {
+            "type": "string"
+          },
+          "target_uid": {
+            "type": "string"
+          },
+          "target_wa_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "uid": {
+            "type": "string"
+          },
+          "unsupported": {
+            "type": "string"
+          },
+          "view_once": {
+            "type": "boolean"
+          },
+          "wa_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_key",
+          "device_id",
+          "is_from_me",
+          "kind",
+          "seq",
+          "source",
+          "tenant_id",
+          "type",
+          "uid",
+          "wa_id"
+        ],
+        "type": "object"
+      },
+      "MessageVersion": {
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "message": {
+            "$ref": "#/components/schemas/SealedMessage"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "until": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "PageResponse": {
+        "properties": {
+          "chat_key": {
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/SealedMessage"
+            },
+            "type": "array"
+          },
+          "next_seq": {
+            "type": "integer"
+          },
+          "next_ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/components/schemas/MessageAcks"
+            },
+            "type": "array"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_key",
+          "has_more",
+          "messages",
+          "tenant_id"
+        ],
+        "type": "object"
+      },
+      "ReaderDevice": {
+        "properties": {
+          "agent": {
+            "type": "integer"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "confirmed_revision": {
+            "type": "integer"
+          },
+          "delivered": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "device": {
+            "type": "integer"
+          },
+          "key": {
+            "type": "string"
+          },
+          "played": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "read": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderRevision"
+            },
+            "type": "array"
+          },
+          "saw_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confirmed",
+          "confirmed_revision",
+          "key",
+          "saw_revision"
+        ],
+        "type": "object"
+      },
+      "ReaderRevision": {
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          },
+          "delivered": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "played": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "played_confirmed": {
+            "type": "boolean"
+          },
+          "read": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "type": "object"
+      },
+      "SealedKey": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sealed"
+        ],
+        "type": "object"
+      },
+      "SealedMedia": {
+        "properties": {
+          "download_status": {
+            "type": "string"
+          },
+          "file_enc_sha256": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "file_length": {
+            "type": "integer"
+          },
+          "filename_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "is_gif": {
+            "type": "boolean"
+          },
+          "media_key_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "mimetype": {
+            "type": "string"
+          },
+          "seconds": {
+            "type": "integer"
+          },
+          "thumb_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "waveform": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "download_status",
+          "media_type"
+        ],
+        "type": "object"
+      },
+      "SealedMessage": {
+        "properties": {
+          "body_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "chat_key": {
+            "type": "string"
+          },
+          "content_key_id": {
+            "type": "integer"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "ephemeral": {
+            "type": "boolean"
+          },
+          "expiration": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "forwarding_score": {
+            "type": "integer"
+          },
+          "is_forwarded": {
+            "type": "boolean"
+          },
+          "is_from_me": {
+            "type": "boolean"
+          },
+          "is_group": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "media": {
+            "$ref": "#/components/schemas/SealedMedia"
+          },
+          "payload_sealed": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "reply_to": {
+            "type": "string"
+          },
+          "sender_key": {
+            "type": "string"
+          },
+          "sender_lid": {
+            "type": "string"
+          },
+          "sender_pn": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target_rel": {
+            "type": "string"
+          },
+          "target_uid": {
+            "type": "string"
+          },
+          "target_wa_id": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "uid": {
+            "type": "string"
+          },
+          "unsupported": {
+            "type": "string"
+          },
+          "view_once": {
+            "type": "boolean"
+          },
+          "wa_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_key",
+          "device_id",
+          "is_from_me",
+          "kind",
+          "seq",
+          "source",
+          "type",
+          "uid",
+          "wa_id"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "description": "Opaque Wappie session token or API key in Authorization only. Scope read is sufficient; send and full include read. API key whitelist and service grants further restrict access. No tenant override is accepted.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "First read-only archive release. Bearer credentials select a single workspace; clients must validate tenant_id and pin the installation origin. All authenticated data responses and errors use Cache-Control: no-store. Credentials and device permissions are revalidated on every request and immediately before response serialization. Unknown/repeated query parameters are rejected; query strings are limited to 8192 bytes. No sends, downloads, capture/resume commands, plaintext content, private keys or storage object keys are exposed. Existing login, WebSocket and media protocols are documented separately.",
+    "title": "Wappie sealed archive REST API",
+    "version": "1.0.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.1",
+  "paths": {
+    "/v1/devices": {
+      "get": {
+        "description": "Lists devices permitted by ActionView, live account permissions and API key restrictions. Owners may see/manage a device without permission to read its content. There is no pagination on this workspace directory.",
+        "operationId": "listDevices",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicesResponse"
+                }
+              }
+            },
+            "description": "Sealed archive response. tenant_id is derived from the credential.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "summary": "List visible numbers"
+      }
+    },
+    "/v1/devices/{device}/chats": {
+      "get": {
+        "description": "Requires read access. Bounded directory, not a complete export: limit applies to stored chat rows before PN/LID alias folding. truncated=true means further rows exist. No cursor is available in this version. Names and latest message previews remain encrypted.",
+        "operationId": "listChats",
+        "parameters": [
+          {
+            "description": "Complete, nonzero UUID. Short prefixes are not accepted.",
+            "in": "path",
+            "name": "device",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum stored chat rows before alias folding.",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 3000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatsResponse"
+                }
+              }
+            },
+            "description": "Sealed archive response. tenant_id is derived from the credential.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "summary": "List recent archived conversations"
+      }
+    },
+    "/v1/devices/{device}/keys": {
+      "get": {
+        "description": "Requires read access. ids is a comma-separated list of 1 to 500 positive int32 key IDs; duplicates are folded, missing IDs omitted. archive_tenant_id is the immutable cryptographic namespace, including after a device moves workspace. Keys are sealed to the archive public key; the server cannot unwrap them.",
+        "operationId": "getContentKeys",
+        "parameters": [
+          {
+            "description": "Complete, nonzero UUID. Short prefixes are not accepted.",
+            "in": "path",
+            "name": "device",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "type": "string"
+            }
+          },
+          {
+            "description": "1–500 comma-separated positive IDs (1..2147483647); no repeated ids query parameters. Missing key IDs are omitted.",
+            "explode": false,
+            "in": "query",
+            "name": "ids",
+            "required": true,
+            "schema": {
+              "items": {
+                "maximum": 2147483647,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxItems": 500,
+              "minItems": 1,
+              "type": "array"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeysResponse"
+                }
+              }
+            },
+            "description": "Sealed archive response. tenant_id is derived from the credential.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "summary": "Read wrapped content keys"
+      }
+    },
+    "/v1/devices/{device}/messages": {
+      "get": {
+        "description": "Requires read access. Returns newest page when cursor is absent, ordered oldest first within each page. Follow next_ts and next_seq together only while has_more=true. Cursor is exclusive and ordered by message timestamp (created_at fallback), then tenant sequence; timestamps alone are not a cursor. Messages from known PN/LID aliases may be included, while chat_key echoes the request exactly. No live snapshot guarantee across pages; backfilled or concurrently changed archives can change the result.",
+        "operationId": "listMessages",
+        "parameters": [
+          {
+            "description": "Complete, nonzero UUID. Short prefixes are not accepted.",
+            "in": "path",
+            "name": "device",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "type": "string"
+            }
+          },
+          {
+            "description": "Conversation identifier, percent-encoded as a query value.",
+            "in": "query",
+            "name": "chat_key",
+            "required": true,
+            "schema": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum messages per page.",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "RFC3339 timestamp from next_ts; must accompany before_seq.",
+            "in": "query",
+            "name": "before_ts",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Positive tenant sequence from next_seq; must accompany before_ts.",
+            "in": "query",
+            "name": "before_seq",
+            "schema": {
+              "maximum": 9223372036854776000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponse"
+                }
+              }
+            },
+            "description": "Sealed archive response. tenant_id is derived from the credential.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "summary": "Read a page of archived messages"
+      }
+    },
+    "/v1/grants": {
+      "get": {
+        "description": "Requires a person session or API key acting as an active service account. A bare operator API key receives 403. Returns only current-epoch grants the actor may read, intersected with the API key device whitelist. user_id is the grant recipient used by local cryptography, and archive_tenant_id remains immutable after a workspace transfer.",
+        "operationId": "listGrants",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantsResponse"
+                }
+              }
+            },
+            "description": "Sealed archive response. tenant_id is derived from the credential.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "summary": "Read this account’s sealed archive grants"
+      }
+    },
+    "/v1/messages/{uid}": {
+      "get": {
+        "description": "Requires read access to the message device. A foreign-workspace UID is indistinguishable from a missing UID. The message body, structured payload and media secrets remain base64 ciphertext.",
+        "operationId": "getMessage",
+        "parameters": [
+          {
+            "description": "Complete, nonzero UUID. Short prefixes are not accepted.",
+            "in": "path",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            },
+            "description": "Sealed archive response. tenant_id is derived from the credential.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "summary": "Read one sealed message"
+      }
+    },
+    "/v1/messages/{uid}/history": {
+      "get": {
+        "description": "Requires read access. requested_uid echoes the route UID. A control/edit UID resolves to the original message thread; wa_id and chat_key identify that root. Returns the complete existing WebSocket history projection, with no row cap or pagination in this version; large histories can be expensive and the query has a 30-second deadline. All revisions and reaction contents remain encrypted.",
+        "operationId": "getMessageHistory",
+        "parameters": [
+          {
+            "description": "Complete, nonzero UUID. Short prefixes are not accepted.",
+            "in": "path",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            },
+            "description": "Sealed archive response. tenant_id is derived from the credential.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "summary": "Read revisions, reactions and receipts"
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPI",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OpenAPI 3.1.1 document for the read-only sealed archive API.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Archive responses must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Read this public OpenAPI document"
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "This Wappie installation; configure HTTPS in production.",
+      "url": "/"
+    }
+  ]
+}

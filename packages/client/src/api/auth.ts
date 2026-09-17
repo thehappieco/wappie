@@ -106,7 +106,7 @@ export interface SignedIn {
 
 export type SignInStep = 'checking' | 'unlocking' | 'authenticating' | 'passkey' | 'opening'
 
-async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal): Promise<T> {
+async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal, maxResponseBytes?: number): Promise<T> {
   const response = await fetch(endpoint(serverURL, path), {
     method: body === undefined ? 'GET' : 'POST',
     headers: {
@@ -118,7 +118,28 @@ async function call<T>(serverURL: string, path: string, body: unknown, token?: s
     ...(signal ? { signal } : {}),
   })
   if (response.status === 204) return undefined as T
-  const text = await response.text()
+  let text: string
+  if (maxResponseBytes === undefined) text = await response.text()
+  else {
+    const reader = response.body?.getReader(), parts: Uint8Array[] = []
+    let size = 0
+    if (reader) try {
+      for (;;) {
+        const next = await reader.read()
+        if (next.done) break
+        size += next.value.length
+        if (size > maxResponseBytes) {
+          await reader.cancel()
+          throw new AuthError('response_too_large', 'Authentication response exceeds the configured limit.')
+        }
+        parts.push(next.value)
+      }
+    } finally { reader.releaseLock() }
+    const buffer = new Uint8Array(size)
+    let offset = 0
+    for (const part of parts) { buffer.set(part, offset); offset += part.length }
+    text = new TextDecoder().decode(buffer)
+  }
   let parsed: unknown
   try {
     parsed = text ? JSON.parse(text) : {}
@@ -500,14 +521,40 @@ export async function withDeviceKey<T>(
     password: string
     token: string
     deviceID: string
+    /** Optional identity pins for local clients with fixed workspace configuration. */
+    expectedTenantID?: string
+    expectedUserID?: string
+    signal?: AbortSignal
+    /** Refuse costly challenges without lowering the server's KDF parameters. */
+    maxKDF?: { m: number; t: number; p: number }
+    /** Optional bounded auth JSON reader for local automation clients. */
+    maxAuthResponseBytes?: number
   },
   use: (deviceKey: Bytes, epoch: number, archiveTenantID: string) => Promise<T>,
 ): Promise<T> {
+  if (input.maxKDF && (['m', 't', 'p'] as const).some(key => !Number.isSafeInteger(input.maxKDF![key]) || input.maxKDF![key] < 1)) {
+    throw new AuthError('invalid_kdf_limits', 'Invalid local KDF limits.')
+  }
+  if (input.maxAuthResponseBytes !== undefined && (!Number.isSafeInteger(input.maxAuthResponseBytes) || input.maxAuthResponseBytes < 1)) {
+    throw new AuthError('invalid_response_limit', 'Invalid local authentication response limit.')
+  }
   const challenge = await call<ChallengeReply>(input.serverURL, '/v1/auth/challenge', {
     email: input.email,
-  })
+  }, undefined, input.signal, input.maxAuthResponseBytes)
+  if (input.maxKDF) {
+    for (const key of ['m', 't', 'p'] as const) {
+      const cost = challenge?.params?.[key]
+      if (!Number.isSafeInteger(cost) || cost < 1 || cost > input.maxKDF[key]) {
+        throw new AuthError('kdf_cost_exceeded', 'The challenge exceeds the local KDF policy or has invalid costs.')
+      }
+    }
+  }
   const derived = await derive(input.password, fromBase64(challenge.salt), challenge.params)
-  const me = await call<MeReply>(input.serverURL, '/v1/auth/me', undefined, input.token)
+  const me = await call<MeReply>(input.serverURL, '/v1/auth/me', undefined, input.token, input.signal, input.maxAuthResponseBytes)
+  if ((input.expectedTenantID && me.user.tenant_id !== input.expectedTenantID) ||
+    (input.expectedUserID && me.user.id !== input.expectedUserID)) {
+    throw new AuthError('not_authorized', 'The session does not match the configured account and workspace.')
+  }
 
   // A wrong password fails here and nowhere else: the server compared a hash
   // at sign-in, and this compares nothing — it simply does not open.
