@@ -28,6 +28,11 @@ func (a *app) maintain(ctx context.Context) {
 	}
 }
 
+// mcpPendingTTL is how long a consented connection may wait for the reader to
+// finish the handshake. It matches the reader's own pending-request lifetime:
+// past it the request is gone and the consent can only be given again.
+const mcpPendingTTL = 20 * time.Minute
+
 func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
@@ -36,6 +41,24 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		a.log.Warn("housekeeping failed", "error", err)
 	} else if sessions+invites > 0 {
 		a.log.Info("housekeeping", "sessions", sessions, "invites", invites)
+	}
+
+	// Keys issued with a deadline stop working the moment it passes; this
+	// records the fact so the key list agrees. A hosted assistant connection
+	// whose handshake never finished is revoked with its key once the reader
+	// has forgotten the request — where a reader runs; elsewhere the table
+	// stays empty and is left alone.
+	if keys, err := store.ExpireAPIKeys(ctx, a.pools.API); err != nil {
+		a.log.Warn("api key expiry failed", "error", err)
+	} else if keys > 0 {
+		a.log.Info("api keys expired", "keys", keys)
+	}
+	if a.cfg.MCP.Enabled {
+		if connections, err := store.ExpireMCPConnections(ctx, a.pools.API, mcpPendingTTL); err != nil {
+			a.log.Warn("mcp connection expiry failed", "error", err)
+		} else if connections > 0 {
+			a.log.Info("mcp connections settled", "connections", connections)
+		}
 	}
 
 	// Retry confirmed orphan objects even when no new retention purge occurs.

@@ -35,7 +35,7 @@ func (a *APIKeys) ConnectionKey(ctx context.Context, id uuid.UUID, tenant string
 	var active bool
 	err := a.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys k JOIN tenants t ON t.id=k.tenant_id
 		WHERE k.id=$1 AND k.tenant_id=$2 AND k.scope=$3 AND k.revoked_at IS NULL AND t.status='active'
-		AND k.access_version=$5 AND coalesce(k.acts_as,'00000000-0000-0000-0000-000000000000'::uuid)=$4)`, id, tenant, string(scope), actsAs, version).Scan(&active)
+		AND (k.expires_at IS NULL OR k.expires_at > now()) AND k.access_version=$5 AND coalesce(k.acts_as,'00000000-0000-0000-0000-000000000000'::uuid)=$4)`, id, tenant, string(scope), actsAs, version).Scan(&active)
 	if err != nil {
 		return err
 	}

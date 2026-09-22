@@ -102,6 +102,14 @@ var ErrInvalidKey = errors.New("store: invalid api key")
 // Foreign-workspace and missing devices deliberately produce the same error.
 var ErrInvalidKeyDevices = errors.New("store: choose distinct devices in this workspace")
 
+// ErrInvalidExpiry means a deadline in the past or further out than a key is
+// allowed to live.
+var ErrInvalidExpiry = errors.New("store: expiry must be in the future and within a year")
+
+// maxKeyLifetime caps how far out a key's deadline may be set. A credential
+// that "expires" in a decade is one with no expiry and a false sense of one.
+const maxKeyLifetime = 365 * 24 * time.Hour
+
 // Argon2id parameters for verifying API keys.
 //
 // Much lighter than the parameters used for a user password, and on purpose:
@@ -151,16 +159,25 @@ func (a *APIKeys) IssueScoped(ctx context.Context, tenantID, name string, scope 
 // refused devices the account has no grant for, exactly like a member.
 func (a *APIKeys) IssueActingAs(ctx context.Context, tenantID, name string, scope KeyScope,
 	createdBy, actsAs *uuid.UUID) (string, error) {
-	return a.IssueActingAsForDevices(ctx, tenantID, name, scope, createdBy, actsAs, nil)
+	return a.IssueActingAsForDevices(ctx, tenantID, name, scope, createdBy, actsAs, nil, nil)
 }
 
 // IssueActingAsForDevices atomically issues the credential and its device list.
 // A nil selection preserves legacy unrestricted issuance. A supplied selection
 // must be nonempty; removing its last device later leaves the key restricted.
+//
+// A nil expiresAt issues a key that lives until revoked. A deadline must be
+// in the future and at most a year out; past that the key is refused as if
+// it had never been valid, by the same query that refuses a revoked one.
 func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name string, scope KeyScope,
-	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID) (string, error) {
+	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID, expiresAt *time.Time) (string, error) {
 	if _, err := ParseKeyScope(string(scope)); err != nil {
 		return "", err
+	}
+	if expiresAt != nil {
+		if err := checkKeyExpiry(*expiresAt); err != nil {
+			return "", err
+		}
 	}
 	if deviceIDs != nil {
 		if len(deviceIDs) == 0 {
@@ -237,8 +254,8 @@ func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name st
 			}
 		}
 		var keyID uuid.UUID
-		if err := tx.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, created_by, scope, acts_as, devices_restricted)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, tenantID, prefix, hash, name, createdBy, string(scope), actsAs, deviceIDs != nil).Scan(&keyID); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, created_by, scope, acts_as, devices_restricted, expires_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, tenantID, prefix, hash, name, createdBy, string(scope), actsAs, deviceIDs != nil, expiresAt).Scan(&keyID); err != nil {
 			return err
 		}
 		if deviceIDs != nil {
@@ -251,6 +268,35 @@ func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name st
 		return "", fmt.Errorf("store: issue api key: %w", err)
 	}
 	return prefix + "." + secretStr, nil
+}
+
+// checkKeyExpiry refuses a deadline that is already behind us or beyond the
+// lifetime cap.
+func checkKeyExpiry(at time.Time) error {
+	now := time.Now()
+	if !at.After(now) || at.After(now.Add(maxKeyLifetime)) {
+		return ErrInvalidExpiry
+	}
+	return nil
+}
+
+// extendAPIKeyExpiryTx moves a key's deadline forward to until, and only
+// forward: a key issued with a short provisional deadline is promoted to the
+// lifetime a person consented to, never shortened or given a deadline it did
+// not have. Anything else — unknown key, revoked, no deadline, or one already
+// past until — is ErrInvalidKey, so the caller cannot tell them apart.
+func extendAPIKeyExpiryTx(ctx context.Context, tx pgx.Tx, keyID, tenant uuid.UUID, until time.Time) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE api_keys SET expires_at = $3
+		 WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL
+		   AND expires_at IS NOT NULL AND expires_at < $3`, keyID, tenant, until)
+	if err != nil {
+		return fmt.Errorf("store: extend api key expiry: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidKey
+	}
+	return nil
 }
 
 // Verify resolves a presented key to its tenant.
@@ -277,11 +323,14 @@ func (a *APIKeys) VerifyScoped(ctx context.Context, presented string) (Verified,
 		SELECT id, tenant_id::text, key_hash, scope, acts_as, access_version
 		  FROM api_keys
 		 WHERE prefix = $1 AND revoked_at IS NULL
+		 AND (expires_at IS NULL OR expires_at > now())
 		 AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=api_keys.tenant_id AND t.status='active')`, prefix).Scan(&id, &tenantID, &storedHash, &scope, &actsAs, &accessVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Hash anyway so an unknown prefix costs the same time as a known one.
 		// Without this the response time distinguishes the two, which is a free
-		// oracle for enumerating valid prefixes.
+		// oracle for enumerating valid prefixes. An expired key takes this same
+		// path, on purpose: a faster answer for "known but past its deadline"
+		// would be the same oracle by another door.
 		//nolint:errcheck // the result is discarded on purpose; only the timing matters
 		_, _ = hashSecret(secret)
 		return Verified{}, ErrInvalidKey
@@ -342,6 +391,9 @@ type APIKeyInfo struct {
 	CreatedAt  time.Time
 	LastUsedAt time.Time
 	RevokedAt  time.Time
+	// ExpiresAt is the deadline the key was issued or extended to, nil for a
+	// key that lives until revoked.
+	ExpiresAt *time.Time
 }
 
 // List returns a tenant's keys, active ones first.
@@ -362,7 +414,7 @@ func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, erro
 	err := pg.InTenantTx(ctx, a.pool, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT k.prefix, k.name, k.scope, coalesce(creator.email, u.email, ''), coalesce(service.email, s.email, ''),
-			       k.created_at, k.last_used_at, k.revoked_at, k.acts_as, k.devices_restricted,
+			       k.created_at, k.last_used_at, k.revoked_at, k.expires_at, k.acts_as, k.devices_restricted,
 			       ARRAY(SELECT x.device_id::text FROM api_key_devices x JOIN devices d ON d.id=x.device_id
 			             WHERE x.api_key_id=k.id AND d.tenant_id=k.tenant_id ORDER BY x.device_id)
 			  FROM api_keys k
@@ -381,7 +433,7 @@ func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, erro
 			var used, revoked *time.Time
 			var actsAs string
 			if err := rows.Scan(&k.Prefix, &k.Name, &k.Scope, &k.CreatedBy, &actsAs,
-				&k.CreatedAt, &used, &revoked, &k.ActsAsID, &k.DevicesRestricted, &k.DeviceIDs); err != nil {
+				&k.CreatedAt, &used, &revoked, &k.ExpiresAt, &k.ActsAsID, &k.DevicesRestricted, &k.DeviceIDs); err != nil {
 				return err
 			}
 			if actsAs != "" {
