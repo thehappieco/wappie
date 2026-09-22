@@ -16,7 +16,11 @@ const schema = z.strictObject({
   max_scan_messages: z.number().int().min(1).max(2000).default(500),
   device_ids: z.array(id).min(1).max(1000).optional(),
   max_text_chars: z.number().int().min(128).max(8192).default(4096),
+  // 'provided': a hosted reader supplies the credential in process; no file
+  // fields and no plaintext opt-in are allowed (metadata-only by construction).
+  credential_source: z.enum(['files', 'provided']).default('files'),
 })
+const credentialFiles = ['session_file', 'token_file', 'password_file', 'service_key_file', 'contacts_file']
 export class LocalConfigError extends Error {
   constructor(code) { super(code); this.name = 'LocalConfigError'; this.code = code }
 }
@@ -42,7 +46,9 @@ export function validateConfig(value, base = process.cwd()) {
   if (!result.success) throw new LocalConfigError('invalid_config')
   const config = result.data
   try { config.server = archiveOrigin(config.server) } catch { throw new LocalConfigError('invalid_server') }
-  if (Boolean(config.session_file) === Boolean(config.token_file)) throw new LocalConfigError('choose_one_credential')
+  if (config.credential_source === 'provided') {
+    if (credentialFiles.some(field => config[field]) || config.allow_plaintext) throw new LocalConfigError('provided_credentials_metadata_only')
+  } else if (Boolean(config.session_file) === Boolean(config.token_file)) throw new LocalConfigError('choose_one_credential')
   if ((config.session_file && (config.service_key_file || config.service_user_id)) ||
     (config.token_file && config.password_file)) throw new LocalConfigError('mixed_credentials')
   if (config.service_key_file && !config.service_user_id) throw new LocalConfigError('service_user_required')
@@ -51,7 +57,7 @@ export function validateConfig(value, base = process.cwd()) {
   try { new Intl.DateTimeFormat('en', { timeZone: config.timezone }).format(0) } catch { throw new LocalConfigError('invalid_timezone') }
   if (config.contacts_file && (!config.allow_plaintext || !config.token_file || !config.service_key_file || !config.service_user_id || !config.device_ids)) throw new LocalConfigError('contact_pack_requires_service_scope')
   if (config.device_ids && new Set(config.device_ids).size !== config.device_ids.length) throw new LocalConfigError('invalid_config')
-  for (const field of ['session_file', 'token_file', 'password_file', 'service_key_file', 'contacts_file']) if (config[field]) config[field] = resolve(base, config[field])
+  for (const field of credentialFiles) if (config[field]) config[field] = resolve(base, config[field])
   if (config.device_ids) Object.freeze(config.device_ids)
   return Object.freeze(config)
 }
@@ -63,14 +69,24 @@ export async function loadConfig(path) {
     return validateConfig(parsed, dirname(resolve(path)))
   } finally { data.fill(0) }
 }
-export async function loadCredential(config) {
+function apiKeyCredential(token) {
+  if (typeof token !== 'string' || !token || /\s/.test(token)) throw new LocalConfigError('invalid_token_file')
+  return { token, kind: 'api_key' }
+}
+/**
+ * Resolves the credential the reader authenticates with. A provided-mode config
+ * takes it from `provider.token()` (`{token, kind:'api_key'}`), never from disk.
+ */
+export async function loadCredential(config, provider) {
+  if (config.credential_source === 'provided') {
+    if (!provider || typeof provider.token !== 'function') throw new LocalConfigError('credential_provider_required')
+    const credential = await provider.token()
+    if (!credential || credential.kind !== 'api_key') throw new LocalConfigError('invalid_token_file')
+    return apiKeyCredential(credential.token)
+  }
   const data = await readPrivateFile(config.session_file || config.token_file)
   try {
-    if (config.token_file) {
-      const token = data.toString('utf8').trim()
-      if (!token || /\s/.test(token)) throw new LocalConfigError('invalid_token_file')
-      return { token, kind: 'api_key' }
-    }
+    if (config.token_file) return apiKeyCredential(data.toString('utf8').trim())
     let session
     try { session = JSON.parse(data.toString('utf8')) } catch { throw new LocalConfigError('invalid_session') }
     if (session.origin !== config.server || session.tenantID !== config.workspace ||

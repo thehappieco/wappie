@@ -105,6 +105,16 @@ test('invalid origins, identities, tokens, keys and mixed bundle fields create n
   }
 })
 
+test('hosted-connector bundles carrying a link secret are refused by the local import', async t => {
+  const f = await fixture(t, { ...bundle(), link_secret: Buffer.alloc(32, 7).toString('base64url') })
+  const result = await invoke(f.input, f.output)
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /invalid or unsupported/)
+  await assert.rejects(lstat(f.output), { code: 'ENOENT' })
+  secretsAbsent(result)
+  assert.equal(result.stderr.includes(Buffer.alloc(32, 7).toString('base64url')), false)
+})
+
 test('existing directories, files and destination symlinks are never overwritten', async t => {
   const f = await fixture(t)
   await mkdir(f.output, { mode: 0o700 })
