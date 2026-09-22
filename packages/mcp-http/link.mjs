@@ -37,7 +37,7 @@ export const bundleBody = z.strictObject({
 export function descriptor(pending, state) {
   return {
     request_id: pending.id, kid: state.recipient.kid, reader_public_key: state.recipient.publicKeyEncoded,
-    client_id: pending.client_id, client_name: pending.client_name, redirect_host: pending.redirect_host,
+    client_id: pending.client_id, client_name: pending.client_name, redirect_host: pending.redirect_host, redirect_local: pending.redirect_local === true,
     code_challenge: pending.code_challenge, resource: pending.resource, expires_at: new Date(pending.expires_at).toISOString(),
   }
 }

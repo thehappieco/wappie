@@ -4,7 +4,7 @@
 // because the SDK ships only the resource-server half; it is deliberately small
 // and every branch is exercised by the negative matrix in test/as.test.mjs.
 import { randomBytes } from 'node:crypto'
-import { RegistrationError } from './clients.mjs'
+import { redirectAllowed, RegistrationError } from './clients.mjs'
 import { dummyProof, LinkError, MAX_PROOF_ATTEMPTS, verifyProof } from './link.mjs'
 import { GrantError, hash, wellFormed } from './tokens.mjs'
 import { SCOPE } from './metadata.mjs'
@@ -114,7 +114,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (!client) { meta.code = 'invalid_client'; return page(400, 'invalid_client') }
       meta.client = client.client_id
       const redirectURI = params.get('redirect_uri')
-      if (!client.redirect_uris.includes(redirectURI)) { meta.code = 'invalid_redirect_uri'; return page(400, 'invalid_redirect_uri') }
+      if (!redirectAllowed(client, redirectURI)) { meta.code = 'invalid_redirect_uri'; return page(400, 'invalid_redirect_uri') }
       // From here on the redirect target is trusted, so errors travel back to the client.
       const fail = code => {
         meta.code = code
@@ -136,6 +136,9 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       const id = randomBytes(16).toString('base64url')
       state.pending.set(id, {
         id, client_id: client.client_id, client_name: client.client_name, redirect_uri: redirectURI, redirect_host: client.redirect_host,
+        // The console tells the person where the code goes; for a native app
+        // that is their own machine, not the host that vouches for the app.
+        redirect_local: client.loopback === true,
         state: stateParam ?? undefined, code_challenge: challenge, resource, scope: SCOPE, ip,
         created_at: now(), expires_at: now() + pendingTTLMs, proof_attempts: 0,
       })
