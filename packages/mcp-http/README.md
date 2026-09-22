@@ -87,6 +87,22 @@ wiped locally. Refresh always asks Go.
 | `WAPPIE_MCP_CIMD` | `on` | advertise and resolve Client ID Metadata Documents (fetched by the API relay, cached for a day) |
 | `WAPPIE_MCP_PENDING_TTL_SECONDS` | `1200` | how long a consent may stay pending |
 
+### The console document may not declare `no-referrer`
+
+The consent form is a top-level cross-origin POST from the console to
+`/mcp/authorize/complete`. A document served with `Referrer-Policy: no-referrer`
+or `same-origin`, or carrying `<meta name="referrer" content="no-referrer">`,
+makes the browser replace the `Origin` header with the literal `null` on that
+post, and the reader refuses it. Serve the console with
+`strict-origin-when-cross-origin`: it sends the bare origin off-site and never
+the path or the query, so the consent request id still stays where it was.
+
+`whatserverd` does this for the page it serves. A console behind some other
+static server must set it there. The three refusals are told apart in the log
+and on the refusal page: `origin_missing` (no header at all), `opaque_origin`
+(the literal `null`, i.e. this misconfiguration) and `invalid_origin` (a real
+origin that is not `WAPPIE_MCP_CONSOLE_URL`'s).
+
 Two SDK notices are normal at startup: the reader answers JSON, not SSE, so
 the SDK prints that mid-call notifications are dropped.
 

@@ -334,6 +334,15 @@ test('consent completion: only the console origin may post, bad proofs burn afte
   assert.equal(h.go.activations, 0, 'no state change')
   const missing = await h.form('/mcp/authorize/complete', { request: evil.id, proof: evil.proof })
   assert.equal(missing.status, 400)
+  assert.match(missing.body, /origin_missing/, 'a request with no Origin at all is not a wrong Origin')
+  // A console document served with `Referrer-Policy: no-referrer` makes the
+  // browser send the literal `Origin: null`. The consent is still refused, but
+  // under a code that names the misconfiguration instead of blaming the page.
+  const opaque = await h.form('/mcp/authorize/complete', { request: evil.id, proof: evil.proof }, { origin: 'null' })
+  assert.equal(opaque.status, 400)
+  assert.match(opaque.body, /opaque_origin/)
+  assert.equal(h.go.activations, 0, 'no state change')
+  for (const refused of [evil.completed, missing, opaque]) assert.ok(refused.body.includes(h.consoleOrigin), 'a refusal leaves a way back to the console')
   const good = await h.form('/mcp/authorize/complete', { request: evil.id, proof: evil.proof }, { origin: h.consoleOrigin })
   assert.equal(good.status, 302, 'the same request completes once the console posts it')
   assert.equal(h.go.activations, 1)

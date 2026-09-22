@@ -174,6 +174,14 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 		header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		header.Set("Cache-Control", "no-cache, no-store")
 	case clean == "/" || clean == "/index.html":
+		// The hosted MCP consent form is a top-level cross-origin POST from
+		// this document to the reader. A document that declares no-referrer
+		// makes the browser replace the Origin header with the literal
+		// "null" on such a post (Fetch, "append a request Origin header"),
+		// and no origin check can accept that. This policy keeps the request
+		// id here all the same: cross-origin it sends the bare origin, never
+		// the path and never the query.
+		header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		policy := contentSecurityPolicy
 		if h.ExternalServers && external != "" {
 			if p, err := browserorigin.Parse(external, false); err == nil && len(p.Origins) == 1 {
