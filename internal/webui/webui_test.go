@@ -77,6 +77,14 @@ func TestServesThePage(t *testing.T) {
 	if got := resp.Header.Get("Permissions-Policy"); !strings.Contains(got, "geolocation=(self)") {
 		t.Errorf("location sharing must be allowed to request position permission: %q", got)
 	}
+	// The hosted MCP consent form posts from this document to the reader on
+	// another origin. Under "no-referrer" or "same-origin" the browser sends
+	// `Origin: null` there and the reader refuses the consent, so those two
+	// policies must never come back for the document.
+	switch got := resp.Header.Get("Referrer-Policy"); got {
+	case "no-referrer", "same-origin", "":
+		t.Errorf("Referrer-Policy is %q: the consent form post would arrive with Origin: null", got)
+	}
 }
 
 func TestServesAssets(t *testing.T) {

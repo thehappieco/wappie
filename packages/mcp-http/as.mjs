@@ -22,8 +22,15 @@ const requestIDShape = /^[A-Za-z0-9_-]{22}$/
 const noStore = { 'Cache-Control': 'no-store', Pragma: 'no-cache' }
 
 const oauthError = (status, error, description, extra = {}) => Response.json({ error, error_description: description }, { status, headers: { ...noStore, ...extra } })
-/** Browser-facing failures get a static page; the code comes from a fixed set, never from input. */
-const page = (status, code) => new Response(`<!doctype html><meta charset="utf-8"><title>Wappie MCP</title><p>Wappie MCP: ${code}.</p>`,
+const escapeHTML = value => value.replace(/[&<>"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[character])
+/**
+ * Browser-facing failures get a static page; the code comes from a fixed set,
+ * never from input, and `back` only ever from configuration. A refusal with no
+ * way back strands the owner on this page with a consent already half made, so
+ * the routes a browser reaches pass the console here.
+ */
+const page = (status, code, back = '') => new Response(`<!doctype html><meta charset="utf-8"><title>Wappie MCP</title>` +
+  `<p>Wappie MCP: ${code}.</p>` + (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : ''),
   { status, headers: { ...noStore, 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' } })
 const redirect = location => new Response(null, { status: 302, headers: { ...noStore, Location: location } })
 const text = value => (typeof value === 'string' ? value : undefined)
@@ -139,31 +146,39 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
 
     async complete(request, ip, meta) {
       if (request.method !== 'POST') return page(405, 'method_not_allowed')
-      // CSRF: the consent form is posted by the console, and only by the console.
-      if (request.headers.get('origin') !== consoleOrigin) { meta.code = 'invalid_origin'; return page(400, 'invalid_origin') }
+      // CSRF: the consent form is posted by the console, and only by the
+      // console. A document served with `Referrer-Policy: no-referrer` makes
+      // the browser send the literal `Origin: null` on a top-level post, so
+      // that case gets its own code: it names a console misconfiguration, not
+      // a hostile page, and the two must not read alike in the journal.
+      const sent = request.headers.get('origin')
+      if (sent !== consoleOrigin) {
+        meta.code = sent === null ? 'origin_missing' : sent === 'null' ? 'opaque_origin' : 'invalid_origin'
+        return page(400, meta.code, consoleURL)
+      }
       const taken = limiter.take('complete', ip, 10)
-      if (!taken.ok) { meta.code = 'rate_limited'; return page(429, 'too_many_requests') }
+      if (!taken.ok) { meta.code = 'rate_limited'; return page(429, 'too_many_requests', consoleURL) }
       const params = await form(request)
-      if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request') }
+      if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request', consoleURL) }
       const id = params.get('request') ?? '', proof = params.get('proof') ?? ''
       const pending = pendingFor(id)
-      if (!pending || !pending.bundle) { dummyProof(); meta.code = 'invalid_proof'; return page(400, 'invalid_proof') }
+      if (!pending || !pending.bundle) { dummyProof(); meta.code = 'invalid_proof'; return page(400, 'invalid_proof', consoleURL) }
       meta.client = pending.client_id
       meta.connection = pending.connection_id
       let bundle = null
       try { bundle = await verifyProof(state, pending, proof) } catch (error) { if (!(error instanceof LinkError)) throw error }
       if (!bundle) {
         pending.proof_attempts++
-        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return page(400, 'invalid_proof') }
+        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return page(400, 'invalid_proof', consoleURL) }
         meta.code = 'invalid_proof'
-        return page(400, 'invalid_proof')
+        return page(400, 'invalid_proof', consoleURL)
       }
       state.pending.delete(id)
       try { await relay.activate(pending.connection_id) } catch (error) {
         if (!(error instanceof RelayError)) throw error
         void relay.revoke(pending.connection_id)
         meta.code = 'activation_failed'
-        return page(502, 'activation_failed')
+        return page(502, 'activation_failed', consoleURL)
       }
       state.connections.set(pending.connection_id, {
         connection_id: pending.connection_id, tenant_id: pending.tenant_id, workspace_id: bundle.workspace_id, device_ids: bundle.device_ids,
