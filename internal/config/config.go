@@ -44,7 +44,9 @@ type Config struct {
 	Web            Web
 	Passkeys       Passkeys
 	Signup         Signup
-	Log            Log
+	// MCP is the hosted assistant connector, off unless a reader runs here.
+	MCP MCP
+	Log Log
 }
 
 // Web is the browser client, served as files from disk.
@@ -136,6 +138,7 @@ func Load() (Config, error) {
 		CallsEnabled:   boolean("WS_CALLS_ENABLED", true, &errs),
 		WADeviceName:   strings.TrimSpace(str("WS_WA_DEVICE_NAME", "whappie")),
 		Signup:         loadSignup(&errs),
+		MCP:            loadMCP(&errs),
 		Passkeys:       Passkeys{RPID: strings.TrimSpace(os.Getenv("WS_PASSKEY_RP_ID"))},
 		Env:            env,
 		HTTPAddr:       str("WS_HTTP_ADDR", ":8080"),
@@ -189,6 +192,9 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 	if err := cfg.Signup.Validate(env.IsProd()); err != nil {
+		errs = append(errs, err)
+	}
+	if err := cfg.MCP.Validate(env.IsProd()); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -269,11 +275,11 @@ func (p Postgres) RedactedDSN() string {
 // String renders the configuration for startup logs with every secret removed.
 func (c Config) String() string {
 	return fmt.Sprintf(
-		"env=%s http=%s postgres=%s pools=live:%d/history:%d/api:%d s3=%s/%s log=%s/%s",
+		"env=%s http=%s postgres=%s pools=live:%d/history:%d/api:%d s3=%s/%s log=%s/%s %s",
 		c.Env, c.HTTPAddr, c.Postgres.RedactedDSN(),
 		c.Postgres.LiveConns, c.Postgres.HistoryConns, c.Postgres.APIConns,
 		orDefault(c.Storage.Endpoint, "aws"), orDefault(c.Storage.Bucket, "unconfigured"),
-		c.Log.Level, c.Log.Format,
+		c.Log.Level, c.Log.Format, c.MCP,
 	)
 }
 

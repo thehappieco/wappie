@@ -45,3 +45,31 @@ func TestDiscoveryAdvertisesContactPagesAndDeviceScans(t *testing.T) {
 		}
 	}
 }
+
+// The hosted connector is advertised exactly when it is mounted: a console
+// offering a remote connection against a server that cannot record one
+// would fail at the consent, which is the wrong moment.
+func TestDiscoveryAdvertisesRemoteMCP(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		w := httptest.NewRecorder()
+		discoveryFor(enabled)(w, httptest.NewRequest("GET", "/v1/discovery", nil))
+		var doc struct {
+			Capabilities []string          `json:"capabilities"`
+			Endpoints    map[string]string `json:"endpoints"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		_, hasEndpoint := doc.Endpoints["mcp"]
+		if slices.Contains(doc.Capabilities, "mcp.remote.v1") != enabled || hasEndpoint != enabled {
+			t.Fatalf("enabled=%v: %s", enabled, w.Body.String())
+		}
+		if enabled && doc.Endpoints["mcp"] != "/v1/mcp" {
+			t.Fatalf("mcp endpoint = %q", doc.Endpoints["mcp"])
+		}
+		// Everything a client relied on before is still there.
+		if !slices.Contains(doc.Capabilities, "archive.rest.v1") || doc.Endpoints["websocket"] != "/v1/ws" {
+			t.Fatalf("enabled=%v lost an existing capability: %s", enabled, w.Body.String())
+		}
+	}
+}

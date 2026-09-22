@@ -12,7 +12,52 @@ services:
       WS_HTTP_ADDR: :8090
       WS_METRICS_ADDR: :9090
       WS_WEB_DIR: ""
-    ports: ["127.0.0.1:8090:8090"]
+    # 18093 is the MCP reader below, which shares this network namespace; it
+    # is published here because compose forbids ports on a service that joins
+    # another one. Nothing listens on it until the mcp-http profile is up.
+    ports: ["127.0.0.1:8090:8090", "127.0.0.1:18093:18093"]
     restart: unless-stopped
     read_only: true
     tmpfs: [/tmp]
+  # Optional hosted MCP connector (claude.ai / ChatGPT). Enable with
+  # `--profile mcp-http`; the API must run with WS_MCP_ENABLED=true and the
+  # matching WS_MCP_* values (WS_MCP_READER_URL=http://127.0.0.1:18093 in
+  # ../.env), and the reverse proxy in front must route /mcp and
+  # /.well-known/oauth-* here. Variables live in ../.env.mcp-http (ignored by
+  # git; the names are documented in packages/mcp-http/README.md). The relay
+  # secret is the file ../.env.mcp-relay-secret (the .env.* name keeps it out
+  # of git), owned by uid 10001 with mode 0600 and mounted read-only,
+  # never an environment value.
+  #
+  # The reader joins the api container's network namespace instead of the
+  # bridge: the relay routes on both sides (/v1/mcp/internal in Go,
+  # /internal in the reader) answer only a loopback peer, and Go accepts only a
+  # loopback WS_MCP_READER_URL, so the two processes must see each other on
+  # 127.0.0.1 exactly as the systemd layout does. Loosening those guards is
+  # not an option; they are the boundary that keeps the relay secret and the
+  # sealed bundles on one host. The reader listens on every address of that
+  # namespace because a published port is delivered to the container's bridge
+  # address, never to its loopback; the guards still hold, they check the
+  # peer, not the listener. A recreated api container is a new namespace:
+  # bring the profile up again afterwards so the reader rejoins it.
+  mcp-http:
+    profiles: [mcp-http]
+    image: wappie-mcp-http:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.mcp-http
+    env_file: ../.env.mcp-http
+    environment:
+      WAPPIE_MCP_LISTEN: 0.0.0.0:18093
+      WAPPIE_MCP_ARCHIVE_URL: http://127.0.0.1:8090
+      WAPPIE_MCP_RELAY_SECRET_FILE: /run/secrets/wappie-mcp-relay
+    network_mode: "service:api"
+    volumes:
+      - mcp-state:/var/lib/wappie-mcp
+      - ../.env.mcp-relay-secret:/run/secrets/wappie-mcp-relay:ro
+    depends_on: [api]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+volumes:
+  mcp-state:

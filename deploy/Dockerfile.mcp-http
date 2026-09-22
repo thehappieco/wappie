@@ -1,0 +1,39 @@
+# Hosted MCP connector for self-hosted installations. Build from the PUBLIC
+# repository root: docker build -f deploy/Dockerfile.mcp-http .
+# The reader imports the MCP SDK only through @whatserver2/mcp, so the image
+# holds one copy of it; the build stage installs production dependencies per
+# package and the runtime stage receives a link-free copy.
+FROM node:22-bookworm-slim AS build
+WORKDIR /src/packages
+COPY packages/client/ ./client/
+COPY packages/mcp/ ./mcp/
+COPY packages/mcp-http/ ./mcp-http/
+RUN rm -rf client/node_modules client/dist mcp/node_modules mcp-http/node_modules && \
+    cd client && npm ci --no-audit --no-fund && npm run build && rm -rf node_modules && \
+    npm ci --omit=dev --no-audit --no-fund && \
+    cd ../mcp && npm ci --omit=dev --no-audit --no-fund && \
+    cd ../mcp-http && npm ci --omit=dev --no-audit --no-fund && \
+    mkdir -p /out/packages && \
+    for name in client mcp mcp-http; do cp -RL "/src/packages/$name" "/out/packages/$name"; done && \
+    find /out -type d \( -name src -o -name test \) -prune -exec rm -rf {} + && \
+    find /out -type f \( -name '*.map' -o -name '*.ts' \) -delete && \
+    test -z "$(find /out -type l)"
+FROM node:22-bookworm-slim
+COPY --from=build /out/packages/ /app/packages/
+WORKDIR /app
+# State: recipient key and the encrypted token store. Mount a volume owned by
+# uid 10001 (0700); nothing else on the image is written.
+# The listener covers every address so the port published by compose reaches
+# it (a published port lands on the container's bridge address, not on its
+# loopback). That only works with the network namespace shared with the API
+# container (deploy/compose.yaml: network_mode "service:api", 18093 published
+# by the api service): the relay guards on both sides accept loopback peers
+# only, so a reader attached to the bridge on its own cannot complete a
+# consent, whatever it listens on.
+ENV WAPPIE_MCP_LISTEN=0.0.0.0:18093 \
+    WAPPIE_MCP_STATE_DIR=/var/lib/wappie-mcp
+RUN mkdir -p /var/lib/wappie-mcp && chown 10001:10001 /var/lib/wappie-mcp && chmod 0700 /var/lib/wappie-mcp
+VOLUME /var/lib/wappie-mcp
+USER 10001:10001
+EXPOSE 18093
+CMD ["node", "packages/mcp-http/server.mjs"]

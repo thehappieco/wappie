@@ -24,8 +24,13 @@ function openedText(value, max) {
   if (value.state === 'absent') return omitted()
   return { state: 'locked', reason: 'The authorized key could not open this content.' }
 }
-export async function createReader(config) {
-  const credential = await loadCredential(config)
+/**
+ * `provider` (provided-mode configs only) replaces every credential file read:
+ * `token()`, `serviceKey()` (43-char base64url string or the raw 32 bytes) and
+ * `contactPack()` (the parsed encrypted snapshot, or null for none).
+ */
+export async function createReader(config, provider) {
+  const credential = await loadCredential(config, provider)
   const api = new ArchiveClient({ serverURL: config.server, workspaceID: config.workspace, token: credential.token })
   const allowed = device => !config.device_ids || config.device_ids.includes(device)
   function permit(device) { if (!allowed(device)) throw new ArchiveError('not_authorized', 403) }
@@ -58,13 +63,19 @@ export async function createReader(config) {
     const grant = grants.grants.find(item => item.device_id === device)
     if (!grant) throw new ArchiveError('not_authorized', 403)
     if (!Number.isSafeInteger(grant.epoch) || grant.epoch < 1 || grant.epoch > 65535) throw new ArchiveError('invalid_grant')
-    const data = await readPrivateFile(config.service_key_file)
+    const provided = provider ? await provider.serviceKey() : await readPrivateFile(config.service_key_file)
+    if (typeof provided !== 'string' && !ArrayBuffer.isView(provided)) throw new LocalConfigError('invalid_service_key')
+    // A view over the provided bytes, so the zeroing below reaches the provider's buffer.
+    const data = typeof provided === 'string' ? null : Buffer.from(provided.buffer, provided.byteOffset, provided.byteLength)
     let raw, archive
     try {
-      const encoded = data.toString('utf8').trim()
-      if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) throw new LocalConfigError('invalid_service_key')
-      raw = Buffer.from(encoded, 'base64url')
-      if (raw.length !== 32 || raw.toString('base64url') !== encoded) throw new LocalConfigError('invalid_service_key')
+      if (data && provider && data.length === 32) raw = Buffer.from(data)
+      else {
+        const encoded = (data ? data.toString('utf8') : provided).trim()
+        if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) throw new LocalConfigError('invalid_service_key')
+        raw = Buffer.from(encoded, 'base64url')
+        if (raw.length !== 32 || raw.toString('base64url') !== encoded) throw new LocalConfigError('invalid_service_key')
+      }
       const namespace = bytes.parseUUID(grant.archive_tenant_id || config.workspace)
       const deviceBytes = bytes.parseUUID(device)
       const row = await seal.grantRow(namespace, deviceBytes, bytes.parseUUID(grants.user_id), grant.epoch)
@@ -77,7 +88,7 @@ export async function createReader(config) {
         if (current.user_id !== grants.user_id || !same || same.epoch !== grant.epoch || same.sealed_dsk !== grant.sealed_dsk || same.archive_tenant_id !== grant.archive_tenant_id) throw new ArchiveError('not_authorized', 403)
       }
       return result
-    } finally { data.fill(0); raw?.fill(0); archive?.fill(0) }
+    } finally { data?.fill(0); raw?.fill(0); archive?.fill(0) }
   }
   async function messages(rows, device, opener) {
     if (rows.some(row => row.device_id !== device)) throw new ArchiveError('device_mismatch')
@@ -89,14 +100,21 @@ export async function createReader(config) {
     })))
   }
   async function personalContacts(serviceKey) {
+    const scope = { server_url: config.server, workspace_id: config.workspace, service_user_id: config.service_user_id, device_ids: config.device_ids }
+    if (provider) {
+      // A snapshot only exists behind a service key; without one nothing is asked
+      // of the provider, so metadata-only lookups never touch personal contacts.
+      if (!serviceKey) return null
+      const pack = await provider.contactPack()
+      if (pack === null || pack === undefined) return null
+      try { return await openContactPack(serviceKey, pack, scope) }
+      catch { throw new LocalConfigError('invalid_contact_pack') }
+    }
     if (!config.contacts_file) return null
     if (!serviceKey) throw new LocalConfigError('contact_pack_requires_service_scope')
     const data = await readPrivateFile(config.contacts_file, { maxBytes: MAX_CONTACT_PACK_BYTES })
-    try {
-      return await openContactPack(serviceKey, JSON.parse(data.toString('utf8')), {
-        server_url: config.server, workspace_id: config.workspace, service_user_id: config.service_user_id, device_ids: config.device_ids,
-      })
-    } catch { throw new LocalConfigError('invalid_contact_pack') }
+    try { return await openContactPack(serviceKey, JSON.parse(data.toString('utf8')), scope) }
+    catch { throw new LocalConfigError('invalid_contact_pack') }
     finally { data.fill(0) }
   }
   async function historyStatus(row, device) {

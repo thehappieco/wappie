@@ -17,7 +17,10 @@ The recommended index runs in an authorized local companion process alongside
 MCP. The Wappie archive server continues storing sealed content. Archive private
 keys, decrypted text, embeddings and index keys stay outside that central server.
 A user-managed machine could host the companion, but that machine then becomes
-part of the user's trusted environment.
+part of the user's trusted environment. The hosted MCP connector does not
+change this: it is metadata-only and holds no key, so it cannot build or serve
+this index. A cloud-hosted index would still require the separate, explicit
+sharing decision described below.
 
 ```mermaid
 flowchart TD

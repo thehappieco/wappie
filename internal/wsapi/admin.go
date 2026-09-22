@@ -326,8 +326,16 @@ func apiKeyInfo(k store.APIKeyInfo) APIKeyInfo {
 		at := k.RevokedAt
 		info.RevokedAt = &at
 	}
+	if k.ExpiresAt != nil {
+		at := *k.ExpiresAt
+		info.ExpiresAt = &at
+	}
 	return info
 }
+
+// maxKeyLifetime caps how far out a key's deadline may be set; the store
+// enforces the same bound.
+const maxKeyLifetime = 365 * 24 * time.Hour
 
 // handleAPIKeyCreate mints a key and returns it once.
 //
@@ -421,10 +429,30 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 		}
 		actsAs, actsAsName = &id, store.ServiceName(account)
 	}
+	var expiresAt *time.Time
+	if strings.TrimSpace(req.ExpiresAt) != "" {
+		at, err := time.Parse(time.RFC3339, req.ExpiresAt)
+		if err != nil {
+			s.replyError(f.ReqID, ErrCodeBadRequest, "expires_at must be an RFC 3339 timestamp")
+			return
+		}
+		// The store checks again, inside the transaction; this is the
+		// message a person reads.
+		if now := time.Now(); !at.After(now) || at.After(now.Add(maxKeyLifetime)) {
+			s.replyError(f.ReqID, ErrCodeBadRequest, "expires_at must be in the future and at most a year out")
+			return
+		}
+		at = at.UTC()
+		expiresAt = &at
+	}
 	author := who.userID
-	key, err := s.srv.cfg.Keys.IssueActingAsForDevices(ctx, tenant, name, scope, &author, actsAs, deviceIDs)
+	key, err := s.srv.cfg.Keys.IssueActingAsForDevices(ctx, tenant, name, scope, &author, actsAs, deviceIDs, expiresAt)
 	if errors.Is(err, store.ErrInvalidKeyDevices) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "device_ids must select distinct devices in this workspace")
+		return
+	}
+	if errors.Is(err, store.ErrInvalidExpiry) {
+		s.replyError(f.ReqID, ErrCodeBadRequest, "expires_at must be in the future and at most a year out")
 		return
 	}
 	if errors.Is(err, store.ErrMembershipForbidden) {

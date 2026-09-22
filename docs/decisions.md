@@ -1138,3 +1138,65 @@ transition must apply unavailable directly instead of changing the policy first
 and then calling a passive no-op disconnect handler. Phone notification behavior
 is validated by the user; an unavailable connection cannot undo explicit read
 confirmations from the Wappie reader or another linked client.
+
+## Hosted remote MCP is metadata-only (2026-09-21)
+
+The local stdio MCP stays exactly as it is: keys on your computer, plaintext
+optional, nothing to revise. The hosted connector is a second transport, not a
+replacement, and the line it draws is the one the archive already drew: the
+process that can be reached from the internet on somebody else's schedule
+never holds a key that opens content. `packages/mcp-http` runs the existing
+reader over Streamable HTTP with an API key that is read-only, restricted to
+the consented devices and dated to expire. It is handed no service account and
+no archive private key, so sealed bodies are `locked` there the way they are
+for any unauthorized local reader, and a compromise of that host is a metadata
+leak, not a content leak. Metadata still reaches the assistant's provider, and
+the docs say so instead of hiding behind "encrypted".
+
+**The authorization server lives in the Node reader, not in Go.** Whoever
+mints tokens can read with them. Putting the OAuth server in the archive
+process would have given the server that sits next to every sealed body a
+credential that reads the archive through the front door, plus a token-signing
+key to protect. So the reader is its own RFC 9728 resource and RFC 8414
+authorization server: PKCE S256 only, tokens bound to the `/mcp` resource
+(RFC 8707) so one minted for one installation is refused by another, opaque
+tokens stored as hashes, refresh rotation serialised per family with a short
+grace window because the hosts retry. The Go server keeps a registry of
+connections and relays opaque blobs over loopback; it can list, revoke and
+answer "is this still active", and nothing more.
+
+**Dynamic client registration and client metadata documents, both.** DCR is
+what the hosts speak today, restricted to HTTPS redirects on `claude.ai` and
+`chatgpt.com`, with the authentication method assigned as `none` whatever the
+client asked for, because a public client's secret protects nobody. CIMD is
+where the client SDK is heading, and it needs an outbound fetch; the reader is
+denied the network, so that fetch goes through a Go relay that enforces the
+same host allowlist, refuses redirects and caps the body. The two allowlists
+must match, and the runbook says so rather than trusting anyone to remember.
+
+**The consent is proven, not assumed.** The browser seals the connection
+bundle to the reader's public key with HPKE, so the archive server that relays
+it cannot open it, and proves with an HMAC over a `link_secret` that travelled
+only inside that sealed bundle that the same browser approved the same
+request. The reader mints the authorization code only after that proof
+verifies; three bad proofs burn the request and revoke the connection.
+
+**The API key is provisional until the connection exists.** The console issues
+it with twenty minutes to live and only a successful registration extends it to
+the consented 30, 90 or 365 days. An abandoned consent dies on its own instead
+of leaving a live key behind, and an expired key fails inside the same query
+that would have found it, with the same hashing on the miss, so expiry adds no
+timing oracle. A janitor revokes what has expired and marks connections
+`expired`, because a connector that outlives its consent is the failure mode
+that matters.
+
+**Rollback needs a down-step this time.** Migrations 39 and 40 change `api_keys`
+and add `mcp_connections`, and the previous executable refuses a schema it
+does not know. The deployment record carries the reverse SQL, rehearsed before
+the pilot; the price is that consented connections are lost on rollback and
+users approve again. Better a documented re-consent than a rollback path that
+does not exist.
+
+`docs/rest-api.md` still says the server never opens archived content or
+receives archive private keys. That sentence stays true, and it was the test
+for every choice above.

@@ -31,13 +31,13 @@ func TestRestrictedAPIKeyStoreRejectsInvalidSelections(t *testing.T) {
 		"foreign": {a.device, uuid.MustParse(foreignDevice.ID)}, "missing": {a.device, uuid.New()},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), name, store.ScopeRead, &owner, nil, selection)
+			_, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), name, store.ScopeRead, &owner, nil, selection, nil)
 			if !errors.Is(err, store.ErrInvalidKeyDevices) {
 				t.Fatalf("invalid selection accepted: %v", err)
 			}
 		})
 	}
-	if _, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), "Member", store.ScopeRead, &member, nil, []uuid.UUID{a.device}); !errors.Is(err, store.ErrMembershipForbidden) {
+	if _, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), "Member", store.ScopeRead, &member, nil, []uuid.UUID{a.device}, nil); !errors.Is(err, store.ErrMembershipForbidden) {
 		t.Fatalf("member could issue a restricted key: %v", err)
 	}
 	listed, err := keys.List(ctx, a.tenant.String())
@@ -57,7 +57,7 @@ func TestRestrictedAPIKeyRollsBackWhenWhitelistInsertFails(t *testing.T) {
 		CREATE TRIGGER reject_test_key_device BEFORE INSERT ON api_key_devices FOR EACH ROW EXECUTE FUNCTION reject_test_key_device()`); err != nil {
 		t.Fatal(err)
 	}
-	key, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), "Must roll back", store.ScopeRead, nil, nil, []uuid.UUID{a.device})
+	key, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), "Must roll back", store.ScopeRead, nil, nil, []uuid.UUID{a.device}, nil)
 	if err == nil || key != "" {
 		t.Fatalf("failed whitelist returned a credential: error=%v", err)
 	}
@@ -76,7 +76,7 @@ func TestRestrictedAPIKeyKeepsEmptyScopeAfterPersonalTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), "MCP", store.ScopeRead, &owner, &service.ID, []uuid.UUID{a.device})
+	key, err := keys.IssueActingAsForDevices(ctx, a.tenant.String(), "MCP", store.ScopeRead, &owner, &service.ID, []uuid.UUID{a.device}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

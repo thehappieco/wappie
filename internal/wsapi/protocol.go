@@ -375,6 +375,9 @@ type APIKeyInfo struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
+	// ExpiresAt is the deadline the key stops working at; absent for a key
+	// that lives until revoked.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // APIKeys is the response to apikeys.list.
@@ -399,6 +402,10 @@ type APIKeyRequest struct {
 	// contain distinct, complete, nonzero UUIDs in the current workspace.
 	// omitzero omits nil but preserves an explicitly empty slice for rejection.
 	DeviceIDs []string `json:"device_ids,omitzero"`
+	// ExpiresAt, RFC 3339, gives the key a deadline: in the future and at
+	// most a year out. Omitted means the key lives until revoked, as every
+	// key did before deadlines existed.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // GrantsRequest asks for the grants of the account this connection acts as.

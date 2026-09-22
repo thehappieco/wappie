@@ -1,8 +1,11 @@
-# Wappie MCP: authorized local reads
+# Wappie MCP: authorized archive reads
 
-An open source MCP server over **stdio** for querying a fixed Wappie installation
-and workspace. It uses the public REST APIs and public SDK cryptography, without
-depending on the private app. Requires Node.js 22 or later.
+An open source MCP server for querying a fixed Wappie installation and
+workspace. It runs over **stdio** locally, and the companion
+[`packages/mcp-http`](../mcp-http/README.md) serves the same reader over
+**Streamable HTTP** in metadata-only mode. It uses the public REST APIs and
+public SDK cryptography, without depending on the private app. Requires
+Node.js 22 or later.
 
 ## Install from the repository
 
@@ -89,7 +92,9 @@ configuration below needs only the path to `config.json`, never its credentials.
 ## Connect to ChatGPT
 
 This package speaks **stdio**. Connect it through OpenAI's Secure MCP Tunnel;
-the Wappie server's REST address is not an MCP endpoint.
+the Wappie server's REST address is not an MCP endpoint. For a connector that
+needs no tunnel and no always-on computer, use the installation's hosted
+metadata-only endpoint instead; see [remote HTTP MCP](../mcp-http/README.md).
 
 1. Follow the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
    to install `tunnel-client`, create a tunnel in the correct organization and
@@ -121,6 +126,9 @@ by itself; discovery and tool calls must still be verified in your workspace.
 
 ## Connect to Claude Desktop
 
+This section covers the desktop app. For claude.ai, add the hosted connector
+described in [remote HTTP MCP](../mcp-http/README.md) instead.
+
 The same local stdio server works with Claude Desktop. In the desktop app's
 settings, open **Developer → Edit Config** and merge this entry into
 `claude_desktop_config.json`. Replace all absolute paths, including the Node.js
@@ -143,8 +151,11 @@ describes this configuration flow.
 ```
 
 Fully quit and restart Claude Desktop, then review and enable Wappie's tools in
-the conversation's connectors menu. This config is for the local desktop app;
-do not add the Wappie REST address as a remote MCP URL in claude.ai. See also
+the conversation's connectors menu. This config is for the local desktop app.
+A Wappie REST address is still not an MCP URL; for claude.ai, add the hosted
+connector URL published by your installation (`https://<host>/mcp`), which is
+metadata-only and discovered through `/.well-known/oauth-protected-resource`.
+See also
 [Claude's local MCP support guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
 
 ## First check
@@ -324,6 +335,9 @@ default to UTC.
 | `search_messages` | Bounded lexical search and metadata filtering across a number's archived chats. |
 | `activity_summary` | Page-level counts of archived original message events by chat, sender and direction. |
 
+The remote HTTP transport exposes the same eight tools; sealed content is
+always reported as `locked` there, because that reader is never given a key.
+
 `list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
 defaulting to 50. For `list_messages`, pass
 `next` as `before` in the next request, preserving `ts` and `seq`. Chat listing
@@ -483,7 +497,8 @@ values out of diagnostics. Time tests cover calendar boundaries, daylight-saving
 changes and nanosecond-preserving explicit bounds. Search tests exercise bounded
 cross-chat scans, continuation, contact ambiguity and historical event counts. These
 local tests do not establish a live ChatGPT or Claude connection; complete the
-host-specific first check above in your own account.
+host-specific first check above in your own account. `packages/mcp-http` has
+its own protocol, OAuth and metadata-only regression suite; see its README.
 
 References: [MCP SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/),
 [official stdio documentation](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio.html).

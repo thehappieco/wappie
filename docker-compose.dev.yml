@@ -7,6 +7,9 @@ services:
       POSTGRES_USER: whatserver
       POSTGRES_PASSWORD: dev
       POSTGRES_DB: whatserver2
+      # postgres:18 images moved the default data directory to /var/lib/postgresql/18/docker;
+      # pin PGDATA so the mounted volume path keeps working.
+      PGDATA: /var/lib/postgresql/data
     ports: ["127.0.0.1:5433:5432"]
     volumes: ["pgdata:/var/lib/postgresql/data"]
     healthcheck:

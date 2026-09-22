@@ -13,6 +13,16 @@ Contact pagination and cross-chat scans additionally advertise `archive.contacts
 and `archive.scan.v1`.
 It uses [OpenAPI 3.1.1](https://spec.openapis.org/oas/v3.1.1.html).
 
+Installations that run the hosted [remote MCP connector](mcp.md) additionally
+advertise `mcp.remote.v1` and an `mcp` endpoint. The connection registry lives
+under `/v1/mcp/*`: it relays the reader's request descriptor, records consented
+connections, and forwards the browser's sealed bundle to the reader over
+loopback as an opaque blob. The same loopback-only, secret-guarded internal
+routes let the reader check, activate and revoke a connection, and fetch OAuth
+client metadata documents on its behalf, since the reader itself has no outbound
+network access. None of these routes is part of the archive OpenAPI document,
+and the API process still receives no archive private key.
+
 ## Authentication and workspace isolation
 
 Send a session or API key as `Authorization: Bearer <token>` over HTTPS.

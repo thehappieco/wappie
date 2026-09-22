@@ -1,5 +1,5 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
-	client-install client-build client-test client-check mcp-check public-source
+	client-install client-build client-test client-check mcp-check mcp-http-check public-source
 
 GO      ?= go
 PKGS    := ./...
@@ -67,6 +67,15 @@ mcp-check: client-build ## Install and verify the local MCP server
 	$(NPM) --prefix packages/mcp ci
 	$(NPM) --prefix packages/mcp test
 	cd packages/mcp && $(NPM) pack --dry-run
+
+# mcp-http depends on packages/mcp through file:, so that package is installed
+# first. Plain npm ci on purpose: the symlinked layout is the one that can load
+# a second copy of the MCP SDK, so it is the layout worth testing.
+mcp-http-check: client-build ## Install and verify the remote HTTP MCP reader
+	$(NPM) --prefix packages/mcp ci
+	$(NPM) --prefix packages/mcp-http ci
+	$(NPM) --prefix packages/mcp-http test
+	cd packages/mcp-http && $(NPM) pack --dry-run
 
 public-source: ## Export an allowlisted public source snapshot without private code
 	python3 scripts/export-public.py --output dist/wappie-source.tar.gz

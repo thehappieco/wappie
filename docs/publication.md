@@ -13,9 +13,12 @@ checkout or replace the public branch with an unrelated history.
 `make public-source` exports only the server, public clients, documentation and
 site. The exporter rejects private UI source and runtime configuration and
 excludes dependencies, generated builds, local evidence and hosted test runbooks.
-Inspect the resulting file list and scan both the new source and Git history for
-secrets before publishing. CI verifies that the extracted public source compiles
-without the private checkout.
+`packages/mcp-http` is part of the public export; verify it appears in the
+exported file list, because a root missing from the exporter's allowlist is
+dropped silently. Inspect the resulting file list and scan both the new source
+and Git history for secrets before publishing. CI verifies that the extracted
+public source compiles without the private checkout, and builds and tests
+`packages/mcp-http` from that extracted copy.
 
 The latest tree no longer contains the private app. Older published versions
 remain available in repository history with their original license notices.
