@@ -43,8 +43,14 @@ test('claude.ai-style client: discovery, DCR assigned none, consent, PKCE exchan
     // Nothing the assistant is handed over a hosted connection may send its
     // user after a plaintext setting: there is none, and an owner chasing one
     // reads a deliberate guarantee as a misconfiguration.
+    // The owner asked for "Lana"; the assistant paged through every archived
+    // contact because each empty page came back with a next cursor.
+    const named = parsed(await call(client, 'resolve_contact', { device_id: vector.device, query: 'Lana' }))
+    assert.equal(named.names_searchable, false)
+    assert.equal(named.next, undefined)
+    assert.match(named.instruction, /ask for the phone number/)
     const listed = listing.tools.map(tool => tool.description).join('\n')
-    const spoken = [listed, search.content[0].text, parsed(chats).chats[0].name.reason, parsed(messages).messages[0].body.reason,
+    const spoken = [listed, search.content[0].text, parsed(chats).chats[0].name.reason, parsed(messages).messages[0].body.reason, named.instruction, named.coverage.note,
       (await client.getServerCapabilities(), client.getInstructions() ?? '')].join('\n')
     for (const phrase of ['local plaintext access', 'local configuration', 'Local reading has not been enabled', 'plaintext_required']) {
       assert.equal(spoken.includes(phrase), false, `hosted wording still sends the user after a setting: ${phrase}`)
