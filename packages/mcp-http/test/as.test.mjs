@@ -219,8 +219,12 @@ test('token endpoint: every mismatch is invalid_grant, a replayed code kills its
   const unaffected = await refresh(h, { refreshToken: shared.tokens.refresh_token, clientId: shared.clientId })
   assert.equal(unaffected.status, 200, 'a legitimate user of the same client_id is unaffected')
   await garbage('2001:db8:1:2::5', 300)
-  const limited = (await garbage('2001:db8:1:2:ffff::1', 1))[0]
-  assert.equal(limited.status, 429, 'three hundred a minute per address, an IPv6 /64 being one address')
+  // The bucket refills continuously (five a second), so a slow runner may earn
+  // a token or two back while the burst is in flight; a short follow-up burst
+  // from the same /64 must still hit the ceiling.
+  const followUp = await garbage('2001:db8:1:2:ffff::1', 10)
+  const limited = followUp.find(response => response.status === 429)
+  assert.ok(limited, 'three hundred a minute per address, an IPv6 /64 being one address')
   assert.equal(limited.json().error, 'temporarily_unavailable')
   assert.ok(Number(limited.headers.get('retry-after')) >= 1)
   assert.equal((await garbage('2001:db8:1:3::1', 1))[0].status, 400, 'the next /64 is another address')
