@@ -5,7 +5,6 @@ import { resolveRange } from './time.mjs'
 import { Opener } from '@whatserver2/client/api/opener'
 import { loadCredential, LocalConfigError, readPrivateFile } from './config.mjs'
 
-const locked = () => ({ state: 'locked', reason: 'Encrypted content. Local reading has not been enabled for this MCP server.' })
 const omitted = () => ({ state: 'absent' })
 const textFields = ['uid', 'device_id', 'wa_id', 'chat_key', 'sender_key', 'sender_lid', 'sender_pn', 'ts', 'kind', 'type', 'source', 'target_uid', 'target_rel', 'reply_to', 'order_ts']
 function metadata(message) {
@@ -30,6 +29,17 @@ function openedText(value, max) {
  * `contactPack()` (the parsed encrypted snapshot, or null for none).
  */
 export async function createReader(config, provider) {
+  /**
+   * Why a value is locked, in the words that are true of this connection. A
+   * provided credential can never open content — config.mjs refuses
+   * allow_plaintext in that mode — so the reason must not read like a setting
+   * somebody forgot to turn on; a local install with plaintext off really did
+   * leave one off.
+   */
+  const lockedReason = config.credential_source === 'provided'
+    ? 'Sealed content. This connection reads metadata only, and the key that opens it never leaves the devices of the user.'
+    : 'Encrypted content. Local reading has not been enabled for this MCP server.'
+  const locked = () => ({ state: 'locked', reason: lockedReason })
   const credential = await loadCredential(config, provider)
   const api = new ArchiveClient({ serverURL: config.server, workspaceID: config.workspace, token: credential.token })
   const allowed = device => !config.device_ids || config.device_ids.includes(device)
@@ -141,7 +151,9 @@ export async function createReader(config, provider) {
   async function scan(input, activity = false) {
     const { device_id, query = '', limit = 20, before } = input
     permit(device_id)
-    if (query && !config.allow_plaintext) throw new LocalConfigError('plaintext_required_for_text_search')
+    // Same refusal, two different truths: a local install can be opted in, a
+    // provided credential never can, and the code is what the model quotes.
+    if (query && !config.allow_plaintext) throw new LocalConfigError(config.credential_source === 'provided' ? 'content_sealed_metadata_only' : 'plaintext_required_for_text_search')
     if (before && (!input.from || !input.until || input.period)) throw new LocalConfigError('continuation_requires_fixed_range')
     let range
     try { range = resolveRange(input, config.timezone) } catch { throw new LocalConfigError('invalid_time_range') }
@@ -190,8 +202,8 @@ export async function createReader(config, provider) {
             const searchable = [body, filename].filter(value => value.state === 'ok').map(value => value.value).join('\n')
             if (!query || matchesText(searchable, query)) {
               counters.matched++
-              hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : openedText(body, config.max_text_chars),
-                ...(row.media ? { attachment: { ...metadata(row).attachment, filename: openedText(filename, config.max_text_chars) } } : {}),
+              hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : opener ? openedText(body, config.max_text_chars) : body,
+                ...(row.media ? { attachment: { ...metadata(row).attachment, filename: opener ? openedText(filename, config.max_text_chars) : filename } } : {}),
                 structured_content: row.payload_sealed ? { state: 'unsupported' } : omitted(),
                 archive_status: await historyStatus(row, device_id),
                 source: { server: config.server, workspace_id: config.workspace, device_id, message_uid: row.uid, chat_key: row.chat_key,
@@ -252,7 +264,10 @@ export async function createReader(config, provider) {
     },
     async listNumbers() {
       const reply = await api.listDevices()
-      return { workspace_id: config.workspace, plaintext_enabled: config.allow_plaintext, timezone: config.timezone, now: new Date().toISOString(),
+      // plaintext_enabled alone reads like a switch left off; plaintext_available
+      // says whether the connection has a switch at all.
+      return { workspace_id: config.workspace, plaintext_enabled: config.allow_plaintext, plaintext_available: config.credential_source !== 'provided',
+        timezone: config.timezone, now: new Date().toISOString(),
         numbers: reply.devices.filter(device => allowed(device.id)).map(device => ({
           id: device.id, name: device.label || device.push_name || device.pn || 'Unnamed number',
           phone: device.pn, status: device.status, paused: device.paused === true,

@@ -31,6 +31,7 @@ test('claude.ai-style client: discovery, DCR assigned none, consent, PKCE exchan
     const numbers = parsed(await call(client, 'list_numbers'))
     assert.equal(numbers.numbers.length, 1)
     assert.equal(numbers.plaintext_enabled, false)
+    assert.equal(numbers.plaintext_available, false, 'a hosted connection has no switch to enable')
     const chats = await call(client, 'list_chats', { device_id: vector.device })
     assert.equal(parsed(chats).chats[0].name.state, 'locked')
     assert.equal(parsed(chats).chats[0].preview.state, 'locked')
@@ -38,7 +39,17 @@ test('claude.ai-style client: discovery, DCR assigned none, consent, PKCE exchan
     assert.equal(parsed(messages).messages[0].body.state, 'locked')
     const search = await call(client, 'search_messages', { device_id: vector.device, query: 'anything', period: 'all' })
     assert.equal(search.isError, true)
-    assert.match(search.content[0].text, /plaintext_required_for_text_search/)
+    assert.match(search.content[0].text, /content_sealed_metadata_only/)
+    // Nothing the assistant is handed over a hosted connection may send its
+    // user after a plaintext setting: there is none, and an owner chasing one
+    // reads a deliberate guarantee as a misconfiguration.
+    const listed = listing.tools.map(tool => tool.description).join('\n')
+    const spoken = [listed, search.content[0].text, parsed(chats).chats[0].name.reason, parsed(messages).messages[0].body.reason,
+      (await client.getServerCapabilities(), client.getInstructions() ?? '')].join('\n')
+    for (const phrase of ['local plaintext access', 'local configuration', 'Local reading has not been enabled', 'plaintext_required']) {
+      assert.equal(spoken.includes(phrase), false, `hosted wording still sends the user after a setting: ${phrase}`)
+    }
+    assert.match(parsed(chats).chats[0].name.reason, /metadata only/)
     const archive = h.f.state.requests
     assert.ok(archive.length >= 3)
     assert.ok(archive.every(item => item.method === 'GET' && item.auth === `Bearer ${h.apiKey}`))

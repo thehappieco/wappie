@@ -25,6 +25,9 @@ test('a provided credential reaches the archive without any file read and stays 
     const numbers = await reader.listNumbers()
     assert.equal(numbers.numbers.length, 1)
     assert.equal(numbers.plaintext_enabled, false)
+    // A provided credential has no switch to throw, and says so: the false above
+    // otherwise reads like a setting somebody forgot to turn on.
+    assert.equal(numbers.plaintext_available, false)
     const message = await reader.getMessage({ device_id: vector.device, uid: body.row })
     assert.equal(message.message.body.state, 'locked')
     const chats = await reader.listChats({ device_id: vector.device, limit: 10 })
@@ -33,7 +36,11 @@ test('a provided credential reaches the archive without any file read and stays 
     assert.ok(f.state.requests.every(item => item.auth === `Bearer ${f.token}` && item.method === 'GET'))
     assert.equal(f.state.requests.some(item => /keys|grants|auth/.test(item.path)), false, 'metadata reads never ask for keys')
     noSecrets({ numbers, message, chats }, f.secret)
-    await assert.rejects(reader.searchMessages({ device_id: vector.device, query: 'anything', period: 'all' }), { code: 'plaintext_required_for_text_search' })
+    // Not plaintext_required_for_text_search: that code names a local opt-in,
+    // and there is none here. See the locked reason below for the same reason.
+    await assert.rejects(reader.searchMessages({ device_id: vector.device, query: 'anything', period: 'all' }), { code: 'content_sealed_metadata_only' })
+    assert.match(message.message.body.reason, /metadata only/)
+    assert.equal(/enabled|local/i.test(message.message.body.reason), false, 'a sealed reason must not read like an unset option')
   } finally { await f.close() }
 })
 

@@ -10,7 +10,11 @@ It is **metadata-only by construction**. A connection carries a device-scoped,
 read-only API key and nothing else: no archive private key, no service account,
 no contact snapshot, no password. Every `list_chats` name, message body and
 attachment filename stays `locked`; `search_messages` with a text query answers
-`plaintext_required_for_text_search`. The reader cannot decrypt anything even
+`content_sealed_metadata_only`. That code, and every description and locked
+reason the assistant sees on a hosted connection, is chosen from
+`credential_source`: the local stdio install can be opted into plaintext and
+says so, a hosted connection never can, and must not send its user after a
+setting that cannot exist. The reader cannot decrypt anything even
 if a bundle tried to give it the means, because the credential provider it hands
 the shared reader refuses `serviceKey()` and `contactPack()` outright.
 
