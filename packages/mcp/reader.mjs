@@ -236,6 +236,22 @@ export async function createReader(config, provider) {
     activitySummary(input) { return scan(input, true) },
     async resolveContact({ device_id, query, limit = 20, after_key }) {
       permit(device_id)
+      // Without plaintext no archived name is ever readable and no personal
+      // snapshot exists (config.mjs refuses contacts_file without it), so a
+      // query that names somebody can never match, however many pages are
+      // fetched. Answering with a next cursor made the assistant walk every
+      // contact in the archive — six thousand of them, a dozen calls — to learn
+      // nothing. A phone number has no letters and an explicit identifier keeps
+      // its '@'; a name needs neither, and that is the whole test.
+      if (!config.allow_plaintext && /\p{L}/u.test(query) && !query.includes('@')) {
+        const hosted = config.credential_source === 'provided'
+        return { workspace_id: config.workspace, device_id, candidates: [], omitted_candidates: 0, ambiguous: false, names_searchable: false,
+          instruction: hosted
+            ? 'Contact names are sealed on this connection, so no name can match and paging would find nothing. Tell the user so, ask for the phone number, and resolve that instead.'
+            : 'Contact names stay locked while local plaintext access is off, so no name can match. Resolve a phone number instead, or ask the user to enable plaintext in the local configuration.',
+          coverage: { archived_contacts_examined: 0, unavailable_names: 0, archive_has_more: false, personal_snapshot: null, complete: false,
+            note: 'A name query was not run: this connection cannot read names. The empty result says nothing about whether the contact exists.' } }
+      }
       return withOpener(device_id, async (opener, serviceKey) => {
         const reply = await archiveRead('archive_contacts', () => api.listContacts(device_id, { limit: 500, afterKey: after_key }))
         const pack = await personalContacts(serviceKey)

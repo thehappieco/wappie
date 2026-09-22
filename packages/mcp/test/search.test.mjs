@@ -158,6 +158,22 @@ test('bounded scans report partial empty results and metadata activity keeps cha
     assert.equal(summary.activity.length, 3)
     assert.equal(summary.activity.filter(item => item.is_group).length, 1)
     assert.equal((await call(metadata, 'search_messages', { ...interval, query: 'exame' })).isError, true)
+    // A name cannot match without plaintext, so the reader says so at once
+    // instead of handing back a cursor the assistant would follow to the end.
+    f.state.contactsMore = true
+    const before = f.state.requests.length
+    const named = parsed(await call(metadata, 'resolve_contact', { device_id: device, query: 'roberto' }))
+    assert.equal(named.names_searchable, false)
+    assert.deepEqual(named.candidates, [])
+    assert.equal(named.next, undefined, 'no cursor: paging could never find a name')
+    assert.equal(named.coverage.complete, false, 'an unrun search proves nothing about absence')
+    assert.equal(f.state.requests.slice(before).some(item => item.path.includes('/contacts')), false, 'no contact page was fetched')
+    // Digits and explicit identifiers still resolve against the archive.
+    for (const query of [phone.slice(1, 9), lid]) {
+      const found = parsed(await call(metadata, 'resolve_contact', { device_id: device, query }))
+      assert.equal(found.names_searchable, undefined)
+      assert.equal(found.candidates.length, 1, query)
+    }
   } finally { await f.close() }
 })
 test('contact resolution opens only a scoped optional snapshot, exposes explicit aliases and rejects revoked access', async () => {
