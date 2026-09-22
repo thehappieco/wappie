@@ -55,7 +55,7 @@ jobs:
           fail=0
           # Packages carrying real business or cryptographic logic. Plumbing is
           # deliberately not on this list.
-          for pkg in internal/crypto/wamedia internal/config internal/obs; do
+          for pkg in internal/crypto/wamedia internal/config internal/obs internal/mcpauth; do
             pct=$(grep "whatserver2/$pkg/" cov.txt | awk '{gsub("%","",$NF); s+=$NF; n++} END {if(n) printf "%.1f", s/n; else print 0}')
             echo "$pkg: $pct%"
             awk -v p="$pct" 'BEGIN {exit !(p < 80)}' && { echo "  below the 80% floor"; fail=1; }
@@ -88,7 +88,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: "22", cache: npm, cache-dependency-path: packages/client/package-lock.json}
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            packages/client/package-lock.json
+            packages/mcp/package-lock.json
+            packages/mcp-http/package-lock.json
       - run: npm ci
         working-directory: packages/client
       - run: npm run typecheck && npm test && npm run build
@@ -99,6 +105,10 @@ jobs:
         working-directory: packages/cli
       - run: npm ci && npm test && npm pack --dry-run
         working-directory: packages/mcp
+      # Plain npm ci, no --install-links: the symlinked file: layout is the one
+      # that can resolve a second copy of the MCP SDK, so it is the one to test.
+      - run: npm ci && npm test && npm pack --dry-run
+        working-directory: packages/mcp-http
 
   distribution:
     runs-on: ubuntu-latest
@@ -120,6 +130,20 @@ jobs:
           npm --prefix packages/mcp ci
           npm --prefix packages/mcp test
           (cd packages/mcp && npm pack --dry-run)
+          npm --prefix packages/mcp-http ci
+          npm --prefix packages/mcp-http test
+          (cd packages/mcp-http && npm pack --dry-run)
+
+  container-mcp-http:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build only; nothing is pushed. The image is the self-hosting artifact
+      # for the remote MCP reader, so it must keep building from the public tree.
+      - run: docker build -f deploy/Dockerfile.mcp-http -t wappie-mcp-http:ci .
+      # The smoke test proves the loopback + relay-bearer guards from inside a
+      # container namespace, the layout self-hosters get from deploy/compose.yaml.
+      - run: deploy/smoke-mcp-http.sh wappie-mcp-http:ci
 
   secrets:
     runs-on: ubuntu-latest
