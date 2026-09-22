@@ -32,6 +32,7 @@ import (
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
 	"whatserver2/internal/mailer"
+	"whatserver2/internal/mcpauth"
 	"whatserver2/internal/media"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/obs"
@@ -624,8 +625,8 @@ func (a *app) probes(mux *http.ServeMux) {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/discovery", discovery)
-	mux.HandleFunc("GET /.well-known/wappie", discovery)
+	mux.HandleFunc("GET /v1/discovery", discoveryFor(a.cfg.MCP.Enabled))
+	mux.HandleFunc("GET /.well-known/wappie", discoveryFor(a.cfg.MCP.Enabled))
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
@@ -653,6 +654,24 @@ func (a *app) routes() http.Handler {
 			return ok && device.Client().IsConnected()
 		},
 	}).Mount(mux)
+
+	// The hosted assistant connector: consents and the loopback relay to
+	// the reader process, mounted only where a reader runs.
+	if a.cfg.MCP.Enabled {
+		(&mcpauth.Handler{
+			Connections: store.NewMCPConnections(a.pools.API), APIKeys: a.apiKeys, Users: a.users,
+			Limits: a.limits, Reader: mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret),
+			// The descriptor is read on every render of the consent card,
+			// so it gets a budget of its own, per request id rather than
+			// per account: the sign-in limit would refuse the sixth reload
+			// in a minute for nothing.
+			DescriptorLimits: &ratelimit.Auth{
+				PerIP: ratelimit.New(60, 20), PerSubject: ratelimit.New(30, 10), Proxies: a.cfg.TrustedProxies,
+			},
+			PublicOrigin: a.cfg.MCP.PublicOrigin, RelaySecret: a.cfg.MCP.RelaySecret,
+			RedirectHosts: a.cfg.MCP.RedirectHosts, Log: a.log,
+		}).Mount(mux)
+	}
 
 	mux.Handle("/v1/ws", a.ws)
 	if a.calls != nil {
