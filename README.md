@@ -16,7 +16,7 @@ shared workspaces, per-number permissions and a messaging client.
 - [Publishing public/private releases](docs/publication.md)
 - [Passkeys and encrypted login](docs/passkeys-api.md)
 - [Read-only REST API and OpenAPI](docs/rest-api.md)
-- [Local MCP for authorized archive reading](docs/mcp.md)
+- [MCP for authorized archive reading: local and remote](docs/mcp.md)
 - [Native WhatsApp audio and video calls](docs/whatsapp-calls.md)
 
 The server, API/CLI administration and transport/cryptography SDK are Apache-2.0.
@@ -104,6 +104,7 @@ CREATE DATABASE whatserver2 OWNER whatserver2_app;
 make check           # fmt, vet, layout, tests with -race
 make client-check    # public SDK, interoperability and build
 make mcp-check       # local MCP protocol and decryption checks
+make mcp-http-check  # remote HTTP MCP reader: protocol, OAuth and metadata-only checks
 make cover
 make fuzz
 ```
@@ -175,6 +176,12 @@ keys are never uploaded to the archive server.
 messages and revisions through the read-only REST API. It starts with encrypted
 content locked; plaintext requires explicit local configuration and authorized
 keys. See the [REST contract](docs/rest-api.md) and [MCP setup](docs/mcp.md).
+
+`packages/mcp-http` runs the same reader over Streamable HTTP for remote
+connectors (claude.ai, ChatGPT). It is an OAuth 2.1 resource *and*
+authorization server in its own process, so the Go server never mints tokens.
+It is **metadata-only**: it holds no archive private key and cannot open sealed
+content. Self-hosters can run it as a container beside their installation.
 
 ```
 make client-install
@@ -476,6 +483,13 @@ is.
 
 - **Lose every access path and the archive is gone.** Permanently, for everyone,
   including the operator. That is the trade the design makes.
+
+- **A remote MCP connector still sends metadata to your AI provider.** The
+  hosted endpoint returns who, when and how much: participants, timestamps,
+  counts, and chat names when they are not sealed. It cannot return message
+  content, because it has no key. Assume your assistant's provider sees
+  everything it is shown, and revoke the connection when it is no longer
+  needed; revocation stops future reads, not copies already made.
 
 ## Seeing what a normal client hides
 

@@ -1,9 +1,24 @@
-# Local MCP for authorized archive reads
+# MCP for authorized archive reads
 
 The public [`packages/mcp`](../packages/mcp/README.md) package connects an MCP
 host to a Wappie installation's REST APIs. It provides number, chat, message,
 revision and contact queries, bounded cross-chat lexical search and activity
-counts without depending on the commercial app.
+counts without depending on the commercial app. The companion
+[`packages/mcp-http`](../packages/mcp-http/README.md) serves the same reader
+over Streamable HTTP for remote hosts, in metadata-only mode.
+
+## Three ways to connect
+
+| Tier | Transport | Content | Where it runs |
+| --- | --- | --- | --- |
+| **Local** | stdio (`packages/mcp`) | Metadata, or message text when `allow_plaintext` is enabled in the local configuration | Your computer. Archive private keys never leave it. Unchanged in this release. |
+| **Cloud** | Streamable HTTP (`/mcp` on the hosted API origin) | **Metadata only**: who, when and how much, never the content | A reader process at Wappie Cloud that holds no archive private key. Sealed bodies stay sealed and are reported as `locked`. |
+| **Enterprise** | Streamable HTTP (`packages/mcp-http` container) | Metadata only, as in Cloud | Your infrastructure, beside your own installation, under your own OAuth server and policy. |
+
+The remote tiers share one property that the table cannot overstate: the
+reader is issued a read-only, device-restricted API key with an expiry, never a
+service account or an archive private key, so it cannot open message text even
+if its host is compromised. Metadata still reaches the assistant's provider.
 
 ## Connect an assistant
 
@@ -31,11 +46,35 @@ hosts in order:
    Workspace access and live tool discovery must be verified in your own account.
 2. [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop),
    using the same MCP process and private configuration.
+3. [claude.ai and ChatGPT through the remote connector](../packages/mcp-http/README.md),
+   which needs no tunnel and no always-on computer. Add the installation's
+   `https://<host>/mcp` URL in the assistant; the browser is sent to the console
+   to approve the connection.
 
-This release has no public HTTP MCP endpoint. A Wappie REST address cannot be
-used as a remote MCP URL. The computer running the local connection must remain
-available. A [manual setup](../packages/mcp/README.md#manual-configuration) also
-works with public API/CLI credentials, without the commercial console.
+A Wappie REST address is still not an MCP endpoint: the REST API and the MCP
+endpoint are different services on different paths. Two transports are
+supported. **Local stdio** (`packages/mcp`) keeps decryption keys on your
+computer and requires that computer to stay awake and connected. **Remote
+HTTP** (`packages/mcp-http`, served at `/mcp` behind OAuth 2.1) is
+metadata-only: it runs the same reader over Streamable HTTP, and no archive
+decryption key ever reaches it. A [manual setup](../packages/mcp/README.md#manual-configuration)
+also works with public API/CLI credentials, without the commercial console.
+
+### Approving a remote connection
+
+The assistant redirects the browser to the console with a one-time request id.
+An owner or administrator chooses the numbers, the timezone and an expiry of
+30, 90 or 365 days, and sees the sentence the connection is held to: the
+assistant will see who, when and how much, never the content. On approval the
+console issues a read-only API key restricted to those numbers, seals it to
+the reader's public key in the browser, and hands the reader a proof that the
+same browser approved that same request. The archive server relays the sealed
+bundle as an opaque blob and records the connection; it never sees the key
+inside. A workspace can hold five live connections; each is listed in the
+console's MCP panel and can be revoked there, which revokes its API key in the
+same transaction. Revocation stops future reads; it cannot retract metadata
+already returned. An approval that is not completed within twenty minutes
+expires with its provisional key.
 
 ## Configuration and identity
 

@@ -13,6 +13,18 @@ API version, capabilities and relative HTTP/WebSocket/media paths. Clients must
 reject incompatible versions before authenticating. The first version requires
 `product: wappie`, `api_version: 1` and `external-client.v1`.
 
+### Remote MCP connector
+
+An installation that serves the hosted MCP connector advertises `mcp.remote.v1`
+alongside `external-client.v1`, with `mcp` among its endpoints. Its OAuth
+metadata is unauthenticated at `/.well-known/oauth-protected-resource` and
+`/.well-known/oauth-authorization-server` (with and without the `/mcp` suffix);
+those documents carry no credential and are not covered by
+`WS_BROWSER_ORIGINS`, which governs browser origins only. The console approves
+a connection against the origin named in the reader's descriptor, not against
+its own page origin, so a hosted console can approve connections for a
+compatible external installation.
+
 `WS_BROWSER_ORIGINS` lists exact origins allowed for HTTP, WebSocket and call
 media. Wildcards, userinfo, paths and query strings are rejected. HTTPS is
 required except explicit localhost HTTP origins in development. HTTP preflight
