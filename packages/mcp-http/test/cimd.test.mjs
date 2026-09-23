@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { auth, Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { harness, authorize, authorizeURL, clientProvider, consent, pkce, secretsAbsent, REDIRECT_URI } from './harness.mjs'
+import { harness, authorize, authorizeURL, clientProvider, consent, exchange, pkce, secretsAbsent, REDIRECT_URI } from './harness.mjs'
 import { cimdURL } from '../cimd.mjs'
 
 const CIMD = 'https://claude.ai/.well-known/oauth-client'
@@ -132,4 +132,95 @@ test('with CIMD off the AS does not advertise it, URL client_ids are unknown and
   assert.notEqual(provider.store.client.client_id, CIMD, 'the SDK falls back to registration')
   assert.equal(done.completed.status, 302)
   secretsAbsent(h, { linkSecrets: [done.linkSecret] })
+})
+
+// The document ChatGPT serves for Codex, in the shape it really has: a native
+// app on the user's machine, portless loopback redirects, and a localhost one.
+const CODEX = 'https://chatgpt.com/oauth/codex/client.json'
+const codex = (overrides = {}) => JSON.stringify({ client_id: CODEX, client_uri: 'https://chatgpt.com/codex', application_type: 'native',
+  redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback'], token_endpoint_auth_method: 'none',
+  token_endpoint_auth_methods_supported: ['none'], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], client_name: 'Codex', ...overrides })
+
+test('a native app vouched for by an allowed host gets its code on its own loopback port, and nowhere else', async t => {
+  const h = await harness(t)
+  h.go.cimd.set(CODEX, { body: codex() })
+  const { challenge, verifier } = pkce()
+  const redirectUri = 'http://127.0.0.1:58936/callback'
+  const url = authorizeURL(h, { clientId: CODEX, challenge, redirectUri })
+  const done = await consent(h, url)
+  assert.equal(done.authorize.status, 302, 'the request that ended in invalid_client on the pilot')
+  const record = h.reader.state.clients.get(CODEX)
+  assert.equal(record.loopback, true)
+  assert.equal(record.redirect_host, 'chatgpt.com', 'the host that vouches for the app, which the API allowlist checks')
+  assert.deepEqual(record.redirect_uris, ['http://127.0.0.1/callback'], 'localhost is passed over, not trusted')
+  // The consent card must say where the code really goes.
+  assert.equal(done.descriptor.redirect_local, true)
+  assert.equal(done.descriptor.client_name, 'Codex')
+  assert.equal(done.completed.status, 302)
+  const back = new URL(done.completed.location)
+  assert.equal(back.origin + back.pathname, redirectUri, 'the code goes to the port the app asked for')
+  const code = back.searchParams.get('code')
+  const pair = await exchange(h, { code, clientId: CODEX, verifier, redirectUri })
+  assert.equal(pair.status, 200)
+  assert.equal((await exchange(h, { code, clientId: CODEX, verifier, redirectUri })).status, 400, 'a code is single-use')
+  // RFC 8252 §7.3: any port. Host, path and scheme must still match exactly.
+  assert.equal((await h.request(authorizeURL(h, { clientId: CODEX, challenge, redirectUri: 'http://127.0.0.1:1/callback' }).href.replace(h.publicOrigin, ''))).status, 302)
+  for (const refused of ['http://127.0.0.1:58936/other', 'http://localhost:58936/callback', 'https://127.0.0.1:58936/callback',
+    'http://127.0.0.2:58936/callback', 'http://127.0.0.1:58936/callback?next=x', 'http://[::1]:58936/callback', 'http://user@127.0.0.1:58936/callback']) {
+    const target = authorizeURL(h, { clientId: CODEX, challenge, redirectUri: refused })
+    const answer = await h.request(target.pathname + target.search)
+    assert.equal(answer.status, 400, refused)
+    assert.match(answer.body, /invalid_redirect_uri/, refused)
+  }
+  secretsAbsent(h, { linkSecrets: [done.linkSecret], tokens: [pair.json().access_token, pair.json().refresh_token] })
+})
+
+test('loopback redirects need a vouching document: open registration, mixed lists, ports and localhost alone are refused', async t => {
+  const h = await harness(t)
+  const registered = await h.request('/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ client_name: 'Local app', redirect_uris: ['http://127.0.0.1/callback'], token_endpoint_auth_method: 'none' }) })
+  assert.equal(registered.status, 400, 'nobody vouches for a client that registers itself')
+  assert.match(registered.body, /invalid_redirect_uri/)
+  const { challenge } = pkce()
+  const cases = {
+    'https://chatgpt.com/oauth/codex/mixed.json': ['http://127.0.0.1/callback', 'https://chatgpt.com/callback'],
+    'https://chatgpt.com/oauth/codex/port.json': ['http://127.0.0.1:8080/callback'],
+    'https://chatgpt.com/oauth/codex/localhost.json': ['http://localhost/callback'],
+    'https://chatgpt.com/oauth/codex/elsewhere.json': ['http://127.0.0.1/callback', 'http://evil.example/callback'],
+  }
+  // One address per document: fetching a fourth from the same one is the
+  // fetch budget's 429, which is not what these cases test.
+  for (const [index, [id, uris]] of Object.entries(cases).entries()) {
+    h.go.cimd.set(id, { body: codex({ client_id: id, redirect_uris: uris }) })
+    const target = authorizeURL(h, { clientId: id, challenge, redirectUri: 'http://127.0.0.1:58936/callback' })
+    const answer = await h.request(target.pathname + target.search, { headers: { 'x-forwarded-for': `198.51.100.${10 + index}` } })
+    assert.equal(answer.status, 400, id)
+    assert.match(answer.body, /invalid_client/, id)
+  }
+  assert.equal(h.reader.state.clients.size, 0)
+})
+
+test('a consent whose code never reaches the app frees its slot in Go within minutes', async t => {
+  // Codex waits on its loopback port only so long. If the owner approves after
+  // it gave up, the browser's last hop is refused and the code is never
+  // exchanged — and the connection used to stay active in Go for its whole
+  // lifetime, one of the workspace's five.
+  const h = await harness(t)
+  h.go.cimd.set(CODEX, { body: codex() })
+  const abandoned = await consent(h, authorizeURL(h, { clientId: CODEX, challenge: pkce().challenge, redirectUri: 'http://127.0.0.1:58936/callback' }))
+  assert.equal(abandoned.completed.status, 302)
+  const used = pkce()
+  const kept = await consent(h, authorizeURL(h, { clientId: CODEX, challenge: used.challenge, redirectUri: 'http://127.0.0.1:58937/callback' }))
+  const code = new URL(kept.completed.location).searchParams.get('code')
+  assert.equal((await exchange(h, { code, clientId: CODEX, verifier: used.verifier, redirectUri: 'http://127.0.0.1:58937/callback' })).status, 200)
+  h.clock.advance(4 * 60_000)
+  await h.reader.sweep()
+  assert.equal(h.go.connections.get(abandoned.connectionId).status, 'active', 'a slow exchange is not an abandoned one')
+  h.clock.advance(2 * 60_000)
+  await h.reader.sweep()
+  assert.equal(h.go.connections.get(abandoned.connectionId).status, 'revoked')
+  assert.equal(h.reader.state.connections.has(abandoned.connectionId), false)
+  assert.equal(h.go.connections.get(kept.connectionId).status, 'active', 'an exchanged connection is left alone')
+  assert.equal(h.reader.state.connections.has(kept.connectionId), true)
+  assert.ok(h.logs.some(line => JSON.parse(line).event === 'unclaimed_connection_revoked'))
 })

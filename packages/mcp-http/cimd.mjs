@@ -53,15 +53,15 @@ export function createCIMD(state, { relay, now = Date.now, enabled, hosts }) {
       let document
       try { document = JSON.parse(body.toString('utf8')) } catch { return remember(clientID) }
       if (!document || typeof document !== 'object' || Array.isArray(document) || document.client_id !== clientID) return remember(clientID)
-      let uris, host, name
+      let uris, host, loopback, name
       try {
-        ({ uris, host } = validateRedirectURIs(document.redirect_uris, hosts))
+        ({ uris, host, loopback } = validateRedirectURIs(document.redirect_uris, hosts, { vouchedBy: url.hostname.toLowerCase() }))
         name = validateClientName(document.client_name)
       } catch (error) { if (error instanceof RegistrationError) return remember(clientID); throw error }
       if (!cached && !makeRoom(state, host)) return null
       failed.delete(clientID)
       const record = {
-        client_id: clientID, redirect_uris: uris, client_name: name, redirect_host: host,
+        client_id: clientID, redirect_uris: uris, client_name: name, redirect_host: host, loopback,
         grant_types: ['authorization_code', 'refresh_token'], source: 'cimd', created_at: cached?.created_at ?? now(),
         last_used_at: now(), cimd_fetched_at: now(), authorized_at: cached?.authorized_at,
       }

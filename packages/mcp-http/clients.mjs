@@ -28,19 +28,76 @@ export function redirectHost(value, hosts) {
   return hosts.includes(host) ? host : null
 }
 
-/** Validates a redirect_uris list the way both DCR and CIMD documents require. */
-export function validateRedirectURIs(list, hosts) {
+const loopbackHosts = ['127.0.0.1', '[::1]']
+
+/**
+ * A native app's loopback redirect (RFC 8252 §7.3): plain http to a loopback
+ * IP literal, no userinfo, query or fragment. The app picks a free port when
+ * the flow starts, so the port is not part of the identity: `{ host, path }`,
+ * or null. `localhost` is never one — RFC 8252 §8.3 advises against it,
+ * because a name can be made to resolve elsewhere and an IP literal cannot.
+ */
+export function loopbackRedirect(value) {
+  if (typeof value !== 'string' || value.length > 2048) return null
+  let url
+  try { url = new URL(value) } catch { return null }
+  if (url.protocol !== 'http:' || url.username || url.password || url.search || url.hash) return null
+  return loopbackHosts.includes(url.hostname) ? { host: url.hostname, path: url.pathname } : null
+}
+
+/**
+ * Validates a redirect_uris list the way both DCR and CIMD documents require.
+ *
+ * `vouchedBy` is set only for a CIMD document, and names the allowed host that
+ * served it. Such a document may instead list loopback redirects for a native
+ * app — ChatGPT's Codex does — because its identity is the https document, not
+ * the redirect: the code goes to a listener on the consenting person's own
+ * machine, and PKCE keeps it useless to anything but the app that started the
+ * flow. The client's redirect_host is then the vouching host, which is what
+ * the consent card names and what the API's allowlist checks. `localhost`
+ * entries beside the IP literals are passed over, not fatal. Open registration
+ * never gets loopback: nobody vouches for it.
+ */
+export function validateRedirectURIs(list, hosts, { vouchedBy } = {}) {
   if (!Array.isArray(list) || list.length < 1 || list.length > 5) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must list one to five HTTPS URIs')
   const uris = [], seen = new Set()
-  let host
+  let host, loopback = false, https = false
   for (const value of list) {
     const found = redirectHost(value, hosts)
-    if (!found) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must be HTTPS URIs on an allowed host')
-    if (host && host !== found) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must share one host')
-    host = found
+    if (found) {
+      if (host && host !== found) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must share one host')
+      host = found; https = true
+    } else if (vouchedBy && loopbackRedirect(value) && !new URL(value).port) {
+      loopback = true
+    } else if (vouchedBy && isLocalhost(value)) {
+      continue
+    } else {
+      throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must be HTTPS URIs on an allowed host')
+    }
     if (!seen.has(value)) { seen.add(value); uris.push(value) }
   }
-  return { uris, host }
+  if (loopback && https) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must be either HTTPS or loopback, not both')
+  if (!uris.length) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must name a loopback IP literal, not localhost')
+  return loopback ? { uris, host: vouchedBy, loopback } : { uris, host, loopback }
+}
+function isLocalhost(value) {
+  try { const url = new URL(value); return url.protocol === 'http:' && url.hostname === 'localhost' } catch { return false }
+}
+
+/**
+ * Whether `requested` is one of the client's redirect URIs. Exact, except for
+ * a loopback client, whose registered URIs carry no port: RFC 8252 §7.3 says
+ * any port must be accepted there, and the host and path must still match.
+ */
+export function redirectAllowed(client, requested) {
+  if (typeof requested !== 'string') return false
+  if (client.redirect_uris.includes(requested)) return true
+  if (!client.loopback) return false
+  const asked = loopbackRedirect(requested)
+  return Boolean(asked) && client.redirect_uris.some(registered => {
+    const known = loopbackRedirect(registered)
+    return known && known.host === asked.host && known.path === asked.path
+  })
 }
 
 export function validateClientName(value) {
