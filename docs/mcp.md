@@ -53,19 +53,25 @@ hosts in order:
 
 ### Installing the hosted connector in one step
 
-For Wappie's own hosted connector, `https://api.wappie.thehappie.co/mcp`:
+For Wappie's own hosted connector, `https://api.wappie.thehappie.co/mcp`.
+Every host takes the address as it is — **nothing to install**:
 
-- **Claude** (claude.ai, Desktop, mobile): the console's MCP panel has a
-  **Connect to Claude** button — Claude's prefilled "add custom connector"
-  dialog — so nobody pastes a URL. On Team and Enterprise an owner adds it
-  once for the organisation.
-- **Codex** (ChatGPT desktop app, CLI) and **Claude Code**: install the
-  official plugin from [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins),
-  e.g. `codex plugin marketplace add thehappieco/wappie-plugins`. Its skill
-  tells the assistant what the connection can see and not to read WhatsApp
-  through the screen to get around a locked result.
-- **ChatGPT on the web**: developer mode, then add the URL as a plugin, until
-  there is a directory listing.
+- **Claude** (claude.ai, Desktop, mobile): the console's MCP panel and the
+  Wappie page have a **Connect to Claude** button, Claude's prefilled "add
+  custom connector" dialog; or paste the address in Settings → Connectors. On
+  Team and Enterprise an owner adds it once for the organisation.
+- **Codex** (ChatGPT desktop app or CLI): Settings → MCP servers → Add server →
+  Streamable HTTP → the address, or `codex mcp add wappie --url
+  https://api.wappie.thehappie.co/mcp`. Codex opens the consent page itself.
+- **Claude Code**: `claude mcp add --transport http --scope user wappie
+  https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
+- **ChatGPT on the web**: turn on developer mode, then add the address as a
+  plugin — that entry is all ChatGPT needs; there is no file to build.
+
+The plugin at [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins)
+is optional. It adds a skill that tells Codex or Claude Code what the
+connection can see, and not to read WhatsApp through the screen to get around a
+locked result.
 
 Native apps such as Codex and Claude Code identify themselves with a Client ID
 Metadata Document on an allowed host and take the code on a loopback port
