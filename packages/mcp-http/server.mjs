@@ -35,6 +35,9 @@ function origin(value, code) {
   return url.origin
 }
 
+/** How long a consented connection may wait for its code to be exchanged; the code itself lives a minute. */
+export const UNCLAIMED_CONNECTION_MS = 5 * 60_000
+
 /** Reads and validates the WAPPIE_MCP_* environment; the relay secret file is read separately. */
 export function readEnv(env = process.env) {
   const listen = env.WAPPIE_MCP_LISTEN || '127.0.0.1:18093'
@@ -133,7 +136,20 @@ export async function startReader(options = {}) {
   async function sweep() {
     as.sweepPending()
     let changed = tokens.sweep() | clients.sweep()
-    for (const [id, connection] of state.connections) if (Date.parse(connection.expires_at) <= now()) { state.wipeConnection(id); changed = 1 }
+    for (const [id, connection] of state.connections) {
+      if (Date.parse(connection.expires_at) <= now()) { state.wipeConnection(id); changed = 1; continue }
+      // A consent whose code was never exchanged leaves a connection no token
+      // will ever reach: a native app's loopback listener had closed by the
+      // time the owner approved, or the browser never made the last hop. Go
+      // counts it against the workspace's five live connections for its whole
+      // lifetime, so it is revoked there first and forgotten here only once Go
+      // agrees; a failed revoke is retried on the next sweep. The exchange is
+      // what sets family_id, so its absence is the whole test.
+      if (!connection.family_id && now() - connection.created_at > UNCLAIMED_CONNECTION_MS && await relay.revoke(id)) {
+        state.wipeConnection(id); changed = 1
+        log.event('unclaimed_connection_revoked')
+      }
+    }
     if (changed) await state.save()
   }
   const timer = setInterval(() => { sweep().catch(() => {}) }, 30_000)

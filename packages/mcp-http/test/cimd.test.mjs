@@ -199,3 +199,28 @@ test('loopback redirects need a vouching document: open registration, mixed list
   }
   assert.equal(h.reader.state.clients.size, 0)
 })
+
+test('a consent whose code never reaches the app frees its slot in Go within minutes', async t => {
+  // Codex waits on its loopback port only so long. If the owner approves after
+  // it gave up, the browser's last hop is refused and the code is never
+  // exchanged — and the connection used to stay active in Go for its whole
+  // lifetime, one of the workspace's five.
+  const h = await harness(t)
+  h.go.cimd.set(CODEX, { body: codex() })
+  const abandoned = await consent(h, authorizeURL(h, { clientId: CODEX, challenge: pkce().challenge, redirectUri: 'http://127.0.0.1:58936/callback' }))
+  assert.equal(abandoned.completed.status, 302)
+  const used = pkce()
+  const kept = await consent(h, authorizeURL(h, { clientId: CODEX, challenge: used.challenge, redirectUri: 'http://127.0.0.1:58937/callback' }))
+  const code = new URL(kept.completed.location).searchParams.get('code')
+  assert.equal((await exchange(h, { code, clientId: CODEX, verifier: used.verifier, redirectUri: 'http://127.0.0.1:58937/callback' })).status, 200)
+  h.clock.advance(4 * 60_000)
+  await h.reader.sweep()
+  assert.equal(h.go.connections.get(abandoned.connectionId).status, 'active', 'a slow exchange is not an abandoned one')
+  h.clock.advance(2 * 60_000)
+  await h.reader.sweep()
+  assert.equal(h.go.connections.get(abandoned.connectionId).status, 'revoked')
+  assert.equal(h.reader.state.connections.has(abandoned.connectionId), false)
+  assert.equal(h.go.connections.get(kept.connectionId).status, 'active', 'an exchanged connection is left alone')
+  assert.equal(h.reader.state.connections.has(kept.connectionId), true)
+  assert.ok(h.logs.some(line => JSON.parse(line).event === 'unclaimed_connection_revoked'))
+})
