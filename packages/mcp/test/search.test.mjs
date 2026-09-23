@@ -9,6 +9,8 @@ import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { bytes, hpke, seal } from '@whatserver2/client'
 import { sealContactPack } from '@whatserver2/client/crypto/contactPack'
+import { createReader } from '../reader.mjs'
+import { validateConfig } from '../config.mjs'
 const vector = JSON.parse(await readFile(new URL('../../../internal/crypto/seal/testdata/vectors.json', import.meta.url), 'utf8'))
 const workspace = '018f3a2b-2222-7000-8000-00000000bbbb'
 const user = '018f3a2b-2222-7000-8000-00000000aaaa'
@@ -102,7 +104,7 @@ async function fixture() {
   await privateFile(join(directory, 'contacts.enc.json'), JSON.stringify(pack))
   account.privateKey.fill(0)
   const clients = []
-  return { state, pack, directory,
+  return { state, pack, directory, server,
     async connect(extra = {}) {
       const config = { server, workspace, token_file: './token', service_key_file: './key', service_user_id: user, allow_plaintext: true,
         device_ids: [device], contacts_file: './contacts.enc.json', timezone: 'America/Sao_Paulo', max_text_chars: 128, ...extra }
@@ -223,5 +225,21 @@ test('contact ciphertext moved to another scope is rejected without leaking snap
     assert.equal(result.isError, true)
     assert.match(result.content[0].text, /invalid_contact_pack/)
     assert.equal(JSON.stringify(result).includes('Personal'), false)
+  } finally { await f.close() }
+})
+test('hosted search hits cite the message, never the reader\'s own archive address', async () => {
+  // A hosted reader reaches the API on the host's loopback; that address used
+  // to travel to the assistant in every hit's source.server and source.url.
+  const f = await fixture()
+  try {
+    const config = validateConfig({ server: f.server, workspace, device_ids: [device], credential_source: 'provided', timezone: 'America/Sao_Paulo' })
+    const reader = await createReader(config, { token: async () => ({ token, kind: 'api_key' }) })
+    const result = await reader.searchMessages({ ...interval })
+    assert.ok(result.messages.length > 0)
+    for (const hit of result.messages) assert.deepEqual(Object.keys(hit.source).sort(), ['chat_key', 'device_id', 'message_uid', 'workspace_id'])
+    assert.equal(JSON.stringify(result).includes(f.server), false, 'the archive address reached the result')
+    // A local install keeps linking to the server its user reads the archive at.
+    const local = parsed(await call(await f.connect({ allow_plaintext: false, service_key_file: undefined, service_user_id: undefined, contacts_file: undefined }), 'search_messages', interval))
+    assert.equal(local.messages[0].source.server, f.server)
   } finally { await f.close() }
 })
