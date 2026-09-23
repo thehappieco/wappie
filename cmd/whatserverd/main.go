@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
@@ -625,8 +626,12 @@ func (a *app) probes(mux *http.ServeMux) {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/discovery", discoveryFor(a.cfg.MCP.Enabled))
-	mux.HandleFunc("GET /.well-known/wappie", discoveryFor(a.cfg.MCP.Enabled))
+	mcpServer := ""
+	if a.cfg.MCP.Enabled {
+		mcpServer = strings.TrimSuffix(a.cfg.MCP.PublicOrigin, "/") + "/mcp"
+	}
+	mux.HandleFunc("GET /v1/discovery", discoveryFor(mcpServer))
+	mux.HandleFunc("GET /.well-known/wappie", discoveryFor(mcpServer))
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
@@ -669,7 +674,7 @@ func (a *app) routes() http.Handler {
 				PerIP: ratelimit.New(60, 20), PerSubject: ratelimit.New(30, 10), Proxies: a.cfg.TrustedProxies,
 			},
 			PublicOrigin: a.cfg.MCP.PublicOrigin, RelaySecret: a.cfg.MCP.RelaySecret,
-			RedirectHosts: a.cfg.MCP.RedirectHosts, Log: a.log,
+			RedirectHosts: a.cfg.MCP.RedirectHosts, Log: a.log, OpenAIAppsChallenge: a.cfg.MCP.OpenAIAppsChallenge,
 		}).Mount(mux)
 	}
 

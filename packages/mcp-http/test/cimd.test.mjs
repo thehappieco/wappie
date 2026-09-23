@@ -152,7 +152,7 @@ test('a native app vouched for by an allowed host gets its code on its own loopb
   const record = h.reader.state.clients.get(CODEX)
   assert.equal(record.loopback, true)
   assert.equal(record.redirect_host, 'chatgpt.com', 'the host that vouches for the app, which the API allowlist checks')
-  assert.deepEqual(record.redirect_uris, ['http://127.0.0.1/callback'], 'localhost is passed over, not trusted')
+  assert.deepEqual(record.redirect_uris, ['http://127.0.0.1/callback', 'http://localhost/callback'])
   // The consent card must say where the code really goes.
   assert.equal(done.descriptor.redirect_local, true)
   assert.equal(done.descriptor.client_name, 'Codex')
@@ -165,7 +165,8 @@ test('a native app vouched for by an allowed host gets its code on its own loopb
   assert.equal((await exchange(h, { code, clientId: CODEX, verifier, redirectUri })).status, 400, 'a code is single-use')
   // RFC 8252 §7.3: any port. Host, path and scheme must still match exactly.
   assert.equal((await h.request(authorizeURL(h, { clientId: CODEX, challenge, redirectUri: 'http://127.0.0.1:1/callback' }).href.replace(h.publicOrigin, ''))).status, 302)
-  for (const refused of ['http://127.0.0.1:58936/other', 'http://localhost:58936/callback', 'https://127.0.0.1:58936/callback',
+  assert.equal((await h.request(authorizeURL(h, { clientId: CODEX, challenge, redirectUri: 'http://localhost:58936/callback' }).href.replace(h.publicOrigin, ''))).status, 302, 'a declared localhost redirect')
+  for (const refused of ['http://127.0.0.1:58936/other', 'http://localhost:58936/other', 'https://127.0.0.1:58936/callback', 'https://localhost:58936/callback',
     'http://127.0.0.2:58936/callback', 'http://127.0.0.1:58936/callback?next=x', 'http://[::1]:58936/callback', 'http://user@127.0.0.1:58936/callback']) {
     const target = authorizeURL(h, { clientId: CODEX, challenge, redirectUri: refused })
     const answer = await h.request(target.pathname + target.search)
@@ -175,7 +176,7 @@ test('a native app vouched for by an allowed host gets its code on its own loopb
   secretsAbsent(h, { linkSecrets: [done.linkSecret], tokens: [pair.json().access_token, pair.json().refresh_token] })
 })
 
-test('loopback redirects need a vouching document: open registration, mixed lists, ports and localhost alone are refused', async t => {
+test('loopback redirects need a vouching document: open registration, mixed lists and ports are refused', async t => {
   const h = await harness(t)
   const registered = await h.request('/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ client_name: 'Local app', redirect_uris: ['http://127.0.0.1/callback'], token_endpoint_auth_method: 'none' }) })
@@ -185,7 +186,6 @@ test('loopback redirects need a vouching document: open registration, mixed list
   const cases = {
     'https://chatgpt.com/oauth/codex/mixed.json': ['http://127.0.0.1/callback', 'https://chatgpt.com/callback'],
     'https://chatgpt.com/oauth/codex/port.json': ['http://127.0.0.1:8080/callback'],
-    'https://chatgpt.com/oauth/codex/localhost.json': ['http://localhost/callback'],
     'https://chatgpt.com/oauth/codex/elsewhere.json': ['http://127.0.0.1/callback', 'http://evil.example/callback'],
   }
   // One address per document: fetching a fourth from the same one is the
@@ -223,4 +223,22 @@ test('a consent whose code never reaches the app frees its slot in Go within min
   assert.equal(h.go.connections.get(kept.connectionId).status, 'active', 'an exchanged connection is left alone')
   assert.equal(h.reader.state.connections.has(kept.connectionId), true)
   assert.ok(h.logs.some(line => JSON.parse(line).event === 'unclaimed_connection_revoked'))
+})
+
+test('Claude Code, which asks for localhost, gets its code on the port it chose', async t => {
+  // The document claude.ai serves for Claude Code, as fetched on 2026-09-23.
+  const id = 'https://claude.ai/oauth/claude-code-client-metadata'
+  const h = await harness(t)
+  h.go.cimd.set(id, { body: JSON.stringify({ client_id: id, client_name: 'Claude Code', client_uri: 'https://claude.ai',
+    redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'], grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'], token_endpoint_auth_method: 'none' }) })
+  const { challenge, verifier } = pkce()
+  const redirectUri = 'http://localhost:54321/callback'
+  const done = await consent(h, authorizeURL(h, { clientId: id, challenge, redirectUri }))
+  assert.equal(done.authorize.status, 302)
+  assert.equal(done.descriptor.redirect_host, 'claude.ai')
+  assert.equal(done.descriptor.redirect_local, true)
+  const back = new URL(done.completed.location)
+  assert.equal(back.origin + back.pathname, redirectUri)
+  assert.equal((await exchange(h, { code: back.searchParams.get('code'), clientId: id, verifier, redirectUri })).status, 200)
 })

@@ -35,6 +35,11 @@ type MCP struct {
 	// behalf. The reader carries the same list under its own name; the
 	// runbook says they must match.
 	RedirectHosts []string
+	// OpenAIAppsChallenge is the domain-verification token OpenAI's plugin
+	// portal issues for the MCP server's origin, served verbatim at
+	// /.well-known/openai-apps-challenge. Empty until a submission asks for
+	// one; the path answers 404 until then.
+	OpenAIAppsChallenge string
 }
 
 // defaultRedirectHosts are the assistants the pilot serves.
@@ -42,10 +47,11 @@ const defaultRedirectHosts = "claude.ai,chatgpt.com"
 
 func loadMCP(errs *[]error) MCP {
 	m := MCP{
-		Enabled:      boolean("WS_MCP_ENABLED", false, errs),
-		ReaderURL:    strings.TrimSpace(os.Getenv("WS_MCP_READER_URL")),
-		RelaySecret:  os.Getenv("WS_MCP_RELAY_SECRET"),
-		PublicOrigin: strings.TrimSpace(os.Getenv("WS_MCP_PUBLIC_ORIGIN")),
+		Enabled:             boolean("WS_MCP_ENABLED", false, errs),
+		ReaderURL:           strings.TrimSpace(os.Getenv("WS_MCP_READER_URL")),
+		RelaySecret:         os.Getenv("WS_MCP_RELAY_SECRET"),
+		PublicOrigin:        strings.TrimSpace(os.Getenv("WS_MCP_PUBLIC_ORIGIN")),
+		OpenAIAppsChallenge: strings.TrimSpace(os.Getenv("WS_MCP_OPENAI_APPS_CHALLENGE")),
 	}
 	for _, host := range strings.Split(str("WS_MCP_REDIRECT_HOSTS", defaultRedirectHosts), ",") {
 		if host = strings.ToLower(strings.TrimSpace(host)); host != "" {
@@ -79,7 +85,24 @@ func (m MCP) Validate(prod bool) error {
 			errs = append(errs, fmt.Errorf("WS_MCP_REDIRECT_HOSTS: %q is not a bare host name", host))
 		}
 	}
+	if !validChallenge(m.OpenAIAppsChallenge) {
+		errs = append(errs, errors.New("WS_MCP_OPENAI_APPS_CHALLENGE must be up to 256 printable characters without spaces"))
+	}
 	return errors.Join(errs...)
+}
+
+// validChallenge keeps the token to something a response body can carry
+// verbatim: printable ASCII, no whitespace, bounded. Empty is allowed.
+func validChallenge(token string) bool {
+	if len(token) > 256 {
+		return false
+	}
+	for _, r := range token {
+		if r <= ' ' || r > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // validReaderURL accepts http://127.0.0.1:18093 and its kin, nothing else.

@@ -162,3 +162,23 @@ func TestMCPValidateDirect(t *testing.T) {
 		t.Errorf("String = %q", got)
 	}
 }
+
+// The verification token is served as a response body verbatim, so it is
+// held to something that can be: printable, no whitespace, bounded.
+func TestMCPOpenAIAppsChallenge(t *testing.T) {
+	mcpEnv(t)
+	t.Setenv("WS_MCP_OPENAI_APPS_CHALLENGE", "  oa-verify-3f9c2e  ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MCP.OpenAIAppsChallenge != "oa-verify-3f9c2e" {
+		t.Errorf("token = %q, want it trimmed", cfg.MCP.OpenAIAppsChallenge)
+	}
+	for _, bad := range []string{"two words", strings.Repeat("x", 257), "tab\there"} {
+		t.Setenv("WS_MCP_OPENAI_APPS_CHALLENGE", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "WS_MCP_OPENAI_APPS_CHALLENGE") {
+			t.Errorf("%q: err = %v, want a refusal naming the variable", bad, err)
+		}
+	}
+}

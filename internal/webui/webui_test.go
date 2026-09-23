@@ -400,3 +400,23 @@ func TestExternalDocumentCSPIsOptInAndExact(t *testing.T) {
 		}
 	}
 }
+
+// OpenID and domain-verification probes must not get the console document:
+// a 200 with HTML tells a client the metadata exists.
+func TestWellKnownPathsAreNotPages(t *testing.T) {
+	h, err := webui.New(build(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"/.well-known/openid-configuration", "/.well-known/openai-apps-challenge", "/.well-known/anything/else"} {
+		resp := get(t, h, target)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: status %d, want 404", target, resp.StatusCode)
+		}
+		if strings.Contains(string(body), "<html") || strings.Contains(string(body), "<!doctype") {
+			t.Errorf("%s: answered with the console document", target)
+		}
+	}
+}

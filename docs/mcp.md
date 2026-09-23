@@ -51,6 +51,33 @@ hosts in order:
    `https://<host>/mcp` URL in the assistant; the browser is sent to the console
    to approve the connection.
 
+### Installing the hosted connector in one step
+
+For Wappie's own hosted connector, `https://api.wappie.thehappie.co/mcp`:
+
+- **Claude** (claude.ai, Desktop, mobile): the console's MCP panel has a
+  **Connect to Claude** button — Claude's prefilled "add custom connector"
+  dialog — so nobody pastes a URL. On Team and Enterprise an owner adds it
+  once for the organisation.
+- **Codex** (ChatGPT desktop app, CLI) and **Claude Code**: install the
+  official plugin from [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins),
+  e.g. `codex plugin marketplace add thehappieco/wappie-plugins`. Its skill
+  tells the assistant what the connection can see and not to read WhatsApp
+  through the screen to get around a locked result.
+- **ChatGPT on the web**: developer mode, then add the URL as a plugin, until
+  there is a directory listing.
+
+Native apps such as Codex and Claude Code identify themselves with a Client ID
+Metadata Document on an allowed host and take the code on a loopback port
+(RFC 8252); open registration never gets loopback redirects.
+
+The server advertises the connector's address in `/v1/discovery` as
+`endpoints.mcp_server`, because the console runs on another origin than the
+connector and cannot work it out. `WS_MCP_OPENAI_APPS_CHALLENGE` serves the
+token OpenAI's plugin portal issues for domain verification at
+`/.well-known/openai-apps-challenge`; unset, the path is a 404 like every other
+unknown `/.well-known` path.
+
 A Wappie REST address is still not an MCP endpoint: the REST API and the MCP
 endpoint are different services on different paths. Two transports are
 supported. **Local stdio** (`packages/mcp`) keeps decryption keys on your

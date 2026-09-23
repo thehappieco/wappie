@@ -28,14 +28,21 @@ export function redirectHost(value, hosts) {
   return hosts.includes(host) ? host : null
 }
 
-const loopbackHosts = ['127.0.0.1', '[::1]']
+const loopbackHosts = ['127.0.0.1', '[::1]', 'localhost']
 
 /**
  * A native app's loopback redirect (RFC 8252 §7.3): plain http to a loopback
- * IP literal, no userinfo, query or fragment. The app picks a free port when
- * the flow starts, so the port is not part of the identity: `{ host, path }`,
- * or null. `localhost` is never one — RFC 8252 §8.3 advises against it,
- * because a name can be made to resolve elsewhere and an IP literal cannot.
+ * address, no userinfo, query or fragment. The app picks a free port when the
+ * flow starts, so the port is not part of the identity: `{ host, path }`, or
+ * null.
+ *
+ * `localhost` counts. RFC 8252 §8.3 advises clients to prefer an IP literal,
+ * because a name can be made to resolve elsewhere; but Claude Code asks for
+ * http://localhost:<port>/callback, and an authorization server that refuses
+ * it simply locks that client out. What is admitted is only what a vouching
+ * document declares, browsers resolve localhost to loopback without asking
+ * DNS, and a machine whose resolver sends it elsewhere is already compromised
+ * where the code lands.
  */
 export function loopbackRedirect(value) {
   if (typeof value !== 'string' || value.length > 2048) return null
@@ -54,9 +61,8 @@ export function loopbackRedirect(value) {
  * the redirect: the code goes to a listener on the consenting person's own
  * machine, and PKCE keeps it useless to anything but the app that started the
  * flow. The client's redirect_host is then the vouching host, which is what
- * the consent card names and what the API's allowlist checks. `localhost`
- * entries beside the IP literals are passed over, not fatal. Open registration
- * never gets loopback: nobody vouches for it.
+ * the consent card names and what the API's allowlist checks. Open
+ * registration never gets loopback: nobody vouches for it.
  */
 export function validateRedirectURIs(list, hosts, { vouchedBy } = {}) {
   if (!Array.isArray(list) || list.length < 1 || list.length > 5) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must list one to five HTTPS URIs')
@@ -69,19 +75,13 @@ export function validateRedirectURIs(list, hosts, { vouchedBy } = {}) {
       host = found; https = true
     } else if (vouchedBy && loopbackRedirect(value) && !new URL(value).port) {
       loopback = true
-    } else if (vouchedBy && isLocalhost(value)) {
-      continue
     } else {
       throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must be HTTPS URIs on an allowed host')
     }
     if (!seen.has(value)) { seen.add(value); uris.push(value) }
   }
   if (loopback && https) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must be either HTTPS or loopback, not both')
-  if (!uris.length) throw new RegistrationError('invalid_redirect_uri', 'redirect_uris must name a loopback IP literal, not localhost')
   return loopback ? { uris, host: vouchedBy, loopback } : { uris, host, loopback }
-}
-function isLocalhost(value) {
-  try { const url = new URL(value); return url.protocol === 'http:' && url.hostname === 'localhost' } catch { return false }
 }
 
 /**

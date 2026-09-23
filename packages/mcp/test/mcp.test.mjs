@@ -16,6 +16,8 @@ test('stdio initializes and lists eight bounded read-only tools; locked metadata
     for (const tool of listing.tools) {
       assert.equal(tool.annotations.readOnlyHint, true)
       assert.equal(tool.annotations.destructiveHint, false)
+      assert.equal(tool.annotations.openWorldHint, false, 'one bounded, private archive is a closed domain')
+      assert.ok(tool.title && tool.annotations.title === tool.title, `${tool.name} has no title`)
       assert.equal(tool.inputSchema.additionalProperties, false)
     }
     const numbers = await call(client, 'list_numbers')

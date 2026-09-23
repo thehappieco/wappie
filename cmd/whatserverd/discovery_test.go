@@ -51,8 +51,12 @@ func TestDiscoveryAdvertisesContactPagesAndDeviceScans(t *testing.T) {
 // would fail at the consent, which is the wrong moment.
 func TestDiscoveryAdvertisesRemoteMCP(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
+		server := ""
+		if enabled {
+			server = "https://api.example.test/mcp"
+		}
 		w := httptest.NewRecorder()
-		discoveryFor(enabled)(w, httptest.NewRequest("GET", "/v1/discovery", nil))
+		discoveryFor(server)(w, httptest.NewRequest("GET", "/v1/discovery", nil))
 		var doc struct {
 			Capabilities []string          `json:"capabilities"`
 			Endpoints    map[string]string `json:"endpoints"`
@@ -66,6 +70,11 @@ func TestDiscoveryAdvertisesRemoteMCP(t *testing.T) {
 		}
 		if enabled && doc.Endpoints["mcp"] != "/v1/mcp" {
 			t.Fatalf("mcp endpoint = %q", doc.Endpoints["mcp"])
+		}
+		// The console cannot derive the connector's address from its own
+		// origin, so the server names it.
+		if got, has := doc.Endpoints["mcp_server"]; has != enabled || (enabled && got != "https://api.example.test/mcp") {
+			t.Fatalf("enabled=%v: mcp_server = %q", enabled, got)
 		}
 		// Everything a client relied on before is still there.
 		if !slices.Contains(doc.Capabilities, "archive.rest.v1") || doc.Endpoints["websocket"] != "/v1/ws" {
