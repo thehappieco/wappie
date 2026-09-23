@@ -14,18 +14,26 @@ var BuildVersion = "development"
 // use discoveryFor with it; this form serves the tests and any caller that
 // has no configuration in hand.
 func discovery(w http.ResponseWriter, r *http.Request) {
-	discoveryFor(false)(w, r)
+	discoveryFor("")(w, r)
 }
 
 // discoveryFor describes the protocol. The hosted assistant connector is
 // advertised only when it is mounted, so a console never offers a remote
 // connection this installation cannot record.
-func discoveryFor(remoteMCP bool) http.HandlerFunc {
+//
+// mcpServer is the connector's absolute address, <public origin>/mcp, or ""
+// when it is not mounted. It is advertised as endpoints.mcp_server because the
+// console runs on another origin than the connector (app. against api.) and
+// cannot work out the address an assistant must be given; "mcp" stays the
+// path of the consent API on this server.
+func discoveryFor(mcpServer string) http.HandlerFunc {
+	remoteMCP := mcpServer != ""
 	capabilities := []string{"archive.sealed.v1", "archive.rest.v1", "archive.contacts.v1", "archive.scan.v1", "apikeys.device-scope.v1", "workspaces.v1", "auth.password", "external-client.v1"}
 	endpoints := map[string]string{"websocket": "/v1/ws", "archive_rest": "/v1", "openapi": "/v1/openapi.json", "auth": "/v1/auth", "media": "/v1/media", "upload": "/v1/upload", "calls_media": "/v1/calls/media"}
 	if remoteMCP {
 		capabilities = append(capabilities, "mcp.remote.v1")
 		endpoints["mcp"] = "/v1/mcp"
+		endpoints["mcp_server"] = mcpServer
 	}
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

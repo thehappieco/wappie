@@ -18,7 +18,19 @@ const filters = { chat_key: identity.optional(), sender_keys: z.array(identity).
   direction: z.enum(['incoming', 'outgoing']).optional(), type: z.string().min(1).max(64).regex(/^[a-z_]+$/).optional(),
   has_attachment: z.boolean().optional(),
 }
-const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+/**
+ * Every tool reads one bounded archive — the authorized numbers of one
+ * workspace — and nothing outside it, so the domain is closed: openWorldHint
+ * is false. MCP defines true as "may interact with an open world of external
+ * entities", and directory reviews read a wrong hint as a mismatch.
+ */
+const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+/** The names hosts show beside each tool; directory reviews flag a tool without one. */
+const titles = {
+  list_numbers: 'List authorized numbers', list_chats: 'List chats', list_messages: 'List messages', get_message: 'Get message',
+  list_revisions: 'List message revisions', resolve_contact: 'Resolve contact', search_messages: 'Search messages',
+  activity_summary: 'Summarize activity',
+}
 /** `provider` is handed to every reader; see createReader for its shape. */
 export function createServer(config, provider) {
   /**
@@ -47,7 +59,7 @@ export function createServer(config, provider) {
       : 'Check the session, permissions and local configuration.'
   }
   function tool(name, description, schema, method) {
-    server.registerTool(name, { description, inputSchema: schema, annotations }, async input => {
+    server.registerTool(name, { title: titles[name], description, inputSchema: schema, annotations: { ...annotations, title: titles[name] } }, async input => {
       try {
         const reader = await createReader(config, provider)
         const data = await reader[method](input)

@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -68,6 +69,9 @@ type Handler struct {
 	// hand in one that answers locally.
 	CIMDTransport http.RoundTripper
 	Log           *slog.Logger
+	// OpenAIAppsChallenge is served at /.well-known/openai-apps-challenge for
+	// OpenAI's plugin portal to verify the domain; empty means 404.
+	OpenAIAppsChallenge string
 }
 
 // Mount registers the routes on a mux.
@@ -80,6 +84,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/activate", h.internal(h.activate))
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/revoke", h.internal(h.revoke))
 	mux.HandleFunc("GET /v1/mcp/internal/cimd", h.internal(h.cimd))
+	mux.HandleFunc("GET /.well-known/openai-apps-challenge", h.openAIChallenge)
 }
 
 func (h *Handler) log() *slog.Logger {
@@ -669,4 +674,19 @@ func send(w http.ResponseWriter, status int, body any) {
 
 func fail(w http.ResponseWriter, status int, code, message string) {
 	send(w, status, wireError{Code: code, Message: message})
+}
+
+// openAIChallenge answers OpenAI's domain verification with the token and
+// nothing else, as the portal requires; until one is configured the path
+// does not exist.
+func (h *Handler) openAIChallenge(w http.ResponseWriter, _ *http.Request) {
+	if h.OpenAIAppsChallenge == "" {
+		http.NotFound(w, nil)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	//nolint:errcheck // the client hung up; there is nothing left to say to it
+	_, _ = io.WriteString(w, h.OpenAIAppsChallenge)
 }

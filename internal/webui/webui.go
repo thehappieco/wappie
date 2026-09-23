@@ -99,6 +99,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clean := path.Clean("/" + r.URL.Path)
+	// Nothing under /.well-known is a page. Answering one with the console
+	// document tells a client probing for OpenID or verification metadata
+	// that it exists, with HTML where it expected JSON or a token.
+	if strings.HasPrefix(clean, "/.well-known/") {
+		h.headers(w, clean, r.Host, "")
+		http.NotFound(w, r)
+		return
+	}
 	if clean == sessionBridgePath {
 		// This exception must never turn an SPA fallback or another host's
 		// application page into a frameable document.

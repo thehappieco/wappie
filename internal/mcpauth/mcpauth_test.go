@@ -1066,3 +1066,29 @@ func TestRelayClient(t *testing.T) {
 		t.Fatalf("closed port: %v", err)
 	}
 }
+
+// OpenAI's portal reads the whole response body as the token; until a
+// submission issues one the path does not exist. Needs no database.
+func TestOpenAIAppsChallenge(t *testing.T) {
+	for _, tc := range []struct {
+		token  string
+		status int
+	}{{"", http.StatusNotFound}, {"oa-verify-3f9c2e", http.StatusOK}} {
+		mux := http.NewServeMux()
+		(&mcpauth.Handler{OpenAIAppsChallenge: tc.token}).Mount(mux)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.well-known/openai-apps-challenge", nil))
+		if rec.Code != tc.status {
+			t.Fatalf("token %q: status %d, want %d", tc.token, rec.Code, tc.status)
+		}
+		if tc.token == "" {
+			continue
+		}
+		if got := rec.Body.String(); got != tc.token {
+			t.Errorf("body = %q, want exactly the token", got)
+		}
+		if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+			t.Errorf("Content-Type = %q", got)
+		}
+	}
+}
