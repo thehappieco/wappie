@@ -31,7 +31,7 @@ connection.close()
 ```
 
 Subpath exports include `api/auth`, `api/rest`, `api/passkeys`, `api/media`, `api/upload`,
-`api/opener`, `api/protocol`, and `crypto/{bytes,hpke,seal,account,passkey,wamedia}`.
+`api/opener`, `api/protocol`, and `crypto/{bytes,hpke,seal,account,passkey,wamedia,attestation}`.
 Build output includes types and browser KDF worker source. Applications may call
 `setMessageResolver` from `messages` to translate diagnostics. Error codes and
 server diagnostic details remain available without any UI framework.
