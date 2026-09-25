@@ -43,7 +43,12 @@ async function form(request) {
   return params
 }
 
-export function createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL, resource, pendingTTLMs }) {
+/**
+ * `newRecipient`, when given, mints a key for every pending request (the
+ * enclave: the key the console seals to is the one the attestation names, and
+ * it dies with the request). Without it every request shares the reader's key.
+ */
+export function createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL, resource, pendingTTLMs, newRecipient }) {
   const consoleOrigin = new URL(consoleURL).origin
   const tooMany = (meta, retryAfter) => { meta.code = 'rate_limited'; return oauthError(429, 'temporarily_unavailable', 'too many requests', { 'Retry-After': String(retryAfter) }) }
   function expirePending(id, pending) {
@@ -134,6 +139,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (stateParam !== null && (stateParam.length === 0 || stateParam.length > MAX_STATE_CHARS)) return fail('invalid_request')
       if (!makeRoom()) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests') }
       const id = randomBytes(16).toString('base64url')
+      const recipient = newRecipient ? await newRecipient() : undefined
       state.pending.set(id, {
         id, client_id: client.client_id, client_name: client.client_name, redirect_uri: redirectURI, redirect_host: client.redirect_host,
         // The console tells the person where the code goes; for a native app
@@ -141,6 +147,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
         redirect_local: client.loopback === true,
         state: stateParam ?? undefined, code_challenge: challenge, resource, scope: SCOPE, ip,
         created_at: now(), expires_at: now() + pendingTTLMs, proof_attempts: 0,
+        ...(recipient ? { recipient, prepares: 0 } : {}),
       })
       const location = new URL(consoleURL)
       location.searchParams.set('mcp_connect', id)

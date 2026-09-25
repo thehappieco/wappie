@@ -3,13 +3,20 @@
 // browser ever calls it), the consent completion demands the console's Origin
 // as its CSRF proof, and the server-to-server OAuth endpoints never look at
 // Origin at all. The internal routes have their own guard.
+//
+// In the enclave the router serves two listeners (`info.listener`): the public
+// one never reaches /internal, the internal one reaches nothing else, and each
+// demands its exact Host. The PROXY v2 source is the client address there, so
+// X-Forwarded-For is never consulted.
 import { createMcpHandler, hostHeaderValidationResponse, requireBearerAuth } from '@whatserver2/mcp/sdk'
 import { createServer } from '@whatserver2/mcp'
+import { AttestationError, decodeNonce } from './attestation.mjs'
 import { clientIP, ipKey } from './limits.mjs'
 import { configFor, providerFor } from './provider.mjs'
 
 export const BODY_LIMITS = { mcp: 1024 * 1024, link: 96 * 1024, as: 16 * 1024 }
 export const MCP_PER_MINUTE = 60
+export const ATTESTATION_PER_MINUTE = 10
 
 /** The body cap for a request, decided before any byte is read. */
 export function bodyLimitFor(path) {
@@ -20,8 +27,14 @@ export function bodyLimitFor(path) {
 
 const rpcError = (status, message, extra = {}) => Response.json({ jsonrpc: '2.0', error: { code: -32000, message }, id: null }, { status, headers: { 'Cache-Control': 'no-store', ...extra } })
 const notFound = () => Response.json({ code: 'not_found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } })
+const refuse = (status, code) => Response.json({ code }, { status, headers: { 'Cache-Control': 'no-store' } })
 
-export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost }) {
+/**
+ * `listenerHosts` ({public, internal}) turns on the enclave's two-listener
+ * mode with exact Host checks; `attestation({nonce})` adds the public
+ * `GET /attestation` route; `trustForwarded` false ignores X-Forwarded-For.
+ */
+export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true }) {
   const gate = requireBearerAuth({ verifier, requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
   const handler = createMcpHandler(ctx => {
     const connection = state.connections.get(ctx.authInfo?.extra?.connection_id)
@@ -32,12 +45,33 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
     close: () => handler.close(),
     async handle(request, info, meta) {
       const path = new URL(request.url).pathname
-      if (path === '/internal' || path.startsWith('/internal/')) return internal(request, info, meta)
-      const badHost = hostHeaderValidationResponse(request, [publicHost])
-      if (badHost) { meta.route = 'public'; meta.code = 'invalid_host'; return badHost }
+      const internalPath = path === '/internal' || path.startsWith('/internal/')
+      if (listenerHosts) {
+        const listener = info.listener === 'internal' ? 'internal' : 'public'
+        if (internalPath !== (listener === 'internal')) { meta.route = listener === 'internal' ? 'unmatched' : 'internal'; meta.code = 'not_found'; return notFound() }
+        if (request.headers.get('host') !== listenerHosts[listener]) { meta.route = listener; meta.code = 'invalid_host'; return refuse(403, 'invalid_host') }
+        if (listener === 'internal') return internal(request, info, meta)
+      } else {
+        if (internalPath) return internal(request, info, meta)
+        const badHost = hostHeaderValidationResponse(request, [publicHost])
+        if (badHost) { meta.route = 'public'; meta.code = 'invalid_host'; return badHost }
+      }
       const served = metadata.respond(request)
       if (served) { meta.route = `${request.method} /.well-known`; return served }
-      const ip = ipKey(clientIP(info.remoteAddress, request.headers.get('x-forwarded-for')))
+      const ip = ipKey(clientIP(info.remoteAddress, trustForwarded ? request.headers.get('x-forwarded-for') : null))
+      if (path === '/attestation' && attestation) {
+        meta.route = `${request.method} /attestation`
+        if (request.method !== 'GET') return refuse(405, 'method_not_allowed')
+        const taken = limiter.take('attestation', ip, ATTESTATION_PER_MINUTE)
+        if (!taken.ok) { meta.code = 'rate_limited'; return Response.json({ code: 'rate_limited' }, { status: 429, headers: { 'Cache-Control': 'no-store', 'Retry-After': String(taken.retryAfter) } }) }
+        const params = new URL(request.url).searchParams
+        const nonce = params.getAll('nonce').length === 1 && [...params.keys()].length === 1 ? decodeNonce(params.get('nonce')) : null
+        if (!nonce) { meta.code = 'bad_request'; return refuse(400, 'bad_request') }
+        try { return Response.json({ attestation: await attestation({ nonce }) }, { headers: { 'Cache-Control': 'no-store' } }) } catch (error) {
+          if (error instanceof AttestationError) { meta.code = error.code; return refuse(error.status, error.code) }
+          throw error
+        }
+      }
       switch (path) {
         case '/mcp': {
           meta.route = `${request.method} /mcp`

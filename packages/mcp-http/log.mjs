@@ -4,6 +4,8 @@
 import { createHash } from 'node:crypto'
 
 export const fingerprint = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 12)
+const FINGERPRINT = /^[0-9a-f]{12}$/
+const CODE = /^[a-z][a-z0-9_]{0,47}$/
 
 /** `sink` receives one complete line per event; the default is stdout. */
 export function createLog(sink = line => process.stdout.write(line + '\n'), now = Date.now) {
@@ -19,9 +21,16 @@ export function createLog(sink = line => process.stdout.write(line + '\n'), now 
       if (code) entry.code = code
       write(entry)
     },
+    /**
+     * Numbers and booleans only, with two exceptions the enclave's log sink
+     * also admits: a string survives when it is a 12-hex fingerprint (a PCR0,
+     * SPKI or policy hash prefix), and `code` when it is a snake_case code.
+     */
     event(code, fields = {}) {
       const entry = { ts: new Date(now()).toISOString(), event: code }
-      for (const [key, value] of Object.entries(fields)) if (typeof value === 'number' || typeof value === 'boolean') entry[key] = value
+      for (const [key, value] of Object.entries(fields)) {
+        if (typeof value === 'number' || typeof value === 'boolean' || (typeof value === 'string' && (FINGERPRINT.test(value) || (key === 'code' && CODE.test(value))))) entry[key] = value
+      }
       write(entry)
     },
   }

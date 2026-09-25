@@ -193,6 +193,41 @@ WAPPIE_MCP_PUBLIC_ORIGIN=https://api.example.test WAPPIE_MCP_CONSOLE_URL=https:/
 WAPPIE_MCP_RELAY_SECRET_FILE=/etc/wappie/mcp-relay-secret node packages/mcp-http/server.mjs
 ```
 
+## The attested reader (`enclave/`)
+
+`enclave/main.mjs` runs this same reader inside an AWS Nitro Enclave at
+`https://mcp.wappie.thehappie.co/mcp`, still metadata-only. The contract is
+`docs/mcp-enclave.md`; what differs from the hosted reader:
+
+- Configuration is `enclave/constants.mjs`, measured into PCR0. Nothing is
+  read from the environment; the build fills only the two KMS key ARNs.
+- TLS terminates inside the enclave with an ECDSA P-256 key made per enclave
+  boot (in `/run/wappie`, RAM only) and a Let's Encrypt certificate ordered
+  over TLS-ALPN-01 (`enclave/acme.mjs`, `enclave/tls.mjs`). The public (5443)
+  and internal (5444) listeners take PROXY v2 first (`enclave/proxy.mjs`);
+  5445 answers only the ACME challenge.
+- The OAuth state is sealed per collection under the reader KMS key
+  (`enclave/sealer.mjs`, `openSealedState` in `state.mjs`) and stored by Go
+  as opaque bytes with compare-and-set generations.
+- Go and the enclave sign every request with HMAC in both directions
+  (`enclave/hmac.mjs`, `enclave/relay.mjs`); the relay secret arrives as KMS
+  ciphertext under the boot key and rotates at runtime
+  (`POST /internal/relay-secret`).
+- Every consent request gets its own X25519 key, and
+  `POST /internal/requests/{id}/prepare` returns the descriptor with a fresh
+  attestation document binding that key, the browser's nonce, the TLS SPKI
+  and the live KMS key policy hash (`attestation.mjs`, `enclave/policy.mjs`).
+  `GET /attestation?nonce=` serves the same without a key, for anyone.
+- Logs leave only through the vsock sink, each line checked against the
+  parent's schema (`enclave/logsink.mjs`), with a health line every minute
+  that includes the clock's skew against KMS's `Date` (`enclave/health.mjs`).
+
+`server.mjs` never imports `enclave/` (a test walks its imports), and the
+enclave's dependencies live in its own `enclave/package.json`.
+
+`node enclave/policy.mjs < policy.json` prints the policy hash the console
+accepts; `--canonical` prints the canonical bytes.
+
 ## Tests
 
 ```sh
@@ -210,6 +245,12 @@ and Origin checks, bundle invariants, proof tampering and replay, unsafe state
 files, oversize bodies, rate limits. Every response body and log line is
 checked for the API key, link secrets, proofs and private keys. All test
 material is minted at run time; nothing token-shaped is committed.
+
+The enclave has its own suite (`npm --prefix packages/mcp-http/enclave ci`
+first, then `npm --prefix packages/mcp-http/enclave test`): the contract's
+vectors, sealed state, CMS and KMS, PROXY v2, the HMAC guard, and the whole
+enclave booted against a stub `nsm-attest`, an in-memory KMS, a fake Go and a
+fake ACME server that really dials the TLS-ALPN-01 listener.
 
 ## What this never has
 
