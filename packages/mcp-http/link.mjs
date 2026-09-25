@@ -33,10 +33,14 @@ export const bundleBody = z.strictObject({
   expires_at: z.string().min(20).max(40),
 })
 
+/** The key a request's bundle is sealed to: its own when it has one (the enclave), else the reader's. */
+const recipientOf = (pending, state) => pending.recipient ?? state.recipient
+
 /** The public descriptor for a pending request, relayed verbatim by Go. */
 export function descriptor(pending, state) {
+  const recipient = recipientOf(pending, state)
   return {
-    request_id: pending.id, kid: state.recipient.kid, reader_public_key: state.recipient.publicKeyEncoded,
+    request_id: pending.id, kid: recipient.kid, reader_public_key: recipient.publicKeyEncoded,
     client_id: pending.client_id, client_name: pending.client_name, redirect_host: pending.redirect_host, redirect_local: pending.redirect_local === true,
     code_challenge: pending.code_challenge, resource: pending.resource, expires_at: new Date(pending.expires_at).toISOString(),
   }
@@ -48,7 +52,10 @@ export function descriptor(pending, state) {
  * caller keeps the result only as long as it needs the API key and link secret.
  */
 export async function openBundle(state, pending, sealed, kid) {
-  const recipient = [state.recipient, state.previous].find(candidate => candidate && candidate.kid === kid)
+  // A request with its own key accepts nothing else: a bundle sealed to any
+  // other key was not sealed to what the console verified.
+  const candidates = pending.recipient ? [pending.recipient] : [state.recipient, state.previous]
+  const recipient = candidates.find(candidate => candidate && candidate.kid === kid)
   if (!recipient) throw new LinkError('unknown_kid')
   if (sealed.length < ENC_LEN + TAG_LEN) throw new LinkError('invalid_bundle')
   let plain

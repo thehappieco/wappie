@@ -16,6 +16,12 @@
 // routes take the relay secret and a loopback peer, and answer 404 to
 // anything that came through the proxy — nginx says the same before it gets
 // here, so the check is belt and braces.
+//
+// An attested reader runs in a Nitro Enclave on another machine and reaches
+// the same questions through /v1/mcp/enclave/*, with a signed request from a
+// configured address instead of a loopback bearer (see enclave.go). Several
+// readers may be configured; a pending request belongs to whichever reader
+// answers for its id, and a connection to the reader recorded on its row.
 package mcpauth
 
 import (
@@ -55,13 +61,22 @@ type Handler struct {
 	// after a workspace switch, on reload — and none of that is a guess at
 	// a password. Nil allows everything.
 	DescriptorLimits *ratelimit.Auth
-	// Reader is the loopback relay to the reader process.
+	// Reader is the loopback relay to the hosted reader process; nil when
+	// the hosted reader is not configured.
 	Reader *Relay
-	// PublicOrigin is where the reader is served from the internet; the
-	// console posts its proof to PublicOrigin/mcp/authorize/complete.
+	// PublicOrigin is where the hosted reader is served from the internet;
+	// the console posts its proof to PublicOrigin/mcp/authorize/complete.
 	PublicOrigin string
-	// RelaySecret is what the reader presents on the internal routes.
+	// RelaySecret is what the hosted reader presents on the internal routes.
 	RelaySecret string
+	// Attested are the readers off this host, each with its own relay,
+	// secrets, peers and tenants.
+	Attested []*AttestedReader
+	// TrustedProxies are the proxies whose X-Forwarded-For names an
+	// attested reader's address; the peer check reads through them.
+	TrustedProxies []netip.Prefix
+	// States keeps the attested readers' sealed state.
+	States *store.MCPReaderStates
 	// RedirectHosts are the hosts an assistant may redirect to and whose
 	// metadata documents may be fetched. Same list as the reader's.
 	RedirectHosts []string
@@ -72,11 +87,21 @@ type Handler struct {
 	// OpenAIAppsChallenge is served at /.well-known/openai-apps-challenge for
 	// OpenAI's plugin portal to verify the domain; empty means 404.
 	OpenAIAppsChallenge string
+
+	// Set up by Mount.
+	readers  []reader
+	requests *requestCache
+	replay   *replayCache
 }
 
-// Mount registers the routes on a mux.
+// Mount registers the routes on a mux. Call it once, after the fields are
+// set: it takes the list of readers from them.
 func (h *Handler) Mount(mux *http.ServeMux) {
+	h.readers = h.configuredReaders()
+	h.requests = newRequestCache()
+	h.replay = newReplayCache(replayCap)
 	mux.HandleFunc("GET /v1/mcp/requests/{id}", h.descriptor)
+	mux.HandleFunc("POST /v1/mcp/requests/{id}/prepare", h.prepare)
 	mux.HandleFunc("POST /v1/mcp/connections", h.create)
 	mux.HandleFunc("GET /v1/mcp/connections", h.list)
 	mux.HandleFunc("DELETE /v1/mcp/connections/{id}", h.remove)
@@ -84,6 +109,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/activate", h.internal(h.activate))
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/revoke", h.internal(h.revoke))
 	mux.HandleFunc("GET /v1/mcp/internal/cimd", h.internal(h.cimd))
+	if len(h.Attested) > 0 {
+		h.mountEnclave(mux)
+	}
 	mux.HandleFunc("GET /.well-known/openai-apps-challenge", h.openAIChallenge)
 }
 
@@ -189,16 +217,83 @@ func (h *Handler) descriptor(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "not_found", "no such request")
 		return
 	}
-	raw, err := h.Reader.Descriptor(r.Context(), id)
+	_, raw, err := h.readDescriptor(r.Context(), id)
 	if err != nil {
 		h.readerError(w, err)
 		return
 	}
+	sendRaw(w, raw)
+}
+
+// sendRaw answers with a reader's JSON as the reader sent it.
+func sendRaw(w http.ResponseWriter, raw []byte) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	//nolint:errcheck // the client hung up; there is nothing left to say to it
 	_, _ = w.Write(raw)
+}
+
+// prepareBody is the console's prepare: a nonce it generated for this page.
+type prepareBody struct {
+	Nonce string `json:"nonce"`
+}
+
+// prepare asks an attested reader for the request's descriptor with a fresh
+// attestation over the browser's nonce, and relays it verbatim. Public and
+// unauthenticated like the descriptor, and on the descriptor's budget: the
+// console prepares on every render of an attested consent card.
+//
+// This server checks the answer's shape and remembers what the reader
+// declared, for the ledger, and that this request was prepared with this
+// kid: a consent for an attested reader is refused unless it was. It does
+// not verify the document. The browser does, and a verifier here would run
+// on the machine the attestation exists to not trust.
+func (h *Handler) prepare(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !allow(w, r, h.DescriptorLimits, "prepare:"+id) {
+		return
+	}
+	if !validRequestID(id) {
+		fail(w, http.StatusNotFound, "not_found", "no such request")
+		return
+	}
+	var req prepareBody
+	if !decode(w, r, &req) {
+		return
+	}
+	if !validPrepareNonce(req.Nonce) {
+		fail(w, http.StatusBadRequest, "bad_request", "nonce must be 16 to 64 bytes in unpadded base64url")
+		return
+	}
+	ctx := r.Context()
+	rd, _, err := h.resolve(ctx, id)
+	if err != nil {
+		h.readerError(w, err)
+		return
+	}
+	if rd.attested == nil {
+		fail(w, http.StatusConflict, "attestation_unsupported", "this request's reader does not attest; use its descriptor")
+		return
+	}
+	raw, err := rd.attested.Relay.Prepare(ctx, id, req.Nonce)
+	if errors.Is(err, ErrTooManyPrepares) {
+		fail(w, http.StatusTooManyRequests, "too_many_prepares", "this request has been prepared too many times; start again from the assistant")
+		return
+	}
+	if err != nil {
+		h.readerError(w, err)
+		return
+	}
+	entry, err := checkPrepared(raw, id, rd)
+	if err != nil {
+		h.log().Warn("an attested reader answered a prepare with the wrong shape", "reader", rd.id, "error", err)
+		fail(w, http.StatusBadGateway, "reader_unavailable", "the assistant connector answered with something unexpected; try again in a moment")
+		return
+	}
+	h.requests.put(id, entry, time.Now())
+	h.log().Info("mcp request prepared", "reader", rd.id, "pcr0", entry.pcr0[:12], "document", entry.documentSHA256[:12])
+	sendRaw(w, raw)
 }
 
 // create records a consent and hands the reader the sealed bundle.
@@ -246,17 +341,39 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	in.DeviceCount = len(keys[i].DeviceIDs)
 
-	raw, err := h.Reader.Descriptor(ctx, in.RequestID)
+	rd, raw, err := h.resolve(ctx, in.RequestID)
 	if err != nil {
 		h.readerError(w, err)
 		return
+	}
+	if rd.attested != nil {
+		if !rd.attested.allows(user.TenantID) {
+			fail(w, http.StatusForbidden, "tenant_not_allowed", "this workspace may not use this assistant connector yet")
+			return
+		}
+		// The browser verified an attestation for this request and sealed
+		// to the key it named; the kid it sends must be the one prepared
+		// here, or the bundle is sealed to a key nothing attested.
+		entry, ok := h.requests.get(in.RequestID, time.Now())
+		if !ok || !entry.prepared || entry.reader != rd.id || entry.kid != req.KID {
+			fail(w, http.StatusConflict, "attestation_required", "this connector must be verified before a consent; reload the consent page")
+			return
+		}
+		in.ReaderMeasurement = entry.measurement()
+	}
+	in.Reader = rd.id
+	if raw == nil {
+		if raw, err = rd.relay.Descriptor(ctx, in.RequestID); err != nil {
+			h.readerError(w, err)
+			return
+		}
 	}
 	var d descriptor
 	if json.Unmarshal(raw, &d) != nil || d.RequestID != in.RequestID || d.RedirectHost == "" {
 		fail(w, http.StatusBadGateway, "reader_unavailable", "the reader answered with a descriptor for another request")
 		return
 	}
-	if d.Resource != h.resource() {
+	if d.Resource != rd.resource() {
 		// The reader and this server are configured with the public origin
 		// separately, and the console refuses a completion address on any
 		// other origin than the descriptor's. Caught here, before the
@@ -287,7 +404,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relay := BundleRelay{ConnectionID: conn.ID, TenantID: conn.TenantID, KID: in.ReaderKID, Sealed: req.Sealed, ExpiresAt: conn.ExpiresAt}
-	if err := h.Reader.Bundle(ctx, in.RequestID, relay); err != nil {
+	if err := rd.relay.Bundle(ctx, in.RequestID, relay); err != nil {
 		if derr := h.Connections.DeleteFailed(ctx, conn.ID); derr != nil {
 			// The row stays pending and the janitor revokes it with its
 			// key once the reader's request lifetime has passed.
@@ -298,17 +415,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log().Info("mcp connection consented", "connection", conn.ID, "client", in.RedirectHost,
-		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt)
+		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id)
 	send(w, http.StatusCreated, createReply{
 		ID: conn.ID, Status: conn.Status, ExpiresAt: conn.ExpiresAt,
-		CompleteURL: strings.TrimRight(h.PublicOrigin, "/") + completePath,
+		CompleteURL: rd.completeURL(),
 	})
-}
-
-// resource is the canonical MCP resource this server fronts, as the reader
-// must advertise it: the public origin plus the MCP path, byte for byte.
-func (h *Handler) resource() string {
-	return strings.TrimRight(h.PublicOrigin, "/") + resourcePath
 }
 
 // checkCreate validates the shape of a consent. Everything here has one
@@ -393,12 +504,15 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.Connections.Revoke(r.Context(), user.TenantID, user.ID, id); err != nil {
+	owner, err := h.Connections.Revoke(r.Context(), user.TenantID, user.ID, id)
+	if err != nil {
 		h.connectionError(w, err)
 		return
 	}
-	if err := h.Reader.Revoke(r.Context(), id); err != nil {
-		h.log().Warn("the reader was not told about a revocation", "connection", id, "error", err)
+	if rd, ok := h.readerByID(owner); !ok {
+		h.log().Warn("the reader of a revoked connection is not configured here", "connection", id, "reader", owner)
+	} else if err := rd.relay.Revoke(r.Context(), id); err != nil {
+		h.log().Warn("the reader was not told about a revocation", "connection", id, "reader", owner, "error", err)
 	}
 	h.log().Info("mcp connection revoked", "connection", id)
 	w.WriteHeader(http.StatusNoContent)
@@ -430,11 +544,17 @@ func (h *Handler) internal(next http.HandlerFunc) http.HandlerFunc {
 
 // status answers where a connection stands and notes that the reader asked.
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
+	h.connectionStatus(w, r, store.HostedReader)
+}
+
+// connectionStatus answers for one of this reader's connections; another
+// reader's is not found.
+func (h *Handler) connectionStatus(w http.ResponseWriter, r *http.Request, readerID string) {
 	id, ok := connectionID(w, r)
 	if !ok {
 		return
 	}
-	status, expiresAt, err := h.Connections.Status(r.Context(), id)
+	status, expiresAt, err := h.Connections.Status(r.Context(), readerID, id)
 	if err != nil {
 		h.connectionError(w, err)
 		return
@@ -445,15 +565,19 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 // activate records that the reader finished the handshake. Once: a second
 // activation is a replay of something and is refused.
 func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
+	h.connectionActivate(w, r, store.HostedReader)
+}
+
+func (h *Handler) connectionActivate(w http.ResponseWriter, r *http.Request, readerID string) {
 	id, ok := connectionID(w, r)
 	if !ok {
 		return
 	}
-	if err := h.Connections.Activate(r.Context(), id); err != nil {
+	if err := h.Connections.Activate(r.Context(), readerID, id); err != nil {
 		h.connectionError(w, err)
 		return
 	}
-	h.log().Info("mcp connection activated", "connection", id)
+	h.log().Info("mcp connection activated", "connection", id, "reader", readerID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -461,17 +585,23 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 // that failed its checks. Idempotent, and an id the ledger never held is
 // already as ended as it can be.
 func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
+	h.connectionRevoke(w, r, store.HostedReader)
+}
+
+// connectionRevoke ends one of this reader's connections. Another reader's
+// is as unknown as an id the ledger never held, and gets the same 204.
+func (h *Handler) connectionRevoke(w http.ResponseWriter, r *http.Request, readerID string) {
 	id, ok := connectionID(w, r)
 	if !ok {
 		return
 	}
-	err := h.Connections.RevokeByID(r.Context(), id)
+	err := h.Connections.RevokeByID(r.Context(), readerID, id)
 	if err != nil && !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		h.connectionError(w, err)
 		return
 	}
 	if err == nil {
-		h.log().Info("mcp connection revoked by the reader", "connection", id)
+		h.log().Info("mcp connection revoked by the reader", "connection", id, "reader", readerID)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

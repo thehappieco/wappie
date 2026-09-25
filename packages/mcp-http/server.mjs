@@ -9,15 +9,17 @@ import { pathToFileURL } from 'node:url'
 import { archiveOrigin } from '@whatserver2/client'
 import { readPrivateFile } from '@whatserver2/mcp/config'
 import { createAuthorizationServer } from './as.mjs'
+import { AttestationError, createAttestor } from './attestation.mjs'
 import { createCIMD } from './cimd.mjs'
 import { createClients } from './clients.mjs'
 import { createRelay, internalRoutes, RelayError } from './internal.mjs'
 import { createLimiter, isLoopback } from './limits.mjs'
 import { createLog } from './log.mjs'
+import { descriptor } from './link.mjs'
 import { createMetadata } from './metadata.mjs'
 import { sendWebResponse, toWebRequest } from './node-adapter.mjs'
 import { bodyLimitFor, createRouter } from './router.mjs'
-import { openState, StateError } from './state.mjs'
+import { newRecipient, openState, StateError } from './state.mjs'
 import { createTokens } from './tokens.mjs'
 import { createStatusCheck, createVerifier } from './verifier.mjs'
 
@@ -78,15 +80,32 @@ async function readRelaySecret(path) {
 
 /**
  * Starts the reader. `options.env` replaces process.env, `options.now` the
- * clock, `options.logSink` the log line writer; tests use all three.
+ * clock, `options.logSink` the log line writer; tests use all three, and with
+ * only those the reader is the hosted one, exactly as before.
+ *
+ * The enclave (enclave/main.mjs) injects the rest; nothing here imports it:
+ * - `config` replaces readEnv (the image's constants, plus `readerId`,
+ *   `readerVersion`, `listenerHosts` ({public, internal} exact Host values),
+ *   and the `spki()`, `policy()` and `health()` getters);
+ * - `secrets` (the relay secret holder, enclave/secrets.mjs) replaces the
+ *   relay secret file, and its `rotate` adds POST /internal/relay-secret;
+ * - `state` (openSealedState), `relay` (createSignedRelay) and
+ *   `internalAuth(request, info)` (the HMAC guard) replace their hosted forms;
+ * - `servers` ({public, internal}) are created but not listening: handlers
+ *   are attached here, after reconciling, replacing whatever answered before;
+ * - `keys: 'per-request'` mints a key for every pending request;
+ * - `attest({publicKey, nonce, userData})` returns a raw NSM document and turns
+ *   on prepare and the public /attestation route.
  */
 export async function startReader(options = {}) {
-  const config = readEnv(options.env ?? process.env)
+  const config = options.config ?? readEnv(options.env ?? process.env)
   const now = options.now ?? Date.now
   const log = createLog(options.logSink, now)
-  const secret = await readRelaySecret(config.relaySecretFile)
-  const state = await openState(config.stateDir)
-  const relay = createRelay({ archive: config.archive, secret })
+  // Without a relay secret file there is no bearer: both directions must be replaced.
+  if (options.secrets && (!options.relay || !options.internalAuth)) throw new ConfigError('injection_incomplete')
+  const secret = options.secrets ? null : await readRelaySecret(config.relaySecretFile)
+  const state = options.state ?? await openState(config.stateDir)
+  const relay = options.relay ?? createRelay({ archive: config.archive, secret })
   // Go is the authority on connections: anything it no longer serves is dropped
   // before the first request. An unreachable Go keeps the state as it was; the
   // per-request check catches up within a minute.
@@ -99,12 +118,15 @@ export async function startReader(options = {}) {
   }
   if (dropped) { await state.save(); log.event('reconcile_dropped', { connections: dropped }) }
 
-  const server = createHTTPServer({ maxHeaderSize: 16 * 1024 })
-  server.headersTimeout = 10_000
-  server.requestTimeout = 60_000
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.listen.port, config.listen.host, () => { server.off('error', reject); resolve() }) })
-  const address = server.address()
-  const publicOrigin = config.publicOrigin ?? `http://${address.family === 'IPv6' ? `[${address.address}]` : address.address}:${address.port}`
+  const injected = options.servers
+  const server = injected?.public ?? createHTTPServer({ maxHeaderSize: 16 * 1024 })
+  if (!injected) {
+    server.headersTimeout = 10_000
+    server.requestTimeout = 60_000
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.listen.port, config.listen.host, () => { server.off('error', reject); resolve() }) })
+  }
+  const address = injected ? null : server.address()
+  const publicOrigin = injected ? config.publicOrigin : config.publicOrigin ?? `http://${address.family === 'IPv6' ? `[${address.address}]` : address.address}:${address.port}`
 
   const limiter = createLimiter(now)
   const metadata = createMetadata({ publicOrigin, cimd: config.cimd })
@@ -114,24 +136,38 @@ export async function startReader(options = {}) {
   const verifier = createVerifier({ tokens, state, resource: metadata.resource, checkActive })
   const clients = createClients(state, { now, hosts: config.hosts })
   const cimd = createCIMD(state, { relay, now, enabled: config.cimd, hosts: config.hosts })
-  const as = createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL: config.consoleURL, resource: metadata.resource, pendingTTLMs: config.pendingTTLMs })
-  const internal = internalRoutes({ state, secret, now, pendingFor: as.pendingFor })
-  const router = createRouter({ state, metadata, as, internal, verifier, limiter, log, archive: config.archive, publicHost: new URL(publicOrigin).hostname })
+  const as = createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL: config.consoleURL, resource: metadata.resource, pendingTTLMs: config.pendingTTLMs,
+    newRecipient: options.keys === 'per-request' ? newRecipient : undefined })
+  const attestor = options.attest ? createAttestor({ attest: options.attest, readerId: config.readerId, readerVersion: config.readerVersion, resource: metadata.resource, spki: config.spki, policy: config.policy }) : null
+  const prepare = attestor && (async (pending, nonce) => {
+    if (!pending.recipient) throw new AttestationError('attest_failed')
+    return { ...descriptor(pending, state), attestation: await attestor.attestation({ requestId: pending.id, publicKey: pending.recipient.publicKey, nonce }) }
+  })
+  const internal = internalRoutes({ state, secret, now, pendingFor: as.pendingFor, auth: options.internalAuth, health: config.health, prepare, rotateSecret: options.secrets?.rotate })
+  const router = createRouter({ state, metadata, as, internal, verifier, limiter, log, archive: config.archive, publicHost: new URL(publicOrigin).hostname,
+    listenerHosts: injected ? config.listenerHosts : undefined, trustForwarded: !injected,
+    attestation: attestor && (({ nonce }) => attestor.attestation({ requestId: '', publicKey: null, nonce })) })
 
-  server.on('request', async (req, res) => {
+  const handlerFor = listener => async (req, res) => {
     const started = now(), meta = {}
     let response
     try {
       const request = await toWebRequest(req, publicOrigin, bodyLimitFor(req.url.split('?')[0]))
       if (!request) { meta.route = 'public'; meta.code = 'body_too_large'; response = Response.json({ code: 'body_too_large' }, { status: 413, headers: { Connection: 'close' } }) }
-      else response = await router.handle(request, { remoteAddress: req.socket.remoteAddress }, meta)
+      else response = await router.handle(request, { remoteAddress: req.socket.remoteAddress, listener, target: req.url }, meta)
     } catch {
       meta.code = 'internal_error'
       response = Response.json({ code: 'internal_error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
     }
     try { await sendWebResponse(res, response) } catch { /* the peer went away */ }
     log.request({ route: meta.route ?? 'unmatched', status: response.status, ms: now() - started, connection: meta.connection, client: meta.client, code: meta.code })
-  })
+  }
+  const servers = injected ? [[injected.public, 'public'], ...(injected.internal ? [[injected.internal, 'internal']] : [])] : [[server, undefined]]
+  for (const [target, listener] of servers) {
+    // In the enclave something answered 503 `starting` until now.
+    if (injected) target.removeAllListeners('request')
+    target.on('request', handlerFor(listener))
+  }
 
   async function sweep() {
     as.sweepPending()
@@ -154,14 +190,16 @@ export async function startReader(options = {}) {
   }
   const timer = setInterval(() => { sweep().catch(() => {}) }, 30_000)
   timer.unref()
-  log.event('listening', { port: address.port, cimd: config.cimd })
+  log.event('listening', { ...(address ? { port: address.port } : {}), cimd: config.cimd })
   return {
-    port: address.port, publicOrigin, resource: metadata.resource, state, config, sweep,
+    port: address?.port, publicOrigin, resource: metadata.resource, state, config, sweep, log,
     async close() {
       clearInterval(timer)
       await router.close()
-      await new Promise(resolve => server.close(resolve))
-      server.closeAllConnections?.()
+      for (const [target] of servers) {
+        await new Promise(resolve => { if (target.listening) target.close(() => resolve()); else resolve() })
+        target.closeAllConnections?.()
+      }
       await state.close()
     },
   }

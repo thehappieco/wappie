@@ -109,6 +109,52 @@ same transaction. Revocation stops future reads; it cannot retract metadata
 already returned. An approval that is not completed within twenty minutes
 expires with its provisional key.
 
+### Server configuration for the readers
+
+The archive server fronts one or more readers, listed in `WS_MCP_READERS`
+(default `hosted`). The **hosted** reader is the process on the same host and
+keeps its original variables: `WS_MCP_READER_URL` (loopback http),
+`WS_MCP_RELAY_SECRET` (at least 32 bytes) and `WS_MCP_PUBLIC_ORIGIN`; they are
+required only when `hosted` is listed. Any other id is an **attested** reader
+running in a Nitro Enclave (`enclave` for `https://mcp.wappie.thehappie.co/mcp`),
+configured under `WS_MCP_READER_<ID>_*`:
+
+| Variable | Rule |
+|---|---|
+| `_URL` | `https://<host>:<port>` with no path, on the public origin's host (`https://mcp.wappie.thehappie.co:8443`) |
+| `_PUBLIC_ORIGIN` | https origin with no path (`https://mcp.wappie.thehappie.co`) |
+| `_SECRET` | exactly 43 base64url characters; the HMAC key is the string as written |
+| `_SECRET_NEXT` | optional, same shape, different from `_SECRET`; set only during a rotation |
+| `_PEER` | the addresses the enclave calls from (the parent's Elastic IP as `/32`) |
+| `_TENANTS` | workspace UUIDs that may consent to this reader, or `*` |
+
+`WS_MCP_READER_HOSTED_*` is a configuration error, and nothing is relaxed
+outside production for an attested reader. The startup line prints each
+reader's id, URL, origin, whether each secret is set, and its peer and tenant
+counts, never a secret.
+
+Requests between the server and an attested reader are signed in both
+directions (HMAC-SHA256 over method, raw target, timestamp, nonce and body
+hash, with a direction), checked within 60 seconds and against a replay cache.
+The server reaches the reader over HTTPS verified with the system roots, with
+no proxy, no redirects and a 10 second timeout. The reader calls back on
+`/v1/mcp/enclave/*` only from a `_PEER` address, and each call acts only on
+that reader's own connections. The console prepares an attested consent with
+`POST /v1/mcp/requests/{id}/prepare` and verifies the attestation in the
+browser; the server refuses a consent for an attested reader that was not
+prepared with the same key, records the PCR0 and the document's SHA-256 the
+reader declared, and never verifies attestations itself. The enclave's sealed
+state lives in `mcp_reader_state` as opaque blobs, written with a generation
+compare-and-swap and at most 12 MiB each. When `enclave` is configured,
+discovery adds `endpoints.mcp_server_attested`.
+
+To rotate an attested reader's secret: encrypt the new secret under the
+reader's boot key, set it as `_SECRET_NEXT` and restart the server, then run
+`whatserverd mcp-relay-secret -reader enclave < ciphertext.b64` (signed with
+the current secret), replace `boot.json` on the parent, and finally make the
+new secret `_SECRET` and unset `_SECRET_NEXT`. The full contract is
+[mcp-enclave.md](mcp-enclave.md).
+
 ## Configuration and identity
 
 - The installation and workspace are fixed in a private local configuration file.

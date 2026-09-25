@@ -145,6 +145,58 @@ jobs:
       # container namespace, the layout self-hosters get from deploy/compose.yaml.
       - run: deploy/smoke-mcp-http.sh wappie-mcp-http:ci
 
+  # The attested reader (docs/mcp-enclave.md): the enclave package's unit
+  # tests, the public attestation CLI and CT monitor, and the key-policy
+  # renderer. The client job already runs the verifier's vitest suite.
+  enclave:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            packages/client/package-lock.json
+            packages/mcp/package-lock.json
+            packages/mcp-http/package-lock.json
+            packages/mcp-http/enclave/package-lock.json
+            tools/reader-verify/package-lock.json
+      - run: make client-install enclave-check reader-verify
+      - name: Deploy scripts parse
+        run: |
+          for f in deploy/enclave/*.sh; do bash -n "$f"; done
+          shellcheck deploy/enclave/*.sh
+          python3 -m py_compile deploy/enclave/kms/render.py
+          python3 -m unittest discover -s deploy/enclave -p 'test_*.py'
+          python3 -m unittest discover -s deploy/enclave/kms -p 'test_*.py'
+          for t in deploy/enclave/kms/*.template.json; do
+            python3 deploy/enclave/kms/render.py "$t" --role-arn arn:aws:iam::000000000000:role/ci \
+              --pcr0 "$(printf 'a%.0s' $(seq 96))" > /dev/null
+          done
+
+  # Build only, on an arm64 runner like the Graviton parent: no EIF (nitro-cli
+  # needs the parent) and no KMS ARNs (build.sh writes them), so this image
+  # would refuse to boot. It proves the image builds from the public tree with
+  # pinned inputs, and check-image.sh runs its static checks.
+  enclave-image:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - run: make enclave-image ENCLAVE_TAG=wappie-reader:ci
+      # The image is one layer (deploy/enclave/Dockerfile), so equal layer
+      # digests mean equal files, modes and times: what PCR0 measures. A second
+      # build from nothing must match the first (the Alpine index can still
+      # move between days; within one job it does not).
+      - name: Reproducible
+        run: |
+          docker build --no-cache -q -f deploy/enclave/Dockerfile \
+            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" -t wappie-reader:ci2 . > /dev/null
+          a=$(docker inspect --format '{{json .RootFS.Layers}}' wappie-reader:ci)
+          b=$(docker inspect --format '{{json .RootFS.Layers}}' wappie-reader:ci2)
+          echo "$a"; echo "$b"
+          [ "$a" = "$b" ]
+
   secrets:
     runs-on: ubuntu-latest
     steps:

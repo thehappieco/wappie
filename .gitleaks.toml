@@ -15,3 +15,8 @@ paths = [
 description = "Deterministic WhatsApp media test key (byte progression), reused by upload fixture"
 regexTarget = "secret"
 regexes = ['''HyIlKCsuMTQ3Oj1AQ0ZJTE9SVVhbXmFkZ2ptcHN2eXw=''']
+
+[[allowlists]]
+description = "Documented HMAC test-vector secret for the enclave relay (docs/mcp-enclave.md); it signs nothing real"
+regexTarget = "secret"
+regexes = ['''^wappie-test-relay-secret-0123456789abcdefghij$''']

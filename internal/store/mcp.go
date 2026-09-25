@@ -63,7 +63,17 @@ type MCPConnection struct {
 	CreatedAt                           time.Time
 	ActivatedAt, RevokedAt, LastSeenAt  *time.Time
 	ExpiresAt                           time.Time
+	// Reader is the id of the reader that holds the connection: "hosted"
+	// for the process on this host, or an attested reader's id.
+	Reader string
+	// ReaderMeasurement is what an attested reader declared when the
+	// consent was prepared, "nitro:pcr0=<hex>;doc=<hex>"; empty for hosted.
+	ReaderMeasurement string
 }
+
+// HostedReader is the reader id of the process on this host, and the one
+// every connection recorded before attested readers existed belongs to.
+const HostedReader = "hosted"
 
 // CreateMCPConnection is what a consent records.
 type CreateMCPConnection struct {
@@ -72,6 +82,11 @@ type CreateMCPConnection struct {
 	ReaderKID                                      string
 	// ExpiresAt is the lifetime the person chose. The key is extended to it.
 	ExpiresAt time.Time
+	// Reader is the reader the bundle goes to; empty means HostedReader.
+	Reader string
+	// ReaderMeasurement is recorded as given, and only for an attested
+	// reader; empty stores NULL.
+	ReaderMeasurement string
 }
 
 // Create records a consent and promotes its key from the provisional deadline
@@ -91,6 +106,9 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 	in.ClientName = strings.TrimSpace(in.ClientName)
 	in.RedirectHost = strings.TrimSpace(in.RedirectHost)
 	in.ReaderKID = strings.TrimSpace(in.ReaderKID)
+	if in.Reader == "" {
+		in.Reader = HostedReader
+	}
 	if in.RequestID == "" || in.ClientName == "" || in.RedirectHost == "" || in.ReaderKID == "" || in.DeviceCount < 1 {
 		// The handler validates the body before it gets here; this is the
 		// backstop, not the message a person sees.
@@ -106,6 +124,7 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		TenantID: tenant.String(), RequestID: in.RequestID, CreatedBy: actor,
 		KeyPrefix: in.KeyPrefix, ClientName: in.ClientName, RedirectHost: in.RedirectHost,
 		DeviceCount: in.DeviceCount, ReaderKID: in.ReaderKID, Status: "pending", ExpiresAt: in.ExpiresAt,
+		Reader: in.Reader, ReaderMeasurement: in.ReaderMeasurement,
 	}
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
@@ -147,9 +166,11 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 			return ErrTooManyMCPConnections
 		}
 		err = tx.QueryRow(ctx, `INSERT INTO mcp_connections
-			(tenant_id, request_id, api_key_id, created_by, client_name, redirect_host, device_count, reader_kid, status, expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9) RETURNING id::text, created_at`,
-			tenant, in.RequestID, out.APIKeyID, actor, in.ClientName, in.RedirectHost, in.DeviceCount, in.ReaderKID, in.ExpiresAt).
+			(tenant_id, request_id, api_key_id, created_by, client_name, redirect_host, device_count, reader_kid, status, expires_at,
+			 reader, reader_measurement)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,'')) RETURNING id::text, created_at`,
+			tenant, in.RequestID, out.APIKeyID, actor, in.ClientName, in.RedirectHost, in.DeviceCount, in.ReaderKID, in.ExpiresAt,
+			in.Reader, in.ReaderMeasurement).
 			Scan(&out.ID, &out.CreatedAt)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -180,7 +201,8 @@ func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConne
 	rows, err := m.pool.Query(ctx, `
 		SELECT c.id::text, c.tenant_id::text, c.request_id, c.api_key_id, c.created_by, k.prefix,
 		       c.client_name, c.redirect_host, c.device_count, c.reader_kid, c.status,
-		       c.created_at, c.activated_at, c.revoked_at, c.last_seen_at, c.expires_at
+		       c.created_at, c.activated_at, c.revoked_at, c.last_seen_at, c.expires_at,
+		       c.reader, coalesce(c.reader_measurement, '')
 		  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
 		 WHERE c.tenant_id = $1
 		 ORDER BY c.created_at DESC, c.id DESC`, tenant)
@@ -193,7 +215,8 @@ func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConne
 		var c MCPConnection
 		if err := rows.Scan(&c.ID, &c.TenantID, &c.RequestID, &c.APIKeyID, &c.CreatedBy, &c.KeyPrefix,
 			&c.ClientName, &c.RedirectHost, &c.DeviceCount, &c.ReaderKID, &c.Status,
-			&c.CreatedAt, &c.ActivatedAt, &c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt); err != nil {
+			&c.CreatedAt, &c.ActivatedAt, &c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt,
+			&c.Reader, &c.ReaderMeasurement); err != nil {
 			return nil, fmt.Errorf("store: list mcp connections: %w", err)
 		}
 		out = append(out, c)
@@ -207,15 +230,16 @@ func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConne
 // Revoke ends a connection on a person's behalf: the row and its key, in one
 // transaction, so there is no moment where the assistant's key still opens
 // the archive after the console says it does not. Revoking an already ended
-// connection is not an error; the id must exist in this workspace.
-func (m *MCPConnections) Revoke(ctx context.Context, tenant, actor uuid.UUID, id string) error {
-	return pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+// connection is not an error; the id must exist in this workspace. It
+// returns the reader that holds the connection, which is the one to tell.
+func (m *MCPConnections) Revoke(ctx context.Context, tenant, actor uuid.UUID, id string) (reader string, err error) {
+	err = pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
 			return err
 		}
 		var keyID uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT api_key_id FROM mcp_connections WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
-			id, tenant).Scan(&keyID)
+		err := tx.QueryRow(ctx, `SELECT api_key_id, reader FROM mcp_connections WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+			id, tenant).Scan(&keyID, &reader)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrMCPConnectionNotFound
 		}
@@ -224,6 +248,10 @@ func (m *MCPConnections) Revoke(ctx context.Context, tenant, actor uuid.UUID, id
 		}
 		return revokeMCPConnectionTx(ctx, tx, id, keyID)
 	})
+	if err != nil {
+		return "", err
+	}
+	return reader, nil
 }
 
 // revokeMCPConnectionTx marks a live connection revoked and revokes its key.
@@ -258,13 +286,14 @@ func (m *MCPConnections) DeleteFailed(ctx context.Context, id string) error {
 	})
 }
 
-// Status answers the reader's question about one connection and notes that
-// it asked. An active connection past its deadline is reported expired even
-// before the janitor has recorded it, so the reader never serves on a
-// consent that has run out.
-func (m *MCPConnections) Status(ctx context.Context, id string) (status string, expiresAt time.Time, err error) {
-	err = m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1
-		RETURNING CASE WHEN status='active' AND expires_at <= now() THEN 'expired' ELSE status END, expires_at`, id).
+// Status answers a reader's question about one of its connections and notes
+// that it asked. An active connection past its deadline is reported expired
+// even before the janitor has recorded it, so the reader never serves on a
+// consent that has run out. Another reader's connection is not found: a
+// reader learns about its own rows only.
+func (m *MCPConnections) Status(ctx context.Context, reader, id string) (status string, expiresAt time.Time, err error) {
+	err = m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1 AND reader=$2
+		RETURNING CASE WHEN status='active' AND expires_at <= now() THEN 'expired' ELSE status END, expires_at`, id, reader).
 		Scan(&status, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", time.Time{}, ErrMCPConnectionNotFound
@@ -277,10 +306,11 @@ func (m *MCPConnections) Status(ctx context.Context, id string) (status string, 
 
 // Activate records that the reader completed the handshake. Only a pending
 // connection that has not run out can become active; anything else is
-// ErrMCPConnectionState, and an unknown id is ErrMCPConnectionNotFound.
-func (m *MCPConnections) Activate(ctx context.Context, id string) error {
+// ErrMCPConnectionState, and an unknown id, or another reader's, is
+// ErrMCPConnectionNotFound.
+func (m *MCPConnections) Activate(ctx context.Context, reader, id string) error {
 	tag, err := m.pool.Exec(ctx, `UPDATE mcp_connections SET status='active', activated_at=now()
-		WHERE id=$1 AND status='pending' AND expires_at > now()`, id)
+		WHERE id=$1 AND reader=$2 AND status='pending' AND expires_at > now()`, id, reader)
 	if err != nil {
 		return fmt.Errorf("store: activate mcp connection: %w", err)
 	}
@@ -288,7 +318,7 @@ func (m *MCPConnections) Activate(ctx context.Context, id string) error {
 		return nil
 	}
 	var exists bool
-	if err := m.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mcp_connections WHERE id=$1)`, id).Scan(&exists); err != nil {
+	if err := m.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mcp_connections WHERE id=$1 AND reader=$2)`, id, reader).Scan(&exists); err != nil {
 		return fmt.Errorf("store: activate mcp connection: %w", err)
 	}
 	if !exists {
@@ -299,11 +329,12 @@ func (m *MCPConnections) Activate(ctx context.Context, id string) error {
 
 // RevokeByID ends a connection on the reader's behalf — a bad proof, a burnt
 // request, a bundle that failed its checks — and revokes its key. Idempotent
-// for a known connection; an unknown id is ErrMCPConnectionNotFound.
-func (m *MCPConnections) RevokeByID(ctx context.Context, id string) error {
+// for a known connection; an unknown id, or another reader's, is
+// ErrMCPConnectionNotFound.
+func (m *MCPConnections) RevokeByID(ctx context.Context, reader, id string) error {
 	return m.inTx(ctx, func(tx pgx.Tx) error {
 		var keyID uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT api_key_id FROM mcp_connections WHERE id=$1 FOR UPDATE`, id).Scan(&keyID)
+		err := tx.QueryRow(ctx, `SELECT api_key_id FROM mcp_connections WHERE id=$1 AND reader=$2 FOR UPDATE`, id, reader).Scan(&keyID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrMCPConnectionNotFound
 		}

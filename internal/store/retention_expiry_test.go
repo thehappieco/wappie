@@ -89,7 +89,7 @@ func TestExpireMCPConnectionsPendingAndActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{done.ID, running.ID} {
-		if err := f.conns.Activate(ctx, id); err != nil {
+		if err := f.conns.Activate(ctx, store.HostedReader, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -100,7 +100,7 @@ func TestExpireMCPConnectionsPendingAndActive(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET expires_at = now() - interval '1 minute' WHERE id = $1`, done.ID); err != nil {
 		t.Fatal(err)
 	}
-	if status, _, err := f.conns.Status(ctx, done.ID); err != nil || status != "expired" {
+	if status, _, err := f.conns.Status(ctx, store.HostedReader, done.ID); err != nil || status != "expired" {
 		t.Fatalf("status before the sweep = %q %v, want expired", status, err)
 	}
 

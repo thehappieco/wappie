@@ -1,0 +1,13 @@
+{
+  "name": "@whatserver2/reader-verify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "bin": { "reader-verify": "./reader-verify.mjs" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "@whatserver2/client": "file:../../packages/client"
+  }
+}

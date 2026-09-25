@@ -1,0 +1,12 @@
+{
+  "name": "@whatserver2/mcp-http-enclave",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "@aws-sdk/client-kms": "3.1139.0",
+    "asn1js": "3.0.10"
+  }
+}
