@@ -76,6 +76,12 @@ func (c *Relay) Descriptor(ctx context.Context, requestID string) (json.RawMessa
 	if err != nil {
 		return nil, err
 	}
+	return descriptorAnswer(status, body)
+}
+
+// descriptorAnswer maps a reader's answer to a descriptor fetch, the same
+// for every reader.
+func descriptorAnswer(status int, body []byte) (json.RawMessage, error) {
 	switch status {
 	case http.StatusOK:
 		if !json.Valid(body) || len(body) == 0 || body[0] != '{' {
@@ -95,6 +101,11 @@ func (c *Relay) Bundle(ctx context.Context, requestID string, in BundleRelay) er
 	if err != nil {
 		return err
 	}
+	return bundleAnswer(status, body)
+}
+
+// bundleAnswer maps a reader's answer to a bundle hand-off.
+func bundleAnswer(status int, body []byte) error {
 	switch status {
 	case http.StatusNoContent, http.StatusOK:
 		return nil
@@ -115,6 +126,11 @@ func (c *Relay) Revoke(ctx context.Context, connectionID string) error {
 	if err != nil {
 		return err
 	}
+	return revokeAnswer(status)
+}
+
+// revokeAnswer maps a reader's answer to a revocation notice.
+func revokeAnswer(status int) error {
 	if status != http.StatusNoContent && status != http.StatusOK && status != http.StatusNotFound {
 		return fmt.Errorf("%w: revoke answered %d", ErrReaderUnavailable, status)
 	}
@@ -156,6 +172,12 @@ func (c *Relay) do(ctx context.Context, method, path string, body any) (int, []b
 		//nolint:errcheck // the body is drained; a close error changes nothing
 		_ = resp.Body.Close()
 	}()
+	return readAnswer(resp)
+}
+
+// readAnswer returns a reader's status and body, bounded. The caller closes
+// the body.
+func readAnswer(resp *http.Response) (int, []byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxRelayBody+1))
 	if err != nil {
 		return 0, nil, fmt.Errorf("%w: %w", ErrReaderUnavailable, err)

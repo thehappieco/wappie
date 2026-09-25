@@ -210,7 +210,7 @@ func TestCreateConnectionInvariants(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.conns.Revoke(ctx, f.tenant, f.owner, listed[0].ID); err != nil {
+		if _, err := f.conns.Revoke(ctx, f.tenant, f.owner, listed[0].ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix)); err != nil {
@@ -253,17 +253,17 @@ func TestCreateConnectionOwnerUnderRLS(t *testing.T) {
 	}
 
 	// The reader's side of the ledger.
-	status, expires, err := f.conns.Status(ctx, got.ID)
+	status, expires, err := f.conns.Status(ctx, store.HostedReader, got.ID)
 	if err != nil || status != "pending" || expires.Sub(in.ExpiresAt) > time.Second {
 		t.Fatalf("status = %q %v %v", status, expires, err)
 	}
-	if err := f.conns.Activate(ctx, got.ID); err != nil {
+	if err := f.conns.Activate(ctx, store.HostedReader, got.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.conns.Activate(ctx, got.ID); !errors.Is(err, store.ErrMCPConnectionState) {
+	if err := f.conns.Activate(ctx, store.HostedReader, got.ID); !errors.Is(err, store.ErrMCPConnectionState) {
 		t.Fatalf("second activation: err = %v", err)
 	}
-	if err := f.conns.Activate(ctx, uuid.NewString()); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+	if err := f.conns.Activate(ctx, store.HostedReader, uuid.NewString()); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("unknown activation: err = %v", err)
 	}
 	listed, _ = f.conns.List(ctx, f.tenant)
@@ -276,27 +276,27 @@ func TestCreateConnectionOwnerUnderRLS(t *testing.T) {
 	if _, err := f.conns.Create(ctx, f.tenant, member, consent(memberPrefix)); !errors.Is(err, store.ErrMembershipForbidden) {
 		t.Fatalf("member consented: %v", err)
 	}
-	if err := f.conns.Revoke(ctx, f.tenant, member, got.ID); !errors.Is(err, store.ErrMembershipForbidden) {
+	if _, err := f.conns.Revoke(ctx, f.tenant, member, got.ID); !errors.Is(err, store.ErrMembershipForbidden) {
 		t.Fatalf("member revoked: %v", err)
 	}
 	// Nor may an owner of another workspace reach this one's connection.
-	if err := f.conns.Revoke(ctx, uuid.MustParse(newTenant(t, f.pool, "Other")), f.owner, got.ID); !errors.Is(err, store.ErrMembershipForbidden) {
+	if _, err := f.conns.Revoke(ctx, uuid.MustParse(newTenant(t, f.pool, "Other")), f.owner, got.ID); !errors.Is(err, store.ErrMembershipForbidden) {
 		t.Fatalf("foreign revoke: %v", err)
 	}
 
-	if err := f.conns.Revoke(ctx, f.tenant, f.owner, got.ID); err != nil {
+	if _, err := f.conns.Revoke(ctx, f.tenant, f.owner, got.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.keys.Verify(ctx, key); !errors.Is(err, store.ErrInvalidKey) {
 		t.Fatalf("revoking the connection left the key working: %v", err)
 	}
-	if err := f.conns.Revoke(ctx, f.tenant, f.owner, got.ID); err != nil {
+	if _, err := f.conns.Revoke(ctx, f.tenant, f.owner, got.ID); err != nil {
 		t.Fatalf("second revoke: %v", err)
 	}
-	if err := f.conns.Revoke(ctx, f.tenant, f.owner, uuid.NewString()); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+	if _, err := f.conns.Revoke(ctx, f.tenant, f.owner, uuid.NewString()); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("unknown revoke: err = %v", err)
 	}
-	status, _, err = f.conns.Status(ctx, got.ID)
+	status, _, err = f.conns.Status(ctx, store.HostedReader, got.ID)
 	if err != nil || status != "revoked" {
 		t.Fatalf("status after revoke = %q %v", status, err)
 	}
@@ -330,19 +330,19 @@ func TestDeleteFailedRemovesPendingAndRevokesKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.conns.Activate(ctx, got.ID); err != nil {
+	if err := f.conns.Activate(ctx, store.HostedReader, got.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.conns.DeleteFailed(ctx, got.ID); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("active row deleted: %v", err)
 	}
-	if err := f.conns.RevokeByID(ctx, got.ID); err != nil {
+	if err := f.conns.RevokeByID(ctx, store.HostedReader, got.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.conns.RevokeByID(ctx, got.ID); err != nil {
+	if err := f.conns.RevokeByID(ctx, store.HostedReader, got.ID); err != nil {
 		t.Fatalf("second reader revoke: %v", err)
 	}
-	if err := f.conns.RevokeByID(ctx, uuid.NewString()); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+	if err := f.conns.RevokeByID(ctx, store.HostedReader, uuid.NewString()); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("unknown reader revoke: err = %v", err)
 	}
 	if _, err := f.keys.Verify(ctx, key); !errors.Is(err, store.ErrInvalidKey) {

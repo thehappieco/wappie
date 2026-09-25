@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
@@ -69,6 +68,8 @@ func main() {
 		err = eraseContact(os.Args[2:])
 	case len(os.Args) > 1 && os.Args[1] == "reproject":
 		err = reproject(os.Args[2:])
+	case len(os.Args) > 1 && os.Args[1] == "mcp-relay-secret":
+		err = mcpRelaySecret(os.Args[2:], os.Stdin, os.Stdout)
 	default:
 		err = serve()
 	}
@@ -110,6 +111,9 @@ type app struct {
 	// limits bounds sign-in attempts, shared by the HTTP auth endpoints and
 	// the websocket hello so a script cannot alternate between the two.
 	limits *ratelimit.Auth
+	// mcp is the assistant connector's handler, nil unless it is enabled;
+	// serve starts its reader health checks.
+	mcp *mcpauth.Handler
 }
 
 // setup opens every dependency and runs migrations. The returned close
@@ -476,6 +480,12 @@ func serve() error {
 		BaseContext:       func(net.Listener) context.Context { return obs.WithLogger(ctx, a.log) },
 	}
 
+	// Each attested reader is asked for its health once a minute, so the
+	// log shows its image, certificate and policy before anyone asks.
+	if a.mcp != nil {
+		a.mcp.MonitorReaders(ctx)
+	}
+
 	errc := make(chan error, 1)
 	ln, err := listenPatiently(ctx, a.cfg.HTTPAddr, a.log)
 	if err != nil {
@@ -626,12 +636,9 @@ func (a *app) probes(mux *http.ServeMux) {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
-	mcpServer := ""
-	if a.cfg.MCP.Enabled {
-		mcpServer = strings.TrimSuffix(a.cfg.MCP.PublicOrigin, "/") + "/mcp"
-	}
-	mux.HandleFunc("GET /v1/discovery", discoveryFor(mcpServer))
-	mux.HandleFunc("GET /.well-known/wappie", discoveryFor(mcpServer))
+	mcpServers := advertisedMCP(a.cfg.MCP)
+	mux.HandleFunc("GET /v1/discovery", discoveryFor(mcpServers))
+	mux.HandleFunc("GET /.well-known/wappie", discoveryFor(mcpServers))
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
@@ -660,12 +667,13 @@ func (a *app) routes() http.Handler {
 		},
 	}).Mount(mux)
 
-	// The hosted assistant connector: consents and the loopback relay to
-	// the reader process, mounted only where a reader runs.
+	// The hosted assistant connector: consents, the loopback relay to the
+	// reader process on this host and the signed relay to any attested
+	// reader, mounted only where a reader runs.
 	if a.cfg.MCP.Enabled {
-		(&mcpauth.Handler{
+		a.mcp = &mcpauth.Handler{
 			Connections: store.NewMCPConnections(a.pools.API), APIKeys: a.apiKeys, Users: a.users,
-			Limits: a.limits, Reader: mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret),
+			Limits: a.limits,
 			// The descriptor is read on every render of the consent card,
 			// so it gets a budget of its own, per request id rather than
 			// per account: the sign-in limit would refuse the sixth reload
@@ -673,9 +681,16 @@ func (a *app) routes() http.Handler {
 			DescriptorLimits: &ratelimit.Auth{
 				PerIP: ratelimit.New(60, 20), PerSubject: ratelimit.New(30, 10), Proxies: a.cfg.TrustedProxies,
 			},
-			PublicOrigin: a.cfg.MCP.PublicOrigin, RelaySecret: a.cfg.MCP.RelaySecret,
 			RedirectHosts: a.cfg.MCP.RedirectHosts, Log: a.log, OpenAIAppsChallenge: a.cfg.MCP.OpenAIAppsChallenge,
-		}).Mount(mux)
+			Attested:       attestedReaders(a.cfg.MCP),
+			TrustedProxies: a.cfg.TrustedProxies,
+			States:         store.NewMCPReaderStates(a.pools.API),
+		}
+		if a.cfg.MCP.Hosted() {
+			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)
+			a.mcp.PublicOrigin, a.mcp.RelaySecret = a.cfg.MCP.PublicOrigin, a.cfg.MCP.RelaySecret
+		}
+		a.mcp.Mount(mux)
 	}
 
 	mux.Handle("/v1/ws", a.ws)
