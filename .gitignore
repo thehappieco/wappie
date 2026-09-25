@@ -27,3 +27,7 @@ node_modules/
 # Private hosting/billing lives in its own repository.
 /commercial/
 /.claude/
+
+# Python bytecode from the deploy tooling tests
+__pycache__/
+*.pyc

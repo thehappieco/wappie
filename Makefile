@@ -1,5 +1,6 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
-	client-install client-build client-test client-check mcp-check mcp-http-check public-source
+	client-install client-build client-test client-check mcp-check mcp-http-check public-source \
+	enclave-check enclave-image reader-verify
 
 GO      ?= go
 PKGS    := ./...
@@ -76,6 +77,27 @@ mcp-http-check: client-build ## Install and verify the remote HTTP MCP reader
 	$(NPM) --prefix packages/mcp-http ci
 	$(NPM) --prefix packages/mcp-http test
 	cd packages/mcp-http && $(NPM) pack --dry-run
+
+# The attested reader (docs/mcp-enclave.md). Its package nests inside
+# mcp-http and imports it, so mcp-http is installed first.
+enclave-check: client-build ## Install and test the enclave reader package
+	$(NPM) --prefix packages/mcp ci
+	$(NPM) --prefix packages/mcp-http ci
+	$(NPM) --prefix packages/mcp-http/enclave ci
+	$(NPM) --prefix packages/mcp-http/enclave test
+
+# Build only, on arm64 (the parent is Graviton): no EIF and no KMS ARNs, so
+# this image refuses to boot. deploy/enclave/build.sh makes a release.
+ENCLAVE_TAG ?= wappie-reader:dev
+enclave-image: ## Build and check the reader enclave image (arm64 Docker)
+	docker build -f deploy/enclave/Dockerfile --build-arg SOURCE_DATE_EPOCH=$$(git log -1 --format=%ct) -t $(ENCLAVE_TAG) .
+	sh deploy/enclave/check-image.sh $(ENCLAVE_TAG)
+
+reader-verify: client-build ## Install and test the attestation CLI and the CT monitor
+	$(NPM) --prefix tools/reader-verify ci
+	$(NPM) --prefix tools/reader-verify test
+	$(NPM) --prefix tools/ct-watch ci
+	$(NPM) --prefix tools/ct-watch test
 
 public-source: ## Export an allowlisted public source snapshot without private code
 	python3 scripts/export-public.py --output dist/wappie-source.tar.gz

@@ -1,0 +1,2 @@
+# cargo build output; the image builds in its own stage.
+/target/

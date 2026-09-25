@@ -5,10 +5,11 @@ import pathlib
 import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-ROOTS = ("cmd", "internal", "packages/client", "packages/cli", "packages/mcp", "packages/mcp-http", "docs", "site", "deploy", "scripts", ".github")
+ROOTS = ("cmd", "internal", "packages/client", "packages/cli", "packages/mcp", "packages/mcp-http", "docs", "site", "deploy", "scripts", ".github", "tools")
 FILES = ("go.mod", "go.sum", "README.md", "LICENSE", "NOTICE", "CONTRIBUTING.md", "SECURITY.md", "Makefile", ".env.example", ".gitignore", ".dockerignore", ".golangci.yml", ".gitleaks.toml", "docker-compose.dev.yml")
 OPERATIONAL_DOCS = {"docs/testing-awsa.md", "docs/testing-aws-to-awsa.md", "docs/implementation-2026-09-15.md"}
-EXCLUDED = {"node_modules", "dist", ".git", ".superpowers", "__pycache__", ".DS_Store", "superpowers"}
+# target: cargo's output for deploy/enclave/nsm-attest (the image builds its own).
+EXCLUDED = {"node_modules", "dist", ".git", ".superpowers", "__pycache__", ".DS_Store", "superpowers", "target"}
 
 def public_files():
     for root in ROOTS:

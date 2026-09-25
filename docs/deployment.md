@@ -111,6 +111,56 @@ api_keys DROP COLUMN expires_at; DELETE FROM schema_migrations WHERE version IN
 connection is lost; users approve again after a later roll-forward. Rehearse
 the down-step against a copy before relying on it.
 
+### Attested reader (Nitro Enclave)
+
+The hosted connector at `https://mcp.wappie.thehappie.co/mcp` runs the same
+reader inside an AWS Nitro Enclave: TLS ends inside it, its OAuth state and
+relay secret open only inside it (KMS keys whose policy admits only released
+images), and a browser checks which code it talks to before sealing anything
+to it. It is metadata-only, like
+the loopback reader above. The contract (topology, HMAC relay, endpoints,
+attestation, sealed state, log schema) is [mcp-enclave.md](mcp-enclave.md).
+Self-hosted installations do not need it; the loopback reader above keeps
+working unchanged.
+
+What is public, so anyone can check a running reader:
+
+- `deploy/enclave/Dockerfile`: the enclave image. Base images are pinned by
+  digest, npm and cargo dependencies by lockfile, and every file time is
+  clamped to `SOURCE_DATE_EPOCH` in a single-layer image, so two builds of one
+  commit give the same filesystem, which is what PCR0 measures. The Alpine
+  packages still come from the branch's current index, which is why each
+  release also publishes the exact image by digest.
+- `deploy/enclave/entrypoint.sh`: brings loopback up, bridges vsock to
+  loopback with `socat`, and restarts Node in a loop with its output on
+  `/dev/null` (the only output channel is a schema-checked log line over vsock).
+- `deploy/enclave/nsm-attest/`: the Rust helper that asks the Nitro Secure
+  Module for attestation documents.
+- `deploy/enclave/build.sh` (on an arm64 host with Docker and `nitro-cli`):
+  builds the image with the KMS key ARNs written into `constants.mjs`, the EIF,
+  the key policies rendered from `deploy/enclave/kms/` and their hashes, and
+  `measurements.json` (PCR0-2, EIF and image digests, `nitro-cli` version and
+  blob hashes). Each release is published as `reader-v<version>` with those
+  files.
+- `tools/reader-verify/`: sends a fresh nonce to the reader's public
+  `/attestation`, verifies the document against a release's
+  `measurements.json`, and checks that the TLS connection ended inside that
+  enclave. `tools/ct-watch/` watches Certificate Transparency for certificates
+  the enclave did not attest.
+
+```
+make enclave-check      # the enclave package's tests
+make enclave-image      # build and check the image on arm64 (no EIF; it refuses to boot without key ARNs)
+make reader-verify      # the verifier CLI's and the CT monitor's tests
+```
+
+The parent host runs only byte pipes: haproxy in TCP mode (TLS ends in the
+enclave; ALPN `acme-tls/1` goes to the enclave's certificate challenge
+listener, everything else arrives with a PROXY v2 header), `vsock-proxy` with
+an allowlist for KMS, the archive API and Let's Encrypt, and a log receiver
+that drops any line outside the schema. Its units and runbook are part of the
+private hosted product.
+
 ### Name in WhatsApp's Linked devices
 
 `WS_WA_DEVICE_NAME` defaults to `whappie` for independent installations. Managed
@@ -153,7 +203,9 @@ remains available. Existing URLs and archive formats remain unchanged. The
 hosted operations guide is in the private repository's `docs/deployment.md`;
 its remote MCP runbook (reader key rotation, backup and restore, the schema
 down-step and lifting the proxy's rate-limit dry run) is private as well, while
-the [connector layout above](#remote-mcp-connector) is the same for both.
+the [connector layout above](#remote-mcp-connector) is the same for both. The
+attested reader's parent-host units and runbook are private too; its image,
+build and verifier are the public ones described above.
 
 ## Enabling external clients
 

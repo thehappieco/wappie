@@ -1,0 +1,23 @@
+# In-enclave attestation helper for the Wappie reader (deploy/enclave). Built in a
+# rust:1-alpine stage (musl targets link statically by default).
+[package]
+name = "nsm-attest"
+version = "0.1.0"
+edition = "2021"
+# aws-nitro-enclaves-nsm-api 0.5.x declares rust-version 1.92.
+rust-version = "1.92"
+publish = false
+
+# Exact pins: the binary is measured into PCR0/PCR2, so dependency drift
+# would change the image. Default features stay on: the driver module
+# (/dev/nsm ioctl) only exists with the nsm-api "nix" feature.
+[dependencies]
+aws-nitro-enclaves-nsm-api = "=0.5.2"
+serde_bytes = "=0.11.19"
+hex = "=0.4.3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
