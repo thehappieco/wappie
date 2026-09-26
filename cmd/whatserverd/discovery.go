@@ -24,6 +24,9 @@ type mcpEndpoints struct {
 	Server string
 	// Attested is the reader in the Nitro Enclave, <its public origin>/mcp.
 	Attested string
+	// Content is set when the enclave may open message text: the switch is
+	// on. Which workspaces may is asked per workspace (GET /v1/mcp/content).
+	Content bool
 }
 
 // discoveryFor describes the protocol. The hosted assistant connector is
@@ -48,6 +51,9 @@ func discoveryFor(mcp mcpEndpoints) http.HandlerFunc {
 	}
 	if mcp.Attested != "" {
 		endpoints["mcp_server_attested"] = mcp.Attested
+		if mcp.Content {
+			capabilities = append(capabilities, "mcp.remote.content.v1")
+		}
 	}
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

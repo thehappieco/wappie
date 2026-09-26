@@ -148,6 +148,11 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 			if err := requireRemainingReader(ctx, tx, tenant, target, nil); err != nil {
 				return err
 			}
+			// A disabled consenter's connections end with their access, and
+			// a disabled connection service account ends its connection.
+			if err := endConnectionsOfMemberTx(ctx, tx, tenant, target, false); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE workspace_memberships SET role=$3,status=$4 WHERE tenant_id=$1 AND user_id=$2`, tenant, target, role, status); err != nil {
 			return err
@@ -216,6 +221,11 @@ func (u *Users) RemoveMember(ctx context.Context, tenant, actor, target uuid.UUI
 		if err := requireRemainingReader(ctx, tx, tenant, target, nil); err != nil {
 			return err
 		}
+		// A consent does not outlive the person who gave it in this
+		// workspace, and a connection does not outlive its service account.
+		if err := endConnectionsOfMemberTx(ctx, tx, tenant, target, true); err != nil {
+			return err
+		}
 		// Keep attribution for previously issued tokens and other members' key
 		// grants. A snapshot avoids granting access to the former member's profile.
 		if _, err := tx.Exec(ctx, `INSERT INTO workspace_member_history(tenant_id,user_id,email) VALUES($1,$2,$3)
@@ -245,6 +255,35 @@ func (u *Users) RemoveMember(ctx context.Context, tenant, actor, target uuid.UUI
 		_, err = tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2`, tenant, target)
 		return err
 	})
+}
+
+// removeServiceAccountTx revokes every key acting as a service account and
+// deletes its grants, permissions and membership in this workspace, without
+// requireRemainingReader: a connection service account's grants are copies
+// sealed to a key that lives in a reader, never an archive's last envelope.
+// Only a service account is removed this way; a person's membership is
+// refused. Idempotent. The caller holds pg.InTenantTx(tenant) and the
+// tenants row lock.
+func removeServiceAccountTx(ctx context.Context, tx pgx.Tx, tenant, service uuid.UUID) error {
+	var role string
+	err := tx.QueryRow(ctx, `SELECT role FROM users WHERE id=$1`, service).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && role != RoleService {
+		return ErrInvalidMembership
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE tenant_id=$1 AND acts_as=$2 AND revoked_at IS NULL`, tenant, service); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND user_id=$2`, tenant, service); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM device_permissions WHERE tenant_id=$1 AND user_id=$2`, tenant, service); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2 AND role='service'`, tenant, service)
+	return err
 }
 
 // InviteMember issues a seven-day, one-use invitation without delivering it.

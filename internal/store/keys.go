@@ -260,7 +260,7 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 		}
 		var member uuid.UUID
 		if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
-			WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' FOR SHARE OF m`, g.TenantID, g.UserID).Scan(&member); err != nil {
+			WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, g.TenantID, g.UserID).Scan(&member); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}

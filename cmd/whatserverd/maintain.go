@@ -59,6 +59,13 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		} else if connections > 0 {
 			a.log.Info("mcp connections settled", "connections", connections)
 		}
+		// A content consent abandoned after its service account registered
+		// leaves an account with a thirty-minute deadline and no connection.
+		if services, err := store.ExpireServiceAccounts(ctx, a.pools.API); err != nil {
+			a.log.Warn("mcp service account expiry failed", "error", err)
+		} else if services > 0 {
+			a.log.Info("mcp service accounts removed", "accounts", services)
+		}
 	}
 
 	// Retry confirmed orphan objects even when no new retention purge occurs.

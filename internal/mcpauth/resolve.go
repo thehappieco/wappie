@@ -133,6 +133,13 @@ type requestEntry struct {
 	documentSHA256 string
 	prepared       bool
 	expires        time.Time
+	// publicKey is the full per-request key the reader attested (32
+	// bytes), which a content consent's service account must carry.
+	publicKey []byte
+	// connection is set for a renewal: the connection the renewal id was
+	// issued for. A consent's entry has none, and neither kind of entry
+	// answers for the other.
+	connection string
 }
 
 // measurement is the ledger's record of what the reader declared, for
@@ -266,14 +273,19 @@ const (
 
 // preparedDescriptor is the part of a prepared descriptor this server reads.
 type preparedDescriptor struct {
-	RequestID   string `json:"request_id"`
-	KID         string `json:"kid"`
-	Resource    string `json:"resource"`
-	Attestation *struct {
-		Document string `json:"document"`
-		PCR0     string `json:"pcr0"`
+	RequestID       string `json:"request_id"`
+	KID             string `json:"kid"`
+	ReaderPublicKey string `json:"reader_public_key"`
+	Resource        string `json:"resource"`
+	Attestation     *struct {
+		Document  string `json:"document"`
+		PCR0      string `json:"pcr0"`
+		RequestID string `json:"request_id"`
 	} `json:"attestation"`
 }
+
+// readerPublicKeyLen is an X25519 public key.
+const readerPublicKeyLen = 32
 
 // validPrepareNonce is 16 to 64 bytes in unpadded base64url.
 func validPrepareNonce(nonce string) bool {
@@ -292,8 +304,25 @@ func checkPrepared(raw json.RawMessage, id string, rd reader) (requestEntry, err
 	if p.RequestID != id || p.Resource != rd.resource() {
 		return requestEntry{}, errors.New("the prepared descriptor is for another request or resource")
 	}
+	return p.entry(rd, false)
+}
+
+// entry checks the fields a prepared descriptor and a renewal share and
+// turns them into what this server remembers. The public key is kept when
+// present and must then be well formed; needKey makes it required, as it is
+// for a renewal. A consent's entry without one cannot bind a content
+// connection (create refuses it).
+func (p preparedDescriptor) entry(rd reader, needKey bool) (requestEntry, error) {
 	if len(p.KID) != kidLen || !isHex(p.KID) {
 		return requestEntry{}, errors.New("the prepared descriptor's kid is malformed")
+	}
+	var publicKey []byte
+	if p.ReaderPublicKey != "" || needKey {
+		var err error
+		publicKey, err = base64.RawURLEncoding.Strict().DecodeString(p.ReaderPublicKey)
+		if err != nil || len(publicKey) != readerPublicKeyLen {
+			return requestEntry{}, errors.New("the prepared descriptor's reader_public_key is malformed")
+		}
 	}
 	if p.Attestation == nil {
 		return requestEntry{}, errors.New("the prepared descriptor carries no attestation")
@@ -308,6 +337,36 @@ func checkPrepared(raw json.RawMessage, id string, rd reader) (requestEntry, err
 	sum := sha256.Sum256(document)
 	return requestEntry{
 		reader: rd.id, kid: p.KID, pcr0: p.Attestation.PCR0,
-		documentSHA256: hex.EncodeToString(sum[:]), prepared: true,
+		documentSHA256: hex.EncodeToString(sum[:]), prepared: true, publicKey: publicKey,
 	}, nil
+}
+
+// renewalDescriptor is the part of a renewal answer this server reads.
+type renewalDescriptor struct {
+	preparedDescriptor
+	RenewalID    string `json:"renewal_id"`
+	ConnectionID string `json:"connection_id"`
+}
+
+// checkRenewal reads what the reader attested for a renewal and checks its
+// shape as checkPrepared does: a renewal id of a request id's shape, this
+// connection, this reader's resource, and an attestation over the renewal
+// id. The renewal id comes back with the entry to remember under it.
+func checkRenewal(raw json.RawMessage, connectionID string, rd reader) (string, requestEntry, error) {
+	var p renewalDescriptor
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return "", requestEntry{}, errors.New("the renewal is not the expected object")
+	}
+	if !validRequestID(p.RenewalID) || p.ConnectionID != connectionID || p.Resource != rd.resource() {
+		return "", requestEntry{}, errors.New("the renewal is for another connection or resource, or its id is malformed")
+	}
+	if p.Attestation != nil && p.Attestation.RequestID != p.RenewalID {
+		return "", requestEntry{}, errors.New("the renewal's attestation is for another request")
+	}
+	e, err := p.entry(rd, true)
+	if err != nil {
+		return "", requestEntry{}, err
+	}
+	e.connection = connectionID
+	return p.RenewalID, e, nil
 }

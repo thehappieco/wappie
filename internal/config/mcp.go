@@ -55,13 +55,28 @@ type MCP struct {
 	// off this host (a Nitro Enclave) and talk to this server over
 	// HMAC-signed HTTPS, each with its own WS_MCP_READER_<ID>_* block.
 	Attested []MCPReader
+	// ContentEnabled is the kill switch for content connections: message
+	// text read inside the enclave reader. Off by default; off, every
+	// content connection's key is dropped within a minute and no new one
+	// is consented, while the consents themselves survive.
+	ContentEnabled bool
+	// ContentTenants are the workspaces that may consent to content, each
+	// also allowed by the enclave reader's TENANTS. Required when
+	// ContentEnabled; "*" is not accepted.
+	ContentTenants []uuid.UUID
 
 	// readersErr is what was wrong with WS_MCP_READERS itself, and
 	// strayHosted the WS_MCP_READER_HOSTED_* names that were set. Both are
 	// reported by Validate, because a disabled connector is not inspected.
 	readersErr  error
 	strayHosted []string
+	// contentTenantErr is a WS_MCP_CONTENT_TENANTS value that did not parse.
+	contentTenantErr error
 }
+
+// ContentReader is the reader content connections are held by: the
+// production enclave. No other reader, attested or not, is given text.
+const ContentReader = "enclave"
 
 // MCPReader is one attested reader's block, WS_MCP_READER_<ID>_*.
 type MCPReader struct {
@@ -119,7 +134,31 @@ func loadMCP(errs *[]error) MCP {
 			m.strayHosted = append(m.strayHosted, name)
 		}
 	}
+	m.ContentEnabled = boolean("WS_MCP_CONTENT_ENABLED", false, errs)
+	m.ContentTenants, m.contentTenantErr = contentTenants(os.Getenv("WS_MCP_CONTENT_TENANTS"))
 	return m
+}
+
+// contentTenants parses WS_MCP_CONTENT_TENANTS: workspace UUIDs, comma
+// separated. Every workspace is named; "*" is refused, because content is
+// opened one workspace at a time, on purpose.
+func contentTenants(raw string) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	var errs []error
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		tenant, err := uuid.Parse(part)
+		if err != nil || len(part) != 36 || tenant == uuid.Nil {
+			errs = append(errs, fmt.Errorf("WS_MCP_CONTENT_TENANTS: %q is not a workspace id (a UUID; * is not accepted)", part))
+			continue
+		}
+		if !slices.Contains(out, tenant) {
+			out = append(out, tenant)
+		}
+	}
+	return out, errors.Join(errs...)
 }
 
 // hostedReader is the reader on this host, configured by the original
@@ -233,7 +272,45 @@ func (m MCP) Validate(prod bool) error {
 	if !validChallenge(m.OpenAIAppsChallenge) {
 		errs = append(errs, errors.New("WS_MCP_OPENAI_APPS_CHALLENGE must be up to 256 printable characters without spaces"))
 	}
+	errs = append(errs, m.validateContent()...)
 	return errors.Join(errs...)
+}
+
+// validateContent checks the content switch. Off, the tenant list is not
+// inspected. On, it needs the enclave reader and a list of workspaces that
+// reader also admits.
+func (m MCP) validateContent() []error {
+	if !m.ContentEnabled {
+		return nil
+	}
+	var errs []error
+	if m.contentTenantErr != nil {
+		errs = append(errs, m.contentTenantErr)
+	}
+	if len(m.ContentTenants) == 0 && m.contentTenantErr == nil {
+		errs = append(errs, errors.New("WS_MCP_CONTENT_TENANTS must list the workspaces that may consent to content when WS_MCP_CONTENT_ENABLED is set"))
+	}
+	enclave, ok := m.Reader(ContentReader)
+	if !ok {
+		return append(errs, fmt.Errorf("WS_MCP_CONTENT_ENABLED needs the %q reader in WS_MCP_READERS: content is opened only inside it", ContentReader))
+	}
+	for _, tenant := range m.ContentTenants {
+		if !enclave.AllTenants && !slices.Contains(enclave.Tenants, tenant) {
+			errs = append(errs, fmt.Errorf("WS_MCP_CONTENT_TENANTS: %s is not in WS_MCP_READER_%s_TENANTS", tenant, strings.ToUpper(ContentReader)))
+		}
+	}
+	return errs
+}
+
+// ContentAllowed reports whether a workspace may have content connections
+// right now: the connector and the switch are on, the enclave reader is
+// configured and admits the workspace, and the workspace is listed.
+func (m MCP) ContentAllowed(tenant uuid.UUID) bool {
+	if !m.Enabled || !m.ContentEnabled || !slices.Contains(m.ContentTenants, tenant) {
+		return false
+	}
+	enclave, ok := m.Reader(ContentReader)
+	return ok && (enclave.AllTenants || slices.Contains(enclave.Tenants, tenant))
 }
 
 // validateHosted is today's check of the hosted reader, unchanged: a
@@ -428,6 +505,11 @@ func (m MCP) String() string {
 		b.WriteString(" ")
 		b.WriteString(r.String())
 	}
+	content := "off"
+	if m.ContentEnabled {
+		content = "on"
+	}
+	fmt.Fprintf(&b, " content=%s content_tenants=%d", content, len(m.ContentTenants))
 	return b.String()
 }
 

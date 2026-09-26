@@ -230,7 +230,7 @@ func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name st
 		if actsAs != nil {
 			var id uuid.UUID
 			if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
-				WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND m.role='service' FOR SHARE OF m`, tenantID, actsAs).Scan(&id); err != nil {
+				WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND m.role='service' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, tenantID, actsAs).Scan(&id); err != nil {
 				return ErrMembershipForbidden
 			}
 		}

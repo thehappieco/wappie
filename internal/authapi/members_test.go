@@ -272,3 +272,48 @@ func TestDemotionInvalidatesOutstandingInvitations(t *testing.T) {
 		t.Fatalf("demoted issuer created invitation: %v", err)
 	}
 }
+
+// A content consent's service invitation: provisional, for a service
+// account with no address, from a manager, valid for thirty minutes, and the
+// account it registers carries the same window.
+func TestProvisionalServiceInvite(t *testing.T) {
+	h := newHarness(t)
+	_, ownerToken := memberAccount(t, h, "owner@example.com", "owner")
+	_, memberToken := memberAccount(t, h, "member@example.com", "member")
+	for _, tc := range []struct {
+		name  string
+		body  map[string]any
+		token string
+		want  int
+	}{
+		{"a person", map[string]any{"role": "member", "provisional": true}, ownerToken, 400},
+		{"with an address", map[string]any{"role": "service", "email": "svc@example.com", "provisional": true}, ownerToken, 400},
+		{"not a manager", map[string]any{"role": "service", "provisional": true}, memberToken, 403},
+	} {
+		if code := h.post(t, "/v1/auth/workspaces/invites", tc.body, nil, tc.token); code != tc.want {
+			t.Fatalf("%s: status=%d want=%d", tc.name, code, tc.want)
+		}
+	}
+	var created struct {
+		Invite     string `json:"invite"`
+		Invitation struct {
+			Role      string    `json:"role"`
+			ExpiresAt time.Time `json:"expires_at"`
+		} `json:"invitation"`
+		EmailSent bool `json:"email_sent"`
+	}
+	if code := h.post(t, "/v1/auth/workspaces/invites", map[string]any{"role": "service", "provisional": true}, &created, ownerToken); code != 201 {
+		t.Fatalf("provisional invite: %d", code)
+	}
+	if created.Invite == "" || created.Invitation.Role != "service" || created.EmailSent ||
+		time.Until(created.Invitation.ExpiresAt) > 30*time.Minute || time.Until(created.Invitation.ExpiresAt) < 29*time.Minute {
+		t.Fatalf("created = %+v", created)
+	}
+	svc, err := h.users.SignupService(context.Background(), created.Invite, "assistant", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.users.Get(context.Background(), h.tenant, svc.ID); err != nil {
+		t.Fatalf("the provisional account is not a member inside its window: %v", err)
+	}
+}

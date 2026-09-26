@@ -12,6 +12,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"whatserver2/internal/store"
 )
 
 // The replay cache refuses a nonce it holds, forgets one once its timestamp
@@ -190,5 +194,29 @@ func TestCheckReader(t *testing.T) {
 	}
 	if level, msg, _ := logs.last(); level != slog.LevelWarn || !strings.Contains(msg, "expiry") {
 		t.Fatalf("a ten-day certificate: %v %q", level, msg)
+	}
+}
+
+// A connection's standing carries its expiry in UTC, for the hosted and the
+// attested reply alike, whatever zone the database driver handed it in.
+func TestStandingReplyExpiryIsUTC(t *testing.T) {
+	zone := time.FixedZone("UTC+2", 2*60*60)
+	at := time.Date(2026, 10, 26, 14, 30, 0, 0, zone)
+	service := uuid.New()
+	for name, attested := range map[string]bool{"hosted": false, "attested": true} {
+		raw, err := json.Marshal(standingReply(store.StatusAnswer{Status: "active", ExpiresAt: at, Kind: "content", ServiceUserID: &service}, attested))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got["expires_at"] != "2026-10-26T12:30:00Z" {
+			t.Fatalf("%s: expires_at = %v", name, got["expires_at"])
+		}
+		if _, carries := got["service_user_id"]; carries != attested {
+			t.Fatalf("%s: reply = %s", name, raw)
+		}
 	}
 }

@@ -484,6 +484,9 @@ func serve() error {
 	// log shows its image, certificate and policy before anyone asks.
 	if a.mcp != nil {
 		a.mcp.MonitorReaders(ctx)
+		// A revocation an attested reader has not confirmed is sent again
+		// every thirty seconds until it is.
+		a.mcp.WatchRevocations(ctx)
 	}
 
 	errc := make(chan error, 1)
@@ -685,6 +688,10 @@ func (a *app) routes() http.Handler {
 			Attested:       attestedReaders(a.cfg.MCP),
 			TrustedProxies: a.cfg.TrustedProxies,
 			States:         store.NewMCPReaderStates(a.pools.API),
+			// Message text, only inside the enclave, only while the switch
+			// is on and only for the workspaces listed.
+			ContentReader:  config.ContentReader,
+			ContentAllowed: a.cfg.MCP.ContentAllowed,
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)

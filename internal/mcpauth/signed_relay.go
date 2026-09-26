@@ -138,6 +138,37 @@ func (c *SignedRelay) Revoke(ctx context.Context, connectionID string) error {
 	return revokeAnswer(status)
 }
 
+// Renewal asks the reader for a new per-connection key for a content
+// connection, attested over the browser's nonce like a prepare. The bytes
+// come back as the reader sent them.
+func (c *SignedRelay) Renewal(ctx context.Context, connectionID, nonce string) (json.RawMessage, error) {
+	status, body, err := c.do(ctx, http.MethodPost, "/internal/connections/"+url.PathEscape(connectionID)+"/renewal", prepareRequest{Nonce: nonce})
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusTooManyRequests:
+		return nil, ErrTooManyPrepares
+	case http.StatusBadRequest:
+		return nil, &RefusalError{Code: readerCode(body)}
+	case http.StatusServiceUnavailable:
+		return nil, fmt.Errorf("%w: renewal answered 503 %s", ErrReaderUnavailable, readerCode(body))
+	}
+	return descriptorAnswer(status, body)
+}
+
+// RenewalBundle hands the reader the sealed bundle of a renewal. The reader
+// checks it and stages the new key; it commits it when it next hears the
+// connection names the new service account.
+func (c *SignedRelay) RenewalBundle(ctx context.Context, connectionID, renewalID string, in BundleRelay) error {
+	status, body, err := c.do(ctx, http.MethodPost,
+		"/internal/connections/"+url.PathEscape(connectionID)+"/renewal/"+url.PathEscape(renewalID)+"/bundle", in)
+	if err != nil {
+		return err
+	}
+	return bundleAnswer(status, body)
+}
+
 // ReaderHealth is the reader's own account of itself. Every fingerprint in
 // it is public: the PCR0 is in the release, the SPKI is in the certificate
 // transparency logs, and the policy hash is published with the release.

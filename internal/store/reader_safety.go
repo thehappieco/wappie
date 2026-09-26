@@ -24,7 +24,22 @@ func lockWorkspaceAccess(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) error
 // keyless CLI devices remain supported; the check only protects envelopes held
 // by active members. Even a holder whose read flag was withheld may be the
 // only recoverable copy. Old non-retired epochs need a reader too.
+//
+// A connection service account never counts: not as a backup, because its
+// grants are sealed to a key that lives only in a reader and dies with it
+// (after a restart nobody could open them), and not as the one being
+// checked, because its grants are copies of someone else's. That is any
+// membership with a deadline, and any account a connection names.
 func requireRemainingReader(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID, device *uuid.UUID) error {
+	var connectionService bool
+	if err := tx.QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2 AND expires_at IS NOT NULL)
+		OR EXISTS(SELECT 1 FROM mcp_connections WHERE service_user_id=$2)`, tenant, target).Scan(&connectionService); err != nil {
+		return err
+	}
+	if connectionService {
+		return nil
+	}
 	var stranded bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1 FROM device_key_grants doomed
@@ -35,9 +50,11 @@ func requireRemainingReader(ctx context.Context, tx pgx.Tx, tenant, target uuid.
 		AND NOT EXISTS(
 			SELECT 1 FROM device_key_grants backup
 			JOIN workspace_memberships bm ON bm.tenant_id=backup.tenant_id AND bm.user_id=backup.user_id AND bm.status='active'
+				AND bm.expires_at IS NULL
 			JOIN users bu ON bu.id=bm.user_id AND bu.status='active'
 			JOIN device_permissions bp ON bp.tenant_id=backup.tenant_id AND bp.device_id=backup.device_id AND bp.user_id=backup.user_id AND bp.can_read
 			WHERE backup.tenant_id=doomed.tenant_id AND backup.device_id=doomed.device_id AND backup.epoch=doomed.epoch AND backup.user_id<>$2
+			AND NOT EXISTS(SELECT 1 FROM mcp_connections c WHERE c.service_user_id=backup.user_id)
 		)
 	)`, tenant, target, device).Scan(&stranded)
 	if err != nil {

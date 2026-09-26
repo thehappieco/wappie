@@ -65,6 +65,12 @@ func (u *Users) sealInvite(tenant, id uuid.UUID, secret string) ([]byte, error) 
 	return aead.Seal(nonce, nonce, []byte(secret), inviteAAD(tenant, id)), nil
 }
 func (u *Users) createInviteTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, role, email string, creator *uuid.UUID, ttl time.Duration) (string, Invitation, error) {
+	return u.createInviteKindTx(ctx, tx, tenant, role, email, creator, ttl, false)
+}
+
+// createInviteKindTx is createInviteTx for either kind of invitation;
+// provisional is the thirty-minute service invitation of a content consent.
+func (u *Users) createInviteKindTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, role, email string, creator *uuid.UUID, ttl time.Duration, provisional bool) (string, Invitation, error) {
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		return "", Invitation{}, err
@@ -80,7 +86,7 @@ func (u *Users) createInviteTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID,
 	if email != "" {
 		address = &out.Email
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO invites(id,invite_id,tenant_id,role,email,created_by,expires_at,secret_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING created_at`, out.ID, sum[:], tenant, role, address, creator, out.ExpiresAt, sealed).Scan(&out.CreatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO invites(id,invite_id,tenant_id,role,email,created_by,expires_at,secret_ciphertext,provisional) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING created_at`, out.ID, sum[:], tenant, role, address, creator, out.ExpiresAt, sealed, provisional).Scan(&out.CreatedAt)
 	return secret, out, err
 }
 func (u *Users) managerInvite(ctx context.Context, tx pgx.Tx, tenant, actor, id uuid.UUID) (Invitation, []byte, error) {
@@ -238,6 +244,30 @@ func (u *Users) NewMemberInvitation(ctx context.Context, tenant, actor uuid.UUID
 			return e
 		}
 		secret, inv, e = u.createInviteTx(ctx, tx, tenant, role, email, &actor, 7*24*time.Hour)
+		return e
+	})
+	return secret, inv, err
+}
+
+// ProvisionalServiceTTL is how long a content consent's service invitation,
+// and then the service account's membership, lasts before the consent binds
+// it: long enough to type a password and seal the grants, short enough that
+// an abandoned consent leaves nothing behind for long.
+const ProvisionalServiceTTL = 30 * time.Minute
+
+// NewProvisionalServiceInvitation issues the service invitation of a content
+// consent: role service, valid for ProvisionalServiceTTL, and marked so that
+// the account it registers gets a membership with the same deadline.
+// ExpireServiceAccounts removes it if no connection takes it in time.
+func (u *Users) NewProvisionalServiceInvitation(ctx context.Context, tenant, actor uuid.UUID) (string, Invitation, error) {
+	var secret string
+	var inv Invitation
+	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		if _, e := lockWorkspaceManager(ctx, tx, tenant, actor); e != nil {
+			return e
+		}
+		var e error
+		secret, inv, e = u.createInviteKindTx(ctx, tx, tenant, RoleService, "", &actor, ProvisionalServiceTTL, true)
 		return e
 	})
 	return secret, inv, err
