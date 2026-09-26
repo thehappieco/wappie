@@ -3,7 +3,9 @@
 An open source MCP server for querying a fixed Wappie installation and
 workspace. It runs over **stdio** locally, and the companion
 [`packages/mcp-http`](../mcp-http/README.md) serves the same reader over
-**Streamable HTTP** in metadata-only mode. It uses the public REST APIs and
+**Streamable HTTP**: as the hosted metadata connector, which never opens
+content, and inside an attested enclave, which can open message text for a
+connection the user enabled it on. It uses the public REST APIs and
 public SDK cryptography, without depending on the private app. Requires
 Node.js 22 or later.
 
@@ -27,7 +29,7 @@ without the console.
 
 1. Select the installation and workspace you intend to share. Open **MCP** in
    the console, name the connection and select its numbers.
-2. Leave message text disabled for metadata only. To allow text, enable
+2. Leave message text disabled to share metadata alone. To allow text, enable
    **Allow the assistant to read message text** and enter your Wappie password
    for that installation. Your account must have archive access to every
    selected number. The browser uses the password locally; it is not exported.
@@ -93,8 +95,9 @@ configuration below needs only the path to `config.json`, never its credentials.
 
 This package speaks **stdio**. Connect it through OpenAI's Secure MCP Tunnel;
 the Wappie server's REST address is not an MCP endpoint. For a connector that
-needs no tunnel and no always-on computer, use the installation's hosted
-metadata-only endpoint instead; see [remote HTTP MCP](../mcp-http/README.md).
+needs no tunnel and no always-on computer, use one of the installation's
+hosted endpoints instead; see [remote HTTP MCP](../mcp-http/README.md) and
+[MCP setup](../../docs/mcp.md#ways-to-connect) for what each can read.
 
 1. Follow the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
    to install `tunnel-client`, create a tunnel in the correct organization and
@@ -153,8 +156,10 @@ describes this configuration flow.
 Fully quit and restart Claude Desktop, then review and enable Wappie's tools in
 the conversation's connectors menu. This config is for the local desktop app.
 A Wappie REST address is still not an MCP URL; for claude.ai, add the hosted
-connector URL published by your installation (`https://<host>/mcp`), which is
-metadata-only and discovered through `/.well-known/oauth-protected-resource`.
+connector URL published by your installation (`https://<host>/mcp`),
+discovered through `/.well-known/oauth-protected-resource`. Wappie publishes
+two: a metadata connector and an attested reader that can also open text; see
+[MCP setup](../../docs/mcp.md#ways-to-connect).
 See also
 [Claude's local MCP support guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
 
@@ -290,7 +295,7 @@ checked again.
 The password file contains only the password, with an optional trailing newline.
 The MCP server fetches the challenge and current grants to open the key locally;
 it does not sign in, create a session or change the account. Renew expired
-sessions through the CLI. For metadata only, remove `password_file` and
+sessions through the CLI. To read metadata alone, remove `password_file` and
 `allow_plaintext`. Do not mix session/password credentials with API key/service
 key credentials.
 
@@ -304,6 +309,55 @@ not derive passwords and is not subject to these Argon2 limits.
 You choose the configuration outside the arguments sent by the model. Configure
 another MCP instance to connect to a different server/workspace. Use HTTPS;
 HTTP is accepted only for `localhost`, `127.0.0.1` or `::1`.
+
+### Hosted modes: `credential_source`
+
+The configurations above use the default `credential_source: "files"`. The two
+hosted readers in [`packages/mcp-http`](../mcp-http/README.md) build their
+configuration in process, one per connection; nobody writes these by hand.
+`readerMode(config)` names the mode, and every model-facing string (tool
+descriptions, instructions, locked reasons, guidance) picks its wording by it.
+Source URLs are left out of results in both hosted modes, because the archive
+address a hosted reader uses is internal.
+
+| `credential_source` | Mode | What it opens |
+| --- | --- | --- |
+| `"files"` (default) | `local` | What the local configuration above allows. |
+| `"provided"` | `hosted-metadata` | Nothing. The pilot's hosted connector (`wappie-mcp`) and every connection of kind `metadata`. |
+| `"enclave"` | `hosted-content` | Message text, chat names and previews, contact names and filenames, inside the attested reader. |
+
+**`"provided"` is unchanged by the content milestone and still never opens
+content.** The provider hands over only a token; any credential file or
+`allow_plaintext` is refused with `provided_credentials_metadata_only`, and no
+code reachable from the pilot's server can select `"enclave"`. Text queries
+answer `content_sealed_metadata_only`.
+
+**`"enclave"`** is the attested reader's content connection. It requires
+`service_user_id`, `device_ids` and `allow_plaintext: true`, and refuses every
+file field (`token_file`, `service_key_file`, `session_file`, `password_file`,
+`contacts_file`) with `enclave_credentials_invalid`. The provider supplies
+`token()`, `serviceKey()` (a non-extractable X25519 key handle with its 32-byte
+public half, never key bytes; anything else is `invalid_service_key`),
+`expectedEpoch(device)` (the grant epoch consented for that number) and,
+optionally, `renewalURL()` and `onStaleGrant({device_id})`. The reader still
+fetches the grants on every operation; a grant whose epoch differs from the
+consented one, or that the held key cannot open, is refused with `stale_grant`,
+after `onStaleGrant` is told (best effort: it is not awaited and cannot fail the
+tool) so the enclave can log the event. There is no personal contacts snapshot
+in this mode; the provider is never asked for one. The key lives only in the
+enclave's memory: when the reader restarts it is gone, and `token()` answers
+`reconsent_required` until the user renews.
+
+Two guidance codes exist only in this mode. The tool result names the code and
+tells the assistant what to say:
+
+| Code | Meaning | Guidance to the assistant |
+| --- | --- | --- |
+| `reconsent_required` | The reader restarted and holds no key for this connection. | Give the user the renewal link (or point to the Wappie console) to renew with their password; the assistant does not reconnect and does not retry until they have. |
+| `stale_grant` | The number's access changed after consent (new grant epoch, or a grant the held key cannot open). | Ask the user to renew the connection, with the renewal link when there is one. |
+
+A renewal link is included only when it is an `https` address; otherwise the
+guidance points to the Wappie console.
 
 ## Search configuration
 
@@ -335,8 +389,11 @@ default to UTC.
 | `search_messages` | Bounded lexical search and metadata filtering across a number's archived chats. |
 | `activity_summary` | Page-level counts of archived original message events by chat, sender and direction. |
 
-The remote HTTP transport exposes the same eight tools; sealed content is
-always reported as `locked` there, because that reader is never given a key.
+The remote HTTP transport exposes the same eight tools. On the hosted metadata
+connector (`"provided"`) sealed content is always reported as `locked`, because
+that reader is never given a key. On the attested reader (`"enclave"`) content
+opens with the connection's key, and a value that key cannot open is `locked`
+with the reason "The key this connection holds could not open this content."
 
 `list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
 defaulting to 50. For `list_messages`, pass
@@ -355,6 +412,11 @@ examines up to 500 archived contacts and the optional personal snapshot. Names
 identify their source; results include explicit phone/JID aliases and
 `ambiguous` when several candidates match. Ask the user which candidate they
 mean before choosing an identity.
+
+On the attested reader (`hosted-content`) each call reads exactly **four pages**
+of 500 archived contacts, following `has_more` whatever matched, so the archive
+cannot tell from the paging which contact was looked for; `next` continues after
+the fourth page. Every other mode reads one page per call.
 
 Follow the complete returned `next` object as the next call's arguments to scan
 more archived contacts. If `omitted_candidates` is positive, narrow the query;
@@ -392,13 +454,33 @@ have more rows to search. Follow the complete `next` object unchanged while
 `has_more` is true. This is different from `list_messages`, where only the cursor
 is passed as `before`.
 
-Each result includes an authenticated REST source reference and an
-`archive_status`: `latest_archived`, `superseded`, `deleted`, `control_event` or
-`unavailable`. A search can match an old revision or a subsequently deleted
+Each result includes a source reference (with an authenticated REST URL on a
+local install) and an `archive_status`: `latest_archived`, `superseded`,
+`deleted`, `control_event` or `unavailable`, or `not_checked` for a text query
+on the attested reader (below). A search can match an old revision or a subsequently deleted
 message. Check this state and use `list_revisions` before presenting a historical
 statement as current. The source URL contains no credential and still requires
 authorized access. To expand context, search the returned `chat_key` with a
 bounded explicit time interval and no text query.
+
+**Text search on the attested reader (`hosted-content`) scans a fixed window.**
+Stopping at `limit`, or looking up the history of each hit, would show the
+archive which rows hold the words. So a call with a `query` there always
+examines the whole budget (`max_scan_messages`, 500 for the enclave) unless the
+45-second deadline passes first, and its REST requests depend only on the range,
+the filters and the budget:
+
+- The first `limit` hits in scan order are returned; the rest are counted in
+  `omitted_hits`. When it is above zero, narrow the range or the filters.
+- Hits carry `archive_status: {"state": "not_checked"}` and no history is
+  fetched. Use `list_revisions` before presenting a hit as current.
+- `coverage.fixed_window` is `true`, and `coverage.deadline_reached` says
+  whether the deadline cut the window short.
+- `next` starts after the last row examined, not after the last hit returned;
+  follow it unchanged while `has_more` is true.
+
+Searches without a query, `activity_summary`, and every search in the other
+modes behave as described above.
 
 ### Calendar periods and continuation
 
@@ -498,7 +580,7 @@ changes and nanosecond-preserving explicit bounds. Search tests exercise bounded
 cross-chat scans, continuation, contact ambiguity and historical event counts. These
 local tests do not establish a live ChatGPT or Claude connection; complete the
 host-specific first check above in your own account. `packages/mcp-http` has
-its own protocol, OAuth and metadata-only regression suite; see its README.
+its own protocol, OAuth and content-boundary regression suite; see its README.
 
 References: [MCP SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/),
 [official stdio documentation](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio.html).

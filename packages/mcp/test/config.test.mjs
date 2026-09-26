@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { validateConfig, readPrivateFile, loadCredential } from '../config.mjs'
+import { validateConfig, readPrivateFile, loadCredential, readerMode, LocalConfigError } from '../config.mjs'
 const base = { server: 'https://example.test', workspace: '11111111-1111-4111-8111-111111111111', token_file: 'token' }
 const service = { ...base, allow_plaintext: true, service_key_file: 'key', service_user_id: '22222222-2222-4222-8222-222222222222', device_ids: ['33333333-3333-4333-8333-333333333333'] }
 test('contact packs require explicit plaintext service credentials and an exact device allowlist', () => {
@@ -61,4 +61,39 @@ test('a provider supplies the token in provided mode and is never consulted for 
   // File mode ignores the provider: the missing token file is what fails.
   await assert.rejects(loadCredential(validateConfig({ ...base, token_file: '/nonexistent/wappie-token' }), provider), { code: 'private_file_unavailable' })
   assert.equal(calls, 1)
+})
+const enclave = { server: base.server, workspace: base.workspace, credential_source: 'enclave', allow_plaintext: true,
+  service_user_id: service.service_user_id, device_ids: ['33333333-3333-4333-8333-333333333333'], timezone: 'America/Sao_Paulo' }
+test('enclave credentials open content with a service scope and no files; every other shape is refused', () => {
+  const configured = validateConfig(enclave, '/private')
+  assert.equal(configured.credential_source, 'enclave')
+  assert.equal(configured.allow_plaintext, true)
+  assert.equal(configured.max_scan_messages, 500)
+  assert.ok(Object.isFrozen(configured) && Object.isFrozen(configured.device_ids))
+  assert.equal(validateConfig({ ...enclave, service_user_id: enclave.service_user_id.toUpperCase() }).service_user_id, enclave.service_user_id)
+  for (const override of [{ token_file: 'token' }, { session_file: 'session.json' }, { password_file: 'password' }, { service_key_file: 'key' },
+    { contacts_file: 'contacts.enc.json' }, { allow_plaintext: false }, { allow_plaintext: undefined }, { service_user_id: undefined }, { device_ids: undefined },
+    { token_file: 'token', service_key_file: 'key' }]) {
+    assert.throws(() => validateConfig({ ...enclave, ...override }), { code: 'enclave_credentials_invalid' }, JSON.stringify(override))
+  }
+  for (const override of [{ device_ids: [] }, { service_user_id: 'not-a-uuid' }, { contacts: [] }, { service_private_key: 'x' }, { credential_source: 'Enclave' }]) {
+    assert.throws(() => validateConfig({ ...enclave, ...override }), { code: 'invalid_config' }, JSON.stringify(override))
+  }
+  assert.throws(() => validateConfig({ ...enclave, device_ids: [enclave.device_ids[0], enclave.device_ids[0]] }), { code: 'invalid_config' })
+  assert.throws(() => validateConfig({ ...enclave, timezone: 'Mars/Olympus' }), { code: 'invalid_timezone' })
+  assert.throws(() => validateConfig({ ...enclave, server: 'http://remote.example.test' }), { code: 'invalid_server' })
+})
+test('readerMode names the three readers and nothing else', () => {
+  assert.equal(readerMode(validateConfig(base)), 'local')
+  assert.equal(readerMode(validateConfig(service)), 'local')
+  assert.equal(readerMode(validateConfig(provided)), 'hosted-metadata')
+  assert.equal(readerMode(validateConfig(enclave)), 'hosted-content')
+  for (const bad of [{}, { credential_source: 'network' }, null, undefined]) assert.throws(() => readerMode(bad), { code: 'invalid_config' })
+})
+test('an enclave config takes its token from the provider, which answers reconsent_required without a key', async () => {
+  const token = 'synthetic-enclave-credential-never-returned'
+  assert.deepEqual(await loadCredential(validateConfig(enclave), { token: async () => ({ token, kind: 'api_key' }) }), { token, kind: 'api_key' })
+  await assert.rejects(loadCredential(validateConfig(enclave)), { code: 'credential_provider_required' })
+  await assert.rejects(loadCredential(validateConfig(enclave), { token: async () => { throw new LocalConfigError('reconsent_required') } }), { code: 'reconsent_required' })
+  await assert.rejects(loadCredential(validateConfig(enclave), { token: async () => ({ token, kind: 'session' }) }), { code: 'invalid_token_file' })
 })
