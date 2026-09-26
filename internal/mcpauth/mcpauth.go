@@ -87,6 +87,14 @@ type Handler struct {
 	// OpenAIAppsChallenge is served at /.well-known/openai-apps-challenge for
 	// OpenAI's plugin portal to verify the domain; empty means 404.
 	OpenAIAppsChallenge string
+	// ContentReader is the attested reader content connections may be held
+	// by; empty allows content nowhere.
+	ContentReader string
+	// ContentAllowed reports whether a workspace may have content
+	// connections right now: the kill switch and the workspace allowlist.
+	// Nil allows none. It is asked on every consent, renewal and status
+	// check, so turning the switch off reaches live connections too.
+	ContentAllowed func(tenant uuid.UUID) bool
 
 	// Set up by Mount.
 	readers  []reader
@@ -105,6 +113,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/mcp/connections", h.create)
 	mux.HandleFunc("GET /v1/mcp/connections", h.list)
 	mux.HandleFunc("DELETE /v1/mcp/connections/{id}", h.remove)
+	mux.HandleFunc("POST /v1/mcp/connections/{id}/renewal", h.renewal)
+	mux.HandleFunc("POST /v1/mcp/connections/{id}/renew", h.renew)
+	mux.HandleFunc("GET /v1/mcp/content", h.content)
 	mux.HandleFunc("GET /v1/mcp/internal/connections/{id}", h.internal(h.status))
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/activate", h.internal(h.activate))
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/revoke", h.internal(h.revoke))
@@ -140,6 +151,12 @@ type createRequest struct {
 	ExpiresAt  string `json:"expires_at"`
 	KID        string `json:"kid"`
 	Sealed     string `json:"sealed"`
+	// Kind is "metadata" (the default when absent) or "content". The three
+	// fields after it are for content only, and absent for metadata.
+	Kind           string `json:"kind"`
+	ServiceUserID  string `json:"service_user_id"`
+	KeyMode        string `json:"key_mode"`
+	ConsentVersion int    `json:"consent_version"`
 }
 
 type createReply struct {
@@ -162,16 +179,34 @@ type connectionInfo struct {
 	ActivatedAt  *time.Time `json:"activated_at"`
 	ExpiresAt    time.Time  `json:"expires_at"`
 	LastSeenAt   *time.Time `json:"last_seen_at"`
+	// Kind is "metadata" or "content"; KeyMode is null for metadata.
+	Kind    string  `json:"kind"`
+	KeyMode *string `json:"key_mode"`
+	// RevokeReason says why an ended connection ended; null otherwise.
+	RevokeReason *string `json:"revoke_reason"`
+	// Renewable is set on a live content connection the viewer consented
+	// to, while content is allowed for the workspace.
+	Renewable bool `json:"renewable"`
 }
 
 type connectionsReply struct {
 	Connections []connectionInfo `json:"connections"`
 }
 
-// statusReply answers the reader's standing check.
+// statusReply answers the hosted reader's standing check.
 type statusReply struct {
 	Status    string    `json:"status"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// attestedStatusReply answers an attested reader's: the standing, and which
+// kind of connection it is and, for content, which service account it reads
+// as, so the reader can drop a key that belongs to another.
+type attestedStatusReply struct {
+	Status        string    `json:"status"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	Kind          string    `json:"kind"`
+	ServiceUserID *string   `json:"service_user_id"`
 }
 
 // descriptor is the part of the reader's answer this server reads: enough to
@@ -346,6 +381,13 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.readerError(w, err)
 		return
 	}
+	content := in.Kind == store.KindContent
+	if content && !h.contentAllowed(rd, user.TenantID) {
+		// Text is opened only inside the attested reader, only while the
+		// switch is on, and only for the workspaces listed.
+		fail(w, http.StatusForbidden, "content_not_allowed", "this workspace may not let an assistant read message text yet")
+		return
+	}
 	if rd.attested != nil {
 		if !rd.attested.allows(user.TenantID) {
 			fail(w, http.StatusForbidden, "tenant_not_allowed", "this workspace may not use this assistant connector yet")
@@ -355,11 +397,16 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		// to the key it named; the kid it sends must be the one prepared
 		// here, or the bundle is sealed to a key nothing attested.
 		entry, ok := h.requests.get(in.RequestID, time.Now())
-		if !ok || !entry.prepared || entry.reader != rd.id || entry.kid != req.KID {
+		if !ok || !entry.prepared || entry.reader != rd.id || entry.kid != req.KID || entry.connection != "" ||
+			content && len(entry.publicKey) != readerPublicKeyLen {
 			fail(w, http.StatusConflict, "attestation_required", "this connector must be verified before a consent; reload the consent page")
 			return
 		}
 		in.ReaderMeasurement = entry.measurement()
+		if content {
+			// The service account's public key must be the attested key.
+			in.ReaderPublicKey = append([]byte(nil), entry.publicKey...)
+		}
 	}
 	in.Reader = rd.id
 	if raw == nil {
@@ -404,6 +451,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relay := BundleRelay{ConnectionID: conn.ID, TenantID: conn.TenantID, KID: in.ReaderKID, Sealed: req.Sealed, ExpiresAt: conn.ExpiresAt}
+	if content {
+		relay.Kind = store.KindContent
+	}
 	if err := rd.relay.Bundle(ctx, in.RequestID, relay); err != nil {
 		if derr := h.Connections.DeleteFailed(ctx, conn.ID); derr != nil {
 			// The row stays pending and the janitor revokes it with its
@@ -415,7 +465,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log().Info("mcp connection consented", "connection", conn.ID, "client", in.RedirectHost,
-		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id)
+		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id, "kind", in.Kind)
 	send(w, http.StatusCreated, createReply{
 		ID: conn.ID, Status: conn.Status, ExpiresAt: conn.ExpiresAt,
 		CompleteURL: rd.completeURL(),
@@ -456,10 +506,37 @@ func checkCreate(w http.ResponseWriter, req createRequest) (store.CreateMCPConne
 	}
 	in = store.CreateMCPConnection{
 		RequestID: req.RequestID, KeyPrefix: req.KeyPrefix, ClientName: name,
-		ReaderKID: req.KID, ExpiresAt: at.UTC(),
+		ReaderKID: req.KID, ExpiresAt: at.UTC(), Kind: store.KindMetadata,
+	}
+	switch req.Kind {
+	case "", store.KindMetadata:
+		if req.ServiceUserID != "" || req.KeyMode != "" || req.ConsentVersion != 0 {
+			return bad("service_user_id, key_mode and consent_version are for a content connection only")
+		}
+	case store.KindContent:
+		service, err := uuid.Parse(req.ServiceUserID)
+		if err != nil || len(req.ServiceUserID) != 36 || service == uuid.Nil {
+			return bad("service_user_id must be the content connection's service account id")
+		}
+		if req.KeyMode != store.KeyModeEphemeral {
+			return bad("key_mode must be ephemeral")
+		}
+		if req.ConsentVersion != store.ContentConsentVersion {
+			return bad("consent_version must be 1")
+		}
+		if at.After(time.Now().Add(maxContentLifetime)) {
+			return bad("a content connection's expires_at must be within 90 days")
+		}
+		in.Kind, in.ServiceUserID, in.KeyMode, in.ConsentVersion = store.KindContent, service, req.KeyMode, req.ConsentVersion
+	default:
+		return bad("kind must be metadata or content")
 	}
 	return in, true
 }
+
+// maxContentLifetime bounds a content consent: ninety days, and an hour for
+// the console's clock.
+const maxContentLifetime = 90*24*time.Hour + time.Hour
 
 // list shows every connection of the workspace, in every status. A member
 // may look: knowing which assistants reach the archive is not a privilege.
@@ -476,18 +553,28 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := connectionsReply{Connections: make([]connectionInfo, 0, len(rows))}
 	now := time.Now()
+	allowed := h.contentEnabledFor(user.TenantID)
 	for _, c := range rows {
 		status := c.Status
-		if status == "active" && !c.ExpiresAt.After(now) {
+		if (status == "active" || status == "reseal") && !c.ExpiresAt.After(now) {
 			// What the reader is told, so the list never says an ended
 			// connection is live while the janitor is between runs.
 			status = "expired"
 		}
-		out.Connections = append(out.Connections, connectionInfo{
+		info := connectionInfo{
 			ID: c.ID, ClientName: c.ClientName, RedirectHost: c.RedirectHost, Status: status,
 			DeviceCount: c.DeviceCount, KeyPrefix: c.KeyPrefix, CreatedAt: c.CreatedAt,
 			ActivatedAt: c.ActivatedAt, ExpiresAt: c.ExpiresAt, LastSeenAt: c.LastSeenAt,
-		})
+			Kind:      c.Kind,
+			Renewable: c.Kind == store.KindContent && (status == "active" || status == "reseal") && c.CreatedBy == user.ID && allowed,
+		}
+		if c.KeyMode != "" {
+			info.KeyMode = &c.KeyMode
+		}
+		if c.RevokeReason != "" {
+			info.RevokeReason = &c.RevokeReason
+		}
+		out.Connections = append(out.Connections, info)
 	}
 	send(w, http.StatusOK, out)
 }
@@ -509,12 +596,8 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 		h.connectionError(w, err)
 		return
 	}
-	if rd, ok := h.readerByID(owner); !ok {
-		h.log().Warn("the reader of a revoked connection is not configured here", "connection", id, "reader", owner)
-	} else if err := rd.relay.Revoke(r.Context(), id); err != nil {
-		h.log().Warn("the reader was not told about a revocation", "connection", id, "reader", owner, "error", err)
-	}
-	h.log().Info("mcp connection revoked", "connection", id)
+	h.tellRevoked(r.Context(), owner, id)
+	h.log().Info("mcp connection revoked", "connection", id, "reason", store.ReasonConsole)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -554,12 +637,34 @@ func (h *Handler) connectionStatus(w http.ResponseWriter, r *http.Request, reade
 	if !ok {
 		return
 	}
-	status, expiresAt, err := h.Connections.Status(r.Context(), readerID, id)
+	var allowed func(uuid.UUID) bool
+	rd, known := h.readerByID(readerID)
+	if known && rd.attested != nil {
+		allowed = func(tenant uuid.UUID) bool { return h.contentAllowed(rd, tenant) }
+	}
+	a, err := h.Connections.Status(r.Context(), readerID, id, allowed)
 	if err != nil {
 		h.connectionError(w, err)
 		return
 	}
-	send(w, http.StatusOK, statusReply{Status: status, ExpiresAt: expiresAt})
+	send(w, http.StatusOK, standingReply(a, known && rd.attested != nil))
+}
+
+// standingReply shapes a connection's standing for its reader. The expiry
+// goes out in UTC whatever the host's zone, the form every other expiry on
+// this interface takes: a reader holds it next to the consent's, and a
+// renewal on a host with another zone would otherwise not match it.
+func standingReply(a store.StatusAnswer, attested bool) any {
+	expires := a.ExpiresAt.UTC()
+	if !attested {
+		return statusReply{Status: a.Status, ExpiresAt: expires}
+	}
+	reply := attestedStatusReply{Status: a.Status, ExpiresAt: expires, Kind: a.Kind}
+	if a.ServiceUserID != nil {
+		service := a.ServiceUserID.String()
+		reply.ServiceUserID = &service
+	}
+	return reply
 }
 
 // activate records that the reader finished the handshake. Once: a second
@@ -585,23 +690,23 @@ func (h *Handler) connectionActivate(w http.ResponseWriter, r *http.Request, rea
 // that failed its checks. Idempotent, and an id the ledger never held is
 // already as ended as it can be.
 func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
-	h.connectionRevoke(w, r, store.HostedReader)
+	h.connectionRevoke(w, r, store.HostedReader, store.ReasonReader)
 }
 
 // connectionRevoke ends one of this reader's connections. Another reader's
 // is as unknown as an id the ledger never held, and gets the same 204.
-func (h *Handler) connectionRevoke(w http.ResponseWriter, r *http.Request, readerID string) {
+func (h *Handler) connectionRevoke(w http.ResponseWriter, r *http.Request, readerID, reason string) {
 	id, ok := connectionID(w, r)
 	if !ok {
 		return
 	}
-	err := h.Connections.RevokeByID(r.Context(), readerID, id)
+	err := h.Connections.RevokeByID(r.Context(), readerID, id, reason)
 	if err != nil && !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		h.connectionError(w, err)
 		return
 	}
 	if err == nil {
-		h.log().Info("mcp connection revoked by the reader", "connection", id, "reader", readerID)
+		h.log().Info("mcp connection revoked by the reader", "connection", id, "reader", readerID, "reason", reason)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -648,7 +753,7 @@ func (h *Handler) connectionError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "too_many_connections", "this workspace already has as many live assistant connections as it may; revoke one first")
 	case errors.Is(err, store.ErrMCPKeyUnsuitable), errors.Is(err, store.ErrInvalidKey):
 		fail(w, http.StatusUnprocessableEntity, "key_unsuitable",
-			"the key must be read-only, restricted to named numbers, carry no service account, be live and carry a provisional deadline")
+			"the key must be read-only, restricted to named numbers, be live and carry a provisional deadline; for metadata it carries no service account, for content it acts as the connection's own")
 	case errors.Is(err, store.ErrInvalidExpiry):
 		fail(w, http.StatusBadRequest, "bad_request", "expires_at must be in the future and within a year")
 	case errors.Is(err, store.ErrMCPConnectionState):
@@ -665,9 +770,14 @@ func (h *Handler) connectionError(w http.ResponseWriter, err error) {
 // person's problem to fix (the consent page has expired); anything else is
 // this host's, and says so.
 func (h *Handler) readerError(w http.ResponseWriter, err error) {
+	var refusal *RefusalError
 	switch {
 	case errors.Is(err, ErrReaderNotFound):
 		fail(w, http.StatusNotFound, "not_found", "that request is no longer waiting for a consent; start again from the assistant")
+	case errors.As(err, &refusal) && (refusal.Code == "invalid_bundle" || refusal.Code == "grant_proof_failed"):
+		// The reader opened the bundle and it was not what the consent
+		// promised, or a grant in it did not open with the attested key.
+		fail(w, http.StatusBadRequest, refusal.Code, "the reader refused the sealed bundle; start again from the assistant")
 	case errors.Is(err, ErrReaderRefused):
 		fail(w, http.StatusBadRequest, "bad_request", "the reader refused the sealed bundle; start again from the assistant")
 	default:

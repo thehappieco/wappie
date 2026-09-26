@@ -87,13 +87,18 @@ export async function recipientFrom(raw) {
 }
 
 /**
- * A fresh recipient that never touches a disk: the private half is imported as
- * a non-extractable CryptoKey at once and its raw bytes zeroed, so it lives
- * exactly as long as the record holding it.
+ * A fresh recipient that never touches a disk: the pair is generated with a
+ * non-extractable private half, so its bytes never exist in this process
+ * (no PKCS#8 export to zero, as hpke.generateKeyPair would leave), and it
+ * lives exactly as long as the record holding it.
  */
 export async function newRecipient() {
-  const pair = await hpke.generateKeyPair()
-  return recipientFrom(pair.privateKey)
+  const pair = await crypto.subtle.generateKey({ name: 'X25519' }, false, ['deriveBits'])
+  const publicKey = Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey))
+  return {
+    kid: createHash('sha256').update(publicKey).digest('hex').slice(0, 16), publicKey, publicKeyEncoded: publicKey.toString('base64url'),
+    privateKey: { key: pair.privateKey, publicRaw: new Uint8Array(publicKey) },
+  }
 }
 
 export function encryptState(key, plaintext) {
@@ -133,10 +138,14 @@ function liveState(fields) {
     for (const [request, pending] of state.pending) if (pending.connection_id === id) state.pending.delete(request)
     return changed
   }
-  /** Kills a token family; returns the connection it served (now wiped) or null. */
+  /**
+   * Kills a token family; returns the connection it served (now wiped) or
+   * null. Only the connection whose record carries the family is wiped: a
+   * stale family's tokens may still name an id that now holds another record.
+   */
   state.revokeFamily = family => {
     let connection = null
-    for (const [hash, token] of state.tokens) if (token.family_id === family) { connection = token.connection_id; state.tokens.delete(hash) }
+    for (const [hash, token] of state.tokens) if (token.family_id === family) state.tokens.delete(hash)
     for (const record of state.connections.values()) if (record.family_id === family) connection = record.connection_id
     if (connection) state.wipeConnection(connection)
     return connection

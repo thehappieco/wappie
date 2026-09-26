@@ -5,8 +5,9 @@ import { readFile, rename, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { auth } from '@modelcontextprotocol/client'
 import { hpke } from '@whatserver2/client'
-import { harness, authorize, clientProvider, consent, proof, raw, rpc, sealBundle, secretsAbsent, vector, workspace, DAY } from './harness.mjs'
-import { LinkError, openBundle, proofFor } from '../link.mjs'
+import { harness, apiKey, authorize, authorizeURL, clientProvider, consent, pkce, proof, raw, register, rpc, sealBundle, secretsAbsent, session, vector, workspace, CONSOLE_ORIGIN, DAY } from './harness.mjs'
+import { acceptBundle, LinkError, openBundle, proofFor } from '../link.mjs'
+import { newRecipient } from '../state.mjs'
 
 const kidOf = publicKey => createHash('sha256').update(publicKey).digest('hex').slice(0, 16)
 
@@ -193,4 +194,174 @@ test('authorized reads survive a restart and every archive call carries the bund
   assert.equal(tools.status, 200)
   assert.equal(h.f.state.requests.every(item => item.auth === `Bearer ${h.apiKey}`), true)
   secretsAbsent(h, { linkSecrets: [done.linkSecret], tokens: [provider.store.tokens.access_token] })
+})
+
+test('connection ids: a relay naming one already in use is 400 with nothing attached, and a completion never replaces a connection', async t => {
+  const h = await harness(t)
+  const state = h.reader.state
+  const fresh = async () => {
+    h.clock.advance(13_000)
+    const clientId = (await register(h, { client_name: `Ids ${randomBytes(3).toString('hex')}` })).json().client_id
+    return authorizeURL(h, { clientId, challenge: pkce().challenge })
+  }
+  const nothingAttached = (pending, label) => {
+    for (const field of ['bundle', 'connection_id', 'tenant_id', 'accepting']) assert.equal(pending[field], undefined, `${label}: ${field}`)
+  }
+  // An existing connection's id, relayed for another consent.
+  const s = await session(h)
+  const X = s.done.connectionId
+  const record = state.connections.get(X)
+  const goRow = { ...h.go.connections.get(X) }
+  const reused = await consent(h, await fresh(), { connectionId: X, until: 'bundle' })
+  assert.equal(reused.relayed.status, 400)
+  assert.equal(reused.relayed.json().code, 'bad_request')
+  nothingAttached(state.pending.get(reused.id), 'existing id')
+  assert.equal(state.connections.get(X), record)
+  h.go.connections.set(X, goRow)
+  assert.equal((await rpc(h, s.tokens.access_token)).status, 200, 'the connection under X still serves its own family')
+
+  // Two requests, one id.
+  const shared = randomUUID()
+  const first = await consent(h, await fresh(), { connectionId: shared, until: 'bundle' })
+  assert.equal(first.relayed.status, 204)
+  const second = await consent(h, await fresh(), { connectionId: shared, until: 'bundle' })
+  assert.equal(second.relayed.status, 400)
+  nothingAttached(state.pending.get(second.id), 'shared id')
+  assert.equal(state.pending.get(first.id).connection_id, shared)
+
+  // A connection that appears under a request's id between relay and proof is never replaced.
+  const late = await consent(h, await fresh(), { until: 'bundle' })
+  assert.equal(late.relayed.status, 204)
+  const sentinel = { connection_id: late.connectionId, family_id: 'someone-else', client_id: 'someone-else', expires_at: late.expiresAt, created_at: h.clock.now() }
+  state.connections.set(late.connectionId, sentinel)
+  const activations = h.go.activations
+  const signature = proof(late.linkSecret, { requestID: late.id, clientID: late.descriptor.client_id, codeChallenge: late.descriptor.code_challenge, sealedBytes: late.sealedBytes })
+  const completed = await h.form('/mcp/authorize/complete', { request: late.id, proof: signature }, { origin: CONSOLE_ORIGIN })
+  assert.equal(completed.status, 400)
+  assert.match(completed.body, /connection_exists/)
+  assert.equal(state.connections.get(late.connectionId), sentinel)
+  assert.equal(state.pending.has(late.id), false)
+  assert.equal(h.go.activations, activations, 'nothing was activated')
+  assert.equal(h.logs.map(line => JSON.parse(line)).filter(entry => entry.code === 'connection_exists').length, 1)
+})
+
+test('connection ids: an id stays reserved while its completion awaits Go\'s activation, and is released once it lands or fails', async t => {
+  const h = await harness(t)
+  const state = h.reader.state
+  const fresh = async () => {
+    h.clock.advance(13_000)
+    const clientId = (await register(h, { client_name: `Held ${randomBytes(3).toString('hex')}` })).json().client_id
+    return authorizeURL(h, { clientId, challenge: pkce().challenge })
+  }
+  const nothingAttached = (pending, label) => {
+    for (const field of ['bundle', 'connection_id', 'tenant_id', 'accepting']) assert.equal(pending[field], undefined, `${label}: ${field}`)
+  }
+  // Go's activation, held open until the test lets it answer.
+  const hold = () => {
+    let arrived, open
+    const reached = new Promise(resolve => { arrived = resolve })
+    const gate = new Promise(resolve => { open = resolve })
+    h.go.holdActivate = id => { arrived(id); return gate }
+    return { reached, release: () => { h.go.holdActivate = null; open() } }
+  }
+  const complete = done => h.form('/mcp/authorize/complete', {
+    request: done.id, proof: proof(done.linkSecret, { requestID: done.id, clientID: done.descriptor.client_id, codeChallenge: done.descriptor.code_challenge, sealedBytes: done.sealedBytes }),
+  }, { origin: CONSOLE_ORIGIN })
+  // Another request, its bundle sealed before anything is held; `relay(id)` posts it as Go would, naming `id`.
+  const rival = async () => {
+    const started = await consent(h, await fresh(), { until: 'authorize' })
+    const descriptor = (await h.internal(`/internal/requests/${started.id}`)).json()
+    const { sealed } = await sealBundle(descriptor, {
+      version: 1, server_url: new URL(descriptor.resource).origin, workspace_id: workspace, device_ids: [vector.device], token: h.apiKey, allow_plaintext: false, timezone: 'UTC', link_secret: randomBytes(32).toString('base64url'),
+    })
+    const relay = connectionId => h.internal(`/internal/requests/${started.id}/bundle`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      connection_id: connectionId, tenant_id: workspace, kid: descriptor.kid, sealed, expires_at: new Date(h.clock.now() + 90 * DAY).toISOString(),
+    }) })
+    return { id: started.id, relay }
+  }
+
+  // Activation succeeds: while it is in flight the id is in neither pending nor connections, and still refused.
+  const first = await consent(h, await fresh(), { until: 'bundle' })
+  assert.equal(first.relayed.status, 204)
+  const A = first.connectionId
+  const other = await rival()
+  const activations = h.go.activations
+  const held = hold()
+  const completing = complete(first)
+  assert.equal(await held.reached, A)
+  assert.equal(state.pending.has(first.id), false, 'the request has left pending')
+  assert.equal(state.connections.has(A), false, 'and has not landed yet')
+  assert.equal(state.activating?.has(A), true, 'the id is reserved across the await')
+  const refused = await other.relay(A)
+  assert.equal(refused.status, 400)
+  assert.equal(refused.json().code, 'bad_request')
+  nothingAttached(state.pending.get(other.id), 'relay during activation')
+  held.release()
+  const completed = await completing
+  assert.equal(completed.status, 302, completed.body)
+  assert.equal(state.connections.get(A).client_id, first.descriptor.client_id, 'the first consent owns the id')
+  assert.equal(state.activating.has(A), false, 'the reservation ends when the connection lands')
+  assert.equal(h.go.activations, activations + 1)
+  assert.equal(h.go.connections.get(A).status, 'active')
+  assert.equal((await other.relay(randomUUID())).status, 204, 'only the id was refused, not the request')
+
+  // Activation fails (Go lost the row: 404, a RelayError): 502, and the reservation goes with the attempt.
+  const second = await consent(h, await fresh(), { until: 'bundle' })
+  assert.equal(second.relayed.status, 204)
+  const B = second.connectionId
+  const another = await rival()
+  const failing = hold()
+  const attempt = complete(second)
+  assert.equal(await failing.reached, B)
+  assert.equal(state.activating.has(B), true)
+  assert.equal((await another.relay(B)).status, 400)
+  nothingAttached(state.pending.get(another.id), 'relay during a failing activation')
+  h.go.connections.delete(B)
+  failing.release()
+  const failed = await attempt
+  assert.equal(failed.status, 502)
+  assert.match(failed.body, /activation_failed/)
+  assert.equal(state.activating.has(B), false, 'a failed activation clears the reservation')
+  assert.equal(state.connections.has(B), false)
+  assert.equal(state.pending.has(second.id), false)
+  assert.equal(h.logs.map(line => JSON.parse(line)).filter(entry => entry.code === 'activation_failed').length, 1)
+  assert.equal((await another.relay(B)).status, 204, 'the id is not held after the attempt')
+  secretsAbsent(h, { linkSecrets: [first.linkSecret, second.linkSecret] })
+})
+
+test('acceptBundle (2a): concurrent relays for one request are one 204 and one 409; two requests racing for one id get one bundle', async () => {
+  const resource = 'https://mcp.example.test/mcp'
+  const state = { connections: new Map(), pending: new Map() }
+  const request = async id => { const pending = { id, recipient: await newRecipient(), resource }; state.pending.set(id, pending); return pending }
+  const relayFor = async (pending, connectionId) => {
+    const descriptor = { request_id: pending.id, kid: pending.recipient.kid, reader_public_key: pending.recipient.publicKeyEncoded, resource }
+    const bundle = { version: 1, server_url: 'https://mcp.example.test', workspace_id: workspace, device_ids: [vector.device], token: apiKey(), allow_plaintext: false, timezone: 'UTC', link_secret: randomBytes(32).toString('base64url') }
+    const { sealed } = await sealBundle(descriptor, bundle)
+    return { connection_id: connectionId, tenant_id: workspace, kid: pending.recipient.kid, sealed, expires_at: new Date(Date.now() + DAY).toISOString() }
+  }
+  // Every body is sealed before either call starts, so the two really interleave.
+  const one = await request('A'.repeat(22))
+  const bodies = [await relayFor(one, randomUUID()), await relayFor(one, randomUUID())]
+  const [won, lost] = await Promise.allSettled(bodies.map(body => acceptBundle(state, one, body)))
+  assert.equal(won.status, 'fulfilled')
+  assert.equal(lost.status, 'rejected')
+  assert.equal(lost.reason.status, 409)
+  assert.equal(one.connection_id, bodies[0].connection_id, 'the first relay\'s bundle, never overwritten')
+  assert.equal(one.accepting, undefined)
+
+  const shared = randomUUID()
+  const two = await request('B'.repeat(22)), three = await request('C'.repeat(22))
+  const racing = [await relayFor(two, shared), await relayFor(three, shared)]
+  const [first, second] = await Promise.allSettled([acceptBundle(state, two, racing[0]), acceptBundle(state, three, racing[1])])
+  assert.equal(first.status, 'fulfilled')
+  assert.equal(second.status, 'rejected')
+  assert.equal(second.reason.code, 'bad_request')
+  assert.equal(three.bundle, undefined)
+  assert.equal(three.tenant_id, undefined)
+
+  const four = await request('D'.repeat(22))
+  const existing = randomUUID()
+  state.connections.set(existing, { connection_id: existing })
+  await assert.rejects(acceptBundle(state, four, await relayFor(four, existing)), { code: 'bad_request' })
+  assert.equal(four.bundle, undefined)
 })

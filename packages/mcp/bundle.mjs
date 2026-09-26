@@ -1,7 +1,9 @@
 import * as z from 'zod/v4'
 import { hpke } from '@whatserver2/client'
 import { openContactPack, validateContactPack } from '@whatserver2/client/crypto/contactPack'
+import { archiveOrigin } from '@whatserver2/client'
 import { LocalConfigError, validateConfig } from './config.mjs'
+import { validTimezone } from './time.mjs'
 
 const id = z.string().uuid().transform(value => value.toLowerCase())
 /**
@@ -60,4 +62,50 @@ export async function validateBundle(value) {
     finally { raw?.fill(0) }
   }
   return { bundle, output }
+}
+
+/** The consent text version a content bundle was sealed under (the card the user saw). */
+export const CONTENT_CONSENT_VERSION = 1
+/** A content connection lasts at most 90 days; an hour of slack covers clocks and the consent itself. */
+const MAX_CONTENT_AHEAD_MS = (90 * 24 + 1) * 60 * 60 * 1000
+/**
+ * The content bundle (v2) the console seals to an attested reader's
+ * per-request key. It never carries a service private key, a contact snapshot
+ * or a plaintext flag: the key lives only in the reader, contacts are out of
+ * this phase, and content is what `kind` says. Those, like any unknown key, are
+ * refused. v1's `validateBundle` accepts `version: 1` only, so no v1 path
+ * (the pilot's link, the local import) can take one of these.
+ */
+export const contentBundleSchema = z.strictObject({
+  version: z.literal(2), kind: z.literal('content'), purpose: z.enum(['consent', 'renewal']),
+  server_url: z.string().min(1).max(4096), workspace_id: id, service_user_id: id,
+  device_ids: z.array(id).min(1).max(100),
+  token: z.string().length(52),
+  key_mode: z.literal('ephemeral'), consent_version: z.literal(CONTENT_CONSENT_VERSION),
+  expires_at: z.iso.datetime().max(40),
+  timezone: z.string().min(1).max(100).optional(),
+  link_secret: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
+  connection_id: id.optional(),
+})
+function httpsOrigin(value) {
+  try { return value.startsWith('https://') && archiveOrigin(value) === value } catch { return false }
+}
+/**
+ * Validates a parsed content bundle and returns it frozen; any failure is
+ * `invalid_bundle`, with nothing of the input in the error. `now` is for tests.
+ */
+export function validateContentBundle(value, now = Date.now()) {
+  const parsed = contentBundleSchema.safeParse(value)
+  if (!parsed.success) fail('invalid_bundle')
+  const bundle = parsed.data
+  const expires = Date.parse(bundle.expires_at)
+  if (!httpsOrigin(bundle.server_url) ||
+    new Set(bundle.device_ids).size !== bundle.device_ids.length ||
+    !/^[a-f0-9]{8}\./.test(bundle.token) || !canonicalKey(bundle.token.slice(9)) ||
+    !Number.isFinite(expires) || expires <= now || expires > now + MAX_CONTENT_AHEAD_MS ||
+    (bundle.timezone !== undefined && !validTimezone(bundle.timezone)) ||
+    (bundle.purpose === 'consent' && (!canonicalKey(bundle.link_secret) || bundle.connection_id !== undefined)) ||
+    (bundle.purpose === 'renewal' && (bundle.link_secret !== undefined || bundle.connection_id === undefined))) fail('invalid_bundle')
+  Object.freeze(bundle.device_ids)
+  return Object.freeze(bundle)
 }

@@ -7,6 +7,8 @@
 // bytes, the relay secret arrives as boot-key ciphertext, both directions with
 // Go are HMAC-signed over WebPKI, every consent request gets its own key and a
 // fresh attestation, and logs leave only through the schema-checked sink.
+// Content connections (content.mjs, §15) keep their keys in this process's
+// memory only; after any restart they wait in `reseal` for a renewal.
 //
 // Boot order (§10.2): boot.json; credentials and the RSA recipient key; the
 // relay secret; the key policy hash (not fatal); the sealed state; the ACME
@@ -17,7 +19,7 @@
 import { createServer as createHTTPServer } from 'node:http'
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { decodeAttestationDocument } from '../attestation.mjs'
+import { createAttestor, decodeAttestationDocument } from '../attestation.mjs'
 import { createLog } from '../log.mjs'
 import { startReader } from '../server.mjs'
 import { openSealedState, sealedCollection, StateError } from '../state.mjs'
@@ -25,6 +27,7 @@ import { accountId, createAcmeClient, createChallenges, newAccountKey } from './
 import { attest as nsmAttest } from './attest.mjs'
 import { parseBootJson, readLocal as readLocalPort } from './boot.mjs'
 import { imageConstants, PORTS } from './constants.mjs'
+import { createContent } from './content.mjs'
 import { createHealthLine, clockSkew, prefix } from './health.mjs'
 import { createHmacGuard } from './hmac.mjs'
 import { codeOf, createKms, kmsClient, recipientKeys, roleCredentials } from './kms.mjs'
@@ -102,7 +105,7 @@ export async function startEnclave(options = {}) {
   }
   const readLocal = options.readLocal ?? (port => readLocalPort(port))
   const counters = { proxyRejected: 0 }
-  const facts = { pcr0: null, state: null, secrets: null, certificates: null, policy: null, acmeUri: null, ready: false }
+  const facts = { pcr0: null, state: null, secrets: null, certificates: null, policy: null, acmeUri: null, content: null, ready: false }
 
   // Every document the NSM signs carries PCR0; the first one tells the reader its own.
   const attest = async fields => {
@@ -121,6 +124,7 @@ export async function startEnclave(options = {}) {
       policy_ok: facts.policy ? facts.policy.current() !== null : undefined, policy: prefix(facts.policy?.current()),
       pcr0: prefix(facts.pcr0), spki: prefix(facts.certificates?.spkiSha256()),
       log_dropped: sink.dropped?.(), proxy_rejected: counters.proxyRejected,
+      content_connections: facts.content?.counts().connections, content_keys: facts.content?.counts().keys,
     }),
   })
   health.start()
@@ -219,8 +223,14 @@ export async function startEnclave(options = {}) {
         policy_sha256: policy.current(), acme_account_uri: facts.acmeUri, relay_secrets: secrets.count(),
       }),
     }
+    const resource = `${c.PUBLIC_ORIGIN}/mcp`
+    const content = createContent({
+      state, relay, log, now, archive, consoleURL: c.CONSOLE_URL, resource, fetch: options.fetch,
+      attestor: createAttestor({ attest, readerId: c.READER_ID, readerVersion: c.READER_VERSION, resource, spki: config.spki, policy: config.policy }),
+    })
+    facts.content = content
     const reader = await startReader({
-      config, now, logSink, secrets, state, relay, servers, keys: 'per-request', attest,
+      config, now, logSink, secrets, state, relay, servers, keys: 'per-request', attest, content,
       internalAuth: createHmacGuard({ readerId: c.READER_ID, secrets, now }),
     })
     facts.ready = true

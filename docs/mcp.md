@@ -5,20 +5,51 @@ host to a Wappie installation's REST APIs. It provides number, chat, message,
 revision and contact queries, bounded cross-chat lexical search and activity
 counts without depending on the commercial app. The companion
 [`packages/mcp-http`](../packages/mcp-http/README.md) serves the same reader
-over Streamable HTTP for remote hosts, in metadata-only mode.
+over Streamable HTTP for remote hosts: as the hosted metadata connector, which
+never opens content, and as the attested reader in an AWS Nitro Enclave, which
+can also open message text for a connection the user enabled it on.
 
-## Three ways to connect
+## Ways to connect
 
 | Tier | Transport | Content | Where it runs |
 | --- | --- | --- | --- |
-| **Local** | stdio (`packages/mcp`) | Metadata, or message text when `allow_plaintext` is enabled in the local configuration | Your computer. Archive private keys never leave it. Unchanged in this release. |
-| **Cloud** | Streamable HTTP (`/mcp` on the hosted API origin) | **Metadata only**: who, when and how much, never the content | A reader process at Wappie Cloud that holds no archive private key. Sealed bodies stay sealed and are reported as `locked`. |
-| **Enterprise** | Streamable HTTP (`packages/mcp-http` container) | Metadata only, as in Cloud | Your infrastructure, beside your own installation, under your own OAuth server and policy. |
+| **Local** | stdio (`packages/mcp`) | Metadata, or message text when `allow_plaintext` is enabled in the local configuration | Your computer. Archive private keys never leave it. |
+| **Cloud, metadata** | Streamable HTTP, `https://api.wappie.thehappie.co/mcp` | Who, when and how much, never the content | A reader process on Wappie's API host that holds no archive private key. Sealed bodies stay sealed and are reported as `locked`. |
+| **Cloud, attested reader** | Streamable HTTP, `https://mcp.wappie.thehappie.co/mcp` | Metadata; with **message text** switched on at consent, also text, chat names and previews, contact names and filenames of the chosen numbers. Never attachment contents | The same reader inside an AWS Nitro Enclave. TLS ends inside it, and the browser checks its published image before sealing anything to it ([contract](mcp-enclave.md)). Text is available only in workspaces Wappie has enabled for it. |
+| **Enterprise** | Streamable HTTP (`packages/mcp-http` container) | Metadata, as the hosted metadata connector | Your infrastructure, beside your own installation, under your own OAuth server and policy. |
 
-The remote tiers share one property that the table cannot overstate: the
-reader is issued a read-only, device-restricted API key with an expiry, never a
-service account or an archive private key, so it cannot open message text even
-if its host is compromised. Metadata still reaches the assistant's provider.
+The hosted metadata connector, the self-hosted container and every attested
+connection without text share one property: the reader is issued a read-only,
+device-restricted API key with an expiry, never a service account or an archive
+private key, so it cannot open message text even if its host is compromised.
+Metadata still reaches the assistant's provider. A **text** connection on the
+attested reader is different by design, and [who can read what](#who-can-read-what)
+says exactly how.
+
+## Who can read what
+
+For a connection with message text, on `https://mcp.wappie.thehappie.co/mcp`:
+
+| Who | Reads the text? | How, or why not |
+| --- | --- | --- |
+| The reader in the enclave (published image, verified by the browser) | Yes, in memory, per tool call | Only while the connection is live. The current grants are fetched on every call. |
+| The AI provider the user connected | Yes, what the tools return | By design, limited to the chosen numbers, the expiry and each tool's size limits. |
+| Wappie's staff, the archive server, its database and backups | No, short of the rows below | The key that opens the grants is generated in the enclave and never leaves it; the database holds only grants sealed to that key. |
+| The host running the enclave | No | TLS ends inside the enclave, and a CAA record lets only the enclave's own ACME account obtain a certificate for the address. The host sees names, addresses, timing and sizes. |
+| An operator who changes the KMS key policy | No, with the key only in memory (the only mode today) | Reading would need a new certificate for the address, which Certificate Transparency records publicly. Every attestation carries the live policy's hash, which the browser checks. |
+| An operator who controls DNS | **Yes**, while it lasts | With a certificate of their own they can pose as the reader to the AI host and receive its tokens. That certificate is public in Certificate Transparency, and `tools/ct-watch` flags any certificate whose key no enclave attested. |
+| An operator who serves malicious code in the console | Could divert the sealing | The same trust in delivery all of Wappie's browser cryptography relies on. |
+| AWS (hypervisor, Nitro Security Module, KMS) | Trusted | Outside this model. |
+
+The key is memory-only: a restart of the enclave (every reader release, a
+reboot or a crash) clears it. The connection then answers
+`reconsent_required` with a console link, and the person who consented renews
+it there with their password. The assistant does not have to reconnect.
+Revoking stops future reads; it cannot erase what the assistant already
+received. Someone who leaves the workspace or is disabled loses their text
+connections with it. Live ingestion is not blind (the server that receives
+messages from WhatsApp sees them before sealing), and the archive REST API
+still never opens archived content.
 
 ## Connect an assistant
 
@@ -53,7 +84,11 @@ hosts in order:
 
 ### Installing the hosted connector in one step
 
-For Wappie's own hosted connector, `https://api.wappie.thehappie.co/mcp`.
+Wappie runs two addresses. `https://api.wappie.thehappie.co/mcp` is the hosted
+metadata connector. `https://mcp.wappie.thehappie.co/mcp` is the attested
+reader: it reads metadata the same way, and also message text in workspaces
+where Wappie has enabled it and the approver switched it on. The steps below
+use the first address; the second works the same way in every host.
 Every host takes the address as it is — **nothing to install**:
 
 - **Claude** (claude.ai, Desktop, mobile): the console's MCP panel and the
@@ -88,9 +123,10 @@ A Wappie REST address is still not an MCP endpoint: the REST API and the MCP
 endpoint are different services on different paths. Two transports are
 supported. **Local stdio** (`packages/mcp`) keeps decryption keys on your
 computer and requires that computer to stay awake and connected. **Remote
-HTTP** (`packages/mcp-http`, served at `/mcp` behind OAuth 2.1) is
-metadata-only: it runs the same reader over Streamable HTTP, and no archive
-decryption key ever reaches it. A [manual setup](../packages/mcp/README.md#manual-configuration)
+HTTP** (`packages/mcp-http`, served at `/mcp` behind OAuth 2.1) runs the same
+reader over Streamable HTTP. On `api.` and in a self-hosted container no
+archive decryption key ever reaches it; on the attested reader a text
+connection's key exists only inside the enclave. A [manual setup](../packages/mcp/README.md#manual-configuration)
 also works with public API/CLI credentials, without the commercial console.
 
 ### Approving a remote connection
@@ -108,6 +144,30 @@ console's MCP panel and can be revoked there, which revokes its API key in the
 same transaction. Revocation stops future reads; it cannot retract metadata
 already returned. An approval that is not completed within twenty minutes
 expires with its provisional key.
+
+On the attested reader the console first asks it for a fresh attestation
+document and verifies it in the browser: the image must be one of the
+published releases, the key policy one of the published hashes, and the key the
+bundle is sealed to the one the enclave attested. Only then, and only in a
+workspace enabled for text, does the card offer **Also read message text**.
+With it on, the approver chooses 1, 30 or 90 days (30 by default), reads the
+sentence the connection is held to (the reader will be able to open all
+messages, chat names, contacts and files of those numbers, past and future,
+until the date shown; Wappie does not receive the key; revoking does not erase
+what the assistant already read), and enters their password once for all the
+chosen numbers. The browser then creates a service account for this connection
+alone, gives it read-only access to those numbers, seals each number's key to
+the enclave's attested key, and issues an API key that acts as that account.
+Nothing sealed leaves the browser before the attestation passes. The console
+lists the connection as text, and its refresh token lapses after seven days
+unused (thirty for metadata).
+
+When the enclave restarts the connection shows **reseal** in the console and
+its tools answer `reconsent_required` with a link to
+`/console?mcp_renew=<connection id>`. The person who consented opens it, the
+console verifies a new attestation, and their password seals the grants to a
+new enclave key and a new service account on the same connection, with the
+same expiry. The assistant keeps its tokens.
 
 ### Server configuration for the readers
 
@@ -147,6 +207,34 @@ reader declared, and never verifies attestations itself. The enclave's sealed
 state lives in `mcp_reader_state` as opaque blobs, written with a generation
 compare-and-swap and at most 12 MiB each. When `enclave` is configured,
 discovery adds `endpoints.mcp_server_attested`.
+
+Message text is a separate switch, with two variables:
+
+| Variable | Rule |
+|---|---|
+| `WS_MCP_CONTENT_ENABLED` | boolean, default `false`; lets the `enclave` reader hold **content** connections. On without an `enclave` reader in `WS_MCP_READERS` is a configuration error |
+| `WS_MCP_CONTENT_TENANTS` | workspace UUIDs, comma separated, that may consent to content; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_READER_ENCLAVE_TENANTS` |
+
+The server allows a content consent only for a request the enclave holds,
+prepared by this process, with the switch on and the workspace listed;
+anything else is `403 content_not_allowed`. Turning the switch off (or
+removing a workspace from the list) is the kill switch: the enclave's status
+checks answer `reseal` for that workspace's live content connections, so
+every key is dropped within a minute while the consents and the assistants'
+token families survive, and renewal is refused until content is allowed
+again. Discovery adds the capability `mcp.remote.content.v1` when
+`enclave` is configured and the switch is on; the console asks
+`GET /v1/mcp/content` whether its own workspace may use it. The startup line
+prints `content=on|off` and the number of listed workspaces.
+
+A content connection reads as a service account created for it alone, with a
+thirty-minute membership until the consent is recorded and the connection's
+lifetime after. Ending the connection in any way (the console, the reader, a
+failed hand-off, expiry, or removing or disabling the service account or the
+person who consented) revokes its key and removes that account's grants,
+permissions and membership in the same transaction. The janitor also removes
+provisional accounts whose consent was abandoned, and revocations the enclave
+has not confirmed are sent again every 30 seconds for a day.
 
 To rotate an attested reader's secret: encrypt the new secret under the
 reader's boot key, set it as `_SECRET_NEXT` and restart the server, then run
@@ -227,9 +315,13 @@ must be summed by group across completed pages. Concurrent backfill and other
 archive changes can still require a rescan.
 
 Search can find superseded or deleted historical content. Check `archive_status`
-and use `list_revisions` before describing a match as current. Exhausting an
-archive interval does not establish that every original WhatsApp message was
-captured. See [period semantics and continuation](../packages/mcp/README.md#calendar-periods-and-continuation)
+and use `list_revisions` before describing a match as current. On a text
+connection of the attested reader, a text query always scans the whole scan
+budget and reports `archive_status: {"state": "not_checked"}`, so the archive
+server cannot tell from the requests which messages matched; follow `next`,
+narrow the period when `omitted_hits` is above zero, and use `list_revisions`
+to check that a match is current. Exhausting an archive interval does not
+establish that every original WhatsApp message was captured. See [period semantics and continuation](../packages/mcp/README.md#calendar-periods-and-continuation)
 and [activity counting](../packages/mcp/README.md#summarize-activity-accurately).
 
 For limits, complete examples, identity setup and host configuration, see the

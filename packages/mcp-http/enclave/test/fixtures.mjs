@@ -128,9 +128,18 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
 /**
  * Go's /v1/mcp/enclave/* (HMAC checked against `secrets()`, the list Go
  * accepts) in front of the synthetic archive at `upstream`.
+ *
+ * Content connections: a connection row may carry `kind` and
+ * `service_user_id` (the status route answers both), `reseal` moves a live
+ * row to `reseal`, and `revokes` records every revoke with its body. The
+ * archive side accepts every API key in `tokens` in place of the fixture's
+ * own (`upstreamToken`), and answers `/v1/grants` for a key from `grants`
+ * (token -> {user_id, grants}), which is how a test seals grants to a key the
+ * enclave minted.
  */
-export function createEnclaveGo({ upstream, secrets, now = Date.now }) {
-  const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set() }
+export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamToken, workspace }) {
+  const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set(),
+    revokes: [], reseals: [], tokens: new Set(), grants: new Map(), archiveRequests: [] }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
   const http = createHTTPServer(async (req, res) => {
     const chunks = []
@@ -138,7 +147,14 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now }) {
     const body = Buffer.concat(chunks)
     const url = new URL(req.url, 'http://go')
     if (!url.pathname.startsWith('/v1/mcp/enclave/')) {
-      const forwarded = await fetch(upstream + req.url, { method: req.method, headers: req.headers.authorization ? { authorization: req.headers.authorization } : {}, body: req.method === 'GET' ? undefined : body })
+      let authorization = req.headers.authorization
+      const presented = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null
+      if (presented && go.tokens.has(presented)) {
+        go.archiveRequests.push({ method: req.method, path: url.pathname, query: url.search, token: presented })
+        if (url.pathname === '/v1/grants' && go.grants.has(presented)) return json(res, { tenant_id: workspace, ...go.grants.get(presented) })
+        authorization = `Bearer ${upstreamToken}`
+      }
+      const forwarded = await fetch(upstream + req.url, { method: req.method, headers: authorization ? { authorization } : {}, body: req.method === 'GET' ? undefined : body })
       res.writeHead(forwarded.status, { 'content-type': forwarded.headers.get('content-type') ?? 'application/json' })
       res.end(Buffer.from(await forwarded.arrayBuffer()))
       return
@@ -155,7 +171,17 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now }) {
     let match
     if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)$/.exec(url.pathname)) && req.method === 'GET') {
       const connection = go.connections.get(match[1])
-      return connection ? json(res, { status: connection.status, expires_at: connection.expires_at }) : json(res, { code: 'not_found' }, 404)
+      if (!connection) return json(res, { code: 'not_found' }, 404)
+      return json(res, { status: connection.status, expires_at: connection.expires_at, ...(connection.kind ? { kind: connection.kind, service_user_id: connection.service_user_id ?? null } : {}) })
+    }
+    if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/reseal$/.exec(url.pathname)) && req.method === 'POST') {
+      const connection = go.connections.get(match[1])
+      go.reseals.push(match[1])
+      if (go.resealDown) { res.destroy(); return }
+      if (!connection) return json(res, { code: 'not_found' }, 404)
+      if (connection.kind !== 'content' || !['active', 'reseal'].includes(connection.status)) return json(res, { code: 'connection_state' }, 409)
+      connection.status = 'reseal'
+      res.writeHead(204); res.end(); return
     }
     if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/activate$/.exec(url.pathname)) && req.method === 'POST') {
       const connection = go.connections.get(match[1])
@@ -166,6 +192,8 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now }) {
     }
     if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/revoke$/.exec(url.pathname)) && req.method === 'POST') {
       const connection = go.connections.get(match[1])
+      if (body.length && (req.headers['content-type'] !== 'application/json' || JSON.stringify(JSON.parse(body.toString('utf8'))) !== '{"reason":"reuse_detected"}')) return json(res, { code: 'bad_request' }, 400)
+      go.revokes.push({ id: match[1], body: body.toString('utf8') })
       if (connection) connection.status = 'revoked'
       res.writeHead(204); res.end(); return
     }

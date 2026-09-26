@@ -111,7 +111,7 @@ func lockSignupInvite(ctx context.Context, tx pgx.Tx, secret, email string, serv
 	}
 	var inv Invite
 	var recipient *string
-	err = tx.QueryRow(ctx, `SELECT tenant_id,role,email,expires_at FROM invites WHERE invite_id=$1 AND completed_at IS NULL AND revoked_at IS NULL AND expires_at>now() FOR UPDATE`, sum).Scan(&inv.TenantID, &inv.Role, &recipient, &inv.ExpiresAt)
+	err = tx.QueryRow(ctx, `SELECT tenant_id,role,email,expires_at,provisional FROM invites WHERE invite_id=$1 AND completed_at IS NULL AND revoked_at IS NULL AND expires_at>now() FOR UPDATE`, sum).Scan(&inv.TenantID, &inv.Role, &recipient, &inv.ExpiresAt, &inv.Provisional)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrInviteInvalid
 	}
@@ -211,6 +211,14 @@ func (u *Users) SignupService(ctx context.Context, secret, name string, pub []by
 		e = tx.QueryRow(ctx, `INSERT INTO users(tenant_id,email,public_key,role) VALUES($1,$2,$3,$4) RETURNING id,created_at`, inv.TenantID, out.Email, pub, RoleService).Scan(&out.ID, &out.CreatedAt)
 		if e != nil {
 			return accountInsertError(e)
+		}
+		if inv.Provisional {
+			// A content consent's account: its membership has the consent's
+			// window and no more, until a connection takes it.
+			if _, e = tx.Exec(ctx, `UPDATE workspace_memberships SET expires_at=now()+$3::int*interval '1 second'
+				WHERE tenant_id=$1 AND user_id=$2 AND role='service'`, inv.TenantID, out.ID, int(ProvisionalServiceTTL.Seconds())); e != nil {
+				return e
+			}
 		}
 		_, e = tx.Exec(ctx, `UPDATE invites SET completed_at=now(),claimed_by=$2 WHERE invite_id=$1`, digest, out.ID)
 		return e

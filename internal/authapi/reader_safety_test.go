@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"whatserver2/internal/crypto/seal"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -165,5 +167,68 @@ func TestConcurrentAccessRemovalsAlwaysRetainOneReader(t *testing.T) {
 				t.Fatalf("remaining readers=%v err=%v", readers, err)
 			}
 		})
+	}
+}
+
+// The console removes a content consent's provisional service account when
+// the consent does not complete. Its grants are copies sealed to a key that
+// lives only in a reader, so the removal never waits for another reader:
+// not while the account is inside its window, and not once the window has
+// lapsed and the sweep has not reached it yet. The owner holds the only
+// other envelope with its read flag withheld, so no person could stand in
+// as a backup: the account is let go because of what it is, not because
+// someone else reads. The person keeps being the last reader throughout.
+func TestRemovingProvisionalServiceNeverNeedsAnotherReader(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	owner, token := memberAccount(t, h, "owner@provisional.test", "owner")
+	device := protectedNumber(t, h, owner)
+	if err := pg.InTenantTx(ctx, h.pool, h.tenant.String(), func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read) VALUES($1,$2,$3,false)
+			ON CONFLICT(tenant_id,device_id,user_id) DO UPDATE SET can_read=false`, h.tenant, device, owner.ID)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, lapsed := range []bool{false, true} {
+		var created struct {
+			Invite string `json:"invite"`
+		}
+		if code := h.post(t, "/v1/auth/workspaces/invites", map[string]any{"role": "service", "provisional": true}, &created, token); code != http.StatusCreated {
+			t.Fatalf("provisional invite: %d", code)
+		}
+		svc, err := h.users.SignupService(ctx, created.Invite, "assistant-"+uuid.NewString()[:8], make([]byte, 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.users.SetDevicePermission(ctx, h.tenant, owner.ID, store.DevicePermission{DeviceID: device, UserID: svc.ID, Read: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: svc.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key")}, &owner.ID); err != nil {
+			t.Fatal(err)
+		}
+		if lapsed {
+			if err := pg.InTenantTx(ctx, h.pool, h.tenant.String(), func(tx pgx.Tx) error {
+				_, e := tx.Exec(ctx, `UPDATE workspace_memberships SET expires_at=now()-interval '1 minute' WHERE tenant_id=$1 AND user_id=$2`, h.tenant, svc.ID)
+				return e
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if code, reason := removeMember(t, h, token, svc.ID.String()); code != http.StatusNoContent {
+			t.Fatalf("lapsed=%v: removing the provisional service = %d %s", lapsed, code, reason)
+		}
+		var held int
+		if err := pg.InTenantTx(ctx, h.pool, h.tenant.String(), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT
+				(SELECT count(*) FROM device_key_grants WHERE tenant_id=$1 AND user_id=$2) +
+				(SELECT count(*) FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2)`, h.tenant, svc.ID).Scan(&held)
+		}); err != nil || held != 0 {
+			t.Fatalf("lapsed=%v: the service kept %d rows (%v)", lapsed, held, err)
+		}
+	}
+	// The person is still the last reader, and still cannot leave.
+	if err := h.keys.RevokeGrant(ctx, h.tenant, device, owner.ID); !errors.Is(err, store.ErrLastDeviceReader) {
+		t.Fatalf("the owner's envelope: %v", err)
 	}
 }

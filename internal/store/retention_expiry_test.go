@@ -100,8 +100,8 @@ func TestExpireMCPConnectionsPendingAndActive(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET expires_at = now() - interval '1 minute' WHERE id = $1`, done.ID); err != nil {
 		t.Fatal(err)
 	}
-	if status, _, err := f.conns.Status(ctx, store.HostedReader, done.ID); err != nil || status != "expired" {
-		t.Fatalf("status before the sweep = %q %v, want expired", status, err)
+	if answer, err := f.conns.Status(ctx, store.HostedReader, done.ID, nil); err != nil || answer.Status != "expired" {
+		t.Fatalf("status before the sweep = %+v %v, want expired", answer, err)
 	}
 
 	n, err := store.ExpireMCPConnections(ctx, f.pool, 20*time.Minute)
@@ -124,25 +124,33 @@ func TestExpireMCPConnectionsPendingAndActive(t *testing.T) {
 			t.Errorf("%s: status %q, want %q", c.ClientName, c.Status, want[c.ID])
 		}
 	}
-	// The abandoned consent's key went with it. The finished connection's key
-	// carries the same deadline; ExpireAPIKeys records that half.
-	if _, err := f.keys.Verify(ctx, staleKey); !errors.Is(err, store.ErrInvalidKey) {
-		t.Fatalf("stale consent's key still works: %v", err)
+	// Both ended connections' keys went with them, through the one helper
+	// every end takes; the live connections' keys are untouched.
+	for name, key := range map[string]string{"stale": staleKey, "done": doneKey} {
+		if _, err := f.keys.Verify(ctx, key); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("the %s connection's key still works: %v", name, err)
+		}
 	}
 	keys, err := f.keys.List(ctx, f.tenant.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range keys {
-		if k.Prefix == stalePrefix && k.RevokedAt.IsZero() {
-			t.Fatal("stale consent's key not recorded as revoked")
+		ended := k.Prefix == stalePrefix || k.Prefix == donePrefix
+		if ended && k.RevokedAt.IsZero() {
+			t.Fatalf("%s: an ended connection's key not recorded as revoked", k.Name)
 		}
-		if k.Prefix != stalePrefix && !k.RevokedAt.IsZero() {
+		if !ended && !k.RevokedAt.IsZero() {
 			t.Fatalf("%s revoked by the connection sweep", k.Name)
 		}
 	}
-	if _, err := f.keys.Verify(ctx, doneKey); err != nil {
-		t.Fatalf("the finished connection's key should still be inside its deadline here: %v", err)
+	reasons := map[string]string{}
+	listed, _ = f.conns.List(ctx, f.tenant)
+	for _, c := range listed {
+		reasons[c.ID] = c.RevokeReason
+	}
+	if reasons[stale.ID] != store.ReasonPendingExpired || reasons[done.ID] != store.ReasonExpired || reasons[running.ID] != "" {
+		t.Fatalf("reasons = %v", reasons)
 	}
 }
 

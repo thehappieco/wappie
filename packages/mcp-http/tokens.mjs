@@ -6,6 +6,10 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export const ACCESS_TTL_MS = 15 * 60_000
 export const REFRESH_IDLE_MS = 30 * 24 * 3_600_000
+/** A content connection's refresh token dies after a week unused (metadata keeps thirty days). */
+export const CONTENT_REFRESH_IDLE_MS = 7 * 24 * 3_600_000
+/** The one death Go is told the cause of: someone may hold a copy of a token. */
+export const REUSE_DETECTED = 'reuse_detected'
 export const CODE_TTL_MS = 60_000
 export const ROTATION_GRACE_MS = 30_000
 const prefixes = { code: 'wmcp_c_', access: 'wmcp_a_', refresh: 'wmcp_r_' }
@@ -18,6 +22,13 @@ export class GrantError extends Error {
 export const mint = kind => prefixes[kind] + randomBytes(32).toString('base64url')
 export const hash = value => createHash('sha256').update(value).digest('hex')
 export const wellFormed = (kind, value) => typeof value === 'string' && shapes[kind].test(value)
+/**
+ * Whether a token (or code) record belongs to the connection record it names:
+ * the family the connection's code exchange started and the client it was
+ * consented for. A connection id is only a name; a record replaced under it
+ * never inherits the tokens of the one before.
+ */
+export const boundTo = (token, connection) => typeof connection.family_id === 'string' && token.family_id === connection.family_id && token.client_id === connection.client_id
 
 function sameString(a, b) {
   const left = Buffer.from(String(a)), right = Buffer.from(String(b))
@@ -31,8 +42,11 @@ export function verifierMatches(codeVerifier, codeChallenge) {
 
 /**
  * `checkActive(connectionId, {force})` asks Go whether the connection may still
- * be served (the caller caches). `onFamilyRevoked(connectionId)` lets the
- * caller tell Go; the local wipe happens here.
+ * be served (the caller caches). `onFamilyRevoked(connectionId, reason)` lets
+ * the caller tell Go; the local wipe happens here. `reason` is
+ * 'reuse_detected' for a replayed code, a rotated refresh token presented past
+ * the grace window and a refresh from another client, and undefined for every
+ * other death (RFC 7009, idle expiry, an inactive connection).
  */
 export function createTokens(state, { now = Date.now, checkActive, onFamilyRevoked = async () => {} }) {
   const rotating = new Map()
@@ -41,16 +55,18 @@ export function createTokens(state, { now = Date.now, checkActive, onFamilyRevok
   // else, so a copy of the state directory never yields a usable token.
   const successors = new Map()
   const seconds = ms => Math.max(1, Math.floor(ms / 1000))
-  async function killFamily(family) {
+  async function killFamily(family, reason) {
     successors.delete(family)
     const connection = state.revokeFamily(family)
     void state.save().catch(() => {})
-    if (connection) await onFamilyRevoked(connection)
+    if (connection) await onFamilyRevoked(connection, reason)
   }
   function pairFor(connection, client, family) {
-    const at = now(), absolute = Date.parse(connection.expires_at)
+    // A content connection's consent bounds its tokens even before a status answer has clamped expires_at.
+    const at = now(), absolute = Math.min(Date.parse(connection.expires_at), Date.parse(connection.consented_expires_at ?? connection.expires_at))
     const access = mint('access'), refresh = mint('refresh')
-    const accessUntil = Math.min(at + ACCESS_TTL_MS, absolute), refreshUntil = Math.min(at + REFRESH_IDLE_MS, absolute)
+    const idle = connection.kind === 'content' ? CONTENT_REFRESH_IDLE_MS : REFRESH_IDLE_MS
+    const accessUntil = Math.min(at + ACCESS_TTL_MS, absolute), refreshUntil = Math.min(at + idle, absolute)
     state.tokens.set(hash(access), { hash: hash(access), kind: 'access', connection_id: connection.connection_id, client_id: client, family_id: family, expires_at: accessUntil })
     state.tokens.set(hash(refresh), { hash: hash(refresh), kind: 'refresh', connection_id: connection.connection_id, client_id: client, family_id: family, expires_at: refreshUntil, issued_at: at })
     return { access_token: access, token_type: 'Bearer', expires_in: seconds(accessUntil - at), refresh_token: refresh, scope: 'wappie:read' }
@@ -72,12 +88,14 @@ export function createTokens(state, { now = Date.now, checkActive, onFamilyRevok
       if (record && record.used) {
         // A replayed code means the first exchange may have gone to an attacker: nothing issued from it survives.
         state.codes.delete(hash(code))
-        await killFamily(record.family_id)
+        await killFamily(record.family_id, REUSE_DETECTED)
         throw new GrantError()
       }
       if (!fresh || !ok) { if (record) state.codes.delete(hash(code)); throw new GrantError() }
       const connection = state.connections.get(record.connection_id)
-      if (!connection) { state.codes.delete(hash(code)); throw new GrantError() }
+      // One exchange per connection, by the client it was consented for: a
+      // connection that already has a family never starts a second one.
+      if (!connection || connection.family_id !== undefined || !sameString(record.client_id, connection.client_id)) { state.codes.delete(hash(code)); throw new GrantError() }
       const family = randomBytes(16).toString('base64url')
       record.used = true; record.family_id = family
       connection.family_id = family
@@ -100,17 +118,20 @@ export function createTokens(state, { now = Date.now, checkActive, onFamilyRevok
       const previous = rotating.get(family) ?? Promise.resolve()
       const run = previous.catch(() => {}).then(async () => {
         const current = state.tokens.get(record.hash)
+        const connection = current && state.connections.get(current.connection_id)
+        // A family that is not its connection's (the record was replaced under
+        // the same id) dies alone: the connection it names is someone else's.
+        if (connection && !boundTo(current, connection)) { await killFamily(family); throw new GrantError() }
         if (!current || !sameString(client_id, current.client_id)) {
-          if (current) await killFamily(family)
+          if (current) await killFamily(family, REUSE_DETECTED)
           throw new GrantError()
         }
         if (current.rotated_to) {
           const successor = state.tokens.get(current.rotated_to), kept = successors.get(family)
-          if (!successor || successor.rotated_to || !kept || now() - current.rotated_at > ROTATION_GRACE_MS) { await killFamily(family); throw new GrantError() }
+          if (!successor || successor.rotated_to || !kept || now() - current.rotated_at > ROTATION_GRACE_MS) { await killFamily(family, REUSE_DETECTED); throw new GrantError() }
           return kept.pair
         }
         if (current.expires_at <= now()) { await killFamily(family); throw new GrantError() }
-        const connection = state.connections.get(current.connection_id)
         if (!connection || !(await checkActive(current.connection_id, { force: true }))) { await killFamily(family); throw new GrantError() }
         const pair = pairFor(connection, current.client_id, family)
         current.rotated_to = hash(pair.refresh_token); current.rotated_at = now()

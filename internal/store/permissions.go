@@ -49,7 +49,8 @@ func (u *Users) DevicePermission(ctx context.Context, tenant, user, device uuid.
    FROM workspace_memberships m JOIN users u ON u.id=m.user_id JOIN tenants t ON t.id=m.tenant_id
    JOIN devices d ON d.tenant_id=m.tenant_id
    LEFT JOIN device_permissions p ON p.tenant_id=m.tenant_id AND p.device_id=d.id AND p.user_id=m.user_id
-   WHERE m.tenant_id=$1 AND m.user_id=$2 AND d.id=$3 AND m.status='active' AND u.status='active' AND t.status='active'`, tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey)
+   WHERE m.tenant_id=$1 AND m.user_id=$2 AND d.id=$3 AND m.status='active' AND u.status='active' AND t.status='active'
+   AND (m.expires_at IS NULL OR m.expires_at > now())`, tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound

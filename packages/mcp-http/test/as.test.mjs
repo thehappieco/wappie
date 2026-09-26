@@ -400,3 +400,48 @@ test('the SDK client recovers from invalid_grant by re-authorizing, and a second
   assert.equal(h.reader.state.connections.size, 1)
   secretsAbsent(h, { linkSecrets: [done.linkSecret, again.linkSecret] })
 })
+
+test('token binding: a family that is not its connection record\'s is refused and kills nothing, and a code exchanges only into a fresh connection of its client', async t => {
+  const h = await harness(t)
+  const state = h.reader.state
+  // A record replaced under the same id: the old family's tokens are 401 and invalid_grant.
+  const s = await session(h)
+  const X = s.done.connectionId
+  const original = state.connections.get(X)
+  assert.equal((await rpc(h, s.tokens.access_token)).status, 200)
+  const swapped = { ...original, family_id: 'another-family' }
+  state.connections.set(X, swapped)
+  assert.equal((await rpc(h, s.tokens.access_token)).status, 401)
+  const refreshed = await refresh(h, { refreshToken: s.tokens.refresh_token, clientId: s.clientId })
+  assert.equal(refreshed.status, 400)
+  assert.equal(refreshed.json().error, 'invalid_grant')
+  assert.equal(state.connections.get(X), swapped, 'the record now under the id is not wiped')
+  assert.equal(h.go.connections.get(X).status, 'active', 'and Go is not told to revoke it')
+  assert.equal([...state.tokens.values()].some(token => token.family_id === original.family_id), false, 'the stale family is gone')
+
+  // The same family under another client's record.
+  const other = await session(h)
+  state.connections.set(other.done.connectionId, { ...state.connections.get(other.done.connectionId), client_id: 'someone-else' })
+  assert.equal((await rpc(h, other.tokens.access_token)).status, 401)
+
+  // RFC 7009 on a stale token ends its family only.
+  const third = await session(h)
+  const moved = { ...state.connections.get(third.done.connectionId), family_id: 'yet-another' }
+  state.connections.set(third.done.connectionId, moved)
+  assert.equal((await h.form('/mcp/revoke', { token: third.tokens.refresh_token, client_id: third.clientId })).status, 200)
+  assert.equal(state.connections.get(third.done.connectionId), moved)
+  assert.equal(h.go.connections.get(third.done.connectionId).status, 'active')
+
+  // A code whose connection already has a family, or belongs to another client, is invalid_grant.
+  for (const [label, change] of [['a family', { family_id: 'already' }], ['another client', { client_id: 'someone-else' }]]) {
+    h.clock.advance(13_000)
+    const clientId = (await register(h, { client_name: `Binding ${label}` })).json().client_id
+    const { verifier, challenge } = pkce()
+    const done = await consent(h, authorizeURL(h, { clientId, challenge }))
+    assert.equal(done.completed.status, 302, label)
+    Object.assign(state.connections.get(done.connectionId), change)
+    const exchanged = await exchange(h, { code: new URL(done.completed.location).searchParams.get('code'), clientId, verifier })
+    assert.equal(exchanged.status, 400, label)
+    assert.equal(exchanged.json().error, 'invalid_grant', label)
+  }
+})

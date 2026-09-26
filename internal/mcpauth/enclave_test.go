@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,7 +41,9 @@ const (
 	enclaveOrigin = "https://mcp.example.test"
 	stagingOrigin = "https://mcp-staging.example.test"
 	enclaveKID    = "fedcba9876543210"
-	enclavePCR0   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	// enclaveRenewalKID is the kid every renewal of the fake attests.
+	enclaveRenewalKID = "0f1e2d3c4b5a6978"
+	enclavePCR0       = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 
 // fakeEnclave stands in for the reader in the enclave on the far side of the
@@ -63,6 +66,17 @@ type fakeEnclave struct {
 	prepareReply func(id string) (int, any) // nil answers normally
 	unsigned     int
 	lastNonce    string
+	// bundleStatus and bundleCode, when set, answer every bundle hand-off
+	// (consent or renewal) with that refusal; revokeStatus answers every
+	// revocation notice.
+	bundleStatus int
+	bundleCode   string
+	revokeStatus int
+	// renewalKey is the key a renewal attests; renewalBundles are the
+	// renewal hand-offs by renewal id.
+	renewalKey     []byte
+	renewalBundles map[string]map[string]any
+	renewals       int
 }
 
 func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
@@ -71,6 +85,7 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 		id: id, secret: secret, origin: origin,
 		requests: map[string]map[string]any{}, bundles: map[string]map[string]any{},
 		documents: map[string][]byte{}, prepares: map[string]int{},
+		renewalBundles: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/requests/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -134,13 +149,70 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 			http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
 			return
 		}
+		if f.bundleStatus != 0 {
+			writeJSON(t, w, f.bundleStatus, map[string]string{"code": f.bundleCode})
+			return
+		}
 		f.bundles[r.PathValue("id")] = body
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /internal/connections/{id}/revoke", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.revokeStatus != 0 {
+			writeJSON(t, w, f.revokeStatus, map[string]string{"code": "unavailable"})
+			return
+		}
 		f.revoked = append(f.revoked, r.PathValue("id"))
-		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /internal/connections/{id}/renewal", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Nonce string `json:"nonce"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.lastNonce = body.Nonce
+		f.renewals++
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			t.Error(err)
+		}
+		renewalID := base64.RawURLEncoding.EncodeToString(raw)
+		document := make([]byte, 4000)
+		if _, err := rand.Read(document); err != nil {
+			t.Error(err)
+		}
+		f.documents[renewalID] = document
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"renewal_id": renewalID, "connection_id": r.PathValue("id"), "kid": enclaveRenewalKID,
+			"reader_public_key": base64.RawURLEncoding.EncodeToString(f.renewalKey), "resource": f.origin + "/mcp",
+			"device_ids": []string{}, "expires_at": time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339),
+			"connection_expires_at": time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339),
+			"attestation": map[string]any{
+				"format": "aws-nitro-v1", "document": base64.RawURLEncoding.EncodeToString(document),
+				"request_id": renewalID, "resource": f.origin + "/mcp", "reader_id": f.id, "reader_version": "0.3.0",
+				"tls_spki_sha256": strings.Repeat("a", 64), "policy_sha256": strings.Repeat("b", 64), "pcr0": enclavePCR0,
+			},
+		})
+	})
+	mux.HandleFunc("POST /internal/connections/{id}/renewal/{renewal}/bundle", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.bundleStatus != 0 {
+			writeJSON(t, w, f.bundleStatus, map[string]string{"code": f.bundleCode})
+			return
+		}
+		f.renewalBundles[r.PathValue("renewal")] = body
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /internal/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -185,6 +257,16 @@ func writeJSON(t *testing.T, w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Error(err)
 	}
+}
+
+// pendingKey registers a request whose per-request key is pub.
+func (f *fakeEnclave) pendingKey(t *testing.T, pub []byte) string {
+	t.Helper()
+	id := f.pending(t)
+	f.mu.Lock()
+	f.requests[id]["reader_public_key"] = base64.RawURLEncoding.EncodeToString(pub)
+	f.mu.Unlock()
+	return id
 }
 
 // pending registers a request as the enclave would after /mcp/authorize.
@@ -250,6 +332,10 @@ type attestedHarness struct {
 	*harness
 	enclave *fakeEnclave
 	staging *fakeEnclave
+	// contentOn is the content switch; the harness's workspace is the only
+	// one listed. Off unless a test turns it on.
+	contentOn atomic.Bool
+	handler   *mcpauth.Handler
 }
 
 func newAttestedHarness(t *testing.T) *attestedHarness {
@@ -260,7 +346,7 @@ func newAttestedHarness(t *testing.T) *attestedHarness {
 		staging: newFakeEnclave(t, "staging", stagingSecret, stagingOrigin),
 	}
 	h.mux = http.NewServeMux()
-	(&mcpauth.Handler{
+	h.handler = &mcpauth.Handler{
 		Connections: h.conns, APIKeys: h.keys, Users: h.users,
 		Reader:       mcpauth.NewRelay(h.reader.srv.URL, relaySecret),
 		PublicOrigin: publicOrigin, RelaySecret: relaySecret,
@@ -284,7 +370,12 @@ func newAttestedHarness(t *testing.T) *attestedHarness {
 		// the guard tests tell a request that got through.
 		CIMDTransport: noNetwork{},
 		Log:           slog.New(slog.DiscardHandler),
-	}).Mount(h.mux)
+		ContentReader: "enclave",
+		ContentAllowed: func(tenant uuid.UUID) bool {
+			return h.contentOn.Load() && tenant == h.tenant
+		},
+	}
+	h.handler.Mount(h.mux)
 	h.srv.Close()
 	h.srv = httptest.NewServer(h.mux)
 	t.Cleanup(h.srv.Close)

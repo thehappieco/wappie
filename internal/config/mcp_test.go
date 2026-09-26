@@ -2,8 +2,11 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // mcpEnv enables the connector with a complete, valid block on top of the
@@ -354,5 +357,120 @@ func TestMCPReaderSecretsNeverRendered(t *testing.T) {
 		if strings.Contains(rendered, enclaveSecret) || strings.Contains(rendered, enclaveSecretNext) {
 			t.Errorf("rendered config leaks a reader secret:\n%s", rendered)
 		}
+	}
+}
+
+// Content is off unless switched on, and the startup line says which.
+func TestMCPContentOffByDefault(t *testing.T) {
+	enclaveEnv(t)
+	t.Setenv("WS_MCP_CONTENT_TENANTS", "not even a uuid")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("an unused tenant list was inspected: %v", err)
+	}
+	if cfg.MCP.ContentEnabled || cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) {
+		t.Fatal("content allowed with the switch off")
+	}
+	if !strings.Contains(cfg.MCP.String(), " content=off content_tenants=0") {
+		t.Fatalf("String = %q", cfg.MCP.String())
+	}
+}
+
+func TestMCPContentLoads(t *testing.T) {
+	enclaveEnv(t)
+	t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
+	t.Setenv("WS_MCP_CONTENT_TENANTS", " "+testWorkspace+" ,,")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.MCP.ContentEnabled || len(cfg.MCP.ContentTenants) != 1 || cfg.MCP.ContentTenants[0].String() != testWorkspace {
+		t.Fatalf("content = %v %v", cfg.MCP.ContentEnabled, cfg.MCP.ContentTenants)
+	}
+	if !cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) || cfg.MCP.ContentAllowed(uuid.New()) {
+		t.Fatal("ContentAllowed does not follow the list")
+	}
+	if !strings.Contains(cfg.MCP.String(), " content=on content_tenants=1") {
+		t.Fatalf("String = %q", cfg.MCP.String())
+	}
+	// An enclave open to every workspace still gives text only to the listed.
+	t.Setenv("WS_MCP_READER_ENCLAVE_TENANTS", "*")
+	if cfg, err = Load(); err != nil || !cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) || cfg.MCP.ContentAllowed(uuid.New()) {
+		t.Fatalf("enclave for every workspace: %v", err)
+	}
+	// The connector off turns content off whatever the switch says.
+	cfg.MCP.Enabled = false
+	if cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) {
+		t.Fatal("content allowed with the connector off")
+	}
+}
+
+func TestMCPContentInvalid(t *testing.T) {
+	other := "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+	for name, env := range map[string]map[string]string{
+		"no tenants":              {"WS_MCP_CONTENT_TENANTS": ""},
+		"every workspace":         {"WS_MCP_CONTENT_TENANTS": "*"},
+		"not a uuid":              {"WS_MCP_CONTENT_TENANTS": "acme"},
+		"nil uuid":                {"WS_MCP_CONTENT_TENANTS": "00000000-0000-0000-0000-000000000000"},
+		"outside the enclave":     {"WS_MCP_CONTENT_TENANTS": testWorkspace + "," + other},
+		"no enclave reader":       {"WS_MCP_READERS": "hosted"},
+		"another attested reader": {"WS_MCP_READERS": "hosted,staging"},
+		"switch not a boolean":    {"WS_MCP_CONTENT_ENABLED": "maybe"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			enclaveEnv(t)
+			t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
+			t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if env["WS_MCP_READERS"] == "hosted,staging" {
+				for _, k := range []string{"URL", "PUBLIC_ORIGIN", "SECRET", "PEER", "TENANTS"} {
+					t.Setenv("WS_MCP_READER_STAGING_"+k, os.Getenv("WS_MCP_READER_ENCLAVE_"+k))
+				}
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load accepted %v", env)
+			}
+		})
+	}
+	// A disabled connector does not look at the switch either.
+	minimalEnv(t)
+	t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
+	if _, err := Load(); err != nil {
+		t.Fatalf("a disabled connector's content switch was inspected: %v", err)
+	}
+}
+
+// The content switch and its workspace list are documented where an
+// operator looks: the readers' configuration section of docs/mcp.md and
+// .env.example, each with its rule.
+func TestContentVariablesDocumented(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	doc := read("../../docs/mcp.md")
+	start := strings.Index(doc, "### Server configuration for the readers")
+	end := strings.Index(doc, "## Configuration and identity")
+	if start < 0 || end < start {
+		t.Fatal("docs/mcp.md has no readers' configuration section")
+	}
+	section := doc[start:end]
+	env := read("../../.env.example")
+	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_CONTENT_TENANTS"} {
+		if !strings.Contains(section, "| `"+name+"` |") {
+			t.Errorf("docs/mcp.md's readers' configuration does not list %s", name)
+		}
+		if !strings.Contains(env, "\n# "+name+"=") {
+			t.Errorf(".env.example does not show %s", name)
+		}
+	}
+	if !strings.Contains(env, "# WS_MCP_CONTENT_ENABLED=false\n") {
+		t.Error(".env.example does not show the content switch's default")
 	}
 }

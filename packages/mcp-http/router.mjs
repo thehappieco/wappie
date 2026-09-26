@@ -32,13 +32,21 @@ const refuse = (status, code) => Response.json({ code }, { status, headers: { 'C
 /**
  * `listenerHosts` ({public, internal}) turns on the enclave's two-listener
  * mode with exact Host checks; `attestation({nonce})` adds the public
- * `GET /attestation` route; `trustForwarded` false ignores X-Forwarded-For.
+ * `GET /attestation` route; `trustForwarded` false ignores X-Forwarded-For;
+ * `content.serverFor(record)` supplies the configuration and provider of a
+ * content connection. Without `content` such a record is never served: the
+ * metadata configuration and provider are the only ones this file builds.
  */
-export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true }) {
+export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content }) {
   const gate = requireBearerAuth({ verifier, requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
   const handler = createMcpHandler(ctx => {
     const connection = state.connections.get(ctx.authInfo?.extra?.connection_id)
     if (!connection) throw new Error('unknown connection')
+    if (connection.kind === 'content') {
+      if (!content) throw new Error('content connection without a content reader')
+      const { config, provider } = content.serverFor(connection)
+      return createServer(config, provider)
+    }
     return createServer(configFor(connection, archive), providerFor(connection))
   }, { responseMode: 'json', keepAliveMs: 0, onerror: () => log.event('mcp_error') })
   return {

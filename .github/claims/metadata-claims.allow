@@ -1,0 +1,45 @@
+# Allowlist for .github/claims/metadata-claims.py (run it for the rules).
+#
+# Every line that says "metadata-only" (or "metadata only", "somente
+# metadados", "solo metadatos") must be here. A line qualifies when it names
+# which connector it means: the hosted metadata connector (api.…/mcp, the
+# pilot's server.mjs, self-hosted containers, 'metadata' connections, the
+# 'provided' credential source), or 2a's attested reader as it was before 2b;
+# or when it is about something else entirely. A general claim that "the
+# hosted connector" cannot read content is not allowed: since 2b the attested
+# reader at mcp.…/mcp can, for 'content' connections.
+#
+#   <path>                 every hit in the file (code; give the reason)
+#   <path> :: <fragment>   only hits whose line contains the fragment
+
+# Unrelated meanings of the phrase.
+deploy/enclave/Dockerfile :: # metadata-only directory changes: /app and the apk directories
+docs/media-security.md :: Begin with metadata-only counts and ambiguous object
+docs/rest-api.md :: The server filters routing metadata only, never plaintext.
+internal/store/scan.go :: ScanFilter describes routing metadata only.
+internal/wsapi/readmodel.go :: DeviceFromRow contains stored metadata only.
+
+# History: the 2026-09-21 decision, now marked superseded for the attested reader.
+docs/decisions.md :: ## Hosted remote MCP is metadata-only (2026-09-21)
+
+# This gate's own CI job explains the rule.
+.github/workflows/ci.yml :: sentence calling "the hosted connector" metadata-only is false unless it
+
+# The lead's contract: 2a as it shipped, the pilot's reader, and this gate's own pattern.
+docs/mcp-enclave.md :: 2a is **metadata-only**: no message text
+docs/mcp-enclave.md :: The pilot's reader (`server.mjs` as `wappie-mcp`) stays metadata-only
+docs/mcp-enclave.md :: the CI grep gate (`metadata-only
+
+# Code and tests of the hosted metadata connector and of the 'metadata' mode:
+# model-facing strings, locked reasons and comments that describe that mode.
+packages/mcp/config.mjs
+packages/mcp/reader.mjs
+packages/mcp/server.mjs
+packages/mcp/test/provider.test.mjs
+# Asserts that content-mode strings never say metadata only, and metadata mode does.
+packages/mcp/test/content.test.mjs
+packages/mcp-http/link.mjs
+packages/mcp-http/server.mjs
+packages/mcp-http/test/http.test.mjs
+# Contrasts the enclave's content provider with the pilot's metadata provider.
+packages/mcp-http/enclave/provider.mjs

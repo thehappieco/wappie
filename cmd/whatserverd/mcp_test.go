@@ -55,8 +55,18 @@ func TestAdvertisedMCP(t *testing.T) {
 	// Only the reader called enclave is the attested endpoint.
 	cfg = enclaveConfig()
 	cfg.Attested[0].ID = "staging"
-	if got := advertisedMCP(cfg); got.Attested != "" {
+	cfg.ContentEnabled = true
+	if got := advertisedMCP(cfg); got.Attested != "" || got.Content {
 		t.Fatalf("a staging reader was advertised: %+v", got)
+	}
+	// Content rides on the enclave and the switch.
+	cfg = enclaveConfig()
+	if got := advertisedMCP(cfg); got.Content {
+		t.Fatalf("content advertised with the switch off: %+v", got)
+	}
+	cfg.ContentEnabled = true
+	if got := advertisedMCP(cfg); !got.Content {
+		t.Fatalf("content not advertised: %+v", got)
 	}
 }
 

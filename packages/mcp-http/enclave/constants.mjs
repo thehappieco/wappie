@@ -9,7 +9,7 @@
 // image that still carries a marker refuses to boot (constants_invalid). They
 // are ARNs by key id, never aliases: an UpdateAlias would swap the key.
 export const READER_ID = 'enclave'
-export const READER_VERSION = '0.2.0'
+export const READER_VERSION = '0.3.0'
 export const PUBLIC_HOST = 'mcp.wappie.thehappie.co'
 export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`
 export const CONSOLE_URL = 'https://app.wappie.thehappie.co/console'

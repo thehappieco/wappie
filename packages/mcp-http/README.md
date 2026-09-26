@@ -1,4 +1,4 @@
-# Wappie MCP HTTP: the hosted, metadata-only connector
+# Wappie MCP HTTP: the hosted connector and the attested reader
 
 `@whatserver2/mcp-http` serves the same read-only tools as
 [`packages/mcp`](../mcp/README.md) over **Streamable HTTP**, so claude.ai and
@@ -6,7 +6,9 @@ ChatGPT can connect to a Wappie installation as a remote MCP server. It is the
 open source half of the hosted connector: one Node process on loopback behind
 the reverse proxy, next to the Wappie API. Requires Node.js 22 or later.
 
-It is **metadata-only by construction**. A connection carries a device-scoped,
+`server.mjs`, the process this section and the next ones describe (Wappie's
+`https://api.wappie.thehappie.co/mcp` and every self-hosted container), never
+opens content, by construction. A connection carries a device-scoped,
 read-only API key and nothing else: no archive private key, no service account,
 no contact snapshot, no password. Every `list_chats` name, message body and
 attachment filename stays `locked`; `search_messages` with a text query answers
@@ -16,7 +18,12 @@ reason the assistant sees on a hosted connection, is chosen from
 says so, a hosted connection never can, and must not send its user after a
 setting that cannot exist. The reader cannot decrypt anything even
 if a bundle tried to give it the means, because the credential provider it hands
-the shared reader refuses `serviceKey()` and `contactPack()` outright.
+the shared reader refuses `serviceKey()` and `contactPack()` outright, and
+its bundle parser accepts only version 1, which cannot carry one.
+
+The same package also builds the attested reader (`enclave/`, below), which
+can open message text for a `content` connection. Nothing reachable from
+`server.mjs` can: a test walks its imports.
 
 ## What runs where
 
@@ -196,8 +203,8 @@ WAPPIE_MCP_RELAY_SECRET_FILE=/etc/wappie/mcp-relay-secret node packages/mcp-http
 ## The attested reader (`enclave/`)
 
 `enclave/main.mjs` runs this same reader inside an AWS Nitro Enclave at
-`https://mcp.wappie.thehappie.co/mcp`, still metadata-only. The contract is
-`docs/mcp-enclave.md`; what differs from the hosted reader:
+`https://mcp.wappie.thehappie.co/mcp`. The contract is `docs/mcp-enclave.md`;
+what differs from the hosted reader:
 
 - Configuration is `enclave/constants.mjs`, measured into PCR0. Nothing is
   read from the environment; the build fills only the two KMS key ARNs.
@@ -221,8 +228,38 @@ WAPPIE_MCP_RELAY_SECRET_FILE=/etc/wappie/mcp-relay-secret node packages/mcp-http
 - Logs leave only through the vsock sink, each line checked against the
   parent's schema (`enclave/logsink.mjs`), with a health line every minute
   that includes the clock's skew against KMS's `Date` (`enclave/health.mjs`).
+  No line carries text, names, queries, tokens, keys or bundles.
 
-`server.mjs` never imports `enclave/` (a test walks its imports), and the
+**Content connections** (milestone 2b, `docs/mcp-enclave.md` section 15). A
+connection is `metadata` (as above) or `content`. For `content` the console
+seals a version 2 bundle to the attested per-request key: an API key acting
+as a service account made for this connection alone, whose grants are sealed
+to that same key. Before the consent completes, `enclave/content.mjs` opens
+every grant once and refuses the bundle if one fails. The private key then
+moves into `enclave/connkeys.mjs`, a map from connection id to a
+non-extractable `CryptoKey` in memory only, never in the sealed state.
+`enclave/provider.mjs` hands the shared reader a handle to it, never its
+bytes, and the reader opens each grant per tool call. The archive server
+allows content only for the workspaces the operator lists
+(`WS_MCP_CONTENT_TENANTS`) and only while `WS_MCP_CONTENT_ENABLED` is on.
+
+- **Restart**: every key is gone. Content connections become `reseal` (the
+  connection id and the assistant's tokens survive), tools answer
+  `reconsent_required` with the console's renewal link, and
+  `enclave/renew.mjs` takes a new attested key and a new service account on
+  the same connection.
+- **Revocation**: Go tells the enclave at once and resends every 30 s until
+  it answers; independently, the enclave asks Go about every content
+  connection each minute and drops the key on any answer but `active`. If Go
+  cannot be reached it stops serving and keeps the key.
+- **Refresh**: a content connection's refresh token lapses after seven days
+  unused (thirty for metadata).
+- **Search**: with a text query the reader scans the whole budget and does not
+  check history per hit, so the REST requests do not reveal which messages
+  matched.
+
+`server.mjs` never imports `enclave/` and never names the `'enclave'`
+credential source or the key map (`test/enclave-boundary.test.mjs`), and the
 enclave's dependencies live in its own `enclave/package.json`.
 
 `node enclave/policy.mjs < policy.json` prints the policy hash the console
@@ -254,7 +291,13 @@ fake ACME server that really dials the TLS-ALPN-01 listener.
 
 ## What this never has
 
-An archive private key. A service account or its key. A contact snapshot. A
-password. The plaintext of any message. The reader holds device-scoped,
-read-only API keys for the connections its workspace owners consented to, and
-those keys can be revoked from the console at any time.
+`server.mjs`, the hosted metadata connector: an archive private key. A service
+account or its key. A contact snapshot. A password. The plaintext of any
+message. It holds device-scoped, read-only API keys for the connections its
+workspace owners consented to, and those keys can be revoked from the console
+at any time.
+
+The attested reader, for any connection: an archive private key, a password, a
+contact snapshot, attachment bytes, a way to send. For a `content` connection
+it holds, in enclave memory only, the key its service account's grants are
+sealed to, and opens text only while that connection is live.

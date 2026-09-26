@@ -25,6 +25,14 @@ a connection against the origin named in the reader's descriptor, not against
 its own page origin, so a hosted console can approve connections for a
 compatible external installation.
 
+`endpoints.mcp_server` is the hosted metadata connector's address and
+`endpoints.mcp_server_attested` the attested reader's (see
+[attested MCP reader](mcp-enclave.md)). The capability
+`mcp.remote.content.v1` is advertised only when the attested reader is
+configured **and** message text is switched on (`WS_MCP_CONTENT_ENABLED`); it
+says that text connections exist on this installation, not that a given
+workspace may create one. The console asks `GET /v1/mcp/content` for that.
+
 `WS_BROWSER_ORIGINS` lists exact origins allowed for HTTP, WebSocket and call
 media. Wildcards, userinfo, paths and query strings are rejected. HTTPS is
 required except explicit localhost HTTP origins in development. HTTP preflight

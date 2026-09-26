@@ -197,6 +197,17 @@ jobs:
           echo "$a"; echo "$b"
           [ "$a" = "$b" ]
 
+  # Since milestone 2b the attested reader (mcp.) can open message text, so a
+  # sentence calling "the hosted connector" metadata-only is false unless it
+  # names the metadata connector (api.) or the metadata kind. Every such
+  # phrase must be on .github/claims/metadata-claims.allow, and every entry
+  # there must still match (docs/mcp-enclave.md section 15.1).
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/claims/metadata-claims.py
+
   secrets:
     runs-on: ubuntu-latest
     steps:

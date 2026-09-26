@@ -520,6 +520,11 @@ func nilIfEmpty(b []byte) []byte {
 
 // Get loads one account. The auth hash is not among the columns read: nothing
 // outside Authenticate has any use for it.
+//
+// A membership past its deadline is as absent as a disabled one. Only
+// connection service accounts carry a deadline, so a key acting as one stops
+// authenticating the moment its consent window or its connection runs out,
+// before any janitor has run.
 func (u *Users) Get(ctx context.Context, tenant, id uuid.UUID) (User, error) {
 	if tenant == uuid.Nil {
 		return u.identity(ctx, id)
@@ -531,7 +536,8 @@ func (u *Users) Get(ctx context.Context, tenant, id uuid.UUID) (User, error) {
 			SELECT u.email, u.kdf_salt, u.kdf_params, u.public_key, u.wrapped_usk,
 			       u.recovery_wrap, u.recovery_hash IS NOT NULL, m.role, u.status, u.created_at, u.name, u.avatar
 			  FROM users u JOIN workspace_memberships m ON m.user_id = u.id
-			 WHERE u.id = $1 AND m.tenant_id = $2 AND m.status = 'active'`, id, tenant).Scan(&out.Email, &out.KDFSalt, &raw,
+			 WHERE u.id = $1 AND m.tenant_id = $2 AND m.status = 'active'
+			   AND (m.expires_at IS NULL OR m.expires_at > now())`, id, tenant).Scan(&out.Email, &out.KDFSalt, &raw,
 			&out.PublicKey, &out.WrappedUSK, &out.RecoveryWrap, &out.RecoveryUsable,
 			&out.Role, &out.Status, &out.CreatedAt, &out.Name, &out.Avatar)
 	})
@@ -846,6 +852,8 @@ type Invite struct {
 	Role      string
 	Email     string
 	ExpiresAt time.Time
+	// Provisional marks a content consent's service invitation.
+	Provisional bool
 }
 
 // CreateInvite issues an invite secret. Optional encrypted recovery is available

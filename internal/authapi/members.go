@@ -101,8 +101,25 @@ func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Role  string `json:"role"`
 		Email string `json:"email"`
+		// Provisional asks for a content consent's service invitation:
+		// thirty minutes, and an account that lives only as long as the
+		// consent unless a connection takes it.
+		Provisional bool `json:"provisional"`
 	}
 	if !decode(w, r, &req) || !h.allow(w, r, user.Email) {
+		return
+	}
+	if req.Provisional && (req.Role != store.RoleService || req.Email != "") {
+		fail(w, http.StatusBadRequest, "bad_request", "a provisional invitation is for a service account, with no email")
+		return
+	}
+	if req.Provisional {
+		invite, invitation, err := h.Users.NewProvisionalServiceInvitation(r.Context(), user.TenantID, user.ID)
+		if err != nil {
+			h.memberError(w, err)
+			return
+		}
+		send(w, http.StatusCreated, map[string]any{"invite": invite, "invitation": invitation, "email_sent": false})
 		return
 	}
 	invite, invitation, err := h.Users.NewMemberInvitation(r.Context(), user.TenantID, user.ID, req.Role, req.Email)

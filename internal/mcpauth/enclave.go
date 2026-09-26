@@ -41,9 +41,8 @@ func (h *Handler) mountEnclave(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/mcp/enclave/connections/{id}/activate", h.signed(maxBody, func(w http.ResponseWriter, r *http.Request, caller *AttestedReader, _ []byte) {
 		h.connectionActivate(w, r, caller.ID)
 	}))
-	mux.HandleFunc("POST /v1/mcp/enclave/connections/{id}/revoke", h.signed(maxBody, func(w http.ResponseWriter, r *http.Request, caller *AttestedReader, _ []byte) {
-		h.connectionRevoke(w, r, caller.ID)
-	}))
+	mux.HandleFunc("POST /v1/mcp/enclave/connections/{id}/revoke", h.signed(maxBody, h.attestedRevoke))
+	mux.HandleFunc("POST /v1/mcp/enclave/connections/{id}/reseal", h.signed(maxBody, h.reseal))
 	mux.HandleFunc("GET /v1/mcp/enclave/cimd", h.signed(maxBody, func(w http.ResponseWriter, r *http.Request, _ *AttestedReader, _ []byte) {
 		h.cimd(w, r)
 	}))

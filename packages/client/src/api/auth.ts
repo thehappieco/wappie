@@ -493,6 +493,26 @@ export async function signOut(serverURL: string, token: string, allRelated = fal
   }
 }
 
+/** What withDeviceKey needs to recover one device's archive key. */
+export interface WithDeviceKeyInput {
+  serverURL: string
+  email: string
+  password: string
+  token: string
+  deviceID: string
+  /** Optional identity pins for local clients with fixed workspace configuration. */
+  expectedTenantID?: string
+  expectedUserID?: string
+  signal?: AbortSignal
+  /** Refuse costly challenges without lowering the server's KDF parameters. */
+  maxKDF?: { m: number; t: number; p: number }
+  /** Optional bounded auth JSON reader for local automation clients. */
+  maxAuthResponseBytes?: number
+}
+
+/** The most devices one withDeviceKeys call lends, which is also a content consent's limit. */
+export const MaxDeviceKeys = 100
+
 /**
  * withDeviceKey lends a device's archive key to one operation.
  *
@@ -515,28 +535,39 @@ export async function signOut(serverURL: string, token: string, allRelated = fal
  * currently selected workspace, when sealing another grant after a transfer.
  */
 export async function withDeviceKey<T>(
-  input: {
-    serverURL: string
-    email: string
-    password: string
-    token: string
-    deviceID: string
-    /** Optional identity pins for local clients with fixed workspace configuration. */
-    expectedTenantID?: string
-    expectedUserID?: string
-    signal?: AbortSignal
-    /** Refuse costly challenges without lowering the server's KDF parameters. */
-    maxKDF?: { m: number; t: number; p: number }
-    /** Optional bounded auth JSON reader for local automation clients. */
-    maxAuthResponseBytes?: number
-  },
+  input: WithDeviceKeyInput,
   use: (deviceKey: Bytes, epoch: number, archiveTenantID: string) => Promise<T>,
 ): Promise<T> {
+  const { deviceID, ...rest } = input
+  const [result] = await withDeviceKeys({ ...rest, deviceIDs: [deviceID] }, (_device, deviceKey, epoch, archiveTenantID) =>
+    use(deviceKey, epoch, archiveTenantID))
+  return result as T
+}
+
+/**
+ * withDeviceKeys is withDeviceKey for several devices at the price of one:
+ * one challenge, one derivation and one /auth/me, however many devices.
+ *
+ * Every device must have a grant before any key is opened, so a request that
+ * cannot finish fails before `use` runs at all. The devices are then lent one
+ * at a time, in the order given: each key is opened just before its `use` and
+ * overwritten as soon as that `use` settles, so at most one device key exists
+ * at a time. The account key is overwritten at the end, whatever happened.
+ */
+export async function withDeviceKeys<T>(
+  input: Omit<WithDeviceKeyInput, 'deviceID'> & { deviceIDs: readonly string[] },
+  use: (deviceID: string, deviceKey: Bytes, epoch: number, archiveTenantID: string) => Promise<T>,
+): Promise<T[]> {
   if (input.maxKDF && (['m', 't', 'p'] as const).some(key => !Number.isSafeInteger(input.maxKDF![key]) || input.maxKDF![key] < 1)) {
     throw new AuthError('invalid_kdf_limits', 'Invalid local KDF limits.')
   }
   if (input.maxAuthResponseBytes !== undefined && (!Number.isSafeInteger(input.maxAuthResponseBytes) || input.maxAuthResponseBytes < 1)) {
     throw new AuthError('invalid_response_limit', 'Invalid local authentication response limit.')
+  }
+  const deviceIDs = Array.isArray(input.deviceIDs) ? [...input.deviceIDs] : []
+  if (deviceIDs.length < 1 || deviceIDs.length > MaxDeviceKeys || deviceIDs.some(id => typeof id !== 'string' || !id) ||
+    new Set(deviceIDs).size !== deviceIDs.length) {
+    throw new AuthError('invalid_devices', t('escolha de 1 a {v0} aparelhos, sem repetir nenhum', { v0: MaxDeviceKeys }))
   }
   const challenge = await call<ChallengeReply>(input.serverURL, '/v1/auth/challenge', {
     email: input.email,
@@ -564,33 +595,29 @@ export async function withDeviceKey<T>(
     input.email,
   )
   try {
-    const grant = (me.grants ?? []).find((g) => g.device_id === input.deviceID)
-    if (!grant) {
+    const grants = deviceIDs.map(deviceID => (me.grants ?? []).find((g) => g.device_id === deviceID))
+    if (grants.some(grant => !grant)) {
       throw new AuthError(
         'no_grant',
         t('sua conta não tem a chave deste aparelho, então não há o que conceder'),
       )
     }
     const account = await importArchiveKey(accountPrivate)
-    const archiveTenantID = grant.archive_tenant_id || me.user.tenant_id
-    const row = await grantRow(
-      parseUUID(archiveTenantID),
-      parseUUID(input.deviceID),
-      parseUUID(me.user.id),
-      grant.epoch,
-    )
-    const deviceKey = await openDirect(
-      account,
-      Kind.DeviceGrant,
-      parseUUID(archiveTenantID),
-      row,
-      fromBase64(grant.sealed_dsk),
-    )
-    try {
-      return await use(deviceKey, grant.epoch, archiveTenantID)
-    } finally {
-      deviceKey.fill(0)
+    const user = parseUUID(me.user.id)
+    const results: T[] = []
+    for (const [index, deviceID] of deviceIDs.entries()) {
+      const grant = grants[index]!
+      const archiveTenantID = grant.archive_tenant_id || me.user.tenant_id
+      const archiveTenant = parseUUID(archiveTenantID)
+      const row = await grantRow(archiveTenant, parseUUID(deviceID), user, grant.epoch)
+      const deviceKey = await openDirect(account, Kind.DeviceGrant, archiveTenant, row, fromBase64(grant.sealed_dsk))
+      try {
+        results.push(await use(deviceID, deviceKey, grant.epoch, archiveTenantID))
+      } finally {
+        deviceKey.fill(0)
+      }
     }
+    return results
   } finally {
     accountPrivate.fill(0)
   }

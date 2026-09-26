@@ -11,6 +11,7 @@ import { acceptBundle, descriptor, LinkError } from './link.mjs'
 import { isLoopback } from './limits.mjs'
 
 const MAX_RELAY_BODY = 64 * 1024
+const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export class RelayError extends Error {
   constructor(code, status = 0) { super(code); this.name = 'RelayError'; this.code = code; this.status = status }
@@ -21,7 +22,7 @@ export class RelayError extends Error {
  * target, body)` replaces the bearer header when given (the enclave signs
  * every request). `call` and `body` are exposed for the enclave's state routes.
  */
-export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor }) {
+export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor, reasons = false }) {
   const base = archive.replace(/\/$/, '')
   async function call(method, path, query, { body: payload, timeout = timeoutMs, headers: extra = {} } = {}) {
     const url = new URL(base + prefix + path)
@@ -49,7 +50,11 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
   }
   return {
     call, body,
-    /** `{status, expires_at}` of a connection, or null when Go does not know it. */
+    /**
+     * `{status, expires_at}` of a connection, or null when Go does not know it.
+     * An attested reader's route also names the row's `kind` and
+     * `service_user_id`; they are passed on when well formed.
+     */
     async status(id) {
       const response = await call('GET', `/connections/${encodeURIComponent(id)}`)
       const data = await body(response)
@@ -58,7 +63,10 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
       let parsed
       try { parsed = JSON.parse(data.toString('utf8')) } catch { throw new RelayError('relay_failed', response.status) }
       if (!parsed || typeof parsed.status !== 'string' || typeof parsed.expires_at !== 'string') throw new RelayError('relay_failed', response.status)
-      return { status: parsed.status, expires_at: parsed.expires_at }
+      const answer = { status: parsed.status, expires_at: parsed.expires_at }
+      if (parsed.kind === 'metadata' || parsed.kind === 'content') answer.kind = parsed.kind
+      if (typeof parsed.service_user_id === 'string' && uuidShape.test(parsed.service_user_id)) answer.service_user_id = parsed.service_user_id.toLowerCase()
+      return answer
     },
     async activate(id) {
       const response = await call('POST', `/connections/${encodeURIComponent(id)}/activate`)
@@ -66,10 +74,15 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
       if (response.status === 204) return true
       throw new RelayError(response.status === 409 ? 'connection_state' : response.status === 404 ? 'not_found' : 'relay_failed', response.status)
     },
-    /** Best effort: the reader has already forgotten the connection when this is called. */
-    async revoke(id) {
+    /**
+     * Best effort: the reader has already forgotten the connection when this
+     * is called. `reason` ('reuse_detected') travels only on a relay built
+     * with `reasons` (the attested reader's); the hosted route takes no body.
+     */
+    async revoke(id, reason) {
       try {
-        const response = await call('POST', `/connections/${encodeURIComponent(id)}/revoke`)
+        const payload = reasons && reason === 'reuse_detected' ? Buffer.from(JSON.stringify({ reason })) : undefined
+        const response = await call('POST', `/connections/${encodeURIComponent(id)}/revoke`, null, payload ? { body: payload, headers: { 'content-type': 'application/json' } } : {})
         await body(response)
         return response.status === 204
       } catch { return false }
@@ -123,9 +136,13 @@ export function decodeCiphertext(value) {
  * - `auth(request, info)` replaces the loopback guard;
  * - `health()` is the healthz body;
  * - `prepare(pending, nonce)` adds `POST /internal/requests/{id}/prepare`;
- * - `rotateSecret(ciphertext)` adds `POST /internal/relay-secret`.
+ * - `rotateSecret(ciphertext)` adds `POST /internal/relay-secret`;
+ * - `content` (the attested reader's content connections) takes bundles
+ *   relayed with `"kind": "content"` and adds the two renewal routes. Without
+ *   it a `kind` field is an unknown key and the bundle is a bad request.
  */
-export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret }) {
+export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content }) {
+  const refused = (meta, error) => { meta.code = error.code; return json({ code: error.code }, error.status) }
   const guard = auth ?? ((request, info) => internalGuard(request, info, secret))
   return async (request, info, meta) => {
     const path = new URL(request.url).pathname
@@ -174,12 +191,41 @@ export function internalRoutes({ state, secret, now, pendingFor, auth, health, p
       meta.client = pending.client_id
       let body
       try { body = await request.json() } catch { meta.code = 'bad_request'; return json({ code: 'bad_request' }, 400) }
+      const labelled = content && body && typeof body === 'object' && !Array.isArray(body) ? body.kind : undefined
       try {
-        const { connection_id } = await acceptBundle(state, pending, body, { now })
-        meta.connection = connection_id
+        let accepted
+        if (labelled === 'content') accepted = await content.acceptBundle(pending, body)
+        else {
+          // An attested reader's Go labels every relay; a metadata one is the 2a bundle.
+          if (labelled === 'metadata') { const { kind: _kind, ...rest } = body; body = rest }
+          accepted = await acceptBundle(state, pending, body, { now })
+        }
+        meta.connection = accepted.connection_id
         return noContent()
       } catch (error) {
-        if (error instanceof LinkError) { meta.code = error.code; return json({ code: error.code }, error.status) }
+        if (error instanceof LinkError) return refused(meta, error)
+        throw error
+      }
+    }
+    if (content && (match = /^\/internal\/connections\/([0-9a-f-]{36})\/renewal$/.exec(path)) && request.method === 'POST') {
+      meta.route = 'POST /internal/connections/{id}/renewal'
+      meta.connection = match[1]
+      const body = await strictBody(request, ['nonce'])
+      try { return json(await content.renewal.prepare(match[1].toLowerCase(), body && decodeNonce(body.nonce))) } catch (error) {
+        if (error instanceof LinkError || error instanceof AttestationError) return refused(meta, error)
+        throw error
+      }
+    }
+    if (content && (match = /^\/internal\/connections\/([0-9a-f-]{36})\/renewal\/([A-Za-z0-9_-]{22})\/bundle$/.exec(path)) && request.method === 'POST') {
+      meta.route = 'POST /internal/connections/{id}/renewal/{renewal_id}/bundle'
+      meta.connection = match[1]
+      let body
+      try { body = await request.json() } catch { meta.code = 'bad_request'; return json({ code: 'bad_request' }, 400) }
+      try {
+        await content.renewal.acceptBundle(match[1].toLowerCase(), match[2], body)
+        return noContent()
+      } catch (error) {
+        if (error instanceof LinkError) return refused(meta, error)
         throw error
       }
     }

@@ -1141,6 +1141,11 @@ confirmations from the Wappie reader or another linked client.
 
 ## Hosted remote MCP is metadata-only (2026-09-21)
 
+> Still true of `https://api.wappie.thehappie.co/mcp`, of self-hosted
+> containers and of every `metadata` connection. For the attested reader at
+> `https://mcp.wappie.thehappie.co/mcp`, "Message text inside an attested
+> reader (2026-09-26)" below supersedes it.
+
 The local stdio MCP stays exactly as it is: keys on your computer, plaintext
 optional, nothing to revise. The hosted connector is a second transport, not a
 replacement, and the line it draws is the one the archive already drew: the
@@ -1200,3 +1205,67 @@ does not exist.
 `docs/rest-api.md` still says the server never opens archived content or
 receives archive private keys. That sentence stays true, and it was the test
 for every choice above.
+
+## Message text inside an attested reader (2026-09-26)
+
+The hosted connector could not read what people most want to ask about. The
+2026-09-21 line (the process reachable from the internet never holds a key that
+opens content) is kept for `api.` and for self-hosting, and a second reader is
+allowed across it under conditions that make the crossing checkable.
+
+**Where the key may exist.** Only inside an AWS Nitro Enclave whose image is
+public, built from the public tree and verified by the browser before it
+seals anything (`docs/mcp-enclave.md`). TLS ends inside the enclave on a new
+hostname, `mcp.`, because `api.` mixes the REST API and `/mcp` and could not be
+passed through. CAA pins certificates for `mcp.` to the enclave's own ACME
+account before the address resolved, the TLS key is new at every boot, and
+Certificate Transparency is watched for a key no enclave attested. The honest
+residue is written into the consent card and the docs: whoever controls DNS
+can still impersonate the reader to the AI host for as long as it lasts, and
+leaves a public certificate behind.
+
+**Ephemeral keys first.** The per-connection X25519 key is generated inside the
+enclave and lives only in its memory. No KMS policy change can reopen it later,
+because there is nothing stored to reopen. The price is that every reader
+release, reboot or crash clears it: the connection turns `reseal` (not
+revoked), keeps its id and the assistant's tokens, and the person who
+consented renews it in the console with their password. A mode that wraps the
+key under KMS so it survives restarts is a later, separate choice (2c), with
+its own weaker sentence on the card.
+
+**One service account per connection, never reused.** `users.public_key` has no
+update path, and making one would be a new way to redirect every grant a user
+holds. So a text connection gets its own service account whose public key is
+the attested one, read-only permissions on exactly the consented numbers and
+one grant per number; renewal creates a new account and swaps it in on the same
+connection. Such accounts never count as the "another reader remains" backup
+that protects a number from losing its last reader, because their grants die
+with the enclave's memory.
+
+**Revocation is one helper under the tenant.** `device_key_grants` and
+`device_permissions` have forced row-level security, so a `DELETE` outside
+`pg.InTenantTx` removes nothing and reports no error. Every path that ends a
+text connection (console, reader, a failed relay, expiry, removing or
+disabling the service or the person who consented, access found gone) calls
+the same helper in the tenant's transaction, and the enclave asks the server
+about every text connection each minute, so an idle one loses its key within a
+minute of a revocation. Revocation never erases what the assistant already
+received, and the card says so.
+
+**Search must not tell the server what matched.** The reader asks the archive
+for pages and opens them in the enclave. Stopping at the first `limit` hits,
+or asking for the history of each hit, would show the server which messages
+contain the words. With a text query the reader always scans the whole budget
+and does not check history per hit; contact lookup always reads the same
+number of pages.
+
+**Deliberately narrow.** The password stays (one Argon2id derivation for all
+chosen numbers); durations are 1, 30 or 90 days with a seven-day idle refresh;
+the personal contacts snapshot, attachment bytes and sending are out; text is
+enabled only for workspaces the operator lists (`WS_MCP_CONTENT_TENANTS`)
+behind a kill switch (`WS_MCP_CONTENT_ENABLED`). Legal texts and these docs are
+published before any workspace other than the test workspace is listed.
+
+The local stdio MCP is unchanged. `docs/rest-api.md` still holds: the archive
+server never opens archived content or receives archive private keys. The
+enclave reads the archive through that same REST API, as a client would.

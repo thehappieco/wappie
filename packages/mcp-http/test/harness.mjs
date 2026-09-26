@@ -24,9 +24,13 @@ export const DAY = 24 * 3_600_000
 export const apiKey = () => `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
 export const fakeClock = () => { const clock = { offset: 0, now: () => Date.now() + clock.offset, advance(ms) { clock.offset += ms } }; return clock }
 
-/** Go's /v1/mcp/internal/* in front of the synthetic archive REST server. */
+/**
+ * Go's /v1/mcp/internal/* in front of the synthetic archive REST server.
+ * `go.holdActivate(id)`, when set, is awaited before an activation is looked
+ * at, so a test can hold one open and act while the reader waits on it.
+ */
 export function createFakeGo({ upstream, secret, now }) {
-  const go = { connections: new Map(), cimd: new Map(), calls: [], delay: 0, activations: 0 }
+  const go = { connections: new Map(), cimd: new Map(), calls: [], delay: 0, activations: 0, holdActivate: null }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
   const http = createHTTPServer(async (req, res) => {
     const url = new URL(req.url, 'http://go')
@@ -47,6 +51,7 @@ export function createFakeGo({ upstream, secret, now }) {
       return connection ? json(res, { status: connection.status, expires_at: connection.expires_at }) : json(res, { code: 'not_found' }, 404)
     }
     if ((match = /^\/v1\/mcp\/internal\/connections\/([^/]+)\/activate$/.exec(url.pathname)) && req.method === 'POST') {
+      if (go.holdActivate) await go.holdActivate(match[1])
       const connection = go.connections.get(match[1])
       if (!connection) return json(res, { code: 'not_found' }, 404)
       if (connection.status !== 'pending') return json(res, { code: 'connection_state' }, 409)

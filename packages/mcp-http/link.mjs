@@ -103,20 +103,40 @@ export function dummyProof() {
 }
 
 /**
+ * Whether `connectionID` already names something here: a connection, or the
+ * bundle of another request (attached, or being accepted right now, which
+ * `pending.accepting` holds the relayed id for). Go picks the id, so a relay
+ * reusing one would bind a new consent to a connection whose tokens someone
+ * else already holds; the relay routes refuse it before opening anything.
+ */
+export function connectionTaken(state, pending, connectionID) {
+  if (state.connections.has(connectionID) || state.activating?.has(connectionID)) return true
+  for (const other of state.pending.values()) {
+    if (other !== pending && (other.connection_id === connectionID || other.accepting === connectionID)) return true
+  }
+  return false
+}
+
+/**
  * Attaches the bundle Go relayed to its pending request after validating it
  * end to end. Throws LinkError with the status the internal route answers.
+ * While the bundle opens, `pending.accepting` holds the relayed connection id:
+ * a second relay for the request is 409 and one naming that id for another
+ * request is refused, however the two interleave.
  */
 export async function acceptBundle(state, pending, body, { now = Date.now } = {}) {
   const parsed = bundleBody.safeParse(body)
   if (!parsed.success) throw new LinkError('bad_request')
   const { connection_id, tenant_id, kid, sealed: encoded, expires_at } = parsed.data
-  if (pending.bundle) throw new LinkError('bundle_exists', 409)
+  if (pending.bundle || pending.accepting) throw new LinkError('bundle_exists', 409)
+  if (connectionTaken(state, pending, connection_id)) throw new LinkError('bad_request')
   const sealed = Buffer.from(encoded, 'base64url')
   if (sealed.toString('base64url') !== encoded) throw new LinkError('bad_request')
   const expiry = Date.parse(expires_at)
   if (!Number.isFinite(expiry) || expiry <= now() || expiry > now() + 366 * 24 * 3_600_000) throw new LinkError('bad_request')
+  pending.accepting = connection_id
   pending.tenant_id = tenant_id
-  try { await openBundle(state, pending, sealed, kid) } catch (error) { delete pending.tenant_id; throw error }
+  try { await openBundle(state, pending, sealed, kid) } catch (error) { delete pending.tenant_id; throw error } finally { delete pending.accepting }
   pending.bundle = { sealed, kid, connection_id, expires_at: new Date(expiry).toISOString() }
   pending.connection_id = connection_id
   return { connection_id }

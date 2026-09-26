@@ -19,6 +19,7 @@ func (u *Users) ConnectionAccess(ctx context.Context, tenant, user, session uuid
 		return tx.QueryRow(ctx, `SELECT m.role,m.access_version FROM workspace_memberships m
 			JOIN users u ON u.id=m.user_id JOIN tenants t ON t.id=m.tenant_id
 			WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND t.status='active'
+			AND (m.expires_at IS NULL OR m.expires_at > now())
 			AND ($3::uuid='00000000-0000-0000-0000-000000000000' OR EXISTS
 			 (SELECT 1 FROM sessions s WHERE s.id=$3 AND s.user_id=$2 AND s.tenant_id=$1 AND s.revoked_at IS NULL AND s.expires_at>now()))`, tenant, user, session).Scan(&role, &version)
 	})

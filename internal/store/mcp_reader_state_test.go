@@ -138,16 +138,16 @@ func TestConnectionsAreScopedToTheirReader(t *testing.T) {
 	}
 
 	// Another reader asks about the row: not found, and nothing changes.
-	if _, _, err := f.conns.Status(ctx, store.HostedReader, enclave.ID); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+	if _, err := f.conns.Status(ctx, store.HostedReader, enclave.ID, nil); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("hosted status of an enclave row: %v", err)
 	}
 	if err := f.conns.Activate(ctx, store.HostedReader, enclave.ID); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("hosted activation of an enclave row: %v", err)
 	}
-	if err := f.conns.RevokeByID(ctx, store.HostedReader, enclave.ID); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+	if err := f.conns.RevokeByID(ctx, store.HostedReader, enclave.ID, store.ReasonReader); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("hosted revoke of an enclave row: %v", err)
 	}
-	if err := f.conns.RevokeByID(ctx, "enclave", hosted.ID); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+	if err := f.conns.RevokeByID(ctx, "enclave", hosted.ID, store.ReasonReader); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("enclave revoke of a hosted row: %v", err)
 	}
 	if _, err := f.keys.Verify(ctx, enclaveKey); err != nil {
@@ -157,8 +157,8 @@ func TestConnectionsAreScopedToTheirReader(t *testing.T) {
 	if err := f.conns.Activate(ctx, "enclave", enclave.ID); err != nil {
 		t.Fatal(err)
 	}
-	if status, _, err := f.conns.Status(ctx, "enclave", enclave.ID); err != nil || status != "active" {
-		t.Fatalf("status = %q %v", status, err)
+	if answer, err := f.conns.Status(ctx, "enclave", enclave.ID, nil); err != nil || answer.Status != "active" {
+		t.Fatalf("status = %+v %v", answer, err)
 	}
 	// The console's revoke says whose it was, so the right reader is told.
 	if reader, err := f.conns.Revoke(ctx, f.tenant, f.owner, enclave.ID); err != nil || reader != "enclave" {
@@ -204,7 +204,11 @@ func TestMigration0041DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := f.pool.Exec(ctx, downStep0041(t)); err != nil {
+	// Plan order: 0042 comes down first, then 0041.
+	if _, err := f.pool.Exec(ctx, downStep(t, 42)); err != nil {
+		t.Fatalf("0042 down-step: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, downStep(t, 41)); err != nil {
 		t.Fatalf("down-step: %v", err)
 	}
 	var version int
@@ -259,9 +263,9 @@ func TestMigration0041DownStep(t *testing.T) {
 	}
 }
 
-// downStep0041 reads the transaction out of 0041's header comment, so the
-// statements tested are the ones an operator copies.
-func downStep0041(t *testing.T) string {
+// downStep reads the transaction out of a migration's header comment, so
+// the statements tested are the ones an operator copies.
+func downStep(t *testing.T, version int) string {
 	t.Helper()
 	migrations, err := migrate.Load()
 	if err != nil {
@@ -269,7 +273,7 @@ func downStep0041(t *testing.T) string {
 	}
 	var body string
 	for _, m := range migrations {
-		if m.Version == 41 {
+		if m.Version == version {
 			body = m.SQL
 		}
 	}
@@ -291,7 +295,7 @@ func downStep0041(t *testing.T) string {
 		}
 	}
 	if len(out) < 3 || out[len(out)-1] != "COMMIT;" {
-		t.Fatalf("no down-step transaction in 0041's header: %q", out)
+		t.Fatalf("no down-step transaction in %04d's header: %q", version, out)
 	}
 	return strings.Join(out, "\n")
 }

@@ -66,7 +66,23 @@ type BundleRelay struct {
 	KID          string    `json:"kid"`
 	Sealed       string    `json:"sealed"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// Kind is "content" for a content consent or renewal, sent to attested
+	// readers only; empty (and absent on the wire) for metadata, so the
+	// hosted reader's strict body never sees it.
+	Kind string `json:"kind,omitempty"`
 }
+
+// RefusalError is a reader refusing what it was handed, with its code. It
+// is ErrReaderRefused to errors.Is.
+type RefusalError struct {
+	// Code is the reader's error code, "unspecified" when it gave none.
+	Code string
+}
+
+func (e *RefusalError) Error() string { return ErrReaderRefused.Error() + ": " + e.Code }
+
+// Unwrap makes a refusal ErrReaderRefused.
+func (e *RefusalError) Unwrap() error { return ErrReaderRefused }
 
 // Descriptor fetches what the reader knows about a pending request. The
 // bytes come back as the reader sent them, so the console reads the reader's
@@ -112,7 +128,7 @@ func bundleAnswer(status int, body []byte) error {
 	case http.StatusNotFound:
 		return ErrReaderNotFound
 	case http.StatusBadRequest, http.StatusConflict:
-		return fmt.Errorf("%w: %s", ErrReaderRefused, readerCode(body))
+		return &RefusalError{Code: readerCode(body)}
 	default:
 		return fmt.Errorf("%w: bundle answered %d", ErrReaderUnavailable, status)
 	}

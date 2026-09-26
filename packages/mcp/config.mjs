@@ -18,7 +18,9 @@ const schema = z.strictObject({
   max_text_chars: z.number().int().min(128).max(8192).default(4096),
   // 'provided': a hosted reader supplies the credential in process; no file
   // fields and no plaintext opt-in are allowed (metadata-only by construction).
-  credential_source: z.enum(['files', 'provided']).default('files'),
+  // 'enclave': the attested reader supplies the credential and a key handle in
+  // process; plaintext is required, files are refused (see readerMode).
+  credential_source: z.enum(['files', 'provided', 'enclave']).default('files'),
 })
 const credentialFiles = ['session_file', 'token_file', 'password_file', 'service_key_file', 'contacts_file']
 export class LocalConfigError extends Error {
@@ -48,18 +50,39 @@ export function validateConfig(value, base = process.cwd()) {
   try { config.server = archiveOrigin(config.server) } catch { throw new LocalConfigError('invalid_server') }
   if (config.credential_source === 'provided') {
     if (credentialFiles.some(field => config[field]) || config.allow_plaintext) throw new LocalConfigError('provided_credentials_metadata_only')
-  } else if (Boolean(config.session_file) === Boolean(config.token_file)) throw new LocalConfigError('choose_one_credential')
-  if ((config.session_file && (config.service_key_file || config.service_user_id)) ||
-    (config.token_file && config.password_file)) throw new LocalConfigError('mixed_credentials')
-  if (config.service_key_file && !config.service_user_id) throw new LocalConfigError('service_user_required')
-  if (config.allow_plaintext && !(config.session_file ? config.password_file : config.service_key_file)) throw new LocalConfigError('unlock_file_required')
-  if (!config.allow_plaintext && (config.password_file || config.service_key_file)) throw new LocalConfigError('plaintext_opt_in_required')
+  } else if (config.credential_source === 'enclave') {
+    // Content opened in memory with a key handle the attested reader holds for
+    // one service account over an exact set of numbers. Nothing comes from disk.
+    if (credentialFiles.some(field => config[field]) || config.allow_plaintext !== true ||
+      !config.service_user_id || !config.device_ids) throw new LocalConfigError('enclave_credentials_invalid')
+  } else {
+    if (Boolean(config.session_file) === Boolean(config.token_file)) throw new LocalConfigError('choose_one_credential')
+    if ((config.session_file && (config.service_key_file || config.service_user_id)) ||
+      (config.token_file && config.password_file)) throw new LocalConfigError('mixed_credentials')
+    if (config.service_key_file && !config.service_user_id) throw new LocalConfigError('service_user_required')
+    if (config.allow_plaintext && !(config.session_file ? config.password_file : config.service_key_file)) throw new LocalConfigError('unlock_file_required')
+    if (!config.allow_plaintext && (config.password_file || config.service_key_file)) throw new LocalConfigError('plaintext_opt_in_required')
+  }
   try { new Intl.DateTimeFormat('en', { timeZone: config.timezone }).format(0) } catch { throw new LocalConfigError('invalid_timezone') }
   if (config.contacts_file && (!config.allow_plaintext || !config.token_file || !config.service_key_file || !config.service_user_id || !config.device_ids)) throw new LocalConfigError('contact_pack_requires_service_scope')
   if (config.device_ids && new Set(config.device_ids).size !== config.device_ids.length) throw new LocalConfigError('invalid_config')
   for (const field of credentialFiles) if (config[field]) config[field] = resolve(base, config[field])
   if (config.device_ids) Object.freeze(config.device_ids)
   return Object.freeze(config)
+}
+/**
+ * Which reader a configuration makes, and so which words every model-facing
+ * string uses: 'local' (files, stdio), 'hosted-metadata' (a provided
+ * credential that can never open content) or 'hosted-content' (the attested
+ * reader, which opens content with a key handle it holds in memory).
+ */
+export function readerMode(config) {
+  switch (config?.credential_source) {
+    case 'files': return 'local'
+    case 'provided': return 'hosted-metadata'
+    case 'enclave': return 'hosted-content'
+    default: throw new LocalConfigError('invalid_config')
+  }
 }
 export async function loadConfig(path) {
   const data = await readPrivateFile(path)
@@ -74,11 +97,12 @@ function apiKeyCredential(token) {
   return { token, kind: 'api_key' }
 }
 /**
- * Resolves the credential the reader authenticates with. A provided-mode config
- * takes it from `provider.token()` (`{token, kind:'api_key'}`), never from disk.
+ * Resolves the credential the reader authenticates with. A provided or enclave
+ * config takes it from `provider.token()` (`{token, kind:'api_key'}`), never
+ * from disk; an enclave provider throws `reconsent_required` when it holds no key.
  */
 export async function loadCredential(config, provider) {
-  if (config.credential_source === 'provided') {
+  if (config.credential_source === 'provided' || config.credential_source === 'enclave') {
     if (!provider || typeof provider.token !== 'function') throw new LocalConfigError('credential_provider_required')
     const credential = await provider.token()
     if (!credential || credential.kind !== 'api_key') throw new LocalConfigError('invalid_token_file')

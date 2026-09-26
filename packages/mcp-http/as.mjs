@@ -47,8 +47,13 @@ async function form(request) {
  * `newRecipient`, when given, mints a key for every pending request (the
  * enclave: the key the console seals to is the one the attestation names, and
  * it dies with the request). Without it every request shares the reader's key.
+ *
+ * `content` (the attested reader only) owns requests whose bundle it accepted
+ * (`pending.bundle.kind === 'content'`): it checks their proof, adds its
+ * fields to the connection record and installs the request's key once Go has
+ * activated the connection. Without it no such request can exist.
  */
-export function createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL, resource, pendingTTLMs, newRecipient }) {
+export function createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL, resource, pendingTTLMs, newRecipient, content }) {
   const consoleOrigin = new URL(consoleURL).origin
   const tooMany = (meta, retryAfter) => { meta.code = 'rate_limited'; return oauthError(429, 'temporarily_unavailable', 'too many requests', { 'Retry-After': String(retryAfter) }) }
   function expirePending(id, pending) {
@@ -175,25 +180,43 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (!pending || !pending.bundle) { dummyProof(); meta.code = 'invalid_proof'; return page(400, 'invalid_proof', consoleURL) }
       meta.client = pending.client_id
       meta.connection = pending.connection_id
+      const withContent = pending.bundle.kind === 'content'
       let bundle = null
-      try { bundle = await verifyProof(state, pending, proof) } catch (error) { if (!(error instanceof LinkError)) throw error }
+      try { bundle = withContent ? (content ? await content.verifyProof(pending, proof) : null) : await verifyProof(state, pending, proof) } catch (error) { if (!(error instanceof LinkError)) throw error }
       if (!bundle) {
         pending.proof_attempts++
         if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return page(400, 'invalid_proof', consoleURL) }
         meta.code = 'invalid_proof'
         return page(400, 'invalid_proof', consoleURL)
       }
+      // Go names the connection. The relay routes refuse an id already in use,
+      // and this holds whatever interleaved since: a connection that exists
+      // here is never replaced, because its tokens belong to another consent.
+      const inUse = () => { meta.code = 'connection_exists'; return page(400, 'connection_exists', consoleURL) }
+      if (state.connections.has(pending.connection_id)) { expirePending(id, pending); return inUse() }
+      // Between leaving state.pending and landing in state.connections the id
+      // sits in neither; state.activating keeps it reserved across the await,
+      // so connectionTaken refuses a relay naming it meanwhile.
+      state.activating ??= new Set()
+      state.activating.add(pending.connection_id)
       state.pending.delete(id)
-      try { await relay.activate(pending.connection_id) } catch (error) {
-        if (!(error instanceof RelayError)) throw error
-        void relay.revoke(pending.connection_id)
-        meta.code = 'activation_failed'
-        return page(502, 'activation_failed', consoleURL)
+      try {
+        try { await relay.activate(pending.connection_id) } catch (error) {
+          if (!(error instanceof RelayError)) throw error
+          void relay.revoke(pending.connection_id)
+          meta.code = 'activation_failed'
+          return page(502, 'activation_failed', consoleURL)
+        }
+        if (state.connections.has(pending.connection_id)) { void relay.revoke(pending.connection_id); return inUse() }
+        const record = {
+          connection_id: pending.connection_id, tenant_id: pending.tenant_id, workspace_id: bundle.workspace_id, device_ids: bundle.device_ids,
+          timezone: bundle.timezone ?? 'UTC', api_key: bundle.token, expires_at: pending.bundle.expires_at, client_id: pending.client_id, created_at: now(),
+        }
+        if (withContent) content.install(pending, record)
+        state.connections.set(pending.connection_id, record)
+      } finally {
+        state.activating.delete(pending.connection_id)
       }
-      state.connections.set(pending.connection_id, {
-        connection_id: pending.connection_id, tenant_id: pending.tenant_id, workspace_id: bundle.workspace_id, device_ids: bundle.device_ids,
-        timezone: bundle.timezone ?? 'UTC', api_key: bundle.token, expires_at: pending.bundle.expires_at, client_id: pending.client_id, created_at: now(),
-      })
       clients.consented(pending.client_id)
       await state.save()
       const code = tokens.issueCode({ client_id: pending.client_id, redirect_uri: pending.redirect_uri, code_challenge: pending.code_challenge, resource, connection_id: pending.connection_id })

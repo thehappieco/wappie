@@ -15,6 +15,7 @@ behavior.
 | WhatsApp contact or group picture | Ordinary image bytes arrive over HTTPS, are visible in server memory and are sealed before archive persistence. |
 | Wappie account or workspace avatar | A validated image data URL stored as shared profile metadata, without archive encryption. Base64 encoding is not encryption. |
 | Client retrieval | The HTTP media endpoint returns stored bytes. Supported encrypted attachments are opened in the browser or CLI. `wsctl media -raw` retrieves stored bytes; it does not configure storage encryption. |
+| MCP connectors | The hosted metadata connector (`api.`) reports attachment type, MIME type, size and download status; the filename stays locked. The attested reader (`mcp.`) also opens the sealed filename for a text connection. Neither downloads media, opens the sealed media key or thumbnail, or returns attachment bytes. The attested reader's key would technically open the media key and thumbnail, because one key per number opens every sealed field; the reader simply never asks for them. |
 
 The archive private key stays with authorized clients. This does not make the
 live server blind: it has WhatsApp session secrets, sees incoming message
