@@ -2,7 +2,8 @@
 // WebPKI-verified inside the enclave (the parent only pipes bytes), every
 // request HMAC-signed `to-go` with the current relay secret. Same interface as
 // the hosted relay (status, activate, revoke, cimd) plus the sealed-state
-// store (stateGet, statePut) that openSealedState uses.
+// store (stateGet, statePut) that openSealedState uses and, for content
+// connections, `reseal`. `revoke(id, 'reuse_detected')` tells Go why.
 import { createRelay, RelayError } from '../internal.mjs'
 import { StateError } from '../state.mjs'
 import { signedHeaders } from './hmac.mjs'
@@ -14,13 +15,26 @@ const names = new Set(['as-clients', 'as-connections', 'as-tokens', 'infra'])
 
 export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.fetch, timeoutMs = 10_000, now = Date.now }) {
   const headersFor = (method, target, body) => signedHeaders({ secret: secrets.current, direction: 'to-go', readerId, method, target, body, now })
-  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor })
+  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true })
   const statePath = name => {
     if (!names.has(name)) throw new StateError('state_name_invalid')
     return `/state/${name}`
   }
   return {
     status: relay.status, activate: relay.activate, revoke: relay.revoke, cimd: relay.cimd,
+
+    /**
+     * A content connection this process holds no key for: Go keeps it as
+     * `reseal` (true, 204) or has no live row for it (false, 404 or 409).
+     * Anything else is a RelayError, and the caller retries.
+     */
+    async reseal(id) {
+      const response = await relay.call('POST', `/connections/${encodeURIComponent(id)}/reseal`)
+      await relay.body(response)
+      if (response.status === 204) return true
+      if (response.status === 404 || response.status === 409) return false
+      throw new RelayError('relay_failed', response.status)
+    },
 
     /** `{generation, blob}` for a stored collection, or null when Go never had it. */
     async stateGet(name) {

@@ -6,124 +6,16 @@
 // relay-secret rotation, and a log sink that carries nothing secret.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { createServer as createNetServer } from 'node:net'
-import { join } from 'node:path'
-import { fixture, vector, workspace } from '@whatserver2/mcp/test/fixture'
+import { randomBytes } from 'node:crypto'
 import { attestationUserData, decodeAttestationDocument } from '../../attestation.mjs'
-import { pkce, proof, sealBundle } from '../../test/harness.mjs'
-import { attest } from '../attest.mjs'
+import { pkce } from '../../test/harness.mjs'
 import * as constants from '../constants.mjs'
 import { EXIT_BOOT_FAILED, startEnclave } from '../main.mjs'
 import { lineAllowed } from '../logsink.mjs'
 import { policySha256 } from '../policy.mjs'
-import { encodeProxyV2 } from '../proxy.mjs'
 import { spkiSha256 } from '../x509.mjs'
-import { createEnclaveGo, createFakeAcme, fakeKms, fakeNsm, goHeaders, PCR0, proxiedRequest, testCA } from './fixtures.mjs'
-
-const READER_KEY = 'arn:aws:kms:eu-west-1:768406580484:key/11111111-1111-4111-8111-111111111111'
-const BOOT_KEY = 'arn:aws:kms:eu-west-1:768406580484:key/22222222-2222-4222-8222-222222222222'
-const RESOURCE = 'https://mcp.wappie.thehappie.co/mcp'
-const CONSOLE_ORIGIN = 'https://app.wappie.thehappie.co'
-const REDIRECT_URI = 'https://claude.ai/api/mcp/auth_callback'
-const POLICY = '{"Version":"2012-10-17","Statement":[{"Sid":"EnclaveUse","Effect":"Allow"}]}'
-const relayContext = { purpose: 'wappie-mcp-relay', reader_id: 'enclave' }
-
-/** Everything the enclave talks to, plus a way to (re)start it the way entrypoint.sh would. */
-async function world(t, { bootJson } = {}) {
-  const apiKey = `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
-  const f = await fixture({ token: apiKey })
-  const relaySecret = randomBytes(32).toString('base64url')
-  const goSecrets = [relaySecret]
-  const go = await createEnclaveGo({ upstream: f.server, secrets: () => goSecrets }).listen()
-  const ca = testCA()
-  // The challenge listener opens during boot, before startEnclave returns, so its port is chosen here.
-  const challengePort = await freePort()
-  const acme = await createFakeAcme({ ca, challengePort: () => challengePort }).listen()
-  const bin = await fakeNsm()
-  const nsmCalls = []
-  const nsm = fields => { nsmCalls.push(fields); return attest(fields, { bin }) }
-  const kms = fakeKms({ policy: POLICY, attest: nsm })
-  const bootCiphertext = kms.encrypt(BOOT_KEY, Buffer.from(relaySecret), relayContext)
-  const runDir = join(await mkdtemp(join(tmpdir(), 'wappie-enclave-')), 'run')
-  const lines = [], exits = []
-  const sink = { write: line => { lines.push(line); if (process.env.ENCLAVE_TEST_DEBUG) process.stderr.write(line + '\n') }, dropped: () => 0, drain: async () => {} }
-  const boot = Buffer.from(bootJson ?? JSON.stringify({ relay_secret_ciphertext: bootCiphertext.toString('base64') }))
-  const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY }
-  const w = {
-    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0,
-    async start() {
-      w.enclave = await startEnclave({
-        constants: c, sink, kms, attest: nsm, now: () => Date.now() + w.skew, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
-        readLocal: async port => { if (port === 7001) return boot; throw new Error('unexpected port') },
-        overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort } },
-      })
-      return w.enclave
-    },
-    /** A public request as haproxy would forward it, from `source`. */
-    public(path, { method = 'GET', headers = {}, body, source = '203.0.113.10' } = {}) {
-      return proxiedRequest({ port: w.enclave.ports.public, proxy: encodeProxyV2({ address: source, port: 40000 }), ca: ca.pem, method, path, headers, body })
-    },
-    /** A Go request to the internal listener, HMAC-signed `to-reader`. */
-    internal(path, { method = 'GET', body, secret = w.goSecrets[0], headers = {}, signed } = {}) {
-      const bytes = body === undefined ? Buffer.alloc(0) : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))
-      const auth = signed ?? goHeaders(secret, { method, target: path, body: bytes })
-      return proxiedRequest({ port: w.enclave.ports.internal, proxy: encodeProxyV2({ address: '198.51.100.20', port: 50000 }), ca: ca.pem, method, path, body: bytes.length ? bytes : undefined,
-        headers: { host: 'mcp.wappie.thehappie.co:8443', ...(bytes.length ? { 'content-type': 'application/json' } : {}), ...auth, ...headers } })
-    },
-    async close() { await w.enclave?.close(); await go.close(); await acme.close(); await f.close(); await rm(join(runDir, '..'), { recursive: true, force: true }) },
-  }
-  t.after(() => w.close())
-  return w
-}
-
-function freePort() {
-  return new Promise(resolve => { const server = createNetServer(); server.listen(0, '127.0.0.1', () => { const { port } = server.address(); server.close(() => resolve(port)) }) })
-}
-
-const form = fields => ({ method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString() })
-
-/** Registration, authorize, prepare, bundle, consent completion and code exchange, as the assistant, Go and the console do them. */
-async function connect(w, { source = '203.0.113.10' } = {}) {
-  const registered = await w.public('/mcp/register', { method: 'POST', source, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Claude', redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: 'none' }) })
-  assert.equal(registered.status, 201, registered.body)
-  const clientId = JSON.parse(registered.body).client_id
-  const { verifier, challenge } = pkce()
-  const query = new URLSearchParams({ response_type: 'code', client_id: clientId, redirect_uri: REDIRECT_URI, code_challenge: challenge, code_challenge_method: 'S256', resource: RESOURCE, scope: 'wappie:read', state: 'st' })
-  const authorized = await w.public(`/mcp/authorize?${query}`, { source })
-  assert.equal(authorized.status, 302, authorized.body)
-  const location = new URL(authorized.headers.location)
-  assert.equal(location.origin + location.pathname, 'https://app.wappie.thehappie.co/console')
-  const id = location.searchParams.get('mcp_connect')
-  const described = await w.internal(`/internal/requests/${id}`)
-  assert.equal(described.status, 200, described.body)
-  const descriptor = JSON.parse(described.body)
-  const nonce = randomBytes(32)
-  const prepared = await w.internal(`/internal/requests/${id}/prepare`, { method: 'POST', body: { nonce: nonce.toString('base64url') } })
-  assert.equal(prepared.status, 200, prepared.body)
-  const preparedDescriptor = JSON.parse(prepared.body)
-  const linkSecret = randomBytes(32).toString('base64url')
-  const bundle = { version: 1, server_url: 'https://mcp.wappie.thehappie.co', workspace_id: workspace, device_ids: [vector.device], token: w.apiKey, allow_plaintext: false, timezone: 'UTC', link_secret: linkSecret }
-  const { sealed, sealedBytes } = await sealBundle(preparedDescriptor, bundle)
-  const connectionId = randomUUID()
-  const expiresAt = new Date(Date.now() + 90 * 86_400_000).toISOString()
-  w.go.connections.set(connectionId, { status: 'pending', expires_at: expiresAt })
-  const relayed = await w.internal(`/internal/requests/${id}/bundle`, { method: 'POST', body: { connection_id: connectionId, tenant_id: workspace, kid: preparedDescriptor.kid, sealed, expires_at: expiresAt } })
-  assert.equal(relayed.status, 204, relayed.body)
-  const signature = proof(linkSecret, { requestID: id, clientID: clientId, codeChallenge: challenge, sealedBytes })
-  const completed = await w.public('/mcp/authorize/complete', { ...form({ request: id, proof: signature }), headers: { 'content-type': 'application/x-www-form-urlencoded', origin: CONSOLE_ORIGIN }, source })
-  assert.equal(completed.status, 302, completed.body)
-  const code = new URL(completed.headers.location).searchParams.get('code')
-  const exchanged = await w.public('/mcp/token', { ...form({ grant_type: 'authorization_code', code, client_id: clientId, code_verifier: verifier, redirect_uri: REDIRECT_URI, resource: RESOURCE }), source })
-  assert.equal(exchanged.status, 200, exchanged.body)
-  return { id, clientId, descriptor, preparedDescriptor, nonce, linkSecret, signature, connectionId, tokens: JSON.parse(exchanged.body) }
-}
-
-/** A JSON-RPC result from either response form the SDK may choose. */
-const result = body => JSON.parse(body.startsWith('event:') ? body.split('\n').find(line => line.startsWith('data: ')).slice(6) : body).result
-const rpc = (w, token, body = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) => w.public('/mcp', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
+import { goHeaders, PCR0 } from './fixtures.mjs'
+import { BOOT_KEY, connect, form, READER_KEY, REDIRECT_URI, relayContext, RESOURCE, result, rpc, world, POLICY } from './world.mjs'
 
 test('boot, consent through an attested prepare, tools, restart with tokens intact, and nothing secret in the sink', async t => {
   const w = await world(t)

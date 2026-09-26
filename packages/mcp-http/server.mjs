@@ -14,7 +14,7 @@ import { createCIMD } from './cimd.mjs'
 import { createClients } from './clients.mjs'
 import { createRelay, internalRoutes, RelayError } from './internal.mjs'
 import { createLimiter, isLoopback } from './limits.mjs'
-import { createLog } from './log.mjs'
+import { createLog, fingerprint } from './log.mjs'
 import { descriptor } from './link.mjs'
 import { createMetadata } from './metadata.mjs'
 import { sendWebResponse, toWebRequest } from './node-adapter.mjs'
@@ -39,6 +39,8 @@ function origin(value, code) {
 
 /** How long a consented connection may wait for its code to be exchanged; the code itself lives a minute. */
 export const UNCLAIMED_CONNECTION_MS = 5 * 60_000
+/** How often every content connection is checked with Go, whether or not a token arrives. */
+export const CONTENT_SWEEP_MS = 60_000
 
 /** Reads and validates the WAPPIE_MCP_* environment; the relay secret file is read separately. */
 export function readEnv(env = process.env) {
@@ -95,7 +97,11 @@ async function readRelaySecret(path) {
  *   are attached here, after reconciling, replacing whatever answered before;
  * - `keys: 'per-request'` mints a key for every pending request;
  * - `attest({publicKey, nonce, userData})` returns a raw NSM document and turns
- *   on prepare and the public /attestation route.
+ *   on prepare and the public /attestation route;
+ * - `content` (enclave/content.mjs) makes content connections possible: it
+ *   accepts their bundles, proofs and renewals, decides their status, holds
+ *   their keys and builds their readers. Without it (the pilot) a bundle
+ *   labelled `content` is a bad request and no such connection can exist.
  */
 export async function startReader(options = {}) {
   const config = options.config ?? readEnv(options.env ?? process.env)
@@ -106,15 +112,25 @@ export async function startReader(options = {}) {
   const secret = options.secrets ? null : await readRelaySecret(config.relaySecretFile)
   const state = options.state ?? await openState(config.stateDir)
   const relay = options.relay ?? createRelay({ archive: config.archive, secret })
+  const content = options.content
   // Go is the authority on connections: anything it no longer serves is dropped
   // before the first request. An unreachable Go keeps the state as it was; the
   // per-request check catches up within a minute.
   let dropped = 0
+  const withContent = []
   for (const id of [...state.connections.keys()]) {
+    if (state.connections.get(id).kind === 'content') { withContent.push(id); continue }
     try {
       const status = await relay.status(id)
       if (!status || status.status !== 'active') { state.wipeConnection(id); dropped++ }
     } catch (error) { if (!(error instanceof RelayError)) throw error; log.event('reconcile_skipped'); break }
+  }
+  // No content connection has a key after a start. Each is kept, as `reseal`
+  // in Go, until its owner renews it; `onBoot` asks Go (retrying in the
+  // background while Go is away) and says which ones Go no longer has.
+  for (const id of withContent) {
+    const record = state.connections.get(id)
+    if (record && (!content || (await content.onBoot(record)) === 'wipe')) { state.wipeConnection(id); dropped++ }
   }
   if (dropped) { await state.save(); log.event('reconcile_dropped', { connections: dropped }) }
 
@@ -130,23 +146,28 @@ export async function startReader(options = {}) {
 
   const limiter = createLimiter(now)
   const metadata = createMetadata({ publicOrigin, cimd: config.cimd })
-  const onWiped = async id => { await relay.revoke(id) }
-  const checkActive = createStatusCheck({ state, relay, now })
+  const onWiped = async (id, reason) => {
+    if (reason) log.event('family_reuse', { conn: fingerprint(id) })
+    await relay.revoke(id, reason)
+  }
+  // A connection the status check wipes (a service mismatch above all) is
+  // revoked in Go too, so Go never keeps serving a row this reader dropped.
+  const checkActive = createStatusCheck({ state, relay, now, content, onWiped: id => onWiped(id) })
   const tokens = createTokens(state, { now, checkActive, onFamilyRevoked: onWiped })
   const verifier = createVerifier({ tokens, state, resource: metadata.resource, checkActive })
   const clients = createClients(state, { now, hosts: config.hosts })
   const cimd = createCIMD(state, { relay, now, enabled: config.cimd, hosts: config.hosts })
   const as = createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL: config.consoleURL, resource: metadata.resource, pendingTTLMs: config.pendingTTLMs,
-    newRecipient: options.keys === 'per-request' ? newRecipient : undefined })
+    newRecipient: options.keys === 'per-request' ? newRecipient : undefined, content })
   const attestor = options.attest ? createAttestor({ attest: options.attest, readerId: config.readerId, readerVersion: config.readerVersion, resource: metadata.resource, spki: config.spki, policy: config.policy }) : null
   const prepare = attestor && (async (pending, nonce) => {
     if (!pending.recipient) throw new AttestationError('attest_failed')
     return { ...descriptor(pending, state), attestation: await attestor.attestation({ requestId: pending.id, publicKey: pending.recipient.publicKey, nonce }) }
   })
-  const internal = internalRoutes({ state, secret, now, pendingFor: as.pendingFor, auth: options.internalAuth, health: config.health, prepare, rotateSecret: options.secrets?.rotate })
+  const internal = internalRoutes({ state, secret, now, pendingFor: as.pendingFor, auth: options.internalAuth, health: config.health, prepare, rotateSecret: options.secrets?.rotate, content })
   const router = createRouter({ state, metadata, as, internal, verifier, limiter, log, archive: config.archive, publicHost: new URL(publicOrigin).hostname,
     listenerHosts: injected ? config.listenerHosts : undefined, trustForwarded: !injected,
-    attestation: attestor && (({ nonce }) => attestor.attestation({ requestId: '', publicKey: null, nonce })) })
+    attestation: attestor && (({ nonce }) => attestor.attestation({ requestId: '', publicKey: null, nonce })), content })
 
   const handlerFor = listener => async (req, res) => {
     const started = now(), meta = {}
@@ -190,11 +211,37 @@ export async function startReader(options = {}) {
   }
   const timer = setInterval(() => { sweep().catch(() => {}) }, 30_000)
   timer.unref()
+
+  /**
+   * Asks Go about every content connection, used or idle, so a revocation
+   * reaches an idle key within a minute. Go being away wipes nothing: the
+   * cached answers lapse and the verifier answers 503 until Go is back.
+   */
+  async function contentSweep() {
+    let checked = 0, wiped = 0, unreachable = 0
+    for (const [id, record] of [...state.connections]) {
+      if (record.kind !== 'content') continue
+      checked++
+      const held = content.holds(id)
+      try {
+        const answer = await checkActive(id, { force: true })
+        if (held && answer !== 'serve') wiped++
+      } catch (error) { if (!(error instanceof RelayError)) throw error; unreachable++ }
+    }
+    content.sweep()
+    log.event('content_sweep', { checked, wiped, unreachable })
+    return { checked, wiped, unreachable }
+  }
+  const contentTimer = content ? setInterval(() => { contentSweep().catch(() => {}) }, CONTENT_SWEEP_MS) : null
+  contentTimer?.unref()
   log.event('listening', { ...(address ? { port: address.port } : {}), cimd: config.cimd })
   return {
-    port: address?.port, publicOrigin, resource: metadata.resource, state, config, sweep, log,
+    port: address?.port, publicOrigin, resource: metadata.resource, state, config, sweep, log, checkActive,
+    ...(content ? { contentSweep } : {}),
     async close() {
       clearInterval(timer)
+      if (contentTimer) clearInterval(contentTimer)
+      content?.close()
       await router.close()
       for (const [target] of servers) {
         await new Promise(resolve => { if (target.listening) target.close(() => resolve()); else resolve() })
