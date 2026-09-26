@@ -312,6 +312,13 @@ document. Object keys are sorted by UTF-16 code units, arrays keep their order,
 and nothing is normalized beyond JCS (a one-element array and a bare string
 hash differently). `policy_sha256` = lowercase hex SHA-256 of the canonical
 UTF-8 bytes. A value older than 20 minutes counts as unknown.
+
+KMS stores a key policy in its own normal form: every one-element array
+becomes its single value (`["x"]` becomes `"x"`), and `GetKeyPolicy` returns
+that form. `render.py` therefore writes policies already in that form, so the
+published file, its published hash and what the enclave reads back agree.
+Found with release 0.2.0: its first published hashes (`2fd7f570…`) were of the
+array form, while KMS returned `c451898b…`.
 Vector: `{ "Version": "2012-10-17", "Statement": [ { "Sid": "A", "Effect": "Allow" } ] }` canonicalizes to `{"Statement":[{"Effect":"Allow","Sid":"A"}],"Version":"2012-10-17"}`, whose SHA-256 is `50647085b9c42d40af6dec1918c5cb5d97788849feb2377004e08874304d3373`.
 There is one implementation. ENCLAVE exports it from
 `packages/mcp-http/enclave/policy.mjs` and makes that file runnable
@@ -593,7 +600,7 @@ health line and the EIP.
 
 - Whether the AL2023 haproxy build supports `req.ssl_alpn`. If it does not, the enclave reads the ALPN from the ClientHello on one port (the plan's fallback).
 - Whether TLS-ALPN-01 works in `pebble` for CI.
-- Whether `GetKeyPolicy` returns the text exactly as applied. JCS makes the hash immune to whitespace and key order, not to array reordering, so the owner applies the release's rendered file unchanged.
+- Resolved with release 0.2.0: `GetKeyPolicy` does not return the text exactly as applied. KMS collapses one-element arrays (section 7), which `render.py` now matches; whether it also reorders arrays remains UNCONFIRMED, so the owner still applies the release's rendered file unchanged.
 - The spike role name (`wappie-enclave-spike-parent`) is what PCR3 measures. Renaming the role changes PCR3 and the policy.
 
 ## 14. Deviations recorded during implementation

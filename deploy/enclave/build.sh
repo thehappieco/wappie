@@ -178,8 +178,11 @@ eif = out / eif_name
 
 def pins(name, expected):
     """pins_pcr0: exactly the PCR0 values the rendered policy admits, read
-    back from both statements that name them and checked against the build."""
-    lists = {s["Sid"]: s["Condition"][op]["kms:RecipientAttestation:ImageSha384"]
+    back from both statements that name them and checked against the build.
+    render.py writes the form KMS stores, where a single PCR0 is a plain
+    value rather than a one-element array; measurements always list them."""
+    as_list = lambda value: value if isinstance(value, list) else [value]
+    lists = {s["Sid"]: as_list(s["Condition"][op]["kms:RecipientAttestation:ImageSha384"])
              for s in json.loads((out / name).read_text())["Statement"]
              for op in ("StringEqualsIgnoreCase", "StringNotEqualsIgnoreCase")
              if s["Sid"] in ("EnclaveUse", "DenyOtherImages") and op in s.get("Condition", {})}

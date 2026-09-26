@@ -29,9 +29,13 @@ def statements(policy):
     return {s["Sid"]: s for s in policy["Statement"]}
 
 
-def actions(statement):
-    value = statement["Action"]
+def as_set(value):
+    # A policy value is a string or, after KMS's normal form, a list of two or more.
     return {value} if isinstance(value, str) else set(value)
+
+
+def actions(statement):
+    return as_set(statement["Action"])
 
 
 def allowed(policy, principal_arn, action):
@@ -47,7 +51,7 @@ def allowed(policy, principal_arn, action):
             if not condition:
                 return False
             if set(condition) == {"StringNotEquals"} and set(condition["StringNotEquals"]) == {"aws:PrincipalArn"}:
-                if principal_arn not in condition["StringNotEquals"]["aws:PrincipalArn"]:
+                if principal_arn not in as_set(condition["StringNotEquals"]["aws:PrincipalArn"]):
                     return False
         elif s["Principal"] == {"AWS": ROOT} and not condition:
             allow = True
@@ -61,7 +65,7 @@ class OwnerTest(unittest.TestCase):
             self.assertEqual(deny["Effect"], "Deny")
             self.assertEqual(deny["Principal"], "*")
             self.assertEqual(actions(deny), ADMIN)
-            self.assertEqual(deny["Condition"], {"StringNotEquals": {"aws:PrincipalArn": [ROOT]}})
+            self.assertEqual(deny["Condition"], {"StringNotEquals": {"aws:PrincipalArn": ROOT}})
 
     def test_only_owners_administer(self):
         for name in TEMPLATES:
@@ -87,7 +91,7 @@ class OwnerTest(unittest.TestCase):
         policy = rendered("boot", "--pcr0", PCR_A, "--owner-arn", SSO)
         deny = statements(policy)["OnlyOwnerEncrypts"]
         self.assertEqual(actions(deny), {"kms:Encrypt"})
-        self.assertEqual(deny["Condition"], {"StringNotEquals": {"aws:PrincipalArn": [SSO]}})
+        self.assertEqual(deny["Condition"], {"StringNotEquals": {"aws:PrincipalArn": SSO}})
         self.assertFalse(allowed(policy, ROLE, "kms:Encrypt"))
         self.assertFalse(allowed(policy, "arn:aws:iam::000000000000:role/operator", "kms:Encrypt"))
         # The owner's Allow carries the relay context; the Deny must not add
@@ -124,3 +128,29 @@ class OwnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KmsNormalFormTest(unittest.TestCase):
+    """KMS stores one-element arrays as their single value; the published policy
+    must be that form, or its hash never equals the one the enclave reads back."""
+
+    def test_reader_0_2_0_matches_what_kms_returned(self):
+        # The live reader key policy of release 0.2.0, read back with
+        # GetKeyPolicy after the owner applied the published transition policy.
+        live = json.loads((HERE / "testdata/reader-policy-0.2.0-from-kms.json").read_text())
+        pcr0 = "be920347aa10867b596120b85be1a6c66316f318812142f1c273056ae0867f4c2e7d98b5215c5650dcd5493ce82ba086"
+        out = io.StringIO()
+        render.main([str(TEMPLATES["reader"]), "--role-arn", "arn:aws:iam::768406580484:role/wappie-enclave-spike-parent", "--pcr0", pcr0], out=out)
+        self.assertEqual(json.loads(out.getvalue()), live)
+
+    def test_one_element_arrays_become_values_and_longer_ones_stay(self):
+        one = statements(rendered("reader", "--pcr0", PCR_A))
+        self.assertEqual(one["EnclaveUse"]["Condition"]["StringEqualsIgnoreCase"]["kms:RecipientAttestation:ImageSha384"], PCR_A)
+        self.assertEqual(one["OnlyOwnerAdministers"]["Condition"]["StringNotEquals"]["aws:PrincipalArn"], ROOT)
+        two = statements(rendered("reader", "--pcr0", PCR_A, "--pcr0", PCR_B, "--owner-arn", ROOT, "--owner-arn", SSO))
+        self.assertEqual(two["EnclaveUse"]["Condition"]["StringEqualsIgnoreCase"]["kms:RecipientAttestation:ImageSha384"], [PCR_A, PCR_B])
+        self.assertEqual(two["OnlyOwnerAdministers"]["Condition"]["StringNotEquals"]["aws:PrincipalArn"], [ROOT, SSO])
+
+    def test_normal_form_is_idempotent(self):
+        policy = rendered("boot", "--pcr0", PCR_A)
+        self.assertEqual(render.aws_normal_form(policy), policy)

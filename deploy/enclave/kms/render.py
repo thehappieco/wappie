@@ -13,7 +13,11 @@ account root (arn:aws:iam::<account>:root, the root user only): the Deny
 An owner is the account root, an IAM user or an IAM role ARN (for an IAM
 Identity Center permission set, the role with its aws-reserved/... path, which
 is what aws:PrincipalArn carries), in the parent role's account. The result is
-written with sorted keys and two-space indentation; the policy hash is not
+in the form KMS stores: KMS turns every one-element array into its single value
+when it saves a key policy (a one-PCR0 release, a single owner), so the
+published file must already be that form, or the hash the enclave computes
+from GetKeyPolicy would never match the published one. It is written with
+sorted keys and two-space indentation; the policy hash is not
 computed here: packages/mcp-http/enclave/policy.mjs is the one implementation
 of the canonical form (docs/mcp-enclave.md section 7), and build.sh runs it.
 """
@@ -58,6 +62,17 @@ def render(node, values, lists):
     return node
 
 
+def aws_normal_form(node):
+    """The policy as KMS returns it from GetKeyPolicy: one-element arrays become
+    their single value (["x"] -> "x"); IAM treats both forms the same."""
+    if isinstance(node, dict):
+        return {key: aws_normal_form(value) for key, value in node.items()}
+    if isinstance(node, list):
+        items = [aws_normal_form(item) for item in node]
+        return items[0] if len(items) == 1 else items
+    return node
+
+
 def main(argv=None, out=sys.stdout):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("template")
@@ -94,7 +109,7 @@ def main(argv=None, out=sys.stdout):
         template = json.load(fh)
     values = {"@ACCOUNT_ID@": account, "@PARENT_ROLE_ARN@": args.role_arn, "@PCR3@": pcr3(args.role_arn)}
     lists = {"@PCR0S@": pcr0s, "@OWNER_ARNS@": owners}
-    json.dump(render(template, values, lists), out, indent=2, sort_keys=True)
+    json.dump(aws_normal_form(render(template, values, lists)), out, indent=2, sort_keys=True)
     out.write("\n")
 
 
