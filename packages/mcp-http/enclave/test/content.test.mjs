@@ -595,7 +595,15 @@ test('the grant proof gives up at 8 s, under Go\'s 10 s relay timeout', async t 
   const key = (await newRecipient()).privateKey
   const asked = []
   const timeout = AbortSignal.timeout
-  AbortSignal.timeout = ms => { asked.push(ms); return timeout.call(AbortSignal, 20) }
+  // AbortSignal.timeout's own timer is unref'd, and the hanging fetch holds
+  // nothing, so on Node 22 the event loop would end before it fires: a plain
+  // (ref'd) timer stands in for it.
+  AbortSignal.timeout = ms => {
+    asked.push(ms)
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), 20)
+    return controller.signal
+  }
   t.after(() => { AbortSignal.timeout = timeout })
   await assert.rejects(proveGrants(key, bundle, { archive: 'http://127.0.0.1:9', fetch: hang }), { code: 'grant_proof_failed' })
   AbortSignal.timeout = timeout
