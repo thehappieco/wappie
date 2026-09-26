@@ -1,0 +1,69 @@
+{
+  "Version" : "2012-10-17",
+  "Id" : "wappie-mcp-reader",
+  "Statement" : [ {
+    "Sid" : "KeyAdministration",
+    "Effect" : "Allow",
+    "Principal" : {
+      "AWS" : "arn:aws:iam::768406580484:root"
+    },
+    "Action" : [ "kms:CancelKeyDeletion", "kms:DescribeKey", "kms:DisableKey", "kms:EnableKey", "kms:EnableKeyRotation", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus", "kms:ListGrants", "kms:ListKeyPolicies", "kms:ListResourceTags", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:TagResource", "kms:UntagResource", "kms:UpdateKeyDescription" ],
+    "Resource" : "*"
+  }, {
+    "Sid" : "ParentReadsPolicy",
+    "Effect" : "Allow",
+    "Principal" : {
+      "AWS" : "arn:aws:iam::768406580484:role/wappie-enclave-spike-parent"
+    },
+    "Action" : [ "kms:DescribeKey", "kms:GetKeyPolicy" ],
+    "Resource" : "*"
+  }, {
+    "Sid" : "EnclaveUse",
+    "Effect" : "Allow",
+    "Principal" : {
+      "AWS" : "arn:aws:iam::768406580484:role/wappie-enclave-spike-parent"
+    },
+    "Action" : [ "kms:Decrypt", "kms:GenerateDataKey" ],
+    "Resource" : "*",
+    "Condition" : {
+      "StringEqualsIgnoreCase" : {
+        "kms:RecipientAttestation:ImageSha384" : "be920347aa10867b596120b85be1a6c66316f318812142f1c273056ae0867f4c2e7d98b5215c5650dcd5493ce82ba086",
+        "kms:RecipientAttestation:PCR3" : "ba672a54d637d7fa502dbe90ee208f38806482b2bf78249db9b98842082bd62c90aca54985147a73f9c2bbd7a51ec656"
+      }
+    }
+  }, {
+    "Sid" : "DenyOtherImages",
+    "Effect" : "Deny",
+    "Principal" : "*",
+    "Action" : [ "kms:Decrypt", "kms:GenerateDataKey", "kms:GenerateDataKeyPair", "kms:DeriveSharedSecret" ],
+    "Resource" : "*",
+    "Condition" : {
+      "StringNotEqualsIgnoreCase" : {
+        "kms:RecipientAttestation:ImageSha384" : "be920347aa10867b596120b85be1a6c66316f318812142f1c273056ae0867f4c2e7d98b5215c5650dcd5493ce82ba086"
+      }
+    }
+  }, {
+    "Sid" : "DenyForgery",
+    "Effect" : "Deny",
+    "Principal" : "*",
+    "Action" : [ "kms:Encrypt", "kms:ReEncrypt*", "kms:GenerateDataKeyWithoutPlaintext" ],
+    "Resource" : "*"
+  }, {
+    "Sid" : "OnlyOwnerAdministers",
+    "Effect" : "Deny",
+    "Principal" : "*",
+    "Action" : [ "kms:CancelKeyDeletion", "kms:DisableKey", "kms:EnableKey", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion" ],
+    "Resource" : "*",
+    "Condition" : {
+      "StringNotEquals" : {
+        "aws:PrincipalArn" : "arn:aws:iam::768406580484:root"
+      }
+    }
+  }, {
+    "Sid" : "DenyGrants",
+    "Effect" : "Deny",
+    "Principal" : "*",
+    "Action" : "kms:CreateGrant",
+    "Resource" : "*"
+  } ]
+}
