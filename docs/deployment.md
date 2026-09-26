@@ -117,11 +117,15 @@ The hosted connector at `https://mcp.wappie.thehappie.co/mcp` runs the same
 reader inside an AWS Nitro Enclave: TLS ends inside it, its OAuth state and
 relay secret open only inside it (KMS keys whose policy admits only released
 images), and a browser checks which code it talks to before sealing anything
-to it. It is metadata-only, like
-the loopback reader above. The contract (topology, HMAC relay, endpoints,
-attestation, sealed state, log schema) is [mcp-enclave.md](mcp-enclave.md).
-Self-hosted installations do not need it; the loopback reader above keeps
-working unchanged.
+to it. A `metadata` connection there reads what the loopback reader above
+reads. A `content` connection can also open message text, names and filenames
+of its numbers, with a key that exists only in the enclave's memory; the
+archive server enables it only with `WS_MCP_CONTENT_ENABLED=true` and only for
+the workspaces in `WS_MCP_CONTENT_TENANTS` (both in [MCP setup](mcp.md)). The
+loopback reader above never accepts a content bundle. The contract (topology,
+HMAC relay, endpoints, attestation, sealed state, log schema, content) is
+[mcp-enclave.md](mcp-enclave.md). Self-hosted installations do not need it;
+the loopback reader above keeps working unchanged.
 
 What is public, so anyone can check a running reader:
 
