@@ -1,6 +1,7 @@
 # The A0 PROBE image (deploy/enclave/probe). It is NEVER released: probe.sh
-# builds it with a distinct tag and a throwaway EIF, runs it in --debug-mode on a
-# spare c7g.xlarge to answer the §4 JAIL go/no-go, then throws it away. It shares
+# builds it with a distinct tag and a throwaway EIF, runs it in --debug-mode on
+# the parent (production stopped for the run) to answer the §4 JAIL go/no-go,
+# then throws it away. It shares
 # the pinned base images of deploy/enclave/Dockerfile so the kernel/nitro facts
 # it measures match what a released reader would see, but it carries no reader,
 # no KMS, no secrets — only media-jail, the jailed test programs, the A1

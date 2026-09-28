@@ -10,15 +10,21 @@
  *   jailtest socket-vsock   socket(AF_VSOCK)           -> seccomp kill (AF_UNIX only)
  *   jailtest socket-inet    socket(AF_INET)            -> seccomp kill
  *   jailtest socket-unix    socket(AF_UNIX)            -> allowed (shows the filter is precise)
+ *   jailtest connect-unix   socket(AF_UNIX) + connect  -> seccomp kill (connect)
  *   jailtest io-uring       io_uring_setup             -> ENOSYS (shim)
  *   jailtest userfaultfd    userfaultfd(2)             -> seccomp kill
  *   jailtest unshare-userns unshare(CLONE_NEWUSER)     -> seccomp kill
+ *   jailtest clone-newns    clone(CLONE_NEWNS)         -> seccomp kill (flag filter)
+ *   jailtest clone3         clone3(&args)              -> ENOSYS (shim)
+ *   jailtest paths          stat the host-only paths   -> ENOENT for each
  *   jailtest proc-peek PID  open /proc/PID/{stat,mem}  -> ENOENT (other PID ns)
  *   jailtest memhog MB      touch MB MiB               -> OOM kill by memcg
  *   jailtest spin           sleep forever              -> wall timeout / cgroup.kill
  *
  * Built static musl in Dockerfile.probe; runs under the node-worker seccomp
  * profile, so its own startup and write()/openat() calls are all allowlisted.
+ * The runner also runs io-uring, userfaultfd and unshare-userns UNJAILED, as
+ * root, to record what the kernel itself supports (ENOSYS = not built in).
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -27,13 +33,19 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
 #ifndef AF_VSOCK
 #define AF_VSOCK 40
+#endif
+#ifndef SYS_clone3
+#define SYS_clone3 435
 #endif
 
 static void emit(const char *s) { (void)!write(1, s, strlen(s)); }
@@ -88,6 +100,22 @@ static int test_socket(const char *name, int domain) {
     return 0;
 }
 
+static int test_connect_unix(void) {
+    start("connect-unix");
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { result("connect-unix", "SOCKET-FAILED", -1, errno); return 2; }
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    memcpy(sa.sun_path, "/tmp/jailtest.sock", 19);
+    /* A missing path gives ENOENT if connect is allowed; the jail must kill
+     * the process before the kernel ever looks at the path. */
+    int r = connect(fd, (struct sockaddr *)&sa, sizeof sa);
+    if (r == 0) { result("connect-unix", "OPENED", 0, 0); return 1; }
+    result("connect-unix", "SURVIVED", r, errno);
+    return 1;
+}
+
 static int test_io_uring(void) {
     start("io-uring");
     /* io_uring_params is 120 bytes; a zeroed buffer of that size is enough. */
@@ -112,6 +140,54 @@ static int test_unshare_userns(void) {
     int r = unshare(CLONE_NEWUSER);
     if (r == 0) { result("unshare-userns", "SURVIVED", 0, 0); return 1; }
     result("unshare-userns", "DENIED", r, errno);
+    return 0;
+}
+
+static int test_clone_newns(void) {
+    start("clone-newns");
+    /* Raw clone, so libc cannot pick clone3 or add flags: arm64 argument order
+     * is (flags, newsp, parent_tid, tls, child_tid); newsp 0 is fork-like. */
+    long r = syscall(SYS_clone, (long)(CLONE_NEWNS | SIGCHLD), 0L, 0L, 0L, 0L);
+    if (r == 0) _exit(0);
+    if (r > 0) { result("clone-newns", "SURVIVED", r, 0); return 1; }
+    result("clone-newns", "DENIED", r, errno);
+    return 0;
+}
+
+static int test_clone3(void) {
+    start("clone3");
+    /* struct clone_args (v2, 88 bytes): only exit_signal set, a plain fork. */
+    unsigned long long args[11];
+    memset(args, 0, sizeof args);
+    args[4] = SIGCHLD;
+    long r = syscall(SYS_clone3, args, sizeof args);
+    if (r == 0) _exit(0);
+    if (r > 0) { result("clone3", "SURVIVED", r, 0); return 1; }
+    result("clone3", "DENIED", r, errno);
+    return 0;
+}
+
+/* The host-only paths §16.6 says are unreachable. Any answer but ENOENT
+ * (including EACCES) means the path exists in the jail. */
+static int test_paths(void) {
+    start("paths");
+    const char *paths[] = {"/run/wappie", "/run/cg2", "/sys", "/etc/hosts", "/dev/nsm"};
+    int visible = 0;
+    for (unsigned i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+        struct stat st;
+        int r = stat(paths[i], &st);
+        int e = r == 0 ? 0 : errno;
+        char b[96];
+        int n = 0;
+        memcpy(b + n, "PATH ", 5); n += 5;
+        int pl = (int)strlen(paths[i]); memcpy(b + n, paths[i], pl); n += pl;
+        memcpy(b + n, " errno=", 7); n += 7; n = put_long(b, n, e);
+        b[n++] = '\n';
+        (void)!write(1, b, (size_t)n);
+        if (e != ENOENT) visible = 1;
+    }
+    if (visible) { result("paths", "VISIBLE", 0, 0); return 1; }
+    result("paths", "NOT-VISIBLE", -1, ENOENT);
     return 0;
 }
 
@@ -185,9 +261,13 @@ int main(int argc, char **argv) {
     if (!strcmp(t, "socket-vsock")) return test_socket("socket-vsock", AF_VSOCK);
     if (!strcmp(t, "socket-inet")) return test_socket("socket-inet", AF_INET);
     if (!strcmp(t, "socket-unix")) return test_socket("socket-unix", AF_UNIX);
+    if (!strcmp(t, "connect-unix")) return test_connect_unix();
     if (!strcmp(t, "io-uring")) return test_io_uring();
     if (!strcmp(t, "userfaultfd")) return test_userfaultfd();
     if (!strcmp(t, "unshare-userns")) return test_unshare_userns();
+    if (!strcmp(t, "clone-newns")) return test_clone_newns();
+    if (!strcmp(t, "clone3")) return test_clone3();
+    if (!strcmp(t, "paths")) return test_paths();
     if (!strcmp(t, "proc-peek")) return test_proc_peek(argc > 2 ? argv[2] : "1");
     if (!strcmp(t, "memhog")) return test_memhog(argc > 2 ? argv[2] : "512");
     if (!strcmp(t, "lsproc")) return test_lsproc();

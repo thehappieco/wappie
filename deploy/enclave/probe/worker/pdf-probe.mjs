@@ -1,8 +1,9 @@
 // The jailed PDF worker for the A0 probe: the A1 pdfjs-dist text path, run
 // inside media-jail. It proves pdf.js extracts text WITHOUT @napi-rs/canvas
 // (§16 F2) under the memcg, and measures the memory and time of a 50-page
-// document. Reads the corpus PDF from a path (under /opt, bound read-only) and
-// writes a JSON line to stdout.
+// document. Reads the corpus PDF from a path (under /opt/probe, bound
+// read-only) and writes a JSON line to stdout. Its stderr is /dev/null in the
+// jail, so every failure, including a failed import, is reported on stdout.
 //
 // The legacy build is the one that runs without a DOM; text extraction needs no
 // canvas, so the optional native canvas dependency is never loaded here.
@@ -15,15 +16,6 @@ if (!path) {
   process.exit(1)
 }
 
-// pdf.js warns once at import time that it cannot load the optional
-// @napi-rs/canvas (we pruned it, §16 F2). Silence console.warn across the
-// dynamic import so the probe console carries only the report; text extraction
-// needs no canvas.
-const savedWarn = console.warn
-console.warn = () => {}
-const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-console.warn = savedWarn
-
 // Standard-14 font metrics ship in the package; pointing pdf.js at them keeps
 // text extraction quiet and correct without any canvas.
 const standardFontDataUrl = fileURLToPath(
@@ -32,6 +24,18 @@ const standardFontDataUrl = fileURLToPath(
 
 let loadingTask
 try {
+  // pdf.js warns once at import time that it cannot load the optional
+  // @napi-rs/canvas (we pruned it, §16 F2). Silence console.warn across the
+  // dynamic import so the probe console carries only the report; text
+  // extraction needs no canvas.
+  const savedWarn = console.warn
+  console.warn = () => {}
+  let pdfjs
+  try {
+    pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  } finally {
+    console.warn = savedWarn
+  }
   const data = new Uint8Array(readFileSync(path))
   loadingTask = pdfjs.getDocument({
     data,

@@ -12,6 +12,10 @@
 set -u
 
 mkdir -p /run/probe
+# The reader's secrets directory, created as production's entrypoint does, so
+# the jail's `paths` test (it must be absent inside the jail) means something.
+mkdir -p /run/wappie
+chmod 0700 /run/wappie
 
 # 1. Snapshot the boot layout BEFORE any cgroup surgery, so the report can show
 #    what the Nitro init actually mounted (§16.6 open point: v1 vs v2).

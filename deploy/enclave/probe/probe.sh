@@ -20,7 +20,10 @@ CID=30                 # not production's 16
 VSOCK_PORT=9100        # not 5443-5445/7000-7002/8000-8002/9000
 RUN_CPUS=1
 RUN_MEM=1536           # production enclave sizing, to measure real headroom
-REPORT_TIMEOUT=300     # seconds to wait for the report end marker
+# Seconds to wait for the report end marker. A clean run takes a minute or two;
+# this bounds the worst case, where every jailed test hangs until the runner's
+# watchdog (the job's wall + 10 s) and the vsock sender never arrives.
+REPORT_TIMEOUT=480
 
 # nitro-cli's profile script is not sourced by plain shells/SSM (spike Day 1).
 export NITRO_CLI_ARTIFACTS=${NITRO_CLI_ARTIFACTS:-/var/lib/nitro_enclaves/artifacts}
@@ -45,23 +48,33 @@ report=$out/report.json
 
 console_pid=""
 sender_pid=""
+production_stopped=0
 production_restored=0
 
+# Start production again, but only if this script stopped it, and only once.
+# The flag is set after the attempt, so an interrupted attempt is retried.
 restore_production() {
+  [ "$production_stopped" = 1 ] || return 0
   [ "$production_restored" = 0 ] || return 0
-  production_restored=1
   echo "probe.sh: restarting production ($PROD_UNIT)"
   systemctl start "$PROD_UNIT" 2> /dev/null || echo "probe.sh: WARNING could not start $PROD_UNIT; start it by hand" >&2
+  production_restored=1
 }
 
+# Runs once, from the EXIT trap only. A signal handler in bash returns and the
+# script carries on, so HUP/INT/TERM just exit (which runs this); and a second
+# signal must not cut this short before production is back.
 cleanup() {
+  trap '' HUP INT TERM
   [ -z "$sender_pid" ] || kill "$sender_pid" 2> /dev/null || true
   [ -z "$console_pid" ] || kill "$console_pid" 2> /dev/null || true
   nitro-cli terminate-enclave --enclave-name "$NAME" > /dev/null 2>&1 || true
-  # Restart production even on any failure or interrupt.
   restore_production
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --- build the throwaway image and EIF (never overwriting production) ---
 tag=$NAME:$stamp
@@ -74,8 +87,21 @@ nitro-cli build-enclave --docker-uri "$tag" --output-file "$eif" > "$out/build-e
   || die "nitro-cli build-enclave failed"
 eif_size=$(stat -c %s "$eif")
 
+# The installed blob's kernel config, the static answer to §16.14 (e.g.
+# CONFIG_IO_URING) when the enclave kernel has no /proc/config.gz.
+blob_config=$out/blob-kernel-config.txt
+if [ -f "$NITRO_CLI_BLOBS/Image.config" ]; then
+  cp "$NITRO_CLI_BLOBS/Image.config" "$out/Image.config"
+  grep -E '^(# )?CONFIG_(IO_URING|USER_NS|SECCOMP_FILTER|CGROUPS|MEMCG|MEMCG_SWAP|SWAP|CGROUP_PIDS|CPUSETS|PID_NS|NET_NS|USERFAULTFD|SECURITY_YAMA|IKCONFIG_PROC)[ =]' \
+    "$out/Image.config" > "$blob_config" || true
+else
+  echo "absent: $NITRO_CLI_BLOBS/Image.config" > "$blob_config"
+fi
+
 # --- free the enclave slot: stop production (this terminates its enclave) ---
 echo "probe.sh: stopping production ($PROD_UNIT) — the production enclave goes down now"
+# Set before the stop, so an interrupt during it still restarts production.
+production_stopped=1
 systemctl stop "$PROD_UNIT" 2> /dev/null || echo "probe.sh: $PROD_UNIT was not running"
 # Also clear any leftover enclave under our probe name.
 nitro-cli terminate-enclave --enclave-name "$NAME" > /dev/null 2>&1 || true
@@ -113,6 +139,7 @@ awk '/===WAPPIE-A0-PROBE-BEGIN===/{f=1;next} /===WAPPIE-A0-PROBE-END===/{f=0} f'
 echo "-----------------------------------------------------------------"
 echo "probe EIF size : $eif_size bytes ($out/probe.eif)"
 echo "console log    : $console"
+echo "blob config    : $blob_config"
 if [ "$got" = 1 ] && [ -s "$report" ]; then
   echo "report         : $report"
 else
