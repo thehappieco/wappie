@@ -7,6 +7,10 @@
 //   no-oom-group    no memory.oom.group (4.19): media-jail ends the job itself
 //                   on the first oom_kill
 //   no-peak         no memory.peak (5.19): sampled memory.current only
+//   no-swap-max     no memory.swap.max (no swap accounting: CONFIG_SWAP=n,
+//                   CONFIG_MEMCG_SWAP=n before 6.1, or swapaccount=0): the job
+//                   runs only if /proc/swaps lists no device. Not on the 4.14
+//                   blob, which has swap accounting.
 //   no-cpuset       no cgroup2 cpuset (5.0): sched_setaffinity in the child
 //   no-pivot-root   pivot_root refused (EINVAL): the move+chroot root switch
 //   kill-thread     no SECCOMP_RET_KILL_PROCESS (4.14): KILL_THREAD default
@@ -23,6 +27,7 @@ pub struct Emulate {
     pub no_cgroup_kill: bool,
     pub no_oom_group: bool,
     pub no_peak: bool,
+    pub no_swap_max: bool,
     pub no_cpuset: bool,
     pub no_pivot_root: bool,
     pub kill_thread: bool,
@@ -38,6 +43,7 @@ impl Emulate {
                 "no-cgroup-kill" => e.no_cgroup_kill = true,
                 "no-oom-group" => e.no_oom_group = true,
                 "no-peak" => e.no_peak = true,
+                "no-swap-max" => e.no_swap_max = true,
                 "no-cpuset" => e.no_cpuset = true,
                 "no-pivot-root" => e.no_pivot_root = true,
                 "kill-thread" => e.kill_thread = true,
@@ -62,6 +68,7 @@ impl Emulate {
             (self.no_cgroup_kill, "no-cgroup-kill"),
             (self.no_oom_group, "no-oom-group"),
             (self.no_peak, "no-peak"),
+            (self.no_swap_max, "no-swap-max"),
             (self.no_cpuset, "no-cpuset"),
             (self.no_pivot_root, "no-pivot-root"),
             (self.kill_thread, "kill-thread"),
@@ -91,6 +98,13 @@ mod tests {
         assert!(e.no_cgroup_kill && e.no_oom_group && e.no_peak);
         assert!(e.no_cpuset && e.no_pivot_root && e.kill_thread);
         assert_eq!(e.names().join(","), all);
+    }
+
+    #[test]
+    fn no_swap_max_is_its_own_token() {
+        let e = Emulate::parse("no-swap-max").unwrap();
+        assert_eq!(e, Emulate { no_swap_max: true, ..Emulate::default() });
+        assert_eq!(e.names(), ["no-swap-max"]);
     }
 
     #[test]

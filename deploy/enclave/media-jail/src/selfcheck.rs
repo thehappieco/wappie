@@ -63,7 +63,7 @@ fn media_features(emu: &Emulate) -> Val {
     Val::Obj(vec![
         ("memory.max".into(), has("memory.max", false)),
         ("pids.max".into(), has("pids.max", false)),
-        ("memory.swap.max".into(), has("memory.swap.max", false)),
+        ("memory.swap.max".into(), has("memory.swap.max", emu.no_swap_max)),
         ("memory.oom.group".into(), has("memory.oom.group", emu.no_oom_group)),
         ("memory.peak".into(), has("memory.peak", emu.no_peak)),
         ("cgroup.kill".into(), has("cgroup.kill", emu.no_cgroup_kill)),

@@ -29,7 +29,11 @@ and each missing one has a fallback with the same guarantee:
 - step 1: `memory.max` and `pids.max` are required; `memory.oom.group=1` and
   `cpuset.cpus` are written where the leaf has them. Without cpuset the child
   pins itself with `sched_setaffinity`, which is added to the always-absent
-  syscalls.
+  syscalls. `memory.swap.max=0` is written where the leaf has it (the blob has
+  swap accounting, `CONFIG_MEMCG_SWAP_ENABLED=y`); a leaf without it is
+  accepted only when `/proc/swaps` lists no device. Every optional file is
+  detected by its presence: cgroupfs answers a write to a missing file with
+  `EACCES`, not `ENOENT`.
 - step 3: `pivot_root`; if the kernel answers `EINVAL` (a root that is the
   initramfs itself or not a mount root), detach every other mount of the
   private namespace, `MS_MOVE` the new root over `/`, `chroot`, `chdir /`.

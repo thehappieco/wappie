@@ -376,6 +376,7 @@ function jailFacts(st) {
     oom_group: st.oom_group ?? null,
     seccomp_kill: st.seccomp_kill ?? null,
     cgroup: st.cgroup ?? null,
+    swap_max: st.swap_max ?? null,
     emulated: st.emulated ?? [],
   }
 }

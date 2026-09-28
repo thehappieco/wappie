@@ -64,9 +64,10 @@ filter flag is used (seccompiler installs each filter with `seccomp(2)`
 `SECCOMP_SET_MODE_FILTER` and flags 0, Linux 3.17).
 
 **A0 test switch.** `MEDIA_JAIL_EMULATE` (comma-separated `no-cgroup-kill`,
-`no-oom-group`, `no-peak`, `no-cpuset`, `no-pivot-root`, `kill-thread`) makes
-media-jail treat those features as missing, so the 4.14 paths run on a newer
-test kernel. A token can only take a feature away; the status line and
+`no-oom-group`, `no-peak`, `no-swap-max`, `no-cpuset`, `no-pivot-root`,
+`kill-thread`) makes media-jail treat those features as missing, so the 4.14
+paths run on a newer test kernel (`no-swap-max` is not a 4.14 gap: the blob has
+swap accounting). A token can only take a feature away; the status line and
 `--self-check` list what was emulated. A1 removes the switch (src/emulate.rs).
 
 ## What it does (src/jail.rs)
@@ -76,7 +77,9 @@ test kernel. A token can only take a feature away; the status line and
    `memory.swap.max=0` and `pids.max`, plus `memory.oom.group=1` and
    `cpuset.cpus` where the kernel has them (removed again if any write fails).
    A kernel without swap accounting has no `memory.swap.max`; that is accepted
-   only when `/proc/swaps` lists no device. `memory.max` and `pids.max` are
+   only when `/proc/swaps` lists no device. Like the other optional files it is
+   detected by its presence (cgroupfs answers a write to a missing file with
+   `EACCES`, so the write's error cannot tell). `memory.max` and `pids.max` are
    never optional.
 3. Unshares a PID namespace and forks; the child is PID 1 of it. The parent
    stays in the host mount namespace so it can drive cgroupfs by path.
@@ -166,7 +169,10 @@ docker run --rm --privileged media-jail --self-check
 
 The whole jail, both paths, is exercised by the probe image
 (`deploy/enclave/probe`, "Local validation"): natively on the test kernel, and
-with `PROBE_EMULATE_OLD_KERNEL=1`, which runs the 4.14 fallbacks.
+with `PROBE_EMULATE_OLD_KERNEL=1`, which runs the 4.14 fallbacks. The swap path
+is not a 4.14 fallback, so it is checked on its own: with
+`MEDIA_JAIL_EMULATE=no-swap-max` a job is refused (exit 3) while `/proc/swaps`
+lists a device, and runs with `swap_max: absent-no-swap` once it lists none.
 
 `cargo test` needs the aarch64 Linux target (the syscall numbers and seccompiler
 are Linux-only), so it runs in the same stage the Dockerfile uses, not on the

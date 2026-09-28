@@ -227,7 +227,12 @@ privileged container that stands in for the enclave
   time. Also with its output piped into a reader that goes away while
   production is down (`| head -n 4`, and `| tee` with SIGHUP sent to the whole
   pipeline, as an SSH drop does): the script before the SIGPIPE fix left
-  production stopped both times, and now restarts it.
+  production stopped both times, and now restarts it;
+- `media-jail` directly, `MEDIA_JAIL_EMULATE=no-swap-max`: the job is refused
+  (exit 3) while `/proc/swaps` lists the VM's swap file, and runs with
+  `swap_max: absent-no-swap` with an empty list bound over `/proc/swaps`. A
+  write to a missing cgroupfs file fails with `EACCES` on 6.12, which is why
+  the file is detected by its presence.
 
 Only the Nitro enclave boot (the 4.14 kernel, its cgroup layout, `/dev/nsm`,
 the real SIGILLs) and the AF_VSOCK transfer need the actual hardware; those run

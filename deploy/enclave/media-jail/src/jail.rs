@@ -233,12 +233,19 @@ fn write_caps(cfg: &Config, leaf: &str, emu: &Emulate) -> Result<Leaf, String> {
     // leaf without them is an error, never a silently unbounded job.
     write_cg(leaf, "memory.max", &cfg.mem_bytes.to_string())?;
     // memory.swap.max exists only with swap accounting (CONFIG_SWAP and, before
-    // 6.1, CONFIG_MEMCG_SWAP). Its absence is tolerated only when no swap
-    // device exists either, so the job still cannot swap.
-    let swap_max = match fs::write(format!("{leaf}/memory.swap.max"), "0") {
-        Ok(()) => "0",
-        Err(e) if e.kind() == io::ErrorKind::NotFound && no_swap_devices() => "absent-no-swap",
-        Err(e) => return Err(format!("write {leaf}/memory.swap.max = \"0\": {e}")),
+    // 6.1, CONFIG_MEMCG_SWAP; not with swapaccount=0). Its absence is tolerated
+    // only when no swap device exists either, so the job still cannot swap. It
+    // is detected by presence like the other optional files, not by the write
+    // error: cgroupfs answers a write to a missing file with EACCES, not ENOENT.
+    let swap_max = if has_cg(leaf, "memory.swap.max", emu.no_swap_max) {
+        write_cg(leaf, "memory.swap.max", "0")?;
+        "0"
+    } else if no_swap_devices() {
+        "absent-no-swap"
+    } else {
+        return Err(format!(
+            "{leaf}/memory.swap.max is absent but /proc/swaps lists a swap device"
+        ));
     };
     let oom_group = write_optional_cg(leaf, "memory.oom.group", "1", emu.no_oom_group)?;
     write_cg(leaf, "pids.max", &cfg.pids_max.to_string())?;
