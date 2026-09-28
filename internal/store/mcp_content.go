@@ -286,8 +286,12 @@ func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentA
 }
 
 // ContentKey is what the ledger says about an API key that belongs to a
-// content connection.
+// content connection, or that acts as a connection service account.
 type ContentKey struct {
+	// ConnectionID is empty for a key that acts as a connection service
+	// account but that no connection holds: a consent's or a renewal's
+	// before the ledger points at it, or another key issued acting as the
+	// account. Such a key is never Live.
 	ConnectionID string
 	TenantID     uuid.UUID
 	// Live is the connection's status being pending, active or reseal: it
@@ -298,23 +302,38 @@ type ContentKey struct {
 }
 
 // ContentConnectionByAPIKey finds the content connection an API key belongs
-// to: one lookup on the unique api_key_id, asked by /v1/media for every key
-// that fetches an attachment. A key that is no content connection's (a
-// person's, an automation's, a metadata connection's) is
-// ErrMCPConnectionNotFound.
-func (m *MCPConnections) ContentConnectionByAPIKey(ctx context.Context, key uuid.UUID) (ContentKey, error) {
+// to, asked by /v1/media for every key that fetches an attachment: the row
+// whose unique api_key_id it is, and failing that whether the key acts as a
+// connection service account (one whose membership carries a deadline,
+// provisional ones included, 0042). A key that is neither (a person's, an
+// automation's, a metadata connection's) is ErrMCPConnectionNotFound.
+func (m *MCPConnections) ContentConnectionByAPIKey(ctx context.Context, tenant, key uuid.UUID) (ContentKey, error) {
 	var out ContentKey
 	var status string
-	err := m.pool.QueryRow(ctx, `SELECT id::text, tenant_id, status, media FROM mcp_connections
-		WHERE api_key_id=$1 AND kind='content'`, key).Scan(&out.ConnectionID, &out.TenantID, &status, &out.Media)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ContentKey{}, ErrMCPConnectionNotFound
-	}
+	var service bool
+	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `SELECT id::text, tenant_id, status, media FROM mcp_connections
+			WHERE api_key_id=$1 AND kind='content'`, key).Scan(&out.ConnectionID, &out.TenantID, &status, &out.Media)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		// workspace_memberships forces row-level security, hence the
+		// tenant transaction.
+		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys k
+			JOIN workspace_memberships w ON w.tenant_id=k.tenant_id AND w.user_id=k.acts_as
+			WHERE k.id=$1 AND k.tenant_id=$2 AND w.expires_at IS NOT NULL)`, key, tenant).Scan(&service)
+	})
 	if err != nil {
 		return ContentKey{}, fmt.Errorf("store: find the content connection of a key: %w", err)
 	}
-	out.Live = liveStatus(status)
-	return out, nil
+	switch {
+	case out.ConnectionID != "":
+		out.Live = liveStatus(status)
+		return out, nil
+	case service:
+		return ContentKey{TenantID: tenant}, nil
+	}
+	return ContentKey{}, ErrMCPConnectionNotFound
 }
 
 // Reseal records that the reader holds no key for a content connection: it

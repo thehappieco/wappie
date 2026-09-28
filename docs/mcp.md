@@ -241,11 +241,14 @@ answer `media` (whether that connection may open attachments right now) and
 workspace or switching a kind off reaches every reader within a minute while
 text keeps working. `/v1/media` refuses a content connection's key, with the
 same 404 as an attachment that is not the caller's, unless its consent
-includes attachments and the switch allows them now. Discovery adds
-`mcp.remote.media.v1` when content is advertised and the switch is on, and
-`GET /v1/mcp/content` adds `media` for the session's workspace. The startup
-line prints `media=on|off`, the number of listed workspaces and, when any
-are off, `media_off=`.
+includes attachments and the switch allows them now; it refuses any other key
+acting as a connection's service account (a renewal's new key before the
+connection points at it) the same way. The switch and the list reach
+`/v1/media` when the server restarts; the kinds reach only the reader.
+Discovery adds `mcp.remote.media.v1` when content is advertised and the switch
+is on, and `GET /v1/mcp/content` adds `media` for the session's workspace. The
+startup line prints `media=on|off`, the number of listed workspaces and, when
+any are off, `media_off=`.
 
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's

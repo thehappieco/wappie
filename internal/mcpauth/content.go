@@ -69,8 +69,11 @@ func (h *Handler) attestedFor(tenant uuid.UUID) bool {
 // content connection fetches attachment ciphertext only while the connection
 // is live, its consent includes attachments and mediaAllowed says its
 // workspace may open them now; any other content connection's key is refused
-// before the attachment is looked up. Keys that are no content connection's
-// are not this gate's to judge and pass to the handler's usual checks.
+// before the attachment is looked up. So is every other key that acts as a
+// connection service account: a renewal's new key, which the reader holds
+// while it proves the grants and before the ledger points at it, would
+// otherwise pass as nobody's. Keys that are neither are not this gate's to
+// judge and pass to the handler's usual checks.
 //
 // It ships before any reader asks for an attachment, and it can only deny:
 // the reader's own checks stand behind it, and it in front of them, so an
@@ -78,7 +81,7 @@ func (h *Handler) attestedFor(tenant uuid.UUID) bool {
 // wrong about it.
 func MediaGate(conns *store.MCPConnections, mediaAllowed func(tenant uuid.UUID) bool) func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
 	return func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
-		c, err := conns.ContentConnectionByAPIKey(ctx, key)
+		c, err := conns.ContentConnectionByAPIKey(ctx, tenant, key)
 		if errors.Is(err, store.ErrMCPConnectionNotFound) {
 			return true, nil
 		}

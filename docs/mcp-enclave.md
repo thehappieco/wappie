@@ -1526,10 +1526,19 @@ up, an API key is put to the gate `mcpauth.MediaGate`, which
   and `MediaAllowed(tenant)`; otherwise the answer is 404 `no such
   attachment`, byte for byte the answer for an attachment that is not the
   caller's, and nothing is looked up;
+- any other key that acts as a connection service account (its `acts_as`
+  has a membership with `expires_at IS NOT NULL`, provisional ones
+  included, §15.2) gets the same 404: a renewal's new key, which the reader
+  holds while it proves the grants and before `Renew` points the row at it
+  (and for the account's thirty minutes if the renewal fails and the account
+  cannot be removed), a consent's before the row exists, and any other key
+  issued acting as such an account;
 - any other key (an automation's, a metadata connection's) and every
   session pass to the usual checks unchanged;
-- it is one lookup on the unique `mcp_connections.api_key_id`, and it can
-  only deny.
+- it is one tenant transaction: a lookup on the unique
+  `mcp_connections.api_key_id` and, for a key no row names, one on the key's
+  `acts_as` membership; and it can only deny. It does not look at the
+  attachment, so it never sees its kind.
 
 This is narrower than the design's rule (content connections in `active` or
 `reseal`): a pending or ended content connection's key is refused as well.
@@ -1636,12 +1645,16 @@ Go, against Postgres as an ordinary role (`NOSUPERUSER NOBYPASSRLS`):
 - renewal keeps the consent and its relay carries no `media`
   (`TestMediaRenewalKeepsConsent`, `TestRenewKeepsMedia`);
 - the store's backstop and the CHECK (`TestCreateMediaConnection`), the
-  status's `media` (`TestStatusCarriesMedia`), the key lookup
+  status's `media` (`TestStatusCarriesMedia`), the key lookup, with the
+  keys that act as a connection service account no row names
   (`TestContentConnectionByAPIKey`);
 - the gate: a media connection's key reads its own number's ciphertext (GET
   and HEAD); another number, another workspace, an unknown uid, a version-2
-  key without media, a version-1 key and a media key with the switch off all
-  get the same 404; an automation's key and a metadata connection's key are
+  key without media, a version-1 key, a media key with the switch off, a
+  provisional service account's key no connection holds yet (a renewal's
+  while it is staged) and a second key acting as a media connection's
+  account all get the same 404, and each of those keys reads the ciphertext
+  without the gate; an automation's key and a metadata connection's key are
   untouched (`TestTheGateLetsOnlyMediaConnectionsThrough`);
 - 0043 down, as its header documents it, then up; 0043 first in the 0042 and
   0041 down-step tests (`TestMigration0043DownStep`);

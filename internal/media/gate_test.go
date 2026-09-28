@@ -31,16 +31,19 @@ import (
 // own numbers' attachments through the usual checks, and that the gate
 // refuses it, before any lookup and in the same bytes as an attachment that
 // is not the caller's, unless its consent includes attachments and the
-// switch allows them.
+// switch allows them; and that it refuses every other key acting as a
+// connection's service account, a renewal's new one included.
 
-// connectionKey records and activates a content connection on the
-// fixture's device, as the console and the enclave would, and returns its
-// key. version and media are the consent's.
-func (f *fixture) connectionKey(t *testing.T, owner store.User, version int, media bool) string {
+// serviceKey makes what the console makes before a consent or a renewal
+// reaches the reader: a provisional service account whose public key is the
+// attested one, read-only on the fixture's device with a grant sealed to
+// that key, and a twenty-minute key acting as it. No connection holds it
+// yet.
+func (f *fixture) serviceKey(t *testing.T, owner store.User) (service uuid.UUID, pub []byte, key string) {
 	t.Helper()
 	ctx := context.Background()
 	users := store.NewUsers(f.pool)
-	pub := make([]byte, 32)
+	pub = make([]byte, 32)
 	name := make([]byte, 4)
 	if _, err := rand.Read(pub); err != nil {
 		t.Fatal(err)
@@ -52,27 +55,37 @@ func (f *fixture) connectionKey(t *testing.T, owner store.User, version int, med
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := users.SignupService(ctx, secret, "mcp-"+hex.EncodeToString(name), pub)
+	account, err := users.SignupService(ctx, secret, "mcp-"+hex.EncodeToString(name), pub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := users.SetDevicePermission(ctx, f.tenant, owner.ID, store.DevicePermission{DeviceID: f.device, UserID: service.ID, Read: true}); err != nil {
+	if err := users.SetDevicePermission(ctx, f.tenant, owner.ID, store.DevicePermission{DeviceID: f.device, UserID: account.ID, Read: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: service.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key")}, &owner.ID); err != nil {
+	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: account.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key")}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	in := time.Now().Add(20 * time.Minute)
-	key, err := f.apiKeys.IssueActingAsForDevices(ctx, f.tenant.String(), "assistant", store.ScopeRead, &owner.ID, &service.ID, []uuid.UUID{f.device}, &in)
+	key, err = f.apiKeys.IssueActingAsForDevices(ctx, f.tenant.String(), "assistant", store.ScopeRead, &owner.ID, &account.ID, []uuid.UUID{f.device}, &in)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return account.ID, pub, key
+}
+
+// connectionKey records and activates a content connection on the
+// fixture's device, as the console and the enclave would, and returns its
+// service account and key. version and media are the consent's.
+func (f *fixture) connectionKey(t *testing.T, owner store.User, version int, media bool) (uuid.UUID, string) {
+	t.Helper()
+	ctx := context.Background()
+	service, pub, key := f.serviceKey(t, owner)
 	prefix, _, _ := strings.Cut(key, ".")
 	conns := store.NewMCPConnections(f.pool)
 	conn, err := conns.Create(ctx, f.tenant, owner.ID, store.CreateMCPConnection{
 		RequestID: uuid.NewString(), KeyPrefix: prefix, ClientName: "Claude", RedirectHost: "claude.ai", DeviceCount: 1,
 		ReaderKID: "0123456789abcdef", ExpiresAt: time.Now().Add(30 * 24 * time.Hour), Reader: "enclave",
-		Kind: store.KindContent, ServiceUserID: service.ID, KeyMode: store.KeyModeEphemeral, ConsentVersion: version, Media: media,
+		Kind: store.KindContent, ServiceUserID: service, KeyMode: store.KeyModeEphemeral, ConsentVersion: version, Media: media,
 		ReaderPublicKey: pub,
 	})
 	if err != nil {
@@ -81,7 +94,7 @@ func (f *fixture) connectionKey(t *testing.T, owner store.User, version int, med
 	if err := conns.Activate(ctx, "enclave", conn.ID); err != nil {
 		t.Fatal(err)
 	}
-	return key
+	return service, key
 }
 
 // answer is everything a caller sees of a response.
@@ -141,12 +154,14 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 	var mediaOn atomic.Bool
 	mediaOn.Store(true)
 	gate := mcpauth.MediaGate(store.NewMCPConnections(f.pool), func(tenant uuid.UUID) bool { return mediaOn.Load() && tenant == f.tenant })
-	mux := http.NewServeMux()
+	mux, ungated := http.NewServeMux(), http.NewServeMux()
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		mux.Handle(method+" /v1/media/{uid}", &media.Handler{Keys: f.apiKeys, Sessions: users, Media: f.media, Blob: f.blob, Gate: gate,
 			Log: slog.New(slog.DiscardHandler)})
+		ungated.Handle(method+" /v1/media/{uid}", &media.Handler{Keys: f.apiKeys, Sessions: users, Media: f.media, Blob: f.blob,
+			Log: slog.New(slog.DiscardHandler)})
 	}
-	fetch := func(method, key string, uid uuid.UUID) answer {
+	serve := func(mux *http.ServeMux, method, key string, uid uuid.UUID) answer {
 		t.Helper()
 		req := httptest.NewRequest(method, "/v1/media/"+uid.String(), nil)
 		req.Header.Set("Authorization", "Bearer "+key)
@@ -154,10 +169,34 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 		mux.ServeHTTP(w, req)
 		return answer{w.Code, w.Header(), w.Body.String()}
 	}
+	fetch := func(method, key string, uid uuid.UUID) answer {
+		t.Helper()
+		return serve(mux, method, key, uid)
+	}
 
-	withMedia := f.connectionKey(t, owner, store.MediaConsentVersion, true)
-	textOnly := f.connectionKey(t, owner, store.MediaConsentVersion, false)
-	versionOne := f.connectionKey(t, owner, store.ContentConsentVersion, false)
+	mediaService, withMedia := f.connectionKey(t, owner, store.MediaConsentVersion, true)
+	_, textOnly := f.connectionKey(t, owner, store.MediaConsentVersion, false)
+	_, versionOne := f.connectionKey(t, owner, store.ContentConsentVersion, false)
+	// A renewal's new key: the reader holds it while it proves the grants,
+	// before the ledger points the connection at it, and for the account's
+	// thirty minutes if the renewal fails and the account cannot be
+	// removed. So is a consent's, and so is any other key issued acting as
+	// a connection's account.
+	_, _, staged := f.serviceKey(t, owner)
+	in := time.Now().Add(20 * time.Minute)
+	second, err := f.apiKeys.IssueActingAsForDevices(ctx, f.tenant.String(), "second", store.ScopeRead, &owner.ID, &mediaService, []uuid.UUID{f.device}, &in)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Every one of these keys reads its number's ciphertext through the
+	// usual checks: without the gate, nothing below would refuse them.
+	for name, key := range map[string]string{"version-2 key without media": textOnly, "version-1 key": versionOne,
+		"staged key": staged, "second key on a media account": second} {
+		if got := serve(ungated, http.MethodGet, key, f.msgUID); got.status != http.StatusOK || got.body != string(f.cipher) {
+			t.Fatalf("ungated %s: %d", name, got.status)
+		}
+	}
 
 	// A media connection's key reads its own number's attachment, GET and
 	// HEAD, the ciphertext and nothing else.
@@ -187,18 +226,19 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 		same("media key on another number", fetch(method, withMedia, otherNumber))
 		same("version-2 key without media", fetch(method, textOnly, f.msgUID))
 		same("version-1 key", fetch(method, versionOne, f.msgUID))
+		same("staged key", fetch(method, staged, f.msgUID))
+		same("second key on a media account", fetch(method, second, f.msgUID))
 		mediaOn.Store(false)
 		same("media key with the switch off", fetch(method, withMedia, f.msgUID))
 		mediaOn.Store(true)
 	}
 
-	// Keys that are no content connection's are not the gate's to judge:
-	// an automation key and a metadata connection's key still read
-	// ciphertext as they always have.
+	// Keys that are no content connection's and act as no connection's
+	// account are not the gate's to judge: an automation key and a metadata
+	// connection's key still read ciphertext as they always have.
 	if got := fetch(http.MethodGet, f.apiKey, f.msgUID); got.status != http.StatusOK || got.body != string(f.cipher) {
 		t.Fatalf("an ordinary key: %d", got.status)
 	}
-	in := time.Now().Add(20 * time.Minute)
 	metaKey, err := f.apiKeys.IssueActingAsForDevices(ctx, f.tenant.String(), "hosted", store.ScopeRead, &owner.ID, nil, []uuid.UUID{f.device}, &in)
 	if err != nil {
 		t.Fatal(err)

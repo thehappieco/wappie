@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -153,7 +154,9 @@ func TestRenewKeepsMedia(t *testing.T) {
 }
 
 // /v1/media's gate asks the ledger about every key: the content connection
-// it belongs to, whether that is live, and whether it carries media.
+// it belongs to, whether that is live, and whether it carries media; and,
+// for a key no connection holds, whether it acts as a connection service
+// account all the same.
 func TestContentConnectionByAPIKey(t *testing.T) {
 	f := newContentFixture(t)
 	ctx := context.Background()
@@ -172,23 +175,40 @@ func TestContentConnectionByAPIKey(t *testing.T) {
 		return k.ID
 	}
 
-	got, err := f.conns.ContentConnectionByAPIKey(ctx, keyID(mc.key))
+	got, err := f.conns.ContentConnectionByAPIKey(ctx, f.tenant, keyID(mc.key))
 	if err != nil || got.ConnectionID != media.ID || got.TenantID != f.tenant || !got.Live || !got.Media {
 		t.Fatalf("media key = %+v %v", got, err)
 	}
-	if got, err := f.conns.ContentConnectionByAPIKey(ctx, keyID(tc.key)); err != nil || !got.Live || got.Media {
+	if got, err := f.conns.ContentConnectionByAPIKey(ctx, f.tenant, keyID(tc.key)); err != nil || !got.Live || got.Media {
 		t.Fatalf("text key = %+v %v", got, err)
 	}
 	for name, id := range map[string]uuid.UUID{"metadata key": keyID(metaKey), "unknown key": uuid.New()} {
-		if _, err := f.conns.ContentConnectionByAPIKey(ctx, id); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+		if _, err := f.conns.ContentConnectionByAPIKey(ctx, f.tenant, id); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
+
+	// Keys acting as a connection service account that no connection
+	// holds: a prepared consent's or renewal's, before the ledger points at
+	// it, and a second key acting as a live media connection's account.
+	staged := f.prepareContent(ctx, t, f.owner)
+	in := time.Now().Add(20 * time.Minute)
+	second, err := f.keys.IssueActingAsForDevices(ctx, f.tenant.String(), "second", store.ScopeRead, &f.owner, &mc.service, []uuid.UUID{f.device}, &in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]string{"staged key": staged.key, "second key": second} {
+		got, err := f.conns.ContentConnectionByAPIKey(ctx, f.tenant, keyID(key))
+		if err != nil || got.ConnectionID != "" || got.TenantID != f.tenant || got.Live || got.Media {
+			t.Fatalf("%s = %+v %v", name, got, err)
+		}
+	}
+
 	id := keyID(mc.key)
 	if _, err := f.conns.Revoke(ctx, f.tenant, f.owner, media.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := f.conns.ContentConnectionByAPIKey(ctx, id); err != nil || got.Live || !got.Media {
+	if got, err := f.conns.ContentConnectionByAPIKey(ctx, f.tenant, id); err != nil || got.Live || !got.Media {
 		t.Fatalf("revoked = %+v %v", got, err)
 	}
 }
