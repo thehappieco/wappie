@@ -1,0 +1,63 @@
+-- Attachments (stage A of the attested reader, docs/mcp-enclave.md §16).
+--
+-- A content connection may now carry media: the person consented, on the
+-- version-2 card, to the attested reader opening attachment contents inside
+-- the enclave. The consent that binds is the one sealed in the bundle; the
+-- flag here is what this server knows of it, so the console lists it, the
+-- relay hands it to the reader to compare with the sealed one, and /v1/media
+-- refuses a content connection's key without it at the source. This server
+-- can only narrow what the bundle says.
+--
+--   media   true only for a content connection given under consent version 2
+--           or later; false for every other row, and for every row written
+--           before this migration.
+--
+-- A version-2 connection without media is valid under 0042's
+-- `consent_version BETWEEN 1 AND 1000`, before this migration and after its
+-- down-step, and the down-step leaves it as it is.
+--
+-- Down-step (additive migration; `migrate.Run` refuses a binary that does not
+-- know version 43, so rolling back below it needs this first). Run only with
+-- `wappie-api` stopped, WS_MCP_MEDIA_ENABLED=false and the enclave on a
+-- release without attachments (docs/mcp-enclave.md §16.12), after checking
+-- this file against `migration43_sha256` in the release's RELEASE.json. Like
+-- 0042's, the tenant-scoped steps run workspace by workspace, so the table
+-- owner can run it under FORCE RLS as well as a superuser. Media connections
+-- first, with 0042's cascade: every one is revoked with its key, and its
+-- service account loses its keys, grants, permissions and membership. An
+-- older binary has no media gate on /v1/media, so a media connection's key
+-- must not outlive the column. No revoke_reason fits a rollback; the rows are
+-- listed as revoked without one, and the revocation notice reaches the
+-- enclave as for any other end.
+--
+--      BEGIN;
+--      SELECT pg_advisory_xact_lock(6289348710053007958);
+--      DO $$
+--      DECLARE t uuid; services uuid[];
+--      BEGIN
+--        FOR t IN SELECT id FROM tenants LOOP
+--          PERFORM set_config('app.tenant_id', t::text, true);
+--          SELECT coalesce(array_agg(service_user_id), '{}') INTO services
+--            FROM mcp_connections WHERE tenant_id = t AND media;
+--          UPDATE api_keys SET revoked_at = now()
+--           WHERE tenant_id = t AND revoked_at IS NULL
+--             AND (id IN (SELECT api_key_id FROM mcp_connections WHERE tenant_id = t AND media)
+--                  OR acts_as = ANY (services));
+--          DELETE FROM device_key_grants WHERE tenant_id = t AND user_id = ANY (services);
+--          DELETE FROM device_permissions WHERE tenant_id = t AND user_id = ANY (services);
+--          DELETE FROM workspace_memberships WHERE tenant_id = t AND user_id = ANY (services);
+--        END LOOP;
+--        PERFORM set_config('app.tenant_id', '', true);
+--      END $$;
+--      UPDATE mcp_connections SET status = 'revoked', revoked_at = now()
+--       WHERE media AND status IN ('pending', 'active', 'reseal');
+--      ALTER TABLE mcp_connections DROP CONSTRAINT mcp_connections_media_content;
+--      ALTER TABLE mcp_connections DROP COLUMN media;
+--      DELETE FROM schema_migrations WHERE version = 43;
+--      COMMIT;
+--
+-- The revoked rows stay in mcp_connections as history, like any revoked
+-- connection, and read as text connections once the column is gone.
+ALTER TABLE mcp_connections ADD COLUMN media boolean NOT NULL DEFAULT false;
+ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_media_content
+    CHECK (NOT media OR (kind = 'content' AND consent_version >= 2));
