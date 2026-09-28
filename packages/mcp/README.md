@@ -27,7 +27,7 @@ The private Wappie console no longer creates new setups: its **MCP** panel now
 offers the [hosted connector](../mcp-http/README.md) instead. The steps below
 describe how a setup was created and still apply to importing a
 `wappie-mcp-setup.json` made earlier; the console lists those setups' tokens
-under **Tokens from the old local MCP** to revoke them. For a new local
+under **Old local MCP tokens** to revoke them. For a new local
 connection, use [manual configuration](#manual-configuration).
 
 1. Select the installation and workspace you intend to share. Open **MCP** in

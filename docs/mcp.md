@@ -61,7 +61,7 @@ connection; nothing runs on the person's computer. See the
 
 The console no longer creates local setup bundles. A bundle created earlier
 still imports with `packages/mcp/setup.mjs`, and the console lists the tokens
-of those setups under **Tokens from the old local MCP** so they can be revoked.
+of those setups under **Old local MCP tokens** so they can be revoked.
 The [package quickstart](../packages/mcp/README.md#start-with-a-console-setup)
 covers importing such a bundle, [ChatGPT through Secure MCP Tunnel](../packages/mcp/README.md#connect-to-chatgpt)
 and [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop);
@@ -82,7 +82,9 @@ Every host takes the address as it is — **nothing to install**:
   Wappie page have a **Connect to Claude** button, Claude's prefilled "add
   custom connector" dialog; or paste the address in Customize → Connectors →
   + → Add custom connector. On Team and Enterprise an owner adds it once for
-  the organisation.
+  the organisation, in Organization settings → Connectors → Add → Custom → Web
+  (the panel also links the same prefilled dialog on that admin path), and
+  members then click Connect on it.
 - **Codex** (ChatGPT desktop app or CLI): Settings → MCP servers → Add server →
   Streamable HTTP → the address, or `codex mcp add wappie --url
   https://api.wappie.thehappie.co/mcp`. Codex opens the consent page itself.
@@ -90,7 +92,8 @@ Every host takes the address as it is — **nothing to install**:
   https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
 - **ChatGPT on the web**: turn on developer mode (Settings → Security and
   login), then add the address as a plugin (Plugins → +) with OAuth — that
-  entry is all ChatGPT needs; there is no file to build.
+  entry is all ChatGPT needs; there is no file to build. If the plugin stays
+  under Drafts, open it and click + to install it.
 
 The plugin at [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins)
 is optional. It adds a skill that tells Codex or Claude Code what the
