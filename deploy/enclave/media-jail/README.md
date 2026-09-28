@@ -25,35 +25,55 @@ supports and runs nothing.
 
 Exit codes: the worker's own on a clean exit; `124` wall timeout; `137` OOM
 kill; `128+signal` on any other signal (a seccomp kill is `159` = 128+SIGSYS);
-`3` a bad invocation or a setup error before the worker starts; `127` a child
-setup error after the fork. `--self-check` exits `0` when the seccomp assembler
+`125` a killed job that could not be reaped; `3` a bad invocation or a setup
+error before the worker starts; `127` a child setup error after the fork. `--self-check` exits `0` when the seccomp assembler
 works.
 
 ## What it does (src/jail.rs)
 
 1. Compiles the seccomp filters for the profile (fails early on a bad profile).
 2. Creates a cgroup v2 leaf `/run/cg2/media/<slot>-<id>` with `memory.max`,
-   `memory.swap.max=0`, `memory.oom.group=1`, `pids.max` and `cpuset.cpus`.
+   `memory.swap.max=0`, `memory.oom.group=1`, `pids.max` and `cpuset.cpus`
+   (removed again if any write fails). A kernel without swap accounting has no
+   `memory.swap.max`; that is accepted only when `/proc/swaps` lists no device.
 3. Unshares a PID namespace and forks; the child is PID 1 of it. The parent
    stays in the host mount namespace so it can drive cgroupfs by path.
 4. Moves the child into the leaf, then releases it (a sync pipe), so every page
    the worker touches is charged to the memcg.
 5. The child unshares mount/net/ipc/uts for itself, makes propagation private,
-   builds a minimal read-only root (read-only binds of `/lib`, `/usr`, `/bin`,
-   `/sbin`, `/opt`; a size-capped tmpfs `/tmp`; a minimal `/dev`; a fresh
-   `/proc`), `pivot_root`s into it and detaches the old root. No `/dev/nsm`,
-   `/run/wappie`, `/run/cg2`, `/sys` or `/etc` is reachable.
+   builds a minimal root on a tmpfs, `pivot_root`s into it and detaches the old
+   root. The root holds only the profile's compiled-in binds (`profile.rs`;
+   for `node-worker`: `/lib`, `/usr/lib`, `/usr/local/bin/node` and the worker
+   tree, `/opt/probe` in A0 and `/opt/media` in A1), a size-capped tmpfs
+   `/tmp`, a `/dev` with only `null`, `zero` and `urandom`, and a fresh
+   `/proc`. The binds are non-recursive, so a submount never enters the jail,
+   and read-only, nosuid, nodev; the root and `/dev` are then remounted
+   read-only too, leaving `/tmp` the only writable place. No `/dev/nsm`,
+   `/run/wappie`, `/run/cg2`, `/sys`, `/etc` or the rest of `/usr/local/bin`
+   (media-jail itself, and in A1 `nsm-attest` and `socat`) is reachable.
 6. Sets `oom_score_adj=1000` and the slot `nice`, applies RLIMITs (NOFILE 64,
    FSIZE = tmp, CORE 0; RLIMIT_AS deliberately unset for Node, §16.6 step 4),
    drops to the slot uid/gid (65532 heavy, 65533 light) and verifies root cannot
    be regained.
-7. Sets `PR_SET_NO_NEW_PRIVS`, installs the seccomp allowlist, and `execve`s the
-   program with a controlled environment (`UV_USE_IO_URING=0`).
+7. Sets `PR_SET_NO_NEW_PRIVS`, closes every fd above 2 and points fd 2 at
+   `/dev/null` (§16.6 step 7), installs the seccomp allowlist, and `execve`s
+   the program with a controlled environment (`UV_USE_IO_URING=0`, `PATH`,
+   `HOME`, `TMPDIR`; no `VIPS_*`, so a worker configures libvips in code). A
+   close-on-exec copy of the real stderr carries the child's own last errors
+   (for example a failed `execve`) until the exec.
 
-The parent waits, enforcing the wall timeout with `cgroup.kill`, then reads
-`memory.events` / `memory.peak` and prints a one-line JSON status on **stderr**
-(so it never mixes with worker stdout). It keeps itself out of the job cgroup so
-a `cgroup.kill` cannot take it down — the one deviation from annex §16.6 step 1,
+The parent waits, enforcing the wall timeout, then reads `memory.events` /
+`memory.peak` and prints a one-line JSON status on **stderr**. The worker's own
+stderr is `/dev/null`, so that line cannot be forged or garbled by the worker.
+The timeout writes `cgroup.kill`; if that write fails (no `cgroup.kill` before
+Linux 5.14) or the child is still there 2 s later, media-jail SIGKILLs the
+child, which is PID 1 of the job's PID namespace, so the kernel kills every
+other process in it. The status says which (`kill_method`: `cgroup.kill`,
+`cgroup.kill+pid1` or `pid1`) and whether the child was reaped; media-jail never
+blocks on a job that will not die. While the job runs, `memory.current` is
+sampled every 50 ms (`memory_current_max_bytes`) for kernels without
+`memory.peak` (5.19). media-jail keeps itself out of the job cgroup so a
+`cgroup.kill` cannot take it down — the one deviation from annex §16.6 step 1,
 which had the main Node hold the timeout; the A0 task gives `media-jail` the
 wall enforcement.
 
@@ -62,9 +82,11 @@ wall enforcement.
 Two stacked cBPF filters, evaluated together (most restrictive action wins):
 
 - **ALLOW** — every profile syscall plus the code-owned argument-filtered calls
-  (`socket`/`socketpair` only `AF_UNIX`; `clone`/`clone3` only without a
-  `CLONE_NEW*` flag; `ioctl` only a tiny request set that excludes the NSM
-  ioctl; `prctl` only name/VMA) → `Allow`, everything else → `KILL_PROCESS`.
+  (`socket`/`socketpair` only `AF_UNIX`; `clone` only without a `CLONE_NEW*`
+  flag; `ioctl` only a tiny request set that excludes the NSM ioctl; `prctl`
+  only name/VMA) → `Allow`, everything else → `KILL_PROCESS`. `io_uring_*` and
+  `clone3` are allowed unconditionally here only so the shim decides them;
+  clone3's flags sit behind a pointer, so it cannot be argument-filtered.
 - **SHIM** — `io_uring_setup`/`enter`/`register` and `clone3` → `ENOSYS`, so
   libuv and glibc fall back rather than being killed.
 

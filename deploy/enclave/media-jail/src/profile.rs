@@ -58,6 +58,20 @@ pub fn source(name: &str) -> Option<&'static str> {
     }
 }
 
+/// What a profile's jail root holds besides /tmp, /dev and /proc: read-only,
+/// non-recursive binds of exactly the §16.6 step 3 set, compiled in like the
+/// syscall lists. A path the image lacks is skipped by the jail.
+pub fn binds(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        // The musl loader in /lib, libstdc++/libgcc_s in /usr/lib, the node
+        // binary alone (not the rest of /usr/local/bin), and the worker tree.
+        // /opt/probe is the A0 probe's tree (jailtest, the sharp/pdfjs worker,
+        // the corpus); A1 replaces it with /opt/media.
+        "node-worker" => Some(&["/lib", "/usr/lib", "/usr/local/bin/node", "/opt/probe"]),
+        _ => None,
+    }
+}
+
 /// Parse a profile's plain-allowlist text into de-duplicated syscall names,
 /// preserving nothing but the names. `#` starts a comment; blank lines are
 /// ignored. A reserved name is an error (it belongs to a code-owned rule).
@@ -119,6 +133,19 @@ mod tests {
         assert!(load("ffmpeg").is_err());
         assert!(load("whisper").is_err());
         assert!(load("nope").is_err());
+        assert!(binds("nope").is_none());
+    }
+
+    #[test]
+    fn node_worker_binds_only_the_annex_set() {
+        // §16.6 step 3: no /usr as a whole, no /bin or /sbin, no /usr/local/bin
+        // directory (media-jail, npm, and in A1 nsm-attest and socat live
+        // there), no /etc, /run or /sys.
+        let binds = binds("node-worker").unwrap();
+        assert_eq!(binds, ["/lib", "/usr/lib", "/usr/local/bin/node", "/opt/probe"]);
+        for b in binds {
+            assert!(b.starts_with('/') && !b.ends_with('/'), "{b} is not a clean absolute path");
+        }
     }
 
     #[test]

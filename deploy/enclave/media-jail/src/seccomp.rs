@@ -7,9 +7,9 @@
 //
 //   ALLOW filter  every profile syscall + the code-owned argument-filtered
 //                 calls → Allow; anything else → KILL_PROCESS. This is the
-//                 real allowlist. It also *allows* io_uring_*/clone3 so the
-//                 shim below can turn them into ENOSYS rather than the kernel
-//                 killing them here.
+//                 real allowlist. It also allows io_uring_* and clone3
+//                 unconditionally so the shim below can turn them into ENOSYS
+//                 rather than the kernel killing them here.
 //   SHIM filter   io_uring_setup/enter/register and clone3 → ENOSYS; everything
 //                 else → Allow. ERRNO is more restrictive than ALLOW, so these
 //                 four resolve to ENOSYS, and libuv/glibc fall back (§16.6:
@@ -26,8 +26,10 @@ use seccompiler::{
 };
 use std::collections::BTreeMap;
 
-// CLONE_NEW* bits: a clone/clone3 that sets any of them is a namespace escape
-// attempt and is denied; ordinary thread creation sets none of them.
+// CLONE_NEW* bits: a clone that sets any of them is a namespace escape attempt
+// and is denied; ordinary thread creation sets none of them. clone3 cannot be
+// filtered this way (its flags sit behind a pointer), so it only ever gets
+// ENOSYS from the shim.
 const CLONE_NS_MASK: u64 = (libc::CLONE_NEWNS
     | libc::CLONE_NEWCGROUP
     | libc::CLONE_NEWUTS
@@ -214,10 +216,12 @@ fn code_owned_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>, String> {
     // parser cannot reach the network or the parent over vsock (§4 JAIL).
     rules.insert(num("socket")?, vec![eq(0, AF_UNIX)?]);
     rules.insert(num("socketpair")?, vec![eq(0, AF_UNIX)?]);
-    // clone/clone3 only without a CLONE_NEW* flag: threads yes, new namespaces
-    // no. clone3 also gets ENOSYS in the shim, so glibc uses clone here.
+    // clone only without a CLONE_NEW* flag: threads yes, new namespaces no.
     rules.insert(num("clone")?, vec![masked_zero(0, CLONE_NS_MASK)?]);
-    rules.insert(num("clone3")?, vec![masked_zero(0, CLONE_NS_MASK)?]);
+    // clone3's arg0 is a pointer to struct clone_args, not flags, so a mask on
+    // it would test address bits and KILL almost every call. It is allowed
+    // here only so the shim's ENOSYS wins, and libc falls back to clone.
+    rules.insert(num("clone3")?, vec![]);
     // ioctl only for the terminal/fd requests libuv issues; the NSM ioctl is
     // not here, so even if /dev/nsm appeared it could not be driven (§16.6).
     let ioctl_allowed: [u64; 6] = [
@@ -243,9 +247,9 @@ fn code_owned_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>, String> {
             eq(0, PR_SET_VMA)?,
         ],
     );
-    // io_uring_* are allowed here only so the ALLOW filter does not KILL them;
-    // the shim downgrades them to ENOSYS. Without this they would die by signal
-    // instead of returning an errno libuv can handle.
+    // io_uring_* likewise are allowed here only so the ALLOW filter does not
+    // KILL them; the shim downgrades them to ENOSYS. Without this they would
+    // die by signal instead of returning an errno libuv can handle.
     rules.insert(num("io_uring_setup")?, vec![]);
     rules.insert(num("io_uring_enter")?, vec![]);
     rules.insert(num("io_uring_register")?, vec![]);
@@ -348,6 +352,16 @@ mod tests {
         for name in ["socket", "socketpair", "clone", "clone3", "ioctl", "prctl", "execve"] {
             assert!(rules.contains_key(&num(name).unwrap()), "missing rule for {name}");
         }
+    }
+
+    #[test]
+    fn clone3_is_left_to_the_shim_not_masked() {
+        // A mask on clone3's pointer argument would KILL it instead of letting
+        // the shim return ENOSYS; the allow rule must be unconditional.
+        let rules = code_owned_rules().unwrap();
+        assert!(rules[&num("clone3").unwrap()].is_empty());
+        assert!(!rules[&num("clone").unwrap()].is_empty());
+        assert!(shim_syscalls().unwrap().contains(&num("clone3").unwrap()));
     }
 
     #[test]

@@ -2,7 +2,8 @@
 // (deploy/enclave, docs/mcp-enclave.md §16.6). It creates a cgroup v2 leaf,
 // forks a worker into fresh namespaces with a minimal read-only root, drops it
 // to a slot uid under a seccomp allowlist, and execs it with the wall timeout
-// enforced by cgroup.kill. See src/jail.rs for the sequence and the deviation
+// enforced by cgroup.kill (and SIGKILL of the job's PID 1 as the fallback).
+// See src/jail.rs for the sequence and the deviation
 // from the annex on who holds the timeout.
 //
 //   media-jail --profile <name> --slot <heavy|light> --mem-mb N --pids N \
@@ -10,9 +11,10 @@
 //   media-jail --self-check
 //
 // Exit codes: the worker's own on a clean exit; 124 wall timeout; 137 OOM kill;
-// 128+signal on any other signal; 3 a bad invocation or setup error before the
-// worker starts; 127 a child setup error after fork. --self-check exits 0 when
-// the seccomp assembler works, 1 otherwise.
+// 128+signal on any other signal; 125 a killed job that could not be reaped;
+// 3 a bad invocation or setup error before the worker starts; 127 a child
+// setup error after fork. --self-check exits 0 when the seccomp assembler
+// works, 1 otherwise.
 
 mod args;
 mod jail;
