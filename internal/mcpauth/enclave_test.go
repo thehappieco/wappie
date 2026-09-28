@@ -333,8 +333,10 @@ type attestedHarness struct {
 	enclave *fakeEnclave
 	staging *fakeEnclave
 	// contentOn is the content switch; the harness's workspace is the only
-	// one listed. Off unless a test turns it on.
+	// one listed. Off unless a test turns it on. mediaOn is the attachments
+	// switch on top of it, listing the same workspace.
 	contentOn atomic.Bool
+	mediaOn   atomic.Bool
 	handler   *mcpauth.Handler
 }
 
@@ -373,6 +375,9 @@ func newAttestedHarness(t *testing.T) *attestedHarness {
 		ContentReader: "enclave",
 		ContentAllowed: func(tenant uuid.UUID) bool {
 			return h.contentOn.Load() && tenant == h.tenant
+		},
+		MediaAllowed: func(tenant uuid.UUID) bool {
+			return h.mediaOn.Load() && tenant == h.tenant
 		},
 	}
 	h.handler.Mount(h.mux)

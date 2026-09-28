@@ -217,9 +217,13 @@ func TestContentConsentGating(t *testing.T) {
 
 	for name, mutate := range map[string]func(map[string]any){
 		"persisted key": func(b map[string]any) { b["key_mode"] = "persisted" },
-		"other consent": func(b map[string]any) { b["consent_version"] = 2 },
-		"no service":    func(b map[string]any) { delete(b, "service_user_id") },
-		"unknown kind":  func(b map[string]any) { b["kind"] = "text" },
+		"other consent": func(b map[string]any) { b["consent_version"] = 3 },
+		"media on v1":   func(b map[string]any) { b["media"] = true },
+		"media not a boolean": func(b map[string]any) {
+			b["consent_version"], b["media"] = 2, "yes"
+		},
+		"no service":   func(b map[string]any) { delete(b, "service_user_id") },
+		"unknown kind": func(b map[string]any) { b["kind"] = "text" },
 		"a hundred days": func(b map[string]any) {
 			b["expires_at"] = time.Now().Add(100 * 24 * time.Hour).UTC().Format(time.RFC3339)
 		},

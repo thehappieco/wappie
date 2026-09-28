@@ -689,9 +689,12 @@ func (a *app) routes() http.Handler {
 			TrustedProxies: a.cfg.TrustedProxies,
 			States:         store.NewMCPReaderStates(a.pools.API),
 			// Message text, only inside the enclave, only while the switch
-			// is on and only for the workspaces listed.
+			// is on and only for the workspaces listed; attachments, on top
+			// of that, behind their own switch and list.
 			ContentReader:  config.ContentReader,
 			ContentAllowed: a.cfg.MCP.ContentAllowed,
+			MediaAllowed:   a.cfg.MCP.MediaAllowed,
+			MediaOff:       a.cfg.MCP.MediaOffKinds,
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)

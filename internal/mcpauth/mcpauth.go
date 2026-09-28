@@ -95,6 +95,14 @@ type Handler struct {
 	// Nil allows none. It is asked on every consent, renewal and status
 	// check, so turning the switch off reaches live connections too.
 	ContentAllowed func(tenant uuid.UUID) bool
+	// MediaAllowed reports whether a workspace's content connections that
+	// consented to attachments may open them right now: the media switch
+	// and its workspace list, on top of ContentAllowed. Nil allows none.
+	// It is asked on every media consent and status check.
+	MediaAllowed func(tenant uuid.UUID) bool
+	// MediaOff are the attachment kinds switched off everywhere, sorted;
+	// every attested status answer carries them.
+	MediaOff []string
 
 	// Set up by Mount.
 	readers  []reader
@@ -151,12 +159,16 @@ type createRequest struct {
 	ExpiresAt  string `json:"expires_at"`
 	KID        string `json:"kid"`
 	Sealed     string `json:"sealed"`
-	// Kind is "metadata" (the default when absent) or "content". The three
+	// Kind is "metadata" (the default when absent) or "content". The four
 	// fields after it are for content only, and absent for metadata.
 	Kind           string `json:"kind"`
 	ServiceUserID  string `json:"service_user_id"`
 	KeyMode        string `json:"key_mode"`
 	ConsentVersion int    `json:"consent_version"`
+	// Media asks for attachments as well as text: consent version 2 only,
+	// and the same value the browser sealed in the bundle, which the reader
+	// compares with this one. Absent is false.
+	Media bool `json:"media"`
 }
 
 type createReply struct {
@@ -179,9 +191,13 @@ type connectionInfo struct {
 	ActivatedAt  *time.Time `json:"activated_at"`
 	ExpiresAt    time.Time  `json:"expires_at"`
 	LastSeenAt   *time.Time `json:"last_seen_at"`
-	// Kind is "metadata" or "content"; KeyMode is null for metadata.
-	Kind    string  `json:"kind"`
-	KeyMode *string `json:"key_mode"`
+	// Kind is "metadata" or "content"; KeyMode and ConsentVersion are null
+	// for metadata. Media says the consent includes attachments, whether or
+	// not the workspace may open them right now.
+	Kind           string  `json:"kind"`
+	KeyMode        *string `json:"key_mode"`
+	ConsentVersion *int    `json:"consent_version"`
+	Media          bool    `json:"media"`
 	// RevokeReason says why an ended connection ended; null otherwise.
 	RevokeReason *string `json:"revoke_reason"`
 	// Renewable is set on a live content connection the viewer consented
@@ -201,12 +217,16 @@ type statusReply struct {
 
 // attestedStatusReply answers an attested reader's: the standing, and which
 // kind of connection it is and, for content, which service account it reads
-// as, so the reader can drop a key that belongs to another.
+// as, so the reader can drop a key that belongs to another. Media says
+// whether the connection may open attachments right now, and MediaOff which
+// kinds are off everywhere; a reader without attachments reads neither.
 type attestedStatusReply struct {
 	Status        string    `json:"status"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	Kind          string    `json:"kind"`
 	ServiceUserID *string   `json:"service_user_id"`
+	Media         bool      `json:"media"`
+	MediaOff      []string  `json:"media_off"`
 }
 
 // descriptor is the part of the reader's answer this server reads: enough to
@@ -388,6 +408,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "content_not_allowed", "this workspace may not let an assistant read message text yet")
 		return
 	}
+	if in.Media && !h.mediaAllowed(rd, user.TenantID) {
+		// Attachments likewise, behind their own switch and list.
+		fail(w, http.StatusBadRequest, "media_not_allowed", "media is not enabled for this workspace")
+		return
+	}
 	if rd.attested != nil {
 		if !rd.attested.allows(user.TenantID) {
 			fail(w, http.StatusForbidden, "tenant_not_allowed", "this workspace may not use this assistant connector yet")
@@ -452,7 +477,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	relay := BundleRelay{ConnectionID: conn.ID, TenantID: conn.TenantID, KID: in.ReaderKID, Sealed: req.Sealed, ExpiresAt: conn.ExpiresAt}
 	if content {
-		relay.Kind = store.KindContent
+		relay.Kind, relay.Media = store.KindContent, in.Media
 	}
 	if err := rd.relay.Bundle(ctx, in.RequestID, relay); err != nil {
 		if derr := h.Connections.DeleteFailed(ctx, conn.ID); derr != nil {
@@ -465,7 +490,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log().Info("mcp connection consented", "connection", conn.ID, "client", in.RedirectHost,
-		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id, "kind", in.Kind)
+		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id, "kind", in.Kind, "media", in.Media)
 	send(w, http.StatusCreated, createReply{
 		ID: conn.ID, Status: conn.Status, ExpiresAt: conn.ExpiresAt,
 		CompleteURL: rd.completeURL(),
@@ -510,8 +535,8 @@ func checkCreate(w http.ResponseWriter, req createRequest) (store.CreateMCPConne
 	}
 	switch req.Kind {
 	case "", store.KindMetadata:
-		if req.ServiceUserID != "" || req.KeyMode != "" || req.ConsentVersion != 0 {
-			return bad("service_user_id, key_mode and consent_version are for a content connection only")
+		if req.ServiceUserID != "" || req.KeyMode != "" || req.ConsentVersion != 0 || req.Media {
+			return bad("service_user_id, key_mode, consent_version and media are for a content connection only")
 		}
 	case store.KindContent:
 		service, err := uuid.Parse(req.ServiceUserID)
@@ -521,13 +546,17 @@ func checkCreate(w http.ResponseWriter, req createRequest) (store.CreateMCPConne
 		if req.KeyMode != store.KeyModeEphemeral {
 			return bad("key_mode must be ephemeral")
 		}
-		if req.ConsentVersion != store.ContentConsentVersion {
-			return bad("consent_version must be 1")
+		if req.ConsentVersion != store.ContentConsentVersion && req.ConsentVersion != store.MediaConsentVersion {
+			return bad("consent_version must be 1 or 2")
+		}
+		if req.Media && req.ConsentVersion != store.MediaConsentVersion {
+			return bad("media requires consent_version 2")
 		}
 		if at.After(time.Now().Add(maxContentLifetime)) {
 			return bad("a content connection's expires_at must be within 90 days")
 		}
 		in.Kind, in.ServiceUserID, in.KeyMode, in.ConsentVersion = store.KindContent, service, req.KeyMode, req.ConsentVersion
+		in.Media = req.Media
 	default:
 		return bad("kind must be metadata or content")
 	}
@@ -570,6 +599,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		if c.KeyMode != "" {
 			info.KeyMode = &c.KeyMode
+		}
+		if c.Kind == store.KindContent && c.ConsentVersion != 0 {
+			info.ConsentVersion, info.Media = &c.ConsentVersion, c.Media
 		}
 		if c.RevokeReason != "" {
 			info.RevokeReason = &c.RevokeReason
@@ -639,7 +671,8 @@ func (h *Handler) connectionStatus(w http.ResponseWriter, r *http.Request, reade
 	}
 	var allowed func(uuid.UUID) bool
 	rd, known := h.readerByID(readerID)
-	if known && rd.attested != nil {
+	attested := known && rd.attested != nil
+	if attested {
 		allowed = func(tenant uuid.UUID) bool { return h.contentAllowed(rd, tenant) }
 	}
 	a, err := h.Connections.Status(r.Context(), readerID, id, allowed)
@@ -647,22 +680,27 @@ func (h *Handler) connectionStatus(w http.ResponseWriter, r *http.Request, reade
 		h.connectionError(w, err)
 		return
 	}
-	send(w, http.StatusOK, standingReply(a, known && rd.attested != nil))
+	media := attested && a.Media && h.mediaAllowed(rd, a.TenantID)
+	send(w, http.StatusOK, standingReply(a, attested, media, h.MediaOff))
 }
 
 // standingReply shapes a connection's standing for its reader. The expiry
 // goes out in UTC whatever the host's zone, the form every other expiry on
 // this interface takes: a reader holds it next to the consent's, and a
-// renewal on a host with another zone would otherwise not match it.
-func standingReply(a store.StatusAnswer, attested bool) any {
+// renewal on a host with another zone would otherwise not match it. The
+// hosted reader's reply never grows: its two fields are all it reads.
+func standingReply(a store.StatusAnswer, attested, media bool, mediaOff []string) any {
 	expires := a.ExpiresAt.UTC()
 	if !attested {
 		return statusReply{Status: a.Status, ExpiresAt: expires}
 	}
-	reply := attestedStatusReply{Status: a.Status, ExpiresAt: expires, Kind: a.Kind}
+	reply := attestedStatusReply{Status: a.Status, ExpiresAt: expires, Kind: a.Kind, Media: media, MediaOff: []string{}}
 	if a.ServiceUserID != nil {
 		service := a.ServiceUserID.String()
 		reply.ServiceUserID = &service
+	}
+	if len(mediaOff) > 0 {
+		reply.MediaOff = append(reply.MediaOff, mediaOff...)
 	}
 	return reply
 }

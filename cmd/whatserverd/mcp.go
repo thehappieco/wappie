@@ -32,6 +32,7 @@ func advertisedMCP(cfg config.MCP) mcpEndpoints {
 	if r, ok := cfg.Reader(attestedReaderID); ok {
 		out.Attested = strings.TrimSuffix(r.PublicOrigin, "/") + "/mcp"
 		out.Content = cfg.ContentEnabled
+		out.Media = cfg.ContentEnabled && cfg.MediaEnabled
 	}
 	return out
 }

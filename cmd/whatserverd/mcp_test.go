@@ -65,8 +65,17 @@ func TestAdvertisedMCP(t *testing.T) {
 		t.Fatalf("content advertised with the switch off: %+v", got)
 	}
 	cfg.ContentEnabled = true
-	if got := advertisedMCP(cfg); !got.Content {
-		t.Fatalf("content not advertised: %+v", got)
+	if got := advertisedMCP(cfg); !got.Content || got.Media {
+		t.Fatalf("content not advertised, or media with its switch off: %+v", got)
+	}
+	// Media rides on content and its own switch.
+	cfg.MediaEnabled = true
+	if got := advertisedMCP(cfg); !got.Content || !got.Media {
+		t.Fatalf("media not advertised: %+v", got)
+	}
+	cfg.ContentEnabled = false
+	if got := advertisedMCP(cfg); got.Content || got.Media {
+		t.Fatalf("media advertised with content off: %+v", got)
 	}
 }
 

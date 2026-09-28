@@ -204,7 +204,7 @@ func TestStandingReplyExpiryIsUTC(t *testing.T) {
 	at := time.Date(2026, 10, 26, 14, 30, 0, 0, zone)
 	service := uuid.New()
 	for name, attested := range map[string]bool{"hosted": false, "attested": true} {
-		raw, err := json.Marshal(standingReply(store.StatusAnswer{Status: "active", ExpiresAt: at, Kind: "content", ServiceUserID: &service}, attested))
+		raw, err := json.Marshal(standingReply(store.StatusAnswer{Status: "active", ExpiresAt: at, Kind: "content", ServiceUserID: &service}, attested, false, nil))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -216,6 +216,40 @@ func TestStandingReplyExpiryIsUTC(t *testing.T) {
 			t.Fatalf("%s: expires_at = %v", name, got["expires_at"])
 		}
 		if _, carries := got["service_user_id"]; carries != attested {
+			t.Fatalf("%s: reply = %s", name, raw)
+		}
+	}
+}
+
+// The attested reply always carries media and media_off, the list never as
+// null; the hosted reader's keeps its two fields whatever it is handed.
+func TestStandingReplyMedia(t *testing.T) {
+	service := uuid.New()
+	answer := store.StatusAnswer{Status: "active", ExpiresAt: time.Now(), Kind: "content", ServiceUserID: &service, Media: true}
+	for name, tc := range map[string]struct {
+		attested, media bool
+		off             []string
+		want            string
+	}{
+		"hosted":             {false, true, []string{"pdf"}, ``},
+		"attested, no media": {true, false, nil, `"media":false,"media_off":[]`},
+		"attested, media":    {true, true, []string{"pdf", "zip"}, `"media":true,"media_off":["pdf","zip"]`},
+	} {
+		raw, err := json.Marshal(standingReply(answer, tc.attested, tc.media, tc.off))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if !tc.attested {
+			if len(fields) != 2 {
+				t.Fatalf("%s: reply = %s", name, raw)
+			}
+			continue
+		}
+		if !strings.HasSuffix(string(raw), ","+tc.want+"}") {
 			t.Fatalf("%s: reply = %s", name, raw)
 		}
 	}
