@@ -1,0 +1,235 @@
+package media_test
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"whatserver2/internal/crypto/seal"
+	"whatserver2/internal/domain"
+	"whatserver2/internal/mcpauth"
+	"whatserver2/internal/media"
+	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
+)
+
+// /v1/media and the assistant connections of the attested reader
+// (docs/mcp-enclave.md §16.3). A content connection's key is a read-only
+// key restricted to its numbers, acting as the connection's own service
+// account; these tests settle that such a key reaches the ciphertext of its
+// own numbers' attachments through the usual checks, and that the gate
+// refuses it, before any lookup and in the same bytes as an attachment that
+// is not the caller's, unless its consent includes attachments and the
+// switch allows them.
+
+// connectionKey records and activates a content connection on the
+// fixture's device, as the console and the enclave would, and returns its
+// key. version and media are the consent's.
+func (f *fixture) connectionKey(t *testing.T, owner store.User, version int, media bool) string {
+	t.Helper()
+	ctx := context.Background()
+	users := store.NewUsers(f.pool)
+	pub := make([]byte, 32)
+	name := make([]byte, 4)
+	if _, err := rand.Read(pub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rand.Read(name); err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := users.NewProvisionalServiceInvitation(ctx, f.tenant, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := users.SignupService(ctx, secret, "mcp-"+hex.EncodeToString(name), pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := users.SetDevicePermission(ctx, f.tenant, owner.ID, store.DevicePermission{DeviceID: f.device, UserID: service.ID, Read: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: service.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key")}, &owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	in := time.Now().Add(20 * time.Minute)
+	key, err := f.apiKeys.IssueActingAsForDevices(ctx, f.tenant.String(), "assistant", store.ScopeRead, &owner.ID, &service.ID, []uuid.UUID{f.device}, &in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix, _, _ := strings.Cut(key, ".")
+	conns := store.NewMCPConnections(f.pool)
+	conn, err := conns.Create(ctx, f.tenant, owner.ID, store.CreateMCPConnection{
+		RequestID: uuid.NewString(), KeyPrefix: prefix, ClientName: "Claude", RedirectHost: "claude.ai", DeviceCount: 1,
+		ReaderKID: "0123456789abcdef", ExpiresAt: time.Now().Add(30 * 24 * time.Hour), Reader: "enclave",
+		Kind: store.KindContent, ServiceUserID: service.ID, KeyMode: store.KeyModeEphemeral, ConsentVersion: version, Media: media,
+		ReaderPublicKey: pub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conns.Activate(ctx, "enclave", conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// answer is everything a caller sees of a response.
+type answer struct {
+	status int
+	header http.Header
+	body   string
+}
+
+func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
+	f := newFixture(t, []byte(strings.Repeat("uma foto aberta no enclave. ", 50)))
+	ref := f.run(t, f.worker(t))
+	if ref.Status != "done" {
+		t.Fatalf("status = %q, want done", ref.Status)
+	}
+	ctx := context.Background()
+	users := store.NewUsers(f.pool)
+	owner, err := users.Create(ctx, store.NewUser{TenantID: f.tenant, Email: "owner@gate.test", Role: "owner", AuthKey: "proof",
+		KDFSalt: make([]byte, 16), KDFParams: store.DefaultKDFParams(), PublicKey: make([]byte, 32), WrappedUSK: []byte("wrapped")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.NewKeys(f.pool).CreateArchiveKey(ctx, f.tenant, f.device, 1, archivePub); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("the owner's")}, &owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.SetDevicePermission(ctx, f.tenant, owner.ID, store.DevicePermission{DeviceID: f.device, UserID: owner.ID, Read: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another number in the workspace, with the same attachment stored.
+	dev, err := store.NewDevices(f.pool).Create(ctx, f.tenant.String(), "second", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherNumber := f.insertAttachment(t, f.tenant, uuid.MustParse(dev.ID))
+	f.exec(t, `UPDATE media SET download_status='done', object_key='`+ref.ObjectKey+`', object_size=`+
+		itoa(ref.Size)+` WHERE message_uid='`+otherNumber.String()+`'`)
+	// And another workspace's.
+	var otherID string
+	if err := f.pool.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ('elsewhere') RETURNING id::text`).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	otherTenant := uuid.MustParse(otherID)
+	otherDev, err := store.NewDevices(f.pool).Create(ctx, otherID, "theirs", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherWorkspace := f.insertAttachment(t, otherTenant, uuid.MustParse(otherDev.ID))
+
+	var mediaOn atomic.Bool
+	mediaOn.Store(true)
+	gate := mcpauth.MediaGate(store.NewMCPConnections(f.pool), func(tenant uuid.UUID) bool { return mediaOn.Load() && tenant == f.tenant })
+	mux := http.NewServeMux()
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		mux.Handle(method+" /v1/media/{uid}", &media.Handler{Keys: f.apiKeys, Sessions: users, Media: f.media, Blob: f.blob, Gate: gate,
+			Log: slog.New(slog.DiscardHandler)})
+	}
+	fetch := func(method, key string, uid uuid.UUID) answer {
+		t.Helper()
+		req := httptest.NewRequest(method, "/v1/media/"+uid.String(), nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return answer{w.Code, w.Header(), w.Body.String()}
+	}
+
+	withMedia := f.connectionKey(t, owner, store.MediaConsentVersion, true)
+	textOnly := f.connectionKey(t, owner, store.MediaConsentVersion, false)
+	versionOne := f.connectionKey(t, owner, store.ContentConsentVersion, false)
+
+	// A media connection's key reads its own number's attachment, GET and
+	// HEAD, the ciphertext and nothing else.
+	got := fetch(http.MethodGet, withMedia, f.msgUID)
+	if got.status != http.StatusOK || got.body != string(f.cipher) || got.header.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("media key on its number: %d %q", got.status, got.header.Get("Content-Type"))
+	}
+	if head := fetch(http.MethodHead, withMedia, f.msgUID); head.status != http.StatusOK || head.header.Get("Content-Length") != itoa(int64(len(f.cipher))) {
+		t.Fatalf("media key HEAD: %d %v", head.status, head.header)
+	}
+
+	// Not yours: another workspace's attachment, and one that does not
+	// exist. Every refusal below is this answer, byte for byte.
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		notYours := fetch(method, withMedia, otherWorkspace)
+		if notYours.status != http.StatusNotFound {
+			t.Fatalf("%s another workspace: %d", method, notYours.status)
+		}
+		same := func(name string, a answer) {
+			t.Helper()
+			if a.status != notYours.status || a.body != notYours.body || !reflect.DeepEqual(a.header, notYours.header) {
+				t.Fatalf("%s %s = %d %v %.40q, not the answer for an attachment that is not the caller's (%d %v %q)",
+					method, name, a.status, a.header, a.body, notYours.status, notYours.header, notYours.body)
+			}
+		}
+		same("unknown attachment", fetch(method, withMedia, uuid.New()))
+		same("media key on another number", fetch(method, withMedia, otherNumber))
+		same("version-2 key without media", fetch(method, textOnly, f.msgUID))
+		same("version-1 key", fetch(method, versionOne, f.msgUID))
+		mediaOn.Store(false)
+		same("media key with the switch off", fetch(method, withMedia, f.msgUID))
+		mediaOn.Store(true)
+	}
+
+	// Keys that are no content connection's are not the gate's to judge:
+	// an automation key and a metadata connection's key still read
+	// ciphertext as they always have.
+	if got := fetch(http.MethodGet, f.apiKey, f.msgUID); got.status != http.StatusOK || got.body != string(f.cipher) {
+		t.Fatalf("an ordinary key: %d", got.status)
+	}
+	in := time.Now().Add(20 * time.Minute)
+	metaKey, err := f.apiKeys.IssueActingAsForDevices(ctx, f.tenant.String(), "hosted", store.ScopeRead, &owner.ID, nil, []uuid.UUID{f.device}, &in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaPrefix, _, _ := strings.Cut(metaKey, ".")
+	if _, err := store.NewMCPConnections(f.pool).Create(ctx, f.tenant, owner.ID, store.CreateMCPConnection{
+		RequestID: uuid.NewString(), KeyPrefix: metaPrefix, ClientName: "Claude", RedirectHost: "claude.ai", DeviceCount: 1,
+		ReaderKID: "0123456789abcdef", ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fetch(http.MethodGet, metaKey, f.msgUID); got.status != http.StatusOK {
+		t.Fatalf("a metadata connection's key: %d", got.status)
+	}
+}
+
+// insertAttachment files a pending image message on a device.
+func (f *fixture) insertAttachment(t *testing.T, tenant, device uuid.UUID) uuid.UUID {
+	t.Helper()
+	uid := uuid.New()
+	if _, err := store.NewMessages(f.pool).Insert(context.Background(), store.InsertMessage{
+		UID: uid, TenantID: tenant, DeviceID: device, WAID: "M-" + uid.String()[:8], ChatKey: "5511999999999@s.whatsapp.net",
+		Kind: domain.KindMessage, Type: domain.TypeImage, Source: domain.SourceLive, TS: time.Now(),
+		Media: &store.InsertMedia{
+			MediaType: "image", MimeType: "image/jpeg", FileLength: int64(len(f.plain)),
+			FileEncSHA256: []byte(strings.Repeat("h", 32)), URL: f.cdn.URL + "/blob", MediaKeySealed: []byte("sealed-not-real"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return uid
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }

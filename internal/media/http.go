@@ -34,13 +34,24 @@ type Handler struct {
 	Sessions *store.Users
 	Media    *store.Media
 	Blob     BlobReader
-	Log      *slog.Logger
+	// Gate is asked about every API key before the attachment is looked
+	// up; nil lets every key through to the usual checks.
+	Gate MediaGate
+	Log  *slog.Logger
 }
 
 // BlobReader is the read half of object storage.
 type BlobReader interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
 }
+
+// MediaGate says whether an API key may fetch attachment ciphertext at all,
+// before any attachment is looked up. It can only deny: a key it refuses is
+// answered exactly as an attachment that is not the caller's, and one it
+// lets through still faces every check below. It exists for the assistant
+// connections of the attested reader, whose keys fetch attachments only
+// when their consent includes them (docs/mcp-enclave.md §16.3).
+type MediaGate func(ctx context.Context, tenant, key uuid.UUID) (bool, error)
 
 // ServeHTTP answers GET /v1/media/{uid}.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +72,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "not a message id", http.StatusBadRequest)
 		return
+	}
+
+	if h.Gate != nil && actor.Key != uuid.Nil {
+		allowed, err := h.Gate(r.Context(), tenant, actor.Key)
+		if err != nil {
+			log.Error("could not check a key against the media gate", "uid", uid, "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !allowed {
+			// Before the lookup, and the same answer as below: a key the
+			// gate refuses learns nothing, not even whether the message
+			// exists or has an attachment.
+			http.Error(w, "no such attachment", http.StatusNotFound)
+			return
+		}
 	}
 
 	ref, err := h.Media.Object(r.Context(), tenant, uid)

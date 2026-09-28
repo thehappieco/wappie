@@ -64,6 +64,31 @@ func (h *Handler) attestedFor(tenant uuid.UUID) bool {
 	return ok && rd.attested != nil && rd.attested.allows(tenant)
 }
 
+// MediaGate is the deny at source for /v1/media (docs/mcp-enclave.md
+// §16.3), handed to the media handler as its gate. A key that belongs to a
+// content connection fetches attachment ciphertext only while the connection
+// is live, its consent includes attachments and mediaAllowed says its
+// workspace may open them now; any other content connection's key is refused
+// before the attachment is looked up. Keys that are no content connection's
+// are not this gate's to judge and pass to the handler's usual checks.
+//
+// It ships before any reader asks for an attachment, and it can only deny:
+// the reader's own checks stand behind it, and it in front of them, so an
+// operator's switch reaches a connection's key even if the reader were
+// wrong about it.
+func MediaGate(conns *store.MCPConnections, mediaAllowed func(tenant uuid.UUID) bool) func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
+	return func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
+		c, err := conns.ContentConnectionByAPIKey(ctx, key)
+		if errors.Is(err, store.ErrMCPConnectionNotFound) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return c.Live && c.Media && c.TenantID == tenant && mediaAllowed != nil && mediaAllowed(tenant), nil
+	}
+}
+
 type contentReply struct {
 	Enabled  bool `json:"enabled"`
 	Attested bool `json:"attested"`
