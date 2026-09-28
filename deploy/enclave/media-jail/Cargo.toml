@@ -1,0 +1,31 @@
+# media-jail: the sandbox launcher for enclave media parsers (deploy/enclave,
+# docs/mcp-enclave.md §16.6). Built as a static aarch64 musl binary in the same
+# rust:1-alpine stage as nsm-attest (deploy/enclave/Dockerfile), from the
+# committed Cargo.lock (built with --locked) so it is measured into PCR0.
+#
+# STATUS: A0 PROTOTYPE. Enough to drive the go/no-go probe (§4 JAIL); the A1
+# production jail (pipelines, native profiles, the compiled-in argv table) is
+# built on top of it. It is never part of a released reader.
+[package]
+name = "media-jail"
+version = "0.0.0"
+edition = "2021"
+# Match nsm-attest so both Rust stages share one toolchain expectation.
+rust-version = "1.92"
+publish = false
+
+# Minimal, well-known crates. The binary is security-critical and measured, so
+# every dependency is an exact pin resolved through the committed Cargo.lock.
+# The namespace/mount/pivot_root/setresuid dance is written against libc
+# directly (checked return values, no feature-gated wrappers), so seccompiler is
+# the only non-libc dependency: rust-vmm's cBPF assembler, the same crate
+# Firecracker ships. It already pulls libc, which is also used directly here.
+[dependencies]
+libc = "=0.2.189"
+seccompiler = "=0.5.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
