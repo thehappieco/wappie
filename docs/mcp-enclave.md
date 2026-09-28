@@ -1458,7 +1458,7 @@ result blocks.
 |---|---|
 | `WS_MCP_MEDIA_ENABLED` | boolean, default `false` |
 | `WS_MCP_MEDIA_TENANTS` | comma-separated workspace UUIDs, each also in `WS_MCP_CONTENT_TENANTS`; `*` refused; required and non-empty when the switch is on; the same parser as `WS_MCP_CONTENT_TENANTS` |
-| `WS_MCP_MEDIA_OFF_KINDS` | a subset of `image,pdf,office,text,zip,audio,video`, in any case and order; an unknown word is a configuration error; kept lower-cased, once each and sorted |
+| `WS_MCP_MEDIA_OFF_KINDS` | a subset of `image,pdf,office,text,zip,audio,video`, in any case and order; an unknown word is a configuration error; kept lower-cased, once each and sorted. Enforced by the reader only, through the status's `media_off` (within 60 s): `/v1/media` never looks at kinds and keeps serving an off kind's ciphertext to a media connection's key |
 
 `MediaAllowed(tenant) = ContentAllowed(tenant) ∧ MEDIA_ENABLED ∧ tenant ∈
 MEDIA_TENANTS`. Media rides on content: while `WS_MCP_CONTENT_ENABLED` or
@@ -1617,9 +1617,14 @@ days.
 
 **Rollback, fastest first:**
 
-1. `WS_MCP_MEDIA_OFF_KINDS` or `WS_MCP_MEDIA_ENABLED=false`, and a server
-   restart: effective at once at `/v1/media` and within 60 s at the reader;
-   text is unaffected.
+1. `WS_MCP_MEDIA_ENABLED=false`, or the workspace removed from
+   `WS_MCP_MEDIA_TENANTS`, and a server restart: effective at `/v1/media` as
+   soon as the server is back and within 60 s at the reader. A kind in
+   `WS_MCP_MEDIA_OFF_KINDS`, and a server restart: effective within 60 s at
+   the reader only; `/v1/media` keeps serving that kind's ciphertext to media
+   connections' keys (it never sees the kind, §16.3), so a parser CVE is
+   contained by the reader refusing to open the kind, not by the archive
+   server. Text is unaffected either way.
 2. The previous EIF, allowlisted for 7 days. On 0.3.0 every version-2
    connection, text-only or media, renews as text-only: 0.3.0's descriptor
    has no `consent_version`, so the console seals version 1 and no `media`,

@@ -76,9 +76,10 @@ type MCP struct {
 	// attachments, each also in ContentTenants. Required when MediaEnabled;
 	// "*" is not accepted.
 	MediaTenants []uuid.UUID
-	// MediaOffKinds are the attachment kinds switched off everywhere, a
+	// MediaOffKinds are the attachment kinds switched off at the reader, a
 	// sorted subset of MediaKinds: the reader refuses them while text and
-	// the other kinds keep working. Empty by default.
+	// the other kinds keep working. /v1/media does not look at kinds, so
+	// only the reader enforces them. Empty by default.
 	MediaOffKinds []string
 
 	// readersErr is what was wrong with WS_MCP_READERS itself, and

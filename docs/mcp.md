@@ -229,7 +229,7 @@ attachments yet: the switch is off, and the server side ships first.
 |---|---|
 | `WS_MCP_MEDIA_ENABLED` | boolean, default `false`; lets content connections whose consent includes attachments (`media`) open them inside the `enclave` reader. With `WS_MCP_CONTENT_ENABLED` off it is off too, and the other two are not inspected |
 | `WS_MCP_MEDIA_TENANTS` | workspace UUIDs, comma separated, whose content connections may open attachments; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_CONTENT_TENANTS` |
-| `WS_MCP_MEDIA_OFF_KINDS` | attachment kinds switched off everywhere, any of `image`, `pdf`, `office`, `text`, `zip`, `audio`, `video`, comma separated; empty by default; an unknown word is a configuration error |
+| `WS_MCP_MEDIA_OFF_KINDS` | attachment kinds the reader refuses to open, any of `image`, `pdf`, `office`, `text`, `zip`, `audio`, `video`, comma separated; empty by default; an unknown word is a configuration error. Only the reader enforces it: `/v1/media` does not look at kinds and keeps serving their ciphertext to a media connection's key |
 
 A consent asks for attachments with `"media": true`, which needs
 `consent_version: 2`, and is refused with `400 media_not_allowed` unless both
