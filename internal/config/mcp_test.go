@@ -442,9 +442,128 @@ func TestMCPContentInvalid(t *testing.T) {
 	}
 }
 
+// mediaEnv is enclaveEnv with content on for the test workspace, the only
+// workspace the enclave admits.
+func mediaEnv(t *testing.T) {
+	t.Helper()
+	enclaveEnv(t)
+	t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
+	t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace)
+}
+
+// Attachments are off unless switched on, and the startup line says which.
+func TestMCPMediaOffByDefault(t *testing.T) {
+	mediaEnv(t)
+	t.Setenv("WS_MCP_MEDIA_TENANTS", "not even a uuid")
+	t.Setenv("WS_MCP_MEDIA_OFF_KINDS", "slides")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("an unused media block was inspected: %v", err)
+	}
+	if cfg.MCP.MediaEnabled || cfg.MCP.MediaAllowed(uuid.MustParse(testWorkspace)) {
+		t.Fatal("media allowed with the switch off")
+	}
+	if !cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) {
+		t.Fatal("the media switch turned content off")
+	}
+	if !strings.HasSuffix(cfg.MCP.String(), " content=on content_tenants=1 media=off media_tenants=0") {
+		t.Fatalf("String = %q", cfg.MCP.String())
+	}
+}
+
+func TestMCPMediaLoads(t *testing.T) {
+	mediaEnv(t)
+	t.Setenv("WS_MCP_MEDIA_ENABLED", "true")
+	t.Setenv("WS_MCP_MEDIA_TENANTS", " "+testWorkspace+" ,,")
+	t.Setenv("WS_MCP_MEDIA_OFF_KINDS", " Zip , pdf,,zip")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	workspace := uuid.MustParse(testWorkspace)
+	if !cfg.MCP.MediaEnabled || len(cfg.MCP.MediaTenants) != 1 || cfg.MCP.MediaTenants[0] != workspace {
+		t.Fatalf("media = %v %v", cfg.MCP.MediaEnabled, cfg.MCP.MediaTenants)
+	}
+	// Lower-cased, once each and sorted: the order the reader is told.
+	if got := strings.Join(cfg.MCP.MediaOffKinds, ","); got != "pdf,zip" {
+		t.Fatalf("off kinds = %q", got)
+	}
+	if !cfg.MCP.MediaAllowed(workspace) || cfg.MCP.MediaAllowed(uuid.New()) {
+		t.Fatal("MediaAllowed does not follow the list")
+	}
+	if !strings.HasSuffix(cfg.MCP.String(), " media=on media_tenants=1 media_off=pdf,zip") {
+		t.Fatalf("String = %q", cfg.MCP.String())
+	}
+	// A workspace with content but not listed for media reads text only.
+	other := uuid.MustParse("0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee")
+	t.Setenv("WS_MCP_READER_ENCLAVE_TENANTS", "*")
+	t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace+","+other.String())
+	if cfg, err = Load(); err != nil || !cfg.MCP.ContentAllowed(other) || cfg.MCP.MediaAllowed(other) || !cfg.MCP.MediaAllowed(workspace) {
+		t.Fatalf("content without media: %v", err)
+	}
+	// Media rides on content: content off, or the connector off, turns it
+	// off whatever its own switch says.
+	off := cfg.MCP
+	off.ContentEnabled = false
+	if off.MediaAllowed(workspace) {
+		t.Fatal("media allowed with content off")
+	}
+	off = cfg.MCP
+	off.Enabled = false
+	if off.MediaAllowed(workspace) {
+		t.Fatal("media allowed with the connector off")
+	}
+	// No kind off is the default.
+	t.Setenv("WS_MCP_MEDIA_OFF_KINDS", "")
+	if cfg, err = Load(); err != nil || len(cfg.MCP.MediaOffKinds) != 0 || strings.Contains(cfg.MCP.String(), "media_off") {
+		t.Fatalf("no kinds off: %v %v %q", err, cfg.MCP.MediaOffKinds, cfg.MCP.String())
+	}
+}
+
+func TestMCPMediaInvalid(t *testing.T) {
+	other := "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+	for name, env := range map[string]map[string]string{
+		"no tenants":           {"WS_MCP_MEDIA_TENANTS": ""},
+		"every workspace":      {"WS_MCP_MEDIA_TENANTS": "*"},
+		"not a uuid":           {"WS_MCP_MEDIA_TENANTS": "acme"},
+		"nil uuid":             {"WS_MCP_MEDIA_TENANTS": "00000000-0000-0000-0000-000000000000"},
+		"without content":      {"WS_MCP_MEDIA_TENANTS": testWorkspace + "," + other, "WS_MCP_READER_ENCLAVE_TENANTS": "*"},
+		"unknown kind":         {"WS_MCP_MEDIA_OFF_KINDS": "pdf,slides"},
+		"every kind as *":      {"WS_MCP_MEDIA_OFF_KINDS": "*"},
+		"switch not a boolean": {"WS_MCP_MEDIA_ENABLED": "maybe"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mediaEnv(t)
+			t.Setenv("WS_MCP_MEDIA_ENABLED", "true")
+			t.Setenv("WS_MCP_MEDIA_TENANTS", testWorkspace)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load accepted %v", env)
+			}
+		})
+	}
+	// Content off is the kill switch, and flipping it must not need the
+	// media block tidied first: its list and kinds are not inspected then.
+	mediaEnv(t)
+	t.Setenv("WS_MCP_CONTENT_ENABLED", "false")
+	t.Setenv("WS_MCP_CONTENT_TENANTS", "")
+	t.Setenv("WS_MCP_MEDIA_ENABLED", "true")
+	t.Setenv("WS_MCP_MEDIA_TENANTS", testWorkspace)
+	t.Setenv("WS_MCP_MEDIA_OFF_KINDS", "slides")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("with content off the media block was inspected: %v", err)
+	}
+	if cfg.MCP.MediaAllowed(uuid.MustParse(testWorkspace)) {
+		t.Fatal("media allowed with content off")
+	}
+}
+
 // The content switch and its workspace list are documented where an
 // operator looks: the readers' configuration section of docs/mcp.md and
-// .env.example, each with its rule.
+// .env.example, each with its rule. So are the attachments' three.
 func TestContentVariablesDocumented(t *testing.T) {
 	read := func(path string) string {
 		t.Helper()
@@ -462,7 +581,7 @@ func TestContentVariablesDocumented(t *testing.T) {
 	}
 	section := doc[start:end]
 	env := read("../../.env.example")
-	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_CONTENT_TENANTS"} {
+	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_CONTENT_TENANTS", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_TENANTS", "WS_MCP_MEDIA_OFF_KINDS"} {
 		if !strings.Contains(section, "| `"+name+"` |") {
 			t.Errorf("docs/mcp.md's readers' configuration does not list %s", name)
 		}
@@ -472,5 +591,8 @@ func TestContentVariablesDocumented(t *testing.T) {
 	}
 	if !strings.Contains(env, "# WS_MCP_CONTENT_ENABLED=false\n") {
 		t.Error(".env.example does not show the content switch's default")
+	}
+	if !strings.Contains(env, "# WS_MCP_MEDIA_ENABLED=false\n") {
+		t.Error(".env.example does not show the media switch's default")
 	}
 }

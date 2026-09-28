@@ -64,19 +64,45 @@ type MCP struct {
 	// also allowed by the enclave reader's TENANTS. Required when
 	// ContentEnabled; "*" is not accepted.
 	ContentTenants []uuid.UUID
+	// MediaEnabled is the switch for attachments: a content connection
+	// whose consent carries media may open attachment contents inside the
+	// enclave reader. Off by default; off, the status of every media
+	// connection says media is not allowed within a minute, while its text
+	// keeps working and its consent survives. It rides on content: with
+	// ContentEnabled off it is off too, and its list and kinds are not
+	// inspected.
+	MediaEnabled bool
+	// MediaTenants are the workspaces whose content connections may open
+	// attachments, each also in ContentTenants. Required when MediaEnabled;
+	// "*" is not accepted.
+	MediaTenants []uuid.UUID
+	// MediaOffKinds are the attachment kinds switched off everywhere, a
+	// sorted subset of MediaKinds: the reader refuses them while text and
+	// the other kinds keep working. Empty by default.
+	MediaOffKinds []string
 
 	// readersErr is what was wrong with WS_MCP_READERS itself, and
 	// strayHosted the WS_MCP_READER_HOSTED_* names that were set. Both are
 	// reported by Validate, because a disabled connector is not inspected.
 	readersErr  error
 	strayHosted []string
-	// contentTenantErr is a WS_MCP_CONTENT_TENANTS value that did not parse.
+	// contentTenantErr is a WS_MCP_CONTENT_TENANTS value that did not parse,
+	// mediaTenantErr a WS_MCP_MEDIA_TENANTS one and mediaOffErr a word of
+	// WS_MCP_MEDIA_OFF_KINDS that is not a kind.
 	contentTenantErr error
+	mediaTenantErr   error
+	mediaOffErr      error
 }
 
 // ContentReader is the reader content connections are held by: the
 // production enclave. No other reader, attested or not, is given text.
 const ContentReader = "enclave"
+
+// MediaKinds are the kinds of attachment WS_MCP_MEDIA_OFF_KINDS may switch
+// off, each a family the reader opens with its own parser: images (with
+// stickers and video thumbnails), PDF, office documents, plain text, zip
+// archives, audio and video.
+var MediaKinds = []string{"image", "pdf", "office", "text", "zip", "audio", "video"}
 
 // MCPReader is one attested reader's block, WS_MCP_READER_<ID>_*.
 type MCPReader struct {
@@ -135,14 +161,18 @@ func loadMCP(errs *[]error) MCP {
 		}
 	}
 	m.ContentEnabled = boolean("WS_MCP_CONTENT_ENABLED", false, errs)
-	m.ContentTenants, m.contentTenantErr = contentTenants(os.Getenv("WS_MCP_CONTENT_TENANTS"))
+	m.ContentTenants, m.contentTenantErr = workspaceList("WS_MCP_CONTENT_TENANTS", os.Getenv("WS_MCP_CONTENT_TENANTS"))
+	m.MediaEnabled = boolean("WS_MCP_MEDIA_ENABLED", false, errs)
+	m.MediaTenants, m.mediaTenantErr = workspaceList("WS_MCP_MEDIA_TENANTS", os.Getenv("WS_MCP_MEDIA_TENANTS"))
+	m.MediaOffKinds, m.mediaOffErr = mediaKinds(os.Getenv("WS_MCP_MEDIA_OFF_KINDS"))
 	return m
 }
 
-// contentTenants parses WS_MCP_CONTENT_TENANTS: workspace UUIDs, comma
-// separated. Every workspace is named; "*" is refused, because content is
-// opened one workspace at a time, on purpose.
-func contentTenants(raw string) ([]uuid.UUID, error) {
+// workspaceList parses WS_MCP_CONTENT_TENANTS or WS_MCP_MEDIA_TENANTS,
+// named by name: workspace UUIDs, comma separated. Every workspace is named;
+// "*" is refused, because content and attachments are opened one workspace
+// at a time, on purpose.
+func workspaceList(name, raw string) ([]uuid.UUID, error) {
 	var out []uuid.UUID
 	var errs []error
 	for _, part := range strings.Split(raw, ",") {
@@ -151,13 +181,37 @@ func contentTenants(raw string) ([]uuid.UUID, error) {
 		}
 		tenant, err := uuid.Parse(part)
 		if err != nil || len(part) != 36 || tenant == uuid.Nil {
-			errs = append(errs, fmt.Errorf("WS_MCP_CONTENT_TENANTS: %q is not a workspace id (a UUID; * is not accepted)", part))
+			errs = append(errs, fmt.Errorf("%s: %q is not a workspace id (a UUID; * is not accepted)", name, part))
 			continue
 		}
 		if !slices.Contains(out, tenant) {
 			out = append(out, tenant)
 		}
 	}
+	return out, errors.Join(errs...)
+}
+
+// mediaKinds parses WS_MCP_MEDIA_OFF_KINDS: kinds from MediaKinds, comma
+// separated, in any case and order. They come back lower-cased, once each
+// and sorted, which is the order the reader is told them in. A word that is
+// not a kind is an error rather than ignored: a mistyped kind would leave on
+// the parser it was meant to switch off.
+func mediaKinds(raw string) ([]string, error) {
+	var out []string
+	var errs []error
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.ToLower(strings.TrimSpace(part)); part == "" {
+			continue
+		}
+		if !slices.Contains(MediaKinds, part) {
+			errs = append(errs, fmt.Errorf("WS_MCP_MEDIA_OFF_KINDS: %q is not an attachment kind (%s)", part, strings.Join(MediaKinds, ", ")))
+			continue
+		}
+		if !slices.Contains(out, part) {
+			out = append(out, part)
+		}
+	}
+	slices.Sort(out)
 	return out, errors.Join(errs...)
 }
 
@@ -273,6 +327,7 @@ func (m MCP) Validate(prod bool) error {
 		errs = append(errs, errors.New("WS_MCP_OPENAI_APPS_CHALLENGE must be up to 256 printable characters without spaces"))
 	}
 	errs = append(errs, m.validateContent()...)
+	errs = append(errs, m.validateMedia()...)
 	return errors.Join(errs...)
 }
 
@@ -311,6 +366,40 @@ func (m MCP) ContentAllowed(tenant uuid.UUID) bool {
 	}
 	enclave, ok := m.Reader(ContentReader)
 	return ok && (enclave.AllTenants || slices.Contains(enclave.Tenants, tenant))
+}
+
+// validateMedia checks the attachments switch. It rides on content: while
+// either switch is off its list and kinds are not inspected, so turning
+// content off in a hurry never needs them tidied first. On, it needs a list
+// of workspaces that content also lists, and kinds that exist.
+func (m MCP) validateMedia() []error {
+	if !m.ContentEnabled || !m.MediaEnabled {
+		return nil
+	}
+	var errs []error
+	if m.mediaTenantErr != nil {
+		errs = append(errs, m.mediaTenantErr)
+	}
+	if len(m.MediaTenants) == 0 && m.mediaTenantErr == nil {
+		errs = append(errs, errors.New("WS_MCP_MEDIA_TENANTS must list the workspaces that may open attachments when WS_MCP_MEDIA_ENABLED is set"))
+	}
+	for _, tenant := range m.MediaTenants {
+		if !slices.Contains(m.ContentTenants, tenant) {
+			errs = append(errs, fmt.Errorf("WS_MCP_MEDIA_TENANTS: %s is not in WS_MCP_CONTENT_TENANTS", tenant))
+		}
+	}
+	if m.mediaOffErr != nil {
+		errs = append(errs, m.mediaOffErr)
+	}
+	return errs
+}
+
+// MediaAllowed reports whether a workspace's content connections that
+// consented to attachments may open them right now: content is allowed for
+// the workspace, the media switch is on and the workspace is listed. Which
+// kinds are off is MediaOffKinds, and applies to every workspace.
+func (m MCP) MediaAllowed(tenant uuid.UUID) bool {
+	return m.ContentAllowed(tenant) && m.MediaEnabled && slices.Contains(m.MediaTenants, tenant)
 }
 
 // validateHosted is today's check of the hosted reader, unchanged: a
@@ -510,6 +599,14 @@ func (m MCP) String() string {
 		content = "on"
 	}
 	fmt.Fprintf(&b, " content=%s content_tenants=%d", content, len(m.ContentTenants))
+	media := "off"
+	if m.MediaEnabled {
+		media = "on"
+	}
+	fmt.Fprintf(&b, " media=%s media_tenants=%d", media, len(m.MediaTenants))
+	if len(m.MediaOffKinds) > 0 {
+		fmt.Fprintf(&b, " media_off=%s", strings.Join(m.MediaOffKinds, ","))
+	}
 	return b.String()
 }
 
