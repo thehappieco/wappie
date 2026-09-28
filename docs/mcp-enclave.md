@@ -9,7 +9,7 @@ console verifies an attestation document before it seals anything to the reader.
 (`packages/mcp-http/server.mjs` on `127.0.0.1:18093`, loopback relay in
 `internal/mcpauth`) keeps working unchanged.
 Milestone 2b (message text inside the enclave, ephemeral keys) is §15, which
-extends this contract.
+extends this contract, and stage A (attachments) is §16, which extends §15.
 
 This document is the contract between five workstreams that implement 2a in
 parallel. Where it states a byte layout, a field name, a limit or a status code,
@@ -659,7 +659,9 @@ rows of the plan's 2b table. `READER_VERSION` becomes `0.3.0`.
 `WS_MCP_CONTENT_ENABLED`; the password stays, with **one** Argon2id derivation
 for N numbers; content lasts 1, 30 or 90 days (default 30) with a 7-day idle
 refresh; the personal contacts snapshot, attachment bytes and sending are
-**out**. The pilot's reader (`server.mjs` as `wappie-mcp`) stays metadata-only
+**out** (attachment bytes for 2b: stage A opens them for media connections
+only, §16).
+The pilot's reader (`server.mjs` as `wappie-mcp`) stays metadata-only
 by construction: `'provided'` is unchanged and nothing reachable from
 `server.mjs` can open content.
 
@@ -677,7 +679,8 @@ by construction: `'provided'` is unchanged and nothing reachable from
 
 A connection's **kind** is `metadata` (every 2a and hosted connection) or
 `content`. A content connection has `key_mode = 'ephemeral'`,
-`consent_version = 1` and its own **service account** (`service_user_id`),
+`consent_version = 1` (1 or 2 since stage A, with `media` only on 2: §16.2,
+§16.4) and its own **service account** (`service_user_id`),
 created for it and never reused. A new status, **`reseal`** (content only),
 means consented but no key in the enclave; the connection id and the token
 family survive it. "Live" becomes `pending`, `active` or `reseal` in every
@@ -888,9 +891,9 @@ a content variant that never mentions a local setting.
 
 **Consent body.** `POST /v1/mcp/connections` gains `kind` (default
 `metadata`) and, for content, `service_user_id`, `key_mode: 'ephemeral'` and
-`consent_version: 1`. Content `expires_at` is at most 90 days + 1 h ahead. The
-request cache entry that prepare fills also keeps the **full**
-`reader_public_key` (32 bytes).
+`consent_version: 1` (since stage A, 1 or 2, and `media`: §16.3). Content
+`expires_at` is at most 90 days + 1 h ahead. The request cache entry that
+prepare fills also keeps the **full** `reader_public_key` (32 bytes).
 
 **Provisional service.** `POST /v1/auth/workspaces/invites` accepts
 `"provisional": true` with `role: 'service'` only (invite TTL 30 min);
@@ -951,9 +954,10 @@ by any `mcp_connections.service_user_id`, never counts as a backup reader, and
 copies).
 
 **Status** (`GET /v1/mcp/enclave/connections/{id}`) answers
-`{"status","expires_at","kind","service_user_id"}` (the hosted route keeps two
-fields); `service_user_id` is `null` for a metadata row, and `expires_at` is
-always RFC 3339 in UTC (`Z`), whatever the host's zone. For content it runs
+`{"status","expires_at","kind","service_user_id"}`, and since stage A
+`"media","media_off"` (§16.3) (the hosted route keeps two fields);
+`service_user_id` is `null` for a metadata row, and `expires_at` is always
+RFC 3339 in UTC (`Z`), whatever the host's zone. For content it runs
 under `pg.InTenantTx` of the row's tenant and decides in this order: an ended
 row answers its status; a live row past its deadline is ended (`expired`,
 reason `expired`, the full cascade) and answers `expired`; a revoked or
@@ -971,12 +975,14 @@ ticker every 30 s per attested reader resends for rows with
 the reader revoked itself are marked notified at once.
 
 **Listing.** Rows add `kind`, `key_mode`, `revoke_reason` and `renewable`
-(content, `active` or `reseal`, viewer is `created_by`, content allowed); the
-listed status is the row's own (the kill switch only makes `renewable`
-false), with `active` or `reseal` past the deadline listed as `expired`.
+(content, `active` or `reseal`, viewer is `created_by`, content allowed), and
+since stage A `consent_version` and `media` (§16.3); the listed status is the
+row's own (the kill switch only makes `renewable` false), with `active` or
+`reseal` past the deadline listed as `expired`.
 `GET /v1/mcp/content` (session, any role) answers
-`{"enabled": bool, "attested": bool}` for the session's workspace. `enabled`
-is true only when the `enclave` reader is configured, the switch is on, and
+`{"enabled": bool, "attested": bool}` for the session's workspace (and since
+stage A `"media": bool`, §16.3). `enabled` is true only when the `enclave`
+reader is configured, the switch is on, and
 the workspace is in `WS_MCP_CONTENT_TENANTS` and allowed by that reader's
 `TENANTS` (which may be `*`). `attested` is true when the `enclave` reader is
 configured and its `TENANTS` allow the workspace, whatever the switch says: a
@@ -1063,15 +1069,15 @@ never updated.
 
 | Direction | Method and path | Body → success | Other |
 |---|---|---|---|
-| console → Go | `POST /v1/mcp/connections` | + `kind`, `service_user_id`, `key_mode`, `consent_version` → 201 | 403 `content_not_allowed` |
-| console → Go | `GET /v1/mcp/content` | → 200 `{"enabled", "attested"}` | 401 |
+| console → Go | `POST /v1/mcp/connections` | + `kind`, `service_user_id`, `key_mode`, `consent_version`, and `media` (§16.3) → 201 | 403 `content_not_allowed`, 400 `media_not_allowed` |
+| console → Go | `GET /v1/mcp/content` | → 200 `{"enabled", "attested", "media"}` | 401 |
 | console → Go | `POST /v1/mcp/connections/{id}/renewal` | `{"nonce"}` → 200 | 403, 404, 409 `connection_state`, 429, 502 |
 | console → Go | `POST /v1/mcp/connections/{id}/renew` | §15.9 step 5 → 200 | 400, 403, 409, 422 `key_unsuitable`, 502 |
 | console → Go | `POST /v1/auth/workspaces/invites` | + `"provisional": true` | 400 |
-| Go → enclave | `POST /internal/requests/{id}/bundle` | + `"kind"` → 204 | 400 `invalid_bundle`, `grant_proof_failed` |
+| Go → enclave | `POST /internal/requests/{id}/bundle` | + `"kind"`, and `"media": true` only for a media consent (§16.2) → 204 | 400 `invalid_bundle`, `grant_proof_failed` |
 | Go → enclave | `POST /internal/connections/{id}/renewal` | `{"nonce"}` → 200 | 400, 404, 429, 503 as prepare |
 | Go → enclave | `POST /internal/connections/{id}/renewal/{renewal_id}/bundle` | `BundleRelay` + `kind` → 204 | 400, 404, 409 `bundle_exists` |
-| enclave → Go | `GET /v1/mcp/enclave/connections/{id}` | → 200 + `kind`, `service_user_id` | 404 |
+| enclave → Go | `GET /v1/mcp/enclave/connections/{id}` | → 200 + `kind`, `service_user_id`, `media`, `media_off` (§16.3) | 404 |
 | enclave → Go | `POST /v1/mcp/enclave/connections/{id}/reseal` | none → 204 (active or reseal) | 404, 409 `connection_state` |
 | enclave → Go | `POST /v1/mcp/enclave/connections/{id}/revoke` | none or `{"reason":"reuse_detected"}`, strict → 204 | 400 |
 
@@ -1317,3 +1323,368 @@ fails on allowlist entries that no longer match. `commercial/scripts/release.py`
 records `migration42_sha256` (the SHA-256 of the core's
 `internal/migrate/sql/0042_mcp_content.sql`, or null) beside
 `migration41_sha256` in `RELEASE.json`.
+
+## 16. Stage A: attachments
+
+Stage A lets a content connection whose sealed consent carries `media: true`
+open attachment contents inside the enclave. Sections 1 to 15 still hold;
+where this section differs, it wins for stage A. It ships in two steps:
+
+- **A0**, the archive server's side, with no reader release and no PCR0
+  change. The live reader, 0.3.0 built from `69e9a1a`, keeps running
+  unchanged: every body the server sends it for a connection without
+  attachments is one it already accepts, and a consent with attachments
+  fails closed (§16.2 rules 3 and 4, §16.13). A0 is §16.3 and §16.4,
+  implemented.
+- **A1**, reader 0.4.0, which opens attachments. Everything marked **A1**
+  below is the design A1 implements; none of it exists yet, and the rest of
+  its contract (§16.5 to §16.11) joins this document with it.
+
+**Fixed by the owner (2026-09-28), binding here:**
+
+- View-once media is refused (`view_once_excluded`): the assistant learns the
+  attachment exists, never its content.
+- Transcription (the stage once called A2: whisper, ffmpeg, audio and video
+  transcripts and keyframes) is **deferred indefinitely**, and nothing is
+  built for it. Audio and voice notes stay `attachment_unsupported`; a video
+  offers its sealed thumbnail only.
+- Attachments take a **new** consent, version 2 with `media: true`. A text
+  connection is never upgraded in place: the person connects again and
+  revokes the old one.
+- ChatGPT receives text only (the header, captions and document text), never
+  image blocks, unless the image probe (P2) passes.
+- The card says that the archive server sees which attachment is opened and
+  when.
+
+### 16.1 Scope and ownership
+
+**In scope** (A1), for a connection whose sealed consent carries `media: true`:
+
+- images and stickers, as re-encoded images;
+- PDF as text, with scanned pages as images;
+- office and plain-text files as text;
+- zip archives as entry names;
+- video: its sealed thumbnail.
+
+**Out of scope:** recovery of `gone` media; keyless or unhashed media;
+view-once media; audio, voice notes and anything of a video beyond its
+thumbnail (transcription is deferred); HEIC; interactive and template header
+media; link-preview and invite thumbnails; OCR; an in-place text-to-media
+upgrade; MCP Tasks and elicitation; `audio`, `resource` and `resource_link`
+result blocks.
+
+| Owner | Files |
+|---|---|
+| READER (`packages/mcp`) | `server.mjs` (tool, result branch, media instructions, guidance codes); `reader.mjs` (`openAttachment`, metadata fields on media connections); `bundle.mjs` (consent v2, `media`) — A1 |
+| ENCLAVE (`packages/mcp-http/enclave`) | `content.mjs`, `renew.mjs`, `provider.mjs`, `constants.mjs`, `health.mjs`, `main.mjs`, new `media/**` — A1 |
+| HTTP (`packages/mcp-http`) | `node-adapter.mjs` (padding), `verifier.mjs` (status media fields cached with `serve`), `test/enclave-boundary.test.mjs` — A1 |
+| GO | `internal/config/mcp.go`, `internal/mcpauth/{mcpauth,content,relay}.go`, `internal/store/{mcp,mcp_content}.go`, `internal/media/http.go`, `cmd/whatserverd/{main,mcp,discovery}.go`, migration 0043 — A0, done |
+| CONSOLE | `commercial/web/src/state/mcpConnect.ts`, `components/MCPPanel.vue`, `ui/locales/*/mcp-connect.json`, the generator of `state/readerMeasurements.ts` — A1 |
+| DEPLOY | `deploy/enclave/{Dockerfile,entrypoint.sh,check-image.sh,build.sh}`, new `deploy/enclave/media-jail/`, new `deploy/enclave/probe/` (never released); `commercial/deploy/enclave/{wappie-reader-supervisor.sh,log-sink.py,test_log_sink.py}` — A0 probes, then A1 |
+| DOCSOPS | a new attachment claims gate in both repositories; the public docs that say attachment contents are never opened — A1 |
+
+### 16.2 Media capability and consent v2
+
+1. **Where the capability lives.** `kind` stays `'content'`. The capability
+   is `media: true` in the sealed content bundle; an absent field means false.
+   `consent_version` ∈ {1, 2}, and `media: true` requires
+   `consent_version: 2`. Scope comes only from the sealed bundle; Go can only
+   narrow it.
+2. **Bundle schema** (A1, `packages/mcp/bundle.mjs`):
+   `consent_version: z.union([z.literal(1), z.literal(2)])` and
+   `media: z.boolean().optional()`, refined so that
+   `media ⇒ consent_version === 2`. The pilot keeps refusing content bundles.
+3. **Relay** (A0). Go's relayed consent body carries `"media": true` when the
+   consent includes attachments, and **omits the field otherwise**: every
+   reader up to 0.3.0 parses the relay strictly (`bundleBody` is a
+   `z.strictObject`), so even `"media": false` would be refused. A renewal's
+   relay never carries it (rule 6). Readers from A1 on read a missing field
+   as false.
+4. **Enclave acceptance** (A1, `content.mjs`): accept `consent_version` ∈ {1, 2};
+   after opening the bundle and before the grant proof, require
+   `relayed.media === (bundle.media === true)`, else `invalid_bundle` (400).
+   0.3.0 refuses a relay with `media` as `bad_request` before opening
+   anything, and Go then undoes the consent (§15.7): a media consent can only
+   fail closed on a reader without attachments.
+5. **Install** (A1) copies `consent_version` and `media: bundle.media === true`
+   into the sealed record.
+6. **Renewal.** A1 additionally requires `bundle.consent_version ===
+   record.consent_version` and `(bundle.media === true) === (record.media ===
+   true)`, and `commit` never writes either field. Go (A0) never changes
+   `consent_version` or `media` on a renewal: a renewal renews the key, never
+   the consent.
+7. **Renewal descriptor** (A1) adds `consent_version` (the record's, default
+   1) and `media` (default false). They are not attested; a wrong value can
+   only make the renewal fail under rule 6. Go relays the descriptor as the
+   reader sends it and reads only the fields it knows, so it takes them
+   already.
+8. **Console consent version** (A1). `build.sh` writes the measured constant
+   `READER_CAPABILITIES` into `measurements.json` as `capabilities`; the
+   generated `readerMeasurements.ts` carries it per attested reader version.
+   A release without the field has `[]`; 0.4.0 declares
+   `['consent_v2','media']`. A new consent uses version 2 if and only if the
+   attested release declares `consent_v2`, else version 1.
+9. **Console media toggle** (A1), "Also read attachments", implies text. It
+   is shown only when the attested release declares `media`, discovery lists
+   `mcp.remote.media.v1` and `GET /v1/mcp/content` answers `media: true` (the
+   last two are A0's), never from a URL parameter or a descriptor field. The
+   create request sends the same `media` the bundle seals.
+10. **Console renewal** (A1) seals the descriptor's `consent_version` and
+    `media`, defaulting to 1 and false, and shows the matching card.
+11. **Cards** (A1, five locales; the owner approves pt and en first, legal
+    review does not block). v1 is unchanged; v2 text-only is v1 with "files"
+    changed to "file names"; v2 with attachments, English source, a draft for
+    the owner:
+
+    > "Also read attachments. Photos, stickers, PDFs and documents are opened
+    > inside the verified reader and sent to {assistant} as text and, where it
+    > accepts them, images. Photos are re-encoded, which removes location and
+    > camera data. View-once media and attachments the archive cannot verify
+    > are never opened. The archive server can see which attachments are
+    > opened and when. On claude.ai, large results and images may be copied
+    > into Anthropic's code-execution storage and kept there. Revoking stops
+    > future reads; it does not erase what {assistant} already received."
+
+    It promises no transcription: that is deferred, and how a consent to it
+    would be given is decided if it returns.
+
+### 16.3 Go: configuration, consent, status, discovery, deny at source (A0)
+
+**Configuration** (`internal/config/mcp.go`). The startup line prints
+`media=on|off`, `media_tenants=<count>` and, when any kind is off,
+`media_off=<kinds>`.
+
+| Variable | Rule |
+|---|---|
+| `WS_MCP_MEDIA_ENABLED` | boolean, default `false` |
+| `WS_MCP_MEDIA_TENANTS` | comma-separated workspace UUIDs, each also in `WS_MCP_CONTENT_TENANTS`; `*` refused; required and non-empty when the switch is on; the same parser as `WS_MCP_CONTENT_TENANTS` |
+| `WS_MCP_MEDIA_OFF_KINDS` | a subset of `image,pdf,office,text,zip,audio,video`, in any case and order; an unknown word is a configuration error; kept lower-cased, once each and sorted |
+
+`MediaAllowed(tenant) = ContentAllowed(tenant) ∧ MEDIA_ENABLED ∧ tenant ∈
+MEDIA_TENANTS`. Media rides on content: while `WS_MCP_CONTENT_ENABLED` or
+`WS_MCP_MEDIA_ENABLED` is off, neither the list nor the kinds is inspected,
+so turning content off in a hurry never needs the media block tidied first.
+
+**Kinds**, for `WS_MCP_MEDIA_OFF_KINDS` and the reader (A1):
+
+| Kind | Attachments |
+|---|---|
+| `image` | images, stickers, video thumbnails |
+| `pdf` | PDF |
+| `office` | docx, odt, xlsx, xls, ods, pptx |
+| `text` | txt, csv, json, md |
+| `zip` | other zip archives |
+| `audio` | audio, ptt (unsupported while transcription is deferred) |
+| `video` | video, ptv and GIF beyond their thumbnails (likewise) |
+
+**Consent** (`POST /v1/mcp/connections`) takes `"media": bool`, absent
+meaning false. In order, each a 400:
+
+- metadata with `media`: `bad_request`, like the other content-only fields;
+- content with `consent_version` other than 1 or 2: `bad_request`
+  ("consent_version must be 1 or 2");
+- `media` without `consent_version: 2`: `bad_request` ("media requires
+  consent_version 2");
+- after the content gate (403 `content_not_allowed`), `media` while
+  `MediaAllowed(tenant)` is false: `media_not_allowed` ("media is not enabled
+  for this workspace"), before the ledger and before the reader.
+
+The store's `Create` applies the same set as a backstop
+(`ErrMCPKeyUnsuitable`), and migration 0043's CHECK stands behind both.
+
+**Connection list** rows add `consent_version` (null for metadata) and
+`media` (the consent's, whatever the switch says now).
+
+**Renewal** never touches `media` or `consent_version`, and its relay never
+carries `media` (§16.2 rule 6).
+
+**Status** (`GET /v1/mcp/enclave/connections/{id}`, attested readers only)
+adds, on every answer:
+
+- `media` = the row's `media` ∧ the answer is `pending`, `active` or `reseal`
+  ∧ `MediaAllowed(tenant)`;
+- `media_off` = the sorted kinds that are off, `[]` when none, never null.
+
+The hosted route's answer keeps its two fields. Media never produces
+`reseal`: with the media switch off, an active media connection answers
+`active` and `media: false`, and its text keeps working. A reader treats a
+missing `media` as false and a missing `media_off` as `[]`; 0.3.0 reads
+neither (its status parser keeps only the fields it knows).
+
+**Discovery** lists `mcp.remote.media.v1` iff it lists
+`mcp.remote.content.v1` and `WS_MCP_MEDIA_ENABLED` is on.
+**`GET /v1/mcp/content`** answers `{"enabled", "attested", "media"}`, with
+`media = MediaAllowed(tenant)` for the session's workspace.
+
+**Deny at source** (`internal/media/http.go`, GET and HEAD). After the
+bearer authenticates and the uid parses, and before the attachment is looked
+up, an API key is put to the gate `mcpauth.MediaGate`, which
+`cmd/whatserverd/main.go` injects whether or not the connector is mounted:
+
+- a key that is the `api_key_id` of a content connection passes only if that
+  connection is live (`pending`, `active` or `reseal`), its `media` is true
+  and `MediaAllowed(tenant)`; otherwise the answer is 404 `no such
+  attachment`, byte for byte the answer for an attachment that is not the
+  caller's, and nothing is looked up;
+- any other key (an automation's, a metadata connection's) and every
+  session pass to the usual checks unchanged;
+- it is one lookup on the unique `mcp_connections.api_key_id`, and it can
+  only deny.
+
+This is narrower than the design's rule (content connections in `active` or
+`reseal`): a pending or ended content connection's key is refused as well.
+It ships in A0, while no reader asks for an attachment.
+
+### 16.4 Migration `0043_mcp_media.sql` (A0)
+
+0043 was held for 2c, which is not scheduled; 2c takes the next free
+number.
+
+```sql
+ALTER TABLE mcp_connections ADD COLUMN media boolean NOT NULL DEFAULT false;
+ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_media_content
+    CHECK (NOT media OR (kind = 'content' AND consent_version >= 2));
+```
+
+**Down-step**, in the migration's header comment like 0042's, extracted and
+run verbatim: with `wappie-api` stopped, `WS_MCP_MEDIA_ENABLED=false` and the
+enclave on a release without attachments, after checking the file against
+`migration43_sha256` in `RELEASE.json`. One transaction under
+`pg_advisory_xact_lock(6289348710053007958)`, workspace by workspace under
+`set_config('app.tenant_id', …)` as 0042's: (1) 0042's cascade for every row
+`WHERE media`: revoke the connection's key and every key acting as its
+service account, and delete that account's `device_key_grants`,
+`device_permissions` and `workspace_memberships`; (2) `UPDATE
+mcp_connections SET status='revoked', revoked_at=now() WHERE media AND status
+IN ('pending','active','reseal')`, with no `revoke_reason` (none fits a
+rollback), and the revocation notice then reaches the enclave as for any
+other end; (3) drop `mcp_connections_media_content` and `media`; (4) delete
+version 43 from `schema_migrations`. The media keys go first because an
+older binary has no gate on `/v1/media`. Version-2 text rows are valid under
+0042's `consent_version BETWEEN 1 AND 1000` and stay as they are; an older
+binary checks `consent_version` only when it creates a connection, so it
+reads them. The order below 43 stands: 0043 down, then 0042, then 0041.
+
+### 16.5 to 16.11 (A1)
+
+The rest of the stage A contract lands with reader 0.4.0, after the A0
+probes: the data path and its integrity (the ciphertext through
+`GET /v1/media/{uid}` over vsock 8001 with the connection's key, SHA-256 and
+MAC checked before any byte reaches a parser), the `media-jail` and its
+kernel requirements, the `open_attachment` tool, the constants measured in
+PCR0, jobs and caches, logs and health, and what leaks. Three owner
+decisions bind it already: `view_once` is `view_once_excluded`; `audio`,
+`ptt` and anything of a video but its sealed thumbnail are
+`attachment_unsupported`; and `IMAGE_HOSTS = ['claude.ai']`, so ChatGPT gets
+`images_withheld: "host"` until P2 passes.
+
+### 16.12 Release and rollback
+
+**A0** (no reader release, no PCR0 change):
+
+1. The archive server with migration 0043 and every media switch off: the
+   consent's `media`, the list, the status fields, discovery, consent
+   version 2 accepted, and the gate on `/v1/media`. 0.3.0 keeps running.
+2. The host probes P1 to P3 with a throwaway MCP server.
+3. The probe enclave on a throwaway `c7g.xlarge` (never released): the jail
+   on the real kernel, vsock throughput.
+4. A query of attachment kinds and sizes for the owner that reads no content.
+
+A0 rolls back with the previous server binary after the 0043 down-step;
+with the switches off there is no media connection, so the down-step
+revokes nothing.
+
+**A1** (runbook `commercial/docs/mcp-enclave-operations.md`): the public PR
+(`READER_VERSION` 0.4.0, `READER_CAPABILITIES = ['consent_v2','media']`,
+caps from the probes); the build with `--previous-pcr0` and the release with
+`capabilities` in `measurements.json`; the private PR (release list,
+measurements, cards and toggle); the owner's KMS transition policies; the
+console with the allowlist {0.3.0, 0.4.0}, which seals version 1 while 0.3.0
+attests and version 2 after; deploy, verify, smoke test, the owner renews
+the text connections; the performance gate; then `WS_MCP_MEDIA_ENABLED=true`
+and `WS_MCP_MEDIA_TENANTS=<the owner's workspace>`; media connections on
+Claude and ChatGPT, the old ones revoked, live tests; 0.3.0 retired after 7
+days.
+
+**Rollback, fastest first:**
+
+1. `WS_MCP_MEDIA_OFF_KINDS` or `WS_MCP_MEDIA_ENABLED=false`, and a server
+   restart: effective at once at `/v1/media` and within 60 s at the reader;
+   text is unaffected.
+2. The previous EIF, allowlisted for 7 days. On 0.3.0 every version-2
+   connection, text-only or media, renews as text-only: 0.3.0's descriptor
+   has no `consent_version`, so the console seals version 1 and no `media`,
+   and 0.3.0's renewal check ignores the version. The sealed record keeps
+   `consent_version: 2` and `media: true` (records are kept whole and
+   `commit` never writes them), so media returns on roll-forward.
+3. Only then the 0043 down-step (§16.4); an older server binary is needed
+   only for a fault in the server itself.
+
+### 16.13 Tests (A0)
+
+Go, against Postgres as an ordinary role (`NOSUPERUSER NOBYPASSRLS`):
+
+- configuration: off by default, the switches and lists, `*` and a workspace
+  outside `WS_MCP_CONTENT_TENANTS` refused, unknown kinds refused, nothing
+  inspected while content is off (`TestMCPMedia*`);
+- the consent: media on version 1, on metadata and on a workspace without
+  media refused before the ledger and the reader; the relay's fields with
+  and without media; the list's version and media; the status's `media` and
+  `media_off` following both switches, never `reseal` for media alone, false
+  once ended; the hosted status unchanged (`TestContentConsentGating`,
+  `TestMediaConsent`, `TestStandingReplyMedia`);
+- renewal keeps the consent and its relay carries no `media`
+  (`TestMediaRenewalKeepsConsent`, `TestRenewKeepsMedia`);
+- the store's backstop and the CHECK (`TestCreateMediaConnection`), the
+  status's `media` (`TestStatusCarriesMedia`), the key lookup
+  (`TestContentConnectionByAPIKey`);
+- the gate: a media connection's key reads its own number's ciphertext (GET
+  and HEAD); another number, another workspace, an unknown uid, a version-2
+  key without media, a version-1 key and a media key with the switch off all
+  get the same 404; an automation's key and a metadata connection's key are
+  untouched (`TestTheGateLetsOnlyMediaConnectionsThrough`);
+- 0043 down, as its header documents it, then up; 0043 first in the 0042 and
+  0041 down-step tests (`TestMigration0043DownStep`);
+- discovery (`TestDiscoveryAdvertisesMedia`, `TestAdvertisedMCP`);
+- the bodies sent to readers pinned byte for byte in
+  `packages/mcp-http/enclave/test/go-a0-shapes.json`
+  (`TestReaderShapesPinned`).
+
+Enclave (`go-a0-shapes.test.mjs`): 0.3.0's own parsers take every pinned
+relay and status answer except the media consent, which they refuse as
+`bad_request`; its status parser reads the answers with `media` and
+`media_off` exactly as without them; and the whole enclave serves a content
+connection while Go answers with both fields, and refuses the media relay
+with nothing attached.
+
+### 16.14 Open points
+
+- **Closed by A0.** A content connection's key does pass `/v1/media` for its
+  own numbers through the ordinary checks (a read-only key restricted to
+  them, acting as its service account); without the gate a text-only
+  connection's key would fetch their ciphertext. The gate refuses it. The
+  migration is 0043.
+- **Before A0 deploys:** `commercial/scripts/release.py` records
+  `migration43_sha256` beside `migration42_sha256` (DOCSOPS).
+- **Still UNCONFIRMED** (A0 probes, then A1): the cgroup v1 layout of the
+  installed Nitro init and whether its controllers can move to cgroup2;
+  `/dev/nsm` permissions; `CONFIG_IO_URING` in the installed kernel; image
+  handling, size limits and timeouts on each host (P1 to P3), and whether
+  image base64 counts toward claude.ai's ~150K-character cap; vsock
+  throughput; Node's memory in production; whether pdf.js 6.x works without
+  `@napi-rs/canvas`; the Node version inside the pinned `node:22-alpine`
+  digest.
+
+### Amendments to §15
+
+| Where | Amendment | When |
+|---|---|---|
+| §15 opening | attachment bytes are out for 2b; stage A opens them for media connections only | now (in place) |
+| §15.2 | `consent_version` ∈ {1, 2}; `media` on version 2 only (migration 0043) | now (in place) |
+| §15.4 | the bundle's `consent_version` ∈ {1, 2}, plus `media` | A1 |
+| §15.6 | the content-mode sentence that attachment contents are unavailable stays for version-1 and version-2 text connections, and is replaced on media connections | A1 |
+| §15.7 | the consent body's `consent_version` and `media`; the list's `consent_version` and `media`; the status's `media` and `media_off`; `GET /v1/mcp/content`'s `media` | now (in place) |
+| §15.9 | Go never changes `consent_version` or `media` on a renewal | now |
+| §15.9 | the renewal equality of `consent_version` and `media`, and the descriptor fields | A1 |
+| §15.10 | the endpoints' new fields and `media_not_allowed` | now (in place) |
+| §15.13 | the attachment events and health fields | A1 |
