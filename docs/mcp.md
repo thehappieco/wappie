@@ -53,55 +53,44 @@ still never opens archived content.
 
 ## Connect an assistant
 
-The console offers an **MCP** setup for workspace owners and administrators:
-choose the installation, workspace and allowed numbers; decide whether to allow
-message text; confirm the timezone; then download the private setup bundle.
-With text reading enabled, an additional opt-in can include an encrypted snapshot
-of names and phone numbers saved in **My contacts**. The bundle contains a token
-and, when text is enabled, a private service key. Import it locally with
-`packages/mcp/setup.mjs` and delete the original download after import.
+The console's **MCP** panel shows workspace owners and administrators one
+connector address and how to add it in Claude or ChatGPT. The assistant then
+sends the browser back to the console to choose the numbers and approve the
+connection; nothing runs on the person's computer. See the
+[remote connector](../packages/mcp-http/README.md) and the steps below.
 
-Use an updated checkout and rebuilt SDK before importing. Existing configurations
-continue to work with the new tools when the installation supports their REST
-endpoints. Personal contacts require a new, explicitly selected snapshot; they
-are not copied from the browser automatically. Import a new bundle into a new
-private directory and update the host's configuration path. The importer does
-not overwrite existing files.
-
+The console no longer creates local setup bundles. A bundle created earlier
+still imports with `packages/mcp/setup.mjs`, and the console lists the tokens
+of those setups under **Tokens from the old local MCP** so they can be revoked.
 The [package quickstart](../packages/mcp/README.md#start-with-a-console-setup)
-includes installation, file permissions and complete commands. It covers these
-hosts in order:
-
-1. [ChatGPT through Secure MCP Tunnel](../packages/mcp/README.md#connect-to-chatgpt),
-   following the [official OpenAI tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
-   Workspace access and live tool discovery must be verified in your own account.
-2. [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop),
-   using the same MCP process and private configuration.
-3. [claude.ai and ChatGPT through the remote connector](../packages/mcp-http/README.md),
-   which needs no tunnel and no always-on computer. Add the installation's
-   `https://<host>/mcp` URL in the assistant; the browser is sent to the console
-   to approve the connection.
+covers importing such a bundle, [ChatGPT through Secure MCP Tunnel](../packages/mcp/README.md#connect-to-chatgpt)
+and [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop);
+a new local connection uses its [manual configuration](../packages/mcp/README.md#manual-configuration).
 
 ### Installing the hosted connector in one step
 
 Wappie runs two addresses. `https://api.wappie.thehappie.co/mcp` is the hosted
 metadata connector. `https://mcp.wappie.thehappie.co/mcp` is the attested
 reader: it reads metadata the same way, and also message text in workspaces
-where Wappie has enabled it and the approver switched it on. The steps below
-use the first address; the second works the same way in every host.
+where Wappie has enabled it and the approver switched it on. The console's MCP
+panel shows the second address to workspaces the attested reader allows and the
+first to every other. The steps below use the first address; the second works
+the same way in every host.
 Every host takes the address as it is — **nothing to install**:
 
 - **Claude** (claude.ai, Desktop, mobile): the console's MCP panel and the
   Wappie page have a **Connect to Claude** button, Claude's prefilled "add
-  custom connector" dialog; or paste the address in Settings → Connectors. On
-  Team and Enterprise an owner adds it once for the organisation.
+  custom connector" dialog; or paste the address in Customize → Connectors →
+  + → Add custom connector. On Team and Enterprise an owner adds it once for
+  the organisation.
 - **Codex** (ChatGPT desktop app or CLI): Settings → MCP servers → Add server →
   Streamable HTTP → the address, or `codex mcp add wappie --url
   https://api.wappie.thehappie.co/mcp`. Codex opens the consent page itself.
 - **Claude Code**: `claude mcp add --transport http --scope user wappie
   https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
-- **ChatGPT on the web**: turn on developer mode, then add the address as a
-  plugin — that entry is all ChatGPT needs; there is no file to build.
+- **ChatGPT on the web**: turn on developer mode (Settings → Security and
+  login), then add the address as a plugin (Plugins → +) with OAuth — that
+  entry is all ChatGPT needs; there is no file to build.
 
 The plugin at [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins)
 is optional. It adds a skill that tells Codex or Claude Code what the
@@ -224,7 +213,9 @@ every key is dropped within a minute while the consents and the assistants'
 token families survive, and renewal is refused until content is allowed
 again. Discovery adds the capability `mcp.remote.content.v1` when
 `enclave` is configured and the switch is on; the console asks
-`GET /v1/mcp/content` whether its own workspace may use it. The startup line
+`GET /v1/mcp/content` whether its own workspace may use it (`enabled`) and
+whether the `enclave` reader allows that workspace at all (`attested`), which
+picks the one connector address the console shows. The startup line
 prints `content=on|off` and the number of listed workspaces.
 
 A content connection reads as a service account created for it alone, with a

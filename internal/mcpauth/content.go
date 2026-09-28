@@ -40,20 +40,32 @@ func (h *Handler) contentEnabledFor(tenant uuid.UUID) bool {
 	return ok && h.contentAllowed(rd, tenant)
 }
 
+// attestedFor reports whether a workspace may consent to the content
+// reader at all, with text or without: the test a consent to it passes
+// before tenant_not_allowed. The content reader is the enclave, the one
+// discovery advertises as endpoints.mcp_server_attested, so the console
+// offers that address only when this says so.
+func (h *Handler) attestedFor(tenant uuid.UUID) bool {
+	rd, ok := h.readerByID(h.ContentReader)
+	return ok && rd.attested != nil && rd.attested.allows(tenant)
+}
+
 type contentReply struct {
-	Enabled bool `json:"enabled"`
+	Enabled  bool `json:"enabled"`
+	Attested bool `json:"attested"`
 }
 
 // content answers the console: may this workspace let an assistant read
-// message text? The console shows the toggle only when this says so, the
-// discovery document advertises it and an attestation for the request
-// verified; none of them alone is enough.
+// message text, and may it use the attested reader? The console shows the
+// toggle only when this says enabled, the discovery document advertises it
+// and an attestation for the request verified; none of them alone is enough.
+// Attested only picks which connector address the console shows.
 func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
-	send(w, http.StatusOK, contentReply{Enabled: h.contentEnabledFor(user.TenantID)})
+	send(w, http.StatusOK, contentReply{Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID)})
 }
 
 // ---------------------------------------------------------------------------
