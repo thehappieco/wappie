@@ -200,10 +200,20 @@ fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
         .map_err(|_| format!("{flag} must be a non-negative integer, not {value}"))
 }
 
-/// A Linux cpuset list: comma-separated singletons or `a-b` ranges of decimal
-/// CPU ids, e.g. `0`, `0-2`, `1,3`. Written verbatim to `cpuset.cpus`, so it is
-/// validated tightly here rather than trusting the caller.
+/// The highest CPU id a `cpu_set_t` holds (CPU_SETSIZE is 1024), so a list the
+/// cpuset accepts can also be applied with sched_setaffinity when the kernel
+/// has no cgroup2 cpuset.
+const MAX_CPU: u32 = 1023;
+
 fn validate_cpus(cpus: &str) -> Result<(), String> {
+    cpu_list(cpus).map(|_| ())
+}
+
+/// A Linux cpuset list: comma-separated singletons or `a-b` ranges of decimal
+/// CPU ids, e.g. `0`, `0-2`, `1,3`, as the ids it names in ascending order.
+/// Written verbatim to `cpuset.cpus`, or applied with sched_setaffinity, so it
+/// is validated tightly here rather than trusting the caller.
+pub fn cpu_list(cpus: &str) -> Result<Vec<u32>, String> {
     if cpus.is_empty() {
         return Err("--cpus must not be empty".into());
     }
@@ -218,13 +228,16 @@ fn validate_cpus(cpus: &str) -> Result<(), String> {
         if lo > hi {
             return Err(format!("--cpus: reversed range {part:?}"));
         }
+        if hi > MAX_CPU {
+            return Err(format!("--cpus: cpu {hi} is above {MAX_CPU}"));
+        }
         for c in lo..=hi {
             if !seen.insert(c) {
                 return Err(format!("--cpus: cpu {c} listed twice"));
             }
         }
     }
-    Ok(())
+    Ok(seen.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -334,6 +347,15 @@ mod tests {
         assert!(validate_cpus("a").is_err());
         assert!(validate_cpus("0-").is_err());
         assert!(validate_cpus("-1").is_err());
+        assert!(validate_cpus("1024").is_err());
+        assert!(validate_cpus("1020-1024").is_err());
+    }
+
+    #[test]
+    fn cpu_list_expands_ranges_in_order() {
+        assert_eq!(cpu_list("0").unwrap(), vec![0]);
+        assert_eq!(cpu_list("3,0-1").unwrap(), vec![0, 1, 3]);
+        assert_eq!(cpu_list("1023").unwrap(), vec![1023]);
     }
 
     #[test]

@@ -6,7 +6,8 @@
 // restrictive action wins):
 //
 //   ALLOW filter  every profile syscall + the code-owned argument-filtered
-//                 calls → Allow; anything else → KILL_PROCESS. This is the
+//                 calls → Allow; anything else → KILL_PROCESS (KILL_THREAD on
+//                 a kernel before 4.14, see kill_action). This is the
 //                 real allowlist. It also allows io_uring_* and clone3
 //                 unconditionally so the shim below can turn them into ENOSYS
 //                 rather than the kernel killing them here.
@@ -19,6 +20,14 @@
 // calls that install the allowlist are still permitted (the shim allows them),
 // and nothing runs between installing the allowlist and execve but execve
 // itself, which the allowlist grants.
+//
+// Kernel floor: seccompiler installs each filter with seccomp(2)
+// SECCOMP_SET_MODE_FILTER and flags 0 (Linux 3.17), after PR_SET_NO_NEW_PRIVS;
+// no filter flag is used, so nothing newer is needed (SPEC_ALLOW is 4.17,
+// NEW_LISTENER 5.0). The only newer piece is the default action,
+// SECCOMP_RET_KILL_PROCESS (4.14), which kill_action detects. Syscalls the
+// kernel does not have (io_uring_* and clone3 on 4.14) are matched by number
+// like any other: the shim still answers ENOSYS before the kernel looks.
 
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
@@ -40,6 +49,55 @@ const CLONE_NS_MASK: u64 = (libc::CLONE_NEWNS
     | libc::CLONE_NEWTIME) as u64;
 
 const AF_UNIX: u64 = libc::AF_UNIX as u64;
+
+/// The ALLOW filter's default action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KillAction {
+    /// SECCOMP_RET_KILL_PROCESS (Linux 4.14): the whole worker dies by SIGSYS.
+    Process,
+    /// SECCOMP_RET_KILL_THREAD, the only kill before 4.14: in a multi-threaded
+    /// worker only the offending thread dies, and the wall timeout ends the
+    /// rest. Still fail-closed: the call never runs.
+    Thread,
+}
+
+impl KillAction {
+    pub fn name(self) -> &'static str {
+        match self {
+            KillAction::Process => "kill_process",
+            KillAction::Thread => "kill_thread",
+        }
+    }
+    fn action(self) -> SeccompAction {
+        match self {
+            KillAction::Process => SeccompAction::KillProcess,
+            KillAction::Thread => SeccompAction::KillThread,
+        }
+    }
+}
+
+/// Ask the running kernel whether it can KILL_PROCESS: SECCOMP_GET_ACTION_AVAIL
+/// arrived in the same release (4.14), so a kernel that cannot answer cannot
+/// kill a process either. (seccompiler's architecture check always returns
+/// KILL_PROCESS; a pre-4.14 kernel reads that as KILL_THREAD, and it never
+/// fires for the aarch64 worker anyway.)
+#[cfg(target_os = "linux")]
+pub fn kill_action() -> KillAction {
+    let action: u32 = libc::SECCOMP_RET_KILL_PROCESS;
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_GET_ACTION_AVAIL as libc::c_ulong,
+            0 as libc::c_ulong,
+            &action as *const u32,
+        )
+    };
+    if r == 0 {
+        KillAction::Process
+    } else {
+        KillAction::Thread
+    }
+}
 
 /// Map an aarch64 syscall name to its number. Explicit rather than table-driven
 /// so a reviewer can read exactly what is granted; an unknown name is an error,
@@ -266,9 +324,13 @@ fn shim_syscalls() -> Result<Vec<i64>, String> {
     ])
 }
 
-/// Compile the (allow, shim) pair for a profile. Pure: no syscalls, so it is
-/// unit tested. `apply` installs the result.
-pub fn compile(profile_names: &[String]) -> Result<(BpfProgram, BpfProgram), String> {
+/// Compile the (allow, shim) pair for a profile, with `kill` as the allowlist's
+/// default action. Pure: no syscalls, so it is unit tested. `apply` installs
+/// the result.
+pub fn compile(
+    profile_names: &[String],
+    kill: KillAction,
+) -> Result<(BpfProgram, BpfProgram), String> {
     // ALLOW filter: profile names (unconditional) + the code-owned rules.
     let mut allow: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for name in profile_names {
@@ -281,7 +343,7 @@ pub fn compile(profile_names: &[String]) -> Result<(BpfProgram, BpfProgram), Str
     }
     let allow_filter = SeccompFilter::new(
         allow,
-        SeccompAction::KillProcess,
+        kill.action(),
         SeccompAction::Allow,
         TargetArch::aarch64,
     )
@@ -312,7 +374,7 @@ pub fn compile(profile_names: &[String]) -> Result<(BpfProgram, BpfProgram), Str
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub fn apply(profile_names: &[String]) -> Result<(), String> {
-    let (allow_prog, shim_prog) = compile(profile_names)?;
+    let (allow_prog, shim_prog) = compile(profile_names, kill_action())?;
     apply_programs(&allow_prog, &shim_prog)
 }
 
@@ -341,9 +403,42 @@ mod tests {
     #[test]
     fn node_worker_compiles_to_two_non_empty_programs() {
         let names = profile::load("node-worker").unwrap();
-        let (allow, shim) = compile(&names).unwrap();
+        let (allow, shim) = compile(&names, KillAction::Process).unwrap();
         assert!(!allow.is_empty(), "allow program is empty");
         assert!(!shim.is_empty(), "shim program is empty");
+    }
+
+    // The return values the allow program can produce, from its BPF_RET|BPF_K
+    // statements (code 0x06).
+    fn returns(prog: &BpfProgram) -> Vec<u32> {
+        prog.iter().filter(|i| i.code == 0x06).map(|i| i.k).collect()
+    }
+
+    #[test]
+    fn the_default_action_is_the_one_asked_for() {
+        let names = profile::load("node-worker").unwrap();
+        let (process, _) = compile(&names, KillAction::Process).unwrap();
+        let (thread, _) = compile(&names, KillAction::Thread).unwrap();
+        // KILL_THREAD is 0; the architecture check keeps its KILL_PROCESS in
+        // both, so only the thread program returns 0.
+        assert!(!returns(&process).contains(&libc::SECCOMP_RET_KILL_THREAD));
+        assert!(returns(&thread).contains(&libc::SECCOMP_RET_KILL_THREAD));
+        assert!(returns(&process).contains(&libc::SECCOMP_RET_KILL_PROCESS));
+    }
+
+    #[test]
+    fn syscalls_4_14_lacks_are_still_matched_by_number() {
+        // io_uring_* (5.1) and clone3 (5.3) do not exist on the Nitro blob
+        // kernel; the shim still names them, so every kernel answers ENOSYS
+        // for them rather than running them.
+        let shim = shim_syscalls().unwrap();
+        for name in ["io_uring_setup", "io_uring_enter", "io_uring_register", "clone3"] {
+            assert!(shim.contains(&num(name).unwrap()), "{name} not in the shim");
+        }
+        let names = profile::load("node-worker").unwrap();
+        let (_, shim_prog) = compile(&names, KillAction::Process).unwrap();
+        let enosys = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+        assert!(returns(&shim_prog).contains(&enosys));
     }
 
     #[test]
@@ -385,6 +480,6 @@ mod tests {
     #[test]
     fn an_unknown_syscall_name_is_an_error_not_a_number() {
         assert!(number("definitely_not_a_syscall").is_none());
-        assert!(compile(&["definitely_not_a_syscall".to_string()]).is_err());
+        assert!(compile(&["definitely_not_a_syscall".to_string()], KillAction::Process).is_err());
     }
 }

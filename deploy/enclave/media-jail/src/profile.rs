@@ -48,6 +48,11 @@ pub const RESERVED: &[&str] = &[
     "listen",
     "accept",
     "accept4",
+    // The kernel-4.14 fallbacks rely on these staying out: the move+chroot
+    // root switch on chroot (no way back out of the new root), and the
+    // affinity pin that stands in for a cgroup2 cpuset on sched_setaffinity.
+    "chroot",
+    "sched_setaffinity",
 ];
 
 /// The compiled-in profiles, keyed by --profile name.
@@ -164,6 +169,8 @@ mod tests {
         assert!(parse("read\nsocket\n").is_err());
         assert!(parse("ptrace\n").is_err());
         assert!(parse("io_uring_setup\n").is_err());
+        assert!(parse("chroot\n").is_err());
+        assert!(parse("sched_setaffinity\n").is_err());
     }
 
     #[test]

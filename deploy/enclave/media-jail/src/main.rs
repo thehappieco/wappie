@@ -1,9 +1,10 @@
 // media-jail: the sandbox launcher for the enclave's media parsers
 // (deploy/enclave, docs/mcp-enclave.md §16.6). It creates a cgroup v2 leaf,
 // forks a worker into fresh namespaces with a minimal read-only root, drops it
-// to a slot uid under a seccomp allowlist, and execs it with the wall timeout
-// enforced by cgroup.kill (and SIGKILL of the job's PID 1 as the fallback).
-// See src/jail.rs for the sequence and the deviation
+// to a slot uid with no capabilities under a seccomp allowlist, and execs it
+// with the wall timeout enforced by cgroup.kill (and SIGKILL of the job's PID 1
+// where the kernel has no cgroup.kill, e.g. the 4.14 Nitro blob). See
+// src/jail.rs for the sequence, the per-feature fallbacks and the deviation
 // from the annex on who holds the timeout.
 //
 //   media-jail --profile <name> --slot <heavy|light> --mem-mb N --pids N \
@@ -17,6 +18,7 @@
 // works, 1 otherwise.
 
 mod args;
+mod emulate;
 mod jail;
 mod json;
 mod profile;

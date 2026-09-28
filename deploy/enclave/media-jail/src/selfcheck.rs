@@ -5,9 +5,12 @@
 // read is reported as null/false rather than aborting, so the caller sees the
 // whole picture.
 
+use crate::emulate::Emulate;
 use crate::json::Val;
+use crate::seccomp::KillAction;
 use crate::{profile, seccomp};
 use std::fs;
+use std::path::Path;
 
 fn read(path: &str) -> Option<String> {
     fs::read_to_string(path).ok()
@@ -49,13 +52,40 @@ fn cgroup2_mounts() -> Vec<String> {
     mounts
 }
 
+/// Which optional cgroup interface files a job leaf will have, read off the
+/// media node (a leaf gets the files of the controllers enabled above it, and
+/// cgroup.kill exists in every non-root cgroup on 5.14+). These pick the
+/// fallbacks in jail.rs; none of them is required.
+fn media_features(emu: &Emulate) -> Val {
+    let has = |file: &str, emulated_absent: bool| {
+        Val::Bool(!emulated_absent && Path::new(&format!("/run/cg2/media/{file}")).exists())
+    };
+    Val::Obj(vec![
+        ("memory.max".into(), has("memory.max", false)),
+        ("pids.max".into(), has("pids.max", false)),
+        ("memory.swap.max".into(), has("memory.swap.max", false)),
+        ("memory.oom.group".into(), has("memory.oom.group", emu.no_oom_group)),
+        ("memory.peak".into(), has("memory.peak", emu.no_peak)),
+        ("cgroup.kill".into(), has("cgroup.kill", emu.no_cgroup_kill)),
+        ("cpuset.cpus".into(), has("cpuset.cpus", emu.no_cpuset)),
+    ])
+}
+
 pub fn run() -> i32 {
     let kernel = read("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string());
+    let emu = match Emulate::from_env() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("media-jail: {e}");
+            return 1;
+        }
+    };
+    let kill = if emu.kill_thread { KillAction::Thread } else { seccomp::kill_action() };
 
     // Seccomp: prove the filter for the shipped profile assembles (does not
     // install it). A failure here means the binary could never sandbox.
     let (seccomp_ok, allow_len, shim_len, seccomp_err) = match profile::load("node-worker")
-        .and_then(|names| seccomp::compile(&names))
+        .and_then(|names| seccomp::compile(&names, kill))
     {
         Ok((allow, shim)) => (true, allow.len() as i64, shim.len() as i64, None),
         Err(e) => (false, 0, 0, Some(e)),
@@ -109,14 +139,23 @@ pub fn run() -> i32 {
                 ("media_subtree_control".into(), media_subtree),
                 (
                     "run_cg2_media_present".into(),
-                    Val::Bool(std::path::Path::new("/run/cg2/media").is_dir()),
+                    Val::Bool(Path::new("/run/cg2/media").is_dir()),
                 ),
+                ("media_files".into(), media_features(&emu)),
             ]),
         ),
         (
             "seccomp".into(),
             Val::Obj(vec![
                 ("compiles".into(), Val::Bool(seccomp_ok)),
+                // KILL_PROCESS from 4.14 on, KILL_THREAD before (seccomp.rs).
+                ("kill_action".into(), Val::s(kill.name())),
+                (
+                    "actions_avail".into(),
+                    read("/proc/sys/kernel/seccomp/actions_avail")
+                        .map(|s| Val::Str(s.trim().to_string()))
+                        .unwrap_or(Val::Null),
+                ),
                 ("allow_filter_insns".into(), Val::Int(allow_len)),
                 ("shim_filter_insns".into(), Val::Int(shim_len)),
                 (
@@ -127,7 +166,11 @@ pub fn run() -> i32 {
         ),
         (
             "dev_nsm".into(),
-            Val::Bool(std::path::Path::new("/dev/nsm").exists()),
+            Val::Bool(Path::new("/dev/nsm").exists()),
+        ),
+        (
+            "emulated".into(),
+            Val::Arr(emu.names().into_iter().map(Val::s).collect()),
         ),
     ]);
 
