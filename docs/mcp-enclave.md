@@ -745,7 +745,9 @@ the switch is off or the tenant is not listed, the enclave status route answers
 `reseal` (computed, never written) for that tenant's live content rows: every
 key is wiped within 60 s, the token families survive, and renewal answers 403
 until content is allowed again. Discovery adds `mcp.remote.content.v1` only when
-the `enclave` reader is configured **and** the switch is on.
+the `enclave` reader is configured **and** the switch is on. Per workspace,
+`GET /v1/mcp/content` answers `enabled` (this test) and `attested` (the
+`enclave` reader's `TENANTS` alone), §15.7.
 
 ### 15.4 Content bundle v2
 
@@ -972,10 +974,15 @@ the reader revoked itself are marked notified at once.
 (content, `active` or `reseal`, viewer is `created_by`, content allowed); the
 listed status is the row's own (the kill switch only makes `renewable`
 false), with `active` or `reseal` past the deadline listed as `expired`.
-`GET /v1/mcp/content` (session, any role) answers `{"enabled": bool}` for the
-session's workspace: true only when the `enclave` reader is configured, the
-switch is on, and the workspace is in `WS_MCP_CONTENT_TENANTS` and allowed by
-that reader's `TENANTS` (which may be `*`); 401 without a session. It never answers per connection.
+`GET /v1/mcp/content` (session, any role) answers
+`{"enabled": bool, "attested": bool}` for the session's workspace. `enabled`
+is true only when the `enclave` reader is configured, the switch is on, and
+the workspace is in `WS_MCP_CONTENT_TENANTS` and allowed by that reader's
+`TENANTS` (which may be `*`). `attested` is true when the `enclave` reader is
+configured and its `TENANTS` allow the workspace, whatever the switch says: a
+metadata consent to it would pass the tenant check. A reply without
+`attested` (an older server) reads as false. 401 without a session. It never
+answers per connection.
 
 ### 15.8 Enclave lifecycle: boot, serving, sweep
 
@@ -1057,7 +1064,7 @@ never updated.
 | Direction | Method and path | Body → success | Other |
 |---|---|---|---|
 | console → Go | `POST /v1/mcp/connections` | + `kind`, `service_user_id`, `key_mode`, `consent_version` → 201 | 403 `content_not_allowed` |
-| console → Go | `GET /v1/mcp/content` | → 200 `{"enabled"}` | 401 |
+| console → Go | `GET /v1/mcp/content` | → 200 `{"enabled", "attested"}` | 401 |
 | console → Go | `POST /v1/mcp/connections/{id}/renewal` | `{"nonce"}` → 200 | 403, 404, 409 `connection_state`, 429, 502 |
 | console → Go | `POST /v1/mcp/connections/{id}/renew` | §15.9 step 5 → 200 | 400, 403, 409, 422 `key_unsuitable`, 502 |
 | console → Go | `POST /v1/auth/workspaces/invites` | + `"provisional": true` | 400 |
@@ -1104,11 +1111,12 @@ never updated.
   token was reused, someone may hold a copy, and suggests reconnecting. New
   codes in 5 languages: `content_not_allowed`, `grant_proof_failed`,
   `connection_state`, `reconsent_required`, `stale_grant`.
-- **Connector address**: "Add Wappie to your assistant" offers the attested
-  reader's address (`endpoints.mcp_server_attested`) beside the hosted
-  metadata connector's (`endpoints.mcp_server`), and only when it equals the
-  console's `READER_RESOURCE`: a content consent can start only from an
-  assistant pointed at `mcp.`.
+- **Connector address**: "Add Wappie to your assistant" offers one address.
+  It is the attested reader's (`endpoints.mcp_server_attested`) when
+  `GET /v1/mcp/content` says `attested` and the address equals the console's
+  `READER_RESOURCE`: a content consent can start only from an assistant
+  pointed at `mcp.`. Otherwise it is the hosted metadata connector's
+  (`endpoints.mcp_server`).
 
 ### 15.12 Signatures that cross boundaries
 
@@ -1291,16 +1299,17 @@ have been corrected in place as well).
 **CLIENTCONSOLE**
 - The console offers the attested reader's connector address
   (`endpoints.mcp_server_attested`, only when it equals `READER_RESOURCE`)
-  beside the hosted one (§15.11).
+  to a workspace that reader allows, and the hosted one to any other
+  (§15.11).
 - Cleanup is idempotent (`not_found` and 404 count as removed) and runs in
   the reverse order in every flow. The local setup also uses
   `withDeviceKeys`, which adds the `invalid_devices` code. A renewal bundle
   leaves out `timezone`; each renewal attempt prepares afresh.
 
-**`GET /v1/mcp/content`** answers `{"enabled": bool}` for the session's
-workspace only (§15.7): any signed-in member may ask, the answer never names
-connections, and it is one of three conditions for the toggle, never enough
-alone.
+**`GET /v1/mcp/content`** answers `{"enabled": bool, "attested": bool}` for
+the session's workspace only (§15.7): any signed-in member may ask, the
+answer never names connections, and `enabled` is one of three conditions for
+the toggle, never enough alone. `attested` only picks the address shown.
 
 **DOCSOPS**: the grep gate is `.github/claims/metadata-claims.py` with
 `metadata-claims.allow` in each repository (byte-identical scripts); it also

@@ -325,6 +325,57 @@ func TestContentConsentGating(t *testing.T) {
 	}
 }
 
+// contentStatus is GET /v1/mcp/content as the console reads it; attested is
+// a pointer so a reply without the field fails instead of reading false.
+func contentStatus(t *testing.T, h *harness, token string) (enabled, attested bool) {
+	t.Helper()
+	r := h.call(t, http.MethodGet, "/v1/mcp/content", nil, bearer(token))
+	expect(t, r, http.StatusOK, "")
+	var out struct {
+		Enabled  bool  `json:"enabled"`
+		Attested *bool `json:"attested"`
+	}
+	r.into(t, &out)
+	if out.Attested == nil {
+		t.Fatalf("no attested field in %s", r.body)
+	}
+	return out.Enabled, *out.Attested
+}
+
+// Attested follows the enclave reader's workspace list alone, for any role:
+// it picks the address the console shows, so the text switch does not move
+// it, and it is false wherever no attested reader is configured.
+func TestContentReplyAttested(t *testing.T) {
+	plain := newHarness(t)
+	if enabled, attested := contentStatus(t, plain, plain.session(t, plain.owner)); enabled || attested {
+		t.Fatalf("no attested reader: enabled %v, attested %v", enabled, attested)
+	}
+
+	h := newAttestedHarness(t)
+	owner := h.session(t, h.owner)
+	member := h.session(t, h.person(t, "member"))
+	// Listed by the enclave with the switch off: its address, no text.
+	for _, token := range []string{owner, member} {
+		if enabled, attested := contentStatus(t, h.harness, token); enabled || !attested {
+			t.Fatalf("switch off: enabled %v, attested %v", enabled, attested)
+		}
+	}
+	h.contentOn.Store(true)
+	if enabled, attested := contentStatus(t, h.harness, owner); !enabled || !attested {
+		t.Fatalf("switch on: enabled %v, attested %v", enabled, attested)
+	}
+	// Off the enclave's list: neither, although the switch still lists it.
+	h.handler.Attested[0].Tenants = []uuid.UUID{uuid.New()}
+	if enabled, attested := contentStatus(t, h.harness, owner); enabled || attested {
+		t.Fatalf("not listed: enabled %v, attested %v", enabled, attested)
+	}
+	h.handler.Attested[0].AllTenants = true
+	if _, attested := contentStatus(t, h.harness, owner); !attested {
+		t.Fatal("every workspace allowed, attested false")
+	}
+	expect(t, h.call(t, http.MethodGet, "/v1/mcp/content", nil, nil), http.StatusUnauthorized, "unauthorized")
+}
+
 // A bundle the enclave refuses (a grant that does not open with the attested
 // key) undoes the whole consent: the row, the key and the service account.
 func TestContentBundleRefusedUndoes(t *testing.T) {
