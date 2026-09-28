@@ -19,7 +19,12 @@
  *   jailtest paths          stat the host-only paths   -> ENOENT for each
  *   jailtest proc-peek PID  open /proc/PID/{stat,mem}  -> ENOENT (other PID ns)
  *   jailtest memhog MB      touch MB MiB               -> OOM kill by memcg
- *   jailtest spin           sleep forever              -> wall timeout / cgroup.kill
+ *   jailtest spin           sleep forever              -> wall timeout / external kill
+ *   jailtest chroot         chroot("/tmp")             -> seccomp kill (never allowlisted)
+ *   jailtest privs          /proc/self/status          -> every capability set empty,
+ *                                                         NoNewPrivs 1, Seccomp 2
+ *   jailtest mountinfo      /proc/self/mountinfo       -> the jail's mounts, one MOUNT line each
+ *   jailtest pidfd-open     pidfd_open(getpid())       -> (unjailed only) ENOSYS before 5.3
  *
  * Built static musl in Dockerfile.probe; runs under the node-worker seccomp
  * profile, so its own startup and write()/openat() calls are all allowlisted.
@@ -224,6 +229,126 @@ static int test_memhog(const char *mb_s) {
     return 0;
 }
 
+/* chroot is never in the allowlist (profile.rs RESERVED), and the worker has
+ * no CAP_SYS_CHROOT either: on the move+chroot root switch this is what keeps a
+ * job from walking back out of its root. */
+static int test_chroot(void) {
+    start("chroot");
+    int r = chroot("/tmp");
+    if (r == 0) { result("chroot", "SURVIVED", 0, 0); return 1; }
+    result("chroot", "DENIED", r, errno);
+    return 0;
+}
+
+/* Read a small /proc file whole into buf (NUL-terminated); returns its length
+ * or -1. */
+static int read_small(const char *path, char *buf, int cap) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    int n = 0;
+    for (;;) {
+        ssize_t r = read(fd, buf + n, (size_t)(cap - 1 - n));
+        if (r <= 0) break;
+        n += (int)r;
+        if (n >= cap - 1) break;
+    }
+    close(fd);
+    buf[n] = 0;
+    return n;
+}
+
+/* The value after "<key>:\t" on its /proc/self/status line, or NULL. */
+static const char *status_field(const char *text, const char *key, char *out, int cap) {
+    int kl = (int)strlen(key);
+    for (const char *p = text; p && *p; ) {
+        const char *eol = strchr(p, '\n');
+        if (!strncmp(p, key, (size_t)kl) && p[kl] == ':') {
+            const char *v = p + kl + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            int n = eol ? (int)(eol - v) : (int)strlen(v);
+            if (n > cap - 1) n = cap - 1;
+            memcpy(out, v, (size_t)n);
+            out[n] = 0;
+            return out;
+        }
+        p = eol ? eol + 1 : NULL;
+    }
+    return NULL;
+}
+
+/* What the jail left the worker: every capability set must be empty (hex all
+ * zeros), NoNewPrivs 1 and Seccomp 2 (filter mode). The raw lines go out as
+ * STATUS lines; the verdict is CLEARED or HELD. */
+static int test_privs(void) {
+    start("privs");
+    char text[4096];
+    if (read_small("/proc/self/status", text, sizeof text) < 0) {
+        result("privs", "UNREADABLE", -1, errno);
+        return 2;
+    }
+    const char *keys[] = {"Uid", "Gid", "Groups", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb",
+                          "NoNewPrivs", "Seccomp", "Cpus_allowed_list"};
+    int held = 0;
+    for (unsigned i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        char v[96];
+        const char *got = status_field(text, keys[i], v, sizeof v);
+        char b[160];
+        int n = 0;
+        memcpy(b + n, "STATUS ", 7); n += 7;
+        int kl = (int)strlen(keys[i]); memcpy(b + n, keys[i], kl); n += kl;
+        b[n++] = ' ';
+        const char *shown = got ? got : "absent";
+        int vl = (int)strlen(shown); memcpy(b + n, shown, vl); n += vl;
+        b[n++] = '\n';
+        (void)!write(1, b, (size_t)n);
+        if (!strncmp(keys[i], "Cap", 3)) {
+            /* CapAmb is absent before 4.3, which has no ambient set. */
+            if (got && strspn(got, "0") != strlen(got)) held = 1;
+        } else if (!strcmp(keys[i], "NoNewPrivs")) {
+            if (!got || strcmp(got, "1")) held = 1;
+        } else if (!strcmp(keys[i], "Seccomp")) {
+            if (!got || strcmp(got, "2")) held = 1;
+        }
+    }
+    if (held) { result("privs", "HELD", 0, 0); return 1; }
+    result("privs", "CLEARED", 0, 0);
+    return 0;
+}
+
+/* The jail's own view of its mounts, one MOUNT line each: a /proc/self/mountinfo
+ * only shows mounts reachable from the process root, so this is exactly what
+ * the worker can see. */
+static int test_mountinfo(void) {
+    start("mountinfo");
+    char text[8192];
+    if (read_small("/proc/self/mountinfo", text, sizeof text) < 0) {
+        result("mountinfo", "UNREADABLE", -1, errno);
+        return 2;
+    }
+    int count = 0;
+    for (char *p = text; *p; ) {
+        char *eol = strchr(p, '\n');
+        int n = eol ? (int)(eol - p) : (int)strlen(p);
+        (void)!write(1, "MOUNT ", 6);
+        (void)!write(1, p, (size_t)n);
+        (void)!write(1, "\n", 1);
+        count++;
+        if (!eol) break;
+        p = eol + 1;
+    }
+    result("mountinfo", "COUNT", count, 0);
+    return 0;
+}
+
+/* pidfd_open (5.3), run unjailed: what the kernel offers Node's kill path. */
+static int test_pidfd_open(void) {
+    start("pidfd-open");
+    long r = syscall(434 /* SYS_pidfd_open on every arch */, (long)getpid(), 0L);
+    if (r >= 0) { result("pidfd-open", "OPENED", r, 0); close((int)r); return 1; }
+    result("pidfd-open", "DENIED", r, errno);
+    return 0;
+}
+
 /* Diagnostic: list the numeric PIDs the jail's /proc shows. In a fresh PID
  * namespace with its own /proc this is just {1}. */
 static int test_lsproc(void) {
@@ -272,6 +397,10 @@ int main(int argc, char **argv) {
     if (!strcmp(t, "memhog")) return test_memhog(argc > 2 ? argv[2] : "512");
     if (!strcmp(t, "lsproc")) return test_lsproc();
     if (!strcmp(t, "spin")) return test_spin();
+    if (!strcmp(t, "chroot")) return test_chroot();
+    if (!strcmp(t, "privs")) return test_privs();
+    if (!strcmp(t, "mountinfo")) return test_mountinfo();
+    if (!strcmp(t, "pidfd-open")) return test_pidfd_open();
     emit("unknown test\n");
     return 3;
 }

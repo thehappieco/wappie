@@ -2,9 +2,10 @@
 # Runs the A0 go/no-go probe ON THE PARENT (deploy/enclave/probe). It builds the
 # throwaway probe image and EIF, STOPS the production reader (which terminates
 # the production enclave), boots the probe enclave in --debug-mode so its console
-# is readable, captures the one JSON report, terminates the probe, and ALWAYS
-# restarts the production reader. Production files are never overwritten: the EIF
-# and logs go under /opt/wappie-reader/probe/.
+# is readable, assembles the report from the sections the enclave streams to its
+# console (assemble-report.py), terminates the probe, and ALWAYS restarts the
+# production reader. Production files are never overwritten: the EIF and logs go
+# under /opt/wappie-reader/probe/.
 #
 #   sudo deploy/enclave/probe/probe.sh
 #
@@ -20,9 +21,10 @@ CID=30                 # not production's 16
 VSOCK_PORT=9100        # not 5443-5445/7000-7002/8000-8002/9000
 RUN_CPUS=1
 RUN_MEM=1536           # production enclave sizing, to measure real headroom
-# Seconds to wait for the report end marker. A clean run takes a minute or two;
-# this bounds the worst case, where every jailed test hangs until the runner's
-# watchdog (the job's wall + 10 s) and the vsock sender never arrives.
+# Seconds to wait for the report end marker, from the launch. A clean run takes
+# a minute or two; this bounds the worst case, where every jailed test hangs
+# until the runner's watchdog (the job's wall + 10 s) and the vsock sender never
+# arrives.
 REPORT_TIMEOUT=480
 
 # nitro-cli's profile script is not sourced by plain shells/SSM (spike Day 1).
@@ -36,14 +38,14 @@ die() { echo "probe.sh: $*" >&2; exit 1; }
 [ "$(uname -m)" = aarch64 ] || die "run on the arm64 parent; this host is $(uname -m)"
 command -v docker > /dev/null || die "docker is not installed"
 command -v nitro-cli > /dev/null || die "nitro-cli is not installed"
-command -v python3 > /dev/null || die "python3 is needed for the vsock sender"
+command -v python3 > /dev/null || die "python3 is needed for the vsock sender and the report"
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 base=/opt/wappie-reader/probe
 out=$base/$stamp
 mkdir -p "$out" || die "cannot create $out"
 console=$out/console.log
-report=$out/report.json
+liveness=$out/liveness.log
 : > "$console"
 
 console_pid=""
@@ -113,6 +115,9 @@ nitro-cli run-enclave --enclave-name "$NAME" --eif-path "$eif" \
   --cpu-count "$RUN_CPUS" --memory "$RUN_MEM" --enclave-cid "$CID" --debug-mode \
   > "$out/run-enclave.json" || die "nitro-cli run-enclave failed"
 
+launched=$(date +%s)
+nitro-cli describe-enclaves > "$out/describe-first.json" 2> "$out/describe-first.err"
+
 # Capture the console to a file, and start the vsock sender (it retries until
 # the enclave's sink is listening, late in the run).
 nitro-cli console --enclave-name "$NAME" >> "$console" 2>&1 &
@@ -120,31 +125,58 @@ console_pid=$!
 python3 "$root/deploy/enclave/probe/vsock-send.py" "$CID" "$VSOCK_PORT" > "$out/vsock-send.log" 2>&1 &
 sender_pid=$!
 
-# --- wait for the report end marker, or time out ---
+# Whether the probe enclave is up, judged from describe-enclaves' OUTPUT. The
+# first run checked `describe-enclaves 2>/dev/null | grep -q` under pipefail,
+# which also reads "gone" whenever nitro-cli exits non-zero (a failed
+# connection to another enclave process is enough) or dies of EPIPE after
+# grep -q matched and quit, with the reason discarded; its cleanup then
+# terminated the probe it had just called gone. Now: "up" when the output
+# lists the enclave, "gone" only when nitro-cli succeeded and did not list it,
+# "unknown" otherwise, and every poll is logged with its stderr.
+enclave_state() {
+  local desc rc
+  desc=$(nitro-cli describe-enclaves 2> "$out/describe.err")
+  rc=$?
+  if [[ $desc == *"\"$NAME\""* ]]; then
+    echo up
+  elif [ "$rc" = 0 ]; then
+    echo gone
+  else
+    echo "unknown(rc=$rc: $(tr '\n' ' ' < "$out/describe.err" | cut -c1-200))"
+  fi
+}
+
+# --- wait for the end marker, the enclave's end, or the timeout ---
 echo "probe.sh: waiting up to ${REPORT_TIMEOUT}s for the report"
-deadline=$(( $(date +%s) + REPORT_TIMEOUT ))
+deadline=$(( launched + REPORT_TIMEOUT ))
 got=0
+gone=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
   if grep -q '===WAPPIE-A0-PROBE-END===' "$console" 2> /dev/null; then got=1; break; fi
-  if ! nitro-cli describe-enclaves 2> /dev/null | grep -q "\"$NAME\""; then
-    echo "probe.sh: probe enclave exited before the report" >&2
+  state=$(enclave_state)
+  echo "+$(( $(date +%s) - launched ))s $state" >> "$liveness"
+  if [ "$state" = gone ]; then gone=$((gone + 1)); else gone=0; fi
+  # Twice in a row, so one odd answer cannot end the run.
+  if [ "$gone" -ge 2 ]; then
+    grep -q '===WAPPIE-A0-PROBE-END===' "$console" 2> /dev/null && got=1
+    [ "$got" = 1 ] || echo "probe.sh: probe enclave ended before the END marker (+$(( $(date +%s) - launched ))s; see $liveness)" >&2
     break
   fi
   sleep 2
 done
+[ "$got" = 1 ] || [ "$gone" -ge 2 ] || echo "probe.sh: no END marker within ${REPORT_TIMEOUT}s" >&2
 
-# Extract the report JSON between the markers.
-awk '/===WAPPIE-A0-PROBE-BEGIN===/{f=1;next} /===WAPPIE-A0-PROBE-END===/{f=0} f' "$console" > "$report"
+# Assemble the report from the streamed sections: complete with the END
+# marker, partial otherwise, and every finished section is kept either way.
+python3 "$root/deploy/enclave/probe/assemble-report.py" "$console" "$out" > "$out/assemble.txt" 2>&1
+assembled=$?
 
 echo "-----------------------------------------------------------------"
 echo "probe EIF size : $eif_size bytes ($out/probe.eif)"
 echo "console log    : $console"
+echo "liveness log   : $liveness"
 echo "blob config    : $blob_config"
-if [ "$got" = 1 ] && [ -s "$report" ]; then
-  echo "report         : $report"
-else
-  echo "report         : INCOMPLETE (no end marker); see $console"
-fi
+echo "report         : $out/report.json ($(cat "$out/assemble.txt"))"
 echo "-----------------------------------------------------------------"
 # cleanup (trap) terminates the probe enclave and restarts production.
-[ "$got" = 1 ]
+[ "$got" = 1 ] && [ "$assembled" = 0 ]

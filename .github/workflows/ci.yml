@@ -166,10 +166,12 @@ jobs:
       - name: Deploy scripts parse
         run: |
           for f in deploy/enclave/*.sh; do bash -n "$f"; done
-          shellcheck deploy/enclave/*.sh
+          shellcheck deploy/enclave/*.sh deploy/enclave/probe/*.sh
           python3 -m py_compile deploy/enclave/kms/render.py
           python3 -m unittest discover -s deploy/enclave -p 'test_*.py'
           python3 -m unittest discover -s deploy/enclave/kms -p 'test_*.py'
+          python3 -m unittest discover -s deploy/enclave/probe -p 'test_*.py'
+          node --check deploy/enclave/probe/probe-report.mjs
           for t in deploy/enclave/kms/*.template.json; do
             python3 deploy/enclave/kms/render.py "$t" --role-arn arn:aws:iam::000000000000:role/ci \
               --pcr0 "$(printf 'a%.0s' $(seq 96))" > /dev/null
