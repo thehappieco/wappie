@@ -83,6 +83,12 @@ type MCPConnection struct {
 	// ResealedAt and RenewedAt are when the reader last lost a content
 	// connection's key and when the person last renewed it.
 	ResealedAt, RenewedAt *time.Time
+	// ConsentVersion is the consent text a content connection was given
+	// under (ContentConsentVersion or MediaConsentVersion); 0 for metadata.
+	ConsentVersion int
+	// Media says a content connection's consent includes attachments. Only
+	// a MediaConsentVersion consent can; a renewal never changes it.
+	Media bool
 }
 
 // Connection kinds. A metadata connection reads through a key with no
@@ -97,8 +103,11 @@ const (
 	// for the person to renew.
 	KeyModeEphemeral = "ephemeral"
 	// ContentConsentVersion is the consent text a content connection was
-	// given under.
+	// given under before attachments, and MediaConsentVersion the one that
+	// followed it: the only one that can include them. A content connection
+	// is given under one of the two, and keeps it for its whole life.
 	ContentConsentVersion = 1
+	MediaConsentVersion   = 2
 	// maxContentLifetime bounds a content consent: ninety days, plus an hour
 	// for the console's clock and the moment it took to click.
 	maxContentLifetime = 90*24*time.Hour + time.Hour
@@ -152,9 +161,13 @@ type CreateMCPConnection struct {
 	// as; the key must act as it.
 	ServiceUserID uuid.UUID
 	// KeyMode must be KeyModeEphemeral, ConsentVersion
-	// ContentConsentVersion.
+	// ContentConsentVersion or MediaConsentVersion.
 	KeyMode        string
 	ConsentVersion int
+	// Media is set when the consent includes attachments, which only a
+	// MediaConsentVersion consent can. Whether the workspace may have them
+	// is the handler's to decide.
+	Media bool
 	// ReaderPublicKey is the per-request key the reader attested when the
 	// console prepared the consent; the service account's public key must
 	// be exactly this.
@@ -201,12 +214,13 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 	switch {
 	case in.Kind != KindMetadata && !content:
 		return MCPConnection{}, fmt.Errorf("store: %q is not a connection kind", in.Kind)
-	case !content && (in.ServiceUserID != uuid.Nil || in.KeyMode != "" || in.ConsentVersion != 0 || in.ReaderPublicKey != nil):
-		return MCPConnection{}, errors.New("store: a metadata connection carries no service account, key mode or consent version")
+	case !content && (in.ServiceUserID != uuid.Nil || in.KeyMode != "" || in.ConsentVersion != 0 || in.ReaderPublicKey != nil || in.Media):
+		return MCPConnection{}, errors.New("store: a metadata connection carries no service account, key mode, consent version or media")
 	case content && (in.Reader == HostedReader || in.ServiceUserID == uuid.Nil || in.KeyMode != KeyModeEphemeral ||
-		in.ConsentVersion != ContentConsentVersion || len(in.ReaderPublicKey) != 32):
+		!validConsentVersion(in.ConsentVersion) || in.Media && in.ConsentVersion != MediaConsentVersion || len(in.ReaderPublicKey) != 32):
 		// The handler gates content to attested readers and checks the
-		// body; this is the backstop.
+		// body; this is the backstop, and the migration's CHECK the one
+		// behind it for media.
 		return MCPConnection{}, ErrMCPKeyUnsuitable
 	case content && in.ExpiresAt.After(time.Now().Add(maxContentLifetime)):
 		return MCPConnection{}, ErrInvalidExpiry
@@ -220,6 +234,7 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 	if content {
 		service := in.ServiceUserID
 		out.ServiceUserID, out.KeyMode = &service, in.KeyMode
+		out.ConsentVersion, out.Media = in.ConsentVersion, in.Media
 	}
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
@@ -278,10 +293,10 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		}
 		err = tx.QueryRow(ctx, `INSERT INTO mcp_connections
 			(tenant_id, request_id, api_key_id, created_by, client_name, redirect_host, device_count, reader_kid, status, expires_at,
-			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15) RETURNING id::text, created_at`,
+			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16) RETURNING id::text, created_at`,
 			tenant, in.RequestID, out.APIKeyID, actor, in.ClientName, in.RedirectHost, in.DeviceCount, in.ReaderKID, in.ExpiresAt,
-			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion).
+			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media).
 			Scan(&out.ID, &out.CreatedAt)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -321,7 +336,7 @@ func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConne
 		       c.client_name, c.redirect_host, c.device_count, c.reader_kid, c.status,
 		       c.created_at, c.activated_at, c.revoked_at, c.last_seen_at, c.expires_at,
 		       c.reader, coalesce(c.reader_measurement, ''), c.kind, c.service_user_id, coalesce(c.key_mode, ''),
-		       coalesce(c.revoke_reason, ''), c.resealed_at, c.renewed_at
+		       coalesce(c.revoke_reason, ''), c.resealed_at, c.renewed_at, coalesce(c.consent_version, 0), c.media
 		  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
 		 WHERE c.tenant_id = $1
 		 ORDER BY c.created_at DESC, c.id DESC`, tenant)
@@ -336,7 +351,7 @@ func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConne
 			&c.ClientName, &c.RedirectHost, &c.DeviceCount, &c.ReaderKID, &c.Status,
 			&c.CreatedAt, &c.ActivatedAt, &c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt,
 			&c.Reader, &c.ReaderMeasurement, &c.Kind, &c.ServiceUserID, &c.KeyMode,
-			&c.RevokeReason, &c.ResealedAt, &c.RenewedAt); err != nil {
+			&c.RevokeReason, &c.ResealedAt, &c.RenewedAt, &c.ConsentVersion, &c.Media); err != nil {
 			return nil, fmt.Errorf("store: list mcp connections: %w", err)
 		}
 		out = append(out, c)

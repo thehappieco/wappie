@@ -130,12 +130,13 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
  * accepts) in front of the synthetic archive at `upstream`.
  *
  * Content connections: a connection row may carry `kind` and
- * `service_user_id` (the status route answers both), `reseal` moves a live
- * row to `reseal`, and `revokes` records every revoke with its body. The
- * archive side accepts every API key in `tokens` in place of the fixture's
- * own (`upstreamToken`), and answers `/v1/grants` for a key from `grants`
- * (token -> {user_id, grants}), which is how a test seals grants to a key the
- * enclave minted.
+ * `service_user_id` (the status route answers both) and `extra`, fields the
+ * status answer carries as they are, the way a newer Go adds them; `reseal`
+ * moves a live row to `reseal`, and `revokes` records every revoke with its
+ * body. The archive side accepts every API key in `tokens` in place of the
+ * fixture's own (`upstreamToken`), and answers `/v1/grants` for a key from
+ * `grants` (token -> {user_id, grants}), which is how a test seals grants to
+ * a key the enclave minted.
  */
 export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamToken, workspace }) {
   const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set(),
@@ -172,7 +173,7 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
     if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)$/.exec(url.pathname)) && req.method === 'GET') {
       const connection = go.connections.get(match[1])
       if (!connection) return json(res, { code: 'not_found' }, 404)
-      return json(res, { status: connection.status, expires_at: connection.expires_at, ...(connection.kind ? { kind: connection.kind, service_user_id: connection.service_user_id ?? null } : {}) })
+      return json(res, { status: connection.status, expires_at: connection.expires_at, ...(connection.kind ? { kind: connection.kind, service_user_id: connection.service_user_id ?? null } : {}), ...connection.extra })
     }
     if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/reseal$/.exec(url.pathname)) && req.method === 'POST') {
       const connection = go.connections.get(match[1])

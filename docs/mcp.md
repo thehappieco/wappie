@@ -221,6 +221,35 @@ whether the `enclave` reader allows that workspace at all (`attested`), which
 picks the one connector address the console shows. The startup line
 prints `content=on|off` and the number of listed workspaces.
 
+Attachments are a third switch on top of content, with three variables
+([contract](mcp-enclave.md#16-stage-a-attachments)). No released reader opens
+attachments yet: the switch is off, and the server side ships first.
+
+| Variable | Rule |
+|---|---|
+| `WS_MCP_MEDIA_ENABLED` | boolean, default `false`; lets content connections whose consent includes attachments (`media`) open them inside the `enclave` reader. With `WS_MCP_CONTENT_ENABLED` off it is off too, and the other two are not inspected |
+| `WS_MCP_MEDIA_TENANTS` | workspace UUIDs, comma separated, whose content connections may open attachments; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_CONTENT_TENANTS` |
+| `WS_MCP_MEDIA_OFF_KINDS` | attachment kinds the reader refuses to open, any of `image`, `pdf`, `office`, `text`, `zip`, `audio`, `video`, comma separated; empty by default; an unknown word is a configuration error. Only the reader enforces it: `/v1/media` does not look at kinds and keeps serving their ciphertext to a media connection's key |
+
+A consent asks for attachments with `"media": true`, which needs
+`consent_version: 2`, and is refused with `400 media_not_allowed` unless both
+switches are on and the workspace is in both lists. The flag is recorded on
+the connection and never changes, a renewal included; attachments for an
+existing text connection take a new consent. The enclave's status checks
+answer `media` (whether that connection may open attachments right now) and
+`media_off` (the kinds switched off), so turning the switch off, removing a
+workspace or switching a kind off reaches every reader within a minute while
+text keeps working. `/v1/media` refuses a content connection's key, with the
+same 404 as an attachment that is not the caller's, unless its consent
+includes attachments and the switch allows them now; it refuses any other key
+acting as a connection's service account (a renewal's new key before the
+connection points at it) the same way. The switch and the list reach
+`/v1/media` when the server restarts; the kinds reach only the reader.
+Discovery adds `mcp.remote.media.v1` when content is advertised and the switch
+is on, and `GET /v1/mcp/content` adds `media` for the session's workspace. The
+startup line prints `media=on|off`, the number of listed workspaces and, when
+any are off, `media_off=`.
+
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's
 lifetime after. Ending the connection in any way (the console, the reader, a

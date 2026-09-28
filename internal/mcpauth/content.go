@@ -40,6 +40,20 @@ func (h *Handler) contentEnabledFor(tenant uuid.UUID) bool {
 	return ok && h.contentAllowed(rd, tenant)
 }
 
+// mediaAllowed reports whether a workspace's content connections with this
+// reader may open attachments right now: content is allowed, and so are
+// attachments, behind their own switch and list (docs/mcp-enclave.md §16.3).
+func (h *Handler) mediaAllowed(rd reader, tenant uuid.UUID) bool {
+	return h.contentAllowed(rd, tenant) && h.MediaAllowed != nil && h.MediaAllowed(tenant)
+}
+
+// mediaEnabledFor is mediaAllowed for the content reader, which is what the
+// console asks before it shows the attachments toggle.
+func (h *Handler) mediaEnabledFor(tenant uuid.UUID) bool {
+	rd, ok := h.readerByID(h.ContentReader)
+	return ok && h.mediaAllowed(rd, tenant)
+}
+
 // attestedFor reports whether a workspace may consent to the content
 // reader at all, with text or without: the test a consent to it passes
 // before tenant_not_allowed. The content reader is the enclave, the one
@@ -50,22 +64,56 @@ func (h *Handler) attestedFor(tenant uuid.UUID) bool {
 	return ok && rd.attested != nil && rd.attested.allows(tenant)
 }
 
+// MediaGate is the deny at source for /v1/media (docs/mcp-enclave.md
+// §16.3), handed to the media handler as its gate. A key that belongs to a
+// content connection fetches attachment ciphertext only while the connection
+// is live, its consent includes attachments and mediaAllowed says its
+// workspace may open them now; any other content connection's key is refused
+// before the attachment is looked up. So is every other key that acts as a
+// connection service account: a renewal's new key, which the reader holds
+// while it proves the grants and before the ledger points at it, would
+// otherwise pass as nobody's. Keys that are neither are not this gate's to
+// judge and pass to the handler's usual checks.
+//
+// It ships before any reader asks for an attachment, and it can only deny:
+// the reader's own checks stand behind it, and it in front of them, so an
+// operator's switch reaches a connection's key even if the reader were
+// wrong about it.
+func MediaGate(conns *store.MCPConnections, mediaAllowed func(tenant uuid.UUID) bool) func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
+	return func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
+		c, err := conns.ContentConnectionByAPIKey(ctx, tenant, key)
+		if errors.Is(err, store.ErrMCPConnectionNotFound) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return c.Live && c.Media && c.TenantID == tenant && mediaAllowed != nil && mediaAllowed(tenant), nil
+	}
+}
+
 type contentReply struct {
 	Enabled  bool `json:"enabled"`
 	Attested bool `json:"attested"`
+	Media    bool `json:"media"`
 }
 
 // content answers the console: may this workspace let an assistant read
 // message text, and may it use the attested reader? The console shows the
 // toggle only when this says enabled, the discovery document advertises it
 // and an attestation for the request verified; none of them alone is enough.
-// Attested only picks which connector address the console shows.
+// Attested only picks which connector address the console shows. Media is
+// the same answer for attachments: one of the three conditions for the
+// attachments toggle, with the discovery capability and a reader release
+// that declares it (§16.2).
 func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
-	send(w, http.StatusOK, contentReply{Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID)})
+	send(w, http.StatusOK, contentReply{
+		Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID), Media: h.mediaEnabledFor(user.TenantID),
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +269,7 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	// The expiry is the connection's, unchanged, in UTC as the consent's
 	// relay carried it: the reader requires it to equal what it recorded.
+	// Media stays off it: a renewal changes no part of the consent.
 	relay := BundleRelay{
 		ConnectionID: id, TenantID: user.TenantID.String(), KID: req.KID, Sealed: req.Sealed,
 		ExpiresAt: conn.ExpiresAt.UTC(), Kind: store.KindContent,

@@ -70,6 +70,13 @@ type BundleRelay struct {
 	// readers only; empty (and absent on the wire) for metadata, so the
 	// hosted reader's strict body never sees it.
 	Kind string `json:"kind,omitempty"`
+	// Media is true for a content consent that includes attachments: the
+	// reader refuses the bundle unless it seals the same. It goes on the
+	// wire only as true, and only on a consent: every reader before
+	// attachments parses this body strictly and would refuse the field
+	// even as false, and a renewal never changes what was consented, so
+	// the reader compares the renewal's bundle with its own sealed record.
+	Media bool `json:"media,omitempty"`
 }
 
 // RefusalError is a reader refusing what it was handed, with its code. It

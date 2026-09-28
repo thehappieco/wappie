@@ -907,7 +907,7 @@ func TestRevokeNoticeRepeated(t *testing.T) {
 // 0042's down-step, exactly as its header documents it, run as the table
 // owner under FORCE RLS: every content connection revoked with its key,
 // every connection service account stripped, the columns gone, version 42
-// forgotten; and up again.
+// forgotten; and up again. 0043 comes down first, as the plan orders it.
 func TestMigration0042DownStep(t *testing.T) {
 	f := newContentFixture(t)
 	ctx := context.Background()
@@ -919,6 +919,9 @@ func TestMigration0042DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 43)); err != nil {
+		t.Fatalf("0043 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 42)); err != nil {
 		t.Fatalf("down-step: %v", err)
 	}
@@ -1012,6 +1015,9 @@ func TestMigration0042DownStepDropsProvisionalInvites(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 43)); err != nil {
+		t.Fatalf("0043 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 42)); err != nil {
 		t.Fatalf("down-step: %v", err)
 	}

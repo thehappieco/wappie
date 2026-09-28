@@ -689,9 +689,12 @@ func (a *app) routes() http.Handler {
 			TrustedProxies: a.cfg.TrustedProxies,
 			States:         store.NewMCPReaderStates(a.pools.API),
 			// Message text, only inside the enclave, only while the switch
-			// is on and only for the workspaces listed.
+			// is on and only for the workspaces listed; attachments, on top
+			// of that, behind their own switch and list.
 			ContentReader:  config.ContentReader,
 			ContentAllowed: a.cfg.MCP.ContentAllowed,
+			MediaAllowed:   a.cfg.MCP.MediaAllowed,
+			MediaOff:       a.cfg.MCP.MediaOffKinds,
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)
@@ -709,14 +712,18 @@ func (a *app) routes() http.Handler {
 	// hundred megabyte video framed down the same connection as live messages
 	// would stall every other frame behind it and would sit in memory on both
 	// ends; here it streams, resumes and caches like any other file. What it
-	// streams is ciphertext.
+	// streams is ciphertext. An assistant connection's key fetches it only
+	// when its consent includes attachments and the switch allows them; the
+	// gate is wired whether or not the connector is mounted, so rows left
+	// from a time it was stay refused.
+	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.cfg.MCP.MediaAllowed)
 	mux.Handle("GET /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
-		Media: a.media, Blob: a.blob, Log: a.log,
+		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
 	})
 	mux.Handle("HEAD /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
-		Media: a.media, Blob: a.blob, Log: a.log,
+		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
 	})
 
 	// Sending an attachment is two steps: the bytes come here, and the message

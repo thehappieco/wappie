@@ -35,6 +35,12 @@ func liveStatus(status string) bool {
 	return status == statusPending || status == statusActive || status == statusReseal
 }
 
+// validConsentVersion is the consent texts a content connection can be
+// given under.
+func validConsentVersion(version int) bool {
+	return version == ContentConsentVersion || version == MediaConsentVersion
+}
+
 // endMCPConnectionTx ends one connection: status (statusRevoked or
 // statusExpired) and reason on the row if it is still live, its key, and for
 // content removeServiceAccountTx. Idempotent: an ended row keeps its status
@@ -192,6 +198,12 @@ type StatusAnswer struct {
 	// ServiceUserID is the account a content connection reads as; the
 	// reader wipes its key when this is not the account it holds a key for.
 	ServiceUserID *uuid.UUID
+	// TenantID is the connection's workspace, for the caller's switches.
+	TenantID uuid.UUID
+	// Media is the row's media flag, set only when the answer is active,
+	// pending or reseal: an ended connection opens nothing. The caller
+	// narrows it further by whether the workspace may open attachments now.
+	Media bool
 }
 
 // Status answers a reader's question about one of its connections and notes
@@ -209,19 +221,22 @@ type StatusAnswer struct {
 // ends it (access_lost) and answers revoked; content not allowed for the
 // workspace right now answers reseal, computed and never written, so the
 // reader drops its key and the consent survives the switch; otherwise the
-// row's status. contentAllowed nil allows nothing.
+// row's status. contentAllowed nil allows nothing. Media is the row's flag
+// on the last two answers only.
 func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentAllowed func(tenant uuid.UUID) bool) (StatusAnswer, error) {
 	var a StatusAnswer
 	var tenant uuid.UUID
+	var media bool
 	err := m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1 AND reader=$2
-		RETURNING tenant_id, status, expires_at, kind, service_user_id`, id, reader).
-		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID)
+		RETURNING tenant_id, status, expires_at, kind, service_user_id, media`, id, reader).
+		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID, &media)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StatusAnswer{}, ErrMCPConnectionNotFound
 	}
 	if err != nil {
 		return StatusAnswer{}, fmt.Errorf("store: mcp connection status: %w", err)
 	}
+	a.TenantID = tenant
 	if !liveStatus(a.Status) {
 		return a, nil
 	}
@@ -266,7 +281,59 @@ func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentA
 	if contentAllowed == nil || !contentAllowed(tenant) {
 		a.Status = statusReseal
 	}
+	a.Media = media
 	return a, nil
+}
+
+// ContentKey is what the ledger says about an API key that belongs to a
+// content connection, or that acts as a connection service account.
+type ContentKey struct {
+	// ConnectionID is empty for a key that acts as a connection service
+	// account but that no connection holds: a consent's or a renewal's
+	// before the ledger points at it, or another key issued acting as the
+	// account. Such a key is never Live.
+	ConnectionID string
+	TenantID     uuid.UUID
+	// Live is the connection's status being pending, active or reseal: it
+	// still holds its consent.
+	Live bool
+	// Media is the row's media flag.
+	Media bool
+}
+
+// ContentConnectionByAPIKey finds the content connection an API key belongs
+// to, asked by /v1/media for every key that fetches an attachment: the row
+// whose unique api_key_id it is, and failing that whether the key acts as a
+// connection service account (one whose membership carries a deadline,
+// provisional ones included, 0042). A key that is neither (a person's, an
+// automation's, a metadata connection's) is ErrMCPConnectionNotFound.
+func (m *MCPConnections) ContentConnectionByAPIKey(ctx context.Context, tenant, key uuid.UUID) (ContentKey, error) {
+	var out ContentKey
+	var status string
+	var service bool
+	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `SELECT id::text, tenant_id, status, media FROM mcp_connections
+			WHERE api_key_id=$1 AND kind='content'`, key).Scan(&out.ConnectionID, &out.TenantID, &status, &out.Media)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		// workspace_memberships forces row-level security, hence the
+		// tenant transaction.
+		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys k
+			JOIN workspace_memberships w ON w.tenant_id=k.tenant_id AND w.user_id=k.acts_as
+			WHERE k.id=$1 AND k.tenant_id=$2 AND w.expires_at IS NOT NULL)`, key, tenant).Scan(&service)
+	})
+	if err != nil {
+		return ContentKey{}, fmt.Errorf("store: find the content connection of a key: %w", err)
+	}
+	switch {
+	case out.ConnectionID != "":
+		out.Live = liveStatus(status)
+		return out, nil
+	case service:
+		return ContentKey{TenantID: tenant}, nil
+	}
+	return ContentKey{}, ErrMCPConnectionNotFound
 }
 
 // Reseal records that the reader holds no key for a content connection: it
@@ -515,8 +582,10 @@ func (m *MCPConnections) CheckRenewal(ctx context.Context, tenant, actor uuid.UU
 // Renew swaps a content connection's key and service account for the ones
 // the person just made, in one transaction: the old service account and its
 // key go, the row names the new ones and what the reader attested, and it is
-// active again. The connection id, its expiry and the reader's token family
-// stay. users.public_key is never updated: a new key is a new account.
+// active again. The connection id, its expiry, its consent version, its
+// media flag and the reader's token family stay: a renewal renews the key,
+// never the consent. users.public_key is never updated: a new key is a new
+// account.
 //
 // The new key and account are held to Create's rules, and the key must name
 // exactly the devices the old one did. ErrMCPKeyUnsuitable otherwise.
