@@ -98,6 +98,13 @@ HUP, INT and TERM make the script exit (bash would otherwise run the handler
 and carry on), cleanup ignores further signals until production is back, and
 production is started again only if the script had stopped it: a signal
 during the image build leaves production running and never launches the probe.
+SIGPIPE is ignored, because bash killed by it skips its EXIT trap: run as
+`sudo probe.sh 2>&1 | tee run.log`, a dropped SSH session takes `tee` with it,
+and the next write would otherwise end the script with production down. Now a
+failed write returns `EPIPE` and the run goes on to cleanup, which starts
+production before it prints anything. Every `nitro-cli describe-enclaves` and
+`terminate-enclave` is bounded by `timeout 60`, so a hung one cannot hold the
+restart either.
 
 ## What the console shows
 
@@ -217,7 +224,10 @@ privileged container that stands in for the enclave
   enclave that ends mid-run (two `gone` polls, a partial report with every
   record streamed so far, exit 1), and a `describe-enclaves` that exits 1 with
   the enclave listed (`unknown`, run completes); production restarted each
-  time.
+  time. Also with its output piped into a reader that goes away while
+  production is down (`| head -n 4`, and `| tee` with SIGHUP sent to the whole
+  pipeline, as an SSH drop does): the script before the SIGPIPE fix left
+  production stopped both times, and now restarts it.
 
 Only the Nitro enclave boot (the 4.14 kernel, its cgroup layout, `/dev/nsm`,
 the real SIGILLs) and the AF_VSOCK transfer need the actual hardware; those run

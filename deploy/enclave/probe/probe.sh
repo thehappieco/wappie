@@ -26,6 +26,9 @@ RUN_MEM=1536           # production enclave sizing, to measure real headroom
 # until the runner's watchdog (the job's wall + 10 s) and the vsock sender never
 # arrives.
 REPORT_TIMEOUT=480
+# Seconds any one nitro-cli describe/terminate may take while production is
+# down, so a hung nitro-cli can neither stretch the wait nor hold the restart.
+NITRO_TIMEOUT=60
 
 # nitro-cli's profile script is not sourced by plain shells/SSM (spike Day 1).
 export NITRO_CLI_ARTIFACTS=${NITRO_CLI_ARTIFACTS:-/var/lib/nitro_enclaves/artifacts}
@@ -39,6 +42,7 @@ die() { echo "probe.sh: $*" >&2; exit 1; }
 command -v docker > /dev/null || die "docker is not installed"
 command -v nitro-cli > /dev/null || die "nitro-cli is not installed"
 command -v python3 > /dev/null || die "python3 is needed for the vsock sender and the report"
+command -v timeout > /dev/null || die "timeout (coreutils) is needed to bound nitro-cli"
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 base=/opt/wappie-reader/probe
@@ -54,12 +58,16 @@ production_stopped=0
 production_restored=0
 
 # Start production again, but only if this script stopped it, and only once.
-# The flag is set after the attempt, so an interrupted attempt is retried.
+# The flag is set after the attempt, so an interrupted attempt is retried. The
+# start comes before any output, so a write that fails cannot stand in its way.
 restore_production() {
   [ "$production_stopped" = 1 ] || return 0
   [ "$production_restored" = 0 ] || return 0
-  echo "probe.sh: restarting production ($PROD_UNIT)"
-  systemctl start "$PROD_UNIT" 2> /dev/null || echo "probe.sh: WARNING could not start $PROD_UNIT; start it by hand" >&2
+  if systemctl start "$PROD_UNIT" 2> /dev/null; then
+    echo "probe.sh: restarted production ($PROD_UNIT)"
+  else
+    echo "probe.sh: WARNING could not start $PROD_UNIT; start it by hand" >&2
+  fi
   production_restored=1
 }
 
@@ -67,16 +75,22 @@ restore_production() {
 # script carries on, so HUP/INT/TERM just exit (which runs this); and a second
 # signal must not cut this short before production is back.
 cleanup() {
-  trap '' HUP INT TERM
+  trap '' HUP INT TERM PIPE
   [ -z "$sender_pid" ] || kill "$sender_pid" 2> /dev/null || true
   [ -z "$console_pid" ] || kill "$console_pid" 2> /dev/null || true
-  nitro-cli terminate-enclave --enclave-name "$NAME" > /dev/null 2>&1 || true
+  timeout "$NITRO_TIMEOUT" nitro-cli terminate-enclave --enclave-name "$NAME" > /dev/null 2>&1 || true
   restore_production
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# A closed stdout must never skip cleanup. Bash dies of SIGPIPE without running
+# its EXIT trap, e.g. under `probe.sh 2>&1 | tee run.log` when the SSH session
+# drops and takes tee with it. Ignored, a failed write returns EPIPE and the
+# script carries on to cleanup. (Not `exit 141`: an exit inside the EXIT trap
+# would cut cleanup short.)
+trap '' PIPE
 
 # --- build the throwaway image and EIF (never overwriting production) ---
 tag=$NAME:$stamp
@@ -106,7 +120,7 @@ echo "probe.sh: stopping production ($PROD_UNIT) — the production enclave goes
 production_stopped=1
 systemctl stop "$PROD_UNIT" 2> /dev/null || echo "probe.sh: $PROD_UNIT was not running"
 # Also clear any leftover enclave under our probe name.
-nitro-cli terminate-enclave --enclave-name "$NAME" > /dev/null 2>&1 || true
+timeout "$NITRO_TIMEOUT" nitro-cli terminate-enclave --enclave-name "$NAME" > /dev/null 2>&1 || true
 sleep 2
 
 # --- run the probe enclave in debug mode (console readable, PCRs all zero) ---
@@ -116,7 +130,7 @@ nitro-cli run-enclave --enclave-name "$NAME" --eif-path "$eif" \
   > "$out/run-enclave.json" || die "nitro-cli run-enclave failed"
 
 launched=$(date +%s)
-nitro-cli describe-enclaves > "$out/describe-first.json" 2> "$out/describe-first.err"
+timeout "$NITRO_TIMEOUT" nitro-cli describe-enclaves > "$out/describe-first.json" 2> "$out/describe-first.err"
 
 # Capture the console to a file, and start the vsock sender (it retries until
 # the enclave's sink is listening, late in the run).
@@ -132,10 +146,11 @@ sender_pid=$!
 # grep -q matched and quit, with the reason discarded; its cleanup then
 # terminated the probe it had just called gone. Now: "up" when the output
 # lists the enclave, "gone" only when nitro-cli succeeded and did not list it,
-# "unknown" otherwise, and every poll is logged with its stderr.
+# "unknown" otherwise (a timed-out poll is rc=124), and every poll is logged
+# with its stderr.
 enclave_state() {
   local desc rc
-  desc=$(nitro-cli describe-enclaves 2> "$out/describe.err")
+  desc=$(timeout "$NITRO_TIMEOUT" nitro-cli describe-enclaves 2> "$out/describe.err")
   rc=$?
   if [[ $desc == *"\"$NAME\""* ]]; then
     echo up
