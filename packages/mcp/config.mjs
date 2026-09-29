@@ -21,6 +21,9 @@ const schema = z.strictObject({
   // 'enclave': the attested reader supplies the credential and a key handle in
   // process; plaintext is required, files are refused (see readerMode).
   credential_source: z.enum(['files', 'provided', 'enclave']).default('files'),
+  // Attachment contents (docs/mcp-enclave.md §16): only the attested reader
+  // opens them, for a connection whose sealed consent says so.
+  media: z.boolean().default(false),
 })
 const credentialFiles = ['session_file', 'token_file', 'password_file', 'service_key_file', 'contacts_file']
 export class LocalConfigError extends Error {
@@ -55,7 +58,9 @@ export function validateConfig(value, base = process.cwd()) {
     // one service account over an exact set of numbers. Nothing comes from disk.
     if (credentialFiles.some(field => config[field]) || config.allow_plaintext !== true ||
       !config.service_user_id || !config.device_ids) throw new LocalConfigError('enclave_credentials_invalid')
-  } else {
+  }
+  if (config.media && config.credential_source !== 'enclave') throw new LocalConfigError('enclave_credentials_invalid')
+  if (config.credential_source === 'files') {
     if (Boolean(config.session_file) === Boolean(config.token_file)) throw new LocalConfigError('choose_one_credential')
     if ((config.session_file && (config.service_key_file || config.service_user_id)) ||
       (config.token_file && config.password_file)) throw new LocalConfigError('mixed_credentials')

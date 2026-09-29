@@ -24,10 +24,15 @@ export const REDIRECT_URI = 'https://claude.ai/api/mcp/auth_callback'
 export const POLICY = '{"Version":"2012-10-17","Statement":[{"Sid":"EnclaveUse","Effect":"Allow"}]}'
 export const relayContext = { purpose: 'wappie-mcp-relay', reader_id: 'enclave' }
 
-/** Everything the enclave talks to, plus a way to (re)start it the way entrypoint.sh would. */
-export async function world(t, { bootJson } = {}) {
+/**
+ * Everything the enclave talks to, plus a way to (re)start it the way
+ * entrypoint.sh would. `archive(apiKey)` replaces the synthetic archive (it
+ * returns a fixture with `server` and `close`); `w.jail`, when set before a
+ * start, replaces media-jail (media tests).
+ */
+export async function world(t, { bootJson, archive } = {}) {
   const apiKey = `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
-  const f = await fixture({ token: apiKey })
+  const f = await (archive ?? (token => fixture({ token })))(apiKey)
   const relaySecret = randomBytes(32).toString('base64url')
   const goSecrets = [relaySecret]
   const go = await createEnclaveGo({ upstream: f.server, secrets: () => goSecrets, upstreamToken: apiKey, workspace, now: () => Date.now() + (w?.skew ?? 0) }).listen()
@@ -46,10 +51,11 @@ export async function world(t, { bootJson } = {}) {
   const boot = Buffer.from(bootJson ?? JSON.stringify({ relay_secret_ciphertext: bootCiphertext.toString('base64') }))
   const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY }
   const w = {
-    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0,
+    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, jail: null,
     async start() {
       w.enclave = await startEnclave({
         constants: c, sink, kms, attest: nsm, now: () => Date.now() + w.skew, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
+        ...(w.jail ? { jail: w.jail } : {}),
         readLocal: async port => { if (port === 7001) return boot; throw new Error('unexpected port') },
         overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort } },
       })

@@ -64,8 +64,12 @@ export async function validateBundle(value) {
   return { bundle, output }
 }
 
-/** The consent text version a content bundle was sealed under (the card the user saw). */
-export const CONTENT_CONSENT_VERSION = 1
+/**
+ * The consent text versions a content bundle may be sealed under (the card the
+ * user saw): 1, and 2 from reader 0.4.0 on, which alone can carry `media`
+ * (docs/mcp-enclave.md §16.2).
+ */
+export const CONTENT_CONSENT_VERSIONS = Object.freeze([1, 2])
 /** A content connection lasts at most 90 days; an hour of slack covers clocks and the consent itself. */
 const MAX_CONTENT_AHEAD_MS = (90 * 24 + 1) * 60 * 60 * 1000
 /**
@@ -74,19 +78,21 @@ const MAX_CONTENT_AHEAD_MS = (90 * 24 + 1) * 60 * 60 * 1000
  * or a plaintext flag: the key lives only in the reader, contacts are out of
  * this phase, and content is what `kind` says. Those, like any unknown key, are
  * refused. v1's `validateBundle` accepts `version: 1` only, so no v1 path
- * (the pilot's link, the local import) can take one of these.
+ * (the pilot's link, the local import) can take one of these. `media: true`
+ * (open attachments too) needs consent version 2; absent means false.
  */
 export const contentBundleSchema = z.strictObject({
   version: z.literal(2), kind: z.literal('content'), purpose: z.enum(['consent', 'renewal']),
   server_url: z.string().min(1).max(4096), workspace_id: id, service_user_id: id,
   device_ids: z.array(id).min(1).max(100),
   token: z.string().length(52),
-  key_mode: z.literal('ephemeral'), consent_version: z.literal(CONTENT_CONSENT_VERSION),
+  key_mode: z.literal('ephemeral'), consent_version: z.union(CONTENT_CONSENT_VERSIONS.map(version => z.literal(version))),
+  media: z.boolean().optional(),
   expires_at: z.iso.datetime().max(40),
   timezone: z.string().min(1).max(100).optional(),
   link_secret: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
   connection_id: id.optional(),
-})
+}).refine(bundle => bundle.media !== true || bundle.consent_version === 2)
 function httpsOrigin(value) {
   try { return value.startsWith('https://') && archiveOrigin(value) === value } catch { return false }
 }
