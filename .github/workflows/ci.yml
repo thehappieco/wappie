@@ -161,17 +161,19 @@ jobs:
             packages/mcp/package-lock.json
             packages/mcp-http/package-lock.json
             packages/mcp-http/enclave/package-lock.json
+            packages/mcp-http/enclave/media/worker/package-lock.json
             tools/reader-verify/package-lock.json
-      - run: make client-install enclave-check reader-verify
+      - run: make client-install enclave-check media-worker-check reader-verify
       - name: Deploy scripts parse
         run: |
           for f in deploy/enclave/*.sh; do bash -n "$f"; done
-          shellcheck deploy/enclave/*.sh deploy/enclave/probe/*.sh
+          shellcheck deploy/enclave/*.sh deploy/enclave/probe/*.sh deploy/enclave/jailcheck/*.sh
           python3 -m py_compile deploy/enclave/kms/render.py
           python3 -m unittest discover -s deploy/enclave -p 'test_*.py'
           python3 -m unittest discover -s deploy/enclave/kms -p 'test_*.py'
           python3 -m unittest discover -s deploy/enclave/probe -p 'test_*.py'
           node --check deploy/enclave/probe/probe-report.mjs
+          for f in deploy/enclave/jailcheck/*.mjs; do node --check "$f"; done
           for t in deploy/enclave/kms/*.template.json; do
             python3 deploy/enclave/kms/render.py "$t" --role-arn arn:aws:iam::000000000000:role/ci \
               --pcr0 "$(printf 'a%.0s' $(seq 96))" > /dev/null
@@ -185,7 +187,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - run: make media-jail-check
       - run: make enclave-image ENCLAVE_TAG=wappie-reader:ci
+      # The jail itself: the escape tests, media-jail's signals and table, and
+      # every corpus file through the workers under media-jail, natively and
+      # with the 4.14 blob kernel's fallbacks.
+      - run: make enclave-jail ENCLAVE_TAG=wappie-reader:ci
       # The image is one layer (deploy/enclave/Dockerfile), so equal layer
       # digests mean equal files, modes and times: what PCR0 measures. A second
       # build from nothing must match the first (the Alpine index can still
