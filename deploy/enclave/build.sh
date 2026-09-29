@@ -1,7 +1,9 @@
 #!/bin/bash
 # Builds one reader release on an arm64 host with Docker and nitro-cli (the
 # parent): the image, its EIF, the two rendered key policies and their hashes,
-# and measurements.json (docs/mcp-enclave.md §9). Publishing is separate:
+# and measurements.json (docs/mcp-enclave.md §9), which also carries the
+# release's capabilities and its dependency manifest (§16.2 rule 8, §16.6).
+# Publishing is separate:
 # pass --push to push the image (the digest then goes into measurements.json);
 # the GitHub release reader-v<version> is created by hand from the output
 # directory (commercial/docs/mcp-enclave-operations.md, "Release").
@@ -118,7 +120,8 @@ constants=$(docker run --rm --network none --entrypoint node -w /app/packages/mc
   --input-type=module -e '
     const c = await import("./constants.mjs")
     console.log(JSON.stringify({ version: c.READER_VERSION, reader_id: c.READER_ID, origin: c.PUBLIC_ORIGIN,
-      region: c.REGION, reader_key_arn: c.KMS_READER_KEY_ARN, boot_key_arn: c.KMS_BOOT_KEY_ARN }))')
+      region: c.REGION, reader_key_arn: c.KMS_READER_KEY_ARN, boot_key_arn: c.KMS_BOOT_KEY_ARN,
+      capabilities: c.READER_CAPABILITIES ?? null }))')
 field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$constants" "$1"; }
 version=$(field version)
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "READER_VERSION is not x.y.z: $version"
@@ -129,6 +132,44 @@ version=$(field version)
 out=${out:-$root/dist/reader-$version}
 [ ! -e "$out" ] || die "$out exists; keep each release's output, choose another --out"
 mkdir -p "$out"
+
+# The dependency manifest (§16.12 "Parser CVEs"): the reader's and the
+# attachment workers' npm locks as built, each package with its version and
+# integrity, and the sha256 of every tarball the worker lock takes from
+# outside the npm registry (SheetJS, from its CDN), fetched here and checked
+# against the lock's own integrity first.
+python3 - "$context" "$context/dependencies.json" <<'PY'
+import base64, hashlib, json, pathlib, sys, urllib.request
+
+context, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+LOCKS = ("packages/mcp-http/enclave/package-lock.json", "packages/mcp-http/enclave/media/worker/package-lock.json")
+REGISTRY = "https://registry.npmjs.org/"
+locks, tarballs = [], []
+for name in LOCKS:
+    raw = (context / name).read_bytes()
+    lock = json.loads(raw)
+    packages = []
+    for path, entry in sorted(lock.get("packages", {}).items()):
+        if not path:
+            continue
+        packages.append({"path": path, "version": entry.get("version"), "resolved": entry.get("resolved"),
+                         "integrity": entry.get("integrity")})
+        url = entry.get("resolved") or ""
+        if url and not url.startswith(REGISTRY):
+            if not url.startswith("https://") or not entry.get("integrity"):
+                sys.exit(f"build.sh: {name}: {path} comes from {url!r} without https and an integrity")
+            # The CDN refuses urllib's default User-Agent.
+            request = urllib.request.Request(url, headers={"User-Agent": "wappie-reader-build"})
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = response.read()
+            algorithm, _, expected = entry["integrity"].split()[0].partition("-")
+            if base64.b64encode(hashlib.new(algorithm, data).digest()).decode() != expected:
+                sys.exit(f"build.sh: {url} does not match its {algorithm} integrity in {name}")
+            tarballs.append({"package": path.rsplit("node_modules/", 1)[-1], "version": entry.get("version"), "url": url,
+                             "integrity": entry["integrity"], "sha256": hashlib.sha256(data).hexdigest()})
+    locks.append({"file": name, "sha256": hashlib.sha256(raw).hexdigest(), "packages": packages})
+target.write_text(json.dumps({"locks": locks, "tarballs": tarballs}))
+PY
 eif=wappie-reader-$version.eif
 nitro-cli build-enclave --docker-uri "$tag" --output-file "$out/$eif" > "$out/build-enclave.json"
 pcr() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["Measurements"]["PCR" + sys.argv[2]])' "$out/build-enclave.json" "$1"; }
@@ -164,10 +205,10 @@ fi
 nitro_version=$(nitro-cli --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 # Values travel as arguments, never spliced into the program text.
 python3 - "$out" "$eif" "$version" "$commit" "$reference" "$node_image" "$rust_image" \
-  "$nitro_version" "$constants" "$transition_sha" "$steady_sha" "$previous" "$pcr0" <<'PY'
-import hashlib, json, os, pathlib, sys
+  "$nitro_version" "$constants" "$transition_sha" "$steady_sha" "$previous" "$pcr0" "$context/dependencies.json" <<'PY'
+import hashlib, json, os, pathlib, re, sys
 (out, eif_name, version, commit, reference, node_image, rust_image, nitro_version, constants, transition, steady,
- previous, pcr0) = sys.argv[1:]
+ previous, pcr0, dependencies) = sys.argv[1:]
 out = pathlib.Path(out)
 c = json.loads(constants)
 digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -191,10 +232,24 @@ def pins(name, expected):
     return expected
 
 
+def capabilities(value):
+    """READER_CAPABILITIES as the image measures it (§16.2 rule 8): the
+    console seals consent version 2 only for a release that declares
+    consent_v2. A reader from before the constant declares none."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or \
+            not all(isinstance(v, str) and re.fullmatch(r"[a-z0-9_]{1,32}", v) for v in value) or \
+            len(set(value)) != len(value):
+        sys.exit(f"build.sh: READER_CAPABILITIES is not a list of distinct capability names: {value!r}")
+    return value
+
+
 measurements = {
     "schema": "wappie-reader-measurements/v1",
     "reader_id": c["reader_id"],
     "version": version,
+    "capabilities": capabilities(c.get("capabilities")),
     "resource": c["origin"] + "/mcp",
     "source": {"repository": "thehappieco/wappie", "commit": commit},
     # null until --push: an unpushed build is not publishable.
@@ -210,6 +265,7 @@ measurements = {
         {"phase": "steady", "file": "reader-key-policy.steady.json", "sha256": steady,
          "pins_pcr0": pins("reader-key-policy.steady.json", [pcr0])},
     ],
+    "dependencies": json.loads(pathlib.Path(dependencies).read_text()),
 }
 (out / "measurements.json").write_text(json.dumps(measurements, indent=2) + "\n")
 PY
