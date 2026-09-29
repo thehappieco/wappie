@@ -3,8 +3,11 @@
 // this package's files, its dependencies are not installed there, nothing
 // reachable from server.mjs names the enclave credential source, the key
 // holder or the v2 bundle, the pilot's link refuses a v2 bundle, and a bundle
-// relayed with `"kind": "content"` is a bad request. This walks every relative
-// import reachable from server.mjs.
+// relayed with `"kind": "content"` is a bad request. Attachments (docs/
+// mcp-enclave.md §16) are the enclave's alone: nothing the pilot reaches
+// imports enclave/media/ or names /v1/media, the reader package included, and
+// the pilot's provider never has `media`. This walks every relative import
+// reachable from server.mjs, and from the reader's own server.mjs.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -15,17 +18,19 @@ import { auth } from '@modelcontextprotocol/client'
 import { hpke } from '@whatserver2/client'
 import { clientProvider, consent, harness, vector, workspace } from './harness.mjs'
 import { aadFor, INFO, LinkError, openBundle } from '../link.mjs'
+import { configFor, providerFor } from '../provider.mjs'
 import { newRecipient } from '../state.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
+const readerRoot = fileURLToPath(new URL('../../mcp/', import.meta.url))
 
-/** Every file reachable from server.mjs through relative imports, with its text. */
-async function reachable() {
-  const seen = new Map(), queue = ['server.mjs']
+/** Every file reachable from `entry` under `base` through relative imports, with its text. */
+async function reachable(base = root, entry = 'server.mjs') {
+  const seen = new Map(), queue = [entry]
   while (queue.length) {
     const file = queue.shift()
     if (seen.has(file)) continue
-    const text = await readFile(join(root, file), 'utf8')
+    const text = await readFile(join(base, file), 'utf8')
     seen.set(file, text)
     for (const [, target] of text.matchAll(/^\s*(?:import|export)[^'"]*?from\s*['"]([^'"]+)['"]/gm)) {
       assert.equal(/(^|\/)enclave(\/|$)/.test(target), false, `${file} imports ${target}`)
@@ -54,6 +59,22 @@ test('nothing the pilot reaches names the enclave credential source, the key hol
   // The pilot's provider refuses every content-opening read.
   const provider = await readFile(join(root, 'provider.mjs'), 'utf8')
   assert.match(provider, /allow_plaintext: false, credential_source: 'provided'/)
+})
+
+test('attachments stay in the enclave: nothing the pilot or the reader reaches opens media or names /v1/media, and the pilot provider has no media', async () => {
+  for (const [base, label] of [[root, 'mcp-http'], [readerRoot, 'mcp']]) {
+    const seen = await reachable(base)
+    assert.ok(seen.size > 2, label)
+    for (const [file, text] of seen) {
+      assert.equal(/enclave\/media/.test(text.replace(/\/\/.*$/gm, '')), false, `${label}/${file} names enclave/media`)
+      assert.equal(text.includes('/v1/media'), false, `${label}/${file} names /v1/media`)
+      for (const name of ['createMediaStream', 'createMediaService', 'runWorker', 'media-jail']) assert.equal(text.includes(name), false, `${label}/${file} names ${name}`)
+    }
+  }
+  assert.ok((await reachable(readerRoot)).has('reader.mjs'))
+  const connection = { connection_id: randomUUID(), workspace_id: workspace, device_ids: [vector.device], timezone: 'UTC', api_key: 'k', media: true }
+  assert.equal(providerFor(connection).media, undefined)
+  assert.equal(configFor(connection, 'https://api.wappie.thehappie.co').media, false)
 })
 
 test('the published files leave enclave/ out', async () => {

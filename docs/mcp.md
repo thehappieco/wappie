@@ -7,7 +7,8 @@ counts without depending on the commercial app. The companion
 [`packages/mcp-http`](../packages/mcp-http/README.md) serves the same reader
 over Streamable HTTP for remote hosts: as the hosted metadata connector, which
 never opens content, and as the attested reader in an AWS Nitro Enclave, which
-can also open message text for a connection the user enabled it on.
+can also open message text for a connection the user enabled it on, and
+attachments for one whose consent includes them.
 
 ## Ways to connect
 
@@ -15,7 +16,7 @@ can also open message text for a connection the user enabled it on.
 | --- | --- | --- | --- |
 | **Local** | stdio (`packages/mcp`) | Metadata, or message text when `allow_plaintext` is enabled in the local configuration | Your computer. Archive private keys never leave it. |
 | **Cloud, metadata** | Streamable HTTP, `https://api.wappie.thehappie.co/mcp` | Who, when and how much, never the content | A reader process on Wappie's API host that holds no archive private key. Sealed bodies stay sealed and are reported as `locked`. |
-| **Cloud, attested reader** | Streamable HTTP, `https://mcp.wappie.thehappie.co/mcp` | Metadata; with **message text** switched on at consent, also text, chat names and previews, contact names and filenames of the chosen numbers. Never attachment contents | The same reader inside an AWS Nitro Enclave. TLS ends inside it, and the browser checks its published image before sealing anything to it ([contract](mcp-enclave.md)). Text is available only in workspaces Wappie has enabled for it. |
+| **Cloud, attested reader** | Streamable HTTP, `https://mcp.wappie.thehappie.co/mcp` | Metadata; with **message text** switched on at consent, also text, chat names and previews, contact names and filenames of the chosen numbers; with **attachments** switched on as well, also photos, stickers, PDFs, office and text files and a video's preview image, opened inside the enclave ([what they send](#attachments)) | The same reader inside an AWS Nitro Enclave. TLS ends inside it, and the browser checks its published image before sealing anything to it ([contract](mcp-enclave.md)). Text, and attachments on top of it, are available only in workspaces Wappie has enabled for them. |
 | **Enterprise** | Streamable HTTP (`packages/mcp-http` container) | Metadata, as the hosted metadata connector | Your infrastructure, beside your own installation, under your own OAuth server and policy. |
 
 The hosted metadata connector, the self-hosted container and every attested
@@ -24,17 +25,19 @@ device-restricted API key with an expiry, never a service account or an archive
 private key, so it cannot open message text even if its host is compromised.
 Metadata still reaches the assistant's provider. A **text** connection on the
 attested reader is different by design, and [who can read what](#who-can-read-what)
-says exactly how.
+says exactly how. A text connection never opens attachment contents; only a
+**media** connection, whose consent also includes attachments, does.
 
 ## Who can read what
 
-For a connection with message text, on `https://mcp.wappie.thehappie.co/mcp`:
+For a connection with message text, on `https://mcp.wappie.thehappie.co/mcp`
+(and its attachments, for a media connection):
 
 | Who | Reads the text? | How, or why not |
 | --- | --- | --- |
 | The reader in the enclave (published image, verified by the browser) | Yes, in memory, per tool call | Only while the connection is live. The current grants are fetched on every call. |
-| The AI provider the user connected | Yes, what the tools return | By design, limited to the chosen numbers, the expiry and each tool's size limits. |
-| Wappie's staff, the archive server, its database and backups | No, short of the rows below | The key that opens the grants is generated in the enclave and never leaves it; the database holds only grants sealed to that key. |
+| The AI provider the user connected | Yes, what the tools return | By design, limited to the chosen numbers, the expiry and each tool's size limits. Attachments reach it as text and re-encoded images; on claude.ai, large results and images may be copied into Anthropic's code-execution storage and kept there. |
+| Wappie's staff, the archive server, its database and backups | No, short of the rows below | The key that opens the grants is generated in the enclave and never leaves it; the database holds only grants sealed to that key. For an attachment, the archive server serves only its ciphertext, so it learns which one was opened, when and how large it is, never its content. |
 | The host running the enclave | No | TLS ends inside the enclave, and a CAA record lets only the enclave's own ACME account obtain a certificate for the address. The host sees names, addresses, timing and sizes. |
 | An operator who changes the KMS key policy | No, with the key only in memory (the only mode today) | Reading would need a new certificate for the address, which Certificate Transparency records publicly. Every attestation carries the live policy's hash, which the browser checks. |
 | An operator who controls DNS | **Yes**, while it lasts | With a certificate of their own they can pose as the reader to the AI host and receive its tokens. That certificate is public in Certificate Transparency, and `tools/ct-watch` flags any certificate whose key no enclave attested. |
@@ -72,10 +75,11 @@ a new local connection uses its [manual configuration](../packages/mcp/README.md
 Wappie runs two addresses. `https://api.wappie.thehappie.co/mcp` is the hosted
 metadata connector. `https://mcp.wappie.thehappie.co/mcp` is the attested
 reader: it reads metadata the same way, and also message text in workspaces
-where Wappie has enabled it and the approver switched it on. The console's MCP
-panel shows the second address to workspaces the attested reader allows and the
-first to every other. The steps below use the first address; the second works
-the same way in every host.
+where Wappie has enabled it and the approver switched it on, and attachments
+where Wappie has enabled those too and the approver switched them on as well.
+The console's MCP panel shows the second address to workspaces the attested
+reader allows and the first to every other. The steps below use the first
+address; the second works the same way in every host.
 Every host takes the address as it is — **nothing to install**:
 
 - **Claude** (claude.ai, Desktop, mobile): the console's MCP panel and the
@@ -88,12 +92,18 @@ Every host takes the address as it is — **nothing to install**:
 - **Codex** (ChatGPT desktop app or CLI): Settings → MCP servers → Add server →
   Streamable HTTP → the address, or `codex mcp add wappie --url
   https://api.wappie.thehappie.co/mcp`. Codex opens the consent page itself.
+  Codex has been seen to list the tools without being able to call them; if
+  that happens, add Wappie as a ChatGPT app instead (below).
 - **Claude Code**: `claude mcp add --transport http --scope user wappie
   https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
-- **ChatGPT on the web**: turn on developer mode (Settings → Security and
-  login), then add the address as a plugin (Plugins → +) with OAuth — that
-  entry is all ChatGPT needs; there is no file to build. If the plugin stays
-  under Drafts, open it and click + to install it.
+- **ChatGPT** (desktop app or web): Settings → Apps (Apps & Connectors) →
+  Advanced settings → turn on Developer mode. Then in Apps click Create: name
+  "Wappie", MCP server URL the address, Authentication OAuth, tick "I trust
+  this application", Create. In a chat, "+" → Developer mode → turn on
+  Wappie. That entry is all ChatGPT needs; there is no file to build. Added
+  another way, for example as a plain connector or in Codex, ChatGPT may list
+  the tools without being able to use them. For attachments, pick a model
+  with reasoning (Thinking or Pro): Instant does not see images.
 
 The plugin at [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins)
 is optional. It adds a skill that tells Codex or Claude Code what the
@@ -161,6 +171,54 @@ console verifies a new attestation, and their password seals the grants to a
 new enclave key and a new service account on the same connection, with the
 same expiry. The assistant keeps its tokens.
 
+### Attachments
+
+Attachments ride on text. Where the attested release declares them, discovery
+lists `mcp.remote.media.v1` and the workspace may use them, the card also
+offers **Also read attachments** ("Photos, PDFs and documents, opened only
+inside the verified reader. Requires your password."), which turns text on
+too. The approver then reads a second paragraph the connection is held to:
+photos, stickers, PDFs and documents of those numbers are opened inside the
+verified reader and sent to the assistant as text and images; photos are
+re-encoded, which removes location and camera data; voice notes, audio and
+video are not transcribed yet, and a video sends only its preview image;
+view-once media are never opened; apart from a video's preview image stored
+in the archive, only attachments the archive has downloaded and can verify
+are read; the archive
+server can see which attachments are opened and when, never their content;
+on claude.ai, large results and images may be copied into Anthropic's
+code-execution storage and kept there; revoking stops future reads and does
+not erase what the assistant already received. The console seals that
+consent as version 2 of the card and lists the connection as **Text +
+attachments**.
+
+A media connection gets a ninth tool, `open_attachment`
+([package guide](../packages/mcp/README.md#open-attachments-on-a-media-connection)).
+Inside the enclave it fetches the attachment's ciphertext from the archive,
+checks its SHA-256 and MAC, decrypts it and parses it in a jailed process
+with no network (a plain-text file is only decoded, in the reader itself,
+with no parser). The AI provider receives photos and stickers as re-encoded
+images, PDFs as text by page with scanned pages as images, docx, odt, xlsx,
+xls, ods, pptx and plain-text files as text, other zip archives as their
+entry names, and a video, a round video note or a GIF as its preview image
+and the length its sender's app reported. It refuses, with a code and a
+sentence telling the assistant what to tell the user: view-once media; audio
+and voice notes, until transcription exists; attachments the archive never
+downloaded and WhatsApp no longer keeps (`gone`), never recovered because a
+recovery would hand the media key to the archive server; keyless or unhashed
+media, which the reader cannot verify; other types (HEIC, legacy doc and ppt
+among them); and files over 16 MB for photos or 32 MB for documents. A
+video's preview image is the exception: it is sealed in the message itself,
+so it is sent whatever the video's key, hash or download status, and the
+video itself is never fetched.
+
+Nothing changes for anyone else. The hosted metadata connector, every
+metadata connection and every text connection, whatever its consent version,
+never open attachment contents. A text connection never gains attachments,
+by renewal or otherwise: connect again with attachments switched on and
+revoke the old connection. Renewing a media connection renews its key, never
+its consent.
+
 ### Server configuration for the readers
 
 The archive server fronts one or more readers, listed in `WS_MCP_READERS`
@@ -222,8 +280,9 @@ picks the one connector address the console shows. The startup line
 prints `content=on|off` and the number of listed workspaces.
 
 Attachments are a third switch on top of content, with three variables
-([contract](mcp-enclave.md#16-stage-a-attachments)). No released reader opens
-attachments yet: the switch is off, and the server side ships first.
+([contract](mcp-enclave.md#16-stage-a-attachments)). Reader 0.4.0 and later
+open attachments for media connections; with the switch off, the default, no
+connection can.
 
 | Variable | Rule |
 |---|---|
@@ -298,11 +357,13 @@ fields, the timezone is UTC and there is no personal snapshot.
 
 `list_numbers`, `list_chats`, `list_messages`, `get_message` and `list_revisions`
 only read the persisted archive. They do not send messages, make calls, mark
-messages as read, download media or sync history. Message listing preserves the
+messages as read, fetch attachments or sync history. Message listing preserves the
 timestamp/sequence cursor provided by the server. Chats and revisions can report
 explicit truncation; these directories do not yet have continuation cursors.
-This release does not open structured payloads or download attachment contents.
-It can open encrypted attachment filenames when plaintext reading is enabled.
+They do not open structured payloads or attachments. They can open encrypted
+attachment filenames when plaintext reading is enabled; on a media connection
+a message's attachment also says whether `open_attachment` would open it
+(`openable`, and `why` when it would not).
 
 Three additional tools build on that archive:
 
@@ -311,6 +372,9 @@ Three additional tools build on that archive:
 | `resolve_contact` | Matches archived names/phones and an optional personal snapshot. Returns candidate identities and explicit ambiguity; follows archive contact pages through `next`. |
 | `search_messages` | Searches all chats of one authorized number using optional lexical body/filename matching, time bounds and metadata filters. Returns sources and historical revision/deletion status. |
 | `activity_summary` | Counts a bounded page of archived original messages by chat, sender and direction. Original events can remain counted after a later edit or deletion. |
+
+On a media connection of the attested reader, and there only, `open_attachment`
+opens one message's attachment inside the enclave, as [above](#attachments).
 
 `search_messages` does not require selecting a person or conversation first.
 It matches all case-insensitive, accent-insensitive query terms; it has no

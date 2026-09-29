@@ -6,7 +6,8 @@
 //
 // The .txt files are compiled in with include_str! so they are measured into
 // PCR0 with the binary (§16.6: "compiled into the binary, so they are
-// measured"). A0 ships the `node-worker` profile; ffmpeg and whisper are A2.
+// measured"). A1 ships the `node-worker` profile, which every row of the
+// worker table (workers.rs) uses; ffmpeg and whisper are A2, deferred.
 
 /// Names seccomp.rs owns through an argument-filtered or ENOSYS rule. A profile
 /// that lists one of these is rejected, so the plain allowlist can never grant
@@ -69,10 +70,10 @@ pub fn source(name: &str) -> Option<&'static str> {
 pub fn binds(name: &str) -> Option<&'static [&'static str]> {
     match name {
         // The musl loader in /lib, libstdc++/libgcc_s in /usr/lib, the node
-        // binary alone (not the rest of /usr/local/bin), and the worker tree.
-        // /opt/probe is the A0 probe's tree (jailtest, the sharp/pdfjs worker,
-        // the corpus); A1 replaces it with /opt/media.
-        "node-worker" => Some(&["/lib", "/usr/lib", "/usr/local/bin/node", "/opt/probe"]),
+        // binary alone (not the rest of /usr/local/bin: media-jail, nsm-attest
+        // and socat live there), and the worker tree: the workers, their
+        // node_modules and nothing of the reader.
+        "node-worker" => Some(&["/lib", "/usr/lib", "/usr/local/bin/node", "/opt/media"]),
         _ => None,
     }
 }
@@ -112,7 +113,7 @@ pub fn parse(text: &str) -> Result<Vec<String>, String> {
 
 /// Load and parse a named profile, or explain why it is unknown/invalid.
 pub fn load(name: &str) -> Result<Vec<String>, String> {
-    let text = source(name).ok_or_else(|| format!("unknown profile {name:?} (A0 ships: node-worker)"))?;
+    let text = source(name).ok_or_else(|| format!("unknown profile {name:?} (A1 ships: node-worker)"))?;
     parse(text)
 }
 
@@ -147,7 +148,7 @@ mod tests {
         // directory (media-jail, npm, and in A1 nsm-attest and socat live
         // there), no /etc, /run or /sys.
         let binds = binds("node-worker").unwrap();
-        assert_eq!(binds, ["/lib", "/usr/lib", "/usr/local/bin/node", "/opt/probe"]);
+        assert_eq!(binds, ["/lib", "/usr/lib", "/usr/local/bin/node", "/opt/media"]);
         for b in binds {
             assert!(b.starts_with('/') && !b.ends_with('/'), "{b} is not a clean absolute path");
         }

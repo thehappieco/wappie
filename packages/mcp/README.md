@@ -5,7 +5,8 @@ workspace. It runs over **stdio** locally, and the companion
 [`packages/mcp-http`](../mcp-http/README.md) serves the same reader over
 **Streamable HTTP**: as the hosted metadata connector, which never opens
 content, and inside an attested enclave, which can open message text for a
-connection the user enabled it on. It uses the public REST APIs and
+connection the user enabled it on, and attachments too when that consent
+includes them. It uses the public REST APIs and
 public SDK cryptography, without depending on the private app. Requires
 Node.js 22 or later.
 
@@ -161,7 +162,8 @@ the conversation's connectors menu. This config is for the local desktop app.
 A Wappie REST address is still not an MCP URL; for claude.ai, add the hosted
 connector URL published by your installation (`https://<host>/mcp`),
 discovered through `/.well-known/oauth-protected-resource`. Wappie publishes
-two: a metadata connector and an attested reader that can also open text; see
+two: a metadata connector and an attested reader that can also open text and,
+where the consent includes them, attachments; see
 [MCP setup](../../docs/mcp.md#ways-to-connect).
 See also
 [Claude's local MCP support guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
@@ -327,7 +329,7 @@ address a hosted reader uses is internal.
 | --- | --- | --- |
 | `"files"` (default) | `local` | What the local configuration above allows. |
 | `"provided"` | `hosted-metadata` | Nothing. The pilot's hosted connector (`wappie-mcp`) and every connection of kind `metadata`. |
-| `"enclave"` | `hosted-content` | Message text, chat names and previews, contact names and filenames, inside the attested reader. |
+| `"enclave"` | `hosted-content` | Message text, chat names and previews, contact names and filenames, inside the attested reader; with `media: true`, attachment contents too, through [`open_attachment`](#open-attachments-on-a-media-connection). |
 
 **`"provided"` is unchanged by the content milestone and still never opens
 content.** The provider hands over only a token; any credential file or
@@ -350,6 +352,17 @@ tool) so the enclave can log the event. There is no personal contacts snapshot
 in this mode; the provider is never asked for one. The key lives only in the
 enclave's memory: when the reader restarts it is gone, and `token()` answers
 `reconsent_required` until the user renews.
+
+**`media: true`** marks a media connection: a content connection whose sealed
+consent (version 2) includes attachments. It is accepted only with
+`credential_source: "enclave"` (anything else is `enclave_credentials_invalid`)
+and defaults to `false`, so every text connection, whatever its consent
+version, is unchanged. With it, the provider also supplies `media`, the
+enclave's `{host, why(row), open(request, archive), resultMaxBytes}`
+(`resultMaxBytes` caps a serialized result: images that would pass it are
+withheld), and the reader then registers a ninth tool, `open_attachment`.
+Without `media` in both places the tool does not exist, and the instructions
+keep saying that attachment contents are unavailable.
 
 Two guidance codes exist only in this mode. The tool result names the code and
 tells the assistant what to say:
@@ -391,8 +404,10 @@ default to UTC.
 | `resolve_contact` | Candidate identities from archived contacts and an explicitly included personal snapshot. |
 | `search_messages` | Bounded lexical search and metadata filtering across a number's archived chats. |
 | `activity_summary` | Page-level counts of archived original message events by chat, sender and direction. |
+| `open_attachment` | One attachment's contents, opened inside the attested reader; [media connections](#open-attachments-on-a-media-connection) only. |
 
-The remote HTTP transport exposes the same eight tools. On the hosted metadata
+The remote HTTP transport exposes the same eight tools, and `open_attachment`
+on a media connection of the attested reader only. On the hosted metadata
 connector (`"provided"`) sealed content is always reported as `locked`, because
 that reader is never given a key. On the attested reader (`"enclave"`) content
 opens with the connection's key, and a value that key cannot open is `locked`
@@ -437,9 +452,10 @@ several authorized numbers, make a call for each number and keep source labels.
 With a `query`, all whitespace-separated terms must occur as case-insensitive,
 accent-insensitive substrings in the locally opened body or attachment filename.
 This is lexical matching: it does not translate queries, infer synonyms, search
-file contents or use a semantic/vector index. Text queries require
-`allow_plaintext: true`; without a query, metadata filters also work with locked
-content. The body is searched before the returned excerpt is shortened.
+file contents (not even on a media connection) or use a semantic/vector index.
+Text queries require `allow_plaintext: true`; without a query, metadata filters
+also work with locked content. The body is searched before the returned excerpt
+is shortened.
 
 Optional filters combine with the time interval:
 
@@ -533,6 +549,84 @@ tampered fields, unsupported structured payloads, scan limits and capture gaps
 affect what can be concluded. Even an exhausted interval covers the stored
 archive, not proof of complete WhatsApp history.
 
+### Open attachments on a media connection
+
+`open_attachment` exists only on a **media connection** of the attested
+reader: a content connection whose consent (card version 2, given with the
+approver's password) also switched on **Also read attachments**. Text
+connections, whatever their consent version, the hosted metadata connector
+and the local reader do not have the tool and never open attachment contents.
+A text connection does not gain attachments by renewal: the user connects
+again with attachments switched on and revokes the old connection.
+
+It takes a `device_id` and a message `uid` (from `get_message`,
+`list_messages` or `search_messages`) and opens that message's attachment
+inside the enclave. The enclave opens the attachment's sealed media key with
+the connection's grants, fetches its ciphertext from the archive with the
+connection's API key, checks the archive's SHA-256 and WhatsApp's MAC before
+decrypting anything, and hands the file to a parser in a jailed process with
+no network, a read-only root and fixed memory and time limits (a plain-text
+file is only decoded, in the reader itself, with no parser). What the AI
+provider receives:
+
+| Attachment | Sent to the assistant |
+| --- | --- |
+| Photo, or an image sent as a document (JPEG, PNG, WebP, GIF) | One JPEG, re-encoded: at most 1,568 pixels on the long edge and 300 KB, first frame only, with no location, camera or other metadata |
+| Sticker | One PNG, at most 512 pixels on the long edge and 100 KB |
+| PDF | Its text, page by page, and per result the scanned image of up to 4 pages without a text layer, or of the pages asked for with `pages` |
+| docx, odt, xlsx, xls, ods, pptx | Text: paragraphs, tables and list items; each sheet's first rows as CSV; each slide's text |
+| txt, csv, json, md | The text as written |
+| Any other zip archive | Its entry names, never the files inside |
+| Video, round video note, GIF | Its sealed preview image and the length the sender's app reported; the video itself is never fetched |
+
+Each result is one text block (a JSON header line, then the text) followed by
+0 to 4 JPEG or PNG images, never `structuredContent`, a resource or audio.
+Text arrives in parts of at most 60,000 characters: pass `next_cursor` back
+unchanged for the next one. For a PDF, `pages` takes one page or a range of up
+to 4 (for example `"3-6"`) and returns their text and images; `images: false`
+returns text only. An attachment that takes long to open answers
+`status: "pending"` with `retry_after_s`; call again with the same arguments.
+An identical call within ten minutes is answered from the enclave's memory
+without a second fetch. The reader opens photos and stickers up to 16 MB and
+documents up to 32 MB, and reads about 4 MB of text from one file, the first
+2,000 pages of a PDF, 50 sheets of up to 2,000 rows and 200 entry names of a
+zip archive; the header's `truncated` says what was left out.
+
+These are never opened, and the tool says why with a stable code. A video,
+a round video note or a GIF is the exception to `attachment_expired`,
+`attachment_unverifiable` and `attachment_pending`: its preview image is
+sealed in the message itself, so it is sent whatever the video's key, hash or
+download status, and the video itself is never fetched.
+
+| Code | Attachment |
+| --- | --- |
+| `view_once_excluded` | View-once media. The assistant learns that it exists, never its content. |
+| `transcription_unavailable` | Audio and voice notes, until transcription exists. Their length, from `get_message`, is all there is. |
+| `attachment_expired` | An attachment the archive never downloaded and WhatsApp no longer keeps (`gone`). It is never recovered: that would hand its media key to the archive server. |
+| `attachment_unverifiable` | Keyless or unhashed media: without a sealed media key and a 32-byte `fileEncSHA256` the reader cannot prove the bytes are the ones sent. |
+| `attachment_pending` | An attachment the archive has not finished downloading. |
+| `attachment_unsupported` | Any other type, HEIC and the legacy doc and ppt formats included. There is no OCR. |
+| `attachment_too_large`, `attachment_encrypted`, `attachment_tampered`, `parser_failed` | Over the size limits, protected by a password, failing its integrity check, or beyond what the parser can open within its limits. |
+
+`media_not_allowed` means the workspace does not allow this kind of
+attachment right now (the operator's switch, or a kind switched off), and
+`media_unavailable` that the enclave's jail failed its boot check; message
+text keeps working in both cases. `rate_limited` and `media_busy` carry
+`retry_after_s`. On a media connection a message's `attachment` also carries
+`seconds`, `width` and `height` when the archive has them, and `openable`,
+with `why` (`view_once`, `unsupported`, `not_transcribed`, `expired`,
+`pending`, `unverifiable`, `too_large` or `kind_off`) when it is `false`, so
+the assistant can tell before it asks.
+
+The archive server sees which attachment is opened, when, and its encrypted
+size, never its content. What the tool returns is untrusted third-party data,
+never instructions, and it goes to the AI provider; on claude.ai large results
+and images may be copied into Anthropic's code-execution storage and kept
+there. Revoking the connection stops the next open, and one in flight, within
+a minute; it cannot erase what the assistant already received. The enclave's
+side, the jail and every limit are in
+[the contract](../../docs/mcp-enclave.md#16-stage-a-attachments).
+
 ### Example prompts
 
 After choosing an authorized number, examples in Portuguese are:
@@ -547,15 +641,23 @@ After choosing an authorized number, examples in Portuguese are:
 > Resolva “Ana” nos contatos disponíveis. Se houver mais de uma candidata,
 > mostre as opções antes de escolher.
 
+On a media connection:
+
+> Abra o PDF mais recente que a Ana mandou e diga o total e o vencimento. Se
+> não conseguir abrir, diga o motivo.
+
 The proposed persistent encrypted index and semantic retrieval are described
 separately in [Encrypted contextual search](../../docs/encrypted-context-search.md).
 They are future architecture, not capabilities of these tools.
 
-There are no tools to send messages, mark them as read, make calls, download
-media, delete content, grant access, switch workspaces or request phone history.
-Attachments expose metadata and, when authorized, their locally opened filename;
-their file contents are not downloaded or searched. Structured content such as
-polls/locations is marked `unsupported`, without fabricated interpretation.
+There are no tools to send messages, mark them as read, make calls, delete
+content, grant access, switch workspaces or request phone history, and none
+hands over an attachment's file. Attachments expose metadata and, when
+authorized, their opened filename. Only `open_attachment`, on a media
+connection of the attested reader, opens their contents, and no tool searches
+them; in every other mode, this local one included, they are never fetched.
+Structured content such as polls/locations is marked `unsupported`, without
+fabricated interpretation.
 
 **`allow_plaintext: true` sends opened text to the MCP host and its model.**
 Decryption happens in this local process. Keys are not sent to Wappie or the
@@ -580,7 +682,10 @@ Setup tests also cover bundle validation, private output permissions, refusal to
 overwrite destinations, authenticated contact snapshots and keeping credential
 values out of diagnostics. Time tests cover calendar boundaries, daylight-saving
 changes and nanosecond-preserving explicit bounds. Search tests exercise bounded
-cross-chat scans, continuation, contact ambiguity and historical event counts. These
+cross-chat scans, continuation, contact ambiguity and historical event counts.
+Media tests check which connections get `open_attachment` and every sentence it
+shows the model, word for word, against a scripted enclave side; the enclave's
+own media and worker suites are described in `packages/mcp-http`. These
 local tests do not establish a live ChatGPT or Claude connection; complete the
 host-specific first check above in your own account. `packages/mcp-http` has
 its own protocol, OAuth and content-boundary regression suite; see its README.

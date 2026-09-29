@@ -1261,10 +1261,12 @@ number of pages.
 
 **Deliberately narrow.** The password stays (one Argon2id derivation for all
 chosen numbers); durations are 1, 30 or 90 days with a seven-day idle refresh;
-the personal contacts snapshot, attachment bytes and sending are out; text is
-enabled only for workspaces the operator lists (`WS_MCP_CONTENT_TENANTS`)
-behind a kill switch (`WS_MCP_CONTENT_ENABLED`). Legal texts and these docs are
-published before any workspace other than the test workspace is listed.
+the personal contacts snapshot, attachment bytes and sending are out (for 2b;
+stage A opens attachments for media connections only, see
+[§16](mcp-enclave.md#16-stage-a-attachments)); text is enabled only for
+workspaces the operator lists (`WS_MCP_CONTENT_TENANTS`) behind a kill switch
+(`WS_MCP_CONTENT_ENABLED`). Legal texts and these docs are published before
+any workspace other than the test workspace is listed.
 
 The local stdio MCP is unchanged. `docs/rest-api.md` still holds: the archive
 server never opens archived content or receives archive private keys. The

@@ -16,10 +16,12 @@ import { LocalConfigError, validateConfig } from '@whatserver2/mcp/config'
 /** The scan budget per text-search call: the REST sequence depends on it, never on what matched. */
 export const CONTENT_MAX_SCAN = 500
 
+/** A record without `media` (every 0.3.0 record included) is a text connection. */
 export function contentConfigFor(record, archive) {
   return validateConfig({
     server: archive, workspace: record.workspace_id, device_ids: record.device_ids, timezone: record.timezone,
     allow_plaintext: true, credential_source: 'enclave', service_user_id: record.service_user_id, max_scan_messages: CONTENT_MAX_SCAN,
+    media: record.media === true,
   })
 }
 
@@ -34,8 +36,10 @@ export function renewalURL(consoleURL, connectionID) {
  * `onStaleGrant()` (optional) is called, with nothing, each time the reader
  * refuses one of this connection's grants as `stale_grant`; the enclave logs
  * the event. The reader neither awaits it nor lets it throw into the tool.
+ * `media` (media/service.mjs forConnection, docs/mcp-enclave.md §16.5) is
+ * given only to a record whose sealed consent includes attachments.
  */
-export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant } = {}) {
+export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media } = {}) {
   const id = record.connection_id
   const held = () => {
     const stored = connkeys.get(id)
@@ -51,5 +55,6 @@ export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant 
     contactPack: async () => null,
     // What the reader passes (the number) stays here: the event names the connection only.
     onStaleGrant: () => { onStaleGrant?.() },
+    ...(media ? { media } : {}),
   }
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { bundleSchema, contentBundleSchema, validateBundle, validateContentBundle, CONTENT_CONSENT_VERSION } from '../bundle.mjs'
+import { bundleSchema, contentBundleSchema, validateBundle, validateContentBundle, CONTENT_CONSENT_VERSIONS } from '../bundle.mjs'
 
 const workspace = '018f3a2b-2222-7000-8000-00000000bbbb'
 const device = '018f3a2b-2222-7000-8000-00000000dddd'
@@ -35,7 +35,7 @@ const consent = () => ({ version: 2, kind: 'content', purpose: 'consent', server
 const renewal = () => { const value = { ...consent(), purpose: 'renewal', connection_id: connection }; delete value.link_secret; return value }
 
 test('content bundle v2 accepts a consent and a renewal and returns them frozen', () => {
-  assert.equal(CONTENT_CONSENT_VERSION, 1)
+  assert.deepEqual(CONTENT_CONSENT_VERSIONS, [1, 2])
   const accepted = validateContentBundle(consent(), now)
   assert.ok(Object.isFrozen(accepted) && Object.isFrozen(accepted.device_ids))
   assert.equal(accepted.link_secret, linkSecret)
@@ -61,7 +61,8 @@ test('content bundle v2 never carries a service key, contacts or a plaintext fla
   const many = Array.from({ length: 101 }, (_, index) => `018f3a2b-2222-7000-8000-${String(index).padStart(12, '0')}`)
   for (const [label, override] of Object.entries({
     v1: { version: 1 }, v3: { version: 3 }, metadata: { kind: 'metadata' }, purpose: { purpose: 'upgrade' },
-    persisted: { key_mode: 'persisted' }, consent_version: { consent_version: 2 }, consent_string: { consent_version: '1' },
+    persisted: { key_mode: 'persisted' }, consent_version: { consent_version: 3 }, consent_zero: { consent_version: 0 }, consent_string: { consent_version: '1' },
+    media_v1: { media: true }, media_string: { consent_version: 2, media: 'true' }, media_null: { consent_version: 2, media: null },
     http: { server_url: 'http://mcp.wappie.thehappie.co' }, localhost: { server_url: 'http://localhost:8080' }, path: { server_url: 'https://mcp.wappie.thehappie.co/mcp' },
     slash: { server_url: 'https://mcp.wappie.thehappie.co/' }, userinfo: { server_url: 'https://user@mcp.wappie.thehappie.co' },
     workspace: { workspace_id: 'not-a-uuid' }, service: { service_user_id: undefined }, no_devices: { device_ids: [] }, too_many: { device_ids: many },
@@ -86,4 +87,19 @@ test('v1 and v2 never accept each other: no v1 path can open a content bundle', 
   assert.equal(contentBundleSchema.safeParse(bundle()).success, false)
   assert.equal(contentBundleSchema.safeParse({ ...bundle(), version: 2 }).success, false)
   assert.throws(() => validateContentBundle({ ...bundle(), link_secret: linkSecret }, now), { code: 'invalid_bundle' })
+})
+
+test('consent version 2 (docs/mcp-enclave.md §16.2): with or without media, and media only on version 2', () => {
+  const text = validateContentBundle({ ...consent(), consent_version: 2 }, now)
+  assert.equal(text.consent_version, 2)
+  assert.equal(text.media, undefined, 'absent means a text connection')
+  const media = validateContentBundle({ ...consent(), consent_version: 2, media: true }, now)
+  assert.equal(media.media, true)
+  assert.equal(validateContentBundle({ ...consent(), consent_version: 2, media: false }, now).media, false)
+  assert.equal(validateContentBundle({ ...consent(), media: false }, now).media, false, 'a version-1 bundle may say false')
+  assert.equal(validateContentBundle({ ...renewal(), consent_version: 2, media: true }, now).media, true, 'a renewal seals the consent again')
+  for (const bad of [{ media: true }, { consent_version: 1, media: true }]) {
+    assert.throws(() => validateContentBundle({ ...consent(), ...bad }, now), { code: 'invalid_bundle' }, JSON.stringify(bad))
+    assert.equal(contentBundleSchema.safeParse({ ...consent(), ...bad }).success, false)
+  }
 })

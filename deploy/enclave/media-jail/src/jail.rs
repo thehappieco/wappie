@@ -25,11 +25,16 @@
 // (deferred: it does not move the parent, only makes the forked child PID 1),
 // so the parent keeps the host mount namespace and can drive cgroupfs by path
 // throughout. The child unshares mount/net/ipc/uts for itself, so its root
-// switch and mounts never disturb the parent. This is the one deviation from
-// annex §16.6 step 1 (where the main Node would hold cgroup.kill); giving
-// media-jail the wall enforcement is what the A0 task asks for.
+// switch and mounts never disturb the parent. The reader's Node never touches
+// cgroupfs (§16.6 "Killing a job"): media-jail holds the wall timeout, and the
+// reader stops a job by sending media-jail SIGTERM (exit 143).
+//
+// Dying together: media-jail asks for SIGTERM when the reader's Node dies
+// (PR_SET_PDEATHSIG), and its child asks for SIGKILL when media-jail dies, so
+// no job outlives the process that wanted it. The child's last write to the
+// facts pipe closes the race of media-jail dying before that request.
 
-use crate::args::{cpu_list, Config, Slot};
+use crate::args::{cpu_list, Config};
 use crate::emulate::Emulate;
 use crate::json::Val;
 use crate::seccomp::KillAction;
@@ -40,6 +45,7 @@ use std::fs;
 use std::io;
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 const CGROUP_BASE: &str = "/run/cg2/media";
@@ -50,6 +56,47 @@ const KILL_GRACE: Duration = Duration::from_secs(2);
 
 fn last() -> io::Error {
     io::Error::last_os_error()
+}
+
+/// The stop signal media-jail received (SIGTERM, SIGINT or SIGHUP), or 0.
+static STOP: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn on_stop(sig: libc::c_int) {
+    STOP.store(sig, Ordering::SeqCst);
+}
+
+/// SIGTERM, SIGINT and SIGHUP end the job as the wall timeout does, and
+/// media-jail then exits 143 (§16.6 "Signals"). The handler only records the
+/// signal; the wait loop acts on it within one 50 ms tick. execve resets the
+/// handlers, so the worker never inherits them.
+fn watch_stop_signals() -> Result<(), String> {
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+        sa.sa_sigaction = on_stop as extern "C" fn(libc::c_int) as usize;
+        unsafe { libc::sigemptyset(&mut sa.sa_mask) };
+        if unsafe { libc::sigaction(sig, &sa, std::ptr::null_mut()) } != 0 {
+            return Err(format!("sigaction({sig}): {}", last()));
+        }
+    }
+    Ok(())
+}
+
+/// SIGTERM when the process that started media-jail (the reader's Node) dies.
+/// A parent that died before the request leaves media-jail reparented, which
+/// getppid shows: then there is nobody to run the job for.
+fn die_with_parent() -> Result<(), String> {
+    let parent = unsafe { libc::getppid() };
+    if prctl2(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0 {
+        return Err(format!("prctl(PR_SET_PDEATHSIG): {}", last()));
+    }
+    if unsafe { libc::getppid() } != parent {
+        return Err("the reader exited before the job started".into());
+    }
+    Ok(())
+}
+
+fn stop_requested() -> bool {
+    STOP.load(Ordering::SeqCst) != 0
 }
 
 fn cstr(s: &str) -> CString {
@@ -543,10 +590,8 @@ fn clear_capabilities() -> Result<(), String> {
     for cap in 0..64 {
         match prctl2(libc::PR_CAPBSET_READ, cap) {
             r if r < 0 => break,
-            1 => {
-                if prctl2(libc::PR_CAPBSET_DROP, cap) != 0 {
-                    return Err(format!("drop capability {cap} from the bounding set: {}", last()));
-                }
+            1 if prctl2(libc::PR_CAPBSET_DROP, cap) != 0 => {
+                return Err(format!("drop capability {cap} from the bounding set: {}", last()));
             }
             _ => {}
         }
@@ -614,9 +659,16 @@ fn pin_cpus(cpus: &[u32]) -> Result<(), String> {
 /// What only the child knows, sent to the parent over a close-on-exec pipe just
 /// before the exec: how it entered its root, and that its capability sets were
 /// verified empty. One line of `key=value` words.
-fn send_facts(fd: libc::c_int, how: RootSwitch) {
+/// The write fails (EPIPE: Rust leaves SIGPIPE ignored) once media-jail is
+/// gone, which ends the child before the exec: the one moment its SIGKILL
+/// parent-death request could have missed media-jail's exit.
+fn send_facts(fd: libc::c_int, how: RootSwitch) -> Result<(), String> {
     let line = format!("root_switch={} caps=cleared\n", how.name());
-    unsafe { libc::write(fd, line.as_ptr() as *const c_void, line.len()) };
+    let n = unsafe { libc::write(fd, line.as_ptr() as *const c_void, line.len()) };
+    if n != line.len() as isize {
+        return Err(format!("media-jail is gone (facts pipe: {})", last()));
+    }
+    Ok(())
 }
 
 fn parse_facts(text: &str) -> Vec<(String, String)> {
@@ -772,11 +824,7 @@ fn child_inner(plan: &Plan, go_read: libc::c_int, facts: libc::c_int) -> Result<
     //    stay on the job's CPUs when the cgroup cannot hold them.
     fs::write("/proc/self/oom_score_adj", b"1000\n")
         .map_err(|e| format!("oom_score_adj: {e}"))?;
-    let nice = match cfg.slot {
-        Slot::Light => 19,
-        Slot::Heavy => 10,
-    };
-    unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, nice) };
+    unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, cfg.slot.nice()) };
     if let Some(cpus) = &plan.pin {
         pin_cpus(cpus)?;
     }
@@ -805,6 +853,11 @@ fn child_inner(plan: &Plan, go_read: libc::c_int, facts: libc::c_int) -> Result<
     if unsafe { libc::setuid(0) } == 0 {
         return Err("regained uid 0 after dropping privileges".into());
     }
+    // The credential change cleared any parent-death signal: ask for SIGKILL
+    // now, so the job ends with media-jail whatever ends media-jail.
+    if prctl2(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
+        return Err(format!("prctl(PR_SET_PDEATHSIG): {}", last()));
+    }
     verify_no_capabilities()?;
 
     // 8. No new privileges.
@@ -818,7 +871,7 @@ fn child_inner(plan: &Plan, go_read: libc::c_int, facts: libc::c_int) -> Result<
     //    able to write there. A close-on-exec copy of the real stderr carries
     //    this child's own last errors until execve. close_from also closes the
     //    facts pipe.
-    send_facts(facts, how);
+    send_facts(facts, how)?;
     close_from(3);
     let diag = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
     let null = unsafe { libc::open(cstr("/dev/null").as_ptr(), libc::O_WRONLY) };
@@ -843,40 +896,47 @@ fn child_inner(plan: &Plan, go_read: libc::c_int, facts: libc::c_int) -> Result<
     //     is installed first so this very install is still allowed.
     seccomp::apply_programs(plan.allow, plan.shim).map_err(fail)?;
 
-    // 11. execve with a controlled environment (§16.6 step 7).
-    let prog = cstr(&cfg.program);
-    let mut argv_c: Vec<CString> = Vec::with_capacity(cfg.argv.len() + 1);
-    argv_c.push(cstr(&cfg.program));
-    for a in &cfg.argv {
-        argv_c.push(cstr(a));
-    }
+    // 11. execve the worker's row, argv exactly as the table has it, with
+    //     exactly the §16.6 environment. OPENSSL_armcap skips OpenSSL's SVE
+    //     probe, one SIGILL per Node start on 4.14; a worker does no
+    //     cryptography. libvips is configured by the worker in code.
+    let argv_c: Vec<CString> = cfg.worker.argv.iter().map(|a| cstr(a)).collect();
     let mut argv_p: Vec<*const libc::c_char> = argv_c.iter().map(|c| c.as_ptr()).collect();
     argv_p.push(std::ptr::null());
-
-    let env: Vec<CString> = [
-        "UV_USE_IO_URING=0",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-    ]
-    .iter()
-    .map(|s| cstr(s))
-    .collect();
+    let env: Vec<CString> = ENV.iter().map(|s| cstr(s)).collect();
     let mut env_p: Vec<*const libc::c_char> = env.iter().map(|c| c.as_ptr()).collect();
     env_p.push(std::ptr::null());
 
-    unsafe { libc::execve(prog.as_ptr(), argv_p.as_ptr(), env_p.as_ptr()) };
+    unsafe { libc::execve(argv_c[0].as_ptr(), argv_p.as_ptr(), env_p.as_ptr()) };
     let err = last();
-    Err(fail(format!("execve {}: {err}", cfg.program)))
+    Err(fail(format!("execve {}: {err}", cfg.worker.argv[0])))
 }
+
+/// The worker's whole environment (§16.6 "Environment").
+pub const ENV: [&str; 5] = [
+    "UV_USE_IO_URING=0",
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "HOME=/tmp",
+    "TMPDIR=/tmp",
+    "OPENSSL_armcap=0",
+];
 
 // ---- parent orchestration ---------------------------------------------------
 
-/// Run one job. Returns the process exit code media-jail itself exits with:
-/// the worker's code on a clean exit, 124 on the wall timeout, 137 on an OOM
-/// kill, 128+signal on any other signal, 125 when a killed job could not be
-/// reaped, 3 on a setup error before the fork.
+/// Run one job. Returns the process exit code media-jail itself exits with
+/// (§16.6): the worker's code on a clean exit, 124 on the wall timeout, 137 on
+/// an OOM kill, 143 when stopped by SIGTERM, SIGINT or SIGHUP, 128+signal on
+/// any other signal, 125 when a killed job could not be reaped, 3 on a setup
+/// error before the fork, 127 when the child's setup failed after it.
 pub fn run(cfg: Config) -> i32 {
+    if let Err(e) = watch_stop_signals() {
+        eprintln!("media-jail: {e}");
+        return 3;
+    }
+    if let Err(e) = die_with_parent() {
+        eprintln!("media-jail: {e}");
+        return 143;
+    }
     let emu = match Emulate::from_env() {
         Ok(e) => e,
         Err(e) => {
@@ -886,17 +946,18 @@ pub fn run(cfg: Config) -> i32 {
     };
     // Compile the seccomp filters before doing anything irreversible, so a bad
     // profile fails cleanly with exit 3 and no cgroup is left behind.
-    let names = match profile::load(&cfg.profile) {
+    let profile_name = cfg.worker.profile;
+    let names = match profile::load(profile_name) {
         Ok(n) => n,
         Err(e) => {
             eprintln!("media-jail: {e}");
             return 3;
         }
     };
-    let binds = match profile::binds(&cfg.profile) {
+    let binds = match profile::binds(profile_name) {
         Some(b) => b,
         None => {
-            eprintln!("media-jail: profile {:?} has no bind list", cfg.profile);
+            eprintln!("media-jail: profile {profile_name:?} has no bind list");
             return 3;
         }
     };
@@ -924,6 +985,10 @@ pub fn run(cfg: Config) -> i32 {
         }
     };
     // From here the cgroup exists; make sure it is removed on every path.
+    if stop_requested() {
+        let _ = fs::remove_dir(&leaf.path);
+        return 143;
+    }
     let plan = Plan {
         cfg: &cfg,
         binds,
@@ -1008,6 +1073,7 @@ fn run_with_cgroup(plan: &Plan, leaf: &Leaf, kill: KillAction) -> i32 {
     // way, for kernels without memory.peak.
     let deadline = Duration::from_secs(cfg.wall_s);
     let mut timed_out = false;
+    let mut stopped = false;
     let mut kill_method: Option<&str> = None;
     let mut reaped = true;
     let mut current_max: Option<u64> = None;
@@ -1029,6 +1095,15 @@ fn run_with_cgroup(plan: &Plan, leaf: &Leaf, kill: KillAction) -> i32 {
         // r == 0: still running.
         if let Some(c) = read_u64(&leaf.path, "memory.current") {
             current_max = Some(current_max.map_or(c, |m| m.max(c)));
+        }
+        if stop_requested() {
+            // The reader asked (a wipe, media off, invalid output, its own
+            // watchdog) or died: end the job as the wall timeout would.
+            stopped = true;
+            let (method, ok) = kill_job(leaf, pid, &mut status, &mut usage);
+            kill_method = Some(method);
+            reaped = ok;
+            break;
         }
         if !leaf.oom_group && read_events(&leaf.path).0 > 0 {
             // The kernel killed one process of the job; end the rest with it,
@@ -1068,6 +1143,8 @@ fn run_with_cgroup(plan: &Plan, leaf: &Leaf, kill: KillAction) -> i32 {
     let (outcome, code): (&str, i32) = if !reaped {
         // status was never filled in; the leaf stays behind (rmdir is EBUSY).
         ("unreaped", 125)
+    } else if stopped {
+        ("stopped", 143)
     } else if oom_group_kill > 0 || oom_kill > 0 {
         ("oom", 137)
     } else if timed_out {
@@ -1081,14 +1158,17 @@ fn run_with_cgroup(plan: &Plan, leaf: &Leaf, kill: KillAction) -> i32 {
     };
 
     // One status line on stderr, so it never mixes with worker stdout; the
-    // worker's own stderr is /dev/null, so this line cannot be forged. The A0
-    // probe records it; production Node reads memory.events itself (§16.10).
+    // worker's own stderr is /dev/null, so this line cannot be forged. The
+    // probe records it; the reader spawns media-jail with stderr ignored, so
+    // no per-job number (memory, time) leaves the process (§16.6, §16.10).
     let report = Val::Obj(vec![
         ("tool".into(), Val::s("media-jail")),
         ("id".into(), Val::s(cfg.id.clone())),
+        ("worker".into(), Val::s(cfg.worker.id)),
         ("slot".into(), Val::s(cfg.slot.name())),
-        ("profile".into(), Val::s(cfg.profile.clone())),
+        ("profile".into(), Val::s(cfg.worker.profile)),
         ("outcome".into(), Val::s(outcome)),
+        ("stop_signal".into(), Val::Int(STOP.load(Ordering::SeqCst) as i64)),
         ("exit_code".into(), Val::Int(exit_code as i64)),
         ("term_signal".into(), Val::Int(term_sig as i64)),
         ("timed_out".into(), Val::Bool(timed_out)),
@@ -1147,7 +1227,7 @@ fn run_with_cgroup(plan: &Plan, leaf: &Leaf, kill: KillAction) -> i32 {
             Val::Arr(plan.emu.names().into_iter().map(Val::s).collect()),
         ),
     ]);
-    eprintln!("{}", report.to_string());
+    eprintln!("{report}");
     code
 }
 
@@ -1197,6 +1277,15 @@ mod tests {
         assert_eq!(unescape_mount("/plain"), "/plain");
         // A lone backslash that is not an escape stays as it is.
         assert_eq!(unescape_mount("/x\\9"), "/x\\9");
+    }
+
+    #[test]
+    fn the_worker_environment_is_exactly_section_16_6() {
+        assert_eq!(
+            ENV,
+            ["UV_USE_IO_URING=0", "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/tmp", "TMPDIR=/tmp", "OPENSSL_armcap=0"]
+        );
+        assert!(!ENV.iter().any(|e| e.starts_with("VIPS_") || e.starts_with("NODE_") || e.starts_with("MEDIA_JAIL")));
     }
 
     #[test]

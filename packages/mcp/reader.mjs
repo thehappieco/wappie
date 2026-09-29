@@ -63,7 +63,12 @@ async function bounded(items, limit, work) {
  *   asked: there is no personal snapshot in this mode. The optional
  *   `onStaleGrant({device_id})` is told, best effort, each time a grant is
  *   refused as `stale_grant`, so the enclave can log the event; it is neither
- *   awaited nor allowed to throw into the tool.
+ *   awaited nor allowed to throw into the tool. On a connection whose sealed
+ *   consent includes attachments (`config.media`), `media` is the enclave's
+ *   `{host, why(row), open(request, archive), resultMaxBytes}`
+ *   (docs/mcp-enclave.md §16.5): `openAttachment` hands it the call and an
+ *   `archive` of the two reads it needs, and every attachment the reader
+ *   describes says whether it opens.
  * A local (files) config ignores the provider.
  */
 export async function createReader(config, provider) {
@@ -89,6 +94,8 @@ export async function createReader(config, provider) {
   const locked = () => ({ state: 'locked', reason: lockedReason })
   const credential = await loadCredential(config, provider)
   if (content && (typeof provider.serviceKey !== 'function' || typeof provider.expectedEpoch !== 'function')) throw new LocalConfigError('credential_provider_required')
+  // Attachments open only on the attested reader, for a consent that includes them.
+  const media = content && config.media === true && typeof provider.media?.open === 'function' ? provider.media : null
   const api = new ArchiveClient({ serverURL: config.server, workspaceID: config.workspace, token: credential.token })
   const allowed = device => !config.device_ids || config.device_ids.includes(device)
   function permit(device) { if (!allowed(device)) throw new ArchiveError('not_authorized', 403) }
@@ -160,12 +167,26 @@ export async function createReader(config, provider) {
       return result
     } finally { data?.fill(0); raw?.fill(0); archive?.fill(0) }
   }
+  /**
+   * A row's attachment with its opened filename. On a media connection it also
+   * carries the dimensions and length the row has, and whether open_attachment
+   * would open it (`openable`, and `why` not when false), from the row alone.
+   */
+  function attachmentOf(row, filename) {
+    const attachment = { ...metadata(row).attachment, filename }
+    if (!media) return attachment
+    for (const key of ['seconds', 'width', 'height']) if (typeof row.media[key] === 'number') attachment[key] = row.media[key]
+    const why = media.why(row)
+    attachment.openable = why === null
+    if (why !== null) attachment.why = why
+    return attachment
+  }
   async function messages(rows, device, opener) {
     if (rows.some(row => row.device_id !== device)) throw new ArchiveError('device_mismatch')
     await opener?.prefetch(rows.map(row => row.content_key_id))
     return Promise.all(rows.map(async row => ({ ...metadata(row),
       body: row.body_sealed ? opener ? openedValue(await opener.body(row)) : locked() : omitted(),
-      ...(row.media ? { attachment: { ...metadata(row).attachment, filename: row.media.filename_sealed ? opener ? openedValue(await opener.fileName(row)) : locked() : omitted() } } : {}),
+      ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(await opener.fileName(row)) : locked() : omitted()) } : {}),
       structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
     })))
   }
@@ -265,7 +286,7 @@ export async function createReader(config, provider) {
               counters.matched++
               if (fixedWindow && hits.length >= limit) omittedHits++
               else hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : opener ? openedValue(body) : body,
-                ...(row.media ? { attachment: { ...metadata(row).attachment, filename: opener ? openedValue(filename) : filename } } : {}),
+                ...(row.media ? { attachment: attachmentOf(row, opener ? openedValue(filename) : filename) } : {}),
                 structured_content: row.payload_sealed ? { state: 'unsupported' } : omitted(),
                 // Filled after the scan (see below); the key keeps its place.
                 archive_status: fixedWindow ? { state: 'not_checked' } : undefined,
@@ -405,6 +426,44 @@ export async function createReader(config, provider) {
       const reply = await api.getMessage(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
       return withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener))[0] }))
+    },
+    /**
+     * open_attachment (docs/mcp-enclave.md §16.5): the enclave's
+     * `media.open(request, archive)` for this call. `archive.row()` reads the
+     * message (another number's, or one without an attachment, is
+     * `attachment_not_found`, like a 404); `archive.open(row, what)` opens,
+     * with the grants of every read, the media key (`what` 'key') or the
+     * sealed preview ('thumbnail'), plus the filename and caption. The caller
+     * owns the bytes and zeroes them.
+     */
+    async openAttachment({ device_id, uid, cursor, pages, images = true }) {
+      permit(device_id)
+      if (!media) throw new ArchiveError('media_not_allowed')
+      const archive = {
+        async row() {
+          let row
+          try { row = await api.getMessage(uid) } catch (error) {
+            if (error instanceof ArchiveError && error.status === 404) throw new ArchiveError('attachment_not_found', 404)
+            throw error
+          }
+          if (row.device_id !== device_id || !row.media || typeof row.media !== 'object') throw new ArchiveError('attachment_not_found', 404)
+          return row
+        },
+        open(row, what) {
+          return withOpener(device_id, async opener => {
+            await opener.prefetch([row.content_key_id])
+            const [sealed, filename, caption] = await Promise.all([what === 'key' ? opener.mediaKey(row) : opener.thumbnail(row), opener.fileName(row), opener.body(row)])
+            const text = value => (value.state === 'ok' ? value.value : null)
+            const opened = { filename: text(filename), caption: text(caption) }
+            if (sealed.state === 'tampered') throw new ArchiveError('attachment_tampered')
+            if (sealed.state === 'locked') throw new ArchiveError('attachment_locked')
+            if (sealed.state === 'ok') opened[what] = sealed.value
+            else if (what === 'key') throw new ArchiveError('attachment_unverifiable')
+            return opened
+          })
+        },
+      }
+      return media.open({ device_id, uid, cursor, pages, images }, archive)
     },
     async listRevisions({ device_id, uid, limit = 50 }) {
       permit(device_id)

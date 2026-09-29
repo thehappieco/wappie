@@ -1,29 +1,30 @@
 #!/bin/sh
-# The CMD of the A0 PROBE enclave (deploy/enclave/probe), started by the Nitro
-# init. This is the §16.6 entrypoint change — unmount the v1 memory/pids/cpuset
-# hierarchies, mount cgroup2 at /run/cg2 and enable the controllers — kept HERE,
-# in the throwaway probe image, and NOT in the production
-# deploy/enclave/entrypoint.sh. A1 moves the reviewed version into production;
-# A0 must not change the released reader.
+# The entrypoint of the A1 PROBE enclave (deploy/enclave/probe), started by
+# the Nitro init. The image is the A1 reader image with the jail check on top
+# (Dockerfile.probe); this script prepares the enclave the way the production
+# entrypoint does and then runs the probe runner, whose report goes to the
+# enclave console (readable because probe.sh runs the enclave with
+# --debug-mode). It never starts the reader's own Node: probe-report.mjs runs
+# a stand-in (reader-bench.mjs).
 #
-# The probe has no network, no KMS, no reader: it prepares the cgroups,
-# snapshots the boot-time kernel state, then runs the probe runner, whose report
-# goes to the enclave console (readable because probe.sh runs the enclave with
-# --debug-mode).
+# What production does, it does with production's own lines: loopback up,
+# /run/wappie, and the media jail block (the cgroup2 surgery, hidepid=2 and
+# oom_score_adj -1000), which is taken from /entrypoint.sh at run time as
+# jailcheck/run.sh takes it, so what is measured is what ships. Its trace
+# goes to /run/probe/cgroup-setup.
 #
-# The console must explain the run even if Node dies: the first Nitro run
-# (2026-09-28) showed only kernel lines. So everything goes to /dev/console
-# explicitly, every step prints a numbered marker before it runs, a trivial
-# node runs first, the runner is a CHILD (never exec'd) so its exit code or
-# signal is printed, the raw /run/probe files are printed, and the END marker is
-# followed by a pause so the console drains before this script exits (the init
-# then reboots the enclave).
+# The console must explain the run even if Node dies (the A0 lesson): so
+# everything goes to /dev/console explicitly, every step prints a numbered
+# marker before it runs, a trivial node runs first, the runner is a CHILD
+# (never exec'd) so its exit code or signal is printed, the raw /run/probe
+# files are printed, and the END marker is followed by a pause so the console
+# drains before this script exits (the init then reboots the enclave).
 #
-# Environment (local smoke test only; unset in the enclave):
-#   PROBE_CONSOLE=-               keep stdout instead of /dev/console
-#   PROBE_EMULATE_OLD_KERNEL=1    behave as on the 4.14 blob on a newer kernel:
-#                                 no cpuset on cgroup2 (the runner tells
-#                                 media-jail the rest)
+# Environment (a local smoke run only; unset in the enclave):
+#   PROBE_CONSOLE=-            keep stdout instead of /dev/console
+#   PROBE_VSOCK_TIMEOUT_MS=N   how long the throughput sink waits for the parent
+#   PROBE_OBJECTS=loopback     the reader stand-in serves its documents itself
+#   PROBE_PARENT_CID=N         the parent's vsock CID (3; 1 for vsock loopback)
 set -u
 
 console=${PROBE_CONSOLE:-/dev/console}
@@ -31,16 +32,15 @@ if [ "$console" != - ]; then
   if { : > "$console"; } 2> /dev/null; then
     exec > "$console" 2>&1
   else
-    echo "A0 console $console is not writable; staying on stdout"
+    echo "A1 console $console is not writable; staying on stdout"
   fi
 fi
-emulate=${PROBE_EMULATE_OLD_KERNEL:-0}
 
 up() { cut -d' ' -f1 /proc/uptime 2> /dev/null; }
 n=0
 step() {
   n=$((n + 1))
-  echo "A0 STEP $n t=$(up) $*"
+  echo "A1 STEP $n t=$(up) $*"
 }
 
 # Run a command in the background so its pid can be printed (a kernel report
@@ -52,96 +52,30 @@ run_logged() {
   shift
   "$@" &
   pid=$!
-  echo "A0 PID $pid $label: $*"
+  echo "A1 PID $pid $label: $*"
   wait "$pid"
   rc=$?
   if [ "$rc" -gt 128 ]; then how="signal $((rc - 128))"; else how="exit $rc"; fi
-  echo "A0 EXIT $pid $label: $how"
+  echo "A1 EXIT $pid $label: $how"
   echo "$label pid=$pid rc=$rc" >> /run/probe/processes
   return "$rc"
 }
 
-# A controller an unmounted v1 hierarchy held comes back to cgroup2 only once
-# the kernel has released that hierarchy, which is asynchronous: wait up to
-# ~3 s for it to be offered. Each controller is enabled with its own write, at
-# the root and at /run/cg2/media, because one write naming a controller the
-# kernel's cgroup2 lacks (cpuset before 5.0) fails as a whole: on the first
-# Nitro run '+memory +pids +cpuset' left memory and pids off too.
-enable_controller() {
-  c=$1
-  tries=0
-  while ! grep -qw "$c" /run/cg2/cgroup.controllers 2> /dev/null; do
-    tries=$((tries + 1))
-    if [ "$tries" -gt 15 ]; then
-      echo "controller $c: not offered by cgroup2 (cgroup.controllers: $(cat /run/cg2/cgroup.controllers))"
-      return 1
-    fi
-    sleep 0.2
-  done
-  if ! err=$( { echo "+$c" > /run/cg2/cgroup.subtree_control; } 2>&1 ); then
-    echo "controller $c: root enable FAILED ($err)"
-    return 1
-  fi
-  if ! err=$( { echo "+$c" > /run/cg2/media/cgroup.subtree_control; } 2>&1 ); then
-    echo "controller $c: media enable FAILED ($err)"
-    return 1
-  fi
-  echo "controller $c: enabled (waited $tries x 0.2 s)"
-}
+node_trivial='const fs=require("fs"),os=require("os");fs.writeSync(1,"A1 NODE "+JSON.stringify({pid:process.pid,version:process.version,arch:process.arch,release:os.release(),openssl:process.versions.openssl,armcap:process.env.OPENSSL_armcap||null,sha256:require("crypto").createHash("sha256").update("a1").digest("hex").slice(0,16)})+"\n")'
 
-cgroup_setup() {
-  for c in memory pids cpuset; do
-    if grep -q " /sys/fs/cgroup/$c cgroup " /proc/mounts; then
-      if umount "/sys/fs/cgroup/$c"; then
-        echo "v1 $c: unmounted"
-      else
-        echo "v1 $c: unmount FAILED"
-      fi
-    else
-      echo "v1 $c: not a v1 mount"
-    fi
-  done
-
-  mkdir -p /run/cg2
-  if grep -q " /run/cg2 cgroup2 " /proc/mounts; then
-    echo "cgroup2: already mounted at /run/cg2"
-  elif mount -t cgroup2 cgroup2 /run/cg2; then
-    echo "cgroup2: mounted at /run/cg2"
-  else
-    echo "cgroup2: mount FAILED"
-    return 1
-  fi
-
-  # cgroup2 forbids enabling controllers in a cgroup that still holds processes
-  # (the "no internal processes" rule) unless it is the true root. In the
-  # enclave /run/cg2 IS the true root, so this normally is not needed; the init
-  # leaf move makes the probe work under a delegated (nested) cgroup too, and is
-  # harmless in the enclave.
-  mkdir -p /run/cg2/probe-init /run/cg2/media
-  echo $$ > /run/cg2/probe-init/cgroup.procs || echo "init move: FAILED"
-
-  # memory and pids are required; cpuset is used where the kernel has it on
-  # cgroup2 (5.0+), else media-jail pins jobs with sched_setaffinity.
-  wanted="memory pids cpuset"
-  [ "$emulate" = 1 ] && wanted="memory pids"
-  for c in $wanted; do
-    enable_controller "$c"
-  done
-  echo "root subtree_control: [$(cat /run/cg2/cgroup.subtree_control)]"
-  echo "media subtree_control: [$(cat /run/cg2/media/cgroup.subtree_control)]"
-}
-
-node_trivial='const fs=require("fs"),os=require("os");fs.writeSync(1,"A0 NODE "+JSON.stringify({pid:process.pid,version:process.version,arch:process.arch,release:os.release(),openssl:process.versions.openssl,armcap:process.env.OPENSSL_armcap||null,sha256:require("crypto").createHash("sha256").update("a0").digest("hex").slice(0,16)})+"\n")'
-
-echo '===WAPPIE-A0-PROBE-BEGIN==='
+echo '===WAPPIE-A1-PROBE-BEGIN==='
 # A mark in the kernel log itself: the runner reads the kernel's reports about
 # this run (SIGILLs, seccomp kills, OOM) from /dev/kmsg after it, and on the
 # console it dates the start in kernel time.
-echo "wappie-a0: probe entrypoint started" > /dev/kmsg 2> /dev/null
-step "entrypoint: pid $$, kernel $(uname -r), emulate-old-kernel=$emulate"
+echo "wappie-a1: probe entrypoint started" > /dev/kmsg 2> /dev/null
+step "entrypoint: pid $$, kernel $(uname -r)"
 mkdir -p /run/probe
-# The reader's secrets directory, created as production's entrypoint does, so
-# the jail's `paths` test (it must be absent inside the jail) means something.
+
+step "loopback up, as the production entrypoint brings it up"
+ip addr add 127.0.0.1/8 dev lo 2> /dev/null || true
+ip link set dev lo up || echo "A1 loopback: ip link set dev lo up FAILED"
+# The reader's secrets directory, as production's entrypoint makes it before
+# the media jail block, so the escape tests' `paths` check means something.
 mkdir -p /run/wappie
 chmod 0700 /run/wappie
 
@@ -165,28 +99,39 @@ run_logged node-trivial node -e "$node_trivial"
 step "node again with OPENSSL_armcap=0 (OpenSSL skips its probes): expect NO kernel line for this pid"
 run_logged node-trivial-armcap0 env OPENSSL_armcap=0 node -e "$node_trivial"
 
-step "cgroup: v1 memory/pids/cpuset out, cgroup2 at /run/cg2, controllers one at a time"
-cgroup_setup > /run/probe/cgroup-setup 2>&1
-cat /run/probe/cgroup-setup
-
-# So a jailed job cannot read the runner's /proc entries even before it gets
-# its own PID namespace (§16.6). hidepid=2 is the same mode 5.8 named
-# "invisible", and every kernel takes the number, while 4.14 refuses the name
-# (the first run's console: "proc: unrecognized mount option"). The flags the
-# init mounted /proc with are restated, because a remount resets them, and the
-# source is named, because busybox mount cannot always find /proc in
-# /proc/mounts by itself.
-step "hidepid=2 on /proc"
-if mount -o remount,nosuid,nodev,noexec,hidepid=2 proc /proc; then
-  hidepid=2
+step "the production media jail block, from /entrypoint.sh, traced to /run/probe/cgroup-setup"
+sed -n '/^# Media jail (docs\/mcp-enclave.md §16.6)/,/^echo -1000 > \/proc\/self\/oom_score_adj/p' /entrypoint.sh > /run/probe/media-block.sh
+if grep -q '^echo -1000 > /proc/self/oom_score_adj' /run/probe/media-block.sh; then
+  # In the enclave /run/cg2 is the true root, where controllers can be enabled
+  # while it holds processes. A privileged container's cgroup namespace root
+  # (the local smoke run) is not, so this shell leaves it first, as
+  # jailcheck/run.sh does.
+  if grep -q ' /sys/fs/cgroup cgroup2 ' /proc/mounts; then
+    mkdir -p /sys/fs/cgroup/probe-init
+    echo $$ > /sys/fs/cgroup/probe-init/cgroup.procs || echo "A1 cgroup: could not leave the namespace root"
+  fi
+  # Sourced, not run: oom_score_adj -1000 is this shell's, and the runner and
+  # every Node it starts inherit it, as the reader's Node does in production.
+  exec 3>&2 2> /run/probe/cgroup-setup
+  set -x
+  # shellcheck disable=SC1091 # extracted from the image at run time.
+  . /run/probe/media-block.sh
+  set +x
+  exec 2>&3 3>&-
+  {
+    echo "cgroup.controllers: [$(cat /run/cg2/cgroup.controllers 2>&1)]"
+    echo "root subtree_control: [$(cat /run/cg2/cgroup.subtree_control 2>&1)]"
+    echo "media subtree_control: [$(cat /run/cg2/media/cgroup.subtree_control 2>&1)]"
+    echo "proc: $(grep ' /proc proc ' /proc/mounts)"
+    echo "oom_score_adj: $(cat /proc/self/oom_score_adj)"
+  } >> /run/probe/cgroup-setup 2>&1
 else
-  hidepid=none
+  echo "A1 no media jail block in /entrypoint.sh" | tee /run/probe/cgroup-setup
 fi
-echo "hidepid=$hidepid ($(grep ' /proc proc ' /proc/mounts))" > /run/probe/hidepid
-cat /run/probe/hidepid
+tail -n 5 /run/probe/cgroup-setup
 
 step "heartbeat every 10 s while the runner works"
-(while :; do sleep 10; echo "A0 ALIVE t=$(up)"; done) &
+(while :; do sleep 10; echo "A1 ALIVE t=$(up)"; done) &
 beat=$!
 
 step "runner: node /probe/probe-report.mjs, as a child"
@@ -196,13 +141,13 @@ kill "$beat" 2> /dev/null
 step "raw /run/probe files"
 for f in /run/probe/*; do
   [ -f "$f" ] || continue
-  echo "A0 FILE $f BEGIN"
+  echo "A1 FILE $f BEGIN"
   cat "$f"
-  echo "A0 FILE $f END"
+  echo "A1 FILE $f END"
 done
 
 step "end"
-echo '===WAPPIE-A0-PROBE-END==='
+echo '===WAPPIE-A1-PROBE-END==='
 # Let the console drain before this script (the init's only child) exits and
 # the init reboots the enclave.
 sleep 5

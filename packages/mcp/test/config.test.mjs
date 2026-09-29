@@ -83,6 +83,16 @@ test('enclave credentials open content with a service scope and no files; every 
   assert.throws(() => validateConfig({ ...enclave, timezone: 'Mars/Olympus' }), { code: 'invalid_timezone' })
   assert.throws(() => validateConfig({ ...enclave, server: 'http://remote.example.test' }), { code: 'invalid_server' })
 })
+test('attachments (media) are the attested reader\'s only: off by default, and refused on any other credential source', () => {
+  assert.equal(validateConfig(enclave).media, false)
+  assert.equal(validateConfig({ ...enclave, media: true }).media, true)
+  for (const config of [base, service, provided]) {
+    assert.equal(validateConfig(config, '/private').media, false)
+    assert.throws(() => validateConfig({ ...config, media: true }, '/private'), { code: 'enclave_credentials_invalid' }, config.credential_source ?? 'files')
+    assert.equal(validateConfig({ ...config, media: false }, '/private').media, false)
+  }
+  assert.throws(() => validateConfig({ ...enclave, media: 'true' }), { code: 'invalid_config' })
+})
 test('readerMode names the three readers and nothing else', () => {
   assert.equal(readerMode(validateConfig(base)), 'local')
   assert.equal(readerMode(validateConfig(service)), 'local')

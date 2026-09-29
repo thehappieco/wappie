@@ -34,8 +34,10 @@ const refuse = (status, code) => Response.json({ code }, { status, headers: { 'C
  * mode with exact Host checks; `attestation({nonce})` adds the public
  * `GET /attestation` route; `trustForwarded` false ignores X-Forwarded-For;
  * `content.serverFor(record)` supplies the configuration and provider of a
- * content connection. Without `content` such a record is never served: the
- * metadata configuration and provider are the only ones this file builds.
+ * content connection, and `content.padResponse(response)` pads every /mcp
+ * response of one whose consent includes attachments (docs/mcp-enclave.md
+ * §16.10). Without `content` such a record is never served: the metadata
+ * configuration and provider are the only ones this file builds.
  */
 export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content }) {
   const gate = requireBearerAuth({ verifier, requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
@@ -89,9 +91,14 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
           if (auth instanceof Response) { meta.code = auth.status === 401 ? 'unauthorized' : auth.status === 403 ? 'insufficient_scope' : 'auth_failed'; return auth }
           meta.connection = auth.extra.connection_id
           meta.client = auth.clientId
+          // The parent sees response sizes: a media connection's are padded to
+          // buckets, all but a subscriptions/listen stream, which never ends.
+          const pads = content?.padResponse && state.connections.get(auth.extra.connection_id)?.media === true &&
+            !(await request.clone().json().then(body => body?.method === 'subscriptions/listen', () => false))
+          const padded = response => (pads ? content.padResponse(response) : response)
           const taken = limiter.take('mcp', auth.extra.connection_id, MCP_PER_MINUTE)
-          if (!taken.ok) { meta.code = 'rate_limited'; return rpcError(429, 'Too many requests.', { 'Retry-After': String(taken.retryAfter) }) }
-          return handler.fetch(request, { authInfo: auth })
+          if (!taken.ok) { meta.code = 'rate_limited'; return padded(rpcError(429, 'Too many requests.', { 'Retry-After': String(taken.retryAfter) })) }
+          return padded(await handler.fetch(request, { authInfo: auth }))
         }
         case '/mcp/authorize': meta.route = `${request.method} /mcp/authorize`; return as.authorize(request, ip, meta)
         case '/mcp/authorize/complete': meta.route = `${request.method} /mcp/authorize/complete`; return as.complete(request, ip, meta)

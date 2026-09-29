@@ -24,8 +24,11 @@ export const contactKey = n => `${String(n).padStart(6, '0')}@lid`
  * first is named 'Archived Roberto'), and `scanPage`, the most rows one scan
  * page returns. `state.historyDelayMs` slows the history route, and
  * `state.maxHistoryInFlight` records the most history requests open at once.
+ * `addMedia(fields)` adds a message with an attachment, served only by
+ * `GET /v1/messages/{uid}`, its media key, preview, filename and caption
+ * sealed like the archive seals them. `token` replaces the bearer it accepts.
  */
-export async function contentFixture({ rows: rowCount = 120, contacts: contactCount = 2200, scanPage = 40 } = {}) {
+export async function contentFixture({ rows: rowCount = 120, contacts: contactCount = 2200, scanPage = 40, token: bearer = token } = {}) {
   const account = await hpke.generateKeyPair()
   const namespace = bytes.parseUUID(vector.tenant), deviceBytes = bytes.parseUUID(device)
   const rawKey = crypto.getRandomValues(new Uint8Array(32))
@@ -37,11 +40,11 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
   const grantFor = async epoch => bytes.toBase64(await seal.sealDirect(account.publicKey, seal.Kind.DeviceGrant, namespace,
     await seal.grantRow(namespace, deviceBytes, bytes.parseUUID(service), epoch), epoch, bytes.fromBase64(vector.private_key)))
   const grants = { 1: await grantFor(1), 2: await grantFor(2) }
-  async function encrypt(row, kind, text) {
+  async function encrypt(row, kind, value) {
     const header = new Uint8Array([0x57, 0x53, 1, 1, 2, 0, 1, 0])
     const nonce = crypto.getRandomValues(new Uint8Array(12))
     const aad = bytes.concat(bytes.encodeUTF8('wsv1'), new Uint8Array([kind]), namespace, bytes.parseUUID(row), header)
-    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, aes, bytes.encodeUTF8(text)))
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, aes, typeof value === 'string' ? bytes.encodeUTF8(value) : value))
     const id = new Uint8Array(4); new DataView(id.buffer).setUint32(0, keyID, false)
     return bytes.toBase64(bytes.concat(header, id, nonce, ciphertext))
   }
@@ -58,17 +61,52 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
     if (n === 1) contact.full_name_sealed = await encrypt(contact.uid, seal.Kind.FullName, 'Archived Roberto')
     contacts.push(contact)
   }
+  const messages = new Map()
+  /**
+   * A message with an attachment: `key` (32 bytes) is sealed as its media
+   * key, `thumbnail` as its preview, `filename` and `caption` as the archive
+   * seals them. `tamper` flips a byte of the sealed key; `keyID` names a
+   * content key the archive does not serve (the key is then locked);
+   * `object` is the ciphertext `GET /v1/media/{uid}` serves.
+   */
+  const objects = new Map()
+  async function addMedia({ uid: id = uid(50_000 + messages.size), device_id = device, key, thumbnail, filename, caption, tamper = false, keyID: sealedUnder = keyID, media = {}, object, ...fields } = {}) {
+    if (object) objects.set(id, object)
+    const row = { uid: id, seq: 1, device_id, wa_id: `synthetic-media-${messages.size}`, chat_key: '5511999990000@s.whatsapp.net', ts: at, is_from_me: false,
+      kind: 'message', type: media.media_type ?? 'image', source: 'live', content_key_id: sealedUnder, ...fields, media: { download_status: 'done', ...media } }
+    if (key) {
+      const sealed = bytes.fromBase64(await encrypt(id, seal.Kind.MediaKey, key))
+      if (tamper) sealed[sealed.length - 1] ^= 1
+      row.media.media_key_sealed = bytes.toBase64(sealed)
+    }
+    if (thumbnail) row.media.thumb_sealed = await encrypt(id, seal.Kind.Thumbnail, thumbnail)
+    if (filename) row.media.filename_sealed = await encrypt(id, seal.Kind.ContactName, filename)
+    if (caption) row.body_sealed = await encrypt(id, seal.Kind.Body, caption)
+    messages.set(id, row)
+    return row
+  }
   const state = { requests: [], grantEpoch: 1, historyDelayMs: 0, historyInFlight: 0, maxHistoryInFlight: 0 }
   const http = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost'), path = url.pathname
     state.requests.push({ method: request.method, target: request.url, path })
     const send = (value, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)) }
     const reply = value => send({ tenant_id: workspace, ...value })
-    if (request.headers.authorization !== `Bearer ${token}` || request.method !== 'GET') return send({ code: 'not_authorized' }, 403)
+    if (request.headers.authorization !== `Bearer ${bearer}` || request.method !== 'GET') return send({ code: 'not_authorized' }, 403)
+    if (path.startsWith('/v1/media/')) {
+      const object = objects.get(path.slice('/v1/media/'.length))
+      if (!object) return send({ code: 'not_found' }, 404)
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(object.length) })
+      return response.end(object)
+    }
+    if (path.startsWith('/v1/messages/') && !path.endsWith('/history')) {
+      const row = messages.get(path.slice('/v1/messages/'.length)) ?? rows.find(item => path.endsWith(item.uid))
+      return row ? reply(row) : send({ code: 'not_found' }, 404)
+    }
     if (path === '/v1/devices') return reply({ devices: [{ id: device, label: 'Número autorizado', status: 'online' }] })
     if (path === '/v1/grants') return reply({ user_id: service, grants: [{ device_id: device, epoch: state.grantEpoch, archive_tenant_id: vector.tenant, sealed_dsk: grants[state.grantEpoch] }] })
     if (path.endsWith('/chats')) return reply({ device_id: device, limit: Number(url.searchParams.get('limit')), truncated: false, chats: [] })
-    if (path.endsWith('/keys')) return reply({ device_id: device, archive_tenant_id: vector.tenant, keys: [{ id: keyID, epoch: 1, sealed: bytes.toBase64(sealedKey) }] })
+    if (path.endsWith('/keys')) return reply({ device_id: device, archive_tenant_id: vector.tenant,
+      keys: (url.searchParams.get('ids') ?? '').split(',').includes(String(keyID)) ? [{ id: keyID, epoch: 1, sealed: bytes.toBase64(sealedKey) }] : [] })
     if (path.endsWith('/contacts')) {
       const after = url.searchParams.get('after_key')
       const limit = Number(url.searchParams.get('limit'))
@@ -104,7 +142,7 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
   const secret = Buffer.from(account.privateKey)
   account.privateKey.fill(0)
   return {
-    state, server, rows, contacts,
+    state, server, rows, contacts, addMedia,
     /** The service key as the attested reader holds it: a non-extractable handle. */
     handle: () => hpke.importArchiveKey(Buffer.from(secret)),
     /** The raw service key, for tests that prove bytes are refused. */

@@ -12,8 +12,9 @@
 //
 // Boot order (§10.2): boot.json; credentials and the RSA recipient key; the
 // relay secret; the key policy hash (not fatal); the sealed state; the ACME
-// account; the challenge listener, then the certificate; the HTTPS listeners;
-// reconciliation with Go. A fatal boot error writes boot_failed and exits 78;
+// account; the challenge listener, then the certificate; the media jail's
+// boot check (§16.6, never fatal: attachments stay off for the boot); the
+// HTTPS listeners; reconciliation with Go. A fatal boot error writes boot_failed and exits 78;
 // entrypoint.sh restarts Node with backoff. Invalid image constants take the
 // same path, with code constants_invalid, before anything else starts.
 import { createServer as createHTTPServer } from 'node:http'
@@ -28,7 +29,7 @@ import { attest as nsmAttest } from './attest.mjs'
 import { parseBootJson, readLocal as readLocalPort } from './boot.mjs'
 import { imageConstants, PORTS } from './constants.mjs'
 import { createContent } from './content.mjs'
-import { createHealthLine, clockSkew, prefix } from './health.mjs'
+import { createHealthLine, createMemSampler, clockSkew, prefix } from './health.mjs'
 import { createHmacGuard } from './hmac.mjs'
 import { codeOf, createKms, kmsClient, recipientKeys, roleCredentials } from './kms.mjs'
 import { createSinkWriter } from './logsink.mjs'
@@ -79,8 +80,9 @@ async function persist(collection, wait) {
 /**
  * Boots the reader. Production passes nothing. Tests inject: `constants`,
  * `sink` (a writer), `readLocal(port)`, `kms` (decrypt/dataKey/keyPolicy),
- * `attest` (NSM), `fetch`, `exit(code)`, `wait`, and `overrides` for the
- * archive URL, ACME directory, run directory, ports and clock URL.
+ * `attest` (NSM), `fetch`, `jail` (media-jail's boot check and jobs),
+ * `exit(code)`, `wait`, and `overrides` for the archive URL, ACME directory,
+ * run directory, ports and clock URL.
  */
 export async function startEnclave(options = {}) {
   // An image that still carries a build marker (or a bad ARN) is a boot
@@ -114,10 +116,12 @@ export async function startEnclave(options = {}) {
     return document
   }
 
+  const memory = createMemSampler()
   const health = createHealthLine({
     log, now, started: now(),
     probe: () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now }),
     fields: () => ({
+      ...mediaHealth(),
       cert_days_left: facts.certificates?.daysLeft() ?? undefined,
       connections: facts.state?.connections.size, pending: facts.state?.pending.size, state_dirty: facts.state?.dirty(),
       relay_secrets: facts.secrets?.count(), acme_account_id: accountId(facts.acmeUri) ?? undefined,
@@ -127,7 +131,15 @@ export async function startEnclave(options = {}) {
       content_connections: facts.content?.counts().connections, content_keys: facts.content?.counts().keys,
     }),
   })
+  /** The attachment fields of the health line (§16.10): counts since the last line. */
+  function mediaHealth() {
+    const media = facts.content?.media
+    if (!media) return {}
+    const counts = media.counts()
+    return { media_jail: media.ready(), media_opens: counts.opens, media_killed: counts.killed, media_queue: counts.queue, mem_avail_min_mb: memory.take() }
+  }
   health.start()
+  memory.start()
 
   try {
     // 1. boot.json
@@ -203,6 +215,17 @@ export async function startEnclave(options = {}) {
     await certificates.ready()
     certificates.start()
 
+    // The content connections' side, and the media jail's boot check before
+    // anything listens: a failure keeps attachments off for this boot, logged
+    // once, and text serves as before.
+    const resource = `${c.PUBLIC_ORIGIN}/mcp`
+    const content = createContent({
+      state, relay, log, now, archive, consoleURL: c.CONSOLE_URL, resource, fetch: options.fetch, jail: options.jail,
+      attestor: createAttestor({ attest, readerId: c.READER_ID, readerVersion: c.READER_VERSION, resource, spki: () => certificates.spkiSha256(), policy: () => policy.current() }),
+    })
+    facts.content = content
+    await content.media.start()
+
     // 8. The HTTPS listeners, answering 503 `starting` until the reader takes over.
     const servers = { public: httpServer(), internal: httpServer() }
     const listeners = {}
@@ -223,12 +246,6 @@ export async function startEnclave(options = {}) {
         policy_sha256: policy.current(), acme_account_uri: facts.acmeUri, relay_secrets: secrets.count(),
       }),
     }
-    const resource = `${c.PUBLIC_ORIGIN}/mcp`
-    const content = createContent({
-      state, relay, log, now, archive, consoleURL: c.CONSOLE_URL, resource, fetch: options.fetch,
-      attestor: createAttestor({ attest, readerId: c.READER_ID, readerVersion: c.READER_VERSION, resource, spki: config.spki, policy: config.policy }),
-    })
-    facts.content = content
     const reader = await startReader({
       config, now, logSink, secrets, state, relay, servers, keys: 'per-request', attest, content,
       internalAuth: createHmacGuard({ readerId: c.READER_ID, secrets, now }),
@@ -239,7 +256,7 @@ export async function startEnclave(options = {}) {
       reader, ports: Object.fromEntries(Object.entries(listeners).map(([name, server]) => [name, server.address().port]).concat([['challenge', challengeServer.address().port]])),
       material, names, secrets, state, certificates, policy, health, facts,
       async close() {
-        health.stop(); policy.stop(); certificates.stop()
+        health.stop(); memory.stop(); policy.stop(); certificates.stop()
         await reader.close()
         for (const server of [...Object.values(listeners), challengeServer]) await new Promise(resolve => server.close(() => resolve()))
         await infra.close()
@@ -247,6 +264,7 @@ export async function startEnclave(options = {}) {
     }
   } catch (error) {
     health.stop()
+    memory.stop()
     const code = error instanceof BootFailure ? error.code : 'boot_failed'
     log.event('boot_failed', { code })
     await sink.drain?.()

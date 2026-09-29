@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Assembles the A0 probe report from the enclave console, on the parent
+"""Assembles the A1 probe report from the enclave console, on the parent
 (deploy/enclave/probe; probe.sh runs it). The runner streams one line per
-finished section,
+finished section, and one per jail check result and reader stand-in result,
 
-    A0R <seq> <bytes> {"section": ..., "t": ..., "data": ...}
+    A1R <seq> <bytes> {"section": ..., "t": ..., "data": ...}
 
 where <bytes> is the UTF-8 length of the JSON, and the entrypoint prints every
 record again from /run/probe/report.jsonl at the end. So a record survives a
 kernel message that splits one copy of it (the kernel writes to the console
 without regard for a half-written user line), and a run that dies mid-way still
-yields every section it finished. The entrypoint's own lines (A0 STEP, PID,
+yields every section it finished. The entrypoint's own lines (A1 STEP, PID,
 EXIT, NODE, ALIVE) and the kernel's SIGILL reports are collected too, so the
 report explains a run even if the runner never started.
 
@@ -24,13 +24,13 @@ import pathlib
 import re
 import sys
 
-BEGIN = "===WAPPIE-A0-PROBE-BEGIN==="
-END = "===WAPPIE-A0-PROBE-END==="
-RECORD = re.compile(r"A0R (\d+) (\d+) (.*)")
+BEGIN = "===WAPPIE-A1-PROBE-BEGIN==="
+END = "===WAPPIE-A1-PROBE-END==="
+RECORD = re.compile(r"A1R (\d+) (\d+) (.*)")
 # A kernel console line starts with its timestamp, e.g. "[    0.326174] ".
 KERNEL = re.compile(r"\[\s*\d+\.\d+\] ")
 # Sections the runner emits more than once; every other name appears once.
-REPEATED = {"spawn", "exit", "jail_test", "fatal"}
+REPEATED = {"spawn", "exit", "jail_result", "bench", "fatal"}
 
 
 def console_lines(text):
@@ -111,50 +111,52 @@ def kernel_sigills(lines):
 
 
 def entrypoint_lines(lines):
-    """The entrypoint's own markers, and pid -> label from its A0 PID lines."""
+    """The entrypoint's own markers, and pid -> label from its A1 PID lines."""
     out = {"steps": [], "pids": [], "exits": [], "node": [], "last_alive": None}
     labels = {}
     for line in lines:
-        for tag, key in (("A0 STEP ", "steps"), ("A0 PID ", "pids"), ("A0 EXIT ", "exits")):
+        for tag, key in (("A1 STEP ", "steps"), ("A1 PID ", "pids"), ("A1 EXIT ", "exits")):
             at = line.find(tag)
             if at >= 0:
                 out[key].append(line[at:])
-        m = re.search(r"A0 PID (\d+) (\S+): (.*)", line)
+        m = re.search(r"A1 PID (\d+) (\S+): (.*)", line)
         if m:
             labels[int(m.group(1))] = f"entrypoint {m.group(2)}: {m.group(3)}"
-        at = line.find("A0 NODE ")
+        at = line.find("A1 NODE ")
         if at >= 0:
             try:
-                out["node"].append(json.loads(line[at + len("A0 NODE ") :]))
+                out["node"].append(json.loads(line[at + len("A1 NODE ") :]))
             except ValueError:
                 out["node"].append({"raw": line[at:]})
-        m = re.search(r"A0 ALIVE t=(\S+)", line)
+        m = re.search(r"A1 ALIVE t=(\S+)", line)
         if m:
             out["last_alive"] = m.group(1)
     return out, labels
 
 
 def process_labels(sections):
-    """pid -> what it was, from the runner's spawn records and every jailed
-    job's child_pid."""
+    """pid -> what it was, from the runner's spawn records. A jailed job's PID
+    1 is the grandchild of a spawn (jail-check.mjs or the reader stand-in
+    started it), so it is not among them."""
     labels = {}
     for entry in sections.get("spawn", []):
         d = entry.get("data") or {}
         if d.get("pid"):
             labels[d["pid"]] = f"runner spawn: {' '.join(d.get('argv') or [])}"
-
-    def jailed(name, data):
-        jail = (data or {}).get("jail") or {}
-        if jail.get("child_pid"):
-            labels[jail["child_pid"]] = f"jailed job {name}"
-
-    for entry in sections.get("jail_test", []):
-        d = entry.get("data") or {}
-        jailed(d.get("test"), d)
-    for name in ("image_job", "pdf_job"):
-        if name in sections:
-            jailed(name, sections[name].get("data"))
     return labels
+
+
+def verdict(sections):
+    """The go/no-go parts from the runner's `done` record and its sections."""
+    done = (sections.get("done") or {}).get("data") or {}
+    jail = (sections.get("jail_check") or {}).get("data") or {}
+    results = [e.get("data") or {} for e in sections.get("jail_result", [])]
+    return {
+        "go": done.get("go"),
+        "parts": done.get("parts"),
+        "jail_checks": len(results),
+        "jail_failed": [r.get("name") for r in results if not r.get("pass")] or jail.get("failed") or [],
+    }
 
 
 def assemble(text):
@@ -183,8 +185,9 @@ def assemble(text):
     done = "done" in sections
     last = max(records) if records else 0
     return {
-        "schema": "wappie-media-a0-probe-report/v2",
+        "schema": "wappie-media-a1-probe-report/v1",
         "complete": end and done,
+        "verdict": verdict(sections),
         "begin_marker": any(BEGIN in line for line in lines),
         "end_marker": end,
         "runner_done": done,
@@ -207,9 +210,10 @@ def main():
     report, ordered = assemble(console.read_bytes().decode("utf-8", "replace"))
     (out / "report.jsonl").write_text("".join(json.dumps(r) + "\n" for r in ordered))
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-    jail = ((report["sections"].get("jail") or {}).get("data")) or {}
+    v = report["verdict"]
     if report["complete"]:
-        print(f"report: complete, {report['records']} records, jail go={jail.get('go')}")
+        failed = f", failed: {'; '.join(v['jail_failed'])}" if v["jail_failed"] else ""
+        print(f"report: complete, {report['records']} records, go={v['go']} {json.dumps(v['parts'])}, {v['jail_checks']} jail checks{failed}")
         return 0
     if report["records"]:
         print(

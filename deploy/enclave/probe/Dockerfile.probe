@@ -1,56 +1,49 @@
-# The A0 PROBE image (deploy/enclave/probe). It is NEVER released: probe.sh
-# builds it with a distinct tag and a throwaway EIF, runs it in --debug-mode on
-# the parent (production stopped for the run) to answer the §4 JAIL go/no-go,
-# then throws it away. It shares
-# the pinned base images of deploy/enclave/Dockerfile so the kernel/nitro facts
-# it measures match what a released reader would see, but it carries no reader,
-# no KMS, no secrets — only media-jail, the jailed test programs, the A1
-# sharp/pdfjs stack and the probe runner.
+# The A1 PROBE image (deploy/enclave/probe). It is NEVER released: probe.sh
+# builds it with a distinct tag and a throwaway EIF, runs it in --debug-mode
+# on the parent (production stopped for the run), and throws it away.
 #
-# Build from the PUBLIC repo root, on arm64:
-#   docker build -f deploy/enclave/probe/Dockerfile.probe -t wappie-reader-probe .
+# It is the reader image of this commit (deploy/enclave/Dockerfile) with the
+# jail check of check-image.sh --jail on top (deploy/enclave/jailcheck, target
+# `check`: the A0 escape tests, the §16.13 corpus, the reader's end-to-end
+# test), and then only what the probe adds: the runner, its entrypoint, the
+# reader stand-in (reader-bench.mjs) and the vsock throughput sink. So the
+# jail, the workers, Node and the seccomp profile are the ones that ship.
+# build-image.sh builds the three in order:
+#   deploy/enclave/probe/build-image.sh <tag>
+# or by hand, from the PUBLIC repository root, on arm64:
+#   docker build -f deploy/enclave/Dockerfile --build-arg SOURCE_DATE_EPOCH=... -t R .
+#   docker build -f deploy/enclave/jailcheck/Dockerfile --target check --build-arg READER_IMAGE=R -t J .
+#   docker build -f deploy/enclave/probe/Dockerfile.probe --build-arg JAILCHECK_IMAGE=J -t P .
 # Classic Dockerfile syntax only (the parent may run the legacy builder).
 
-ARG NODE_IMAGE=node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+ARG JAILCHECK_IMAGE
 ARG RUST_IMAGE=rust:1-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f
 
-# --- media-jail and the C test programs, static musl, from committed locks ---
+# The A0 vsock throughput sink, static musl.
 FROM ${RUST_IMAGE} AS native
 RUN apk add --no-cache musl-dev build-base linux-headers
-WORKDIR /mj
-COPY deploy/enclave/media-jail/Cargo.toml deploy/enclave/media-jail/Cargo.lock ./
-COPY deploy/enclave/media-jail/src/ ./src/
-COPY deploy/enclave/media-jail/profiles/ ./profiles/
-RUN cargo build --release --locked && cp target/release/media-jail /media-jail
-COPY deploy/enclave/probe/tests/ /tests/
-RUN cc -static -O2 -Wall -o /jailtest /tests/jailtest.c \
- && cc -static -O2 -Wall -o /vsock-sink /tests/vsock-sink.c
+COPY deploy/enclave/probe/tests/vsock-sink.c /tests/vsock-sink.c
+RUN cc -static -O2 -Wall -o /vsock-sink /tests/vsock-sink.c
 
-# --- worker dependencies: the A1 sharp + pdfjs-dist stack, then @napi-rs/canvas
-#     pruned (§16 F2). sharp's platform binaries are optionalDependencies, so
-#     optional deps stay installed and only @napi-rs is removed. ---
-FROM ${NODE_IMAGE} AS workerdeps
-WORKDIR /opt/probe/worker
-COPY deploy/enclave/probe/worker/package.json deploy/enclave/probe/worker/package-lock.json ./
-RUN npm ci --no-audit --no-fund \
- && rm -rf node_modules/@napi-rs \
- && test ! -e node_modules/@napi-rs \
- && node -e "require('sharp')" \
- && test -d node_modules/pdfjs-dist
-COPY deploy/enclave/probe/worker/gen-corpus.mjs deploy/enclave/probe/worker/image-probe.mjs deploy/enclave/probe/worker/pdf-probe.mjs ./
-
-# --- the probe rootfs ---
-FROM ${NODE_IMAGE} AS probe
-COPY --from=native /media-jail /usr/local/bin/media-jail
-COPY --from=native /jailtest /opt/probe/bin/jailtest
+FROM ${JAILCHECK_IMAGE}
+# The enclave's memory holds the whole root filesystem, and nitro-cli asks
+# for four times the EIF: the check's test tree is cut to what it runs. The
+# SDK keeps its runtime dependencies only (it is built already), and the
+# worker package's test tree imports the image's own /opt/media/worker
+# dependencies, which are the ones the workers run with.
+RUN cd /opt/e2e/packages/client \
+ && rm -rf node_modules \
+ && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+ && rm -rf /root/.npm \
+ && rm -rf /opt/e2e/packages/mcp-http/enclave/media/worker/node_modules \
+ && ln -s /opt/media/worker/node_modules /opt/e2e/packages/mcp-http/enclave/media/worker/node_modules
 COPY --from=native /vsock-sink /opt/probe/bin/vsock-sink
-COPY --from=workerdeps /opt/probe/worker/ /opt/probe/worker/
-COPY deploy/enclave/probe/entrypoint-probe.sh /probe/entrypoint-probe.sh
-COPY deploy/enclave/probe/probe-report.mjs /probe/probe-report.mjs
-RUN chmod 0555 /usr/local/bin/media-jail /opt/probe/bin/jailtest /opt/probe/bin/vsock-sink /probe/entrypoint-probe.sh \
- && mkdir -p /opt/probe/corpus /run/probe \
+COPY deploy/enclave/probe/entrypoint-probe.sh deploy/enclave/probe/probe-report.mjs /probe/
+COPY deploy/enclave/probe/reader-bench.mjs /opt/e2e/packages/mcp-http/enclave/test/probe-bench.mjs
+RUN chmod 0555 /opt/probe/bin/vsock-sink /probe/entrypoint-probe.sh \
+ && mkdir -p /run/probe \
  && node --check /probe/probe-report.mjs \
+ && node --check /opt/e2e/packages/mcp-http/enclave/test/probe-bench.mjs \
  && sh -n /probe/entrypoint-probe.sh
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    NODE_ENV=production
-CMD ["/bin/sh", "/probe/entrypoint-probe.sh"]
+ENTRYPOINT ["/bin/sh", "/probe/entrypoint-probe.sh"]
+CMD []

@@ -5,6 +5,9 @@
 // KMS endpoint: TLS verified here, so the parent can delay the answer but not
 // forge it, and a 4xx carries a Date without spending any quota.
 
+import { readFile as readFileAsync } from 'node:fs/promises'
+import { MEM_SAMPLE_MS } from './media/policy.mjs'
+
 export const HEALTH_EVERY_MS = 60_000
 export const CLOCK_URL = 'https://kms.eu-west-1.amazonaws.com/'
 const MB = 1024 * 1024
@@ -49,6 +52,33 @@ export function createHealthLine({ log, fields, probe = () => clockSkew(), every
     tick,
     skew: () => skew,
     start() { void tick(); timer = setInterval(() => { void tick() }, everyMs); timer.unref?.() },
+    stop() { if (timer) clearInterval(timer); timer = null },
+  }
+}
+
+/**
+ * The lowest `MemAvailable` over a health window (docs/mcp-enclave.md
+ * §16.10): sampled every MEM_SAMPLE_MS, reported once per line as
+ * `mem_avail_min_mb`, rounded down to a multiple of 64 so the parent learns
+ * memory pressure, never one job's size. `take()` returns it (undefined when
+ * /proc/meminfo cannot be read) and starts the next window.
+ */
+export function createMemSampler({ readFile = readFileAsync, everyMs = MEM_SAMPLE_MS } = {}) {
+  let timer = null, lowest = Infinity
+  async function sample() {
+    try {
+      const match = /^MemAvailable:\s+(\d+) kB$/m.exec(await readFile('/proc/meminfo', 'utf8'))
+      if (match) lowest = Math.min(lowest, Number(match[1]) * 1024)
+    } catch { /* not a Linux host: the field is left out */ }
+  }
+  return {
+    sample,
+    take() {
+      const value = Number.isFinite(lowest) ? Math.floor(lowest / MB / 64) * 64 : undefined
+      lowest = Infinity
+      return value
+    },
+    start() { void sample(); timer = setInterval(() => { void sample() }, everyMs); timer.unref?.() },
     stop() { if (timer) clearInterval(timer); timer = null },
   }
 }
