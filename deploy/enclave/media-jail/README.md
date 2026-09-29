@@ -210,9 +210,11 @@ deploy/enclave/check-image.sh --jail <reader image>
 `check-image.sh --jail` (`deploy/enclave/jailcheck`) runs the entrypoint's own
 cgroup block in a privileged container, then the A0 probe's escape tests from
 a stand-in `/opt/media` (its driver execs `jailtest` as the worker), the A1
-checks (the table, refusals, SIGTERM, a dying reader) and every corpus file
-through the real workers; then all of it again with a test build and every
-4.14 token. The A0 probe (`deploy/enclave/probe`) still drives the A0
+checks (the table, refusals, SIGTERM, a dying reader), every corpus file
+through the real workers as the reader's own `runWorker` runs and reads them,
+and the reader's end-to-end test (`open_attachment` over `/mcp` to the jailed
+workers, `enclave/test/media-e2e.test.mjs`); then all of it again with a test
+build and every 4.14 token. The A0 probe (`deploy/enclave/probe`) still drives the A0
 command line (`--profile … -- <program>`), which this binary no longer
 accepts: before the probe enclave runs the A1 jail checks on the real kernel,
 its runner moves to `deploy/enclave/jailcheck`.
