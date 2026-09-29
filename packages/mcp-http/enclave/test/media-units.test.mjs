@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createStatusCheck, STATUS_TTL_MS } from '../../verifier.mjs'
-import { READER_CAPABILITIES, READER_VERSION } from '../constants.mjs'
+import { CONSOLE_URL, READER_CAPABILITIES, READER_VERSION } from '../constants.mjs'
 import { createMemSampler } from '../health.mjs'
 import { createCaches, sizeOf } from '../media/cache.mjs'
 import { checkRow, hostOf, knownKinds, parseRequest, whyNot } from '../media/gate.mjs'
@@ -14,7 +14,8 @@ import { checkJail, CONTROLLERS_FILE, jailArgs, jobHeader } from '../media/jail.
 import { createBudgets, createScheduler, retryAfter } from '../media/jobs.mjs'
 import { paddedLength, padResponse } from '../media/pad.mjs'
 import * as policy from '../media/policy.mjs'
-import { charPart, pageBlocks, pdfPart, pdfWindow } from '../media/result.mjs'
+import { charPart, factsOf, finish, pageBlocks, pdfPart, pdfWindow, pending } from '../media/result.mjs'
+import { messageURL } from '../provider.mjs'
 import { JOBS } from '../media/service.mjs'
 import { cleanText, decodeText, sniff } from '../media/sniff.mjs'
 import { jpegInfo, pngInfo } from '../media/validate-output.mjs'
@@ -254,6 +255,37 @@ test('budgets, slot and queue: retry_after_s values, opens a minute, bytes an ho
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(order, [0, 1])
   assert.equal(scheduler.queued(), 2)
+
+  // `left` is told once the entry's place is free, after the next one started: a connection's next open takes the place it held.
+  const handed = createScheduler({ slots: 1, queue: 1 })
+  const told = [], release = []
+  const hold = n => () => new Promise(resolve => { release[n] = resolve })
+  const [a, b, c] = [{}, {}, {}]
+  assert.equal(handed.admit(a, hold(0), () => told.push(['a', handed.running(), handed.queued(), handed.admit(c, hold(2))])), true)
+  assert.equal(handed.admit(b, hold(1), () => { throw new Error('a left that throws is contained') }), true)
+  await new Promise(resolve => setImmediate(resolve))
+  release[0]()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(told, [['a', 1, 0, true]], 'b runs, the queue is empty, and c gets the place a held')
+  assert.equal(handed.position(c), 0)
+  release[1]()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(handed.position(c), 'running')
+})
+
+test('the console link (§16.7): the contract\'s three parameters, UUIDs only, in lower case; every answer about the message carries it', () => {
+  const tenant = '018F3A2B-1111-7000-8000-00000000AAAA', device = '018f3a2b-2222-7000-8000-00000000dddd', uid = '018f3a2b-3333-7000-8000-00000000cccc'
+  const link = messageURL(CONSOLE_URL, tenant, device, uid)
+  assert.equal(link, `https://app.wappie.thehappie.co/console?workspace=${tenant.toLowerCase()}&open_device=${device}&open_message=${uid}`)
+  const url = new URL(link)
+  assert.deepEqual([url.origin + url.pathname, [...url.searchParams.keys()]], [CONSOLE_URL, ['workspace', 'open_device', 'open_message']])
+  for (const [a, b, c] of [[undefined, device, uid], [tenant, 'x', uid], [tenant, device, `${uid}&mcp_renew=1`], [tenant, device, 42]]) assert.equal(messageURL(CONSOLE_URL, a, b, c), null)
+  const row = { uid, media: { media_type: 'ptt', file_length: 9 } }
+  assert.throws(() => checkRow(row, parseRequest({ uid }), [], link), error => error.code === 'transcription_unavailable' && error.facts.open_url === link)
+  assert.equal(finish(factsOf(row, null, { sniffed: 'jpeg' }, link)).header.open_url, link)
+  assert.deepEqual(Object.keys(finish(factsOf(row, null, { sniffed: 'jpeg' }, link)).header).at(-1), 'open_url', 'last of the reader\'s fields')
+  assert.deepEqual(pending(uid, 'image', 10, link).header, { uid, media_type: 'image', status: 'pending', retry_after_s: 10, open_url: link })
+  assert.equal(factsOf(row, null, {}).open_url, undefined)
 })
 
 test('paging: char parts never split a surrogate pair; page parts are whole blocks within the window', () => {
@@ -384,8 +416,8 @@ test('the health line\'s memory minimum: sampled, the lowest of the window, roun
   assert.equal(off.take(), undefined)
 })
 
-test('the release: reader 0.4.0 declares consent version 2 and media', () => {
-  assert.equal(READER_VERSION, '0.4.0')
+test('the release: reader 0.4.1 declares consent version 2 and media, as 0.4.0 did', () => {
+  assert.equal(READER_VERSION, '0.4.1')
   assert.deepEqual(READER_CAPABILITIES, ['consent_v2', 'media'])
   assert.equal(Object.isFrozen(READER_CAPABILITIES), true)
 })

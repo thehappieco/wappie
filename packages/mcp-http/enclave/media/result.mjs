@@ -6,7 +6,7 @@ import { CAPTION_MAX_CHARS, FILENAME_MAX_CHARS, IMAGES_PER_RESULT, PART_MAX_CHAR
 
 /** The header's fields in their order (§16.7); `notes` and `source` are the reader's. */
 export const HEADER_ORDER = Object.freeze(['uid', 'media_type', 'sniffed', 'file_length', 'filename', 'caption', 'pages', 'sheets', 'slides', 'entries',
-  'seconds_claimed', 'animated', 'part', 'scanned_pages', 'image_pages', 'next_cursor', 'status', 'retry_after_s', 'truncated', 'images', 'images_withheld'])
+  'seconds_claimed', 'animated', 'part', 'scanned_pages', 'image_pages', 'next_cursor', 'status', 'retry_after_s', 'truncated', 'images', 'images_withheld', 'open_url'])
 const TRUNCATED_ORDER = ['text_cap', 'page_cap', 'page_too_long', 'sheet_cap', 'row_cap', 'entry_cap']
 const invalidCursor = () => refusal('invalid_cursor')
 
@@ -26,10 +26,11 @@ export function cut(text, max) {
 
 /**
  * The facts every result of one attachment repeats: from the row, the opened
- * filename and caption, and what its jobs found. `truncated` is what of the
- * whole attachment the reader cannot read.
+ * filename and caption, what its jobs found, and `openURL`, the console link
+ * of its message (§16.7), when there is one. `truncated` is what of the whole
+ * attachment the reader cannot read.
  */
-export function factsOf(row, opened, found = {}) {
+export function factsOf(row, opened, found = {}, openURL) {
   const media = row.media
   const facts = { uid: row.uid, media_type: media.media_type, sniffed: found.sniffed }
   if (Number.isSafeInteger(media.file_length)) facts.file_length = media.file_length
@@ -38,6 +39,7 @@ export function factsOf(row, opened, found = {}) {
   for (const key of ['pages', 'sheets', 'slides', 'entries']) if (found[key] !== undefined) facts[key] = found[key]
   if (found.seconds_claimed !== undefined) facts.seconds_claimed = found.seconds_claimed
   facts.truncated = TRUNCATED_ORDER.filter(item => found.truncated?.includes(item))
+  if (typeof openURL === 'string') facts.open_url = openURL
   return facts
 }
 
@@ -51,9 +53,9 @@ export function finish(facts, { body = '', images = [], withheld, part, next, ex
   return { header, body, images: images.map(image => ({ mimeType: image.mimeType, data: image.data })), ...(suggest ? { suggest_pages: suggest } : {}) }
 }
 
-/** An answer while the open goes on: no body, no images. */
-export function pending(uid, mediaType, retryAfterS) {
-  return { header: orderHeader({ uid, media_type: mediaType, status: 'pending', retry_after_s: retryAfterS }), body: '', images: [] }
+/** An answer while the open goes on, or waits its turn: no body, no images. */
+export function pending(uid, mediaType, retryAfterS, openURL) {
+  return { header: orderHeader({ uid, media_type: mediaType, status: 'pending', retry_after_s: retryAfterS, open_url: openURL ?? undefined }), body: '', images: [] }
 }
 
 /**

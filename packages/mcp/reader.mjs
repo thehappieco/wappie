@@ -21,6 +21,11 @@ function metadata(message) {
   }
   return result
 }
+/** A link a provider offers, if it is a plain https URL; nothing else reaches the model. */
+export function safeLink(value) {
+  if (typeof value !== 'string' || value.length > 2048 || /[\s<>"'`]/.test(value)) return null
+  try { return new URL(value).protocol === 'https:' ? value : null } catch { return null }
+}
 const keyLockedReason = 'The authorized key could not open this content.'
 const contentLockedReason = 'The key this connection holds could not open this content.'
 function openedText(value, max, reason = keyLockedReason) {
@@ -65,10 +70,11 @@ async function bounded(items, limit, work) {
  *   refused as `stale_grant`, so the enclave can log the event; it is neither
  *   awaited nor allowed to throw into the tool. On a connection whose sealed
  *   consent includes attachments (`config.media`), `media` is the enclave's
- *   `{host, why(row), open(request, archive), resultMaxBytes}`
+ *   `{host, why(row), openURL(row), open(request, archive), resultMaxBytes}`
  *   (docs/mcp-enclave.md §16.5): `openAttachment` hands it the call and an
- *   `archive` of the two reads it needs, and every attachment the reader
- *   describes says whether it opens.
+ *   `archive` of the two reads it needs, every attachment the reader
+ *   describes says whether it opens, and get_message's also names the
+ *   console link where the user sees the original.
  * A local (files) config ignores the provider.
  */
 export async function createReader(config, provider) {
@@ -170,23 +176,27 @@ export async function createReader(config, provider) {
   /**
    * A row's attachment with its opened filename. On a media connection it also
    * carries the dimensions and length the row has, and whether open_attachment
-   * would open it (`openable`, and `why` not when false), from the row alone.
+   * would open it (`openable`, and `why` not when false), from the row alone;
+   * with `link` (get_message), `open_url` too: the console link where the user
+   * sees or hears the original (§16.7).
    */
-  function attachmentOf(row, filename) {
+  function attachmentOf(row, filename, link = false) {
     const attachment = { ...metadata(row).attachment, filename }
     if (!media) return attachment
     for (const key of ['seconds', 'width', 'height']) if (typeof row.media[key] === 'number') attachment[key] = row.media[key]
     const why = media.why(row)
     attachment.openable = why === null
     if (why !== null) attachment.why = why
+    const url = link ? safeLink(media.openURL?.(row)) : null
+    if (url) attachment.open_url = url
     return attachment
   }
-  async function messages(rows, device, opener) {
+  async function messages(rows, device, opener, { link = false } = {}) {
     if (rows.some(row => row.device_id !== device)) throw new ArchiveError('device_mismatch')
     await opener?.prefetch(rows.map(row => row.content_key_id))
     return Promise.all(rows.map(async row => ({ ...metadata(row),
       body: row.body_sealed ? opener ? openedValue(await opener.body(row)) : locked() : omitted(),
-      ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(await opener.fileName(row)) : locked() : omitted()) } : {}),
+      ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(await opener.fileName(row)) : locked() : omitted(), link) } : {}),
       structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
     })))
   }
@@ -425,7 +435,7 @@ export async function createReader(config, provider) {
       permit(device_id)
       const reply = await api.getMessage(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
-      return withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener))[0] }))
+      return withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener, { link: true }))[0] }))
     },
     /**
      * open_attachment (docs/mcp-enclave.md §16.5): the enclave's

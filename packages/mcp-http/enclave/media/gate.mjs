@@ -24,13 +24,14 @@ export const knownKinds = value => (Array.isArray(value) ? [...new Set(value.fil
 export const hostOf = redirectHost => (redirectHost === 'chatgpt.com' || redirectHost === 'claude.ai' ? redirectHost : 'default')
 export const waitFor = host => HOST_WAIT_MS[host] ?? HOST_WAIT_MS.default
 
-/** The row's visible metadata an error line repeats. */
-export function rowFacts(row) {
+/** The row's visible metadata an error line repeats, and the console link of its message when there is one (§16.7). */
+export function rowFacts(row, openURL) {
   const media = row?.media ?? {}
   const facts = {}
   if (typeof media.media_type === 'string') facts.media_type = media.media_type
   if (typeof media.mimetype === 'string') facts.mimetype = media.mimetype
   if (Number.isSafeInteger(media.file_length)) facts.file_length = media.file_length
+  if (typeof openURL === 'string') facts.open_url = openURL
   return facts
 }
 
@@ -75,13 +76,13 @@ const hash32 = value => {
 
 /**
  * Steps 9 to 16 but the byte budget, in order, on the row: returns
- * `{family, label, preview, kind, encSHA256}` or throws the refusal. `preview`
- * is a video's path (no fetch, the sealed preview only); `hasPreview` says
- * whether it has one.
+ * `{family, label, preview, kind, encSHA256}` or throws the refusal, whose
+ * facts carry `openURL` when given. `preview` is a video's path (no fetch,
+ * the sealed preview only); `hasPreview` says whether it has one.
  */
-export function checkRow(row, request, mediaOff) {
+export function checkRow(row, request, mediaOff, openURL) {
   const media = row.media
-  const facts = rowFacts(row)
+  const facts = rowFacts(row, openURL)
   const refuse = (code, extra = {}) => refusal(code, { facts: { ...facts, ...extra } })
   if (row.view_once === true) throw refuse('view_once_excluded')
   const type = Object.hasOwn(MEDIA_TYPES, media.media_type) ? MEDIA_TYPES[media.media_type] : null

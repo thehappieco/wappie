@@ -10,12 +10,15 @@ import { randomUUID } from 'node:crypto'
 import { createLog } from '../../log.mjs'
 import { lineAllowed } from '../logsink.mjs'
 import { runWorker } from '../media/jail.mjs'
-import { BYTES_PER_HOUR, CAP_BYTES, HOST_WAIT_MS, OPENS_PER_MINUTE, PART_MAX_CHARS, RESULT_TTL_MS, TEXT_TTL_MS, THUMB_MAX_BYTES } from '../media/policy.mjs'
+import { BYTES_PER_HOUR, CAP_BYTES, HOST_WAIT_MS, OPENS_PER_MINUTE, OPENS_QUEUE_MAX, PART_MAX_CHARS, RESULT_TTL_MS, TEXT_TTL_MS, THUMB_MAX_BYTES } from '../media/policy.mjs'
 import { createMediaService } from '../media/service.mjs'
 import { encryptMedia, fakeJailSpawn, JPEG_MAGIC, LABELS, newMediaKey, PDF_MAGIC, sha256, WEBP_MAGIC, withScenario, ZIP_MAGIC } from './media-fixtures.mjs'
 
 const ARCHIVE = 'https://api.wappie.thehappie.co'
 const device = '018f3a2b-2222-7000-8000-00000000dddd'
+const tenant = '018f3a2b-1111-7000-8000-00000000aaaa'
+/** The console link of a message of `device` (ยง16.7's contract), as the console reads it. */
+const linkTo = (uid, number = device) => `https://app.wappie.thehappie.co/console?workspace=${tenant}&open_device=${number}&open_message=${uid}`
 const sentinel = { filename: 'SENTINEL-filename-7c1f.pdf', caption: 'SENTINEL caption 7c1f' }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
@@ -23,9 +26,10 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
  * A media service with everything around it faked. `status` is what Go's
  * status says (mutable); `clock` drives budgets and TTLs. The inline wait's
  * timer (`waits` records the ms asked for) lasts until the open settles, or
- * with `pending` ends at once, so a slow open answers `pending`.
+ * with `pending` ends at once, so a slow open answers `pending`, or ends after
+ * `waitMs` real milliseconds: the host's wait running out mid-job.
  */
-async function harness(t, { host = 'claude.ai', jailEnv = {}, ready = true, pending = false } = {}) {
+async function harness(t, { host = 'claude.ai', jailEnv = {}, ready = true, pending = false, waitMs } = {}) {
   const h = { lines: [], fetches: [], rows: 0, opens: [], objects: new Map(), status: { answer: 'serve', media: true, media_off: [] }, clock: Date.now(), waits: [], jobs: [] }
   const log = createLog(line => h.lines.push(line), () => h.clock)
   const fetch = async (url, init) => {
@@ -42,10 +46,17 @@ async function harness(t, { host = 'claude.ai', jailEnv = {}, ready = true, pend
     log, now: () => h.clock, archive: ARCHIVE, fetch,
     checkActive: { mediaStatus: async () => ({ ...h.status, media_off: [...h.status.media_off] }) },
     jail: { checkJail: async () => (ready ? { ok: true, cpuset: false } : { ok: false, code: 'no_controllers' }), runWorker, spawn: fakeJailSpawn(jailEnv, h.jobs) },
-    delay: (ms, signal) => { h.waits.push(ms); return pending ? Promise.resolve() : new Promise(resolve => signal.addEventListener('abort', resolve)) },
+    delay: (ms, signal) => {
+      h.waits.push(ms)
+      if (pending) return Promise.resolve()
+      return new Promise(resolve => {
+        const timer = waitMs === undefined ? null : setTimeout(resolve, waitMs)
+        signal.addEventListener('abort', () => { clearTimeout(timer); resolve() })
+      })
+    },
   })
   await h.service.start()
-  h.record = { connection_id: randomUUID(), api_key: `a1b2c3d4.${'k'.repeat(43)}`, media: true, redirect_host: host }
+  h.record = { connection_id: randomUUID(), tenant_id: tenant, api_key: `a1b2c3d4.${'k'.repeat(43)}`, media: true, redirect_host: host }
   h.media = h.service.forConnection(h.record)
   /** An attachment the fake archive serves: its row, and the access reader.mjs would build for it. */
   h.attachment = ({ type = 'image', plaintext, mimetype, media = {}, view_once, thumbnail, opened = sentinel, object } = {}) => {
@@ -96,8 +107,9 @@ test('a photo: the key, the ciphertext with the connection\'s key and identity e
   const h = await harness(t)
   const photo = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { width: 1200, height: 800 }), mimetype: 'image/jpeg' })
   const result = await photo.open()
-  assert.deepEqual(Object.keys(result.header), ['uid', 'media_type', 'sniffed', 'file_length', 'filename', 'caption', 'status', 'images'])
-  assert.deepEqual(result.header, { uid: photo.uid, media_type: 'image', sniffed: 'jpeg', file_length: photo.row.media.file_length, filename: sentinel.filename, caption: sentinel.caption, status: 'complete', images: 1 })
+  assert.deepEqual(Object.keys(result.header), ['uid', 'media_type', 'sniffed', 'file_length', 'filename', 'caption', 'status', 'images', 'open_url'])
+  assert.deepEqual(result.header, { uid: photo.uid, media_type: 'image', sniffed: 'jpeg', file_length: photo.row.media.file_length, filename: sentinel.filename, caption: sentinel.caption, status: 'complete', images: 1, open_url: linkTo(photo.uid) })
+  assert.equal(h.media.openURL(photo.row), linkTo(photo.uid), 'get_message\'s link is the same')
   assert.equal(result.body, '')
   assert.equal(result.images[0].mimeType, 'image/jpeg')
   assert.deepEqual([...result.images[0].data.subarray(0, 3)], [0xff, 0xd8, 0xff])
@@ -128,7 +140,10 @@ test('a photo: the key, the ciphertext with the connection\'s key and identity e
   assert.deepEqual(h.events().map(entry => entry.event), ['media_opened', 'media_opened', 'media_opened'])
   for (const line of h.lines) {
     assert.equal(lineAllowed(line), true, line)
-    for (const secret of [photo.uid, sentinel.filename, sentinel.caption, h.record.api_key, String(photo.row.media.file_length)]) assert.equal(line.includes(secret), false, line)
+    for (const secret of [photo.uid, sentinel.filename, sentinel.caption, h.record.api_key, linkTo(photo.uid)]) assert.equal(line.includes(secret), false, line)
+    // The size as a value of its own: a substring check would match the timestamp or the fingerprint by chance.
+    const { ts: _ts, ...entry } = JSON.parse(line)
+    assert.equal(Object.values(entry).some(value => String(value) === String(photo.row.media.file_length)), false, line)
   }
 })
 
@@ -166,8 +181,13 @@ test('every call refusal comes before a key is opened or ciphertext asked for (ย
   }
   // A refusal after the row carries what the model could already see; one before it does not.
   const late = h.attachment({ plaintext: Buffer.from(JPEG_MAGIC), view_once: true, mimetype: 'image/jpeg' })
-  await assert.rejects(late.open(), error => assert.deepEqual(error.facts, { media_type: 'image', mimetype: 'image/jpeg', file_length: 4 }) ?? true)
+  await assert.rejects(late.open(), error => assert.deepEqual(error.facts, { media_type: 'image', mimetype: 'image/jpeg', file_length: 4, open_url: linkTo(late.uid) }) ?? true)
   await assert.rejects(late.open({ cursor: 'p1', pages: '1' }), error => error.facts === undefined)
+  // Every refusal that names the message carries its console link: the person can see or hear the original there.
+  for (const [code, options] of [['transcription_unavailable', { type: 'ptt' }], ['attachment_expired', { type: 'document', media: { download_status: 'gone' } }], ['attachment_too_large', { media: { file_length: CAP_BYTES.image + 1 } }]]) {
+    const item = h.attachment({ plaintext: Buffer.from(JPEG_MAGIC), ...options })
+    await assert.rejects(item.open(), refusedWith(code, error => error.facts.open_url === linkTo(item.uid)), code)
+  }
   // The row itself: another number, no attachment and a 404 are reader.mjs's attachment_not_found, passed through.
   const missing = { row: async () => { throw Object.assign(new Error('x'), { code: 'attachment_not_found' }) }, open: async () => assert.fail('no key') }
   await assert.rejects(h.media.open({ device_id: device, uid: randomUUID(), images: true }, missing), refusedWith('attachment_not_found'))
@@ -201,28 +221,33 @@ test('every call refusal comes before a key is opened or ciphertext asked for (ย
   assert.ok(refused.every(entry => Object.keys(entry).sort().join() === 'code,conn,event,ts'))
 })
 
-test('budgets: one open in flight, OPENS_PER_MINUTE a minute, BYTES_PER_HOUR an hour, and a full queue', async t => {
+test('budgets: a queue of OPENS_QUEUE_MAX behind the connection\'s open, OPENS_PER_MINUTE a minute, BYTES_PER_HOUR an hour', async t => {
   const h = await harness(t, { pending: true })
-  // A slow open holds the connection's one place in flight; another key is refused, the same key joins.
+  // A slow open holds the connection's place in the slot; another key waits behind it, the same key joins.
   const slow = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 400 }) })
   const first = await slow.open()
   assert.deepEqual([first.header.status, first.header.retry_after_s], ['pending', 5])
   const other = h.attachment({ plaintext: Buffer.from(JPEG_MAGIC) })
-  await assert.rejects(other.open(), refusedWith('rate_limited', error => error.retry_after_s === 10))
+  const queued = await other.open()
+  assert.deepEqual([queued.header.status, queued.header.retry_after_s, queued.header.open_url], ['pending', 10, linkTo(other.uid)], 'next after the running open')
+  assert.deepEqual(h.opens, ['key'], 'nothing of the queued attachment is opened before its turn')
   const joined = await slow.open()
   assert.equal(joined.header.status, 'pending')
   assert.equal(h.fetches.length, 1, 'a joined call starts nothing')
   assert.equal((await h.finish(slow)).header.status, 'complete')
-  // OPENS_PER_MINUTE: every admitted open counts, the eleventh waits for the oldest to age out.
-  for (let n = 1; n < OPENS_PER_MINUTE; n++) {
+  assert.equal((await h.finish(other)).header.status, 'complete')
+  assert.equal(h.fetches.length, 2)
+  // OPENS_PER_MINUTE: every admitted open counts, queued ones too; the eleventh waits for the oldest to age out.
+  for (let n = 2; n < OPENS_PER_MINUTE; n++) {
     const item = h.attachment({ plaintext: Buffer.from(JPEG_MAGIC), mimetype: 'image/jpeg' })
     h.objects.get(item.uid).fetch = () => new Response('', { status: 404 })
     await assert.rejects(h.finish(item), refusedWith('attachment_not_found'))
     h.clock += 1000
   }
-  await assert.rejects(other.open(), refusedWith('rate_limited', error => error.retry_after_s === 60 && error.facts === undefined))
-  h.clock += 60_000 - (OPENS_PER_MINUTE - 1) * 1000 - 21_000
-  await assert.rejects(other.open(), refusedWith('rate_limited', error => error.retry_after_s === 40))
+  const late = h.attachment({ plaintext: Buffer.from(JPEG_MAGIC) })
+  await assert.rejects(late.open(), refusedWith('rate_limited', error => error.retry_after_s === 60 && error.facts === undefined))
+  h.clock += 60_000 - (OPENS_PER_MINUTE - 2) * 1000 - 21_000
+  await assert.rejects(late.open(), refusedWith('rate_limited', error => error.retry_after_s === 40))
   h.clock += 40_000
   // BYTES_PER_HOUR: the claimed size is checked before any key; the declared length is charged at the fetch.
   const huge = h.attachment({ type: 'document', plaintext: PDF_MAGIC, media: { file_length: CAP_BYTES.document } })
@@ -237,25 +262,120 @@ test('budgets: one open in flight, OPENS_PER_MINUTE a minute, BYTES_PER_HOUR an 
   assert.deepEqual([since().opens, since().fetches], [0, 0])
 })
 
-test('parallel calls of one connection while the row is read: an identical one joins the open, one for another attachment is rate_limited', async t => {
+test('queue overflow: one open running and OPENS_QUEUE_MAX waiting; the next is rate_limited before its row is read, and room comes back as the line moves', async t => {
+  const h = await harness(t, { pending: true })
+  const items = Array.from({ length: 1 + OPENS_QUEUE_MAX }, () => h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 300 }) }))
+  const answers = []
+  for (const item of items) answers.push((await item.open()).header)
+  assert.deepEqual(answers.map(header => [header.status, header.retry_after_s]), [['pending', 5], ['pending', 10], ['pending', 20], ['pending', 20], ['pending', 20]])
+  assert.equal(h.service.counts().queue, OPENS_QUEUE_MAX, 'the line counts as waiting in the health line')
+  const extra = h.attachment({ plaintext: Buffer.from(JPEG_MAGIC) })
+  const since = h.quiet()
+  await assert.rejects(extra.open(), refusedWith('rate_limited', error => error.retry_after_s === 10 && error.facts === undefined))
+  assert.deepEqual(since(), { fetches: 0, opens: 0, rows: 0 })
+  assert.equal(h.events().filter(entry => entry.event === 'media_refused').map(entry => entry.code).join(), 'rate_limited')
+  // The line moves in arrival order, one job at a time, and the refused call fits once it has.
+  for (const item of items) assert.equal((await h.finish(item)).header.status, 'complete')
+  assert.deepEqual(h.fetches.map(item => item.url), items.map(item => `${ARCHIVE}/v1/media/${item.uid}`))
+  assert.equal((await h.finish(extra)).header.status, 'complete')
+  assert.deepEqual(h.service.counts(), { opens: 6, queue: 0, killed: 0 })
+})
+
+test('parallel calls of one connection: two, then five, all answered inline, one after another in arrival order; an identical call joins even a queued open', async t => {
   const h = await harness(t)
   const photo = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 200 }) }))
   const pair = await Promise.all([photo.open(), photo.open()])
   assert.deepEqual(pair.map(result => result.header.status), ['complete', 'complete'])
   assert.deepEqual([h.fetches.length, h.opens.length], [1, 1], 'the second call joined the first open')
+  // Two photos at once, as claude.ai asks for them: the second waits for the first and runs next, within the same wait.
   const one = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 200 }) }))
   const two = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }))
-  const [first, second] = await Promise.allSettled([one.open(), two.open()])
-  assert.equal(first.value.header.status, 'complete')
-  refusedWith('rate_limited', error => error.retry_after_s === 10 && error.facts.media_type === 'image')(second.reason)
-  assert.deepEqual([h.fetches.length, h.opens.length], [2, 2], 'OPENS_IN_FLIGHT held: nothing of the second attachment was opened')
+  const both = await Promise.all([one.open(), two.open()])
+  assert.deepEqual(both.map(result => [result.header.status, result.images.length]), [['complete', 1], ['complete', 1]])
+  assert.deepEqual(both.map(result => result.header.uid), [one.uid, two.uid])
+  assert.deepEqual([h.fetches.length, h.opens.length], [3, 3])
+  // Five at once, with a repeat of a queued one among them: every call is answered, the repeat by the open it joined.
+  const five = Array.from({ length: 5 }, (_, n) => h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 100 + 20 * n }) }), 10))
+  let running = 0, most = 0
+  for (const item of five) {
+    const open = item.access.open.bind(item.access)
+    item.access.open = async (...args) => { running++; most = Math.max(most, running); try { return await open(...args) } finally { running-- } }
+  }
+  const mark = h.fetches.length
+  const results = await Promise.all([...five.map(item => item.open()), five[3].open()])
+  assert.deepEqual(results.map(result => result.header.status), Array(6).fill('complete'))
+  assert.deepEqual(results.map(result => result.header.uid), [...five.map(item => item.uid), five[3].uid])
+  assert.deepEqual(h.fetches.slice(mark).map(item => item.url), five.map(item => `${ARCHIVE}/v1/media/${item.uid}`), 'one fetch each, in arrival order')
+  assert.equal(most, 1, 'one key opened at a time')
+  assert.equal(h.events().filter(entry => entry.event === 'media_refused').length, 0)
   // A wipe while the row is read ends the call before anything opens.
   const late = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }), 100)
   const call = late.open()
   await new Promise(resolve => setTimeout(resolve, 20))
   h.service.wipe(h.record.connection_id)
   await assert.rejects(call, refusedWith('media_not_allowed'))
-  assert.deepEqual([h.fetches.length, h.opens.length], [2, 2])
+  assert.equal(h.fetches.length, mark + 5)
+})
+
+test('the host\'s wait holds for a queued open too: 40 s on claude.ai, 25 s on ChatGPT; a turn that does not come in time is pending, like a slow job', async t => {
+  for (const [host, wait] of [['claude.ai', 40_000], ['chatgpt.com', 25_000]]) {
+    // The host's wait runs out (after 60 real ms here) while the first job still runs.
+    const h = await harness(t, { host, waitMs: 60 })
+    const first = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 600 }) })
+    const second = h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) })
+    const [a, b] = await Promise.all([first.open(), second.open()])
+    assert.deepEqual(h.waits, [wait, wait], host)
+    assert.deepEqual([a.header.status, a.header.retry_after_s], ['pending', 5], host)
+    assert.deepEqual([b.header.status, b.header.retry_after_s, b.header.open_url], ['pending', 10, linkTo(second.uid)], host)
+    assert.deepEqual([b.body, b.images], ['', []])
+    // Called again as the note says, the queued one is answered once its turn has come; nothing was refused.
+    assert.equal((await h.finish(second)).header.status, 'complete', host)
+    assert.equal((await h.finish(first)).header.status, 'complete', host)
+    assert.equal(h.fetches.length, 2, host)
+    assert.equal(h.events().filter(entry => entry.event === 'media_refused').length, 0, host)
+  }
+  // Within the wait, a queued call is answered with its result.
+  const h = await harness(t, { host: 'chatgpt.com' })
+  const first = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 200 }) })
+  const second = h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) })
+  const answered = await Promise.all([first.open(), second.open()])
+  assert.deepEqual(answered.map(result => result.header.status), ['complete', 'complete'])
+  assert.deepEqual(h.waits, [25_000, 25_000])
+})
+
+test('revocation and media off with a queue: the running job dies, the queued opens are dropped unopened, and every waiting call answers media_not_allowed', async t => {
+  const h = await harness(t)
+  const id = h.record.connection_id
+  const until = async condition => { while (!condition()) await new Promise(resolve => setTimeout(resolve, 20)) }
+  const killed = () => h.events().filter(entry => entry.event === 'media_job_killed').map(entry => entry.code)
+  for (const reason of ['revoked', 'media_off']) {
+    const running = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 5000 }) })
+    const queued = [h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }), h.attachment({ type: 'document', plaintext: withScenario(ZIP_MAGIC, { office: { sniffed: 'docx', text: 'never' } }) })]
+    const calls = [running.open(), ...queued.map(item => item.open()), queued[0].open()]
+    await until(() => h.jobs.length > 0 && h.service.counts().queue === 2 && h.service.scheduler.running() === 1)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    const since = h.quiet()
+    const started = Date.now()
+    h.service.wipe(id, reason)
+    for (const settled of await Promise.allSettled(calls)) refusedWith('media_not_allowed')(settled.reason)
+    await until(() => !h.service.scheduler.running())
+    assert.ok(Date.now() - started < 4000, `${reason}: the job died on SIGTERM`)
+    assert.deepEqual(since(), { fetches: 0, opens: 0, rows: 0 }, `${reason}: nothing of the queued attachments was opened`)
+    assert.equal(killed().at(-1), reason)
+    assert.equal(h.service.counts().queue, 0)
+    assert.equal(h.service.caches.bytes(id), 0)
+  }
+  // A kind switched off drops that kind's opens, running or queued; the rest of the line goes on in order.
+  const photo = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 5000 }) })
+  const sticker = h.attachment({ type: 'sticker', plaintext: withScenario(WEBP_MAGIC, {}) })
+  const docx = h.attachment({ type: 'document', plaintext: withScenario(ZIP_MAGIC, { office: { sniffed: 'docx', text: 'kept' } }) })
+  const [a, b, c] = [photo.open(), sticker.open(), docx.open()]
+  await until(() => h.service.scheduler.running() === 1 && h.service.counts().queue === 2)
+  await new Promise(resolve => setTimeout(resolve, 200))
+  h.service.narrow(id, ['image'])
+  await assert.rejects(a, refusedWith('media_not_allowed'))
+  await assert.rejects(b, refusedWith('media_not_allowed'))
+  assert.equal((await c).body, 'kept', 'the document ran once the killed job had left the slot')
 })
 
 test('the queue: one slot enclave-wide, four waiting in order; pending says 5, 10 and 20; a fifth waiting is media_busy', async t => {
@@ -284,7 +404,8 @@ test('the inline wait is the host\'s: 40 s on claude.ai, 25 s on ChatGPT and els
     const pending = await item.open()
     assert.equal(h.waits[0], wait, host)
     assert.equal(wait, HOST_WAIT_MS[host] ?? HOST_WAIT_MS.default)
-    assert.deepEqual(Object.keys(pending.header), ['uid', 'media_type', 'status', 'retry_after_s'])
+    assert.deepEqual(Object.keys(pending.header), ['uid', 'media_type', 'status', 'retry_after_s', 'open_url'])
+    assert.equal(pending.header.open_url, linkTo(item.uid))
     assert.deepEqual([pending.body, pending.images], ['', []])
   }
   // Within the wait the call answers the finished open itself, and the same call again comes from the cache.
@@ -377,13 +498,13 @@ test('video: the sealed preview only, never a fetch; no preview answers at once;
   const h = await harness(t)
   const video = h.attachment({ type: 'video', thumbnail: withScenario(JPEG_MAGIC, {}), media: { seconds: 42, download_status: 'gone', media_key_sealed: undefined, file_length: 10 ** 9 } })
   const result = await video.open()
-  assert.deepEqual(result.header, { uid: video.uid, media_type: 'video', sniffed: 'thumbnail', file_length: 10 ** 9, filename: sentinel.filename, caption: sentinel.caption, seconds_claimed: 42, status: 'complete', images: 1 })
+  assert.deepEqual(result.header, { uid: video.uid, media_type: 'video', sniffed: 'thumbnail', file_length: 10 ** 9, filename: sentinel.filename, caption: sentinel.caption, seconds_claimed: 42, status: 'complete', images: 1, open_url: linkTo(video.uid) })
   assert.deepEqual(h.opens, ['thumbnail'])
   assert.equal(h.fetches.length, 0)
   const none = h.attachment({ type: 'ptv', media: { seconds: 7 } })
   const since = h.quiet()
   const bare = await none.open()
-  assert.deepEqual(bare.header, { uid: none.uid, media_type: 'ptv', sniffed: 'thumbnail', file_length: 10, seconds_claimed: 7, status: 'complete', images: 0 })
+  assert.deepEqual(bare.header, { uid: none.uid, media_type: 'ptv', sniffed: 'thumbnail', file_length: 10, seconds_claimed: 7, status: 'complete', images: 0, open_url: linkTo(none.uid) })
   assert.deepEqual(since(), { fetches: 0, opens: 0, rows: 1 })
   const quietVideo = h.attachment({ type: 'video', thumbnail: withScenario(JPEG_MAGIC, {}) })
   assert.deepEqual([(await quietVideo.open({ images: false })).header.images_withheld], ['request'])
@@ -400,7 +521,7 @@ test('PDF: text by page in whole blocks, scanned pages and their images, page cu
   // Page 6 has a little text and no raster image; the other short pages are scans.
   const pdf = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages, raster: [2, 7, 8, 9, 10] }) })
   const first = await pdf.open()
-  assert.deepEqual(Object.keys(first.header), ['uid', 'media_type', 'sniffed', 'file_length', 'filename', 'caption', 'pages', 'part', 'scanned_pages', 'image_pages', 'next_cursor', 'status', 'images'])
+  assert.deepEqual(Object.keys(first.header), ['uid', 'media_type', 'sniffed', 'file_length', 'filename', 'caption', 'pages', 'part', 'scanned_pages', 'image_pages', 'next_cursor', 'status', 'images', 'open_url'])
   assert.deepEqual([first.header.pages, first.header.part, first.header.scanned_pages, first.header.image_pages, first.header.next_cursor, first.header.status, first.header.images],
     [11, { unit: 'page', from: 1, to: 4 }, [2], [2], 'p5', 'partial', 1])
   assert.match(first.body, /^--- page 1 ---\nPage one says hello.*\n\n--- page 2 \(scanned\) ---\n\n\n--- page 3 ---\n/s)

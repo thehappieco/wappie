@@ -58,8 +58,12 @@ export const SHEET_ROWS = 2_000
 
 /** Admitted opens per connection, rolling 60 s (the /mcp limit of 60 calls a minute still applies). */
 export const OPENS_PER_MINUTE = 10
-/** Queued or running opens per connection. */
-export const OPENS_IN_FLIGHT = 1
+/**
+ * Opens of one connection waiting behind its own, first in first out: a
+ * connection holds one place in the slot's queue at a time, so parallel calls
+ * wait their turn here rather than fill the queue other connections share.
+ */
+export const OPENS_QUEUE_MAX = 4
 /** Ciphertext fetched per connection, rolling hour. */
 export const BYTES_PER_HOUR = 268_435_456
 /** Opens running at once, enclave-wide: the light slot. */
