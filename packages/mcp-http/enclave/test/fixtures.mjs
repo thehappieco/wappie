@@ -8,7 +8,7 @@ import { createServer as createHTTPServer, request as httpRequest } from 'node:h
 import { connect as netConnect } from 'node:net'
 import { Duplex } from 'node:stream'
 import { createHash, createHmac, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign as signData, timingSafeEqual, verify as verifyData } from 'node:crypto'
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
+import { access, chmod, constants as fsConstants, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { connect as tlsConnect } from 'node:tls'
@@ -50,7 +50,10 @@ export function fakeDocument({ publicKey = null, nonce = null, userData = null, 
 /**
  * Writes a stub nsm-attest with the real one's argument and exit-code
  * contract. It runs with an empty environment, so the shebang is absolute.
- * `mode: 'fail'` exits 1 (an NSM error).
+ * `mode: 'fail'` exits 1 (an NSM error). It goes under os.tmpdir(), which must
+ * allow exec: where it does not (the probe enclave's /tmp is a noexec tmpfs)
+ * this says so, rather than every boot failing later as attest_failed. Set
+ * TMPDIR to a directory that does (deploy/enclave/probe does).
  */
 export async function fakeNsm({ mode = 'ok' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'wappie-nsm-'))
@@ -66,6 +69,9 @@ const { fakeDocument } = await import(${JSON.stringify(fixtures)})
 process.stdout.write(fakeDocument({ publicKey, nonce, userData }))
 `)
   await chmod(bin, 0o755)
+  try { await access(bin, fsConstants.X_OK) } catch (error) {
+    throw new Error(`fakeNsm: ${bin} cannot be executed (${error.code}); ${dir} may be on a noexec mount: set TMPDIR to a directory that allows exec`)
+  }
   return bin
 }
 

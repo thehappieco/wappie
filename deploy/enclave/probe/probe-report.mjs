@@ -24,6 +24,9 @@
 //     and parent death, and the whole §16.13 corpus through the reader's
 //     runWorker, every worker under the image's media-jail and seccomp
 //     profile. One `jail_result` record per check, as it passes or fails;
+//   - whether a script under TMPDIR can be exec'd, since the test world's fake
+//     nsm-attest is one; where /tmp cannot, a directory on the root
+//     filesystem is the TMPDIR of the two runs below;
 //   - the reader end to end (enclave/test/media-e2e.test.mjs, MEDIA_E2E=jail),
 //     which needs loopback only;
 //   - the reader stand-in (reader-bench.mjs): the production reader idle,
@@ -36,19 +39,23 @@
 // Every process it starts is announced first (argv), then recorded with its
 // pid, /proc/<pid>/comm and cmdline, and its exit code or signal, so a kernel
 // line naming a pid can be traced to a command.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   constants,
   existsSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readSync,
+  rmSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs'
-import { release } from 'node:os'
-import { dirname } from 'node:path'
+import { release, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 
 const MEDIA_JAIL = '/usr/local/bin/media-jail'
@@ -67,6 +74,10 @@ const BRIDGE_PORT = 9101 // the loopback end of the bridge to the parent's 9101
 const PARENT_CID = Number(process.env.PROBE_PARENT_CID || 3)
 const PROBE = '/run/probe'
 const REPORT = `${PROBE}/report.jsonl`
+// A scratch directory on the root filesystem, which allows exec where the
+// enclave's /tmp (a noexec tmpfs) does not: the TMPDIR of the end-to-end test
+// and the stand-in when /tmp cannot run a script (tmp_exec below).
+const EXEC_TMP = '/opt/probe/tmp'
 const CG_MEDIA = '/run/cg2/media'
 // Paths only the probe carries: the root filesystem lives in enclave memory,
 // so the report says how much of it production would not hold.
@@ -561,11 +572,73 @@ async function jailCheck() {
   }
 }
 
+// --- a TMPDIR the test world can exec from --------------------------------------
+
+// The mount a path is on, from /proc/self/mountinfo: the longest mount point
+// that holds it (the last one mounted there), its options and type.
+function mountOf(path) {
+  let best = null
+  for (const line of (readText('/proc/self/mountinfo') || '').split('\n')) {
+    const f = line.split(' ')
+    const dash = f.indexOf('-')
+    const point = f[4]
+    if (!point || dash < 0) continue
+    if (path !== point && !path.startsWith(point === '/' ? '/' : `${point}/`)) continue
+    if (!best || point.length >= best.point.length) best = { point, fstype: f[dash + 1], options: f[5] }
+  }
+  return best ? { ...best, noexec: best.options.split(',').includes('noexec') } : null
+}
+
+// Writes a two-line shell script into `dir` and execs it: whether that works,
+// and if not, the error and the mount it is on.
+function execCheck(dir) {
+  const script = join(dir, `probe-exec-${process.pid}`)
+  const result = { dir, mount: mountOf(dir) }
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(script, '#!/bin/sh\nexit 0\n')
+    chmodSync(script, 0o700)
+    const r = spawnSync(script, [], { stdio: 'ignore', timeout: 10000 })
+    if (r.error) return { ...result, exec: false, error: r.error.code || String(r.error) }
+    return { ...result, exec: r.status === 0, status: r.status, signal: r.signal }
+  } catch (e) {
+    return { ...result, exec: false, error: e.code || errText(e) }
+  } finally {
+    try {
+      rmSync(script, { force: true })
+    } catch {
+      /* gone */
+    }
+  }
+}
+
+// The test world writes its fake nsm-attest (enclave/test/fixtures.mjs fakeNsm)
+// as a script under os.tmpdir() and runs it. On the A1 run (2026-09-29) /tmp
+// was a noexec tmpfs, the script could not run, and both runs below ended in
+// BootFailure attest_failed before they measured anything. So: /tmp if it can
+// exec, else EXEC_TMP; `why` says what failed when neither can.
+function tmpExec() {
+  const checks = [execCheck(tmpdir()), execCheck(EXEC_TMP)]
+  const chosen = checks.find((c) => c.exec) || null
+  const reason = (c) =>
+    `${c.dir}: ${c.error ?? `exit ${c.status}${c.signal ? ` (${c.signal})` : ''}`}` +
+    (c.mount ? ` on ${c.mount.point} (${c.mount.fstype} ${c.mount.options})${c.mount.noexec ? ', mounted noexec' : ''}` : '')
+  return {
+    tmpdir: chosen ? chosen.dir : null,
+    checks,
+    why: chosen ? null : `no directory can exec a script, so the test world's fake nsm-attest cannot run (BootFailure attest_failed): ${checks.map(reason).join('; ')}`,
+  }
+}
+
+// The environment and the report fields the two runs below share: TMPDIR, and why they cannot boot without one.
+const tmpEnv = (tmp) => (tmp && tmp.tmpdir ? { TMPDIR: tmp.tmpdir } : {})
+const tmpFields = (tmp) => ({ tmpdir: tmp ? tmp.tmpdir : null, ...(tmp && tmp.why ? { why: tmp.why } : {}) })
+
 // --- the reader end to end, as check-image.sh --jail runs it -------------------
-async function mediaE2e() {
+async function mediaE2e(tmp) {
   const tap = []
   const r = await streamChild([NODE, '--test', '--test-reporter=tap', E2E], {
-    env: { ...process.env, MEDIA_E2E: 'jail' },
+    env: { ...process.env, ...tmpEnv(tmp), MEDIA_E2E: 'jail' },
     timeoutMs: 300000,
     onLine(line) {
       tap.push(line)
@@ -576,6 +649,7 @@ async function mediaE2e() {
   const count = (key) => Number((tap.join('\n').match(new RegExp(`^# ${key} (\\d+)$`, 'm')) || [])[1] ?? NaN)
   return {
     go: r.code === 0 && count('pass') >= 1 && count('fail') === 0,
+    ...tmpFields(tmp),
     exit_code: r.code,
     signal: r.signal,
     timed_out: r.timed_out,
@@ -590,7 +664,7 @@ async function mediaE2e() {
 }
 
 // --- the reader stand-in: idle memory, the heaviest jobs, documents over vsock
-async function readerBench() {
+async function readerBench(tmp) {
   const loopback = process.env.PROBE_OBJECTS === 'loopback'
   // The parent's objects arrive the way production's archive answers do: a
   // socat bridge from loopback to the parent's vsock port.
@@ -605,7 +679,7 @@ async function readerBench() {
   try {
     const r = await streamChild([NODE, '--expose-gc', BENCH], {
       cwd: dirname(BENCH),
-      env: { ...process.env, PROBE_OBJECTS: loopback ? 'loopback' : 'vsock', PROBE_BRIDGE_PORT: String(BRIDGE_PORT) },
+      env: { ...process.env, ...tmpEnv(tmp), PROBE_OBJECTS: loopback ? 'loopback' : 'vsock', PROBE_BRIDGE_PORT: String(BRIDGE_PORT) },
       timeoutMs: 900000,
       onLine(line) {
         if (!line.startsWith('BENCH ')) return false
@@ -624,6 +698,7 @@ async function readerBench() {
     const opened = (d) => !d.error && (d.outcome === 'complete' || d.outcome === 'partial')
     return {
       go: r.code === 0 && phases.end === 1 && phases.media_jail === true && documents.length === 4 && documents.every(opened),
+      ...tmpFields(tmp),
       exit_code: r.code,
       signal: r.signal,
       timed_out: r.timed_out,
@@ -812,8 +887,9 @@ async function main() {
   // Early, while the parent's sender still retries its connect.
   await section('vsock', vsock)
   ctx.jail = await section('jail_check', jailCheck)
-  ctx.e2e = await section('media_e2e', mediaE2e)
-  ctx.bench = await section('reader_bench', readerBench)
+  ctx.tmp = await section('tmp_exec', tmpExec)
+  ctx.e2e = await section('media_e2e', () => mediaE2e(ctx.tmp))
+  ctx.bench = await section('reader_bench', () => readerBench(ctx.tmp))
   const kernel = await section('kernel_log', kernelLog)
   await section('a1_kernel', () => a1Kernel(ctx))
   const go = {
