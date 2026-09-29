@@ -63,23 +63,25 @@ export const H = {
 /**
  * One word for how a job ended: done, done:cut, error:<code>[/<what>] for a
  * valid output; oom (137), wall (124), term (143), seccomp (159), jail (3,
- * 125, 127) and abort (134, V8's heap limit) for media-jail's exits; signal:X
- * for a direct run killed by a signal; invalid:<why> for output the reader
- * would refuse.
+ * 125, 127), abort (134) and crash (139) for media-jail's exits; signal:X for
+ * a direct run killed by a signal; invalid:<why> for output the reader would
+ * refuse. V8's heap limit is abort() outside the jail and a crash inside it,
+ * where the worker is its PID namespace's init and ignores its own SIGABRT.
  */
 export function outcome(r) {
   if (r.valid) {
     if (r.error) return `error:${r.error.code}${r.error.what ? `/${r.error.what}` : ''}`
     return r.cut ? 'done:cut' : 'done'
   }
-  const named = { 124: 'wall', 134: 'abort', 137: 'oom', 143: 'term', 159: 'seccomp', 3: 'jail', 125: 'jail', 127: 'jail' }
+  const named = { 124: 'wall', 134: 'abort', 137: 'oom', 139: 'crash', 143: 'term', 159: 'seccomp', 3: 'jail', 125: 'jail', 127: 'jail' }
   if (r.code != null && named[r.code]) return named[r.code]
   if (r.signal) return `signal:${r.signal}`
   return `invalid:${r.why}`
 }
 
-// Outcomes that bound a hostile job without a result.
-const KILLED = ['oom', 'wall', 'abort', 'signal:SIGABRT']
+// Outcomes that bound a hostile job without a result: the memcg, the wall,
+// V8's heap limit.
+const KILLED = ['oom', 'wall', 'abort', 'crash', 'signal:SIGABRT']
 
 // ---- small builders --------------------------------------------------------
 
@@ -217,6 +219,7 @@ export function makePdf(pages, { trailer = '', encrypt } = {}) {
         img.mask ? '/ImageMask true' : `/ColorSpace ${img.colorSpace ?? '/DeviceRGB'}`,
         `/BitsPerComponent ${img.bpc ?? 8}`,
         img.filter ? `/Filter ${img.filter}` : '',
+        img.parms ? `/DecodeParms ${img.parms}` : '',
       ].join(' ')
       const ref = pdf.stream(dict, img.data)
       xobjects.push(`/${img.name} ${ref} 0 R`)
@@ -535,6 +538,8 @@ export async function corpus() {
   const gpsPhoto = withSegments(photo)
   const big = await noise(4000, 3000, 28).jpeg({ quality: 92 }).toBuffer()
   const alphaPng = await sharp({ create: { width: 300, height: 200, channels: 4, background: { r: 0, g: 0, b: 255, alpha: 0 } } }).png().toBuffer()
+  // 35 MP: PNG has no shrink-on-load, so this is decoded whole (105 MB of pixels).
+  const largePng = await sharp({ create: { width: 7_000, height: 5_000, channels: 3, background: '#d0e0f0' } }).png().toBuffer()
   const frame = (c) => sharp({ create: { width: 64, height: 48, channels: 4, background: c } }).png().toBuffer()
   const animatedGif = await sharp([await frame('#ff0000'), await frame('#00ff00')], { join: { animated: true } }).gif().toBuffer()
   const sticker = await sharp({ create: { width: 512, height: 512, channels: 4, background: { r: 250, g: 120, b: 0, alpha: 0.6 } } }).webp({ quality: 80 }).toBuffer()
@@ -550,6 +555,13 @@ export async function corpus() {
   const rgb = gradient(640, 480)
   const inline = gradient(16, 16)
   const bilevel = Buffer.alloc(((200 + 7) >> 3) * 100, 0xaa)
+  // CCITT group 4 of an all-white page: each row is one V0 code, a 1 bit, so
+  // 64 rows are 8 bytes of 0xFF. pdf.js decodes CCITT (and JBIG2) with its
+  // jbig2 wasm module, and DeviceCMYK through its qcms wasm module and the
+  // ICC profile it ships: these two pages are where the jail runs wasm.
+  const ccitt = Buffer.alloc(8, 0xff)
+  const cmyk = Buffer.alloc(120 * 80 * 4)
+  for (let i = 0; i < cmyk.length; i += 4) cmyk.set([i % 255, 40, 200, 10], i)
   const textPages = Array.from({ length: 50 }, (_, i) => ({ lines: [`Page ${i + 1} of 50`, 'The quick brown fox jumps over the lazy dog 0123456789', `Total R$ ${i},00   `] }))
   const textPdf = makePdf(textPages)
   const scanned = makePdf([
@@ -559,6 +571,8 @@ export async function corpus() {
     { images: [{ inline: true, width: 16, height: 16, data: inline.data, w: 100, h: 100 }] },
     { images: [{ name: 'Im4', width: 200, height: 100, colorSpace: '/DeviceGray', bpc: 1, data: bilevel, w: 400, h: 200 }] },
     { images: [{ name: 'Mask', width: 200, height: 100, mask: true, bpc: 1, data: bilevel, w: 400, h: 200 }], lines: ['vector only'] },
+    { images: [{ name: 'Fax', width: 64, height: 64, colorSpace: '/DeviceGray', bpc: 1, filter: '/CCITTFaxDecode', parms: '<< /K -1 /Columns 64 /Rows 64 >>', data: ccitt, w: 300, h: 300 }] },
+    { images: [{ name: 'Cmyk', width: 120, height: 80, colorSpace: '/DeviceCMYK', filter: '/FlateDecode', data: deflateSync(cmyk), w: 360, h: 240 }] },
   ])
   const encryptedPdf = makePdf([{ lines: ['secret'] }], { encrypt: pdfEncryption('user-pass', 'owner-pass') })
   const bomb = await deflateZeros(1 << 30, false)
@@ -610,6 +624,7 @@ export async function corpus() {
     },
     { name: 'photo-12mp-ladder', worker: 'image', header: H.image('photo', 'jpeg'), input: big, expect: ['done', 'error:too_large/pixels'] },
     { name: 'photo-png-alpha', worker: 'image', header: H.image('photo', 'png'), input: alphaPng, expect: ['done'] },
+    { name: 'photo-png-35mp', worker: 'image', header: H.image('photo', 'png'), input: largePng, expect: ['done'], check: (r) => r.images[0].width === 1_568 },
     { name: 'photo-webp', worker: 'image', header: H.image('photo', 'webp'), input: webpPhoto, expect: ['done'] },
     { name: 'photo-gif-animated', worker: 'image', header: H.image('photo', 'gif'), input: animatedGif, expect: ['done'], check: (r) => r.header.animated === true },
     { name: 'sticker', worker: 'image', header: H.image('sticker', 'webp'), input: sticker, expect: ['done'], check: (r) => r.images[0].type === 'png' },
@@ -640,7 +655,7 @@ export async function corpus() {
     { name: 'pdf-text-window', worker: 'pdf', header: H.pdfText(49, 10), input: textPdf, expect: ['done'], check: (r) => r.sections.map((s) => s.value.page).join() === '49,50' },
     { name: 'pdf-text-past-end', worker: 'pdf', header: H.pdfText(51, 1), input: textPdf, expect: ['done'], check: (r) => r.sections.length === 0 && r.header.pages === 50 },
     { name: 'pdf-text-cut', worker: 'pdf', header: H.pdfText(1, 300, { text_bytes: 1_000 }), input: textPdf, expect: ['done:cut'], check: (r) => Buffer.byteLength(r.text) === 1_000 },
-    { name: 'pdf-scanned-text', worker: 'pdf', header: H.pdfText(1, 6), input: scanned, expect: ['done'], check: (r) => r.sections.length === 6 && r.sections[1].text === '' },
+    { name: 'pdf-scanned-text', worker: 'pdf', header: H.pdfText(1, 8), input: scanned, expect: ['done'], check: (r) => r.header.pages === 8 && r.sections.length === 8 && r.sections[1].text === '' },
     {
       name: 'pdf-scanned-images',
       worker: 'pdf',
@@ -650,6 +665,14 @@ export async function corpus() {
       check: (r) => r.images.map((i) => i.page).join() === '2,3,4,5' && r.images[0].height === 1568 && r.images[1].width === 640,
     },
     { name: 'pdf-images-none', worker: 'pdf', header: H.pdfImages([1, 6]), input: scanned, expect: ['done'], check: (r) => r.images.length === 0 },
+    {
+      name: 'pdf-images-wasm',
+      worker: 'pdf',
+      header: H.pdfImages([7, 8]),
+      input: scanned,
+      expect: ['done'],
+      check: (r) => r.images.map((i) => `${i.page}:${i.width}x${i.height}`).join() === '7:64x64,8:120x80',
+    },
     { name: 'pdf-encrypted', worker: 'pdf', header: H.pdfText(), input: encryptedPdf, expect: ['error:encrypted'] },
     { name: 'pdf-not-a-pdf', worker: 'pdf', header: H.pdfText(), input: Buffer.from('%PDF-1.4 but nothing else'), expect: ['error:damaged'] },
     { name: 'pdf-truncated', worker: 'pdf', header: H.pdfText(), input: truncate(textPdf), expect: ['done', 'error:damaged'] },

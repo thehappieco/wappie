@@ -18,12 +18,15 @@ export const LOADERS = Object.freeze({
 /**
  * Import sharp with libvips set for one job: one thread, no operation cache,
  * every loader blocked except `loader` (none for raw pixels, which need no
- * loader). VIPS_BLOCK_UNTRUSTED is set before libvips starts, so its
- * untrusted-marked operations stay blocked whatever the block list says; the
- * jail passes no VIPS_* variable (§16.6), so this is where it is set.
+ * loader). The jail passes no VIPS_* variable (§16.6), so libvips is set up
+ * here, before it starts: VIPS_BLOCK_UNTRUSTED keeps its untrusted-marked
+ * operations blocked whatever the block list says, and VIPS_DISC_THRESHOLD
+ * keeps every decode in memory, which the job's memcg bounds, rather than in a
+ * temporary file the jail's 16 MiB /tmp could not hold.
  */
 export async function loadSharp(loader) {
   process.env.VIPS_BLOCK_UNTRUSTED = '1'
+  process.env.VIPS_DISC_THRESHOLD = '1g'
   const { default: sharp } = await import('sharp')
   sharp.concurrency(1)
   sharp.cache(false)
