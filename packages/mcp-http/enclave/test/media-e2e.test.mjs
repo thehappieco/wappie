@@ -68,7 +68,7 @@ const bodyOf = value => value.content[0].text.slice(value.content[0].text.indexO
 const imagesOf = value => value.content.slice(1).map(block => ({ mimeType: block.mimeType, data: Buffer.from(block.data, 'base64') }))
 const events = w => w.lines.map(line => JSON.parse(line)).filter(entry => entry.event)
 
-test(`open_attachment end to end with the real workers (${JAILED ? 'under media-jail' : 'no jail'}): a photo, a sticker, a scanned PDF, a docx, an xlsx, a zip, and the workers' refusals`, {
+test(`open_attachment end to end with the real workers (${JAILED ? 'under media-jail' : 'no jail'}): a photo, a sticker, a video's preview, a scanned PDF, a docx, an xlsx, a zip, and the workers' refusals`, {
   skip: !JAILED && !INSTALLED && 'the worker package is not installed (make media-worker-check)', timeout: 180_000,
 }, async t => {
   assert.ok(INSTALLED, `the worker package is not installed in ${WORKER_DIR}`)
@@ -117,6 +117,17 @@ test(`open_attachment end to end with the real workers (${JAILED ? 'under media-
   const [png] = imagesOf(stuck)
   assert.equal(png.mimeType, 'image/png')
   assert.deepEqual(pngInfo(png.data), { width: 512, height: 512 })
+
+  // A video: its sealed preview re-encoded and the length its sender's app claimed; nothing fetched.
+  const video = await w.f.addMedia({ thumbnail: input.thumb, filename: 'SENTINEL-clip.mp4', media: { media_type: 'video', mimetype: 'video/mp4', seconds: 42 } })
+  opened.push(video.uid)
+  const clip = (await openAttachment(w, done, { uid: video.uid })).value
+  assert.equal(clip.isError, undefined, clip.content[0].text)
+  const clipHeader = headerOf(clip)
+  assert.deepEqual([clipHeader.sniffed, clipHeader.seconds_claimed, clipHeader.images, clipHeader.notes[1]], ['thumbnail', 42, 1,
+    "This is the video's preview image only: the reader does not watch or transcribe videos yet. Its sender's app reported a length of 42 seconds."])
+  assert.deepEqual(jpegInfo(imagesOf(clip)[0].data), { width: 100, height: 56 })
+  assert.equal(fetched(video.uid), 0)
 
   // A PDF of a text page and seven scanned ones: the text job, then the images
   // job for the first four scanned pages; then pages 6-8 from the text cache
@@ -191,12 +202,12 @@ test(`open_attachment end to end with the real workers (${JAILED ? 'under media-
   const password = (await openAttachment(w, done, { uid: locked.uid })).value
   assert.equal(password.content[0].text.split('\n')[0], 'Could not open the attachment (attachment_encrypted). The file is protected by a password, so the reader cannot open it. Tell the user.')
 
-  // One job per image and office file; the PDF's text job once, its images job per part; nothing for the cached repeat.
-  assert.deepEqual(jobs, ['image', 'image', 'pdf', 'pdf', 'pdf', 'office', 'office', 'office', 'office', 'pdf'])
+  // One job per image, preview and office file; the PDF's text job once, its images job per part; nothing for the cached repeat.
+  assert.deepEqual(jobs, ['image', 'image', 'image', 'pdf', 'pdf', 'pdf', 'office', 'office', 'office', 'office', 'pdf'])
 
   // Only events and codes reach the log: no uid, filename, caption, content or key.
   const logged = events(w)
-  assert.equal(logged.filter(entry => entry.event === 'media_opened').length, 7)
+  assert.equal(logged.filter(entry => entry.event === 'media_opened').length, 8)
   assert.deepEqual(logged.filter(entry => entry.event === 'media_refused').map(entry => entry.code), ['attachment_too_large', 'attachment_encrypted'])
   assert.deepEqual(logged.filter(entry => entry.event === 'media_job_killed'), [])
   for (const entry of w.lines) {
@@ -204,5 +215,5 @@ test(`open_attachment end to end with the real workers (${JAILED ? 'under media-
     for (const secret of [...opened, bomb.uid, locked.uid, 'SENTINEL', 'Invoice', done.token]) assert.equal(entry.includes(secret), false, entry)
   }
   const health = await e.health.tick()
-  assert.deepEqual([health.media_jail, health.media_opens, health.media_killed, health.media_queue], [true, 7, 0, 0])
+  assert.deepEqual([health.media_jail, health.media_opens, health.media_killed, health.media_queue], [true, 8, 0, 0])
 })
