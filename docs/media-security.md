@@ -15,7 +15,7 @@ behavior.
 | WhatsApp contact or group picture | Ordinary image bytes arrive over HTTPS, are visible in server memory and are sealed before archive persistence. |
 | Wappie account or workspace avatar | A validated image data URL stored as shared profile metadata, without archive encryption. Base64 encoding is not encryption. |
 | Client retrieval | The HTTP media endpoint returns stored bytes. Supported encrypted attachments are opened in the browser or CLI. `wsctl media -raw` retrieves stored bytes; it does not configure storage encryption. |
-| MCP connectors | The hosted metadata connector (`api.`) reports attachment type, MIME type, size and download status; the filename stays locked. The attested reader (`mcp.`) also opens the sealed filename for a text connection. Neither downloads media, opens the sealed media key or thumbnail, or returns attachment bytes. The attested reader's key would technically open the media key and thumbnail, because one key per number opens every sealed field; the reader simply never asks for them. |
+| MCP connectors | The hosted metadata connector (`api.`) reports attachment type, MIME type, size and download status; the filename stays locked. The attested reader (`mcp.`) also opens the sealed filename for a text connection. Neither fetches media, opens the sealed media key or thumbnail, or returns attachment bytes for those connections; the attested reader's key would technically open the media key and thumbnail, because one key per number opens every sealed field, but for a text connection the reader never asks for them. For a **media** connection (a version-2 consent that includes attachments, reader 0.4.0 and later) the attested reader does open attachment contents, inside the enclave only: it opens the sealed media key (or, for a video, the sealed thumbnail) with the connection's grants, fetches the ciphertext from `/v1/media` with the connection's key, checks `fileEncSHA256` and the MAC before decrypting, and parses the plaintext in a jailed worker. The AI provider receives text and re-encoded images, never the file. View-once media, `gone` attachments (recovering one would hand its media key to the archive server), audio and voice notes (until transcription exists) and keyless or unhashed media are never opened. The archive server learns which attachment is opened, when and its ciphertext size, never its content. The hash and MAC prove that the bytes match what the live server recorded at ingestion; that server saw the media key and could have forged both, a declared residual. |
 
 The archive private key stays with authorized clients. This does not make the
 live server blind: it has WhatsApp session secrets, sees incoming message
@@ -36,6 +36,10 @@ The pinned whatsmeow newsletter upload explicitly permits media without a
 media key or encrypted-file hash. Preserving such bytes does not establish
 encryption at rest; a supplied hash alone proves integrity, not encryption.
 These are source-level risks, not findings about inspected customer objects.
+The attested MCP reader never opens such an attachment for a media
+connection: without a sealed media key and a 32-byte `fileEncSHA256` it
+answers `attachment_unverifiable` before requesting anything, so the shared
+`<tenant>/unhashed/` objects never reach it.
 
 Relevant implementation: [normalization](../internal/wa/normalize/content.go),
 [ingestion](../internal/ingest/pipeline.go),

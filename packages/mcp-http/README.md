@@ -22,8 +22,9 @@ the shared reader refuses `serviceKey()` and `contactPack()` outright, and
 its bundle parser accepts only version 1, which cannot carry one.
 
 The same package also builds the attested reader (`enclave/`, below), which
-can open message text for a `content` connection. Nothing reachable from
-`server.mjs` can: a test walks its imports.
+can open message text for a `content` connection, and attachment contents for
+a content connection whose consent includes them. Nothing reachable from
+`server.mjs` can do either: a test walks its imports.
 
 ## What runs where
 
@@ -258,9 +259,57 @@ allows content only for the workspaces the operator lists
   check history per hit, so the REST requests do not reveal which messages
   matched.
 
+**Media connections** (stage A, `docs/mcp-enclave.md` section 16). A content
+connection whose sealed consent (version 2) carries `media: true` also gets
+the tool `open_attachment`; a text connection, whatever its consent version,
+never does, and never opens attachment contents. Go allows media only for the
+workspaces in `WS_MCP_MEDIA_TENANTS` while `WS_MCP_MEDIA_ENABLED` is on, and
+every status answer carries `media` and `media_off` (the kinds switched off),
+so a switch reaches the enclave within a minute while text keeps serving.
+
+- **Opening** (`enclave/media/`): the row is checked first (view-once, type,
+  download status, a sealed media key and a 32-byte hash, the size caps and
+  the connection's budgets), so a refusal opens no key and fetches nothing.
+  Then the media key is opened with the connection's grants, the ciphertext
+  is fetched from Go's `/v1/media/{uid}` with the connection's API key, and
+  its SHA-256 and MAC are verified before anything is decrypted
+  (`wamedia-stream.mjs`, `node:crypto` only). A video's preview comes from
+  its sealed thumbnail, with no fetch. Plain text is decoded in the reader;
+  images, PDFs, office files and zip archives go to a worker.
+- **Workers** (`enclave/media/worker/`): their own package (sharp, pdf.js,
+  SheetJS), installed at `/opt/media/worker` in the image and never under
+  `/app`; the reader's Node gains no dependency. Each job runs under
+  `media-jail` (`deploy/enclave/media-jail/`): its own mount, PID, network,
+  IPC and UTS namespaces, a minimal read-only root, a cgroup v2 leaf bounding
+  memory and processes, no capabilities and a seccomp allowlist, on the
+  enclave's 4.14 kernel. If the jail fails its boot check, every open
+  answers `media_unavailable` and text keeps serving.
+- **Limits** (`enclave/media/policy.mjs`, measured in PCR0): one open at a
+  time in the enclave with four waiting; per connection one open in flight,
+  ten a minute and 256 MiB of ciphertext an hour; photos and stickers up to
+  16 MiB and documents up to 32 MiB; four images and 1.5 MiB per result.
+  Nothing is read from the environment, a request or Go.
+- **Caches and wiping**: a finished answer is kept ten minutes and a file's
+  text an hour, per connection and in memory only. Revocation, expiry or
+  `media: false` aborts the connection's fetch and job and empties both
+  caches within a minute; a kind switched off does the same for that kind.
+- **Padding and logs**: every `/mcp` response of a media connection is padded
+  to a fixed size bucket, so the parent learns only the bucket. The log adds
+  `media_opened`, `media_refused`, `media_job_killed` and
+  `media_jail_unavailable`, with the connection's fingerprint and a code only,
+  and the health line `media_jail`, `media_opens`, `media_killed`,
+  `media_queue` and `mem_avail_min_mb`; never a filename, caption, type, size,
+  page count or duration.
+
+What the assistant receives, and what is never opened (view-once media,
+audio and voice notes until transcription exists, `gone` attachments, keyless
+or unhashed media), is in the [reader's guide](../mcp/README.md#open-attachments-on-a-media-connection).
+
 `server.mjs` never imports `enclave/` and never names the `'enclave'`
-credential source or the key map (`test/enclave-boundary.test.mjs`), and the
-enclave's dependencies live in its own `enclave/package.json`.
+credential source, the key map, `enclave/media/` or `/v1/media`
+(`test/enclave-boundary.test.mjs`); the pilot's provider never has `media`.
+The enclave's dependencies live in its own `enclave/package.json`, and the
+workers' in theirs.
 
 `node enclave/policy.mjs < policy.json` prints the policy hash the console
 accepts; `--canonical` prints the canonical bytes.
@@ -287,7 +336,12 @@ The enclave has its own suite (`npm --prefix packages/mcp-http/enclave ci`
 first, then `npm --prefix packages/mcp-http/enclave test`): the contract's
 vectors, sealed state, CMS and KMS, PROXY v2, the HMAC guard, and the whole
 enclave booted against a stub `nsm-attest`, an in-memory KMS, a fake Go and a
-fake ACME server that really dials the TLS-ALPN-01 listener.
+fake ACME server that really dials the TLS-ALPN-01 listener. Its `media-*`
+tests cover the attachment path: every refusal before a key is opened or a
+byte fetched, decryption against Go's vectors, the worker protocol, caches,
+wiping and padding. The workers have their own suite (`make
+media-worker-check`), and `make enclave-jail` runs the attachment corpus
+through them under `media-jail` on a built image (arm64, privileged).
 
 ## What this never has
 
@@ -298,6 +352,9 @@ workspace owners consented to, and those keys can be revoked from the console
 at any time.
 
 The attested reader, for any connection: an archive private key, a password, a
-contact snapshot, attachment bytes, a way to send. For a `content` connection
-it holds, in enclave memory only, the key its service account's grants are
-sealed to, and opens text only while that connection is live.
+contact snapshot, a way to send. For a `content` connection it holds, in
+enclave memory only, the key its service account's grants are sealed to, and
+opens text only while that connection is live. Only for a media connection
+does it hold an attachment's plaintext, for the length of one open, in memory
+and in a jailed worker, and it keeps what it read in the caches above, never
+past the connection's end.

@@ -193,9 +193,16 @@ It runs in two places, and they differ in what they can read:
   a workspace owner or administrator enables with their password, can open
   message text, chat names and previews, contact names and filenames of the
   consented numbers, inside the enclave only, with a key that lives in the
-  enclave's memory and nowhere else. Attachment contents are never opened.
-  Content is enabled per workspace by the operator; see
-  [attested MCP reader](docs/mcp-enclave.md).
+  enclave's memory and nowhere else. When the consent also includes
+  attachments (a media connection), it opens photos, stickers, PDFs, office
+  and text files and a video's preview image the same way, parses them in a
+  jailed process inside the enclave, and sends the assistant text and
+  re-encoded images. It never opens view-once media, audio or voice notes
+  (not transcribed yet), or attachments the archive has not downloaded or
+  cannot verify. Text connections and the hosted connector never open
+  attachment contents. Content, and attachments on top of it, are enabled per
+  workspace by the operator; see
+  [attested MCP reader](docs/mcp-enclave.md) and [MCP setup](docs/mcp.md#attachments).
 
 ```
 make client-install
@@ -501,9 +508,12 @@ is.
 - **A remote MCP connector still sends metadata to your AI provider.** The
   hosted endpoint returns who, when and how much: participants, timestamps,
   counts, and chat names when they are not sealed. It cannot return message
-  content, because it has no key. Assume your assistant's provider sees
-  everything it is shown, and revoke the connection when it is no longer
-  needed; revocation stops future reads, not copies already made.
+  content, because it has no key. The attested reader also sends what a
+  connection's consent covers: message text for a text connection, and for a
+  media connection its attachments, as text and re-encoded images. Assume
+  your assistant's provider sees everything it is shown, and revoke the
+  connection when it is no longer needed; revocation stops future reads, not
+  copies already made.
 
 ## Seeing what a normal client hides
 

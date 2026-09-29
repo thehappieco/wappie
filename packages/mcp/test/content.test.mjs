@@ -228,3 +228,16 @@ test('the README documents the hosted-content mode the code implements', async (
   assert.match(readme, /exactly \*\*four pages\*\* of 500 archived contacts/)
   assert.match(readme, /45-second deadline/)
 })
+
+test('the README documents media connections and what they still never open', async () => {
+  const readme = (await readFile(new URL('../README.md', import.meta.url), 'utf8')).replace(/\s+/g, ' ')
+  for (const phrase of ['**`media: true`** marks a media connection', '`open_attachment`', '`next_cursor`', '`retry_after_s`',
+    '`view_once_excluded`', '`transcription_unavailable`', '`attachment_expired`', '`attachment_unverifiable`',
+    '`media_not_allowed`', '`media_unavailable`', '`openable`',
+    'A text connection does not gain attachments by renewal',
+    'The archive server sees which attachment is opened, when, and its encrypted size, never its content.']) {
+    assert.ok(readme.includes(phrase), `README names ${phrase}`)
+  }
+  // The why values of a message's attachment, in the order the enclave checks them (docs/mcp-enclave.md §16.7).
+  assert.ok(readme.includes('`why` (`view_once`, `unsupported`, `not_transcribed`, `expired`, `pending`, `unverifiable`, `too_large` or `kind_off`)'))
+})
