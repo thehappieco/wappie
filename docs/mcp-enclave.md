@@ -1685,6 +1685,8 @@ provider.media = {
   why(row),           // → null, or why the attachment cannot be opened, from the row alone (no I/O; §16.7 metadata)
   open(request, archive), // → Promise<AttachmentResult>; rejects with ArchiveError or LocalConfigError (code below),
                       //   which may carry own properties retry_after_s (a RETRY_AFTER_S value) and facts (§16.7 errors)
+  resultMaxBytes,     // RESULT_MAX_BYTES: the serialized result's cap, which server.mjs enforces (§16.7); server.mjs
+                      //   imports nothing of enclave/media/, so the constant reaches it here
 }
 request = { device_id, uid, cursor /* optional */, pages /* optional */, images /* boolean */ } // the §16.7 input, as parsed
 // READER → ENCLAVE: built in reader.mjs openAttachment for this call.
@@ -1698,7 +1700,8 @@ archive = {
                       //   reconsent_required and stale_grant pass through. The caller owns the bytes and zeroes them.
 }
 AttachmentResult = { header /* §16.7 fields, without notes and source */, body /* string */,
-                     images /* [{ mimeType: 'image/jpeg' | 'image/png', data: Buffer }] */ }
+                     images /* [{ mimeType: 'image/jpeg' | 'image/png', data: Buffer }] */,
+                     suggest_pages /* optional: "a-b", the range the scanned-pages note offers (§16.7); never in the header */ }
 ```
 
 `reader.mjs` exports `openAttachment({device_id, uid, cursor, pages,
@@ -1973,7 +1976,12 @@ media-jail --table
   `PATH=/usr/local/bin:/usr/bin:/bin`, `HOME=/tmp`, `TMPDIR=/tmp` and
   `OPENSSL_armcap=0` (skips OpenSSL's SVE probe, one SIGILL per Node start on
   4.14; a worker does no cryptography). `MEDIA_JAIL_EMULATE` and
-  `src/emulate.rs` are removed.
+  `src/emulate.rs` stay only behind the cargo feature `emulate-old-kernel`,
+  for test builds that force the 4.14 fallbacks on a newer kernel (the
+  `check-4.14` target of `jailcheck/`, `make media-jail-check`). The image
+  builds with no features, so its binary never reads the variable:
+  `check-image.sh` runs `--self-check` with it set and fails unless nothing
+  is emulated.
 - **fds**: the worker's 0 and 1 are media-jail's own stdin and stdout
   (§16.11); its 2 is `/dev/null`; every other fd is closed
   (`close_range`, else a walk of `/proc/self/fd`).
@@ -2019,7 +2027,7 @@ stand as they are.
 | 127 | the child's setup failed after the fork |
 | 137 | the memcg's OOM killer ended the job |
 | 143 | killed on request (`SIGTERM` to media-jail) |
-| 128 + n otherwise | the worker died of signal n (134 is V8's heap-limit abort, 159 a seccomp kill) |
+| 128 + n otherwise | the worker died of signal n (159 a seccomp kill). V8's heap-limit abort is 139 inside the jail: the worker is its PID namespace's init, which ignores its own `SIGABRT`, so musl's `abort()` ends in `SIGSEGV` (134 outside the jail). Both are crashes, `parser_exit` (§16.11) |
 
 **Killing a job.** The reader never touches cgroupfs: media-jail keeps
 itself out of the leaf and holds the wall timeout. The reader sends
@@ -2128,8 +2136,9 @@ guidance rather than a schema error.
   `{type: 'image', data: <base64>, mimeType: 'image/jpeg' | 'image/png'}`,
   in the order of `image_pages` for a PDF. Images go to every host.
 - The serialized result is at most `RESULT_MAX_BYTES` for this tool only
-  (the other tools keep 1 MiB). If it is larger, images are dropped from the
-  end until it fits, with `images_withheld: "cap"`.
+  (the other tools keep 1 MiB), which `server.mjs` reads as
+  `provider.media.resultMaxBytes` (§16.5). If it is larger, images are
+  dropped from the end until it fits, with `images_withheld: "cap"`.
 - `status: "pending"` is not an error (`isError` absent): its body is empty
   and it has no images.
 
@@ -2221,7 +2230,7 @@ joined by ", ", the first 20 and then " and K more"):
 | `next_cursor` | `More follows: call open_attachment again with the same device_id and uid and cursor "{next_cursor}".` |
 | `scanned_pages` | `Pages without a text layer (scanned) in this part: {list}.` |
 | `image_pages` | `Images attached for pages: {list}.` |
-| scanned pages of the part without an image, `images` true | `To see other scanned pages, call again with pages set to one page or a range of up to 4, for example "{a}-{b}".` (`a` the first such page, `b` = min(a + 3, its window's last page)) |
+| scanned pages of the part without an image, `images` true | `To see other scanned pages, call again with pages set to one page or a range of up to 4, for example "{a}-{b}".` (`a` the first such page, `b` = min(a + 3, its window's last page); the enclave, which knows the window, hands `"{a}-{b}"` to `server.mjs` as the AttachmentResult's `suggest_pages`, never a header field) |
 | `pages` asked, some without an image (not with `kind_off`) | `No scanned image to show on pages: {list}; their text is above.` |
 | `text_cap` | `The reader reads about 4 MB of text from one file; the rest of this file cannot be opened here.` |
 | `page_cap` | `The reader reads the first 2,000 pages of a PDF; later pages cannot be opened here.` |
@@ -2321,7 +2330,7 @@ header (§16.11) copies the worker's limits from here, `media-jail`'s table
 | `IMAGES_PER_RESULT` | `4` | image blocks per result |
 | `IMAGES_TOTAL_BYTES` | `921_600` | image bytes per result (so 4 images of a PDF target `IMAGES_TOTAL_BYTES / 4` each) |
 | `PART_MAX_CHARS` | `60_000` | a result's body |
-| `RESULT_MAX_BYTES` | `1_572_864` | the serialized `open_attachment` result |
+| `RESULT_MAX_BYTES` | `1_572_864` | the serialized `open_attachment` result (`server.mjs` gets it as `provider.media.resultMaxBytes`) |
 | `JOB_TEXT_MAX_BYTES` | `4_194_304` | UTF-8 text from one job, and plain text decoded from one file |
 | `PDF_MAX_PAGES` | `2_000` | pages ever read of a PDF |
 | `PDF_PAGES_PER_JOB` | `300` | pages one text job reads (its window) |
@@ -2365,7 +2374,11 @@ An **open** is the work one call starts: its keys, the fetch, the
 decryption and one or two jobs (§16.5). A **job** is one `media-jail` run of
 one worker.
 
-- **Open key**: per connection, `${uid}|${cursor ?? ''}|${pages ?? ''}|${images ? 1 : 0}`.
+- **Open key**: per connection,
+  `${device_id}|${uid}|${cursor ?? ''}|${pages ?? ''}|${images ? 1 : 0}`.
+  The number is part of it, as it is of the text cache's key, so what one
+  number's call opened never answers a call naming another, whose row check
+  (§16.5 step 8) would have refused it.
   A call whose key names a running open joins it and waits (§16.5 step 18);
   it neither counts toward the budgets nor starts anything, even when it
   arrived in parallel with the call that started the open (§16.5 step 17
@@ -2386,14 +2399,17 @@ one worker.
 - **Result cache**: an open's outcome is kept under its key for
   `RESULT_TTL_MS` from completion and answers every identical call, which is
   how the repeats ChatGPT makes cost nothing. Refusals are kept too, except
-  `attachment_pending`, `read_failed`, `reconsent_required`, `stale_grant`
-  and `unauthorized`, which are answered once and forgotten. Refusals of the
-  call itself (§16.5 steps 2 to 17) are never kept, and neither is a result
-  with `images_withheld: "kind_off"`, whose answer changes when `image` is
-  switched back on (its text is in the text cache).
-- **Text cache**: per connection and `uid`, what the jobs read, so a new
-  cursor needs no fetch: the rendered text of an office file, zip listing or
-  plain-text file (at most `JOB_TEXT_MAX_BYTES` of it); a PDF's page texts
+  `attachment_pending`, `read_failed`, `reconsent_required`, `stale_grant`,
+  `unauthorized`, `rate_limited` and `media_not_allowed`, which are answered
+  once and forgotten: the last two change with a budget or a switch rather
+  than with the attachment (a kept `rate_limited` would outlive its own
+  `retry_after_s`, a kept `media_not_allowed` a kind switched back on).
+  Refusals of the call itself (§16.5 steps 2 to 17) are never kept, and
+  neither is a result with `images_withheld: "kind_off"`, whose answer
+  changes when `image` is switched back on (its text is in the text cache).
+- **Text cache**: per connection, `device_id` and `uid`, what the jobs read,
+  so a new cursor needs no fetch: the rendered text of an office file, zip
+  listing or plain-text file (at most `JOB_TEXT_MAX_BYTES` of it); a PDF's page texts
   by job window (`p` to `p + PDF_PAGES_PER_JOB − 1`, a window the text limit
   cut short ends at its last complete page, and the next window starts
   there; a `pages` read not in the cache adds a window of just those pages,
@@ -2490,17 +2506,24 @@ every new event and health field (`ENCLAVE_EVENTS` and the `HEALTH`
 fixture). Per-job `memory.peak` is measured in the probe enclave only.
 
 **Padding.** Every `/mcp` response of a media connection (`router.mjs`,
-through `enclave/media/pad.mjs` `padResponse(response)`) is padded with
-trailing spaces, which JSON allows, to the smallest `PAD_BUCKETS` size at
-least its length, or past the last bucket to the next multiple of 524,288
-bytes, with `Content-Length` set to match.
+through `enclave/media/pad.mjs` `padResponse(response)`) is padded to the
+smallest `PAD_BUCKETS` size at least its length, or past the last bucket to
+the next multiple of 524,288 bytes, with `Content-Length` set to match. A
+JSON body takes trailing spaces, which JSON allows. An event stream
+(`text/event-stream`: the SDK answers 2025-era clients in SSE whatever its
+response mode) takes one trailing comment line, `:` then spaces then `\n`,
+which every SSE parser ignores; a pad of one byte is a lone `\n`, an empty
+line, which dispatches nothing after a complete event. The one response
+left unpadded is a `subscriptions/listen` stream: it never ends, so it
+cannot be buffered, and it carries notifications only, never an
+attachment.
 
 **What leaks:**
 
 | Observable | By whom | Treatment |
 |---|---|---|
 | Which uid is opened, when, and its ciphertext size | Go and the operator (`/v1/media/{uid}`; `internal/media/http.go` logs the uid on errors) | Inherent, and on the card. The caches spare repeat fetches; a video's preview needs no fetch |
-| Result size | the parent, from TLS record lengths | padding to `PAD_BUCKETS` |
+| Result size | the parent, from TLS record lengths | padding to `PAD_BUCKETS` (all but a `subscriptions/listen` stream, which carries no result) |
 | Processing time, and which host (the inline wait differs) | the parent | declared, not mitigated |
 | Memory pressure | the parent, through `mem_avail_min_mb` | one minimum per 60 s, rounded to 64 MiB |
 | What the provider received | the AI provider; on claude.ai possibly its code-execution storage | on the card |
@@ -2679,7 +2702,7 @@ depends on its stdin alone.
 | 137 | memory | `parser_failed` | `oom` |
 | 143, after MAIN's `SIGTERM` | the reason MAIN sent it | `parser_failed` for invalid output and the watchdog; `media_not_allowed` for a wipe or `media_off` (§16.9) | `bad_output`, `watchdog`, `revoked` or `media_off` |
 | 3, 125, 127 | jail error | `parser_failed` | `jail_error` |
-| anything else | crash | `parser_failed` | `parser_exit` |
+| anything else (V8's heap limit included: 139 in the jail, 134 outside) | crash | `parser_failed` | `parser_exit` |
 
 **Example.** A sticker job's stdin is `00 00 00 68` and the 104-byte header
 `{"v":1,"op":"sticker","format":"webp","limits":{"pixels":40000000,"long_edge":512,"image_bytes":102400}}`,
