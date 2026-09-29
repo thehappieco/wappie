@@ -24,6 +24,34 @@ printf '%s\n' \
 mkdir -p /run/wappie
 chmod 0700 /run/wappie
 
+# Media jail (docs/mcp-enclave.md §16.6). The Nitro init mounts each cgroup
+# controller as its own v1 hierarchy; memory, pids and cpuset move to a
+# cgroup2 mount. An unmounted v1 hierarchy is released asynchronously, so each
+# controller is waited for (about 3 s) and enabled with its own write: one
+# write naming a controller the kernel's cgroup2 lacks (cpuset before 5.0)
+# fails as a whole. Nothing here is fatal: without memory and pids the reader
+# keeps media off for this boot and text serves.
+for c in memory pids cpuset; do
+  if grep -q " /sys/fs/cgroup/$c cgroup " /proc/mounts; then umount "/sys/fs/cgroup/$c" || true; fi
+done
+mkdir -p /run/cg2
+if mount -t cgroup2 cgroup2 /run/cg2 2> /dev/null; then
+  mkdir -p /run/cg2/media
+  for c in memory pids cpuset; do
+    tries=0
+    while ! grep -qw "$c" /run/cg2/cgroup.controllers && [ "$tries" -lt 15 ]; do
+      sleep 0.2
+      tries=$((tries + 1))
+    done
+    { echo "+$c" > /run/cg2/cgroup.subtree_control && echo "+$c" > /run/cg2/media/cgroup.subtree_control; } 2> /dev/null || true
+  done
+fi
+# hidepid=2 is the mode 5.8 names "invisible"; 4.14 refuses that name.
+mount -o remount,nosuid,nodev,noexec,hidepid=2 proc /proc || true
+# Inherited by Node through the loop: a job, never the reader, is what the
+# kernel's OOM killer takes (media-jail gives each job 1000).
+echo -1000 > /proc/self/oom_score_adj || true
+
 # Keeps one socat alive. A bridge that dies (it should not: fork mode) comes
 # back after a second instead of leaving the reader deaf or mute until the
 # next boot. The arguments are socat's two addresses.
