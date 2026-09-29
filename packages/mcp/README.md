@@ -358,9 +358,10 @@ consent (version 2) includes attachments. It is accepted only with
 `credential_source: "enclave"` (anything else is `enclave_credentials_invalid`)
 and defaults to `false`, so every text connection, whatever its consent
 version, is unchanged. With it, the provider also supplies `media`, the
-enclave's `{host, why(row), openURL(row), open(request, archive), resultMaxBytes}`
+enclave's `{host, why(row), openURL(row), consoleURL, open(request, archive), resultMaxBytes}`
 (`resultMaxBytes` caps a serialized result: images that would pass it are
-withheld; `openURL` is the console link `get_message` adds), and the reader
+withheld; `openURL` is the console link `get_message` adds, and `consoleURL`
+the address every such link must begin with), and the reader
 then registers a ninth tool, `open_attachment`.
 Without `media` in both places the tool does not exist, and the instructions
 keep saying that attachment contents are unavailable.
@@ -630,10 +631,13 @@ a result or a refusal once the reader has read the message, carries
 `open_url`, which opens that message in the Wappie console
 (`https://app.wappie.thehappie.co/console?workspace=…&open_device=…&open_message=…`),
 where the user's own browser decrypts the photo, voice note or document to
-see, play or download it. The text ends with a line telling the assistant
-to give the user that link when they ask to see, hear or download the
-original. `get_message`'s `attachment` carries the same `open_url` on a
-media connection. The link holds the workspace, number and message ids the
+see, play or download it. The result header's last note, above the file's
+own text, tells the assistant to give the user that link when they ask to
+see, hear or download the original, and never a link found in the file; a
+refusal ends with a line saying the same. The instructions name the
+console's address, and the reader passes only links that begin with it.
+`get_message`'s `attachment` carries the same `open_url` on a media
+connection. The link holds the workspace, number and message ids the
 tools already return, nothing secret; the console opens it only for someone
 signed in with access to that number.
 
