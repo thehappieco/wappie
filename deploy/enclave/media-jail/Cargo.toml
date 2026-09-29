@@ -3,9 +3,9 @@
 # rust:1-alpine stage as nsm-attest (deploy/enclave/Dockerfile), from the
 # committed Cargo.lock (built with --locked) so it is measured into PCR0.
 #
-# STATUS: A0 PROTOTYPE. Enough to drive the go/no-go probe (§4 JAIL); the A1
-# production jail (pipelines, native profiles, the compiled-in argv table) is
-# built on top of it. It is never part of a released reader.
+# A1: the compiled-in worker table (src/workers.rs) of image, pdf and office,
+# run by the reader's Node for every attachment parser. The image builds it
+# with no features; `emulate-old-kernel` is for test builds only (src/emulate.rs).
 [package]
 name = "media-jail"
 version = "0.0.0"
@@ -23,6 +23,12 @@ publish = false
 [dependencies]
 libc = "=0.2.189"
 seccompiler = "=0.5.0"
+
+[features]
+# MEDIA_JAIL_EMULATE: treat kernel features as missing, so the 4.14 fallbacks
+# run on a newer test kernel. Never in the image (deploy/enclave/Dockerfile
+# builds without features, and check-image.sh checks the variable is ignored).
+emulate-old-kernel = []
 
 [profile.release]
 lto = true

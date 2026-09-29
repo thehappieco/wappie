@@ -1,0 +1,14 @@
+{
+  "name": "@whatserver2/media-worker",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "The attested reader's jailed attachment parsers (docs/mcp-enclave.md §16.11), installed at /opt/media/worker and run only under media-jail.",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "pdfjs-dist": "6.3.289",
+    "sharp": "0.35.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}

@@ -1,7 +1,10 @@
-// A0 ONLY: make media-jail behave as it would on an older kernel, so the
-// fallback paths the Nitro blob kernel (Linux 4.14) needs can be exercised on a
-// newer test kernel. MEDIA_JAIL_EMULATE is a comma-separated list of the
-// features to treat as missing:
+// TEST BUILDS ONLY: make media-jail behave as it would on an older kernel, so
+// the fallback paths the Nitro blob kernel (Linux 4.14) needs can be exercised
+// on a newer test kernel. MEDIA_JAIL_EMULATE is read only by a binary built
+// with `--features emulate-old-kernel`; the image's binary (cargo build
+// --locked --release, no features) never reads it, and every Emulate it uses
+// is the default one: nothing emulated. MEDIA_JAIL_EMULATE is a
+// comma-separated list of the features to treat as missing:
 //
 //   no-cgroup-kill  no cgroup.kill (5.14): kill the job's PID 1 instead
 //   no-oom-group    no memory.oom.group (4.19): media-jail ends the job itself
@@ -16,10 +19,10 @@
 //   kill-thread     no SECCOMP_RET_KILL_PROCESS (4.14): KILL_THREAD default
 //
 // Every token only takes a kernel feature away, and every fallback keeps the
-// §16.6 properties, so the switch can never widen the jail. The status line and
-// --self-check list what was emulated. A1 removes this module: the released
-// binary detects features only.
+// §16.6 properties, so even a test build can never widen the jail. The status
+// line and --self-check list what was emulated.
 
+#[cfg_attr(not(feature = "emulate-old-kernel"), allow(dead_code))]
 pub const ENV: &str = "MEDIA_JAIL_EMULATE";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -36,6 +39,7 @@ pub struct Emulate {
 impl Emulate {
     /// Parse the MEDIA_JAIL_EMULATE list. Unknown tokens are an error, so a
     /// typo cannot silently test the wrong path.
+    #[cfg_attr(not(feature = "emulate-old-kernel"), allow(dead_code))]
     pub fn parse(text: &str) -> Result<Emulate, String> {
         let mut e = Emulate::default();
         for token in text.split(',').map(str::trim).filter(|t| !t.is_empty()) {
@@ -53,12 +57,19 @@ impl Emulate {
         Ok(e)
     }
 
-    /// From the environment; unset or empty means a real run.
+    /// From the environment in a test build; unset or empty means a real run.
+    #[cfg(feature = "emulate-old-kernel")]
     pub fn from_env() -> Result<Emulate, String> {
         match std::env::var(ENV) {
             Ok(v) => Emulate::parse(&v),
             Err(_) => Ok(Emulate::default()),
         }
+    }
+
+    /// The released binary: always a real run, whatever the environment says.
+    #[cfg(not(feature = "emulate-old-kernel"))]
+    pub fn from_env() -> Result<Emulate, String> {
+        Ok(Emulate::default())
     }
 
     /// The emulated features, for the reports.
@@ -105,6 +116,15 @@ mod tests {
         let e = Emulate::parse("no-swap-max").unwrap();
         assert_eq!(e, Emulate { no_swap_max: true, ..Emulate::default() });
         assert_eq!(e.names(), ["no-swap-max"]);
+    }
+
+    #[test]
+    #[cfg(not(feature = "emulate-old-kernel"))]
+    fn the_released_binary_ignores_the_environment() {
+        // The variable is set for this process only; from_env must not read it.
+        std::env::set_var(ENV, "no-pivot-root,kill-thread");
+        assert_eq!(Emulate::from_env().unwrap(), Emulate::default());
+        std::env::remove_var(ENV);
     }
 
     #[test]

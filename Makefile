@@ -1,6 +1,6 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
 	client-install client-build client-test client-check mcp-check mcp-http-check public-source \
-	enclave-check enclave-image reader-verify
+	enclave-check enclave-image enclave-jail media-worker-check media-jail-check reader-verify
 
 GO      ?= go
 PKGS    := ./...
@@ -92,6 +92,24 @@ ENCLAVE_TAG ?= wappie-reader:dev
 enclave-image: ## Build and check the reader enclave image (arm64 Docker)
 	docker build -f deploy/enclave/Dockerfile --build-arg SOURCE_DATE_EPOCH=$$(git log -1 --format=%ct) -t $(ENCLAVE_TAG) .
 	sh deploy/enclave/check-image.sh $(ENCLAVE_TAG)
+
+# The attachment jail on a built image (docs/mcp-enclave.md §16.13 JAIL and
+# CORPUS): privileged Docker on an arm64 host with cgroup v2.
+enclave-jail: ## Run the jail checks and the worker corpus under media-jail (arm64, privileged)
+	sh deploy/enclave/check-image.sh --jail $(ENCLAVE_TAG)
+
+# The attachment workers (§16.11): their own package, installed as the image
+# installs it (no install scripts, pdf.js's optional canvas removed).
+media-worker-check: ## Install and test the enclave's attachment workers
+	$(NPM) --prefix packages/mcp-http/enclave/media/worker ci --ignore-scripts
+	rm -rf packages/mcp-http/enclave/media/worker/node_modules/@napi-rs
+	$(NPM) --prefix packages/mcp-http/enclave/media/worker test
+
+# media-jail's unit tests and release build, in the image's pinned Rust stage.
+RUST_IMAGE ?= $(shell sed -n 's/^ARG RUST_IMAGE=//p' deploy/enclave/Dockerfile)
+media-jail-check: ## Test and build media-jail in the pinned rust image (arm64 Docker)
+	docker run --rm -v "$(CURDIR)/deploy/enclave/media-jail:/mj:ro" -w /mj -e CARGO_TARGET_DIR=/tmp/target $(RUST_IMAGE) \
+	  sh -c 'apk add --no-cache musl-dev > /dev/null && cargo test --locked && cargo test --locked --features emulate-old-kernel && cargo build --locked --release'
 
 reader-verify: client-build ## Install and test the attestation CLI and the CT monitor
 	$(NPM) --prefix tools/reader-verify ci

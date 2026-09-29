@@ -13,6 +13,14 @@ Nothing here changes a released reader. In particular the §16.6 cgroup surgery
 enable the controllers) lives in `entrypoint-probe.sh`, **not** in the
 production `deploy/enclave/entrypoint.sh`; A1 moves the reviewed version there.
 
+**A1.** The reviewed block is now in `deploy/enclave/entrypoint.sh`, and
+`media-jail` takes only its compiled-in workers (`--worker image|pdf|office`,
+no `--profile … -- <program>`), which `probe-report.mjs` still uses: this
+directory records the A0 run as it was. The A1 jail checks, the A0 escape
+tests with `/opt/media` included, are `deploy/enclave/jailcheck`, which
+`check-image.sh --jail` runs in a privileged container; before the release,
+the probe enclave runs them on the real kernel through a runner moved there.
+
 ## The first Nitro run (2026-09-28)
 
 c7g.large parent, nitro-cli 1.5.0, enclave 1 vCPU / 1536 MiB, `--debug-mode`.

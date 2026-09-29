@@ -32,6 +32,53 @@ COPY deploy/enclave/nsm-attest/Cargo.toml deploy/enclave/nsm-attest/Cargo.lock .
 COPY deploy/enclave/nsm-attest/src/ ./src/
 RUN cargo build --release --locked && cp target/release/nsm-attest /nsm-attest
 
+# media-jail, the sandbox every attachment parser runs in (docs/mcp-enclave.md
+# §16.6), in the same pattern: a static musl binary from its committed
+# Cargo.lock. No cargo features: the test-only MEDIA_JAIL_EMULATE switch
+# (feature emulate-old-kernel) is not compiled in.
+FROM ${RUST_IMAGE} AS mediajail
+RUN apk add --no-cache musl-dev
+WORKDIR /mj
+COPY deploy/enclave/media-jail/Cargo.toml deploy/enclave/media-jail/Cargo.lock ./
+COPY deploy/enclave/media-jail/src/ ./src/
+COPY deploy/enclave/media-jail/profiles/ ./profiles/
+RUN cargo build --release --locked && cp target/release/media-jail /media-jail
+
+# The attachment workers (§16.11) and their parsers: their own package and
+# lockfile, installed at /opt/media/worker, never under /app, so the reader's
+# Node has no parser to import. npm ci verifies every tarball against the lock
+# (SheetJS comes from its CDN, pinned the same way) and runs no install
+# script. @napi-rs/canvas, pdf.js's optional canvas, is removed and must stay
+# absent. What no worker loads is pruned, since the root filesystem lives in
+# enclave memory: source maps and type declarations, pdf.js's modern build,
+# viewer, image decoders and scripting sandbox (the worker uses the legacy
+# build), SheetJS's browser bundles (it uses xlsx.mjs and the codepage
+# tables). check-image.sh imports what remains and runs every worker.
+FROM ${NODE_IMAGE} AS workerdeps
+WORKDIR /opt/media/worker
+COPY packages/mcp-http/enclave/media/worker/package.json packages/mcp-http/enclave/media/worker/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+ && rm -rf node_modules/@napi-rs \
+ && test ! -e node_modules/@napi-rs \
+ && rm -rf node_modules/.bin \
+    node_modules/pdfjs-dist/build node_modules/pdfjs-dist/web node_modules/pdfjs-dist/types \
+    node_modules/pdfjs-dist/image_decoders node_modules/pdfjs-dist/legacy/web node_modules/pdfjs-dist/legacy/image_decoders \
+    node_modules/pdfjs-dist/legacy/build/pdf.min.mjs node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs \
+    node_modules/pdfjs-dist/legacy/build/pdf.sandbox.mjs node_modules/pdfjs-dist/legacy/build/pdf.sandbox.min.mjs \
+    node_modules/xlsx/bin node_modules/xlsx/types node_modules/xlsx/xlsxworker.js \
+ && find node_modules/xlsx/dist -type f ! -name cpexcel.full.mjs ! -name LICENSE -delete \
+ && find node_modules -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \) -delete \
+ && rm -rf /root/.npm
+COPY packages/mcp-http/enclave/media/worker/image.mjs packages/mcp-http/enclave/media/worker/pdf.mjs packages/mcp-http/enclave/media/worker/office.mjs ./
+COPY packages/mcp-http/enclave/media/worker/lib/ ./lib/
+# Root-owned and read-only (directories 0555, files 0444); media-jail binds
+# the tree read-only into every jail as well. No symlink: every path in the
+# jail resolves inside /opt/media.
+RUN test -z "$(find /opt/media -type l)" \
+ && chown -R 0:0 /opt/media \
+ && find /opt/media -type d -exec chmod 0555 {} + \
+ && find /opt/media -type f -exec chmod 0444 {} +
+
 # Production dependencies per package, then a link-free copy (the pattern of
 # deploy/Dockerfile.mcp-http). The enclave's own dependencies (KMS client and
 # the rest of packages/mcp-http/enclave/package.json) come from its nested
@@ -46,8 +93,10 @@ COPY packages/mcp/ ./mcp/
 COPY packages/mcp-http/ ./mcp-http/
 # src/ and test/ are pruned everywhere, as in the pilot images. A dependency
 # that ships runtime code under src/ would break here: deploy/enclave/check-image.sh
-# imports every enclave dependency, so CI catches that.
+# imports every enclave dependency, so CI catches that. The attachment workers
+# are their own package at /opt/media (the workerdeps stage), never in /app.
 RUN rm -rf client/node_modules client/dist mcp/node_modules mcp-http/node_modules mcp-http/enclave/node_modules \
+    mcp-http/enclave/media/worker \
  && test -f mcp-http/enclave/package-lock.json \
  && cd client && npm ci --no-audit --no-fund && npm run build && rm -rf node_modules && npm ci --omit=dev --no-audit --no-fund \
  && cd ../mcp && npm ci --omit=dev --no-audit --no-fund \
@@ -58,6 +107,7 @@ RUN rm -rf client/node_modules client/dist mcp/node_modules mcp-http/node_module
  && find /out -type f \( -name '*.map' -o -name '*.ts' \) -delete \
  && test -z "$(find /out -type l)" \
  && test -f /out/packages/mcp-http/enclave/main.mjs \
+ && test ! -e /out/packages/mcp-http/enclave/media/worker \
  && mkdir /.sde && touch -d "@${SOURCE_DATE_EPOCH}" /.sde/ref \
  && find /out -newer /.sde/ref -exec touch -h -r /.sde/ref {} +
 
@@ -69,12 +119,15 @@ ARG SOURCE_DATE_EPOCH
 RUN apk add --no-cache socat iproute2 && rm -f /var/log/apk.log
 COPY --from=build /out/packages/ /app/packages/
 COPY --from=nsm /nsm-attest /usr/local/bin/nsm-attest
+COPY --from=mediajail /media-jail /usr/local/bin/media-jail
+COPY --from=workerdeps /opt/media/ /opt/media/
 COPY deploy/enclave/entrypoint.sh /entrypoint.sh
 # Clamp every time newer than SOURCE_DATE_EPOCH (the apk files, the copied
 # trees and every directory they touched) to it; the base image's older times
 # stay. The reference directory is removed and / is re-clamped last, because
 # removing it changes the time of /. The runtime mounts are skipped.
-RUN chmod 0555 /entrypoint.sh /usr/local/bin/nsm-attest \
+# COPY made /opt/media itself 0755; the tree below it is 0555/0444 already.
+RUN chmod 0555 /entrypoint.sh /usr/local/bin/nsm-attest /usr/local/bin/media-jail /opt/media \
  && mkdir /.sde && touch -d "@${SOURCE_DATE_EPOCH}" /.sde/ref \
  && find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /.sde \
       -o -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune \
