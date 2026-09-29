@@ -3,10 +3,12 @@
 // request HMAC-signed `to-go` with the current relay secret. Same interface as
 // the hosted relay (status, activate, revoke, cimd) plus the sealed-state
 // store (stateGet, statePut) that openSealedState uses and, for content
-// connections, `reseal`. `revoke(id, 'reuse_detected')` tells Go why.
+// connections, `reseal`. `revoke(id, 'reuse_detected')` tells Go why. Its
+// status answers carry `media` and `media_off` (docs/mcp-enclave.md §16.9).
 import { createRelay, RelayError } from '../internal.mjs'
 import { StateError } from '../state.mjs'
 import { signedHeaders } from './hmac.mjs'
+import { MEDIA_KINDS } from './media/policy.mjs'
 
 export const STATE_TIMEOUT_MS = 30_000
 export const STATE_MAX_BYTES = 12 * 1024 * 1024
@@ -15,7 +17,7 @@ const names = new Set(['as-clients', 'as-connections', 'as-tokens', 'infra'])
 
 export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.fetch, timeoutMs = 10_000, now = Date.now }) {
   const headersFor = (method, target, body) => signedHeaders({ secret: secrets.current, direction: 'to-go', readerId, method, target, body, now })
-  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true })
+  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true, mediaKinds: MEDIA_KINDS })
   const statePath = name => {
     if (!names.has(name)) throw new StateError('state_name_invalid')
     return `/state/${name}`

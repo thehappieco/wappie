@@ -9,7 +9,11 @@
 // image that still carries a marker refuses to boot (constants_invalid). They
 // are ARNs by key id, never aliases: an UpdateAlias would swap the key.
 export const READER_ID = 'enclave'
-export const READER_VERSION = '0.3.0'
+export const READER_VERSION = '0.4.0'
+// What this release can do, for the console (build.sh writes it into
+// measurements.json as `capabilities`, docs/mcp-enclave.md §16.2): consent
+// version 2, and attachments for a consent that includes them.
+export const READER_CAPABILITIES = Object.freeze(['consent_v2', 'media'])
 export const PUBLIC_HOST = 'mcp.wappie.thehappie.co'
 export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`
 export const CONSOLE_URL = 'https://app.wappie.thehappie.co/console'
@@ -39,7 +43,7 @@ const keyArn = /^arn:aws:kms:eu-west-1:\d{12}:key\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
 export function imageConstants() {
   if (!keyArn.test(KMS_READER_KEY_ARN) || !keyArn.test(KMS_BOOT_KEY_ARN) || KMS_READER_KEY_ARN === KMS_BOOT_KEY_ARN) throw new Error('constants_invalid')
   return Object.freeze({
-    READER_ID, READER_VERSION, PUBLIC_HOST, PUBLIC_ORIGIN, CONSOLE_URL, ARCHIVE, REDIRECT_HOSTS, CIMD, PENDING_TTL_MS, REGION,
+    READER_ID, READER_VERSION, READER_CAPABILITIES, PUBLIC_HOST, PUBLIC_ORIGIN, CONSOLE_URL, ARCHIVE, REDIRECT_HOSTS, CIMD, PENDING_TTL_MS, REGION,
     KMS_READER_KEY_ARN, KMS_BOOT_KEY_ARN, ACME_DIRECTORY, BOOT_NAME_SUFFIX, PUBLIC_LISTENER_HOST, INTERNAL_LISTENER_HOST, PORTS, RUN_DIR, NSM_ATTEST,
   })
 }

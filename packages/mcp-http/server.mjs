@@ -153,6 +153,8 @@ export async function startReader(options = {}) {
   // A connection the status check wipes (a service mismatch above all) is
   // revoked in Go too, so Go never keeps serving a row this reader dropped.
   const checkActive = createStatusCheck({ state, relay, now, content, onWiped: id => onWiped(id) })
+  // Attachment calls ask it for the media fields of the status (enclave only).
+  content?.useStatusCheck?.(checkActive)
   const tokens = createTokens(state, { now, checkActive, onFamilyRevoked: onWiped })
   const verifier = createVerifier({ tokens, state, resource: metadata.resource, checkActive })
   const clients = createClients(state, { now, hosts: config.hosts })

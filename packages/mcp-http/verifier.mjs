@@ -18,6 +18,11 @@ export const STATUS_TTL_MS = 60_000
  * keep treating the answer as a boolean. `content.decide(record, status)`
  * owns the rules for content records (docs/mcp-enclave.md §15.8), and
  * `content.pending(id)` forces a fresh answer while a renewal waits to commit.
+ *
+ * `checkActive.mediaStatus(id)` is an attachment call's gate (§16.5 step 4):
+ * `{answer, media, media_off}` from the `serve` answer cached with them, and a
+ * fresh status check when there is none younger than the TTL. `media` is
+ * false and `media_off` [] unless the answer is 'serve'.
  */
 /**
  * The deadline to keep for a connection given the one Go answers. Go's is
@@ -34,9 +39,10 @@ export function deadlineFor(connection, given) {
 
 export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS_TTL_MS, onWiped = async () => {}, content }) {
   const cache = new Map()
-  return async function checkActive(id, { force = false } = {}) {
+  const fresh = cached => cached && now() - cached.at < ttlMs
+  async function checkActive(id, { force = false } = {}) {
     const cached = cache.get(id)
-    if (!force && cached && now() - cached.at < ttlMs && !content?.pending(id)) return 'serve'
+    if (!force && fresh(cached) && !content?.pending(id)) return 'serve'
     const status = await relay.status(id)
     const connection = state.connections.get(id)
     const deadline = status ? deadlineFor(connection, status.expires_at) : null
@@ -49,11 +55,21 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
       if (state.wipeConnection(id)) { await state.save(); await onWiped(id) }
       return false
     }
-    if (answer === 'serve') cache.set(id, { at: now() })
+    if (answer === 'serve') cache.set(id, { at: now(), media: current.media === true, media_off: Array.isArray(current.media_off) ? [...current.media_off] : [] })
     // Go's expiry is authoritative (within the consent); keep the local copy in step with it.
     if (connection && connection.expires_at !== deadline) { connection.expires_at = deadline; void state.save().catch(() => {}) }
     return answer
   }
+  checkActive.mediaStatus = async id => {
+    let cached = cache.get(id)
+    if (!fresh(cached) || content?.pending(id)) {
+      const answer = await checkActive(id, { force: true })
+      if (answer !== 'serve') return { answer, media: false, media_off: [] }
+      cached = cache.get(id)
+    }
+    return cached ? { answer: 'serve', media: cached.media, media_off: [...cached.media_off] } : { answer: false, media: false, media_off: [] }
+  }
+  return checkActive
 }
 
 /** OAuthTokenVerifier for requireBearerAuth: hash lookup plus the connection check. */

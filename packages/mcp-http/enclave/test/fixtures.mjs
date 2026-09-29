@@ -156,7 +156,9 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
         authorization = `Bearer ${upstreamToken}`
       }
       const forwarded = await fetch(upstream + req.url, { method: req.method, headers: authorization ? { authorization } : {}, body: req.method === 'GET' ? undefined : body })
-      res.writeHead(forwarded.status, { 'content-type': forwarded.headers.get('content-type') ?? 'application/json' })
+      // Content-Length passes through: the reader refuses ciphertext without it (docs/mcp-enclave.md §16.5).
+      const length = forwarded.headers.get('content-length')
+      res.writeHead(forwarded.status, { 'content-type': forwarded.headers.get('content-type') ?? 'application/json', ...(length ? { 'content-length': length } : {}) })
       res.end(Buffer.from(await forwarded.arrayBuffer()))
       return
     }

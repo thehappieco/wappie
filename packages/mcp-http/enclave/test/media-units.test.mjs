@@ -5,6 +5,9 @@
 // No worker runs here (media-worker.test.mjs, media-service.test.mjs).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createStatusCheck, STATUS_TTL_MS } from '../../verifier.mjs'
+import { READER_CAPABILITIES, READER_VERSION } from '../constants.mjs'
+import { createMemSampler } from '../health.mjs'
 import { createCaches, sizeOf } from '../media/cache.mjs'
 import { checkRow, hostOf, knownKinds, parseRequest, whyNot } from '../media/gate.mjs'
 import { checkJail, CONTROLLERS_FILE, jailArgs, jobHeader } from '../media/jail.mjs'
@@ -281,7 +284,7 @@ test('paging: char parts never split a surrogate pair; page parts are whole bloc
   assert.deepEqual([many.wanted, many.suggest], [[1, 2, 3, 4], '5-8'])
 })
 
-test('padding: every bucket, beyond the last in steps of 512 KiB, Content-Length set, bodiless and event streams untouched', async () => {
+test('padding: every bucket, beyond the last in steps of 512 KiB, Content-Length set, event streams with a comment line, bodiless ones untouched', async () => {
   for (const [length, padded] of [[0, 16_384], [1, 16_384], [16_384, 16_384], [16_385, 32_768], [600_000, 1_048_576], [1_048_577, 1_572_864], [2_097_152, 2_097_152], [2_097_153, 2_621_440]]) {
     assert.equal(paddedLength(length), padded, String(length))
   }
@@ -294,8 +297,16 @@ test('padding: every bucket, beyond the last in steps of 512 KiB, Content-Length
   assert.deepEqual(JSON.parse(body.toString('utf8')), { jsonrpc: '2.0', id: 1, result: { content: [] } }, 'trailing spaces are still JSON')
   const empty = new Response(null, { status: 202 })
   assert.equal(await padResponse(empty), empty)
-  const stream = new Response('event: x\n\n', { headers: { 'content-type': 'text/event-stream' } })
-  assert.equal(await padResponse(stream), stream)
+  // An event stream ends in a comment line, so its events read the same.
+  const event = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n'
+  const stream = await padResponse(new Response(event, { headers: { 'content-type': 'text/event-stream' } }))
+  const text = await stream.text()
+  assert.equal(Buffer.byteLength(text), 16_384)
+  assert.equal(text.startsWith(event + ':'), true)
+  assert.equal(text.endsWith(' \n'), true)
+  assert.deepEqual(text.split('\n').filter(line => line && !line.startsWith(':')), ['event: message', 'data: {"jsonrpc":"2.0","id":1,"result":{}}'])
+  const tight = await (await padResponse(new Response('x'.repeat(16_383), { headers: { 'content-type': 'text/event-stream' } }))).text()
+  assert.equal(tight.at(-1), '\n', 'one byte short: an empty line')
 })
 
 test('job headers and media-jail\'s command line are §16.11\'s, byte for byte', () => {
@@ -329,4 +340,52 @@ test('the jail\'s boot check: controllers, then --self-check, then --table equal
   for (const table of ['mismatch', 'extra', 'garbage']) {
     assert.deepEqual(await checkJail({ spawn: fakeJailSpawn({ FAKE_TABLE: table }), readFile: readFile('memory pids') }), { ok: false, code: 'table_mismatch' }, table)
   }
+})
+
+test('mediaStatus: the serve answer\'s media fields for 60 s, a fresh check past them or while a renewal waits, and false and [] unless serve', async () => {
+  const id = '0199b3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b'
+  let clock = 0, calls = 0, waiting = false, decision = 'serve'
+  let reply = { status: 'active', expires_at: '2099-01-01T00:00:00Z', kind: 'content', service_user_id: 'x', media: true, media_off: ['pdf'] }
+  const state = { connections: new Map([[id, { connection_id: id, kind: 'content', expires_at: '2099-01-01T00:00:00Z' }]]), wipeConnection: () => false, save: async () => {} }
+  const check = createStatusCheck({ state, relay: { status: async () => { calls++; return reply } }, now: () => clock, content: { decide: async () => decision, pending: () => waiting } })
+  assert.deepEqual(await check.mediaStatus(id), { answer: 'serve', media: true, media_off: ['pdf'] })
+  assert.equal(calls, 1, 'no cached answer: a check')
+  clock += STATUS_TTL_MS - 1
+  reply = { ...reply, media: false, media_off: [] }
+  assert.deepEqual(await check.mediaStatus(id), { answer: 'serve', media: true, media_off: ['pdf'] }, 'the cached answer serves for 60 s')
+  assert.equal(calls, 1)
+  clock += 1
+  assert.deepEqual(await check.mediaStatus(id), { answer: 'serve', media: false, media_off: [] }, 'older than 60 s: asked again')
+  assert.equal(calls, 2)
+  waiting = true
+  await check.mediaStatus(id)
+  assert.equal(calls, 3, 'a staged renewal forces a check')
+  waiting = false
+  const { media: _media, media_off: _off, ...bare } = reply
+  reply = bare
+  clock += STATUS_TTL_MS
+  assert.deepEqual(await check.mediaStatus(id), { answer: 'serve', media: false, media_off: [] }, 'missing fields are false and []')
+  decision = 'reseal'
+  reply = { ...bare, media: true, media_off: ['zip'] }
+  clock += STATUS_TTL_MS
+  assert.deepEqual(await check.mediaStatus(id), { answer: 'reseal', media: false, media_off: [] })
+  assert.equal(await check(id), 'reseal', 'nothing but serve is cached')
+})
+
+test('the health line\'s memory minimum: sampled, the lowest of the window, rounded down to 64 MiB, then a new window', async () => {
+  const values = [1_400_000, 900_123, 1_200_000]
+  let index = 0
+  const sampler = createMemSampler({ readFile: async path => { assert.equal(path, '/proc/meminfo'); return `MemTotal:  1572864 kB\nMemAvailable:  ${values[index++]} kB\n` } })
+  for (let n = 0; n < 3; n++) await sampler.sample()
+  assert.equal(sampler.take(), 832, '900,123 kB is 879 MiB, 832 after rounding down to 64')
+  assert.equal(sampler.take(), undefined, 'a new window has no sample yet')
+  const off = createMemSampler({ readFile: async () => { throw new Error('ENOENT') } })
+  await off.sample()
+  assert.equal(off.take(), undefined)
+})
+
+test('the release: reader 0.4.0 declares consent version 2 and media', () => {
+  assert.equal(READER_VERSION, '0.4.0')
+  assert.deepEqual(READER_CAPABILITIES, ['consent_v2', 'media'])
+  assert.equal(Object.isFrozen(READER_CAPABILITIES), true)
 })

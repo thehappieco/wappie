@@ -66,9 +66,12 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
    * A message with an attachment: `key` (32 bytes) is sealed as its media
    * key, `thumbnail` as its preview, `filename` and `caption` as the archive
    * seals them. `tamper` flips a byte of the sealed key; `keyID` names a
-   * content key the archive does not serve (the key is then locked).
+   * content key the archive does not serve (the key is then locked);
+   * `object` is the ciphertext `GET /v1/media/{uid}` serves.
    */
-  async function addMedia({ uid: id = uid(50_000 + messages.size), device_id = device, key, thumbnail, filename, caption, tamper = false, keyID: sealedUnder = keyID, media = {}, ...fields } = {}) {
+  const objects = new Map()
+  async function addMedia({ uid: id = uid(50_000 + messages.size), device_id = device, key, thumbnail, filename, caption, tamper = false, keyID: sealedUnder = keyID, media = {}, object, ...fields } = {}) {
+    if (object) objects.set(id, object)
     const row = { uid: id, seq: 1, device_id, wa_id: `synthetic-media-${messages.size}`, chat_key: '5511999990000@s.whatsapp.net', ts: at, is_from_me: false,
       kind: 'message', type: media.media_type ?? 'image', source: 'live', content_key_id: sealedUnder, ...fields, media: { download_status: 'done', ...media } }
     if (key) {
@@ -89,6 +92,12 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
     const send = (value, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)) }
     const reply = value => send({ tenant_id: workspace, ...value })
     if (request.headers.authorization !== `Bearer ${bearer}` || request.method !== 'GET') return send({ code: 'not_authorized' }, 403)
+    if (path.startsWith('/v1/media/')) {
+      const object = objects.get(path.slice('/v1/media/'.length))
+      if (!object) return send({ code: 'not_found' }, 404)
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(object.length) })
+      return response.end(object)
+    }
     if (path.startsWith('/v1/messages/') && !path.endsWith('/history')) {
       const row = messages.get(path.slice('/v1/messages/'.length)) ?? rows.find(item => path.endsWith(item.uid))
       return row ? reply(row) : send({ code: 'not_found' }, 404)

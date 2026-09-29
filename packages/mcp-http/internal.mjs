@@ -21,8 +21,10 @@ export class RelayError extends Error {
  * The relay client. `prefix` is the Go route family; `headersFor(method,
  * target, body)` replaces the bearer header when given (the enclave signs
  * every request). `call` and `body` are exposed for the enclave's state routes.
+ * `mediaKinds` (the attested reader's, docs/mcp-enclave.md §16.9) makes
+ * `status` read the attachment fields too.
  */
-export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor, reasons = false }) {
+export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor, reasons = false, mediaKinds }) {
   const base = archive.replace(/\/$/, '')
   async function call(method, path, query, { body: payload, timeout = timeoutMs, headers: extra = {} } = {}) {
     const url = new URL(base + prefix + path)
@@ -53,7 +55,9 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
     /**
      * `{status, expires_at}` of a connection, or null when Go does not know it.
      * An attested reader's route also names the row's `kind` and
-     * `service_user_id`; they are passed on when well formed.
+     * `service_user_id`; they are passed on when well formed. With
+     * `mediaKinds`, `media` (true only for JSON true) and `media_off` (the
+     * known kinds Go names, sorted, else []) are always there.
      */
     async status(id) {
       const response = await call('GET', `/connections/${encodeURIComponent(id)}`)
@@ -66,6 +70,10 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
       const answer = { status: parsed.status, expires_at: parsed.expires_at }
       if (parsed.kind === 'metadata' || parsed.kind === 'content') answer.kind = parsed.kind
       if (typeof parsed.service_user_id === 'string' && uuidShape.test(parsed.service_user_id)) answer.service_user_id = parsed.service_user_id.toLowerCase()
+      if (mediaKinds) {
+        answer.media = parsed.media === true
+        answer.media_off = Array.isArray(parsed.media_off) ? [...new Set(parsed.media_off.filter(word => mediaKinds.includes(word)))].sort() : []
+      }
       return answer
     },
     async activate(id) {

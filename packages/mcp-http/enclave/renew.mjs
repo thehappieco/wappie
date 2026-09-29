@@ -64,9 +64,12 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
       const renewal = { renewal_id: renewalID, connection_id: connectionID, recipient, created_at: at, expires_at: at + RENEWAL_TTL_MS }
       renewals.set(renewalID, renewal)
       log.event('renewal_prepared', conn(connectionID))
+      // The consent the renewal must seal again (§16.2 rule 7): not attested,
+      // so a wrong value can only make acceptBundle refuse the renewal.
       return {
         renewal_id: renewalID, connection_id: connectionID, kid: recipient.kid, reader_public_key: recipient.publicKeyEncoded, resource,
-        device_ids: [...record.device_ids], expires_at: new Date(renewal.expires_at).toISOString(), connection_expires_at: contentDeadline(record), attestation,
+        device_ids: [...record.device_ids], expires_at: new Date(renewal.expires_at).toISOString(), connection_expires_at: contentDeadline(record),
+        consent_version: record.consent_version ?? 1, media: record.media === true, attestation,
       }
     },
 
@@ -76,16 +79,19 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
       const renewal = renewals.get(renewalID)
       if (!record || !renewal || renewal.connection_id !== connectionID || !live(renewal)) throw new LinkError('not_found', 404)
       const relayed = parseRelay(body)
-      if (relayed.connection_id !== connectionID || relayed.tenant_id !== record.tenant_id) throw new LinkError('bad_request')
+      // A renewal renews the key, never the consent: its relay never carries `media`.
+      if (relayed.connection_id !== connectionID || relayed.tenant_id !== record.tenant_id || relayed.media) throw new LinkError('bad_request')
       if (renewal.stage || renewal.accepting) throw new LinkError('bundle_exists', 409)
       if (relayed.kid !== renewal.recipient.kid) throw new LinkError('unknown_kid')
       renewal.accepting = true
       try {
         const bundle = await open(renewal.recipient, relayed.sealed, { aad: renewAAD(renewalID, connectionID, relayed.kid, resource), tenant: relayed.tenant_id, connectionID })
         // A renewal changes the key and the service, nothing else: not the
-        // workspace, not the numbers, not the deadline.
+        // workspace, not the numbers, not the deadline, not the consent
+        // (its version and whether it includes attachments).
         if (bundle.service_user_id === record.service_user_id || bundle.workspace_id !== record.workspace_id ||
-          !sameSet(bundle.device_ids, record.device_ids) ||
+          !sameSet(bundle.device_ids, record.device_ids) || bundle.consent_version !== (record.consent_version ?? 1) ||
+          (bundle.media === true) !== (record.media === true) ||
           Math.min(Date.parse(bundle.expires_at), relayed.expiry) !== Date.parse(contentDeadline(record))) throw new LinkError('invalid_bundle')
         let epochs
         try { epochs = await prove(renewal.recipient.privateKey, bundle) } catch (error) {
