@@ -1,34 +1,38 @@
-// Command line of media-jail. Kept pure (no syscalls) so the parser is unit
-// tested on any host. The runtime (jail.rs, selfcheck.rs) reads a validated
-// Config; a bad invocation exits 3, like nsm-attest, before anything is opened.
+// Command line of media-jail (docs/mcp-enclave.md §16.6). Kept pure (no
+// syscalls) so the parser is unit tested on any host. The runtime (jail.rs,
+// selfcheck.rs) reads a validated Config; a bad invocation exits 3, like
+// nsm-attest, before anything is opened.
 //
-//   media-jail --profile <name> --slot <heavy|light> --mem-mb N --pids N \
-//              --cpus LIST --wall-s N [--id STR] [--tmp-mb N] -- <program> [args…]
+//   media-jail --worker <id> --slot light --id <job> --mem-mb N --pids N \
+//              --cpus LIST --wall-s N --tmp-mb N
 //   media-jail --self-check
+//   media-jail --table
 //
-// There is no free-form default: every numeric bound and the slot are required
-// for a real run, so a caller cannot silently drop a limit.
+// Every limit is required: there is no default that could drop a bound
+// silently. The worker names a row of the compiled-in table (workers.rs),
+// which fixes the program and its arguments, and every value must be positive
+// and at most that row's ceiling. The heavy slot belongs to A2 (transcription,
+// deferred) and is refused.
 
+use crate::workers::{self, Worker};
 use std::collections::BTreeSet;
 
-pub const USAGE: &str = "usage: media-jail --profile <name> --slot <heavy|light> \
---mem-mb N --pids N --cpus LIST --wall-s N [--id STR] [--tmp-mb N] -- <program> [args…]\n\
-       media-jail --self-check";
+pub const USAGE: &str = "usage: media-jail --worker <image|pdf|office> --slot light --id <16 hex> \
+--mem-mb N --pids N --cpus LIST --wall-s N --tmp-mb N\n\
+       media-jail --self-check\n\
+       media-jail --table";
 
-/// Which uid/gid the child drops to. One per slot, so two concurrent jobs
-/// cannot read each other even if a parser escaped its /proc namespace.
+/// Which uid/gid the child drops to. A1 has one slot; the uid stays per slot
+/// so a second slot (A2's heavy one) could never read the light slot's jobs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
-    /// cpuset-wide, heavier caps (native decoders, whisper): uid/gid 65532.
-    Heavy,
-    /// the single light slot (images, text, office, zip): uid/gid 65533.
+    /// the single light slot (images, PDF, office, zip): uid/gid 65533.
     Light,
 }
 
 impl Slot {
     pub fn uid(self) -> u32 {
         match self {
-            Slot::Heavy => 65532,
             Slot::Light => 65533,
         }
     }
@@ -37,17 +41,21 @@ impl Slot {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Slot::Heavy => "heavy",
             Slot::Light => "light",
+        }
+    }
+    pub fn nice(self) -> i32 {
+        match self {
+            Slot::Light => 19,
         }
     }
 }
 
-/// A validated run request. `id` names the cgroup leaf together with the slot,
-/// and `program`/`argv` are execve'd after the sandbox is built.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A validated run request. `id` names the cgroup leaf together with the
+/// slot; the program and its argv come from the worker's row.
+#[derive(Debug)]
 pub struct Config {
-    pub profile: String,
+    pub worker: &'static Worker,
     pub slot: Slot,
     pub id: String,
     pub mem_bytes: u64,
@@ -55,18 +63,14 @@ pub struct Config {
     pub cpus: String,
     pub tmp_bytes: u64,
     pub wall_s: u64,
-    pub program: String,
-    pub argv: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Parsed {
     Run(Box<Config>),
     SelfCheck,
+    Table,
 }
-
-/// Default /tmp size when `--tmp-mb` is absent (§16.8: 128 MiB, RLIMIT_FSIZE).
-const DEFAULT_TMP_MB: u64 = 128;
 
 pub fn parse<I, S>(argv: I) -> Result<Parsed, String>
 where
@@ -74,140 +78,115 @@ where
     S: Into<String>,
 {
     let args: Vec<String> = argv.into_iter().map(Into::into).collect();
+    match args.as_slice() {
+        [one] if one == "--self-check" => return Ok(Parsed::SelfCheck),
+        [one] if one == "--table" => return Ok(Parsed::Table),
+        _ => {}
+    }
 
-    let mut profile: Option<String> = None;
-    let mut slot: Option<Slot> = None;
+    let mut worker: Option<String> = None;
+    let mut slot: Option<String> = None;
     let mut id: Option<String> = None;
     let mut mem_mb: Option<u64> = None;
-    let mut pids_max: Option<u64> = None;
+    let mut pids: Option<u64> = None;
     let mut cpus: Option<String> = None;
-    let mut tmp_mb: Option<u64> = None;
     let mut wall_s: Option<u64> = None;
-    let mut self_check = false;
+    let mut tmp_mb: Option<u64> = None;
 
-    // A single pass: flags are read until `--`, after which everything is the
-    // program and its own arguments (so a jailed `media-jail --self-check` is
-    // not mistaken for our own self-check). `--self-check` is a flag like any
-    // other and only counts before `--`.
     let mut it = args.into_iter();
-    let mut program: Option<String> = None;
-    let mut child_argv: Vec<String> = Vec::new();
-    let mut saw_double_dash = false;
     while let Some(flag) = it.next() {
-        if flag == "--" {
-            // Everything after `--` is the program and its own arguments.
-            saw_double_dash = true;
-            program = it.next();
-            child_argv.extend(it.by_ref());
-            break;
-        }
-        if flag == "--self-check" {
-            self_check = true;
-            continue;
-        }
-        let mut take = || it.next().ok_or_else(|| format!("{flag} needs a value"));
-        match flag.as_str() {
-            "--profile" => profile = Some(take()?),
-            "--slot" => {
-                slot = Some(match take()?.as_str() {
-                    "heavy" => Slot::Heavy,
-                    "light" => Slot::Light,
-                    other => return Err(format!("--slot must be heavy or light, not {other}")),
-                })
+        let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
+        let slot_for = match flag.as_str() {
+            "--worker" => &mut worker,
+            "--slot" => &mut slot,
+            "--id" => &mut id,
+            "--cpus" => &mut cpus,
+            "--mem-mb" => {
+                set_once(&flag, &mut mem_mb, number(&flag, &value)?)?;
+                continue;
             }
-            "--id" => id = Some(take()?),
-            "--mem-mb" => mem_mb = Some(parse_u64("--mem-mb", &take()?)?),
-            "--pids" => pids_max = Some(parse_u64("--pids", &take()?)?),
-            "--cpus" => cpus = Some(take()?),
-            "--tmp-mb" => tmp_mb = Some(parse_u64("--tmp-mb", &take()?)?),
-            "--wall-s" => wall_s = Some(parse_u64("--wall-s", &take()?)?),
+            "--pids" => {
+                set_once(&flag, &mut pids, number(&flag, &value)?)?;
+                continue;
+            }
+            "--wall-s" => {
+                set_once(&flag, &mut wall_s, number(&flag, &value)?)?;
+                continue;
+            }
+            "--tmp-mb" => {
+                set_once(&flag, &mut tmp_mb, number(&flag, &value)?)?;
+                continue;
+            }
             other => return Err(format!("unknown argument {other}")),
-        }
+        };
+        set_once(&flag, slot_for, value)?;
     }
 
-    if self_check {
-        // --self-check runs alone: no run flags, no program.
-        let combined = profile.is_some()
-            || slot.is_some()
-            || id.is_some()
-            || mem_mb.is_some()
-            || pids_max.is_some()
-            || cpus.is_some()
-            || tmp_mb.is_some()
-            || wall_s.is_some()
-            || saw_double_dash;
-        if combined {
-            return Err("--self-check takes no other arguments".into());
-        }
-        return Ok(Parsed::SelfCheck);
-    }
-
-    let profile = profile.ok_or("--profile is required")?;
-    let slot = slot.ok_or("--slot is required")?;
-    let mem_mb = mem_mb.ok_or("--mem-mb is required")?;
-    let pids_max = pids_max.ok_or("--pids is required")?;
-    let cpus = cpus.ok_or("--cpus is required")?;
-    let wall_s = wall_s.ok_or("--wall-s is required")?;
-    let program = program.ok_or("missing program after --")?;
-
-    if profile.is_empty() || !profile.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-        return Err("--profile must be a non-empty [A-Za-z0-9-] name".into());
-    }
-    validate_cpus(&cpus)?;
-    if mem_mb == 0 {
-        return Err("--mem-mb must be positive".into());
-    }
-    if pids_max == 0 {
-        return Err("--pids must be positive".into());
-    }
-    if wall_s == 0 {
-        return Err("--wall-s must be positive".into());
-    }
-    let id = match id {
-        Some(id) => {
-            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-                return Err("--id must be a non-empty [A-Za-z0-9-] name".into());
-            }
-            id
-        }
-        // A stable-per-process default keeps the leaf name unique without a
-        // clock: the caller normally passes --id <job>. The slot already
-        // prefixes the leaf, so the default id is just the pid.
-        None => std::process::id().to_string(),
+    let name = worker.ok_or("--worker is required")?;
+    let worker = workers::find(&name).ok_or_else(|| format!("unknown worker {name:?}"))?;
+    let slot = match slot.ok_or("--slot is required")?.as_str() {
+        "light" => Slot::Light,
+        "heavy" => return Err("--slot heavy is A2 (transcription), which is deferred".into()),
+        other => return Err(format!("--slot must be light, not {other}")),
     };
-    let tmp_mb = tmp_mb.unwrap_or(DEFAULT_TMP_MB);
-    if tmp_mb == 0 {
-        return Err("--tmp-mb must be positive".into());
+    let id = id.ok_or("--id is required")?;
+    if id.len() != 16
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("--id must be 16 lowercase hex characters".into());
     }
+    let cpus = cpus.ok_or("--cpus is required")?;
+    cpu_list(&cpus)?;
+    let max = worker.max;
+    let mem_mb = within("--mem-mb", mem_mb, max.mem_mb)?;
+    let pids = within("--pids", pids, max.pids)?;
+    let wall_s = within("--wall-s", wall_s, max.wall_s)?;
+    let tmp_mb = within("--tmp-mb", tmp_mb, max.tmp_mb)?;
 
     Ok(Parsed::Run(Box::new(Config {
-        profile,
+        worker,
         slot,
         id,
-        mem_bytes: mem_mb.saturating_mul(1024 * 1024),
-        pids_max,
+        mem_bytes: mem_mb * 1024 * 1024,
+        pids_max: pids,
         cpus,
-        tmp_bytes: tmp_mb.saturating_mul(1024 * 1024),
+        tmp_bytes: tmp_mb * 1024 * 1024,
         wall_s,
-        program,
-        argv: child_argv,
     })))
 }
 
-fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
+fn set_once<T>(flag: &str, slot: &mut Option<T>, value: T) -> Result<(), String> {
+    if slot.is_some() {
+        return Err(format!("{flag} given twice"));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+fn number(flag: &str, value: &str) -> Result<u64, String> {
+    if value.is_empty() || value.len() > 12 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("{flag} must be a decimal integer, not {value:?}"));
+    }
     value
         .parse::<u64>()
-        .map_err(|_| format!("{flag} must be a non-negative integer, not {value}"))
+        .map_err(|_| format!("{flag}: {value:?} is out of range"))
+}
+
+/// A required limit, positive and at most the worker's ceiling.
+fn within(flag: &str, value: Option<u64>, max: u64) -> Result<u64, String> {
+    let v = value.ok_or_else(|| format!("{flag} is required"))?;
+    if v == 0 || v > max {
+        return Err(format!("{flag} must be between 1 and {max}, not {v}"));
+    }
+    Ok(v)
 }
 
 /// The highest CPU id a `cpu_set_t` holds (CPU_SETSIZE is 1024), so a list the
 /// cpuset accepts can also be applied with sched_setaffinity when the kernel
 /// has no cgroup2 cpuset.
 const MAX_CPU: u32 = 1023;
-
-fn validate_cpus(cpus: &str) -> Result<(), String> {
-    cpu_list(cpus).map(|_| ())
-}
 
 /// A Linux cpuset list: comma-separated singletons or `a-b` ranges of decimal
 /// CPU ids, e.g. `0`, `0-2`, `1,3`, as the ids it names in ascending order.
@@ -223,8 +202,12 @@ pub fn cpu_list(cpus: &str) -> Result<Vec<u32>, String> {
             Some((a, b)) => (a, b),
             None => (part, part),
         };
-        let lo: u32 = lo.parse().map_err(|_| format!("--cpus: bad cpu id in {part:?}"))?;
-        let hi: u32 = hi.parse().map_err(|_| format!("--cpus: bad cpu id in {part:?}"))?;
+        let lo: u32 = lo
+            .parse()
+            .map_err(|_| format!("--cpus: bad cpu id in {part:?}"))?;
+        let hi: u32 = hi
+            .parse()
+            .map_err(|_| format!("--cpus: bad cpu id in {part:?}"))?;
         if lo > hi {
             return Err(format!("--cpus: reversed range {part:?}"));
         }
@@ -244,123 +227,159 @@ pub fn cpu_list(cpus: &str) -> Result<Vec<u32>, String> {
 mod tests {
     use super::*;
 
-    fn run(args: &[&str]) -> Result<Config, String> {
-        match parse(args.iter().copied())? {
+    const JOB: &str = "0123456789abcdef";
+
+    fn full(worker: &str) -> Vec<String> {
+        [
+            "--worker", worker, "--slot", "light", "--id", JOB, "--mem-mb", "256", "--pids", "64",
+            "--cpus", "0", "--wall-s", "10", "--tmp-mb", "16",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    fn with(worker: &str, flag: &str, value: &str) -> Vec<String> {
+        let mut a = full(worker);
+        let at = a.iter().position(|x| x == flag).unwrap();
+        a[at + 1] = value.to_string();
+        a
+    }
+
+    fn run(args: Vec<String>) -> Result<Config, String> {
+        match parse(args)? {
             Parsed::Run(c) => Ok(*c),
-            Parsed::SelfCheck => Err("expected a run".into()),
+            _ => Err("expected a run".into()),
         }
     }
 
     #[test]
-    fn full_invocation() {
-        let c = run(&[
-            "--profile", "node-worker", "--slot", "light", "--mem-mb", "256", "--pids", "64",
-            "--cpus", "0", "--wall-s", "10", "--id", "job1", "--", "/usr/local/bin/node", "w.mjs",
-        ])
-        .unwrap();
-        assert_eq!(c.profile, "node-worker");
+    fn the_reader_invocation() {
+        let c = run(full("image")).unwrap();
+        assert_eq!(c.worker.id, "image");
+        assert_eq!(c.worker.argv.last(), Some(&"/opt/media/worker/image.mjs"));
         assert_eq!(c.slot, Slot::Light);
         assert_eq!(c.slot.uid(), 65533);
+        assert_eq!(c.id, JOB);
         assert_eq!(c.mem_bytes, 256 * 1024 * 1024);
         assert_eq!(c.pids_max, 64);
         assert_eq!(c.cpus, "0");
-        assert_eq!(c.tmp_bytes, 128 * 1024 * 1024);
         assert_eq!(c.wall_s, 10);
-        assert_eq!(c.id, "job1");
-        assert_eq!(c.program, "/usr/local/bin/node");
-        assert_eq!(c.argv, vec!["w.mjs"]);
+        assert_eq!(c.tmp_bytes, 16 * 1024 * 1024);
+        // Flag order is free.
+        let mut reversed = full("pdf");
+        reversed.reverse();
+        let pairs: Vec<String> = reversed
+            .chunks(2)
+            .flat_map(|p| [p[1].clone(), p[0].clone()])
+            .collect();
+        assert_eq!(run(pairs).unwrap().worker.id, "pdf");
     }
 
     #[test]
-    fn heavy_slot_uid() {
-        let c = run(&[
-            "--profile", "whisper", "--slot", "heavy", "--mem-mb", "1280", "--pids", "64",
-            "--cpus", "0-2", "--wall-s", "60", "--", "/opt/media/bin/whisper-pcm",
-        ])
-        .unwrap();
-        assert_eq!(c.slot.uid(), 65532);
-        assert!(c.argv.is_empty());
+    fn self_check_and_table_run_alone() {
+        assert!(matches!(
+            parse(["--self-check"]).unwrap(),
+            Parsed::SelfCheck
+        ));
+        assert!(matches!(parse(["--table"]).unwrap(), Parsed::Table));
+        assert!(parse(["--self-check", "--table"]).is_err());
+        assert!(parse(["--table", "x"]).is_err());
+        let mut a = full("image");
+        a.push("--table".into());
+        assert!(run(a).is_err());
     }
 
     #[test]
-    fn self_check_alone() {
-        assert_eq!(parse(["--self-check"]).unwrap(), Parsed::SelfCheck);
-        assert!(parse(["--self-check", "--slot", "light"]).is_err());
+    fn no_free_form_program() {
+        let mut a = full("image");
+        a.extend(["--".to_string(), "/bin/sh".to_string()]);
+        assert!(run(a).is_err());
+        assert!(run(with("image", "--worker", "/usr/local/bin/node")).is_err());
+        assert!(run(with("image", "--worker", "ffmpeg")).is_err());
+        assert!(run(with("image", "--worker", "whisper")).is_err());
+        let mut profile = full("image");
+        profile.extend(["--profile".to_string(), "node-worker".to_string()]);
+        assert!(run(profile).is_err());
     }
 
     #[test]
-    fn self_check_after_double_dash_is_a_program_argument_not_our_flag() {
-        // Jailing `media-jail --self-check` must parse as a run of that program,
-        // not as our own self-check.
-        let c = run(&[
-            "--profile", "node-worker", "--slot", "light", "--mem-mb", "128", "--pids", "64",
-            "--cpus", "0", "--wall-s", "5", "--", "/usr/local/bin/media-jail", "--self-check",
-        ])
-        .unwrap();
-        assert_eq!(c.program, "/usr/local/bin/media-jail");
-        assert_eq!(c.argv, vec!["--self-check"]);
+    fn every_flag_is_required() {
+        let base = full("office");
+        for k in (0..base.len()).step_by(2) {
+            let mut a = base.clone();
+            a.drain(k..k + 2);
+            assert!(run(a).is_err(), "without {}", base[k]);
+        }
     }
 
     #[test]
-    fn program_args_after_double_dash_are_not_parsed_as_flags() {
-        let c = run(&[
-            "--profile", "node-worker", "--slot", "light", "--mem-mb", "256", "--pids", "64",
-            "--cpus", "0", "--wall-s", "10", "--", "/bin/echo", "--slot", "--mem-mb",
-        ])
-        .unwrap();
-        assert_eq!(c.program, "/bin/echo");
-        assert_eq!(c.argv, vec!["--slot", "--mem-mb"]);
+    fn values_above_the_row_or_zero_are_refused() {
+        assert!(run(with("image", "--mem-mb", "257")).is_err());
+        assert!(run(with("pdf", "--mem-mb", "384")).is_ok());
+        assert!(run(with("pdf", "--mem-mb", "385")).is_err());
+        assert!(run(with("image", "--wall-s", "11")).is_err());
+        assert!(run(with("pdf", "--wall-s", "20")).is_ok());
+        assert!(run(with("office", "--wall-s", "16")).is_err());
+        assert!(run(with("image", "--pids", "65")).is_err());
+        assert!(run(with("image", "--tmp-mb", "17")).is_err());
+        for flag in ["--mem-mb", "--pids", "--wall-s", "--tmp-mb"] {
+            assert!(run(with("image", flag, "0")).is_err(), "{flag} 0");
+            assert!(run(with("image", flag, "-1")).is_err(), "{flag} -1");
+            assert!(run(with("image", flag, "+5")).is_err(), "{flag} +5");
+            assert!(
+                run(with("image", flag, "99999999999999999999")).is_err(),
+                "{flag} huge"
+            );
+        }
+        assert!(run(with("image", "--mem-mb", "128")).is_ok());
     }
 
     #[test]
-    fn missing_required_flags() {
-        assert!(run(&["--slot", "light", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
-        assert!(run(&["--profile", "p", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
-        assert!(run(&["--profile", "p", "--slot", "light", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
-        assert!(run(&["--profile", "p", "--slot", "light", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "1"]).is_err());
+    fn the_heavy_slot_is_deferred() {
+        assert!(run(with("image", "--slot", "heavy"))
+            .unwrap_err()
+            .contains("deferred"));
+        assert!(run(with("image", "--slot", "medium")).is_err());
     }
 
     #[test]
-    fn bad_values() {
-        let base = ["--profile", "p", "--slot", "light", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"];
-        // zero limits
-        assert!(run(&["--profile", "p", "--slot", "light", "--mem-mb", "0", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
-        assert!(run(&["--profile", "p", "--slot", "light", "--mem-mb", "1", "--pids", "0", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
-        assert!(run(&["--profile", "p", "--slot", "light", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "0", "--", "/bin/true"]).is_err());
-        // bad slot
-        assert!(run(&["--profile", "p", "--slot", "medium", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
-        // unknown flag
-        let mut with_unknown = vec!["--frobnicate", "x"];
-        with_unknown.extend_from_slice(&base);
-        assert!(run(&with_unknown).is_err());
+    fn the_job_id_is_16_lowercase_hex() {
+        for bad in [
+            "0123456789abcde",
+            "0123456789abcdef0",
+            "0123456789ABCDEF",
+            "0123456789abcdeg",
+            "../../../../etc/x",
+            "",
+        ] {
+            assert!(run(with("image", "--id", bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_flag_twice_or_unknown_is_refused() {
+        let mut twice = full("image");
+        twice.extend(["--pids".to_string(), "32".to_string()]);
+        assert!(run(twice).is_err());
+        let mut unknown = full("image");
+        unknown.extend(["--frobnicate".to_string(), "x".to_string()]);
+        assert!(run(unknown).is_err());
+        let mut dangling = full("image");
+        dangling.push("--pids".into());
+        assert!(run(dangling).is_err());
     }
 
     #[test]
     fn cpus_validation() {
-        assert!(validate_cpus("0").is_ok());
-        assert!(validate_cpus("0-2").is_ok());
-        assert!(validate_cpus("1,3,5").is_ok());
-        assert!(validate_cpus("0-1,3").is_ok());
-        assert!(validate_cpus("").is_err());
-        assert!(validate_cpus("2-0").is_err());
-        assert!(validate_cpus("0,0").is_err());
-        assert!(validate_cpus("a").is_err());
-        assert!(validate_cpus("0-").is_err());
-        assert!(validate_cpus("-1").is_err());
-        assert!(validate_cpus("1024").is_err());
-        assert!(validate_cpus("1020-1024").is_err());
-    }
-
-    #[test]
-    fn cpu_list_expands_ranges_in_order() {
-        assert_eq!(cpu_list("0").unwrap(), vec![0]);
+        assert!(cpu_list("0").is_ok());
+        assert!(cpu_list("0-2").is_ok());
+        assert!(cpu_list("1,3,5").is_ok());
+        assert!(cpu_list("0-1,3").is_ok());
+        for bad in ["", "2-0", "0,0", "a", "0-", "-1", "1024", "1020-1024"] {
+            assert!(cpu_list(bad).is_err(), "{bad:?}");
+        }
         assert_eq!(cpu_list("3,0-1").unwrap(), vec![0, 1, 3]);
-        assert_eq!(cpu_list("1023").unwrap(), vec![1023]);
-    }
-
-    #[test]
-    fn profile_name_charset() {
-        assert!(run(&["--profile", "bad name", "--slot", "light", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
-        assert!(run(&["--profile", "", "--slot", "light", "--mem-mb", "1", "--pids", "1", "--cpus", "0", "--wall-s", "1", "--", "/bin/true"]).is_err());
+        assert!(run(with("image", "--cpus", "0,0")).is_err());
     }
 }

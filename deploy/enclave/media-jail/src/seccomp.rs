@@ -163,6 +163,7 @@ fn number(name: &str) -> Option<i64> {
         "sigaltstack" => libc::SYS_sigaltstack,
         "signalfd4" => libc::SYS_signalfd4,
         "tgkill" => libc::SYS_tgkill,
+        "tkill" => libc::SYS_tkill,
         "kill" => libc::SYS_kill,
         "restart_syscall" => libc::SYS_restart_syscall,
         // threads, scheduling, futexes

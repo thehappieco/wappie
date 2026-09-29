@@ -1,14 +1,16 @@
 // `media-jail --self-check` prints one JSON object describing what the running
 // kernel supports, and runs nothing (no unshare, no mount, no exec). The boot
-// check in the reader (§16.6) calls this and requires exit 0; the A0 probe also
-// records its output as raw evidence. It never fails hard: a field it cannot
-// read is reported as null/false rather than aborting, so the caller sees the
-// whole picture.
+// check in the reader (§16.6) calls this and requires exit 0 within 5 s; the
+// probe also records its output as raw evidence. It never fails hard on a
+// kernel fact: a field it cannot read is reported as null/false rather than
+// aborting, so the caller sees the whole picture. It exits 1 only when the
+// binary could never sandbox: a table row whose seccomp profile does not
+// assemble.
 
 use crate::emulate::Emulate;
 use crate::json::Val;
 use crate::seccomp::KillAction;
-use crate::{profile, seccomp};
+use crate::{profile, seccomp, workers};
 use std::fs;
 use std::path::Path;
 
@@ -82,14 +84,22 @@ pub fn run() -> i32 {
     };
     let kill = if emu.kill_thread { KillAction::Thread } else { seccomp::kill_action() };
 
-    // Seccomp: prove the filter for the shipped profile assembles (does not
-    // install it). A failure here means the binary could never sandbox.
-    let (seccomp_ok, allow_len, shim_len, seccomp_err) = match profile::load("node-worker")
-        .and_then(|names| seccomp::compile(&names, kill))
-    {
-        Ok((allow, shim)) => (true, allow.len() as i64, shim.len() as i64, None),
-        Err(e) => (false, 0, 0, Some(e)),
-    };
+    // Seccomp: prove the filter of every table row's profile assembles (does
+    // not install it). A failure here means the binary could never sandbox.
+    let mut compiled = (true, 0, 0, None);
+    for w in workers::WORKERS {
+        match profile::load(w.profile).and_then(|names| seccomp::compile(&names, kill)) {
+            Ok((allow, shim)) => {
+                compiled.1 = allow.len() as i64;
+                compiled.2 = shim.len() as i64;
+            }
+            Err(e) => {
+                compiled = (false, 0, 0, Some(format!("{}: {e}", w.id)));
+                break;
+            }
+        }
+    }
+    let (seccomp_ok, allow_len, shim_len, seccomp_err) = compiled;
 
     let cg2 = cgroup2_mounts();
     let unified_at = cg2.first().cloned();
@@ -169,12 +179,16 @@ pub fn run() -> i32 {
             Val::Bool(Path::new("/dev/nsm").exists()),
         ),
         (
+            "workers".into(),
+            Val::Arr(workers::WORKERS.iter().map(|w| Val::s(w.id)).collect()),
+        ),
+        (
             "emulated".into(),
             Val::Arr(emu.names().into_iter().map(Val::s).collect()),
         ),
     ]);
 
-    println!("{}", report.to_string());
+    println!("{report}");
     // The binary is usable as long as the seccomp assembler works; the kernel
     // facts are advisory and reported either way.
     if seccomp_ok {
