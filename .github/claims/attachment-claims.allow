@@ -1,0 +1,66 @@
+# Allowlist for .github/claims/attachment-claims.py (run it for the rules).
+#
+# Every line that says attachment contents are unavailable, that attachments
+# are never opened, downloaded or read, or that file contents are out of
+# reach (in English, Portuguese, Spanish, French or German) must be here,
+# under the connections a reviewer checked it is true for:
+#   metadata    the hosted metadata connector (api.…/mcp, self-hosted
+#               containers), 'metadata' connections, the local reader
+#               without plaintext
+#   text        text connections of the attested reader (consent version 1,
+#               or 2 without attachments) and the local reader with plaintext
+#   media       media connections: what they still never open (view-once,
+#               gone, keyless or unhashed media, audio and voice notes)
+#   unrelated   about something else entirely
+# A sentence true of several names them all, joined by ','. A general claim
+# that Wappie's connector never opens attachments is not allowed: since A1
+# the attested reader at mcp.…/mcp does, for media connections.
+#
+#   <scope> <path>                 every hit in the file (code; give the reason)
+#   <scope> <path> :: <fragment>   only hits whose line contains the fragment
+
+# Unrelated meanings of the phrases.
+unrelated internal/restapi/openapi.json :: The server does not search plaintext, decrypt names/content, download attachments
+
+# This gate's own CI job explains the rule.
+unrelated .github/workflows/ci.yml :: sentence saying attachments are never opened or file contents are out of
+
+# The lead's contract: the text connection's sentence the amendments keep, and
+# the card and tool description of a media connection.
+text docs/mcp-enclave.md :: content is opened inside an attested Wappie reader; attachment contents are unavailable (on version-1 and version-2 text connections
+text docs/mcp-enclave.md :: the sentences "Attachment contents are unavailable
+text docs/mcp-enclave.md :: calls or attachment downloads are available." of
+text docs/mcp-enclave.md :: | §15.6 | the content-mode sentence that attachment contents are unavailable stays
+media docs/mcp-enclave.md :: > media and attachments the archive cannot verify are never opened, and
+media docs/mcp-enclave.md :: anexos que o arquivo não > consegue verificar nunca são abertos
+media docs/mcp-enclave.md :: > attachments it no longer holds are never opened."
+
+# User-facing docs: what text connections, the hosted connector and the local
+# reader never open, what a media connection never opens, and search, which
+# never looks inside files on any connection.
+metadata,text README.md :: Text connections and the hosted connector never open attachment contents.
+text docs/mcp.md :: A text connection never opens attachment contents; only a
+media docs/mcp.md :: view-once media and attachments the archive cannot verify are never opened,
+metadata,text docs/mcp.md :: never open attachment contents. A text connection never gains attachments,
+text packages/mcp-http/README.md :: never does, and never opens attachment contents.
+text packages/mcp/README.md :: the instructions keep saying that attachment contents are unavailable.
+metadata,text,media packages/mcp/README.md :: file contents (not even on a media connection) or use a semantic/vector index.
+metadata,text packages/mcp/README.md :: and the local reader do not have the tool and never open attachment contents.
+
+# The reader: the instructions of text connections (and of the local and
+# hosted metadata modes), open_attachment's description, and the search
+# coverage note and tool descriptions, which hold on every connection.
+text packages/mcp/server.mjs :: const withoutAttachments = 'Attachment contents are unavailable: only filenames and metadata are returned.
+metadata,text packages/mcp/server.mjs :: 'No sending, mutations, calls or attachment downloads are available. Use resolve_contact
+media packages/mcp/server.mjs :: const openAttachmentDescription = 'Open one attachment of an archived message inside the attested Wappie reader.
+text,media packages/mcp/server.mjs :: or attachment filenames, opened inside the attested Wappie reader; not semantic similarity or file contents.
+metadata,text packages/mcp/server.mjs :: or attachment filenames, not semantic similarity or file contents. Text search requires local plaintext access.
+text,media packages/mcp/reader.mjs :: 'A text query examines a fixed window of archived messages per call
+metadata,text,media packages/mcp/reader.mjs :: Structured payloads and attachment contents are not searched.'
+
+# Tests that pin those sentences: the text connection's instructions, and
+# open_attachment's description on a media connection.
+text packages/mcp/test/content.test.mjs :: /Attachment contents are unavailable/
+text packages/mcp/test/media.test.mjs :: /Attachment contents are unavailable: only filenames and metadata are returned
+text packages/mcp/test/media.test.mjs :: assert.doesNotMatch(instructions, /Attachment contents are unavailable|attachment downloads/)
+media packages/mcp/test/media.test.mjs :: assert.equal(tool.description, 'Open one attachment of an archived message inside the attested Wappie reader.

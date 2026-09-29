@@ -213,11 +213,16 @@ jobs:
   # names the metadata connector (api.) or the metadata kind. Every such
   # phrase must be on .github/claims/metadata-claims.allow, and every entry
   # there must still match (docs/mcp-enclave.md section 15.1).
+  # Since stage A it opens attachment contents for media connections, so a
+  # sentence saying attachments are never opened or file contents are out of
+  # reach must be on .github/claims/attachment-claims.allow, under the
+  # connections it is true for (docs/mcp-enclave.md section 16.1).
   claims:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: python3 .github/claims/metadata-claims.py
+      - run: python3 .github/claims/attachment-claims.py
 
   secrets:
     runs-on: ubuntu-latest
