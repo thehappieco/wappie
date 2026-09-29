@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Parent side of the A0 vsock throughput probe (deploy/enclave/probe). Streams
-16 MiB then 32 MiB to the probe enclave's vsock-sink, which times each transfer.
-Run by probe.sh on the parent (AL2023) after the probe enclave boots; it retries
-the connect until the sink is listening, since the runner starts the sink only
-near the end of its sequence.
+"""Parent side of the probe's vsock throughput (deploy/enclave/probe, measured
+since A0). Streams 16 MiB then 32 MiB to the probe enclave's vsock-sink, which
+times each transfer. Run by probe.sh on the parent (AL2023) right after the
+probe enclave is launched; it retries the connect until the sink is listening,
+which the runner starts once it has read the kernel facts (the enclave boots
+first, and a larger EIF takes longer).
 
     vsock-send.py <enclave-cid> <port>
 
@@ -48,7 +49,7 @@ def main():
     cid = int(sys.argv[1])
     port = int(sys.argv[2])
     # The sink accepts two connections in order: 16 MiB then 32 MiB.
-    deadline = time.time() + 180
+    deadline = time.time() + 600
     for label, size in (("16MiB", 16 * MIB), ("32MiB", 32 * MIB)):
         ok = send_once(cid, port, size, deadline)
         print(f"{label}: {'sent' if ok else 'FAILED (no listener)'}", flush=True)

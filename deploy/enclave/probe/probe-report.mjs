@@ -1,23 +1,37 @@
-// The A0 probe runner. It runs INSIDE the probe enclave at boot, as a child of
+// The A1 probe runner. It runs INSIDE the probe enclave at boot, as a child of
 // entrypoint-probe.sh, and STREAMS its report to the enclave console: every
 // section is printed the moment it is measured, as one line
 //
-//   A0R <seq> <bytes> {"section":"<name>","t":<uptime s>,"data":{...}}
+//   A1R <seq> <bytes> {"section":"<name>","t":<uptime s>,"data":{...}}
 //
 // where <bytes> is the UTF-8 length of the JSON, so probe.sh
 // (assemble-report.py) can tell a whole line from one a kernel message broke
 // in two. The same lines are appended to /run/probe/report.jsonl, which the
 // entrypoint prints again at the end. A crash mid-way therefore still leaves
-// every finished section on the console; the first Nitro run (2026-09-28)
-// printed its one JSON object only at the very end and left nothing.
+// every finished section on the console (the A0 lesson: the first Nitro run
+// printed one JSON object at the very end and left nothing).
 //
-// It answers the §4 JAIL go/no-go and §16 open points with raw evidence: kernel
-// config and features, the cgroup layout and whether the v1→v2 switch worked,
-// /dev/nsm, media-jail --self-check, a jailed test per escape, the memory
-// headroom for the A1 sharp + pdfjs stack on a generated 12 MP JPEG and 50-page
-// PDF, vsock throughput, the kernel's own reports about our processes (SIGILL,
-// seccomp kills, OOM) matched to what the runner started, and what the 4.14
-// blob kernel lacks for §16.6.
+// The probe image is the A1 reader image with the jail check of
+// check-image.sh --jail on top (Dockerfile.probe). On the enclave's own
+// kernel this runs, in order:
+//
+//   - the A0 kernel facts: versions and CPU, /proc/config.gz, the cgroup
+//     layout the production entrypoint's media jail block made, media-jail
+//     --self-check, the syscalls the kernel has outside any jail, and the
+//     vsock throughput from the parent (vsock 9100, vsock-send.py);
+//   - the jail check check-image.sh --jail runs (jailcheck/jail-check.mjs):
+//     the setup, the refusals, the A0 escape tests from /opt/media, signals
+//     and parent death, and the whole §16.13 corpus through the reader's
+//     runWorker, every worker under the image's media-jail and seccomp
+//     profile. One `jail_result` record per check, as it passes or fails;
+//   - the reader end to end (enclave/test/media-e2e.test.mjs, MEDIA_E2E=jail),
+//     which needs loopback only;
+//   - the reader stand-in (reader-bench.mjs): the production reader idle,
+//     MemAvailable while the heaviest jobs run, and 16 and 32 MiB PDF and
+//     docx files opened end to end with their ciphertext served by the parent
+//     over vsock (vsock 9101, vsock-serve.py). One `bench` record per result;
+//   - the kernel's own reports about all of it (SIGILL, seccomp kills, OOM)
+//     and what the 4.14 blob kernel lacks for §16.6.
 //
 // Every process it starts is announced first (argv), then recorded with its
 // pid, /proc/<pid>/comm and cmdline, and its exit code or signal, so a kernel
@@ -31,33 +45,34 @@ import {
   openSync,
   readFileSync,
   readSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs'
 import { release } from 'node:os'
+import { dirname } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 
 const MEDIA_JAIL = '/usr/local/bin/media-jail'
 const NODE = process.execPath
-const BIN = '/opt/probe/bin'
-const WORKER = '/opt/probe/worker'
-const CORPUS = '/opt/probe/corpus'
-const VSOCK_PORT = 9100 // outside production's 5443-5445/7000-7002/8000-8002/9000
+const JAILTEST = '/opt/jailcheck/media/bin/jailtest'
+const VSOCK_SINK = '/opt/probe/bin/vsock-sink'
+const JAIL_CHECK = '/opt/jailcheck/jail-check.mjs'
+const E2E = '/opt/e2e/packages/mcp-http/enclave/test/media-e2e.test.mjs'
+const BENCH = '/opt/e2e/packages/mcp-http/enclave/test/probe-bench.mjs'
+const CONSTANTS = '/app/packages/mcp-http/enclave/constants.mjs'
+// vsock ports outside production's 5443-5445/7000-7002/8000-8002/9000: the
+// parent streams to 9100 (A0's throughput) and serves objects on 9101.
+const VSOCK_PORT = 9100
+const OBJECTS_PORT = 9101
+const BRIDGE_PORT = 9101 // the loopback end of the bridge to the parent's 9101
+const PARENT_CID = Number(process.env.PROBE_PARENT_CID || 3)
 const PROBE = '/run/probe'
 const REPORT = `${PROBE}/report.jsonl`
 const CG_MEDIA = '/run/cg2/media'
+// Paths only the probe carries: the root filesystem lives in enclave memory,
+// so the report says how much of it production would not hold.
+const PROBE_ONLY = ['/opt/e2e', '/opt/jailcheck', '/opt/media/worker/test', '/opt/probe', '/probe']
 
-const ENOENT = 2
 const ENOSYS = 38
-
-// PROBE_EMULATE_OLD_KERNEL=1 (local smoke test only): behave as on the 4.14
-// blob on a newer kernel. The entrypoint leaves cpuset off cgroup2 and hidepid
-// at 2; media-jail is told to treat the rest as missing; the runner's own kill
-// path ignores cgroup.kill.
-const EMULATE = process.env.PROBE_EMULATE_OLD_KERNEL === '1'
-const JAIL_ENV = EMULATE
-  ? { ...process.env, MEDIA_JAIL_EMULATE: 'no-cgroup-kill,no-oom-group,no-peak,no-pivot-root,kill-thread' }
-  : process.env
 
 // The page offset of OpenSSL's _armv8_sve_probe (`eor z0.d, z0.d, z0.d`) in
 // the pinned node:22-alpine binary (Node 22.23.3, OpenSSL 3.5.8; nm: 0x213ee48).
@@ -109,7 +124,7 @@ function emit(section, data) {
   } catch (e) {
     json = JSON.stringify({ section, t: uptime(), data: { error: `unserializable: ${errText(e)}` } })
   }
-  const line = `A0R ${++seq} ${Buffer.byteLength(json)} ${json}\n`
+  const line = `A1R ${++seq} ${Buffer.byteLength(json)} ${json}\n`
   out(line)
   try {
     appendFileSync(REPORT, line)
@@ -119,7 +134,7 @@ function emit(section, data) {
 }
 
 function progress(msg) {
-  out(`A0 RUN t=${uptime()} ${msg}\n`)
+  out(`A1 RUN t=${uptime()} ${msg}\n`)
 }
 
 process.on('uncaughtException', (e) => {
@@ -148,9 +163,6 @@ async function section(name, fn) {
 // --- processes ----------------------------------------------------------------
 
 const spawned = []
-// Every jailed job's PID 1 as the host sees it (media-jail's child_pid), for
-// matching kernel lines to jobs.
-const jobs = []
 
 const procComm = (pid) => (readText(`/proc/${pid}/comm`) || '').trim() || null
 const procCmdline = (pid) => {
@@ -160,9 +172,9 @@ const procCmdline = (pid) => {
 
 // Start a process: its argv is printed BEFORE it starts, then its pid, comm and
 // cmdline as the kernel sees them (spawn returns after the exec), and its end.
-function start(argv, { env = process.env, stdio = ['ignore', 'pipe', 'pipe'] } = {}) {
+function start(argv, { env = process.env, cwd, stdio = ['ignore', 'pipe', 'pipe'] } = {}) {
   progress(`spawn ${JSON.stringify(argv)}`)
-  const child = spawn(argv[0], argv.slice(1), { env, stdio })
+  const child = spawn(argv[0], argv.slice(1), { env, cwd, stdio })
   const pid = child.pid ?? null
   const rec = { pid, argv, comm: pid ? procComm(pid) : null, cmdline: pid ? procCmdline(pid) : null }
   spawned.push(rec)
@@ -172,6 +184,9 @@ function start(argv, { env = process.env, stdio = ['ignore', 'pipe', 'pipe'] } =
     rec.signal = signal
     emit('exit', { pid, argv0: argv[0], code, signal })
   })
+  // A spawn that fails (ENOENT) is reported by its 'error' event; the callers
+  // listen for it, and this keeps it from becoming an uncaught exception.
+  child.on('error', () => {})
   return child
 }
 
@@ -210,149 +225,74 @@ function run(argv, { timeoutMs = 60000, env } = {}) {
   })
 }
 
-function meminfo(text) {
-  if (!text) return null
-  const out = {}
-  for (const key of ['MemTotal', 'MemAvailable', 'MemFree']) {
-    const m = text.match(new RegExp(`^${key}:\\s+(\\d+)`, 'm'))
-    if (m) out[key + '_kb'] = Number(m[1])
-  }
-  return out
-}
-
-// media-jail's one-line status JSON, or null for any other stderr line. The
-// jailed worker's stderr is /dev/null, so only media-jail writes these lines.
-function statusLine(line) {
-  try {
-    const v = JSON.parse(line)
-    return v && v.tool === 'media-jail' ? v : null
-  } catch {
-    return null
-  }
-}
-
-// Parse media-jail's status line off the tail of its stderr.
-function mjStatus(stderr) {
-  const lines = (stderr || '').trim().split('\n').filter(Boolean)
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const v = statusLine(lines[i])
-    if (v) return v
-  }
-  return null
-}
-
-// media-jail's own diagnostics without the status line: a setup error in the
-// parent or the child (a root switch, a cgroup file write, the /proc mount) is
-// the first thing to read when a test fails on the real kernel. The last 2 KiB.
-function stderrTail(stderr) {
-  const text = (stderr || '')
-    .split('\n')
-    .filter((l) => l.trim() && !statusLine(l))
-    .join('\n')
-  return text.length > 2048 ? text.slice(-2048) : text
-}
-
-// The PID-namespace init among a leaf's processes: its NSpid ends in 1.
-function nsInit(pids) {
-  for (const p of pids) {
-    const m = (readText(`/proc/${p}/status`) || '').match(/^NSpid:\s+(.*)$/m)
-    const ids = m ? m[1].trim().split(/\s+/) : []
-    if (ids.length > 1 && ids[ids.length - 1] === '1') return Number(p)
-  }
-  return null
-}
-
-// The main Node's kill path (§16.6): cgroup.kill where the kernel has it
-// (5.14); otherwise SIGKILL the job's PID-namespace init, which takes every
-// process in that namespace with it. Returns what it did.
-function killJob(leaf) {
-  if (!EMULATE && existsSync(`${leaf}/cgroup.kill`)) {
-    writeFileSync(`${leaf}/cgroup.kill`, '1')
-    return 'cgroup.kill'
-  }
-  const pids = (readText(`${leaf}/cgroup.procs`) || '').split('\n').filter(Boolean)
-  const init = nsInit(pids)
-  if (init) {
-    process.kill(init, 'SIGKILL')
-    return 'pidns-init'
-  }
-  for (const p of pids) {
-    try {
-      process.kill(Number(p), 'SIGKILL')
-    } catch {
-      /* gone */
-    }
-  }
-  return `sigkill-each(${pids.length})`
-}
-
-// Run a program in the jail, sampling MemAvailable while it runs. A watchdog
-// fires 10 s after the job's own wall: if a kernel primitive fails and
-// media-jail hangs, it kills media-jail and the job and records `hung`, so one
-// bad primitive cannot cost the whole report.
-function jail(opts) {
-  const { program, argv = [], slot = 'light', memMb, pids = 128, cpus = '0', wallS, id } = opts
-  const args = [
-    '--profile', 'node-worker', '--slot', slot, '--mem-mb', String(memMb),
-    '--pids', String(pids), '--cpus', cpus, '--wall-s', String(wallS), '--id', id,
-    '--', program, ...argv,
-  ]
+// Run a long child, handing each stdout line to `onLine` as it arrives (so its
+// results are streamed, not held), with a hard timeout. Lines `onLine` does
+// not take, and stderr, are kept as tails for the section's record.
+function streamChild(argv, { env = process.env, cwd, timeoutMs, onLine = () => false }) {
   return new Promise((resolve) => {
+    const started = Date.now()
+    const other = []
+    let stderr = ''
+    let pending = ''
+    let done = false
+    let timedOut = false
+    const keep = (line) => {
+      other.push(line)
+      if (other.length > 60) other.shift()
+    }
+    const take = (line) => {
+      try {
+        if (!onLine(line)) keep(line)
+      } catch (e) {
+        keep(`${line} (not read: ${String(e)})`)
+      }
+    }
     let child
     try {
-      child = start([MEDIA_JAIL, ...args], { env: JAIL_ENV })
+      child = start(argv, { env, cwd })
     } catch (e) {
-      resolve({ code: null, signal: null, stdout: '', status: null, stderr_tail: errText(e), min_mem_avail_kb: null, hung: false })
+      resolve({ code: null, signal: null, error: errText(e), ms: 0, output_tail: [], stderr_tail: '' })
       return
     }
-    let stdout = ''
-    let stderr = ''
-    let minAvail = Infinity
-    let done = false
-    child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
-    const sampler = setInterval(() => {
-      const mi = meminfo(readText('/proc/meminfo'))
-      if (mi && mi.MemAvailable_kb < minAvail) minAvail = mi.MemAvailable_kb
-    }, 100)
-    const finish = (code, signal, extra = {}) => {
-      if (done) return
-      done = true
-      clearInterval(sampler)
-      clearTimeout(watchdog)
-      const status = mjStatus(stderr)
-      if (status) jobs.push({ id, program: [program, ...argv].join(' '), child_pid: status.child_pid })
-      resolve({
-        code,
-        signal,
-        stdout: stdout.trim(),
-        status,
-        stderr_tail: stderrTail(stderr),
-        min_mem_avail_kb: Number.isFinite(minAvail) ? minAvail : null,
-        hung: false,
-        ...extra,
-      })
-    }
-    const watchdog = setTimeout(() => {
+    child.stdout.on('data', (d) => {
+      pending += d
+      let nl
+      while ((nl = pending.indexOf('\n')) >= 0) {
+        take(pending.slice(0, nl))
+        pending = pending.slice(nl + 1)
+      }
+    })
+    child.stderr.on('data', (d) => {
+      stderr = (stderr + d).slice(-4000)
+    })
+    const timer = setTimeout(() => {
+      timedOut = true
       try {
         child.kill('SIGKILL')
       } catch {
         /* already gone */
       }
-      let killed
-      try {
-        killed = killJob(`${CG_MEDIA}/${slot}-${id}`)
-      } catch (e) {
-        killed = String(e)
-      }
-      // A surviving job may still hold the pipes open; do not wait for them.
-      child.stdout.destroy()
-      child.stderr.destroy()
-      finish(null, 'SIGKILL', { hung: true, watchdog_kill: killed })
-    }, (wallS + 10) * 1000)
-    child.on('close', (code, signal) => finish(code, signal))
-    child.on('error', (e) => finish(null, null, { stderr_tail: String(e) }))
+    }, timeoutMs)
+    const finish = (extra) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      if (pending) take(pending)
+      resolve({ pid: child.pid ?? null, ms: Date.now() - started, timed_out: timedOut, output_tail: other, stderr_tail: stderr, ...extra })
+    }
+    child.on('error', (e) => finish({ code: null, signal: null, error: errText(e) }))
+    child.on('close', (code, signal) => finish({ code, signal }))
   })
+}
+
+function meminfo(text) {
+  if (!text) return null
+  const out = {}
+  for (const key of ['MemTotal', 'MemAvailable', 'MemFree', 'Shmem', 'Cached']) {
+    const m = text.match(new RegExp(`^${key}:\\s+(\\d+)`, 'm'))
+    if (m) out[key + '_kb'] = Number(m[1])
+  }
+  return out
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -365,23 +305,7 @@ function safeJson(s) {
   }
 }
 
-// What media-jail says about how it built the jail, for every jailed record.
-function jailFacts(st) {
-  if (!st) return null
-  return {
-    child_pid: st.child_pid ?? null,
-    root_switch: st.root_switch ?? null,
-    caps: st.caps ?? null,
-    cpu_pin: st.cpu_pin ?? null,
-    oom_group: st.oom_group ?? null,
-    seccomp_kill: st.seccomp_kill ?? null,
-    cgroup: st.cgroup ?? null,
-    swap_max: st.swap_max ?? null,
-    emulated: st.emulated ?? [],
-  }
-}
-
-// --- sections -----------------------------------------------------------------
+// --- the A0 kernel facts --------------------------------------------------------
 
 // AT_HWCAP / AT_HWCAP2 from /proc/self/auxv (u64 pairs, little-endian arm64).
 function hwcaps() {
@@ -419,11 +343,26 @@ function nodeBase() {
   return null
 }
 
-function meta() {
+async function meta() {
   const [maj, min] = process.versions.node.split('.').map(Number)
+  let reader = null
+  try {
+    const c = await import(CONSTANTS)
+    reader = { version: c.READER_VERSION ?? null, capabilities: c.READER_CAPABILITIES ?? null }
+  } catch (e) {
+    reader = { error: errText(e) }
+  }
+  // The probe-only trees, in KiB (busybox du -sk).
+  const du = await run(['du', '-sk', ...PROBE_ONLY.filter((p) => existsSync(p))], { timeoutMs: 60000 })
+  const probeOnly = {}
+  for (const line of (du.stdout || '').split('\n')) {
+    const m = line.match(/^(\d+)\s+(\S+)$/)
+    if (m) probeOnly[m[2]] = Number(m[1])
+  }
   return {
-    schema: 'wappie-media-a0-probe/v2',
+    schema: 'wappie-media-a1-probe/v1',
     pid: process.pid,
+    reader,
     node: process.version,
     node_ok: maj > 22 || (maj === 22 && min >= 13), // pdf.js needs >= 22.13
     arch: process.arch,
@@ -442,11 +381,13 @@ function meta() {
     // 0xd40 is Neoverse V1 (Graviton3), which has SVE: there a false
     // hwcaps.sve means the kernel, not the CPU, lacks it.
     cpu_part: ((readText('/proc/cpuinfo') || '').match(/^CPU part\s*:\s*(\S+)/m) || [])[1] || null,
+    cpus_online: (readText('/sys/devices/system/cpu/online') || '').trim(),
     cmdline: (readText(`${PROBE}/cmdline`) || '').trim(),
     entrypoint_processes: (readText(`${PROBE}/processes`) || '').trim().split('\n').filter(Boolean),
-    emulate_old_kernel: EMULATE,
     boot_mem: meminfo(readText(`${PROBE}/boot-meminfo`)),
     after_node_mem: meminfo(readText('/proc/meminfo')),
+    probe_only_kb: probeOnly,
+    probe_only_total_kb: Object.values(probeOnly).reduce((a, b) => a + b, 0),
   }
 }
 
@@ -477,8 +418,7 @@ function kernelConfig() {
 
 // --- what the kernel itself supports, outside the jail (root, no seccomp).
 //     Inside the jail these always fail by design, so they say nothing about
-//     the kernel; here ENOSYS means not built in (§16.14: CONFIG_IO_URING) or
-//     older than the call. ---
+//     the kernel; here ENOSYS means not built in or older than the call. ---
 async function kernelUnjailed() {
   const meaning = (line, errno) => {
     if (line && /\b(OPENED|SURVIVED)\b/.test(line)) return 'supported'
@@ -487,7 +427,7 @@ async function kernelUnjailed() {
   }
   const out = {}
   for (const t of ['io-uring', 'userfaultfd', 'unshare-userns', 'clone3', 'pidfd-open']) {
-    const r = await run([`${BIN}/jailtest`, t], { timeoutMs: 5000 })
+    const r = await run([JAILTEST, t], { timeoutMs: 5000 })
     const line = ((r.stdout || '').match(/^RESULT .*/m) || [])[0] || null
     const errno = line ? Number((line.match(/\berrno=(-?\d+)/) || [])[1]) : null
     out[t] = { result_line: line, meaning: meaning(line, errno), exit_code: r.code, signal: r.signal }
@@ -507,14 +447,15 @@ async function kernelUnjailed() {
   return out
 }
 
-// --- cgroup layout, at boot (snapshot) and now ---
+// --- cgroup layout, at boot (snapshot) and after the production block ---
 function cgroupReport() {
   const bootMountinfo = readText(`${PROBE}/boot-mountinfo`) || ''
   const setup = readText(`${PROBE}/cgroup-setup`) || ''
   const mediaCtl = (readText(`${CG_MEDIA}/cgroup.subtree_control`) || '').trim()
   const controllers = mediaCtl ? mediaCtl.split(/\s+/) : []
-  // memory and pids are what media-jail needs; cpuset only where the kernel's
-  // cgroup2 has it (5.0), else media-jail pins with sched_setaffinity.
+  // memory and pids are what the reader's boot check requires; cpuset only
+  // where the kernel's cgroup2 has it (5.0), else media-jail pins with
+  // sched_setaffinity.
   const v2Ok = ['memory', 'pids'].every((c) => controllers.includes(c))
   // Which interface files the media node has: cgroup.kill needs 5.14,
   // memory.peak 5.19, memory.oom.group 4.19, cpuset.cpus a cgroup2 cpuset (5.0).
@@ -523,239 +464,39 @@ function cgroupReport() {
     files[f] = existsSync(`${CG_MEDIA}/${f}`)
   }
   return {
-    path: 'cgroup2 at /run/cg2: memory + pids (+ cpuset where the kernel has it); media-jail detects each optional file',
+    path: "the production entrypoint's media jail block (deploy/enclave/entrypoint.sh), run as shipped",
     boot_cgroup_mountinfo: bootMountinfo.split('\n').filter((l) => l.includes('cgroup')),
     // The boot mount of / (mountinfo field 5): pivot_root needs the current
     // root to be a mount with a parent; this explains which root switch ran.
     boot_root_mount: bootMountinfo.split('\n').filter((l) => l.split(' ')[4] === '/'),
     boot_cgroups: readText(`${PROBE}/boot-cgroups`),
-    setup_log: setup.split('\n').filter(Boolean),
+    setup_trace: setup.split('\n').filter(Boolean).slice(-120),
     root_controllers: (readText('/run/cg2/cgroup.controllers') || '').trim(),
+    root_subtree_control: (readText('/run/cg2/cgroup.subtree_control') || '').trim(),
     run_cg2_media_controllers: controllers,
-    v1_unmounted_v2_mounted_ok: v2Ok,
+    memory_and_pids_ok: v2Ok,
     media_files_present: files,
-    hidepid: (readText(`${PROBE}/hidepid`) || '').trim(),
+    hidepid: (readText('/proc/mounts') || '').split('\n').filter((l) => / \/proc proc /.test(l)),
+    oom_score_adj: (readText('/proc/self/oom_score_adj') || '').trim(),
     swaps: readText('/proc/swaps'),
   }
 }
 
 async function selfCheck() {
-  const r = await run([MEDIA_JAIL, '--self-check'], { env: JAIL_ENV, timeoutMs: 10000 })
-  return { exit_code: r.code, signal: r.signal, report: safeJson(r.stdout), stderr: r.stderr.slice(0, 1000) }
-}
-
-// --- the jailed escape tests ---
-// `started` is the jailtest sub-command whose START line must be on stdout
-// before a kill counts: a SIGSYS during startup is a gap in the profile, not
-// the denial under test. `errno`, when given, is the one a denied-errno must
-// carry (ENOENT for a missing path, ENOSYS for the shim).
-function classify(name, res, expect, { started = name, errno = null } = {}) {
-  const st = res.status || {}
-  const outcome = st.outcome
-  const sig = st.term_signal
-  const resultLine = (res.stdout.match(/^RESULT .*/m) || [])[0] || null
-  const gotErrno = resultLine ? Number((resultLine.match(/\berrno=(-?\d+)/) || [])[1]) : null
-  const didStart = new RegExp(`^START ${started}$`, 'm').test(res.stdout)
-  let verdict
-  // Denied patterns first: NOT-VISIBLE contains "VISIBLE", so it must be
-  // matched before the survived patterns.
-  if (res.hung) verdict = 'hung'
-  else if (resultLine && /\bCLEARED\b/.test(resultLine)) verdict = 'cleared'
-  else if (resultLine && /\bHELD\b/.test(resultLine)) verdict = 'held'
-  else if (resultLine && /\bCOUNT\b/.test(resultLine)) verdict = 'listed'
-  else if (resultLine && /\b(DENIED|NOT-VISIBLE)\b/.test(resultLine)) verdict = 'denied-errno'
-  else if (resultLine && /\b(OPENED|SURVIVED|VISIBLE)\b/.test(resultLine)) verdict = 'survived'
-  else if (!didStart) verdict = `not-started(${outcome},sig=${sig})`
-  else if (outcome === 'signaled' && sig === 31) verdict = 'denied-seccomp'
-  else if (outcome === 'oom') verdict = 'killed-memcg'
-  else if (outcome === 'timeout') verdict = 'killed-wall'
-  else verdict = `other(${outcome},sig=${sig})`
-  let pass = expect.includes(verdict)
-  if (pass && verdict === 'denied-errno' && errno != null) pass = gotErrno === errno
-  // Anything the test printed besides START/RESULT (e.g. the PATH lines).
-  const detail = res.stdout.split('\n').filter((l) => l && !/^(START|RESULT) /.test(l)).slice(0, 40)
-  return {
-    test: name,
-    expected: expect,
-    expected_errno: errno,
-    verdict,
-    pass,
-    result_line: resultLine,
-    errno: gotErrno,
-    started: didStart,
-    ...(detail.length ? { detail } : {}),
-    outcome,
-    term_signal: sig,
-    exit_code: res.code,
-    wall_ms: st.wall_ms ?? null,
-    kill_method: st.kill_method ?? null,
-    jail: jailFacts(res.status),
-    hung: res.hung,
-    ...(res.watchdog_kill ? { watchdog_kill: res.watchdog_kill } : {}),
-    stderr_tail: res.stderr_tail,
-  }
-}
-
-// Mount points a jail must never show (§16.6 step 3).
-const FORBIDDEN_MOUNTS = /^\/(sys|run|etc|oldroot|dev\/nsm)(\/|$)/
-
-async function jailTests() {
-  const jt = `${BIN}/jailtest`
-  const base = { program: jt, slot: 'light', memMb: 128, pids: 64, cpus: '0', wallS: 3 }
-  const tests = []
-  const record = (t) => {
-    tests.push(t)
-    emit('jail_test', t)
-  }
-
-  const run1 = async (name, argv, expect, { wallS = 3, memMb = 128, errno = null } = {}) =>
-    classify(name, await jail({ ...base, argv, id: `t-${name}`, wallS, memMb }), expect, { started: argv[0], errno })
-
-  record(await run1('nsm', ['nsm'], ['denied-errno'], { errno: ENOENT }))
-  record(await run1('socket-vsock', ['socket-vsock'], ['denied-seccomp']))
-  record(await run1('socket-inet', ['socket-inet'], ['denied-seccomp']))
-  record(await run1('socket-unix', ['socket-unix'], ['survived'])) // AF_UNIX is allowed on purpose
-  record(await run1('connect-unix', ['connect-unix'], ['denied-seccomp']))
-  record(await run1('io-uring', ['io-uring'], ['denied-errno'], { errno: ENOSYS }))
-  record(await run1('userfaultfd', ['userfaultfd'], ['denied-seccomp']))
-  record(await run1('unshare-userns', ['unshare-userns'], ['denied-seccomp']))
-  record(await run1('clone-newns', ['clone-newns'], ['denied-seccomp']))
-  record(await run1('clone3', ['clone3'], ['denied-errno'], { errno: ENOSYS }))
-  record(await run1('chroot', ['chroot'], ['denied-seccomp']))
-  record(await run1('paths', ['paths'], ['denied-errno'], { errno: ENOENT }))
-  // No capability left anywhere, NoNewPrivs and the filter on: what makes
-  // either root switch final (the move+chroot one in particular).
-  record(await run1('privs', ['privs'], ['cleared']))
-  // The worker's whole view of the mount table: nothing host-only in it.
-  const mounts = await run1('mountinfo', ['mountinfo'], ['listed'])
-  const points = (mounts.detail || []).filter((l) => l.startsWith('MOUNT ')).map((l) => l.split(' ')[5])
-  mounts.mount_points = points
-  mounts.forbidden = points.filter((p) => FORBIDDEN_MOUNTS.test(p))
-  mounts.pass = mounts.pass && points.length > 0 && mounts.forbidden.length === 0
-  record(mounts)
-  record(await run1('memhog', ['memhog', '512'], ['killed-memcg'], { wallS: 30, memMb: 64 }))
-
-  // proc-peek needs a live concurrent job to look at. Start a spinner, read its
-  // host pid from the leaf's cgroup.procs, then peek it from another jail. The
-  // peek only counts if the victim existed (the runner, outside any jail, sees
-  // it) and was still running when the peek finished.
-  const victimId = 'victim'
-  const victimLeaf = `${CG_MEDIA}/heavy-${victimId}`
-  let victimDone = false
-  const victim = jail({ program: jt, argv: ['spin'], slot: 'heavy', memMb: 64, pids: 64, cpus: '0', wallS: 20, id: victimId })
-  victim.then(() => (victimDone = true))
-  await sleep(800)
-  const victimPid = (readText(`${victimLeaf}/cgroup.procs`) || '').trim().split('\n')[0] || null
-  if (victimPid) {
-    const seenBefore = existsSync(`/proc/${victimPid}/stat`)
-    const peek = await run1('proc-peek', ['proc-peek', victimPid], ['denied-errno'], { errno: ENOENT })
-    const aliveAfter = !victimDone && existsSync(`/proc/${victimPid}/stat`)
-    peek.victim = { host_pid: victimPid, seen_by_runner: seenBefore, alive_after_peek: aliveAfter }
-    if (!seenBefore || !aliveAfter) {
-      peek.pass = false
-      peek.verdict += seenBefore ? ' (victim exited before the peek finished)' : ' (victim pid not visible to the runner)'
-    }
-    record(peek)
-  } else {
-    record({ test: 'proc-peek', expected: ['denied-errno'], verdict: 'no-victim', pass: false, victim_procs: readText(`${victimLeaf}/cgroup.procs`) })
-  }
-
-  // The main Node's kill path from outside media-jail (§16.6): cgroup.kill, or
-  // on a kernel without it (4.14) SIGKILL of the job's PID-namespace init. The
-  // victim must die by SIGKILL well before its 20 s wall.
-  let killPath
-  try {
-    killPath = killJob(victimLeaf)
-  } catch (e) {
-    killPath = `failed: ${String(e)}`
-  }
-  const vr = await victim
-  const vs = vr.status || {}
-  const vStarted = /^START spin$/m.test(vr.stdout)
-  const vVerdict = vr.hung ? 'hung' : vs.outcome === 'signaled' ? `signaled-${vs.term_signal}` : `other(${vs.outcome},sig=${vs.term_signal})`
-  record({
-    test: 'external-kill',
-    expected: ['signaled-9'],
-    verdict: vVerdict,
-    pass: !killPath.startsWith('failed') && vStarted && vVerdict === 'signaled-9' && vs.wall_ms != null && vs.wall_ms < 10000,
-    kill_path: killPath,
-    started: vStarted,
-    outcome: vs.outcome ?? null,
-    term_signal: vs.term_signal ?? null,
-    wall_ms: vs.wall_ms ?? null,
-    kill_method: vs.kill_method ?? null,
-    jail: jailFacts(vr.status),
-    hung: vr.hung,
-    stderr_tail: vr.stderr_tail,
-  })
-
-  // The wall timeout is exercised by spin under a short wall; kill_method says
-  // whether cgroup.kill alone did it or media-jail fell back to the job's PID 1.
-  const spinRes = await jail({ program: jt, argv: ['spin'], slot: 'light', memMb: 128, pids: 64, cpus: '0', wallS: 2, id: 't-wall' })
-  record(classify('wall-timeout', spinRes, ['killed-wall'], { started: 'spin' }))
-
-  return {
-    go: tests.every((t) => t.pass),
-    passed: tests.filter((t) => t.pass).map((t) => t.test),
-    failed: tests.filter((t) => !t.pass).map((t) => t.test),
-    root_switch: [...new Set(tests.map((t) => t.jail && t.jail.root_switch).filter(Boolean))],
-    kill_methods: [...new Set(tests.map((t) => t.kill_method).filter(Boolean))],
-  }
-}
-
-// --- the A1 sharp/pdfjs stack on the generated corpus ---
-const jobMem = (res) => ({
-  parsed: safeJson(res.stdout),
-  peak_bytes: res.status ? res.status.memory_peak_bytes : null,
-  // Sampled every 50 ms by media-jail, for a kernel without memory.peak.
-  current_max_bytes: res.status ? res.status.memory_current_max_bytes : null,
-  ru_maxrss_kb: res.status ? res.status.ru_maxrss_kb : null,
-  wall_ms: res.status ? res.status.wall_ms : null,
-  min_mem_avail_kb: res.min_mem_avail_kb,
-  outcome: res.status ? res.status.outcome : null,
-  exit_code: res.code,
-  jail: jailFacts(res.status),
-  hung: res.hung,
-  stderr_tail: res.stderr_tail,
-})
-
-async function corpus() {
-  // Unjailed: the runner is Node with sharp available.
-  const gen = await run([NODE, `${WORKER}/gen-corpus.mjs`, CORPUS], { timeoutMs: 120000 })
-  const parsed = safeJson(gen.stdout)
-  return { ...parsed, pid: gen.pid, exit_code: gen.code, signal: gen.signal, timed_out: gen.timed_out, stderr: gen.stderr.slice(0, 1000) }
-}
-
-// Image job (jailed): a 12 MP decode + re-encode. Generous cap so it does not
-// OOM — the point is to read the true peak. The jail passes the worker no
-// VIPS_* variables (§16.6 step 7); image-probe.mjs sets concurrency and the
-// loader block itself.
-async function imageJob() {
-  return jobMem(await jail({
-    program: NODE,
-    argv: [`${WORKER}/image-probe.mjs`, `${CORPUS}/image.jpg`],
-    slot: 'light', memMb: 768, pids: 256, cpus: '0', wallS: 30, id: 'img',
-  }))
-}
-
-// PDF job (jailed): 50-page text extraction, proving pdf.js needs no canvas.
-async function pdfJob() {
-  return jobMem(await jail({
-    program: NODE,
-    argv: [`${WORKER}/pdf-probe.mjs`, `${CORPUS}/doc.pdf`],
-    slot: 'light', memMb: 768, pids: 256, cpus: '0', wallS: 30, id: 'pdf',
-  }))
+  const r = await run([MEDIA_JAIL, '--self-check'], { timeoutMs: 10000 })
+  const table = await run([MEDIA_JAIL, '--table'], { timeoutMs: 10000 })
+  return { exit_code: r.code, signal: r.signal, report: safeJson(r.stdout), stderr: r.stderr.slice(0, 1000), table: safeJson(table.stdout) }
 }
 
 // --- vsock throughput: start the sink, the parent (probe.sh) connects and
 //     streams. Wait for the sink to write its results, or time out. ---
 async function vsock() {
   const outFile = `${PROBE}/vsock.json`
-  const sink = start([`${BIN}/vsock-sink`, String(VSOCK_PORT), outFile, '16MiB', '32MiB'], {
+  const sink = start([VSOCK_SINK, String(VSOCK_PORT), outFile, '16MiB', '32MiB'], {
     stdio: ['ignore', 'ignore', 'ignore'],
   })
-  // The wait is bounded; a local (non-Nitro) simulation shortens it because no
-  // parent sender exists there.
+  // The wait is bounded; a local (non-Nitro) run shortens it when no parent
+  // sender exists there.
   const waitMs = Number(process.env.PROBE_VSOCK_TIMEOUT_MS || 60000)
   const deadline = Date.now() + waitMs
   while (Date.now() < deadline) {
@@ -773,6 +514,135 @@ async function vsock() {
     /* best effort */
   }
   return { port: VSOCK_PORT, error: `no sender completed within ${Math.round(waitMs / 1000)}s (parent did not stream)` }
+}
+
+// --- the jail check, as check-image.sh --jail runs it --------------------------
+
+// jail-check.mjs prints `PASS <name> <json>` or `FAIL <name> <json>` per check
+// and a last summary line; each check becomes a `jail_result` record now.
+async function jailCheck() {
+  const results = []
+  const rootSwitch = new Set()
+  const killMethods = new Set()
+  const peaks = []
+  const r = await streamChild([NODE, JAIL_CHECK], {
+    timeoutMs: 600000,
+    onLine(line) {
+      const m = line.match(/^(PASS|FAIL) (.*?)(?: (\{.*\}))?$/)
+      if (!m) return false
+      const detail = m[3] ? safeJson(m[3]) : {}
+      const rec = { pass: m[1] === 'PASS', name: m[2], detail }
+      results.push(rec)
+      emit('jail_result', rec)
+      if (detail.jail?.root_switch) rootSwitch.add(detail.jail.root_switch)
+      if (detail.jail?.kill_method) killMethods.add(detail.jail.kill_method)
+      if (detail.kill_method) killMethods.add(detail.kill_method)
+      if (detail.peak_mb != null || detail.current_max_mb != null) peaks.push({ name: m[2], peak_mb: detail.peak_mb ?? null, current_max_mb: detail.current_max_mb ?? null, ms: detail.ms ?? null })
+      return true
+    },
+  })
+  const failed = results.filter((x) => !x.pass).map((x) => x.name)
+  peaks.sort((a, b) => (b.peak_mb ?? b.current_max_mb ?? 0) - (a.peak_mb ?? a.current_max_mb ?? 0))
+  return {
+    go: r.code === 0 && results.length > 0 && failed.length === 0,
+    exit_code: r.code,
+    signal: r.signal,
+    timed_out: r.timed_out,
+    ms: r.ms,
+    checks: results.length,
+    passed: results.length - failed.length,
+    failed,
+    root_switch: [...rootSwitch],
+    kill_methods: [...killMethods],
+    largest_memory: peaks.slice(0, 8),
+    summary: r.output_tail.filter((l) => l.startsWith('jail check:')),
+    output_tail: r.output_tail.slice(-20),
+    stderr_tail: r.stderr_tail,
+  }
+}
+
+// --- the reader end to end, as check-image.sh --jail runs it -------------------
+async function mediaE2e() {
+  const tap = []
+  const r = await streamChild([NODE, '--test', '--test-reporter=tap', E2E], {
+    env: { ...process.env, MEDIA_E2E: 'jail' },
+    timeoutMs: 300000,
+    onLine(line) {
+      tap.push(line)
+      if (tap.length > 200) tap.shift()
+      return true
+    },
+  })
+  const count = (key) => Number((tap.join('\n').match(new RegExp(`^# ${key} (\\d+)$`, 'm')) || [])[1] ?? NaN)
+  return {
+    go: r.code === 0 && count('pass') >= 1 && count('fail') === 0,
+    exit_code: r.code,
+    signal: r.signal,
+    timed_out: r.timed_out,
+    ms: r.ms,
+    pass: count('pass'),
+    fail: count('fail'),
+    skipped: count('skipped'),
+    // A failure's diagnostics sit between its `not ok` line and the summary.
+    tap_tail: tap.slice(-60),
+    stderr_tail: r.stderr_tail,
+  }
+}
+
+// --- the reader stand-in: idle memory, the heaviest jobs, documents over vsock
+async function readerBench() {
+  const loopback = process.env.PROBE_OBJECTS === 'loopback'
+  // The parent's objects arrive the way production's archive answers do: a
+  // socat bridge from loopback to the parent's vsock port.
+  const bridge = loopback
+    ? null
+    : start(['socat', `TCP-LISTEN:${BRIDGE_PORT},bind=127.0.0.1,reuseaddr,fork`, `VSOCK-CONNECT:${PARENT_CID}:${OBJECTS_PORT}`], {
+        stdio: ['ignore', 'ignore', 'ignore'],
+      })
+  const phases = {}
+  const documents = []
+  let fatalBench = null
+  try {
+    const r = await streamChild([NODE, '--expose-gc', BENCH], {
+      cwd: dirname(BENCH),
+      env: { ...process.env, PROBE_OBJECTS: loopback ? 'loopback' : 'vsock', PROBE_BRIDGE_PORT: String(BRIDGE_PORT) },
+      timeoutMs: 900000,
+      onLine(line) {
+        if (!line.startsWith('BENCH ')) return false
+        const rec = safeJson(line.slice(6))
+        emit('bench', rec)
+        phases[rec.phase] = (phases[rec.phase] ?? 0) + 1
+        if (rec.phase === 'document') documents.push(rec)
+        if (rec.phase === 'fatal') fatalBench = rec.error
+        if (rec.phase === 'boot') phases.media_jail = rec.media_jail
+        if (rec.phase === 'heavy_summary') phases.heavy = { mem_avail_min_mb: rec.mem_avail_min_mb, meets_quarter: rec.meets_quarter }
+        return true
+      },
+    })
+    return {
+      go: r.code === 0 && phases.end === 1 && phases.media_jail === true && documents.length === 4 && documents.every((d) => !d.error),
+      exit_code: r.code,
+      signal: r.signal,
+      timed_out: r.timed_out,
+      ms: r.ms,
+      objects: loopback ? 'loopback (no parent)' : `vsock ${PARENT_CID}:${OBJECTS_PORT} through 127.0.0.1:${BRIDGE_PORT}`,
+      phases,
+      heavy: phases.heavy ?? null,
+      documents: documents.map((d) => ({ name: d.name, ms: d.ms ?? null, outcome: d.outcome ?? null, fits_chatgpt: d.fits_chatgpt ?? null, transport: d.transport ?? null, error: d.error ?? null })),
+      fatal: fatalBench,
+      runner_rss_mb: Math.round(process.memoryUsage.rss() / 1048576),
+      output_tail: r.output_tail.slice(-20),
+      stderr_tail: r.stderr_tail,
+    }
+  } finally {
+    if (bridge) {
+      try {
+        bridge.kill('SIGTERM')
+      } catch {
+        /* gone */
+      }
+    }
+  }
 }
 
 // --- the kernel's own reports about our processes, from /dev/kmsg ---
@@ -801,14 +671,14 @@ function readKmsg() {
   return recs
 }
 
-// Who a pid was: something the runner started, a jailed job's PID 1, one of
-// the entrypoint's processes, or the runner itself.
+// Who a pid was: something the runner started, one of the entrypoint's
+// processes, or the runner itself. A jailed job's PID 1 is a grandchild
+// (jail-check.mjs or the reader stand-in started it), so it reads `unknown`,
+// and its comm says what it ran.
 function whoIs(pid) {
   if (pid === process.pid) return 'the runner (probe-report.mjs)'
   const s = spawned.find((r) => r.pid === pid)
   if (s) return `runner spawn: ${JSON.stringify(s.argv)} (comm ${s.comm})`
-  const j = jobs.find((x) => x.child_pid === pid)
-  if (j) return `jailed job ${j.id}: ${j.program}`
   const e = ((readText(`${PROBE}/processes`) || '').match(new RegExp(`^(\\S+) pid=${pid} `, 'm')) || [])[1]
   if (e) return `entrypoint: ${e}`
   return 'unknown'
@@ -816,7 +686,7 @@ function whoIs(pid) {
 
 // The entrypoint's mark in the kernel log; only what follows it is this run
 // (a test kernel's log also holds other runs).
-const KMSG_MARK = 'wappie-a0: probe entrypoint started'
+const KMSG_MARK = 'wappie-a1: probe entrypoint started'
 
 function kernelLog() {
   const all = readKmsg()
@@ -861,13 +731,14 @@ function kernelLog() {
       continue
     }
     // Seccomp kills, as audit records (type 1326): which syscall, which job.
+    // On the real kernel this is where a gap in node-worker.txt shows.
     if (/type=1326/.test(m)) {
       const f = (k) => ((m.match(new RegExp(`\\b${k}=("[^"]*"|\\S+)`)) || [])[1] || '').replace(/^"|"$/g, '') || null
       const pid = Number(f('pid'))
       seccomp.push({ ts_s: recs[i].ts_us / 1e6, pid, comm: f('comm'), sig: f('sig'), syscall: Number(f('syscall')), code: f('code'), source: whoIs(pid) })
       continue
     }
-    if (/out of memory|Killed process|oom-kill|oom_reaper/i.test(m)) {
+    if (/out of memory|Killed process|oom-kill|oom_reaper|Memory cgroup/i.test(m)) {
       oom.push({ ts_s: recs[i].ts_us / 1e6, msg: m })
       continue
     }
@@ -879,14 +750,18 @@ function kernelLog() {
   return {
     since_mark: from > 0,
     records_read: recs.length,
-    sigill,
+    sigill: sigill.slice(0, 60),
     node_sigill_count: nodeSigills.length,
-    node_sigill_recurs: nodeSigills.length > 1,
     // true when every node SIGILL sits on OpenSSL's SVE probe (handled by
     // OpenSSL, so harmless); false points at something else executing SVE.
+    // Workers run with OPENSSL_armcap=0, so theirs should be none.
     all_node_sigills_are_openssl_sve_probe: nodeSigills.length > 0 && nodeSigills.every((e) => e.openssl_sve_probe),
-    seccomp_kills: seccomp,
-    oom: oom.slice(0, 40),
+    // The escape tests' denials are jailtest's; a kill of a worker (node) is a
+    // gap in node-worker.txt on this kernel, and must be none.
+    seccomp_kills_by_comm: seccomp.reduce((by, e) => ({ ...by, [e.comm]: (by[e.comm] ?? 0) + 1 }), {}),
+    worker_seccomp_kills: seccomp.filter((e) => e.comm !== 'jailtest'),
+    seccomp_kills: seccomp.slice(0, 60),
+    oom: oom.slice(0, 60),
     other: other.slice(0, 40),
   }
 }
@@ -896,7 +771,7 @@ function a1Kernel(ctx) {
   const unj = ctx.unjailed || {}
   const files = (ctx.cgroup && ctx.cgroup.media_files_present) || {}
   const sc = (ctx.selfCheck && ctx.selfCheck.report) || {}
-  const hp = (readText(`${PROBE}/hidepid`) || '').trim()
+  const mounts = (ctx.cgroup && ctx.cgroup.hidepid) || []
   const supported = (t) => (unj[t] ? unj[t].meaning === 'supported' : null)
   const feature = (name, since, present, onMissing) => ({ feature: name, since, present, on_missing: onMissing })
   const hw = (ctx.meta && ctx.meta.hwcaps) || {}
@@ -905,7 +780,7 @@ function a1Kernel(ctx) {
     feature('cgroup.kill', '5.14', files['cgroup.kill'] ?? null, "SIGKILL of the job's PID-namespace init (kills the namespace)"),
     feature('memory.oom.group', '4.19', files['memory.oom.group'] ?? null, 'media-jail kills the namespace on the first oom_kill'),
     feature('memory.peak', '5.19', files['memory.peak'] ?? null, 'memory.current sampled every 50 ms + the worker ru_maxrss'),
-    feature('hidepid on /proc', '3.3 (as 2; "invisible" is its 5.8 name)', hp ? hp.startsWith('hidepid=2') : null, 'none needed: hidepid=2 works on 4.14; jobs mount their own /proc anyway'),
+    feature('hidepid on /proc', '3.3 (as 2; "invisible" is its 5.8 name)', mounts.length ? mounts.some((l) => /hidepid=(2|invisible)/.test(l)) : null, 'none needed: hidepid=2 works on 4.14; jobs mount their own /proc anyway'),
     feature('io_uring', '5.1', supported('io-uring'), 'nothing to do; the ENOSYS shim stays for newer kernels'),
     feature('clone3', '5.3', supported('clone3'), 'nothing to do; the ENOSYS shim stays for newer kernels'),
     feature('pidfd_open', '5.3', supported('pidfd-open'), 'the main Node kills by pid; the PID namespace bounds the job'),
@@ -919,25 +794,27 @@ function a1Kernel(ctx) {
     missing: list.filter((f) => f.present === false).map((f) => f.feature),
     features: list,
     root_switch_used: ctx.jail ? ctx.jail.root_switch : null,
+    kill_methods_used: ctx.jail ? ctx.jail.kill_methods : null,
   }
 }
 
 async function main() {
-  emit('begin', { schema: 'wappie-media-a0-probe/v2', pid: process.pid, emulate_old_kernel: EMULATE })
+  emit('begin', { schema: 'wappie-media-a1-probe/v1', pid: process.pid })
   const ctx = {}
   ctx.meta = await section('meta', meta)
   await section('kernel_config', kernelConfig)
   ctx.cgroup = await section('cgroup', cgroupReport)
   ctx.selfCheck = await section('media_jail_self_check', selfCheck)
   ctx.unjailed = await section('kernel_unjailed', kernelUnjailed)
-  ctx.jail = await section('jail', jailTests)
-  await section('corpus', corpus)
-  await section('image_job', imageJob)
-  await section('pdf_job', pdfJob)
+  // Early, while the parent's sender still retries its connect.
   await section('vsock', vsock)
+  ctx.jail = await section('jail_check', jailCheck)
+  ctx.e2e = await section('media_e2e', mediaE2e)
+  ctx.bench = await section('reader_bench', readerBench)
   await section('kernel_log', kernelLog)
   await section('a1_kernel', () => a1Kernel(ctx))
-  emit('done', { records: seq + 1, fatal_errors: fatal, spawned: spawned.length, go: ctx.jail ? ctx.jail.go === true : false })
+  const go = { jail_check: ctx.jail?.go === true, media_e2e: ctx.e2e?.go === true, reader_bench: ctx.bench?.go === true }
+  emit('done', { records: seq + 1, fatal_errors: fatal, spawned: spawned.length, go: Object.values(go).every(Boolean), parts: go })
 }
 
 main().then(

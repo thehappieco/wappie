@@ -2866,7 +2866,14 @@ with nothing attached.
 
 **A1.** Each workstream's tests run in CI without an enclave, except where
 marked; the jail tests run in `check-image.sh --jail` (privileged, arm64)
-and once in the probe enclave before the release.
+and once in the probe enclave before the release. The probe
+(`deploy/enclave/probe/probe.sh`, on the reader's parent with production
+stopped) is this commit's reader image with the jail check on top, in debug
+mode on the enclave's own kernel: the same jail check and end-to-end test,
+plus the memory headroom with the reader idle and while the heaviest jobs
+run, and the 16 and 32 MiB documents opened end to end with their
+ciphertext served over vsock: a first reading of GATE's memory and document
+figures, which the release still measures in production.
 
 - **MAIN, reader and consent:** the tool absent on version-1, version-2
   text and pilot connections, and on a record without `media`; the input

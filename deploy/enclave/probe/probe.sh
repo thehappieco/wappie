@@ -1,31 +1,38 @@
 #!/bin/bash
-# Runs the A0 go/no-go probe ON THE PARENT (deploy/enclave/probe). It builds the
-# throwaway probe image and EIF, STOPS the production reader (which terminates
-# the production enclave), boots the probe enclave in --debug-mode so its console
-# is readable, assembles the report from the sections the enclave streams to its
-# console (assemble-report.py), terminates the probe, and ALWAYS restarts the
-# production reader. Production files are never overwritten: the EIF and logs go
-# under /opt/wappie-reader/probe/.
+# Runs the A1 probe ON THE PARENT (deploy/enclave/probe): the jail check on the
+# enclave's own kernel before the release (docs/mcp-enclave.md §16.13). It
+# builds the throwaway probe image (build-image.sh: this commit's reader image,
+# the jail check on top, the probe) and its EIF, checks the EIF fits the
+# enclave, STOPS the production reader (which terminates the production
+# enclave), boots the probe enclave in --debug-mode so its console is
+# readable, serves the documents the enclave asks for over vsock
+# (vsock-serve.py), assembles the report from the sections the enclave streams
+# to its console (assemble-report.py), terminates the probe, and ALWAYS
+# restarts the production reader. Production files are never overwritten: the
+# EIF and logs go under /opt/wappie-reader/probe/.
 #
 #   sudo deploy/enclave/probe/probe.sh
 #
-# Requirements (task A0): arm64 parent (c7g.large), docker + nitro-cli 1.5.0, the
-# production supervisor unit wappie-reader-supervisor, and the allocator already
-# reserving 1 vCPU / 1536 MiB (commercial/deploy/enclave/allocator.yaml). Run as
-# root: it stops/starts a systemd unit and runs enclaves.
+# Requirements: arm64 parent (c7g.large), docker + nitro-cli 1.5.0, python3,
+# the production supervisor unit wappie-reader-supervisor, and the allocator
+# already reserving 1 vCPU / 1536 MiB (commercial/deploy/enclave/allocator.yaml).
+# Run as root: it stops/starts a systemd unit and runs enclaves. Production is
+# down for a few minutes; REPORT_TIMEOUT bounds it.
 set -uo pipefail
 
 NAME=wappie-reader-probe
 PROD_UNIT=wappie-reader-supervisor
 CID=30                 # not production's 16
-VSOCK_PORT=9100        # not 5443-5445/7000-7002/8000-8002/9000
+VSOCK_PORT=9100        # throughput; not 5443-5445/7000-7002/8000-8002/9000
+OBJECTS_PORT=9101      # the documents the reader stand-in opens; not production's either
 RUN_CPUS=1
 RUN_MEM=1536           # production enclave sizing, to measure real headroom
 # Seconds to wait for the report end marker, from the launch. A clean run takes
-# a minute or two; this bounds the worst case, where every jailed test hangs
-# until the runner's watchdog (the job's wall + 10 s) and the vsock sender never
-# arrives.
-REPORT_TIMEOUT=480
+# a few minutes on one vCPU; this bounds the worst case, where each of the
+# runner's children (the jail check, the end-to-end test, the reader
+# stand-in) runs into its own timeout (10, 5 and 15 minutes) and the vsock
+# sender never arrives.
+REPORT_TIMEOUT=2100
 # Seconds any one nitro-cli describe/terminate may take while production is
 # down, so a hung nitro-cli can neither stretch the wait nor hold the restart.
 NITRO_TIMEOUT=60
@@ -54,6 +61,7 @@ liveness=$out/liveness.log
 
 console_pid=""
 sender_pid=""
+serve_pid=""
 production_stopped=0
 production_restored=0
 
@@ -77,6 +85,7 @@ restore_production() {
 cleanup() {
   trap '' HUP INT TERM PIPE
   [ -z "$sender_pid" ] || kill "$sender_pid" 2> /dev/null || true
+  [ -z "$serve_pid" ] || kill "$serve_pid" 2> /dev/null || true
   [ -z "$console_pid" ] || kill "$console_pid" 2> /dev/null || true
   timeout "$NITRO_TIMEOUT" nitro-cli terminate-enclave --enclave-name "$NAME" > /dev/null 2>&1 || true
   restore_production
@@ -95,13 +104,18 @@ trap '' PIPE
 # --- build the throwaway image and EIF (never overwriting production) ---
 tag=$NAME:$stamp
 echo "probe.sh: building $tag"
-docker build -f "$root/deploy/enclave/probe/Dockerfile.probe" -t "$tag" "$root" \
-  || die "docker build failed"
+sh "$root/deploy/enclave/probe/build-image.sh" "$tag" || die "the probe image did not build"
 eif=$out/probe.eif
 echo "probe.sh: building EIF $eif"
 nitro-cli build-enclave --docker-uri "$tag" --output-file "$eif" > "$out/build-enclave.json" \
   || die "nitro-cli build-enclave failed"
 eif_size=$(stat -c %s "$eif")
+# nitro-cli refuses an enclave with less than four times its EIF's size in
+# memory (E26); the probe carries the jail check's test tree on top of the
+# reader, so this is checked here, while production is still up.
+eif_mib=$(( (eif_size + 1048575) / 1048576 ))
+[ $(( eif_mib * 4 )) -le "$RUN_MEM" ] \
+  || die "the EIF is $eif_mib MiB; nitro-cli wants $(( eif_mib * 4 )) MiB for it, more than the $RUN_MEM MiB the enclave has"
 
 # The installed blob's kernel config, the static answer to §16.14 (e.g.
 # CONFIG_IO_URING) when the enclave kernel has no /proc/config.gz.
@@ -113,6 +127,11 @@ if [ -f "$NITRO_CLI_BLOBS/Image.config" ]; then
 else
   echo "absent: $NITRO_CLI_BLOBS/Image.config" > "$blob_config"
 fi
+
+# The parent end of the documents the reader stand-in opens, up before the
+# enclave boots. It exits by itself after the longest run.
+python3 "$root/deploy/enclave/probe/vsock-serve.py" "$OBJECTS_PORT" $(( REPORT_TIMEOUT + 300 )) > "$out/vsock-serve.log" 2>&1 &
+serve_pid=$!
 
 # --- free the enclave slot: stop production (this terminates its enclave) ---
 echo "probe.sh: stopping production ($PROD_UNIT) — the production enclave goes down now"
@@ -167,13 +186,13 @@ deadline=$(( launched + REPORT_TIMEOUT ))
 got=0
 gone=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  if grep -q '===WAPPIE-A0-PROBE-END===' "$console" 2> /dev/null; then got=1; break; fi
+  if grep -q '===WAPPIE-A1-PROBE-END===' "$console" 2> /dev/null; then got=1; break; fi
   state=$(enclave_state)
   echo "+$(( $(date +%s) - launched ))s $state" >> "$liveness"
   if [ "$state" = gone ]; then gone=$((gone + 1)); else gone=0; fi
   # Twice in a row, so one odd answer cannot end the run.
   if [ "$gone" -ge 2 ]; then
-    grep -q '===WAPPIE-A0-PROBE-END===' "$console" 2> /dev/null && got=1
+    grep -q '===WAPPIE-A1-PROBE-END===' "$console" 2> /dev/null && got=1
     [ "$got" = 1 ] || echo "probe.sh: probe enclave ended before the END marker (+$(( $(date +%s) - launched ))s; see $liveness)" >&2
     break
   fi
@@ -190,6 +209,7 @@ echo "-----------------------------------------------------------------"
 echo "probe EIF size : $eif_size bytes ($out/probe.eif)"
 echo "console log    : $console"
 echo "liveness log   : $liveness"
+echo "documents      : $out/vsock-serve.log"
 echo "blob config    : $blob_config"
 echo "report         : $out/report.json ($(cat "$out/assemble.txt"))"
 echo "-----------------------------------------------------------------"
