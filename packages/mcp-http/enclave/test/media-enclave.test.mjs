@@ -12,7 +12,7 @@ import { vector, workspace } from '@whatserver2/mcp/test/fixture'
 import { runWorker } from '../media/jail.mjs'
 import { PAD_BUCKETS } from '../media/policy.mjs'
 import { lineAllowed } from '../logsink.mjs'
-import { callTool, connectContent, contentGrants, newApiKey, ORIGIN, renewLabels, result, rpc, sealContent, world } from './world.mjs'
+import { callTool, connectContent, connectMedia, contentGrants, newApiKey, openAttachment as open, ORIGIN, renewLabels, result, rpc, sealContent, world } from './world.mjs'
 import { encryptMedia, fakeJailSpawn, JPEG_MAGIC, LABELS, sha256, withScenario } from './media-fixtures.mjs'
 
 const fakeJail = env => ({ checkJail: async () => ({ ok: true, cpuset: false }), runWorker, spawn: fakeJailSpawn(env) })
@@ -22,24 +22,12 @@ async function mediaWorld(t, { jail = fakeJail() } = {}) {
   const e = await w.start()
   return { w, e }
 }
-/** A consent that includes attachments, and Go's status saying so. */
-async function connectMedia(w, overrides = {}) {
-  const done = await connectContent(w, { ...overrides, bundle: { consent_version: 2, media: true, ...overrides.bundle }, relay: { media: true, ...overrides.relay } })
-  w.go.connections.get(done.connectionId).extra = { media: true, media_off: [] }
-  return done
-}
 /** An attachment in the synthetic archive: its sealed key and the ciphertext /v1/media serves. */
 async function photo(w, scenario = {}, fields = {}) {
   const key = randomBytes(32), plaintext = withScenario(JPEG_MAGIC, scenario)
   const object = encryptMedia(plaintext, key, LABELS.image)
   return w.f.addMedia({ key, object, filename: 'SENTINEL-foto.jpg', caption: 'SENTINEL caption', ...fields,
     media: { media_type: 'image', mimetype: 'image/jpeg', file_length: plaintext.length, file_enc_sha256: sha256(object).toString('base64'), ...fields.media } })
-}
-/** open_attachment over /mcp: the HTTP answer and the JSON-RPC result. */
-async function open(w, done, args) {
-  const response = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'open_attachment', arguments: { device_id: vector.device, ...args } } })
-  assert.equal(response.status, 200, response.body)
-  return { response, value: result(response.body) }
 }
 const headerOf = value => JSON.parse(value.content[0].text.split('\n')[0])
 const events = w => w.lines.map(line => JSON.parse(line)).filter(entry => entry.event)

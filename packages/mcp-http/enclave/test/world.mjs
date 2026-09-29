@@ -222,3 +222,19 @@ export async function callTool(w, token, name, args = {}) {
   const value = result(response.body)
   return { status: 200, isError: value.isError === true, data: value.structuredContent, text: value.content?.[0]?.text ?? '' }
 }
+
+// ---- Media connections (A1) --------------------------------------------------------
+
+/** A content consent that includes attachments (§16.2), and Go's status saying so. */
+export async function connectMedia(w, overrides = {}) {
+  const done = await connectContent(w, { ...overrides, bundle: { consent_version: 2, media: true, ...overrides.bundle }, relay: { media: true, ...overrides.relay } })
+  w.go.connections.get(done.connectionId).extra = { media: true, media_off: [] }
+  return done
+}
+
+/** open_attachment over /mcp: the HTTP answer and the JSON-RPC result. */
+export async function openAttachment(w, done, args) {
+  const response = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'open_attachment', arguments: { device_id: vector.device, ...args } } })
+  assert.equal(response.status, 200, response.body)
+  return { response, value: result(response.body) }
+}

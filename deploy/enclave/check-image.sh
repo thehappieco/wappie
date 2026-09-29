@@ -9,10 +9,12 @@
 # container on an arm64 host with cgroup v2 stands in for the enclave, runs
 # the entrypoint's own cgroup block, then deploy/enclave/jailcheck: the A0
 # escape tests with /opt/media, media-jail's table, refusals, signals and
-# parent death, and the whole worker corpus under media-jail. Twice: with the
-# image's media-jail, and with a test build of the same source that takes the
-# 4.14 blob kernel's fallback paths. It builds throwaway images on top of
-# <image> (jailtest and the corpus added), never the image under test.
+# parent death, the whole worker corpus under media-jail through the reader's
+# runWorker, and open_attachment end to end (enclave/test/media-e2e.test.mjs).
+# Twice: with the image's media-jail, and with a test build of the same source
+# that takes the 4.14 blob kernel's fallback paths. It builds throwaway images
+# on top of <image> (jailtest, the corpus and the reader's tests added), never
+# the image under test.
 set -eu
 
 jail=0
@@ -172,12 +174,13 @@ arch=$(docker image inspect --format '{{.Architecture}}' "$image")
 [ "$arch" = arm64 ] || { echo "check-image: --jail needs an arm64 image (the enclave's), not $arch" >&2; exit 1; }
 root=$(cd "$here/../.." && pwd)
 rust_image=${RUST_IMAGE:-$(sed -n 's/^ARG RUST_IMAGE=//p' "$here/Dockerfile")}
+node_image=${NODE_IMAGE:-$(sed -n 's/^ARG NODE_IMAGE=//p' "$here/Dockerfile")}
 tag=wappie-reader-jailcheck:$$
 trap 'docker rmi -f "$tag" "$tag-4.14" > /dev/null 2>&1 || true' EXIT
 for target in check check-4.14; do
   suffix=${target#check}
   docker build -q -f "$here/jailcheck/Dockerfile" --target "$target" --build-arg READER_IMAGE="$image" \
-    --build-arg RUST_IMAGE="$rust_image" -t "$tag$suffix" "$root" > /dev/null
+    --build-arg RUST_IMAGE="$rust_image" --build-arg NODE_IMAGE="$node_image" -t "$tag$suffix" "$root" > /dev/null
   echo "check-image --jail: $target"
   docker run --rm --privileged --cgroupns private --network none "$tag$suffix"
 done

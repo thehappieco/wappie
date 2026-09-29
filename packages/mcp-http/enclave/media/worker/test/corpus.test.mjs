@@ -1,7 +1,7 @@
 // Every §16.13 corpus file through its worker, run directly (no jail): each
 // ends in the bounded outcome its case names, with output the reader's
 // checks accept. The cases whose bound is the memcg run only under the jail
-// (test/jail-corpus.mjs, from deploy/enclave/check-image.sh --jail).
+// (deploy/enclave/jailcheck/jail-check.mjs, from check-image.sh --jail).
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

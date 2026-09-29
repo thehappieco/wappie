@@ -11,16 +11,18 @@
 //   3. the A0 probe's escape tests, run from a stand-in /opt/media (driver.mjs
 //      execs jailtest as the worker), and the A1 ones: SIGTERM ends a job with
 //      143, a reader that dies takes its job with it;
-//   4. every corpus file (test/corpus.mjs) through its real worker: a bounded
-//      outcome its case allows, output the reader's checks accept, and never a
-//      seccomp kill.
+//   4. every corpus file (test/corpus.mjs) through its real worker, run by
+//      the reader's own runWorker (enclave/media/jail.mjs, §16.11's checks and
+//      its watchdog): a bounded outcome its case allows, and never a seccomp
+//      kill.
 
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { stdinOf, validate } from '/opt/media/worker/test/harness.mjs'
+import { runWorker } from '/app/packages/mcp-http/enclave/media/jail.mjs'
+import { stdinOf } from '/opt/media/worker/test/harness.mjs'
 import { corpus, outcome } from '/opt/media/worker/test/corpus.mjs'
 
 const MJ = '/usr/local/bin/media-jail'
@@ -258,21 +260,63 @@ async function escapes() {
 
 // ---- 4. the corpus ----------------------------------------------------------------
 
+/**
+ * One corpus job as the reader runs it: runWorker spawns media-jail with the
+ * table's limits and an empty environment, and reads the frames. The spawn
+ * here also keeps media-jail's status line, which the reader ignores, for the
+ * memory figures. Returns the output in the shape the corpus checks read.
+ */
+async function readerJob(c) {
+  let stderr = ''
+  const spawnJail = (bin, args, options) => {
+    const child = spawn(bin, args, { ...options, env: { ...options.env, ...ENV }, stdio: ['pipe', 'pipe', 'pipe'] })
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    return child
+  }
+  const started = Date.now()
+  const o = await runWorker({ worker: c.worker, job: c.header, input: c.input, spawn: spawnJail })
+  const status = stderr
+    .split('\n')
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .find((v) => v?.tool === 'media-jail')
+  // A job the reader itself ended (bad output, its watchdog) is invalid:<why>,
+  // whatever media-jail exited with after its SIGTERM.
+  return {
+    valid: o.killed === null && (o.exit === 0 || o.exit === 2),
+    why: o.killed ?? `exit ${o.exit}`,
+    code: o.killed ? null : o.exit,
+    header: o.header,
+    error: o.error,
+    cut: o.cut,
+    sections: o.sections.map((s) => ({ value: s.section, text: s.text })),
+    text: o.sections.map((s) => s.text).join(''),
+    images: o.images.map((i) => ({ page: i.page, width: i.width, height: i.height, type: i.mimeType === 'image/png' ? 'png' : 'jpeg', file: i.data })),
+    status,
+    stderr,
+    ms: Date.now() - started,
+  }
+}
+
 async function corpusRun() {
   const cases = await corpus()
   for (const c of cases) {
-    const r = await job(c.worker, stdinOf(c.header, c.input))
-    const v = validate(c.worker, c.header, r.stdout, r.code)
-    const got = outcome({ ...v, code: r.code, signal: r.signal })
-    let pass = c.expect.includes(got) && !r.hung
-    if (pass && got.startsWith('done') && c.check) pass = Boolean(c.check(v))
+    const r = await readerJob(c)
+    const got = outcome(r)
+    let pass = c.expect.includes(got)
+    if (pass && got.startsWith('done') && c.check) pass = Boolean(c.check(r))
     record(`corpus ${c.worker}: ${c.name}`, pass, {
       outcome: got,
       expect: c.expect,
       ms: r.ms,
       peak_mb: r.status?.memory_peak_bytes ? Math.round(r.status.memory_peak_bytes / 1_048_576) : null,
       current_max_mb: r.status?.memory_current_max_bytes ? Math.round(r.status.memory_current_max_bytes / 1_048_576) : null,
-      ...(pass ? {} : { why: v.why, stderr: r.stderr.slice(-400) }),
+      ...(pass ? {} : { why: r.why, stderr: r.stderr.slice(-400) }),
     })
     if (got === 'seccomp') record(`no seccomp kill: ${c.name}`, false)
   }

@@ -2,8 +2,10 @@
 // files of every kind the workers open, and the hostile ones, each ending in
 // a bounded refusal or result. Used twice: directly by the worker tests
 // (test/corpus.test.mjs, no jail) and under media-jail by
-// deploy/enclave/check-image.sh --jail (test/jail-corpus.mjs), where a
-// job the memcg or the wall ends is also bounded.
+// deploy/enclave/check-image.sh --jail (jailcheck/jail-check.mjs, through the
+// reader's runWorker), where a job the memcg or the wall ends is also
+// bounded. The reader's end-to-end test (enclave/test/media-e2e.test.mjs)
+// opens some of its files through open_attachment.
 //
 // A case is { name, worker, header, input, expect, jailOnly?, check? }.
 // `expect` lists the outcomes that count as bounded (see outcome() below);

@@ -2,7 +2,7 @@
 # PID 1 of the jail check (check-image.sh --jail): a privileged container
 # standing in for the enclave. It runs the production entrypoint's own media
 # jail block, taken from /entrypoint.sh, so what is checked is what ships,
-# then jail-check.mjs.
+# then jail-check.mjs and the reader's end-to-end attachment test.
 set -eu
 
 # cgroup2 lets a cgroup enable controllers for its children only while it
@@ -21,4 +21,10 @@ chmod 0700 /run/wappie
 
 # `trace`: the syscalls the workers make (trace-profile.sh), not the checks.
 if [ "${1:-}" = trace ]; then exec node /opt/jailcheck/trace.mjs; fi
-exec node /opt/jailcheck/jail-check.mjs
+rc=0
+node /opt/jailcheck/jail-check.mjs || rc=1
+# open_attachment from a tools/call over /mcp to the answer, with the image's
+# media-jail and workers under the reader's own boot check and runWorker.
+echo "jail check: the reader end to end (media-e2e.test.mjs)"
+MEDIA_E2E=jail node --test /opt/e2e/packages/mcp-http/enclave/test/media-e2e.test.mjs || rc=1
+exit "$rc"

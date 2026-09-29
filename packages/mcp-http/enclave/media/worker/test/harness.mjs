@@ -2,8 +2,8 @@
 // without the jail, feeds it a job, and reads its frames back. `validate`
 // applies the six checks the reader's Node makes on every job (§16.11 "What
 // MAIN checks"), written from the contract alone, so a worker that passes
-// here passes the reader. The jail run (jail-corpus.mjs) uses the same
-// checker on media-jail's output.
+// here passes the reader. The jail run (deploy/enclave/jailcheck/jail-check.mjs)
+// reads media-jail's output with the reader's own runWorker instead.
 
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'

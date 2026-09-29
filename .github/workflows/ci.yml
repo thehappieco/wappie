@@ -163,7 +163,9 @@ jobs:
             packages/mcp-http/enclave/package-lock.json
             packages/mcp-http/enclave/media/worker/package-lock.json
             tools/reader-verify/package-lock.json
-      - run: make client-install enclave-check media-worker-check reader-verify
+      # The workers first: with their package installed, the enclave suite's
+      # end-to-end attachment test (media-e2e.test.mjs) runs them unjailed.
+      - run: make client-install media-worker-check enclave-check reader-verify
       - name: Deploy scripts parse
         run: |
           for f in deploy/enclave/*.sh; do bash -n "$f"; done
