@@ -48,7 +48,7 @@ text docs/mcp-enclave.md :: | §15.6 | the content-mode sentence that attachment
 text docs/mcp-enclave.md :: refresh; the personal contacts snapshot, attachment bytes and sending are
 text docs/mcp-enclave.md :: **out** (attachment bytes for 2b: stage A opens them for media connections
 text docs/mcp-enclave.md :: | §15 opening | attachment bytes are out for 2b; stage A opens them for media connections only
-media docs/mcp-enclave.md :: > attachments it no longer holds are never opened."
+media docs/mcp-enclave.md :: > attachments it no longer holds are never opened. Answers about a message
 media docs/mcp-enclave.md :: | `media_unavailable` | the jail failed its boot check | `The reader cannot open attachments at the moment.
 
 # User-facing docs: what text connections, the hosted connector and the local

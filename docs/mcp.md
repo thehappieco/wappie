@@ -210,7 +210,11 @@ media, which the reader cannot verify; other types (HEIC, legacy doc and ppt
 among them); and files over 16 MB for photos or 32 MB for documents. A
 video's preview image is the exception: it is sealed in the message itself,
 so it is sent whatever the video's key, hash or download status, and the
-video itself is never fetched.
+video itself is never fetched. Since reader 0.4.1 every answer about a
+message, and `get_message`'s attachment, also carries `open_url`: a link that
+opens the message in the console, where the user's own browser decrypts the
+original. The assistant gives the user that link when they ask to see, hear
+or download an attachment; the file itself never leaves the enclave.
 
 Nothing changes for anyone else. The hosted metadata connector, every
 metadata connection and every text connection, whatever its consent version,
