@@ -3,8 +3,9 @@
 // open holds the slot from its keys to the end of its last job, so the
 // reader's Node holds at most one plaintext. Per connection, one open is in
 // the slot or its queue and up to OPENS_QUEUE_MAX wait behind it (service.mjs
-// keeps that line), OPENS_PER_MINUTE are admitted in any 60 s and
-// BYTES_PER_HOUR of ciphertext are fetched in any hour.
+// keeps that line, and hands a line in only while a place stays free for a
+// connection with no open there), OPENS_PER_MINUTE are admitted in any 60 s
+// and BYTES_PER_HOUR of ciphertext are fetched in any hour.
 import { BYTES_PER_HOUR, OPENS_PER_MINUTE, QUEUE, RETRY_AFTER_S, SLOTS } from './policy.mjs'
 
 const MINUTE_MS = 60_000, HOUR_MS = 3_600_000
@@ -57,6 +58,8 @@ export function createScheduler({ slots = SLOTS, queue = QUEUE } = {}) {
     },
     queued: () => waiting.length,
     running: () => running.size,
+    /** Places free now: a free slot starts an entry at once, a free place in the queue holds one. */
+    room: () => Math.max(0, slots - running.size) + Math.max(0, queue - waiting.length),
   }
 }
 

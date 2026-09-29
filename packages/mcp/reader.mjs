@@ -26,6 +26,15 @@ export function safeLink(value) {
   if (typeof value !== 'string' || value.length > 2048 || /[\s<>"'`]/.test(value)) return null
   try { return new URL(value).protocol === 'https:' ? value : null } catch { return null }
 }
+/**
+ * A message's console link from the enclave (docs/mcp-enclave.md §16.7): a
+ * plain https link that begins with `${consoleURL}?`, as the instructions
+ * promise the model, or null.
+ */
+export function consoleLink(value, consoleURL) {
+  const link = safeLink(value)
+  return link && typeof consoleURL === 'string' && link.startsWith(`${consoleURL}?`) ? link : null
+}
 const keyLockedReason = 'The authorized key could not open this content.'
 const contentLockedReason = 'The key this connection holds could not open this content.'
 function openedText(value, max, reason = keyLockedReason) {
@@ -70,7 +79,7 @@ async function bounded(items, limit, work) {
  *   refused as `stale_grant`, so the enclave can log the event; it is neither
  *   awaited nor allowed to throw into the tool. On a connection whose sealed
  *   consent includes attachments (`config.media`), `media` is the enclave's
- *   `{host, why(row), openURL(row), open(request, archive), resultMaxBytes}`
+ *   `{host, why(row), openURL(row), consoleURL, open(request, archive), resultMaxBytes}`
  *   (docs/mcp-enclave.md §16.5): `openAttachment` hands it the call and an
  *   `archive` of the two reads it needs, every attachment the reader
  *   describes says whether it opens, and get_message's also names the
@@ -187,7 +196,7 @@ export async function createReader(config, provider) {
     const why = media.why(row)
     attachment.openable = why === null
     if (why !== null) attachment.why = why
-    const url = link ? safeLink(media.openURL?.(row)) : null
+    const url = link ? consoleLink(media.openURL?.(row), media.consoleURL) : null
     if (url) attachment.open_url = url
     return attachment
   }

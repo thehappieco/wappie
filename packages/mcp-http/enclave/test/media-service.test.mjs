@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { createLog } from '../../log.mjs'
 import { lineAllowed } from '../logsink.mjs'
 import { runWorker } from '../media/jail.mjs'
-import { BYTES_PER_HOUR, CAP_BYTES, HOST_WAIT_MS, OPENS_PER_MINUTE, OPENS_QUEUE_MAX, PART_MAX_CHARS, RESULT_TTL_MS, TEXT_TTL_MS, THUMB_MAX_BYTES } from '../media/policy.mjs'
+import { BYTES_PER_HOUR, CAP_BYTES, HOST_WAIT_MS, OPENS_PER_MINUTE, OPENS_QUEUE_MAX, PART_MAX_CHARS, QUEUE, RESULT_TTL_MS, TEXT_TTL_MS, THUMB_MAX_BYTES } from '../media/policy.mjs'
 import { createMediaService } from '../media/service.mjs'
 import { encryptMedia, fakeJailSpawn, JPEG_MAGIC, LABELS, newMediaKey, PDF_MAGIC, sha256, WEBP_MAGIC, withScenario, ZIP_MAGIC } from './media-fixtures.mjs'
 
@@ -315,6 +315,79 @@ test('parallel calls of one connection: two, then five, all answered inline, one
   h.service.wipe(h.record.connection_id)
   await assert.rejects(call, refusedWith('media_not_allowed'))
   assert.equal(h.fetches.length, mark + 5)
+})
+
+test('the slot\'s queue keeps its last place for a connection with no open there: five connections that keep their lines fed never shut a sixth out, and the lines go in turn', { timeout: 60_000 }, async t => {
+  const h = await harness(t, { pending: true })
+  const until = async condition => { while (!condition()) await new Promise(resolve => setTimeout(resolve, 5)) }
+  // The order media keys are opened in, by connection.
+  const order = []
+  const connection = name => {
+    const media = h.service.forConnection({ ...h.record, connection_id: randomUUID() })
+    return () => {
+      const item = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 120 }) })
+      const open = item.access.open.bind(item.access)
+      item.access.open = async (...args) => { order.push(name); return open(...args) }
+      return () => media.open({ device_id: device, uid: item.uid, images: true }, item.access)
+    }
+  }
+  // Five connections ask for three photos each: one open of each in the slot or its queue, two in its line.
+  const lines = Array.from({ length: 5 }, (_, n) => { const next = connection(`C${n}`); return [next(), next(), next()] })
+  for (const line of lines) for (const call of line) assert.equal((await call()).header.status, 'pending')
+  const sixth = connection('F')()
+  await assert.rejects(sixth(), refusedWith('media_busy', error => error.retry_after_s === 20), 'four connections wait in the queue: it is full')
+  // The first photo done: its connection's line waits, so the place it freed stays free.
+  await until(() => order.length === 2)
+  assert.equal(h.service.scheduler.queued(), QUEUE - 1)
+  assert.equal((await sixth()).header.status, 'pending', 'the sixth connection takes it')
+  await until(() => order.length === 16 && h.service.scheduler.running() === 0)
+  assert.deepEqual(order, ['C0', 'C1', 'C2', 'C3', 'C4', 'F', 'C0', 'C1', 'C2', 'C3', 'C4', 'C0', 'C1', 'C2', 'C3', 'C4'], 'the sixth within the first round, then the lines in turn')
+  // A connection alone still has every place: its line goes in as soon as its open leaves.
+  const alone = connection('A')
+  for (const call of [alone(), alone(), alone()]) await call()
+  await until(() => order.length === 19 && h.service.scheduler.running() === 0)
+  assert.deepEqual(h.service.counts().queue, 0)
+})
+
+test('an open\'s turn looks again at the text cache and the hour\'s bytes: what the connection\'s earlier opens read or fetched counts before its key is opened', async t => {
+  // The first part and page 3 of one PDF, text only: asked together, as asked one after the other, one key and one fetch;
+  // page 3's turn comes after the first part's text is in the text cache.
+  for (const together of [false, true]) {
+    const h = await harness(t)
+    const pages = ['Page one says hello to the reader in more than fifty characters of text.', 'Page two says hello to the reader in more than fifty characters of text.', 'Page three says hello to the reader in more than fifty characters of text.']
+    const pdf = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages }) })
+    const [first, third] = together
+      ? await Promise.all([pdf.open({ images: false }), pdf.open({ pages: '3', images: false })])
+      : [await pdf.open({ images: false }), await pdf.open({ pages: '3', images: false })]
+    assert.deepEqual([first.header.part, third.header.part], [{ unit: 'page', from: 1, to: 3 }, { unit: 'page', from: 3, to: 3 }])
+    assert.ok(third.body.startsWith('--- page 3 ---\nPage three') && first.body.endsWith(third.body))
+    assert.deepEqual([h.opens, h.fetches.length, h.workers()], [['key'], 1, ['pdf']], together ? 'together' : 'one after the other')
+  }
+  // Seven documents of 32 MiB fetched this hour (each refused as short once its length was charged), then three of
+  // 15 MiB asked together: each fits the hour when its call checks it, but only two fit together.
+  const h = await harness(t)
+  const declared = length => () => new Response(new ReadableStream({ start(controller) { controller.close() } }), { status: 200, headers: { 'content-length': String(length) } })
+  for (let n = 0; n < 7; n++) {
+    const filler = h.attachment({ type: 'document', plaintext: PDF_MAGIC, media: { file_length: 10 } })
+    h.objects.get(filler.uid).fetch = declared(CAP_BYTES.document + 26)
+    await assert.rejects(filler.open(), refusedWith('attachment_tampered'))
+    h.clock += 10_000
+  }
+  const claimed = 15 * 1_048_576
+  const keys = []
+  const documents = Array.from({ length: 3 }, () => {
+    const item = h.attachment({ type: 'document', plaintext: PDF_MAGIC, media: { file_length: claimed } })
+    h.objects.get(item.uid).fetch = declared(claimed + 26)
+    const open = item.access.open.bind(item.access)
+    item.access.open = async (...args) => { keys.push(item.uid); return open(...args) }
+    return item
+  })
+  const settled = await Promise.allSettled(documents.map(item => item.open()))
+  assert.deepEqual(settled.map(outcome => outcome.reason?.code), ['attachment_tampered', 'attachment_tampered', 'rate_limited'])
+  const [, , late] = documents
+  refusedWith('rate_limited', error => error.retry_after_s === 60 && error.facts.media_type === 'document' && error.facts.open_url === linkTo(late.uid))(settled[2].reason)
+  assert.deepEqual(keys, documents.slice(0, 2).map(item => item.uid), 'the third\'s key was never opened')
+  assert.equal(h.fetches.some(request => request.url.endsWith(late.uid)), false, 'nor its ciphertext asked for')
 })
 
 test('the host\'s wait holds for a queued open too: 40 s on claude.ai, 25 s on ChatGPT; a turn that does not come in time is pending, like a slow job', async t => {

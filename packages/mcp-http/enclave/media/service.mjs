@@ -7,10 +7,13 @@
 // for it at most HOST_WAIT_MS for its host. A connection has one open in the
 // slot or its queue at a time; the opens its parallel calls start wait behind
 // it in the connection's own line (OPENS_QUEUE_MAX) and go in, in order, as it
-// leaves. An open runs in the slot, from its keys to its last job: the media
-// key, the ciphertext, the checks, the sniff and one or two jailed jobs. The
-// reader's Node itself never parses anything: it checks magic bytes, decodes
-// plain text and reads worker frames.
+// leaves, while one place of the queue stays for a connection with no open
+// there. An open runs in the slot: when its turn comes it looks again at the
+// text cache and the hour's bytes, which the connection's earlier opens may
+// have filled, and only then opens the media key, fetches the ciphertext and
+// runs the checks, the sniff and one or two jailed jobs. The reader's Node
+// itself never parses anything: it checks magic bytes, decodes plain text and
+// reads worker frames.
 import { ArchiveError } from '@whatserver2/client'
 import { LocalConfigError } from '@whatserver2/mcp/config'
 import { fingerprint } from '../../log.mjs'
@@ -51,6 +54,8 @@ const keeps = outcome => (outcome.result ? outcome.result.header.images_withheld
  */
 export const openKey = ({ uid, cursor, pages, images = true }) => `${uid}|${cursor ?? ''}|${pages ?? ''}|${images === false ? 0 : 1}`
 const numbered = (device, key) => `${device}|${key}`
+/** The bytes an open is checked against BYTES_PER_HOUR for before its key: the claimed length, or the cap without one. */
+const claimedBytes = (row, plan) => (Number.isSafeInteger(row.media.file_length) ? row.media.file_length : CAP_BYTES[plan.family])
 
 const defaultDelay = (ms, signal) => new Promise(resolve => {
   const timer = setTimeout(resolve, ms)
@@ -80,6 +85,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
   // slot or the slot's queue, line: its opens waiting behind that one, first in
   // first out, mediaOff: the last media_off seen }
   const connections = new Map()
+  // The ids of connections whose open left with a line behind it that has not
+  // gone in yet, in the order they left: the next free place is theirs, in turn.
+  const parked = []
   const counters = { opens: 0, killed: 0 }
   let jailState = null, closed = false
   const conn = id => ({ conn: fingerprint(id) })
@@ -122,18 +130,32 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     settle(open)
   }
   /**
-   * `open` left the slot or its queue: the connection's next open, first in
-   * its line, goes to the slot. The place it takes was freed just now, so the
-   * scheduler admits it; `media_busy` is only the answer should it not.
+   * `open` left the slot or its queue: its connection's line, if it has one,
+   * waits for a place behind the lines already waiting (`parked`), and the
+   * places now free go to them in turn.
    */
   function leave(open) {
     const state = connections.get(open.id)
-    if (state?.active !== open) return
-    state.active = null
-    while (state.line.length) {
+    if (state?.active === open) {
+      state.active = null
+      if (state.line.length && !parked.includes(open.id)) parked.push(open.id)
+    }
+    handIn()
+  }
+  /**
+   * The first open of each waiting line goes to the slot or its queue, one
+   * line at a time, while more than one place is free: the last place stays
+   * for a connection with no open there (§16.9), so connections that keep
+   * their lines fed never hold the whole queue. A line whose connection was
+   * wiped, or has an open there again, is skipped.
+   */
+  function handIn() {
+    while (parked.length && scheduler.room() > 1) {
+      const id = parked.shift(), state = connections.get(id)
+      if (!state || state.active || !state.line.length) continue
       const next = state.line.shift()
-      if (scheduler.admit(next, next.start, () => leave(next))) { state.active = next; return }
-      settle(next, { error: refusal('media_busy', { retry_after_s: 20, facts: next.facts }) })
+      if (scheduler.admit(next, next.start, () => leave(next))) state.active = next
+      else { state.line.unshift(next); parked.unshift(id); return }
     }
   }
 
@@ -320,9 +342,27 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     }
   }
 
+  /**
+   * An open's turn (§16.5 "An open", step 0). The connection's opens before
+   * it may have read this attachment's text or spent the hour's bytes since
+   * the call checked both (steps 6 and 16), so both are checked again here,
+   * before any key is opened: a part the text cache now holds is answered
+   * from it, and a length the hour has no room for left is `rate_limited`.
+   */
   async function run(open, record, row, request, plan, access) {
+    const id = record.connection_id
     let outcome
-    try { outcome = { result: await perform(open, record, row, request, plan, access) } } catch (error) {
+    try {
+      const cached = await fromText(id, open.textKey, request)
+      if (cached) outcome = { result: cached }
+      else {
+        if (!plan.preview) {
+          const bytesWait = budgets.bytesWait(id, claimedBytes(row, plan))
+          if (bytesWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(bytesWait) })
+        }
+        outcome = { result: await perform(open, record, row, request, plan, access) }
+      }
+    } catch (error) {
       if (error instanceof ArchiveError || error instanceof LocalConfigError) error.facts = { ...open.facts, ...error.facts }
       outcome = { error }
     }
@@ -341,7 +381,8 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
   }
   /** Step 7: room for one more open of this connection (its line not full, OPENS_PER_MINUTE), else `rate_limited`. */
   function budget(state, id, facts) {
-    if (state.active && state.line.length >= OPENS_QUEUE_MAX) throw refusal('rate_limited', { retry_after_s: 10, facts })
+    // A line waiting for a place holds, with no open ahead of it, one more than a line behind one.
+    if ((state.active ? 1 : 0) + state.line.length > OPENS_QUEUE_MAX) throw refusal('rate_limited', { retry_after_s: 10, facts })
     const opensWait = budgets.opensWait(id)
     if (opensWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(opensWait), facts })
   }
@@ -405,7 +446,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
           return finish(factsOf(row, null, { sniffed: 'thumbnail', seconds_claimed: seconds }, link))
         }
         if (!plan.preview) {
-          const bytesWait = budgets.bytesWait(id, Number.isSafeInteger(row.media.file_length) ? row.media.file_length : CAP_BYTES[plan.family])
+          const bytesWait = budgets.bytesWait(id, claimedBytes(row, plan))
           if (bytesWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(bytesWait), facts })
         }
         // Steps 5 and 7 again, with nothing awaited from here to the queue:
@@ -420,8 +461,8 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
           open.settled = new Promise(resolve => { open.resolve = resolve })
           open.start = () => run(open, record, row, request, plan, access)
           // Step 17: the slot or its queue when this connection has nothing
-          // there, else behind its own open, in its line.
-          if (state.active) state.line.push(open)
+          // there or waiting, else last in its line.
+          if (state.active || state.line.length) state.line.push(open)
           else if (scheduler.admit(open, open.start, () => leave(open))) state.active = open
           else throw refusal('media_busy', { retry_after_s: 20, facts })
           budgets.admit(id)
@@ -453,6 +494,8 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         why: row => whyNot(row, connections.get(record.connection_id)?.mediaOff ?? []),
         /** The console link of the row's message, or null (§16.7). */
         openURL: row => linkOf(record, row),
+        /** CONSOLE_URL: every link above begins with it and `?`, as the instructions tell the model (§16.7). */
+        consoleURL,
         open: (request, access) => call(record, request, access, host),
         /** The serialized result's cap, which server.mjs enforces by dropping images (§16.7). */
         resultMaxBytes: RESULT_MAX_BYTES,
