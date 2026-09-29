@@ -98,7 +98,7 @@ function attachmentNotes(header, { host, request, suggest, dropped }) {
   if (header.scanned_pages?.length) notes.push(`Pages without a text layer (scanned) in this part: ${list(header.scanned_pages)}.`)
   if (header.image_pages?.length) notes.push(`Images attached for pages: ${list(header.image_pages)}.`)
   if (suggest && request.images !== false) notes.push(`To see other scanned pages, call again with pages set to one page or a range of up to 4, for example "${suggest}".`)
-  if (request.pages && request.images !== false && header.part?.unit === 'page') {
+  if (request.pages && request.images !== false && header.images_withheld !== 'kind_off' && header.part?.unit === 'page') {
     // The asked pages whose text is in this part; one left out for the size cap is not "without an image".
     const shown = new Set([...(header.image_pages ?? []), ...dropped])
     const missing = []
@@ -113,6 +113,7 @@ function attachmentNotes(header, { host, request, suggest, dropped }) {
   if (truncated.includes('row_cap')) notes.push('Sheets are read up to their first 2,000 rows; each sheet heading shows how many rows it has.')
   if (truncated.includes('entry_cap')) notes.push('Only the first 200 entry names are listed.')
   if (header.images_withheld === 'cap') notes.push('Some images were left out to keep this result within its size limit; ask for fewer pages to see them.')
+  if (header.images_withheld === 'kind_off') notes.push('Page images are switched off for this connection right now; the workspace decides that. Only the text above can be read: never guess what a scanned page shows.')
   if (header.status === 'pending') notes.push(`Still opening this attachment. Call open_attachment again with the same arguments after ${header.retry_after_s} seconds.`)
   return notes
 }

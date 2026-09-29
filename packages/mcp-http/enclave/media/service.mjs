@@ -30,9 +30,12 @@ import {
  * the §16.9 list, plus the two whose truth changes with a budget or a switch
  * rather than with the attachment (a kept `rate_limited` would outlive its
  * own `retry_after_s`, a kept `media_not_allowed` a kind switched back on).
+ * A result whose page images were withheld because `image` is off is not kept
+ * either, for the same reason; its text is in the text cache.
  */
 const FORGOTTEN = new Set(['attachment_pending', 'read_failed', 'reconsent_required', 'stale_grant', 'unauthorized', 'rate_limited', 'media_not_allowed'])
 const safeCode = error => ((error instanceof ArchiveError || error instanceof LocalConfigError) && /^[a-z][a-z0-9_]{0,47}$/.test(error.code) ? error.code : 'read_failed')
+const keeps = outcome => (outcome.result ? outcome.result.header.images_withheld !== 'kind_off' : !FORGOTTEN.has(safeCode(outcome.error)))
 
 /**
  * The per-connection key of an open (§16.9): identical calls share it. The
@@ -87,7 +90,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     const state = connections.get(open.id)
     if (state?.opens.get(open.key) === open) state.opens.delete(open.key)
     if (open.controller.signal.aborted) outcome = { error: refusal('media_not_allowed', { facts: open.facts }) }
-    else if (outcome.result || !FORGOTTEN.has(safeCode(outcome.error))) caches.result.set(open.id, open.key, { outcome, kinds: open.kinds })
+    else if (keeps(outcome)) caches.result.set(open.id, open.key, { outcome, kinds: open.kinds })
     if (outcome.result) { counters.opens++; log.event('media_opened', conn(open.id)) }
     open.outcome = outcome
     open.resolve()
@@ -122,9 +125,10 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     }
     return texts
   }
+  /** Adds `window` to the PDF's text; a window it overlaps stays unless it lies wholly inside it. */
   function storePdf(id, textKey, facts, window) {
     const entry = caches.text.get(id, textKey)
-    const windows = windowsOf(entry).filter(item => item.to < window.from || item.from > window.to)
+    const windows = windowsOf(entry).filter(item => item.from < window.from || item.to > window.to)
     caches.text.set(id, textKey, { kind: 'pdf', facts, windows: [...windows, window].sort((a, b) => a.from - b.from) })
   }
 
@@ -146,6 +150,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       return window
     }
     if (request.cursor?.unit === 'char') throw refusal('invalid_cursor')
+    // Page images are re-encoded by sharp, the image kind's parser: with
+    // `image` off they are withheld and the part is text only (§16.3).
+    const withImages = request.images && !stateOf(id).mediaOff.includes('image')
     let part, wanted = []
     if (request.pages) {
       const { from, to } = request.pages
@@ -156,19 +163,24 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       const end = Math.min(to, pageTexts(windows, from, to) ? to : window.to)
       const texts = pageTexts(windows, from, end)
       part = pagesPart({ from, to: end }, page => texts[page - from])
-      if (request.images) wanted = Array.from({ length: to - from + 1 }, (_, index) => from + index)
-      else part.withheld = 'request'
+      // Pages whose text did not fit follow by cursor, and so do their images.
+      if (part.part.to < to) part.next = `p${part.part.to + 1}`
+      if (withImages) wanted = Array.from({ length: part.part.to - from + 1 }, (_, index) => from + index)
+      else part.withheld = request.images ? 'kind_off' : 'request'
     } else {
       const at = request.cursor?.at ?? 1
       if (at > lastPage(total ?? PDF_MAX_PAGES)) throw refusal('invalid_cursor')
       const window = windows.find(item => item.from <= at && at <= item.to) ?? await read(at, Math.min(PDF_PAGES_PER_JOB, PDF_MAX_PAGES - at + 1))
       if (!window) return null
-      part = pdfPart(window, at, total, request.images)
+      part = pdfPart(window, at, total, withImages)
+      if (part.withheld && request.images) part.withheld = 'kind_off'
       wanted = part.wanted
     }
     if (wanted.length && !plaintext) return null
     let images = []
     if (wanted.length) {
+      // Its pixels go through sharp: `image` switched off now ends this job too.
+      open.kinds = ['pdf', 'image']
       images = (await job(open, 'pdf', pdfImagesJob(wanted), plaintext)).images
       live(open)
     }
@@ -284,6 +296,23 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     settle(open, outcome)
   }
 
+  /** Step 5: this key's kept outcome, answered (a kept refusal is thrown), or its running open to join; else null. */
+  function known(state, id, key) {
+    const kept = caches.result.get(id, key)
+    if (kept) {
+      if (kept.outcome.error) throw kept.outcome.error
+      return { result: copy(kept.outcome.result) }
+    }
+    const open = state.opens.get(key)
+    return open ? { open } : null
+  }
+  /** Step 7: room for one more open of this connection, else `rate_limited`. */
+  function budget(state, id, facts) {
+    if (state.opens.size >= OPENS_IN_FLIGHT) throw refusal('rate_limited', { retry_after_s: 10, facts })
+    const opensWait = budgets.opensWait(id)
+    if (opensWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(opensWait), facts })
+  }
+
   /** Step 18: the open's answer, or `pending` once the host's wait is over. */
   async function wait(open, started, host) {
     const remaining = started + waitFor(host) - now()
@@ -314,18 +343,11 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       const state = stateOf(id)
       state.mediaOff = knownKinds(status.media_off)
       const key = numbered(input.device_id, openKey(input)), textKey = numbered(input.device_id, input.uid)
-      const kept = caches.result.get(id, key)
-      if (kept) {
-        if (kept.outcome.error) throw kept.outcome.error
-        return copy(kept.outcome.result)
-      }
-      let open = state.opens.get(key)
-      if (!open) {
+      let found = known(state, id, key)
+      if (!found) {
         const cached = await fromText(id, textKey, request)
         if (cached) return copy(cached)
-        if (state.opens.size >= OPENS_IN_FLIGHT) throw refusal('rate_limited', { retry_after_s: 10 })
-        const opensWait = budgets.opensWait(id)
-        if (opensWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(opensWait) })
+        budget(state, id)
         const row = await access.row()
         const facts = rowFacts(row)
         const plan = checkRow(row, request, state.mediaOff)
@@ -337,13 +359,23 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
           const bytesWait = budgets.bytesWait(id, Number.isSafeInteger(row.media.file_length) ? row.media.file_length : CAP_BYTES[plan.family])
           if (bytesWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(bytesWait), facts })
         }
-        open = { id, key, textKey, uid: row.uid, facts, kinds: plan.kind ? [plan.kind] : [], controller: new AbortController(), done: false, outcome: null, reason: null }
-        open.settled = new Promise(resolve => { open.resolve = resolve })
-        if (!scheduler.admit(open, () => run(open, record, row, request, plan, access))) throw refusal('media_busy', { retry_after_s: 20, facts })
-        budgets.admit(id)
-        state.opens.set(key, open)
+        // Steps 5 and 7 again, with nothing awaited from here to the queue:
+        // while the text cache and the row were read, a parallel call of this
+        // connection may have started or finished this key's open, or started
+        // another, and a wipe may have ended the connection's media.
+        if (connections.get(id) !== state) throw refusal('media_not_allowed', { facts })
+        found = known(state, id, key)
+        if (!found) {
+          budget(state, id, facts)
+          const open = { id, key, textKey, uid: row.uid, facts, kinds: plan.kind ? [plan.kind] : [], controller: new AbortController(), done: false, outcome: null, reason: null }
+          open.settled = new Promise(resolve => { open.resolve = resolve })
+          if (!scheduler.admit(open, () => run(open, record, row, request, plan, access))) throw refusal('media_busy', { retry_after_s: 20, facts })
+          budgets.admit(id)
+          state.opens.set(key, open)
+          found = { open }
+        }
       }
-      return await wait(open, started, host)
+      return found.result ?? await wait(found.open, started, host)
     } catch (error) {
       log.event('media_refused', { ...conn(id), code: safeCode(error) })
       throw error

@@ -1549,7 +1549,7 @@ which parser each one switches off):
 
 | Kind | Attachments |
 |---|---|
-| `image` | images, stickers, video previews, image files sent as documents |
+| `image` | images, stickers, video previews, image files sent as documents, and a PDF's page images (sharp re-encodes them): while it is off a PDF answers its text only |
 | `pdf` | PDF |
 | `office` | docx, odt, xlsx, xls, ods, pptx |
 | `text` | txt, csv, json, md |
@@ -1758,9 +1758,12 @@ requests ciphertext.
     `CAP_BYTES[family]`, else `attachment_too_large`. The connection's
     `BYTES_PER_HOUR` must have room for `file_length`, or for the cap when
     it is absent, else `rate_limited`.
-17. **Queue**: the open is admitted if the slot is free or fewer than `QUEUE`
-    opens wait for it, else `media_busy`. Admission counts toward
-    `OPENS_PER_MINUTE`.
+17. **Queue**: steps 5 and 7 run again first, with nothing awaited from
+    them to the admission: a parallel call of the connection may have
+    started or finished this key's open, or started another, while steps 6
+    and 8 awaited (and a wipe meanwhile gives `media_not_allowed`). Then the
+    open is admitted if the slot is free or fewer than `QUEUE` opens wait for
+    it, else `media_busy`. Admission counts toward `OPENS_PER_MINUTE`.
 18. **Wait**: the call waits for the open until its own start plus
     `HOST_WAIT_MS[host]`. A finished open is answered; otherwise the call
     answers `status: "pending"` with `retry_after_s` (§16.9), and the open
@@ -1852,7 +1855,8 @@ family and a video's preview must sniff as an image kind; the document
 family may sniff as any row of the table. Then `media_off`: an image, `pdf` or `text` kind that is
 off gives `media_not_allowed`; `zip` and `cfb` go to the office worker with
 `allow` set to those of `office` and `zip` that are on (both off: refused
-here).
+here). A PDF's `images` job re-encodes pixels with sharp, so it runs only
+while `image` is on too (§16.7 `images_withheld: "kind_off"`).
 
 **Dispatch:**
 
@@ -2149,7 +2153,7 @@ guidance rather than a schema error.
 | `retry_after_s` | pending only |
 | `truncated` | what of the whole attachment the reader cannot read: any of `text_cap`, `page_cap`, `page_too_long`, `sheet_cap`, `row_cap`, `entry_cap` |
 | `images` | the number of image blocks that follow (absent when pending) |
-| `images_withheld` | `request` (`images: false`) or `cap` |
+| `images_withheld` | `request` (`images: false`), `cap`, or `kind_off` (a PDF's page images while kind `image` is off; its text is answered) |
 | `notes` | the reader's sentences below, in the table's order (added by `server.mjs`) |
 | `source` | always `"untrusted third-party file"` (added by `server.mjs`) |
 
@@ -2187,8 +2191,10 @@ never splits a surrogate pair.
   `next_cursor` is `p<next page>` while pages up to `min(pages,
   PDF_MAX_PAGES)` remain. A PDF with more pages adds `page_cap`. `N` above
   that bound is `invalid_cursor`.
-- `pages`: exactly those pages' blocks (cut at the cap like a part) and, with
-  `images`, their images; `next_cursor` is `null`. An end above `min(pages,
+- `pages`: those pages' blocks, whole ones while they fit like a part (a
+  single block over the cap is cut) and, with `images`, the images of the
+  pages the part holds; `next_cursor` is `null` when every asked page fits,
+  else `p<the first page left out>`. An end above `min(pages,
   PDF_MAX_PAGES)` is `invalid_cursor`.
 - Without a cursor or `pages`, a PDF starts at `p1` and anything else at
   `c0`. A cursor of the other unit, or on an image or a video, and `pages` on
@@ -2216,7 +2222,7 @@ joined by ", ", the first 20 and then " and K more"):
 | `scanned_pages` | `Pages without a text layer (scanned) in this part: {list}.` |
 | `image_pages` | `Images attached for pages: {list}.` |
 | scanned pages of the part without an image, `images` true | `To see other scanned pages, call again with pages set to one page or a range of up to 4, for example "{a}-{b}".` (`a` the first such page, `b` = min(a + 3, its window's last page)) |
-| `pages` asked, some without an image | `No scanned image to show on pages: {list}; their text is above.` |
+| `pages` asked, some without an image (not with `kind_off`) | `No scanned image to show on pages: {list}; their text is above.` |
 | `text_cap` | `The reader reads about 4 MB of text from one file; the rest of this file cannot be opened here.` |
 | `page_cap` | `The reader reads the first 2,000 pages of a PDF; later pages cannot be opened here.` |
 | `page_too_long` | `A page in this part is longer than one result and was cut at 60,000 characters.` |
@@ -2224,6 +2230,7 @@ joined by ", ", the first 20 and then " and K more"):
 | `row_cap` | `Sheets are read up to their first 2,000 rows; each sheet heading shows how many rows it has.` |
 | `entry_cap` | `Only the first 200 entry names are listed.` |
 | `images_withheld: "cap"` | `Some images were left out to keep this result within its size limit; ask for fewer pages to see them.` |
+| `images_withheld: "kind_off"` | `Page images are switched off for this connection right now; the workspace decides that. Only the text above can be read: never guess what a scanned page shows.` |
 | `pending` | `Still opening this attachment. Call open_attachment again with the same arguments after {retry_after_s} seconds.` |
 
 **Errors.** `isError: true`, one text block:
@@ -2360,7 +2367,9 @@ one worker.
 
 - **Open key**: per connection, `${uid}|${cursor ?? ''}|${pages ?? ''}|${images ? 1 : 0}`.
   A call whose key names a running open joins it and waits (§16.5 step 18);
-  it neither counts toward the budgets nor starts anything. Equivalent
+  it neither counts toward the budgets nor starts anything, even when it
+  arrived in parallel with the call that started the open (§16.5 step 17
+  looks again). Equivalent
   requests with different keys (no cursor and `p1`) meet in the text cache
   instead.
 - **Slot and queue**: `SLOTS` opens run at once enclave-wide, and up to
@@ -2379,13 +2388,17 @@ one worker.
   how the repeats ChatGPT makes cost nothing. Refusals are kept too, except
   `attachment_pending`, `read_failed`, `reconsent_required`, `stale_grant`
   and `unauthorized`, which are answered once and forgotten. Refusals of the
-  call itself (§16.5 steps 2 to 17) are never kept.
+  call itself (§16.5 steps 2 to 17) are never kept, and neither is a result
+  with `images_withheld: "kind_off"`, whose answer changes when `image` is
+  switched back on (its text is in the text cache).
 - **Text cache**: per connection and `uid`, what the jobs read, so a new
   cursor needs no fetch: the rendered text of an office file, zip listing or
   plain-text file (at most `JOB_TEXT_MAX_BYTES` of it); a PDF's page texts
   by job window (`p` to `p + PDF_PAGES_PER_JOB − 1`, a window the text limit
   cut short ends at its last complete page, and the next window starts
-  there); and the facts the header repeats (`sniffed`, totals,
+  there; a `pages` read not in the cache adds a window of just those pages,
+  which replaces only the windows that lie wholly inside it); and the facts
+  the header repeats (`sniffed`, totals,
   `filename`, `caption`, `file_length`, `truncated`). Kept `TEXT_TTL_MS`
   from its job. Images are never in it; a part that needs page images runs an
   `images` job, and so a fetch.
@@ -2411,7 +2424,8 @@ Buffers. It runs:
 
 `media.narrow(connectionID, media_off)` runs on every status answer: it
 aborts the connection's open whose kind (the sniffed one, or the one known
-before the sniff) is now off, and deletes cache entries of those kinds.
+before the sniff) is now off, and deletes cache entries of those kinds. A
+PDF open running its `images` job counts as both `pdf` and `image`.
 Since the sweep asks Go about every content connection every 60 s, a
 revocation or a switch turned off ends a job in flight and empties the
 caches within 60 s, and at once when Go's revocation notice arrives. A
@@ -2736,7 +2750,9 @@ images. The plan note stays: Plus, Pro, Business, Enterprise and Edu.
    connections' keys (it never sees the kind, §16.3), so a parser CVE is
    contained by the reader refusing to open the kind, not by the archive
    server. The office worker's zip reader serves both `office` and `zip`: a
-   flaw in it needs both kinds off. Text is unaffected either way.
+   flaw in it needs both kinds off. A PDF's page images are re-encoded by
+   sharp, so they follow `image`: with `image` off a PDF answers its text
+   only, and a flaw in pdf.js needs `pdf` off. Text is unaffected either way.
 2. The previous EIF, allowlisted for 7 days. On 0.3.0 every version-2
    connection, text-only or media, renews as text-only: 0.3.0's descriptor
    has no `consent_version`, so the console seals version 1 and no `media`,

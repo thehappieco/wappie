@@ -26,7 +26,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
  * with `pending` ends at once, so a slow open answers `pending`.
  */
 async function harness(t, { host = 'claude.ai', jailEnv = {}, ready = true, pending = false } = {}) {
-  const h = { lines: [], fetches: [], rows: 0, opens: [], objects: new Map(), status: { answer: 'serve', media: true, media_off: [] }, clock: Date.now(), waits: [] }
+  const h = { lines: [], fetches: [], rows: 0, opens: [], objects: new Map(), status: { answer: 'serve', media: true, media_off: [] }, clock: Date.now(), waits: [], jobs: [] }
   const log = createLog(line => h.lines.push(line), () => h.clock)
   const fetch = async (url, init) => {
     h.fetches.push({ url: String(url), init })
@@ -41,7 +41,7 @@ async function harness(t, { host = 'claude.ai', jailEnv = {}, ready = true, pend
   h.service = createMediaService({
     log, now: () => h.clock, archive: ARCHIVE, fetch,
     checkActive: { mediaStatus: async () => ({ ...h.status, media_off: [...h.status.media_off] }) },
-    jail: { checkJail: async () => (ready ? { ok: true, cpuset: false } : { ok: false, code: 'no_controllers' }), runWorker, spawn: fakeJailSpawn(jailEnv) },
+    jail: { checkJail: async () => (ready ? { ok: true, cpuset: false } : { ok: false, code: 'no_controllers' }), runWorker, spawn: fakeJailSpawn(jailEnv, h.jobs) },
     delay: (ms, signal) => { h.waits.push(ms); return pending ? Promise.resolve() : new Promise(resolve => signal.addEventListener('abort', resolve)) },
   })
   await h.service.start()
@@ -77,6 +77,14 @@ async function harness(t, { host = 'claude.ai', jailEnv = {}, ready = true, pend
     }
   }
   h.events = () => h.lines.map(line => JSON.parse(line)).filter(entry => entry.event)
+  /** The worker of each job started so far. */
+  h.workers = () => h.jobs.map(call => call.args[call.args.indexOf('--worker') + 1])
+  /** Makes `item`'s row read take `ms`, as the archive's round trip does. */
+  h.slowRow = (item, ms = 30) => {
+    const read = item.access.row.bind(item.access)
+    item.access.row = async () => { await new Promise(resolve => setTimeout(resolve, ms)); return read() }
+    return item
+  }
   h.quiet = () => { const counts = { fetches: h.fetches.length, opens: h.opens.length, rows: h.rows }; return () => ({ fetches: h.fetches.length - counts.fetches, opens: h.opens.length - counts.opens, rows: h.rows - counts.rows }) }
   t.after(() => h.service.close())
   return h
@@ -227,6 +235,27 @@ test('budgets: one open in flight, OPENS_PER_MINUTE a minute, BYTES_PER_HOUR an 
   const since = h.quiet()
   await assert.rejects(huge.open(), refusedWith('rate_limited', error => error.retry_after_s === 60 && error.facts.media_type === 'document'))
   assert.deepEqual([since().opens, since().fetches], [0, 0])
+})
+
+test('parallel calls of one connection while the row is read: an identical one joins the open, one for another attachment is rate_limited', async t => {
+  const h = await harness(t)
+  const photo = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 200 }) }))
+  const pair = await Promise.all([photo.open(), photo.open()])
+  assert.deepEqual(pair.map(result => result.header.status), ['complete', 'complete'])
+  assert.deepEqual([h.fetches.length, h.opens.length], [1, 1], 'the second call joined the first open')
+  const one = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 200 }) }))
+  const two = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }))
+  const [first, second] = await Promise.allSettled([one.open(), two.open()])
+  assert.equal(first.value.header.status, 'complete')
+  refusedWith('rate_limited', error => error.retry_after_s === 10 && error.facts.media_type === 'image')(second.reason)
+  assert.deepEqual([h.fetches.length, h.opens.length], [2, 2], 'OPENS_IN_FLIGHT held: nothing of the second attachment was opened')
+  // A wipe while the row is read ends the call before anything opens.
+  const late = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }), 100)
+  const call = late.open()
+  await new Promise(resolve => setTimeout(resolve, 20))
+  h.service.wipe(h.record.connection_id)
+  await assert.rejects(call, refusedWith('media_not_allowed'))
+  assert.deepEqual([h.fetches.length, h.opens.length], [2, 2])
 })
 
 test('the queue: one slot enclave-wide, four waiting in order; pending says 5, 10 and 20; a fifth waiting is media_busy', async t => {
@@ -411,6 +440,59 @@ test('PDF: text by page in whole blocks, scanned pages and their images, page cu
   assert.equal(h.fetches.length, mark + 1)
   const encrypted = h.attachment({ type: 'document', plaintext: withScenario(PDF_MAGIC, { error: { code: 'encrypted' } }) })
   await assert.rejects(encrypted.open(), refusedWith('attachment_encrypted'))
+})
+
+test('PDF: a pages range whose text passes PART_MAX_CHARS ends at its last whole page, with a cursor for the rest and images for its own pages', async t => {
+  const h = await harness(t)
+  const page = 'Twenty thousand characters of text. '.repeat(560)
+  const pdf = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages: [page, page, page, page, page], raster: [1, 2, 3, 4] }) })
+  const range = await pdf.open({ pages: '1-4' })
+  assert.deepEqual([range.header.part, range.header.next_cursor, range.header.status, range.header.image_pages, range.images.length], [{ unit: 'page', from: 1, to: 2 }, 'p3', 'partial', [1, 2], 2])
+  assert.ok(range.body.length <= PART_MAX_CHARS)
+  const rest = await pdf.open({ cursor: 'p3', images: false })
+  assert.deepEqual([rest.header.part, rest.header.next_cursor], [{ unit: 'page', from: 3, to: 4 }, 'p5'])
+})
+
+test('PDF: a pages read keeps the wider text window it overlaps, so later cursors in it fetch nothing', async t => {
+  const h = await harness(t)
+  const pages = Array.from({ length: 320 }, (_, index) => `Page ${index + 1} has a text layer of more than fifty characters in it.`)
+  const pdf = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages }) })
+  await pdf.open()
+  const asked = await pdf.open({ pages: '299-302' })
+  assert.deepEqual([asked.header.part, h.fetches.length], [{ unit: 'page', from: 299, to: 302 }, 2])
+  const since = h.quiet()
+  assert.deepEqual((await pdf.open({ cursor: 'p50' })).header.part.from, 50)
+  assert.deepEqual((await pdf.open({ pages: '300-301', images: false })).header.part, { unit: 'page', from: 300, to: 301 }, 'its text from both windows')
+  assert.deepEqual(since(), { fetches: 0, opens: 0, rows: 0 })
+})
+
+test('PDF page images follow kind image (sharp re-encodes them): withheld while it is off, with the text; switching it off ends an images job', async t => {
+  const h = await harness(t)
+  const id = h.record.connection_id
+  const pages = ['Words enough to count as a text layer on this first page, surely.', '']
+  const pdf = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages, raster: [2] }) })
+  h.status.media_off = ['image']
+  const off = await pdf.open()
+  assert.deepEqual([off.header.scanned_pages, off.header.image_pages, off.header.images, off.header.images_withheld, off.header.status], [[2], undefined, 0, 'kind_off', 'complete'])
+  assert.deepEqual(h.workers(), ['pdf'], 'the text job only')
+  const since = h.quiet()
+  const asked = await pdf.open({ pages: '2' })
+  assert.deepEqual([asked.header.images, asked.header.images_withheld], [0, 'kind_off'])
+  assert.deepEqual(since(), { fetches: 0, opens: 0, rows: 0 }, 'from the text cache')
+  // Back on, the same call is not answered from a kept result: it gets its image.
+  h.status.media_off = []
+  const on = await pdf.open()
+  assert.deepEqual([on.header.image_pages, on.images.length, on.header.images_withheld], [[2], 1, undefined])
+  assert.deepEqual(h.workers(), ['pdf', 'pdf'], 'the images job of an open whose text was cached')
+  // Turned off while the images job runs: the job is killed and the call answers media_not_allowed.
+  const slow = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages, raster: [2], images_sleep_ms: 5000 }) })
+  const waiting = slow.open()
+  while (h.jobs.length < 4) await new Promise(resolve => setTimeout(resolve, 20))
+  await new Promise(resolve => setTimeout(resolve, 200))
+  h.service.narrow(id, ['image'])
+  await assert.rejects(waiting, refusedWith('media_not_allowed'))
+  while (h.service.scheduler.running()) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(h.events().filter(entry => entry.event === 'media_job_killed').map(entry => entry.code), ['media_off'])
 })
 
 test('office, zip and plain text: rendered text, char cursors from the cache, kinds decided by the worker, and the caps', async t => {

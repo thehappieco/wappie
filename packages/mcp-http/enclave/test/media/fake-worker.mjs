@@ -3,7 +3,8 @@
 // built from a scenario the test put in the plaintext after the magic bytes
 // (media-fixtures.mjs withScenario). It parses no real file. A scenario may
 // also make it misbehave: `raw` (base64 stdout) with `exit`, `error`,
-// `exit_code` with no frames, or `sleep_ms` before answering.
+// `exit_code` with no frames, or `sleep_ms` before answering (`images_sleep_ms`
+// before a PDF images job only).
 import { Buffer } from 'node:buffer'
 
 const worker = process.argv[2]
@@ -31,6 +32,7 @@ try {
 const marker = input.indexOf('@@SCENARIO@@')
 const scenario = marker >= 0 ? JSON.parse(input.subarray(marker + 12).toString('utf8')) : {}
 if (scenario.sleep_ms) await new Promise(resolve => setTimeout(resolve, scenario.sleep_ms))
+if (scenario.images_sleep_ms && job.op === 'images') await new Promise(resolve => setTimeout(resolve, scenario.images_sleep_ms))
 if (scenario.raw !== undefined) { out.push(Buffer.from(scenario.raw, 'base64')); await end(scenario.exit ?? 0) }
 if (scenario.exit_code !== undefined) process.exit(scenario.exit_code)
 

@@ -105,12 +105,13 @@ test('the answer: one text block (the header line, then the body), then the imag
       pending: { header: { uid, media_type: 'document', status: 'pending', retry_after_s: 10 }, body: '', images: [] },
       asked: { header: { uid, media_type: 'document', sniffed: 'pdf', pages: 9, part: { unit: 'page', from: 3, to: 6 }, image_pages: [4], next_cursor: null, status: 'complete', images: 1 }, body: 'x', images: [{ mimeType: 'image/jpeg', data: Buffer.from(image) }] },
       many: { header: { uid, media_type: 'document', sniffed: 'pdf', pages: 40, part: { unit: 'page', from: 1, to: 25 }, scanned_pages: Array.from({ length: 25 }, (_, n) => n + 1), next_cursor: null, status: 'complete', images: 0, images_withheld: 'request' }, body: 'x', images: [] },
+      dimmed: { header: { uid, media_type: 'document', sniffed: 'pdf', pages: 9, part: { unit: 'page', from: 3, to: 6 }, scanned_pages: [4], next_cursor: null, status: 'complete', images: 0, images_withheld: 'kind_off' }, body: 'x', images: [] },
     }
     let pick = 'photo'
     const answers = {}
     for (const host of ['claude.ai', 'chatgpt.com']) {
       const client = await connect(configFor(f.server, { media: true }), await providerFor(f, fakeMedia(async () => structuredClone(results[pick]), host)))
-      for (pick of Object.keys(results)) answers[`${host}/${pick}`] = await call(client, pick === 'asked' ? { pages: '3-6' } : {})
+      for (pick of Object.keys(results)) answers[`${host}/${pick}`] = await call(client, ['asked', 'dimmed'].includes(pick) ? { pages: '3-6' } : {})
       await client.close()
     }
     for (const [name, result] of Object.entries(answers)) {
@@ -152,6 +153,8 @@ test('the answer: one text block (the header line, then the body), then the imag
     assert.equal(answers['claude.ai/pending'].content.length, 1)
     assert.deepEqual(split(answers['claude.ai/asked']).header.notes.slice(1), ['Images attached for pages: 4.', 'No scanned image to show on pages: 3, 5, 6; their text is above.'])
     assert.deepEqual(split(answers['claude.ai/many']).header.notes, ['Pages without a text layer (scanned) in this part: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 and 5 more.'])
+    // Page images while kind image is off: the switch is said, not that the pages have no image.
+    assert.deepEqual(split(answers['claude.ai/dimmed']).header.notes, ['Pages without a text layer (scanned) in this part: 4.', 'Page images are switched off for this connection right now; the workspace decides that. Only the text above can be read: never guess what a scanned page shows.'])
   } finally { await f.close() }
 })
 
