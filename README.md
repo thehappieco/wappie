@@ -196,12 +196,16 @@ It runs in two places, and they differ in what they can read:
   enclave's memory and nowhere else. When the consent also includes
   attachments (a media connection), it opens photos, stickers, PDFs, office
   and text files and a video's preview image the same way, parses them in a
-  jailed process inside the enclave, and sends the assistant text and
+  jailed process inside the enclave (plain-text files are only decoded, in
+  the reader itself, with no parser), and sends the assistant text and
   re-encoded images. It never opens view-once media, audio or voice notes
   (not transcribed yet), or attachments the archive has not downloaded or
-  cannot verify. Text connections and the hosted connector never open
-  attachment contents. Content, and attachments on top of it, are enabled per
-  workspace by the operator; see
+  cannot verify, except that a video's preview image, sealed in the message
+  itself, is sent whatever the video's key, hash or download status; the
+  video itself is never fetched.
+  Text connections and the hosted connector never open attachment contents.
+  Content, and attachments on top of it, are enabled per workspace by the
+  operator; see
   [attested MCP reader](docs/mcp-enclave.md) and [MCP setup](docs/mcp.md#attachments).
 
 ```

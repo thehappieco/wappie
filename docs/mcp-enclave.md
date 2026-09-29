@@ -1155,7 +1155,7 @@ export async function withDeviceKeys<T>(input: Omit<WithDeviceKeyInput, 'deviceI
 ```js
 // READER (packages/mcp): readerMode(config); contentBundleSchema, validateContentBundle(value, now = Date.now()), CONTENT_CONSENT_VERSIONS;
 // the hosted-content provider shape is §15.5's {token, serviceKey, expectedEpoch, renewalURL, contactPack, onStaleGrant?},
-// plus media? ({host, why(row), open(request, archive)}, §16.5) on a media connection only.
+// plus media? ({host, why(row), open(request, archive), resultMaxBytes}, §16.5) on a media connection only.
 // ENCLAVE (packages/mcp-http): startReader({..., content}); absent on the pilot, where kind 'content' is refused.
 // startReader also returns checkActive and, with content, contentSweep() (its own 60 s timer, CONTENT_SWEEP_MS).
 // Since stage A (§16.9): contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media }) adds provider.media when
@@ -1447,7 +1447,7 @@ and DOCSOPS follow them. GO has nothing left to do (A0).
 | **WORKERS** | `packages/mcp-http/enclave/media/worker/**`: its own `package.json` and `package-lock.json`, `image.mjs`, `pdf.mjs`, `office.mjs`, their shared framing module, their tests and the §16.13 corpus |
 | **DEPLOY** | `deploy/enclave/**` (`media-jail` for A1, `Dockerfile`, `entrypoint.sh`, `check-image.sh`, `build.sh`); `commercial/deploy/enclave/{log-sink.py,test_log_sink.py}` |
 | **CONSOLE** | `commercial/web/**`: consent v2, the toggle and the cards (§16.2), `capabilities` in `reader-releases.json` and `readerMeasurements.ts`, and the ChatGPT tab (§16.12) |
-| **DOCSOPS** | the attachment claims gate in both repositories (`.github/claims/attachment-claims.py`, byte-identical, with each repository's `attachment-claims.allow`, whose every entry names the connections it is true for: `metadata`, `text` or `media`); `README.md`, `SECURITY.md`, `docs/mcp.md`, `docs/media-security.md`, `packages/*/README.md`, `commercial/docs/**` |
+| **DOCSOPS** | the attachment claims gate in both repositories (`.github/claims/attachment-claims.py`, byte-identical, with each repository's `attachment-claims.allow`, whose every entry names the connections it is true for: `metadata`, `text` or `media`, or `unrelated` for a sentence about something else entirely); `README.md`, `SECURITY.md`, `docs/mcp.md`, `docs/media-security.md`, `packages/*/README.md`, `commercial/docs/**` |
 | **GO** (A0, done) | `internal/config/mcp.go`, `internal/mcpauth/{mcpauth,content,relay}.go`, `internal/store/{mcp,mcp_content}.go`, `internal/media/http.go`, `cmd/whatserverd/{main,mcp,discovery}.go`, migration 0043 |
 
 The workstreams meet at four interfaces, and a change to any of them goes
@@ -1697,8 +1697,9 @@ reads them. The order below 43 stands: 0043 down, then 0042, then 0041.
   (§16.6).
 - Every limit is a constant of the image (§16.8), measured in PCR0.
 - Logs carry no content, filename, size, page count or duration (§16.10).
-- View-once, `gone`, keyless and unhashed media are refused, and nothing of
-  A2 is built.
+- View-once, `gone`, keyless and unhashed media are refused (but a video's
+  preview, sealed in the message, is sent whatever the video's download
+  status, key or hash: step 13), and nothing of A2 is built.
 
 **Who does what.** The reader (`packages/mcp`) owns the tool, the archive
 reads it already makes, and the opener; the enclave (`enclave/media/`) owns

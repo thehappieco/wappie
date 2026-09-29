@@ -43,7 +43,7 @@ text docs/mcp.md :: A text connection never opens attachment contents; only a
 media docs/mcp.md :: view-once media and attachments the archive cannot verify are never opened,
 metadata,text docs/mcp.md :: never open attachment contents. A text connection never gains attachments,
 text packages/mcp-http/README.md :: never does, and never opens attachment contents.
-text packages/mcp/README.md :: the instructions keep saying that attachment contents are unavailable.
+text packages/mcp/README.md :: keep saying that attachment contents are unavailable.
 metadata,text,media packages/mcp/README.md :: file contents (not even on a media connection) or use a semantic/vector index.
 metadata,text packages/mcp/README.md :: and the local reader do not have the tool and never open attachment contents.
 

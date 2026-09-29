@@ -358,10 +358,11 @@ consent (version 2) includes attachments. It is accepted only with
 `credential_source: "enclave"` (anything else is `enclave_credentials_invalid`)
 and defaults to `false`, so every text connection, whatever its consent
 version, is unchanged. With it, the provider also supplies `media`, the
-enclave's `{host, why(row), open(request, archive)}`, and the reader then
-registers a ninth tool, `open_attachment`. Without `media` in both places the
-tool does not exist, and the instructions keep saying that attachment
-contents are unavailable.
+enclave's `{host, why(row), open(request, archive), resultMaxBytes}`
+(`resultMaxBytes` caps a serialized result: images that would pass it are
+withheld), and the reader then registers a ninth tool, `open_attachment`.
+Without `media` in both places the tool does not exist, and the instructions
+keep saying that attachment contents are unavailable.
 
 Two guidance codes exist only in this mode. The tool result names the code and
 tells the assistant what to say:
@@ -564,7 +565,8 @@ inside the enclave. The enclave opens the attachment's sealed media key with
 the connection's grants, fetches its ciphertext from the archive with the
 connection's API key, checks the archive's SHA-256 and WhatsApp's MAC before
 decrypting anything, and hands the file to a parser in a jailed process with
-no network, a read-only root and fixed memory and time limits. What the AI
+no network, a read-only root and fixed memory and time limits (a plain-text
+file is only decoded, in the reader itself, with no parser). What the AI
 provider receives:
 
 | Attachment | Sent to the assistant |
@@ -590,7 +592,11 @@ documents up to 32 MB, and reads about 4 MB of text from one file, the first
 2,000 pages of a PDF, 50 sheets of up to 2,000 rows and 200 entry names of a
 zip archive; the header's `truncated` says what was left out.
 
-These are never opened, and the tool says why with a stable code:
+These are never opened, and the tool says why with a stable code. A video,
+a round video note or a GIF is the exception to `attachment_expired`,
+`attachment_unverifiable` and `attachment_pending`: its preview image is
+sealed in the message itself, so it is sent whatever the video's key, hash or
+download status, and the video itself is never fetched.
 
 | Code | Attachment |
 | --- | --- |

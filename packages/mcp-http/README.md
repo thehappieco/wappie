@@ -303,7 +303,9 @@ so a switch reaches the enclave within a minute while text keeps serving.
 
 What the assistant receives, and what is never opened (view-once media,
 audio and voice notes until transcription exists, `gone` attachments, keyless
-or unhashed media), is in the [reader's guide](../mcp/README.md#open-attachments-on-a-media-connection).
+or unhashed media; a video's preview image, sealed in the message itself, is
+sent whatever the video's key, hash or download status, and the video is
+never fetched), is in the [reader's guide](../mcp/README.md#open-attachments-on-a-media-connection).
 
 `server.mjs` never imports `enclave/` and never names the `'enclave'`
 credential source, the key map, `enclave/media/` or `/v1/media`

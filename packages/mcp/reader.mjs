@@ -65,9 +65,10 @@ async function bounded(items, limit, work) {
  *   refused as `stale_grant`, so the enclave can log the event; it is neither
  *   awaited nor allowed to throw into the tool. On a connection whose sealed
  *   consent includes attachments (`config.media`), `media` is the enclave's
- *   `{host, why(row), open(request, archive)}` (docs/mcp-enclave.md §16.5):
- *   `openAttachment` hands it the call and an `archive` of the two reads it
- *   needs, and every attachment the reader describes says whether it opens.
+ *   `{host, why(row), open(request, archive), resultMaxBytes}`
+ *   (docs/mcp-enclave.md §16.5): `openAttachment` hands it the call and an
+ *   `archive` of the two reads it needs, and every attachment the reader
+ *   describes says whether it opens.
  * A local (files) config ignores the provider.
  */
 export async function createReader(config, provider) {

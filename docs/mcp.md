@@ -92,6 +92,8 @@ Every host takes the address as it is — **nothing to install**:
 - **Codex** (ChatGPT desktop app or CLI): Settings → MCP servers → Add server →
   Streamable HTTP → the address, or `codex mcp add wappie --url
   https://api.wappie.thehappie.co/mcp`. Codex opens the consent page itself.
+  Codex has been seen to list the tools without being able to call them; if
+  that happens, add Wappie as a ChatGPT app instead (below).
 - **Claude Code**: `claude mcp add --transport http --scope user wappie
   https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
 - **ChatGPT** (desktop app or web): Settings → Apps (Apps & Connectors) →
@@ -193,7 +195,8 @@ A media connection gets a ninth tool, `open_attachment`
 ([package guide](../packages/mcp/README.md#open-attachments-on-a-media-connection)).
 Inside the enclave it fetches the attachment's ciphertext from the archive,
 checks its SHA-256 and MAC, decrypts it and parses it in a jailed process
-with no network. The AI provider receives photos and stickers as re-encoded
+with no network (a plain-text file is only decoded, in the reader itself,
+with no parser). The AI provider receives photos and stickers as re-encoded
 images, PDFs as text by page with scanned pages as images, docx, odt, xlsx,
 xls, ods, pptx and plain-text files as text, other zip archives as their
 entry names, and a video, a round video note or a GIF as its preview image
@@ -203,7 +206,10 @@ and voice notes, until transcription exists; attachments the archive never
 downloaded and WhatsApp no longer keeps (`gone`), never recovered because a
 recovery would hand the media key to the archive server; keyless or unhashed
 media, which the reader cannot verify; other types (HEIC, legacy doc and ppt
-among them); and files over 16 MB for photos or 32 MB for documents.
+among them); and files over 16 MB for photos or 32 MB for documents. A
+video's preview image is the exception: it is sealed in the message itself,
+so it is sent whatever the video's key, hash or download status, and the
+video itself is never fetched.
 
 Nothing changes for anyone else. The hosted metadata connector, every
 metadata connection and every text connection, whatever its consent version,
