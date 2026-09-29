@@ -7,14 +7,15 @@ includes attachments (a 'media' connection). The hosted metadata connector at
 api.wappie.thehappie.co/mcp, every connection of kind 'metadata', every text
 connection (content consent version 1, or version 2 without attachments) and
 the local stdio reader still never open them. A sentence that says attachment
-contents are unavailable, that attachments are never opened, downloaded or
-read, or that file contents are out of reach was true of every connection
-before A1 and is false for a media connection after it. So every such phrase
-in the tree must be on the allowlist next to this file, under the scope a
-reviewer checked it is true for.
+contents are unavailable, that attachments are never (or not) opened,
+downloaded or read, or that attachment bytes or file contents are out of reach
+was true of every connection before A1 and is false for a media connection
+after it. So every such phrase in the tree must be on the allowlist next to
+this file, under the scope a reviewer checked it is true for.
 
 The phrases are matched case-insensitively, also across one line break
-(Markdown wraps prose), in English, Portuguese, Spanish, French and German:
+(Markdown wraps prose; a blockquote's '>' or a comment's '//', '#' or '*' on
+the next line is skipped), in English, Portuguese, Spanish, French and German:
 see PATTERNS below.
 
 Allowlist lines (attachment-claims.allow, '#' starts a comment):
@@ -55,28 +56,36 @@ PATTERNS = (
     r"never\s+(?:opens?|downloads?|reads?)\s+(?:any\s+|the\s+)?attachments?\b",
     r"\battachments?\b[^.\n]{0,60}?\b(?:are|is)\s+never\s+(?:opened|downloaded|read)\b",
     r"attachment\s+downloads?\s+(?:are|is)\s+(?:not\s+)?available",
-    r"\bdownload\s+(?:media|attachments?)\b",
+    r"\bdownloads?\s+(?:media|attachments?)\b",
+    r"\bnever\s+attachment\s+(?:contents?|bytes|files?)\b",
+    r"\battachment\s+bytes\b",
+    r"\bno\b[^.\n]{0,40}?\bopens?\s+attachments?\b",
+    # A claim, not a report of one failure ("Could not open the attachment").
+    r"(?:\b(?:does|do|will|may|can|must|should)\s+not|\b(?:doesn|don|won|can|mustn|shouldn)['’]t|\bcannot)"
+    r"\s+(?:open|download|read)\s+(?:the\s+|any\s+)?attachments?\b",
     r"file\s+contents",
     # Portuguese.
     r"conte[úu]do\s+d[eo]s?\s+(?:anexos|arquivos)",
-    r"nunca\s+(?:abre|baixa|l[êe])\s+(?:os\s+)?anexos",
+    r"(?:nunca|n[ãa]o)\s+(?:abre|baixa|l[êe])\s+(?:os\s+)?anexos",
     r"\banexos?\b[^.\n]{0,60}?\bnunca\s+(?:s[ãa]o|[ée])\s+(?:abert|baixad|lid)",
     # Spanish.
     r"contenido\s+de\s+(?:los\s+)?(?:archivos\s+)?(?:adjuntos|archivos)",
-    r"nunca\s+(?:abre|descarga|lee)\s+(?:los\s+)?(?:archivos\s+)?adjuntos",
+    r"(?:nunca|\bno)\s+(?:abre|descarga|lee)\s+(?:los\s+)?(?:archivos\s+)?adjuntos",
     r"\badjuntos?\b[^.\n]{0,60}?\bnunca\s+se\s+(?:abren|abre|descargan|descarga|leen|lee)\b",
     # French.
     r"contenu\s+des\s+(?:pi[èe]ces\s+jointes|fichiers)",
-    r"n['’]ouvre\s+jamais\s+(?:les\s+)?pi[èe]ces\s+jointes",
-    r"\bpi[èe]ces?\s+jointes?\b[^.\n]{0,60}?\bne\s+(?:sont|est)\s+jamais\s+(?:ouvert|t[ée]l[ée]charg|lu)",
+    r"(?:n['’]ouvre|ne\s+lit|ne\s+t[ée]l[ée]charge)\s+(?:jamais|pas)\s+(?:les\s+)?pi[èe]ces\s+jointes",
+    r"\bpi[èe]ces?\s+jointes?\b[^.\n]{0,60}?\bne\s+(?:sont|est)\s+(?:jamais|pas)\s+(?:ouvert|t[ée]l[ée]charg|lu)",
     # German.
     r"Inhalte?\s+der\s+(?:Anh[äa]nge|Dateien)",
     r"Dateiinhalte?\b",
     r"(?:öffnet|lädt|liest)\s+(?:nie(?:mals)?|keine)\s+Anh[äa]nge",
-    r"\bAnh[äa]nge\b[^.\n]{0,60}?\bwerden\s+nie(?:mals)?\s+(?:geöffnet|heruntergeladen|gelesen)",
+    r"\bAnh[äa]nge\b[^.\n]{0,60}?\b(?:nie(?:mals)?|nicht)\s+(?:geöffnet|heruntergeladen|gelesen)",
 )
 PHRASE = re.compile("|".join(f"(?:{pattern})" for pattern in PATTERNS), re.IGNORECASE)
 MAX_BYTES = 4 * 1024 * 1024
+# What starts a continued blockquote or comment line.
+WRAP_MARKER = re.compile(r"^\s*(?:>+|//+|#+|\*+)?\s*")
 
 
 def tracked_files(root):
@@ -94,7 +103,9 @@ def hits(text):
             yield index + 1, line
         if index + 1 < len(lines):
             head = line.rstrip()
-            joined = head + " " + lines[index + 1].lstrip()
+            # A blockquote or a comment wraps like prose: its next line's
+            # marker is not part of the sentence.
+            joined = head + " " + WRAP_MARKER.sub("", lines[index + 1], count=1)
             for match in PHRASE.finditer(joined):
                 # Only a match that spans the break; the others are found on
                 # their own line.
