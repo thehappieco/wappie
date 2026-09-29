@@ -108,11 +108,16 @@ test('a photo: the key, the ciphertext with the connection\'s key and identity e
   // The answer handed out is a copy: zeroing it leaves the cache whole.
   result.images[0].data.fill(0)
   assert.notEqual((await photo.open()).images[0].data[0], 0)
+  // Another number of the same connection is never answered from what this one opened: its call reads the row.
+  const otherNumber = '018f3a2b-2222-7000-8000-00000000eeee'
+  const rows = h.rows
+  await h.media.open({ device_id: otherNumber, uid: photo.uid, images: true }, photo.access)
+  assert.equal(h.rows, rows + 1)
   h.clock += RESULT_TTL_MS
   await photo.open()
-  assert.equal(h.fetches.length, 2, 'fetched again once the answer expired')
+  assert.equal(h.fetches.length, 3, 'fetched again once the answer expired')
   // What the log says: only the events, the connection and codes.
-  assert.deepEqual(h.events().map(entry => entry.event), ['media_opened', 'media_opened'])
+  assert.deepEqual(h.events().map(entry => entry.event), ['media_opened', 'media_opened', 'media_opened'])
   for (const line of h.lines) {
     assert.equal(lineAllowed(line), true, line)
     for (const secret of [photo.uid, sentinel.filename, sentinel.caption, h.record.api_key, String(photo.row.media.file_length)]) assert.equal(line.includes(secret), false, line)
@@ -430,6 +435,9 @@ test('office, zip and plain text: rendered text, char cursors from the cache, ki
   const next = await docx.open({ cursor: `c${PART_MAX_CHARS}` })
   assert.equal(next.body, long.slice(PART_MAX_CHARS, 2 * PART_MAX_CHARS))
   assert.deepEqual(since(), { fetches: 0, opens: 0, rows: 0 })
+  await h.media.open({ device_id: '018f3a2b-2222-7000-8000-00000000eeee', uid: docx.uid, cursor: `c${PART_MAX_CHARS}`, images: true }, docx.access)
+  assert.equal(since().rows, 1, 'the text cache is the number\'s too')
+  h.clock += 60_000
   for (const request of [{ cursor: 'p1' }, { pages: '1' }, { cursor: `c${long.length}` }]) await assert.rejects(docx.open(request), refusedWith('invalid_cursor'), JSON.stringify(request))
   // Plain text never reaches a worker.
   const killedBefore = h.events().length
@@ -516,8 +524,8 @@ test('wiping: a revocation kills the fetch or the job in flight and empties the 
   const pdf = h.attachment({ type: 'document', plaintext: withScenario(PDF_MAGIC, { pages: ['words words words words words words words words words words.'] }) })
   await pdf.open()
   h.service.narrow(id, ['pdf'])
-  assert.ok(h.service.caches.text.get(id, kept.uid), 'the office text stays')
-  assert.equal(h.service.caches.text.get(id, pdf.uid), undefined, 'the pdf text goes')
+  assert.ok(h.service.caches.text.get(id, `${device}|${kept.uid}`), 'the office text stays')
+  assert.equal(h.service.caches.text.get(id, `${device}|${pdf.uid}`), undefined, 'the pdf text goes')
   assert.equal(h.media.why(pdf.row), null, 'a document\'s kind is known only after the sniff')
   assert.equal(h.media.why(photo.row), null)
   h.service.narrow(id, ['image'])

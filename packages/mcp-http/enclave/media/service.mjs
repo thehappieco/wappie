@@ -34,8 +34,14 @@ import {
 const FORGOTTEN = new Set(['attachment_pending', 'read_failed', 'reconsent_required', 'stale_grant', 'unauthorized', 'rate_limited', 'media_not_allowed'])
 const safeCode = error => ((error instanceof ArchiveError || error instanceof LocalConfigError) && /^[a-z][a-z0-9_]{0,47}$/.test(error.code) ? error.code : 'read_failed')
 
-/** The per-connection key of an open (§16.9): identical calls share it. */
+/**
+ * The per-connection key of an open (§16.9): identical calls share it. The
+ * caches and the running opens are also keyed by the call's number, so what
+ * one number's call opened never answers a call naming another, whose row
+ * check would have refused it.
+ */
 export const openKey = ({ uid, cursor, pages, images = true }) => `${uid}|${cursor ?? ''}|${pages ?? ''}|${images === false ? 0 : 1}`
+const numbered = (device, key) => `${device}|${key}`
 
 const defaultDelay = (ms, signal) => new Promise(resolve => {
   const timer = setTimeout(resolve, ms)
@@ -116,16 +122,15 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     }
     return texts
   }
-  function storePdf(id, uid, facts, window) {
-    const entry = caches.text.get(id, uid)
+  function storePdf(id, textKey, facts, window) {
+    const entry = caches.text.get(id, textKey)
     const windows = windowsOf(entry).filter(item => item.to < window.from || item.from > window.to)
-    caches.text.set(id, uid, { kind: 'pdf', facts, windows: [...windows, window].sort((a, b) => a.from - b.from) })
+    caches.text.set(id, textKey, { kind: 'pdf', facts, windows: [...windows, window].sort((a, b) => a.from - b.from) })
   }
 
-  /** A PDF part, from the text cache where it can be; `plaintext` null means no job may run. */
-  async function pdfResult(open, id, facts, request, plaintext) {
-    const uid = facts.uid
-    let windows = windowsOf(caches.text.get(id, uid)), total = facts.pages
+  /** A PDF part, from the text cache (under `textKey`) where it can be; `plaintext` null means no job may run. */
+  async function pdfResult(open, id, textKey, facts, request, plaintext) {
+    let windows = windowsOf(caches.text.get(id, textKey)), total = facts.pages
     const read = async (from, count) => {
       if (!plaintext) return null
       const output = await job(open, 'pdf', pdfTextJob(from, count), plaintext)
@@ -136,7 +141,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       if (from > lastPage(total)) throw refusal('invalid_cursor')
       const window = pdfWindow(output, from, now() + TEXT_TTL_MS)
       if (!window) throw refusal('parser_failed')
-      storePdf(id, uid, facts, window)
+      storePdf(id, textKey, facts, window)
       windows = [window]
       return window
     }
@@ -172,12 +177,12 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
   }
 
   /** Step 6: a part the text cache already holds, or null. */
-  function fromText(id, request) {
-    const entry = caches.text.get(id, request.uid)
+  function fromText(id, textKey, request) {
+    const entry = caches.text.get(id, textKey)
     const state = connections.get(id)
     if (!entry || state?.mediaOff.includes(entry.kind)) return null
     const facts = { ...entry.facts, truncated: [...entry.facts.truncated] }
-    if (entry.kind === 'pdf') return pdfResult(null, id, facts, request, null)
+    if (entry.kind === 'pdf') return pdfResult(null, id, textKey, facts, request, null)
     if (request.pages || request.cursor?.unit === 'page') throw refusal('invalid_cursor')
     const part = charPart(entry.text, request.cursor)
     return finish(facts, { body: part.body, part: part.part, next: part.next })
@@ -242,9 +247,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         return finish(facts, { images: output.images, extra: { animated: output.header.animated || undefined } })
       }
       if (sniffed.kind === 'pdf') {
-        const entry = caches.text.get(id, row.uid)
+        const entry = caches.text.get(id, open.textKey)
         const facts = entry?.kind === 'pdf' ? { ...entry.facts, truncated: [...entry.facts.truncated] } : factsOf(row, opened, { sniffed: 'pdf' })
-        return await pdfResult(open, id, facts, request, plaintext)
+        return await pdfResult(open, id, open.textKey, facts, request, plaintext)
       }
       if (request.cursor?.unit === 'page') throw refusal('invalid_cursor')
       // Plain text is decoded here; an office file or a zip is the office worker's.
@@ -260,7 +265,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         open.kinds = [output.header.sniffed === 'zip' ? 'zip' : 'office']
       }
       const facts = factsOf(row, opened, found)
-      caches.text.set(id, row.uid, { kind: open.kinds[0], facts, text })
+      caches.text.set(id, open.textKey, { kind: open.kinds[0], facts, text })
       const part = charPart(text, request.cursor)
       return finish(facts, { body: part.body, part: part.part, next: part.next })
     } finally {
@@ -308,7 +313,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       if (status.answer !== 'serve' || status.media !== true) throw refusal('media_not_allowed')
       const state = stateOf(id)
       state.mediaOff = knownKinds(status.media_off)
-      const key = openKey(input)
+      const key = numbered(input.device_id, openKey(input)), textKey = numbered(input.device_id, input.uid)
       const kept = caches.result.get(id, key)
       if (kept) {
         if (kept.outcome.error) throw kept.outcome.error
@@ -316,7 +321,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       }
       let open = state.opens.get(key)
       if (!open) {
-        const cached = await fromText(id, request)
+        const cached = await fromText(id, textKey, request)
         if (cached) return copy(cached)
         if (state.opens.size >= OPENS_IN_FLIGHT) throw refusal('rate_limited', { retry_after_s: 10 })
         const opensWait = budgets.opensWait(id)
@@ -332,7 +337,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
           const bytesWait = budgets.bytesWait(id, Number.isSafeInteger(row.media.file_length) ? row.media.file_length : CAP_BYTES[plan.family])
           if (bytesWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(bytesWait), facts })
         }
-        open = { id, key, uid: row.uid, facts, kinds: plan.kind ? [plan.kind] : [], controller: new AbortController(), done: false, outcome: null, reason: null }
+        open = { id, key, textKey, uid: row.uid, facts, kinds: plan.kind ? [plan.kind] : [], controller: new AbortController(), done: false, outcome: null, reason: null }
         open.settled = new Promise(resolve => { open.resolve = resolve })
         if (!scheduler.admit(open, () => run(open, record, row, request, plan, access))) throw refusal('media_busy', { retry_after_s: 20, facts })
         budgets.admit(id)
