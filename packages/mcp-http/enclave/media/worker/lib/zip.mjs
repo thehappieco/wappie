@@ -35,8 +35,9 @@ const utf8 = new TextDecoder('utf-8')
 
 /**
  * Read the central directory of `buf` and apply the declared checks.
- * Returns { entries }, each { name, method, flags, crc, compressed, size,
- * offset, directory, encrypted }, in central-directory order.
+ * Returns { entries }, each { name, nameBytes, method, flags, crc,
+ * compressed, size, offset, directory, encrypted }, in central-directory
+ * order.
  */
 export function readZip(buf, limits) {
   const end = findEnd(buf)
@@ -78,6 +79,7 @@ export function readZip(buf, limits) {
     if (declared > limits.inflated) throw refuse('too_large', 'inflated')
     entries.push({
       name,
+      nameBytes,
       method,
       flags,
       crc,
@@ -179,4 +181,55 @@ export class Inflater {
     this.left -= out.length
     return out
   }
+}
+
+/**
+ * The files of a checked zip as a stored zip of our own: each entry read
+ * through `inflater` (so counted and checked like any other read), under a
+ * local header that agrees with the one central directory, and an end record
+ * with no comment. SheetJS reads this instead of the original (office.mjs),
+ * so it finds the directory readZip checked, not one that an end record
+ * hidden in a comment points at, and it inflates nothing itself. Its size is
+ * bounded by the declared sizes readZip already held to `limits.inflated`.
+ */
+export function storedZip(entries, inflater) {
+  const files = entries.filter((e) => !e.directory)
+  const out = Buffer.alloc(files.reduce((sum, e) => sum + 76 + 2 * e.nameBytes.length + e.size, 22))
+  const flags = (e) => e.flags & 0x800
+  const offsets = []
+  let at = 0
+  for (const e of files) {
+    const data = inflater.read(e)
+    offsets.push(at)
+    out.writeUInt32LE(LOCAL, at)
+    out.writeUInt16LE(20, at + 4)
+    out.writeUInt16LE(flags(e), at + 6)
+    out.writeUInt32LE(e.crc, at + 14)
+    out.writeUInt32LE(data.length, at + 18)
+    out.writeUInt32LE(data.length, at + 22)
+    out.writeUInt16LE(e.nameBytes.length, at + 26)
+    e.nameBytes.copy(out, at + 30)
+    data.copy(out, at + 30 + e.nameBytes.length)
+    at += 30 + e.nameBytes.length + data.length
+  }
+  const directory = at
+  files.forEach((e, k) => {
+    out.writeUInt32LE(CENTRAL, at)
+    out.writeUInt16LE(20, at + 4)
+    out.writeUInt16LE(20, at + 6)
+    out.writeUInt16LE(flags(e), at + 8)
+    out.writeUInt32LE(e.crc, at + 16)
+    out.writeUInt32LE(e.size, at + 20)
+    out.writeUInt32LE(e.size, at + 24)
+    out.writeUInt16LE(e.nameBytes.length, at + 28)
+    out.writeUInt32LE(offsets[k], at + 42)
+    e.nameBytes.copy(out, at + 46)
+    at += 46 + e.nameBytes.length
+  })
+  out.writeUInt32LE(EOCD, at)
+  out.writeUInt16LE(files.length, at + 8)
+  out.writeUInt16LE(files.length, at + 10)
+  out.writeUInt32LE(at - directory, at + 12)
+  out.writeUInt32LE(directory, at + 16)
+  return out
 }

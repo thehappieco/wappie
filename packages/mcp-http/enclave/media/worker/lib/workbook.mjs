@@ -2,9 +2,9 @@
 // only. Formulas are never read, so never evaluated; macros, external links,
 // styles and properties are not read either. SheetJS stops each sheet at
 // `limits.sheet_rows` rows; its `!fullref` still says how many the sheet
-// declares. An xlsx reaches here only after the zip checks and a counted
-// inflate of every entry (office.mjs), so its own inflater sees nothing the
-// limits did not already bound.
+// declares. An xlsx reaches here as a stored zip of its entries, each
+// inflated with the counts and checks of lib/zip.mjs (office.mjs), so its own
+// zip reader finds only the directory those checks read and inflates nothing.
 
 import * as XLSX from 'xlsx'
 import * as cptable from 'xlsx/dist/cpexcel.full.mjs'

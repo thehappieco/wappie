@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { deflateRawSync } from 'node:zlib'
-import { readZip, Inflater } from '../lib/zip.mjs'
+import { readZip, Inflater, storedZip } from '../lib/zip.mjs'
 import { cfbNames, classifyCfb } from '../lib/cfb.mjs'
 import { parseXml, decodeXml, unescapeXml, MAX_DEPTH } from '../lib/xml.mjs'
 import { resolvePart } from '../lib/package.mjs'
@@ -54,6 +54,23 @@ test('inflating counts: a lie about the size or the CRC is caught', () => {
   const stored = zip([{ name: 'st', data: 'stored bytes', method: 0 }])
   assert.equal(new Inflater(stored, LIMITS).read(readZip(stored, LIMITS).entries[0]).toString(), 'stored bytes')
   assert.equal(deflateRawSync(Buffer.alloc(1)).length > 0, true)
+})
+
+test('storedZip: every file again, read through the counted inflater, stored under one directory and a last end record', () => {
+  const buf = zip([
+    { name: 'dir/', data: '' },
+    { name: 'ünï.txt', data: 'a'.repeat(3_000) },
+    { name: Buffer.from([0x80, 0x41]).toString('latin1'), data: 'b', cp437: true },
+    { name: 'st', data: 'stored bytes', method: 0 },
+  ])
+  const inflater = new Inflater(buf, LIMITS)
+  const stored = storedZip(readZip(buf, { ...LIMITS, ratio: 1_000 }).entries, inflater)
+  assert.equal(inflater.left, LIMITS.inflated - 3_013)
+  const entries = readZip(stored, LIMITS).entries
+  assert.deepEqual(entries.map((e) => [e.name, e.method, e.compressed, e.size]), [['ünï.txt', 0, 3_000, 3_000], ['ÇA', 0, 1, 1], ['st', 0, 12, 12]])
+  assert.deepEqual(entries.map((e) => new Inflater(stored, LIMITS).read(e).toString()), ['a'.repeat(3_000), 'b', 'stored bytes'])
+  assert.equal(stored.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])), stored.length - 22)
+  assert.equal(Buffer.from(XLSX.CFB.find(XLSX.CFB.read(stored, { type: 'buffer' }), 'st').content).toString(), 'stored bytes')
 })
 
 test('a damaged central directory is damaged, never a crash', () => {

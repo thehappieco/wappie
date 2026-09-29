@@ -2590,7 +2590,13 @@ after others, followed by exit 2.
   encrypted OOXML package (a CFB with `EncryptionInfo`) ERROR `encrypted`;
   any other CFB ERROR `unsupported`; any other zip `zip`. Kind `office` for
   the first six, `zip` for the last; not in `allow`: ERROR `kind_off`, before
-  any parser of that kind runs. Macros and scripts are never run, formulas
+  any parser of that kind runs. An xlsx without `[Content_Types].xml` (SheetJS
+  would open a nested `Index.zip` with its own inflater), or with a part that
+  sends SheetJS to another format (`META-INF/manifest.xml`, `objectdata.xml`,
+  `Index/Document.iwa`, in any case and with either slash): ERROR
+  `unsupported`. SheetJS never reads the original: it gets a stored zip of
+  the entries, each inflated with the counts above, under the one central
+  directory the checks read. Macros and scripts are never run, formulas
   never evaluated, external links never followed. HEADER
   `{"sniffed":…}`, plus `"sheets":total` for a workbook, `"slides":total` for
   pptx, `"entries":total` for a zip. Then, per §16.7's body table: docx and
@@ -2839,7 +2845,9 @@ and once in the probe enclave before the release.
   ending in a bounded refusal or result and never a reader restart: a
   50k × 50k PNG; a zip bomb; nested zips; a docx with an external image link
   (CVE-2025-11849); a PDF with a 1 GB Flate stream; deep nesting in PDF and
-  XML; an xlsx with a million rows; the CVE-2023-4863 WebP; an SVG and a
+  XML; an xlsx with a million rows; an xlsx holding a nested `Index.zip`
+  bomb and one whose decoy end record points at a second central directory;
+  the CVE-2023-4863 WebP; an SVG and a
   HEIC sent as images; a truncated file of each kind.
 - **JAIL** (`check-image.sh --jail`, then the probe enclave): the A0 probe's
   18 tests with `/opt/media`; `--table` equals `WORKERS`; an unknown worker

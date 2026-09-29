@@ -7,7 +7,7 @@
 // does not allow (kind_off) before any parser of that kind runs:
 //
 //   word/document.xml      docx   own XML reader (lib/flow.mjs)
-//   xl/workbook.xml        xlsx   SheetJS, after a counted inflate of every entry
+//   xl/workbook.xml        xlsx   SheetJS, on a stored copy of the counted entries
 //   ppt/presentation.xml   pptx   own XML reader, slides in presentation order
 //   mimetype …text         odt    own XML reader
 //   mimetype …spreadsheet  ods    own XML reader (lib/ods.mjs)
@@ -21,7 +21,7 @@
 
 import { silenceConsole, run, strict, refuse, isInt, isObject, HEADER, SECTION, TextSink } from './lib/frames.mjs'
 import { JOB_TEXT_MAX_BYTES, ZIP_MAX_ENTRIES, ZIP_MAX_INFLATED, ZIP_MAX_RATIO, ZIP_LISTED, SHEETS_MAX, SHEET_ROWS } from './lib/limits.mjs'
-import { readZip } from './lib/zip.mjs'
+import { readZip, storedZip } from './lib/zip.mjs'
 import { classifyCfb } from './lib/cfb.mjs'
 import { Package } from './lib/package.mjs'
 import { parseXml } from './lib/xml.mjs'
@@ -39,6 +39,10 @@ const ODF = {
 }
 const KINDS = ['office', 'zip']
 const NAME_MAX = 255
+// Parts that make SheetJS read a package as another format (ODS, UOC,
+// Numbers), matched as it matches them: any case, either slash.
+const NOT_XLSX = new Set(['meta-inf/manifest.xml', 'objectdata.xml', 'index/document.iwa'])
+const partName = (name) => name.toLowerCase().replace(/\\/g, '/').replace(/^\/+/, '')
 
 function parseJob(header) {
   const job = strict(header, {
@@ -101,12 +105,16 @@ async function openZip(input, job, out) {
       return { header: { sniffed, sheets: book.sheets }, render: book.render }
     }
     case 'xlsx': {
-      // SheetJS inflates on its own; every entry is inflated here first,
-      // counted and checked against its declared size and CRC, so what it
-      // inflates is bounded by the limits already.
-      for (const e of entries) if (!e.directory) pkg.inflater.read(e)
+      // Only what SheetJS reads as an xlsx: without [Content_Types].xml it
+      // would open a nested Index.zip and inflate it with no limits, and the
+      // parts above send it to another format's parser.
+      if (!pkg.has('[Content_Types].xml') || entries.some((e) => NOT_XLSX.has(partName(e.name)))) throw refuse('unsupported')
+      // SheetJS gets the entries again as a stored zip, each inflated here,
+      // counted and checked against its declared size and CRC: it reads the
+      // central directory lib/zip.mjs checked and inflates nothing itself.
+      const stored = storedZip(entries, pkg.inflater)
       const { readWorkbook } = await import('./lib/workbook.mjs')
-      const book = readWorkbook(input, out, job.limits)
+      const book = readWorkbook(stored, out, job.limits)
       return { header: { sniffed, sheets: book.sheets }, render: book.render }
     }
     default:

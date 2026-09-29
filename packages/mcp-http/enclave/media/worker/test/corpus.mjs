@@ -138,6 +138,28 @@ export function zip(files) {
   return Buffer.concat([...locals, cd, end])
 }
 
+/**
+ * Two packages in one file: `hidden`, then `shown` with its offsets moved
+ * past it, whose end record's comment is a copy of `hidden`'s end record.
+ * The copy claims a comment running past the end of the file, so a reader
+ * that checks comment lengths (lib/zip.mjs) finds `shown`'s directory, and
+ * one that takes the last end record it sees (SheetJS) finds `hidden`'s.
+ */
+function twoDirectories(shown, hidden) {
+  const out = Buffer.from(shown)
+  const end = out.length - 22
+  let at = out.readUInt32LE(end + 16)
+  for (let k = 0; k < out.readUInt16LE(end + 10); k++) {
+    out.writeUInt32LE(out.readUInt32LE(at + 42) + hidden.length, at + 42)
+    at += 46 + out.readUInt16LE(at + 28) + out.readUInt16LE(at + 30) + out.readUInt16LE(at + 32)
+  }
+  out.writeUInt32LE(out.readUInt32LE(end + 16) + hidden.length, end + 16)
+  out.writeUInt16LE(22, end + 20)
+  const decoy = Buffer.from(hidden.subarray(hidden.length - 22))
+  decoy.writeUInt16LE(0xffff, 20)
+  return Buffer.concat([hidden, out, decoy])
+}
+
 /** Deflate `total` zero bytes without holding them. */
 function deflateZeros(total, raw = true) {
   return new Promise((resolve, reject) => {
@@ -610,6 +632,24 @@ export async function corpus() {
     ...Array.from({ length: 246 }, (_, i) => ({ name: `f/${String(i).padStart(3, '0')}.txt`, data: `${i}` })),
   ])
   const zipBomb = zip([{ name: 'zeros.bin', data: Buffer.alloc(0), compressed: await deflateZeros(50 << 20), declaredSize: 50 << 20, crc: 0, method: 8 }])
+  // Without [Content_Types].xml SheetJS opens a nested Index.zip and inflates
+  // it itself; this one holds 300 MiB of zeros in a stored entry.
+  const indexZip = zip([
+    { name: 'xl/workbook.xml', data: `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>` },
+    { name: 'Index.zip', data: zip([{ name: 'a.bin', data: Buffer.alloc(0), compressed: await deflateZeros(300 << 20), declaredSize: 300 << 20, crc: 0, method: 8 }]), method: 0 },
+  ])
+  // A manifest makes SheetJS read the package as ODS, whatever else it holds.
+  const xlsxAsOds = zip([
+    { name: '[Content_Types].xml', data: '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>' },
+    { name: 'xl/workbook.xml', data: `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>` },
+    { name: 'META-INF\\Manifest.xml', data: '<manifest/>' },
+  ])
+  const oneCell = (text) => {
+    const book = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([[text]]), 'Folha')
+    return XLSX.write(book, { type: 'buffer', bookType: 'xlsx' })
+  }
+  const secondDirectory = twoDirectories(oneCell('SHOWN-SENTINEL'), oneCell('HIDDEN-SENTINEL'))
   const manyEntries = zip(Array.from({ length: 2_001 }, (_, i) => ({ name: `e${i}`, data: '' })))
   const encryptedOoxml = cfb({ EncryptionInfo: Buffer.alloc(200, 1), EncryptedPackage: Buffer.alloc(200, 2) })
   const wordCfb = cfb({ WordDocument: Buffer.alloc(600, 3) })
@@ -770,6 +810,10 @@ export async function corpus() {
     { name: 'xls-kind-off', worker: 'office', header: H.office(['zip']), input: xls, expect: ['error:kind_off'] },
     { name: 'xlsx-million-rows', worker: 'office', header: H.office(), input: million, expect: ['done', ...KILLED], check: (r) => r.sections[0].value.rows === 2000 && r.sections[0].value.total_rows === 1_000_000 },
     { name: 'xlsx-truncated', worker: 'office', header: H.office(), input: truncate(xlsx), expect: ['error:damaged'] },
+    { name: 'xlsx-index-zip-bomb', worker: 'office', header: H.office(), input: indexZip, expect: ['error:unsupported'] },
+    { name: 'xlsx-read-as-ods', worker: 'office', header: H.office(), input: xlsxAsOds, expect: ['error:unsupported'] },
+    // SheetJS reads a stored copy of the directory lib/zip.mjs checked, never the one the decoy points at.
+    { name: 'xlsx-second-directory', worker: 'office', header: H.office(), input: secondDirectory, expect: ['done'], check: all(has('SHOWN-SENTINEL'), lacks('HIDDEN-SENTINEL')) },
     { name: 'xls-truncated', worker: 'office', header: H.office(), input: truncate(xls), expect: ['error:damaged', 'done'] },
     { name: 'ooxml-encrypted', worker: 'office', header: H.office(), input: encryptedOoxml, expect: ['error:encrypted'] },
     { name: 'ooxml-encrypted-office-off', worker: 'office', header: H.office(['zip']), input: encryptedOoxml, expect: ['error:encrypted'] },
