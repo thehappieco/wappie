@@ -76,8 +76,9 @@ function classifyZip(entries, pkg) {
 async function openCfb(input, job, out) {
   const kind = classifyCfb(input, job.limits.entries)
   if (!kind) throw refuse('unsupported')
-  if (!job.allow.includes('office')) throw refuse('kind_off')
+  // A classification, like `unsupported`: no parser of any kind has run.
   if (kind === 'encrypted') throw refuse('encrypted')
+  if (!job.allow.includes('office')) throw refuse('kind_off')
   const { readWorkbook } = await import('./lib/workbook.mjs')
   const book = readWorkbook(input, out, job.limits)
   return { header: { sniffed: 'xls', sheets: book.sheets }, render: book.render }

@@ -79,7 +79,8 @@ async function open(input, imagePixels) {
 }
 
 // A page's text: its items joined, an item's end of line as "\n", spaces at
-// the end of each line removed.
+// the end of each line removed, and the line breaks after its last line (the
+// reader writes the block's own).
 function pageText(items) {
   let s = ''
   for (const item of items) {

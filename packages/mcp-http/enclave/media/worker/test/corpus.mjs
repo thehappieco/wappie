@@ -770,6 +770,7 @@ export async function corpus() {
     { name: 'xlsx-truncated', worker: 'office', header: H.office(), input: truncate(xlsx), expect: ['error:damaged'] },
     { name: 'xls-truncated', worker: 'office', header: H.office(), input: truncate(xls), expect: ['error:damaged', 'done'] },
     { name: 'ooxml-encrypted', worker: 'office', header: H.office(), input: encryptedOoxml, expect: ['error:encrypted'] },
+    { name: 'ooxml-encrypted-office-off', worker: 'office', header: H.office(['zip']), input: encryptedOoxml, expect: ['error:encrypted'] },
     { name: 'cfb-word97', worker: 'office', header: H.office(), input: wordCfb, expect: ['error:unsupported'] },
     {
       name: 'zip-listing',
