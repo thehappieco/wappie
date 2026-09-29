@@ -27,6 +27,11 @@ SIGILL = [
 ]
 
 
+# The runner's go parts for a run whose seccomp-killed corpus PDF was a
+# worker's kill: the jail check fails, and so does the kernel log's part.
+PARTS = {"jail_check": False, "media_e2e": True, "reader_bench": True, "no_worker_seccomp_kills": False}
+
+
 def console(*lines):
     return "\r\n".join(lines) + "\r\n"
 
@@ -45,8 +50,9 @@ class AssembleTest(unittest.TestCase):
             record(4, "jail_result", {"pass": True, "name": "escape: nsm", "detail": {}}),
             record(5, "jail_result", {"pass": False, "name": "corpus pdf: pdf-1gb-stream", "detail": {"outcome": "seccomp"}}),
             record(6, "jail_check", {"go": False, "failed": ["corpus pdf: pdf-1gb-stream"]}),
-            record(7, "bench", {"phase": "document", "name": "pdf-32mib", "ms": 4200}),
-            record(8, "done", {"fatal_errors": 0, "go": False, "parts": {"jail_check": False, "media_e2e": True, "reader_bench": True}}),
+            record(7, "bench", {"phase": "document", "name": "pdf-32mib", "ms": 4200, "outcome": "complete"}),
+            record(8, "kernel_log", {"worker_seccomp_kills": [{"pid": 640, "comm": "node", "syscall": 441}]}),
+            record(9, "done", {"fatal_errors": 0, "go": False, "parts": PARTS}),
             "A1 EXIT 570 runner: exit 0",
             ar.END,
         ]
@@ -54,11 +60,11 @@ class AssembleTest(unittest.TestCase):
     def test_a_whole_run_is_complete(self):
         report, ordered = ar.assemble(console(*self.full_run()))
         self.assertTrue(report["complete"])
-        self.assertEqual(report["records"], 8)
+        self.assertEqual(report["records"], 9)
         self.assertEqual(report["missing_seqs"], [])
         self.assertEqual(
             [r["section"] for r in ordered],
-            ["begin", "meta", "spawn", "jail_result", "jail_result", "jail_check", "bench", "done"],
+            ["begin", "meta", "spawn", "jail_result", "jail_result", "jail_check", "bench", "kernel_log", "done"],
         )
         self.assertEqual(len(report["sections"]["jail_result"]), 2)
         self.assertEqual(report["sections"]["bench"][0]["data"]["name"], "pdf-32mib")
@@ -70,7 +76,7 @@ class AssembleTest(unittest.TestCase):
             report["verdict"],
             {
                 "go": False,
-                "parts": {"jail_check": False, "media_e2e": True, "reader_bench": True},
+                "parts": PARTS,
                 "jail_checks": 2,
                 "jail_failed": ["corpus pdf: pdf-1gb-stream"],
             },
@@ -97,8 +103,8 @@ class AssembleTest(unittest.TestCase):
     def test_duplicates_count_once(self):
         lines = self.full_run()
         report, ordered = ar.assemble(console(*lines, *[l for l in lines if l.startswith("A1R ")]))
-        self.assertEqual(report["records"], 8)
-        self.assertEqual(len(ordered), 8)
+        self.assertEqual(report["records"], 9)
+        self.assertEqual(len(ordered), 9)
         self.assertEqual(len(report["sections"]["spawn"]), 1)
 
     def test_a_run_that_died_is_partial_but_keeps_its_sections(self):
@@ -145,7 +151,8 @@ class AssembleTest(unittest.TestCase):
             self.assertIn("complete", done.stdout)
             self.assertIn("go=False", done.stdout)
             self.assertIn("failed: corpus pdf: pdf-1gb-stream", done.stdout)
-            self.assertEqual(len((out / "report.jsonl").read_text().splitlines()), 8)
+            self.assertIn('"no_worker_seccomp_kills": false', done.stdout)
+            self.assertEqual(len((out / "report.jsonl").read_text().splitlines()), 9)
             self.assertTrue(json.loads((out / "report.json").read_text())["complete"])
 
             (out / "console.log").write_text(console(*self.full_run()[:10]))

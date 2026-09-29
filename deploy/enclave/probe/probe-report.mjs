@@ -619,8 +619,11 @@ async function readerBench() {
         return true
       },
     })
+    // Each document must open: an OOM, a wall, a worker's seccomp kill or a
+    // still-pending open after OPEN_LIMIT_MS ends as another outcome.
+    const opened = (d) => !d.error && (d.outcome === 'complete' || d.outcome === 'partial')
     return {
-      go: r.code === 0 && phases.end === 1 && phases.media_jail === true && documents.length === 4 && documents.every((d) => !d.error),
+      go: r.code === 0 && phases.end === 1 && phases.media_jail === true && documents.length === 4 && documents.every(opened),
       exit_code: r.code,
       signal: r.signal,
       timed_out: r.timed_out,
@@ -811,9 +814,15 @@ async function main() {
   ctx.jail = await section('jail_check', jailCheck)
   ctx.e2e = await section('media_e2e', mediaE2e)
   ctx.bench = await section('reader_bench', readerBench)
-  await section('kernel_log', kernelLog)
+  const kernel = await section('kernel_log', kernelLog)
   await section('a1_kernel', () => a1Kernel(ctx))
-  const go = { jail_check: ctx.jail?.go === true, media_e2e: ctx.e2e?.go === true, reader_bench: ctx.bench?.go === true }
+  const go = {
+    jail_check: ctx.jail?.go === true,
+    media_e2e: ctx.e2e?.go === true,
+    reader_bench: ctx.bench?.go === true,
+    // The 32 MiB documents run only in the stand-in; a worker killed there shows only here.
+    no_worker_seccomp_kills: Array.isArray(kernel?.worker_seccomp_kills) && kernel.worker_seccomp_kills.length === 0,
+  }
   emit('done', { records: seq + 1, fatal_errors: fatal, spawned: spawned.length, go: Object.values(go).every(Boolean), parts: go })
 }
 

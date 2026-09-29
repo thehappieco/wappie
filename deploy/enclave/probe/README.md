@@ -113,8 +113,9 @@ already reserving 1 vCPU / 1536 MiB. `probe.sh`:
 7. assembles the report from the streamed sections (`assemble-report.py`):
    `report.json` (complete with the END marker and the runner's `done`
    record, partial otherwise) and `report.jsonl`, keeping every finished
-   section either way, and prints its one-line summary: `go` and its three
-   parts (`jail_check`, `media_e2e`, `reader_bench`), and any failed check;
+   section either way, and prints its one-line summary: `go` and its four
+   parts (`jail_check`, `media_e2e`, `reader_bench`,
+   `no_worker_seccomp_kills`), and any failed check;
 8. **always restarts the production supervisor** from its EXIT trap, even on
    failure or interrupt, and prints the report path, the EIF size, the
    installed blob's kernel config (`$NITRO_CLI_BLOBS/Image.config`) and the
@@ -185,14 +186,15 @@ One record per section, streamed as soon as it is measured:
   `idle`, `heavy` per file, `heavy_summary` with `mem_avail_min_mb`, the
   quarter of MemTotal and the reader's own health figures, `document` per
   file with `ms`, `fits_chatgpt`, `transport`, the header's summary and every
-  job, and `end`), then `reader_bench`: `go`, the documents' times, and the
-  runner's own RSS;
+  job, and `end`), then `reader_bench`: `go` (every document opened,
+  `complete` or `partial`), the documents' times, and the runner's own RSS;
 - `kernel_log`: from `/dev/kmsg` after the entrypoint's mark, every `Bad EL0`
   report with its pid, comm and pc, traced to the process that raised it
   (whether they all sit on OpenSSL's SVE probe; workers run with
   `OPENSSL_armcap=0`), seccomp kills (audit type 1326: syscall number and
-  process; `worker_seccomp_kills` must be empty, the escape tests' own are
-  jailtest's), OOM lines;
+  process; `worker_seccomp_kills` must be empty, which `done`'s
+  `no_worker_seccomp_kills` checks, the escape tests' own are jailtest's), OOM
+  lines;
 - `a1_kernel`: what §16.6 wanted and this kernel lacks, measured, with the
   fallback and the root switch and kill method in use;
 - `done`, with `go` and its parts; `spawn`/`exit` records for every process
@@ -236,7 +238,7 @@ python3 deploy/enclave/probe/assemble-report.py console.log .
 ```
 
 The report is complete in about 95 s (the jail check 32 s, the end-to-end
-test 15 s, the stand-in 42 s), `go` with all three parts: 114 of 114 jail
+test 15 s, the stand-in 42 s), `go` with all four parts: 114 of 114 jail
 checks, the end-to-end test passing, the four documents opened (the PDFs in
 about 2 s, the docx files in under 1 s, each repeat from the cache). The
 kernel's own seccomp reports are the escape tests' (comm `jailtest`) only.
