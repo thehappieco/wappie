@@ -4,13 +4,21 @@
 //
 // A call runs §16.5's cheap checks in order (nothing opens a key or asks for
 // ciphertext before the last of them), then joins or starts an open and waits
-// for it at most HOST_WAIT_MS for its host. An open runs in the slot, from its
-// keys to its last job: the media key, the ciphertext, the checks, the sniff
-// and one or two jailed jobs. The reader's Node itself never parses anything:
-// it checks magic bytes, decodes plain text and reads worker frames.
+// for it at most HOST_WAIT_MS for its host. A connection has one open in the
+// slot or its queue at a time; the opens its parallel calls start wait behind
+// it in the connection's own line (OPENS_QUEUE_MAX) and go in, in order, as it
+// leaves, while one place of the queue stays for a connection with no open
+// there. An open runs in the slot: when its turn comes it looks again at the
+// text cache and the hour's bytes, which the connection's earlier opens may
+// have filled, and only then opens the media key, fetches the ciphertext and
+// runs the checks, the sniff and one or two jailed jobs. The reader's Node
+// itself never parses anything: it checks magic bytes, decodes plain text and
+// reads worker frames.
 import { ArchiveError } from '@whatserver2/client'
 import { LocalConfigError } from '@whatserver2/mcp/config'
 import { fingerprint } from '../../log.mjs'
+import { CONSOLE_URL } from '../constants.mjs'
+import { messageURL } from '../provider.mjs'
 import { createCaches } from './cache.mjs'
 import { fetchCiphertext } from './fetch.mjs'
 import { checkRow, hostOf, knownKinds, parseRequest, refusal, rowFacts, waitFor, whyNot } from './gate.mjs'
@@ -20,20 +28,21 @@ import { charPart, factsOf, finish, lastPage, pagesPart, pdfPart, pdfWindow, pen
 import { decodeText, sniff } from './sniff.mjs'
 import { createMediaStream } from './wamedia-stream.mjs'
 import {
-  CAP_BYTES, IMAGE_LONG_EDGE, IMAGE_MAX_BYTES, IMAGE_MAX_PIXELS, IMAGES_TOTAL_BYTES, JOB_TEXT_MAX_BYTES, OPENS_IN_FLIGHT, PDF_MAX_IMAGE_PIXELS,
+  CAP_BYTES, IMAGE_LONG_EDGE, IMAGE_MAX_BYTES, IMAGE_MAX_PIXELS, IMAGES_TOTAL_BYTES, JOB_TEXT_MAX_BYTES, OPENS_QUEUE_MAX, PDF_MAX_IMAGE_PIXELS,
   PDF_MAX_PAGES, PDF_PAGES_PER_JOB, RESULT_MAX_BYTES, SHEET_ROWS, SHEETS_MAX, STICKER_LONG_EDGE, STICKER_MAX_BYTES, TEXT_TTL_MS, THUMB_MAX_BYTES,
   ZIP_LISTED, ZIP_MAX_ENTRIES, ZIP_MAX_INFLATED, ZIP_MAX_RATIO,
 } from './policy.mjs'
 
 /**
  * Outcomes answered once and forgotten rather than kept for RESULT_TTL_MS:
- * the §16.9 list, plus the two whose truth changes with a budget or a switch
- * rather than with the attachment (a kept `rate_limited` would outlive its
- * own `retry_after_s`, a kept `media_not_allowed` a kind switched back on).
- * A result whose page images were withheld because `image` is off is not kept
- * either, for the same reason; its text is in the text cache.
+ * the §16.9 list, plus the three whose truth changes with a budget, a switch
+ * or the queue rather than with the attachment (a kept `rate_limited` or
+ * `media_busy` would outlive its own `retry_after_s`, a kept
+ * `media_not_allowed` a kind switched back on). A result whose page images
+ * were withheld because `image` is off is not kept either, for the same
+ * reason; its text is in the text cache.
  */
-const FORGOTTEN = new Set(['attachment_pending', 'read_failed', 'reconsent_required', 'stale_grant', 'unauthorized', 'rate_limited', 'media_not_allowed'])
+const FORGOTTEN = new Set(['attachment_pending', 'read_failed', 'reconsent_required', 'stale_grant', 'unauthorized', 'rate_limited', 'media_busy', 'media_not_allowed'])
 const safeCode = error => ((error instanceof ArchiveError || error instanceof LocalConfigError) && /^[a-z][a-z0-9_]{0,47}$/.test(error.code) ? error.code : 'read_failed')
 const keeps = outcome => (outcome.result ? outcome.result.header.images_withheld !== 'kind_off' : !FORGOTTEN.has(safeCode(outcome.error)))
 
@@ -45,6 +54,8 @@ const keeps = outcome => (outcome.result ? outcome.result.header.images_withheld
  */
 export const openKey = ({ uid, cursor, pages, images = true }) => `${uid}|${cursor ?? ''}|${pages ?? ''}|${images === false ? 0 : 1}`
 const numbered = (device, key) => `${device}|${key}`
+/** The bytes an open is checked against BYTES_PER_HOUR for before its key: the claimed length, or the cap without one. */
+const claimedBytes = (row, plan) => (Number.isSafeInteger(row.media.file_length) ? row.media.file_length : CAP_BYTES[plan.family])
 
 const defaultDelay = (ms, signal) => new Promise(resolve => {
   const timer = setTimeout(resolve, ms)
@@ -62,23 +73,31 @@ export const JOBS = Object.freeze({ imageJob, pdfTextJob, pdfImagesJob, officeJo
 
 /**
  * `checkActive.mediaStatus(id)` is verifier.mjs's; `archive` is the ARCHIVE
- * origin; `jail` is {checkJail, runWorker} (tests replace it, and may pass
- * `spawn` for runWorker); `delay(ms, signal)` is the inline wait's timer.
+ * origin; `consoleURL` is CONSOLE_URL, where a result's `open_url` points;
+ * `jail` is {checkJail, runWorker} (tests replace it, and may pass `spawn`
+ * for runWorker); `delay(ms, signal)` is the inline wait's timer.
  */
-export function createMediaService({ log, now = Date.now, checkActive, archive, fetch = globalThis.fetch, jail = { checkJail, runWorker }, delay = defaultDelay }) {
+export function createMediaService({ log, now = Date.now, checkActive, archive, consoleURL = CONSOLE_URL, fetch = globalThis.fetch, jail = { checkJail, runWorker }, delay = defaultDelay }) {
   const caches = createCaches({ now })
   const scheduler = createScheduler()
   const budgets = createBudgets({ now })
-  // connection id -> { opens: Map(open key -> open), mediaOff: the last media_off seen }
+  // connection id -> { opens: Map(open key -> open), active: its open in the
+  // slot or the slot's queue, line: its opens waiting behind that one, first in
+  // first out, mediaOff: the last media_off seen }
   const connections = new Map()
+  // The ids of connections whose open left with a line behind it that has not
+  // gone in yet, in the order they left: the next free place is theirs, in turn.
+  const parked = []
   const counters = { opens: 0, killed: 0 }
   let jailState = null, closed = false
   const conn = id => ({ conn: fingerprint(id) })
   const stateOf = id => {
     let state = connections.get(id)
-    if (!state) connections.set(id, state = { opens: new Map(), mediaOff: [] })
+    if (!state) connections.set(id, state = { opens: new Map(), active: null, line: [], mediaOff: [] })
     return state
   }
+  /** The console link of a row's message on this connection (§16.7), or null. */
+  const linkOf = (record, row) => messageURL(consoleURL, record.tenant_id, row?.device_id, row?.uid)
   const ready = () => jailState?.ok === true && !closed
 
   /** Copies of a result's image Buffers: the cached ones are zeroed when their entry leaves. */
@@ -89,19 +108,55 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     open.done = true
     const state = connections.get(open.id)
     if (state?.opens.get(open.key) === open) state.opens.delete(open.key)
+    const index = state ? state.line.indexOf(open) : -1
+    if (index >= 0) state.line.splice(index, 1)
     if (open.controller.signal.aborted) outcome = { error: refusal('media_not_allowed', { facts: open.facts }) }
     else if (keeps(outcome)) caches.result.set(open.id, open.key, { outcome, kinds: open.kinds })
     if (outcome.result) { counters.opens++; log.event('media_opened', conn(open.id)) }
     open.outcome = outcome
     open.resolve()
   }
-  /** Ends an open for `reason` ('revoked' or 'media_off'): its callers answer now, its job dies on SIGTERM. */
+  /**
+   * Ends an open for `reason` ('revoked' or 'media_off'): its callers answer
+   * now, its job dies on SIGTERM. One waiting in the slot's queue leaves it at
+   * once and hands its connection's place to the next of its line; one
+   * running hands it over when its job has died (`leave`).
+   */
   function abort(open, reason) {
     if (open.done) return
     open.reason = reason
     open.controller.abort()
-    scheduler.remove(open)
+    if (scheduler.remove(open)) leave(open)
     settle(open)
+  }
+  /**
+   * `open` left the slot or its queue: its connection's line, if it has one,
+   * waits for a place behind the lines already waiting (`parked`), and the
+   * places now free go to them in turn.
+   */
+  function leave(open) {
+    const state = connections.get(open.id)
+    if (state?.active === open) {
+      state.active = null
+      if (state.line.length && !parked.includes(open.id)) parked.push(open.id)
+    }
+    handIn()
+  }
+  /**
+   * The first open of each waiting line goes to the slot or its queue, one
+   * line at a time, while more than one place is free: the last place stays
+   * for a connection with no open there (§16.9), so connections that keep
+   * their lines fed never hold the whole queue. A line whose connection was
+   * wiped, or has an open there again, is skipped.
+   */
+  function handIn() {
+    while (parked.length && scheduler.room() > 1) {
+      const id = parked.shift(), state = connections.get(id)
+      if (!state || state.active || !state.line.length) continue
+      const next = state.line.shift()
+      if (scheduler.admit(next, next.start, () => leave(next))) state.active = next
+      else { state.line.unshift(next); parked.unshift(id); return }
+    }
   }
 
   /** One jailed job of the open; its output, or the refusal its end means. */
@@ -211,7 +266,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         opened = await access.open(row, 'thumbnail')
         live(open)
         const seconds = typeof media.seconds === 'number' && Number.isFinite(media.seconds) && media.seconds >= 0 ? media.seconds : undefined
-        const facts = factsOf(row, opened, { sniffed: 'thumbnail', seconds_claimed: seconds })
+        const facts = factsOf(row, opened, { sniffed: 'thumbnail', seconds_claimed: seconds }, open.link)
         const thumbnail = opened.thumbnail
         if (!thumbnail?.length) return finish(facts)
         if (thumbnail.length > THUMB_MAX_BYTES) throw refusal('attachment_too_large', { facts: { ...open.facts, size: thumbnail.length, cap: THUMB_MAX_BYTES, family: 'image' } })
@@ -251,7 +306,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       }
       if ((sniffed.kind !== 'pdf' && request.pages) || (sniffed.kind === 'image' && request.cursor)) throw refusal('invalid_cursor')
       if (sniffed.kind === 'image') {
-        const facts = factsOf(row, opened, { sniffed: sniffed.sniffed })
+        const facts = factsOf(row, opened, { sniffed: sniffed.sniffed }, open.link)
         if (!request.images) return finish(facts, { withheld: 'request' })
         const op = media.media_type === 'sticker' ? 'sticker' : 'photo'
         const output = await job(open, 'image', imageJob(op, sniffed.sniffed), plaintext)
@@ -260,7 +315,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       }
       if (sniffed.kind === 'pdf') {
         const entry = caches.text.get(id, open.textKey)
-        const facts = entry?.kind === 'pdf' ? { ...entry.facts, truncated: [...entry.facts.truncated] } : factsOf(row, opened, { sniffed: 'pdf' })
+        const facts = entry?.kind === 'pdf' ? { ...entry.facts, truncated: [...entry.facts.truncated] } : factsOf(row, opened, { sniffed: 'pdf' }, open.link)
         return await pdfResult(open, id, open.textKey, facts, request, plaintext)
       }
       if (request.cursor?.unit === 'page') throw refusal('invalid_cursor')
@@ -276,7 +331,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         ;({ text, found } = renderOffice(output))
         open.kinds = [output.header.sniffed === 'zip' ? 'zip' : 'office']
       }
-      const facts = factsOf(row, opened, found)
+      const facts = factsOf(row, opened, found, open.link)
       caches.text.set(id, open.textKey, { kind: open.kinds[0], facts, text })
       const part = charPart(text, request.cursor)
       return finish(facts, { body: part.body, part: part.part, next: part.next })
@@ -287,9 +342,27 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     }
   }
 
+  /**
+   * An open's turn (§16.5 "An open", step 0). The connection's opens before
+   * it may have read this attachment's text or spent the hour's bytes since
+   * the call checked both (steps 6 and 16), so both are checked again here,
+   * before any key is opened: a part the text cache now holds is answered
+   * from it, and a length the hour has no room for left is `rate_limited`.
+   */
   async function run(open, record, row, request, plan, access) {
+    const id = record.connection_id
     let outcome
-    try { outcome = { result: await perform(open, record, row, request, plan, access) } } catch (error) {
+    try {
+      const cached = await fromText(id, open.textKey, request)
+      if (cached) outcome = { result: cached }
+      else {
+        if (!plan.preview) {
+          const bytesWait = budgets.bytesWait(id, claimedBytes(row, plan))
+          if (bytesWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(bytesWait) })
+        }
+        outcome = { result: await perform(open, record, row, request, plan, access) }
+      }
+    } catch (error) {
       if (error instanceof ArchiveError || error instanceof LocalConfigError) error.facts = { ...open.facts, ...error.facts }
       outcome = { error }
     }
@@ -306,14 +379,30 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     const open = state.opens.get(key)
     return open ? { open } : null
   }
-  /** Step 7: room for one more open of this connection, else `rate_limited`. */
+  /** Step 7: room for one more open of this connection (its line not full, OPENS_PER_MINUTE), else `rate_limited`. */
   function budget(state, id, facts) {
-    if (state.opens.size >= OPENS_IN_FLIGHT) throw refusal('rate_limited', { retry_after_s: 10, facts })
+    // A line waiting for a place holds, with no open ahead of it, one more than a line behind one.
+    if ((state.active ? 1 : 0) + state.line.length > OPENS_QUEUE_MAX) throw refusal('rate_limited', { retry_after_s: 10, facts })
     const opensWait = budgets.opensWait(id)
     if (opensWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(opensWait), facts })
   }
 
-  /** Step 18: the open's answer, or `pending` once the host's wait is over. */
+  /**
+   * A waiting call's `retry_after_s` (§16.9): 5 while its open runs, 10 when
+   * it runs next (first in the slot's queue, or first in its connection's
+   * line behind a running open with no queue), 20 behind that.
+   */
+  function retryOf(open) {
+    const state = connections.get(open.id)
+    const index = state ? state.line.indexOf(open) : -1
+    if (index < 0) {
+      const position = scheduler.position(open)
+      return position === 'running' || position === null ? 5 : position === 0 ? 10 : 20
+    }
+    return index === 0 && scheduler.position(state.active) === 'running' && scheduler.queued() === 0 ? 10 : 20
+  }
+
+  /** Step 18: the open's answer, or `pending` once the host's wait is over, whether it runs or waits its turn. */
   async function wait(open, started, host) {
     const remaining = started + waitFor(host) - now()
     if (!open.done && remaining > 0) {
@@ -325,8 +414,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       if (open.outcome.error) throw open.outcome.error
       return copy(open.outcome.result)
     }
-    const position = scheduler.position(open)
-    return pending(open.uid, open.facts.media_type, position === 'running' || position === null ? 5 : position === 0 ? 10 : 20)
+    return pending(open.uid, open.facts.media_type, retryOf(open), open.link)
   }
 
   /** One open_attachment call (§16.5 "A call"), steps 3 to 18. */
@@ -349,14 +437,16 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         if (cached) return copy(cached)
         budget(state, id)
         const row = await access.row()
-        const facts = rowFacts(row)
-        const plan = checkRow(row, request, state.mediaOff)
+        // From here every answer names this message: it carries the console link (§16.7).
+        const link = linkOf(record, row)
+        const facts = rowFacts(row, link)
+        const plan = checkRow(row, request, state.mediaOff, link)
         if (plan.preview && !plan.hasPreview) {
           const seconds = typeof row.media.seconds === 'number' && Number.isFinite(row.media.seconds) && row.media.seconds >= 0 ? row.media.seconds : undefined
-          return finish(factsOf(row, null, { sniffed: 'thumbnail', seconds_claimed: seconds }))
+          return finish(factsOf(row, null, { sniffed: 'thumbnail', seconds_claimed: seconds }, link))
         }
         if (!plan.preview) {
-          const bytesWait = budgets.bytesWait(id, Number.isSafeInteger(row.media.file_length) ? row.media.file_length : CAP_BYTES[plan.family])
+          const bytesWait = budgets.bytesWait(id, claimedBytes(row, plan))
           if (bytesWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(bytesWait), facts })
         }
         // Steps 5 and 7 again, with nothing awaited from here to the queue:
@@ -367,9 +457,14 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         found = known(state, id, key)
         if (!found) {
           budget(state, id, facts)
-          const open = { id, key, textKey, uid: row.uid, facts, kinds: plan.kind ? [plan.kind] : [], controller: new AbortController(), done: false, outcome: null, reason: null }
+          const open = { id, key, textKey, uid: row.uid, facts, link, kinds: plan.kind ? [plan.kind] : [], controller: new AbortController(), done: false, outcome: null, reason: null }
           open.settled = new Promise(resolve => { open.resolve = resolve })
-          if (!scheduler.admit(open, () => run(open, record, row, request, plan, access))) throw refusal('media_busy', { retry_after_s: 20, facts })
+          open.start = () => run(open, record, row, request, plan, access)
+          // Step 17: the slot or its queue when this connection has nothing
+          // there or waiting, else last in its line.
+          if (state.active || state.line.length) state.line.push(open)
+          else if (scheduler.admit(open, open.start, () => leave(open))) state.active = open
+          else throw refusal('media_busy', { retry_after_s: 20, facts })
           budgets.admit(id)
           state.opens.set(key, open)
           found = { open }
@@ -397,6 +492,10 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       return {
         host,
         why: row => whyNot(row, connections.get(record.connection_id)?.mediaOff ?? []),
+        /** The console link of the row's message, or null (§16.7). */
+        openURL: row => linkOf(record, row),
+        /** CONSOLE_URL: every link above begins with it and `?`, as the instructions tell the model (§16.7). */
+        consoleURL,
         open: (request, access) => call(record, request, access, host),
         /** The serialized result's cap, which server.mjs enforces by dropping images (§16.7). */
         resultMaxBytes: RESULT_MAX_BYTES,
@@ -405,7 +504,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     /** Ends everything of a connection's media: its open, its queue entries, both caches (§16.9). */
     wipe(id, reason = 'revoked') {
       const state = connections.get(id)
-      for (const open of state?.opens.values() ?? []) abort(open, reason)
+      // Its line first, so that the open leaving the slot's queue hands nothing in.
+      for (const open of state?.line.splice(0) ?? []) abort(open, reason)
+      for (const open of [...(state?.opens.values() ?? [])]) abort(open, reason)
       caches.drop(id)
       if (reason === 'revoked') { connections.delete(id); budgets.forget(id) }
       else if (state) state.opens.clear()
@@ -419,9 +520,11 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       for (const open of [...state.opens.values()]) if (open.kinds.some(kind => off.includes(kind))) abort(open, 'media_off')
       caches.dropKinds(id, off)
     },
-    /** Opens finished and jobs killed since the last call, and opens waiting now. */
+    /** Opens finished and jobs killed since the last call, and opens waiting now (the slot's queue and every connection's line). */
     counts() {
-      const counts = { opens: counters.opens, queue: scheduler.queued(), killed: counters.killed }
+      let queue = scheduler.queued()
+      for (const state of connections.values()) queue += state.line.length
+      const counts = { opens: counters.opens, queue, killed: counters.killed }
       counters.opens = 0
       counters.killed = 0
       return counts

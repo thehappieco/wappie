@@ -32,6 +32,23 @@ export function renewalURL(consoleURL, connectionID) {
   return url.href
 }
 
+const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/**
+ * The console link that opens one message (docs/mcp-enclave.md §16.7, the
+ * link contract): `${consoleURL}?workspace=<tenant>&open_device=<number>&open_message=<uid>`,
+ * the ids in lower case. The person's browser opens the original there with
+ * their own keys; the link carries ids the reader already returns and
+ * nothing secret. Null when an id is not a UUID, so nothing else ever
+ * reaches the URL.
+ */
+export function messageURL(consoleURL, tenantID, deviceID, uid) {
+  const params = [['workspace', tenantID], ['open_device', deviceID], ['open_message', uid]]
+  if (!params.every(([, id]) => typeof id === 'string' && uuidShape.test(id))) return null
+  const url = new URL(consoleURL)
+  for (const [name, id] of params) url.searchParams.set(name, id.toLowerCase())
+  return url.href
+}
+
 /**
  * `onStaleGrant()` (optional) is called, with nothing, each time the reader
  * refuses one of this connection's grants as `stale_grant`; the enclave logs

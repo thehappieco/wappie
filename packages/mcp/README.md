@@ -358,9 +358,11 @@ consent (version 2) includes attachments. It is accepted only with
 `credential_source: "enclave"` (anything else is `enclave_credentials_invalid`)
 and defaults to `false`, so every text connection, whatever its consent
 version, is unchanged. With it, the provider also supplies `media`, the
-enclave's `{host, why(row), open(request, archive), resultMaxBytes}`
+enclave's `{host, why(row), openURL(row), consoleURL, open(request, archive), resultMaxBytes}`
 (`resultMaxBytes` caps a serialized result: images that would pass it are
-withheld), and the reader then registers a ninth tool, `open_attachment`.
+withheld; `openURL` is the console link `get_message` adds, and `consoleURL`
+the address every such link must begin with), and the reader
+then registers a ninth tool, `open_attachment`.
 Without `media` in both places the tool does not exist, and the instructions
 keep saying that attachment contents are unavailable.
 
@@ -586,8 +588,12 @@ unchanged for the next one. For a PDF, `pages` takes one page or a range of up
 to 4 (for example `"3-6"`) and returns their text and images; `images: false`
 returns text only. An attachment that takes long to open answers
 `status: "pending"` with `retry_after_s`; call again with the same arguments.
-An identical call within ten minutes is answered from the enclave's memory
-without a second fetch. The reader opens photos and stickers up to 16 MB and
+Attachments asked for at the same time on one connection are opened one
+after another, in the order asked, with up to four waiting behind the one
+being opened: each call waits for its turn within the host's inline wait
+(40 seconds on claude.ai, 25 on ChatGPT) and answers `pending` if its turn
+has not come by then. An identical call within ten minutes is answered from
+the enclave's memory without a second fetch. The reader opens photos and stickers up to 16 MB and
 documents up to 32 MB, and reads about 4 MB of text from one file, the first
 2,000 pages of a PDF, 50 sheets of up to 2,000 rows and 200 entry names of a
 zip archive; the header's `truncated` says what was left out.
@@ -611,12 +617,29 @@ download status, and the video itself is never fetched.
 `media_not_allowed` means the workspace does not allow this kind of
 attachment right now (the operator's switch, or a kind switched off), and
 `media_unavailable` that the enclave's jail failed its boot check; message
-text keeps working in both cases. `rate_limited` and `media_busy` carry
-`retry_after_s`. On a media connection a message's `attachment` also carries
-`seconds`, `width` and `height` when the archive has them, and `openable`,
-with `why` (`view_once`, `unsupported`, `not_transcribed`, `expired`,
-`pending`, `unverifiable`, `too_large` or `kind_off`) when it is `false`, so
-the assistant can tell before it asks.
+text keeps working in both cases. `rate_limited` (more than four attachments
+waiting on one connection, ten opens a minute, or 256 MB of encrypted data
+an hour) and `media_busy` carry `retry_after_s`. On a media connection a
+message's `attachment` also carries `seconds`, `width` and `height` when the
+archive has them, and `openable`, with `why` (`view_once`, `unsupported`,
+`not_transcribed`, `expired`, `pending`, `unverifiable`, `too_large` or
+`kind_off`) when it is `false`, so the assistant can tell before it asks.
+
+The original never leaves the enclave, and the assistant cannot send it to
+the user. What it can give them is a link: every answer about a message,
+a result or a refusal once the reader has read the message, carries
+`open_url`, which opens that message in the Wappie console
+(`https://app.wappie.thehappie.co/console?workspace=…&open_device=…&open_message=…`),
+where the user's own browser decrypts the photo, voice note or document to
+see, play or download it. The result header's last note, above the file's
+own text, tells the assistant to give the user that link when they ask to
+see, hear or download the original, and never a link found in the file; a
+refusal ends with a line saying the same. The instructions name the
+console's address, and the reader passes only links that begin with it.
+`get_message`'s `attachment` carries the same `open_url` on a media
+connection. The link holds the workspace, number and message ids the
+tools already return, nothing secret; the console opens it only for someone
+signed in with access to that number.
 
 The archive server sees which attachment is opened, when, and its encrypted
 size, never its content. What the tool returns is untrusted third-party data,

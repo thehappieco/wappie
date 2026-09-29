@@ -145,7 +145,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
   // startReader binds the status check once it exists (useStatusCheck).
   let statusCheck = null
   const media = createMediaService({
-    log, now, archive, ...(fetch ? { fetch } : {}), ...(jail ? { jail } : {}),
+    log, now, archive, consoleURL, ...(fetch ? { fetch } : {}), ...(jail ? { jail } : {}),
     checkActive: { mediaStatus: id => (statusCheck ? statusCheck.mediaStatus(id) : Promise.resolve({ answer: false, media: false, media_off: [] })) },
   })
 

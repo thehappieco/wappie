@@ -42,6 +42,7 @@ COPY deploy/enclave/probe/entrypoint-probe.sh deploy/enclave/probe/probe-report.
 COPY deploy/enclave/probe/reader-bench.mjs /opt/e2e/packages/mcp-http/enclave/test/probe-bench.mjs
 RUN chmod 0555 /opt/probe/bin/vsock-sink /probe/entrypoint-probe.sh \
  && mkdir -p /run/probe \
+ && mkdir -m 0700 /opt/probe/tmp \
  && node --check /probe/probe-report.mjs \
  && node --check /opt/e2e/packages/mcp-http/enclave/test/probe-bench.mjs \
  && sh -n /probe/entrypoint-probe.sh

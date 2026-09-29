@@ -54,6 +54,12 @@ the runner, which measures on the real kernel:
   `SIGTERM` and parent death, and every corpus file through the reader's own
   `runWorker`, each worker under the image's `media-jail` and seccomp
   profile, never a seccomp kill;
+- **whether the test world can exec from `TMPDIR`**: its fake nsm-attest
+  (`enclave/test/fixtures.mjs` `fakeNsm`) is a script it writes under
+  `os.tmpdir()` and runs, and the enclave's `/tmp` is a `noexec` tmpfs. The
+  runner writes and runs a two-line script in `/tmp`, then in
+  `/opt/probe/tmp` on the root filesystem (the initramfs, which allows
+  exec), and gives the first that runs to the two runs below as `TMPDIR`;
 - **the reader end to end**, `enclave/test/media-e2e.test.mjs` with
   `MEDIA_E2E=jail`, as `check-image.sh --jail` runs it (loopback only);
 - **the reader stand-in** (`reader-bench.mjs`): the production reader,
@@ -181,13 +187,19 @@ One record per section, streamed as soon as it is measured:
   each escape with the jail's own account, each corpus file with its outcome,
   time and memcg peak), then `jail_check`: `go`, the counts, what failed, the
   root switch and kill method the kernel took, and the largest memcg peaks;
-- `media_e2e`: `go`, the TAP counts and tail;
+- `tmp_exec`: each directory tried (`dir`, `exec`, the error, and the mount
+  it is on with its options), the `tmpdir` chosen, and, when none can run a
+  script, `why`: the test world's fake nsm-attest cannot run, and both runs
+  below will end in `BootFailure attest_failed`;
+- `media_e2e`: `go`, the `tmpdir` it ran with (and `why` without one), the
+  TAP counts and tail;
 - `bench`, one per stand-in result (`phase`: `begin`, `inputs`, `boot`,
   `idle`, `heavy` per file, `heavy_summary` with `mem_avail_min_mb`, the
   quarter of MemTotal and the reader's own health figures, `document` per
   file with `ms`, `fits_chatgpt`, `transport`, the header's summary and every
   job, and `end`), then `reader_bench`: `go` (every document opened,
-  `complete` or `partial`), the documents' times, and the runner's own RSS;
+  `complete` or `partial`), the `tmpdir` it ran with (and `why` without
+  one), the documents' times, and the runner's own RSS;
 - `kernel_log`: from `/dev/kmsg` after the entrypoint's mark, every `Bad EL0`
   report with its pid, comm and pc, traced to the process that raised it
   (whether they all sit on OpenSSL's SVE probe; workers run with
@@ -228,14 +240,19 @@ before it, so a hang costs its own section only.
 
 On an arm64 host with Docker (Docker Desktop, kernel 6.12, cgroup v2), the
 probe image from `build-image.sh`, in a privileged container that stands in
-for the enclave, limited to one CPU:
+for the enclave, limited to one CPU, with `/tmp` a `noexec` tmpfs as the
+enclave mounts it:
 
 ```
 docker run --rm --privileged --cgroupns private --cpus 1 \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec \
   -e PROBE_CONSOLE=- -e PROBE_VSOCK_TIMEOUT_MS=2000 -e PROBE_OBJECTS=loopback \
   wappie-reader-probe:local > console.log
 python3 deploy/enclave/probe/assemble-report.py console.log .
 ```
+
+With that `/tmp`, `tmp_exec` finds `/tmp` refused (`EACCES`, `noexec`) and
+runs both with `TMPDIR=/opt/probe/tmp`; without `--tmpfs` it keeps `/tmp`.
 
 The report is complete in about 95 s (the jail check 32 s, the end-to-end
 test 15 s, the stand-in 42 s), `go` with all four parts: 114 of 114 jail
@@ -256,6 +273,19 @@ SIGILLs), 1536 MiB of memory with a 325 MB root filesystem in it, and the
 parent's vsock; those are what `probe.sh` is for. The 4.14 fallbacks are
 exercised off-Nitro by `check-image.sh --jail`'s `check-4.14` target, with a
 test build of `media-jail`; the probe runs only the image's binary.
+
+## History: the first A1 run (2026-09-29)
+
+The jail check passed on the enclave's kernel (114 of 114, no worker
+seccomp kill), but `media_e2e` and `reader_bench` both ended at once in
+`BootFailure attest_failed`: the test world writes its fake nsm-attest
+under `os.tmpdir()` and runs it, and the Nitro init mounts `/tmp` (and
+`/run`) as `noexec` tmpfs, so the script could not run and every boot of the
+test world failed its attestation. Neither measured anything; production's
+reader never runs a file from `/tmp`. Now the runner checks exec in `/tmp`
+and on the root filesystem first (`tmp_exec`) and runs both with an
+exec-able `TMPDIR`, and `fakeNsm` itself says when its directory cannot
+exec instead of leaving it to surface as `attest_failed`.
 
 ## History: A0 (2026-09-28)
 

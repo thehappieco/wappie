@@ -1,9 +1,11 @@
 // Who may open what, and when (docs/mcp-enclave.md §16.9): SLOTS opens run at
 // once enclave-wide and up to QUEUE wait for the slot in arrival order; an
 // open holds the slot from its keys to the end of its last job, so the
-// reader's Node holds at most one plaintext. Per connection, OPENS_IN_FLIGHT
-// opens are queued or running, OPENS_PER_MINUTE are admitted in any 60 s and
-// BYTES_PER_HOUR of ciphertext are fetched in any hour.
+// reader's Node holds at most one plaintext. Per connection, one open is in
+// the slot or its queue and up to OPENS_QUEUE_MAX wait behind it (service.mjs
+// keeps that line, and hands a line in only while a place stays free for a
+// connection with no open there), OPENS_PER_MINUTE are admitted in any 60 s
+// and BYTES_PER_HOUR of ciphertext are fetched in any hour.
 import { BYTES_PER_HOUR, OPENS_PER_MINUTE, QUEUE, RETRY_AFTER_S, SLOTS } from './policy.mjs'
 
 const MINUTE_MS = 60_000, HOUR_MS = 3_600_000
@@ -15,9 +17,11 @@ export function retryAfter(ms) {
 }
 
 /**
- * The slot and its queue. `admit(entry, run)` starts `run()` at once when a
- * slot is free, queues it when fewer than QUEUE wait, and otherwise answers
- * false. `run` returns a promise; the next entry starts when it settles.
+ * The slot and its queue. `admit(entry, run, left)` starts `run()` at once
+ * when a slot is free, queues it when fewer than QUEUE wait, and otherwise
+ * answers false. `run` returns a promise; the next entry starts when it
+ * settles, and then `left()` (optional) is called: the entry's place is free
+ * again, and its connection may hand the next of its own opens in.
  */
 export function createScheduler({ slots = SLOTS, queue = QUEUE } = {}) {
   const running = new Set(), waiting = []
@@ -26,11 +30,14 @@ export function createScheduler({ slots = SLOTS, queue = QUEUE } = {}) {
     Promise.resolve().then(entry.run).catch(() => {}).finally(() => {
       running.delete(entry)
       while (running.size < slots && waiting.length) start(waiting.shift())
+      // Nothing it throws may become an unhandled rejection of the reader's Node.
+      try { entry.left?.() } catch {}
     })
   }
   return {
-    admit(entry, run) {
+    admit(entry, run, left) {
       entry.run = run
+      entry.left = left
       if (running.size < slots) { start(entry); return true }
       if (waiting.length >= queue) return false
       waiting.push(entry)
@@ -51,6 +58,8 @@ export function createScheduler({ slots = SLOTS, queue = QUEUE } = {}) {
     },
     queued: () => waiting.length,
     running: () => running.size,
+    /** Places free now: a free slot starts an entry at once, a free place in the queue holds one. */
+    room: () => Math.max(0, slots - running.size) + Math.max(0, queue - waiting.length),
   }
 }
 
