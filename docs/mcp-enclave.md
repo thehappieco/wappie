@@ -1516,32 +1516,35 @@ through the lead:
     "Também ler anexos", with the helper "Photos, PDFs and documents, opened
     only inside the verified reader. Requires your password." / "Fotos, PDFs
     e documentos, abertos só dentro do leitor verificado. Exige a sua
-    senha." The paragraph (a draft for the owner):
+    senha." The paragraph (a draft for the owner; corrected 2026-09-29 for the
+    video preview, which comes from the archive even when the video itself
+    was never downloaded):
 
     > en: "Also read attachments. Photos, stickers, PDFs and documents of
     > these numbers are opened inside the verified reader and sent to
     > {assistant} as text and images. Photos are re-encoded, which removes
     > location and camera data. Voice notes, audio and video are not
-    > transcribed yet; for a video only its preview image is sent. View-once
-    > media and attachments the archive cannot verify are never opened, and
-    > only attachments the archive has downloaded can be read. The archive
-    > server can see which attachments are opened and when, never their
-    > content. On claude.ai, large results and images may be copied into
-    > Anthropic's code-execution storage and kept there. Revoking stops
-    > future reads; it does not erase what {assistant} already received."
+    > transcribed yet; for a video only the preview image stored in the
+    > archive is sent. View-once media are never opened. Apart from that
+    > preview, only attachments the archive has downloaded and can verify
+    > are read. The archive server can see which attachments are opened and
+    > when, never their content. On claude.ai, large results and images may
+    > be copied into Anthropic's code-execution storage and kept there.
+    > Revoking stops future reads; it does not erase what {assistant}
+    > already received."
 
     > pt: "Também ler anexos. Fotos, figurinhas, PDFs e documentos destes
     > números são abertos dentro do leitor verificado e enviados ao
     > {assistant} como texto e imagens. As fotos são recodificadas, o que
     > remove a localização e os dados da câmera. Áudios, notas de voz e
     > vídeos ainda não são transcritos; de um vídeo vai só a imagem de
-    > prévia. Mídias de visualização única e anexos que o arquivo não
-    > consegue verificar nunca são abertos, e só dá para ler anexos que o
-    > arquivo já baixou. O servidor do arquivo vê quais anexos são abertos e
-    > quando, nunca o conteúdo. No claude.ai, resultados grandes e imagens
-    > podem ser copiados para o armazenamento de execução de código da
-    > Anthropic e ficar guardados lá. Revogar impede novas leituras, mas não
-    > apaga o que o {assistant} já recebeu."
+    > prévia guardada no arquivo. Mídias de visualização única nunca são
+    > abertas. Fora essa prévia, só são lidos anexos que o arquivo já baixou
+    > e consegue verificar. O servidor do arquivo vê quais anexos são
+    > abertos e quando, nunca o conteúdo. No claude.ai, resultados grandes e
+    > imagens podem ser copiados para o armazenamento de execução de código
+    > da Anthropic e ficar guardados lá. Revogar impede novas leituras, mas
+    > não apaga o que o {assistant} já recebeu."
 
     It promises no transcription: that is deferred, and how a consent to it
     would be given is decided if it returns.

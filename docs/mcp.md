@@ -182,8 +182,9 @@ photos, stickers, PDFs and documents of those numbers are opened inside the
 verified reader and sent to the assistant as text and images; photos are
 re-encoded, which removes location and camera data; voice notes, audio and
 video are not transcribed yet, and a video sends only its preview image;
-view-once media and attachments the archive cannot verify are never opened,
-and only attachments the archive has downloaded can be read; the archive
+view-once media are never opened; apart from a video's preview image stored
+in the archive, only attachments the archive has downloaded and can verify
+are read; the archive
 server can see which attachments are opened and when, never their content;
 on claude.ai, large results and images may be copied into Anthropic's
 code-execution storage and kept there; revoking stops future reads and does

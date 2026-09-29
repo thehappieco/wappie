@@ -48,8 +48,6 @@ text docs/mcp-enclave.md :: | §15.6 | the content-mode sentence that attachment
 text docs/mcp-enclave.md :: refresh; the personal contacts snapshot, attachment bytes and sending are
 text docs/mcp-enclave.md :: **out** (attachment bytes for 2b: stage A opens them for media connections
 text docs/mcp-enclave.md :: | §15 opening | attachment bytes are out for 2b; stage A opens them for media connections only
-media docs/mcp-enclave.md :: > media and attachments the archive cannot verify are never opened, and
-media docs/mcp-enclave.md :: anexos que o arquivo não consegue verificar nunca são abertos
 media docs/mcp-enclave.md :: > attachments it no longer holds are never opened."
 media docs/mcp-enclave.md :: | `media_unavailable` | the jail failed its boot check | `The reader cannot open attachments at the moment.
 
@@ -59,7 +57,6 @@ media docs/mcp-enclave.md :: | `media_unavailable` | the jail failed its boot ch
 metadata,text README.md :: Text connections and the hosted connector never open attachment contents.
 metadata,text docs/media-security.md :: Neither fetches media, opens the sealed media key or thumbnail, or returns attachment bytes for those connections
 text docs/mcp.md :: A text connection never opens attachment contents; only a
-media docs/mcp.md :: view-once media and attachments the archive cannot verify are never opened,
 metadata,text docs/mcp.md :: never open attachment contents. A text connection never gains attachments,
 text packages/mcp-http/README.md :: never does, and never opens attachment contents.
 text packages/mcp/README.md :: keep saying that attachment contents are unavailable.
