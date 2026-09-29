@@ -4,6 +4,7 @@
 // and every exit code mapped as the "Exit and outcome" table says.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn as spawnProcess } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -173,6 +174,8 @@ test('exit codes map as §16.11\'s table says, and an abort ends the job at once
   assert.deepEqual(outcomeOf(aborted), { code: 'media_not_allowed', log: 'revoked' })
   const already = new AbortController(); already.abort()
   assert.equal((await run('pdf', jobs.pdfText, [header, done], 0, { delayMs: 10_000, run: { signal: already.signal } })).killed, 'aborted')
-  // A media-jail that cannot be started is a jail error.
+  // A media-jail that cannot be started is a jail error, whether spawn throws or the binary is missing.
   assert.deepEqual(outcomeOf(await runWorker({ worker: 'pdf', job: jobs.pdfText, input, spawn: () => { throw new Error('ENOENT') } })), { code: 'parser_failed', log: 'jail_error' })
+  const missing = await runWorker({ worker: 'pdf', job: jobs.pdfText, input, spawn: (bin, args, options) => spawnProcess(join(tmpdir(), 'no-such-media-jail'), args, options) })
+  assert.deepEqual([missing.exit, outcomeOf(missing)], [3, { code: 'parser_failed', log: 'jail_error' }])
 })

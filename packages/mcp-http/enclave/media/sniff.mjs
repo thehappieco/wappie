@@ -9,9 +9,6 @@ const CFB = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
 const starts = (bytes, prefix) => bytes.length >= prefix.length && [...prefix].every((value, index) => bytes[index] === value)
 const ascii = (bytes, at, text) => bytes.length >= at + text.length && [...text].every((char, index) => bytes[at + index] === char.charCodeAt(0))
 
-/** The image kinds, which the image worker takes. */
-export const IMAGE_SNIFFED = Object.freeze(['jpeg', 'png', 'gif', 'webp'])
-
 /** `mimetype` lower-cased and without parameters. */
 const essence = mimetype => (typeof mimetype === 'string' ? mimetype.split(';')[0].trim().toLowerCase() : '')
 

@@ -120,7 +120,8 @@ export function runWorker({ worker, job, input, signal, spawn = spawnProcess }) 
       clearTimeout(watchdog)
       clearTimeout(graceTimer)
       signal?.removeEventListener('abort', onAbort)
-      const exit = code ?? signalCode(signalName)
+      // A media-jail that never started (no binary) is a jail error, whatever errno says.
+      const exit = child.pid === undefined ? 3 : code ?? signalCode(signalName)
       // A wipe outranks what the job was doing when it came.
       if (killed === 'aborted' || (killed && !broken)) { resolve({ ...empty, exit, killed }); return }
       if (broken) { resolve({ ...empty, exit, killed: 'bad_output' }); return }

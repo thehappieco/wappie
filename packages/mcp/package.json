@@ -15,7 +15,7 @@
     "./test/fixture": "./test/fixture.mjs",
     "./test/content-fixture": "./test/content-fixture.mjs"
   },
-  "files": ["cli.mjs", "setup.mjs", "server.mjs", "config.mjs", "reader.mjs", "contacts.mjs", "time.mjs", "bundle.mjs", "sdk.mjs", "test/fixture.mjs", "README.md", "LICENSE"],
+  "files": ["cli.mjs", "setup.mjs", "server.mjs", "config.mjs", "reader.mjs", "contacts.mjs", "time.mjs", "bundle.mjs", "sdk.mjs", "test/fixture.mjs", "test/content-fixture.mjs", "README.md", "LICENSE"],
   "scripts": { "test": "node --test test/*.test.mjs" },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

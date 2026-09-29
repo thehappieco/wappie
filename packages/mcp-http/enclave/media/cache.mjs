@@ -59,7 +59,8 @@ export function createCaches({ now = Date.now, connectionBytes = CACHE_CONNECTIO
     remove(key)
     prune()
     const bytes = sizeOf(value)
-    if (bytes > connectionBytes || bytes > enclaveBytes) { zero(value); return false }
+    // Refused, it stays its owner's: only what the cache holds is zeroed when it goes.
+    if (bytes > connectionBytes || bytes > enclaveBytes) return false
     evict(connection, () => (perConnection.get(connection) ?? 0) + bytes <= connectionBytes && total + bytes <= enclaveBytes)
     entries.set(key, { connection, value, bytes, expires: now() + ttl })
     perConnection.set(connection, (perConnection.get(connection) ?? 0) + bytes)

@@ -16,8 +16,8 @@ import { fetchCiphertext } from './fetch.mjs'
 import { checkRow, hostOf, knownKinds, parseRequest, refusal, rowFacts, waitFor, whyNot } from './gate.mjs'
 import { checkJail, outcomeOf, runWorker } from './jail.mjs'
 import { createBudgets, createScheduler, retryAfter } from './jobs.mjs'
-import { charPart, factsOf, finish, lastPage, pagesPart, pdfPart, pdfWindow, pending, renderOffice, scanned } from './result.mjs'
-import { decodeText, IMAGE_SNIFFED, sniff } from './sniff.mjs'
+import { charPart, factsOf, finish, lastPage, pagesPart, pdfPart, pdfWindow, pending, renderOffice } from './result.mjs'
+import { decodeText, sniff } from './sniff.mjs'
 import { createMediaStream } from './wamedia-stream.mjs'
 import {
   CAP_BYTES, IMAGE_LONG_EDGE, IMAGE_MAX_BYTES, IMAGE_MAX_PIXELS, IMAGES_TOTAL_BYTES, JOB_TEXT_MAX_BYTES, OPENS_IN_FLIGHT, PDF_MAX_IMAGE_PIXELS,
@@ -144,7 +144,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     let part, wanted = []
     if (request.pages) {
       const { from, to } = request.pages
-      if (total !== undefined && to > lastPage(total)) throw refusal('invalid_cursor')
+      if (to > lastPage(total ?? PDF_MAX_PAGES)) throw refusal('invalid_cursor')
       if (!pageTexts(windows, from, to) && !(await read(from, to - from + 1))) return null
       if (to > lastPage(total)) throw refusal('invalid_cursor')
       const window = windows.find(item => item.from <= from && from <= item.to)
@@ -155,7 +155,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       else part.withheld = 'request'
     } else {
       const at = request.cursor?.at ?? 1
-      if (total !== undefined && at > lastPage(total)) throw refusal('invalid_cursor')
+      if (at > lastPage(total ?? PDF_MAX_PAGES)) throw refusal('invalid_cursor')
       const window = windows.find(item => item.from <= at && at <= item.to) ?? await read(at, Math.min(PDF_PAGES_PER_JOB, PDF_MAX_PAGES - at + 1))
       if (!window) return null
       part = pdfPart(window, at, total, request.images)
@@ -178,7 +178,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     if (!entry || state?.mediaOff.includes(entry.kind)) return null
     const facts = { ...entry.facts, truncated: [...entry.facts.truncated] }
     if (entry.kind === 'pdf') return pdfResult(null, id, facts, request, null)
-    if (request.pages || request.cursor?.unit === 'page') throw refusal('invalid_cursor', { facts: rowFacts({ media: facts }) })
+    if (request.pages || request.cursor?.unit === 'page') throw refusal('invalid_cursor')
     const part = charPart(entry.text, request.cursor)
     return finish(facts, { body: part.body, part: part.part, next: part.next })
   }
@@ -222,43 +222,44 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       live(open)
       opened.key.fill(0)
       const plaintext = stream.finish(plan.encSHA256)
-      const found = sniff(plaintext, media.mimetype)
-      if (!found || (plan.family === 'image' && found.kind !== 'image')) throw refusal('attachment_unsupported')
+      const sniffed = sniff(plaintext, media.mimetype)
+      if (!sniffed || (plan.family === 'image' && sniffed.kind !== 'image')) throw refusal('attachment_unsupported')
       const off = stateOf(id).mediaOff
-      if (found.kind === 'office') {
+      if (sniffed.kind === 'office') {
         open.kinds = ['office', 'zip'].filter(kind => !off.includes(kind))
         if (!open.kinds.length) throw refusal('media_not_allowed')
       } else {
-        if (off.includes(found.kind)) throw refusal('media_not_allowed')
-        open.kinds = [found.kind]
+        if (off.includes(sniffed.kind)) throw refusal('media_not_allowed')
+        open.kinds = [sniffed.kind]
       }
-      if ((found.kind !== 'pdf' && request.pages) || (found.kind === 'image' && request.cursor)) throw refusal('invalid_cursor')
-      if (found.kind === 'image') {
-        const facts = factsOf(row, opened, { sniffed: found.sniffed })
+      if ((sniffed.kind !== 'pdf' && request.pages) || (sniffed.kind === 'image' && request.cursor)) throw refusal('invalid_cursor')
+      if (sniffed.kind === 'image') {
+        const facts = factsOf(row, opened, { sniffed: sniffed.sniffed })
         if (!request.images) return finish(facts, { withheld: 'request' })
         const op = media.media_type === 'sticker' ? 'sticker' : 'photo'
-        const output = await job(open, 'image', imageJob(op, found.sniffed), plaintext)
+        const output = await job(open, 'image', imageJob(op, sniffed.sniffed), plaintext)
         live(open)
         return finish(facts, { images: output.images, extra: { animated: output.header.animated || undefined } })
       }
-      if (found.kind === 'pdf') {
+      if (sniffed.kind === 'pdf') {
         const entry = caches.text.get(id, row.uid)
         const facts = entry?.kind === 'pdf' ? { ...entry.facts, truncated: [...entry.facts.truncated] } : factsOf(row, opened, { sniffed: 'pdf' })
         return await pdfResult(open, id, facts, request, plaintext)
       }
       if (request.cursor?.unit === 'page') throw refusal('invalid_cursor')
-      let text, found2
-      if (found.kind === 'text') {
+      // Plain text is decoded here; an office file or a zip is the office worker's.
+      let text, found
+      if (sniffed.kind === 'text') {
         const decoded = decodeText(plaintext)
         text = decoded.text
-        found2 = { sniffed: 'text', truncated: decoded.cut ? ['text_cap'] : [] }
+        found = { sniffed: 'text', truncated: decoded.cut ? ['text_cap'] : [] }
       } else {
         const output = await job(open, 'office', officeJob(open.kinds), plaintext)
         live(open)
-        ;({ text, found: found2 } = renderOffice(output))
+        ;({ text, found } = renderOffice(output))
         open.kinds = [output.header.sniffed === 'zip' ? 'zip' : 'office']
       }
-      const facts = factsOf(row, opened, found2)
+      const facts = factsOf(row, opened, found)
       caches.text.set(id, row.uid, { kind: open.kinds[0], facts, text })
       const part = charPart(text, request.cursor)
       return finish(facts, { body: part.body, part: part.part, next: part.next })
@@ -315,8 +316,8 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       }
       let open = state.opens.get(key)
       if (!open) {
-        const text = await fromText(id, request)
-        if (text) return copy(text)
+        const cached = await fromText(id, request)
+        if (cached) return copy(cached)
         if (state.opens.size >= OPENS_IN_FLIGHT) throw refusal('rate_limited', { retry_after_s: 10 })
         const opensWait = budgets.opensWait(id)
         if (opensWait > 0) throw refusal('rate_limited', { retry_after_s: retryAfter(opensWait) })
@@ -399,5 +400,3 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
   }
 }
 
-// Exported for tests that check which kinds reach which worker.
-export { IMAGE_SNIFFED, scanned }

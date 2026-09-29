@@ -389,6 +389,11 @@ test('PDF: text by page in whole blocks, scanned pages and their images, page cu
   const asked = await pdf.open({ pages: '6-8' })
   assert.deepEqual([asked.header.part, asked.header.image_pages, asked.images.length], [{ unit: 'page', from: 6, to: 8 }, [7, 8], 2])
   for (const request of [{ cursor: 'p12' }, { pages: '11-12' }, { cursor: 'c0' }]) await assert.rejects(pdf.open(request), refusedWith('invalid_cursor'), JSON.stringify(request))
+  // A first open at a page no PDF may have is refused before any job.
+  const fresh = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages: ['x'] }) })
+  const killed = h.events().length
+  for (const request of [{ cursor: 'p2001' }, { pages: '2001-2002' }]) await assert.rejects(fresh.open(request), refusedWith('invalid_cursor'), JSON.stringify(request))
+  assert.equal(h.events().slice(killed).some(entry => entry.event === 'media_opened' || entry.event === 'media_job_killed'), false)
   // A PDF past PDF_MAX_PAGES: page_cap, and no cursor beyond it.
   const huge = h.attachment({ type: 'document', mimetype: 'application/pdf', plaintext: withScenario(PDF_MAGIC, { pages: ['long enough text for page one, well over fifty characters in all.'], total: 5000 }) })
   const capped = await huge.open({ images: false })
