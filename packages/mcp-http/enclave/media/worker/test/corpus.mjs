@@ -616,6 +616,8 @@ export async function corpus() {
   const lyingDocx = zip([
     { name: 'word/document.xml', data: `<w:document ${W}><w:body>${para('x'.repeat(20_000_000))}</w:body></w:document>`, declaredSize: 10_000 },
   ])
+  // document.xml deflates about 1,000:1, past ZIP_MAX_RATIO: refused when it is inflated.
+  const denseDocx = makeDocx({ body: para('a'.repeat(4_000_000)) })
   const pptx = makePptx()
   const odt = makeOdt()
   const ods = makeOds()
@@ -631,7 +633,11 @@ export async function corpus() {
     { name: 'inner.zip', data: zip([{ name: 'deeper.txt', data: 'hidden' }]), method: 0 },
     ...Array.from({ length: 246 }, (_, i) => ({ name: `f/${String(i).padStart(3, '0')}.txt`, data: `${i}` })),
   ])
-  const zipBomb = zip([{ name: 'zeros.bin', data: Buffer.alloc(0), compressed: await deflateZeros(50 << 20), declaredSize: 50 << 20, crc: 0, method: 8 }])
+  // 50 MiB of zeros in one entry, about 1,000:1: a listing names it and inflates nothing.
+  const zeros = await deflateZeros(50 << 20)
+  const denseZip = zip([{ name: 'zeros.bin', data: Buffer.alloc(0), compressed: zeros, declaredSize: 50 << 20, crc: 0, method: 8 }])
+  // The same entry three times: 150 MiB declared, past ZIP_MAX_INFLATED before anything is read.
+  const zipBomb = zip(['a', 'b', 'c'].map((n) => ({ name: `zeros-${n}.bin`, data: Buffer.alloc(0), compressed: zeros, declaredSize: 50 << 20, crc: 0, method: 8 })))
   // Without [Content_Types].xml SheetJS opens a nested Index.zip and inflates
   // it itself; this one holds 300 MiB of zeros in a stored entry.
   const indexZip = zip([
@@ -748,6 +754,7 @@ export async function corpus() {
     { name: 'docx-deep-nesting', worker: 'office', header: H.office(), input: deepDocx, expect: ['error:damaged'] },
     { name: 'docx-doctype', worker: 'office', header: H.office(), input: doctypeDocx, expect: ['error:damaged'] },
     { name: 'docx-lying-size', worker: 'office', header: H.office(), input: lyingDocx, expect: ['error:too_large/inflated'] },
+    { name: 'docx-dense', worker: 'office', header: H.office(), input: denseDocx, expect: ['error:too_large/inflated'] },
     { name: 'docx-truncated', worker: 'office', header: H.office(), input: truncate(docx), expect: ['error:damaged'] },
     { name: 'docx-cut', worker: 'office', header: H.office(undefined, { text_bytes: 20 }), input: docx, expect: ['done:cut'], check: (r) => Buffer.byteLength(r.text) === 20 },
     {
@@ -831,6 +838,8 @@ export async function corpus() {
       ),
     },
     { name: 'zip-kind-off', worker: 'office', header: H.office(['office']), input: listed, expect: ['error:kind_off'] },
+    // ZIP_MAX_RATIO bounds what is inflated, never a listing (§16.11).
+    { name: 'zip-dense-listed', worker: 'office', header: H.office(), input: denseZip, expect: ['done'], check: (r) => r.header.entries === 1 && r.text === 'entries (1 of 1 listed):\nzeros.bin\n' },
     { name: 'zip-bomb', worker: 'office', header: H.office(), input: zipBomb, expect: ['error:too_large/inflated'] },
     { name: 'zip-entries', worker: 'office', header: H.office(), input: manyEntries, expect: ['error:too_large/entries'] },
     { name: 'zip-total', worker: 'office', header: H.office(undefined, { inflated: 1_000 }), input: docx, expect: ['error:too_large/inflated'] },

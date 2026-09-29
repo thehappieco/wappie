@@ -2338,8 +2338,8 @@ header (§16.11) copies the worker's limits from here, `media-jail`'s table
 | `PDF_SCANNED_BELOW` | `50` | characters below which a page counts as scanned |
 | `PDF_MAX_IMAGE_PIXELS` | `16_000_000` | pdf.js `maxImageSize` |
 | `ZIP_MAX_ENTRIES` | `2_000` | entries in a zip, OOXML or ODF package |
-| `ZIP_MAX_INFLATED` | `104_857_600` | declared and actual inflated bytes, all entries |
-| `ZIP_MAX_RATIO` | `100` | inflated / compressed, per entry |
+| `ZIP_MAX_INFLATED` | `104_857_600` | declared and actual inflated bytes, all entries: the total bound, checked on the central directory, listings included |
+| `ZIP_MAX_RATIO` | `100` | declared inflated / compressed, per entry the worker inflates, before it inflates any of it; never for an entry a listing only names |
 | `ZIP_LISTED` | `200` | names in a zip listing |
 | `SHEETS_MAX` | `50` | sheets read of a workbook |
 | `SHEET_ROWS` | `2_000` | rows read of a sheet |
@@ -2617,9 +2617,11 @@ after others, followed by exit 2.
   images), decoded by pdf.js, re-encoded as `photo` is to `image_bytes`, as
   one IMAGE with that page; a page without one gets no frame.
 - **`office`** (`office.mjs`): classifies first, from the central directory
-  of a zip (at most `limits.entries` entries, each within `limits.ratio` and
-  all within `limits.inflated` bytes, declared and counted while inflating;
-  over any: ERROR `too_large` with `entries` or `inflated`) or from a CFB
+  of a zip (at most `limits.entries` entries and all within
+  `limits.inflated` bytes, declared and counted while inflating; each entry
+  it inflates within `limits.ratio`, checked on its declared sizes before
+  any of it is inflated, never for an entry a listing only names; over any:
+  ERROR `too_large` with `entries` or `inflated`) or from a CFB
   directory: `word/document.xml` is `docx`; `xl/workbook.xml` `xlsx`;
   `ppt/presentation.xml` `pptx`; a first `mimetype` entry of
   `application/vnd.oasis.opendocument.text` `odt`, of

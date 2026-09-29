@@ -4,12 +4,15 @@
 // (OOXML and ODF packages) and zip (listed by name), so a flaw here needs both
 // kinds off (§16.12).
 //
-// The checks, all on the central directory first: at most `limits.entries`
-// entries (else too_large/entries); every entry's declared size within
-// `limits.ratio` times its compressed size, and all declared sizes within
-// `limits.inflated` bytes (else too_large/inflated). Inflating then counts
-// again: an entry may not produce more than it declared, and all entries
-// inflated in one job stay within `limits.inflated`.
+// The checks on the central directory: at most `limits.entries` entries (else
+// too_large/entries), and all declared sizes within `limits.inflated` bytes
+// (else too_large/inflated). The ratio is an inflater's check, made on an
+// entry about to be inflated and before any of it is: its declared size
+// within `limits.ratio` times its compressed size (else too_large/inflated).
+// A listing inflates nothing, so a dense entry it only names never refuses it.
+// Inflating then counts again: an entry may not produce more than it
+// declared, and all entries inflated in one job stay within
+// `limits.inflated`.
 
 import { crc32, inflateRawSync } from 'node:zlib'
 import { refuse } from './frames.mjs'
@@ -74,7 +77,6 @@ export function readZip(buf, limits) {
     }
     const nameBytes = buf.subarray(nameStart, extraStart)
     const name = flags & 0x800 ? utf8.decode(nameBytes) : cp437(nameBytes)
-    if (size > 0 && (compressed === 0 || size / compressed > limits.ratio)) throw refuse('too_large', 'inflated')
     declared += size
     if (declared > limits.inflated) throw refuse('too_large', 'inflated')
     entries.push({
@@ -142,18 +144,23 @@ function zip64Extra(buf, start, length, fields) {
 }
 
 /**
- * The inflater for one job. `budget` counts every byte inflated, so the
- * entries a job reads stay within `limits.inflated` whatever they declared.
+ * The inflater for one job. `left` counts every byte inflated, so the
+ * entries a job reads stay within `limits.inflated` whatever they declared;
+ * `limits.ratio` bounds each entry it inflates.
  */
 export class Inflater {
   constructor(buf, limits) {
     this.buf = buf
     this.left = limits.inflated
+    this.ratio = limits.ratio
   }
 
-  /** The entry's bytes, checked against its declared size and CRC-32. */
+  /** The entry's bytes, checked against its declared size, ratio and CRC-32. */
   read(entry) {
     if (entry.encrypted) throw refuse('encrypted')
+    // The declared ratio, before a byte is inflated: an entry that inflates
+    // past its declared size is refused below, so this bounds what it makes.
+    if (entry.size > 0 && (entry.compressed === 0 || entry.size / entry.compressed > this.ratio)) throw refuse('too_large', 'inflated')
     const at = entry.offset
     if (at + 30 > this.buf.length || this.buf.readUInt32LE(at) !== LOCAL) throw refuse('damaged')
     const start = at + 30 + this.buf.readUInt16LE(at + 26) + this.buf.readUInt16LE(at + 28)

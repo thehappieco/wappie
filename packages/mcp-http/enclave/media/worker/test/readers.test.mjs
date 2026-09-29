@@ -12,6 +12,8 @@ import { zip } from './corpus.mjs'
 import * as XLSX from 'xlsx'
 
 const LIMITS = { entries: 2_000, inflated: 104_857_600, ratio: 100 }
+// For the inflater tests of other checks: 5,000 repeated bytes deflate far past 100:1.
+const DENSE_OK = { ...LIMITS, ratio: 1_000 }
 
 test('readZip lists names, UTF-8 when flagged and CP437 otherwise', () => {
   const buf = zip([
@@ -27,26 +29,44 @@ test('readZip lists names, UTF-8 when flagged and CP437 otherwise', () => {
 test('the declared checks refuse before anything is inflated', () => {
   const many = zip(Array.from({ length: 11 }, (_, i) => ({ name: `${i}`, data: '' })))
   assert.throws(() => readZip(many, { ...LIMITS, entries: 10 }), (e) => e.code === 'too_large' && e.what === 'entries')
-  const dense = zip([{ name: 'z', data: Buffer.alloc(100_000) }])
-  assert.throws(() => readZip(dense, LIMITS), (e) => e.what === 'inflated')
   const total = zip([{ name: 'a', data: 'x'.repeat(600) }, { name: 'b', data: 'y'.repeat(600) }])
-  assert.throws(() => readZip(total, { ...LIMITS, inflated: 1_000, ratio: 1_000 }), (e) => e.what === 'inflated')
-  const noCompressed = zip([{ name: 'n', data: 'abc', compressed: Buffer.alloc(0), declaredSize: 5 }])
-  assert.throws(() => readZip(noCompressed, LIMITS), (e) => e.what === 'inflated')
+  assert.throws(() => readZip(total, { ...LIMITS, inflated: 1_000 }), (e) => e.what === 'inflated')
+})
+
+test('the ratio bounds what is inflated, never a listing', () => {
+  // Dense entries: 100,000 zeros, a declared size with nothing compressed, and
+  // a declared 5,000 bytes over 10 bytes that are not even deflate. The
+  // central directory names them all; the inflater refuses each before
+  // inflating a byte (the last would otherwise be damaged).
+  const dense = zip([
+    { name: 'z', data: Buffer.alloc(100_000) },
+    { name: 'n', data: 'abc', compressed: Buffer.alloc(0), declaredSize: 5 },
+    { name: 'g', data: Buffer.alloc(0), compressed: Buffer.alloc(10, 0xff), declaredSize: 5_000, method: 8 },
+  ])
+  const { entries } = readZip(dense, LIMITS)
+  assert.deepEqual(entries.map((e) => e.name), ['z', 'n', 'g'])
+  const inflater = new Inflater(dense, LIMITS)
+  for (const entry of entries) assert.throws(() => inflater.read(entry), (e) => e.code === 'too_large' && e.what === 'inflated', entry.name)
+  assert.equal(inflater.left, LIMITS.inflated, 'nothing was counted')
+  // Within the ratio, the same entry inflates.
+  assert.equal(new Inflater(dense, { ...LIMITS, ratio: 1_000 }).read(entries[0]).length, 100_000)
+  // A stored entry is 1:1 whatever the ratio.
+  const stored = zip([{ name: 's', data: Buffer.alloc(100_000), method: 0 }])
+  assert.equal(new Inflater(stored, { ...LIMITS, ratio: 1 }).read(readZip(stored, LIMITS).entries[0]).length, 100_000)
 })
 
 test('inflating counts: a lie about the size or the CRC is caught', () => {
   const data = Buffer.from('x'.repeat(5_000))
   const lying = zip([{ name: 'l', data, declaredSize: 100 }])
-  const { entries } = readZip(lying, { ...LIMITS, ratio: 1_000 })
+  const { entries } = readZip(lying, LIMITS)
   assert.throws(() => new Inflater(lying, LIMITS).read(entries[0]), (e) => e.what === 'inflated')
   const short = zip([{ name: 's', data, declaredSize: 6_000 }])
-  assert.throws(() => new Inflater(short, LIMITS).read(readZip(short, { ...LIMITS, ratio: 1_000 }).entries[0]), (e) => e.code === 'damaged')
+  assert.throws(() => new Inflater(short, DENSE_OK).read(readZip(short, LIMITS).entries[0]), (e) => e.code === 'damaged')
   const badCrc = zip([{ name: 'c', data, crc: 1 }])
-  assert.throws(() => new Inflater(badCrc, LIMITS).read(readZip(badCrc, { ...LIMITS, ratio: 1_000 }).entries[0]), (e) => e.code === 'damaged')
+  assert.throws(() => new Inflater(badCrc, DENSE_OK).read(readZip(badCrc, LIMITS).entries[0]), (e) => e.code === 'damaged')
   const budget = zip([{ name: 'a', data }, { name: 'b', data }])
-  const inflater = new Inflater(budget, { inflated: 9_000 })
-  const both = readZip(budget, { ...LIMITS, ratio: 1_000 }).entries
+  const inflater = new Inflater(budget, { ...DENSE_OK, inflated: 9_000 })
+  const both = readZip(budget, LIMITS).entries
   assert.equal(inflater.read(both[0]).length, 5_000)
   assert.throws(() => inflater.read(both[1]), (e) => e.what === 'inflated')
   const encrypted = zip([{ name: 'e', data: 'x', flags: 1 }])
@@ -63,8 +83,8 @@ test('storedZip: every file again, read through the counted inflater, stored und
     { name: Buffer.from([0x80, 0x41]).toString('latin1'), data: 'b', cp437: true },
     { name: 'st', data: 'stored bytes', method: 0 },
   ])
-  const inflater = new Inflater(buf, LIMITS)
-  const stored = storedZip(readZip(buf, { ...LIMITS, ratio: 1_000 }).entries, inflater)
+  const inflater = new Inflater(buf, DENSE_OK)
+  const stored = storedZip(readZip(buf, LIMITS).entries, inflater)
   assert.equal(inflater.left, LIMITS.inflated - 3_013)
   const entries = readZip(stored, LIMITS).entries
   assert.deepEqual(entries.map((e) => [e.name, e.method, e.compressed, e.size]), [['ünï.txt', 0, 3_000, 3_000], ['ÇA', 0, 1, 1], ['st', 0, 12, 12]])
