@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -81,6 +82,27 @@ type MCP struct {
 	// the other kinds keep working. /v1/media does not look at kinds, so
 	// only the reader enforces them. Empty by default.
 	MediaOffKinds []string
+	// SendEnabled is the switch for sending (docs/mcp-enclave.md §17): a
+	// content connection whose consent carries sending may draft messages
+	// for the person who consented to confirm in the console. Off by
+	// default; off, every draft, send and confirmation is refused at once
+	// and the status of every such connection says sending is off within a
+	// minute, while reading keeps working and the consent survives. It rides
+	// on content, and on is a configuration error while content is off.
+	SendEnabled bool
+	// SendTenants are the workspaces whose content connections may send,
+	// each also in ContentTenants. Required when SendEnabled; "*" is not
+	// accepted.
+	SendTenants []uuid.UUID
+	// SendSelfEnabled lets those connections send notes to the number's own
+	// chat as well, if their consent says so. Read only while SendEnabled.
+	SendSelfEnabled bool
+	// SendDirectEnabled is direct send's switch (S3). Until its server
+	// ships, true is a configuration error while SendEnabled is on.
+	SendDirectEnabled bool
+	// SendLimits are the sending limits, each at most the image's ceiling
+	// (SendCeilings): an operator may lower a limit, never raise one.
+	SendLimits MCPSendLimits
 
 	// readersErr is what was wrong with WS_MCP_READERS itself, and
 	// strayHosted the WS_MCP_READER_HOSTED_* names that were set. Both are
@@ -89,11 +111,53 @@ type MCP struct {
 	strayHosted []string
 	// contentTenantErr is a WS_MCP_CONTENT_TENANTS value that did not parse,
 	// mediaTenantErr a WS_MCP_MEDIA_TENANTS one and mediaOffErr a word of
-	// WS_MCP_MEDIA_OFF_KINDS that is not a kind.
+	// WS_MCP_MEDIA_OFF_KINDS that is not a kind. sendTenantErr and
+	// sendLimitErrs are the same for sending's list and limits.
 	contentTenantErr error
 	mediaTenantErr   error
 	mediaOffErr      error
+	sendTenantErr    error
+	sendLimitErrs    []error
 }
+
+// MCPSendLimits bound what a connection that may send does, per connection
+// unless named otherwise (docs/mcp-enclave.md §17.3, §17.10).
+type MCPSendLimits struct {
+	// DraftsPerHour are the drafts a connection may create in a rolling hour.
+	DraftsPerHour int
+	// DraftsPending are the drafts a connection may have waiting at once.
+	DraftsPending int
+	// PerDay are the own-chat and direct sends in a rolling 24 hours.
+	PerDay int
+	// PerChatPerDay are the direct sends to one chat in a rolling 24 hours
+	// (S3).
+	PerChatPerDay int
+	// MinInterval is the least time between two sends of a connection.
+	MinInterval time.Duration
+	// TenantPerDay are the own-chat and direct sends of a whole workspace
+	// in a rolling 24 hours: this server's own bound, which the image does
+	// not know.
+	TenantPerDay int
+}
+
+// SendCeilings are the image's limits (packages/mcp-http/enclave/send/
+// policy.mjs, measured in PCR0), and the defaults. The effective limit is the
+// lower of this server's and the image's, so a value above its ceiling is a
+// configuration error rather than a promise the reader would not keep. The
+// interval is the other way round: the image's is the shortest, and a longer
+// one here is allowed. TenantPerDay is this server's only.
+var SendCeilings = MCPSendLimits{
+	DraftsPerHour: 30, DraftsPending: 20, PerDay: 20, PerChatPerDay: 5,
+	MinInterval: 30 * time.Second, TenantPerDay: 1000,
+}
+
+// defaultTenantSendsPerDay is WS_MCP_SEND_TENANT_PER_DAY's default, below
+// its ceiling.
+const defaultTenantSendsPerDay = 100
+
+// maxSendInterval bounds WS_MCP_SEND_MIN_INTERVAL: an hour between two sends
+// is already a switch that is nearly off.
+const maxSendInterval = time.Hour
 
 // ContentReader is the reader content connections are held by: the
 // production enclave. No other reader, attested or not, is given text.
@@ -166,7 +230,51 @@ func loadMCP(errs *[]error) MCP {
 	m.MediaEnabled = boolean("WS_MCP_MEDIA_ENABLED", false, errs)
 	m.MediaTenants, m.mediaTenantErr = workspaceList("WS_MCP_MEDIA_TENANTS", os.Getenv("WS_MCP_MEDIA_TENANTS"))
 	m.MediaOffKinds, m.mediaOffErr = mediaKinds(os.Getenv("WS_MCP_MEDIA_OFF_KINDS"))
+	m.SendEnabled = boolean("WS_MCP_SEND_ENABLED", false, errs)
+	m.SendTenants, m.sendTenantErr = workspaceList("WS_MCP_SEND_TENANTS", os.Getenv("WS_MCP_SEND_TENANTS"))
+	m.SendSelfEnabled = boolean("WS_MCP_SEND_SELF_ENABLED", false, errs)
+	m.SendDirectEnabled = boolean("WS_MCP_SEND_DIRECT_ENABLED", false, errs)
+	m.SendLimits, m.sendLimitErrs = sendLimits()
 	return m
+}
+
+// sendLimits reads the six WS_MCP_SEND_* limits. A value that does not parse
+// or is out of range comes back as its default, with an error that Validate
+// reports only while sending is on: a limit nobody uses must not stop a
+// server.
+func sendLimits() (MCPSendLimits, []error) {
+	var errs []error
+	count := func(name string, def, ceiling int) int {
+		raw := strings.TrimSpace(os.Getenv(name))
+		if raw == "" {
+			return def
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > ceiling {
+			errs = append(errs, fmt.Errorf("%s: %q is not a whole number from 1 to %d, the reader's own limit", name, raw, ceiling))
+			return def
+		}
+		return n
+	}
+	c := SendCeilings
+	out := MCPSendLimits{
+		DraftsPerHour: count("WS_MCP_SEND_DRAFTS_PER_HOUR", c.DraftsPerHour, c.DraftsPerHour),
+		DraftsPending: count("WS_MCP_SEND_DRAFTS_PENDING", c.DraftsPending, c.DraftsPending),
+		PerDay:        count("WS_MCP_SEND_PER_DAY", c.PerDay, c.PerDay),
+		PerChatPerDay: count("WS_MCP_SEND_PER_CHAT_PER_DAY", c.PerChatPerDay, c.PerChatPerDay),
+		MinInterval:   c.MinInterval,
+		TenantPerDay:  count("WS_MCP_SEND_TENANT_PER_DAY", defaultTenantSendsPerDay, c.TenantPerDay),
+	}
+	if raw := strings.TrimSpace(os.Getenv("WS_MCP_SEND_MIN_INTERVAL")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < c.MinInterval || d > maxSendInterval {
+			errs = append(errs, fmt.Errorf("WS_MCP_SEND_MIN_INTERVAL: %q is not a duration from %s to %s (the reader's own interval is %s)",
+				raw, c.MinInterval, maxSendInterval, c.MinInterval))
+		} else {
+			out.MinInterval = d
+		}
+	}
+	return out, errs
 }
 
 // workspaceList parses WS_MCP_CONTENT_TENANTS or WS_MCP_MEDIA_TENANTS,
@@ -329,6 +437,7 @@ func (m MCP) Validate(prod bool) error {
 	}
 	errs = append(errs, m.validateContent()...)
 	errs = append(errs, m.validateMedia()...)
+	errs = append(errs, m.validateSend()...)
 	return errors.Join(errs...)
 }
 
@@ -401,6 +510,53 @@ func (m MCP) validateMedia() []error {
 // kinds are off is MediaOffKinds, and applies to every workspace.
 func (m MCP) MediaAllowed(tenant uuid.UUID) bool {
 	return m.ContentAllowed(tenant) && m.MediaEnabled && slices.Contains(m.MediaTenants, tenant)
+}
+
+// validateSend checks the sending switch. Off, its list, its limits and the
+// own-chat and direct switches are not inspected, so turning sending off in a
+// hurry never needs them tidied first. On, it needs content on, a list of
+// workspaces that content also lists, and limits within the reader's; direct
+// send cannot be switched on before its server exists.
+func (m MCP) validateSend() []error {
+	if !m.SendEnabled {
+		return nil
+	}
+	if !m.ContentEnabled {
+		return []error{errors.New("WS_MCP_SEND_ENABLED needs WS_MCP_CONTENT_ENABLED: a connection sends only what it may read")}
+	}
+	var errs []error
+	if m.sendTenantErr != nil {
+		errs = append(errs, m.sendTenantErr)
+	}
+	if len(m.SendTenants) == 0 && m.sendTenantErr == nil {
+		errs = append(errs, errors.New("WS_MCP_SEND_TENANTS must list the workspaces whose connections may send when WS_MCP_SEND_ENABLED is set"))
+	}
+	for _, tenant := range m.SendTenants {
+		if !slices.Contains(m.ContentTenants, tenant) {
+			errs = append(errs, fmt.Errorf("WS_MCP_SEND_TENANTS: %s is not in WS_MCP_CONTENT_TENANTS", tenant))
+		}
+	}
+	if m.SendDirectEnabled {
+		errs = append(errs, errors.New("WS_MCP_SEND_DIRECT_ENABLED: direct send (docs/mcp-enclave.md §17.15) is not in this server yet; leave it false"))
+	}
+	return append(errs, m.sendLimitErrs...)
+}
+
+// SendAllowed reports whether a workspace's content connections that
+// consented to sending may draft and send right now: content is allowed for
+// the workspace, the send switch is on and the workspace is listed.
+func (m MCP) SendAllowed(tenant uuid.UUID) bool {
+	return m.ContentAllowed(tenant) && m.SendEnabled && slices.Contains(m.SendTenants, tenant)
+}
+
+// SendSelfAllowed is SendAllowed with the own-chat switch on as well.
+func (m MCP) SendSelfAllowed(tenant uuid.UUID) bool {
+	return m.SendAllowed(tenant) && m.SendSelfEnabled
+}
+
+// SendDirectAllowed is SendAllowed with the direct send switch on as well.
+func (m MCP) SendDirectAllowed(tenant uuid.UUID) bool {
+	return m.SendAllowed(tenant) && m.SendDirectEnabled
 }
 
 // validateHosted is today's check of the hosted reader, unchanged: a
@@ -608,7 +764,19 @@ func (m MCP) String() string {
 	if len(m.MediaOffKinds) > 0 {
 		fmt.Fprintf(&b, " media_off=%s", strings.Join(m.MediaOffKinds, ","))
 	}
+	fmt.Fprintf(&b, " send=%s send_tenants=%d send_self=%s send_direct=%s", onOff(m.SendEnabled), len(m.SendTenants),
+		onOff(m.SendSelfEnabled), onOff(m.SendDirectEnabled))
+	l := m.SendLimits
+	fmt.Fprintf(&b, " send_limits=drafts_per_hour:%d,drafts_pending:%d,per_day:%d,per_chat_per_day:%d,min_interval:%s,tenant_per_day:%d",
+		l.DraftsPerHour, l.DraftsPending, l.PerDay, l.PerChatPerDay, l.MinInterval, l.TenantPerDay)
 	return b.String()
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 // String renders an attested reader without either secret.

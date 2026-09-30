@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -466,7 +467,7 @@ func TestMCPMediaOffByDefault(t *testing.T) {
 	if !cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) {
 		t.Fatal("the media switch turned content off")
 	}
-	if !strings.HasSuffix(cfg.MCP.String(), " content=on content_tenants=1 media=off media_tenants=0") {
+	if !strings.Contains(cfg.MCP.String(), " content=on content_tenants=1 media=off media_tenants=0 send=") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 }
@@ -491,7 +492,7 @@ func TestMCPMediaLoads(t *testing.T) {
 	if !cfg.MCP.MediaAllowed(workspace) || cfg.MCP.MediaAllowed(uuid.New()) {
 		t.Fatal("MediaAllowed does not follow the list")
 	}
-	if !strings.HasSuffix(cfg.MCP.String(), " media=on media_tenants=1 media_off=pdf,zip") {
+	if !strings.Contains(cfg.MCP.String(), " media=on media_tenants=1 media_off=pdf,zip send=") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 	// A workspace with content but not listed for media reads text only.
@@ -561,6 +562,169 @@ func TestMCPMediaInvalid(t *testing.T) {
 	}
 }
 
+// Sending is off unless switched on, nothing of it is inspected while it is
+// off, and the startup line says so with the limits in force.
+func TestMCPSendOffByDefault(t *testing.T) {
+	mediaEnv(t)
+	for k, v := range map[string]string{
+		"WS_MCP_SEND_TENANTS": "not even a uuid", "WS_MCP_SEND_SELF_ENABLED": "true", "WS_MCP_SEND_DIRECT_ENABLED": "true",
+		"WS_MCP_SEND_DRAFTS_PER_HOUR": "31", "WS_MCP_SEND_MIN_INTERVAL": "1s", "WS_MCP_SEND_TENANT_PER_DAY": "0",
+	} {
+		t.Setenv(k, v)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("an unused send block was inspected: %v", err)
+	}
+	workspace := uuid.MustParse(testWorkspace)
+	if cfg.MCP.SendEnabled || cfg.MCP.SendAllowed(workspace) || cfg.MCP.SendSelfAllowed(workspace) || cfg.MCP.SendDirectAllowed(workspace) {
+		t.Fatal("sending allowed with the switch off")
+	}
+	if !cfg.MCP.ContentAllowed(workspace) {
+		t.Fatal("the send switch turned content off")
+	}
+	// The limits that did not parse are the defaults, the image's own.
+	if cfg.MCP.SendLimits != (MCPSendLimits{DraftsPerHour: 30, DraftsPending: 20, PerDay: 20, PerChatPerDay: 5, MinInterval: 30 * time.Second, TenantPerDay: 100}) {
+		t.Fatalf("limits = %+v", cfg.MCP.SendLimits)
+	}
+	want := " send=off send_tenants=0 send_self=on send_direct=on" +
+		" send_limits=drafts_per_hour:30,drafts_pending:20,per_day:20,per_chat_per_day:5,min_interval:30s,tenant_per_day:100"
+	if !strings.HasSuffix(cfg.MCP.String(), want) {
+		t.Fatalf("String = %q", cfg.MCP.String())
+	}
+}
+
+// sendEnv is mediaEnv with sending on for the test workspace.
+func sendEnv(t *testing.T) {
+	t.Helper()
+	mediaEnv(t)
+	t.Setenv("WS_MCP_SEND_ENABLED", "true")
+	t.Setenv("WS_MCP_SEND_TENANTS", testWorkspace)
+}
+
+func TestMCPSendLoads(t *testing.T) {
+	sendEnv(t)
+	t.Setenv("WS_MCP_SEND_TENANTS", " "+testWorkspace+" ,,")
+	for k, v := range map[string]string{
+		"WS_MCP_SEND_DRAFTS_PER_HOUR": "10", "WS_MCP_SEND_DRAFTS_PENDING": " 5 ", "WS_MCP_SEND_PER_DAY": "1",
+		"WS_MCP_SEND_PER_CHAT_PER_DAY": "2", "WS_MCP_SEND_MIN_INTERVAL": "5m", "WS_MCP_SEND_TENANT_PER_DAY": "1000",
+	} {
+		t.Setenv(k, v)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	workspace := uuid.MustParse(testWorkspace)
+	if !cfg.MCP.SendEnabled || len(cfg.MCP.SendTenants) != 1 || cfg.MCP.SendTenants[0] != workspace {
+		t.Fatalf("send = %v %v", cfg.MCP.SendEnabled, cfg.MCP.SendTenants)
+	}
+	if !cfg.MCP.SendAllowed(workspace) || cfg.MCP.SendAllowed(uuid.New()) {
+		t.Fatal("SendAllowed does not follow the list")
+	}
+	// The own-chat switch is off unless set; direct send is never on yet.
+	if cfg.MCP.SendSelfAllowed(workspace) || cfg.MCP.SendDirectAllowed(workspace) {
+		t.Fatal("own chat or direct send allowed without their switches")
+	}
+	if cfg.MCP.SendLimits != (MCPSendLimits{DraftsPerHour: 10, DraftsPending: 5, PerDay: 1, PerChatPerDay: 2, MinInterval: 5 * time.Minute, TenantPerDay: 1000}) {
+		t.Fatalf("limits = %+v", cfg.MCP.SendLimits)
+	}
+	if !strings.Contains(cfg.MCP.String(), " send=on send_tenants=1 send_self=off send_direct=off send_limits=drafts_per_hour:10,drafts_pending:5,per_day:1,per_chat_per_day:2,min_interval:5m0s,tenant_per_day:1000") {
+		t.Fatalf("String = %q", cfg.MCP.String())
+	}
+	t.Setenv("WS_MCP_SEND_SELF_ENABLED", "true")
+	if cfg, err = Load(); err != nil || !cfg.MCP.SendSelfAllowed(workspace) || cfg.MCP.SendSelfAllowed(uuid.New()) {
+		t.Fatalf("own chat: %v", err)
+	}
+	// A workspace with content but not listed for sending only reads.
+	other := uuid.MustParse("0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee")
+	t.Setenv("WS_MCP_READER_ENCLAVE_TENANTS", "*")
+	t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace+","+other.String())
+	if cfg, err = Load(); err != nil || !cfg.MCP.ContentAllowed(other) || cfg.MCP.SendAllowed(other) || cfg.MCP.SendSelfAllowed(other) {
+		t.Fatalf("content without sending: %v", err)
+	}
+	// Sending rides on content and on the connector.
+	off := cfg.MCP
+	off.ContentEnabled = false
+	if off.SendAllowed(workspace) || off.SendSelfAllowed(workspace) {
+		t.Fatal("sending allowed with content off")
+	}
+	off = cfg.MCP
+	off.Enabled = false
+	if off.SendAllowed(workspace) {
+		t.Fatal("sending allowed with the connector off")
+	}
+	// Direct send follows its switch where a configuration has it at all.
+	off = cfg.MCP
+	off.SendDirectEnabled = true
+	if !off.SendDirectAllowed(workspace) || off.SendDirectAllowed(other) {
+		t.Fatal("SendDirectAllowed does not follow the list")
+	}
+}
+
+func TestMCPSendInvalid(t *testing.T) {
+	other := "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+	for name, env := range map[string]map[string]string{
+		"no tenants":               {"WS_MCP_SEND_TENANTS": ""},
+		"every workspace":          {"WS_MCP_SEND_TENANTS": "*"},
+		"not a uuid":               {"WS_MCP_SEND_TENANTS": "acme"},
+		"nil uuid":                 {"WS_MCP_SEND_TENANTS": "00000000-0000-0000-0000-000000000000"},
+		"without content":          {"WS_MCP_SEND_TENANTS": testWorkspace + "," + other, "WS_MCP_READER_ENCLAVE_TENANTS": "*"},
+		"content off":              {"WS_MCP_CONTENT_ENABLED": "false"},
+		"direct before S3":         {"WS_MCP_SEND_DIRECT_ENABLED": "true"},
+		"switch not a boolean":     {"WS_MCP_SEND_ENABLED": "maybe"},
+		"self not a boolean":       {"WS_MCP_SEND_SELF_ENABLED": "sometimes"},
+		"drafts per hour over":     {"WS_MCP_SEND_DRAFTS_PER_HOUR": "31"},
+		"drafts per hour zero":     {"WS_MCP_SEND_DRAFTS_PER_HOUR": "0"},
+		"drafts pending over":      {"WS_MCP_SEND_DRAFTS_PENDING": "21"},
+		"per day over":             {"WS_MCP_SEND_PER_DAY": "21"},
+		"per day not a number":     {"WS_MCP_SEND_PER_DAY": "twenty"},
+		"per chat over":            {"WS_MCP_SEND_PER_CHAT_PER_DAY": "6"},
+		"interval under the image": {"WS_MCP_SEND_MIN_INTERVAL": "29s"},
+		"interval over an hour":    {"WS_MCP_SEND_MIN_INTERVAL": "61m"},
+		"interval not a duration":  {"WS_MCP_SEND_MIN_INTERVAL": "30"},
+		"tenant per day over":      {"WS_MCP_SEND_TENANT_PER_DAY": "1001"},
+		"tenant per day negative":  {"WS_MCP_SEND_TENANT_PER_DAY": "-1"},
+		"drafts per hour fraction": {"WS_MCP_SEND_DRAFTS_PER_HOUR": "2.5"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sendEnv(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load accepted %v", env)
+			}
+		})
+	}
+	// The error names the variable, so the operator knows which to fix.
+	sendEnv(t)
+	t.Setenv("WS_MCP_SEND_PER_DAY", "50")
+	if err := mustFail(t); !strings.Contains(err.Error(), "WS_MCP_SEND_PER_DAY") {
+		t.Fatalf("error = %v", err)
+	}
+	// Sending off is the kill switch, and flipping it must not need the rest
+	// of the block tidied first; a disabled connector looks at none of it.
+	sendEnv(t)
+	t.Setenv("WS_MCP_SEND_ENABLED", "false")
+	t.Setenv("WS_MCP_SEND_TENANTS", "")
+	t.Setenv("WS_MCP_SEND_DIRECT_ENABLED", "true")
+	t.Setenv("WS_MCP_SEND_PER_DAY", "500")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("with sending off the send block was inspected: %v", err)
+	}
+	if cfg.MCP.SendAllowed(uuid.MustParse(testWorkspace)) {
+		t.Fatal("sending allowed with the switch off")
+	}
+	t.Setenv("WS_MCP_ENABLED", "false")
+	t.Setenv("WS_MCP_SEND_ENABLED", "true")
+	t.Setenv("WS_MCP_CONTENT_ENABLED", "false")
+	if _, err := Load(); err != nil {
+		t.Fatalf("a disabled connector's send switch was inspected: %v", err)
+	}
+}
+
 // The content switch and its workspace list are documented where an
 // operator looks: the readers' configuration section of docs/mcp.md and
 // .env.example, each with its rule. So are the attachments' three.
@@ -581,7 +745,10 @@ func TestContentVariablesDocumented(t *testing.T) {
 	}
 	section := doc[start:end]
 	env := read("../../.env.example")
-	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_CONTENT_TENANTS", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_TENANTS", "WS_MCP_MEDIA_OFF_KINDS"} {
+	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_CONTENT_TENANTS", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_TENANTS", "WS_MCP_MEDIA_OFF_KINDS",
+		"WS_MCP_SEND_ENABLED", "WS_MCP_SEND_TENANTS", "WS_MCP_SEND_SELF_ENABLED", "WS_MCP_SEND_DIRECT_ENABLED",
+		"WS_MCP_SEND_DRAFTS_PER_HOUR", "WS_MCP_SEND_DRAFTS_PENDING", "WS_MCP_SEND_PER_DAY", "WS_MCP_SEND_PER_CHAT_PER_DAY",
+		"WS_MCP_SEND_MIN_INTERVAL", "WS_MCP_SEND_TENANT_PER_DAY"} {
 		if !strings.Contains(section, "| `"+name+"` |") {
 			t.Errorf("docs/mcp.md's readers' configuration does not list %s", name)
 		}
@@ -594,5 +761,10 @@ func TestContentVariablesDocumented(t *testing.T) {
 	}
 	if !strings.Contains(env, "# WS_MCP_MEDIA_ENABLED=false\n") {
 		t.Error(".env.example does not show the media switch's default")
+	}
+	for _, off := range []string{"# WS_MCP_SEND_ENABLED=false\n", "# WS_MCP_SEND_SELF_ENABLED=false\n", "# WS_MCP_SEND_DIRECT_ENABLED=false\n"} {
+		if !strings.Contains(env, off) {
+			t.Errorf(".env.example does not show %q", strings.TrimSpace(off))
+		}
 	}
 }
