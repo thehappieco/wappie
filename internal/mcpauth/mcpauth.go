@@ -25,6 +25,7 @@
 package mcpauth
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -103,11 +104,28 @@ type Handler struct {
 	// MediaOff are the attachment kinds switched off everywhere, sorted;
 	// every attested status answer carries them.
 	MediaOff []string
+	// SendAllowed reports whether a workspace's content connections that
+	// consented to sending may draft and send right now: the send switch
+	// and its workspace list, on top of ContentAllowed. SendSelfAllowed and
+	// SendDirectAllowed are the same with the own-chat and direct switches.
+	// Nil allows none. They are asked on every consent, status check, draft,
+	// send and confirmation, never cached.
+	SendAllowed       func(tenant uuid.UUID) bool
+	SendSelfAllowed   func(tenant uuid.UUID) bool
+	SendDirectAllowed func(tenant uuid.UUID) bool
+	// SendLimits bound drafts and sends; a zero field is the image's
+	// ceiling (store's defaults in sendLimits).
+	SendLimits store.SendLimits
+	// SendText sends a text as a number and archives it: the WebSocket's
+	// send core, handed in by main. Nil sends nothing, and the send route
+	// refuses every send.
+	SendText func(ctx context.Context, in OutboundText) (OutboundSent, error)
 
 	// Set up by Mount.
 	readers  []reader
 	requests *requestCache
 	replay   *replayCache
+	dropped  *refusalDrops
 }
 
 // Mount registers the routes on a mux. Call it once, after the fields are
@@ -116,6 +134,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	h.readers = h.configuredReaders()
 	h.requests = newRequestCache()
 	h.replay = newReplayCache(replayCap)
+	h.dropped = newRefusalDrops()
 	mux.HandleFunc("GET /v1/mcp/requests/{id}", h.descriptor)
 	mux.HandleFunc("POST /v1/mcp/requests/{id}/prepare", h.prepare)
 	mux.HandleFunc("POST /v1/mcp/connections", h.create)
@@ -124,6 +143,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/mcp/connections/{id}/renewal", h.renewal)
 	mux.HandleFunc("POST /v1/mcp/connections/{id}/renew", h.renew)
 	mux.HandleFunc("GET /v1/mcp/content", h.content)
+	h.mountSendConsole(mux)
 	mux.HandleFunc("GET /v1/mcp/internal/connections/{id}", h.internal(h.status))
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/activate", h.internal(h.activate))
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/revoke", h.internal(h.revoke))
@@ -165,10 +185,18 @@ type createRequest struct {
 	ServiceUserID  string `json:"service_user_id"`
 	KeyMode        string `json:"key_mode"`
 	ConsentVersion int    `json:"consent_version"`
-	// Media asks for attachments as well as text: consent version 2 only,
+	// Media asks for attachments as well as text: consent version 2 or 3,
 	// and the same value the browser sealed in the bundle, which the reader
 	// compares with this one. Absent is false.
 	Media bool `json:"media"`
+	// Send asks for sending ("draft"; "direct" from S3), only on consent
+	// version 3, which always carries it. SendSelf adds the own chat and
+	// SendGroups groups for drafts. SendChats is direct send's list (S3).
+	// The same values the browser sealed, which the reader compares.
+	Send       string          `json:"send"`
+	SendSelf   bool            `json:"send_self"`
+	SendGroups bool            `json:"send_groups"`
+	SendChats  json.RawMessage `json:"send_chats"`
 }
 
 type createReply struct {
@@ -198,6 +226,15 @@ type connectionInfo struct {
 	KeyMode        *string `json:"key_mode"`
 	ConsentVersion *int    `json:"consent_version"`
 	Media          bool    `json:"media"`
+	// SendMode is the consent's sending, "draft" or "direct", null for none;
+	// SendSelf and SendGroups its own chat and groups, SendPaused whether
+	// the pause is on, and SendChats how many chats direct send's list holds.
+	// The consent's, whatever the switches say now.
+	SendMode   *string `json:"send_mode"`
+	SendSelf   bool    `json:"send_self"`
+	SendGroups bool    `json:"send_groups"`
+	SendPaused bool    `json:"send_paused"`
+	SendChats  int     `json:"send_chats"`
 	// RevokeReason says why an ended connection ended; null otherwise.
 	RevokeReason *string `json:"revoke_reason"`
 	// Renewable is set on a live content connection the viewer consented
@@ -220,6 +257,9 @@ type statusReply struct {
 // as, so the reader can drop a key that belongs to another. Media says
 // whether the connection may open attachments right now, and MediaOff which
 // kinds are off everywhere; a reader without attachments reads neither.
+// Send says how it may send right now ("draft" or "direct", null for not at
+// all) and SendSelf whether to its own chat; a reader without sending reads
+// neither.
 type attestedStatusReply struct {
 	Status        string    `json:"status"`
 	ExpiresAt     time.Time `json:"expires_at"`
@@ -227,6 +267,8 @@ type attestedStatusReply struct {
 	ServiceUserID *string   `json:"service_user_id"`
 	Media         bool      `json:"media"`
 	MediaOff      []string  `json:"media_off"`
+	Send          *string   `json:"send"`
+	SendSelf      bool      `json:"send_self"`
 }
 
 // descriptor is the part of the reader's answer this server reads: enough to
@@ -413,6 +455,13 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "media_not_allowed", "media is not enabled for this workspace")
 		return
 	}
+	if in.SendMode != "" && !h.sendAllowed(rd, user.TenantID) || in.SendSelf && !h.sendSelfAllowed(rd, user.TenantID) ||
+		in.SendMode == store.SendModeDirect && !h.sendDirectAllowed(rd, user.TenantID) {
+		// Sending likewise, and the own chat and direct send each behind a
+		// switch of their own.
+		fail(w, http.StatusForbidden, "send_not_allowed", "sending is not enabled for this workspace")
+		return
+	}
 	if rd.attested != nil {
 		if !rd.attested.allows(user.TenantID) {
 			fail(w, http.StatusForbidden, "tenant_not_allowed", "this workspace may not use this assistant connector yet")
@@ -478,6 +527,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	relay := BundleRelay{ConnectionID: conn.ID, TenantID: conn.TenantID, KID: in.ReaderKID, Sealed: req.Sealed, ExpiresAt: conn.ExpiresAt}
 	if content {
 		relay.Kind, relay.Media = store.KindContent, in.Media
+		relay.Send, relay.SendSelf, relay.SendGroups = in.SendMode, in.SendSelf, in.SendGroups
 	}
 	if err := rd.relay.Bundle(ctx, in.RequestID, relay); err != nil {
 		if derr := h.Connections.DeleteFailed(ctx, conn.ID); derr != nil {
@@ -490,7 +540,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log().Info("mcp connection consented", "connection", conn.ID, "client", in.RedirectHost,
-		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id, "kind", in.Kind, "media", in.Media)
+		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id, "kind", in.Kind, "media", in.Media,
+		"send", in.SendMode, "send_self", in.SendSelf, "send_groups", in.SendGroups)
 	send(w, http.StatusCreated, createReply{
 		ID: conn.ID, Status: conn.Status, ExpiresAt: conn.ExpiresAt,
 		CompleteURL: rd.completeURL(),
@@ -533,12 +584,16 @@ func checkCreate(w http.ResponseWriter, req createRequest) (store.CreateMCPConne
 		RequestID: req.RequestID, KeyPrefix: req.KeyPrefix, ClientName: name,
 		ReaderKID: req.KID, ExpiresAt: at.UTC(), Kind: store.KindMetadata,
 	}
+	sending := req.Send != "" || req.SendSelf || req.SendGroups || len(req.SendChats) > 0
 	switch req.Kind {
 	case "", store.KindMetadata:
-		if req.ServiceUserID != "" || req.KeyMode != "" || req.ConsentVersion != 0 || req.Media {
-			return bad("service_user_id, key_mode, consent_version and media are for a content connection only")
+		if req.ServiceUserID != "" || req.KeyMode != "" || req.ConsentVersion != 0 || req.Media || sending {
+			return bad("service_user_id, key_mode, consent_version, media and the send fields are for a content connection only")
 		}
 	case store.KindContent:
+		if sending && req.Send == "" {
+			return bad("send_self, send_groups and send_chats need send")
+		}
 		service, err := uuid.Parse(req.ServiceUserID)
 		if err != nil || len(req.ServiceUserID) != 36 || service == uuid.Nil {
 			return bad("service_user_id must be the content connection's service account id")
@@ -546,17 +601,30 @@ func checkCreate(w http.ResponseWriter, req createRequest) (store.CreateMCPConne
 		if req.KeyMode != store.KeyModeEphemeral {
 			return bad("key_mode must be ephemeral")
 		}
-		if req.ConsentVersion != store.ContentConsentVersion && req.ConsentVersion != store.MediaConsentVersion {
-			return bad("consent_version must be 1 or 2")
+		switch req.ConsentVersion {
+		case store.ContentConsentVersion, store.MediaConsentVersion, store.SendConsentVersion:
+		default:
+			return bad("consent_version must be 1, 2 or 3")
 		}
-		if req.Media && req.ConsentVersion != store.MediaConsentVersion {
-			return bad("media requires consent_version 2")
+		if (req.Send != "") != (req.ConsentVersion == store.SendConsentVersion) {
+			return bad("consent version 3 carries sending, and only it does")
+		}
+		if req.Media && req.ConsentVersion < store.MediaConsentVersion {
+			return bad("media requires consent_version 2 or 3")
+		}
+		switch {
+		case req.Send == store.SendModeDirect || len(req.SendChats) > 0:
+			// Direct send's server is S3 (docs/mcp-enclave.md §17.15).
+			return bad("direct send and send_chats are not available yet; send must be draft")
+		case req.Send != "" && req.Send != store.SendModeDraft:
+			return bad("send must be draft")
 		}
 		if at.After(time.Now().Add(maxContentLifetime)) {
 			return bad("a content connection's expires_at must be within 90 days")
 		}
 		in.Kind, in.ServiceUserID, in.KeyMode, in.ConsentVersion = store.KindContent, service, req.KeyMode, req.ConsentVersion
 		in.Media = req.Media
+		in.SendMode, in.SendSelf, in.SendGroups = req.Send, req.SendSelf, req.SendGroups
 	default:
 		return bad("kind must be metadata or content")
 	}
@@ -584,31 +652,42 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	allowed := h.contentEnabledFor(user.TenantID)
 	for _, c := range rows {
-		status := c.Status
-		if (status == "active" || status == "reseal") && !c.ExpiresAt.After(now) {
-			// What the reader is told, so the list never says an ended
-			// connection is live while the janitor is between runs.
-			status = "expired"
-		}
-		info := connectionInfo{
-			ID: c.ID, ClientName: c.ClientName, RedirectHost: c.RedirectHost, Status: status,
-			DeviceCount: c.DeviceCount, KeyPrefix: c.KeyPrefix, CreatedAt: c.CreatedAt,
-			ActivatedAt: c.ActivatedAt, ExpiresAt: c.ExpiresAt, LastSeenAt: c.LastSeenAt,
-			Kind:      c.Kind,
-			Renewable: c.Kind == store.KindContent && (status == "active" || status == "reseal") && c.CreatedBy == user.ID && allowed,
-		}
-		if c.KeyMode != "" {
-			info.KeyMode = &c.KeyMode
-		}
-		if c.Kind == store.KindContent && c.ConsentVersion != 0 {
-			info.ConsentVersion, info.Media = &c.ConsentVersion, c.Media
-		}
-		if c.RevokeReason != "" {
-			info.RevokeReason = &c.RevokeReason
-		}
-		out.Connections = append(out.Connections, info)
+		out.Connections = append(out.Connections, listedConnection(c, user.ID, allowed, now))
 	}
 	send(w, http.StatusOK, out)
+}
+
+// listedConnection is one connection as the console lists it to viewer,
+// with content allowed or not for the workspace right now.
+func listedConnection(c store.MCPConnection, viewer uuid.UUID, allowed bool, now time.Time) connectionInfo {
+	status := c.Status
+	if (status == "active" || status == "reseal") && !c.ExpiresAt.After(now) {
+		// What the reader is told, so the list never says an ended
+		// connection is live while the janitor is between runs.
+		status = "expired"
+	}
+	info := connectionInfo{
+		ID: c.ID, ClientName: c.ClientName, RedirectHost: c.RedirectHost, Status: status,
+		DeviceCount: c.DeviceCount, KeyPrefix: c.KeyPrefix, CreatedAt: c.CreatedAt,
+		ActivatedAt: c.ActivatedAt, ExpiresAt: c.ExpiresAt, LastSeenAt: c.LastSeenAt,
+		Kind:      c.Kind,
+		Renewable: c.Kind == store.KindContent && (status == "active" || status == "reseal") && c.CreatedBy == viewer && allowed,
+	}
+	if c.KeyMode != "" {
+		info.KeyMode = &c.KeyMode
+	}
+	if c.Kind == store.KindContent && c.ConsentVersion != 0 {
+		info.ConsentVersion, info.Media = &c.ConsentVersion, c.Media
+	}
+	if c.SendMode != "" {
+		mode := c.SendMode
+		info.SendMode = &mode
+	}
+	info.SendSelf, info.SendGroups, info.SendPaused, info.SendChats = c.SendSelf, c.SendGroups, c.SendPausedAt != nil, c.SendChats
+	if c.RevokeReason != "" {
+		info.RevokeReason = &c.RevokeReason
+	}
+	return info
 }
 
 // remove ends a connection: the row and its key in one transaction, then a
@@ -680,8 +759,33 @@ func (h *Handler) connectionStatus(w http.ResponseWriter, r *http.Request, reade
 		h.connectionError(w, err)
 		return
 	}
-	media := attested && a.Media && h.mediaAllowed(rd, a.TenantID)
-	send(w, http.StatusOK, standingReply(a, attested, media, h.MediaOff))
+	var now standingNow
+	if attested {
+		now.media = a.Media && h.mediaAllowed(rd, a.TenantID)
+		now.mediaOff = h.MediaOff
+		// Sending needs an active answer: a connection waiting for its
+		// handshake, or whose key the reader lost, sends nothing. Direct
+		// send narrows to drafts while its switch is off, and a pause stops
+		// both, never reading.
+		if a.SendMode != "" && a.Status == "active" && !a.SendPaused && h.sendAllowed(rd, a.TenantID) {
+			now.send = a.SendMode
+			if now.send == store.SendModeDirect && !h.sendDirectAllowed(rd, a.TenantID) {
+				now.send = store.SendModeDraft
+			}
+			now.sendSelf = a.SendSelf && h.sendSelfAllowed(rd, a.TenantID)
+		}
+	}
+	send(w, http.StatusOK, standingReply(a, attested, now))
+}
+
+// standingNow is what an attested reader is told about a connection beyond
+// its standing: what the switches let it do right now.
+type standingNow struct {
+	media    bool
+	mediaOff []string
+	// send is "draft", "direct" or "" for none.
+	send     string
+	sendSelf bool
 }
 
 // standingReply shapes a connection's standing for its reader. The expiry
@@ -689,18 +793,22 @@ func (h *Handler) connectionStatus(w http.ResponseWriter, r *http.Request, reade
 // this interface takes: a reader holds it next to the consent's, and a
 // renewal on a host with another zone would otherwise not match it. The
 // hosted reader's reply never grows: its two fields are all it reads.
-func standingReply(a store.StatusAnswer, attested, media bool, mediaOff []string) any {
+func standingReply(a store.StatusAnswer, attested bool, now standingNow) any {
 	expires := a.ExpiresAt.UTC()
 	if !attested {
 		return statusReply{Status: a.Status, ExpiresAt: expires}
 	}
-	reply := attestedStatusReply{Status: a.Status, ExpiresAt: expires, Kind: a.Kind, Media: media, MediaOff: []string{}}
+	reply := attestedStatusReply{Status: a.Status, ExpiresAt: expires, Kind: a.Kind, Media: now.media, MediaOff: []string{}}
 	if a.ServiceUserID != nil {
 		service := a.ServiceUserID.String()
 		reply.ServiceUserID = &service
 	}
-	if len(mediaOff) > 0 {
-		reply.MediaOff = append(reply.MediaOff, mediaOff...)
+	if len(now.mediaOff) > 0 {
+		reply.MediaOff = append(reply.MediaOff, now.mediaOff...)
+	}
+	if now.send != "" {
+		mode := now.send
+		reply.Send, reply.SendSelf = &mode, now.sendSelf
 	}
 	return reply
 }

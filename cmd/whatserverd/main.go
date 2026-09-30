@@ -491,6 +491,9 @@ func serve() error {
 		// A revocation an attested reader has not confirmed is sent again
 		// every thirty seconds until it is.
 		a.mcp.WatchRevocations(ctx)
+		// Refusals past a connection's daily cap are counted, and logged
+		// once an hour.
+		a.mcp.WatchDroppedRefusals(ctx)
 	}
 
 	errc := make(chan error, 1)
@@ -699,6 +702,14 @@ func (a *app) routes() http.Handler {
 			ContentAllowed: a.cfg.MCP.ContentAllowed,
 			MediaAllowed:   a.cfg.MCP.MediaAllowed,
 			MediaOff:       a.cfg.MCP.MediaOffKinds,
+			// Sending, on top of content, behind its own switches, list
+			// and limits; what it sends goes through the socket's own
+			// text send.
+			SendAllowed:       a.cfg.MCP.SendAllowed,
+			SendSelfAllowed:   a.cfg.MCP.SendSelfAllowed,
+			SendDirectAllowed: a.cfg.MCP.SendDirectAllowed,
+			SendLimits:        sendLimits(a.cfg.MCP.SendLimits),
+			SendText:          mcpSendText(a.ws),
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)

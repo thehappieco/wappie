@@ -169,3 +169,29 @@ func TestDiscoveryAdvertisesMedia(t *testing.T) {
 		}
 	}
 }
+
+// Sending is advertised only where content is, and with its own switch on;
+// which workspaces may send is asked per workspace.
+func TestDiscoveryAdvertisesSend(t *testing.T) {
+	for _, tc := range []struct {
+		endpoints mcpEndpoints
+		want      bool
+	}{
+		{mcpEndpoints{Attested: "https://mcp.example.test/mcp", Content: true, Send: true}, true},
+		{mcpEndpoints{Attested: "https://mcp.example.test/mcp", Content: true, Media: true}, false},
+		{mcpEndpoints{Attested: "https://mcp.example.test/mcp", Send: true}, false},
+		{mcpEndpoints{Server: "https://api.example.test/mcp", Content: true, Send: true}, false},
+	} {
+		w := httptest.NewRecorder()
+		discoveryFor(tc.endpoints)(w, httptest.NewRequest("GET", "/v1/discovery", nil))
+		var doc struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(doc.Capabilities, "mcp.remote.send.v1") != tc.want {
+			t.Fatalf("%+v: %s", tc.endpoints, w.Body.String())
+		}
+	}
+}

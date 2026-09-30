@@ -77,6 +77,15 @@ type BundleRelay struct {
 	// even as false, and a renewal never changes what was consented, so
 	// the reader compares the renewal's bundle with its own sealed record.
 	Media bool `json:"media,omitempty"`
+	// Send, SendSelf and SendGroups are a content consent's sending
+	// (docs/mcp-enclave.md §17.2 rule 4): the reader refuses the bundle
+	// unless it seals the same. Each goes on the wire only when present, and
+	// only on a consent, for the same reason as media: a reader before
+	// sending (0.4.x) parses this body strictly, so a consent with sending
+	// fails closed on it, and one without looks to it as before.
+	Send       string `json:"send,omitempty"`
+	SendSelf   bool   `json:"send_self,omitempty"`
+	SendGroups bool   `json:"send_groups,omitempty"`
 }
 
 // RefusalError is a reader refusing what it was handed, with its code. It

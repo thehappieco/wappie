@@ -12,6 +12,8 @@ import (
 
 	"whatserver2/internal/config"
 	"whatserver2/internal/mcpauth"
+	"whatserver2/internal/store"
+	"whatserver2/internal/wsapi"
 )
 
 // attestedReaderID is the reader discovery advertises as
@@ -33,8 +35,43 @@ func advertisedMCP(cfg config.MCP) mcpEndpoints {
 		out.Attested = strings.TrimSuffix(r.PublicOrigin, "/") + "/mcp"
 		out.Content = cfg.ContentEnabled
 		out.Media = cfg.ContentEnabled && cfg.MediaEnabled
+		out.Send = cfg.ContentEnabled && cfg.SendEnabled
 	}
 	return out
+}
+
+// sendLimits hands the configured limits to the handler.
+func sendLimits(l config.MCPSendLimits) store.SendLimits {
+	return store.SendLimits{
+		DraftsPerHour: l.DraftsPerHour, DraftsPending: l.DraftsPending, PerDay: l.PerDay, PerChatPerDay: l.PerChatPerDay,
+		MinInterval: l.MinInterval, TenantPerDay: l.TenantPerDay,
+	}
+}
+
+// mcpSendText is the send route's way to WhatsApp: the socket's own text
+// send, with its answers in the connector's words. A send refused before it
+// left stays one; anything else may have left.
+func mcpSendText(ws *wsapi.Server) func(context.Context, mcpauth.OutboundText) (mcpauth.OutboundSent, error) {
+	return func(ctx context.Context, in mcpauth.OutboundText) (mcpauth.OutboundSent, error) {
+		sent, err := ws.SendText(ctx, wsapi.Text{Tenant: in.Tenant, Device: in.Device, Chat: in.Chat, Body: in.Body})
+		if err != nil {
+			return mcpauth.OutboundSent{}, mapSendError(err)
+		}
+		return mcpauth.OutboundSent{WAID: sent.WAID, Timestamp: sent.Timestamp, MessageUID: sent.UID}, nil
+	}
+}
+
+// mapSendError puts the socket's send errors in the connector's words.
+func mapSendError(err error) error {
+	switch {
+	case errors.Is(err, wsapi.ErrDeviceOffline):
+		return mcpauth.ErrDeviceOffline
+	case errors.Is(err, wsapi.ErrCapturePaused):
+		return mcpauth.ErrStoragePaused
+	case errors.Is(err, wsapi.ErrNotSent):
+		return fmt.Errorf("%w: %w", mcpauth.ErrNotSent, err)
+	}
+	return err
 }
 
 // attestedReaders turns the configuration into the handler's readers, each

@@ -204,7 +204,7 @@ func TestStandingReplyExpiryIsUTC(t *testing.T) {
 	at := time.Date(2026, 10, 26, 14, 30, 0, 0, zone)
 	service := uuid.New()
 	for name, attested := range map[string]bool{"hosted": false, "attested": true} {
-		raw, err := json.Marshal(standingReply(store.StatusAnswer{Status: "active", ExpiresAt: at, Kind: "content", ServiceUserID: &service}, attested, false, nil))
+		raw, err := json.Marshal(standingReply(store.StatusAnswer{Status: "active", ExpiresAt: at, Kind: "content", ServiceUserID: &service}, attested, standingNow{}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -222,20 +222,25 @@ func TestStandingReplyExpiryIsUTC(t *testing.T) {
 }
 
 // The attested reply always carries media and media_off, the list never as
-// null; the hosted reader's keeps its two fields whatever it is handed.
-func TestStandingReplyMedia(t *testing.T) {
+// null, and send and send_self, send as null when the connection may not
+// send; the hosted reader's keeps its two fields whatever it is handed.
+func TestStandingReplyMediaAndSend(t *testing.T) {
 	service := uuid.New()
 	answer := store.StatusAnswer{Status: "active", ExpiresAt: time.Now(), Kind: "content", ServiceUserID: &service, Media: true}
 	for name, tc := range map[string]struct {
-		attested, media bool
-		off             []string
-		want            string
+		attested bool
+		now      standingNow
+		want     string
 	}{
-		"hosted":             {false, true, []string{"pdf"}, ``},
-		"attested, no media": {true, false, nil, `"media":false,"media_off":[]`},
-		"attested, media":    {true, true, []string{"pdf", "zip"}, `"media":true,"media_off":["pdf","zip"]`},
+		"hosted":             {false, standingNow{media: true, mediaOff: []string{"pdf"}, send: "draft", sendSelf: true}, ``},
+		"attested, no media": {true, standingNow{}, `"media":false,"media_off":[],"send":null,"send_self":false`},
+		"attested, media":    {true, standingNow{media: true, mediaOff: []string{"pdf", "zip"}}, `"media":true,"media_off":["pdf","zip"],"send":null,"send_self":false`},
+		"attested, drafts":   {true, standingNow{send: "draft"}, `"media":false,"media_off":[],"send":"draft","send_self":false`},
+		"attested, own chat": {true, standingNow{send: "draft", sendSelf: true}, `"media":false,"media_off":[],"send":"draft","send_self":true`},
+		// The own chat rides on send: without it, never true.
+		"attested, own chat alone": {true, standingNow{sendSelf: true}, `"media":false,"media_off":[],"send":null,"send_self":false`},
 	} {
-		raw, err := json.Marshal(standingReply(answer, tc.attested, tc.media, tc.off))
+		raw, err := json.Marshal(standingReply(answer, tc.attested, tc.now))
 		if err != nil {
 			t.Fatal(err)
 		}
