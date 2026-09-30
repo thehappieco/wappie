@@ -329,6 +329,21 @@ func TestRESTPageHistoryAndValidation(t *testing.T) {
 	if len(chats.Chats.Chats) != 1 || !chats.Truncated || chats.Limit != 1 {
 		t.Fatalf("truncation not disclosed: %+v", chats)
 	}
+	// Narrowed to one key: that chat or none, never truncated, whatever the
+	// limit says.
+	for key, want := range map[string]int{"5511000000002@s.whatsapp.net": 1, chat: 1, "5511000000009@s.whatsapp.net": 0} {
+		var one struct {
+			wsapi.Chats
+			Truncated bool `json:"truncated"`
+		}
+		f.get(t, "/v1/devices/"+f.device.String()+"/chats?limit=1&chat_key="+url.QueryEscape(key), token, 200, &one)
+		if len(one.Chats.Chats) != want || one.Truncated || want == 1 && one.Chats.Chats[0].ChatKey != key {
+			t.Fatalf("chat_key %s: %+v", key, one)
+		}
+	}
+	for _, bad := range []string{"?chat_key=", "?chat_key=" + strings.Repeat("9", 513), "?chat_key=a&chat_key=b"} {
+		f.get(t, "/v1/devices/"+f.device.String()+"/chats"+bad, token, 400, nil)
+	}
 	for _, path := range []string{base + "&before_seq=3", base + "&before_ts=invalid&before_seq=3", base + "&limit=201", "/v1/devices/" + f.device.String() + "/messages", "/v1/devices/" + f.device.String() + "/keys?ids=0", "/v1/devices/" + f.device.String() + "/keys?ids=abc", "/v1/messages/not-a-uuid", "/v1/devices/" + f.device.String()[:8] + "/chats"} {
 		f.get(t, path, token, 400, nil)
 	}

@@ -313,6 +313,45 @@ is on, and `GET /v1/mcp/content` adds `media` for the session's workspace. The
 startup line prints `media=on|off`, the number of listed workspaces and, when
 any are off, `media_off=`.
 
+Sending is a fourth switch on top of content
+([contract](mcp-enclave.md#17-sending-drafts-050-and-direct-send-planned)).
+The server carries it from before reader 0.5.0, every switch off: no reader
+before 0.5.0 drafts or sends, and a consent with sending fails closed on them.
+
+| Variable | Rule |
+|---|---|
+| `WS_MCP_SEND_ENABLED` | boolean, default `false`; lets content connections whose consent includes sending (`send`, consent version 3) draft messages for the person who consented to confirm in the console. On while `WS_MCP_CONTENT_ENABLED` is off is a configuration error; off, nothing below is inspected |
+| `WS_MCP_SEND_TENANTS` | workspace UUIDs, comma separated, whose content connections may send; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_CONTENT_TENANTS` |
+| `WS_MCP_SEND_SELF_ENABLED` | boolean, default `false`; also lets them send notes to the number's own chat, without the console, where their consent says so |
+| `WS_MCP_SEND_DIRECT_ENABLED` | boolean, default `false`; direct send to chats the person chose (S3). Until its server ships, `true` is a configuration error |
+| `WS_MCP_SEND_DRAFTS_PER_HOUR` | 1 to 30, default 30: drafts per connection in a rolling hour |
+| `WS_MCP_SEND_DRAFTS_PENDING` | 1 to 20, default 20: drafts a connection may have waiting at once |
+| `WS_MCP_SEND_PER_DAY` | 1 to 20, default 20: own-chat and direct sends per connection in a rolling day |
+| `WS_MCP_SEND_PER_CHAT_PER_DAY` | 1 to 5, default 5: direct sends per connection and chat in a rolling day (S3) |
+| `WS_MCP_SEND_MIN_INTERVAL` | a Go duration from `30s` to `1h`, default `30s`: the least time between two sends of a connection |
+| `WS_MCP_SEND_TENANT_PER_DAY` | 1 to 1000, default 100: own-chat and direct sends of a whole workspace in a rolling day |
+
+The ceilings are the reader image's own limits: an operator can lower a
+limit but never raise one, and a value above its ceiling is a configuration
+error. A consent asks for sending with `"send": "draft"` (and `"send_self"`,
+`"send_groups"`), which needs `consent_version: 3`, and is refused with
+`403 send_not_allowed` unless the switches allow it for the workspace. The
+fields are recorded on the connection and never change, a renewal included;
+sending for an existing connection takes a new consent. The enclave's status
+checks answer `send` and `send_self`, so turning a switch off, removing a
+workspace or pausing a connection reaches every reader within a minute while
+reading keeps working; the draft and send routes and the console's
+confirmation check the switches, the connection and the consenting person's
+send permission on every request. A connection's own key, and any key a
+connection holds, is refused every WebSocket frame that sends or manages.
+Discovery adds `mcp.remote.send.v1` when content is advertised and the switch
+is on, and `GET /v1/mcp/content` adds `send`, `send_self` and `send_direct`
+for the session's workspace. The startup line prints `send=on|off`, the
+number of listed workspaces, `send_self=on|off`, `send_direct=on|off` and
+the limits in force. Pending drafts expire after 24 hours, and the ledger of
+drafts, sends and refusals keeps no message text and is deleted after 365
+days.
+
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's
 lifetime after. Ending the connection in any way (the console, the reader, a

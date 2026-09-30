@@ -634,6 +634,16 @@ type SendRequest struct {
 	// archive, and it would issue requests to addresses chosen by whoever is
 	// messaging. The client has already loaded the page; it can describe it.
 	Preview *LinkPreviewRequest `json:"preview,omitempty"`
+
+	// MCPDraft confirms an assistant's draft (docs/mcp-enclave.md §17.7a):
+	// the draft's id, sent by the person who consented to its connection,
+	// with the draft's number and chat. The text and the quote are the
+	// frame's: this server cannot open the draft, and never compares them.
+	// A draft is sent once; a second frame naming it is refused.
+	MCPDraft string `json:"mcp_draft,omitempty"`
+	// MCPEdited is the console's word that the person changed the draft's
+	// text before sending it. Recorded as said.
+	MCPEdited bool `json:"mcp_edited,omitempty"`
 }
 
 // LinkPreviewRequest is a link card supplied with an outbound message.
@@ -1584,6 +1594,12 @@ const (
 	ErrCodeRateLimited      = "rate_limited"
 	ErrCodeNotAuthorized    = "not_authorized"
 	ErrCodeLastDeviceReader = "last_device_reader"
+	// ErrCodeDraftState is a draft that is no longer waiting: sent,
+	// discarded, expired, ended with its connection, or being sent.
+	ErrCodeDraftState = "draft_state"
+	// ErrCodeSendNotAllowed is a draft whose connection may not send right
+	// now: paused, switched off, or no longer live.
+	ErrCodeSendNotAllowed = "send_not_allowed"
 )
 
 // Error is the failure payload.

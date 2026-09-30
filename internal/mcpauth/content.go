@@ -54,6 +54,33 @@ func (h *Handler) mediaEnabledFor(tenant uuid.UUID) bool {
 	return ok && h.mediaAllowed(rd, tenant)
 }
 
+// sendAllowed reports whether a workspace's content connections with this
+// reader that consented to sending may draft and send right now: content is
+// allowed, and so is sending, behind its own switch and list
+// (docs/mcp-enclave.md §17.3). sendSelfAllowed and sendDirectAllowed add the
+// own-chat and direct switches.
+func (h *Handler) sendAllowed(rd reader, tenant uuid.UUID) bool {
+	return h.contentAllowed(rd, tenant) && h.SendAllowed != nil && h.SendAllowed(tenant)
+}
+
+func (h *Handler) sendSelfAllowed(rd reader, tenant uuid.UUID) bool {
+	return h.sendAllowed(rd, tenant) && h.SendSelfAllowed != nil && h.SendSelfAllowed(tenant)
+}
+
+func (h *Handler) sendDirectAllowed(rd reader, tenant uuid.UUID) bool {
+	return h.sendAllowed(rd, tenant) && h.SendDirectAllowed != nil && h.SendDirectAllowed(tenant)
+}
+
+// sendEnabledFor is what the console asks before it shows the send
+// toggles: the three answers for the content reader.
+func (h *Handler) sendEnabledFor(tenant uuid.UUID) (send, self, direct bool) {
+	rd, ok := h.readerByID(h.ContentReader)
+	if !ok {
+		return false, false, false
+	}
+	return h.sendAllowed(rd, tenant), h.sendSelfAllowed(rd, tenant), h.sendDirectAllowed(rd, tenant)
+}
+
 // attestedFor reports whether a workspace may consent to the content
 // reader at all, with text or without: the test a consent to it passes
 // before tenant_not_allowed. The content reader is the enclave, the one
@@ -93,9 +120,12 @@ func MediaGate(conns *store.MCPConnections, mediaAllowed func(tenant uuid.UUID) 
 }
 
 type contentReply struct {
-	Enabled  bool `json:"enabled"`
-	Attested bool `json:"attested"`
-	Media    bool `json:"media"`
+	Enabled    bool `json:"enabled"`
+	Attested   bool `json:"attested"`
+	Media      bool `json:"media"`
+	Send       bool `json:"send"`
+	SendSelf   bool `json:"send_self"`
+	SendDirect bool `json:"send_direct"`
 }
 
 // content answers the console: may this workspace let an assistant read
@@ -105,14 +135,17 @@ type contentReply struct {
 // Attested only picks which connector address the console shows. Media is
 // the same answer for attachments: one of the three conditions for the
 // attachments toggle, with the discovery capability and a reader release
-// that declares it (§16.2).
+// that declares it (§16.2). Send, SendSelf and SendDirect are the same
+// answers for the send toggles (§17.2 rule 10).
 func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
+	sending, self, direct := h.sendEnabledFor(user.TenantID)
 	send(w, http.StatusOK, contentReply{
 		Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID), Media: h.mediaEnabledFor(user.TenantID),
+		Send: sending, SendSelf: self, SendDirect: direct,
 	})
 }
 
@@ -269,7 +302,8 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	// The expiry is the connection's, unchanged, in UTC as the consent's
 	// relay carried it: the reader requires it to equal what it recorded.
-	// Media stays off it: a renewal changes no part of the consent.
+	// Media and sending stay off it: a renewal changes no part of the
+	// consent, and the reader compares the renewal's bundle with its record.
 	relay := BundleRelay{
 		ConnectionID: id, TenantID: user.TenantID.String(), KID: req.KID, Sealed: req.Sealed,
 		ExpiresAt: conn.ExpiresAt.UTC(), Kind: store.KindContent,

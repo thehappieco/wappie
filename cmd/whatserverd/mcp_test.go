@@ -6,17 +6,22 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"whatserver2/internal/config"
 	"whatserver2/internal/mcpauth"
+	"whatserver2/internal/store"
+	"whatserver2/internal/wsapi"
 )
 
 var (
@@ -76,6 +81,47 @@ func TestAdvertisedMCP(t *testing.T) {
 	cfg.ContentEnabled = false
 	if got := advertisedMCP(cfg); got.Content || got.Media {
 		t.Fatalf("media advertised with content off: %+v", got)
+	}
+	// Sending likewise.
+	cfg = enclaveConfig()
+	cfg.ContentEnabled = true
+	if got := advertisedMCP(cfg); got.Send {
+		t.Fatalf("sending advertised with its switch off: %+v", got)
+	}
+	cfg.SendEnabled = true
+	if got := advertisedMCP(cfg); !got.Content || !got.Send {
+		t.Fatalf("sending not advertised: %+v", got)
+	}
+	cfg.ContentEnabled = false
+	if got := advertisedMCP(cfg); got.Send {
+		t.Fatalf("sending advertised with content off: %+v", got)
+	}
+}
+
+// The handler's limits are the configuration's, field for field.
+func TestSendLimitsFromConfig(t *testing.T) {
+	got := sendLimits(config.MCPSendLimits{DraftsPerHour: 1, DraftsPending: 2, PerDay: 3, PerChatPerDay: 4, MinInterval: 5 * time.Minute, TenantPerDay: 6})
+	if got != (store.SendLimits{DraftsPerHour: 1, DraftsPending: 2, PerDay: 3, PerChatPerDay: 4, MinInterval: 5 * time.Minute, TenantPerDay: 6}) {
+		t.Fatalf("limits = %+v", got)
+	}
+}
+
+// The send route's answers from the socket, in the connector's words: a
+// send refused before it left stays one, whichever the reason.
+func TestMCPSendTextErrors(t *testing.T) {
+	for in, want := range map[error]error{
+		wsapi.ErrDeviceOffline:                      mcpauth.ErrDeviceOffline,
+		wsapi.ErrCapturePaused:                      mcpauth.ErrStoragePaused,
+		fmt.Errorf("%w: storage", wsapi.ErrNotSent): mcpauth.ErrNotSent,
+	} {
+		got := mapSendError(in)
+		if !errors.Is(got, want) || !errors.Is(got, mcpauth.ErrNotSent) {
+			t.Fatalf("%v became %v", in, got)
+		}
+	}
+	transport := errors.New("socket closed")
+	if got := mapSendError(transport); !errors.Is(got, transport) || errors.Is(got, mcpauth.ErrNotSent) {
+		t.Fatalf("a transport error became %v", got)
 	}
 }
 

@@ -30,6 +30,9 @@ type mcpEndpoints struct {
 	// Media is set when it may also open attachments: both switches are on.
 	// Which workspaces may is asked the same way.
 	Media bool
+	// Send is set when its connections may also draft and send: content and
+	// sending are on. Which workspaces may is asked the same way.
+	Send bool
 }
 
 // discoveryFor describes the protocol. The hosted assistant connector is
@@ -58,6 +61,9 @@ func discoveryFor(mcp mcpEndpoints) http.HandlerFunc {
 			capabilities = append(capabilities, "mcp.remote.content.v1")
 			if mcp.Media {
 				capabilities = append(capabilities, "mcp.remote.media.v1")
+			}
+			if mcp.Send {
+				capabilities = append(capabilities, "mcp.remote.send.v1")
 			}
 		}
 	}

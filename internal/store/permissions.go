@@ -41,9 +41,22 @@ func (p DevicePermission) Allows(action DeviceAction) bool {
 }
 
 func (u *Users) DevicePermission(ctx context.Context, tenant, user, device uuid.UUID) (DevicePermission, error) {
-	out := DevicePermission{DeviceID: device, UserID: user}
+	var out DevicePermission
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT coalesce(p.can_read,false),coalesce(p.can_send,false),
+		var err error
+		out, err = devicePermissionTx(ctx, tx, tenant, user, device)
+		return err
+	})
+	return out, err
+}
+
+// devicePermissionTx is DevicePermission inside a transaction the caller
+// holds for the tenant: an active user with an active, unexpired membership
+// in an active workspace, and what they may do with the device. ErrNotFound
+// when any of that is missing.
+func devicePermissionTx(ctx context.Context, tx pgx.Tx, tenant, user, device uuid.UUID) (DevicePermission, error) {
+	out := DevicePermission{DeviceID: device, UserID: user}
+	err := tx.QueryRow(ctx, `SELECT coalesce(p.can_read,false),coalesce(p.can_send,false),
    (m.role IN ('owner','admin') OR coalesce(p.can_manage,false)),
    EXISTS(SELECT 1 FROM device_key_grants g WHERE g.device_id=d.id AND g.user_id=m.user_id AND g.epoch=d.current_epoch)
    FROM workspace_memberships m JOIN users u ON u.id=m.user_id JOIN tenants t ON t.id=m.tenant_id
@@ -51,7 +64,6 @@ func (u *Users) DevicePermission(ctx context.Context, tenant, user, device uuid.
    LEFT JOIN device_permissions p ON p.tenant_id=m.tenant_id AND p.device_id=d.id AND p.user_id=m.user_id
    WHERE m.tenant_id=$1 AND m.user_id=$2 AND d.id=$3 AND m.status='active' AND u.status='active' AND t.status='active'
    AND (m.expires_at IS NULL OR m.expires_at > now())`, tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey)
-	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}

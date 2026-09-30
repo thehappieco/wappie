@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 	"whatserver2/internal/store"
 
@@ -43,7 +44,7 @@ func (s *session) resolveSend(ctx context.Context, f Frame, deviceID, chat strin
 	}
 	// The registry is keyed by the full id, so use what resolveDevice found
 	// rather than what the caller typed, which may have been a prefix.
-	dev, running := s.srv.cfg.Registry.Get(resolved.String())
+	dev, running := s.srv.device(resolved.String())
 	if !running {
 		s.replyError(f.ReqID, ErrCodeConflict,
 			"that device is not connected right now; nothing can be sent from it")
@@ -68,24 +69,42 @@ func (s *session) resolveSend(ctx context.Context, f Frame, deviceID, chat strin
 // archiving error logged is honest about what happened; failing the call would
 // invite a retry that duplicates the message.
 func (s *session) archive(ctx context.Context, t sendTarget, sent send.Sent, f Frame) {
-	result := SendResult{ID: sent.ID, Timestamp: sent.Timestamp}
+	s.reply(TypeSendResult, f.ReqID, s.srv.archiveSent(ctx, s.log, t, sent))
+}
 
-	if s.srv.cfg.Router != nil {
-		res, err := s.srv.cfg.Router.IngestOutbound(ctx, t.tenant, t.device.ID(), sent.Envelope)
+// archiveSent stores an outbound message through the router, as inbound is
+// stored, and says what it became. A failure is logged and leaves the uid
+// empty: the message left all the same.
+func (s *Server) archiveSent(ctx context.Context, log *slog.Logger, t sendTarget, sent send.Sent) SendResult {
+	result := SendResult{ID: sent.ID, Timestamp: sent.Timestamp}
+	if s.cfg.Router != nil {
+		res, err := s.cfg.Router.IngestOutbound(ctx, t.tenant, t.device.ID(), sent.Envelope)
 		if err != nil {
-			s.log.Error("a message was sent but could not be archived",
+			log.Error("a message was sent but could not be archived",
 				"message", sent.ID, "error", err)
 		} else {
 			result.UID, result.Seq = res.UID.String(), res.Seq
 		}
 	}
-	s.reply(TypeSendResult, f.ReqID, result)
+	return result
+}
+
+// sendText is the text send every path shares: the frame's, a person's
+// confirmation of a draft, and an assistant connection's own-chat note. The
+// chat's disappearing timer is applied here, so none of them can forget it.
+func (s *Server) sendText(ctx context.Context, log *slog.Logger, t sendTarget, body string, opts send.Options, id string) (send.Sent, error) {
+	s.applyChatTimer(ctx, log, t, &opts)
+	return send.SendText(ctx, t.device.Client(), send.Request{Chat: t.chat, Body: body, Opts: opts, ID: id})
 }
 
 func (s *session) handleSend(ctx context.Context, f Frame) {
 	var req SendRequest
 	if err := json.Unmarshal(f.Payload, &req); err != nil {
 		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())
+		return
+	}
+	if req.MCPDraft != "" {
+		s.handleDraftSend(ctx, f, req)
 		return
 	}
 	t, ok := s.resolveSend(ctx, f, req.DeviceID, req.Chat)
@@ -137,11 +156,7 @@ func (s *session) handleSend(ctx context.Context, f Frame) {
 		}
 	}
 
-	s.applyChatTimer(ctx, t, &opts)
-
-	sent, err := send.SendText(ctx, t.device.Client(), send.Request{
-		Chat: t.chat, Body: req.Body, Opts: opts, ID: req.ID,
-	})
+	sent, err := s.srv.sendText(ctx, s.log, t, req.Body, opts, req.ID)
 	if errors.Is(err, send.ErrViewOnceText) {
 		// The caller asked for something WhatsApp does not do, not something
 		// that failed. Retrying will never help.
@@ -287,11 +302,18 @@ func (s *session) handleChatTimer(ctx context.Context, f Frame) {
 // So the caller does not pass an expiry at all in the normal case; the chat's
 // setting is read here and applied.
 func (s *session) applyChatTimer(ctx context.Context, t sendTarget, opts *send.Options) {
+	s.srv.applyChatTimer(ctx, s.log, t, opts)
+}
+
+func (s *Server) applyChatTimer(ctx context.Context, log *slog.Logger, t sendTarget, opts *send.Options) {
 	if opts.Expiration == 0 {
-		seconds, err := s.srv.cfg.Messages.ChatTimer(ctx, t.tenant, t.deviceID, t.chat.String())
+		seconds, err := s.cfg.Messages.ChatTimer(ctx, t.tenant, t.deviceID, t.chat.String())
 		if err != nil {
-			s.log.Warn("could not read a chat's disappearing timer",
-				"chat", t.chat, "error", err)
+			// The device, never the chat: every send path comes through
+			// here, an assistant's own-chat note included, whose log never
+			// names a chat key or a JID (docs/mcp-enclave.md §17.12).
+			log.Warn("could not read a chat's disappearing timer",
+				"device", t.deviceID, "error", err)
 			return
 		}
 		if seconds <= 0 {

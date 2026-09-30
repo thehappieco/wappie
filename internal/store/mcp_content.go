@@ -38,7 +38,17 @@ func liveStatus(status string) bool {
 // validConsentVersion is the consent texts a content connection can be
 // given under.
 func validConsentVersion(version int) bool {
-	return version == ContentConsentVersion || version == MediaConsentVersion
+	return version == ContentConsentVersion || version == MediaConsentVersion || version == SendConsentVersion
+}
+
+// validConsentSend is the sending a consent version carries: version 3
+// carries sending, and only it does; the own chat and groups ride on it.
+// Direct send (S3) is not taken yet.
+func validConsentSend(version int, mode string, self, groups bool) bool {
+	if version != SendConsentVersion {
+		return mode == "" && !self && !groups
+	}
+	return mode == SendModeDraft
 }
 
 // endMCPConnectionTx ends one connection: status (statusRevoked or
@@ -70,6 +80,13 @@ func endMCPConnectionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id, st
 			return false, err
 		}
 		ended = true
+	}
+	// Its drafts waiting for a person go with it, text and all; a send in
+	// flight finishes as it would have, and one that never does is made
+	// uncertain by the janitor (docs/mcp-enclave.md §17.14).
+	if _, err := tx.Exec(ctx, `UPDATE mcp_outbound SET status='revoked', sealed=NULL, decided_at=now()
+		WHERE connection_id=$1 AND tenant_id=$2 AND status='pending'`, id, tenant); err != nil {
+		return false, err
 	}
 	// An expired connection's key stopped working at the deadline it shares
 	// with the connection; the key list says so. Anything else stops now.
@@ -204,6 +221,12 @@ type StatusAnswer struct {
 	// pending or reseal: an ended connection opens nothing. The caller
 	// narrows it further by whether the workspace may open attachments now.
 	Media bool
+	// SendMode, SendSelf and SendPaused are the row's sending, set on the
+	// same answers as Media. The caller decides what the reader is told:
+	// only an active answer sends, and only while the switches allow it.
+	SendMode   string
+	SendSelf   bool
+	SendPaused bool
 }
 
 // Status answers a reader's question about one of its connections and notes
@@ -221,15 +244,17 @@ type StatusAnswer struct {
 // ends it (access_lost) and answers revoked; content not allowed for the
 // workspace right now answers reseal, computed and never written, so the
 // reader drops its key and the consent survives the switch; otherwise the
-// row's status. contentAllowed nil allows nothing. Media is the row's flag
-// on the last two answers only.
+// row's status. contentAllowed nil allows nothing. Media and the sending
+// fields are the row's on the last two answers only.
 func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentAllowed func(tenant uuid.UUID) bool) (StatusAnswer, error) {
 	var a StatusAnswer
 	var tenant uuid.UUID
-	var media bool
+	var media, sendSelf, sendPaused bool
+	var sendMode string
 	err := m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1 AND reader=$2
-		RETURNING tenant_id, status, expires_at, kind, service_user_id, media`, id, reader).
-		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID, &media)
+		RETURNING tenant_id, status, expires_at, kind, service_user_id, media,
+		          coalesce(send_mode, ''), send_self, send_paused_at IS NOT NULL`, id, reader).
+		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID, &media, &sendMode, &sendSelf, &sendPaused)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StatusAnswer{}, ErrMCPConnectionNotFound
 	}
@@ -282,6 +307,7 @@ func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentA
 		a.Status = statusReseal
 	}
 	a.Media = media
+	a.SendMode, a.SendSelf, a.SendPaused = sendMode, sendSelf, sendPaused
 	return a, nil
 }
 
