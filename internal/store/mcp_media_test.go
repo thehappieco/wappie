@@ -217,8 +217,8 @@ func TestContentConnectionByAPIKey(t *testing.T) {
 // owner under FORCE RLS: every media connection revoked with its key and its
 // service account stripped, 0042's cascade; version-2 text connections, the
 // others and every person's access untouched; the column and its CHECK gone
-// and version 43 forgotten; and up again. 0044 comes down first, as the plan
-// orders it.
+// and version 43 forgotten; and up again. 0045 and 0044 come down first, as
+// the plan orders it.
 func TestMigration0043DownStep(t *testing.T) {
 	f := newContentFixture(t)
 	ctx := context.Background()
@@ -236,6 +236,9 @@ func TestMigration0043DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
+		t.Fatalf("0045 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 44)); err != nil {
 		t.Fatalf("0044 down-step: %v", err)
 	}

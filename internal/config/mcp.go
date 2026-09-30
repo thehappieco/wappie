@@ -103,6 +103,22 @@ type MCP struct {
 	// SendLimits are the sending limits, each at most the image's ceiling
 	// (SendCeilings): an operator may lower a limit, never raise one.
 	SendLimits MCPSendLimits
+	// AIEnabled is the switch for AI integrations (docs/mcp-enclave.md §18):
+	// the attested reader sends attachments to the AI providers a person
+	// chose, with their own keys, and stores what comes back. Off by default;
+	// off, every AI authorization's status reads reseal and the reader wipes
+	// its keys within a minute, while the authorizations, the keychain and
+	// the stored results survive. It rides on attachments (see ai.go).
+	AIEnabled bool
+	// AITenants are the workspaces that may have AI integrations, each also
+	// in MediaTenants. Required when AIEnabled; "*" is not accepted.
+	AITenants []uuid.UUID
+	// AIOffProviders and AIOffFeatures are the providers and functions
+	// switched off everywhere, sorted subsets of AIProviders and AIFeatures:
+	// every AI status answer carries them, and no new authorization may use
+	// them. Empty by default.
+	AIOffProviders []string
+	AIOffFeatures  []string
 
 	// readersErr is what was wrong with WS_MCP_READERS itself, and
 	// strayHosted the WS_MCP_READER_HOSTED_* names that were set. Both are
@@ -118,6 +134,11 @@ type MCP struct {
 	mediaOffErr      error
 	sendTenantErr    error
 	sendLimitErrs    []error
+	// aiTenantErr, aiOffProvidersErr and aiOffFeaturesErr are the same for
+	// the AI block.
+	aiTenantErr       error
+	aiOffProvidersErr error
+	aiOffFeaturesErr  error
 }
 
 // MCPSendLimits bound what a connection that may send does, per connection
@@ -235,6 +256,7 @@ func loadMCP(errs *[]error) MCP {
 	m.SendSelfEnabled = boolean("WS_MCP_SEND_SELF_ENABLED", false, errs)
 	m.SendDirectEnabled = boolean("WS_MCP_SEND_DIRECT_ENABLED", false, errs)
 	m.SendLimits, m.sendLimitErrs = sendLimits()
+	loadAI(&m, errs)
 	return m
 }
 
@@ -438,6 +460,7 @@ func (m MCP) Validate(prod bool) error {
 	errs = append(errs, m.validateContent()...)
 	errs = append(errs, m.validateMedia()...)
 	errs = append(errs, m.validateSend()...)
+	errs = append(errs, m.validateAI()...)
 	return errors.Join(errs...)
 }
 
@@ -769,6 +792,7 @@ func (m MCP) String() string {
 	l := m.SendLimits
 	fmt.Fprintf(&b, " send_limits=drafts_per_hour:%d,drafts_pending:%d,per_day:%d,per_chat_per_day:%d,min_interval:%s,tenant_per_day:%d",
 		l.DraftsPerHour, l.DraftsPending, l.PerDay, l.PerChatPerDay, l.MinInterval, l.TenantPerDay)
+	b.WriteString(m.aiString())
 	return b.String()
 }
 

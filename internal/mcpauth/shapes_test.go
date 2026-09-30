@@ -77,7 +77,14 @@ func readerShapes() map[string]any {
 }
 
 func TestReaderShapesPinned(t *testing.T) {
-	raw, err := os.ReadFile(shapesFile)
+	checkPinned(t, shapesFile, readerShapes())
+}
+
+// checkPinned compares the bodies built with a file that pins them, byte
+// for byte but for white space, both ways.
+func checkPinned(t *testing.T, file string, shapes map[string]any) {
+	t.Helper()
+	raw, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +92,6 @@ func TestReaderShapesPinned(t *testing.T) {
 	if err := json.Unmarshal(raw, &pinned); err != nil {
 		t.Fatal(err)
 	}
-	shapes := readerShapes()
 	for name, body := range shapes {
 		got, err := json.Marshal(body)
 		if err != nil {

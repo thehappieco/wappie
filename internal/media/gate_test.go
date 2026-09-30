@@ -3,6 +3,7 @@ package media_test
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"log/slog"
 	"net/http"
@@ -97,6 +98,49 @@ func (f *fixture) connectionKey(t *testing.T, owner store.User, version int, med
 	return service, key
 }
 
+// aiConnectionKey records and activates an AI authorization on the
+// fixture's device, as the console and the enclave would, with Gemini for
+// audio, and returns its id and key.
+func (f *fixture) aiConnectionKey(t *testing.T, owner store.User) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	service, pub, key := f.serviceKey(t, owner)
+	prefix, _, _ := strings.Cut(key, ".")
+	item, err := store.NewAI(f.pool).AddKeychainItem(ctx, f.tenant, owner.ID, store.AIKeychainItem{
+		ID: uuid.New(), Provider: "google", Label: "Gemini", Suffix: "a1B2", Envelope: []byte("WKC1" + strings.Repeat("s", 60)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.New()
+	request, expires := base64.RawURLEncoding.EncodeToString(id[:]), time.Now().Add(30*24*time.Hour).Truncate(time.Second)
+	device := f.device.String()
+	raw := `{"version":1,"request":"` + request + `","kid":"0123456789abcdef","service_user_id":"` + service.String() + `",
+		"epochs":{"` + device + `":1},"ns":{"` + device + `":"` + f.tenant.String() + `"},
+		"keys":{"google":{"keychain_id":"` + item.ID.String() + `","sha256":"` + strings.Repeat("ab", 32) + `","label":"Gemini","suffix":"a1B2"}},
+		"functions":{"audio":{"provider":"google","model":"gemini-3.8-flash"}},
+		"features":{"` + device + `":{"audio":{"mode":"request","requesters":"self"}}},
+		"budget":{"monthly_usd_cents":1000,"request_items_per_day":100,"rates":{"google:gemini-3.8-flash":{"in":30,"out":250,"sec":0}}},
+		"expires_at":"` + expires.UTC().Format(time.RFC3339) + `","key_mode":"ephemeral","cfg_tags":{"` + device + `":"` + strings.Repeat("A", 43) + `"}}`
+	cfg, err := store.ParseAIConfig([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conns := store.NewMCPConnections(f.pool)
+	conn, err := conns.Create(ctx, f.tenant, owner.ID, store.CreateMCPConnection{
+		RequestID: request, KeyPrefix: prefix, ClientName: store.AIClientName, RedirectHost: store.AIRedirectHost, DeviceCount: 1,
+		ReaderKID: "0123456789abcdef", ExpiresAt: expires, Reader: "enclave", Kind: store.KindAI, ServiceUserID: service,
+		KeyMode: store.KeyModeEphemeral, ConsentVersion: store.AIConsentVersion, ReaderPublicKey: pub, AIConfig: &cfg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conns.Activate(ctx, "enclave", conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	return conn.ID, key
+}
+
 // answer is everything a caller sees of a response.
 type answer struct {
 	status int
@@ -151,9 +195,11 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 	}
 	otherWorkspace := f.insertAttachment(t, otherTenant, uuid.MustParse(otherDev.ID))
 
-	var mediaOn atomic.Bool
+	var mediaOn, aiOn atomic.Bool
 	mediaOn.Store(true)
-	gate := mcpauth.MediaGate(store.NewMCPConnections(f.pool), func(tenant uuid.UUID) bool { return mediaOn.Load() && tenant == f.tenant })
+	aiOn.Store(true)
+	gate := mcpauth.MediaGate(store.NewMCPConnections(f.pool), func(tenant uuid.UUID) bool { return mediaOn.Load() && tenant == f.tenant },
+		func(tenant uuid.UUID) bool { return aiOn.Load() && tenant == f.tenant })
 	mux, ungated := http.NewServeMux(), http.NewServeMux()
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		mux.Handle(method+" /v1/media/{uid}", &media.Handler{Keys: f.apiKeys, Sessions: users, Media: f.media, Blob: f.blob, Gate: gate,
@@ -177,6 +223,18 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 	mediaService, withMedia := f.connectionKey(t, owner, store.MediaConsentVersion, true)
 	_, textOnly := f.connectionKey(t, owner, store.MediaConsentVersion, false)
 	_, versionOne := f.connectionKey(t, owner, store.ContentConsentVersion, false)
+	// AI authorizations: one live, one paused, one whose reader lost its key.
+	conns := store.NewMCPConnections(f.pool)
+	aiConnection, aiKey := f.aiConnectionKey(t, owner)
+	aiPaused, aiPausedKey := f.aiConnectionKey(t, owner)
+	paused := true
+	if _, err := conns.SetAIControls(ctx, f.tenant, owner.ID, aiPaused, store.AIControls{Paused: &paused}); err != nil {
+		t.Fatal(err)
+	}
+	aiResealed, aiResealedKey := f.aiConnectionKey(t, owner)
+	if err := conns.Reseal(ctx, "enclave", aiResealed); err != nil {
+		t.Fatal(err)
+	}
 	// A renewal's new key: the reader holds it while it proves the grants,
 	// before the ledger points the connection at it, and for the account's
 	// thirty minutes if the renewal fails and the account cannot be
@@ -192,7 +250,7 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 	// Every one of these keys reads its number's ciphertext through the
 	// usual checks: without the gate, nothing below would refuse them.
 	for name, key := range map[string]string{"version-2 key without media": textOnly, "version-1 key": versionOne,
-		"staged key": staged, "second key on a media account": second} {
+		"staged key": staged, "second key on a media account": second, "paused AI key": aiPausedKey, "resealed AI key": aiResealedKey} {
 		if got := serve(ungated, http.MethodGet, key, f.msgUID); got.status != http.StatusOK || got.body != string(f.cipher) {
 			t.Fatalf("ungated %s: %d", name, got.status)
 		}
@@ -206,6 +264,10 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 	}
 	if head := fetch(http.MethodHead, withMedia, f.msgUID); head.status != http.StatusOK || head.header.Get("Content-Length") != itoa(int64(len(f.cipher))) {
 		t.Fatalf("media key HEAD: %d %v", head.status, head.header)
+	}
+	// So does a live AI authorization's key, while AI is allowed.
+	if got := fetch(http.MethodGet, aiKey, f.msgUID); got.status != http.StatusOK || got.body != string(f.cipher) {
+		t.Fatalf("AI key on its number: %d", got.status)
 	}
 
 	// Not yours: another workspace's attachment, and one that does not
@@ -231,6 +293,19 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 		mediaOn.Store(false)
 		same("media key with the switch off", fetch(method, withMedia, f.msgUID))
 		mediaOn.Store(true)
+		same("AI key on another workspace's", fetch(method, aiKey, otherWorkspace))
+		same("paused AI key", fetch(method, aiPausedKey, f.msgUID))
+		same("resealed AI key", fetch(method, aiResealedKey, f.msgUID))
+		aiOn.Store(false)
+		same("AI key with AI off", fetch(method, aiKey, f.msgUID))
+		aiOn.Store(true)
+	}
+	// An ended authorization's key ended with it, before any gate.
+	if _, _, err := conns.RevokeAI(ctx, f.tenant, owner.ID, aiConnection, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := fetch(http.MethodGet, aiKey, f.msgUID); got.status == http.StatusOK {
+		t.Fatalf("an ended AI key: %d", got.status)
 	}
 
 	// Keys that are no content connection's and act as no connection's

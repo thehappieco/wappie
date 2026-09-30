@@ -96,6 +96,20 @@ func TestAdvertisedMCP(t *testing.T) {
 	if got := advertisedMCP(cfg); got.Send {
 		t.Fatalf("sending advertised with content off: %+v", got)
 	}
+	// AI likewise: its switch, beside content.
+	cfg = enclaveConfig()
+	cfg.ContentEnabled, cfg.MediaEnabled = true, true
+	if got := advertisedMCP(cfg); got.AI {
+		t.Fatalf("AI advertised with its switch off: %+v", got)
+	}
+	cfg.AIEnabled = true
+	if got := advertisedMCP(cfg); !got.Content || !got.AI {
+		t.Fatalf("AI not advertised: %+v", got)
+	}
+	cfg.ContentEnabled = false
+	if got := advertisedMCP(cfg); got.AI {
+		t.Fatalf("AI advertised with content off: %+v", got)
+	}
 }
 
 // The handler's limits are the configuration's, field for field.

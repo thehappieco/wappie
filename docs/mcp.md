@@ -352,6 +352,43 @@ the limits in force. Pending drafts expire after 24 hours, and the ledger of
 drafts, sends and refusals keeps no message text and is deleted after 365
 days.
 
+AI integrations are a switch on top of attachments
+([contract](mcp-enclave.md#18-ai-integrations-on-request-050)): the enclave
+sends a number's audio, video, images and documents to the AI provider a
+person chose for each function, with that person's own API key, and stores
+the transcripts, descriptions and summaries sealed with the number's keys.
+The server carries it from before reader 0.5.0, every switch off; it never
+sees a key or a word of the content.
+
+| Variable | Rule |
+|---|---|
+| `WS_AI_ENABLED` | boolean, default `false`; lets the workspaces listed below have AI authorizations. On while `WS_MCP_MEDIA_ENABLED` is off (with content on) is a configuration error; while content or this switch is off, nothing below is inspected |
+| `WS_AI_TENANTS` | workspace UUIDs, comma separated; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_MEDIA_TENANTS` |
+| `WS_AI_OFF_PROVIDERS` | a subset of `anthropic,openai,google`, any case and order, switched off for every workspace; an unknown word is a configuration error. Empty by default |
+| `WS_AI_OFF_FEATURES` | a subset of `audio,video,image,document`, likewise |
+
+`AIAllowed(workspace)` is attachments allowed for the workspace, the switch
+on and the workspace listed. An AI authorization is an `ai` row of the
+connections ledger with its own service account, created by an owner or an
+admin in the console; it is left out of the cap of five live connections and
+out of `GET /v1/mcp/connections`, and is listed by `GET /v1/ai/authorizations`.
+While `AIAllowed` is false its status reads `reseal` (computed, never
+written) and the enclave wipes its API keys within a minute; every status
+answer of an `ai` row carries `ai_off`: the functions switched off (by
+`WS_AI_OFF_FEATURES`, by the row's own narrowing, or because their provider
+is in `WS_AI_OFF_PROVIDERS`), the providers switched off, whether the row is
+paused, and its spending cap. `/v1/media` lets an `ai` row's key through only
+while the row is active, not paused and `AIAllowed`. Discovery adds
+`mcp.remote.ai.v1` when content is advertised and the switch is on, and
+`GET /v1/mcp/content` adds `ai` for the session's workspace. The `/v1/ai/*`
+routes answer 404 while the switch is off, except the keychain, the listing
+of authorizations, their revocation and the deletion of results. The startup
+line prints `ai=on|off`, the number of listed workspaces and, when any is
+off, `ai_off_providers=` and `ai_off_features=`. Stored results go with their
+message and count toward the storage quota; the daily usage counters are
+deleted 400 days after their day, and deleted keychain items 30 days after
+their deletion.
+
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's
 lifetime after. Ending the connection in any way (the console, the reader, a

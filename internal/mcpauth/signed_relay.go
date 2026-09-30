@@ -233,6 +233,11 @@ func (c *SignedRelay) RelaySecret(ctx context.Context, ciphertext string) error 
 // do signs and sends one request and returns the status and the bounded
 // body. Nothing here logs; the signature and the body never leave it.
 func (c *SignedRelay) do(ctx context.Context, method, path string, body any) (int, []byte, error) {
+	return c.doWith(ctx, c.Client, method, path, body)
+}
+
+// doWith is do with another client, for the calls that wait longer.
+func (c *SignedRelay) doWith(ctx context.Context, client *http.Client, method, path string, body any) (int, []byte, error) {
 	var raw []byte
 	if body != nil {
 		var err error
@@ -259,7 +264,6 @@ func (c *SignedRelay) do(ctx context.Context, method, path string, body any) (in
 	if raw != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	client := c.Client
 	if client == nil {
 		client = signedClient("", nil)
 	}
