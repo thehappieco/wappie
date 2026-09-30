@@ -13,10 +13,11 @@ import (
 // aiShapesFile pins the JSON this server sends the enclave for AI
 // integrations (docs/mcp-enclave.md §18.11): the AI request, the consent's
 // and the renewal's relays, a job, and what the enclave's AI routes answer,
-// the status of an AI row included. It lives with the server that builds
-// the bodies; the enclave's tests read the same file, so a field added here
-// that the enclave would refuse fails there.
-const aiShapesFile = "testdata/go-b1-shapes.json"
+// the status of an AI row included. It lives beside go-s0-shapes.json, with
+// the enclave's tests (go-b1-shapes.test.mjs), which put every body through
+// the reader's own parsers, so a field added here that the enclave would
+// refuse fails there.
+const aiShapesFile = "../../packages/mcp-http/enclave/test/go-b1-shapes.json"
 
 // aiShapes are the bodies built with the same types and functions the
 // handlers use, from fixed values.
