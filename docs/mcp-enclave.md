@@ -6462,6 +6462,18 @@ private repository, and not part of this track.
   (open_attachment's inline wait timer). Production passes neither.
 - **Not built in B1**, as §18.7 says: `POST
   /internal/ai/requests/{id}/models`.
+- **Where §18.17's tests are.** CLIENT: `packages/client/test/{derived,aikeychain}.spec.ts`
+  (and `jcs.spec.ts`, S1's). READER: `packages/mcp/test/ai.test.mjs`. ENCLAVE:
+  `enclave/test/ai-units.test.mjs` (the constants and the reader's copies,
+  the entrypoint, N-AI-7, the lists of N-AI-12, the retries, step 4's row
+  checks, N-AI-9 and N-AI-13's charges, the queue and I3a),
+  `ai-shapes.test.mjs` (the bodies, a body per row of the error map and the
+  answers: N-AI-14), `ai-derived.test.mjs` (the vectors, N-AI-3, N-AI-6's
+  tags) and `ai-enclave.test.mjs` (install and N-AI-1, N-AI-1b, N-AI-5,
+  N-AI-6's reuse, N-AI-8, N-AI-9, N-AI-11, N-AI-12, N-AI-13, N-AI-14 in a job,
+  the connector's answers, a video, a revocation mid-call, `derived_exists`,
+  `storage_paused`, `ai_busy`, a renewal and a restart), against the fake Go
+  and the provider stubs of `ai-stubs.mjs`.
 
 ### Amendments to §§1 to 16
 
