@@ -18,7 +18,7 @@ import { messageURLs } from '../provider.mjs'
 import { createDedupe } from './dedupe.mjs'
 import { createDrafts } from './drafts.mjs'
 import { createFingerprints } from './fingerprints.mjs'
-import { LEDGER_ROUTE_TIMEOUT_MS } from './policy.mjs'
+import { LEDGER_ROUTE_TIMEOUT_MS, LIST_OUTGOING_MAX } from './policy.mjs'
 import { createSends, createWindows } from './sends.mjs'
 
 /** A refusal the reader words (§17.8): an ArchiveError with `retry_at`, `why` or `keep` as own properties. */
@@ -102,7 +102,7 @@ export function createSendService({ log, now = Date.now, relay, checkActive, con
   /** list_outgoing: a page of the connection's ledger, newest first, with each sent message's console link (§17.8). */
   async function outgoing(record, query) {
     await gate(record, { ledger: true })
-    const params = { limit: String(query.limit ?? 20) }
+    const params = { limit: String(Math.min(query.limit ?? 20, LIST_OUTGOING_MAX)) }
     for (const name of ['before', 'status', 'device_id']) if (query[name] !== undefined) params[name] = String(query[name])
     let answer
     try { answer = await relay.sending(record.connection_id, record.api_key, 'GET', 'outbound', { query: params, timeout: LEDGER_ROUTE_TIMEOUT_MS }) } catch { throw refusal('read_failed') }

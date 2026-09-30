@@ -65,6 +65,7 @@ test('the sending tools exist only on a content connection whose sealed consent 
       ['a content connection without sending', configFor(f.server), await providerFor(f, send)],
       ['sending in the config, no provider.send', configFor(f.server, { send: 'draft', send_self: true }), await providerFor(f)],
       ['a metadata connection', validateConfig({ server: f.server, workspace, device_ids: [device], credential_source: 'provided' }), { token: async () => ({ token, kind: 'api_key' }), send }],
+      ['the local reader', validateConfig({ server: f.server, workspace, device_ids: [device], token_file: './token' }, '/private'), { send }],
     ]
     for (const [label, config, provider] of none) {
       const client = await connect(config, provider)
