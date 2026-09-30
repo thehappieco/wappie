@@ -16,12 +16,18 @@ import { LocalConfigError, validateConfig } from '@whatserver2/mcp/config'
 /** The scan budget per text-search call: the REST sequence depends on it, never on what matched. */
 export const CONTENT_MAX_SCAN = 500
 
-/** A record without `media` (every 0.3.0 record included) is a text connection. */
+/**
+ * A record without `media` (every 0.3.0 record included) is a text
+ * connection; one without `send` (every record before 0.5.0) never drafts or
+ * sends (docs/mcp-enclave.md §17.8): the tools a connection has are the
+ * sealed consent's, the same on every request.
+ */
 export function contentConfigFor(record, archive) {
+  const send = record.send === 'draft' || record.send === 'direct' ? record.send : null
   return validateConfig({
     server: archive, workspace: record.workspace_id, device_ids: record.device_ids, timezone: record.timezone,
     allow_plaintext: true, credential_source: 'enclave', service_user_id: record.service_user_id, max_scan_messages: CONTENT_MAX_SCAN,
-    media: record.media === true,
+    media: record.media === true, send, send_self: send !== null && record.send_self === true,
   })
 }
 
@@ -42,7 +48,11 @@ const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
  * reaches the URL.
  */
 export function messageURL(consoleURL, tenantID, deviceID, uid) {
-  const params = [['workspace', tenantID], ['open_device', deviceID], ['open_message', uid]]
+  return consoleLinkOf(consoleURL, [['workspace', tenantID], ['open_device', deviceID], ['open_message', uid]])
+}
+
+/** `${consoleURL}?name=id&…` in the order given, every id a UUID in lower case, or null. */
+function consoleLinkOf(consoleURL, params) {
   if (!params.every(([, id]) => typeof id === 'string' && uuidShape.test(id))) return null
   const url = new URL(consoleURL)
   for (const [name, id] of params) url.searchParams.set(name, id.toLowerCase())
@@ -50,13 +60,29 @@ export function messageURL(consoleURL, tenantID, deviceID, uid) {
 }
 
 /**
+ * The console links of a workspace's sending (§17.8, the shared link
+ * contract with §16.7's): a sent message (`open_message`), one draft to
+ * review (`mcp_draft`, with the number it goes out from) and a connection's
+ * pending drafts (`mcp_drafts`). Each is null unless every id is a UUID.
+ */
+export function messageURLs(consoleURL, tenantID) {
+  return {
+    message: (deviceID, uid) => messageURL(consoleURL, tenantID, deviceID, uid),
+    draft: (deviceID, draftID) => consoleLinkOf(consoleURL, [['workspace', tenantID], ['open_device', deviceID], ['mcp_draft', draftID]]),
+    drafts: connectionID => consoleLinkOf(consoleURL, [['workspace', tenantID], ['mcp_drafts', connectionID]]),
+  }
+}
+
+/**
  * `onStaleGrant()` (optional) is called, with nothing, each time the reader
  * refuses one of this connection's grants as `stale_grant`; the enclave logs
  * the event. The reader neither awaits it nor lets it throw into the tool.
  * `media` (media/service.mjs forConnection, docs/mcp-enclave.md §16.5) is
- * given only to a record whose sealed consent includes attachments.
+ * given only to a record whose sealed consent includes attachments, and
+ * `send` (send/service.mjs forConnection, §17.8) only to one whose sealed
+ * consent includes sending.
  */
-export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media } = {}) {
+export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media, send } = {}) {
   const id = record.connection_id
   const held = () => {
     const stored = connkeys.get(id)
@@ -73,5 +99,6 @@ export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant,
     // What the reader passes (the number) stays here: the event names the connection only.
     onStaleGrant: () => { onStaleGrant?.() },
     ...(media ? { media } : {}),
+    ...(send ? { send } : {}),
   }
 }

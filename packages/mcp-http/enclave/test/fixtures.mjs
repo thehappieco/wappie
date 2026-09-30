@@ -143,10 +143,21 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
  * fixture's own (`upstreamToken`), and answers `/v1/grants` for a key from
  * `grants` (token -> {user_id, grants}), which is how a test seals grants to
  * a key the enclave minted.
+ *
+ * Sending (docs/mcp-enclave.md §17.7): the draft, send, refusals and outbound
+ * routes check the bearer (a connection row's `api_key`, when set, else any
+ * key in `tokens`), answer 403 unless the row's `extra.send` is set (and
+ * `extra.send_self` for an own-chat send), keep every draft, send and refusal
+ * in `outbound`, and record each call's body in `sendCalls`. `sending`
+ * shapes Go's side: `ineligible` (chat keys that never wrote), `ownChat`,
+ * `draftsPending`, `outcome` ('sent', 'uncertain', 'offline', or 'drop',
+ * which records the send and closes the socket unanswered) and `answer`
+ * (route, body) -> {status, body} to replace an answer outright.
  */
 export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamToken, workspace }) {
   const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set(),
-    revokes: [], reseals: [], tokens: new Set(), grants: new Map(), archiveRequests: [] }
+    revokes: [], reseals: [], tokens: new Set(), grants: new Map(), archiveRequests: [],
+    outbound: [], sendCalls: [], sending: { ineligible: new Set(), ownChat: '5511900000001@s.whatsapp.net', draftsPending: 20, outcome: 'sent', answer: null } }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
   const http = createHTTPServer(async (req, res) => {
     const chunks = []
@@ -206,6 +217,7 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
       if (connection) connection.status = 'revoked'
       res.writeHead(204); res.end(); return
     }
+    if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/(drafts|send|refusals|outbound)$/.exec(url.pathname))) return sendRoute(req, res, match[1], match[2], url, body)
     if (url.pathname === '/v1/mcp/enclave/cimd' && req.method === 'GET') {
       const entry = go.cimd.get(url.searchParams.get('url'))
       if (!entry) return json(res, { code: 'cimd_unavailable' }, 502)
@@ -227,6 +239,64 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
     }
     json(res, { code: 'not_found' }, 404)
   })
+  /** The send routes, as §17.7 orders them, over `go.outbound`. */
+  async function sendRoute(req, res, id, route, url, body) {
+    const connection = go.connections.get(id)
+    const presented = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null
+    let parsed = null
+    if (body.length) { try { parsed = JSON.parse(body.toString('utf8')) } catch { return json(res, { code: 'bad_request' }, 400) } }
+    go.sendCalls.push({ route, method: req.method, id, authorization: req.headers.authorization ?? null, body: parsed, query: url.search })
+    if (!connection || !presented || (connection.api_key ? presented !== connection.api_key : !go.tokens.has(presented))) return json(res, { code: 'not_found' }, 404)
+    const override = go.sending.answer?.(route, parsed)
+    if (override) { res.writeHead(override.status, { 'content-type': 'application/json' }); res.end(override.body === undefined ? '' : JSON.stringify(override.body)); return }
+    const stamp = () => new Date(now()).toISOString().replace('Z', '123Z')
+    const refuse = (row, code, status, extra = {}) => { go.outbound.push({ ...row, id: randomUUID(), status: 'refused', code, created_at: stamp() }); return json(res, { code, message: code, ...extra }, status) }
+    const extra = connection.extra ?? {}
+    if (route === 'drafts' && req.method === 'POST') {
+      const names = Object.keys(parsed ?? {})
+      if (!parsed || names.some(name => !['id', 'device_id', 'chat_key', 'reply_to_uid', 'epoch', 'sealed'].includes(name)) || !/^[A-Za-z0-9_-]+$/.test(parsed.sealed ?? '') ||
+        Buffer.from(parsed.sealed, 'base64url').length > 16_384 || !Number.isInteger(parsed.epoch)) return json(res, { code: 'bad_request' }, 400)
+      const row = { connection: id, kind: 'draft', device_id: parsed.device_id, chat_key: parsed.chat_key, reply_to_uid: parsed.reply_to_uid ?? null, decided_at: null, edited: false, message_uid: null }
+      if (connection.status !== 'active') return json(res, { code: 'connection_state' }, 409)
+      if (!extra.send) return json(res, { code: 'send_not_allowed' }, 403)
+      if (go.sending.ineligible.has(parsed.chat_key)) return refuse(row, 'chat_not_eligible', 422)
+      if (parsed.chat_key.endsWith('@g.us') && !extra.send_groups) return refuse(row, 'group_not_allowed', 422)
+      if (go.outbound.some(item => item.id === parsed.id)) return json(res, { code: 'draft_exists' }, 409)
+      if (go.outbound.filter(item => item.connection === id && item.status === 'pending').length >= go.sending.draftsPending) return refuse(row, 'rate_limited', 429, { retry_at: '2026-10-02T09:30:15.123456Z' })
+      const expires = new Date(now() + 86_400_000).toISOString().replace('Z', '456Z')
+      go.outbound.push({ ...row, id: parsed.id, status: 'pending', code: null, created_at: stamp(), epoch: parsed.epoch, sealed: parsed.sealed, expires_at: expires })
+      return json(res, { id: parsed.id, expires_at: expires }, 201)
+    }
+    if (route === 'send' && req.method === 'POST') {
+      if (!parsed || parsed.kind !== 'self' || !/^[A-Za-z0-9_-]{22}$/.test(parsed.client_ref ?? '') || typeof parsed.text !== 'string') return json(res, { code: 'bad_request' }, 400)
+      const row = { connection: id, kind: 'self', device_id: parsed.device_id, chat_key: go.sending.ownChat, reply_to_uid: null, edited: false, client_ref: parsed.client_ref }
+      if (connection.status !== 'active') return json(res, { code: 'connection_state' }, 409)
+      if (!extra.send || !extra.send_self) return json(res, { code: 'send_not_allowed' }, 403)
+      const sent = { ...row, id: randomUUID(), status: 'sending', code: null, created_at: stamp(), decided_at: null, message_uid: null, text: parsed.text }
+      go.outbound.push(sent)
+      if (go.sending.outcome === 'drop') { res.destroy(); return }
+      if (go.sending.outcome === 'offline') { Object.assign(sent, { status: 'refused', code: 'device_offline' }); return json(res, { code: 'device_offline' }, 409) }
+      if (go.sending.outcome === 'uncertain') { sent.status = 'uncertain'; return json(res, { code: 'send_uncertain' }, 502) }
+      Object.assign(sent, { status: 'sent', message_uid: randomUUID(), wa_id: `3EB0${randomBytes(8).toString('hex').toUpperCase()}`, decided_at: stamp() })
+      return json(res, { id: sent.id, message_uid: sent.message_uid, wa_id: sent.wa_id, timestamp: sent.decided_at, duplicate: false })
+    }
+    if (route === 'refusals' && req.method === 'POST') {
+      if (!extra.send) return json(res, { code: 'not_found' }, 404)
+      if (!parsed || !['draft', 'self', 'send'].includes(parsed.kind) || !['text_not_allowed', 'cross_chat_blocked', 'chat_not_allowed', 'recipient_mismatch', 'rate_limited'].includes(parsed.code) ||
+        (parsed.kind === 'self') !== (parsed.chat_key === undefined)) return json(res, { code: 'bad_request' }, 400)
+      go.outbound.push({ connection: id, id: randomUUID(), kind: parsed.kind, status: 'refused', code: parsed.code, device_id: parsed.device_id, chat_key: parsed.chat_key ?? null,
+        reply_to_uid: null, created_at: stamp(), decided_at: null, edited: false, message_uid: null })
+      res.writeHead(204); res.end(); return
+    }
+    if (route === 'outbound' && req.method === 'GET') {
+      const limit = Number(url.searchParams.get('limit') ?? 20), status = url.searchParams.get('status'), device = url.searchParams.get('device_id')
+      const items = go.outbound.filter(item => item.connection === id && (!status || item.status === status) && (!device || item.device_id === device)).reverse().slice(0, limit)
+        .map(({ id: itemID, kind, status: itemStatus, code, device_id, chat_key, reply_to_uid, created_at, decided_at, edited, message_uid }) =>
+          ({ id: itemID, kind, status: itemStatus, code: code ?? null, device_id, chat_key: chat_key ?? null, reply_to_uid: reply_to_uid ?? null, created_at, decided_at: decided_at ?? null, edited, message_uid: message_uid ?? null }))
+      return json(res, { items, next: null })
+    }
+    return json(res, { code: 'not_found' }, 404)
+  }
   go.listen = async () => { await new Promise(resolve => http.listen(0, '127.0.0.1', resolve)); go.url = `http://127.0.0.1:${http.address().port}`; return go }
   go.close = () => new Promise(resolve => { http.closeAllConnections?.(); http.close(resolve) })
   return go

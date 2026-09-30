@@ -4,7 +4,9 @@
 // the hosted relay (status, activate, revoke, cimd) plus the sealed-state
 // store (stateGet, statePut) that openSealedState uses and, for content
 // connections, `reseal`. `revoke(id, 'reuse_detected')` tells Go why. Its
-// status answers carry `media` and `media_off` (docs/mcp-enclave.md §16.9).
+// status answers carry `media` and `media_off` (docs/mcp-enclave.md §16.9),
+// and `send` and `send_self` (§17.3); `sending` reaches the send routes
+// (§17.7) with the connection's own key.
 import { createRelay, RelayError } from '../internal.mjs'
 import { StateError } from '../state.mjs'
 import { signedHeaders } from './hmac.mjs'
@@ -14,10 +16,11 @@ export const STATE_TIMEOUT_MS = 30_000
 export const STATE_MAX_BYTES = 12 * 1024 * 1024
 const generationShape = /^[1-9][0-9]{0,15}$/
 const names = new Set(['as-clients', 'as-connections', 'as-tokens', 'infra'])
+const SEND_ROUTES = new Set(['drafts', 'send', 'refusals', 'outbound'])
 
 export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.fetch, timeoutMs = 10_000, now = Date.now }) {
   const headersFor = (method, target, body) => signedHeaders({ secret: secrets.current, direction: 'to-go', readerId, method, target, body, now })
-  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true, mediaKinds: MEDIA_KINDS })
+  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true, mediaKinds: MEDIA_KINDS, send: true })
   const statePath = name => {
     if (!names.has(name)) throw new StateError('state_name_invalid')
     return `/state/${name}`
@@ -36,6 +39,27 @@ export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.
       if (response.status === 204) return true
       if (response.status === 404 || response.status === 409) return false
       throw new RelayError('relay_failed', response.status)
+    },
+
+    /**
+     * One of the send routes of connection `id` (§17.7): `route` is
+     * 'drafts', 'send', 'refusals' or 'outbound'. Signed like every call,
+     * and carrying the connection's own API key as a bearer, which Go checks
+     * is the row's live key: a mix-up of connection ids in here fails at Go.
+     * Resolves to `{status, data}`, `data` the parsed JSON body or null;
+     * RelayError('relay_unavailable') when no whole answer came, which for a
+     * send means it may have left.
+     */
+    async sending(id, apiKey, method, route, { body, query, timeout } = {}) {
+      if (!SEND_ROUTES.has(route)) throw new RelayError('relay_failed')
+      const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body))
+      const response = await relay.call(method, `/connections/${encodeURIComponent(id)}/${route}`, query, {
+        body: payload, timeout, headers: { authorization: `Bearer ${apiKey}`, ...(payload ? { 'content-type': 'application/json' } : {}) },
+      })
+      const data = await relay.body(response)
+      let parsed = null
+      try { parsed = data.length ? JSON.parse(data.toString('utf8')) : null } catch { parsed = null }
+      return { status: response.status, data: parsed }
     },
 
     /** `{generation, blob}` for a stored collection, or null when Go never had it. */
