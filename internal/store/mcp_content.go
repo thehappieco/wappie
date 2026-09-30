@@ -95,7 +95,7 @@ func endMCPConnectionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id, st
 		WHERE id=$1 AND tenant_id=$2 AND revoked_at IS NULL`, keyID, tenant, status); err != nil {
 		return false, err
 	}
-	if kind == KindContent && service != nil {
+	if (kind == KindContent || kind == KindAI) && service != nil {
 		if err := removeServiceAccountTx(ctx, tx, tenant, *service); err != nil {
 			return false, err
 		}
@@ -227,6 +227,21 @@ type StatusAnswer struct {
 	SendMode   string
 	SendSelf   bool
 	SendPaused bool
+	// AIConfig is an AI authorization's configuration, and AIOff, AIPaused
+	// and AICapCents what a person narrowed it by. The caller works out
+	// what the reader is told from them and the switches.
+	AIConfig   *AIConfig
+	AIOff      []string
+	AIPaused   bool
+	AICapCents *int
+}
+
+// StatusAllowed says whether the workspace may have each kind of
+// connection that holds a key right now: Content for content connections
+// and AI for AI authorizations. A nil test allows nothing.
+type StatusAllowed struct {
+	Content func(tenant uuid.UUID) bool
+	AI      func(tenant uuid.UUID) bool
 }
 
 // Status answers a reader's question about one of its connections and notes
@@ -247,14 +262,25 @@ type StatusAnswer struct {
 // row's status. contentAllowed nil allows nothing. Media and the sending
 // fields are the row's on the last two answers only.
 func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentAllowed func(tenant uuid.UUID) bool) (StatusAnswer, error) {
+	return m.StatusFor(ctx, reader, id, StatusAllowed{Content: contentAllowed})
+}
+
+// StatusFor is Status with a test per kind: an AI authorization is decided
+// as a content connection is, with allowed.AI in place of the content test
+// (docs/mcp-enclave.md §18.4), and answers its configuration and narrowing
+// whatever its status.
+func (m *MCPConnections) StatusFor(ctx context.Context, reader, id string, allowed StatusAllowed) (StatusAnswer, error) {
 	var a StatusAnswer
 	var tenant uuid.UUID
 	var media, sendSelf, sendPaused bool
 	var sendMode string
+	var aiConfig []byte
 	err := m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1 AND reader=$2
 		RETURNING tenant_id, status, expires_at, kind, service_user_id, media,
-		          coalesce(send_mode, ''), send_self, send_paused_at IS NOT NULL`, id, reader).
-		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID, &media, &sendMode, &sendSelf, &sendPaused)
+		          coalesce(send_mode, ''), send_self, send_paused_at IS NOT NULL,
+		          ai_config::text, ai_off, ai_paused_at IS NOT NULL, ai_cap_cents`, id, reader).
+		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID, &media, &sendMode, &sendSelf, &sendPaused,
+			&aiConfig, &a.AIOff, &a.AIPaused, &a.AICapCents)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StatusAnswer{}, ErrMCPConnectionNotFound
 	}
@@ -262,10 +288,21 @@ func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentA
 		return StatusAnswer{}, fmt.Errorf("store: mcp connection status: %w", err)
 	}
 	a.TenantID = tenant
+	if aiConfig != nil {
+		c, err := storedAIConfig(aiConfig)
+		if err != nil {
+			return StatusAnswer{}, err
+		}
+		a.AIConfig = &c
+	}
 	if !liveStatus(a.Status) {
 		return a, nil
 	}
-	if a.Kind != KindContent {
+	contentAllowed := allowed.Content
+	if a.Kind == KindAI {
+		contentAllowed = allowed.AI
+	}
+	if a.Kind != KindContent && a.Kind != KindAI {
 		if a.Status == statusActive && !a.ExpiresAt.After(time.Now()) {
 			a.Status = statusExpired
 		}
@@ -325,21 +362,29 @@ type ContentKey struct {
 	Live bool
 	// Media is the row's media flag.
 	Media bool
+	// Kind is KindContent or KindAI; Active is the row being active inside
+	// its lifetime, and Paused an AI authorization's pause.
+	Kind   string
+	Active bool
+	Paused bool
 }
 
-// ContentConnectionByAPIKey finds the content connection an API key belongs
-// to, asked by /v1/media for every key that fetches an attachment: the row
-// whose unique api_key_id it is, and failing that whether the key acts as a
-// connection service account (one whose membership carries a deadline,
-// provisional ones included, 0042). A key that is neither (a person's, an
-// automation's, a metadata connection's) is ErrMCPConnectionNotFound.
+// ContentConnectionByAPIKey finds the content connection or AI
+// authorization an API key belongs to, asked by /v1/media for every key that
+// fetches an attachment: the row whose unique api_key_id it is, and failing
+// that whether the key acts as a connection service account (one whose
+// membership carries a deadline, provisional ones included, 0042). A key
+// that is neither (a person's, an automation's, a metadata connection's) is
+// ErrMCPConnectionNotFound.
 func (m *MCPConnections) ContentConnectionByAPIKey(ctx context.Context, tenant, key uuid.UUID) (ContentKey, error) {
 	var out ContentKey
 	var status string
 	var service bool
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT id::text, tenant_id, status, media FROM mcp_connections
-			WHERE api_key_id=$1 AND kind='content'`, key).Scan(&out.ConnectionID, &out.TenantID, &status, &out.Media)
+		err := tx.QueryRow(ctx, `SELECT id::text, tenant_id, kind, status, status = 'active' AND expires_at > now(), media,
+			       ai_paused_at IS NOT NULL
+			FROM mcp_connections WHERE api_key_id=$1 AND kind IN ('content', 'ai')`, key).
+			Scan(&out.ConnectionID, &out.TenantID, &out.Kind, &status, &out.Active, &out.Media, &out.Paused)
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -362,15 +407,15 @@ func (m *MCPConnections) ContentConnectionByAPIKey(ctx context.Context, tenant, 
 	return ContentKey{}, ErrMCPConnectionNotFound
 }
 
-// Reseal records that the reader holds no key for a content connection: it
-// restarted, and the person renews in the console. The connection keeps its
-// id, its consent and its token family. Only an active or resealed content
-// connection inside its lifetime can be resealed; anything else is
+// Reseal records that the reader holds no key for a content connection or an
+// AI authorization: it restarted, and the person renews in the console. The
+// connection keeps its id, its consent and its token family. Only an active
+// or resealed one inside its lifetime can be resealed; anything else is
 // ErrMCPConnectionState, and an unknown id, or another reader's, is
 // ErrMCPConnectionNotFound.
 func (m *MCPConnections) Reseal(ctx context.Context, reader, id string) error {
 	tag, err := m.pool.Exec(ctx, `UPDATE mcp_connections SET status='reseal', resealed_at=now()
-		WHERE id=$1 AND reader=$2 AND kind='content' AND status IN ('active','reseal') AND expires_at > now()`, id, reader)
+		WHERE id=$1 AND reader=$2 AND kind IN ('content', 'ai') AND status IN ('active','reseal') AND expires_at > now()`, id, reader)
 	if err != nil {
 		return fmt.Errorf("store: reseal mcp connection: %w", err)
 	}
@@ -554,12 +599,17 @@ type RenewMCPConnection struct {
 	// ReaderPublicKey is the renewal's attested key; the new service
 	// account's public key must be exactly this.
 	ReaderPublicKey []byte
+	// AIConfig is an AI authorization's new configuration, required for one
+	// and refused for a content connection. Its keys and models may change
+	// within their providers; nothing else may.
+	AIConfig *AIConfig
 }
 
-// Renewable checks that a person may renew a content connection: it is this
-// workspace's, of kind content, active or resealed and inside its lifetime,
-// and the person consented to it and is still an owner or admin. The
-// connection comes back with its reader, expiry and service account.
+// Renewable checks that a person may renew a content connection or an AI
+// authorization: it is this workspace's, of kind content or ai, active or
+// resealed and inside its lifetime, and the person consented to it and is
+// still an owner or admin. The connection comes back with its kind, reader,
+// expiry and service account.
 func (m *MCPConnections) Renewable(ctx context.Context, tenant, actor uuid.UUID, id string) (MCPConnection, error) {
 	var out MCPConnection
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -585,7 +635,7 @@ func renewableTx(ctx context.Context, tx pgx.Tx, tenant, actor uuid.UUID, id str
 		return MCPConnection{}, err
 	}
 	switch {
-	case out.Kind != KindContent || out.ServiceUserID == nil:
+	case out.Kind != KindContent && out.Kind != KindAI || out.ServiceUserID == nil:
 		return MCPConnection{}, ErrMCPConnectionNotFound
 	case out.CreatedBy != actor:
 		return MCPConnection{}, ErrMembershipForbidden
@@ -676,6 +726,28 @@ func (m *MCPConnections) renew(ctx context.Context, tenant, actor uuid.UUID, id 
 		if err := checkContentServiceTx(ctx, tx, tenant, in.ServiceUserID, keyID, in.ReaderPublicKey); err != nil {
 			return err
 		}
+		switch {
+		case conn.Kind != KindAI && in.AIConfig != nil:
+			return aiConfigError("a content connection has no ai_config")
+		case conn.Kind == KindAI && in.AIConfig == nil:
+			return aiConfigError("ai_config is required to renew an AI authorization")
+		case conn.Kind == KindAI:
+			next := *in.AIConfig
+			if next.KID != in.ReaderKID || next.ServiceUserID != in.ServiceUserID ||
+				!next.ExpiresAt.Truncate(time.Second).Equal(conn.ExpiresAt.UTC().Truncate(time.Second)) {
+				return aiConfigError("ai_config must name the renewal's kid, service account and the authorization's expiry")
+			}
+			current, err := aiRowConfigTx(ctx, tx, tenant, id)
+			if err != nil {
+				return err
+			}
+			if err := sameAIRenewal(current, next); err != nil {
+				return err
+			}
+			if err := checkAIConfigTx(ctx, tx, tenant, actor, keyID, next); err != nil {
+				return err
+			}
+		}
 		if !apply {
 			return errDryRun
 		}
@@ -688,10 +760,18 @@ func (m *MCPConnections) renew(ctx context.Context, tenant, actor uuid.UUID, id 
 			conn.APIKeyID, tenant); err != nil {
 			return err
 		}
+		// An AI authorization takes its new configuration, and what the
+		// reader reported about the old one no longer holds.
+		var aiConfig *string
+		if in.AIConfig != nil {
+			raw := string(in.AIConfig.Raw)
+			aiConfig = &raw
+		}
 		_, err = tx.Exec(ctx, `UPDATE mcp_connections
 			SET api_key_id=$3, service_user_id=$4, reader_kid=$5, reader_measurement=NULLIF($6,''),
-			    status='active', renewed_at=now()
-			WHERE id=$1 AND tenant_id=$2`, id, tenant, keyID, in.ServiceUserID, in.ReaderKID, in.ReaderMeasurement)
+			    status='active', renewed_at=now(),
+			    ai_config=coalesce($7::jsonb, ai_config), ai_alerts=CASE WHEN kind='ai' THEN '{}' ELSE ai_alerts END
+			WHERE id=$1 AND tenant_id=$2`, id, tenant, keyID, in.ServiceUserID, in.ReaderKID, in.ReaderMeasurement, aiConfig)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {

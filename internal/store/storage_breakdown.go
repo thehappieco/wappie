@@ -82,10 +82,13 @@ func storageBreakdownTx(ctx context.Context, tx pgx.Tx) (*StorageBreakdown, erro
    WHEN i.source IN ('messages','media') THEN m.device_id
    WHEN i.source='group_changes' THEN g.device_id
    WHEN i.source IN ('chats','receipts','contacts','group_participants') THEN (i.identity::jsonb->>0)::uuid
+   WHEN i.source='ai_derived' THEN a.device_id
   END device_id,i.bytes
   FROM storage_inventory i
   LEFT JOIN messages m ON m.uid=(CASE WHEN i.source IN ('messages','media') THEN i.identity::jsonb->>0 END)::uuid
   LEFT JOIN group_changes g ON g.id=(CASE WHEN i.source='group_changes' THEN i.identity::jsonb->>0 END)::bigint
+  LEFT JOIN ai_derived a ON a.message_uid=(CASE WHEN i.source='ai_derived' THEN i.identity::jsonb->>0 END)::uuid
+   AND a.feature=(CASE WHEN i.source='ai_derived' THEN i.identity::jsonb->>1 END)
  ), object_references AS (
   SELECT d.object_key,m.device_id FROM media d JOIN messages m ON m.uid=d.message_uid WHERE d.object_key IS NOT NULL
   UNION

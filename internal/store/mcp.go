@@ -69,10 +69,10 @@ type MCPConnection struct {
 	// ReaderMeasurement is what an attested reader declared when the
 	// consent was prepared, "nitro:pcr0=<hex>;doc=<hex>"; empty for hosted.
 	ReaderMeasurement string
-	// Kind is KindMetadata or KindContent.
+	// Kind is KindMetadata, KindContent or KindAI.
 	Kind string
-	// ServiceUserID is a content connection's own service account; nil for
-	// metadata.
+	// ServiceUserID is a content connection's or an AI authorization's own
+	// service account; nil for metadata.
 	ServiceUserID *uuid.UUID
 	// KeyMode is how the reader holds a content connection's key
 	// (KeyModeEphemeral); empty for metadata.
@@ -195,6 +195,9 @@ type CreateMCPConnection struct {
 	// console prepared the consent; the service account's public key must
 	// be exactly this.
 	ReaderPublicKey []byte
+	// AIConfig is an AI authorization's configuration (KindAI only): its
+	// numbers are the key's, and its keychain items the actor's.
+	AIConfig *AIConfig
 }
 
 // Create records a consent and promotes its key from the provisional deadline
@@ -233,22 +236,36 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 	if in.Kind == "" {
 		in.Kind = KindMetadata
 	}
-	content := in.Kind == KindContent
+	ai := in.Kind == KindAI
+	// content is every kind that reads as a service account of its own: a
+	// content connection, and an AI authorization.
+	content := in.Kind == KindContent || ai
 	switch {
 	case in.Kind != KindMetadata && !content:
 		return MCPConnection{}, fmt.Errorf("store: %q is not a connection kind", in.Kind)
 	case !content && (in.ServiceUserID != uuid.Nil || in.KeyMode != "" || in.ConsentVersion != 0 || in.ReaderPublicKey != nil || in.Media ||
-		in.SendMode != "" || in.SendSelf || in.SendGroups):
-		return MCPConnection{}, errors.New("store: a metadata connection carries no service account, key mode, consent version, media or sending")
-	case content && (in.Reader == HostedReader || in.ServiceUserID == uuid.Nil || in.KeyMode != KeyModeEphemeral ||
-		!validConsentVersion(in.ConsentVersion) || in.Media && in.ConsentVersion < MediaConsentVersion || len(in.ReaderPublicKey) != 32 ||
-		!validConsentSend(in.ConsentVersion, in.SendMode, in.SendSelf, in.SendGroups)):
+		in.SendMode != "" || in.SendSelf || in.SendGroups || in.AIConfig != nil):
+		return MCPConnection{}, errors.New("store: a metadata connection carries no service account, key mode, consent version, media, sending or AI")
+	case content && (in.Reader == HostedReader || in.ServiceUserID == uuid.Nil || in.KeyMode != KeyModeEphemeral || len(in.ReaderPublicKey) != 32):
 		// The handler gates content to attested readers and checks the
 		// body; this is the backstop, and the migrations' CHECKs the ones
-		// behind it for media and sending.
+		// behind it for media, sending and AI.
+		return MCPConnection{}, ErrMCPKeyUnsuitable
+	case in.Kind == KindContent && (in.AIConfig != nil || !validConsentVersion(in.ConsentVersion) || in.Media && in.ConsentVersion < MediaConsentVersion ||
+		!validConsentSend(in.ConsentVersion, in.SendMode, in.SendSelf, in.SendGroups)):
+		return MCPConnection{}, ErrMCPKeyUnsuitable
+	case ai && (in.AIConfig == nil || in.ConsentVersion != AIConsentVersion || in.Media || in.SendMode != "" || in.SendSelf || in.SendGroups ||
+		in.ClientName != AIClientName || in.RedirectHost != AIRedirectHost):
+		// An AI authorization is the console's, never media and never
+		// sending; its consent is the AI card's.
 		return MCPConnection{}, ErrMCPKeyUnsuitable
 	case content && in.ExpiresAt.After(time.Now().Add(maxContentLifetime)):
 		return MCPConnection{}, ErrInvalidExpiry
+	}
+	if ai {
+		if err := checkAIConsent(*in.AIConfig, in); err != nil {
+			return MCPConnection{}, err
+		}
 	}
 	out := MCPConnection{
 		TenantID: tenant.String(), RequestID: in.RequestID, CreatedBy: actor,
@@ -299,17 +316,27 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		} else if actsAs != nil {
 			return ErrMCPKeyUnsuitable
 		}
-		// The count is safe against a concurrent consent because
-		// lockWorkspaceManager holds the workspace's tenants row FOR UPDATE
-		// for the rest of the transaction: two consents on one workspace
-		// run one after the other, whoever the actors are.
-		var live int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM mcp_connections
-			WHERE tenant_id=$1 AND status IN ('pending','active','reseal') AND expires_at > now()`, tenant).Scan(&live); err != nil {
-			return err
-		}
-		if live >= maxLiveMCPConnections {
-			return ErrTooManyMCPConnections
+		var aiConfig *string
+		if ai {
+			if err := checkAIConfigTx(ctx, tx, tenant, actor, out.APIKeyID, *in.AIConfig); err != nil {
+				return err
+			}
+			raw := string(in.AIConfig.Raw)
+			aiConfig = &raw
+		} else {
+			// The count is safe against a concurrent consent because
+			// lockWorkspaceManager holds the workspace's tenants row FOR
+			// UPDATE for the rest of the transaction: two consents on one
+			// workspace run one after the other, whoever the actors are.
+			// AI authorizations are not assistants and are not counted.
+			var live int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM mcp_connections
+				WHERE tenant_id=$1 AND kind <> 'ai' AND status IN ('pending','active','reseal') AND expires_at > now()`, tenant).Scan(&live); err != nil {
+				return err
+			}
+			if live >= maxLiveMCPConnections {
+				return ErrTooManyMCPConnections
+			}
 		}
 		var service *uuid.UUID
 		var keyMode *string
@@ -319,11 +346,11 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		}
 		err = tx.QueryRow(ctx, `INSERT INTO mcp_connections
 			(tenant_id, request_id, api_key_id, created_by, client_name, redirect_host, device_count, reader_kid, status, expires_at,
-			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media, send_mode, send_self, send_groups)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($17,''),$18,$19)
+			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media, send_mode, send_self, send_groups, ai_config)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($17,''),$18,$19,$20::jsonb)
 			RETURNING id::text, created_at`,
 			tenant, in.RequestID, out.APIKeyID, actor, in.ClientName, in.RedirectHost, in.DeviceCount, in.ReaderKID, in.ExpiresAt,
-			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media, in.SendMode, in.SendSelf, in.SendGroups).
+			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media, in.SendMode, in.SendSelf, in.SendGroups, aiConfig).
 			Scan(&out.ID, &out.CreatedAt)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -334,6 +361,10 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 					return ErrMCPKeyUnsuitable
 				}
 				return ErrMCPConnectionState
+			}
+			if errors.As(err, &pgErr) && pgErr.Code == "23514" && strings.Contains(pgErr.ConstraintName, "ai_config") {
+				// Its text form over 32 KiB: the column's own bound.
+				return aiConfigError("ai_config is larger than its column holds")
 			}
 			return err
 		}
@@ -354,7 +385,8 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 
 // List returns a workspace's connections, newest first, in every status.
 // A revoked connection is part of the answer to "what has reached this
-// archive", exactly like a revoked key.
+// archive", exactly like a revoked key. AI authorizations are not
+// assistants' connections: AIAuthorizations lists them.
 func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConnection, error) {
 	out := []MCPConnection{}
 	// Neither mcp_connections nor api_keys carries a row-level policy, so the
@@ -371,7 +403,7 @@ func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConne
 			       coalesce(c.send_mode, ''), c.send_self, c.send_groups, c.send_paused_at,
 			       (SELECT count(*) FROM mcp_send_chats s WHERE s.connection_id = c.id AND s.removed_at IS NULL)
 			  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
-			 WHERE c.tenant_id = $1
+			 WHERE c.tenant_id = $1 AND c.kind <> 'ai'
 			 ORDER BY c.created_at DESC, c.id DESC`, tenant)
 		if err != nil {
 			return err

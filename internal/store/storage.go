@@ -126,7 +126,7 @@ func (s *Storage) Reconcile(ctx context.Context, tenant uuid.UUID) (StorageUsage
 		if _, err := tx.Exec(ctx, `DELETE FROM storage_inventory WHERE tenant_id=$1`, tenant); err != nil {
 			return err
 		}
-		for _, table := range []string{"messages", "chats", "media", "receipts", "contacts", "group_participants", "group_changes"} {
+		for _, table := range []string{"messages", "chats", "media", "receipts", "contacts", "group_participants", "group_changes", "ai_derived"} {
 			if _, err := tx.Exec(ctx, `UPDATE `+table+` SET tenant_id=tenant_id WHERE tenant_id=$1`, tenant); err != nil {
 				return err
 			}

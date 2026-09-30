@@ -96,12 +96,12 @@ func ExpireMCPConnections(ctx context.Context, pool *pgxpool.Pool, pendingTTL ti
 // with its keys, grants, permissions and membership. It reports how many.
 //
 // A provisional account can only come from a provisional invitation, and a
-// connection's from a content row, so those name every workspace that can
-// hold one; memberships force row-level security and are read per workspace.
+// connection's from a content or AI row, so those name every workspace that
+// can hold one; memberships force row-level security and are read per workspace.
 func ExpireServiceAccounts(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT tenant_id FROM invites WHERE provisional
-		UNION SELECT tenant_id FROM mcp_connections WHERE kind = 'content'`)
+		UNION SELECT tenant_id FROM mcp_connections WHERE kind IN ('content', 'ai')`)
 	if err != nil {
 		return 0, fmt.Errorf("store: expire service accounts: %w", err)
 	}

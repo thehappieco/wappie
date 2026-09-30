@@ -26,7 +26,7 @@ func (e *TransferDenied) Error() string { return e.Reason }
 
 const movingInventory = `tenant_id=$1 AND (
  (source IN ('chats','receipts','contacts','group_participants') AND identity::jsonb->>0=($2::uuid)::text)
- OR (source IN ('messages','media') AND (CASE WHEN source IN ('messages','media') THEN identity::jsonb->>0 END)::uuid IN (SELECT uid FROM messages WHERE device_id=$2))
+ OR (source IN ('messages','media','ai_derived') AND (CASE WHEN source IN ('messages','media','ai_derived') THEN identity::jsonb->>0 END)::uuid IN (SELECT uid FROM messages WHERE device_id=$2))
  OR (source='group_changes' AND (CASE WHEN source='group_changes' THEN identity::jsonb->>0 END)::bigint IN (SELECT id FROM group_changes WHERE device_id=$2)))`
 
 func transferPreviewTx(ctx context.Context, tx pgx.Tx, source, actor, device uuid.UUID) (out PersonalTransferPreview, resultErr error) {
@@ -227,6 +227,12 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 		}
 		// Move media before messages: message accounting updates its media rows too.
 		if _, err = tx.Exec(ctx, `UPDATE media SET tenant_id=$2,download_status=CASE WHEN download_status='downloading' THEN 'pending' ELSE download_status END,claimed_at=NULL WHERE message_uid IN (SELECT uid FROM messages WHERE device_id=$1)`, device, target); err != nil {
+			return err
+		}
+		// AI results go with their number, before its messages. The
+		// authorization that made one belongs to the old workspace, so the
+		// new workspace's owners and admins decide about it from now on.
+		if _, err = tx.Exec(ctx, `UPDATE ai_derived SET tenant_id=$2,authorization_id=NULL WHERE device_id=$1`, device, target); err != nil {
 			return err
 		}
 		for _, table := range []string{"device_archive_keys", "device_key_grants", "content_keys", "contacts", "group_participants", "group_changes", "reader_preferences", "device_permissions"} {
