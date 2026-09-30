@@ -81,6 +81,14 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		if settled.Deleted > 0 {
 			a.log.Info("mcp ledger rows past retention removed", "rows", settled.Deleted)
 		}
+		// AI usage counters go 400 days after their day, and deleted
+		// keychain items 30 days after their deletion. The results go with
+		// their messages.
+		if ai, err := store.SettleAI(ctx, a.pools.API); err != nil {
+			a.log.Warn("ai retention failed", "error", err)
+		} else if ai.UsageRows+ai.KeychainRows > 0 {
+			a.log.Info("ai rows past retention removed", "usage", ai.UsageRows, "keychain", ai.KeychainRows)
+		}
 	}
 
 	// Retry confirmed orphan objects even when no new retention purge occurs.

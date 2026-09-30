@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow"
 
+	"whatserver2/internal/aiapi"
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/blob"
 	"whatserver2/internal/bus"
@@ -723,6 +724,15 @@ func (a *app) routes() http.Handler {
 			a.mcp.PublicOrigin, a.mcp.RelaySecret = a.cfg.MCP.PublicOrigin, a.cfg.MCP.RelaySecret
 		}
 		a.mcp.Mount(mux)
+		// The console's AI routes: a person's keychain, the authorizations,
+		// the jobs they ask for, the results and the usage. Off, only what
+		// lets a person see and delete what they hold answers.
+		(&aiapi.Handler{
+			Users: a.users, Connections: a.mcp.Connections, AI: a.mcp.AI, Enabled: a.cfg.MCP.AIEnabled, MCP: a.mcp,
+			RequestLimits: a.mcp.DescriptorLimits,
+			ProcessLimits: &ratelimit.Auth{PerSubject: ratelimit.New(aiapi.ProcessPerMinute, aiapi.ProcessPerMinute), Proxies: a.cfg.TrustedProxies},
+			Log:           a.log,
+		}).Mount(mux)
 	}
 
 	mux.Handle("/v1/ws", a.ws)

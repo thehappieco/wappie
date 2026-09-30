@@ -33,6 +33,10 @@ type mcpEndpoints struct {
 	// Send is set when its connections may also draft and send: content and
 	// sending are on. Which workspaces may is asked the same way.
 	Send bool
+	// AI is set when AI integrations are on beside content: the AI switch
+	// is on. Which workspaces may is asked the same way (GET
+	// /v1/mcp/content's ai).
+	AI bool
 }
 
 // discoveryFor describes the protocol. The hosted assistant connector is
@@ -64,6 +68,9 @@ func discoveryFor(mcp mcpEndpoints) http.HandlerFunc {
 			}
 			if mcp.Send {
 				capabilities = append(capabilities, "mcp.remote.send.v1")
+			}
+			if mcp.AI {
+				capabilities = append(capabilities, "mcp.remote.ai.v1")
 			}
 		}
 	}

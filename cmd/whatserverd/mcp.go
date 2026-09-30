@@ -36,6 +36,7 @@ func advertisedMCP(cfg config.MCP) mcpEndpoints {
 		out.Content = cfg.ContentEnabled
 		out.Media = cfg.ContentEnabled && cfg.MediaEnabled
 		out.Send = cfg.ContentEnabled && cfg.SendEnabled
+		out.AI = cfg.ContentEnabled && cfg.AIEnabled
 	}
 	return out
 }

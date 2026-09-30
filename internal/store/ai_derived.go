@@ -239,3 +239,29 @@ func (a *AI) DeleteAIDerivedOf(ctx context.Context, tenant, actor uuid.UUID, aut
 	}
 	return deleted, nil
 }
+
+// AIMessageInfo is what a request for a function reads of its message: its
+// type, whether it is a GIF, and whether it was sent to be viewed once.
+type AIMessageInfo struct {
+	Type     string
+	IsGIF    bool
+	ViewOnce bool
+}
+
+// AIMessage reads a message of a number for a request for a function. One
+// that is not a message of that number is ErrAINotFound.
+func (a *AI) AIMessage(ctx context.Context, tenant, device, uid uuid.UUID) (AIMessageInfo, error) {
+	var out AIMessageInfo
+	err := pg.InTenantTx(ctx, a.pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT m.type, coalesce(d.is_gif, false), m.view_once FROM messages m
+			LEFT JOIN media d ON d.message_uid = m.uid
+			WHERE m.uid=$1 AND m.device_id=$2 AND m.kind='message'`, uid, device).Scan(&out.Type, &out.IsGIF, &out.ViewOnce)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AIMessageInfo{}, ErrAINotFound
+	}
+	if err != nil {
+		return AIMessageInfo{}, fmt.Errorf("store: read a message for AI: %w", err)
+	}
+	return out, nil
+}
