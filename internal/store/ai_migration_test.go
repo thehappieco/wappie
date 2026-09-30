@@ -55,7 +55,12 @@ func TestMigration0045DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.ai.RecordAIUsage(ctx, f.tenant, active.ID, store.AIUsage{DeviceID: f.device, Feature: "audio", Provider: "google", Model: geminiModel,
-		Origin: "console", RequesterID: f.owner, Items: 1}); err != nil {
+		Origin: "console", RequesterID: f.owner, Items: 1, InputTokens: 424, OutputTokens: 741, ChargedTokens: 1165}); err != nil {
+		t.Fatal(err)
+	}
+	// A lower cap in tokens, so the down-step drops a column in use.
+	capTokens := int64(2_500_000)
+	if _, err := f.conns.SetAIControls(ctx, f.tenant, f.owner, active.ID, store.AIControls{CapSet: true, Cap: &capTokens}); err != nil {
 		t.Fatal(err)
 	}
 	if with, err := storage.Usage(ctx, f.tenant); err != nil || with.ArchiveBytes <= before.ArchiveBytes {
@@ -74,7 +79,7 @@ func TestMigration0045DownStep(t *testing.T) {
 		(SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema()
 		   AND table_name IN ('ai_keychain','ai_derived','ai_usage_daily')),
 		(SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='mcp_connections'
-		   AND column_name IN ('ai_config','ai_paused_at','ai_off','ai_cap_cents','ai_alerts')),
+		   AND column_name IN ('ai_config','ai_paused_at','ai_off','ai_cap_tokens','ai_alerts')),
 		(SELECT count(*) FROM pg_constraint WHERE conname='mcp_connections_ai_coherent' AND connamespace=current_schema()::regnamespace)`).
 		Scan(&tables, &columns, &constraints); err != nil || tables+columns+constraints != 0 {
 		t.Fatalf("left: %d tables, %d columns, %d constraints %v", tables, columns, constraints, err)

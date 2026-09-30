@@ -205,18 +205,12 @@ type AIFeature struct {
 	Requesters string
 }
 
-// AIBudget is the authorization's spending bound and the rates the console
-// estimated it from.
+// AIBudget is the authorization's safety cap: tokens a month and
+// attachments a day. Prices vary with each person's plan and model, so no
+// price or amount of money is part of it (§18.10).
 type AIBudget struct {
-	MonthlyUSDCents    int
+	MonthlyTokens      int64
 	RequestItemsPerDay int
-	Rates              map[string]AIRate
-}
-
-// AIRate is one provider and model's price: US cents per million input and
-// output tokens, and per 1,000 seconds.
-type AIRate struct {
-	In, Out, Sec int64
 }
 
 // The wire shapes. Pointers tell a missing field from a zero one; the
@@ -253,23 +247,15 @@ type (
 		Requesters *string         `json:"requesters"`
 	}
 	aiBudgetWire struct {
-		MonthlyUSDCents    *int                  `json:"monthly_usd_cents"`
-		RequestItemsPerDay *int                  `json:"request_items_per_day"`
-		Rates              map[string]aiRateWire `json:"rates"`
-	}
-	aiRateWire struct {
-		In  *int64 `json:"in"`
-		Out *int64 `json:"out"`
-		Sec *int64 `json:"sec"`
+		MonthlyTokens      *int64 `json:"monthly_tokens"`
+		RequestItemsPerDay *int   `json:"request_items_per_day"`
 	}
 )
 
-// The budget's and the rates' bounds (AI_MONTHLY_USD_CENTS_MAX,
-// AI_REQUEST_ITEMS_PER_DAY_MAX, and the rates' ceiling).
+// The budget's bounds (AI_MONTHLY_TOKENS_MAX, AI_REQUEST_ITEMS_PER_DAY_MAX).
 const (
-	aiMonthlyCentsMax = 100_000
-	aiItemsPerDayMax  = 1_000
-	aiRateMax         = 100_000_000
+	aiMonthlyTokensMax = 1_000_000_000
+	aiItemsPerDayMax   = 1_000
 )
 
 // ParseAIConfig reads an ai_config as the console sends it: a strict object
@@ -372,7 +358,6 @@ func ParseAIConfig(raw []byte) (AIConfig, error) {
 		return AIConfig{}, aiConfigError("functions must name at least one function")
 	}
 	c.Functions = map[string]AIFunction{}
-	pairs := map[string]bool{}
 	for feature, f := range w.Functions {
 		if !slices.Contains(AIFeatures, feature) {
 			return AIConfig{}, aiConfigError("%q is not a function", feature)
@@ -384,7 +369,6 @@ func ParseAIConfig(raw []byte) (AIConfig, error) {
 			return AIConfig{}, aiConfigError("the %s function's model is not a model id", feature)
 		}
 		c.Functions[feature] = AIFunction{Provider: *f.Provider, Model: *f.Model}
-		pairs[*f.Provider+":"+*f.Model] = true
 	}
 	if len(w.Keys) != len(c.providers()) {
 		return AIConfig{}, aiConfigError("keys must name exactly the providers the functions use")
@@ -438,25 +422,12 @@ func ParseAIConfig(raw []byte) (AIConfig, error) {
 
 	b := w.Budget
 	switch {
-	case b.MonthlyUSDCents == nil || *b.MonthlyUSDCents < 1 || *b.MonthlyUSDCents > aiMonthlyCentsMax:
-		return AIConfig{}, aiConfigError("budget.monthly_usd_cents must be 1 to %d", aiMonthlyCentsMax)
+	case b.MonthlyTokens == nil || *b.MonthlyTokens < 1 || *b.MonthlyTokens > aiMonthlyTokensMax:
+		return AIConfig{}, aiConfigError("budget.monthly_tokens must be 1 to %d", aiMonthlyTokensMax)
 	case b.RequestItemsPerDay == nil || *b.RequestItemsPerDay < 1 || *b.RequestItemsPerDay > aiItemsPerDayMax:
 		return AIConfig{}, aiConfigError("budget.request_items_per_day must be 1 to %d", aiItemsPerDayMax)
-	case len(b.Rates) != len(pairs):
-		return AIConfig{}, aiConfigError("budget.rates must have one entry per provider and model the functions use")
 	}
-	c.Budget = AIBudget{MonthlyUSDCents: *b.MonthlyUSDCents, RequestItemsPerDay: *b.RequestItemsPerDay, Rates: map[string]AIRate{}}
-	for pair, r := range b.Rates {
-		if !pairs[pair] {
-			return AIConfig{}, aiConfigError("budget.rates must have one entry per provider and model the functions use")
-		}
-		for _, v := range []*int64{r.In, r.Out, r.Sec} {
-			if v == nil || *v < 0 || *v > aiRateMax {
-				return AIConfig{}, aiConfigError("a rate's in, out and sec must be whole numbers from 0 to %d", aiRateMax)
-			}
-		}
-		c.Budget.Rates[pair] = AIRate{In: *r.In, Out: *r.Out, Sec: *r.Sec}
-	}
+	c.Budget = AIBudget{MonthlyTokens: *b.MonthlyTokens, RequestItemsPerDay: *b.RequestItemsPerDay}
 	return c, nil
 }
 
@@ -520,9 +491,8 @@ func (c AIConfig) FunctionsOff(offFeatures, offProviders []string) bool {
 
 // sameAIRenewal holds a renewal's configuration to what a renewal may
 // change (§18.7 step 7): a key within the same provider, and a function's
-// model within the same provider with the rates following it. The numbers,
-// the functions and their providers, every number's functions and the
-// budget's two limits stay.
+// model within the same provider. The numbers, the functions and their
+// providers, every number's functions and the budget's two limits stay.
 func sameAIRenewal(current, next AIConfig) error {
 	if len(current.Epochs) != len(next.Epochs) {
 		return aiConfigError("a renewal covers the same numbers")
@@ -551,7 +521,7 @@ func sameAIRenewal(current, next AIConfig) error {
 			}
 		}
 	}
-	if current.Budget.MonthlyUSDCents != next.Budget.MonthlyUSDCents || current.Budget.RequestItemsPerDay != next.Budget.RequestItemsPerDay {
+	if current.Budget != next.Budget {
 		return aiConfigError("a renewal keeps the budget's limits")
 	}
 	return nil

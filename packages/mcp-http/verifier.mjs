@@ -93,7 +93,7 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
     }
     return cached ? { answer: 'serve', send: cached.send, send_self: cached.send_self && cached.send !== null } : { answer: false, send: null, send_self: false }
   }
-  const pausedOff = () => ({ functions: [], providers: [], paused: true, monthly_usd_cents: null })
+  const pausedOff = () => ({ functions: [], providers: [], paused: true, monthly_tokens: null })
   checkActive.aiStatus = async id => {
     let cached = cache.get(id)
     if (!fresh(cached) || content?.pending(id)) {

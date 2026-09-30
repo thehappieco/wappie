@@ -57,7 +57,7 @@ const aiBundle = (change = {}) => ({
   keys: { google: 'wappie-test-key-google-aaaaaaaaaaaaaaaa', anthropic: 'wappie-test-key-anthropic-bbbbbbbbbbbbbbbb' },
   functions: { audio: { provider: 'google', model: 'gemini-synthetic-flash' }, document: { provider: 'anthropic', model: 'claude-synthetic-5' } },
   features: { [device]: { audio: { mode: 'request', lang: 'pt-BR', requesters: 'self' }, document: { mode: 'request', requesters: 'console' } } },
-  budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'google:gemini-synthetic-flash': { in: 30, out: 250, sec: 0 }, 'anthropic:claude-synthetic-5': { in: 300, out: 1500, sec: 0 } } },
+  budget: { monthly_tokens: 5_000_000, request_items_per_day: 100 },
   cfg_tags: { [device]: tag },
   ...change,
 })
@@ -80,20 +80,21 @@ test('validateAIBundle: the schema matrix (§18.7 step 3); any failure is invali
     ['a bad language', { features: { [device]: { audio: { mode: 'request', lang: 'Portuguese', requesters: 'self' } } } }],
     ['a feature of a function not configured', { features: { [device]: { video: { mode: 'request', requesters: 'self' } } } }],
     ['features for another number', { features: { '018f3a2b-2222-7000-8000-0000000fffff': {} } }],
-    ['Anthropic for audio (N-AI-11)', { functions: { audio: { provider: 'anthropic', model: 'claude-synthetic-5' }, document: { provider: 'anthropic', model: 'claude-synthetic-5' } }, keys: { anthropic: 'wappie-test-key-anthropic-bbbbbbbbbbbbbbbb' }, budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'anthropic:claude-synthetic-5': { in: 1, out: 1, sec: 0 } } } }],
-    ['OpenAI for video (N-AI-11)', { functions: { video: { provider: 'openai', model: 'gpt-synthetic' } }, keys: { openai: 'wappie-test-key-openai-cccccccccccccccc' }, features: { [device]: { video: { mode: 'request', requesters: 'self' } } }, budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'openai:gpt-synthetic': { in: 1, out: 1, sec: 0 } } } }],
-    ['a Google model with a colon', { functions: { audio: { provider: 'google', model: 'gemini:flash' }, document: { provider: 'anthropic', model: 'claude-synthetic-5' } }, budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'google:gemini:flash': { in: 1, out: 1, sec: 0 }, 'anthropic:claude-synthetic-5': { in: 1, out: 1, sec: 0 } } } }],
+    ['Anthropic for audio (N-AI-11)', { functions: { audio: { provider: 'anthropic', model: 'claude-synthetic-5' }, document: { provider: 'anthropic', model: 'claude-synthetic-5' } }, keys: { anthropic: 'wappie-test-key-anthropic-bbbbbbbbbbbbbbbb' } }],
+    ['OpenAI for video (N-AI-11)', { functions: { video: { provider: 'openai', model: 'gpt-synthetic' } }, keys: { openai: 'wappie-test-key-openai-cccccccccccccccc' }, features: { [device]: { video: { mode: 'request', requesters: 'self' } } } }],
+    ['a Google model with a colon', { functions: { audio: { provider: 'google', model: 'gemini:flash' }, document: { provider: 'anthropic', model: 'claude-synthetic-5' } } }],
     ['a model that is no model id', { functions: { audio: { provider: 'google', model: 'Gemini Flash' }, document: { provider: 'anthropic', model: 'claude-synthetic-5' } } }],
-    ['no function', { functions: {}, keys: {}, features: { [device]: {} }, budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: {} } }],
+    ['no function', { functions: {}, keys: {}, features: { [device]: {} } }],
     ['a key no function uses', { keys: { google: 'wappie-test-key-google-aaaaaaaaaaaaaaaa', anthropic: 'wappie-test-key-anthropic-bbbbbbbbbbbbbbbb', openai: 'wappie-test-key-openai-cccccccccccccccc' } }],
     ['a missing key', { keys: { google: 'wappie-test-key-google-aaaaaaaaaaaaaaaa' } }],
     ['a key that is too short', { keys: { google: 'short', anthropic: 'wappie-test-key-anthropic-bbbbbbbbbbbbbbbb' } }],
-    ['a rate for no pair', { budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'google:gemini-synthetic-flash': { in: 1, out: 1, sec: 0 }, 'anthropic:claude-synthetic-5': { in: 1, out: 1, sec: 0 }, 'openai:x': { in: 1, out: 1, sec: 0 } } } }],
-    ['a missing rate', { budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'google:gemini-synthetic-flash': { in: 1, out: 1, sec: 0 } } } }],
-    ['a rate over its ceiling', { budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'google:gemini-synthetic-flash': { in: 100_000_001, out: 1, sec: 0 }, 'anthropic:claude-synthetic-5': { in: 1, out: 1, sec: 0 } } } }],
-    ['a cap over its ceiling', { budget: { monthly_usd_cents: 100_001, request_items_per_day: 100, rates: aiBundle().budget.rates } }],
-    ['no cap', { budget: { monthly_usd_cents: 0, request_items_per_day: 100, rates: aiBundle().budget.rates } }],
-    ['items over their ceiling', { budget: { monthly_usd_cents: 1000, request_items_per_day: 1001, rates: aiBundle().budget.rates } }],
+    ['a price: rates are no longer part of the budget', { budget: { monthly_tokens: 5_000_000, request_items_per_day: 100, rates: { 'google:gemini-synthetic-flash': { in: 30, out: 250, sec: 0 }, 'anthropic:claude-synthetic-5': { in: 300, out: 1500, sec: 0 } } } }],
+    ['a cap in money', { budget: { monthly_usd_cents: 1000, request_items_per_day: 100 } }],
+    ['a cap over its ceiling', { budget: { monthly_tokens: 1_000_000_001, request_items_per_day: 100 } }],
+    ['no cap', { budget: { monthly_tokens: 0, request_items_per_day: 100 } }],
+    ['a cap that is not a whole number', { budget: { monthly_tokens: 2.5, request_items_per_day: 100 } }],
+    ['items over their ceiling', { budget: { monthly_tokens: 5_000_000, request_items_per_day: 1001 } }],
+    ['no items', { budget: { monthly_tokens: 5_000_000 } }],
     ['a tag that is not canonical base64url', { cfg_tags: { [device]: 'A'.repeat(42) + 'B' } }], ['no tag', { cfg_tags: {} }],
     ['a renewal without its connection', { purpose: 'renewal' }], ['a consent naming a connection', { connection_id: authorization }],
     ['an expiry past 90 days', { expires_at: new Date(Date.now() + 92 * DAY).toISOString() }], ['an expiry past', { expires_at: new Date(Date.now() - 1000).toISOString() }],
@@ -113,7 +114,7 @@ test('the configuration tag: bundle.mjs reproduces the independent vectors the e
     assert.equal(canonicalJSON(config), item.config_jcs, item.name)
     assert.equal(aiConfigTag(Buffer.from(item.dsk, 'base64url'), { namespace: item.namespace, deviceID: item.device_id, epoch: item.epoch, config }), item.cfg_tag, item.name)
     // A change of anything the tag covers is another tag: the key's hash, the budget, the request.
-    const changed = aiConfigScope({ ...item.fields, budget: { ...item.fields.budget, monthly_usd_cents: item.fields.budget.monthly_usd_cents + 1 } }, { deviceID: item.device_id, epoch: item.epoch, request: item.request, kid: item.kid })
+    const changed = aiConfigScope({ ...item.fields, budget: { ...item.fields.budget, monthly_tokens: item.fields.budget.monthly_tokens + 1 } }, { deviceID: item.device_id, epoch: item.epoch, request: item.request, kid: item.kid })
     assert.notEqual(aiConfigTag(Buffer.from(item.dsk, 'base64url'), { namespace: item.namespace, deviceID: item.device_id, epoch: item.epoch, config: changed }), item.cfg_tag)
   }
 })
@@ -243,7 +244,7 @@ test('the AI codes: every guidance sentence word for word, which are answers and
       ['ai_unsupported', 'The AI provider does not take this kind of file. Tell the user; the original is in the Wappie console.', false],
       ['ai_paused', 'AI transcription on this number is paused until its owner renews or resumes it in the Wappie console, under AI integrations. Tell the user; do not retry.', true],
       ['ai_output_limit', 'The AI model used its whole output limit before it answered, which a reasoning model can do. Tell the user they can redo it or pick another model in the Wappie console, under AI integrations; do not retry.', true],
-      ['ai_budget_reached', 'The AI integration for this number reached its limit: its monthly spending (starts again on the 1st, UTC) or its attachments for today (starts again at 00:00 UTC). Tell the user; do not retry before then.', true],
+      ['ai_budget_reached', 'The AI integration for this number reached its limit: its tokens for this month (start again on the 1st, UTC) or its attachments for today (start again at 00:00 UTC). Tell the user; do not retry before then.', true],
       ['ai_key_rejected', 'The AI provider rejected the key the user gave it. Tell the user to replace the key in the Wappie console, under AI integrations; do not retry.', true],
       ['ai_model_unavailable', 'The AI model chosen for this is no longer available with the user\'s key. Tell the user to pick another model in the Wappie console, under AI integrations; do not retry.', true],
       ['ai_quota', 'The user\'s account at the AI provider has no quota or credit left. Tell the user; do not retry.', true],
@@ -263,7 +264,7 @@ test('the AI codes: every guidance sentence word for word, which are answers and
     }
     // Which limit ai_budget_reached met, when the enclave says (§18.20).
     for (const [limit, guidance] of [
-      ['month', 'The AI integration for this number reached its monthly spending limit, which starts again on the 1st (UTC). Tell the user; do not retry before then.'],
+      ['month', 'The AI integration for this number reached its tokens for this month, which start again on the 1st (UTC). Tell the user; do not retry before then.'],
       ['day', 'The AI integration for this number reached its attachments for today, which start again at 00:00 UTC. Tell the user; do not retry before then.'],
     ]) {
       current = refusal('ai_budget_reached', { limit })

@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import * as bundle from '@whatserver2/mcp/bundle'
 import { createLog } from '../../log.mjs'
-import { costOf, createBudgets, measure, reported } from '../ai/budget.mjs'
+import { chargedTokens, createBudgets, reported } from '../ai/budget.mjs'
 import { createEgress, EgressError, providerKey } from '../ai/egress.mjs'
 import { checkKeys, listModels } from '../ai/install.mjs'
 import { ArchiveError } from '@whatserver2/client'
@@ -38,10 +38,11 @@ test('§18.14: every constant as the contract has it, frozen, and the reader\'s 
   assert.deepEqual(policy.AI_CAP_BYTES, { audio: 26_214_400, video: 14_950_848, image: 16_777_216, document: 33_554_432 })
   assert.deepEqual(policy.AI_MAX_SECONDS, { audio: 1_400, video: 600 })
   assert.deepEqual(policy.AI_RETRIES, [2_000, 8_000, 30_000])
-  const scalars = ['AI_GOOGLE_REQUEST_MAX_BYTES', 'AI_OPENAI_AUDIO_MAX_BYTES', 'AI_MIN_BYTES_PER_SECOND', 'AI_GOOGLE_AUDIO_TOKENS_PER_SECOND', 'AI_TEXT_MAX_CHARS', 'AI_RESPONSE_MAX_BYTES',
-    'AI_CALL_TIMEOUT_MS', 'AI_MODELS_TIMEOUT_MS', 'AI_MODELS_PAGES_MAX', 'AI_DEVICES_MAX', 'AI_CALLS_IN_FLIGHT', 'AI_LINE_MAX', 'AI_QUEUE_MAX', 'AI_JOB_TTL_MS', 'AI_REQUESTS_PENDING_MAX',
-    'AI_REQUEST_ITEMS_PER_DAY_MAX', 'AI_MONTHLY_USD_CENTS_MAX']
-  assert.deepEqual(scalars.map(name => policy[name]), [20_000_000, 26_214_400, 250, 25, 200_000, 2_097_152, 120_000, 8_000, 5, 25, 4, 4, 16, 600_000, 20, 1_000, 100_000])
+  const scalars = ['AI_GOOGLE_REQUEST_MAX_BYTES', 'AI_OPENAI_AUDIO_MAX_BYTES', 'AI_MIN_BYTES_PER_SECOND', 'AI_GOOGLE_AUDIO_TOKENS_PER_SECOND', 'AI_DURATION_TOKENS_PER_SECOND', 'AI_TEXT_MAX_CHARS',
+    'AI_RESPONSE_MAX_BYTES', 'AI_CALL_TIMEOUT_MS', 'AI_MODELS_TIMEOUT_MS', 'AI_MODELS_PAGES_MAX', 'AI_DEVICES_MAX', 'AI_CALLS_IN_FLIGHT', 'AI_LINE_MAX', 'AI_QUEUE_MAX', 'AI_JOB_TTL_MS',
+    'AI_REQUESTS_PENDING_MAX', 'AI_REQUEST_ITEMS_PER_DAY_MAX', 'AI_MONTHLY_TOKENS_MAX']
+  assert.deepEqual(scalars.map(name => policy[name]), [20_000_000, 26_214_400, 250, 25, 25, 200_000, 2_097_152, 120_000, 8_000, 5, 25, 4, 4, 16, 600_000, 20, 1_000, 1_000_000_000])
+  assert.equal(Object.keys(policy).some(name => /USD|CENT|PRICE|RATE/.test(name)), false, 'no price, rate or money anywhere in the policy')
   assert.equal(String(policy.AI_MODEL_RE), '/^[a-z0-9][a-z0-9._:-]{0,63}$/')
   for (const name of ['AI_PROVIDERS', 'AI_FEATURES', 'AI_PROMPTS', 'AI_OUTPUT_MAX_TOKENS', 'AI_CAP_BYTES', 'AI_MAX_SECONDS', 'AI_RETRIES', 'AI_ERROR_RULES', 'AI_ERROR_EFFECTS', 'GOOGLE_SAFETY_STOPS']) {
     assert.equal(Object.isFrozen(policy[name]), true, name)
@@ -52,7 +53,7 @@ test('§18.14: every constant as the contract has it, frozen, and the reader\'s 
   assert.deepEqual(bundle.AI_FEATURES, policy.AI_FEATURES)
   assert.equal(String(bundle.AI_MODEL_RE), String(policy.AI_MODEL_RE))
   assert.equal(String(bundle.AI_KEY_RE), String(policy.AI_KEY_RE))
-  assert.equal(bundle.AI_MONTHLY_USD_CENTS_MAX, policy.AI_MONTHLY_USD_CENTS_MAX)
+  assert.equal(bundle.AI_MONTHLY_TOKENS_MAX, policy.AI_MONTHLY_TOKENS_MAX)
   assert.equal(bundle.AI_REQUEST_ITEMS_PER_DAY_MAX, policy.AI_REQUEST_ITEMS_PER_DAY_MAX)
 })
 
@@ -315,35 +316,43 @@ test('step 4 on the row: the function\'s message types, view-once, download, has
   assert.equal(mediaContainer(bytes('%PDF-1.7'), 'audio'), null)
 })
 
-test('N-AI-13 and N-AI-9: the charge follows the provider\'s measure, else a bound no sender shrinks; the cap is the bundle\'s whatever Go says', () => {
-  const rate = { in: 30, out: 250, sec: 600 }
+test('N-AI-13 and N-AI-9: the tokens counted follow the provider\'s measure, else a bound no sender shrinks; the cap is the bundle\'s whatever Go says', () => {
+  const tokens = (feature, usage, sizes) => chargedTokens(feature, usage, sizes)
+  // The tokens the provider reports, input plus output (the thinking is in the output): no price anywhere.
+  assert.equal(tokens('image', { input_tokens: 1_200, output_tokens: 300 }, { bodyBytes: 800_000 }), 1_500)
+  assert.equal(tokens('document', { input_tokens: 5_000 }, { bodyBytes: 40_000 }), 5_000 + policy.AI_OUTPUT_MAX_TOKENS.document, 'a missing output count: the output limit')
+  assert.equal(tokens('document', { output_tokens: 700 }, { bodyBytes: 40_000 }), 10_000 + 700, 'a missing input count: the body\'s bytes ÷ 4')
   // A voice note that claims 1 s and holds 25 minutes of opus (~375 kB at 2 kbit/s would be the floor; this one is 900 kB).
   const bytes = 900_000
-  const reported = measure('audio', { seconds: 1500 }, { bodyBytes: bytes, plaintextBytes: bytes, claimedSeconds: 1 })
-  assert.deepEqual(reported, { input_tokens: Math.ceil(bytes / 4), output_tokens: 16_000, seconds: 1500 }, 'the provider\'s duration; missing tokens charged at their bound')
-  const bound = measure('audio', {}, { bodyBytes: bytes, plaintextBytes: bytes, claimedSeconds: 1 })
-  assert.equal(bound.seconds, Math.ceil(bytes / policy.AI_MIN_BYTES_PER_SECOND), 'no measure: the bytes bound, never the claim')
-  assert.equal(measure('audio', {}, { bodyBytes: 10, plaintextBytes: 250, claimedSeconds: 30 }).seconds, 30, 'the claim when larger')
-  assert.equal(measure('image', { input_tokens: 5, output_tokens: 7 }, { bodyBytes: 10, plaintextBytes: 10_000 }).seconds, 0)
-  assert.equal(costOf(rate, { input_tokens: 1_000_000, output_tokens: 0, seconds: 0 }), 30 * 1_000_000, '30 cents per million input tokens, in microcents')
-  assert.equal(costOf(rate, { input_tokens: 0, output_tokens: 0, seconds: 1000 }), 600 * 1_000_000, '600 cents per 1,000 seconds')
+  assert.equal(tokens('audio', { duration: true, seconds: 1500 }, { bodyBytes: bytes, plaintextBytes: bytes, claimedSeconds: 1 }), 1500 * 25, 'billed by duration: its seconds × 25')
+  assert.equal(policy.AI_DURATION_TOKENS_PER_SECOND, 25)
+  assert.equal(tokens('audio', { duration: true }, { bodyBytes: bytes, plaintextBytes: bytes, claimedSeconds: 1 }), Math.ceil(bytes / policy.AI_MIN_BYTES_PER_SECOND) * 25,
+    'a duration answer without its seconds: the bytes bound, never the claim')
+  assert.equal(tokens('audio', { duration: true }, { bodyBytes: 10, plaintextBytes: 250, claimedSeconds: 30 }), 30 * 25, 'the claim when larger')
+  assert.equal(tokens('audio', {}, { bodyBytes: bytes, plaintextBytes: bytes, claimedSeconds: 1 }), Math.ceil(bytes / 4) + 16_000, 'no usage: the input and output bounds')
+  assert.equal(tokens('audio', {}, { bodyBytes: 4_000, plaintextBytes: 3_900, claimedSeconds: 1_400 }), 1_400 * 25, 'and never less than the length bound')
+  assert.equal(tokens('image', {}, { bodyBytes: 4_000, plaintextBytes: 1_000_000, claimedSeconds: 1_400 }), 1_000 + 4_000, 'no length for an image')
+  // Google's audio seconds are reported, never counted: its audio is in its input tokens already.
+  assert.equal(tokens('audio', { input_tokens: 424, output_tokens: 741, seconds: 15 }, { bodyBytes: 5_400, plaintextBytes: 4_000, claimedSeconds: 14 }), 424 + 741)
   let clock = Date.parse('2026-10-15T12:00:00Z')
   const budgets = createBudgets({ now: () => clock })
-  const record = { connection_id: 'a', budget: { monthly_usd_cents: 10, request_items_per_day: 3, rates: {} } }
-  const status = cap => ({ ai_off: { monthly_usd_cents: cap } })
+  const record = { connection_id: 'a', budget: { monthly_tokens: 10_000, request_items_per_day: 3 } }
+  const status = cap => ({ ai_off: { monthly_tokens: cap } })
   // Go reports no usage and a cap ten times the bundle's: the enclave stops at the bundle's.
-  budgets.fromGo('a', { month: '2026-10', cost_microcents: 0, items_today: 0 })
-  assert.equal(budgets.allows(record, status(100)), true)
-  budgets.charge('a', 10 * 1_000_000)
-  assert.equal(budgets.allows(record, status(100)), false, 'used ≥ min(bundle, Go) × 1,000,000')
-  assert.equal(budgets.allows({ ...record, connection_id: 'b' }, status(1)), true)
-  budgets.charge('b', 1_000_000)
-  assert.equal(budgets.allows({ ...record, connection_id: 'b' }, status(1)), false, 'Go may lower the cap')
+  budgets.fromGo('a', { month: '2026-10', charged_tokens: 0, items_today: 0 })
+  assert.equal(budgets.allows(record, status(100_000)), true)
+  budgets.charge('a', 10_000)
+  assert.equal(budgets.allows(record, status(100_000)), false, 'used ≥ min(bundle, Go)')
+  assert.equal(budgets.allows({ ...record, connection_id: 'b' }, status(1_000)), true)
+  budgets.charge('b', 1_000)
+  assert.equal(budgets.allows({ ...record, connection_id: 'b' }, status(1_000)), false, 'Go may lower the cap')
   // Go's count can only raise what is used; a next month starts over.
-  budgets.fromGo('c', { month: '2026-10', cost_microcents: 10 * 1_000_000, items_today: 0 })
+  budgets.fromGo('c', { month: '2026-10', charged_tokens: 10_000, items_today: 0 })
   assert.equal(budgets.allows({ ...record, connection_id: 'c' }, status(null)), false)
-  budgets.fromGo('c', { month: '2026-10', cost_microcents: -1, items_today: 0 })
-  assert.equal(budgets.used('c').cost, 10 * 1_000_000, 'a malformed answer changes nothing')
+  budgets.fromGo('c', { month: '2026-10', charged_tokens: -1, items_today: 0 })
+  assert.equal(budgets.used('c').tokens, 10_000, 'a malformed answer changes nothing')
+  budgets.fromGo('c', { month: '2026-10', cost_microcents: 0, items_today: 0 })
+  assert.equal(budgets.used('c').tokens, 10_000, 'nor an answer in money')
   clock = Date.parse('2026-11-01T00:00:01Z')
   assert.equal(budgets.allows({ ...record, connection_id: 'c' }, status(null)), true)
   // The day's items.
@@ -353,31 +362,25 @@ test('N-AI-13 and N-AI-9: the charge follows the provider\'s measure, else a bou
   clock += 86_400_000
   assert.equal(budgets.allows({ ...record, connection_id: 'd' }, status(null)), true)
   assert.equal(budgets.limit({ ...record, connection_id: 'd' }, status(null)), null)
-  budgets.charge('d', 10 * 1_000_000)
+  budgets.charge('d', 10_000)
   for (let n = 0; n < 3; n++) budgets.item('d')
-  assert.equal(budgets.limit({ ...record, connection_id: 'd' }, status(null)), 'month', 'the month\'s spend first')
+  assert.equal(budgets.limit({ ...record, connection_id: 'd' }, status(null)), 'month', 'the month\'s tokens first')
 })
 
-test('what the usage and the record report beside the charge (§18.10): the provider\'s counts, else what the pair never charges without a bound, else the bound', () => {
+test('what the usage and the record report beside the tokens counted (§18.10): the provider\'s tokens, else 0; its seconds, else the claimed length', () => {
   const claimed = 14.5
-  // Gemini video: Google counts it as VIDEO tokens, never seconds; the pair charges no time, so the claim is reported.
-  const video = { input_tokens: 1160, output_tokens: 393 }
-  const videoBounds = measure('video', video, { bodyBytes: 14_800_000, plaintextBytes: 14_795_000, claimedSeconds: 43 })
-  assert.equal(videoBounds.seconds, Math.ceil(14_795_000 / policy.AI_MIN_BYTES_PER_SECOND), 'the charge keeps its bound')
-  assert.deepEqual(reported('video', video, videoBounds, { in: 100, out: 250, sec: 0 }, 43), { input_tokens: 1160, output_tokens: 393, seconds: 43 })
-  // OpenAI's token-billed transcriber: its tokens, and the claimed seconds (the pair charges none).
-  const tokens = { input_tokens: 144, output_tokens: 52 }
-  assert.deepEqual(reported('audio', tokens, measure('audio', tokens, { bodyBytes: 42_000, plaintextBytes: 41_700, claimedSeconds: claimed }), { in: 300, out: 500, sec: 0 }, claimed),
-    { input_tokens: 144, output_tokens: 52, seconds: 15 })
-  // A transcriber billed by duration: its seconds, and no tokens (the pair charges none).
-  const duration = { seconds: 15 }
-  const durationBounds = measure('audio', duration, { bodyBytes: 1_000_000, plaintextBytes: 999_000, claimedSeconds: claimed })
-  assert.deepEqual([durationBounds.input_tokens, durationBounds.output_tokens], [250_000, 16_000], 'the charge\'s bounds, at rates of 0')
-  assert.deepEqual(reported('audio', duration, durationBounds, { in: 0, out: 0, sec: 10 }, claimed), { input_tokens: 0, output_tokens: 0, seconds: 15 })
-  // A call sent and never answered, on a pair that charges everything: the bounds it was charged.
-  const bounds = measure('audio', {}, { bodyBytes: 4000, plaintextBytes: 3900, claimedSeconds: 1 })
-  assert.deepEqual(reported('audio', {}, bounds, { in: 30, out: 250, sec: 600 }, 1), bounds)
-  assert.equal(reported('image', {}, measure('image', {}, { bodyBytes: 800 }), { in: 30, out: 250, sec: 0 }).seconds, 0)
+  // Gemini video: Google counts it as VIDEO tokens, never seconds, so the claim is reported.
+  assert.deepEqual(reported('video', { input_tokens: 1160, output_tokens: 393 }, 43), { input_tokens: 1160, output_tokens: 393, seconds: 43 })
+  // OpenAI's token-billed transcriber: its tokens, and the claimed seconds.
+  assert.deepEqual(reported('audio', { input_tokens: 144, output_tokens: 52 }, claimed), { input_tokens: 144, output_tokens: 52, seconds: 15 })
+  // A transcriber billed by duration: its seconds, and no tokens.
+  assert.deepEqual(reported('audio', { duration: true, seconds: 15 }, claimed), { input_tokens: 0, output_tokens: 0, seconds: 15 })
+  // Google's audio: its measure.
+  assert.deepEqual(reported('audio', { input_tokens: 424, output_tokens: 741, seconds: 15 }, 1), { input_tokens: 424, output_tokens: 741, seconds: 15 })
+  // A call sent and never answered: nothing reported but the claimed length; what it counted is charged_tokens.
+  assert.deepEqual(reported('audio', {}, 1), { input_tokens: 0, output_tokens: 0, seconds: 1 })
+  assert.deepEqual(reported('audio', {}, undefined), { input_tokens: 0, output_tokens: 0, seconds: 0 })
+  assert.deepEqual(reported('image', {}, 30), { input_tokens: 0, output_tokens: 0, seconds: 0 })
 })
 
 test('the queue: 4 at once, one per authorization, 4 waiting per authorization and 16 in all, connector jobs first, identical requests joined, retry_after_s by place', async () => {
@@ -424,7 +427,7 @@ test('I3a: the stored tag holds under the DSK the install proved, and fails unde
   const record = {
     workspace_id: ns, service_user_id: '0199b3c4-0000-7000-8000-00000000a1a1', device_ids: [device], key_mode: 'ephemeral', bundle_expires_at: '2026-12-01T12:00:00.000Z',
     keys_sha256: { google: createHash('sha256').update(STUB_KEYS.google).digest('hex') }, functions: { audio: { provider: 'google', model: 'gemini-synthetic-flash' } },
-    features: { [device]: { audio: { mode: 'request', requesters: 'self' } } }, budget: { monthly_usd_cents: 1000, request_items_per_day: 100, rates: { 'google:gemini-synthetic-flash': { in: 1, out: 1, sec: 0 } } },
+    features: { [device]: { audio: { mode: 'request', requesters: 'self' } } }, budget: { monthly_tokens: 5_000_000, request_items_per_day: 100 },
     request: 'AAECAwQFBgcICQoLDA0ODw', kid: 'fedcba9876543210', epochs: { [device]: 2 }, ns: { [device]: ns },
   }
   record.cfg_tags = { [device]: configTag(dsk, tagFields(record), { device, namespace: ns, epoch: 2, request: record.request, kid: record.kid }) }
@@ -433,7 +436,7 @@ test('I3a: the stored tag holds under the DSK the install proved, and fails unde
   assert.equal(recordTagHolds(record, device, { dsk, namespace: ns, epoch: 3 }), false)
   assert.equal(recordTagHolds(record, device, { dsk, namespace: '01a08e0e-0000-7000-8000-000000000000', epoch: 2 }), false)
   assert.equal(recordTagHolds(record, device, null), false)
-  assert.equal(recordTagHolds({ ...record, budget: { ...record.budget, monthly_usd_cents: 100_000 } }, device, { dsk, namespace: ns, epoch: 2 }), false, 'a record whose budget changed')
+  assert.equal(recordTagHolds({ ...record, budget: { ...record.budget, monthly_tokens: 1_000_000_000 } }, device, { dsk, namespace: ns, epoch: 2 }), false, 'a record whose budget changed')
 })
 
 test('a job\'s code: the authorization\'s own grant or key failing is ai_paused, never the caller\'s own connection code; anything unknown is read_failed', () => {

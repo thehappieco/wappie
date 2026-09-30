@@ -26,15 +26,8 @@
           }
         },
         "budget": {
-          "monthly_usd_cents": 1000,
-          "request_items_per_day": 100,
-          "rates": {
-            "google:gemini-synthetic-flash": {
-              "in": 30,
-              "out": 250,
-              "sec": 0
-            }
-          }
+          "monthly_tokens": 5000000,
+          "request_items_per_day": 100
         },
         "keys_sha256": {
           "google": "ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76"
@@ -49,8 +42,8 @@
       "request": "AAECAwQFBgcICQoLDA0ODw",
       "kid": "fedcba9876543210",
       "dsk": "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
-      "config_jcs": "{\"auto\":null,\"budget\":{\"monthly_usd_cents\":1000,\"rates\":{\"google:gemini-synthetic-flash\":{\"in\":30,\"out\":250,\"sec\":0}},\"request_items_per_day\":100},\"device_id\":\"0199b3c4-3333-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\"],\"epoch\":1,\"expires_at\":\"2026-12-01T12:00:00.000Z\",\"features\":{\"audio\":{\"mode\":\"request\",\"requesters\":\"self\"}},\"functions\":{\"audio\":{\"model\":\"gemini-synthetic-flash\",\"provider\":\"google\"}},\"key_mode\":\"ephemeral\",\"keys_sha256\":{\"google\":\"ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76\"},\"kid\":\"fedcba9876543210\",\"request\":\"AAECAwQFBgcICQoLDA0ODw\",\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000a1a1\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
-      "cfg_tag": "RkBaRbqKcOrMi1WgMQy2o-wj-KrPKpFoaPPx6OjG-NA"
+      "config_jcs": "{\"auto\":null,\"budget\":{\"monthly_tokens\":5000000,\"request_items_per_day\":100},\"device_id\":\"0199b3c4-3333-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\"],\"epoch\":1,\"expires_at\":\"2026-12-01T12:00:00.000Z\",\"features\":{\"audio\":{\"mode\":\"request\",\"requesters\":\"self\"}},\"functions\":{\"audio\":{\"model\":\"gemini-synthetic-flash\",\"provider\":\"google\"}},\"key_mode\":\"ephemeral\",\"keys_sha256\":{\"google\":\"ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76\"},\"kid\":\"fedcba9876543210\",\"request\":\"AAECAwQFBgcICQoLDA0ODw\",\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000a1a1\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
+      "cfg_tag": "U0drEPKRDPHiXhYViRYcV9DGFbBJ-aDIlYm_xViUmfE"
     },
     {
       "name": "two numbers, three functions on three providers, languages and requesters, one number moved from another workspace, a renewal (number 8888)",
@@ -98,25 +91,8 @@
           }
         },
         "budget": {
-          "monthly_usd_cents": 2500,
-          "request_items_per_day": 300,
-          "rates": {
-            "google:gemini-synthetic-flash": {
-              "in": 30,
-              "out": 250,
-              "sec": 0
-            },
-            "anthropic:claude-synthetic-5": {
-              "in": 300,
-              "out": 1500,
-              "sec": 0
-            },
-            "openai:gpt-synthetic-mini": {
-              "in": 75,
-              "out": 450,
-              "sec": 0
-            }
-          }
+          "monthly_tokens": 12500000,
+          "request_items_per_day": 300
         },
         "keys_sha256": {
           "google": "ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76",
@@ -135,8 +111,8 @@
       "request": "EBESExQVFhcYGRobHB0eHw",
       "kid": "0123456789abcdef",
       "dsk": "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
-      "config_jcs": "{\"auto\":null,\"budget\":{\"monthly_usd_cents\":2500,\"rates\":{\"anthropic:claude-synthetic-5\":{\"in\":300,\"out\":1500,\"sec\":0},\"google:gemini-synthetic-flash\":{\"in\":30,\"out\":250,\"sec\":0},\"openai:gpt-synthetic-mini\":{\"in\":75,\"out\":450,\"sec\":0}},\"request_items_per_day\":300},\"device_id\":\"0199b3c4-3333-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\",\"0199b3c4-9999-7444-8555-666677778888\"],\"epoch\":3,\"expires_at\":\"2026-12-29T09:30:00Z\",\"features\":{\"audio\":{\"lang\":\"pt-BR\",\"mode\":\"request\",\"requesters\":\"readers\"},\"document\":{\"lang\":\"pt\",\"mode\":\"request\",\"requesters\":\"console\"}},\"functions\":{\"audio\":{\"model\":\"gemini-synthetic-flash\",\"provider\":\"google\"},\"document\":{\"model\":\"claude-synthetic-5\",\"provider\":\"anthropic\"},\"image\":{\"model\":\"gpt-synthetic-mini\",\"provider\":\"openai\"}},\"key_mode\":\"ephemeral\",\"keys_sha256\":{\"anthropic\":\"d6fa8cc969c9d955693ce8f8ac70f88b14e38ae1b9c4e22ef447b6bc7773aaf5\",\"google\":\"ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76\",\"openai\":\"7408028cbcaa31bf6b0d70cf3b7aef740a8b0139119890d3ccb250cff9be7eef\"},\"kid\":\"0123456789abcdef\",\"request\":\"EBESExQVFhcYGRobHB0eHw\",\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000a1a1\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
-      "cfg_tag": "rFPc5qMLN9U_y9FgBJ-rfqiMD7vWRAcVmJ3pGSvvQy4"
+      "config_jcs": "{\"auto\":null,\"budget\":{\"monthly_tokens\":12500000,\"request_items_per_day\":300},\"device_id\":\"0199b3c4-3333-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\",\"0199b3c4-9999-7444-8555-666677778888\"],\"epoch\":3,\"expires_at\":\"2026-12-29T09:30:00Z\",\"features\":{\"audio\":{\"lang\":\"pt-BR\",\"mode\":\"request\",\"requesters\":\"readers\"},\"document\":{\"lang\":\"pt\",\"mode\":\"request\",\"requesters\":\"console\"}},\"functions\":{\"audio\":{\"model\":\"gemini-synthetic-flash\",\"provider\":\"google\"},\"document\":{\"model\":\"claude-synthetic-5\",\"provider\":\"anthropic\"},\"image\":{\"model\":\"gpt-synthetic-mini\",\"provider\":\"openai\"}},\"key_mode\":\"ephemeral\",\"keys_sha256\":{\"anthropic\":\"d6fa8cc969c9d955693ce8f8ac70f88b14e38ae1b9c4e22ef447b6bc7773aaf5\",\"google\":\"ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76\",\"openai\":\"7408028cbcaa31bf6b0d70cf3b7aef740a8b0139119890d3ccb250cff9be7eef\"},\"kid\":\"0123456789abcdef\",\"request\":\"EBESExQVFhcYGRobHB0eHw\",\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000a1a1\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
+      "cfg_tag": "veaWV3eiBcC2WKvQnUSSSSK5NIJfz5HjcIADTMQ9Ejc"
     },
     {
       "name": "two numbers, three functions on three providers, languages and requesters, one number moved from another workspace, a renewal (number 8888)",
@@ -184,25 +160,8 @@
           }
         },
         "budget": {
-          "monthly_usd_cents": 2500,
-          "request_items_per_day": 300,
-          "rates": {
-            "google:gemini-synthetic-flash": {
-              "in": 30,
-              "out": 250,
-              "sec": 0
-            },
-            "anthropic:claude-synthetic-5": {
-              "in": 300,
-              "out": 1500,
-              "sec": 0
-            },
-            "openai:gpt-synthetic-mini": {
-              "in": 75,
-              "out": 450,
-              "sec": 0
-            }
-          }
+          "monthly_tokens": 12500000,
+          "request_items_per_day": 300
         },
         "keys_sha256": {
           "google": "ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76",
@@ -221,8 +180,8 @@
       "request": "EBESExQVFhcYGRobHB0eHw",
       "kid": "0123456789abcdef",
       "dsk": "__r18Ovm4dzX0s3Iw765tK-qpaCblpGMh4J9eHNuaWQ",
-      "config_jcs": "{\"auto\":null,\"budget\":{\"monthly_usd_cents\":2500,\"rates\":{\"anthropic:claude-synthetic-5\":{\"in\":300,\"out\":1500,\"sec\":0},\"google:gemini-synthetic-flash\":{\"in\":30,\"out\":250,\"sec\":0},\"openai:gpt-synthetic-mini\":{\"in\":75,\"out\":450,\"sec\":0}},\"request_items_per_day\":300},\"device_id\":\"0199b3c4-9999-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\",\"0199b3c4-9999-7444-8555-666677778888\"],\"epoch\":65535,\"expires_at\":\"2026-12-29T09:30:00Z\",\"features\":{\"image\":{\"mode\":\"request\",\"requesters\":\"self\"}},\"functions\":{\"audio\":{\"model\":\"gemini-synthetic-flash\",\"provider\":\"google\"},\"document\":{\"model\":\"claude-synthetic-5\",\"provider\":\"anthropic\"},\"image\":{\"model\":\"gpt-synthetic-mini\",\"provider\":\"openai\"}},\"key_mode\":\"ephemeral\",\"keys_sha256\":{\"anthropic\":\"d6fa8cc969c9d955693ce8f8ac70f88b14e38ae1b9c4e22ef447b6bc7773aaf5\",\"google\":\"ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76\",\"openai\":\"7408028cbcaa31bf6b0d70cf3b7aef740a8b0139119890d3ccb250cff9be7eef\"},\"kid\":\"0123456789abcdef\",\"request\":\"EBESExQVFhcYGRobHB0eHw\",\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000a1a1\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
-      "cfg_tag": "UybXev2vzlrU98dxtJLL3hjGNNvu6MSsW9J22eWGITg"
+      "config_jcs": "{\"auto\":null,\"budget\":{\"monthly_tokens\":12500000,\"request_items_per_day\":300},\"device_id\":\"0199b3c4-9999-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\",\"0199b3c4-9999-7444-8555-666677778888\"],\"epoch\":65535,\"expires_at\":\"2026-12-29T09:30:00Z\",\"features\":{\"image\":{\"mode\":\"request\",\"requesters\":\"self\"}},\"functions\":{\"audio\":{\"model\":\"gemini-synthetic-flash\",\"provider\":\"google\"},\"document\":{\"model\":\"claude-synthetic-5\",\"provider\":\"anthropic\"},\"image\":{\"model\":\"gpt-synthetic-mini\",\"provider\":\"openai\"}},\"key_mode\":\"ephemeral\",\"keys_sha256\":{\"anthropic\":\"d6fa8cc969c9d955693ce8f8ac70f88b14e38ae1b9c4e22ef447b6bc7773aaf5\",\"google\":\"ffede2dcb9e0056edbc2ca97fd16c9b365bbc7c4623239eef3b5ccdcf730ff76\",\"openai\":\"7408028cbcaa31bf6b0d70cf3b7aef740a8b0139119890d3ccb250cff9be7eef\"},\"kid\":\"0123456789abcdef\",\"request\":\"EBESExQVFhcYGRobHB0eHw\",\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000a1a1\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
+      "cfg_tag": "XK4XVTr5Nh6CMv88M4mlNBsvgD7n-mayr6gJ0dp2H0I"
     }
   ]
 }

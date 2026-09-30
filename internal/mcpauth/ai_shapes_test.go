@@ -39,9 +39,9 @@ func aiShapes() map[string]any {
 		"audio": {Provider: "google", Model: "gemini-3.8-flash"}, "document": {Provider: "anthropic", Model: "claude-sonnet-5-5"},
 	}}
 	active := store.StatusAnswer{Status: "active", ExpiresAt: expires, Kind: store.KindAI, ServiceUserID: &service, AIConfig: config}
-	capCents := 500
+	capTokens := int64(2_500_000)
 	narrowed := active
-	narrowed.AIOff, narrowed.AIPaused, narrowed.AICapCents = []string{"image"}, true, &capCents
+	narrowed.AIOff, narrowed.AIPaused, narrowed.AICapTokens = []string{"image"}, true, &capTokens
 	created := time.Date(2026, 10, 1, 9, 30, 15, 123456000, time.UTC)
 	record := append([]byte("WDRV"), 1, 0, 1)
 	record = append(record, make([]byte, 12+16+8)...)
@@ -67,7 +67,7 @@ func aiShapes() map[string]any {
 			MessageUID: uid, Feature: "audio", DeviceID: device, Epoch: 1, Sealed: record, CreatedAt: created,
 		}}),
 		"ai_derived_none": enclaveDerivedItems(nil),
-		"ai_usage_month":  aiMonthReply{Month: "2026-10", CostMicrocents: 240_000, ItemsToday: 2},
+		"ai_usage_month":  aiMonthReply{Month: "2026-10", ChargedTokens: 240_000, ItemsToday: 2},
 	}
 }
 

@@ -26,12 +26,13 @@ import (
 const aiDerivedBody = 768 << 10
 
 // Bounds on one usage increment: far above what one job reports, low
-// enough that no sum overflows its column.
+// enough that no sum overflows its column. What one call counts toward the
+// cap is at most its input and output bounds together.
 const (
 	aiUsageCountMax   = 1_000
 	aiUsageTokensMax  = 1_000_000_000
 	aiUsageSecondsMax = 1_000_000
-	aiUsageCostMax    = 100_000_000_000_000_000
+	aiUsageChargedMax = 2 * aiUsageTokensMax
 )
 
 func (h *Handler) mountEnclaveAI(mux *http.ServeMux) {
@@ -308,19 +309,19 @@ func (h *Handler) enclaveAIStore(w http.ResponseWriter, r *http.Request, caller 
 // aiUsageRequest is one increment the enclave counted after a provider's
 // answer.
 type aiUsageRequest struct {
-	DeviceID       string `json:"device_id"`
-	Feature        string `json:"feature"`
-	Provider       string `json:"provider"`
-	Model          string `json:"model"`
-	Origin         string `json:"origin"`
-	RequesterID    string `json:"requester_id"`
-	Items          int    `json:"items"`
-	Reused         int    `json:"reused"`
-	Failures       int    `json:"failures"`
-	InputTokens    int64  `json:"input_tokens"`
-	OutputTokens   int64  `json:"output_tokens"`
-	Seconds        int    `json:"seconds"`
-	CostMicrocents int64  `json:"cost_microcents"`
+	DeviceID      string `json:"device_id"`
+	Feature       string `json:"feature"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	Origin        string `json:"origin"`
+	RequesterID   string `json:"requester_id"`
+	Items         int    `json:"items"`
+	Reused        int    `json:"reused"`
+	Failures      int    `json:"failures"`
+	InputTokens   int64  `json:"input_tokens"`
+	OutputTokens  int64  `json:"output_tokens"`
+	Seconds       int    `json:"seconds"`
+	ChargedTokens int64  `json:"charged_tokens"`
 }
 
 // enclaveAIUsage adds an increment to today's row of a live AI
@@ -356,14 +357,14 @@ func (h *Handler) enclaveAIUsage(w http.ResponseWriter, r *http.Request, caller 
 		return
 	case !inRange(int64(req.Items), aiUsageCountMax) || !inRange(int64(req.Reused), aiUsageCountMax) || !inRange(int64(req.Failures), aiUsageCountMax) ||
 		!inRange(req.InputTokens, aiUsageTokensMax) || !inRange(req.OutputTokens, aiUsageTokensMax) ||
-		!inRange(int64(req.Seconds), aiUsageSecondsMax) || !inRange(req.CostMicrocents, aiUsageCostMax):
+		!inRange(int64(req.Seconds), aiUsageSecondsMax) || !inRange(req.ChargedTokens, aiUsageChargedMax):
 		fail(w, http.StatusBadRequest, "bad_request", "the counts must be whole numbers within their bounds")
 		return
 	}
 	err := h.AI.RecordAIUsage(r.Context(), row.TenantID, row.ID, store.AIUsage{
 		DeviceID: device, Feature: req.Feature, Provider: req.Provider, Model: req.Model, Origin: req.Origin, RequesterID: requester,
 		Items: req.Items, Reused: req.Reused, Failures: req.Failures, InputTokens: req.InputTokens, OutputTokens: req.OutputTokens,
-		Seconds: req.Seconds, CostMicrocents: req.CostMicrocents,
+		Seconds: req.Seconds, ChargedTokens: req.ChargedTokens,
 	})
 	switch {
 	case errors.Is(err, store.ErrAIUsageKey):
@@ -378,11 +379,12 @@ func (h *Handler) enclaveAIUsage(w http.ResponseWriter, r *http.Request, caller 
 }
 
 // aiMonthReply is what the enclave reads back at install and every minute:
-// the month's cost and today's items, which it takes as a lower bound.
+// the month's tokens counted toward the cap and today's items, which it
+// takes as a lower bound.
 type aiMonthReply struct {
-	Month          string `json:"month"`
-	CostMicrocents int64  `json:"cost_microcents"`
-	ItemsToday     int64  `json:"items_today"`
+	Month         string `json:"month"`
+	ChargedTokens int64  `json:"charged_tokens"`
+	ItemsToday    int64  `json:"items_today"`
 }
 
 // monthLayout is YYYY-MM.
@@ -410,7 +412,7 @@ func (h *Handler) enclaveAIMonth(w http.ResponseWriter, r *http.Request, caller 
 		fail(w, http.StatusInternalServerError, "internal", "could not total the usage")
 		return
 	}
-	send(w, http.StatusOK, aiMonthReply{Month: values.Get("month"), CostMicrocents: total.CostMicrocents, ItemsToday: total.ItemsToday})
+	send(w, http.StatusOK, aiMonthReply{Month: values.Get("month"), ChargedTokens: total.ChargedTokens, ItemsToday: total.ItemsToday})
 }
 
 // aiAlertRequest is something the enclave paused on: a key rejected or a

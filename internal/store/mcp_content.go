@@ -228,12 +228,12 @@ type StatusAnswer struct {
 	SendSelf   bool
 	SendPaused bool
 	// AIConfig is an AI authorization's configuration, and AIOff, AIPaused
-	// and AICapCents what a person narrowed it by. The caller works out
+	// and AICapTokens what a person narrowed it by. The caller works out
 	// what the reader is told from them and the switches.
-	AIConfig   *AIConfig
-	AIOff      []string
-	AIPaused   bool
-	AICapCents *int
+	AIConfig    *AIConfig
+	AIOff       []string
+	AIPaused    bool
+	AICapTokens *int64
 }
 
 // StatusAllowed says whether the workspace may have each kind of
@@ -278,9 +278,9 @@ func (m *MCPConnections) StatusFor(ctx context.Context, reader, id string, allow
 	err := m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1 AND reader=$2
 		RETURNING tenant_id, status, expires_at, kind, service_user_id, media,
 		          coalesce(send_mode, ''), send_self, send_paused_at IS NOT NULL,
-		          ai_config::text, ai_off, ai_paused_at IS NOT NULL, ai_cap_cents`, id, reader).
+		          ai_config::text, ai_off, ai_paused_at IS NOT NULL, ai_cap_tokens`, id, reader).
 		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID, &media, &sendMode, &sendSelf, &sendPaused,
-			&aiConfig, &a.AIOff, &a.AIPaused, &a.AICapCents)
+			&aiConfig, &a.AIOff, &a.AIPaused, &a.AICapTokens)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StatusAnswer{}, ErrMCPConnectionNotFound
 	}

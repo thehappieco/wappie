@@ -279,7 +279,7 @@ type AIAuthorizationInfo struct {
 	AIConfig     json.RawMessage `json:"ai_config"`
 	Paused       bool            `json:"paused"`
 	Off          []string        `json:"off"`
-	CapCents     *int            `json:"cap_cents"`
+	CapTokens    *int64          `json:"cap_tokens"`
 	Alerts       []store.AIAlert `json:"alerts"`
 	RevokeReason *string         `json:"revoke_reason"`
 	Renewable    bool            `json:"renewable"`
@@ -297,7 +297,7 @@ func ListedAIAuthorization(a store.AIAuthorization, viewer uuid.UUID, allowed bo
 	}
 	info := AIAuthorizationInfo{
 		ID: a.ID, CreatedBy: a.CreatedBy.String(), Status: status, ExpiresAt: a.ExpiresAt.UTC(), DeviceCount: a.DeviceCount,
-		AIConfig: a.Config, Paused: a.PausedAt != nil, Off: a.Off, CapCents: a.CapCents, Alerts: a.Alerts,
+		AIConfig: a.Config, Paused: a.PausedAt != nil, Off: a.Off, CapTokens: a.CapTokens, Alerts: a.Alerts,
 		Renewable: (status == "active" || status == "reseal") && a.CreatedBy == viewer && allowed, CreatedAt: a.CreatedAt.UTC(),
 	}
 	if info.Off == nil {
@@ -318,12 +318,12 @@ func ListedAIAuthorization(a store.AIAuthorization, viewer uuid.UUID, allowed bo
 
 // aiOff is what an AI row's status says is narrowed: the functions off (the
 // switches', the row's own, and those whose provider is off), the providers
-// off, the pause and the cap.
+// off, the pause and the cap in tokens.
 type aiOff struct {
-	Functions       []string `json:"functions"`
-	Providers       []string `json:"providers"`
-	Paused          bool     `json:"paused"`
-	MonthlyUSDCents *int     `json:"monthly_usd_cents"`
+	Functions     []string `json:"functions"`
+	Providers     []string `json:"providers"`
+	Paused        bool     `json:"paused"`
+	MonthlyTokens *int64   `json:"monthly_tokens"`
 }
 
 // aiStatusReply answers the enclave's standing check for an AI row: the
@@ -342,7 +342,7 @@ type aiStatusReply struct {
 // narrowing, whatever the status.
 func aiStanding(a store.StatusAnswer, mediaOff, offFeatures, offProviders []string) aiStatusReply {
 	reply := aiStatusReply{Status: a.Status, ExpiresAt: a.ExpiresAt.UTC(), Kind: store.KindAI, MediaOff: []string{},
-		AIOff: aiOff{Functions: []string{}, Providers: []string{}, Paused: a.AIPaused, MonthlyUSDCents: a.AICapCents}}
+		AIOff: aiOff{Functions: []string{}, Providers: []string{}, Paused: a.AIPaused, MonthlyTokens: a.AICapTokens}}
 	if a.ServiceUserID != nil {
 		service := a.ServiceUserID.String()
 		reply.ServiceUserID = &service

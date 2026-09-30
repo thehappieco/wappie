@@ -282,7 +282,7 @@ type AIAuthorization struct {
 	Config       json.RawMessage
 	PausedAt     *time.Time
 	Off          []string
-	CapCents     *int
+	CapTokens    *int64
 	Alerts       []AIAlert
 	RevokeReason string
 	CreatedAt    time.Time
@@ -302,13 +302,13 @@ type AIAlert struct {
 var AIAlertCodes = []string{"ai_key_rejected", "ai_model_unavailable", "ai_quota"}
 
 const aiAuthorizationColumns = `id::text, created_by, status, expires_at, device_count, ai_config::text, ai_paused_at,
-	ai_off, ai_cap_cents, ai_alerts::text, coalesce(revoke_reason, ''), created_at, reader`
+	ai_off, ai_cap_tokens, ai_alerts::text, coalesce(revoke_reason, ''), created_at, reader`
 
 func scanAIAuthorization(s interface{ Scan(...any) error }) (AIAuthorization, error) {
 	var a AIAuthorization
 	var config, alerts []byte
 	if err := s.Scan(&a.ID, &a.CreatedBy, &a.Status, &a.ExpiresAt, &a.DeviceCount, &config, &a.PausedAt,
-		&a.Off, &a.CapCents, &alerts, &a.RevokeReason, &a.CreatedAt, &a.Reader); err != nil {
+		&a.Off, &a.CapTokens, &alerts, &a.RevokeReason, &a.CreatedAt, &a.Reader); err != nil {
 		return AIAuthorization{}, err
 	}
 	a.Config = config
@@ -400,13 +400,14 @@ func activeRoleTx(ctx context.Context, tx pgx.Tx, tenant, actor uuid.UUID) (stri
 func managerRole(role string) bool { return role == "owner" || role == "admin" }
 
 // AIControls are a person's changes to an authorization: a pause, the
-// functions switched off on it, and a monthly cap below the sealed budget.
+// functions switched off on it, and a monthly cap in tokens below the sealed
+// budget.
 // A nil field is left as it is; CapSet with a nil Cap removes the cap.
 type AIControls struct {
 	Paused *bool
 	Off    *[]string
 	CapSet bool
-	Cap    *int
+	Cap    *int64
 }
 
 // SetAIControls applies a person's changes to one of the workspace's AI
@@ -428,8 +429,8 @@ func (m *MCPConnections) SetAIControls(ctx context.Context, tenant, actor uuid.U
 		slices.Sort(off)
 		in.Off = &off
 	}
-	if in.CapSet && in.Cap != nil && (*in.Cap < 1 || *in.Cap > aiMonthlyCentsMax) {
-		return AIAuthorization{}, fmt.Errorf("%w: cap_cents must be 1 to %d", ErrAIConfig, aiMonthlyCentsMax)
+	if in.CapSet && in.Cap != nil && (*in.Cap < 1 || *in.Cap > aiMonthlyTokensMax) {
+		return AIAuthorization{}, fmt.Errorf("%w: cap_tokens must be 1 to %d", ErrAIConfig, aiMonthlyTokensMax)
 	}
 	var out AIAuthorization
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -442,10 +443,10 @@ func (m *MCPConnections) SetAIControls(ctx context.Context, tenant, actor uuid.U
 		var expires time.Time
 		var paused bool
 		var off []string
-		var capCents *int
-		err = tx.QueryRow(ctx, `SELECT created_by, status, expires_at, ai_paused_at IS NOT NULL, ai_off, ai_cap_cents
+		var capTokens *int64
+		err = tx.QueryRow(ctx, `SELECT created_by, status, expires_at, ai_paused_at IS NOT NULL, ai_off, ai_cap_tokens
 			FROM mcp_connections WHERE id=$1 AND tenant_id=$2 AND kind='ai' FOR UPDATE`, id, tenant).
-			Scan(&createdBy, &status, &expires, &paused, &off, &capCents)
+			Scan(&createdBy, &status, &expires, &paused, &off, &capTokens)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrMCPConnectionNotFound
 		}
@@ -465,7 +466,7 @@ func (m *MCPConnections) SetAIControls(ctx context.Context, tenant, actor uuid.U
 				widens = widens || !slices.Contains(*in.Off, feature)
 			}
 		}
-		if in.CapSet && capCents != nil && (in.Cap == nil || *in.Cap > *capCents) {
+		if in.CapSet && capTokens != nil && (in.Cap == nil || *in.Cap > *capTokens) {
 			widens = true
 		}
 		if widens && !creator {
@@ -483,7 +484,7 @@ func (m *MCPConnections) SetAIControls(ctx context.Context, tenant, actor uuid.U
 			}
 		}
 		if in.CapSet {
-			if _, err := tx.Exec(ctx, `UPDATE mcp_connections SET ai_cap_cents=$3 WHERE id=$1 AND tenant_id=$2`, id, tenant, in.Cap); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE mcp_connections SET ai_cap_tokens=$3 WHERE id=$1 AND tenant_id=$2`, id, tenant, in.Cap); err != nil {
 				return err
 			}
 		}

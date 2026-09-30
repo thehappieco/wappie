@@ -63,8 +63,8 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
      * `send` ('draft' or 'direct', else null: a missing field reads as null)
      * and `send_self` (true only for JSON true). With `ai`, an `ai` row's
      * kind is kept and `ai_off` read as `{functions, providers, paused,
-     * monthly_usd_cents}`: the known words Go names, sorted, `paused` true only
-     * for JSON true, and the cap a positive integer or null. A row that says
+     * monthly_tokens}`: the known words Go names, sorted, `paused` true only
+     * for JSON true, and the cap in tokens a positive integer or null. A row that says
      * it is `ai` without an `ai_off` Go can read reads as paused.
      */
     async status(id) {
@@ -89,9 +89,9 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
       if (ai && answer.kind === 'ai') {
         const off = parsed.ai_off && typeof parsed.ai_off === 'object' && !Array.isArray(parsed.ai_off) ? parsed.ai_off : null
         const known = (list, words) => (Array.isArray(list) ? [...new Set(list.filter(word => words.includes(word)))].sort() : [])
-        const cap = off?.monthly_usd_cents
+        const cap = off?.monthly_tokens
         answer.ai_off = { functions: known(off?.functions, ai.functions), providers: known(off?.providers, ai.providers), paused: off === null || off.paused === true,
-          monthly_usd_cents: Number.isSafeInteger(cap) && cap > 0 ? cap : null }
+          monthly_tokens: Number.isSafeInteger(cap) && cap > 0 ? cap : null }
       }
       return answer
     },

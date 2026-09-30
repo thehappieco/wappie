@@ -99,11 +99,8 @@ func aiConfigFor(t *testing.T, c contentConsent, keys map[string]uuid.UUID, muta
 			"audio":    map[string]any{"provider": "google", "model": geminiModel},
 			"document": map[string]any{"provider": "anthropic", "model": claudeModel},
 		},
-		"features": features,
-		"budget": map[string]any{"monthly_usd_cents": 1000, "request_items_per_day": 100, "rates": map[string]any{
-			"google:" + geminiModel:    map[string]any{"in": 30, "out": 250, "sec": 0},
-			"anthropic:" + claudeModel: map[string]any{"in": 300, "out": 1500, "sec": 0},
-		}},
+		"features":   features,
+		"budget":     map[string]any{"monthly_tokens": 5_000_000, "request_items_per_day": 100},
 		"expires_at": c.in.ExpiresAt.UTC().Format(time.RFC3339), "key_mode": "ephemeral", "cfg_tags": tags,
 	}
 	if mutate != nil {
@@ -276,25 +273,22 @@ func TestParseAIConfigShape(t *testing.T) {
 			m["features"].(map[string]any)[device].(map[string]any)["audio"] = map[string]any{"mode": "request", "requesters": "self", "lang": nil}
 		},
 		"budget over the ceiling": func(m map[string]any) {
-			m["budget"].(map[string]any)["monthly_usd_cents"] = 100_001
+			m["budget"].(map[string]any)["monthly_tokens"] = 1_000_000_001
+		},
+		"no budget": func(m map[string]any) {
+			m["budget"].(map[string]any)["monthly_tokens"] = 0
+		},
+		"a budget that is not a whole number": func(m map[string]any) {
+			m["budget"].(map[string]any)["monthly_tokens"] = 2.5
 		},
 		"items over the ceiling": func(m map[string]any) {
 			m["budget"].(map[string]any)["request_items_per_day"] = 1001
 		},
-		"a rate for no pair": func(m map[string]any) {
-			m["budget"].(map[string]any)["rates"].(map[string]any)["openai:"+openaiModel] = map[string]any{"in": 1, "out": 1, "sec": 1}
+		"a budget in money": func(m map[string]any) {
+			m["budget"] = map[string]any{"monthly_usd_cents": 1000, "request_items_per_day": 100}
 		},
-		"a pair without its rate": func(m map[string]any) {
-			delete(m["budget"].(map[string]any)["rates"].(map[string]any), "google:"+geminiModel)
-		},
-		"a negative rate": func(m map[string]any) {
-			m["budget"].(map[string]any)["rates"].(map[string]any)["google:"+geminiModel] = map[string]any{"in": -1, "out": 1, "sec": 0}
-		},
-		"a rate over the ceiling": func(m map[string]any) {
-			m["budget"].(map[string]any)["rates"].(map[string]any)["google:"+geminiModel] = map[string]any{"in": 100_000_001, "out": 1, "sec": 0}
-		},
-		"a rate without sec": func(m map[string]any) {
-			m["budget"].(map[string]any)["rates"].(map[string]any)["google:"+geminiModel] = map[string]any{"in": 1, "out": 1}
+		"a price in the budget": func(m map[string]any) {
+			m["budget"].(map[string]any)["rates"] = map[string]any{"google:" + geminiModel: map[string]any{"in": 30, "out": 250, "sec": 0}}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -499,8 +493,8 @@ func TestAIConnectionChecks(t *testing.T) {
 		"an AI row for an assistant":     `UPDATE mcp_connections SET redirect_host='claude.ai' WHERE id=$1`,
 		"an AI row without an account":   `UPDATE mcp_connections SET service_user_id=NULL WHERE id=$1`,
 		"a function that is not one off": `UPDATE mcp_connections SET ai_off='{translate}' WHERE id=$1`,
-		"a cap of zero":                  `UPDATE mcp_connections SET ai_cap_cents=0 WHERE id=$1`,
-		"a cap over the ceiling":         `UPDATE mcp_connections SET ai_cap_cents=100001 WHERE id=$1`,
+		"a cap of zero":                  `UPDATE mcp_connections SET ai_cap_tokens=0 WHERE id=$1`,
+		"a cap over the ceiling":         `UPDATE mcp_connections SET ai_cap_tokens=1000000001 WHERE id=$1`,
 		"a kind that is not one":         `UPDATE mcp_connections SET kind='assistant' WHERE id=$1`,
 	} {
 		if _, err := f.pool.Exec(ctx, q, conn.ID); err == nil {
@@ -511,7 +505,7 @@ func TestAIConnectionChecks(t *testing.T) {
 		"a config on a content row": `UPDATE mcp_connections SET ai_config='{}' WHERE id=$1`,
 		"a pause on a content row":  `UPDATE mcp_connections SET ai_paused_at=now() WHERE id=$1`,
 		"off on a content row":      `UPDATE mcp_connections SET ai_off='{audio}' WHERE id=$1`,
-		"a cap on a content row":    `UPDATE mcp_connections SET ai_cap_cents=10 WHERE id=$1`,
+		"a cap on a content row":    `UPDATE mcp_connections SET ai_cap_tokens=10 WHERE id=$1`,
 		"alerts on a content row":   `UPDATE mcp_connections SET ai_alerts='{"x":1}' WHERE id=$1`,
 	} {
 		if _, err := f.pool.Exec(ctx, q, content.ID); err == nil {
@@ -543,7 +537,7 @@ func TestAIConfigAtDevicesMax(t *testing.T) {
 		"openai": f.keychainItem(ctx, t, f.owner, "openai")}
 	// The longest of everything: four functions on three providers with
 	// 64-character models, 60-character labels, the longest language on
-	// every function of every number, the largest epochs and rates.
+	// every function of every number, the largest epochs and budget.
 	model := func(c string) string { return c + strings.Repeat("x", 63) }
 	longest := func(m map[string]any) {
 		functions := map[string]any{
@@ -553,13 +547,8 @@ func TestAIConfigAtDevicesMax(t *testing.T) {
 			"document": map[string]any{"provider": "google", "model": model("d")},
 		}
 		m["functions"] = functions
-		rates := map[string]any{}
-		for _, fn := range functions {
-			fn := fn.(map[string]any)
-			rates[fn["provider"].(string)+":"+fn["model"].(string)] = map[string]any{"in": 100_000_000, "out": 100_000_000, "sec": 100_000_000}
-		}
-		m["budget"].(map[string]any)["rates"] = rates
-		m["budget"].(map[string]any)["monthly_usd_cents"] = 100_000
+		m["budget"].(map[string]any)["monthly_tokens"] = 1_000_000_000
+		m["budget"].(map[string]any)["request_items_per_day"] = 1_000
 		for _, k := range m["keys"].(map[string]any) {
 			k.(map[string]any)["label"] = strings.Repeat("ç", 60)
 		}
@@ -610,7 +599,7 @@ func TestAIStatus(t *testing.T) {
 
 	a, err := f.conns.StatusFor(ctx, "enclave", conn.ID, store.StatusAllowed{Content: no, AI: yes})
 	if err != nil || a.Status != "active" || a.Kind != store.KindAI || a.AIConfig == nil || a.AIConfig.Request != c.in.RequestID ||
-		a.AIPaused || a.AICapCents != nil || len(a.AIOff) != 0 || a.Media {
+		a.AIPaused || a.AICapTokens != nil || len(a.AIOff) != 0 || a.Media {
 		t.Fatalf("answer = %+v %v", a, err)
 	}
 	// AI not allowed: reseal, computed and never written.
@@ -629,12 +618,12 @@ func TestAIStatus(t *testing.T) {
 		t.Fatalf("Status = %+v %v", a, err)
 	}
 	// The narrowing is answered.
-	paused, cap := true, 500
+	paused, cap := true, int64(2_500_000)
 	if _, err := f.conns.SetAIControls(ctx, f.tenant, f.owner, conn.ID, store.AIControls{Paused: &paused, Off: &[]string{"document"}, CapSet: true, Cap: &cap}); err != nil {
 		t.Fatal(err)
 	}
-	if a, err := f.conns.StatusFor(ctx, "enclave", conn.ID, store.StatusAllowed{AI: yes}); err != nil || !a.AIPaused || a.AICapCents == nil ||
-		*a.AICapCents != 500 || strings.Join(a.AIOff, ",") != "document" {
+	if a, err := f.conns.StatusFor(ctx, "enclave", conn.ID, store.StatusAllowed{AI: yes}); err != nil || !a.AIPaused || a.AICapTokens == nil ||
+		*a.AICapTokens != 2_500_000 || strings.Join(a.AIOff, ",") != "document" {
 		t.Fatalf("narrowed = %+v %v", a, err)
 	}
 	// Access lost ends it, with the cascade.
@@ -1199,7 +1188,7 @@ func TestAIUsage(t *testing.T) {
 	conn, c := f.consentAI(ctx, t, f.owner, keys, nil)
 	theirs, _ := f.consentAI(ctx, t, admin, f.aiKeys(ctx, t, admin), nil)
 	inc := store.AIUsage{DeviceID: f.device, Feature: "audio", Provider: "google", Model: geminiModel, Origin: "connector", RequesterID: f.owner,
-		Items: 1, InputTokens: 1000, OutputTokens: 200, Seconds: 60, CostMicrocents: 80_000}
+		Items: 1, InputTokens: 1000, OutputTokens: 200, Seconds: 60, ChargedTokens: 1200}
 	for range 3 {
 		if err := f.ai.RecordAIUsage(ctx, f.tenant, conn.ID, inc); err != nil {
 			t.Fatal(err)
@@ -1207,7 +1196,7 @@ func TestAIUsage(t *testing.T) {
 	}
 	// A reuse asked from the console is a row of its own.
 	reused := inc
-	reused.Origin, reused.Items, reused.Reused, reused.CostMicrocents, reused.InputTokens, reused.OutputTokens, reused.Seconds = "console", 0, 1, 0, 0, 0, 0
+	reused.Origin, reused.Items, reused.Reused, reused.ChargedTokens, reused.InputTokens, reused.OutputTokens, reused.Seconds = "console", 0, 1, 0, 0, 0, 0
 	if err := f.ai.RecordAIUsage(ctx, f.tenant, conn.ID, reused); err != nil {
 		t.Fatal(err)
 	}
@@ -1227,10 +1216,10 @@ func TestAIUsage(t *testing.T) {
 	}
 
 	total, err := f.ai.AIMonthUsage(ctx, f.tenant, conn.ID, time.Now())
-	if err != nil || total.CostMicrocents != 240_000 || total.ItemsToday != 3 {
+	if err != nil || total.ChargedTokens != 3600 || total.ItemsToday != 3 {
 		t.Fatalf("total = %+v %v", total, err)
 	}
-	if last, err := f.ai.AIMonthUsage(ctx, f.tenant, conn.ID, time.Now().AddDate(0, -1, 0)); err != nil || last.CostMicrocents != 0 || last.ItemsToday != 3 {
+	if last, err := f.ai.AIMonthUsage(ctx, f.tenant, conn.ID, time.Now().AddDate(0, -1, 0)); err != nil || last.ChargedTokens != 0 || last.ItemsToday != 3 {
 		t.Fatalf("last month = %+v %v", last, err)
 	}
 	// Yesterday's items are not today's.
@@ -1238,7 +1227,7 @@ func TestAIUsage(t *testing.T) {
 		_, err := tx.Exec(ctx, `UPDATE ai_usage_daily SET day = day - 1 WHERE authorization_id=$1`, conn.ID)
 		return err
 	})
-	if total, err := f.ai.AIMonthUsage(ctx, f.tenant, conn.ID, time.Now().Add(-24*time.Hour)); err != nil || total.ItemsToday != 0 || total.CostMicrocents != 240_000 {
+	if total, err := f.ai.AIMonthUsage(ctx, f.tenant, conn.ID, time.Now().Add(-24*time.Hour)); err != nil || total.ItemsToday != 0 || total.ChargedTokens != 3600 {
 		t.Fatalf("after a day = %+v %v", total, err)
 	}
 
@@ -1356,8 +1345,6 @@ func TestAIRenewal(t *testing.T) {
 		"a function's provider changed": func(m map[string]any) {
 			m["functions"].(map[string]any)["document"] = map[string]any{"provider": "google", "model": geminiModel}
 			delete(m["keys"].(map[string]any), "anthropic")
-			rates := m["budget"].(map[string]any)["rates"].(map[string]any)
-			delete(rates, "anthropic:"+claudeModel)
 		},
 		"a function added": func(m map[string]any) {
 			m["functions"].(map[string]any)["video"] = map[string]any{"provider": "google", "model": geminiModel}
@@ -1372,7 +1359,7 @@ func TestAIRenewal(t *testing.T) {
 				byFeature.(map[string]any)["audio"].(map[string]any)["lang"] = "en"
 			}
 		},
-		"the monthly budget changed": func(m map[string]any) { m["budget"].(map[string]any)["monthly_usd_cents"] = 2000 },
+		"the monthly budget changed": func(m map[string]any) { m["budget"].(map[string]any)["monthly_tokens"] = 10_000_000 },
 		"the daily items changed":    func(m map[string]any) { m["budget"].(map[string]any)["request_items_per_day"] = 50 },
 		"another expiry": func(m map[string]any) {
 			m["expires_at"] = time.Now().Add(80 * 24 * time.Hour).UTC().Format(time.RFC3339)
@@ -1411,9 +1398,6 @@ func TestAIRenewal(t *testing.T) {
 	newer := "gemini-4.0-pro"
 	if err := try(rotated, func(m map[string]any) {
 		m["functions"].(map[string]any)["audio"] = map[string]any{"provider": "google", "model": newer}
-		rates := m["budget"].(map[string]any)["rates"].(map[string]any)
-		delete(rates, "google:"+geminiModel)
-		rates["google:"+newer] = map[string]any{"in": 125, "out": 1000, "sec": 0}
 	}); err != nil {
 		t.Fatalf("a rotation: %v", err)
 	}
@@ -1451,7 +1435,7 @@ func TestAIControls(t *testing.T) {
 	member := f.member(t, "member")
 	conn, _ := f.consentAI(ctx, t, f.owner, f.aiKeys(ctx, t, f.owner), nil)
 	yes, no := true, false
-	cap500, cap900, cap300 := 500, 900, 300
+	cap500, cap900, cap300 := int64(500), int64(900), int64(300)
 	set := func(actor uuid.UUID, in store.AIControls) (store.AIAuthorization, error) {
 		return f.conns.SetAIControls(ctx, f.tenant, actor, conn.ID, in)
 	}
@@ -1463,11 +1447,11 @@ func TestAIControls(t *testing.T) {
 	}
 	forbidden(t, member, store.AIControls{Paused: &yes})
 	got, err := set(admin, store.AIControls{Paused: &yes, Off: &[]string{"document", "audio", "document"}, CapSet: true, Cap: &cap500})
-	if err != nil || got.PausedAt == nil || strings.Join(got.Off, ",") != "audio,document" || got.CapCents == nil || *got.CapCents != 500 {
+	if err != nil || got.PausedAt == nil || strings.Join(got.Off, ",") != "audio,document" || got.CapTokens == nil || *got.CapTokens != 500 {
 		t.Fatalf("narrowed by an admin = %+v %v", got, err)
 	}
 	// Narrowing further is still the admin's; widening is not.
-	if got, err := set(admin, store.AIControls{CapSet: true, Cap: &cap300}); err != nil || *got.CapCents != 300 {
+	if got, err := set(admin, store.AIControls{CapSet: true, Cap: &cap300}); err != nil || *got.CapTokens != 300 {
 		t.Fatalf("lowered = %+v %v", got, err)
 	}
 	forbidden(t, admin, store.AIControls{Paused: &no})
@@ -1481,14 +1465,18 @@ func TestAIControls(t *testing.T) {
 	}
 	// The creator undoes it all.
 	got, err = set(f.owner, store.AIControls{Paused: &no, Off: &[]string{}, CapSet: true})
-	if err != nil || got.PausedAt != nil || len(got.Off) != 0 || got.CapCents != nil {
+	if err != nil || got.PausedAt != nil || len(got.Off) != 0 || got.CapTokens != nil {
 		t.Fatalf("undone = %+v %v", got, err)
 	}
 	if _, err := set(f.owner, store.AIControls{Off: &[]string{"translate"}}); !errors.Is(err, store.ErrAIConfig) {
 		t.Fatalf("an unknown function = %v", err)
 	}
-	if _, err := set(f.owner, store.AIControls{CapSet: true, Cap: new(int)}); !errors.Is(err, store.ErrAIConfig) {
+	if _, err := set(f.owner, store.AIControls{CapSet: true, Cap: new(int64)}); !errors.Is(err, store.ErrAIConfig) {
 		t.Fatalf("a cap of zero = %v", err)
+	}
+	over := int64(1_000_000_001)
+	if _, err := set(f.owner, store.AIControls{CapSet: true, Cap: &over}); !errors.Is(err, store.ErrAIConfig) {
+		t.Fatalf("a cap over the ceiling = %v", err)
 	}
 	// Another workspace's id, and an ended one.
 	if _, err := f.conns.SetAIControls(ctx, f.tenant, f.owner, uuid.NewString(), store.AIControls{Paused: &yes}); !errors.Is(err, store.ErrMCPConnectionNotFound) {

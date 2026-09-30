@@ -70,7 +70,7 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
   function usage(record, job, counts) {
     const entry = record.functions[job.feature]
     const body = { device_id: job.device_id, feature: job.feature, provider: entry.provider, model: entry.model, origin: job.origin, requester_id: job.requester_id,
-      items: 0, reused: 0, failures: 0, input_tokens: 0, output_tokens: 0, seconds: 0, cost_microcents: 0, ...counts }
+      items: 0, reused: 0, failures: 0, input_tokens: 0, output_tokens: 0, seconds: 0, charged_tokens: 0, ...counts }
     void relay.ai(record.connection_id, record.api_key, 'POST', 'ai/usage', { body }).catch(() => {})
   }
   /** The error map's effect (§18.9): the provider or the function pauses until a renewal, Go is told for the console, the log says which code. */
@@ -172,7 +172,7 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
      * Opens and checks a renewal's AI bundle (§18.7 step 7): the same
      * workspace, numbers, features, monthly cap, daily items and each
      * function's provider; a key may rotate within its provider and a model
-     * change within it (the rates following); fresh tags and the models
+     * change within it; fresh tags and the models
      * checked again. Resolves to the stage renew.mjs commits.
      */
     async accept({ record, renewal, body, renewalID, connectionID }) {
@@ -184,7 +184,7 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
       })
       const functions = Object.keys(bundle.functions)
       if (bundle.service_user_id === record.service_user_id || bundle.workspace_id !== record.workspace_id || !sameSet(bundle.device_ids, record.device_ids) ||
-        canonicalJSON(bundle.features) !== canonicalJSON(record.features) || bundle.budget.monthly_usd_cents !== record.budget.monthly_usd_cents ||
+        canonicalJSON(bundle.features) !== canonicalJSON(record.features) || bundle.budget.monthly_tokens !== record.budget.monthly_tokens ||
         bundle.budget.request_items_per_day !== record.budget.request_items_per_day || !sameSet(functions, Object.keys(record.functions)) ||
         functions.some(name => bundle.functions[name].provider !== record.functions[name].provider) ||
         Math.min(Date.parse(bundle.expires_at), relayed.expiry) !== Date.parse(contentDeadline(record))) throw new LinkError('invalid_bundle')

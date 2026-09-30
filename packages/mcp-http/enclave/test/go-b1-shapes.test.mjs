@@ -100,9 +100,9 @@ test('the status of an ai row: its kind, service account and ai_off as Go writes
   }
   const service = '0199b3c4-0000-7000-8000-00000000c0de'
   assert.deepEqual(await answerTo(bytesOf('status_attested_ai')), { status: 'active', expires_at: '2026-10-28T12:00:00Z', kind: 'ai', service_user_id: service, media: false, media_off: [],
-    send: null, send_self: false, ai_off: { functions: [], providers: [], paused: false, monthly_usd_cents: null } })
+    send: null, send_self: false, ai_off: { functions: [], providers: [], paused: false, monthly_tokens: null } })
   assert.deepEqual(await answerTo(bytesOf('status_attested_ai_off')), { status: 'active', expires_at: '2026-10-28T12:00:00Z', kind: 'ai', service_user_id: service, media: false,
-    media_off: ['pdf', 'zip'], send: null, send_self: false, ai_off: { functions: ['document', 'image', 'video'], providers: ['anthropic'], paused: true, monthly_usd_cents: 500 } })
+    media_off: ['pdf', 'zip'], send: null, send_self: false, ai_off: { functions: ['document', 'image', 'video'], providers: ['anthropic'], paused: true, monthly_tokens: 2_500_000 } })
   assert.deepEqual((await answerTo(bytesOf('status_attested_ai_reseal'))).status, 'reseal')
   // Without its ai_off an ai row reads as paused: nothing runs on a status Go did not finish.
   const { ai_off: _off, ...bare } = body('status_attested_ai')
@@ -141,8 +141,9 @@ test('the month\'s usage is what the budget reads from Go', () => {
   const at = () => Date.parse(`${shapes.ai_usage_month.month}-15T12:00:00Z`)
   const budgets = createBudgets({ now: at })
   budgets.fromGo('a', body('ai_usage_month'))
-  assert.deepEqual(budgets.used('a'), { cost: shapes.ai_usage_month.cost_microcents, items: shapes.ai_usage_month.items_today })
-  // 240,000 microcents is under a one-cent cap's 1,000,000; two items under a limit of three.
-  assert.equal(budgets.allows({ connection_id: 'a', budget: { monthly_usd_cents: 1, request_items_per_day: 3 } }, null), true)
-  assert.equal(budgets.allows({ connection_id: 'a', budget: { monthly_usd_cents: 1, request_items_per_day: 2 } }, null), false)
+  assert.deepEqual(budgets.used('a'), { tokens: shapes.ai_usage_month.charged_tokens, items: shapes.ai_usage_month.items_today })
+  // 240,000 tokens are under a cap of 240,001 and at one of 240,000; two items under a limit of three.
+  assert.equal(budgets.allows({ connection_id: 'a', budget: { monthly_tokens: 240_001, request_items_per_day: 3 } }, null), true)
+  assert.equal(budgets.limit({ connection_id: 'a', budget: { monthly_tokens: 240_000, request_items_per_day: 3 } }, null), 'month')
+  assert.equal(budgets.limit({ connection_id: 'a', budget: { monthly_tokens: 240_001, request_items_per_day: 2 } }, null), 'day')
 })

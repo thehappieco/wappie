@@ -1,96 +1,89 @@
-// The spending bound of each AI authorization (docs/mcp-enclave.md §18.10,
-// I9), kept in this process's memory: the month's cost and the day's items.
-// Go's own counts (GET …/ai/usage) are read at install and by the 60 s
-// sweep; Go can only understate them, so the enclave keeps the larger of
-// the two, and the cap is the smaller of the bundle's and Go's. Every
-// attempt at a provider call is an item as it leaves, and the budget is
-// checked before each; every 200 answer is charged by the provider's own
-// usage, or an upper bound of it, and a call that left and was never
-// answered (a timeout, a dropped connection, an abort) at that bound
-// (§18.9): never by the sender's claim alone.
-import { AI_MIN_BYTES_PER_SECOND, AI_OUTPUT_MAX_TOKENS } from './policy.mjs'
+// The safety cap of each AI authorization (docs/mcp-enclave.md §18.10, I9),
+// kept in this process's memory: the month's tokens and the day's items.
+// Prices vary with each person's plan and model, and billing is their
+// account's at each provider, so the cap counts tokens, never money. Go's
+// own counts (GET …/ai/usage) are read at install and by the 60 s sweep; Go
+// can only understate them, so the enclave keeps the larger of the two, and
+// the cap is the smaller of the bundle's and Go's. Every attempt at a
+// provider call is an item as it leaves, and the budget is checked before
+// each; every 200 answer counts the tokens the provider reports, or an upper
+// bound of them, and a call that left and was never answered (a timeout, a
+// dropped connection, an abort) counts that bound (§18.9): never the
+// sender's claim alone.
+import { AI_DURATION_TOKENS_PER_SECOND, AI_MIN_BYTES_PER_SECOND, AI_OUTPUT_MAX_TOKENS } from './policy.mjs'
 
 const monthOf = at => new Date(at).toISOString().slice(0, 7)
 const dayOf = at => new Date(at).toISOString().slice(0, 10)
-const MICROCENTS_PER_CENT = 1_000_000
+const isCount = value => Number.isSafeInteger(value) && value >= 0
+const timed = feature => feature === 'audio' || feature === 'video'
+/** The claimed length in whole seconds, or 0 without a claim. */
+const claimOf = claimedSeconds => (Number.isFinite(claimedSeconds) && claimedSeconds > 0 ? Math.ceil(claimedSeconds) : 0)
 
 /**
- * What one call is charged for (§18.10): the provider's token counts, a
- * missing one as `ceil(request body bytes / 4)` input tokens or
- * AI_OUTPUT_MAX_TOKENS[feature] output tokens; and, for audio and video,
- * seconds by the provider's own measure (OpenAI's transcription duration,
- * Google's audio tokens), else `max(claimed, ceil(plaintext bytes ÷
- * AI_MIN_BYTES_PER_SECOND))`, a bound no sender can shrink. A call that left
- * and was never answered has no usage (`{}`): it is charged the bounds.
+ * The tokens one call counts toward the monthly limit (§18.10): the tokens
+ * the provider reports, input plus output (its reasoning or thinking tokens
+ * are in the output); for an answer billed by duration (OpenAI's
+ * transcription `usage.type` `duration`), its seconds ×
+ * AI_DURATION_TOKENS_PER_SECOND. What the answer does not report takes an
+ * upper bound: `ceil(request body bytes / 4)` input tokens,
+ * AI_OUTPUT_MAX_TOKENS[feature] output tokens, and for audio and video with
+ * no measure at all, at least the length bound `max(claimed, ceil(plaintext
+ * bytes ÷ AI_MIN_BYTES_PER_SECOND))` × AI_DURATION_TOKENS_PER_SECOND, which
+ * no sender can shrink. A call that left and was never answered has no usage
+ * (`{}`): it counts the bounds.
  */
-export function measure(feature, usage, { bodyBytes, plaintextBytes = 0, claimedSeconds }) {
-  const input = Number.isSafeInteger(usage?.input_tokens) ? usage.input_tokens : Math.ceil(bodyBytes / 4)
-  const output = Number.isSafeInteger(usage?.output_tokens) ? usage.output_tokens : AI_OUTPUT_MAX_TOKENS[feature]
-  let seconds = 0
-  if (feature === 'audio' || feature === 'video') {
-    const claimed = Number.isFinite(claimedSeconds) && claimedSeconds > 0 ? Math.ceil(claimedSeconds) : 0
-    seconds = Number.isSafeInteger(usage?.seconds) ? usage.seconds : Math.max(claimed, Math.ceil(plaintextBytes / AI_MIN_BYTES_PER_SECOND))
-  }
-  return { input_tokens: input, output_tokens: output, seconds }
+export function chargedTokens(feature, usage, { bodyBytes, plaintextBytes = 0, claimedSeconds }) {
+  const length = () => Math.max(claimOf(claimedSeconds), Math.ceil(plaintextBytes / AI_MIN_BYTES_PER_SECOND)) * AI_DURATION_TOKENS_PER_SECOND
+  if (usage?.duration === true) return isCount(usage.seconds) ? usage.seconds * AI_DURATION_TOKENS_PER_SECOND : length()
+  const input = isCount(usage?.input_tokens) ? usage.input_tokens : undefined
+  const output = isCount(usage?.output_tokens) ? usage.output_tokens : undefined
+  const bounded = (input ?? Math.ceil(bodyBytes / 4)) + (output ?? AI_OUTPUT_MAX_TOKENS[feature])
+  return input === undefined && output === undefined && timed(feature) ? Math.max(bounded, length()) : bounded
 }
 
 /**
- * Microcents for `counts` at `rate` (the bundle's `{in, out, sec}`: US cents
- * per million input tokens, per million output tokens, per 1,000 seconds).
+ * What a call's usage row reports beside the tokens it counted (§18.10):
+ * the tokens the provider reported, 0 where it reported none, and for audio
+ * and video the seconds it measured (OpenAI's duration, Google's AUDIO
+ * tokens), else the claimed length. A transcriber billed by duration so
+ * shows no tokens, and a Gemini video, which Google counts as VIDEO tokens
+ * and never as seconds, its claimed minutes.
  */
-export const costOf = (rate, counts) => rate.in * counts.input_tokens + rate.out * counts.output_tokens + rate.sec * counts.seconds * 1_000
-
-/**
- * What a call's usage row and record report (§18.10), beside `charged`
- * (`measure`'s counts, which the cost always takes): the provider's own
- * counts where the answer carries them; else, for a count the pair's
- * `rate` never charges, what is known without a bound (the claimed length
- * for seconds, 0 for tokens); else the bound itself. So a Gemini video,
- * which Google counts as VIDEO tokens and never as seconds, shows its
- * claimed minutes, and a transcriber billed by duration shows no tokens.
- */
-export function reported(feature, usage, charged, rate, claimedSeconds) {
-  const tokens = (field, perMillion) => (Number.isSafeInteger(usage?.[field]) ? usage[field] : perMillion === 0 ? 0 : charged[field])
-  let seconds = 0
-  if (feature === 'audio' || feature === 'video') {
-    const claimed = Number.isFinite(claimedSeconds) && claimedSeconds > 0 ? Math.ceil(claimedSeconds) : 0
-    seconds = Number.isSafeInteger(usage?.seconds) ? usage.seconds : rate.sec === 0 ? claimed : charged.seconds
-  }
-  return { input_tokens: tokens('input_tokens', rate.in), output_tokens: tokens('output_tokens', rate.out), seconds }
+export function reported(feature, usage, claimedSeconds) {
+  const seconds = timed(feature) ? (isCount(usage?.seconds) ? usage.seconds : claimOf(claimedSeconds)) : 0
+  return { input_tokens: isCount(usage?.input_tokens) ? usage.input_tokens : 0, output_tokens: isCount(usage?.output_tokens) ? usage.output_tokens : 0, seconds }
 }
 
 export function createBudgets({ now = Date.now } = {}) {
-  // id -> { month, cost, day, items, go: {month, cost, day, items} }
+  // id -> { month, tokens, day, items, go: {month, tokens, day, items} }
   const books = new Map()
   function book(id) {
     const at = now(), month = monthOf(at), day = dayOf(at)
     let entry = books.get(id)
-    if (!entry) books.set(id, entry = { month, cost: 0, day, items: 0, go: null })
-    if (entry.month !== month) { entry.month = month; entry.cost = 0 }
+    if (!entry) books.set(id, entry = { month, tokens: 0, day, items: 0, go: null })
+    if (entry.month !== month) { entry.month = month; entry.tokens = 0 }
     if (entry.day !== day) { entry.day = day; entry.items = 0 }
     return entry
   }
-  const goCost = entry => (entry.go?.month === entry.month ? entry.go.cost : 0)
+  const goTokens = entry => (entry.go?.month === entry.month ? entry.go.tokens : 0)
   const goItems = entry => (entry.go?.day === entry.day ? entry.go.items : 0)
   return {
-    /** Go's answer `{month, cost_microcents, items_today}`; a malformed one is ignored. */
+    /** Go's answer `{month, charged_tokens, items_today}`; a malformed one is ignored. */
     fromGo(id, answer) {
       const entry = book(id)
-      if (!answer || answer.month !== entry.month || !Number.isSafeInteger(answer.cost_microcents) || answer.cost_microcents < 0 ||
-        !Number.isSafeInteger(answer.items_today) || answer.items_today < 0) return
-      entry.go = { month: answer.month, cost: answer.cost_microcents, day: entry.day, items: answer.items_today }
+      if (!answer || answer.month !== entry.month || !isCount(answer.charged_tokens) || !isCount(answer.items_today)) return
+      entry.go = { month: answer.month, tokens: answer.charged_tokens, day: entry.day, items: answer.items_today }
     },
     /**
      * The limit a call made now would pass, or null when it may be made:
-     * `month` when the month's spend reached the cap (`min(bundle, Go's)` in
-     * US cents), else `day` when the day's items reached
-     * `request_items_per_day`.
+     * `month` when the month's tokens reached the cap (`min(bundle, Go's)`),
+     * else `day` when the day's items reached `request_items_per_day`.
      */
     limit(record, status) {
       const entry = book(record.connection_id)
-      const goCap = status?.ai_off?.monthly_usd_cents
-      const cents = Number.isSafeInteger(goCap) && goCap > 0 ? Math.min(record.budget.monthly_usd_cents, goCap) : record.budget.monthly_usd_cents
-      if (Math.max(entry.cost, goCost(entry)) >= cents * MICROCENTS_PER_CENT) return 'month'
+      const goCap = status?.ai_off?.monthly_tokens
+      const cap = Number.isSafeInteger(goCap) && goCap > 0 ? Math.min(record.budget.monthly_tokens, goCap) : record.budget.monthly_tokens
+      if (Math.max(entry.tokens, goTokens(entry)) >= cap) return 'month'
       if (Math.max(entry.items, goItems(entry)) >= record.budget.request_items_per_day) return 'day'
       return null
     },
@@ -98,8 +91,8 @@ export function createBudgets({ now = Date.now } = {}) {
     allows(record, status) { return this.limit(record, status) === null },
     /** One attempt at a provider call (counted before it leaves, whatever its answer). */
     item(id) { book(id).items++ },
-    charge(id, microcents) { book(id).cost += microcents },
-    used(id) { const entry = book(id); return { cost: Math.max(entry.cost, goCost(entry)), items: Math.max(entry.items, goItems(entry)) } },
+    charge(id, tokens) { book(id).tokens += tokens },
+    used(id) { const entry = book(id); return { tokens: Math.max(entry.tokens, goTokens(entry)), items: Math.max(entry.items, goItems(entry)) } },
     forget(id) { books.delete(id) },
     clear() { books.clear() },
   }

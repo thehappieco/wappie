@@ -345,7 +345,7 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
       res.writeHead(204); res.end(); return
     }
     if (route === 'ai/usage' && req.method === 'POST') { go.ai.usage.push({ id, body: parsed }); res.writeHead(204); res.end(); return }
-    if (route === 'ai/usage' && req.method === 'GET') return json(res, go.ai.usageAnswers.get(id) ?? { month: q('month'), cost_microcents: 0, items_today: 0 })
+    if (route === 'ai/usage' && req.method === 'GET') return json(res, go.ai.usageAnswers.get(id) ?? { month: q('month'), charged_tokens: 0, items_today: 0 })
     if (route === 'ai/alerts' && req.method === 'POST') { go.ai.alerts.push({ id, body: parsed }); res.writeHead(204); res.end(); return }
     return json(res, { code: 'not_found' }, 404)
   }
