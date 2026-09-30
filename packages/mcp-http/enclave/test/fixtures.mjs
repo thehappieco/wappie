@@ -392,7 +392,7 @@ export function proxiedRequest({ port, proxy, ca, servername = 'mcp.wappie.theha
         const req = httpRequest({ createConnection: () => tls, method, path, headers: { host: 'mcp.wappie.thehappie.co', connection: 'close', ...headers } }, res => {
           const chunks = []
           res.on('data', chunk => chunks.push(chunk))
-          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8'), peer: tls.getPeerX509Certificate(), alpn: tls.alpnProtocol }))
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8'), bytes: Buffer.concat(chunks), peer: tls.getPeerX509Certificate(), alpn: tls.alpnProtocol }))
         })
         req.on('error', reject)
         req.end(body)

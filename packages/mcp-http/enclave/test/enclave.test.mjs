@@ -2,11 +2,12 @@
 // ACME: boot order, TLS behind PROXY v2 on both listeners, HMAC in both
 // directions, a consent through prepare with a per-request key and a fresh
 // attestation, the eight tools behind the token, the public /attestation
-// route, a Node restart that reloads the sealed state and keeps the tokens,
-// relay-secret rotation, and a log sink that carries nothing secret.
+// route and icon files, a Node restart that reloads the sealed state and keeps
+// the tokens, relay-secret rotation, and a log sink that carries nothing secret.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
+import { ICON_FILES, serverIcons } from '@whatserver2/mcp/icons'
 import { attestationUserData, decodeAttestationDocument } from '../../attestation.mjs'
 import { pkce } from '../../test/harness.mjs'
 import * as constants from '../constants.mjs'
@@ -62,6 +63,10 @@ test('boot, consent through an attested prepare, tools, restart with tokens inta
   const listed = await rpc(w, done.tokens.access_token)
   assert.equal(listed.status, 200, listed.body)
   assert.equal(result(listed.body).tools.length, 8)
+  // serverInfo names the icon as data and by the URLs this listener serves.
+  const initialized = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 3, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'enclave-test', version: '1' } } })
+  assert.deepEqual(result(initialized.body).serverInfo, { name: 'wappie-readonly', version: '0.1.0', icons: serverIcons(constants.PUBLIC_ORIGIN) })
+  assert.deepEqual(result(initialized.body).serverInfo.icons.slice(1).map(icon => icon.src), ['https://mcp.wappie.thehappie.co/favicon.svg', 'https://mcp.wappie.thehappie.co/apple-touch-icon.png'])
   const numbers = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_numbers', arguments: {} } })
   assert.equal(result(numbers.body).structuredContent.plaintext_enabled, false)
   assert.equal(w.go.activations, 1)
@@ -100,6 +105,25 @@ test('listeners: /internal never on the public port, nothing else on the interna
   assert.equal((await w.internal('/internal/healthz', { headers: { host: 'mcp.wappie.thehappie.co' } })).status, 403)
   const prm = await w.public('/.well-known/oauth-protected-resource')
   assert.equal(JSON.parse(prm.body).resource, RESOURCE)
+  // The icon files: public, no bearer, the kit's bytes and types, behind the same Host check, never on the internal port.
+  for (const [path, { type, bytes }] of Object.entries(ICON_FILES)) {
+    const icon = await w.public(path)
+    assert.equal(icon.status, 200, path)
+    assert.equal(icon.headers['content-type'], type, path)
+    assert.equal(icon.headers['content-length'], String(bytes.length), path)
+    assert.deepEqual(icon.bytes, bytes, path)
+    assert.deepEqual([icon.headers['cache-control'], icon.headers['x-content-type-options'], icon.headers['access-control-allow-origin'], icon.headers['cross-origin-resource-policy']],
+      ['public, max-age=86400', 'nosniff', '*', 'cross-origin'], path)
+    assert.equal(icon.headers['content-security-policy'], type === 'image/svg+xml' ? "default-src 'none'" : undefined, path)
+    const head = await w.public(path, { method: 'HEAD' })
+    assert.deepEqual([head.status, head.headers['content-type'], head.bytes.length], [200, type, 0], path)
+    const posted = await w.public(path, { method: 'POST', body: '' })
+    assert.deepEqual([posted.status, posted.headers.allow], [405, 'GET, HEAD'], path)
+    assert.equal((await w.public(path, { headers: { host: 'evil.example' } })).status, 403, path)
+    assert.equal((await w.internal(path)).status, 404, path)
+  }
+  assert.equal((await w.public('/favicon.png')).status, 404)
+  assert.equal((await w.public('/favicon.svg/')).status, 404)
   // No signature, a wrong secret, a replay: 401 with no detail.
   const unsigned = await w.internal('/internal/healthz', { signed: {} })
   assert.equal(unsigned.status, 401)
@@ -111,6 +135,7 @@ test('listeners: /internal never on the public port, nothing else on the interna
   await new Promise(resolve => setTimeout(resolve, 50)) // a line is written once its response has gone out
   const codes = w.lines.map(line => JSON.parse(line).code).filter(Boolean)
   for (const code of ['hmac_missing', 'hmac_bad', 'hmac_replay']) assert.ok(codes.includes(code), code)
+  for (const route of ['GET /favicon.ico', 'HEAD /favicon.svg', 'GET /apple-touch-icon.png']) assert.ok(w.lines.some(line => lineAllowed(line) && JSON.parse(line).route === route), route)
   // X-Forwarded-For is never trusted: the PROXY source is the client.
   for (let i = 0; i < 10; i++) assert.equal((await w.public(`/attestation?nonce=${randomBytes(16).toString('base64url')}`, { source: '192.0.2.1', headers: { 'x-forwarded-for': `10.0.0.${i}` } })).status, 200)
   const limited = await w.public(`/attestation?nonce=${randomBytes(16).toString('base64url')}`, { source: '192.0.2.1', headers: { 'x-forwarded-for': '10.9.9.9' } })

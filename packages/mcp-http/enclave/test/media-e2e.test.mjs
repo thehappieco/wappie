@@ -206,7 +206,7 @@ test(`open_attachment end to end with the real workers (${JAILED ? 'under media-
   // The workers' refusals: a zip bomb and a PDF with a password, each an answer and never a crash.
   const bomb = await attach(w, input['zip-bomb'], { media_type: 'document', mimetype: 'application/zip', filename: 'SENTINEL-bomb.zip' })
   const refused = (await openAttachment(w, done, { uid: bomb.uid })).value
-  assert.equal(refused.isError, true)
+  assert.equal(refused.isError, undefined, 'an answer about the file, not a failed call (0.4.2)')
   const [line, facts, link] = refused.content[0].text.split('\n')
   assert.equal(line, "Could not open the attachment (attachment_too_large). The file is too large to open inside the reader: its unpacked contents exceed the reader's limits. The user can open it in WhatsApp or in the Wappie console.")
   assert.deepEqual(JSON.parse(facts), { uid: bomb.uid, media_type: 'document', mimetype: 'application/zip', file_length: input['zip-bomb'].length, open_url: linkTo(bomb.uid) })
@@ -214,6 +214,7 @@ test(`open_attachment end to end with the real workers (${JAILED ? 'under media-
   const locked = await attach(w, input['pdf-encrypted'], { media_type: 'document', mimetype: 'application/pdf', filename: 'SENTINEL-locked.pdf' })
   const password = (await openAttachment(w, done, { uid: locked.uid })).value
   assert.equal(password.content[0].text.split('\n')[0], 'Could not open the attachment (attachment_encrypted). The file is protected by a password, so the reader cannot open it. Tell the user.')
+  assert.equal(password.isError, undefined)
 
   // One job per image, preview and office file; the PDF's text job once, its images job per part; nothing for the cached repeat.
   assert.deepEqual(jobs, ['image', 'image', 'image', 'pdf', 'pdf', 'pdf', 'office', 'office', 'office', 'office', 'pdf'])

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { auth, Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { McpServer } from '@whatserver2/mcp/sdk'
 import { createServer } from '@whatserver2/mcp'
+import { serverIcons } from '@whatserver2/mcp/icons'
 import { harness, authorize, clientProvider, consent, call, parsed, raw, rpc, session, secretsAbsent, vector, workspace, DAY } from './harness.mjs'
 import { configFor, providerFor } from '../provider.mjs'
 import { BODY_LIMITS } from '../router.mjs'
@@ -25,6 +26,8 @@ test('claude.ai-style client: discovery, DCR assigned none, consent, PKCE exchan
   await client.connect(transport)
   try {
     assert.equal(client.getServerVersion().name, 'wappie-readonly')
+    // Its proxy routes only the reader's own paths, so only the data: icon is named (the enclave adds its URLs).
+    assert.deepEqual(client.getServerVersion().icons, serverIcons())
     const listing = await client.listTools()
     assert.deepEqual(listing.tools.map(tool => tool.name), tools)
     for (const tool of listing.tools) assert.equal(tool.annotations.readOnlyHint, true)
@@ -133,6 +136,7 @@ test('well-known metadata is identical on all four paths; /mcp challenges, refus
   assert.equal(withOrigin.status, 403)
   assert.equal((await h.request('/nothing')).status, 404)
   assert.equal((await h.request('/v1/mcp/internal/connections/x')).status, 404)
+  assert.equal((await h.request('/favicon.ico')).status, 404, 'the icon files are the enclave\'s')
   const unknownBearer = await rpc(h, `wmcp_a_${'A'.repeat(43)}`)
   assert.equal(unknownBearer.status, 401)
   secretsAbsent(h)

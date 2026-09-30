@@ -1,7 +1,8 @@
 // open_attachment in the reader (docs/mcp-enclave.md §16.5 and §16.7): which
 // connections have it, what the model reads (instructions, description,
 // every note and every guidance sentence, word for word), the shape of the
-// answer (one text block first, images after, never structuredContent), the
+// answer (one text block first, images after, never structuredContent), which
+// refusals are answers (no isError) and which are failures, the
 // size cap, and the two archive reads reader.mjs hands the enclave. The
 // enclave's side is a fake `provider.media` here; it is tested in
 // packages/mcp-http/enclave/test/media-*.test.mjs.
@@ -184,7 +185,15 @@ test('past the result cap, images go from the end with images_withheld "cap", an
   } finally { await f.close() }
 })
 
-test('refusals: every guidance sentence word for word, the JSON line of what the model could see, and the text codes', async () => {
+/**
+ * The refusals that are the answer about the attachment (reader 0.4.2, §16.7):
+ * no isError, so the host shows the call as done. Every other code keeps
+ * isError true.
+ */
+const answerCodes = ['media_not_allowed', 'attachment_pending', 'attachment_expired', 'attachment_unverifiable', 'attachment_locked',
+  'view_once_excluded', 'transcription_unavailable', 'attachment_unsupported', 'attachment_too_large', 'attachment_encrypted']
+
+test('refusals: every guidance sentence word for word, the JSON line of what the model could see, the text codes, and which are answers (no isError) or failures', async () => {
   const f = await contentFixture({ rows: 1, contacts: 1 })
   try {
     const facts = { media_type: 'document', mimetype: 'application/pdf', file_length: 188_743_680 }
@@ -219,10 +228,13 @@ test('refusals: every guidance sentence word for word, the JSON line of what the
     ]
     let current
     const client = await connect(configFor(f.server, { media: true }), await providerFor(f, fakeMedia(async () => { throw current })))
+    const failures = new Set()
     for (const [error, guidance, seen = {}, code = error.code] of cases) {
       current = error
       const result = await call(client)
-      assert.equal(result.isError, true, code)
+      // An answer about the attachment is a result; a failure, a wait or the model's own arguments are errors.
+      assert.equal(result.isError, answerCodes.includes(code) ? undefined : true, code)
+      if (result.isError) failures.add(code)
       assert.equal(result.content.length, 1)
       assert.equal(result.structuredContent, undefined)
       const [line, json] = result.content[0].text.split('\n')
@@ -230,6 +242,8 @@ test('refusals: every guidance sentence word for word, the JSON line of what the
       assert.deepEqual(JSON.parse(json), { uid, ...seen }, code)
       assert.equal(result.content[0].text.includes('private words'), false)
     }
+    assert.deepEqual([...failures].sort(), ['attachment_not_found', 'attachment_tampered', 'invalid_cursor', 'media_busy', 'media_unavailable', 'parser_failed',
+      'rate_limited', 'read_failed', 'reconsent_required', 'stale_grant', 'unauthorized'])
     // A text answer on the same connection keeps its code and words.
     const numbers = await client.callTool({ name: 'list_numbers', arguments: {} })
     assert.equal(numbers.isError, undefined)
@@ -293,6 +307,7 @@ test('the console link: open_url in the header and a last note saying where the 
     for (const [code, value, line] of cases) {
       current = Object.assign(new ArchiveError(code), { facts: value })
       const result = await call(refusing)
+      assert.equal(result.isError, answerCodes.includes(code) ? undefined : true, code)
       const lines = result.content[0].text.split('\n')
       assert.equal(lines.length, 3, code)
       assert.match(lines[0], new RegExp(`^Could not open the attachment \\(${code}\\)\\. `), code)
