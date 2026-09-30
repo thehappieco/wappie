@@ -507,5 +507,15 @@ async function prepare(ctx, record, job, row, plaintext, off, signal) {
   })
 }
 
-/** An ArchiveError code a job may answer with, or `read_failed`. */
-export const jobCode = error => (error instanceof ArchiveError && /^[a-z][a-z0-9_]{0,47}$/.test(error.code) ? error.code : error?.code === 'reconsent_required' ? 'ai_paused' : 'read_failed')
+/**
+ * The authorization's own grant or key no longer serving (its key gone, its
+ * grant's epoch or service changed, its API key refused): the authorization
+ * waits for its creator, which its callers hear as `ai_paused`, never as
+ * their own connection's code.
+ */
+const PAUSED = new Set(['reconsent_required', 'stale_grant', 'account_mismatch', 'not_authorized', 'unauthorized', 'invalid_grant'])
+/** The code a job answers with: an ArchiveError's, `ai_paused` for PAUSED, else `read_failed`. */
+export function jobCode(error) {
+  if (PAUSED.has(error?.code)) return 'ai_paused'
+  return error instanceof ArchiveError && /^[a-z][a-z0-9_]{0,47}$/.test(error.code) ? error.code : 'read_failed'
+}

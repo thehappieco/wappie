@@ -13,7 +13,9 @@ import { createLog } from '../../log.mjs'
 import { costOf, createBudgets, measure } from '../ai/budget.mjs'
 import { createEgress, EgressError, providerKey } from '../ai/egress.mjs'
 import { checkKeys, listModels } from '../ai/install.mjs'
-import { callProvider, checkAIRow, createQueue, functionOf, mediaContainer } from '../ai/jobs.mjs'
+import { ArchiveError } from '@whatserver2/client'
+import { LocalConfigError } from '@whatserver2/mcp/config'
+import { callProvider, checkAIRow, createQueue, functionOf, jobCode, mediaContainer } from '../ai/jobs.mjs'
 import * as policy from '../ai/policy.mjs'
 import { recordTagHolds, tagFields, configTag } from '../ai/tags.mjs'
 import { createProviderStubs, STUB_KEYS } from './ai-stubs.mjs'
@@ -336,4 +338,12 @@ test('I3a: the stored tag holds under the DSK the install proved, and fails unde
   assert.equal(recordTagHolds(record, device, { dsk, namespace: '01a08e0e-0000-7000-8000-000000000000', epoch: 2 }), false)
   assert.equal(recordTagHolds(record, device, null), false)
   assert.equal(recordTagHolds({ ...record, budget: { ...record.budget, monthly_usd_cents: 100_000 } }, device, { dsk, namespace: ns, epoch: 2 }), false, 'a record whose budget changed')
+})
+
+test('a job\'s code: the authorization\'s own grant or key failing is ai_paused, never the caller\'s own connection code; anything unknown is read_failed', () => {
+  for (const code of ['stale_grant', 'account_mismatch', 'not_authorized', 'unauthorized', 'invalid_grant']) assert.equal(jobCode(new ArchiveError(code)), 'ai_paused', code)
+  assert.equal(jobCode(new LocalConfigError('reconsent_required')), 'ai_paused')
+  assert.equal(jobCode(new ArchiveError('ai_too_large')), 'ai_too_large')
+  assert.equal(jobCode(new Error('a bug with private words')), 'read_failed')
+  assert.equal(jobCode(Object.assign(new ArchiveError('x'), { code: 'Bad Code' })), 'read_failed')
 })

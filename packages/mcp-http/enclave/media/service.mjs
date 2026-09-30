@@ -133,7 +133,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
   const conn = id => ({ conn: fingerprint(id) })
   const stateOf = id => {
     let state = connections.get(id)
-    if (!state) connections.set(id, state = { opens: new Map(), active: null, line: [], mediaOff: [], aiWaits: new Set(), aiOnce: new Map() })
+    if (!state) connections.set(id, state = { opens: new Map(), active: null, line: [], mediaOff: [], aiWaits: new Set(), aiOnce: new Map(), aiWatched: new WeakSet() })
     return state
   }
   /** The console link of a row's message on this connection (§16.7), or null. */
@@ -521,8 +521,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       keepAI(state, id, aiKey, outcome)
       return aiAnswer(outcome, row, request, link, facts)
     }
-    if (!job.watched) {
-      job.watched = true
+    // Each connection keeps the job's outcome under its own key, once, whoever else waits for the job.
+    if (!state.aiWatched.has(job)) {
+      state.aiWatched.add(job)
       job.settled.then(outcome => keepAI(state, id, aiKey, outcome.error ? outcome : { result: outcome.record }, job))
     }
     // The call waits until its start plus the host's wait; the job goes on after that.

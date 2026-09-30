@@ -6445,7 +6445,10 @@ private repository, and not part of this track.
   empty body and its note. A transcript's status is `partial` while
   `next_cursor` is set; it has no `images` field. A job on an authorization
   this process holds no keys for answers `ai_paused` without `renew_url`
-  (only Go's `reseal` pick carries the link). An AI answer does not count
+  (only Go's `reseal` pick carries the link), and so does one whose own
+  grant or key no longer serves (a stale grant, another service, a refused
+  API key): the caller hears the authorization's state, never its own
+  connection's codes. An AI answer does not count
   toward `OPENS_PER_MINUTE`: the AI queue and budgets bound it. The
   `get_message` `openable` of audio on `ai_v1` readers follows the
   download, hash and size checks with `AI_CAP_BYTES.audio` and kind `audio`.

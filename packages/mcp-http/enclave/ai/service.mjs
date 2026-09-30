@@ -140,8 +140,9 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
       log.event('ai_job_done', conn(id))
       return outcome
     } catch (error) {
-      log.event('ai_job_failed', { ...conn(id), code: codeOf(error) })
-      throw error
+      const code = codeOf(error)
+      log.event('ai_job_failed', { ...conn(id), code })
+      throw error?.code === code ? error : aiRefusal(code)
     }
   }
   /** Queues a job (or joins the one in flight for the same key). */
