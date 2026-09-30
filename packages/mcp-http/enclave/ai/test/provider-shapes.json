@@ -2458,6 +2458,7 @@
     "text": "Oi, aqui é a sonda de teste. A reunião ficou para quinta-feira, dia 16, às 15:30.",
     "flags": [],
     "usage": {
+     "duration": true,
      "seconds": 15
     }
    }

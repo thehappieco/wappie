@@ -294,7 +294,7 @@ export async function connectSending(w, options = {}) {
 export const aiConnectLabels = (requestId, kid) => ({ info: 'wappie-ai-connect/v1', aad: JSON.stringify(['wappie/ai-connect', 1, requestId, kid, RESOURCE]) })
 export const aiRenewLabels = (renewalId, connectionId, kid) => ({ info: 'wappie-ai-renew/v1', aad: JSON.stringify(['wappie/ai-renew', 1, renewalId, connectionId, kid, RESOURCE]) })
 /** Go's `ai_off` for a row nothing narrows. */
-export const aiOff = (change = {}) => ({ functions: [], providers: [], paused: false, monthly_usd_cents: null, ...change })
+export const aiOff = (change = {}) => ({ functions: [], providers: [], paused: false, monthly_tokens: null, ...change })
 
 /** POST /internal/ai/requests: the attested descriptor of a fresh AI request. */
 export async function requestAI(w, { nonce = randomBytes(32) } = {}) {
@@ -309,14 +309,14 @@ export function aiTags(bundle, { request, kid, epoch = 1, dsk = DSK(), namespace
 }
 
 /** The functions, keys, features and budget of a bundle for `functions` ({feature: [provider, model]}) on the fixture's number. */
-export function aiScope(functions, { lang, requesters = 'self', devices = [vector.device], keys = {}, cents = 1000, items = 100, rates = {} } = {}) {
+export function aiScope(functions, { lang, requesters = 'self', devices = [vector.device], keys = {}, tokens = 5_000_000, items = 100 } = {}) {
   const entries = Object.fromEntries(Object.entries(functions).map(([feature, [provider, model]]) => [feature, { provider, model }]))
   const providers = [...new Set(Object.values(entries).map(entry => entry.provider))]
   return {
     keys: Object.fromEntries(providers.map(provider => [provider, keys[provider] ?? STUB_KEYS[provider]])),
     functions: entries,
     features: Object.fromEntries(devices.map(device => [device, Object.fromEntries(Object.keys(entries).map(feature => [feature, { mode: 'request', ...(lang ? { lang } : {}), requesters }]))])),
-    budget: { monthly_usd_cents: cents, request_items_per_day: items, rates: Object.fromEntries(Object.values(entries).map(entry => [`${entry.provider}:${entry.model}`, rates[`${entry.provider}:${entry.model}`] ?? { in: 100, out: 400, sec: 0 }])) },
+    budget: { monthly_tokens: tokens, request_items_per_day: items },
   }
 }
 

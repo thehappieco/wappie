@@ -275,8 +275,7 @@ func (h *harness) authorization(t *testing.T, user store.User, requesters string
 			"document": map[string]any{"provider": "anthropic", "model": "claude-sonnet-5-5"}},
 		"features": map[string]any{d: map[string]any{"audio": map[string]any{"mode": "request", "requesters": requesters},
 			"document": map[string]any{"mode": "request", "requesters": requesters}}},
-		"budget": map[string]any{"monthly_usd_cents": 1000, "request_items_per_day": 100, "rates": map[string]any{
-			"google:gemini-3.8-flash": map[string]any{"in": 30, "out": 250, "sec": 0}, "anthropic:claude-sonnet-5-5": map[string]any{"in": 300, "out": 1500, "sec": 0}}},
+		"budget":     map[string]any{"monthly_tokens": 5_000_000, "request_items_per_day": 100},
 		"expires_at": expires.UTC().Format(time.RFC3339), "key_mode": "ephemeral",
 		"cfg_tags": map[string]any{d: base64.RawURLEncoding.EncodeToString(random(t, 32))},
 	}
@@ -565,25 +564,27 @@ func TestAIAuthorizationRoutes(t *testing.T) {
 	patch := func(token, id string, body map[string]any) reply {
 		return h.call(t, http.MethodPatch, "/v1/ai/authorizations/"+id, token, body)
 	}
-	r := patch(adminToken, id, map[string]any{"paused": true, "off": []string{"document"}, "cap_cents": 300})
+	r := patch(adminToken, id, map[string]any{"paused": true, "off": []string{"document"}, "cap_tokens": 2_500_000})
 	expect(t, r, http.StatusOK, "")
 	var got mcpauth.AIAuthorizationInfo
 	r.into(t, &got)
-	if !got.Paused || strings.Join(got.Off, ",") != "document" || got.CapCents == nil || *got.CapCents != 300 {
+	if !got.Paused || strings.Join(got.Off, ",") != "document" || got.CapTokens == nil || *got.CapTokens != 2_500_000 {
 		t.Fatalf("narrowed = %s", r.body)
 	}
 	expect(t, patch(adminToken, id, map[string]any{"paused": false}), http.StatusForbidden, "not_authorized")
-	expect(t, patch(adminToken, id, map[string]any{"cap_cents": nil}), http.StatusForbidden, "not_authorized")
+	expect(t, patch(adminToken, id, map[string]any{"cap_tokens": nil}), http.StatusForbidden, "not_authorized")
 	expect(t, patch(memberToken, id, map[string]any{"paused": true}), http.StatusForbidden, "not_authorized")
 	expect(t, patch(ownerToken, id, map[string]any{}), http.StatusBadRequest, "bad_request")
-	expect(t, patch(ownerToken, id, map[string]any{"cap_cents": 1.5}), http.StatusBadRequest, "bad_request")
-	expect(t, patch(ownerToken, id, map[string]any{"cap_cents": 0}), http.StatusBadRequest, "bad_request")
+	expect(t, patch(ownerToken, id, map[string]any{"cap_tokens": 1.5}), http.StatusBadRequest, "bad_request")
+	expect(t, patch(ownerToken, id, map[string]any{"cap_tokens": 0}), http.StatusBadRequest, "bad_request")
+	expect(t, patch(ownerToken, id, map[string]any{"cap_tokens": 1_000_000_001}), http.StatusBadRequest, "bad_request")
+	expect(t, patch(ownerToken, id, map[string]any{"cap_cents": 300}), http.StatusBadRequest, "bad_request")
 	expect(t, patch(ownerToken, id, map[string]any{"off": []string{"translate"}}), http.StatusBadRequest, "bad_request")
 	expect(t, patch(ownerToken, uuid.NewString(), map[string]any{"paused": true}), http.StatusNotFound, "not_found")
-	r = patch(ownerToken, id, map[string]any{"paused": false, "off": []string{}, "cap_cents": nil})
+	r = patch(ownerToken, id, map[string]any{"paused": false, "off": []string{}, "cap_tokens": nil})
 	expect(t, r, http.StatusOK, "")
 	r.into(t, &got)
-	if got.Paused || len(got.Off) != 0 || got.CapCents != nil {
+	if got.Paused || len(got.Off) != 0 || got.CapTokens != nil {
 		t.Fatalf("undone = %s", r.body)
 	}
 
@@ -844,7 +845,7 @@ func TestAIUsageRoute(t *testing.T) {
 	ctx := context.Background()
 	for _, id := range []string{mine, theirs} {
 		if err := h.ai.RecordAIUsage(ctx, h.tenant, id, store.AIUsage{DeviceID: h.device, Feature: "audio", Provider: "google", Model: "gemini-3.8-flash",
-			Origin: "console", RequesterID: h.owner.ID, Items: 1, InputTokens: 10, CostMicrocents: 99}); err != nil {
+			Origin: "console", RequesterID: h.owner.ID, Items: 1, InputTokens: 10, ChargedTokens: 99}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -865,11 +866,12 @@ func TestAIUsageRoute(t *testing.T) {
 	}
 	// Today's calls, answered and failed, beside the month's counters.
 	if err := h.ai.RecordAIUsage(ctx, h.tenant, mine, store.AIUsage{DeviceID: h.device, Feature: "audio", Provider: "google", Model: "gemini-3.8-flash",
-		Origin: "console", RequesterID: h.owner.ID, Failures: 2, CostMicrocents: 5}); err != nil {
+		Origin: "console", RequesterID: h.owner.ID, Failures: 2, ChargedTokens: 5}); err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range func() []map[string]any { _, items := usage(ownerToken); return items }() {
-		if item["authorization_id"] == mine && (item["items_today"] != float64(1) || item["failures_today"] != float64(2) || item["items"] != float64(1)) {
+		if item["authorization_id"] == mine && (item["items_today"] != float64(1) || item["failures_today"] != float64(2) || item["items"] != float64(1) ||
+			item["charged_tokens"] != float64(104) || item["input_tokens"] != float64(10)) {
 			t.Fatalf("today = %v", item)
 		}
 	}

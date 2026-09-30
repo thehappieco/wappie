@@ -219,21 +219,20 @@ export const AI_LANG_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/
 export const AI_KEY_RE = /^[!-~]{20,256}$/
 /** Who may ask for a function on a number (§18.10). */
 export const AI_REQUESTERS = Object.freeze(['self', 'readers', 'console'])
-/** The bundle's ceilings (AI_MONTHLY_USD_CENTS_MAX, AI_REQUEST_ITEMS_PER_DAY_MAX), and a rate's. */
-export const AI_MONTHLY_USD_CENTS_MAX = 100_000
+/** The bundle's ceilings (AI_MONTHLY_TOKENS_MAX, AI_REQUEST_ITEMS_PER_DAY_MAX). */
+export const AI_MONTHLY_TOKENS_MAX = 1_000_000_000
 export const AI_REQUEST_ITEMS_PER_DAY_MAX = 1_000
-export const AI_RATE_MAX = 100_000_000
 /** The configuration tag's label (§18.7 step 4). */
 export const AI_CONFIG_LABEL = 'wappie-ai-config/v1'
 
 const aiFunction = z.strictObject({ provider: z.enum(AI_PROVIDER_NAMES), model: z.string().max(64).regex(AI_MODEL_RE) })
 const aiFeature = z.strictObject({ mode: z.literal('request'), lang: z.string().max(40).regex(AI_LANG_RE).optional(), requesters: z.enum(AI_REQUESTERS) })
-const aiRate = z.number().int().min(0).max(AI_RATE_MAX)
 const byFunction = entry => z.strictObject(Object.fromEntries(AI_FUNCTIONS.map(name => [name, entry.optional()])))
 /**
  * The AI bundle (§18.7 step 3): a format no other validator takes (`version:
  * 3`, `kind: 'ai'`), sealed to an attested AI request's key. `auto` (B2) is
- * absent, like any key not listed; `mode: 'auto'` is refused.
+ * absent, like any key not listed; `mode: 'auto'` is refused. The budget is
+ * a safety cap in tokens and attachments, never money (§18.10).
  */
 export const aiBundleSchema = z.strictObject({
   version: z.literal(3), kind: z.literal('ai'), purpose: z.enum(['consent', 'renewal']),
@@ -248,15 +247,12 @@ export const aiBundleSchema = z.strictObject({
   functions: byFunction(aiFunction),
   features: z.record(z.string().max(36), byFunction(aiFeature)),
   budget: z.strictObject({
-    monthly_usd_cents: z.number().int().min(1).max(AI_MONTHLY_USD_CENTS_MAX),
+    monthly_tokens: z.number().int().min(1).max(AI_MONTHLY_TOKENS_MAX),
     request_items_per_day: z.number().int().min(1).max(AI_REQUEST_ITEMS_PER_DAY_MAX),
-    rates: z.record(z.string().max(80), z.strictObject({ in: aiRate, out: aiRate, sec: aiRate })),
   }),
   cfg_tags: z.record(z.string().max(36), z.string().length(43)),
 })
 
-/** The `"<provider>:<model>"` pairs a bundle's functions name, each once. */
-export const aiPairs = functions => [...new Set(Object.values(functions).map(entry => `${entry.provider}:${entry.model}`))]
 const sameKeys = (object, keys) => { const names = Object.keys(object); return names.length === keys.length && keys.every(key => Object.hasOwn(object, key)) }
 
 /**
@@ -280,7 +276,6 @@ export function validateAIBundle(value, now = Date.now()) {
     !sameKeys(bundle.keys, providers) ||
     !sameKeys(bundle.features, bundle.device_ids) ||
     Object.values(bundle.features).some(features => Object.keys(features).some(name => !named.includes(name))) ||
-    !sameKeys(bundle.budget.rates, aiPairs(bundle.functions)) ||
     !sameKeys(bundle.cfg_tags, bundle.device_ids) || Object.values(bundle.cfg_tags).some(tag => !canonicalKey(tag))) fail('invalid_bundle')
   Object.freeze(bundle.device_ids)
   for (const name of ['keys', 'functions', 'features', 'cfg_tags']) Object.freeze(bundle[name])

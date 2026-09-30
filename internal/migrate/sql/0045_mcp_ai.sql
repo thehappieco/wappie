@@ -19,7 +19,8 @@
 --                     who may ask, the budget and the tags. On 'ai' rows only.
 --     ai_paused_at    when a person paused it; NULL while not paused.
 --     ai_off          the functions a person switched off on it.
---     ai_cap_cents    a monthly cap a person set below the sealed budget.
+--     ai_cap_tokens   a monthly cap in tokens a person set below the sealed
+--                     budget (a safety lock: no price is kept anywhere).
 --     ai_alerts       what the reader reported (a key rejected, a model gone,
 --                     no quota), kept until a renewal.
 --   revoke_reason     adds 'ai_key_deleted': the keychain item it named went.
@@ -33,7 +34,9 @@
 --                     keyed the same way. They count toward the storage quota,
 --                     go with their message, and move with their device.
 --   ai_usage_daily    plain counters per day, authorization, number,
---                     function, provider, model, key, origin and requester.
+--                     function, provider, model, key, origin and requester:
+--                     attachments, the tokens each provider reported, seconds,
+--                     and the tokens the reader counted toward the cap.
 --
 -- Down-step (additive migration; `migrate.Run` refuses a binary that does not
 -- know version 45, so rolling back below it needs this first). Run only with
@@ -75,7 +78,7 @@
 --      DELETE FROM mcp_connections WHERE kind = 'ai';
 --      ALTER TABLE mcp_connections DROP CONSTRAINT mcp_connections_ai_coherent;
 --      ALTER TABLE mcp_connections DROP COLUMN ai_config, DROP COLUMN ai_paused_at, DROP COLUMN ai_off,
---          DROP COLUMN ai_cap_cents, DROP COLUMN ai_alerts;
+--          DROP COLUMN ai_cap_tokens, DROP COLUMN ai_alerts;
 --      ALTER TABLE mcp_connections DROP CONSTRAINT mcp_connections_revoke_reason_check;
 --      ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_revoke_reason_check CHECK (revoke_reason IN (
 --          'console', 'reader', 'reuse_detected', 'relay_failed', 'pending_expired', 'expired', 'service_removed',
@@ -105,16 +108,16 @@ ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_revoke_reason_check C
     'console', 'reader', 'reuse_detected', 'relay_failed', 'pending_expired', 'expired', 'service_removed',
     'service_disabled', 'member_removed', 'member_disabled', 'access_lost', 'ai_key_deleted'));
 ALTER TABLE mcp_connections
-    ADD COLUMN ai_config    jsonb       CHECK (octet_length(ai_config::text) <= 32768),
-    ADD COLUMN ai_paused_at timestamptz,
-    ADD COLUMN ai_off       text[]      NOT NULL DEFAULT '{}'
-                                        CHECK (ai_off <@ ARRAY['audio', 'video', 'image', 'document']),
-    ADD COLUMN ai_cap_cents integer     CHECK (ai_cap_cents BETWEEN 1 AND 100000),
-    ADD COLUMN ai_alerts    jsonb       NOT NULL DEFAULT '{}' CHECK (octet_length(ai_alerts::text) <= 4096);
+    ADD COLUMN ai_config     jsonb       CHECK (octet_length(ai_config::text) <= 32768),
+    ADD COLUMN ai_paused_at  timestamptz,
+    ADD COLUMN ai_off        text[]      NOT NULL DEFAULT '{}'
+                                         CHECK (ai_off <@ ARRAY['audio', 'video', 'image', 'document']),
+    ADD COLUMN ai_cap_tokens bigint      CHECK (ai_cap_tokens BETWEEN 1 AND 1000000000),
+    ADD COLUMN ai_alerts     jsonb       NOT NULL DEFAULT '{}' CHECK (octet_length(ai_alerts::text) <= 4096);
 ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_ai_coherent CHECK (
     (kind = 'ai' AND ai_config IS NOT NULL AND NOT media AND redirect_host = 'console' AND consent_version = 1)
  OR (kind <> 'ai' AND ai_config IS NULL AND ai_paused_at IS NULL AND ai_off = '{}'
-     AND ai_cap_cents IS NULL AND ai_alerts = '{}'));
+     AND ai_cap_tokens IS NULL AND ai_alerts = '{}'));
 
 -- A person's API keys, sealed in their browser (§18.6). Go stores an opaque envelope.
 CREATE TABLE ai_keychain (
@@ -168,7 +171,7 @@ CREATE TABLE ai_usage_daily (
     input_tokens     bigint  NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
     output_tokens    bigint  NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
     seconds          integer NOT NULL DEFAULT 0 CHECK (seconds >= 0),
-    cost_microcents  bigint  NOT NULL DEFAULT 0 CHECK (cost_microcents >= 0),
+    charged_tokens   bigint  NOT NULL DEFAULT 0 CHECK (charged_tokens >= 0),   -- counted toward the cap (§18.10)
     PRIMARY KEY (tenant_id, day, authorization_id, device_id, feature, provider, model, keychain_id, origin, requester_id)
 );
 

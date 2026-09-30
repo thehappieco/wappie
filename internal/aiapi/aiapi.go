@@ -323,9 +323,9 @@ func (h *Handler) authorizations(w http.ResponseWriter, r *http.Request) {
 }
 
 type controlsRequest struct {
-	Paused   *bool           `json:"paused"`
-	Off      *[]string       `json:"off"`
-	CapCents json.RawMessage `json:"cap_cents"`
+	Paused    *bool           `json:"paused"`
+	Off       *[]string       `json:"off"`
+	CapTokens json.RawMessage `json:"cap_tokens"`
 }
 
 // controls pauses, narrows or widens an authorization: pausing and
@@ -346,19 +346,19 @@ func (h *Handler) controls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := store.AIControls{Paused: req.Paused, Off: req.Off}
-	if len(req.CapCents) > 0 {
+	if len(req.CapTokens) > 0 {
 		in.CapSet = true
-		if string(req.CapCents) != "null" {
-			var capCents int
-			if err := json.Unmarshal(req.CapCents, &capCents); err != nil {
-				fail(w, http.StatusBadRequest, "bad_request", "cap_cents must be a whole number of cents, or null")
+		if string(req.CapTokens) != "null" {
+			var capTokens int64
+			if err := json.Unmarshal(req.CapTokens, &capTokens); err != nil {
+				fail(w, http.StatusBadRequest, "bad_request", "cap_tokens must be a whole number of tokens, or null")
 				return
 			}
-			in.Cap = &capCents
+			in.Cap = &capTokens
 		}
 	}
 	if in.Paused == nil && in.Off == nil && !in.CapSet {
-		fail(w, http.StatusBadRequest, "bad_request", "name paused, off or cap_cents")
+		fail(w, http.StatusBadRequest, "bad_request", "name paused, off or cap_tokens")
 		return
 	}
 	a, err := h.Connections.SetAIControls(r.Context(), user.TenantID, user.ID, id.String(), in)
@@ -366,7 +366,7 @@ func (h *Handler) controls(w http.ResponseWriter, r *http.Request) {
 		h.authorizationError(w, err)
 		return
 	}
-	h.log().Info("ai authorization controls", "connection", a.ID, "paused", a.PausedAt != nil, "off", strings.Join(a.Off, ","), "capped", a.CapCents != nil)
+	h.log().Info("ai authorization controls", "connection", a.ID, "paused", a.PausedAt != nil, "off", strings.Join(a.Off, ","), "capped", a.CapTokens != nil)
 	send(w, http.StatusOK, mcpauth.ListedAIAuthorization(a, user.ID, h.allowed(user.TenantID), time.Now()))
 }
 
@@ -827,7 +827,7 @@ type usageItem struct {
 	InputTokens     int64  `json:"input_tokens"`
 	OutputTokens    int64  `json:"output_tokens"`
 	Seconds         int64  `json:"seconds"`
-	CostMicrocents  int64  `json:"cost_microcents"`
+	ChargedTokens   int64  `json:"charged_tokens"`
 	// ItemsToday and FailuresToday are today's (UTC) calls of the line,
 	// answered and failed: what the reader counts against the daily cap.
 	ItemsToday    int64 `json:"items_today"`
@@ -864,7 +864,7 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 			AuthorizationID: u.AuthorizationID.String(), DeviceID: u.DeviceID.String(), Feature: u.Feature, Provider: u.Provider,
 			Model: u.Model, KeychainID: u.KeychainID.String(), Origin: u.Origin, RequesterID: u.RequesterID.String(),
 			Items: u.Items, Reused: u.Reused, Failures: u.Failures, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-			Seconds: u.Seconds, CostMicrocents: u.CostMicrocents, ItemsToday: u.ItemsToday, FailuresToday: u.FailuresToday,
+			Seconds: u.Seconds, ChargedTokens: u.ChargedTokens, ItemsToday: u.ItemsToday, FailuresToday: u.FailuresToday,
 		})
 	}
 	send(w, http.StatusOK, out)

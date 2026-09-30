@@ -331,9 +331,10 @@ providers' keys in memory only (`aikeys` beside `connkeys`, wiped with it).
   file, reused when a stored result of the same file, function, provider,
   model, prompt and language exists on a number of the authorization; images
   and documents prepared by the jailed workers; the result sealed under the
-  number's key (`derived.mjs`) and stored with its dedupe tag; the charge from
-  the provider's own usage against the authorization's budget
-  (`budget.mjs`). Four jobs at once, one per authorization.
+  number's key (`derived.mjs`) and stored with its dedupe tag; the tokens the
+  provider reports counted against the authorization's safety cap in tokens
+  and attachments (`budget.mjs`), never a price. Four jobs at once, one per
+  authorization.
 - **Media connections** answer audio and video with transcripts
   (`enclave/media/service.mjs`); the console asks for jobs through
   `/internal/ai/jobs`. The log adds `ai_*` events with a fingerprint and a

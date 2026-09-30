@@ -377,17 +377,17 @@ written) and the enclave wipes its API keys within a minute; every status
 answer of an `ai` row carries `ai_off`: the functions switched off (by
 `WS_AI_OFF_FEATURES`, by the row's own narrowing, or because their provider
 is in `WS_AI_OFF_PROVIDERS`), the providers switched off, whether the row is
-paused, and its spending cap. `/v1/media` lets an `ai` row's key through only
-while the row is active, not paused and `AIAllowed`. Discovery adds
-`mcp.remote.ai.v1` when content is advertised and the switch is on, and
-`GET /v1/mcp/content` adds `ai` for the session's workspace. The `/v1/ai/*`
-routes answer 404 while the switch is off, except the keychain, the listing
-of authorizations, their revocation and the deletion of results. The startup
-line prints `ai=on|off`, the number of listed workspaces and, when any is
-off, `ai_off_providers=` and `ai_off_features=`. Stored results go with their
-message and count toward the storage quota; the daily usage counters are
-deleted 400 days after their day, and deleted keychain items 30 days after
-their deletion.
+paused, and its lower monthly cap in tokens. `/v1/media` lets an `ai` row's
+key through only while the row is active, not paused and `AIAllowed`.
+Discovery adds `mcp.remote.ai.v1` when content is advertised and the switch
+is on, and `GET /v1/mcp/content` adds `ai` for the session's workspace. The
+`/v1/ai/*` routes answer 404 while the switch is off, except the keychain,
+the listing of authorizations, their revocation and the deletion of results.
+The startup line prints `ai=on|off`, the number of listed workspaces and,
+when any is off, `ai_off_providers=` and `ai_off_features=`. Stored results
+go with their message and count toward the storage quota; the daily usage
+counters are deleted 400 days after their day, and deleted keychain items 30
+days after their deletion.
 
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's

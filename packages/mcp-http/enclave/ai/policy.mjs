@@ -3,8 +3,10 @@
 // here is read from the environment, a request, a bundle or Go. The
 // providers, their hosts and routes, the prompts, which provider may serve
 // which function, the limits and the error map are all here (I7); model
-// names and prices are not: each is the person's pick, tagged, and checked
-// against their key's own list at install.
+// names are not: each is the person's pick, tagged, and checked against
+// their key's own list at install. No price is anywhere: prices vary with
+// each person's plan and model, so the budget is a safety cap in tokens
+// (§18.10).
 //
 // packages/mcp/bundle.mjs repeats the bundle's limits (AI_DEVICES_MAX,
 // AI_FEATURES, AI_MODEL_RE and the budget ceilings) for validateAIBundle,
@@ -126,12 +128,19 @@ export const AI_OUTPUT_MAX_TOKENS = deepFreeze({ image: 4_000, document: 8_000, 
 export const AI_CAP_BYTES = deepFreeze({ audio: 26_214_400, video: 14_950_848, image: CAP_BYTES.image, document: CAP_BYTES.document })
 export const AI_GOOGLE_REQUEST_MAX_BYTES = 20_000_000
 export const AI_OPENAI_AUDIO_MAX_BYTES = 26_214_400
-/** The claimed length above which a call is not made (the charge never rests on the claim, §18.10). */
+/** The claimed length above which a call is not made (what is counted never rests on the claim, §18.10). */
 export const AI_MAX_SECONDS = deepFreeze({ audio: 1_400, video: 600 })
-/** The charge's upper bound on a length: 2 kbit/s, below every speech codec the providers decode. */
+/** The upper bound on a length, where no measure is: 2 kbit/s, below every speech codec the providers decode. */
 export const AI_MIN_BYTES_PER_SECOND = 250
 /** Google's audio tokens per second (B0, §18.19). */
 export const AI_GOOGLE_AUDIO_TOKENS_PER_SECOND = 25
+/**
+ * The tokens a second counts toward the monthly limit for an answer billed
+ * by duration (OpenAI's transcription `usage.type` `duration`: whisper-1 and
+ * gpt-transcribe, B0), and for the length bound: Google's measured audio
+ * rate (§18.10, §18.19).
+ */
+export const AI_DURATION_TOKENS_PER_SECOND = AI_GOOGLE_AUDIO_TOKENS_PER_SECOND
 export const AI_TEXT_MAX_CHARS = 200_000
 export const AI_RESPONSE_MAX_BYTES = 2_097_152
 export const AI_CALL_TIMEOUT_MS = 120_000
@@ -148,8 +157,9 @@ export const AI_LINE_MAX = 4
 export const AI_QUEUE_MAX = 16
 export const AI_JOB_TTL_MS = 600_000
 export const AI_REQUESTS_PENDING_MAX = 20
+/** The bundle's ceilings: attempts at a provider call a day, and tokens a month. */
 export const AI_REQUEST_ITEMS_PER_DAY_MAX = 1_000
-export const AI_MONTHLY_USD_CENTS_MAX = 100_000
+export const AI_MONTHLY_TOKENS_MAX = 1_000_000_000
 
 /**
  * What the enclave reads of a provider's error answer (egress.mjs

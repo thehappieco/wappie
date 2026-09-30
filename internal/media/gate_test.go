@@ -120,7 +120,7 @@ func (f *fixture) aiConnectionKey(t *testing.T, owner store.User) (string, strin
 		"keys":{"google":{"keychain_id":"` + item.ID.String() + `","sha256":"` + strings.Repeat("ab", 32) + `","label":"Gemini","suffix":"a1B2"}},
 		"functions":{"audio":{"provider":"google","model":"gemini-3.8-flash"}},
 		"features":{"` + device + `":{"audio":{"mode":"request","requesters":"self"}}},
-		"budget":{"monthly_usd_cents":1000,"request_items_per_day":100,"rates":{"google:gemini-3.8-flash":{"in":30,"out":250,"sec":0}}},
+		"budget":{"monthly_tokens":5000000,"request_items_per_day":100},
 		"expires_at":"` + expires.UTC().Format(time.RFC3339) + `","key_mode":"ephemeral","cfg_tags":{"` + device + `":"` + strings.Repeat("A", 43) + `"}}`
 	cfg, err := store.ParseAIConfig([]byte(raw))
 	if err != nil {

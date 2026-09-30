@@ -28,7 +28,7 @@ import { MEDIA_TYPES, PDF_MAX_PAGES, PDF_PAGES_PER_JOB, JOB_TEXT_MAX_BYTES, IMAG
 import { cut, renderOffice, scanned } from '../media/result.mjs'
 import { cleanText, decodeText, sniff } from '../media/sniff.mjs'
 import { createMediaStream } from '../media/wamedia-stream.mjs'
-import { costOf, measure, reported } from './budget.mjs'
+import { chargedTokens, reported } from './budget.mjs'
 import { dedupeTag, reusable } from './dedupe.mjs'
 import { makeRecord, sealDerivedWith } from './derived.mjs'
 import { classify, EgressError, errorFacts } from './egress.mjs'
@@ -364,16 +364,12 @@ export async function runJob(ctx, record, job) {
       if (!request) throw aiRefusal('ai_unsupported')
       if (entry.provider === 'openai' && feature === 'audio' && plaintext.length > AI_OPENAI_AUDIO_MAX_BYTES) throw aiRefusal('ai_too_large')
       if (entry.provider === 'google' && Buffer.byteLength(JSON.stringify(request.body)) > AI_GOOGLE_REQUEST_MAX_BYTES) throw aiRefusal('ai_too_large')
-      const rate = record.budget.rates[`${entry.provider}:${entry.model}`]
       const claimed = claimedSeconds(row)
-      /** Charges `usage` (a 200's, or `{}` for a call sent and never answered) and posts it: the cost by `measure`'s bounds, the counts as reported. */
+      /** Counts `usage` (a 200's, or `{}` for a call sent and never answered) toward the cap and posts it: the tokens charged, beside the counts reported. */
       const charge = (usage, bytesOut, counted) => {
-        const bounds = measure(feature, usage, { bodyBytes: bytesOut, plaintextBytes: plaintext.length, claimedSeconds: claimed })
-        const cost = costOf(rate, bounds)
-        const counts = reported(feature, usage, bounds, rate, claimed)
-        ctx.budgets.charge(record.connection_id, cost)
-        ctx.usage(record, job, { ...counted, ...counts, cost_microcents: cost })
-        return counts
+        const tokens = chargedTokens(feature, usage, { bodyBytes: bytesOut, plaintextBytes: plaintext.length, claimedSeconds: claimed })
+        ctx.budgets.charge(record.connection_id, tokens)
+        ctx.usage(record, job, { ...counted, ...reported(feature, usage, claimed), charged_tokens: tokens })
       }
       let answer
       try {
@@ -401,13 +397,15 @@ export async function runJob(ctx, record, job) {
       }
       // 11. Every 200 answer is charged by its usage, a record or not (the counts go to Go).
       const read = interpret(entry.provider, answer.route, answer.json)
-      const counts = charge(read.usage, answer.bytesOut, { items: 1 })
+      charge(read.usage, answer.bytesOut, { items: 1 })
       if (read.code) throw aiRefusal(read.code)
-      // 10. The record, sealed and stored, with the counts its usage row reports.
+      // 10. The record, sealed and stored, with the tokens the provider reported and, for audio and video, the seconds its usage row reports.
+      const counts = reported(feature, read.usage, claimed)
+      const kept = Object.fromEntries(['input_tokens', 'output_tokens'].filter(name => read.usage[name] !== undefined).map(name => [name, counts[name]]))
+      if (feature === 'audio' || feature === 'video') kept.seconds = counts.seconds
       const made = makeRecord({
         feature, text: read.text, lang, provider: entry.provider, model: entry.model, prompt_version: version, created_at: new Date(ctx.now()).toISOString(),
-        source_sha256, usage: { input_tokens: counts.input_tokens, output_tokens: counts.output_tokens, ...(feature === 'audio' || feature === 'video' ? { seconds: counts.seconds } : {}) },
-        flags: [...read.flags, ...(job.redo ? ['redo'] : [])],
+        source_sha256, usage: kept, flags: [...read.flags, ...(job.redo ? ['redo'] : [])],
       })
       return await store(ctx, record, job, row, keys, scope, made, tagInput)
     } finally {

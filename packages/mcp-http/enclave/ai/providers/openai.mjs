@@ -72,7 +72,8 @@ const count = value => (Number.isSafeInteger(value) && value >= 0 ? value : unde
 
 /**
  * A 200 answer. Transcription: `text`, and its usage (`tokens` with input
- * and output, or `duration` with `seconds`, B0). Responses: the
+ * and output, or `duration` with `seconds`, B0: marked `duration`, since
+ * the budget counts its seconds and not tokens, §18.10). Responses: the
  * `output_text` parts joined; a `refusal` part, or `incomplete` for
  * `content_filter`, is a safety stop, `incomplete` for `max_output_tokens` the
  * output limit.
@@ -85,8 +86,9 @@ export function answer(json, route) {
     if (measured?.type === 'tokens') {
       if (count(measured.input_tokens) !== undefined) usage.input_tokens = measured.input_tokens
       if (count(measured.output_tokens) !== undefined) usage.output_tokens = measured.output_tokens
-    } else if (measured?.type === 'duration' && typeof measured.seconds === 'number' && Number.isFinite(measured.seconds) && measured.seconds >= 0) {
-      usage.seconds = Math.ceil(measured.seconds)
+    } else if (measured?.type === 'duration') {
+      usage.duration = true
+      if (typeof measured.seconds === 'number' && Number.isFinite(measured.seconds) && measured.seconds >= 0) usage.seconds = Math.ceil(measured.seconds)
     }
     return { text, stop: null, usage, transcription: true }
   }

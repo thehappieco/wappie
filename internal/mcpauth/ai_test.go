@@ -135,10 +135,8 @@ func aiConfigFor(request, kid string, service uuid.UUID, devices []uuid.UUID, ke
 			"audio":    map[string]any{"provider": "google", "model": geminiModel},
 			"document": map[string]any{"provider": "anthropic", "model": claudeModel},
 		},
-		"features": features,
-		"budget": map[string]any{"monthly_usd_cents": 1000, "request_items_per_day": 100, "rates": map[string]any{
-			"google:" + geminiModel: map[string]any{"in": 30, "out": 250, "sec": 0}, "anthropic:" + claudeModel: map[string]any{"in": 300, "out": 1500, "sec": 0},
-		}},
+		"features":   features,
+		"budget":     map[string]any{"monthly_tokens": 5_000_000, "request_items_per_day": 100},
 		"expires_at": expires.UTC().Format(time.RFC3339), "key_mode": "ephemeral", "cfg_tags": tags,
 	}
 	if mutate != nil {
@@ -214,7 +212,7 @@ func TestAIConsent(t *testing.T) {
 	var created mcpauth.AIAuthorizationInfo
 	r.into(t, &created)
 	if created.Status != "active" || created.CreatedBy != h.owner.ID.String() || created.DeviceCount != 1 || created.Paused ||
-		len(created.Off) != 0 || created.CapCents != nil || !created.Renewable || created.RevokeReason != nil {
+		len(created.Off) != 0 || created.CapTokens != nil || !created.Renewable || created.RevokeReason != nil {
 		t.Fatalf("created = %s", r.body)
 	}
 	var mirror map[string]any
@@ -372,12 +370,7 @@ func TestAIConsentAtDevicesMax(t *testing.T) {
 				"image": map[string]any{"provider": "anthropic", "model": model("c")}, "document": map[string]any{"provider": "google", "model": model("d")},
 			}
 			cfg["functions"] = functions
-			rates := map[string]any{}
-			for _, fn := range functions {
-				fn := fn.(map[string]any)
-				rates[fn["provider"].(string)+":"+fn["model"].(string)] = map[string]any{"in": 100_000_000, "out": 100_000_000, "sec": 100_000_000}
-			}
-			cfg["budget"].(map[string]any)["rates"] = rates
+			cfg["budget"] = map[string]any{"monthly_tokens": 1_000_000_000, "request_items_per_day": 1_000}
 			for _, k := range cfg["keys"].(map[string]any) {
 				k.(map[string]any)["label"] = strings.Repeat("ç", 60)
 			}
@@ -434,7 +427,7 @@ func TestAIStatusAnswer(t *testing.T) {
 	}
 	got := status()
 	want := map[string]any{"status": "active", "kind": "ai", "service_user_id": c.service.String(), "media": false, "media_off": []any{"pdf"},
-		"ai_off": map[string]any{"functions": []any{}, "providers": []any{}, "paused": false, "monthly_usd_cents": nil}}
+		"ai_off": map[string]any{"functions": []any{}, "providers": []any{}, "paused": false, "monthly_tokens": nil}}
 	for k, v := range want {
 		if fmt.Sprint(got[k]) != fmt.Sprint(v) {
 			t.Fatalf("%s = %v, want %v (%v)", k, got[k], v, got)
@@ -445,12 +438,12 @@ func TestAIStatusAnswer(t *testing.T) {
 	}
 	// The switches, the pause, the row's off and the cap.
 	h.handler.AIOffProviders, h.handler.AIOffFeatures = []string{"anthropic"}, []string{"video"}
-	paused, capCents := true, 250
-	if _, err := h.conns.SetAIControls(context.Background(), h.tenant, h.owner.ID, id, store.AIControls{Paused: &paused, Off: &[]string{"image"}, CapSet: true, Cap: &capCents}); err != nil {
+	paused, capTokens := true, int64(2_500_000)
+	if _, err := h.conns.SetAIControls(context.Background(), h.tenant, h.owner.ID, id, store.AIControls{Paused: &paused, Off: &[]string{"image"}, CapSet: true, Cap: &capTokens}); err != nil {
 		t.Fatal(err)
 	}
 	off := status()["ai_off"].(map[string]any)
-	if fmt.Sprint(off) != "map[functions:[document image video] monthly_usd_cents:250 paused:true providers:[anthropic]]" {
+	if fmt.Sprint(off) != "map[functions:[document image video] monthly_tokens:2.5e+06 paused:true providers:[anthropic]]" {
 		t.Fatalf("ai_off = %v", off)
 	}
 	h.handler.AIOffProviders, h.handler.AIOffFeatures = nil, nil
@@ -576,7 +569,7 @@ func TestAIRenewal(t *testing.T) {
 		"another renewal's": body(renewalID, service, prefix, c.keys, func(m map[string]any) {
 			m["request"] = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 16))
 		}),
-		"the budget's limit changed": body(renewalID, service, prefix, c.keys, func(m map[string]any) { m["budget"].(map[string]any)["monthly_usd_cents"] = 5 }),
+		"the budget's limit changed": body(renewalID, service, prefix, c.keys, func(m map[string]any) { m["budget"].(map[string]any)["monthly_tokens"] = 5 }),
 		"one number more": body(renewalID, service, prefix, c.keys, func(m map[string]any) {
 			for range store.AIDevicesMax {
 				m["epochs"].(map[string]any)[uuid.NewString()] = 1
@@ -911,12 +904,13 @@ func TestEnclaveAIRoutes(t *testing.T) {
 	// Usage, and the month's total.
 	usage := map[string]any{"device_id": h.device.String(), "feature": "audio", "provider": "google", "model": geminiModel, "origin": "connector",
 		"requester_id": h.owner.ID.String(), "items": 1, "reused": 0, "failures": 0, "input_tokens": 1500, "output_tokens": 300, "seconds": 60,
-		"cost_microcents": 120_000}
+		"charged_tokens": 1800}
 	expect(t, h.asRow(t, http.MethodPost, "/v1/mcp/enclave/connections/"+aiID+"/ai/usage", ac.key, usage), http.StatusNoContent, "")
 	expect(t, h.asRow(t, http.MethodPost, "/v1/mcp/enclave/connections/"+aiID+"/ai/usage", ac.key, usage), http.StatusNoContent, "")
 	for name, change := range map[string]map[string]any{
 		"another provider": {"provider": "openai"}, "a model of the wrong shape": {"model": "Gemini"}, "origin auto": {"origin": "auto"},
 		"a negative count": {"items": -1}, "a number outside": {"device_id": other.String()}, "a function it lacks": {"feature": "video"},
+		"a charge past its bound": {"charged_tokens": 2_000_000_001}, "a charge in money": {"cost_microcents": 120_000},
 	} {
 		b := map[string]any{}
 		for k, v := range usage {
@@ -932,7 +926,7 @@ func TestEnclaveAIRoutes(t *testing.T) {
 	month := time.Now().UTC().Format("2006-01")
 	r = h.asRow(t, http.MethodGet, "/v1/mcp/enclave/connections/"+aiID+"/ai/usage?month="+month, ac.key, nil)
 	expect(t, r, http.StatusOK, "")
-	if string(bytes.TrimSpace(r.body)) != `{"month":"`+month+`","cost_microcents":240000,"items_today":2}` {
+	if string(bytes.TrimSpace(r.body)) != `{"month":"`+month+`","charged_tokens":3600,"items_today":2}` {
 		t.Fatalf("month = %s", r.body)
 	}
 	expect(t, h.asRow(t, http.MethodGet, "/v1/mcp/enclave/connections/"+aiID+"/ai/usage?month=2026-13", ac.key, nil), http.StatusBadRequest, "bad_request")
