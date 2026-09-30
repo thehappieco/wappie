@@ -4931,7 +4931,7 @@ bound by the owner's decisions of 2026-09-30. The steps:
 | **GO** | `internal/**` (`internal/config/ai.go`, `internal/aiapi/**`, `internal/store/ai*.go`, the media gate, the status and listing fields, the storage and device-transfer lists), `cmd/**`, `internal/migrate/sql/0045_mcp_ai.sql`, `.env.example`, the configuration section of `docs/mcp.md` |
 | **CLIENT** | `packages/client/src/crypto/{jcs,derived,aikeychain}.ts` and their exports, tests and cross vectors |
 | **READER** | `packages/mcp/**`: `bundle.mjs` (`validateAIBundle`), `server.mjs` (open_attachment's AI answers, notes, codes and sentences), `reader.mjs` (`openDerived`, the stored-result read) |
-| **ENCLAVE** | `packages/mcp-http/**`: `internal.mjs` (the `/internal/ai/*` routes, the status's `ai_off`), `enclave/relay.mjs`, `enclave/{content,renew,provider,constants,health,main}.mjs`, and the new `enclave/ai/{policy,requests,install,egress,jobs,derived,dedupe,budget,tags}.mjs` and `enclave/ai/providers/{anthropic,openai,google}.mjs` |
+| **ENCLAVE** | `packages/mcp-http/**`: `internal.mjs` (the `/internal/ai/*` routes, the status's `ai_off`), `enclave/relay.mjs`, `enclave/{content,renew,provider,constants,health,main}.mjs`, and the new `enclave/ai/{policy,requests,install,egress,jobs,derived,dedupe,budget,tags,service}.mjs` and `enclave/ai/providers/{anthropic,openai,google}.mjs` (B1 added `service.mjs` and touched `media/{service,gate,result}.mjs`, `verifier.mjs` and `server.mjs`, §18.20) |
 | **CONSOLE** | `commercial/web/**`: the AI area (keys, integrations, usage), the authorization flow and card, the tags, the buttons and results in the conversation, the deep links, the price table (`src/state/aiPrices.ts`), five locales |
 | **DEPLOY** | `deploy/enclave/entrypoint.sh` (three hosts and bridges), `commercial/deploy/enclave/{vsock-proxy.yaml,bootstrap.sh,log-sink.py,test_log_sink.py}` (three proxies, the events and health fields) |
 | **DOCSOPS** | `docs/mcp.md`, `SECURITY.md`, `docs/media-security.md` (what each provider receives), `commercial/docs/**` (runbook, the key guidance per provider, the Terms and DPA drafts), `commercial/scripts/release.py` (`migration45_sha256`) |
@@ -5381,8 +5381,10 @@ before anything is kept:
    sealed state: `{kind:'ai', connection_id, tenant_id, service_user_id,
    key_mode, consent_version:1, api_key: <token>, device_ids, epochs, ns,
    request, kid, keys_sha256, functions, features, budget, cfg_tags,
-   expires_at, consented_expires_at, redirect_host:'console'}`. Answer
-   204; log `ai_installed`.
+   expires_at, consented_expires_at, redirect_host:'console'}`, plus
+   `workspace_id`, `timezone` (when set), `bundle_expires_at` (the
+   bundle's `expires_at` as sealed, which the tags cover) and `created_at`
+   (§18.20). Answer 204; log `ai_installed`.
 
 An `ai` record never has a token family: no assistant speaks for it.
 The status rules, the 60 s sweep, `reseal`, revocation and wiping are
@@ -5655,10 +5657,11 @@ an identical request joins a job in flight (a redo too). In order:
    answers (a console job ends `done`).
 4. **Row and media.** The row, opened with the record's own grants (I2);
    the message type must fit the function (§18.3), else `ai_unsupported`;
-   `view_once` gives `view_once_excluded`; §16.5 steps 14 to 16 (download
-   status, verifiability, size against `AI_CAP_BYTES[feature]`) with their
-   codes; the claimed `seconds` over `AI_MAX_SECONDS[feature]` gives
-   `ai_too_large`. The claim is the sender's, so this only spares a call
+   `view_once` gives `view_once_excluded`; §16.5 steps 14 and 15
+   (download status, verifiability) with their codes; a size over
+   `AI_CAP_BYTES[feature]` (the claimed `file_length`, or the fetch's
+   `Content-Length`) and the claimed `seconds` over
+   `AI_MAX_SECONDS[feature]` give `ai_too_large`. The claim is the sender's, so this only spares a call
    the provider would refuse; what is charged never rests on it (Budget,
    below).
 5. **Fetch and verify** as §16.5's open steps 1 to 3 (the preview for a
@@ -5674,7 +5677,9 @@ an identical request joins a job in flight (a redo too). In order:
    check is `media_unavailable`.
 8. **Tag again** (I3a): `cfg_tag[device]` recomputed with the DSK that
    opened this content; a mismatch is `grant_mismatch`, nothing is sent,
-   `ai_tag_mismatch` logged.
+   `ai_tag_mismatch` logged. B1 runs this check first, as soon as the
+   job's grant opens and before step 3, so nothing is read, fetched,
+   tagged or sent under a DSK the stored tag does not hold (§18.20).
 9. **Call** the provider (§18.9), within `AI_CALLS_IN_FLIGHT`.
 10. **Store**, when §18.9's "Answers" makes a record: the derived record
     sealed (§18.8) and `PUT` to Go; a 409 `storage_paused` still answers
@@ -5784,7 +5789,7 @@ api_key>` as §17.7; the row is the path's):
 | `GET /v1/mcp/enclave/connections/{id}/ai?device_id=&feature=` | a live media connection | → 200 `{"authorization_id","requester_id","state":"active"\|"reseal"}`: `PickAIAuthorization` with its `created_by`, origin `connector` | 404 `ai_not_enabled`, also when `device_id` is not in the connection's key restriction |
 | `GET /v1/mcp/enclave/connections/{id}/ai/derived?device_id=&uid=` | a media connection or an `ai` row | → 200 `{"items":[{"message_uid","feature","device_id","epoch","sealed","created_at"}]}`, only for devices of the row's key | 400; 404 |
 | `GET /v1/mcp/enclave/connections/{id}/ai/derived?feature=&tags=<device_id>.<tag>,…` | an `ai` row | 1 to `AI_DEVICES_MAX` (25) pairs, `tag` 43 base64url → 200 as above | 400; 404 |
-| `PUT /v1/mcp/enclave/connections/{id}/ai/derived/{uid}/{feature}` | an `ai` row | `{"device_id","epoch","sealed","dedupe_tag","redo"}`, at most 768 KiB → 204: with `redo: true` it inserts or replaces; without, it inserts only | 400 (the uid not on that device, or the type not the function's); 404; 409 `storage_paused`, `derived_exists` (not a redo, and a record for `(uid, feature)` is stored: another authorization finished first, and the enclave answers with that record) |
+| `PUT /v1/mcp/enclave/connections/{id}/ai/derived/{uid}/{feature}` | an `ai` row | `{"device_id","epoch","sealed","dedupe_tag","redo"}` (`sealed` and `dedupe_tag` unpadded base64url, §17.7's form and the `tags` query's), at most 768 KiB → 204: with `redo: true` it inserts or replaces; without, it inserts only | 400 (the uid not on that device, or the type not the function's); 404; 409 `storage_paused`, `derived_exists` (not a redo, and a record for `(uid, feature)` is stored: another authorization finished first, and the enclave answers with that record) |
 | `POST /v1/mcp/enclave/connections/{id}/ai/usage` | an `ai` row | `{"device_id","feature","provider","model","origin","requester_id","items","reused","failures","input_tokens","output_tokens","seconds","cost_microcents"}` → 204 (added to today's row, whose `keychain_id` Go takes from the row's `ai_config.keys.<provider>.keychain_id` as it records) | 400; 404 |
 | `GET /v1/mcp/enclave/connections/{id}/ai/usage?month=` | an `ai` row | → 200 `{"month","cost_microcents","items_today"}` | 404 |
 | `POST /v1/mcp/enclave/connections/{id}/ai/alerts` | an `ai` row | `{"code":"ai_key_rejected"\|"ai_model_unavailable"\|"ai_quota","feature"?,"provider"?}` → 204 (kept in `ai_alerts` until a renewal) | 400; 404 |
@@ -6042,6 +6047,7 @@ the content and people may read it."
 | `AI_CALL_TIMEOUT_MS` | `120_000` |
 | `AI_MODELS_TIMEOUT_MS` | `8_000` (one model list, every page) |
 | `AI_MODELS_PAGES_MAX` | `5` |
+| `AI_QUERY_VALUE_MAX` | `256` (a page cursor's characters before URL encoding, §18.9) |
 | `AI_DEVICES_MAX` | `25` (numbers per authorization; `validateAIBundle`, Go's consent and renewal, the console's picker) |
 | `AI_ERROR_RULES` | §18.9's error map, per provider: the statuses, codes, types, reasons and message patterns of each row |
 | `AI_RETRIES` | `[2_000, 8_000, 30_000]` (backoffs, then `ai_provider_failed`) |
@@ -6092,7 +6098,11 @@ texts B0 sends (`userText()` in its `lib/providers/contract.mjs`), so
   refused; no `conn`).
 - **Health line** adds `ai_records`, `ai_keys` (records holding keys),
   `ai_jobs` and `ai_failed` (since the last line), `ai_queue` and
-  `ai_in_flight` (now).
+  `ai_in_flight` (now). The health object (`/internal/healthz`, §5.1)
+  adds `ai_reach: {"anthropic","openai","google"}`, each true when that
+  host answered a keyless `GET` of its model list over verified TLS at the
+  last probe (at boot and every 60 s), false when it did not, null before
+  the first: §18.16's per-provider reach.
 - **Never logged** (I8, a sentinel test): content, prompts, outputs, model
   names, provider error bodies, keys, suffixes, uids, sizes or durations.
   Go logs the lifecycle and counts with authorization, device and message
@@ -6330,6 +6340,128 @@ prompts and never written. Models used: `gemini-3.8-flash`,
 | Error bodies | 401: OpenAI `invalid_api_key`, Anthropic `authentication_error`; Google 400 `API_KEY_INVALID`; 404: OpenAI `model_not_found`, Anthropic `not_found_error`, Google `NOT_FOUND`; OpenAI 429 type `insufficient_quota`, code `credit_balance_exhausted`; Google 400 `INVALID_ARGUMENT` "Audio input modality is not enabled" for a speech model | `AI_ERROR_RULES` (§18.9) |
 | Size limits | above the documented ones, OpenAI took a 27 MB WAV, Gemini a 21.1 MB request, Anthropic a 5.9 MB PNG | none: the constants keep the documented limits |
 | Transport | `Accept-Encoding: identity` honored, no redirect, no answer over 2 MiB, no call over 120 s | as §18.9 |
+
+### 18.20 Recorded during B1
+
+What the client, reader and enclave settled where the sections above left
+it open, or changed after the build; each binds the console and the GO
+track as the rest of §18 does. The console's texts (the AI area, the card,
+the buttons, results and errors in five locales) are CONSOLE's, in the
+private repository, and not part of this track.
+
+- **Where it lives.** `packages/client/src/crypto/derived.ts` opens records
+  (`openDerived`, `sealDerived` for tests and symmetry, `validateDerivedRecord`)
+  and computes dedupe tags (`dedupeTag`); `aikeychain.ts` has
+  `sealKeychainItem(account, {server_origin, user_id, id, provider,
+  api_key, label, created_at})`, `openKeychainItem(account, {server_origin,
+  user_id, id, provider, envelope})` (the envelope as bytes or Go's standard
+  base64), `keychainKey` and `keychainSuffix`; both are exported from the
+  package index as `derived` and `aikeychain`. `packages/mcp/bundle.mjs`
+  holds `validateAIBundle`, `aiConfigScope`, `aiConfigTag` (the device
+  check's construction under `wappie-ai-config/v1`) and `keysSHA256`, with
+  copies of the bundle's limits that an enclave test holds equal to
+  `policy.mjs`'s. `reader.mjs` holds `openDerived` (and `derivedKey`,
+  `openDerivedWith`, `validateDerivedRecord`, `derivedBytes`), which the
+  enclave imports to open and check what it seals. Beside §18.1's files,
+  `enclave/ai/service.mjs` builds the AI service content.mjs holds (keys,
+  pauses, budgets, the queue, install and renewal hooks, the connector's
+  reads); `jobs.mjs` holds the queue and a job's steps; `egress.mjs` also
+  holds the error map's evaluation (`classify`, `ruleOf`); the provider
+  modules build bodies, read answers and page model lists.
+- **The reader's interface.** `withOpener` hands its operation a third
+  argument, `{dsk, namespace, epoch}`, valid until the operation settles.
+  `archive.derived(row, items)` is §18.12's. For AI jobs the reader built
+  for an `ai` record has `aiJob({device_id, uid}, work)`, which runs `work({row,
+  open, keys})` inside one `withOpener` (so the DSK that opens the media key
+  is the one the job tags and seals with, I3a and I5), and `aiKeys(devices,
+  work)`, the other numbers' DSKs from one grants read for the dedupe
+  lookup. `provider.media` gains `ai: true` and `derivedOf(row)` on `ai_v1`
+  readers; an AI answer is an AttachmentResult with `ai: true` outside its
+  header, as `suggest_pages` is.
+- **Vectors.** `packages/client/testdata/node-derived.json` holds records the
+  enclave sealed in Node (`enclave/test/ai-derived.test.mjs`, regenerated
+  with `WS_REGEN_VECTORS=1`), seven negatives (another message, function,
+  number, epoch, namespace, a flipped byte, another DSK) and ten dedupe tags
+  (the language alone differs between the first three); the browser and
+  `reader.mjs` open the same file. `enclave/test/ai-config-vectors.json`
+  holds configuration tags from an independent WebCrypto generator, which
+  `bundle.mjs` reproduces and the console must too. A record Go seals to the
+  device's public key (HPKE) never opens (N-AI-3); a keychain item Go makes
+  (HPKE to the account's public key, or AES under a key derived from it)
+  never opens (N-AI-2).
+- **Tag again first.** The job checks the stored `cfg_tag` of its number as
+  soon as its grant opens, before the stored read, the row, the fetch and
+  the dedupe tags; for the dedupe lookup, another number counts only when
+  its own stored tag holds under the DSK its grant opens (else it is left
+  out, logged `ai_tag_mismatch`). A forged grant therefore reads, fetches,
+  tags and sends nothing.
+- **Sizes.** A file over `AI_CAP_BYTES[feature]` answers `ai_too_large`
+  (whose guidance names the provider's limits), not `attachment_too_large`
+  (whose guidance quotes the reader's own caps); likewise OpenAI's 25 MiB
+  and Google's 20,000,000-byte request, checked before the call.
+- **Encodings.** The enclave PUTs `sealed` and `dedupe_tag` as unpadded
+  base64url and reads `sealed` in either canonical spelling (unpadded
+  base64url, or padded standard base64). `ai_busy` answers `{"code":
+  "ai_busy","retry_after_s":20}`; `POST /internal/ai/jobs` answers 409 with
+  the gate's code (`ai_paused`, `ai_not_enabled`, `ai_budget_reached`), 404
+  for a record this process does not hold, and 200 `{"stored":true}` when
+  Go lists a record of that `(uid, feature)`; `GET /internal/ai/jobs/{job}`
+  answers a job whose record could not be stored as `failed` with
+  `storage_paused` (or `read_failed`). The renewal relay carries
+  `"kind":"ai"` too; the renewal descriptor adds `consent_version: 1` and
+  `media: false` to §18.7 step 7's fields.
+- **Budget and usage.** `items_day` counts every provider call as it leaves,
+  whatever its answer; the usage row's `items` counts 200 answers,
+  `reused` reuses and `failures` calls that failed (never charged). A
+  record's `usage` holds the counts it was charged for, a missing field's
+  bound included. Go's usage is read at install, at a renewal's commit and
+  with every status the 60 s sweep reads.
+- **Reuse** takes a stored refusal and a transcript without speech too:
+  both are stored so the file is not sent again. A redo skips the stored
+  read and the reuse, and its record carries the flag `redo`.
+- **The error map as pinned.** `AI_ERROR_RULES` holds, per provider in
+  order: key rejected (401, 403; Google's 400 `API_KEY_INVALID`); quota
+  (OpenAI's 429 whose type or code is `insufficient_quota`; Anthropic's 402
+  and its 400 naming the credit balance; Google's 429
+  `RESOURCE_EXHAUSTED` with a `PerDay` quota id); retry (any other 429,
+  5xx); too large (413; a 400 whose message speaks of size; OpenAI's
+  transcription 400 on the audio's duration, on that route only); model
+  (404; OpenAI's 400 or 422 codes `model_not_found`,
+  `unsupported_parameter`, `unsupported_value`, and `invalid_value` whose
+  param or message names the model, input, file, format or MIME type;
+  Anthropic's `invalid_request_error` naming the model, a content block or
+  its media type; Google's `INVALID_ARGUMENT` naming the model, method, MIME
+  type or modality); any other 4xx. The 400/422 rows for Anthropic's
+  `not_found_error` and Google's `NOT_FOUND` were dropped: both come as a
+  404. `enclave/ai/test/provider-shapes.json` pins every row with a body (13
+  of B0's, rebuilt from its reports with synthetic ids, and 30 documented
+  ones), the 27 bodies B0 sent and the providers accepted, and 26 answers.
+- **Installing.** The keys are checked in parallel; a rejection wins over a
+  model on no page, which wins over any other failure. A connection id is
+  reserved from the relay's arrival to the install or its failure, so no
+  other consent or request can name it meanwhile.
+- **Answers on media connections.** A stored record flagged `refused`
+  answers `ai_refused`; one flagged `no_speech` is a transcript with an
+  empty body and its note. A transcript's status is `partial` while
+  `next_cursor` is set; it has no `images` field. A job on an authorization
+  this process holds no keys for answers `ai_paused` without `renew_url`
+  (only Go's `reseal` pick carries the link). An AI answer does not count
+  toward `OPENS_PER_MINUTE`: the AI queue and budgets bound it. The
+  `get_message` `openable` of audio on `ai_v1` readers follows the
+  download, hash and size checks with `AI_CAP_BYTES.audio` and kind `audio`.
+- **Documents.** A PDF's text is read in windows of `PDF_PAGES_PER_JOB`
+  pages up to `JOB_TEXT_MAX_BYTES`, as §16.7's page blocks, with the first
+  4 scanned pages' images (none while kind `image` is off); an office file
+  goes to the office worker allowing `office` only, so a plain zip is
+  `ai_unsupported`, as is a document that sniffs as an image or as nothing.
+- **Probing the providers.** Besides the jobs, the enclave makes one keyless
+  `GET` of each provider's model list at boot and every 60 s, for the health
+  object's `ai_reach` (§18.15); it carries no key and no content.
+- **Tests only.** `startEnclave` takes `aiTransport` (the providers' fetch;
+  the hosts stay the image's, the egress builds every URL) and `mediaDelay`
+  (open_attachment's inline wait timer). Production passes neither.
+- **Not built in B1**, as §18.7 says: `POST
+  /internal/ai/requests/{id}/models`.
 
 ### Amendments to §§1 to 16
 
