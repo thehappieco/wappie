@@ -685,6 +685,7 @@ func TestAIAvailableAndProcess(t *testing.T) {
 		{http.StatusOK, map[string]any{"stored": true}, http.StatusOK, ""},
 		{http.StatusTooManyRequests, map[string]any{"code": "ai_busy", "retry_after_s": 20}, http.StatusTooManyRequests, "ai_busy"},
 		{http.StatusConflict, map[string]any{"code": "ai_budget_reached"}, http.StatusConflict, "ai_budget_reached"},
+		{http.StatusConflict, map[string]any{"code": "ai_budget_reached", "limit": "day"}, http.StatusConflict, "ai_budget_reached"},
 		{http.StatusConflict, map[string]any{"code": "ai_paused"}, http.StatusConflict, "ai_paused"},
 		{http.StatusNotFound, map[string]any{"code": "not_found"}, http.StatusConflict, "ai_paused"},
 		{http.StatusInternalServerError, map[string]any{"code": "internal"}, http.StatusBadGateway, "reader_unavailable"},
@@ -702,6 +703,12 @@ func TestAIAvailableAndProcess(t *testing.T) {
 		case "ai_paused":
 			if !strings.Contains(string(r.body), `"authorization_id":"`+id+`"`) {
 				t.Fatalf("paused = %s", r.body)
+			}
+		case "ai_budget_reached":
+			// Which limit it met passes on when the reader says, and only then.
+			if limit, _ := tc.reply.(map[string]any)["limit"].(string); strings.Contains(string(r.body), `"limit"`) != (limit != "") ||
+				limit != "" && !strings.Contains(string(r.body), `"limit":"`+limit+`"`) {
+				t.Fatalf("budget = %s", r.body)
 			}
 		case "":
 			if strings.TrimSpace(string(r.body)) != `{"stored":true}` {

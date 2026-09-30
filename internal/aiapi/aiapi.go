@@ -511,6 +511,14 @@ type pausedError struct {
 	AuthorizationID string `json:"authorization_id"`
 }
 
+// budgetError is ai_budget_reached with the limit it met, "month" or
+// "day", when the reader says which.
+type budgetError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Limit   string `json:"limit,omitempty"`
+}
+
 // busyError is ai_busy with when to come back.
 type busyError struct {
 	Code       string `json:"code"`
@@ -584,7 +592,7 @@ func (h *Handler) process(w http.ResponseWriter, r *http.Request) {
 		send(w, http.StatusTooManyRequests, busyError{Code: "ai_busy", Message: "the reader is busy with other AI requests", RetryAfter: retry})
 		return
 	case errors.As(err, &refused) && refused.Code == "ai_budget_reached":
-		fail(w, http.StatusConflict, "ai_budget_reached", "the spending limit of this AI integration is reached")
+		send(w, http.StatusConflict, budgetError{Code: "ai_budget_reached", Message: "this AI integration reached its limit for now", Limit: refused.Limit})
 		return
 	case errors.As(err, &refused), errors.Is(err, mcpauth.ErrReaderNotFound):
 		// Paused at the reader, or a record it does not hold (it restarted

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -480,30 +481,41 @@ func TestAIStatusAnswer(t *testing.T) {
 	}
 }
 
-// GET /v1/mcp/content says whether the workspace may have AI now.
+// GET /v1/mcp/content says whether the workspace may have AI now, and which
+// functions and providers this server switched off.
 func TestContentReplyAI(t *testing.T) {
 	h := newAIHarness(t)
-	ai := func() bool {
+	type offReply struct {
+		Features  []string `json:"features"`
+		Providers []string `json:"providers"`
+	}
+	read := func() (bool, offReply) {
 		t.Helper()
 		var out struct {
-			AI *bool `json:"ai"`
+			AI    *bool     `json:"ai"`
+			AIOff *offReply `json:"ai_off"`
 		}
 		h.call(t, http.MethodGet, "/v1/mcp/content", nil, bearer(h.ownerToken)).into(t, &out)
-		if out.AI == nil {
-			t.Fatal("no ai field")
+		if out.AI == nil || out.AIOff == nil || out.AIOff.Features == nil || out.AIOff.Providers == nil {
+			t.Fatal("no ai or ai_off field")
 		}
-		return *out.AI
+		return *out.AI, *out.AIOff
 	}
-	if !ai() {
-		t.Fatal("AI not allowed with every switch on")
+	if ai, off := read(); !ai || len(off.Features) != 0 || len(off.Providers) != 0 {
+		t.Fatalf("every switch on: ai = %v, off = %+v", ai, off)
+	}
+	h.handler.AIOffProviders, h.handler.AIOffFeatures = []string{"openai"}, []string{"document", "video"}
+	if ai, off := read(); !ai || !slices.Equal(off.Features, []string{"document", "video"}) || !slices.Equal(off.Providers, []string{"openai"}) {
+		t.Fatalf("switched off: ai = %v, off = %+v", ai, off)
 	}
 	for _, off := range []func(bool){h.aiOn.Store, h.mediaOn.Store, h.contentOn.Store} {
 		off(false)
-		if ai() {
-			t.Fatal("AI allowed with a switch off")
+		if ai, lists := read(); ai || len(lists.Features) != 0 || len(lists.Providers) != 0 {
+			t.Fatalf("a switch off: ai = %v, off = %+v", ai, lists)
 		}
 		off(true)
 	}
+	h.handler.AIOffProviders, h.handler.AIOffFeatures = nil, nil
 }
 
 // An AI authorization renews like a content connection, with a new
@@ -681,6 +693,18 @@ func TestAIJobRelay(t *testing.T) {
 			var e *mcpauth.AIJobError
 			return errors.As(err, &e) && e.Code == "ai_busy" && e.RetryAfter == 10
 		}},
+		{http.StatusConflict, map[string]any{"code": "ai_budget_reached", "limit": "day"}, func(_ mcpauth.AIJobStarted, err error) bool {
+			var e *mcpauth.AIJobError
+			return errors.As(err, &e) && e.Code == "ai_budget_reached" && e.Limit == "day"
+		}},
+		{http.StatusConflict, map[string]any{"code": "ai_budget_reached", "limit": "week"}, func(_ mcpauth.AIJobStarted, err error) bool {
+			var e *mcpauth.AIJobError
+			return errors.As(err, &e) && e.Code == "ai_budget_reached" && e.Limit == ""
+		}},
+		{http.StatusConflict, map[string]any{"code": "ai_paused", "limit": "month"}, func(_ mcpauth.AIJobStarted, err error) bool {
+			var e *mcpauth.AIJobError
+			return errors.As(err, &e) && e.Code == "ai_paused" && e.Limit == ""
+		}},
 		{http.StatusNotFound, map[string]any{"code": "not_found"}, func(_ mcpauth.AIJobStarted, err error) bool { return errors.Is(err, mcpauth.ErrReaderNotFound) }},
 		{http.StatusBadRequest, map[string]any{"code": "bad_request"}, func(_ mcpauth.AIJobStarted, err error) bool { return errors.Is(err, mcpauth.ErrReaderUnavailable) }},
 		{http.StatusAccepted, map[string]any{"job": "x"}, func(_ mcpauth.AIJobStarted, err error) bool { return errors.Is(err, mcpauth.ErrReaderUnavailable) }},
@@ -700,11 +724,22 @@ func TestAIJobRelay(t *testing.T) {
 		return http.StatusOK, map[string]any{"state": "failed", "code": "ai_quota"}
 	}
 	f.mu.Unlock()
-	if state, err := relay.AIJobStatus(ctx, started.Job, in.RequesterID); err != nil || state.State != "failed" || state.Code != "ai_quota" {
+	if state, err := relay.AIJobStatus(ctx, started.Job, in.RequesterID); err != nil || state.State != "failed" || state.Code != "ai_quota" || state.Limit != "" {
 		t.Fatalf("state = %+v %v", state, err)
 	}
 	if _, err := relay.AIJobStatus(ctx, started.Job, uuid.NewString()); !errors.Is(err, mcpauth.ErrReaderNotFound) {
 		t.Fatalf("another requester = %v", err)
+	}
+	// A job the budget stopped says which limit, month or day; nothing else is passed on.
+	for _, tc := range []struct{ code, limit, want string }{{"ai_budget_reached", "month", "month"}, {"ai_budget_reached", "hour", ""}, {"ai_quota", "day", ""}} {
+		f.mu.Lock()
+		f.jobState = func(string, string) (int, any) {
+			return http.StatusOK, map[string]any{"state": "failed", "code": tc.code, "limit": tc.limit}
+		}
+		f.mu.Unlock()
+		if state, err := relay.AIJobStatus(ctx, started.Job, in.RequesterID); err != nil || state.Code != tc.code || state.Limit != tc.want {
+			t.Fatalf("%s %s: state = %+v %v", tc.code, tc.limit, state, err)
+		}
 	}
 }
 

@@ -125,13 +125,22 @@ func MediaGate(conns *store.MCPConnections, mediaAllowed, aiAllowed func(tenant 
 }
 
 type contentReply struct {
-	Enabled    bool `json:"enabled"`
-	Attested   bool `json:"attested"`
-	Media      bool `json:"media"`
-	Send       bool `json:"send"`
-	SendSelf   bool `json:"send_self"`
-	SendDirect bool `json:"send_direct"`
-	AI         bool `json:"ai"`
+	Enabled    bool       `json:"enabled"`
+	Attested   bool       `json:"attested"`
+	Media      bool       `json:"media"`
+	Send       bool       `json:"send"`
+	SendSelf   bool       `json:"send_self"`
+	SendDirect bool       `json:"send_direct"`
+	AI         bool       `json:"ai"`
+	AIOff      aiOffReply `json:"ai_off"`
+}
+
+// aiOffReply is which AI functions and providers this server switched off
+// (WS_AI_OFF_FEATURES, WS_AI_OFF_PROVIDERS), so the console's form can say
+// so before the person fills it in; both empty while AI is not allowed.
+type aiOffReply struct {
+	Features  []string `json:"features"`
+	Providers []string `json:"providers"`
 }
 
 // content answers the console: may this workspace let an assistant read
@@ -144,16 +153,22 @@ type contentReply struct {
 // that declares it (§16.2). Send, SendSelf and SendDirect are the same
 // answers for the send toggles (§17.2 rule 10), and AI whether the workspace
 // may have AI integrations now (§18.4), one of the three conditions for the
-// console's AI area.
+// console's AI area, with AIOff the functions and providers switched off.
 func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
 	sending, self, direct := h.sendEnabledFor(user.TenantID)
+	ai := h.AIAllowedFor(user.TenantID)
+	off := aiOffReply{Features: []string{}, Providers: []string{}}
+	if ai {
+		off.Features = append(off.Features, h.AIOffFeatures...)
+		off.Providers = append(off.Providers, h.AIOffProviders...)
+	}
 	send(w, http.StatusOK, contentReply{
 		Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID), Media: h.mediaEnabledFor(user.TenantID),
-		Send: sending, SendSelf: self, SendDirect: direct, AI: h.AIAllowedFor(user.TenantID),
+		Send: sending, SendSelf: self, SendDirect: direct, AI: ai, AIOff: off,
 	})
 }
 

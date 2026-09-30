@@ -29,6 +29,9 @@ type AIJobError struct {
 	Code string
 	// RetryAfter is ai_busy's retry_after_s; zero otherwise.
 	RetryAfter int
+	// Limit is which limit ai_budget_reached met, "month" or "day", when
+	// the reader says; empty otherwise.
+	Limit string
 }
 
 func (e *AIJobError) Error() string { return "mcpauth: the reader refused the AI job: " + e.Code }
@@ -117,11 +120,12 @@ func (c *SignedRelay) AIJob(ctx context.Context, in AIJobRequest) (AIJobStarted,
 		var refusal struct {
 			Code       string `json:"code"`
 			RetryAfter int    `json:"retry_after_s"`
+			Limit      string `json:"limit"`
 		}
 		if json.Unmarshal(body, &refusal) != nil || refusal.Code == "" {
 			refusal.Code = "unspecified"
 		}
-		return AIJobStarted{}, &AIJobError{Status: status, Code: refusal.Code, RetryAfter: refusal.RetryAfter}
+		return AIJobStarted{}, &AIJobError{Status: status, Code: refusal.Code, RetryAfter: refusal.RetryAfter, Limit: budgetLimit(refusal.Code, refusal.Limit)}
 	default:
 		return AIJobStarted{}, fmt.Errorf("%w: ai job answered %d %s", ErrReaderUnavailable, status, readerCode(body))
 	}
@@ -131,6 +135,18 @@ func (c *SignedRelay) AIJob(ctx context.Context, in AIJobRequest) (AIJobStarted,
 type AIJobState struct {
 	State string `json:"state"`
 	Code  string `json:"code,omitempty"`
+	// Limit is which limit a job that failed with ai_budget_reached met,
+	// "month" or "day", when the reader says.
+	Limit string `json:"limit,omitempty"`
+}
+
+// budgetLimit is the reader's limit for ai_budget_reached when it is one of
+// the two it names, else empty.
+func budgetLimit(code, limit string) string {
+	if code == "ai_budget_reached" && (limit == "month" || limit == "day") {
+		return limit
+	}
+	return ""
 }
 
 // aiJobStates are the states a job is in.
@@ -149,6 +165,7 @@ func (c *SignedRelay) AIJobStatus(ctx context.Context, job, requester string) (A
 		if json.Unmarshal(body, &out) != nil || !slices.Contains(aiJobStates, out.State) || out.Code != "" && !codePattern.MatchString(out.Code) {
 			return AIJobState{}, fmt.Errorf("%w: the job's state is not the expected object", ErrReaderUnavailable)
 		}
+		out.Limit = budgetLimit(out.Code, out.Limit)
 		return out, nil
 	case http.StatusNotFound:
 		return AIJobState{}, ErrReaderNotFound
