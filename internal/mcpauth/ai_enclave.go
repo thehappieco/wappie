@@ -111,8 +111,8 @@ type aiPickReply struct {
 // enclaveAIPick answers which authorization serves a media connection's
 // request for a function on one of its numbers: PickAIAuthorization with
 // the connection's creator as the requester, origin connector. A number
-// outside the connection's key, a connection that may not open
-// attachments now, and no authorization at all are 404 ai_not_enabled.
+// outside the connection's key, a connection whose attachments are switched
+// off now, and no authorization at all are 404 ai_not_enabled.
 func (h *Handler) enclaveAIPick(w http.ResponseWriter, r *http.Request, caller *AttestedReader, _ []byte) {
 	row, rd, ok := h.readerRow(w, r, caller)
 	if !ok {
