@@ -307,8 +307,41 @@ so a switch reaches the enclave within a minute while text keeps serving.
   `media_queue` and `mem_avail_min_mb`; never a filename, caption, type, size,
   page count or duration.
 
+**AI integrations** (B1, reader 0.5.0 with `ai_v1`, `docs/mcp-enclave.md`
+section 18). A person sends attachments of the numbers they read to AI
+providers they choose per function, with their own keys, from inside the
+enclave; nothing of it runs in Go. An AI authorization is a record of kind
+`ai`: no token family, never an MCP server, its connection key and its
+providers' keys in memory only (`aikeys` beside `connkeys`, wiped with it).
+
+- **Install** (`enclave/ai/install.mjs`, `requests.mjs`): an attested AI
+  request of its own, the AI bundle opened under its own labels, the grant
+  proof with each number's configuration tag recomputed from the DSK its
+  grant opens (a bundle Go sealed itself fails), each key's model list read
+  whole, then activation, then the record. A renewal checks the same.
+- **Egress** (`enclave/ai/egress.mjs`, `policy.mjs`): the only way out, to
+  `api.anthropic.com`, `api.openai.com` and
+  `generativelanguage.googleapis.com` through their own loopback addresses
+  and vsock proxies, on the routes `policy.mjs` freezes, each key only in its
+  own provider's header, OpenAI's Responses with `store: false`. The bodies
+  B0 sent and the providers accepted are pinned in
+  `enclave/ai/test/provider-shapes.json`.
+- **Jobs** (`enclave/ai/jobs.mjs`): the configuration tag again with the DSK
+  that opens the content, before anything is fetched or sent; the verified
+  file, reused when a stored result of the same file, function, provider,
+  model, prompt and language exists on a number of the authorization; images
+  and documents prepared by the jailed workers; the result sealed under the
+  number's key (`derived.mjs`) and stored with its dedupe tag; the charge from
+  the provider's own usage against the authorization's budget
+  (`budget.mjs`). Four jobs at once, one per authorization.
+- **Media connections** answer audio and video with transcripts
+  (`enclave/media/service.mjs`); the console asks for jobs through
+  `/internal/ai/jobs`. The log adds `ai_*` events with a fingerprint and a
+  code, the health line `ai_records`, `ai_keys`, `ai_jobs`, `ai_failed`,
+  `ai_queue` and `ai_in_flight`, and the health object `ai_reach`.
+
 What the assistant receives, and what is never opened (view-once media,
-audio and voice notes until transcription exists, `gone` attachments, keyless
+audio and voice notes on readers without AI transcripts, `gone` attachments, keyless
 or unhashed media; a video's preview image, sealed in the message itself, is
 sent whatever the video's key, hash or download status, and the video is
 never fetched), is in the [reader's guide](../mcp/README.md#open-attachments-on-a-media-connection).

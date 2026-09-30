@@ -22,10 +22,11 @@ export class RelayError extends Error {
  * target, body)` replaces the bearer header when given (the enclave signs
  * every request). `call` and `body` are exposed for the enclave's state routes.
  * `mediaKinds` (the attested reader's, docs/mcp-enclave.md §16.9) makes
- * `status` read the attachment fields too, and `send` (the attested reader's
- * from 0.5.0, §17.3) the sending fields.
+ * `status` read the attachment fields too, `send` (the attested reader's
+ * from 0.5.0, §17.3) the sending fields, and `ai` (§18.4, with the known
+ * functions and providers) an `ai` row's kind and `ai_off`.
  */
-export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor, reasons = false, mediaKinds, send = false }) {
+export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor, reasons = false, mediaKinds, send = false, ai = null }) {
   const base = archive.replace(/\/$/, '')
   async function call(method, path, query, { body: payload, timeout = timeoutMs, headers: extra = {} } = {}) {
     const url = new URL(base + prefix + path)
@@ -60,7 +61,11 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
      * `mediaKinds`, `media` (true only for JSON true) and `media_off` (the
      * known kinds Go names, sorted, else []) are always there; with `send`,
      * `send` ('draft' or 'direct', else null: a missing field reads as null)
-     * and `send_self` (true only for JSON true).
+     * and `send_self` (true only for JSON true). With `ai`, an `ai` row's
+     * kind is kept and `ai_off` read as `{functions, providers, paused,
+     * monthly_usd_cents}`: the known words Go names, sorted, `paused` true only
+     * for JSON true, and the cap a positive integer or null. A row that says
+     * it is `ai` without an `ai_off` Go can read reads as paused.
      */
     async status(id) {
       const response = await call('GET', `/connections/${encodeURIComponent(id)}`)
@@ -71,7 +76,7 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
       try { parsed = JSON.parse(data.toString('utf8')) } catch { throw new RelayError('relay_failed', response.status) }
       if (!parsed || typeof parsed.status !== 'string' || typeof parsed.expires_at !== 'string') throw new RelayError('relay_failed', response.status)
       const answer = { status: parsed.status, expires_at: parsed.expires_at }
-      if (parsed.kind === 'metadata' || parsed.kind === 'content') answer.kind = parsed.kind
+      if (parsed.kind === 'metadata' || parsed.kind === 'content' || (ai && parsed.kind === 'ai')) answer.kind = parsed.kind
       if (typeof parsed.service_user_id === 'string' && uuidShape.test(parsed.service_user_id)) answer.service_user_id = parsed.service_user_id.toLowerCase()
       if (mediaKinds) {
         answer.media = parsed.media === true
@@ -80,6 +85,13 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
       if (send) {
         answer.send = parsed.send === 'draft' || parsed.send === 'direct' ? parsed.send : null
         answer.send_self = parsed.send_self === true
+      }
+      if (ai && answer.kind === 'ai') {
+        const off = parsed.ai_off && typeof parsed.ai_off === 'object' && !Array.isArray(parsed.ai_off) ? parsed.ai_off : null
+        const known = (list, words) => (Array.isArray(list) ? [...new Set(list.filter(word => words.includes(word)))].sort() : [])
+        const cap = off?.monthly_usd_cents
+        answer.ai_off = { functions: known(off?.functions, ai.functions), providers: known(off?.providers, ai.providers), paused: off === null || off.paused === true,
+          monthly_usd_cents: Number.isSafeInteger(cap) && cap > 0 ? cap : null }
       }
       return answer
     },
@@ -155,9 +167,15 @@ export function decodeCiphertext(value) {
  * - `content` (the attested reader's content connections) takes bundles
  *   relayed with `"kind": "content"` and adds the two renewal routes. Without
  *   it a `kind` field is an unknown key and the bundle is a bad request.
+ *   Its `ai` (a release that declares ai_v1, docs/mcp-enclave.md §18.11)
+ *   adds `/internal/ai/*`: AI requests and their bundles, and console jobs.
  */
 export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content }) {
-  const refused = (meta, error) => { meta.code = error.code; return json({ code: error.code }, error.status) }
+  const refused = (meta, error) => {
+    meta.code = error.code
+    return json({ code: error.code, ...(Number.isInteger(error.retry_after_s) ? { retry_after_s: error.retry_after_s } : {}), ...(error.limit === 'month' || error.limit === 'day' ? { limit: error.limit } : {}) }, error.status)
+  }
+  const ai = content?.ai ?? null
   const guard = auth ?? ((request, info) => internalGuard(request, info, secret))
   return async (request, info, meta) => {
     const path = new URL(request.url).pathname
@@ -243,6 +261,47 @@ export function internalRoutes({ state, secret, now, pendingFor, auth, health, p
         if (error instanceof LinkError) return refused(meta, error)
         throw error
       }
+    }
+    if (ai && path === '/internal/ai/requests' && request.method === 'POST') {
+      meta.route = 'POST /internal/ai/requests'
+      const body = await strictBody(request, ['nonce'])
+      try { return json(await ai.request(body && decodeNonce(body.nonce))) } catch (error) {
+        if (error instanceof LinkError || error instanceof AttestationError) return refused(meta, error)
+        throw error
+      }
+    }
+    if (ai && (match = /^\/internal\/ai\/requests\/([A-Za-z0-9_-]{22})\/bundle$/.exec(path)) && request.method === 'POST') {
+      meta.route = 'POST /internal/ai/requests/{id}/bundle'
+      let body
+      try { body = await request.json() } catch { meta.code = 'bad_request'; return json({ code: 'bad_request' }, 400) }
+      if (body && typeof body === 'object' && typeof body.connection_id === 'string') meta.connection = body.connection_id.toLowerCase()
+      try {
+        await ai.acceptBundle(match[1], body)
+        return noContent()
+      } catch (error) {
+        if (error instanceof LinkError) return refused(meta, error)
+        throw error
+      }
+    }
+    if (ai && path === '/internal/ai/jobs' && request.method === 'POST') {
+      meta.route = 'POST /internal/ai/jobs'
+      let body
+      try { body = await request.json() } catch { meta.code = 'bad_request'; return json({ code: 'bad_request' }, 400) }
+      try {
+        const answer = await ai.submit(body)
+        meta.connection = body.authorization_id
+        return json(answer.body, answer.status)
+      } catch (error) {
+        if (error instanceof LinkError) return refused(meta, error)
+        throw error
+      }
+    }
+    if (ai && (match = /^\/internal\/ai\/jobs\/([A-Za-z0-9_-]{22})$/.exec(path)) && request.method === 'GET') {
+      meta.route = 'GET /internal/ai/jobs/{job}'
+      const requester = new URL(request.url).searchParams.get('requester_id') ?? ''
+      const answer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requester) ? ai.jobState(match[1], requester) : null
+      if (!answer) { meta.code = 'not_found'; return json({ code: 'not_found' }, 404) }
+      return json(answer)
     }
     if ((match = /^\/internal\/connections\/([0-9a-f-]{36})\/revoke$/.exec(path)) && request.method === 'POST') {
       meta.route = 'POST /internal/connections/{id}/revoke'

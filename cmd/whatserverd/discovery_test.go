@@ -195,3 +195,31 @@ func TestDiscoveryAdvertisesSend(t *testing.T) {
 		}
 	}
 }
+
+// AI integrations are advertised exactly where content is, with the AI
+// switch on; which workspaces may is asked per workspace (GET
+// /v1/mcp/content's ai).
+func TestDiscoveryAdvertisesAI(t *testing.T) {
+	for _, tc := range []struct {
+		endpoints mcpEndpoints
+		want      bool
+	}{
+		{mcpEndpoints{Attested: "https://mcp.example.test/mcp", Content: true, Media: true, AI: true}, true},
+		{mcpEndpoints{Attested: "https://mcp.example.test/mcp", Content: true, AI: true}, true},
+		{mcpEndpoints{Attested: "https://mcp.example.test/mcp", Content: true, Media: true}, false},
+		{mcpEndpoints{Attested: "https://mcp.example.test/mcp", AI: true}, false},
+		{mcpEndpoints{Server: "https://api.example.test/mcp", Content: true, AI: true}, false},
+	} {
+		w := httptest.NewRecorder()
+		discoveryFor(tc.endpoints)(w, httptest.NewRequest("GET", "/v1/discovery", nil))
+		var doc struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(doc.Capabilities, "mcp.remote.ai.v1") != tc.want {
+			t.Fatalf("%+v: %s", tc.endpoints, w.Body.String())
+		}
+	}
+}

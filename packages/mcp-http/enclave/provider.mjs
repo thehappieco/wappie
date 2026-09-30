@@ -20,7 +20,9 @@ export const CONTENT_MAX_SCAN = 500
  * A record without `media` (every 0.3.0 record included) is a text
  * connection; one without `send` (every record before 0.5.0) never drafts or
  * sends (docs/mcp-enclave.md §17.8): the tools a connection has are the
- * sealed consent's, the same on every request.
+ * sealed consent's, the same on every request. An `ai` record (§18.12) has
+ * neither: its reader only opens content for its own jobs, never as an MCP
+ * server.
  */
 export function contentConfigFor(record, archive) {
   const send = record.send === 'draft' || record.send === 'direct' ? record.send : null
@@ -49,6 +51,16 @@ const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
  */
 export function messageURL(consoleURL, tenantID, deviceID, uid) {
   return consoleLinkOf(consoleURL, [['workspace', tenantID], ['open_device', deviceID], ['open_message', uid]])
+}
+
+/**
+ * The console link where an AI authorization's creator renews it
+ * (docs/mcp-enclave.md §18.7 step 7, §18.12):
+ * `${consoleURL}?workspace=<tenant>&ai_renew=<authorization>`, built like
+ * messageURL, or null.
+ */
+export function aiRenewURL(consoleURL, tenantID, authorizationID) {
+  return consoleLinkOf(consoleURL, [['workspace', tenantID], ['ai_renew', authorizationID]])
 }
 
 /** `${consoleURL}?name=id&…` in the order given, every id a UUID in lower case, or null. */

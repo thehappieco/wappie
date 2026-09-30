@@ -623,7 +623,7 @@ download status, and the video itself is never fetched.
 | Code | Attachment |
 | --- | --- |
 | `view_once_excluded` | View-once media. The assistant learns that it exists, never its content. |
-| `transcription_unavailable` | Audio and voice notes, until transcription exists. Their length, from `get_message`, is all there is. |
+| `transcription_unavailable` | Audio and voice notes on readers without AI transcripts (before `ai_v1`). Their length, from `get_message`, is all there is. |
 | `attachment_expired` | An attachment the archive never downloaded and WhatsApp no longer keeps (`gone`). It is never recovered: that would hand its media key to the archive server. |
 | `attachment_unverifiable` | Keyless or unhashed media: without a sealed media key and a 32-byte `fileEncSHA256` the reader cannot prove the bytes are the ones sent. |
 | `attachment_pending` | An attachment the archive has not finished downloading. |
@@ -680,6 +680,38 @@ there. Revoking the connection stops the next open, and one in flight, within
 a minute; it cannot erase what the assistant already received. The enclave's
 side, the jail and every limit are in
 [the contract](../../docs/mcp-enclave.md#16-stage-a-attachments).
+
+### AI transcripts on a media connection
+
+From reader 0.5.0 (`ai_v1`), a media connection answers a voice note, an
+audio or a video (not a GIF) with an AI transcript where its user turned on
+an **AI integration** in the Wappie console: a provider they chose per
+function (Anthropic, OpenAI or Google), with their own API key, for the
+numbers they picked. The transcript is made inside the attested reader,
+which sends the verified file to that provider over its own TLS with the
+user's key, and stored in the archive sealed with the number's key; any
+media connection that reads the number opens it with its own grant.
+
+`open_attachment` then answers, in order: a stored transcript; else, when
+the archive server finds an integration that covers the number for this
+connection's creator, a job on it, waited for within the host's inline wait
+and otherwise `status: "pending"` with `retry_after_s` (call again with the
+same arguments); else `ai_not_enabled`, an answer rather than an error, and
+for a video its preview image as before. A transcript's header says
+`sniffed: "transcript"` and `derived` (the function, provider, model, time
+and, when set, the language and flags), its first note says it is an AI
+transcript that may contain errors, and its text pages by `c` cursors like
+any text. `ai_paused` carries `renew_url` when the integration waits for its
+creator's renewal after a reader update or restart; the other codes
+(`ai_too_large`, `ai_refused`, `ai_unsupported`, `ai_output_limit`,
+`ai_budget_reached`, `ai_key_rejected`, `ai_model_unavailable`, `ai_quota`,
+`ai_provider_failed`, `ai_busy`, `grant_mismatch`) each say what to tell the
+user. `get_message`'s attachment no longer says `not_transcribed` for audio
+on these readers, and adds `derived: ["audio"]` or `["video"]` when a
+transcript is stored. Photos and documents are unchanged: the connection
+opens them itself, and their AI descriptions and summaries are the console's.
+Readers without `ai_v1` keep `transcription_unavailable`. The contract is
+[§18](../../docs/mcp-enclave.md#18-ai-integrations-on-request-050).
 
 ### Drafts and own-chat notes on a sending connection
 

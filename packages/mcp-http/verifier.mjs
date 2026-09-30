@@ -29,6 +29,11 @@ export const STATUS_TTL_MS = 60_000
  * false unless the answer is 'serve'. Go answers `send: null` for a paused
  * connection or a workspace whose switch is off, so both reach the enclave
  * within the TTL; Go refuses them itself at once.
+ *
+ * `checkActive.aiStatus(id)` is an AI job's gate (docs/mcp-enclave.md §18.10
+ * step 1), the same way, for an `ai` record: `{answer, ai_off, media_off}`,
+ * `ai_off` paused and `media_off` [] unless the answer is 'serve'. An `ai`
+ * record's status is `content.decide`'s, as a content record's is.
  */
 /**
  * The deadline to keep for a connection given the one Go answers. Go's is
@@ -37,7 +42,7 @@ export const STATUS_TTL_MS = 60_000
  * the deadline forward, never push it back.
  */
 export function deadlineFor(connection, given) {
-  const consented = connection?.kind === 'content' ? connection.consented_expires_at : undefined
+  const consented = connection?.kind === 'content' || connection?.kind === 'ai' ? connection.consented_expires_at : undefined
   if (typeof consented !== 'string') return given
   const at = Date.parse(given), limit = Date.parse(consented)
   return Number.isFinite(at) && Number.isFinite(limit) && at > limit ? consented : given
@@ -54,7 +59,7 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
     const deadline = status ? deadlineFor(connection, status.expires_at) : null
     const current = status && Date.parse(deadline) > now() ? status : null
     let answer
-    if (connection?.kind === 'content') answer = content && current ? await content.decide(connection, current) : false
+    if (connection?.kind === 'content' || connection?.kind === 'ai') answer = content && current ? await content.decide(connection, current) : false
     else answer = current && current.status === 'active' && (current.kind === undefined || current.kind === 'metadata') ? 'serve' : false
     if (answer !== 'serve') cache.delete(id)
     if (!answer) {
@@ -63,7 +68,8 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
     }
     if (answer === 'serve') {
       cache.set(id, { at: now(), media: current.media === true, media_off: Array.isArray(current.media_off) ? [...current.media_off] : [],
-        send: current.send === 'draft' || current.send === 'direct' ? current.send : null, send_self: current.send_self === true })
+        send: current.send === 'draft' || current.send === 'direct' ? current.send : null, send_self: current.send_self === true,
+        ...(current.ai_off ? { ai_off: structuredClone(current.ai_off) } : {}) })
     }
     // Go's expiry is authoritative (within the consent); keep the local copy in step with it.
     if (connection && connection.expires_at !== deadline) { connection.expires_at = deadline; void state.save().catch(() => {}) }
@@ -86,6 +92,16 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
       cached = cache.get(id)
     }
     return cached ? { answer: 'serve', send: cached.send, send_self: cached.send_self && cached.send !== null } : { answer: false, send: null, send_self: false }
+  }
+  const pausedOff = () => ({ functions: [], providers: [], paused: true, monthly_usd_cents: null })
+  checkActive.aiStatus = async id => {
+    let cached = cache.get(id)
+    if (!fresh(cached) || content?.pending(id)) {
+      const answer = await checkActive(id, { force: true })
+      if (answer !== 'serve') return { answer, ai_off: pausedOff(), media_off: [] }
+      cached = cache.get(id)
+    }
+    return cached ? { answer: 'serve', ai_off: structuredClone(cached.ai_off ?? pausedOff()), media_off: [...cached.media_off] } : { answer: false, ai_off: pausedOff(), media_off: [] }
   }
   return checkActive
 }

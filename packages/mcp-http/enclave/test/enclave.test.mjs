@@ -31,7 +31,10 @@ test('boot, consent through an attested prepare, tools, restart with tokens inta
   const health = await w.internal('/internal/healthz')
   assert.equal(health.status, 200, health.body)
   const object = JSON.parse(health.body)
-  assert.deepEqual(Object.keys(object), ['ok', 'reader_id', 'reader_version', 'boot_id', 'state', 'pcr0', 'tls_spki_sha256', 'cert_not_after', 'policy_sha256', 'acme_account_uri', 'relay_secrets'])
+  assert.deepEqual(Object.keys(object), ['ok', 'reader_id', 'reader_version', 'boot_id', 'state', 'pcr0', 'tls_spki_sha256', 'cert_not_after', 'policy_sha256', 'acme_account_uri', 'relay_secrets', 'ai_reach'])
+  // Each AI provider's host, probed over TLS through the injected transport (it fails here): never reached, never a real provider.
+  assert.deepEqual(Object.keys(object.ai_reach), ['anthropic', 'openai', 'google'])
+  assert.ok(Object.values(object.ai_reach).every(value => value === false || value === null))
   assert.equal(object.state, 'ready')
   assert.equal(object.pcr0, PCR0)
   assert.equal(object.tls_spki_sha256, spkiSha256(e.material.spki))

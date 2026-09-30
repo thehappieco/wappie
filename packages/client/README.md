@@ -31,7 +31,10 @@ connection.close()
 ```
 
 Subpath exports include `api/auth`, `api/rest`, `api/passkeys`, `api/media`, `api/upload`,
-`api/opener`, `api/protocol`, and `crypto/{bytes,hpke,seal,account,passkey,wamedia,attestation}`.
+`api/opener`, `api/protocol`, and `crypto/{bytes,hpke,seal,account,passkey,wamedia,attestation,jcs,derived,aikeychain}`.
+`crypto/derived` opens the AI results the attested reader stores (and computes their
+dedupe tags); `crypto/aikeychain` seals and opens a person's AI provider keys under a
+key only their account's private key derives (docs/mcp-enclave.md §18.6, §18.8).
 Build output includes types and browser KDF worker source. Applications may call
 `setMessageResolver` from `messages` to translate diagnostics. Error codes and
 server diagnostic details remain available without any UI framework.

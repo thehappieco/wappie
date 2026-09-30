@@ -1269,7 +1269,8 @@ func TestOutboundMessages(t *testing.T) {
 // owner under FORCE RLS: every connection that consented to sending revoked
 // with its key and its service account stripped, 0043's cascade; the ledger,
 // the list and the columns gone and version 44 forgotten; every other
-// connection and every person's access untouched; and up again.
+// connection and every person's access untouched; and up again. 0045 comes
+// down first, as the plan orders it.
 func TestMigration0044DownStep(t *testing.T) {
 	f := newSendFixture(t)
 	ctx := context.Background()
@@ -1291,6 +1292,9 @@ func TestMigration0044DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
+		t.Fatalf("0045 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 44)); err != nil {
 		t.Fatalf("down-step: %v", err)
 	}

@@ -42,6 +42,12 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"base-uri 'none'; " +
 	"object-src 'none'"
 
+// aiProviderOrigins are where a console reads a key's model list from, in
+// the person's own browser with their own key (docs/mcp-enclave.md §18.7):
+// Anthropic, OpenAI and Google's Gemini API. Nothing else of AI reaches the
+// browser; the enclave makes every call that carries content.
+const aiProviderOrigins = "https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com"
+
 const sessionBridgePath = "/session-bridge.html"
 const sessionBridgeHost = "api.wappie.thehappie.co"
 const sessionBridgeURL = "https://" + sessionBridgeHost + sessionBridgePath
@@ -58,9 +64,13 @@ const sessionBridgePolicy = "default-src 'self'; " +
 type Handler struct {
 	// ExternalServers permits one validated HTTPS origin selected by the private app.
 	ExternalServers bool
-	dir             string
-	files           http.Handler
-	log             *slog.Logger
+	// AIModelLists lets the console document read the AI providers' model
+	// lists: set only while discovery advertises AI integrations, so with
+	// the AI switch off the document connects where it always did.
+	AIModelLists bool
+	dir          string
+	files        http.Handler
+	log          *slog.Logger
 }
 
 // ErrNotBuilt says the directory holds no client.
@@ -191,10 +201,13 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 		// the path and never the query.
 		header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		policy := contentSecurityPolicy
+		if h.AIModelLists {
+			policy = strings.Replace(policy, "connect-src 'self';", "connect-src 'self' "+aiProviderOrigins+";", 1)
+		}
 		if h.ExternalServers && external != "" {
 			if p, err := browserorigin.Parse(external, false); err == nil && len(p.Origins) == 1 {
 				origin := p.Origins[0]
-				policy = strings.Replace(policy, "connect-src 'self';", "connect-src 'self' "+origin+" "+strings.Replace(origin, "https://", "wss://", 1)+";", 1)
+				policy = strings.Replace(policy, "connect-src 'self'", "connect-src 'self' "+origin+" "+strings.Replace(origin, "https://", "wss://", 1), 1)
 			}
 		}
 		if host == "app.wappie.thehappie.co" || host == "console.wappie.thehappie.co" {

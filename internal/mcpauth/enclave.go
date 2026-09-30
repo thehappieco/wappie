@@ -49,6 +49,7 @@ func (h *Handler) mountEnclave(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/mcp/enclave/state/{name}", h.signed(maxBody, h.stateGet))
 	mux.HandleFunc("PUT /v1/mcp/enclave/state/{name}", h.signed(maxStateBody, h.statePut))
 	h.mountEnclaveSend(mux)
+	h.mountEnclaveAI(mux)
 }
 
 // signed guards an attested reader's route. The steps and their answers are

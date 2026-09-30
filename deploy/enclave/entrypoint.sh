@@ -12,12 +12,19 @@ set -eu
 ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 ip link set dev lo up
 
-# The three outbound names resolve to their own loopback address, so each
-# gets its own vsock-proxy on the parent (and that proxy's allowlist entry).
+# The outbound names resolve to their own loopback address, so each gets its
+# own vsock-proxy on the parent (and that proxy's allowlist entry). The last
+# three are the AI providers (docs/mcp-enclave.md §18.9), which only
+# packages/mcp-http/enclave/ai/egress.mjs reaches, with the TLS verified in
+# Node: the parent sees which provider, the timing and the sizes, never
+# a key or a byte of content.
 printf '%s\n' \
   '127.0.0.2 kms.eu-west-1.amazonaws.com' \
   '127.0.0.3 api.wappie.thehappie.co' \
-  '127.0.0.4 acme-v02.api.letsencrypt.org' >> /etc/hosts
+  '127.0.0.4 acme-v02.api.letsencrypt.org' \
+  '127.0.0.5 api.anthropic.com' \
+  '127.0.0.6 api.openai.com' \
+  '127.0.0.7 generativelanguage.googleapis.com' >> /etc/hosts
 
 # TLS key and certificate of this boot (§10.3): RAM only, like the whole
 # root filesystem of an enclave, and it survives a Node restart.
@@ -67,6 +74,10 @@ bridge() {
 bridge TCP-LISTEN:443,bind=127.0.0.2,reuseaddr,fork VSOCK-CONNECT:3:8000   # KMS
 bridge TCP-LISTEN:443,bind=127.0.0.3,reuseaddr,fork VSOCK-CONNECT:3:8001   # api.wappie.thehappie.co
 bridge TCP-LISTEN:443,bind=127.0.0.4,reuseaddr,fork VSOCK-CONNECT:3:8002   # Let's Encrypt ACME
+# vsock 8003 stays reserved for Amazon S3 (2d).
+bridge TCP-LISTEN:443,bind=127.0.0.5,reuseaddr,fork VSOCK-CONNECT:3:8004   # api.anthropic.com
+bridge TCP-LISTEN:443,bind=127.0.0.6,reuseaddr,fork VSOCK-CONNECT:3:8005   # api.openai.com
+bridge TCP-LISTEN:443,bind=127.0.0.7,reuseaddr,fork VSOCK-CONNECT:3:8006   # generativelanguage.googleapis.com
 bridge TCP-LISTEN:7000,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:3:7000  # role credentials
 bridge TCP-LISTEN:7001,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:3:7001  # boot.json
 bridge TCP-LISTEN:7002,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:3:7002  # log sink

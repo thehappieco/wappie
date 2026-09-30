@@ -119,13 +119,14 @@ export async function startReader(options = {}) {
   let dropped = 0
   const withContent = []
   for (const id of [...state.connections.keys()]) {
-    if (state.connections.get(id).kind === 'content') { withContent.push(id); continue }
+    const kind = state.connections.get(id).kind
+    if (kind === 'content' || kind === 'ai') { withContent.push(id); continue }
     try {
       const status = await relay.status(id)
       if (!status || status.status !== 'active') { state.wipeConnection(id); dropped++ }
     } catch (error) { if (!(error instanceof RelayError)) throw error; log.event('reconcile_skipped'); break }
   }
-  // No content connection has a key after a start. Each is kept, as `reseal`
+  // No content connection (nor AI authorization) has a key after a start. Each is kept, as `reseal`
   // in Go, until its owner renews it; `onBoot` asks Go (retrying in the
   // background while Go is away) and says which ones Go no longer has.
   for (const id of withContent) {
@@ -204,7 +205,8 @@ export async function startReader(options = {}) {
       // lifetime, so it is revoked there first and forgotten here only once Go
       // agrees; a failed revoke is retried on the next sweep. The exchange is
       // what sets family_id, so its absence is the whole test.
-      if (!connection.family_id && now() - connection.created_at > UNCLAIMED_CONNECTION_MS && await relay.revoke(id)) {
+      // An AI authorization (docs/mcp-enclave.md §18.7) never has a token family: no assistant speaks for it.
+      if (!connection.family_id && connection.kind !== 'ai' && now() - connection.created_at > UNCLAIMED_CONNECTION_MS && await relay.revoke(id)) {
         state.wipeConnection(id); changed = 1
         log.event('unclaimed_connection_revoked')
       }
@@ -222,7 +224,7 @@ export async function startReader(options = {}) {
   async function contentSweep() {
     let checked = 0, wiped = 0, unreachable = 0
     for (const [id, record] of [...state.connections]) {
-      if (record.kind !== 'content') continue
+      if (record.kind !== 'content' && record.kind !== 'ai') continue
       checked++
       const held = content.holds(id)
       try {

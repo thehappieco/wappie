@@ -1,3 +1,4 @@
+import { createDecipheriv, hkdfSync } from 'node:crypto'
 import { ArchiveClient, ArchiveError, auth, bytes, hpke, seal } from '@whatserver2/client'
 import { openContactPack, MAX_CONTACT_PACK_BYTES } from '@whatserver2/client/crypto/contactPack'
 import { contactCandidates, matchesText, excerpt } from './contacts.mjs'
@@ -56,6 +57,115 @@ function serviceKeyHandle(value) {
     !(publicRaw instanceof Uint8Array) || publicRaw.length !== 32) throw new LocalConfigError('invalid_service_key')
   return { key, publicRaw }
 }
+// ---- Derived records (docs/mcp-enclave.md §18.8) ------------------------------
+//
+// What an AI provider made of an attachment, sealed in the attested reader
+// under a key derived from the DSK that opened the source; the enclave seals
+// (packages/mcp-http/enclave/ai/derived.mjs), the reader and the console open.
+
+export const DERIVED_LABEL = 'wappie-derived/v1'
+/** A record's plaintext at most; the envelope adds 35 bytes. */
+export const DERIVED_MAX_BYTES = 524_288
+/** AI_TEXT_MAX_CHARS: a record's text, in UTF-16 code units. */
+export const DERIVED_TEXT_MAX_CHARS = 200_000
+export const DERIVED_FEATURES = Object.freeze(['audio', 'video', 'image', 'document'])
+export const DERIVED_PROVIDERS = Object.freeze(['anthropic', 'openai', 'google'])
+export const DERIVED_FLAGS = Object.freeze(['cut', 'refused', 'no_speech', 'partial', 'redo'])
+export const DERIVED_MAGIC = Buffer.from('WDRV')
+const DERIVED_HEADER = 7, DERIVED_IV = 12, DERIVED_TAG = 16
+const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const invalidDerived = () => new LocalConfigError('invalid_derived')
+function derivedScope(scope) {
+  if (!scope || !uuidShape.test(scope.namespace ?? '') || !uuidShape.test(scope.device_id ?? '') || (scope.message_uid !== undefined && !uuidShape.test(scope.message_uid)) ||
+    (scope.feature !== undefined && !DERIVED_FEATURES.includes(scope.feature)) || !Number.isInteger(scope.epoch) || scope.epoch < 1 || scope.epoch > 65535) throw invalidDerived()
+  return scope
+}
+/** The AAD binding a record to its namespace, number, message, function and epoch. */
+export function derivedAAD(scope) {
+  const { namespace, device_id, message_uid, feature, epoch } = derivedScope(scope)
+  if (message_uid === undefined || feature === undefined) throw invalidDerived()
+  return Buffer.from(JSON.stringify(['wappie/derived', 1, namespace, device_id, message_uid, feature, epoch]))
+}
+/** HKDF-SHA256 over DSK(device, epoch) under `label` ‖ device ‖ u16be epoch, salt the namespace: 32 bytes the caller zeroes. */
+export function numberKey(dsk, label, { namespace, device_id, epoch }) {
+  if (!(dsk instanceof Uint8Array) || dsk.length !== 32) throw invalidDerived()
+  derivedScope({ namespace, device_id, epoch })
+  const epochBytes = Buffer.alloc(2)
+  epochBytes.writeUInt16BE(epoch)
+  return Buffer.from(hkdfSync('sha256', dsk, Buffer.from(bytes.parseUUID(namespace)), Buffer.concat([Buffer.from(label), Buffer.from(bytes.parseUUID(device_id)), epochBytes]), 32))
+}
+/** `k` of a number's derived records: 32 bytes the caller zeroes. */
+export const derivedKey = (dsk, scope) => numberKey(dsk, DERIVED_LABEL, scope)
+
+const recordKeys = ['v', 'feature', 'text', 'lang', 'provider', 'model', 'prompt_version', 'created_at', 'source_sha256', 'usage', 'flags']
+const usageKeys = ['input_tokens', 'output_tokens', 'seconds']
+/**
+ * A record's plaintext, checked as §18.8 writes it: every field and nothing
+ * else, `feature` the expected one, the text within its cap, known flags
+ * once each, an empty text only for a refusal or a transcript without
+ * speech. Throws LocalConfigError('invalid_derived').
+ */
+export function validateDerivedRecord(value, feature) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidDerived()
+  const keys = Object.keys(value)
+  const { usage, flags } = value
+  if (keys.some(key => !recordKeys.includes(key)) || recordKeys.some(key => key !== 'lang' && !Object.hasOwn(value, key)) ||
+    value.v !== 1 || !DERIVED_FEATURES.includes(value.feature) || (feature !== undefined && value.feature !== feature) ||
+    typeof value.text !== 'string' || value.text.length > DERIVED_TEXT_MAX_CHARS ||
+    (value.lang !== undefined && (typeof value.lang !== 'string' || !/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/.test(value.lang))) ||
+    !DERIVED_PROVIDERS.includes(value.provider) || typeof value.model !== 'string' || !/^[a-z0-9][a-z0-9._:-]{0,63}$/.test(value.model) ||
+    typeof value.prompt_version !== 'string' || /^([a-z]+)\/[1-9]\d{0,3}$/.exec(value.prompt_version)?.[1] !== value.feature ||
+    typeof value.created_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value.created_at) || !Number.isFinite(Date.parse(value.created_at)) ||
+    typeof value.source_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.source_sha256) ||
+    !usage || typeof usage !== 'object' || Array.isArray(usage) || Object.keys(usage).some(key => !usageKeys.includes(key)) ||
+    Object.values(usage).some(count => !Number.isSafeInteger(count) || count < 0) ||
+    !Array.isArray(flags) || new Set(flags).size !== flags.length || flags.some(flag => !DERIVED_FLAGS.includes(flag))) throw invalidDerived()
+  const empty = value.text === '', refused = flags.includes('refused'), silent = flags.includes('no_speech')
+  if ((empty && !refused && !silent) || ((refused || silent) && !empty) || (refused && silent)) throw invalidDerived()
+  return value
+}
+/** Opens an envelope with `key` (derivedKey's) for exactly `scope`, or throws LocalConfigError('invalid_derived'). */
+export function openDerivedWith(key, scope, envelope) {
+  const aad = derivedAAD(scope)
+  const sealed = Buffer.isBuffer(envelope) ? envelope : envelope instanceof Uint8Array ? Buffer.from(envelope.buffer, envelope.byteOffset, envelope.byteLength) : null
+  if (!sealed || sealed.length < DERIVED_HEADER + DERIVED_IV + DERIVED_TAG || sealed.length > DERIVED_MAX_BYTES + DERIVED_HEADER + DERIVED_IV + DERIVED_TAG ||
+    !sealed.subarray(0, 4).equals(DERIVED_MAGIC) || sealed[4] !== 1 || sealed.readUInt16BE(5) !== scope.epoch) throw invalidDerived()
+  let plain
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, sealed.subarray(DERIVED_HEADER, DERIVED_HEADER + DERIVED_IV))
+    decipher.setAAD(aad)
+    decipher.setAuthTag(sealed.subarray(sealed.length - DERIVED_TAG))
+    plain = Buffer.concat([decipher.update(sealed.subarray(DERIVED_HEADER + DERIVED_IV, sealed.length - DERIVED_TAG)), decipher.final()])
+  } catch { plain?.fill(0); throw invalidDerived() }
+  try {
+    let parsed
+    try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(plain)) } catch { throw invalidDerived() }
+    return validateDerivedRecord(parsed, scope.feature)
+  } finally { plain.fill(0) }
+}
+/**
+ * Opens a derived record with the DSK that opened its source (§18.8), for
+ * exactly this namespace, number, message, function and epoch. Anything
+ * else throws LocalConfigError('invalid_derived'): another message's record,
+ * a moved row, a tampered byte, a record Go sealed to the device public key.
+ */
+export function openDerived(dsk, scope, envelope) {
+  const key = derivedKey(dsk, derivedScope(scope))
+  try { return openDerivedWith(key, scope, envelope) } finally { key.fill(0) }
+}
+/**
+ * A stored record's `sealed` as Go's JSON carries it, or null: unpadded
+ * base64url as the enclave writes it (§17.7's form), or padded standard
+ * base64; either only in its canonical spelling.
+ */
+export function derivedBytes(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > Math.ceil((DERIVED_MAX_BYTES + 35) / 3) * 4) return null
+  const url = /^[A-Za-z0-9_-]+$/.test(value)
+  if (!url && !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return null
+  const decoded = Buffer.from(value, url ? 'base64url' : 'base64')
+  return decoded.toString(url ? 'base64url' : 'base64') === value ? decoded : null
+}
+
 /** Runs `work` over `items` with at most `limit` in flight; the first failure stops new work. */
 async function bounded(items, limit, work) {
   let next = 0, failed = false
@@ -83,7 +193,12 @@ async function bounded(items, limit, work) {
  *   (docs/mcp-enclave.md §16.5): `openAttachment` hands it the call and an
  *   `archive` of the two reads it needs, every attachment the reader
  *   describes says whether it opens, and get_message's also names the
- *   console link where the user sees the original. On a connection whose
+ *   console link where the user sees the original. On a reader that
+ *   declares ai_v1 (§18.12) `media` also has `ai: true` and
+ *   `derivedOf(row)` (the functions whose AI result is stored, which
+ *   get_message adds as `derived`), and the `archive` gains `derived(row,
+ *   items)`, which opens a stored result with this connection's own grant.
+ *   On a connection whose
  *   sealed consent includes sending (`config.send`), `send` is the enclave's
  *   `{mode, self, consoleURL, draft(input, archive), sendSelf(input),
  *   outgoing(query), observe(device, chatKey, text)}` (§17.8): the three
@@ -140,6 +255,14 @@ export async function createReader(config, provider) {
     } catch {}
     return new ArchiveError('stale_grant')
   }
+  /**
+   * Runs `operation(opener, serviceKey, keys)` with the number's grant opened
+   * as every read opens it (grants fetched now, the consented epoch, the
+   * service key). `keys` is `{dsk, namespace, epoch}`: the raw DSK, valid only
+   * until `operation` settles (it is zeroed then), and the namespace and epoch
+   * of the grant that opened it, which the AI results' keys derive from
+   * (docs/mcp-enclave.md §18.8).
+   */
   async function withOpener(device, operation, revalidate = false) {
     permit(device)
     if (!opens) {
@@ -155,8 +278,9 @@ export async function createReader(config, provider) {
           expectedTenantID: config.workspace, expectedUserID: credential.userID,
           signal: AbortSignal.timeout(30_000),
           maxKDF: { m: 128 * 1024, t: 5, p: 4 }, maxAuthResponseBytes: 4 * 1024 * 1024,
-        }, async (raw, _epoch, namespace) => {
-          const result = await operation(new Opener(api.keySource(device), bytes.parseUUID(namespace), bytes.parseUUID(device), device, await hpke.importArchiveKey(raw)))
+        }, async (raw, epoch, namespace) => {
+          const result = await operation(new Opener(api.keySource(device), bytes.parseUUID(namespace), bytes.parseUUID(device), device, await hpke.importArchiveKey(raw)),
+            undefined, { dsk: raw, namespace: namespace.toLowerCase(), epoch })
           if (revalidate) await api.listChats(device, { limit: 1 })
           return result
         })
@@ -191,7 +315,8 @@ export async function createReader(config, provider) {
         try { archive = await seal.openDirect(serviceKey, seal.Kind.DeviceGrant, namespace, row, bytes.fromBase64(grant.sealed_dsk)) }
         catch { throw staleGrant(device) }
       } else archive = await seal.openDirect(serviceKey, seal.Kind.DeviceGrant, namespace, row, bytes.fromBase64(grant.sealed_dsk))
-      const result = await operation(new Opener(api.keySource(device), namespace, deviceBytes, device, await hpke.importArchiveKey(archive)), serviceKey)
+      const result = await operation(new Opener(api.keySource(device), namespace, deviceBytes, device, await hpke.importArchiveKey(archive)), serviceKey,
+        { dsk: archive, namespace: (grant.archive_tenant_id || config.workspace).toLowerCase(), epoch: grant.epoch })
       if (revalidate) {
         const current = await api.grants()
         const same = current.grants.find(item => item.device_id === device)
@@ -377,6 +502,32 @@ export async function createReader(config, provider) {
       }
     }, true)
   }
+  /** A message with an attachment on `device`, or `attachment_not_found` (a 404, another number, no `media`). */
+  async function attachmentRow(device, uid) {
+    let row
+    try { row = await api.getMessage(uid) } catch (error) {
+      if (error instanceof ArchiveError && error.status === 404) throw new ArchiveError('attachment_not_found', 404)
+      throw error
+    }
+    if (row.device_id !== device || !row.media || typeof row.media !== 'object') throw new ArchiveError('attachment_not_found', 404)
+    return row
+  }
+  /**
+   * An attachment's media key (`what` 'key') or sealed preview
+   * ('thumbnail'), and its filename and caption, opened with `opener`
+   * (§16.5's `archive.open`). The caller owns the bytes and zeroes them.
+   */
+  async function openedMedia(opener, row, what) {
+    await opener.prefetch([row.content_key_id])
+    const [sealed, filename, caption] = await Promise.all([what === 'key' ? opener.mediaKey(row) : opener.thumbnail(row), opener.fileName(row), opener.body(row)])
+    const text = value => (value.state === 'ok' ? value.value : null)
+    const opened = { filename: text(filename), caption: text(caption) }
+    if (sealed.state === 'tampered') throw new ArchiveError('attachment_tampered')
+    if (sealed.state === 'locked') throw new ArchiveError('attachment_locked')
+    if (sealed.state === 'ok') opened[what] = sealed.value
+    else if (what === 'key') throw new ArchiveError('attachment_unverifiable')
+    return opened
+  }
   /** The user part of a JID or phone number: before any '@' and any ':' device suffix. */
   const userOf = jid => (typeof jid === 'string' ? jid.split('@')[0].split(':')[0] : '')
   /**
@@ -499,7 +650,16 @@ export async function createReader(config, provider) {
       permit(device_id)
       const reply = await api.getMessage(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
-      return withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener, { link: true }))[0] }))
+      const result = await withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener, { link: true }))[0] }))
+      // On readers with AI (§18.12): the functions whose result is stored for
+      // this attachment, from one derived read; lists and searches leave it out.
+      if (result.message.attachment && typeof media?.derivedOf === 'function') {
+        try {
+          const features = await media.derivedOf(reply)
+          if (Array.isArray(features) && features.length) result.message.attachment.derived = features
+        } catch { /* best effort: the message reads as before */ }
+      }
+      return result
     },
     /**
      * open_attachment (docs/mcp-enclave.md §16.5): the enclave's
@@ -516,26 +676,32 @@ export async function createReader(config, provider) {
       let chat = null
       const archive = {
         async row() {
-          let row
-          try { row = await api.getMessage(uid) } catch (error) {
-            if (error instanceof ArchiveError && error.status === 404) throw new ArchiveError('attachment_not_found', 404)
-            throw error
-          }
-          if (row.device_id !== device_id || !row.media || typeof row.media !== 'object') throw new ArchiveError('attachment_not_found', 404)
+          const row = await attachmentRow(device_id, uid)
           chat = row.chat_key
           return row
         },
         open(row, what) {
-          return withOpener(device_id, async opener => {
-            await opener.prefetch([row.content_key_id])
-            const [sealed, filename, caption] = await Promise.all([what === 'key' ? opener.mediaKey(row) : opener.thumbnail(row), opener.fileName(row), opener.body(row)])
-            const text = value => (value.state === 'ok' ? value.value : null)
-            const opened = { filename: text(filename), caption: text(caption) }
-            if (sealed.state === 'tampered') throw new ArchiveError('attachment_tampered')
-            if (sealed.state === 'locked') throw new ArchiveError('attachment_locked')
-            if (sealed.state === 'ok') opened[what] = sealed.value
-            else if (what === 'key') throw new ArchiveError('attachment_unverifiable')
-            return opened
+          return withOpener(device_id, opener => openedMedia(opener, row, what))
+        },
+        /**
+         * The first of Go's stored records for this message (§18.12) that this
+         * connection's own grant opens, as `{feature, text, lang?, provider,
+         * model, prompt_version, created_at, source_sha256, usage, flags}`, or
+         * null. `items` are `{message_uid, feature, device_id, epoch, sealed}`;
+         * one of another message, number or epoch is skipped, and so is one
+         * the key cannot open.
+         */
+        derived(row, items) {
+          return withOpener(device_id, async (_opener, _serviceKey, keys) => {
+            for (const item of Array.isArray(items) ? items : []) {
+              const sealed = derivedBytes(item?.sealed)
+              if (!sealed || !keys || item.message_uid !== row.uid || item.device_id !== device_id || item.epoch !== keys.epoch || !DERIVED_FEATURES.includes(item.feature)) continue
+              try {
+                const { v: _v, ...record } = openDerived(keys.dsk, { namespace: keys.namespace, device_id, message_uid: row.uid, feature: item.feature, epoch: item.epoch }, sealed)
+                return record
+              } catch { /* another key's record: the next one */ } finally { sealed.fill(0) }
+            }
+            return null
           })
         },
       }
@@ -549,6 +715,47 @@ export async function createReader(config, provider) {
         for (const text of [result.body, result.header?.filename, result.header?.caption]) if (typeof text === 'string' && text) observe(device_id, chat, { state: 'ok', value: text })
       }
       return result
+    },
+    /**
+     * The enclave's AI jobs (docs/mcp-enclave.md §18.10), on the attested
+     * reader only, which builds this reader for an `ai` record and never
+     * serves it as an MCP server: every open uses that record's own grants
+     * (I2). `work` runs inside one withOpener of `device_id` and gets
+     * `{row(), open(row, what), keys}`: the message row (as open_attachment
+     * reads it), its media key or preview with filename and caption (the
+     * caller zeroes them), and `{dsk, namespace, epoch}` of the grant that
+     * opens this content, which the job tags and seals with (I3a, I5). The
+     * DSK is zeroed when `work` settles.
+     */
+    async aiJob({ device_id, uid }, work) {
+      permit(device_id)
+      if (!content) throw new LocalConfigError('credential_provider_required')
+      return withOpener(device_id, (opener, _serviceKey, keys) => work({ row: () => attachmentRow(device_id, uid), open: (row, what) => openedMedia(opener, row, what), keys }))
+    },
+    /**
+     * The DSKs of several of this record's numbers from one grants read (the
+     * dedupe lookup, §18.8): `work(device, {dsk, namespace, epoch})` runs in
+     * order for each device whose grant opens at its consented epoch, and the
+     * others are skipped. Each DSK is zeroed once its call settles.
+     */
+    async aiKeys(devices, work) {
+      if (!content) throw new LocalConfigError('credential_provider_required')
+      for (const device of devices) permit(device)
+      const grants = await api.grants()
+      if (grants.user_id !== config.service_user_id) throw new ArchiveError('account_mismatch')
+      const serviceKey = serviceKeyHandle(await provider.serviceKey())
+      for (const device of devices) {
+        const grant = grants.grants.find(item => item.device_id === device)
+        if (!grant || !Number.isSafeInteger(grant.epoch) || grant.epoch !== await provider.expectedEpoch(device)) continue
+        const ns = (grant.archive_tenant_id || config.workspace).toLowerCase()
+        let dsk
+        try {
+          const namespace = bytes.parseUUID(ns)
+          const row = await seal.grantRow(namespace, bytes.parseUUID(device), bytes.parseUUID(grants.user_id), grant.epoch)
+          try { dsk = await seal.openDirect(serviceKey, seal.Kind.DeviceGrant, namespace, row, bytes.fromBase64(grant.sealed_dsk)) } catch { continue }
+          await work(device, { dsk, namespace: ns, epoch: grant.epoch })
+        } finally { dsk?.fill(0) }
+      }
     },
     /**
      * draft_message (§17.8): the enclave runs every step. `archive.chat()` is

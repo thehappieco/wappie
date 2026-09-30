@@ -154,11 +154,20 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
  * which records the send and closes the socket unanswered) and `answer`
  * (route, body) -> {status, body} (or {status, raw}, a text body as a proxy
  * writes one) to replace an answer outright.
+ *
+ * AI (docs/mcp-enclave.md §18.11): the pick, derived, usage and alerts
+ * routes check the bearer as the send routes do. `ai.picks` maps
+ * `${connection}|${device}|${feature}` to Go's pick (else 404); `ai.derived`
+ * holds the stored records of the whole workspace (a PUT inserts, or
+ * replaces on a redo; `ai.storagePaused` answers 409); `ai.usage` and
+ * `ai.alerts` record what the enclave posted, `ai.usageAnswers` maps a row to
+ * its `GET …/ai/usage` answer, and `ai.calls` records every call.
  */
 export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamToken, workspace }) {
   const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set(),
     revokes: [], reseals: [], tokens: new Set(), grants: new Map(), archiveRequests: [],
-    outbound: [], sendCalls: [], sending: { ineligible: new Set(), ownChat: '5511900000001@s.whatsapp.net', draftsPending: 20, outcome: 'sent', answer: null } }
+    outbound: [], sendCalls: [], sending: { ineligible: new Set(), ownChat: '5511900000001@s.whatsapp.net', draftsPending: 20, outcome: 'sent', answer: null },
+    ai: { picks: new Map(), derived: [], usage: [], alerts: [], usageAnswers: new Map(), storagePaused: false, calls: [] } }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
   const http = createHTTPServer(async (req, res) => {
     const chunks = []
@@ -200,7 +209,7 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
       go.reseals.push(match[1])
       if (go.resealDown) { res.destroy(); return }
       if (!connection) return json(res, { code: 'not_found' }, 404)
-      if (connection.kind !== 'content' || !['active', 'reseal'].includes(connection.status)) return json(res, { code: 'connection_state' }, 409)
+      if (!['content', 'ai'].includes(connection.kind) || !['active', 'reseal'].includes(connection.status)) return json(res, { code: 'connection_state' }, 409)
       connection.status = 'reseal'
       res.writeHead(204); res.end(); return
     }
@@ -219,6 +228,7 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
       res.writeHead(204); res.end(); return
     }
     if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/(drafts|send|refusals|outbound)$/.exec(url.pathname))) return sendRoute(req, res, match[1], match[2], url, body)
+    if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/(ai(?:\/.*)?)$/.exec(url.pathname))) return aiRoute(req, res, match[1], match[2], url, body)
     if (url.pathname === '/v1/mcp/enclave/cimd' && req.method === 'GET') {
       const entry = go.cimd.get(url.searchParams.get('url'))
       if (!entry) return json(res, { code: 'cimd_unavailable' }, 502)
@@ -301,6 +311,42 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
           ({ id: itemID, kind, status: itemStatus, code: code ?? null, device_id, chat_key: chat_key ?? null, reply_to_uid: reply_to_uid ?? null, created_at, decided_at: decided_at ?? null, edited, message_uid: message_uid ?? null }))
       return json(res, { items, next: null })
     }
+    return json(res, { code: 'not_found' }, 404)
+  }
+  /** The AI routes (§18.11), over `go.ai`. */
+  async function aiRoute(req, res, id, route, url, body) {
+    const connection = go.connections.get(id)
+    const presented = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null
+    let parsed = null
+    if (body.length) { try { parsed = JSON.parse(body.toString('utf8')) } catch { return json(res, { code: 'bad_request' }, 400) } }
+    go.ai.calls.push({ route, method: req.method, id, query: url.search, body: parsed, authorization: req.headers.authorization ?? null })
+    if (!connection || !presented || (connection.api_key ? presented !== connection.api_key : !go.tokens.has(presented))) return json(res, { code: 'not_found' }, 404)
+    const q = name => url.searchParams.get(name)
+    const listed = items => items.map(({ message_uid, feature, device_id, epoch, sealed, created_at }) => ({ message_uid, feature, device_id, epoch, sealed, created_at }))
+    let match
+    if (route === 'ai' && req.method === 'GET') {
+      const pick = go.ai.picks.get(`${id}|${q('device_id')}|${q('feature')}`)
+      return pick ? json(res, pick) : json(res, { code: 'ai_not_enabled' }, 404)
+    }
+    if (route === 'ai/derived' && req.method === 'GET') {
+      if (q('uid')) return json(res, { items: listed(go.ai.derived.filter(item => item.device_id === q('device_id') && item.message_uid === q('uid'))) })
+      const pairs = (q('tags') ?? '').split(',')
+      if (!pairs.length || pairs.length > 25 || pairs.some(pair => !/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/.test(pair))) return json(res, { code: 'bad_request' }, 400)
+      return json(res, { items: listed(go.ai.derived.filter(item => item.feature === q('feature') && pairs.includes(`${item.device_id}.${item.dedupe_tag}`))) })
+    }
+    if ((match = /^ai\/derived\/([0-9a-f-]{36})\/(audio|video|image|document)$/.exec(route)) && req.method === 'PUT') {
+      const names = Object.keys(parsed ?? {}).sort().join()
+      if (names !== 'dedupe_tag,device_id,epoch,redo,sealed' || !/^[A-Za-z0-9_-]+$/.test(parsed.sealed) || !/^[A-Za-z0-9_-]{43}$/.test(parsed.dedupe_tag) || typeof parsed.redo !== 'boolean') return json(res, { code: 'bad_request' }, 400)
+      if (go.ai.storagePaused) return json(res, { code: 'storage_paused' }, 409)
+      const at = go.ai.derived.findIndex(item => item.message_uid === match[1] && item.feature === match[2])
+      if (at >= 0 && !parsed.redo) return json(res, { code: 'derived_exists' }, 409)
+      const row = { message_uid: match[1], feature: match[2], device_id: parsed.device_id, epoch: parsed.epoch, sealed: parsed.sealed, dedupe_tag: parsed.dedupe_tag, authorization_id: id, created_at: new Date(now()).toISOString() }
+      if (at >= 0) go.ai.derived[at] = row; else go.ai.derived.push(row)
+      res.writeHead(204); res.end(); return
+    }
+    if (route === 'ai/usage' && req.method === 'POST') { go.ai.usage.push({ id, body: parsed }); res.writeHead(204); res.end(); return }
+    if (route === 'ai/usage' && req.method === 'GET') return json(res, go.ai.usageAnswers.get(id) ?? { month: q('month'), cost_microcents: 0, items_today: 0 })
+    if (route === 'ai/alerts' && req.method === 'POST') { go.ai.alerts.push({ id, body: parsed }); res.writeHead(204); res.end(); return }
     return json(res, { code: 'not_found' }, 404)
   }
   go.listen = async () => { await new Promise(resolve => http.listen(0, '127.0.0.1', resolve)); go.url = `http://127.0.0.1:${http.address().port}`; return go }

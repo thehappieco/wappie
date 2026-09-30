@@ -8,13 +8,14 @@ import { tmpdir } from 'node:os'
 import { createServer as createNetServer } from 'node:net'
 import { join } from 'node:path'
 import { bytes, hpke, seal } from '@whatserver2/client'
-import { deviceCheck, deviceScope } from '@whatserver2/mcp/bundle'
+import { aiConfigScope, aiConfigTag, deviceCheck, deviceScope, keysSHA256 } from '@whatserver2/mcp/bundle'
 import { fixture, vector, workspace } from '@whatserver2/mcp/test/fixture'
 import { pkce, proof, sealBundle } from '../../test/harness.mjs'
 import { attest } from '../attest.mjs'
 import * as constants from '../constants.mjs'
 import { startEnclave } from '../main.mjs'
 import { encodeProxyV2 } from '../proxy.mjs'
+import { STUB_KEYS } from './ai-stubs.mjs'
 import { createEnclaveGo, createFakeAcme, fakeKms, fakeNsm, goHeaders, proxiedRequest, testCA } from './fixtures.mjs'
 
 export const READER_KEY = 'arn:aws:kms:eu-west-1:768406580484:key/11111111-1111-4111-8111-111111111111'
@@ -52,11 +53,14 @@ export async function world(t, { bootJson, archive } = {}) {
   const boot = Buffer.from(bootJson ?? JSON.stringify({ relay_secret_ciphertext: bootCiphertext.toString('base64') }))
   const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY }
   const w = {
-    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, jail: null,
+    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, jail: null, aiTransport: null, mediaDelay: null,
     async start() {
       w.enclave = await startEnclave({
         constants: c, sink, kms, attest: nsm, now: () => Date.now() + w.skew, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
         ...(w.jail ? { jail: w.jail } : {}),
+        // Never a real provider: the AI egress goes to w.aiTransport (ai-stubs.mjs), or fails.
+        aiTransport: (url, init) => (w.aiTransport ? w.aiTransport(url, init) : Promise.reject(new TypeError('fetch failed'))),
+        ...(w.mediaDelay ? { mediaDelay: w.mediaDelay } : {}),
         readLocal: async port => { if (port === 7001) return boot; throw new Error('unexpected port') },
         overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort } },
       })
@@ -146,16 +150,16 @@ export async function sealContent(publicKeyEncoded, bundle, { info, aad }) {
 
 /**
  * Registers `token` with the fake archive for `service` and seals the vector
- * device key to `publicKeyEncoded` as each device's grant. `devices` defaults
+ * device key (or `dsk`, a forged one) to `publicKeyEncoded` as each device's grant. `devices` defaults
  * to the one number the synthetic archive holds; `epoch` and `rowEpoch` differ
  * only in a negative case.
  */
-export async function contentGrants(w, publicKeyEncoded, { service, token, devices = [vector.device], epoch = 1, rowEpoch = epoch, user = service, sealTo = publicKeyEncoded }) {
+export async function contentGrants(w, publicKeyEncoded, { service, token, devices = [vector.device], epoch = 1, rowEpoch = epoch, user = service, sealTo = publicKeyEncoded, dsk = bytes.fromBase64(vector.private_key) }) {
   const namespace = bytes.parseUUID(vector.tenant)
   const grants = []
   for (const device of devices) {
     const row = await seal.grantRow(namespace, bytes.parseUUID(device), bytes.parseUUID(service), rowEpoch)
-    const sealed = await seal.sealDirect(new Uint8Array(Buffer.from(sealTo, 'base64url')), seal.Kind.DeviceGrant, namespace, row, rowEpoch, bytes.fromBase64(vector.private_key))
+    const sealed = await seal.sealDirect(new Uint8Array(Buffer.from(sealTo, 'base64url')), seal.Kind.DeviceGrant, namespace, row, rowEpoch, dsk)
     grants.push({ device_id: device, archive_tenant_id: vector.tenant, epoch, sealed_dsk: bytes.toBase64(sealed) })
   }
   w.go.tokens.add(token)
@@ -278,4 +282,67 @@ export async function connectSending(w, options = {}) {
   row.api_key = token
   row.extra = { media: fields.media === true, media_off: [], send: 'draft', send_self: fields.send_self === true, send_groups: fields.send_groups === true }
   return done
+}
+
+// ---- AI integrations (B1) ---------------------------------------------------------
+//
+// The console's side of §18.7, written from the contract: an attested AI
+// request, grants sealed to its key for a fresh service account, the AI
+// bundle with its configuration tags computed from each number's DSK, sealed
+// under the AI labels, and Go's relay with `"kind": "ai"`.
+
+export const aiConnectLabels = (requestId, kid) => ({ info: 'wappie-ai-connect/v1', aad: JSON.stringify(['wappie/ai-connect', 1, requestId, kid, RESOURCE]) })
+export const aiRenewLabels = (renewalId, connectionId, kid) => ({ info: 'wappie-ai-renew/v1', aad: JSON.stringify(['wappie/ai-renew', 1, renewalId, connectionId, kid, RESOURCE]) })
+/** Go's `ai_off` for a row nothing narrows. */
+export const aiOff = (change = {}) => ({ functions: [], providers: [], paused: false, monthly_usd_cents: null, ...change })
+
+/** POST /internal/ai/requests: the attested descriptor of a fresh AI request. */
+export async function requestAI(w, { nonce = randomBytes(32) } = {}) {
+  const answer = await w.internal('/internal/ai/requests', { method: 'POST', body: { nonce: nonce.toString('base64url') } })
+  return { status: answer.status, body: answer.body, descriptor: answer.status === 200 ? JSON.parse(answer.body) : null, nonce }
+}
+
+/** `cfg_tags` of `bundle` as the creator's browser computes them (§18.7 step 4), with `dsk` for every number. */
+export function aiTags(bundle, { request, kid, epoch = 1, dsk = DSK(), namespace = vector.tenant }) {
+  const fields = { ...bundle, keys_sha256: keysSHA256(bundle.keys) }
+  return Object.fromEntries(bundle.device_ids.map(device => [device, aiConfigTag(dsk, { namespace, deviceID: device, epoch, config: aiConfigScope(fields, { deviceID: device, epoch, request, kid }) })]))
+}
+
+/** The functions, keys, features and budget of a bundle for `functions` ({feature: [provider, model]}) on the fixture's number. */
+export function aiScope(functions, { lang, requesters = 'self', devices = [vector.device], keys = {}, cents = 1000, items = 100, rates = {} } = {}) {
+  const entries = Object.fromEntries(Object.entries(functions).map(([feature, [provider, model]]) => [feature, { provider, model }]))
+  const providers = [...new Set(Object.values(entries).map(entry => entry.provider))]
+  return {
+    keys: Object.fromEntries(providers.map(provider => [provider, keys[provider] ?? STUB_KEYS[provider]])),
+    functions: entries,
+    features: Object.fromEntries(devices.map(device => [device, Object.fromEntries(Object.keys(entries).map(feature => [feature, { mode: 'request', ...(lang ? { lang } : {}), requesters }]))])),
+    budget: { monthly_usd_cents: cents, request_items_per_day: items, rates: Object.fromEntries(Object.values(entries).map(entry => [`${entry.provider}:${entry.model}`, rates[`${entry.provider}:${entry.model}`] ?? { in: 100, out: 400, sec: 0 }])) },
+  }
+}
+
+/**
+ * An AI consent as §18.7 orders it, every piece overridable: `scope` (aiScope),
+ * `bundle` fields, `tags` (in place of the browser's), `tagDSK` (the DSK the
+ * tags are made with), `grants` (contentGrants' options), `relay` fields.
+ * Go's row takes the service's API key and a status with `ai_off`.
+ */
+export async function connectAI(w, options = {}) {
+  const request = options.request ?? (await requestAI(w)).descriptor
+  const service = options.service ?? randomUUID()
+  const token = options.token ?? newApiKey()
+  const expiresAt = options.expiresAt ?? new Date(Date.now() + 30 * DAY).toISOString()
+  await contentGrants(w, request.reader_public_key, { service, token, ...options.grants })
+  const scope = options.scope ?? aiScope({ audio: ['google', 'gemini-synthetic-flash'] })
+  const bundle = {
+    version: 3, kind: 'ai', purpose: 'consent', server_url: ORIGIN, workspace_id: workspace, service_user_id: service, device_ids: [vector.device],
+    token, key_mode: 'ephemeral', consent_version: 1, expires_at: expiresAt, ...scope, ...options.bundle,
+  }
+  bundle.cfg_tags = options.tags ?? aiTags(bundle, { request: request.request_id, kid: request.kid, ...(options.tagDSK ? { dsk: options.tagDSK } : {}) })
+  const { sealed } = await sealContent(options.sealTo ?? request.reader_public_key, bundle, options.labels ?? aiConnectLabels(request.request_id, request.kid))
+  const connectionId = options.connectionId ?? randomUUID()
+  w.go.connections.set(connectionId, { status: 'pending', expires_at: expiresAt, kind: 'ai', service_user_id: service, api_key: token, extra: { media: false, media_off: [], ai_off: aiOff() } })
+  const relayed = await w.internal(`/internal/ai/requests/${request.request_id}/bundle`, { method: 'POST', body: {
+    connection_id: connectionId, tenant_id: workspace, kid: request.kid, sealed, expires_at: expiresAt, kind: 'ai', ...options.relay,
+  } })
+  return { request, service, token, bundle, sealed, connectionId, expiresAt, relayed }
 }

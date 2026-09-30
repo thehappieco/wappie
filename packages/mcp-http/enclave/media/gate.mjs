@@ -111,14 +111,25 @@ export function checkRow(row, request, mediaOff, openURL) {
  * Why get_message's attachment cannot be opened, from the row alone, or
  * null (§16.7): `view_once`, `unsupported`, `not_transcribed`, `expired`,
  * `pending`, `unverifiable`, `too_large`, `kind_off`, in that order. A video
- * is openable whenever its view-once and kind checks pass.
+ * is openable whenever its view-once and kind checks pass. With `aiCap` (the
+ * audio cap of a reader that declares ai_v1, §18.12), audio and voice notes
+ * are no longer `not_transcribed`: they go through the download, hash and
+ * size checks like a document, with kind `audio`, and open_attachment
+ * answers whether an AI integration covers them.
  */
-export function whyNot(row, mediaOff) {
+export function whyNot(row, mediaOff, aiCap) {
   const media = row?.media
   if (!media) return null
   if (row.view_once === true) return 'view_once'
   const type = Object.hasOwn(MEDIA_TYPES, media.media_type) ? MEDIA_TYPES[media.media_type] : null
   if (!type) return 'unsupported'
+  if (type.family === 'audio' && aiCap !== undefined) {
+    if (media.download_status === 'gone') return 'expired'
+    if (media.download_status !== 'done') return 'pending'
+    if (typeof media.media_key_sealed !== 'string' || !media.media_key_sealed || !hash32(media.file_enc_sha256)) return 'unverifiable'
+    if (media.file_length !== undefined && (!Number.isSafeInteger(media.file_length) || media.file_length > aiCap)) return 'too_large'
+    return mediaOff.includes('audio') ? 'kind_off' : null
+  }
   if (type.family === 'audio') return 'not_transcribed'
   const kind = kindBeforeSniff(media.media_type)
   const off = (kind && mediaOff.includes(kind)) || (type.family === 'document' && documentKinds.every(item => mediaOff.includes(item)))

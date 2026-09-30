@@ -15,6 +15,12 @@
 // its consent's send fields unchanged, under fresh device checks made for
 // this renewal, and its draft keys are pinned again from the DSKs this
 // renewal's grants open.
+//
+// An AI authorization (docs/mcp-enclave.md §18.7 step 7) renews the same way,
+// through `ai`'s hooks (ai/service.mjs): its descriptor names its functions,
+// features and budget, its bundle is an AI bundle under its own labels with
+// fresh configuration tags and its models checked again, and the commit also
+// swaps its provider keys.
 import { randomBytes } from 'node:crypto'
 import { LinkError } from '../link.mjs'
 import { fingerprint } from '../log.mjs'
@@ -34,10 +40,14 @@ export function contentDeadline(record) {
  * `open(recipient, sealed, {aad, tenant, connectionID})` and
  * `prove(privateKey, bundle, {request, kid})` are content.mjs's, bound to the
  * renewal labels and the archive; `parseRelay(body)` checks the relayed body;
- * `onProofFailed(id, error)` logs a failed proof by what failed.
+ * `onProofFailed(id, error)` logs a failed proof by what failed. `ai`, when
+ * given, renews `ai` records too: `describe(record)` adds the descriptor's
+ * fields, `accept({record, renewal, body, renewalID, connectionID})` opens,
+ * checks and proves the bundle and resolves to the stage (with its `ai`
+ * part), and `apply(record, stage.ai)` commits that part.
  */
 export function createRenewals({ state, connkeys, log, now = Date.now, resource, attestor, newRecipient, open, prove, parseRelay, renewAAD, onCommit = () => {},
-  onProofFailed = id => log.event('grant_proof_failed', { conn: fingerprint(id) }) }) {
+  onProofFailed = id => log.event('grant_proof_failed', { conn: fingerprint(id) }), ai = null }) {
   const renewals = new Map()
   // connection id -> times of the renewals prepared in the last hour.
   const history = new Map()
@@ -45,7 +55,7 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
   const live = renewal => renewal.expires_at > now()
   const recordFor = id => {
     const record = state.connections.get(id)
-    return record && record.kind === 'content' ? record : null
+    return record && (record.kind === 'content' || (ai && record.kind === 'ai')) ? record : null
   }
   function forConnection(id) { return [...renewals.values()].filter(renewal => renewal.connection_id === id) }
   function drop(renewalID) { renewals.delete(renewalID) }
@@ -77,8 +87,10 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
       return {
         renewal_id: renewalID, connection_id: connectionID, kid: recipient.kid, reader_public_key: recipient.publicKeyEncoded, resource,
         device_ids: [...record.device_ids], expires_at: new Date(renewal.expires_at).toISOString(), connection_expires_at: contentDeadline(record),
-        consent_version: record.consent_version ?? 1, media: record.media === true,
-        ...(record.send ? { send: record.send, ...(record.send_self === true ? { send_self: true } : {}), ...(record.send_groups === true ? { send_groups: true } : {}) } : {}),
+        ...(record.kind === 'ai' ? ai.describe(record) : {
+          consent_version: record.consent_version ?? 1, media: record.media === true,
+          ...(record.send ? { send: record.send, ...(record.send_self === true ? { send_self: true } : {}), ...(record.send_groups === true ? { send_groups: true } : {}) } : {}),
+        }),
         attestation,
       }
     },
@@ -88,6 +100,15 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
       const record = recordFor(connectionID)
       const renewal = renewals.get(renewalID)
       if (!record || !renewal || renewal.connection_id !== connectionID || !live(renewal)) throw new LinkError('not_found', 404)
+      if (record.kind === 'ai') {
+        if (renewal.stage || renewal.accepting) throw new LinkError('bundle_exists', 409)
+        renewal.accepting = true
+        try {
+          renewal.stage = await ai.accept({ record, renewal, body, renewalID, connectionID })
+          log.event('renewal_staged', conn(connectionID))
+        } finally { delete renewal.accepting }
+        return
+      }
       const relayed = parseRelay(body)
       // A renewal renews the key, never the consent: its relay never carries `media` or a send field.
       if (relayed.connection_id !== connectionID || relayed.tenant_id !== record.tenant_id || relayed.media ||
@@ -132,13 +153,14 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
       const id = record.connection_id
       const renewal = forConnection(id).find(item => item.stage && live(item) && item.stage.service_user_id === status.service_user_id)
       if (!renewal) return false
-      const { key, api_key, service_user_id, epochs, expires_at, drafts_to } = renewal.stage
+      const { key, api_key, service_user_id, epochs, expires_at, drafts_to, ai: aiStage } = renewal.stage
       connkeys.wipe(id)
       connkeys.set(id, key)
       const consented = [record.consented_expires_at, expires_at].filter(value => typeof value === 'string')
         .reduce((earliest, value) => (earliest === undefined || Date.parse(value) < Date.parse(earliest) ? value : earliest), undefined)
       Object.assign(record, { api_key, service_user_id, epochs: { ...epochs }, renewed_at: now(), ...(consented ? { consented_expires_at: consented } : {}),
         ...(drafts_to ? { drafts_to: structuredClone(drafts_to) } : {}) })
+      if (aiStage && record.kind === 'ai') ai.apply(record, aiStage)
       for (const item of forConnection(id)) drop(item.renewal_id)
       await state.save().catch(() => {})
       onCommit(id)

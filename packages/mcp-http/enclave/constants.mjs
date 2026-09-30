@@ -11,12 +11,14 @@
 export const READER_ID = 'enclave'
 export const READER_VERSION = '0.5.0'
 // What this release can do, for the console (build.sh writes it into
-// measurements.json as `capabilities`, docs/mcp-enclave.md §16.2 rule 8 and
-// §17.2 rule 9): consent version 2, attachments for a consent that includes
-// them, consent version 3 (the card with sending and its device checks), and
-// drafts, with own-chat sends riding on them. Direct send (`send_direct_v1`)
-// is S3's.
-export const READER_CAPABILITIES = Object.freeze(['consent_v2', 'media', 'consent_v3', 'send_draft_v1'])
+// measurements.json as `capabilities`, docs/mcp-enclave.md §16.2 rule 8,
+// §17.2 rule 9 and §18.14): consent version 2, attachments for a consent that
+// includes them, consent version 3 (the card with sending and its device
+// checks), drafts, with own-chat sends riding on them, and AI integrations
+// on request (`ai_v1`, §18: AI authorizations, their jobs and transcripts on
+// media connections). Direct send (`send_direct_v1`) is S3's. Without `ai_v1`
+// (B1 slipping to 0.5.1) content.mjs builds no AI service at all.
+export const READER_CAPABILITIES = Object.freeze(['consent_v2', 'media', 'consent_v3', 'send_draft_v1', 'ai_v1'])
 export const PUBLIC_HOST = 'mcp.wappie.thehappie.co'
 export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`
 export const CONSOLE_URL = 'https://app.wappie.thehappie.co/console'

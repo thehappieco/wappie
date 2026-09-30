@@ -401,6 +401,52 @@ func TestExternalDocumentCSPIsOptInAndExact(t *testing.T) {
 	}
 }
 
+// The console reads an AI key's model list from the provider, in the
+// person's browser (docs/mcp-enclave.md §18.7): the document may connect to
+// the three providers only while AI integrations are advertised, and nothing
+// else is relaxed for it.
+func TestAIModelListsAreAllowedOnlyWhileAIIsOn(t *testing.T) {
+	const providers = "https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com"
+	for _, tc := range []struct {
+		ai, external bool
+		want         string
+	}{
+		{false, false, "'self'"},
+		{true, false, "'self' " + providers},
+		{false, true, "'self' https://remote.example:8443 wss://remote.example:8443"},
+		{true, true, "'self' https://remote.example:8443 wss://remote.example:8443 " + providers},
+	} {
+		dir := build(t)
+		write(t, filepath.Join(dir, "session-bridge.html"), "<!doctype html><title>session bridge</title>")
+		h, err := webui.New(dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.AIModelLists, h.ExternalServers = tc.ai, tc.external
+		resp := get(t, h, "/?server_origin="+url.QueryEscape("https://remote.example:8443"))
+		resp.Body.Close()
+		csp := resp.Header.Get("Content-Security-Policy")
+		if got := directive(csp, "connect-src"); got != tc.want {
+			t.Errorf("ai=%v external=%v: connect-src %q, want %q", tc.ai, tc.external, got, tc.want)
+		}
+		if directive(csp, "script-src") != "'self'" || directive(csp, "default-src") != "'self'" {
+			t.Errorf("ai=%v: another directive changed: %s", tc.ai, csp)
+		}
+		// Only the document: an asset and the session bridge keep their own.
+		asset := get(t, h, "/assets/index-abc123.js")
+		asset.Body.Close()
+		if strings.Contains(asset.Header.Get("Content-Security-Policy"), "api.openai.com") {
+			t.Errorf("ai=%v: an asset's policy names a provider", tc.ai)
+		}
+		req := httptest.NewRequest(http.MethodGet, "https://api.wappie.thehappie.co/session-bridge.html", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if strings.Contains(rec.Header().Get("Content-Security-Policy"), "api.openai.com") {
+			t.Errorf("ai=%v: the session bridge's policy names a provider", tc.ai)
+		}
+	}
+}
+
 // OpenID and domain-verification probes must not get the console document:
 // a 200 with HTML tells a client the metadata exists.
 func TestWellKnownPathsAreNotPages(t *testing.T) {

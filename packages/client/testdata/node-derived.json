@@ -1,0 +1,358 @@
+{
+  "note": "Derived records (docs/mcp-enclave.md §18.8) sealed in Node by packages/mcp-http/enclave/test/ai-derived.test.mjs with enclave/ai/derived.mjs, as the enclave seals them, and dedupe tags computed with enclave/ai/dedupe.mjs; opened in the browser (packages/client/test/derived.spec.ts) and in the reader (packages/mcp/test/ai.test.mjs). The DSK is fixture material that opens nothing. Regenerate with: cd packages/mcp-http/enclave && WS_REGEN_VECTORS=1 npm test",
+  "dsk": "Aw4ZJC86RVBbZnF8h5KdqLO-ydTf6vUACxYhLDdCTVg",
+  "namespace": "018f3a2b-0000-7000-8000-000000000021",
+  "device_id": "018f3a2b-0000-7000-8000-000000000022",
+  "epoch": 2,
+  "records": [
+    {
+      "name": "an audio transcript, pt-BR, with its usage",
+      "message_uid": "018f3a2b-0000-7000-8000-000000000031",
+      "record": {
+        "v": 1,
+        "feature": "audio",
+        "text": "Oi, aqui é a sonda. A reunião ficou para quinta, às 15:30.\n[inaudible]",
+        "lang": "pt-BR",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1",
+        "created_at": "2026-10-01T09:30:15.123Z",
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "usage": {
+          "input_tokens": 424,
+          "output_tokens": 741,
+          "seconds": 15
+        },
+        "flags": []
+      },
+      "feature": "audio",
+      "plaintext": "{\"v\":1,\"feature\":\"audio\",\"text\":\"Oi, aqui é a sonda. A reunião ficou para quinta, às 15:30.\\n[inaudible]\",\"lang\":\"pt-BR\",\"provider\":\"google\",\"model\":\"gemini-synthetic-flash\",\"prompt_version\":\"audio/1\",\"created_at\":\"2026-10-01T09:30:15.123Z\",\"source_sha256\":\"090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b\",\"usage\":{\"input_tokens\":424,\"output_tokens\":741,\"seconds\":15},\"flags\":[]}",
+      "sealed": "V0RSVgEAAg5SEz4035TOAjK8uMLX7xJlx5KPYQ37IAU5B8rztcPCrLehgX8fk5KITrHPS1gzbRsI3QYtuKu5sbqdbDqKQgi8YGwqA3M83BHTEp1sjJHOu6yVlFyOZdZcnYr8CrUOmo03AXc0DB3z3ve3mZWpsOEFj7bAxnWmPnff726i4NgUqJXQGnELsMkeLESWyOXbavaovsMjD4k0EGBRcvFTxSmyBHUtBpiPkp4ho39cpstGZ284GnWmywpKOInbrfEM8IOr6m53YWtd6lrp4TXyRMPKKhoC_-RY2uTSSMfCAd2rpEPt1zr2WqdkayFs1yjcKgeNrrc0rBtwD3qF0aWhVJDpfrUX1Kv82b5pYUybga4sSWeP1EgRrbS9AC00KJ1Xl3VrnlxJ028iKfAvu-WM1npYuSvewd7v7y7qeXUY8QZ8fgst7kUBEFxSSNt8ZVpTj6K6Y2x4K9Yx1ZimPk7P7pK2mdt8eY69krd2R0-ij-oGuzMkMMwKjq7Xo0p3bdOj_E4u5otc2jQQye2coosU3Xb3MIskiGNWXLmRsgNMAqT6HXu5Z8U3BxM9zGfg"
+    },
+    {
+      "name": "a refusal: no text, stored so the file is not sent again",
+      "message_uid": "018f3a2b-0000-7000-8000-000000000032",
+      "record": {
+        "v": 1,
+        "feature": "image",
+        "text": "",
+        "provider": "anthropic",
+        "model": "claude-synthetic-5",
+        "prompt_version": "image/1",
+        "created_at": "2026-10-01T09:31:00.000Z",
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "usage": {
+          "input_tokens": 504,
+          "output_tokens": 0
+        },
+        "flags": [
+          "refused"
+        ]
+      },
+      "feature": "image",
+      "plaintext": "{\"v\":1,\"feature\":\"image\",\"text\":\"\",\"provider\":\"anthropic\",\"model\":\"claude-synthetic-5\",\"prompt_version\":\"image/1\",\"created_at\":\"2026-10-01T09:31:00.000Z\",\"source_sha256\":\"090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b\",\"usage\":{\"input_tokens\":504,\"output_tokens\":0},\"flags\":[\"refused\"]}",
+      "sealed": "V0RSVgEAAqYcx8YqBhSQsrmLG9C0UeuFUz-r1GtfzAuSJmwiXhMIinbUhXdphyTEazHqlbUzeZkQmPzGC6JFoD6EP08GBpveDd_10ZFklaqlexFUOvP9p7CUtg1odXTFeB2eJ0IC3InVytMvKU_gPKNX2UC8998EN0wOHQgaOTgtMMRS3nRp3fKQadDDMoaiG-a3Iexavp9Dph468guf_t06qcv6_aOPAmg5-g8UbVX3ngEElAGZl5jik4TnS9tAeOojPjqf0pfVtA1LV_99dvy3nI6vHbX4lcS0DaIDJ6awfSZe_ka_C4hVXFc759ZrBLRGckWgIQ-_gyRwY7GHLOKU4DhXZwUC19qIbXGERFHCE80r3TmYg6dRXg797JTRUMe0rTjQtbKnFNSxD2O8wlTXK1RqIGnolx2J7NwnpDvVHutttPeB4DNilNUlzGYQxlJM"
+    },
+    {
+      "name": "a video, cut, partial and redone, no language",
+      "message_uid": "018f3a2b-0000-7000-8000-000000000033",
+      "record": {
+        "v": 1,
+        "feature": "video",
+        "text": "Transcript:\nOlá.\n\nShown:\nUm círculo azul.",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "video/1",
+        "created_at": "2026-10-01T09:32:00Z",
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "usage": {
+          "input_tokens": 1160,
+          "output_tokens": 393,
+          "seconds": 12
+        },
+        "flags": [
+          "cut",
+          "partial",
+          "redo"
+        ]
+      },
+      "feature": "video",
+      "plaintext": "{\"v\":1,\"feature\":\"video\",\"text\":\"Transcript:\\nOlá.\\n\\nShown:\\nUm círculo azul.\",\"provider\":\"google\",\"model\":\"gemini-synthetic-flash\",\"prompt_version\":\"video/1\",\"created_at\":\"2026-10-01T09:32:00Z\",\"source_sha256\":\"090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b\",\"usage\":{\"input_tokens\":1160,\"output_tokens\":393,\"seconds\":12},\"flags\":[\"cut\",\"partial\",\"redo\"]}",
+      "sealed": "V0RSVgEAAt3VquMt5mUyUXmDAou2cfls8EeQWZw5vfDND_sQUJJXGt1Gr9DsPrpD4jVbrUH6JEGicjDeNHHLM7FM939T_OESN1F7m9lUEEcGov2fC20fdEeYKQeQvG2Q_EhiB1P9cWaxwdwOuY_SndYpGydSRXKLT8uJlVlSxMLja5g34IZmPG6tUDBwijEacpIDlIKdnK0XcQ6KVcojYy2YINL5rS8Lvo2_4eLac6ceGxILJ3HG-afQRV0-Tic8JdG_zMtzzchX2NXdpIxfghkMQK57wZCfZwBxAsVNgUfpW1pooKA8shAzc3-o7CGKQp3niXGwqp4ees5AnM0ojoyffwH0Yk9DIam-GggjYBbBsfw8O7UzyQ-Tz0H2PCLIXBPHyoTMvN1DLLLGdPtMus4oTLbBVroPTRuUvqYjDCovt0Zhwq3MIW5Ec9UOZsIsbi_KMoPbITW5mgSGWCOg0O6VzeHsiGCH1kFfSPPBZrdueuppeJfU5It0Ad7GV9H625I4KuAMOhPq8g_0P-Q8tK68OT7YDR1Xp_-kGg"
+    },
+    {
+      "name": "no speech: an OpenAI transcript without text",
+      "message_uid": "018f3a2b-0000-7000-8000-000000000032",
+      "record": {
+        "v": 1,
+        "feature": "audio",
+        "text": "",
+        "lang": "pt",
+        "provider": "openai",
+        "model": "gpt-synthetic-transcribe",
+        "prompt_version": "audio/1",
+        "created_at": "2026-10-01T09:33:00.000Z",
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "usage": {
+          "seconds": 3
+        },
+        "flags": [
+          "no_speech"
+        ]
+      },
+      "feature": "audio",
+      "plaintext": "{\"v\":1,\"feature\":\"audio\",\"text\":\"\",\"lang\":\"pt\",\"provider\":\"openai\",\"model\":\"gpt-synthetic-transcribe\",\"prompt_version\":\"audio/1\",\"created_at\":\"2026-10-01T09:33:00.000Z\",\"source_sha256\":\"090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b\",\"usage\":{\"seconds\":3},\"flags\":[\"no_speech\"]}",
+      "sealed": "V0RSVgEAAkhkVRLMyUJQlh47Xm9bWiYRDth6Pws8OugRC9NlglZeMCCyTZdWncWhiLP--Gdf23tluJPf0gUeaSmvKJPHTrWhm4vh5tIsFAAAe1nLa3n6Cnim11nGbkYEC177RFuTbRFUeFAYgGTu0XnjTRBWkuGmO0ijrUZ6q-xX5AQiqnv-JmVW37J-baf61y8nty8iMfYX9ouMXuMbUhcFt5mXfKDLqcrULcbdOte6PNbb0EgeuK2Xsjo_C9CgK57LVWi1Fn5_jPEnMB0Z-0DJyde94w48QEhuv0x8X_nYfMgPWg4biTYe3svDh4VzRUxDhJJ_-A87Qo5MbhuseltFknpdS6zJ2tYPS9JIGS4KjYZP-gTkEpMhsIpGJb-6GjfnE-4RHh1Kqf5YOnWgmnXhDXNeh9JLG2aqVNBGg-06GDAziNYowf1Aqg"
+    }
+  ],
+  "negatives": [
+    {
+      "why": "another message",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2,
+        "message_uid": "018f3a2b-0000-7000-8000-000000000033",
+        "feature": "audio"
+      },
+      "sealed": "V0RSVgEAAg5SEz4035TOAjK8uMLX7xJlx5KPYQ37IAU5B8rztcPCrLehgX8fk5KITrHPS1gzbRsI3QYtuKu5sbqdbDqKQgi8YGwqA3M83BHTEp1sjJHOu6yVlFyOZdZcnYr8CrUOmo03AXc0DB3z3ve3mZWpsOEFj7bAxnWmPnff726i4NgUqJXQGnELsMkeLESWyOXbavaovsMjD4k0EGBRcvFTxSmyBHUtBpiPkp4ho39cpstGZ284GnWmywpKOInbrfEM8IOr6m53YWtd6lrp4TXyRMPKKhoC_-RY2uTSSMfCAd2rpEPt1zr2WqdkayFs1yjcKgeNrrc0rBtwD3qF0aWhVJDpfrUX1Kv82b5pYUybga4sSWeP1EgRrbS9AC00KJ1Xl3VrnlxJ028iKfAvu-WM1npYuSvewd7v7y7qeXUY8QZ8fgst7kUBEFxSSNt8ZVpTj6K6Y2x4K9Yx1ZimPk7P7pK2mdt8eY69krd2R0-ij-oGuzMkMMwKjq7Xo0p3bdOj_E4u5otc2jQQye2coosU3Xb3MIskiGNWXLmRsgNMAqT6HXu5Z8U3BxM9zGfg"
+    },
+    {
+      "why": "another function",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2,
+        "message_uid": "018f3a2b-0000-7000-8000-000000000031",
+        "feature": "video"
+      },
+      "sealed": "V0RSVgEAAg5SEz4035TOAjK8uMLX7xJlx5KPYQ37IAU5B8rztcPCrLehgX8fk5KITrHPS1gzbRsI3QYtuKu5sbqdbDqKQgi8YGwqA3M83BHTEp1sjJHOu6yVlFyOZdZcnYr8CrUOmo03AXc0DB3z3ve3mZWpsOEFj7bAxnWmPnff726i4NgUqJXQGnELsMkeLESWyOXbavaovsMjD4k0EGBRcvFTxSmyBHUtBpiPkp4ho39cpstGZ284GnWmywpKOInbrfEM8IOr6m53YWtd6lrp4TXyRMPKKhoC_-RY2uTSSMfCAd2rpEPt1zr2WqdkayFs1yjcKgeNrrc0rBtwD3qF0aWhVJDpfrUX1Kv82b5pYUybga4sSWeP1EgRrbS9AC00KJ1Xl3VrnlxJ028iKfAvu-WM1npYuSvewd7v7y7qeXUY8QZ8fgst7kUBEFxSSNt8ZVpTj6K6Y2x4K9Yx1ZimPk7P7pK2mdt8eY69krd2R0-ij-oGuzMkMMwKjq7Xo0p3bdOj_E4u5otc2jQQye2coosU3Xb3MIskiGNWXLmRsgNMAqT6HXu5Z8U3BxM9zGfg"
+    },
+    {
+      "why": "another number",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000023",
+        "epoch": 2,
+        "message_uid": "018f3a2b-0000-7000-8000-000000000031",
+        "feature": "audio"
+      },
+      "sealed": "V0RSVgEAAg5SEz4035TOAjK8uMLX7xJlx5KPYQ37IAU5B8rztcPCrLehgX8fk5KITrHPS1gzbRsI3QYtuKu5sbqdbDqKQgi8YGwqA3M83BHTEp1sjJHOu6yVlFyOZdZcnYr8CrUOmo03AXc0DB3z3ve3mZWpsOEFj7bAxnWmPnff726i4NgUqJXQGnELsMkeLESWyOXbavaovsMjD4k0EGBRcvFTxSmyBHUtBpiPkp4ho39cpstGZ284GnWmywpKOInbrfEM8IOr6m53YWtd6lrp4TXyRMPKKhoC_-RY2uTSSMfCAd2rpEPt1zr2WqdkayFs1yjcKgeNrrc0rBtwD3qF0aWhVJDpfrUX1Kv82b5pYUybga4sSWeP1EgRrbS9AC00KJ1Xl3VrnlxJ028iKfAvu-WM1npYuSvewd7v7y7qeXUY8QZ8fgst7kUBEFxSSNt8ZVpTj6K6Y2x4K9Yx1ZimPk7P7pK2mdt8eY69krd2R0-ij-oGuzMkMMwKjq7Xo0p3bdOj_E4u5otc2jQQye2coosU3Xb3MIskiGNWXLmRsgNMAqT6HXu5Z8U3BxM9zGfg"
+    },
+    {
+      "why": "another epoch",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 3,
+        "message_uid": "018f3a2b-0000-7000-8000-000000000031",
+        "feature": "audio"
+      },
+      "sealed": "V0RSVgEAAg5SEz4035TOAjK8uMLX7xJlx5KPYQ37IAU5B8rztcPCrLehgX8fk5KITrHPS1gzbRsI3QYtuKu5sbqdbDqKQgi8YGwqA3M83BHTEp1sjJHOu6yVlFyOZdZcnYr8CrUOmo03AXc0DB3z3ve3mZWpsOEFj7bAxnWmPnff726i4NgUqJXQGnELsMkeLESWyOXbavaovsMjD4k0EGBRcvFTxSmyBHUtBpiPkp4ho39cpstGZ284GnWmywpKOInbrfEM8IOr6m53YWtd6lrp4TXyRMPKKhoC_-RY2uTSSMfCAd2rpEPt1zr2WqdkayFs1yjcKgeNrrc0rBtwD3qF0aWhVJDpfrUX1Kv82b5pYUybga4sSWeP1EgRrbS9AC00KJ1Xl3VrnlxJ028iKfAvu-WM1npYuSvewd7v7y7qeXUY8QZ8fgst7kUBEFxSSNt8ZVpTj6K6Y2x4K9Yx1ZimPk7P7pK2mdt8eY69krd2R0-ij-oGuzMkMMwKjq7Xo0p3bdOj_E4u5otc2jQQye2coosU3Xb3MIskiGNWXLmRsgNMAqT6HXu5Z8U3BxM9zGfg"
+    },
+    {
+      "why": "another namespace",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000024",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2,
+        "message_uid": "018f3a2b-0000-7000-8000-000000000031",
+        "feature": "audio"
+      },
+      "sealed": "V0RSVgEAAg5SEz4035TOAjK8uMLX7xJlx5KPYQ37IAU5B8rztcPCrLehgX8fk5KITrHPS1gzbRsI3QYtuKu5sbqdbDqKQgi8YGwqA3M83BHTEp1sjJHOu6yVlFyOZdZcnYr8CrUOmo03AXc0DB3z3ve3mZWpsOEFj7bAxnWmPnff726i4NgUqJXQGnELsMkeLESWyOXbavaovsMjD4k0EGBRcvFTxSmyBHUtBpiPkp4ho39cpstGZ284GnWmywpKOInbrfEM8IOr6m53YWtd6lrp4TXyRMPKKhoC_-RY2uTSSMfCAd2rpEPt1zr2WqdkayFs1yjcKgeNrrc0rBtwD3qF0aWhVJDpfrUX1Kv82b5pYUybga4sSWeP1EgRrbS9AC00KJ1Xl3VrnlxJ028iKfAvu-WM1npYuSvewd7v7y7qeXUY8QZ8fgst7kUBEFxSSNt8ZVpTj6K6Y2x4K9Yx1ZimPk7P7pK2mdt8eY69krd2R0-ij-oGuzMkMMwKjq7Xo0p3bdOj_E4u5otc2jQQye2coosU3Xb3MIskiGNWXLmRsgNMAqT6HXu5Z8U3BxM9zGfg"
+    },
+    {
+      "why": "a flipped byte",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2,
+        "message_uid": "018f3a2b-0000-7000-8000-000000000031",
+        "feature": "audio"
+      },
+      "sealed": "V0RSVgEAAg5SEz4035TOAjK8uMLX7xJlx5KPYQ37IAU5B8rztcPCrLehgX8fk5KITrHPS1gzbRsI3QYtuKu5sbqdbDqKQgi8YGwqA3M83BHTEp1sjJHOu6yVlFyOZdZcnYr8CrUOmo03AXc0DB3z3ve3mZWpsOEFj7bAxnWmPnff726i4NgUqJXQGnELsMkeLESWyOXbavaovsMjD4k0EGBRcvFTxSmyBHUtBpiPkp4ho39cpstGZ284GnWmywpKOInbrfEM8IOr6m53YWtd6lrp4TXyRMPKKhoC_-RY2uTSSMfCAd2rpEPt1zr2WqdkayFs1yjcKgeNrrc0rBtwD3qF0aWhVJDpfrUX1Kv82b5pYUybga4sSWeP1EgRrbS9AC00KJ1Xl3VrnlxJ028iKfAvu-WM1npYuSvewd7v7y7qeXUY8QZ8fgst7kUBEFxSSNt8ZVpTj6K6Y2x4K9Yx1ZimPk7P7pK2mdt8eY69krd2R0-ij-oGuzMkMMwKjq7Xo0p3bdOj_E4u5otc2jQQye2coosU3Xb3MIskiGNWXLiRsgNMAqT6HXu5Z8U3BxM9zGfg"
+    },
+    {
+      "why": "another key (the right format, the wrong DSK)",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2,
+        "message_uid": "018f3a2b-0000-7000-8000-000000000031",
+        "feature": "audio"
+      },
+      "sealed": "V0RSVgEAAqs7OnTYuV8K28XnEXbr0mXTzdNGFzp3AG_0SR3LESdQ5i8g_tyPKX648CYzyHduueyZlEAxd9-FVNyO1laZxOOCI3Ji1t7oDv8Y3kqXOXkv6VXoU3YyV43cSbJz6JNUtXmwZ3kvJ860F2d4FQ1KtcOGE7MOPztoeKhbYU4_sU9FA3JmFI-QF1mtYD4nsvpw9abY1Oe5MWAE4EjSt_ZayW-01uNR-xzYl90_2LMB0kpIiGO2ommfh9X_-uNMEzyc8xoIlnnFvNOBOairpo32lIkdfLQCA6lKHar3AlNbb-8WpWewxp_Ol0cvQiolcMoa8DSUCSg4tC8Az65dDkBMWvMrBfMXMOuxBDU9s6IQrPsLI2waMPaCH43N1CBVvJuVhBHAm6lBos7OdS1VLBeU9LVtfxzJjz2_Ui-In1AZ2NlzUGNX2VLPX4Wb7Go80Dwmb60k98YQonxRH8NGWzZSINUehVN7by19ktfowqJTu3l8ShFhS35pbGDoDk7fDtZSU-WIHqXxePbYlUrQRSI25I_bIseaqAtriwxSluLqgw34icfxjcZ0s8WZoIW6"
+    }
+  ],
+  "dedupe": [
+    {
+      "name": "the reference",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1",
+        "lang": "pt-BR"
+      },
+      "tag": "b3f5458adb7b5ef8e99d539e20ef1739b918e16a9f76d9f52061757b14ef5ea4"
+    },
+    {
+      "name": "only the language differs (pt)",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1",
+        "lang": "pt"
+      },
+      "tag": "487b16adc6e1099cc8b0adff671c27439e601b98e086bc9485879e6e00652e67"
+    },
+    {
+      "name": "no language",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1"
+      },
+      "tag": "57437ee00afdcce3590b1375d42008974c1098eb76670cafe352996956d950fb"
+    },
+    {
+      "name": "another number of the workspace",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000023",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1",
+        "lang": "pt-BR"
+      },
+      "tag": "415786238039619e07630c2b1c97582b89a58f267b3f47f9ce7cf3bfaa3228be"
+    },
+    {
+      "name": "another workspace (namespace)",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000024",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1",
+        "lang": "pt-BR"
+      },
+      "tag": "bb572aedabe7f8b31ca535cf00aeb61d716b3085847c6dfdd6abbbb212b5e326"
+    },
+    {
+      "name": "another function",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "video",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "video/1",
+        "lang": "pt-BR"
+      },
+      "tag": "68709191a3b180dcf3da6f80a364e36f69b610d5dd71f595f467dd0de0f78778"
+    },
+    {
+      "name": "another provider",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "openai",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1",
+        "lang": "pt-BR"
+      },
+      "tag": "ee8b5c968bc668aa02f82c10a3349d0671ac97f9d000e4596ec5e389de267342"
+    },
+    {
+      "name": "another model",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-pro",
+        "prompt_version": "audio/1",
+        "lang": "pt-BR"
+      },
+      "tag": "4c36ac418087b547e4a0686c37f50bcced2d20a951d3f2d4320bdde78e4c5290"
+    },
+    {
+      "name": "another prompt version",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "090cd43924ad18dad1b35c4fb07ae0e35ca204952865082ed69190e852115a6b",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/2",
+        "lang": "pt-BR"
+      },
+      "tag": "7d76634bb48fa0b47b43f1cdbdea479af43ed029eb485f06698f73c0331ab8aa"
+    },
+    {
+      "name": "another file",
+      "scope": {
+        "namespace": "018f3a2b-0000-7000-8000-000000000021",
+        "device_id": "018f3a2b-0000-7000-8000-000000000022",
+        "epoch": 2
+      },
+      "input": {
+        "source_sha256": "100ef6a71bac925f709fe9c114c60460bf6e472cfdb9d44bd8adf1698135260f",
+        "feature": "audio",
+        "provider": "google",
+        "model": "gemini-synthetic-flash",
+        "prompt_version": "audio/1",
+        "lang": "pt-BR"
+      },
+      "tag": "61fb79ab88c1720d70a714430f5097e9eb76a1331dc6be8e80039ffb3471db94"
+    }
+  ]
+}

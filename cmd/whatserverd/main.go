@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow"
 
+	"whatserver2/internal/aiapi"
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/blob"
 	"whatserver2/internal/bus"
@@ -413,6 +414,9 @@ func serve() error {
 	switch {
 	case err == nil:
 		web.ExternalServers = a.cfg.Web.ExternalServers
+		// The console reads an AI key's model list from the provider, from
+		// the person's browser: only while discovery advertises AI.
+		web.AIModelLists = advertisedMCP(a.cfg.MCP).AI
 		a.web = web
 		a.log.Info("serving the web client", "dir", web.Dir())
 	case errors.Is(err, webui.ErrNotBuilt):
@@ -710,12 +714,28 @@ func (a *app) routes() http.Handler {
 			SendDirectAllowed: a.cfg.MCP.SendDirectAllowed,
 			SendLimits:        sendLimits(a.cfg.MCP.SendLimits),
 			SendText:          mcpSendText(a.ws),
+			// AI integrations, on top of attachments, behind their own
+			// switch and list; what is off everywhere goes into every
+			// status answer.
+			AIAllowed:      a.cfg.MCP.AIAllowed,
+			AIOffProviders: a.cfg.MCP.AIOffProviders,
+			AIOffFeatures:  a.cfg.MCP.AIOffFeatures,
+			AI:             store.NewAI(a.pools.API),
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)
 			a.mcp.PublicOrigin, a.mcp.RelaySecret = a.cfg.MCP.PublicOrigin, a.cfg.MCP.RelaySecret
 		}
 		a.mcp.Mount(mux)
+		// The console's AI routes: a person's keychain, the authorizations,
+		// the jobs they ask for, the results and the usage. Off, only what
+		// lets a person see and delete what they hold answers.
+		(&aiapi.Handler{
+			Users: a.users, Connections: a.mcp.Connections, AI: a.mcp.AI, Enabled: a.cfg.MCP.AIEnabled, MCP: a.mcp,
+			RequestLimits: a.mcp.DescriptorLimits,
+			ProcessLimits: &ratelimit.Auth{PerSubject: ratelimit.New(aiapi.ProcessPerMinute, aiapi.ProcessPerMinute), Proxies: a.cfg.TrustedProxies},
+			Log:           a.log,
+		}).Mount(mux)
 	}
 
 	mux.Handle("/v1/ws", a.ws)
@@ -731,7 +751,7 @@ func (a *app) routes() http.Handler {
 	// when its consent includes attachments and the switch allows them; the
 	// gate is wired whether or not the connector is mounted, so rows left
 	// from a time it was stay refused.
-	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.cfg.MCP.MediaAllowed)
+	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.cfg.MCP.MediaAllowed, a.cfg.MCP.AIAllowed)
 	mux.Handle("GET /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
 		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
