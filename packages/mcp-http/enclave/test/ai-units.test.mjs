@@ -116,13 +116,14 @@ test('N-AI-7: the egress refuses any other host, route, method, query or body, a
   assert.equal(answer.status, 200)
   const [call] = stubs.calls
   assert.equal(call.url, 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&pageToken=next%20page%2F%2B%3D')
-  assert.deepEqual(Object.keys(call.headers).sort(), ['accept', 'accept-encoding', 'x-goog-api-key'])
+  assert.deepEqual(Object.keys(call.headers).sort(), ['accept-encoding', 'x-goog-api-key'], 'only §18.9\'s headers')
   assert.deepEqual([call.headers['accept-encoding'], call.redirect], ['identity', 'error'])
   assert.equal(call.url.includes(STUB_KEYS.google), false, 'never the key in the URL')
   await egress.request('openai', keys.openai, { method: 'POST', path: '/v1/responses', body: { model: 'gpt-synthetic-mini', input: [], store: false } })
-  assert.deepEqual(Object.keys(stubs.calls[1].headers).sort(), ['accept', 'accept-encoding', 'authorization', 'content-type'])
+  assert.deepEqual(Object.keys(stubs.calls[1].headers).sort(), ['accept-encoding', 'authorization', 'content-type'])
   await egress.request('anthropic', keys.anthropic, { method: 'GET', path: '/v1/models', query: [['limit', '1000']] })
   assert.deepEqual([stubs.calls[2].headers['x-api-key'], stubs.calls[2].headers['anthropic-version'], stubs.calls[2].headers.authorization], [STUB_KEYS.anthropic, '2023-06-01', undefined])
+  assert.deepEqual(Object.keys(stubs.calls[2].headers).sort(), ['accept-encoding', 'anthropic-version', 'x-api-key'])
   // No key reaches another provider's host, and no provider's host is anything but its own.
   for (const item of stubs.calls) assert.equal(item.key, STUB_KEYS[item.provider])
 })

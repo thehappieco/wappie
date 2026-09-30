@@ -79,7 +79,8 @@ export function createEgress({ transport = globalThis.fetch, log } = {}) {
     if (!route) throw refuse('egress_route')
     const search = searchOf(route, query)
     if (search === null) throw refuse('egress_query')
-    const headers = { accept: 'application/json', 'accept-encoding': 'identity', ...authHeaders(key) }
+    // Only these (§18.9): the encoding, the key's own header, and the body's type.
+    const headers = { 'accept-encoding': 'identity', ...authHeaders(key) }
     let payload, bytesOut = 0
     if (method === 'GET') {
       if (body !== undefined || form !== undefined) throw refuse('egress_body')
@@ -143,7 +144,7 @@ export function createEgress({ transport = globalThis.fetch, log } = {}) {
     const search = route.query ? `?${route.query.filter(([, value]) => value !== null).map(([name, value]) => `${name}=${value}`).join('&')}` : ''
     try {
       const response = await transport(`https://${AI_PROVIDERS[provider].host}${route.path}${search}`, {
-        method: 'GET', headers: { accept: 'application/json', 'accept-encoding': 'identity' }, redirect: 'error', cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(timeoutMs),
+        method: 'GET', headers: { 'accept-encoding': 'identity' }, redirect: 'error', cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(timeoutMs),
       })
       await response.body?.cancel().catch(() => {})
       return true
