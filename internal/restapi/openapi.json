@@ -1341,6 +1341,16 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "description": "Narrows the list to the chat stored under exactly this key: that chat, or none, with truncated=false; limit is then ignored.",
+            "in": "query",
+            "name": "chat_key",
+            "schema": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "responses": {

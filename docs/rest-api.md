@@ -68,7 +68,7 @@ parameters are rejected. Query strings are limited to 8192 bytes. Only GET
 | Route | Successful response and limits |
 | --- | --- |
 | `/v1/devices` | `{tenant_id, devices: DeviceInfo[]}`. Devices visible through the shared `ActionView` rule. This workspace directory is not paginated. |
-| `/v1/devices/{device}/chats?limit=100` | `{tenant_id, device_id, chats: ChatSummary[], limit, truncated}`. Limit 1–3000, default 100. |
+| `/v1/devices/{device}/chats?limit=100` | `{tenant_id, device_id, chats: ChatSummary[], limit, truncated}`. Limit 1–3000, default 100. `chat_key=<key>` (1–512 bytes) narrows the answer to the chat stored under exactly that key, or none, with `truncated: false`; the limit is then ignored. |
 | `/v1/devices/{device}/messages?chat_key=...&limit=50` | `{tenant_id, chat_key, messages, receipts?, next_ts?, next_seq?, has_more}`. Limit 1–200, default 50. |
 | `/v1/devices/{device}/contacts?limit=100` | `{tenant_id, device_id, contacts: ContactSummary[], has_more, next_key?}`. Limit 1–500, default 100; optional exclusive `after_key`. Stored contact metadata and sealed names only. |
 | `/v1/devices/{device}/messages/scan?from=...&until=...` | `{tenant_id, device_id, from, until, messages, has_more, next_ts?, next_seq?}`. Limit 1–200, default 50. Reads across chats; every row includes `order_ts`. |

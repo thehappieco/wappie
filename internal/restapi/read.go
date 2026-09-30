@@ -97,7 +97,7 @@ func (h *Handler) devices(q *request) {
 }
 
 func (h *Handler) chats(q *request) {
-	values, ok := q.query("limit")
+	values, ok := q.query("limit", "chat_key")
 	if !ok {
 		return
 	}
@@ -105,12 +105,26 @@ func (h *Handler) chats(q *request) {
 	if !ok {
 		return
 	}
+	chatKey, narrowed := values["chat_key"]
+	if narrowed && (chatKey[0] == "" || len(chatKey[0]) > 512) {
+		q.bad("chat_key is limited to 1 to 512 bytes")
+		return
+	}
 	device, ok := q.device(store.ActionRead)
 	if !ok {
 		return
 	}
 	id := uuid.MustParse(device.ID)
-	rows, truncated, err := h.Messages.ChatsWithLimit(q.r.Context(), q.actor.Tenant, id, limit)
+	var rows []store.ChatRow
+	var truncated bool
+	var err error
+	if narrowed {
+		// One chat or none: the list narrowed, not a page of it, so
+		// nothing is left out and the limit does not apply.
+		rows, err = h.Messages.ChatByKey(q.r.Context(), q.actor.Tenant, id, chatKey[0])
+	} else {
+		rows, truncated, err = h.Messages.ChatsWithLimit(q.r.Context(), q.actor.Tenant, id, limit)
+	}
 	if err != nil {
 		q.internal(err)
 		return

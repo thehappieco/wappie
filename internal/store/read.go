@@ -369,7 +369,7 @@ func (m *Messages) Get(ctx context.Context, tenant, uid uuid.UUID) (Row, error) 
 
 // Chats returns the chat list for one device, most recent first.
 func (m *Messages) Chats(ctx context.Context, tenant, device uuid.UUID, limit int) ([]ChatRow, error) {
-	rows, err := m.chatRows(ctx, tenant, device, limit)
+	rows, err := m.chatRows(ctx, tenant, device, limit, "")
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +379,7 @@ func (m *Messages) Chats(ctx context.Context, tenant, device uuid.UUID, limit in
 // ChatsWithLimit discloses truncation before PN/LID aliases are folded. The
 // limit counts stored chat rows, not distinct people, and is not a page cursor.
 func (m *Messages) ChatsWithLimit(ctx context.Context, tenant, device uuid.UUID, limit int) ([]ChatRow, bool, error) {
-	rows, err := m.chatRows(ctx, tenant, device, limit+1)
+	rows, err := m.chatRows(ctx, tenant, device, limit+1, "")
 	if err != nil {
 		return nil, false, err
 	}
@@ -390,7 +390,20 @@ func (m *Messages) ChatsWithLimit(ctx context.Context, tenant, device uuid.UUID,
 	return foldChats(rows), truncated, nil
 }
 
-func (m *Messages) chatRows(ctx context.Context, tenant, device uuid.UUID, limit int) ([]ChatRow, error) {
+// ChatByKey is the chat list narrowed to one key: that chat's row, or none.
+// The assistant connector reads a chat this way before it drafts to it
+// (docs/mcp-enclave.md §17.3), rather than a whole list for one name.
+func (m *Messages) ChatByKey(ctx context.Context, tenant, device uuid.UUID, chatKey string) ([]ChatRow, error) {
+	rows, err := m.chatRows(ctx, tenant, device, 1, chatKey)
+	if err != nil {
+		return nil, err
+	}
+	return foldChats(rows), nil
+}
+
+// chatRows reads a device's chat rows, most recent first; chatKey, when
+// set, narrows them to that one chat.
+func (m *Messages) chatRows(ctx context.Context, tenant, device uuid.UUID, limit int, chatKey string) ([]ChatRow, error) {
 	var out []ChatRow
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
@@ -415,7 +428,7 @@ func (m *Messages) chatRows(ctx context.Context, tenant, device uuid.UUID, limit
 			       ORDER BY coalesce(ts, created_at) DESC, seq DESC
 			       LIMIT 1
 			  ) m ON true
-			 WHERE c.device_id = $1
+			 WHERE c.device_id = $1 AND ($3 = '' OR c.chat_key = $3)
 			 -- By when the newest message was sent. Ordering by last_seq put a
 			 -- conversation at the top because a backfill had just written some
 			 -- of its history, which is not what "recent" means to a reader.
@@ -433,7 +446,7 @@ func (m *Messages) chatRows(ctx context.Context, tenant, device uuid.UUID, limit
 			 -- at the top of the sidebar at once.
 			 ORDER BY coalesce(c.last_ts, c.group_created_at) DESC NULLS LAST,
 			          c.created_at DESC, c.last_seq DESC
-			 LIMIT $2`, device, limit)
+			 LIMIT $2`, device, limit, chatKey)
 		if err != nil {
 			return err
 		}
