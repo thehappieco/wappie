@@ -120,7 +120,7 @@ func TestMCPSendTextErrors(t *testing.T) {
 		}
 	}
 	transport := errors.New("socket closed")
-	if got := mapSendError(transport); got != transport || errors.Is(got, mcpauth.ErrNotSent) {
+	if got := mapSendError(transport); !errors.Is(got, transport) || errors.Is(got, mcpauth.ErrNotSent) {
 		t.Fatalf("a transport error became %v", got)
 	}
 }
