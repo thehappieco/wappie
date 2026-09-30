@@ -422,8 +422,9 @@ and `…/apple-touch-icon.png`, which that reader serves itself with
 `/favicon.ico` ([its public routes](../../docs/mcp-enclave.md#54-public-routes-on-the-enclave-listener-5443)).
 Whether a host shows it is the host's choice: none is confirmed to yet
 ([open points](../../docs/mcp-enclave.md#13-open-points-unconfirmed)). ChatGPT's
-developer-mode app form takes an uploaded icon; `icons/apple-touch-icon.png`
-is the one to give it.
+developer-mode app form may take an uploaded icon (third-party guides;
+UNCONFIRMED, see the open points); if it does, `icons/apple-touch-icon.png` is
+the one to give it.
 
 `list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
 defaulting to 50. For `list_messages`, pass
@@ -643,7 +644,11 @@ result rather than a tool error, so the host shows the call as done:
 `media_not_allowed`. Failures keep `isError`: `attachment_tampered`,
 `parser_failed`, `media_unavailable`, `rate_limited`, `media_busy`,
 `attachment_not_found`, `invalid_cursor`, `read_failed` and the connection's
-own codes, `reconsent_required` among them. The text is the same either way
+own codes, `reconsent_required` among them. A call still waiting when its
+connection is revoked or loses its key fails with the connection's own code
+(`unauthorized`, or `reconsent_required` with the renewal link), never
+`media_not_allowed`, which is only ever the workspace's choice. The text is
+the same either way
 ([answers and failures](../../docs/mcp-enclave.md#167-tool-open_attachment-a1)).
 
 The original never leaves the enclave, and the assistant cannot send it to

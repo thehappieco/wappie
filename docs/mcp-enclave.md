@@ -1842,7 +1842,9 @@ requests ciphertext.
    `verifier.mjs` caches with a `serve` answer (`STATUS_TTL_MS`, 60 s) and
    forces a status check when there is none younger. A `reseal` answer (no
    key held) gives `reconsent_required`, as every tool does then; any other
-   answer but `serve`, or `media: false`, gives `media_not_allowed`.
+   answer but `serve` (the connection revoked, expired or gone) gives
+   `unauthorized`, a failure like every other tool's; `serve` with
+   `media: false` gives `media_not_allowed`, the workspace's choice.
 5. **Result cache** (§16.9): a finished answer for this call's open key is
    answered as it is (a cached refusal too); a running open with the same
    key is joined (go to step 18).
@@ -1887,7 +1889,8 @@ requests ciphertext.
 17. **Queue**: steps 5 and 7 run again first, with nothing awaited from
     them to the admission: a parallel call of the connection may have
     started or finished this key's open, or started another, while steps 6
-    and 8 awaited (and a wipe meanwhile gives `media_not_allowed`). Then,
+    and 8 awaited (and a wipe meanwhile that ended the connection gives
+    `unauthorized`, or `reconsent_required` for a reseal, §16.9). Then,
     when the connection already has an open in the slot or its queue, or
     opens waiting in its line, the open goes last in the connection's line,
     to go in when the ones before it have (§16.9); otherwise it is admitted
@@ -2441,7 +2444,7 @@ text, and anything else is `read_failed`. `{size}` and `{cap}` are
 
 | Code | Cause | Guidance (exact) |
 |---|---|---|
-| `media_not_allowed` | not a media connection now: status `media: false` or stale and refused, or the kind is off (before the fetch, after the sniff, or the office worker's `kind_off`) | `This connection cannot open this kind of attachment right now; the workspace decides that. Message text, filenames and metadata still work. Do not retry.` |
+| `media_not_allowed` | the workspace's choice only: a `serve` status with `media: false` (at the gate, or turned off while the call waited), or the kind is off (before the fetch, after the sniff, the office worker's `kind_off`, or turned off while the call waited). A connection that ended or lost its key is never this code (§16.9) | `This connection cannot open this kind of attachment right now; the workspace decides that. Message text, filenames and metadata still work. Do not retry.` |
 | `media_unavailable` | the jail failed its boot check | `The reader cannot open attachments at the moment. Message text, filenames and metadata still work. Do not retry in this conversation.` |
 | `rate_limited` | the connection's line full (`OPENS_QUEUE_MAX`), `OPENS_PER_MINUTE` or `BYTES_PER_HOUR` (at the call, or when the open's turn comes, §16.5) | `Too many attachments are being opened on this connection; nothing is wrong with this one. Wait {retry_after_s} seconds, then call open_attachment again with the same arguments.` |
 | `media_busy` | the queue is full | `The reader is busy opening other attachments; nothing is wrong with this one. Wait {retry_after_s} seconds, then call open_attachment again with the same arguments.` |
@@ -2473,7 +2476,7 @@ told to do.
 
 | Code | `isError` | Why |
 |---|---|---|
-| `media_not_allowed` | none | the workspace's choice for this connection or kind, said as such; nothing broke |
+| `media_not_allowed` | none | the workspace's choice for this connection or kind, said as such; nothing broke (a wipe that ends the connection is `unauthorized`, a reseal `reconsent_required`, §16.9) |
 | `attachment_pending` | none | the archive's state: not downloaded yet, and the person is told to try later |
 | `attachment_expired` | none | what the attachment is: gone for good, never recovered |
 | `attachment_unverifiable` | none | what the attachment is: nothing proves its bytes, so the reader never opens it |
@@ -2490,7 +2493,7 @@ told to do.
 | `rate_limited`, `media_busy` | `true` | the call was not served, and its guidance says when to make it again; nothing was answered about the attachment |
 | `attachment_not_found` | `true` | the arguments name nothing this connection can open (or, after the row, the archive has no ciphertext): the model checks them |
 | `invalid_cursor` | `true` | the model's own arguments, which it corrects: MCP's case for a tool error |
-| `reconsent_required`, `stale_grant`, `not_authorized`, `unauthorized`, any other | `true` | the connection cannot read until it is renewed or its access fixed; every other tool fails the same way |
+| `reconsent_required`, `stale_grant`, `not_authorized`, `unauthorized`, any other | `true` | the connection cannot read until it is renewed or its access fixed, a revocation or reseal while the call waits included (§16.9); every other tool fails the same way |
 
 **Instructions.** On media connections, the sentences "Attachment contents
 are unavailable: only filenames and metadata are returned. No sending,
@@ -2683,13 +2686,20 @@ one worker.
 (nothing of an open still in it was opened), then aborts its open in the
 slot or the slot's queue (the fetch through its `AbortSignal`, the job by
 `SIGTERM` to media-jail), deletes both of its caches and zeroes their
-Buffers. Every call waiting on any of them answers `media_not_allowed`. It
-runs:
+Buffers. Every call waiting on any of them answers as the wipe's reason
+says (`service.mjs` `ended`), and the same for a call whose row read the
+wipe overtook (§16.5 step 17). It runs:
 
 - inside `state.wipeConnection` (as `content.mjs` wraps it for the key), so
   a revocation from Go, a status that ends the connection, the 60 s sweep,
-  a family's death, an expiry and reconciliation all wipe media;
-- on a status answer with `media: false` (media only: text keeps serving).
+  a family's death, an expiry and reconciliation all wipe media, as
+  `'revoked'`: the waiting calls answer `unauthorized`, a failure like every
+  other tool's, and so does the reader's `close()`;
+- on a `reseal` status answer (the key is gone), as `'reseal'`: the waiting
+  calls answer `reconsent_required`, with the renewal link;
+- on a status answer with `media: false` (media only: text keeps serving),
+  as `'media_off'`: the waiting calls answer `media_not_allowed`, the
+  workspace's choice.
 
 `media.narrow(connectionID, media_off)` runs on every status answer: it
 aborts the connection's opens, running or in its line, whose kind (the
@@ -2699,8 +2709,9 @@ PDF open running its `images` job counts as both `pdf` and `image`.
 Since the sweep asks Go about every content connection every 60 s, a
 revocation or a switch turned off ends a job in flight and empties the
 caches within 60 s, and at once when Go's revocation notice arrives. A
-call still waiting on an aborted open answers `media_not_allowed`, and
-nothing of the aborted open is cached.
+call still waiting on an open a kind turned off aborted answers
+`media_not_allowed`, one a revocation aborted `unauthorized`, and nothing
+of the aborted open is cached.
 
 **Signatures** (MAIN; §16.11 fixes what crosses to WORKERS):
 
@@ -2708,7 +2719,7 @@ nothing of the aborted open is cached.
 // enclave/media/service.mjs
 createMediaService({ log, now, checkActive, archive /* ARCHIVE */, consoleURL /* CONSOLE_URL */, fetch, jail /* {checkJail, runWorker} */ })
   → { start() /* runs checkJail once */, ready() /* boolean */, forConnection(record) /* → provider.media */,
-      wipe(connectionID), narrow(connectionID, mediaOff), counts() /* → {opens, queue, killed}: opens and kills since the last call, queue the slot's and every line's now */, close() }
+      wipe(connectionID, reason /* 'revoked' (default) | 'reseal' | 'media_off' */), narrow(connectionID, mediaOff), counts() /* → {opens, queue, killed}: opens and kills since the last call, queue the slot's and every line's now */, close() }
 // enclave/media/jail.mjs
 checkJail({ spawn, readFile }) → Promise<{ ok: true, cpuset: boolean } | { ok: false, code: 'no_controllers' | 'self_check_failed' | 'table_mismatch' }>
 runWorker({ worker, job, input, signal, spawn }) → Promise<WorkerOutput>
@@ -2958,7 +2969,7 @@ depends on its stdin alone.
 | 2, ERROR valid | `unsupported`, `encrypted`, `too_large`, `kind_off`, `damaged`, `bad_input` | `attachment_unsupported`, `attachment_encrypted`, `attachment_too_large`, `media_not_allowed`, `parser_failed`, `parser_failed` | none (`bad_input` logs `parser_exit`) |
 | 124 | wall | `parser_failed` | `wall` |
 | 137 | memory | `parser_failed` | `oom` |
-| 143, after MAIN's `SIGTERM` | the reason MAIN sent it | `parser_failed` for invalid output and the watchdog; `media_not_allowed` for a wipe or `media_off` (§16.9) | `bad_output`, `watchdog`, `revoked` or `media_off` |
+| 143, after MAIN's `SIGTERM` | the reason MAIN sent it | `parser_failed` for invalid output and the watchdog; for a wipe, its reason's code (§16.9): `unauthorized` for `revoked`, `reconsent_required` for `reseal`, `media_not_allowed` for `media_off` | `bad_output`, `watchdog`, `revoked` (a reseal too) or `media_off` |
 | 3, 125, 127 | jail error | `parser_failed` | `jail_error` |
 | anything else (V8's heap limit included: 139 in the jail, 134 outside) | crash | `parser_failed` | `parser_exit` |
 
@@ -3177,7 +3188,11 @@ enclave's `noexec` `/tmp`, and they run with an exec-able `TMPDIR` since
   other code, an unexpected error and the text codes included), with its
   text, JSON line and console line unchanged; the view-once, kind-off,
   zip-bomb and password refusals through the whole enclave without
-  `isError`, and `media_unavailable` with it.
+  `isError`, and `media_unavailable` with it; a revocation and a reseal
+  while a job runs answer `unauthorized` and `reconsent_required` with
+  `isError`, a kind or the switch turned off `media_not_allowed` without,
+  both through the whole enclave and in the service with a queue and a row
+  read the wipe overtakes.
 - **MAIN, the icon (0.4.2):** the files are the kit's bytes (SHA-256
   pinned) and the ICO holds its two PNGs unchanged; the three routes on the
   public listener with no bearer, their types, lengths, bytes and headers,
