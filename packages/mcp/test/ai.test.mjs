@@ -244,7 +244,7 @@ test('the AI codes: every guidance sentence word for word, which are answers and
       ['ai_unsupported', 'The AI provider does not take this kind of file. Tell the user; the original is in the Wappie console.', false],
       ['ai_paused', 'AI transcription on this number is paused until its owner renews or resumes it in the Wappie console, under AI integrations. Tell the user; do not retry.', true],
       ['ai_output_limit', 'The AI model used its whole output limit before it answered, which a reasoning model can do. Tell the user they can redo it or pick another model in the Wappie console, under AI integrations; do not retry.', true],
-      ['ai_budget_reached', 'The AI integration for this number reached its limit: its tokens for this month (start again on the 1st, UTC) or its attachments for today (start again at 00:00 UTC). Tell the user; do not retry before then.', true],
+      ['ai_budget_reached', 'The AI integration for this number reached one of the safety limits set in the Wappie console: its tokens for the month (reset on the 1st, UTC) or its attachments for the day (reset at 00:00 UTC). Tell the user; do not retry before then.', true],
       ['ai_key_rejected', 'The AI provider rejected the key the user gave it. Tell the user to replace the key in the Wappie console, under AI integrations; do not retry.', true],
       ['ai_model_unavailable', 'The AI model chosen for this is no longer available with the user\'s key. Tell the user to pick another model in the Wappie console, under AI integrations; do not retry.', true],
       ['ai_quota', 'The user\'s account at the AI provider has no quota or credit left. Tell the user; do not retry.', true],
@@ -264,7 +264,7 @@ test('the AI codes: every guidance sentence word for word, which are answers and
     }
     // Which limit ai_budget_reached met, when the enclave says (§18.20).
     for (const [limit, guidance] of [
-      ['month', 'The AI integration for this number reached its tokens for this month, which start again on the 1st (UTC). Tell the user; do not retry before then.'],
+      ['month', 'The AI integration for this number reached its monthly token limit, a safety lock set in the Wappie console (not the provider\'s billing), which resets on the 1st (UTC). Tell the user; do not retry before then.'],
       ['day', 'The AI integration for this number reached its attachments for today, which start again at 00:00 UTC. Tell the user; do not retry before then.'],
     ]) {
       current = refusal('ai_budget_reached', { limit })

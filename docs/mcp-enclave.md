@@ -5777,6 +5777,19 @@ provider measures, whatever the row claims, and the worst case is one full
 cap per renewal: Go can understate the counts and the claims, never raise
 the cap. Alerts at 80% and 100% are the console's, from the usage it reads.
 
+At the console's default of 5,000,000 tokens a month, one call on a large
+file that is never answered (a 120 s timeout, a dropped connection, a
+parent that stalls the answer, §18.9) uses up the month, or nearly: its
+bound is 6,569,725 tokens for a 26,214,400-byte audio file to OpenAI's
+transcription route, 8,754,384 for the same file to Gemini (sent as
+base64), and 4,991,866 for a Gemini video at `AI_CAP_BYTES.video`;
+answered, the first counts its measured seconds × 25 (35,000 for 1,400
+s) and the others the tokens Google reports. The integration then stops
+until the 1st (the gate refuses retries too), since a limit can be
+lowered but never raised; its creator can create a new one. Nothing is
+undercounted; whether OpenAI's transcription route should count such a
+call at its length bound instead is open (§18.18).
+
 What the usage row and the record's `usage` **report** is apart from what
 was counted: the tokens the provider reported (0 in the usage row and
 absent from the record where it reported none), and for audio and video
@@ -5925,7 +5938,7 @@ The `next_cursor` and `open_url` notes follow as §16.7 has them.
 | `ai_paused` | `true` | `AI transcription on this number is paused until its owner renews or resumes it in the Wappie console, under AI integrations. Tell the user; do not retry.` |
 | `ai_paused` with `renew_url` | `true` | `AI transcription on this number is paused since the reader was updated or restarted, until the user renews it with their password. Give the user renew_url exactly as returned; do not retry.` |
 | `ai_output_limit` | `true` | `The AI model used its whole output limit before it answered, which a reasoning model can do. Tell the user they can redo it or pick another model in the Wappie console, under AI integrations; do not retry.` |
-| `ai_budget_reached` | `true` | with `limit: "month"`: `The AI integration for this number reached its tokens for this month, which start again on the 1st (UTC). Tell the user; do not retry before then.`; with `limit: "day"`: `The AI integration for this number reached its attachments for today, which start again at 00:00 UTC. Tell the user; do not retry before then.`; without: `The AI integration for this number reached its limit: its tokens for this month (start again on the 1st, UTC) or its attachments for today (start again at 00:00 UTC). Tell the user; do not retry before then.` (§18.20) |
+| `ai_budget_reached` | `true` | with `limit: "month"`: `The AI integration for this number reached its monthly token limit, a safety lock set in the Wappie console (not the provider's billing), which resets on the 1st (UTC). Tell the user; do not retry before then.`; with `limit: "day"`: `The AI integration for this number reached its attachments for today, which start again at 00:00 UTC. Tell the user; do not retry before then.`; without: `The AI integration for this number reached one of the safety limits set in the Wappie console: its tokens for the month (reset on the 1st, UTC) or its attachments for the day (reset at 00:00 UTC). Tell the user; do not retry before then.` (§18.20) |
 | `ai_key_rejected` | `true` | `The AI provider rejected the key the user gave it. Tell the user to replace the key in the Wappie console, under AI integrations; do not retry.` |
 | `ai_model_unavailable` | `true` | `The AI model chosen for this is no longer available with the user's key. Tell the user to pick another model in the Wappie console, under AI integrations; do not retry.` |
 | `ai_quota` | `true` | `The user's account at the AI provider has no quota or credit left. Tell the user; do not retry.` |
@@ -5998,9 +6011,10 @@ and no dollars anywhere in it (the owner's decision of 2026-09-30,
   (the free tier lets Google use the content and people read it; the
   person confirms, decision 5); a Claude Pro or ChatGPT Plus subscription
   is not an API key (keys come from each provider's developer console,
-  billed separately). The guidance and the card keep saying that each
-  provider bills the person's own account, where the spending limits are
-  set.
+  billed separately). The key guidance and the owner's sentence (below)
+  say that each provider bills the person's own account, where the
+  spending limits are set; the card says each provider handles the content
+  under the person's account there.
 - **Integrations.** Each authorization: the numbers; per function its
   provider and model; status, expiry, alerts; verified or "não
   verificada"; Renew, Pause, Revoke (with "apagar também os resultados" /
@@ -6016,39 +6030,84 @@ and no dollars anywhere in it (the owner's decision of 2026-09-30,
   limits ("Limites" / "Limits"), a safety lock with no price anywhere:
   "Tokens por mês, no máximo" / "Tokens a month, at most" (default
   5,000,000, shown and read with the locale's grouping, "5.000.000" /
-  "5,000,000"; it restarts on the 1st at 00:00 UTC and can later be
-  lowered, never raised) and "Anexos por dia, no máximo" / "Attachments a
-  day, at most" (default 100; every request to a provider counts, retries
-  and failures included), under the owner's sentence (§18.20): "Os preços
-  variam com o seu plano e o modelo, e a cobrança é da sua conta em cada
-  provedor: defina lá os seus limites de gasto. A Wappie conta os tokens
-  que cada provedor informa e para no limite abaixo, como trava de
-  segurança." / "Prices vary with your plan and the model, and billing is
-  your account's at each provider: set your spending limits there. Wappie
-  counts the tokens each provider reports and stops at the limit below as
-  a safety lock."; the expiry, which a renewal does not extend; the card;
-  the password. With no key at all the form attests nothing and says to add
+  "5,000,000": plain digits, or groups of three split by one separator,
+  so a decimal such as "2,5" or "1.000.000,00" is no count; it restarts on
+  the 1st at 00:00 UTC and can later be lowered, never raised) and "Anexos
+  por dia, no máximo" / "Attachments a day, at most" (default 100; every
+  request to a provider counts, retries and failures included), under the
+  owner's sentence (§18.20): "Os preços variam com o seu plano e o modelo,
+  e a cobrança é da sua conta em cada provedor: defina lá os seus limites
+  de gasto. A Wappie conta os tokens que cada provedor informa e para no
+  limite abaixo, como trava de segurança." / "Prices vary with your plan
+  and the model, and each provider bills your own account: set your
+  spending limits there. Wappie counts the tokens each provider reports
+  and, as a safeguard, stops at the limit below.", which the tokens field
+  is described by. Under that field, what the limit is not (awaiting the
+  owner's approval, §18.20): "É um limite de tokens, não de dinheiro: os
+  mesmos tokens custam mais em alguns modelos, e ele só conta o que esta
+  integração envia pela Wappie, não outros usos da sua chave. O pedido em
+  andamento quando o limite chega ainda termina. Em Uso, você vê os tokens
+  contados por modelo e função." / "A limit on tokens, not money: the same
+  tokens cost more on some models, and it counts only what this
+  integration sends through Wappie, not other uses of your key. A request
+  under way when the limit is reached still finishes. Usage shows the
+  tokens counted for each model and function."; and, once the field is
+  left with anything but a whole number from 1 to 1,000,000,000, "Informe
+  um número inteiro de tokens, de 1 a {max}, como {exemplo}." / "Enter a
+  whole number of tokens from 1 to {max}, such as {example}." (instead of
+  a grey Authorize with no reason). Then the expiry, which a renewal does
+  not extend; the card; the password. With no key at all the form attests nothing and says to add
   one; a function no held key's provider does says which do ("o Google ou
   a OpenAI fazem isto" / "Google or OpenAI do this").
   An integration's row shows its limit ("Até {n} tokens por mês" / "Up
-  to {n} tokens a month"), its month's tokens against it ("{usados} de
-  {limite} tokens em {mês} ({n}%)" / "{used} of {limit} tokens in {month}
-  ({n}%)") and today's calls against its cap; its lower monthly limit, in
-  tokens ("Baixar o limite mensal (tokens)" / "Lower the monthly limit
-  (tokens)"), accepts only a value below the authorized one, and a pause,
-  a function turned off or a new limit applies within a minute (§18.20);
-  someone who is not its creator confirms a pause, which only the creator
-  can undo.
+  to {n} tokens a month"), its month's tokens against it and today's
+  calls against its cap ("{usados} de {limite} tokens em {mês} ({n}%) ·
+  {itens} de {máx} anexos hoje." / "{used} of {limit} tokens in {month}
+  ({n}%) · {items} of {max} attachments today.", with "<1" for some use
+  under 1%, never "0"); its lower monthly limit, in tokens ("Baixar o
+  limite mensal (tokens)" / "Lower the monthly limit (tokens)"), read as
+  the new integration's field reads it and grouped again once left,
+  accepts only a value below the authorized one ("Vale em até um minuto.
+  Só pode ser menor que {limite} tokens; deixe vazio para voltar a
+  {limite}." / "Applies within a minute. It can only be lower than
+  {budget} tokens; leave it empty to go back to {budget}."; a refusal's
+  example is half the authorized limit), and a pause, a function turned
+  off or a new limit applies within a minute (§18.20); someone who is not
+  its creator confirms a pause, which only the creator can undo.
+- **Renewal.** Beside the card, the renewal's own sentence, with the limit
+  the integration keeps (the authorized one, or a lower one set since),
+  since another model may cost more for the same tokens (awaiting the
+  owner's approval, §18.20): "Os preços variam com o seu plano e o modelo,
+  e a cobrança é da sua conta em cada provedor: defina lá os seus limites
+  de gasto. Esta integração mantém o limite de {n} tokens por mês; outro
+  modelo pode custar mais pelos mesmos tokens." / "Prices vary with your
+  plan and the model, and each provider bills your own account: set your
+  spending limits there. This integration keeps its limit of {amount}
+  tokens a month; another model may cost more for the same tokens."
 - **Usage.** The month by provider, key, model, number and function:
   attachments (and those reused or failed), minutes (audio and video), the
   input and output tokens each provider reported, and the tokens counted
-  toward the limit ("Contados no limite" / "Counted toward the limit": the
-  reported tokens, or an upper bound where a provider reported none), one
-  card per line on a phone; above it, each live integration's month in
+  toward the limit ("Contados no limite" / "Counted toward the limit"),
+  explained below the table: "Contados no limite: os tokens de entrada e
+  saída que cada provedor informou, raciocínio incluído; 25 tokens por
+  segundo numa transcrição cobrada por segundo; e um teto quando o
+  provedor não informou nada, como numa chamada que nunca respondeu." /
+  "Counted toward the limit: the input and output tokens each provider
+  reported, reasoning included; 25 tokens a second for a transcription
+  billed by the second; and an upper bound where a provider reported
+  nothing, such as a call it never answered." On a phone (600 px or less)
+  each line is a card with the same figures, the tokens counted included:
+  "{provedor} · {modelo} — {função} · {número} — anexos: {n} · minutos:
+  {n} — tokens: {n} de entrada, {n} de saída, {n} contados no limite" /
+  "{provider} · {model} — {feature} · {number} — attachments: {items} ·
+  minutes: {minutes} — tokens: {input} in, {output} out, {charged} counted
+  toward the limit", the reused and failed in parentheses after the
+  attachments. Above it, each live integration's month in
   tokens against its limit and today's calls against its daily cap; alerts
-  at 80% and 100% of each limit; below it, the owner's sentence with "no
-  limite de cada integração" / "at each integration's limit" for "no
-  limite abaixo" / "at the limit below". Never money.
+  at 80% and 100% of each limit; below it, the owner's sentence ending "e
+  para no limite de cada integração, como trava de segurança." / "and, as
+  a safeguard, stops each integration at its limit." in place of the
+  form's ending. Never money.
 
 **In the conversation.** Under an attachment whose function
 `GET /v1/ai/available` lists for the viewer: "Transcrever" / "Transcribe"
@@ -6065,7 +6124,11 @@ bold and lists (never as HTML), and a video's `video/2` sections under
 "Fala" / "Speech" and "Na imagem" / "On screen". The console polls the
 job every 3 s, up to 5 minutes, then offers "Ver de novo" / "Check
 again". A failure is worded for its reader: the integration's creator is
-told what to do and offered the AI area, anyone else who can fix it; after
+told what to do and offered the AI area, anyone else who can fix it (a
+month's limit met: "Esta integração com IA atingiu o limite de tokens
+deste mês. A contagem recomeça no dia 1º, às 00:00 UTC." / "This AI
+integration reached its token limit for this month. The count starts
+again on the 1st at 00:00 UTC."); after
 `ai_paused`, `ai_not_enabled` or `ai_budget_reached` the console reads
 `GET /v1/ai/available` again and holds the button with the reason for 60 s
 (the age of the reader's status, within which a lifted limit or an undone
@@ -6379,7 +6442,9 @@ the password; the two fronts therefore share one train.
   file, and the same file on the same number is reused by a second
   person's authorization with the same function, provider, model and
   language, never by one set to another language (a stored record whose
-  `lang` differs is ignored even under an equal tag). **N-AI-7**, egress
+  `lang` differs is ignored even under an equal tag); a reuse posts no
+  item and no tokens (`charged_tokens` 0), and the month's tokens and the
+  day's items stay as they were. **N-AI-7**, egress
   to a host or route outside `AI_PROVIDERS`, a query on any route but the
   two lists or a parameter they do not take, a key to another provider's
   host, and an OpenAI body without `store: false` fail inside the
@@ -6433,10 +6498,13 @@ the password; the two fronts therefore share one train.
   on the second; the picker stopping at `AI_DEVICES_MAX`; Renew in place
   of the button for a `renew` function; the card per function; the
   limits in tokens and attachments (5,000,000 and 100 by default, the
-  locale's grouping read and written, the lower limit only below the
-  authorized one), the usage in tokens and attachments, and no price, rate
-  or dollar anywhere (the price table and its specs are gone); the area's
-  gating; the links; cleanup at every failure point of the flow.
+  locale's grouping read and written, a decimal or mixed separators read
+  as no count, an invalid limit named once its field is left, the lower
+  limit only below the authorized one), the usage in tokens and
+  attachments (the phone's card with the tokens counted, "<1%" for some
+  use under 1%), the renewal's kept limit, and no price, rate or dollar
+  anywhere (the price table and its specs are gone); the area's gating;
+  the links; cleanup at every failure point of the flow.
 - **SPAM:** 500 voice notes to one number: the daily cap and the budget
   hold, and the text tools meet §16.13's gate while jobs run.
 - **LIVE (B1 acceptance)** on claude.ai and ChatGPT, with two functions on
@@ -6455,6 +6523,18 @@ the password; the two fronts therefore share one train.
   55 days), for the Terms; location atoms in real WhatsApp videos and a
   real voice note's Ogg parameters, the owner's local checks; the egress
   from the enclave, at 0.5.0's deploy (§18.16).
+- **The bound of a call never answered, at the default limit** (the
+  review of the token texts, 2026-09-30; the owner's call, since it
+  changes a bound of §18.10): one such call on a large audio file or a
+  Gemini video uses up the default 5,000,000 tokens (§18.10). Proposed,
+  for OpenAI's transcription route only: count a call with no usage, or
+  never answered, as the length bound × `AI_DURATION_TOKENS_PER_SECOND` +
+  `AI_OUTPUT_MAX_TOKENS.audio` instead of `ceil(body bytes / 4)` + the
+  output bound, since a duration answer counts its seconds × 25 and B0's
+  token-billed transcribers measured about 10 audio tokens a second; the
+  bound still rests on §18.10's 250 bytes a second. Gemini keeps `body
+  bytes / 4`: a video has no bound per second. Until the owner decides,
+  the bounds stay as §18.10 states them.
 - **Members' own authorizations.** B1 lets an owner or admin create one,
   as for content connections; a member's own needs a service-account path
   for members.
@@ -6666,12 +6746,12 @@ same day):
   failed after the request was handed to the transport (a timeout, a
   dropped connection, an abort of its job by a revocation, a pause or a
   narrowing, an answer over `AI_RESPONSE_MAX_BYTES`) is charged at §18.10's
-  bound for an answer without usage and posted as a failure with that cost
-  (§18.9's charges). The bound may overcharge a call the provider never
+  bound for an answer without usage and posted as a failure with those
+  tokens (`charged_tokens`, §18.9's charges). The bound may overcharge a call the provider never
   received; it never undercharges one it did. A non-200 answer is still
   never charged.
 - **Which limit.** `ai_budget_reached` carries `limit`, `month` (the
-  month's spend reached the cap) or `day` (the day's items reached
+  month's tokens reached the cap) or `day` (the day's items reached
   `request_items_per_day`): in the enclave's 409 and a failed job's state,
   Go's `POST /v1/ai/process` 409 and `GET /v1/ai/jobs/{job}`, and the
   connector's sentence (§18.12, three sentences). The console picks its
@@ -6837,9 +6917,12 @@ checksum):
   (a call's two token bounds together); `ai_config`'s budget parsed
   strictly, so a budget in money or with rates is refused (400).
 - **The reader** words `ai_budget_reached` in tokens (§18.12): with `limit:
-  "month"`, "reached its tokens for this month, which start again on the
-  1st (UTC)"; without `limit`, "its tokens for this month (start again on
-  the 1st, UTC) or its attachments for today (start again at 00:00 UTC)".
+  "month"`, "reached its monthly token limit, a safety lock set in the
+  Wappie console (not the provider's billing), which resets on the 1st
+  (UTC)"; without `limit`, "reached one of the safety limits set in the
+  Wappie console: its tokens for the month (reset on the 1st, UTC) or its
+  attachments for the day (reset at 00:00 UTC)" (as the review of the
+  token texts, below, reworded them).
 - **The console.** The owner approved every other AI text on 2026-09-30
   (the header of `web/src/ui/aiText.ts` records it); the token texts follow
   the owner's wording of the same day, pt and en first, then es, fr and
@@ -6848,17 +6931,71 @@ checksum):
   plano e o modelo, e a cobrança é da sua conta em cada provedor: defina lá
   os seus limites de gasto. A Wappie conta os tokens que cada provedor
   informa e para no limite abaixo, como trava de segurança." / "Prices vary
-  with your plan and the model, and billing is your account's at each
-  provider: set your spending limits there. Wappie counts the tokens each
-  provider reports and stops at the limit below as a safety lock."); the
-  lower limit and each integration's row in tokens; the Usage tab ("Uso" /
-  "Usage") in tokens and attachments, per integration and per month; and
-  `ai_budget_reached` in tokens. The key guidance and the card keep saying
-  that each provider bills the person's own account.
+  with your plan and the model, and each provider bills your own account:
+  set your spending limits there. Wappie counts the tokens each provider
+  reports and, as a safeguard, stops at the limit below.", the en as the
+  review below reworded it); the lower limit and each integration's row in
+  tokens; the Usage tab ("Uso" / "Usage") in tokens and attachments, per
+  integration and per month; and `ai_budget_reached` in tokens. The key
+  guidance and the owner's sentence say that each provider bills the
+  person's own account.
 - **Vectors and logs.** `enclave/test/ai-config-vectors.json` is
   regenerated with the token budget by an independent WebCrypto generator,
   which `bundle.mjs` and the console reproduce; the parent's `log-sink.py`
   also drops a line that names `charged_tokens`.
+
+**The review of the token texts (2026-09-30)** (core and console; the
+owner's pt sentence is kept word for word; the rewordings follow the
+owner's wording of the same day, as the token texts do, and the two new
+sentences below await the owner's approval; pt and en first, then es, fr
+and de):
+
+- **What the limit is not** (§18.13), under "Tokens a month, at most", new
+  and **awaiting the owner's approval**: a limit on tokens, not money (the
+  same tokens cost more on some models), counting only what the
+  integration sends through Wappie, not other uses of the key, and a
+  request under way when it is reached still finishes (each attempt is
+  checked before it leaves, §18.10); the Usage tab gives the scale, in
+  place of the model estimates the owner removed.
+- **The renewal's sentence** (§18.13), new and **awaiting the owner's
+  approval**: the billing as in the owner's sentence, then the limit in
+  tokens the integration keeps, since another model may cost more for the
+  same tokens. The renewal showed the Usage tab's sentence before.
+- **An invalid limit is named.** The tokens field is text, so a limit that
+  is no whole number from 1 to `AI_MONTHLY_TOKENS_MAX` ("5 milhões",
+  "0", "2.000.000.000") left Authorize grey with no reason; once the field
+  is left the console says "Enter a whole number of tokens from 1 to
+  {max}, such as {example}." A count is plain digits, or groups of three
+  after the first split by one separator: "2,5", "1.5" and "1.000.000,00"
+  used to read as 25, 15 and 100,000,000 and are now no count, in the new
+  integration's field and in the lower limit (whose refusal's example is
+  half the authorized limit, so the example is one the row takes, and
+  whose hint says "leave it empty to go back to {budget}").
+- **The Usage tab.** On a phone each line's card carries the tokens
+  counted toward the limit (the total above could not be matched to any
+  line before), the reused and failed attachments, and no plural to agree
+  with; the note under the table says a transcription billed by the second
+  counts 25 tokens a second, so a whisper-1 line's 0 in, 0 out and 375
+  counted reads as measured, not guessed; some use under 1% reads "<1%",
+  never "0%"; en reads "{items} of {max} attachments today" and fr keeps
+  the % with its number (U+202F). The Limits fieldset spaces its parts,
+  and the tokens field is described by the owner's sentence and its hints.
+- **The owner's sentence in en, es, fr and de** is idiomatic ("and each
+  provider bills your own account ... and, as a safeguard, stops at the
+  limit below"; es, fr and de likewise); pt is the owner's, unchanged.
+- **The month's limit met**, in the console: "The count starts again on
+  the 1st at 00:00 UTC." (a limit does not restart; the count does, and
+  at 00:00 UTC, 21:00 of the last day in Brazil).
+- **The connector's sentences** (§18.12) say the limit is a safety lock
+  set in the Wappie console, not the provider's billing, so an assistant
+  does not tell the user their provider credit ran out (`ai_quota`'s
+  case); the day's is unchanged.
+- **A call never answered on a large file** uses up the default month
+  (§18.10): recorded there, and the proposal to bound OpenAI's
+  transcription route by length is the owner's call (§18.18).
+- **Money wording** left in a comment of `enclave/media/service.mjs` and in
+  the B1 review's entry above now says tokens; the enclave's tests check
+  that a reuse counts no item and no tokens (N-AI-6).
 
 ### Amendments to §§1 to 16
 

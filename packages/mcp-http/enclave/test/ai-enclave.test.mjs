@@ -211,12 +211,15 @@ test('a console job: audio to Google, the transcript sealed and stored under the
   assert.deepEqual(redo.state, { state: 'done' })
   assert.equal(stubs.generations('google').length, 2)
   assert.deepEqual(storedRecord(w, row.uid, 'audio').flags, ['redo'])
-  // The same file on another message: reused, not sent again (N-AI-6).
+  // The same file on another message: reused, not sent again (N-AI-6), and it counts no tokens.
+  const before = e.facts.content.ai.budgets.used(done.connectionId)
   const copy = await voiceNote(w, { plaintext })
   assert.deepEqual((await consoleJob(w, done, { uid: copy.row.uid })).state, { state: 'done' })
   assert.equal(stubs.generations('google').length, 2, 'reused')
   assert.equal(storedRecord(w, copy.row.uid, 'audio').text, stubs.text)
-  assert.ok(w.go.ai.usage.some(item => item.body.reused === 1))
+  const reuse = w.go.ai.usage.find(item => item.body.reused === 1)
+  assert.deepEqual([reuse.body.items, reuse.body.input_tokens, reuse.body.output_tokens, reuse.body.charged_tokens], [0, 0, 0, 0], 'a reuse is no call: no item, no tokens')
+  assert.deepEqual(e.facts.content.ai.budgets.used(done.connectionId), before, 'the month\'s tokens and the day\'s items stay')
   assert.ok(events(w).some(entry => entry.event === 'ai_reused'))
   // The same file on a second person's authorization in another language: never reused (N-AI-6).
   const other = await installed(w, { scope: aiScope({ audio: ['google', 'gemini-synthetic-flash'] }, { lang: 'es', requesters: 'console' }) })
