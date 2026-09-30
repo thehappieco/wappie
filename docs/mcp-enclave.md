@@ -6354,8 +6354,9 @@ private repository, and not part of this track.
   and computes dedupe tags (`dedupeTag`); `aikeychain.ts` has
   `sealKeychainItem(account, {server_origin, user_id, id, provider,
   api_key, label, created_at})`, `openKeychainItem(account, {server_origin,
-  user_id, id, provider, envelope})` (the envelope as bytes or Go's standard
-  base64), `keychainKey` and `keychainSuffix`; both are exported from the
+  user_id, id, provider, envelope})` (the envelope as bytes, or as Go's
+  keychain routes spell it, unpadded base64url; padded standard base64 is
+  read too), `keychainKey` and `keychainSuffix`; both are exported from the
   package index as `derived` and `aikeychain`. `packages/mcp/bundle.mjs`
   holds `validateAIBundle`, `aiConfigScope`, `aiConfigTag` (the device
   check's construction under `wappie-ai-config/v1`) and `keysSHA256`, with

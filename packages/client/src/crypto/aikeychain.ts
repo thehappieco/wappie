@@ -49,7 +49,7 @@ export interface KeychainRow {
   user_id: string
   id: string
   provider: string
-  /** The envelope: bytes, or standard base64 as Go's JSON carries it. */
+  /** The envelope: bytes, or as Go's JSON carries it (unpadded base64url; padded standard base64 is read too). */
   envelope: Bytes | string
 }
 
@@ -127,6 +127,16 @@ export async function sealKeychainItem(account: PrivateKey, input: KeychainInput
 }
 
 /**
+ * An envelope as Go's JSON spells it: unpadded base64url (what the keychain
+ * routes take and list), or padded standard base64. Anything else throws.
+ */
+function envelopeBytes(s: string): Bytes {
+  if (/^[A-Za-z0-9_-]*$/.test(s) && s.length % 4 !== 1) return fromBase64(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '='))
+  if (/^[A-Za-z0-9+/]*={0,2}$/.test(s) && s.length % 4 === 0) return fromBase64(s)
+  throw new Error('not base64')
+}
+
+/**
  * Opens a row of the account's keychain. Throws KeychainError on anything
  * but an item this account sealed for exactly this origin, user, item id
  * and provider, the row's provider included: a row whose provider Go
@@ -134,7 +144,7 @@ export async function sealKeychainItem(account: PrivateKey, input: KeychainInput
  */
 export async function openKeychainItem(account: PrivateKey, row: KeychainRow): Promise<KeychainItem> {
   let envelope: Bytes
-  try { envelope = typeof row?.envelope === 'string' ? fromBase64(row.envelope) : row?.envelope } catch { return fail() }
+  try { envelope = typeof row?.envelope === 'string' ? envelopeBytes(row.envelope) : row?.envelope } catch { return fail() }
   if (!(envelope instanceof Uint8Array) || envelope.length < MAGIC.length + IV_LEN + TAG_LEN || envelope.length > MAGIC.length + IV_LEN + KEYCHAIN_MAX_PLAINTEXT + TAG_LEN ||
     !equal(envelope.subarray(0, MAGIC.length) as Bytes, MAGIC)) fail()
   const aad = binding(row.server_origin, row.user_id, row.id, row.provider)

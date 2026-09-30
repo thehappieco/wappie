@@ -24,6 +24,10 @@ describe('an item', () => {
     const opened = await openKeychainItem(account, row(envelope))
     expect(opened).toEqual({ provider: 'google', api_key: input.api_key, label: input.label, created_at: input.created_at })
     expect(await openKeychainItem(account, row(toBase64(envelope)))).toEqual(opened)
+    // Go's keychain routes take and list the envelope in unpadded base64url.
+    const url = toBase64(envelope).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    expect(await openKeychainItem(account, row(url))).toEqual(opened)
+    for (const bad of [url + '===', url.slice(0, -1) + '*', ' ' + url]) await expect(openKeychainItem(account, row(bad))).rejects.toThrow(KeychainError)
     expect(keychainSuffix(input.api_key)).toBe('aaaa')
   })
 
