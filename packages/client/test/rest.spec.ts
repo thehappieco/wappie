@@ -118,3 +118,25 @@ it('rejects device scans with invalid bounds and malformed or unrelated results'
  const base={device_id:device,from:scanFrom,until:scanUntil,messages:[scanMessage],has_more:false}
  for(const patch of [{device_id:uid},{from:scanUntil},{messages:[{...scanMessage,device_id:uid}]},{messages:[{...scanMessage,order_ts:'2026-09-17T00:00:00Z'}]},{messages:[{...scanMessage,order_ts:scanUntil}]},{messages:[{...scanMessage,ts:scanUntil}]},{has_more:true,next_ts:scanUntil,next_seq:1},{messages:[scanMessage,scanMessage]}]) await expect(client(vi.fn(async()=>json({...base,...patch}))).scanMessages(device,{from:scanFrom,until:scanUntil})).rejects.toThrow()
 })
+
+it('narrows listChats to one chat key, and refuses an answer about another chat', async () => {
+  const chat = { uid, chat_key: '120363041234567890@g.us', last_seq: 7 }
+  const fetcher = vi.fn<typeof fetch>(async () => json({ device_id: device, chats: [chat], limit: 100, truncated: false }))
+  const one = await client(fetcher).listChats(device, { chatKey: chat.chat_key })
+  const url = new URL(String(fetcher.mock.calls[0][0]))
+  expect(url.pathname).toBe(`/v1/devices/${device}/chats`)
+  expect(url.searchParams.get('chat_key')).toBe(chat.chat_key)
+  expect(one.chats).toEqual([chat])
+  // No chat under that key is an empty answer, not an error.
+  await expect(client(vi.fn(async () => json({ device_id: device, chats: [], limit: 100, truncated: false }))).listChats(device, { chatKey: 'none@s.whatsapp.net' })).resolves.toMatchObject({ chats: [] })
+  for (const answer of [
+    { chats: [{ ...chat, chat_key: '5511999990000@s.whatsapp.net' }], truncated: false },
+    { chats: [chat], truncated: true },
+  ]) {
+    await expect(client(vi.fn(async () => json({ device_id: device, limit: 100, ...answer }))).listChats(device, { chatKey: chat.chat_key })).rejects.toMatchObject({ code: 'chat_mismatch' })
+  }
+  await expect(client(vi.fn(async () => json({ device_id: device, chats: [chat, { ...chat, uid: device }], limit: 100, truncated: false }))).listChats(device, { chatKey: chat.chat_key })).rejects.toMatchObject({ code: 'invalid_response' })
+  const never = vi.fn<typeof fetch>()
+  for (const chatKey of ['', 'a\nb', 'x'.repeat(513)]) await expect(client(never).listChats(device, { chatKey })).rejects.toMatchObject({ code: 'invalid_chat' })
+  expect(never).not.toHaveBeenCalled()
+})

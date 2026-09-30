@@ -252,6 +252,29 @@ func GrantRow(tenant, device, user uuid.UUID, epoch uint16) uuid.UUID {
 	return uuid.NewSHA1(tenant, name)
 }
 
+// DraftRow derives the uuid an assistant's draft binds to
+// (docs/mcp-enclave.md §17.6): the number, the connection, the draft, the
+// message it replies to (sixteen zero bytes for none) and the chat.
+//
+// Every routing field is in it because the ledger row that carries the
+// envelope is this server's: rebuilt with another chat, another reply target
+// or another connection, the row opens nothing, so a draft the person was
+// shown for one recipient can never be delivered to another. The browser and
+// the attested reader compute the same value (packages/client draftRow).
+func DraftRow(tenant, device, connection, draft uuid.UUID, reply *uuid.UUID, chatKey string) uuid.UUID {
+	name := make([]byte, 0, 16*4+len(chatKey))
+	name = append(name, device[:]...)
+	name = append(name, connection[:]...)
+	name = append(name, draft[:]...)
+	if reply != nil {
+		name = append(name, reply[:]...)
+	} else {
+		name = append(name, make([]byte, 16)...)
+	}
+	name = append(name, chatKey...)
+	return uuid.NewSHA1(tenant, name)
+}
+
 // Seal encrypts a value under this content key.
 func (c *ContentKey) Seal(kind Kind, tenant, row uuid.UUID, plaintext []byte) ([]byte, error) {
 	gcm, err := c.gcm()

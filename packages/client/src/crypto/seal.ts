@@ -45,6 +45,12 @@ export enum Kind {
   FullName = 0x0b,
   BusinessName = 0x0c,
   Avatar = 0x0d,
+  /**
+   * A message an assistant drafted, sealed inside the attested reader to the
+   * number's archive key (docs/mcp-enclave.md §17.6). Only the person who
+   * opens it in the console ever reads it; 0x0F stays reserved.
+   */
+  McpDraft = 0x0e,
 }
 
 // The names go into the HPKE info string, so they are part of the wire format
@@ -63,6 +69,7 @@ const kindNames: Record<number, string> = {
   [Kind.FullName]: 'full_name',
   [Kind.BusinessName]: 'business_name',
   [Kind.Avatar]: 'avatar',
+  [Kind.McpDraft]: 'mcp_draft',
 }
 
 export function kindName(kind: number): string {
@@ -171,6 +178,10 @@ function encodeHeader(mode: number, epoch: number): Bytes {
  * stores, pairing reports success, and the archive it was supposed to unlock is
  * unreadable by anyone, forever. test/grant.spec.ts seals a vector here that Go
  * has to open.
+ *
+ * The attested reader seals one more thing with it, in Node: an assistant's
+ * draft (Kind.McpDraft, draftRow), to the number's archive public key, which
+ * only the person's browser can open. test/draft.spec.ts keeps that vector.
  */
 export async function sealDirect(
   publicRaw: Bytes,
@@ -339,5 +350,36 @@ export async function grantRow(
   name.set(device, 0)
   name.set(user, 16)
   new DataView(name.buffer).setUint16(32, epoch, false)
+  return uuidV5(tenant, name)
+}
+
+/**
+ * draftRow derives the row an assistant's draft binds to (docs/mcp-enclave.md
+ * §17.6): the number, the connection, the draft, the message it replies to
+ * (sixteen zero bytes for none) and the chat.
+ *
+ * Every routing field is in it because the ledger that carries the envelope
+ * is the server's: a row rebuilt with another chat, another reply target or
+ * another connection opens nothing, so a draft the person was shown for one
+ * recipient can never be delivered to another.
+ */
+export async function draftRow(
+  tenant: Bytes,
+  device: Bytes,
+  connection: Bytes,
+  draft: Bytes,
+  reply: Bytes | null,
+  chatKey: string,
+): Promise<Bytes> {
+  for (const id of [device, connection, draft, ...(reply ? [reply] : [])]) {
+    if (id.length !== 16) throw new SealError('a draft row takes 16-byte ids', 'short')
+  }
+  const key = encodeUTF8(chatKey)
+  const name = new Uint8Array(64 + key.length) as Bytes
+  name.set(device, 0)
+  name.set(connection, 16)
+  name.set(draft, 32)
+  if (reply) name.set(reply, 48)
+  name.set(key, 64)
   return uuidV5(tenant, name)
 }
