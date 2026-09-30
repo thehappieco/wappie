@@ -171,7 +171,10 @@ export function decodeCiphertext(value) {
  *   adds `/internal/ai/*`: AI requests and their bundles, and console jobs.
  */
 export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content }) {
-  const refused = (meta, error) => { meta.code = error.code; return json({ code: error.code, ...(Number.isInteger(error.retry_after_s) ? { retry_after_s: error.retry_after_s } : {}) }, error.status) }
+  const refused = (meta, error) => {
+    meta.code = error.code
+    return json({ code: error.code, ...(Number.isInteger(error.retry_after_s) ? { retry_after_s: error.retry_after_s } : {}), ...(error.limit === 'month' || error.limit === 'day' ? { limit: error.limit } : {}) }, error.status)
+  }
   const ai = content?.ai ?? null
   const guard = auth ?? ((request, info) => internalGuard(request, info, secret))
   return async (request, info, meta) => {

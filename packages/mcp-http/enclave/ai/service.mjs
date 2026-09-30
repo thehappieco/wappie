@@ -86,20 +86,24 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
     queue.abortWhere(id, job => job !== except && (effect === 'provider' ? record.functions[job.feature]?.provider === provider : job.feature === feature), aiRefusal('ai_paused'))
   }
   /**
-   * The stored record of `feature` for (`device`, `uid`) that `keys` (the
-   * record's grant's DSK) opens, or null.
+   * What Go stores of `feature` for (`device`, `uid`): `{read, record}`,
+   * where `read` says Go answered the list and `record` is the first stored
+   * record `keys` (the record's grant's DSK) opens, or null. A record of
+   * another epoch is skipped: no key this grant holds opens it.
    */
-  async function readStored(record, device, uid, feature, keys) {
+  async function storedOf(record, device, uid, feature, keys) {
     let answer
-    try { answer = await relay.ai(record.connection_id, record.api_key, 'GET', 'ai/derived', { query: { device_id: device, uid } }) } catch { return null }
-    if (answer.status !== 200 || !Array.isArray(answer.data?.items)) return null
+    try { answer = await relay.ai(record.connection_id, record.api_key, 'GET', 'ai/derived', { query: { device_id: device, uid } }) } catch { return { read: false, record: null } }
+    if (answer.status !== 200 || !Array.isArray(answer.data?.items)) return { read: false, record: null }
     for (const item of answer.data.items) {
       const sealed = derivedBytes(item?.sealed)
       if (!sealed || item.feature !== feature || item.device_id !== device || item.message_uid !== uid || item.epoch !== keys.epoch) continue
-      try { return openDerived(keys.dsk, { namespace: keys.namespace, device_id: device, message_uid: uid, feature, epoch: item.epoch }, sealed) } catch { /* another key's */ } finally { sealed.fill(0) }
+      try { return { read: true, record: openDerived(keys.dsk, { namespace: keys.namespace, device_id: device, message_uid: uid, feature, epoch: item.epoch }, sealed) } } catch { /* another key's */ } finally { sealed.fill(0) }
     }
-    return null
+    return { read: true, record: null }
   }
+  /** The stored record of `feature` for (`device`, `uid`) that `keys` opens, or null. */
+  const readStored = async (...args) => (await storedOf(...args)).record
 
   /**
    * Step 1 and 2 (§18.10): the record is held with keys and serves; its
@@ -120,7 +124,8 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
     const paused = pauses.get(id)
     if (off.paused || off.functions.includes(feature) || off.providers.includes(entry.provider) || paused?.providers.has(entry.provider) || paused?.functions.has(feature) ||
       (wanted.requesters === 'console' && origin !== 'console')) throw aiRefusal('ai_paused')
-    if (!budgets.allows(record, status)) { log.event('ai_budget_reached', conn(id)); throw aiRefusal('ai_budget_reached') }
+    const limit = budgets.limit(record, status)
+    if (limit) { log.event('ai_budget_reached', conn(id)); throw aiRefusal('ai_budget_reached', { limit }) }
     return status
   }
 
@@ -135,7 +140,7 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
       const outcome = await runJob({
         log, now, relay, egress, budgets, reader, archive, fetch, media: media(),
         keys: item => aikeys.get(item.connection_id), status: item => statuses.get(item.connection_id),
-        pause: (item, code, where) => pause(item, code, where, job), usage, readStored,
+        pause: (item, code, where) => pause(item, code, where, job), usage, readStored, storedOf,
       }, record, job)
       log.event('ai_job_done', conn(id))
       return outcome
@@ -301,7 +306,7 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
         !AI_FUNCTIONS.includes(body.feature) || body.origin !== 'console' || typeof body.redo !== 'boolean') throw new LinkError('bad_request')
       const record = state.connections.get(body.authorization_id)
       if (!record || record.kind !== 'ai') throw new LinkError('not_found', 404)
-      try { await gate(record, body) } catch (error) { throw new LinkError(codeOf(error), 409) }
+      try { await gate(record, body) } catch (error) { throw Object.assign(new LinkError(codeOf(error), 409), error?.limit ? { limit: error.limit } : {}) }
       if (!body.redo) {
         let answer = null
         try { answer = await relay.ai(record.connection_id, record.api_key, 'GET', 'ai/derived', { query: { device_id: body.device_id, uid: body.uid } }) } catch { /* no stored answer known */ }
@@ -319,7 +324,7 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
       const job = queue.get(id)
       if (!job || !job.requesters.has(requester)) return null
       if (job.state === 'done' && job.outcome?.unstored) return { state: 'failed', code: job.outcome.unstored }
-      if (job.state === 'failed') return { state: 'failed', code: codeOf(job.outcome.error) }
+      if (job.state === 'failed') return { state: 'failed', code: codeOf(job.outcome.error), ...(job.outcome.error?.limit ? { limit: job.outcome.error.limit } : {}) }
       return { state: job.state }
     },
 

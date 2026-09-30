@@ -16,9 +16,20 @@
 // host, so a test replaces what answers, never where the request goes.
 import { AI_ERROR_RULES, AI_GOOGLE_REQUEST_MAX_BYTES, AI_KEY_RE, AI_PROVIDERS, AI_QUERY_VALUE_MAX, AI_RESPONSE_MAX_BYTES, AI_CALL_TIMEOUT_MS, ANTHROPIC_VERSION } from './policy.mjs'
 
-/** A refusal or failure of the egress: `ai_egress_refused` (a check failed), `timeout`, `network`, `aborted` or `response_too_large`. */
+/**
+ * A refusal or failure of the egress: `ai_egress_refused` (a check failed),
+ * `timeout`, `network`, `aborted` or `response_too_large`. `sent` marks a
+ * failure after the request was handed to the transport, with the request's
+ * `bytesOut`: the provider may have received it whole and billed it
+ * (§18.9's charges), since the parent relays the bytes and can stall or
+ * drop the answer once the upload is done.
+ */
 export class EgressError extends Error {
-  constructor(code, why) { super(code); this.name = 'EgressError'; this.code = code; if (why) this.why = why }
+  constructor(code, why, sent) {
+    super(code); this.name = 'EgressError'; this.code = code
+    if (why) this.why = why
+    if (sent) { this.sent = true; this.bytesOut = sent.bytesOut }
+  }
 }
 
 /** A provider key, as the enclave holds it: bound to its provider, so it can go nowhere else. */
@@ -103,28 +114,31 @@ export function createEgress({ transport = globalThis.fetch, log } = {}) {
     const url = `https://${AI_PROVIDERS[provider].host}${path}${search}`
     const deadline = AbortSignal.timeout(timeoutMs)
     const both = signal ? AbortSignal.any([signal, deadline]) : deadline
+    // From here the request is the transport's: any failure may come after the provider has it.
+    const sent = { bytesOut }
+    const failed = () => new EgressError(signal?.aborted ? 'aborted' : deadline.aborted ? 'timeout' : 'network', undefined, sent)
     let response
     try {
       response = await transport(url, { method, headers, body: payload, redirect: 'error', cache: 'no-store', credentials: 'omit', signal: both })
     } catch {
-      throw new EgressError(signal?.aborted ? 'aborted' : deadline.aborted ? 'timeout' : 'network')
+      throw failed()
     }
     const encoding = response.headers.get('content-encoding')
     const cancel = () => response.body?.cancel().catch(() => {})
-    if (encoding !== null && encoding.trim().toLowerCase() !== 'identity') { await cancel(); throw new EgressError('network') }
+    if (encoding !== null && encoding.trim().toLowerCase() !== 'identity') { await cancel(); throw new EgressError('network', undefined, sent) }
     const declared = Number(response.headers.get('content-length'))
-    if (Number.isFinite(declared) && declared > AI_RESPONSE_MAX_BYTES) { await cancel(); throw new EgressError('response_too_large') }
+    if (Number.isFinite(declared) && declared > AI_RESPONSE_MAX_BYTES) { await cancel(); throw new EgressError('response_too_large', undefined, sent) }
     const chunks = []
     let size = 0
     try {
       for await (const chunk of response.body ?? []) {
         size += chunk.length
-        if (size > AI_RESPONSE_MAX_BYTES) { await cancel(); throw new EgressError('response_too_large') }
+        if (size > AI_RESPONSE_MAX_BYTES) { await cancel(); throw new EgressError('response_too_large', undefined, sent) }
         chunks.push(chunk)
       }
     } catch (error) {
       if (error instanceof EgressError) throw error
-      throw new EgressError(signal?.aborted ? 'aborted' : deadline.aborted ? 'timeout' : 'network')
+      throw failed()
     }
     const raw = Buffer.concat(chunks, size)
     let json = null

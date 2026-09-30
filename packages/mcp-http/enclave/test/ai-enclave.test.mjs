@@ -361,10 +361,20 @@ test('a video: transcribed by Gemini where an authorization covers it; the previ
   const preview = (await open(w, media, { uid: video.uid })).value
   assert.equal(headerOf(preview).sniffed, 'thumbnail', 'no authorization: the preview, as before')
   w.go.ai.picks.set(`${media.connectionId}|${vector.device}|video`, { authorization_id: auth.connectionId, requester_id: randomUUID(), state: 'active' })
+  // The answer in prompt video/2's sections: stored as the model wrote it, read by the connection under English headings.
+  stubs.text = '[TRANSCRIPT]\nOi, aqui é um vídeo sintético.\n[SHOWN]\nUm círculo azul num fundo branco.'
+  // Google counts a video as VIDEO tokens, never AUDIO (B0's usage): no seconds of its own.
+  stubs.usage.google = { promptTokenCount: 1160, candidatesTokenCount: 116, thoughtsTokenCount: 277, promptTokensDetails: [{ modality: 'TEXT', tokenCount: 68 }, { modality: 'VIDEO', tokenCount: 1092 }] }
   const other = await w.f.addMedia({ key, object, thumbnail, media: { media_type: 'video', mimetype: 'video/mp4', file_length: mp4.length, file_enc_sha256: sha256(object).toString('base64'), seconds: 12 } })
   const described = (await open(w, media, { uid: other.uid })).value
   const header = headerOf(described)
   assert.deepEqual([header.sniffed, header.derived.feature], ['transcript', 'video'])
+  assert.equal(described.content[0].text.split('\n').slice(1).join('\n'), 'Speech:\nOi, aqui é um vídeo sintético.\n\nOn screen:\nUm círculo azul num fundo branco.')
+  assert.deepEqual([storedRecord(w, other.uid, 'video').text, storedRecord(w, other.uid, 'video').prompt_version], [stubs.text, 'video/2'])
+  // Reported as measured, with the claimed 12 s (the pair charges no time); charged by its tokens alone.
+  assert.deepEqual(storedRecord(w, other.uid, 'video').usage, { input_tokens: 1160, output_tokens: 393, seconds: 12 })
+  const charged = w.go.ai.usage.find(item => item.id === auth.connectionId && item.body.items === 1).body
+  assert.deepEqual([charged.seconds, charged.cost_microcents], [12, 100 * 1160 + 400 * 393])
   assert.equal(header.notes[0], 'This is an AI transcript and description of the video made by Google with the user\'s own key; it may contain errors. Quote it as such, not as the speaker\'s exact words.')
   const [call] = stubs.generations('google')
   assert.equal(call.body.contents[0].parts[0].inlineData.mimeType, 'video/mp4')
@@ -424,6 +434,35 @@ test('N-AI-9: Go reports no usage and a cap ten times the bundle\'s: the enclave
   assert.deepEqual([refused.submitted.status, JSON.parse(refused.submitted.body).code], [409, 'ai_budget_reached'])
   assert.equal(stubs.generations().length, 1)
   assert.ok(events(w).some(entry => entry.event === 'ai_budget_reached'))
+})
+
+test('N-AI-9 with calls never answered: the parent stalls then drops each answer once the upload is done; each attempt is an item, each is charged at its bound, and the cap trips', async t => {
+  const { w, e, stubs } = await aiWorld(t)
+  // 1 cent a month, at US$ 100 per million input tokens: one voice note's bound (its body's bytes ÷ 4) is past it.
+  const done = await installed(w, { scope: aiScope({ audio: ['google', 'gemini-synthetic-flash'] }, { requesters: 'console', cents: 1, items: 50, rates: { 'google:gemini-synthetic-flash': { in: 10_000, out: 0, sec: 0 } } }) })
+  stubs.answer = () => ({ delayMs: 20, network: true })
+  const note = await voiceNote(w)
+  const failed = await consoleJob(w, done, { uid: note.row.uid })
+  assert.deepEqual(failed.state, { state: 'failed', code: 'ai_budget_reached', limit: 'month' }, 'the second attempt never leaves')
+  assert.equal(stubs.generations('google').length, 1, 'one call reached the provider')
+  const charged = w.go.ai.usage.filter(item => item.id === done.connectionId && item.body.failures === 1)
+  assert.equal(charged.length, 1)
+  const [call] = stubs.generations('google')
+  const bytes = Buffer.byteLength(JSON.stringify(call.body))
+  assert.deepEqual([charged[0].body.items, charged[0].body.input_tokens, charged[0].body.cost_microcents], [0, Math.ceil(bytes / 4), 10_000 * Math.ceil(bytes / 4)], 'at its bound, as a failure')
+  assert.equal(storedRecord(w, note.row.uid, 'audio'), null)
+  assert.deepEqual(e.facts.content.ai.budgets.used(done.connectionId), { cost: 10_000 * Math.ceil(bytes / 4), items: 1 })
+  // The next job stops at the gate, before anything leaves, and says which limit.
+  const next = await voiceNote(w)
+  const refused = await consoleJob(w, done, { uid: next.row.uid })
+  assert.deepEqual([refused.submitted.status, JSON.parse(refused.submitted.body)], [409, { code: 'ai_budget_reached', limit: 'month' }])
+  assert.equal(stubs.generations('google').length, 1)
+  // With room for more, every attempt that leaves is an item of the day, and the day's items stop the retries too.
+  const daily = await installed(w, { scope: aiScope({ audio: ['google', 'gemini-synthetic-flash'] }, { requesters: 'console', cents: 1000, items: 1, rates: { 'google:gemini-synthetic-flash': { in: 0, out: 0, sec: 0 } } }) })
+  const third = await voiceNote(w)
+  assert.deepEqual((await consoleJob(w, daily, { uid: third.row.uid })).state, { state: 'failed', code: 'ai_budget_reached', limit: 'day' })
+  assert.equal(stubs.generations('google').length, 2, 'one attempt, then the day\'s items stop the retry')
+  assert.equal(w.go.ai.usage.filter(item => item.id === daily.connectionId && item.body.failures === 1).length, 1)
 })
 
 test('N-AI-13: a voice note that claims 1 s and holds 25 minutes: charged by the provider\'s own duration, else by the bytes bound; the cap trips where the real spend would', async t => {
@@ -491,13 +530,16 @@ test('a revocation during a provider call aborts the job: nothing stored or char
   assert.equal(revoked.status, 204)
   assert.deepEqual((await job).state, { state: 'failed', code: 'ai_paused' })
   assert.equal(w.go.ai.derived.length, 0)
-  assert.equal(w.go.ai.usage.some(item => item.body.items > 0), false, 'never charged')
+  assert.equal(w.go.ai.usage.some(item => item.body.items > 0), false, 'no answer, no item')
+  // The call had left: the provider may have it whole, so it is counted as a failure, charged at its bound (§18.9).
+  const [aborted] = w.go.ai.usage.filter(item => item.body.failures === 1)
+  assert.ok(aborted && aborted.body.cost_microcents > 0 && aborted.body.input_tokens > 0, 'charged at its bound')
   assert.equal(e.facts.content.ai.holds(done.connectionId), false)
   const next = await w.internal('/internal/ai/jobs', { method: 'POST', body: { authorization_id: done.connectionId, device_id: vector.device, uid: note.row.uid, feature: 'audio', origin: 'console', requester_id: randomUUID(), redo: false } })
   assert.equal(next.status, 404)
 })
 
-test('a PUT answered derived_exists answers the stored record; storage_paused answers unstored; a busy authorization answers ai_busy', async t => {
+test('a PUT answered derived_exists answers the stored record, or replaces one of an older epoch no grant opens; storage_paused answers unstored; a busy authorization answers ai_busy', async t => {
   const { w, stubs } = await aiWorld(t)
   const auth = await installed(w, { scope: aiScope({ audio: ['google', 'gemini-synthetic-flash'] }) })
   const media = await connectMedia(w)
@@ -517,6 +559,18 @@ test('a PUT answered derived_exists answers the stored record; storage_paused an
   const { value } = await answer
   assert.equal(value.content[0].text.split('\n').slice(1).join('\n'), 'The other authorization\'s transcript.')
   stubs.answer = null
+  // A record stored under an older epoch (the number's epoch rotated since): no current grant opens it, so the job's record replaces it.
+  const rotated = await voiceNote(w)
+  const old = sealDerived(randomBytes(32), { namespace: vector.tenant, device_id: vector.device, message_uid: rotated.row.uid, feature: 'audio', epoch: 7 }, {
+    v: 1, feature: 'audio', text: 'Sealed under an epoch no grant holds now.', provider: 'google', model: 'gemini-synthetic-flash', prompt_version: 'audio/1',
+    created_at: '2026-09-01T09:30:15.123Z', source_sha256: sha256(rotated.plaintext).toString('hex'), usage: {}, flags: [] })
+  w.go.ai.derived.push({ message_uid: rotated.row.uid, feature: 'audio', device_id: vector.device, epoch: 7, sealed: old.toString('base64url'), dedupe_tag: 'B'.repeat(43), authorization_id: randomUUID(), created_at: '2026-09-01T09:30:15Z' })
+  const replaced = (await open(w, media, { uid: rotated.row.uid })).value
+  assert.equal(replaced.content[0].text.split('\n').slice(1).join('\n'), stubs.text)
+  const puts = w.go.ai.calls.filter(call => call.method === 'PUT' && call.route === `ai/derived/${rotated.row.uid}/audio`)
+  assert.deepEqual(puts.map(call => call.body.redo), [false, true], 'refused as derived_exists, then replaced')
+  assert.deepEqual([storedRecord(w, rotated.row.uid, 'audio').text, w.go.ai.derived.filter(item => item.message_uid === rotated.row.uid).length], [stubs.text, 1])
+  assert.equal(events(w).filter(entry => entry.event === 'ai_store_failed').length, 0)
   // Storage paused: the caller still gets the transcript, unstored, and the log says so.
   w.go.ai.storagePaused = true
   const paused = await voiceNote(w)

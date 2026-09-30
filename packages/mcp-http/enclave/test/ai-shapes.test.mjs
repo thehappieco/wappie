@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { classify, errorFacts, ruleOf } from '../ai/egress.mjs'
 import { interpret } from '../ai/jobs.mjs'
-import { AI_ERROR_RULES } from '../ai/policy.mjs'
+import { AI_ERROR_RULES, AI_PROMPTS, promptVersion, systemPrompt } from '../ai/policy.mjs'
 import * as anthropic from '../ai/providers/anthropic.mjs'
 import * as google from '../ai/providers/google.mjs'
 import * as openai from '../ai/providers/openai.mjs'
@@ -30,12 +30,16 @@ function elide(value) {
   return value
 }
 const formSummary = form => Object.fromEntries([...form].map(([name, value]) => [name, typeof value === 'string' ? value : `<file ${value.size} bytes, ${value.type}${value.name ? `, ${value.name}` : ''}>`]))
+/** Where each provider's body carries the system prompt. */
+const PROMPT_AT = { google: body => body.systemInstruction.parts[0], anthropic: body => body, openai: body => body }
+const PROMPT_FIELD = { google: 'text', anthropic: 'system', openai: 'instructions' }
 const inputFor = (entry, media) => (entry.provider === 'google'
   ? { model: entry.model, lang: entry.lang, media, documentText: entry.document_text }
   : { model: entry.model, lang: entry.lang, images: media, documentText: entry.document_text })
 
-test('bodies: what B0 sent and the provider accepted, byte for byte but the media, and the exact JSON with the synthetic media', () => {
+test('bodies: what B0 sent and the provider accepted, byte for byte but the media (and a prompt changed since), and the exact JSON with the synthetic media', () => {
   assert.equal(shapes.bodies.length, 27)
+  assert.deepEqual(shapes.prompt_version, Object.fromEntries(Object.entries(AI_PROMPTS).map(([feature, prompt]) => [feature, prompt.version])))
   for (const entry of shapes.bodies) {
     const module = PROVIDERS[entry.provider]
     if (entry.b0_form) {
@@ -48,8 +52,14 @@ test('bodies: what B0 sent and the provider accepted, byte for byte but the medi
       assert.deepEqual(Object.keys(entry.form), ['file', 'model', 'response_format', 'language'], `${entry.id}: never prompt, and no text part`)
       continue
     }
-    const b0 = module.build(entry.feature, inputFor(entry, entry.b0_media.map(item => ({ mimeType: item.mimeType, data: Buffer.alloc(item.bytes) }))))
-    assert.equal(JSON.stringify(elide(b0.body)), JSON.stringify(entry.b0_request), entry.id)
+    const b0 = elide(module.build(entry.feature, inputFor(entry, entry.b0_media.map(item => ({ mimeType: item.mimeType, data: Buffer.alloc(item.bytes) })))).body)
+    if (entry.b0_prompt_version) {
+      // B0 sent an older version of this function's prompt (video/1, §18.20): the body is B0's but for this version's prompt.
+      assert.notEqual(entry.b0_prompt_version, promptVersion(entry.feature), entry.id)
+      assert.equal(PROMPT_AT[entry.provider](b0)[PROMPT_FIELD[entry.provider]], systemPrompt(entry.feature, entry.lang), entry.id)
+      PROMPT_AT[entry.provider](b0)[PROMPT_FIELD[entry.provider]] = PROMPT_AT[entry.provider](entry.b0_request)[PROMPT_FIELD[entry.provider]]
+    } else assert.equal(`${entry.feature}/1`, promptVersion(entry.feature), `${entry.id}: B0 sent version 1`)
+    assert.equal(JSON.stringify(b0), JSON.stringify(entry.b0_request), entry.id)
     const sent = module.build(entry.feature, inputFor(entry, entry.media.map(item => ({ mimeType: item.mimeType, data: small(item.mimeType) }))))
     assert.equal(JSON.stringify(sent.body), entry.body, entry.id)
     assert.equal(`${sent.method} ${entry.provider === 'google' ? sent.path.replace(entry.model, '{model}') : sent.path}`, entry.route, entry.id)

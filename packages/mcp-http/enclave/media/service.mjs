@@ -465,6 +465,8 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     if (outcome.error) {
       const code = safeCode(outcome.error)
       const error = refusal(code, { facts, ...(Number.isInteger(outcome.error.retry_after_s) ? { retry_after_s: outcome.error.retry_after_s } : {}) })
+      // Which limit an ai_budget_reached met (the month's spending or the day's attachments), for its sentence.
+      if (code === 'ai_budget_reached' && (outcome.error.limit === 'month' || outcome.error.limit === 'day')) error.limit = outcome.error.limit
       throw error
     }
     if (outcome.result.flags.includes('refused')) throw refusal('ai_refused', { facts })

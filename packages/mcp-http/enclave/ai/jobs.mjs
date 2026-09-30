@@ -8,14 +8,16 @@
 // ahead of console jobs; past either, `ai_busy`. A finished job's state is
 // kept AI_JOB_TTL_MS. Wiping an authorization aborts its jobs (the fetch, the
 // provider call and a jailed job through their signals); nothing of an
-// aborted job is stored or charged.
+// aborted job is stored, and only a provider call it had already sent is
+// charged, at its bound (§18.9).
 //
 // A job, in order: the gate; the budget; a stored record (without redo);
 // the row and its media, opened with the authorization's own grants (I2);
 // the configuration tag again with the DSK that opened them (I3a); the
 // fetch and its verification; reuse by dedupe tag (§18.8); the jailed
-// preparation of an image or a document; the provider call (§18.9); the
-// record sealed and stored; the usage counted; every caller answered.
+// preparation of an image or a document; the provider call (§18.9), each
+// attempt checked against the budget and counted as it leaves; the record
+// sealed and stored; the usage counted; every caller answered.
 import { createHash, randomBytes } from 'node:crypto'
 import { ArchiveError } from '@whatserver2/client'
 import { derivedBytes, derivedKey, openDerivedWith } from '@whatserver2/mcp/reader'
@@ -26,7 +28,7 @@ import { MEDIA_TYPES, PDF_MAX_PAGES, PDF_PAGES_PER_JOB, JOB_TEXT_MAX_BYTES, IMAG
 import { cut, renderOffice, scanned } from '../media/result.mjs'
 import { cleanText, decodeText, sniff } from '../media/sniff.mjs'
 import { createMediaStream } from '../media/wamedia-stream.mjs'
-import { costOf, measure } from './budget.mjs'
+import { costOf, measure, reported } from './budget.mjs'
 import { dedupeTag, reusable } from './dedupe.mjs'
 import { makeRecord, sealDerivedWith } from './derived.mjs'
 import { classify, EgressError, errorFacts } from './egress.mjs'
@@ -37,8 +39,15 @@ import {
 } from './policy.mjs'
 import { recordTagHolds } from './tags.mjs'
 
-/** A job's refusal: an ArchiveError with its code (and `retry_after_s` where it has one). */
-export const aiRefusal = (code, extra) => refusal(code, extra)
+/**
+ * A job's refusal: an ArchiveError with its code (and `retry_after_s` where
+ * it has one; `limit`, `month` or `day`, for `ai_budget_reached`).
+ */
+export function aiRefusal(code, extra) {
+  const error = refusal(code, extra)
+  if (extra?.limit === 'month' || extra?.limit === 'day') error.limit = extra.limit
+  return error
+}
 
 // ---- The queue -------------------------------------------------------------------
 
@@ -245,18 +254,29 @@ const delay = (ms, signal) => new Promise(resolve => {
  * The provider call (§18.9) with its retries: a 429 that is not a spent
  * quota, a 5xx, a timeout or a network error is tried again after each of
  * AI_RETRIES, then `ai_provider_failed`. Resolves to `{status: 200, json,
- * bytesOut}` or `{code}`; a 200 is the only answer ever charged.
+ * bytesOut}` or `{code}`.
+ *
+ * Each attempt is a call of its own (§18.10): `attempt()` runs before it
+ * leaves, to check the budget again (it throws to stop) and count the day's
+ * item; `failed({answered, sent, bytesOut})` after each attempt that did not
+ * end in a 200, where `answered` is a non-200 answer (never charged) and
+ * `sent` a request the transport had when it failed unanswered (a timeout,
+ * a dropped connection, an abort, an answer too large), which the caller
+ * charges at its bound: the provider may have it whole and bill it.
  */
-export async function callProvider(egress, provider, key, request, { signal }) {
-  for (let attempt = 0; attempt <= AI_RETRIES.length; attempt++) {
-    if (attempt > 0) { await delay(AI_RETRIES[attempt - 1], signal); if (signal.aborted) throw new EgressError('aborted') }
+export async function callProvider(egress, provider, key, request, { signal, attempt = () => {}, failed = () => {} }) {
+  for (let n = 0; n <= AI_RETRIES.length; n++) {
+    if (n > 0) { await delay(AI_RETRIES[n - 1], signal); if (signal.aborted) throw new EgressError('aborted') }
+    attempt()
     let response
     try { response = await egress.request(provider, key, { ...request, signal }) } catch (error) {
+      failed({ answered: false, sent: error?.sent === true, bytesOut: error?.bytesOut ?? 0 })
       if (error?.code === 'aborted' || signal.aborted) throw new EgressError('aborted')
       if (error?.code === 'timeout' || error?.code === 'network') continue
       return { code: 'ai_provider_failed' }
     }
     if (response.status === 200) return { status: 200, json: response.json, bytesOut: response.bytesOut, route: response.route }
+    failed({ answered: true, sent: true, bytesOut: response.bytesOut })
     const verdict = classify(provider, response.route, response.status, errorFacts(provider, response.json))
     if (verdict !== 'retry') return { code: verdict }
   }
@@ -265,11 +285,12 @@ export async function callProvider(egress, provider, key, request, { signal }) {
 
 /**
  * Runs one job's steps 3 to 12 for `job` under `record` (step 1 and 2, the
- * gate and the budget, ran as it was picked). `ctx` is the AI service's:
- * `{log, now, relay, egress, budgets, reader, keys(record), status,
- * media, archive, fetch, pause(record, code, where), usage(record, job, counts),
- * readStored(record, device, uid)}`. Resolves to `{record}` (the derived
- * record, opened), with `stored`, `reused` or `unstored` saying how.
+ * gate and the budget, ran as it was picked; the budget runs again before
+ * each attempt at the call). `ctx` is the AI service's: `{log, now, relay,
+ * egress, budgets, reader, keys(record), status, media, archive, fetch,
+ * pause(record, code, where), usage(record, job, counts), readStored(record,
+ * device, uid, feature, keys), storedOf(…same)}`. Resolves to `{record}` (the
+ * derived record, opened), with `stored`, `reused` or `unstored` saying how.
  */
 export async function runJob(ctx, record, job) {
   const signal = job.controller.signal
@@ -343,25 +364,46 @@ export async function runJob(ctx, record, job) {
       if (!request) throw aiRefusal('ai_unsupported')
       if (entry.provider === 'openai' && feature === 'audio' && plaintext.length > AI_OPENAI_AUDIO_MAX_BYTES) throw aiRefusal('ai_too_large')
       if (entry.provider === 'google' && Buffer.byteLength(JSON.stringify(request.body)) > AI_GOOGLE_REQUEST_MAX_BYTES) throw aiRefusal('ai_too_large')
-      ctx.budgets.item(record.connection_id)
+      const rate = record.budget.rates[`${entry.provider}:${entry.model}`]
+      const claimed = claimedSeconds(row)
+      /** Charges `usage` (a 200's, or `{}` for a call sent and never answered) and posts it: the cost by `measure`'s bounds, the counts as reported. */
+      const charge = (usage, bytesOut, counted) => {
+        const bounds = measure(feature, usage, { bodyBytes: bytesOut, plaintextBytes: plaintext.length, claimedSeconds: claimed })
+        const cost = costOf(rate, bounds)
+        const counts = reported(feature, usage, bounds, rate, claimed)
+        ctx.budgets.charge(record.connection_id, cost)
+        ctx.usage(record, job, { ...counted, ...counts, cost_microcents: cost })
+        return counts
+      }
       let answer
-      try { answer = await callProvider(ctx.egress, entry.provider, ctx.keys(record)?.[entry.provider], request, { signal }) } catch (error) {
+      try {
+        answer = await callProvider(ctx.egress, entry.provider, ctx.keys(record)?.[entry.provider], request, {
+          signal,
+          // Every attempt is a call (§18.10): the budget again before it leaves, and the day's item counted.
+          attempt: () => {
+            const limit = ctx.budgets.limit(record, ctx.status(record))
+            if (limit) { ctx.log.event('ai_budget_reached', conn); throw aiRefusal('ai_budget_reached', { limit }) }
+            ctx.budgets.item(record.connection_id)
+          },
+          // A failed attempt is counted; one sent and never answered is charged at its bound (§18.9).
+          failed: ({ answered, sent, bytesOut }) => {
+            if (!answered && sent) charge({}, bytesOut, { failures: 1 })
+            else ctx.usage(record, job, { failures: 1 })
+          },
+        })
+      } catch (error) {
         if (error?.code === 'aborted') throw job.abortError ?? aiRefusal('ai_paused')
         throw error
       }
       if (answer.code) {
-        ctx.usage(record, job, { failures: 1 })
         if (AI_ERROR_EFFECTS[answer.code]) ctx.pause(record, answer.code, { provider: entry.provider, feature })
         throw aiRefusal(answer.code)
       }
-      // 11. Every 200 answer is charged by its usage, a record or not (the counts go to Go below).
+      // 11. Every 200 answer is charged by its usage, a record or not (the counts go to Go).
       const read = interpret(entry.provider, answer.route, answer.json)
-      const counts = measure(feature, read.usage, { bodyBytes: answer.bytesOut, plaintextBytes: plaintext.length, claimedSeconds: claimedSeconds(row) })
-      const cost = costOf(record.budget.rates[`${entry.provider}:${entry.model}`], counts)
-      ctx.budgets.charge(record.connection_id, cost)
-      ctx.usage(record, job, { items: 1, ...counts, cost_microcents: cost })
+      const counts = charge(read.usage, answer.bytesOut, { items: 1 })
       if (read.code) throw aiRefusal(read.code)
-      // 10. The record, sealed and stored.
+      // 10. The record, sealed and stored, with the counts its usage row reports.
       const made = makeRecord({
         feature, text: read.text, lang, provider: entry.provider, model: entry.model, prompt_version: version, created_at: new Date(ctx.now()).toISOString(),
         source_sha256, usage: { input_tokens: counts.input_tokens, output_tokens: counts.output_tokens, ...(feature === 'audio' || feature === 'video' ? { seconds: counts.seconds } : {}) },
@@ -415,25 +457,33 @@ async function findReusable(ctx, record, job, keys, tagInput) {
 /**
  * Step 10: the record sealed for this message under the job's number's key
  * and PUT to Go with its dedupe tag. A 409 `derived_exists` (another
- * authorization stored one first) answers with that record instead; a 409
- * `storage_paused`, or any other failure, answers the caller unstored and
- * logs `ai_store_failed`.
+ * authorization stored one first) answers with that record instead; when
+ * what is stored opens under no key this number's grant holds now (a record
+ * of an older epoch, §18.8, which no current grant reads), it is replaced
+ * (`redo: true`). A 409 `storage_paused`, or any other failure, answers the
+ * caller unstored and logs `ai_store_failed`.
  */
 async function store(ctx, record, job, row, keys, scope, made, tagInput) {
   const key = derivedKey(keys.dsk, scope)
   try {
     const sealed = sealDerivedWith(key, { ...scope, message_uid: row.uid, feature: job.feature }, made)
     const tag = dedupeTag(keys.dsk, scope, tagInput)
-    let answer
-    try {
-      answer = await ctx.relay.ai(record.connection_id, record.api_key, 'PUT', `ai/derived/${encodeURIComponent(row.uid)}/${job.feature}`, {
-        body: { device_id: job.device_id, epoch: keys.epoch, sealed: sealed.toString('base64url'), dedupe_tag: tag.toString('base64url'), redo: job.redo === true },
-      })
-    } catch { answer = null }
+    const put = async redo => {
+      try {
+        return await ctx.relay.ai(record.connection_id, record.api_key, 'PUT', `ai/derived/${encodeURIComponent(row.uid)}/${job.feature}`, {
+          body: { device_id: job.device_id, epoch: keys.epoch, sealed: sealed.toString('base64url'), dedupe_tag: tag.toString('base64url'), redo },
+        })
+      } catch { return null }
+    }
+    let answer = await put(job.redo === true)
     if (answer?.status === 204) return { record: made, stored: true }
     if (answer?.status === 409 && answer.data?.code === 'derived_exists') {
-      const stored = await ctx.readStored(record, job.device_id, row.uid, job.feature, keys)
-      if (stored) return { record: stored, stored: true }
+      const stored = await ctx.storedOf(record, job.device_id, row.uid, job.feature, keys)
+      if (stored.record) return { record: stored.record, stored: true }
+      if (stored.read) {
+        answer = await put(true)
+        if (answer?.status === 204) return { record: made, stored: true }
+      }
     }
     ctx.log.event('ai_store_failed', { conn: fingerprint(record.connection_id) })
     return { record: made, unstored: answer?.data?.code === 'storage_paused' ? 'storage_paused' : 'read_failed' }

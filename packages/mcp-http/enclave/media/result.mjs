@@ -68,7 +68,7 @@ export function pending(uid, mediaType, retryAfterS, openURL, ai = false) {
  * reader's notes. `record` is an opened derived record.
  */
 export function transcript(row, record, request, openURL) {
-  const part = charPart(record.text, request.cursor)
+  const part = charPart(record.feature === 'video' ? videoText(record.text) : record.text, request.cursor)
   const seconds = typeof row.media.seconds === 'number' && Number.isFinite(row.media.seconds) && row.media.seconds >= 0 ? row.media.seconds : undefined
   const derived = { feature: record.feature, provider: record.provider, model: record.model, created_at: record.created_at,
     ...(record.lang ? { lang: record.lang } : {}), ...(record.flags.length ? { flags: [...record.flags] } : {}) }
@@ -77,6 +77,33 @@ export function transcript(row, record, request, openURL) {
     seconds_claimed: seconds, derived, part: part.part, next_cursor: part.next, status: part.next ? 'partial' : 'complete', open_url: openURL ?? undefined,
   })
   return { header, body: part.body, images: [], ai: true }
+}
+
+/** A line that opens a video answer's section (prompt video/2): its marker, as ai/policy.mjs VIDEO_SECTIONS has it, maybe bold or a heading. */
+const SECTION_LINE = /^[ \t*#_]*\[(TRANSCRIPT|SHOWN)\][ \t*_:]*/
+/**
+ * A video answer's two sections (§18.20): `{speech, shown}`, the text after
+ * a first line marked `[TRANSCRIPT]` and after the next line marked
+ * `[SHOWN]` (null when the answer was cut before it); null when the text is
+ * not in that form (a model that wrote something else, or a video/1 record),
+ * which is then shown as it was written.
+ */
+export function videoSections(text) {
+  const lines = text.trim().split('\n')
+  const first = SECTION_LINE.exec(lines[0] ?? '')
+  if (!first || first[1] !== 'TRANSCRIPT') return null
+  const at = lines.findIndex((line, index) => index > 0 && SECTION_LINE.exec(line)?.[1] === 'SHOWN')
+  const speech = [lines[0].slice(first[0].length), ...lines.slice(1, at < 0 ? undefined : at)].join('\n').trim()
+  if (at < 0) return { speech, shown: null }
+  const marker = SECTION_LINE.exec(lines[at])
+  return { speech, shown: [lines[at].slice(marker[0].length), ...lines.slice(at + 1)].join('\n').trim() }
+}
+/** A video answer as a connection reads it: its sections under the headings "Speech:" and "On screen:", else as written. */
+export function videoText(text) {
+  const sections = videoSections(text)
+  if (!sections) return text
+  const speech = `Speech:\n${sections.speech || '(none)'}`
+  return sections.shown === null ? speech : `${speech}\n\nOn screen:\n${sections.shown}`
 }
 
 /**

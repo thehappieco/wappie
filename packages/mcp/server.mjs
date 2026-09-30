@@ -108,7 +108,10 @@ function attachmentGuidance(code, error) {
       ? 'AI transcription on this number is paused since the reader was updated or restarted, until the user renews it with their password. Give the user renew_url exactly as returned; do not retry.'
       : 'AI transcription on this number is paused until its owner renews or resumes it in the Wappie console, under AI integrations. Tell the user; do not retry.'
     case 'ai_output_limit': return 'The AI model used its whole output limit before it answered, which a reasoning model can do. Tell the user they can redo it or pick another model in the Wappie console, under AI integrations; do not retry.'
-    case 'ai_budget_reached': return 'The spending limit of the AI integration for this number is reached. Tell the user; do not retry.'
+    case 'ai_budget_reached':
+      if (error?.limit === 'month') return 'The AI integration for this number reached its monthly spending limit, which starts again on the 1st (UTC). Tell the user; do not retry before then.'
+      if (error?.limit === 'day') return 'The AI integration for this number reached its attachments for today, which start again at 00:00 UTC. Tell the user; do not retry before then.'
+      return 'The AI integration for this number reached its limit: its monthly spending (starts again on the 1st, UTC) or its attachments for today (starts again at 00:00 UTC). Tell the user; do not retry before then.'
     case 'ai_key_rejected': return 'The AI provider rejected the key the user gave it. Tell the user to replace the key in the Wappie console, under AI integrations; do not retry.'
     case 'ai_model_unavailable': return 'The AI model chosen for this is no longer available with the user\'s key. Tell the user to pick another model in the Wappie console, under AI integrations; do not retry.'
     case 'ai_quota': return 'The user\'s account at the AI provider has no quota or credit left. Tell the user; do not retry.'
