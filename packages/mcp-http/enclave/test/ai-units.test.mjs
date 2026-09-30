@@ -143,7 +143,9 @@ test('the egress: an answer over 2 MiB or with a content encoding fails, a timeo
   reply = () => Promise.reject(new TypeError('fetch failed'))
   await assert.rejects(egress.request('openai', keys.openai, request), { code: 'network' })
   reply = init => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError'))))
-  await assert.rejects(egress.request('openai', keys.openai, { ...request, timeoutMs: 20 }), { code: 'timeout' })
+  // AbortSignal.timeout's timer does not hold the event loop open (Node 22): something else must, as the reader's listeners do.
+  const alive = setInterval(() => {}, 1000)
+  try { await assert.rejects(egress.request('openai', keys.openai, { ...request, timeoutMs: 20 }), { code: 'timeout' }) } finally { clearInterval(alive) }
   const controller = new AbortController()
   setTimeout(() => controller.abort(), 10)
   await assert.rejects(egress.request('openai', keys.openai, { ...request, signal: controller.signal }), { code: 'aborted' })
