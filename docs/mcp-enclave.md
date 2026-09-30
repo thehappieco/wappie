@@ -6343,11 +6343,11 @@ prompts and never written. Models used: `gemini-3.8-flash`,
 
 ### 18.20 Recorded during B1
 
-What the client, reader and enclave settled where the sections above left
-it open, or changed after the build; each binds the console and the GO
-track as the rest of §18 does. The console's texts (the AI area, the card,
-the buttons, results and errors in five locales) are CONSOLE's, in the
-private repository, and not part of this track.
+What the client, reader, enclave and Go settled where the sections above
+left it open, or changed after the build; each binds the other tracks and
+the console as the rest of §18 does. The console's texts (the AI area, the
+card, the buttons, results and errors in five locales) are CONSOLE's, in
+the private repository, drafts for the owner.
 
 - **Where it lives.** `packages/client/src/crypto/derived.ts` opens records
   (`openDerived`, `sealDerived` for tests and symmetry, `validateDerivedRecord`)
@@ -6478,6 +6478,78 @@ private repository, and not part of this track.
   the connector's answers, a video, a revocation mid-call, `derived_exists`,
   `storage_paused`, `ai_busy`, a renewal and a restart), against the fake Go
   and the provider stubs of `ai-stubs.mjs`.
+
+**Go** (GO's build, merged into the core on 2026-09-30):
+
+- **Where it lives.** `internal/config/ai.go` (the switches);
+  `internal/migrate/sql/0045_mcp_ai.sql`; `internal/store/{ai,ai_connections,
+  ai_keychain,ai_derived,ai_usage}.go`; in `internal/mcpauth`, `ai.go` (the
+  consent of kind `ai` on `POST /v1/mcp/connections`, the renewal, the
+  status and the media gate), `ai_enclave.go` (the enclave's routes to Go)
+  and `ai_relay.go` (Go's relays to the enclave), since they share
+  mcpauth's signed guard, request cache and relays; the console's
+  `/v1/ai/*` routes in `internal/aiapi`. The relay bodies and the enclave
+  routes' answers Go pins are `packages/mcp-http/enclave/test/go-b1-shapes.json`,
+  beside S0's, which Go's shapes test and `go-b1-shapes.test.mjs` (through
+  the enclave's own parsers) both read.
+- **The pick** is `(*store.MCPConnections).PickAIAuthorization(ctx, tenant,
+  requester, device, feature, origin, policy)`: `store.AIPolicy` carries
+  `AIAllowed` and the off lists, which the store cannot see.
+- **Configuration.** `WS_AI_ENABLED` on with `WS_MCP_MEDIA_ENABLED` off is
+  an error only while content is on: with content off nothing of the AI
+  block is inspected, and with the AI switch off neither list is.
+- **Off functions and providers.** An `ai_config` naming a function or a
+  provider that is switched off (`WS_AI_OFF_*`) is 400 `bad_request`, at
+  consent and at renewal, as part of §18.7 step 5's checks.
+- **Narrower checks** than §18.7 lists: `ai_config`'s `request`, `kid`,
+  `service_user_id` and `expires_at` (to the second) must match the
+  consent's body, and at renewal the renewal's id, its kid, the new service
+  account and the authorization's expiry; `PUT …/ai/derived` also checks
+  the WDRV header's version and epoch, and that the function is one the
+  authorization has on that number; `POST …/ai/usage` takes only the
+  origins `console` and `connector` (`auto` is B2's), needs the provider to
+  be that function's, and bounds each count. `ai_config`'s `ns` and
+  `epochs` are not compared with the numbers' namespace and epoch: the
+  enclave's tags decide.
+- **Answers.** The 201 of an AI consent is the authorization as `GET
+  /v1/ai/authorizations` lists it. `ai_alerts` is kept as a JSON object keyed
+  `code|provider|feature` (the latest time kept) and listed as a sorted
+  array of `{code, feature?, provider?, at}`. `POST /v1/ai/process` maps the
+  enclave's answers: its 404 (the record is not held) or 409 `ai_paused` →
+  409 `ai_paused` with `authorization_id`; 409 `ai_budget_reached` → 409;
+  429 `ai_busy` → 429 with `retry_after_s` and `Retry-After`; anything else
+  → 502. `GET /v1/ai/jobs/{job}` also checks that `authorization_id` names
+  one of the workspace's `ai` rows, and relays with the session's user as
+  `requester_id`. `POST /v1/ai/derived/delete` answers 404 for an
+  authorization the workspace does not have. `GET …/ai/derived?feature=&tags=`
+  answers at most one stored record per number (the newest): one is
+  enough for reuse, and it bounds the answer to 25 records.
+- **Encodings.** The keychain routes take and list `envelope` in unpadded
+  base64url (strictly), as the derived routes do `sealed` and `dedupe_tag`.
+- **Which switches a route needs.** Usage increments and alerts from the
+  enclave are taken for any live `ai` row, whatever the switches say;
+  reading and writing stored results needs the row `active` and
+  `AIAllowed`.
+- **Retention.** A usage row is deleted once its day is 400 days old
+  (`day <= today - 400`, UTC); a deleted keychain item after 30 days.
+- **The console document's CSP.** While discovery lists `mcp.remote.ai.v1`,
+  the console document's `connect-src` adds `https://api.anthropic.com`,
+  `https://api.openai.com` and `https://generativelanguage.googleapis.com`,
+  so the browser can list a key's models (§18.7 step 2); with AI off the
+  policy is as before, and the session bridge and assets keep their own.
+- **The 30 s wait** of the AI bundle and renewal relays is the relay's own
+  client timeout; a proxy on the way to the enclave's internal listener must
+  allow it too (deployment).
+- **Not built in B1**, as §18.7 says: `POST /v1/ai/requests/{id}/models`
+  is not mounted.
+- **Where §18.17's GO tests are** (those on the database run as an
+  ordinary `NOSUPERUSER NOBYPASSRLS` role): `internal/config/ai_test.go`,
+  `internal/store/ai_test.go` and `ai_migration_test.go` (0045 down and up
+  again, and 0044 to 0041's down-steps with 0045's first),
+  `internal/mcpauth/ai_test.go` and
+  `ai_shapes_test.go`, `internal/aiapi/aiapi_test.go`,
+  `internal/media/gate_test.go`, `cmd/whatserverd/discovery_test.go` and
+  `internal/webui/webui_test.go` (the CSP).
 
 ### Amendments to §§1 to 16
 
