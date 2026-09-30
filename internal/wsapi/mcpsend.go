@@ -156,15 +156,15 @@ var (
 // quote or chosen id. The message is archived as any outbound one; a failure
 // to archive leaves TextSent.UID nil, and the message has left all the same.
 // An error that is not ErrNotSent is a send that may or may not have left.
-func (srv *Server) SendText(ctx context.Context, in Text) (TextSent, error) {
-	if srv.cfg.Storage != nil {
-		if err := srv.cfg.Storage.Check(ctx, in.Tenant); errors.Is(err, store.ErrStoragePaused) {
+func (s *Server) SendText(ctx context.Context, in Text) (TextSent, error) {
+	if s.cfg.Storage != nil {
+		if err := s.cfg.Storage.Check(ctx, in.Tenant); errors.Is(err, store.ErrStoragePaused) {
 			return TextSent{}, ErrCapturePaused
 		} else if err != nil {
 			return TextSent{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 		}
 	}
-	dev, running := srv.device(in.Device.String())
+	dev, running := s.device(in.Device.String())
 	if !running {
 		return TextSent{}, ErrDeviceOffline
 	}
@@ -173,12 +173,12 @@ func (srv *Server) SendText(ctx context.Context, in Text) (TextSent, error) {
 		return TextSent{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
 	t := sendTarget{tenant: in.Tenant, device: dev, deviceID: in.Device, chat: chat}
-	sent, err := srv.sendText(ctx, srv.log, t, in.Body, send.Options{}, "")
+	sent, err := s.sendText(ctx, s.log, t, in.Body, send.Options{}, "")
 	if err != nil {
 		return TextSent{}, err
 	}
 	out := TextSent{WAID: sent.ID, Timestamp: sent.Timestamp}
-	if uid, err := uuid.Parse(srv.archiveSent(ctx, srv.log, t, sent).UID); err == nil {
+	if uid, err := uuid.Parse(s.archiveSent(ctx, s.log, t, sent).UID); err == nil {
 		out.UID = &uid
 	}
 	return out, nil

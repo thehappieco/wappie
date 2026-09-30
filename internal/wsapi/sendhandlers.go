@@ -75,10 +75,10 @@ func (s *session) archive(ctx context.Context, t sendTarget, sent send.Sent, f F
 // archiveSent stores an outbound message through the router, as inbound is
 // stored, and says what it became. A failure is logged and leaves the uid
 // empty: the message left all the same.
-func (srv *Server) archiveSent(ctx context.Context, log *slog.Logger, t sendTarget, sent send.Sent) SendResult {
+func (s *Server) archiveSent(ctx context.Context, log *slog.Logger, t sendTarget, sent send.Sent) SendResult {
 	result := SendResult{ID: sent.ID, Timestamp: sent.Timestamp}
-	if srv.cfg.Router != nil {
-		res, err := srv.cfg.Router.IngestOutbound(ctx, t.tenant, t.device.ID(), sent.Envelope)
+	if s.cfg.Router != nil {
+		res, err := s.cfg.Router.IngestOutbound(ctx, t.tenant, t.device.ID(), sent.Envelope)
 		if err != nil {
 			log.Error("a message was sent but could not be archived",
 				"message", sent.ID, "error", err)
@@ -92,8 +92,8 @@ func (srv *Server) archiveSent(ctx context.Context, log *slog.Logger, t sendTarg
 // sendText is the text send every path shares: the frame's, a person's
 // confirmation of a draft, and an assistant connection's own-chat note. The
 // chat's disappearing timer is applied here, so none of them can forget it.
-func (srv *Server) sendText(ctx context.Context, log *slog.Logger, t sendTarget, body string, opts send.Options, id string) (send.Sent, error) {
-	srv.applyChatTimer(ctx, log, t, &opts)
+func (s *Server) sendText(ctx context.Context, log *slog.Logger, t sendTarget, body string, opts send.Options, id string) (send.Sent, error) {
+	s.applyChatTimer(ctx, log, t, &opts)
 	return send.SendText(ctx, t.device.Client(), send.Request{Chat: t.chat, Body: body, Opts: opts, ID: id})
 }
 
@@ -305,9 +305,9 @@ func (s *session) applyChatTimer(ctx context.Context, t sendTarget, opts *send.O
 	s.srv.applyChatTimer(ctx, s.log, t, opts)
 }
 
-func (srv *Server) applyChatTimer(ctx context.Context, log *slog.Logger, t sendTarget, opts *send.Options) {
+func (s *Server) applyChatTimer(ctx context.Context, log *slog.Logger, t sendTarget, opts *send.Options) {
 	if opts.Expiration == 0 {
-		seconds, err := srv.cfg.Messages.ChatTimer(ctx, t.tenant, t.deviceID, t.chat.String())
+		seconds, err := s.cfg.Messages.ChatTimer(ctx, t.tenant, t.deviceID, t.chat.String())
 		if err != nil {
 			// The device, never the chat: every send path comes through
 			// here, an assistant's own-chat note included, whose log never
