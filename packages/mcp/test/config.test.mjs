@@ -93,6 +93,19 @@ test('attachments (media) are the attested reader\'s only: off by default, and r
   }
   assert.throws(() => validateConfig({ ...enclave, media: 'true' }), { code: 'invalid_config' })
 })
+test('sending (docs/mcp-enclave.md §17.8) is the attested reader\'s only: off by default, the own chat only with drafts', () => {
+  assert.deepEqual([validateConfig(enclave).send, validateConfig(enclave).send_self], [null, false])
+  assert.deepEqual([validateConfig({ ...enclave, send: 'draft' }).send, validateConfig({ ...enclave, send: 'draft', send_self: true }).send_self], ['draft', true])
+  assert.equal(validateConfig({ ...enclave, send: 'direct' }).send, 'direct')
+  assert.throws(() => validateConfig({ ...enclave, send_self: true }), { code: 'invalid_config' })
+  for (const bad of [{ send: 'none' }, { send: true }, { send_self: 'true' }]) assert.throws(() => validateConfig({ ...enclave, ...bad }), { code: 'invalid_config' }, JSON.stringify(bad))
+  for (const config of [base, service, provided]) {
+    assert.deepEqual([validateConfig(config, '/private').send, validateConfig(config, '/private').send_self], [null, false])
+    for (const extra of [{ send: 'draft' }, { send: 'draft', send_self: true }]) {
+      assert.throws(() => validateConfig({ ...config, ...extra }, '/private'), { code: 'enclave_credentials_invalid' }, config.credential_source ?? 'files')
+    }
+  }
+})
 test('readerMode names the three readers and nothing else', () => {
   assert.equal(readerMode(validateConfig(base)), 'local')
   assert.equal(readerMode(validateConfig(service)), 'local')

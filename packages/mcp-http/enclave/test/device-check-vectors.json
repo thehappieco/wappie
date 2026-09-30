@@ -1,0 +1,75 @@
+{
+  "_comment": "The device check of docs/mcp-enclave.md section 17.2 rule 3, over fixture DSKs (32 raw bytes, base64url; fixture material that opens nothing). bundle holds the fields the scope reads; scope_jcs is the RFC 8785 text whose SHA-256 is signed; check is device_checks[device_id]. Computed with WebCrypto by an independent generator; packages/mcp (bundle.mjs deviceCheck), the enclave and the console must all reproduce them.",
+  "vectors": [
+    {
+      "name": "drafts only, a consent, the number's own namespace",
+      "bundle": {
+        "workspace_id": "01a08e0e-c546-7db3-9c44-e6352636d330",
+        "service_user_id": "0199b3c4-0000-7000-8000-00000000c0de",
+        "device_ids": [
+          "0199b3c4-9999-7444-8555-666677778888",
+          "0199b3c4-3333-7444-8555-666677778888"
+        ],
+        "expires_at": "2026-10-28T12:00:00.000Z",
+        "consent_version": 3,
+        "send": "draft"
+      },
+      "device_id": "0199b3c4-3333-7444-8555-666677778888",
+      "epoch": 1,
+      "namespace": "01a08e0e-c546-7db3-9c44-e6352636d330",
+      "request": "AAECAwQFBgcICQoLDA0ODw",
+      "kid": "fedcba9876543210",
+      "dsk": "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
+      "scope_jcs": "{\"consent_version\":3,\"device_id\":\"0199b3c4-3333-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\",\"0199b3c4-9999-7444-8555-666677778888\"],\"epoch\":1,\"expires_at\":\"2026-10-28T12:00:00.000Z\",\"kid\":\"fedcba9876543210\",\"media\":false,\"request\":\"AAECAwQFBgcICQoLDA0ODw\",\"send\":\"draft\",\"send_chats\":[],\"send_groups\":false,\"send_self\":false,\"send_signature\":null,\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000c0de\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
+      "check": "xJ2GQtlH-FvP-5iUdrGxAmyaM1xHhh2wI1XRT4TOSw0"
+    },
+    {
+      "name": "drafts, own chat, groups and attachments, under an archive tenant",
+      "bundle": {
+        "workspace_id": "01a08e0e-c546-7db3-9c44-e6352636d330",
+        "service_user_id": "0199b3c4-0000-7000-8000-00000000c0de",
+        "device_ids": [
+          "0199b3c4-9999-7444-8555-666677778888",
+          "0199b3c4-3333-7444-8555-666677778888"
+        ],
+        "expires_at": "2026-10-28T12:00:00.000Z",
+        "consent_version": 3,
+        "send": "draft",
+        "send_self": true,
+        "send_groups": true,
+        "media": true
+      },
+      "device_id": "0199b3c4-9999-7444-8555-666677778888",
+      "epoch": 7,
+      "namespace": "0199b3c4-aaaa-7bbb-8ccc-ddddeeeeffff",
+      "request": "AAECAwQFBgcICQoLDA0ODw",
+      "kid": "fedcba9876543210",
+      "dsk": "__z59vPw7ern5OHe29jV0s_MycbDwL26t7SxrquopaI",
+      "scope_jcs": "{\"consent_version\":3,\"device_id\":\"0199b3c4-9999-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\",\"0199b3c4-9999-7444-8555-666677778888\"],\"epoch\":7,\"expires_at\":\"2026-10-28T12:00:00.000Z\",\"kid\":\"fedcba9876543210\",\"media\":true,\"request\":\"AAECAwQFBgcICQoLDA0ODw\",\"send\":\"draft\",\"send_chats\":[],\"send_groups\":true,\"send_self\":true,\"send_signature\":null,\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000c0de\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
+      "check": "6Jee83m7jhViuCSfN72WwlUiG59nkvL5QtnP5L9dhsY"
+    },
+    {
+      "name": "a renewal: the request is the renewal id",
+      "bundle": {
+        "workspace_id": "01a08e0e-c546-7db3-9c44-e6352636d330",
+        "service_user_id": "0199b3c4-0000-7000-8000-00000000c0de",
+        "device_ids": [
+          "0199b3c4-9999-7444-8555-666677778888",
+          "0199b3c4-3333-7444-8555-666677778888"
+        ],
+        "expires_at": "2026-10-28T12:00:00.000Z",
+        "consent_version": 3,
+        "send": "draft",
+        "send_self": true
+      },
+      "device_id": "0199b3c4-3333-7444-8555-666677778888",
+      "epoch": 2,
+      "namespace": "01a08e0e-c546-7db3-9c44-e6352636d330",
+      "request": "ZZZZZZZZZZZZZZZZZZZZZw",
+      "kid": "0123456789abcdef",
+      "dsk": "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
+      "scope_jcs": "{\"consent_version\":3,\"device_id\":\"0199b3c4-3333-7444-8555-666677778888\",\"device_ids\":[\"0199b3c4-3333-7444-8555-666677778888\",\"0199b3c4-9999-7444-8555-666677778888\"],\"epoch\":2,\"expires_at\":\"2026-10-28T12:00:00.000Z\",\"kid\":\"0123456789abcdef\",\"media\":false,\"request\":\"ZZZZZZZZZZZZZZZZZZZZZw\",\"send\":\"draft\",\"send_chats\":[],\"send_groups\":false,\"send_self\":true,\"send_signature\":null,\"service_user_id\":\"0199b3c4-0000-7000-8000-00000000c0de\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
+      "check": "zi7to24IRS4c1hHYccB8fL8ojakJK1DFR09Jj35maf0"
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { bundleSchema, contentBundleSchema, validateBundle, validateContentBundle, CONTENT_CONSENT_VERSIONS } from '../bundle.mjs'
+import { readFile } from 'node:fs/promises'
+import { canonicalJSON } from '@whatserver2/client/crypto/jcs'
+import { bundleSchema, contentBundleSchema, deviceCheck, deviceScope, validateBundle, validateContentBundle, CONTENT_CONSENT_VERSIONS, SEND_MODES } from '../bundle.mjs'
 
 const workspace = '018f3a2b-2222-7000-8000-00000000bbbb'
 const device = '018f3a2b-2222-7000-8000-00000000dddd'
@@ -35,7 +37,7 @@ const consent = () => ({ version: 2, kind: 'content', purpose: 'consent', server
 const renewal = () => { const value = { ...consent(), purpose: 'renewal', connection_id: connection }; delete value.link_secret; return value }
 
 test('content bundle v2 accepts a consent and a renewal and returns them frozen', () => {
-  assert.deepEqual(CONTENT_CONSENT_VERSIONS, [1, 2])
+  assert.deepEqual(CONTENT_CONSENT_VERSIONS, [1, 2, 3])
   const accepted = validateContentBundle(consent(), now)
   assert.ok(Object.isFrozen(accepted) && Object.isFrozen(accepted.device_ids))
   assert.equal(accepted.link_secret, linkSecret)
@@ -61,7 +63,7 @@ test('content bundle v2 never carries a service key, contacts or a plaintext fla
   const many = Array.from({ length: 101 }, (_, index) => `018f3a2b-2222-7000-8000-${String(index).padStart(12, '0')}`)
   for (const [label, override] of Object.entries({
     v1: { version: 1 }, v3: { version: 3 }, metadata: { kind: 'metadata' }, purpose: { purpose: 'upgrade' },
-    persisted: { key_mode: 'persisted' }, consent_version: { consent_version: 3 }, consent_zero: { consent_version: 0 }, consent_string: { consent_version: '1' },
+    persisted: { key_mode: 'persisted' }, consent_v3_without_send: { consent_version: 3 }, consent_v4: { consent_version: 4 }, consent_zero: { consent_version: 0 }, consent_string: { consent_version: '1' },
     media_v1: { media: true }, media_string: { consent_version: 2, media: 'true' }, media_null: { consent_version: 2, media: null },
     http: { server_url: 'http://mcp.wappie.thehappie.co' }, localhost: { server_url: 'http://localhost:8080' }, path: { server_url: 'https://mcp.wappie.thehappie.co/mcp' },
     slash: { server_url: 'https://mcp.wappie.thehappie.co/' }, userinfo: { server_url: 'https://user@mcp.wappie.thehappie.co' },
@@ -89,7 +91,7 @@ test('v1 and v2 never accept each other: no v1 path can open a content bundle', 
   assert.throws(() => validateContentBundle({ ...bundle(), link_secret: linkSecret }, now), { code: 'invalid_bundle' })
 })
 
-test('consent version 2 (docs/mcp-enclave.md §16.2): with or without media, and media only on version 2', () => {
+test('consent version 2 (docs/mcp-enclave.md §16.2): with or without media, and media never on version 1', () => {
   const text = validateContentBundle({ ...consent(), consent_version: 2 }, now)
   assert.equal(text.consent_version, 2)
   assert.equal(text.media, undefined, 'absent means a text connection')
@@ -102,4 +104,90 @@ test('consent version 2 (docs/mcp-enclave.md §16.2): with or without media, and
     assert.throws(() => validateContentBundle({ ...consent(), ...bad }, now), { code: 'invalid_bundle' }, JSON.stringify(bad))
     assert.equal(contentBundleSchema.safeParse({ ...consent(), ...bad }).success, false)
   }
+})
+
+// ---- Consent version 3: sending (docs/mcp-enclave.md §17.2) ----------------------------
+
+const check = Buffer.alloc(32, 5).toString('base64url')
+const sending = (fields = {}) => ({ ...consent(), consent_version: 3, send: 'draft', device_checks: { [device]: check }, ...fields })
+
+test('consent version 3 carries drafts, and may add the own chat, groups and attachments', () => {
+  assert.deepEqual(SEND_MODES, ['draft'])
+  const drafts = validateContentBundle(sending(), now)
+  assert.deepEqual([drafts.consent_version, drafts.send, drafts.send_self, drafts.send_groups, drafts.media], [3, 'draft', undefined, undefined, undefined])
+  assert.ok(Object.isFrozen(drafts.device_checks))
+  assert.deepEqual(drafts.device_checks, { [device]: check })
+  const all = validateContentBundle(sending({ send_self: true, send_groups: true, media: true }), now)
+  assert.deepEqual([all.send_self, all.send_groups, all.media], [true, true, true])
+  assert.equal(validateContentBundle(sending({ send_self: false, send_groups: false }), now).send_self, false)
+  assert.equal(validateContentBundle({ ...renewal(), consent_version: 3, send: 'draft', send_self: true, device_checks: { [device]: check } }, now).send_self, true, 'a renewal seals the send fields again')
+  const two = '018f3a2b-2222-7000-8000-0000000000d2'
+  assert.ok(validateContentBundle(sending({ device_ids: [device, two], device_checks: { [two]: check, [device]: Buffer.alloc(32, 6).toString('base64url') } }), now))
+})
+
+test('the version 3 matrix: sending and its checks come with version 3 and only with it, and 0.5.0 refuses direct send', () => {
+  const invalid = (value, label) => assert.throws(() => validateContentBundle(value, now), error => error.code === 'invalid_bundle', label)
+  const two = '018f3a2b-2222-7000-8000-0000000000d2'
+  for (const [label, value] of Object.entries({
+    v3_without_send: { ...sending(), send: undefined },
+    v3_without_checks: { ...sending(), device_checks: undefined },
+    v3_with_neither: { ...sending(), send: undefined, device_checks: undefined },
+    send_on_v2: sending({ consent_version: 2 }), send_on_v1: sending({ consent_version: 1 }),
+    checks_on_v2: { ...consent(), consent_version: 2, device_checks: { [device]: check } },
+    send_self_without_send: { ...consent(), consent_version: 2, send_self: true },
+    send_groups_without_send: { ...consent(), send_groups: false },
+    send_self_on_v3_without_send: { ...sending(), send: undefined, send_self: true },
+    direct: sending({ send: 'direct' }), none: sending({ send: 'none' }), send_true: sending({ send: true }),
+    send_chats: sending({ send_chats: [{ device_id: device, chat_key: '5511999990000@s.whatsapp.net' }] }),
+    send_chats_empty: sending({ send_chats: [] }),
+    send_signature: sending({ send_signature: '— enviado pelo assistente de Ana' }),
+    send_self_string: sending({ send_self: 'true' }), send_groups_null: sending({ send_groups: null }),
+    check_missing: sending({ device_ids: [device, two] }),
+    check_extra: sending({ device_checks: { [device]: check, [two]: check } }),
+    check_other_number: sending({ device_checks: { [two]: check } }),
+    check_upper_key: sending({ device_checks: { [device.toUpperCase()]: check } }),
+    check_short: sending({ device_checks: { [device]: check.slice(1) } }),
+    check_long: sending({ device_checks: { [device]: check + 'A' } }),
+    check_noncanonical: sending({ device_checks: { [device]: check.slice(0, 42) + 'B' } }),
+    check_padded: sending({ device_checks: { [device]: Buffer.alloc(32, 5).toString('base64') } }),
+    check_not_string: sending({ device_checks: { [device]: 7 } }),
+    checks_array: sending({ device_checks: [check] }),
+  })) invalid(value, label)
+})
+
+const vectors = JSON.parse(await readFile(new URL('../../mcp-http/enclave/test/device-check-vectors.json', import.meta.url), 'utf8')).vectors
+
+test('the device check reproduces the shared vectors, scope and HMAC (§17.2 rule 3)', () => {
+  assert.ok(vectors.length >= 3)
+  for (const v of vectors) {
+    const scope = deviceScope(v.bundle, { deviceID: v.device_id, epoch: v.epoch, request: v.request, kid: v.kid })
+    assert.equal(canonicalJSON(scope), v.scope_jcs, v.name)
+    const dsk = Buffer.from(v.dsk, 'base64url')
+    assert.equal(deviceCheck(dsk, { namespace: v.namespace, deviceID: v.device_id, epoch: v.epoch, scope }), v.check, v.name)
+    assert.deepEqual([...dsk], [...Buffer.from(v.dsk, 'base64url')], 'the DSK is the caller\'s and is left as it was')
+  }
+})
+
+test('the device check changes with every field of the scope, the key, the namespace and the epoch', () => {
+  const v = vectors[0]
+  const dsk = Buffer.from(v.dsk, 'base64url')
+  const at = { deviceID: v.device_id, epoch: v.epoch, request: v.request, kid: v.kid }
+  const of = (bundle, where = at, { namespace = v.namespace, key = dsk } = {}) => deviceCheck(key, { namespace, deviceID: where.deviceID, epoch: where.epoch, scope: deviceScope(bundle, where) })
+  assert.equal(of(v.bundle), v.check)
+  const changed = {
+    expiry: of({ ...v.bundle, expires_at: '2026-10-28T12:00:01.000Z' }), media: of({ ...v.bundle, media: true }),
+    devices: of({ ...v.bundle, device_ids: [v.device_id] }), self: of({ ...v.bundle, send_self: true }), groups: of({ ...v.bundle, send_groups: true }),
+    service: of({ ...v.bundle, service_user_id: '0199b3c4-0000-7000-8000-00000000beef' }), workspace: of({ ...v.bundle, workspace_id: '0199b3c4-0000-7000-8000-00000000f00d' }),
+    request: of(v.bundle, { ...at, request: 'BBECAwQFBgcICQoLDA0ODw' }), kid: of(v.bundle, { ...at, kid: '0000000000000000' }),
+    epoch: of(v.bundle, { ...at, epoch: v.epoch + 1 }), namespace: of(v.bundle, at, { namespace: '0199b3c4-aaaa-7bbb-8ccc-ddddeeeeffff' }),
+    key: of(v.bundle, at, { key: Buffer.alloc(32, 1) }),
+    direct_fields: of({ ...v.bundle, send_chats: [{ device_id: v.device_id, chat_key: 'x@s.whatsapp.net' }] }),
+    signature: of({ ...v.bundle, send_signature: 'x' }),
+  }
+  for (const [label, value] of Object.entries(changed)) assert.notEqual(value, v.check, label)
+  assert.equal(new Set(Object.values(changed)).size, Object.keys(changed).length)
+  // Another number's chats are not this number's scope.
+  assert.equal(of({ ...v.bundle, send_chats: [{ device_id: '0199b3c4-0000-7000-8000-000000000001', chat_key: 'x@s.whatsapp.net' }] }), v.check)
+  for (const bad of [Buffer.alloc(31), 'x'.repeat(32), null]) assert.throws(() => deviceCheck(bad, { namespace: v.namespace, deviceID: v.device_id, epoch: v.epoch, scope: deviceScope(v.bundle, at) }), { code: 'invalid_bundle' })
+  for (const epoch of [0, 65536, 1.5]) assert.throws(() => deviceCheck(dsk, { namespace: v.namespace, deviceID: v.device_id, epoch, scope: deviceScope(v.bundle, at) }), { code: 'invalid_bundle' })
 })
