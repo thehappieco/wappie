@@ -179,8 +179,13 @@ export function deviceScope(bundle, { deviceID, epoch, request, kid }) {
  * caller owns and zeroes; the derived key is zeroed here.
  */
 export function deviceCheck(dsk, { namespace, deviceID, epoch, scope }) {
+  return scopeTag(DEVICE_CHECK_LABEL, dsk, { namespace, deviceID, epoch, scope })
+}
+
+/** A tag of one number's scope under `label` (the device check's construction, §17.2 rule 3, and the AI configuration tag's, §18.7). */
+function scopeTag(labelText, dsk, { namespace, deviceID, epoch, scope }) {
   if (!(dsk instanceof Uint8Array) || dsk.length !== 32 || !Number.isInteger(epoch) || epoch < 1 || epoch > 65535) throw new LocalConfigError('invalid_bundle')
-  const label = Buffer.from(DEVICE_CHECK_LABEL)
+  const label = Buffer.from(labelText)
   const epochBytes = Buffer.alloc(2)
   epochBytes.writeUInt16BE(epoch)
   const key = Buffer.from(hkdfSync('sha256', dsk, bytes.parseUUID(namespace), Buffer.concat([label, bytes.parseUUID(deviceID), epochBytes]), 32))
@@ -188,4 +193,126 @@ export function deviceCheck(dsk, { namespace, deviceID, epoch, scope }) {
     const digest = createHash('sha256').update(canonicalJSON(scope), 'utf8').digest()
     return createHmac('sha256', key).update(Buffer.concat([label, Buffer.from([0]), digest])).digest('base64url')
   } finally { key.fill(0) }
+}
+
+// ---- AI integrations (docs/mcp-enclave.md §18.7) ------------------------------
+//
+// The limits below repeat those of packages/mcp-http/enclave/ai/policy.mjs
+// (measured in PCR0), which a test there holds equal: this package is the
+// reader's, which the enclave imports and never the other way round.
+
+/** Numbers per authorization (AI_DEVICES_MAX). */
+export const AI_DEVICES_MAX = 25
+/** Which provider may serve which function (AI_FEATURES). */
+export const AI_FEATURES = Object.freeze({
+  anthropic: Object.freeze(['image', 'document']),
+  openai: Object.freeze(['audio', 'image', 'document']),
+  google: Object.freeze(['audio', 'video', 'image', 'document']),
+})
+export const AI_PROVIDER_NAMES = Object.freeze(['anthropic', 'openai', 'google'])
+export const AI_FUNCTIONS = Object.freeze(['audio', 'video', 'image', 'document'])
+/** A model id's shape (AI_MODEL_RE); which models exist is each key's list. */
+export const AI_MODEL_RE = /^[a-z0-9][a-z0-9._:-]{0,63}$/
+/** A function's optional language: a BCP 47 tag. */
+export const AI_LANG_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/
+/** An API key as the bundle carries it. */
+export const AI_KEY_RE = /^[!-~]{20,256}$/
+/** Who may ask for a function on a number (§18.10). */
+export const AI_REQUESTERS = Object.freeze(['self', 'readers', 'console'])
+/** The bundle's ceilings (AI_MONTHLY_USD_CENTS_MAX, AI_REQUEST_ITEMS_PER_DAY_MAX), and a rate's. */
+export const AI_MONTHLY_USD_CENTS_MAX = 100_000
+export const AI_REQUEST_ITEMS_PER_DAY_MAX = 1_000
+export const AI_RATE_MAX = 100_000_000
+/** The configuration tag's label (§18.7 step 4). */
+export const AI_CONFIG_LABEL = 'wappie-ai-config/v1'
+
+const aiFunction = z.strictObject({ provider: z.enum(AI_PROVIDER_NAMES), model: z.string().max(64).regex(AI_MODEL_RE) })
+const aiFeature = z.strictObject({ mode: z.literal('request'), lang: z.string().max(40).regex(AI_LANG_RE).optional(), requesters: z.enum(AI_REQUESTERS) })
+const aiRate = z.number().int().min(0).max(AI_RATE_MAX)
+const byFunction = entry => z.strictObject(Object.fromEntries(AI_FUNCTIONS.map(name => [name, entry.optional()])))
+/**
+ * The AI bundle (§18.7 step 3): a format no other validator takes (`version:
+ * 3`, `kind: 'ai'`), sealed to an attested AI request's key. `auto` (B2) is
+ * absent, like any key not listed; `mode: 'auto'` is refused.
+ */
+export const aiBundleSchema = z.strictObject({
+  version: z.literal(3), kind: z.literal('ai'), purpose: z.enum(['consent', 'renewal']),
+  server_url: z.string().min(1).max(4096), workspace_id: id, service_user_id: id,
+  device_ids: z.array(id).min(1).max(AI_DEVICES_MAX),
+  token: z.string().length(52),
+  timezone: z.string().min(1).max(100).optional(),
+  key_mode: z.literal('ephemeral'), consent_version: z.literal(1),
+  expires_at: z.iso.datetime().max(40),
+  connection_id: id.optional(),
+  keys: z.strictObject(Object.fromEntries(AI_PROVIDER_NAMES.map(name => [name, z.string().regex(AI_KEY_RE).optional()]))),
+  functions: byFunction(aiFunction),
+  features: z.record(z.string().max(36), byFunction(aiFeature)),
+  budget: z.strictObject({
+    monthly_usd_cents: z.number().int().min(1).max(AI_MONTHLY_USD_CENTS_MAX),
+    request_items_per_day: z.number().int().min(1).max(AI_REQUEST_ITEMS_PER_DAY_MAX),
+    rates: z.record(z.string().max(80), z.strictObject({ in: aiRate, out: aiRate, sec: aiRate })),
+  }),
+  cfg_tags: z.record(z.string().max(36), z.string().length(43)),
+})
+
+/** The `"<provider>:<model>"` pairs a bundle's functions name, each once. */
+export const aiPairs = functions => [...new Set(Object.values(functions).map(entry => `${entry.provider}:${entry.model}`))]
+const sameKeys = (object, keys) => { const names = Object.keys(object); return names.length === keys.length && keys.every(key => Object.hasOwn(object, key)) }
+
+/**
+ * Validates a parsed AI bundle and returns it frozen; any failure is
+ * `invalid_bundle`, with nothing of the input in the error. `now` is for tests.
+ */
+export function validateAIBundle(value, now = Date.now()) {
+  const parsed = aiBundleSchema.safeParse(value)
+  if (!parsed.success) fail('invalid_bundle')
+  const bundle = parsed.data
+  const expires = Date.parse(bundle.expires_at)
+  const named = Object.keys(bundle.functions)
+  const providers = [...new Set(Object.values(bundle.functions).map(entry => entry.provider))]
+  if (!httpsOrigin(bundle.server_url) || new Set(bundle.device_ids).size !== bundle.device_ids.length ||
+    !/^[a-f0-9]{8}\./.test(bundle.token) || !canonicalKey(bundle.token.slice(9)) ||
+    !Number.isFinite(expires) || expires <= now || expires > now + MAX_CONTENT_AHEAD_MS ||
+    (bundle.timezone !== undefined && !validTimezone(bundle.timezone)) ||
+    (bundle.purpose === 'consent') !== (bundle.connection_id === undefined) ||
+    named.length === 0 ||
+    Object.entries(bundle.functions).some(([name, entry]) => !AI_FEATURES[entry.provider].includes(name) || (entry.provider === 'google' && entry.model.includes(':'))) ||
+    !sameKeys(bundle.keys, providers) ||
+    !sameKeys(bundle.features, bundle.device_ids) ||
+    Object.values(bundle.features).some(features => Object.keys(features).some(name => !named.includes(name))) ||
+    !sameKeys(bundle.budget.rates, aiPairs(bundle.functions)) ||
+    !sameKeys(bundle.cfg_tags, bundle.device_ids) || Object.values(bundle.cfg_tags).some(tag => !canonicalKey(tag))) fail('invalid_bundle')
+  Object.freeze(bundle.device_ids)
+  for (const name of ['keys', 'functions', 'features', 'cfg_tags']) Object.freeze(bundle[name])
+  return Object.freeze(bundle)
+}
+
+/** `{provider: hex SHA-256 of the key's UTF-8}`: what a configuration tag binds of each key. */
+export function keysSHA256(keys) {
+  return Object.fromEntries(Object.entries(keys).map(([provider, key]) => [provider, createHash('sha256').update(key, 'utf8').digest('hex')]))
+}
+
+/**
+ * `config[d]` (§18.7 step 4): what one number's configuration tag covers.
+ * `fields` holds the bundle's `workspace_id`, `service_user_id`,
+ * `device_ids`, `functions`, `features`, `budget`, `expires_at` and
+ * `key_mode`, and `keys_sha256` in place of the keys (the enclave keeps the
+ * hashes in the record, the keys only in memory). `request` is the AI
+ * request's id or the renewal's, `kid` the attested key's id.
+ */
+export function aiConfigScope(fields, { deviceID, epoch, request, kid }) {
+  return {
+    workspace_id: fields.workspace_id, device_id: deviceID, epoch, service_user_id: fields.service_user_id, request, kid,
+    device_ids: [...fields.device_ids].sort(), keys_sha256: fields.keys_sha256, functions: fields.functions,
+    features: fields.features[deviceID], auto: null, budget: fields.budget, expires_at: fields.expires_at, key_mode: fields.key_mode,
+  }
+}
+
+/**
+ * `cfg_tag[d]`, base64url: the device check's construction under
+ * "wappie-ai-config/v1" over `config` (aiConfigScope). `dsk` is DSK(d, e),
+ * which the caller zeroes.
+ */
+export function aiConfigTag(dsk, { namespace, deviceID, epoch, config }) {
+  return scopeTag(AI_CONFIG_LABEL, dsk, { namespace, deviceID, epoch, scope: config })
 }
