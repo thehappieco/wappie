@@ -589,7 +589,7 @@ func TestMCPSendOffByDefault(t *testing.T) {
 	}
 	want := " send=off send_tenants=0 send_self=on send_direct=on" +
 		" send_limits=drafts_per_hour:30,drafts_pending:20,per_day:20,per_chat_per_day:5,min_interval:30s,tenant_per_day:100"
-	if !strings.HasSuffix(cfg.MCP.String(), want) {
+	if !strings.Contains(cfg.MCP.String(), want+" ai=") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 }
@@ -729,22 +729,7 @@ func TestMCPSendInvalid(t *testing.T) {
 // operator looks: the readers' configuration section of docs/mcp.md and
 // .env.example, each with its rule. So are the attachments' three.
 func TestContentVariablesDocumented(t *testing.T) {
-	read := func(path string) string {
-		t.Helper()
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(raw)
-	}
-	doc := read("../../docs/mcp.md")
-	start := strings.Index(doc, "### Server configuration for the readers")
-	end := strings.Index(doc, "## Configuration and identity")
-	if start < 0 || end < start {
-		t.Fatal("docs/mcp.md has no readers' configuration section")
-	}
-	section := doc[start:end]
-	env := read("../../.env.example")
+	section, env := readersDocs(t)
 	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_CONTENT_TENANTS", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_TENANTS", "WS_MCP_MEDIA_OFF_KINDS",
 		"WS_MCP_SEND_ENABLED", "WS_MCP_SEND_TENANTS", "WS_MCP_SEND_SELF_ENABLED", "WS_MCP_SEND_DIRECT_ENABLED",
 		"WS_MCP_SEND_DRAFTS_PER_HOUR", "WS_MCP_SEND_DRAFTS_PENDING", "WS_MCP_SEND_PER_DAY", "WS_MCP_SEND_PER_CHAT_PER_DAY",
@@ -767,4 +752,25 @@ func TestContentVariablesDocumented(t *testing.T) {
 			t.Errorf(".env.example does not show %q", strings.TrimSpace(off))
 		}
 	}
+}
+
+// readersDocs returns the readers' configuration section of docs/mcp.md and
+// the whole of .env.example.
+func readersDocs(t *testing.T) (section, env string) {
+	t.Helper()
+	read := func(path string) string {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	doc := read("../../docs/mcp.md")
+	start := strings.Index(doc, "### Server configuration for the readers")
+	end := strings.Index(doc, "## Configuration and identity")
+	if start < 0 || end < start {
+		t.Fatal("docs/mcp.md has no readers' configuration section")
+	}
+	return doc[start:end], read("../../.env.example")
 }
