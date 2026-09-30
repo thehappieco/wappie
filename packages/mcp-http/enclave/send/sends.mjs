@@ -52,6 +52,18 @@ export const createWindows = ({ now = Date.now } = {}) => ({
   sends: slidingWindow({ limit: SENDS_PER_DAY, span: DAY_MS, interval: SEND_MIN_INTERVAL_MS, now }),
 })
 
+/**
+ * Whether Go itself refused a send, so that nothing left: a 4xx carrying one
+ * of Go's codes, or Go's 500 `internal`, which it records as refused (§17.19).
+ * Every other answer but a well-formed 200 (Go's 502 `send_uncertain`, a
+ * status Go never wrote, a body without Go's code) may follow a message that
+ * left.
+ */
+export function refusedByGo({ status, data }) {
+  const code = typeof data?.code === 'string' ? data.code : ''
+  return (status >= 400 && status < 500 && code !== '') || (status === 500 && code === 'internal')
+}
+
 /** A send's reference: 16 random bytes. Nothing derived from the text goes to Go: a hash of a short text could be brute-forced. */
 export const clientRef = () => randomBytes(16).toString('base64url')
 
@@ -82,15 +94,16 @@ export function createSends(ctx) {
       const url = data.message_uid ? messageURLs(consoleURL, record.tenant_id).message(device, data.message_uid) : null
       return { message_uid: data.message_uid, wa_id: data.wa_id, timestamp: data.timestamp, ...(url ? { open_url: url } : {}) }
     }
-    const error = fromGo(answer)
-    if (error.code === 'send_uncertain') {
-      error.keep = true
+    if (!refusedByGo(answer)) {
+      // Go's 502, or an answer Go did not write: a proxy's 502 or 504 after
+      // Go took the send, a restart mid-send, a 200 that does not parse. The
+      // message may have left: it counts, and it is never sent again.
       event('send_uncertain', id)
-      throw error
+      throw refusal('send_uncertain', { keep: true })
     }
     // Refused before anything left: it does not count.
     windows.sends.release(id, taken.slot)
-    throw error
+    throw fromGo(answer)
   }
 
   /** provider.send.sendSelf for `record`: the §17.8 steps from the gate on. */

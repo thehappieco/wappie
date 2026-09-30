@@ -152,7 +152,8 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
  * shapes Go's side: `ineligible` (chat keys that never wrote), `ownChat`,
  * `draftsPending`, `outcome` ('sent', 'uncertain', 'offline', or 'drop',
  * which records the send and closes the socket unanswered) and `answer`
- * (route, body) -> {status, body} to replace an answer outright.
+ * (route, body) -> {status, body} (or {status, raw}, a text body as a proxy
+ * writes one) to replace an answer outright.
  */
 export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamToken, workspace }) {
   const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set(),
@@ -248,7 +249,11 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
     go.sendCalls.push({ route, method: req.method, id, authorization: req.headers.authorization ?? null, body: parsed, query: url.search })
     if (!connection || !presented || (connection.api_key ? presented !== connection.api_key : !go.tokens.has(presented))) return json(res, { code: 'not_found' }, 404)
     const override = go.sending.answer?.(route, parsed)
-    if (override) { res.writeHead(override.status, { 'content-type': 'application/json' }); res.end(override.body === undefined ? '' : JSON.stringify(override.body)); return }
+    if (override) {
+      res.writeHead(override.status, { 'content-type': override.raw === undefined ? 'application/json' : 'text/html' })
+      res.end(override.raw ?? (override.body === undefined ? '' : JSON.stringify(override.body)))
+      return
+    }
     const stamp = () => new Date(now()).toISOString().replace('Z', '123Z')
     const refuse = (row, code, status, extra = {}) => { go.outbound.push({ ...row, id: randomUUID(), status: 'refused', code, created_at: stamp() }); return json(res, { code, message: code, ...extra }, status) }
     const extra = connection.extra ?? {}
@@ -282,7 +287,8 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
     }
     if (route === 'refusals' && req.method === 'POST') {
       if (!extra.send) return json(res, { code: 'not_found' }, 404)
-      if (!parsed || !['draft', 'self', 'send'].includes(parsed.kind) || !['text_not_allowed', 'cross_chat_blocked', 'chat_not_allowed', 'recipient_mismatch', 'rate_limited'].includes(parsed.code) ||
+      if (!parsed || !['draft', 'self', 'send'].includes(parsed.kind) ||
+        !['text_not_allowed', 'cross_chat_blocked', 'chat_not_allowed', 'recipient_mismatch', 'rate_limited', 'chat_not_eligible', 'group_not_allowed'].includes(parsed.code) ||
         (parsed.kind === 'self') !== (parsed.chat_key === undefined)) return json(res, { code: 'bad_request' }, 400)
       go.outbound.push({ connection: id, id: randomUUID(), kind: parsed.kind, status: 'refused', code: parsed.code, device_id: parsed.device_id, chat_key: parsed.chat_key ?? null,
         reply_to_uid: null, created_at: stamp(), decided_at: null, edited: false, message_uid: null })

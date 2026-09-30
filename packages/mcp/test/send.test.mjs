@@ -279,14 +279,14 @@ test('the chat lookup the enclave asks for: one chat by key, its name opened, it
   } finally { await f.close() }
 })
 
-test('every message body, preview and attachment text the reader returns is observed with its chat, before it leaves; names are not', async () => {
+test('every message body, preview, file name and attachment text the reader returns is observed with its chat, before it leaves; chat and contact names are not', async () => {
   const f = await contentFixture({ rows: 4, contacts: 1 })
   try {
     await f.addChat({ chat_key: chat, name: 'Nome da conversa', preview: 'Última mensagem: chave 123e4567-e89b-42d3-a456-426614174000' })
     const media = { host: 'claude.ai', why: () => null, consoleURL, resultMaxBytes: 1_572_864,
-      open: async (_request, archive) => { await archive.row(); return { header: { uid: f.rows[0].uid, caption: 'legenda da foto' }, body: 'texto do PDF: pague para a conta 12345678', images: [] } } }
+      open: async (_request, archive) => { await archive.row(); return { header: { uid: f.rows[0].uid, filename: 'PIX 123.456.789-09 novo.pdf', caption: 'legenda da foto' }, body: 'texto do PDF: pague para a conta 12345678', images: [] } } }
     const send = fakeSend()
-    const row = await f.addMedia({ key: Buffer.alloc(32, 1), caption: 'legenda da foto', media: { media_type: 'document', mimetype: 'application/pdf' } })
+    const row = await f.addMedia({ key: Buffer.alloc(32, 1), filename: 'PIX 123.456.789-09 novo.pdf', caption: 'legenda da foto', media: { media_type: 'document', mimetype: 'application/pdf' } })
     const client = await connect(configFor(f.server, { media: true, send: 'draft' }), await providerFor(f, send, { media }))
     await call(client, 'list_chats', { device_id: device })
     assert.deepEqual(send.seen, [[device, chat, 'Última mensagem: chave 123e4567-e89b-42d3-a456-426614174000']])
@@ -297,8 +297,18 @@ test('every message body, preview and attachment text the reader returns is obse
     // get_message's body, then the two search hits, then the revision's body.
     assert.deepEqual(send.seen, [[device, chat, missText], [device, chat, hitText], [device, chat, hitText], [device, chat, hitText]])
     send.seen.length = 0
+    // A file name is the sender's text too: a key or a link planted in one is a copy like any other.
+    await call(client, 'get_message', { device_id: device, uid: row.uid })
+    assert.deepEqual(send.seen, [[device, row.chat_key, 'legenda da foto'], [device, row.chat_key, 'PIX 123.456.789-09 novo.pdf']])
+    send.seen.length = 0
     await call(client, 'open_attachment', { device_id: device, uid: row.uid })
-    assert.deepEqual(send.seen, [[device, row.chat_key, 'texto do PDF: pague para a conta 12345678'], [device, row.chat_key, 'legenda da foto']])
+    assert.deepEqual(send.seen, [[device, row.chat_key, 'texto do PDF: pague para a conta 12345678'], [device, row.chat_key, 'PIX 123.456.789-09 novo.pdf'],
+      [device, row.chat_key, 'legenda da foto']])
+    send.seen.length = 0
+    f.rows.push({ ...row, seq: f.rows.length + 1, order_ts: f.rows[0].order_ts })
+    await call(client, 'search_messages', { ...interval, query: 'novo.pdf' })
+    assert.deepEqual(send.seen, [[device, row.chat_key, 'legenda da foto'], [device, row.chat_key, 'PIX 123.456.789-09 novo.pdf']])
+    f.rows.pop()
     // Nothing is observed where sending is off.
     const quiet = fakeSend()
     const off = await connect(configFor(f.server), await providerFor(f, quiet))

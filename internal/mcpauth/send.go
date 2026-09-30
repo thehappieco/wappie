@@ -548,12 +548,14 @@ type refusalRequest struct {
 
 // readerRefusalCodes are the refusals the reader decides on its own and
 // records here.
-var readerRefusalCodes = []string{"text_not_allowed", "cross_chat_blocked", "chat_not_allowed", "recipient_mismatch", "rate_limited"}
+var readerRefusalCodes = []string{"text_not_allowed", "cross_chat_blocked", "chat_not_allowed", "recipient_mismatch", "rate_limited",
+	"chat_not_eligible", "group_not_allowed"}
 
 // enclaveRefusal records a refusal the reader decided: a text its rules
-// refused, its own limits, and from S3 a chat off the list, a recipient
-// that does not match or a copy from another chat. A connection without
-// sending has no ledger to write to.
+// refused, its own limits, a draft to a chat the number does not have or to
+// a group its consent leaves out, and from S3 a chat off the list, a
+// recipient that does not match or a copy from another chat. A connection
+// without sending has no ledger to write to.
 func (h *Handler) enclaveRefusal(w http.ResponseWriter, r *http.Request, caller *AttestedReader, body []byte) {
 	conn, _, ok := h.sendingConnection(w, r, caller)
 	if !ok {

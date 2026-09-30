@@ -24,10 +24,19 @@ export const SENDS_PER_DAY = 20
 export const SEND_MIN_INTERVAL_MS = 30_000
 /** How long an identical call answers what the first one did (§17.11). */
 export const DEDUPE_WINDOW_MS = 600_000
-/** The cross-chat fingerprints (§17.11): life, per-connection cap, shingle width, chats a draft names. */
+/**
+ * The cross-chat fingerprints (§17.11): their life; the per-connection
+ * budgets, one for shingles and one for entities, which shingles never
+ * evict; the shingle width; the shingles one text may add; how much of a
+ * text is fingerprinted (its first and last halves of this many code units);
+ * and the chats a draft names.
+ */
 export const FP_TTL_MS = 3_600_000
-export const FP_MAX_PER_CONNECTION = 20_000
+export const FP_SHINGLES_PER_CONNECTION = 20_000
+export const FP_ENTITIES_PER_CONNECTION = 5_000
 export const FP_SHINGLE_WORDS = 8
+export const FP_SHINGLES_PER_TEXT = 2_000
+export const FP_TEXT_MAX_CHARS = 16_384
 export const FP_CROSS_CHAT_MAX = 5
 /** Items per list_outgoing page. */
 export const LIST_OUTGOING_MAX = 50

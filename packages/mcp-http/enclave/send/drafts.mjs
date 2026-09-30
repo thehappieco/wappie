@@ -8,8 +8,9 @@
 // The steps, in order, every refusal a §17.8 code and nothing sealed before
 // the sixth: (1) the schema and the number, in the reader; (2) the gate; (3)
 // the text rules, a refusal recorded; (4) dedupe; (5) the chat, looked up and
-// its name opened by the reader, then this connection's hourly count, a
-// refusal recorded; (6) the fingerprints give `cross_chat`, and the draft is
+// its name opened by the reader (none, or a group the consent leaves out, a
+// refusal recorded), then this connection's hourly count, a refusal
+// recorded; (6) the fingerprints give `cross_chat`, and the draft is
 // sealed under a fresh id; (7) Go's route, whose 4xx is the answer (Go
 // recorded it); (8) the dedupe entry, `draft_created`, the answer.
 import { randomUUID } from 'node:crypto'
@@ -60,9 +61,15 @@ export function createDrafts(ctx) {
     const id = record.connection_id, device = input.device_id, chatKey = input.chat_key, replyTo = input.reply_to_uid ?? null
     // 5. The chat: the number has it under that key, and its name, opened by
     // the reader as list_chats opens it, goes back in the answer.
+    // A chat the number does not have (the usual outcome of a number an
+    // injected message supplied) and a group the consent leaves out are
+    // refused here, and recorded, so the person sees them in the activity.
     const chat = await archive.chat()
-    if (!chat) throw refusal('chat_not_eligible')
-    if (chat.is_group && record.send_groups !== true) throw refusal('group_not_allowed')
+    const code = !chat ? 'chat_not_eligible' : chat.is_group && record.send_groups !== true ? 'group_not_allowed' : null
+    if (code) {
+      await recordRefusal(record, { kind: 'draft', device_id: device, chat_key: chatKey, code })
+      throw refusal(code)
+    }
     const pin = record.drafts_to?.[device]
     if (!pin) throw refusal('send_not_allowed')
     const taken = windows.drafts.take(id)
@@ -115,6 +122,7 @@ export function createDrafts(ctx) {
         await recordRefusal(record, { kind: 'draft', device_id: input.device_id, chat_key: input.chat_key, code: 'text_not_allowed' })
         throw refusal('text_not_allowed', { why })
       }
+      // A key Go's ledger cannot hold cannot be recorded either.
       if (!chatKeyShape(input.chat_key)) throw refusal('chat_not_eligible')
       // 4. An identical call within the window answers this one's draft.
       const key = dedupeKey({ connection: id, tool: 'draft_message', device: input.device_id, chatKey: input.chat_key, replyTo: input.reply_to_uid, text })

@@ -13,7 +13,7 @@ import { createDedupe, dedupeKey } from '../send/dedupe.mjs'
 import { draftPlaintext, sealDraft } from '../send/drafts.mjs'
 import { createFingerprints, pieces } from '../send/fingerprints.mjs'
 import * as policy from '../send/policy.mjs'
-import { clientRef, slidingWindow } from '../send/sends.mjs'
+import { clientRef, refusedByGo, slidingWindow } from '../send/sends.mjs'
 import { fromGo } from '../send/service.mjs'
 import { LINK, normalizeNewlines, textRefusal } from '../send/textrules.mjs'
 
@@ -42,7 +42,8 @@ test('the limits are §17.10\'s, frozen in the image, and the reader\'s schemas 
   assert.deepEqual({ ...policy }, {
     DRAFT_TTL_MS: 86_400_000, DRAFTS_PER_HOUR: 30, DRAFTS_PENDING_MAX: 20, DRAFT_TEXT_MAX_CHARS: 4_096, DRAFT_SEALED_MAX_BYTES: 16_384,
     SELF_TEXT_MAX_CHARS: 1_000, SENDS_PER_DAY: 20, SEND_MIN_INTERVAL_MS: 30_000, DEDUPE_WINDOW_MS: 600_000,
-    FP_TTL_MS: 3_600_000, FP_MAX_PER_CONNECTION: 20_000, FP_SHINGLE_WORDS: 8, FP_CROSS_CHAT_MAX: 5, LIST_OUTGOING_MAX: 50,
+    FP_TTL_MS: 3_600_000, FP_SHINGLES_PER_CONNECTION: 20_000, FP_ENTITIES_PER_CONNECTION: 5_000, FP_SHINGLE_WORDS: 8, FP_SHINGLES_PER_TEXT: 2_000,
+    FP_TEXT_MAX_CHARS: 16_384, FP_CROSS_CHAT_MAX: 5, LIST_OUTGOING_MAX: 50,
     DRAFT_ROUTE_TIMEOUT_MS: 15_000, SEND_ROUTE_TIMEOUT_MS: 75_000, LEDGER_ROUTE_TIMEOUT_MS: 10_000,
   })
   assert.equal(READER_DRAFT_MAX, policy.DRAFT_TEXT_MAX_CHARS)
@@ -96,20 +97,61 @@ test('fingerprints: entities (e-mails, phone numbers, CPF and CNPJ, amounts), da
   assert.deepEqual(hits.slice(0, 3).map(hit => hit.chat_key), ['chat0@s.whatsapp.net', 'chat1@s.whatsapp.net', 'chat2@s.whatsapp.net'])
 })
 
-test('fingerprints: past the per-connection cap the least recently seen go first; a wipe drops the key and the entries', () => {
+test('fingerprints: past a budget the chat holding the most loses its least recently seen; a wipe drops the key and the entries', () => {
   const store = createFingerprints()
   const words = n => Array.from({ length: 8 }, (_, index) => `w${n}x${index}`).join(' ')
   store.observe('c', device, chatA, words(0))
-  for (let n = 1; n <= policy.FP_MAX_PER_CONNECTION; n++) store.observe('c', device, chatB, words(n))
-  assert.equal(store.size(), policy.FP_MAX_PER_CONNECTION)
-  assert.deepEqual(store.check('c', { device, keys: [own] }, words(0)), [], 'the oldest went')
-  assert.equal(store.check('c', { device, keys: [own] }, words(policy.FP_MAX_PER_CONNECTION)).length, 1)
+  for (let n = 1; n <= policy.FP_SHINGLES_PER_CONNECTION; n++) store.observe('c', device, chatB, words(n))
+  assert.equal(store.size(), policy.FP_SHINGLES_PER_CONNECTION)
+  // Chat B filled the budget: it lost its own oldest, and chat A kept its one.
+  assert.deepEqual(store.check('c', { device, keys: [own] }, words(0)), [{ device_id: device, chat_key: chatA }], 'the smaller chat stays')
+  assert.deepEqual(store.check('c', { device, keys: [own] }, words(1)), [], 'the largest chat lost its oldest')
+  assert.equal(store.check('c', { device, keys: [own] }, words(policy.FP_SHINGLES_PER_CONNECTION)).length, 1)
   store.wipe('c')
   assert.equal(store.size(), 0)
-  assert.deepEqual(store.check('c', { device, keys: [own] }, words(policy.FP_MAX_PER_CONNECTION)), [])
+  assert.deepEqual(store.check('c', { device, keys: [own] }, words(policy.FP_SHINGLES_PER_CONNECTION)), [])
   store.observe('c', device, chatA, '')
   store.observe('c', device, null, words(1))
   assert.equal(store.size(), 0)
+})
+
+test('fingerprints: a long or flooding text from another chat never pushes out a PIX key or a link read from chat A (§17.11)', () => {
+  const store = createFingerprints()
+  const chatC = '5511977770000@s.whatsapp.net'
+  store.observe('c', device, chatA, 'A chave nova é 123e4567-e89b-42d3-a456-426614174000, pague em banco-pix.example/boleto hoje')
+  const draftToB = 'Pix 123e4567-e89b-42d3-a456-426614174000 e o link banco-pix.example/boleto'
+  const marked = () => store.check('c', { device, keys: [chatB] }, draftToB)
+  assert.deepEqual(marked(), [{ device_id: device, chat_key: chatA }])
+  // A 60,000-character part from chat C, as open_attachment returns one.
+  const document = Array.from({ length: 10_000 }, (_, index) => `p${index}`).join(' ').slice(0, 60_000)
+  store.observe('c', device, chatC, document)
+  assert.deepEqual(marked(), [{ device_id: device, chat_key: chatA }], 'after a long read')
+  // A 64K flood of distinct words, and one of distinct entities, from chat C, again and again.
+  const flood = n => Array.from({ length: 32_767 }, (_, index) => String.fromCodePoint(0x4e00 + ((index + n * 8_192) % 20_000))).join(' ')
+  const entities = n => Array.from({ length: 400 }, (_, index) => { const k = n * 400 + index; return `r$${k} x${k}@exemplo.com ${10_000_000 + k}` }).join(' ')
+  for (let n = 0; n < 16; n++) { store.observe('c', device, chatC, flood(n)); store.observe('c', device, chatC, entities(n)) }
+  assert.deepEqual(marked(), [{ device_id: device, chat_key: chatA }], 'after the floods')
+  assert.ok(store.size() <= policy.FP_SHINGLES_PER_CONNECTION + policy.FP_ENTITIES_PER_CONNECTION)
+  // One text adds at most FP_SHINGLES_PER_TEXT shingles.
+  const fresh = createFingerprints()
+  fresh.observe('c', device, chatC, flood(0))
+  assert.ok(fresh.size() <= policy.FP_SHINGLES_PER_TEXT, String(fresh.size()))
+})
+
+test('fingerprints: every pattern is linear, and a text is fingerprinted up to FP_TEXT_MAX_CHARS (its first and last halves)', () => {
+  for (const unit of ['1', 'a', '%', 'a.', 'a-', 'a@', '1 (', 'r$1', 'x@y.', 'www.', 'ﷺ']) {
+    const text = unit.repeat(Math.ceil(65_536 / unit.length)).slice(0, 65_536)
+    const started = performance.now()
+    pieces(text)
+    const took = performance.now() - started
+    assert.ok(took < 50, `${JSON.stringify(unit)}: ${took.toFixed(1)} ms`)
+  }
+  const middle = 'x'.repeat(20_000) + ' pague 123e4567-e89b-42d3-a456-426614174000 ' + 'x'.repeat(20_000)
+  assert.deepEqual(pieces(middle).filter(piece => piece.startsWith('pix')), [], 'the middle of a long text is not read')
+  const ends = 'chave 123e4567-e89b-42d3-a456-426614174000 ' + 'y '.repeat(20_000) + ' fim ana@exemplo.com'
+  assert.deepEqual(pieces(ends).filter(piece => /^(?:pix|email)\u0000/.test(piece)), ['pix\u0000123e4567-e89b-42d3-a456-426614174000', 'email\u0000ana@exemplo.com'])
+  // A cut never splits a surrogate pair.
+  assert.ok(pieces('😀'.repeat(20_000) + ' ' + 'um dois três quatro cinco seis sete oito').some(piece => piece === 'w\u0000um dois três quatro cinco seis sete oito'))
 })
 
 test('dedupe: an identical call answers the first one\'s result as a duplicate for ten minutes, joins one still running, and keeps only uncertain failures', async () => {
@@ -214,5 +256,12 @@ test('Go\'s answers read as the refusals the model reads (§17.7)', () => {
     [409, 'send_in_progress'], [409, 'storage_paused'], [502, 'send_uncertain'], [409, 'draft_exists']]) assert.deepEqual(read(status, { code }), [code, undefined], code)
   for (const [status, data] of [[500, { code: 'internal' }], [400, { code: 'bad_request' }], [422, { code: 'something_new' }], [418, null], [200, {}]]) {
     assert.deepEqual(read(status, data), ['send_failed', undefined], String(status))
+  }
+  // A send is refused, nothing having left, only when Go says so: a 4xx with Go's code, or Go's 500 internal.
+  for (const [status, data] of [[403, { code: 'send_not_allowed' }], [404, { code: 'not_found' }], [409, { code: 'device_offline' }], [422, { code: 'text_not_allowed' }],
+    [429, { code: 'rate_limited' }], [400, { code: 'bad_request' }], [500, { code: 'internal' }]]) assert.equal(refusedByGo({ status, data }), true, `${status} ${data.code}`)
+  // Anything else may follow a message that left: Go's 502, a proxy's 502 or 504, a body Go did not write, a 200 that does not parse.
+  for (const [status, data] of [[502, { code: 'send_uncertain' }], [502, null], [504, null], [503, null], [500, null], [500, { code: 'other' }], [413, null], [200, {}], [200, null]]) {
+    assert.equal(refusedByGo({ status, data }), false, `${status} ${JSON.stringify(data)}`)
   }
 })

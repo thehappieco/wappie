@@ -88,9 +88,9 @@ async function bounded(items, limit, work) {
  *   `{mode, self, consoleURL, draft(input, archive), sendSelf(input),
  *   outgoing(query), observe(device, chatKey, text)}` (§17.8): the three
  *   sending methods hand it the call, `draft` with an `archive` whose
- *   `chat()` looks the named chat up, and every message body and caption the
- *   reader returns is shown to `observe` first, the source of the
- *   cross-chat fingerprints (§17.11).
+ *   `chat()` looks the named chat up, and every message body, caption and
+ *   file name the reader returns is shown to `observe` first, the source of
+ *   the cross-chat fingerprints (§17.11).
  * A local (files) config ignores the provider.
  */
 export async function createReader(config, provider) {
@@ -223,10 +223,12 @@ export async function createReader(config, provider) {
     await opener?.prefetch(rows.map(row => row.content_key_id))
     return Promise.all(rows.map(async row => {
       const body = row.body_sealed && opener ? await opener.body(row) : null
+      const filename = row.media?.filename_sealed && opener ? await opener.fileName(row) : null
       observe(device, row.chat_key, body)
+      observe(device, row.chat_key, filename)
       return { ...metadata(row),
         body: row.body_sealed ? opener ? openedValue(body) : locked() : omitted(),
-        ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(await opener.fileName(row)) : locked() : omitted(), link) } : {}),
+        ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(filename) : locked() : omitted(), link) } : {}),
         structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
       }
     }))
@@ -328,6 +330,7 @@ export async function createReader(config, provider) {
               if (fixedWindow && hits.length >= limit) omittedHits++
               else {
                 observe(device_id, row.chat_key, body)
+                observe(device_id, row.chat_key, filename)
                 hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : opener ? openedValue(body) : body,
                   ...(row.media ? { attachment: attachmentOf(row, opener ? openedValue(filename) : filename) } : {}),
                   structured_content: row.payload_sealed ? { state: 'unsupported' } : omitted(),
@@ -543,7 +546,7 @@ export async function createReader(config, provider) {
         if (chat === null) {
           try { const row = await api.getMessage(uid); if (row.device_id === device_id) chat = row.chat_key } catch { /* best effort */ }
         }
-        for (const text of [result.body, result.header?.caption]) if (typeof text === 'string' && text) observe(device_id, chat, { state: 'ok', value: text })
+        for (const text of [result.body, result.header?.filename, result.header?.caption]) if (typeof text === 'string' && text) observe(device_id, chat, { state: 'ok', value: text })
       }
       return result
     },

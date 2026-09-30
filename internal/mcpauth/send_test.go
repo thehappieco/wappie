@@ -725,8 +725,12 @@ func TestRefusalRoute(t *testing.T) {
 	device := h.device.String()
 	expect(t, post(map[string]any{"kind": "draft", "device_id": device, "chat_key": friend, "code": "text_not_allowed"}), http.StatusNoContent, "")
 	expect(t, post(map[string]any{"kind": "self", "device_id": device, "code": "rate_limited"}), http.StatusNoContent, "")
+	// A draft to a chat the number does not have, or to a group the consent
+	// leaves out, is the reader's to refuse, and the ledger's to show.
+	expect(t, post(map[string]any{"kind": "draft", "device_id": device, "chat_key": "5511977776666@s.whatsapp.net", "code": "chat_not_eligible"}), http.StatusNoContent, "")
+	expect(t, post(map[string]any{"kind": "draft", "device_id": device, "chat_key": "120363041234567890@g.us", "code": "group_not_allowed"}), http.StatusNoContent, "")
 	for name, body := range map[string]map[string]any{
-		"a code Go decides":      {"kind": "draft", "device_id": device, "chat_key": friend, "code": "chat_not_eligible"},
+		"a code Go decides":      {"kind": "draft", "device_id": device, "chat_key": friend, "code": "reply_not_found"},
 		"own chat with a chat":   {"kind": "self", "device_id": device, "chat_key": friend, "code": "rate_limited"},
 		"a draft without a chat": {"kind": "draft", "device_id": device, "code": "rate_limited"},
 		"another number":         {"kind": "self", "device_id": uuid.NewString(), "code": "rate_limited"},
@@ -736,7 +740,7 @@ func TestRefusalRoute(t *testing.T) {
 			expect(t, post(body), http.StatusBadRequest, "bad_request")
 		})
 	}
-	if got := h.ledger(t, c.id); !equalRows(got, [][2]string{{"refused", "text_not_allowed"}, {"refused", "rate_limited"}}) {
+	if got := h.ledger(t, c.id); !equalRows(got, [][2]string{{"refused", "text_not_allowed"}, {"refused", "rate_limited"}, {"refused", "chat_not_eligible"}, {"refused", "group_not_allowed"}}) {
 		t.Fatalf("ledger = %v", got)
 	}
 	// A connection without sending has no ledger to write to, whichever
