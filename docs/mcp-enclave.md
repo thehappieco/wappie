@@ -6102,7 +6102,9 @@ and no dollars anywhere in it (the owner's decision of 2026-09-30,
   "{provider} · {model} — {feature} · {number} — attachments: {items} ·
   minutes: {minutes} — tokens: {input} in, {output} out, {charged} counted
   toward the limit", the reused and failed in parentheses after the
-  attachments. Above it, each live integration's month in
+  attachments, and no minutes for photos and documents ("… — anexos: {n}
+  — tokens: …" / "… — attachments: {items} — tokens: …"). Above it, each
+  live integration's month in
   tokens against its limit and today's calls against its daily cap; alerts
   at 80% and 100% of each limit; below it, the owner's sentence ending "e
   para no limite de cada integração, como trava de segurança." / "and, as
