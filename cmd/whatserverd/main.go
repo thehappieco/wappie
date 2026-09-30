@@ -380,6 +380,10 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		Registry: registry, Bus: a.bus, Router: router, Metrics: a.metrics,
 		Blob: a.blob, Pool: pools.API,
 		Limits: a.limits, Log: lg,
+		// Wired whether or not the connector is mounted: a key a
+		// connection held never sends or manages here, and a draft is
+		// confirmed only while the switches allow it.
+		MCP: store.NewMCPConnections(pools.API), MCPSendAllowed: cfg.MCP.SendAllowed,
 	})
 
 	a.registry, a.router, a.ws = registry, router, ws

@@ -85,12 +85,23 @@ type Config struct {
 	// surface and a way to make this process spend memory on demand.
 	Limits *ratelimit.Auth
 	Log    *slog.Logger
+	// MCP is the ledger of assistant connections: a key a connection holds
+	// may never send or manage over this socket, and a person confirms an
+	// assistant's draft through it. Nil refuses every draft and leaves keys
+	// to their scope.
+	MCP *store.MCPConnections
+	// MCPSendAllowed reports whether a workspace's connections may send
+	// right now, the switches of docs/mcp-enclave.md §17.3; asked on every
+	// draft confirmation. Nil allows none.
+	MCPSendAllowed func(tenant uuid.UUID) bool
 }
 
 // Server serves the websocket endpoint.
 type Server struct {
 	cfg Config
 	log *slog.Logger
+	// device is the running device with an id, the registry's in service.
+	device func(id string) (*wa.Device, bool)
 
 	mu       sync.RWMutex
 	sessions map[*session]struct{}
@@ -101,7 +112,7 @@ func NewServer(cfg Config) *Server {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Server{cfg: cfg, log: cfg.Log, sessions: map[*session]struct{}{}}
+	return &Server{cfg: cfg, log: cfg.Log, device: cfg.Registry.Get, sessions: map[*session]struct{}{}}
 }
 
 const (
@@ -285,6 +296,11 @@ type actor struct {
 	// email are that account's then, and the key reaches only the devices
 	// the account holds a grant for — exactly like a member.
 	service bool
+	// assistant is true for a key an assistant connection holds, whatever
+	// its scope says: such a session sends and manages nothing
+	// (docs/mcp-enclave.md §17.3). The only way a connection sends is the
+	// send route, behind its own checks.
+	assistant bool
 }
 
 // admin reports whether this actor may change the tenant's configuration.
@@ -546,6 +562,14 @@ func (s *session) credentials(ctx context.Context, hello Hello) (actor, error) {
 		return actor{}, errors.New("invalid api key")
 	}
 	who := actor{tenant: key.TenantID, keyPrefix: key.Prefix, scope: key.Scope, keyID: key.ID, keyVersion: key.AccessVersion}
+	if s.srv.cfg.MCP != nil {
+		// Once, here: a key never stops being a connection's.
+		held, err := s.srv.cfg.MCP.HoldsAPIKey(ctx, key.ID)
+		if err != nil {
+			return actor{}, errors.New("could not check the api key")
+		}
+		who.assistant = held
+	}
 	if key.ActsAs != nil {
 		if s.srv.cfg.Accounts == nil {
 			return actor{}, errors.New("service accounts are not configured")
@@ -592,6 +616,12 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		return
 	}
 	if !s.allowStorageOperation(ctx, f) {
+		return
+	}
+	if action := frameAction(f.Type); s.actor().assistant && (action == store.ActionSend || action == store.ActionManage) {
+		// Before any lookup: an assistant's key is read-only by scope as
+		// well, and this makes the send route the only way it sends.
+		s.replyError(f.ReqID, ErrCodeNotAuthorized, "an assistant connection's key cannot send or manage over this socket")
 		return
 	}
 	switch f.Type {
