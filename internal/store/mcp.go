@@ -87,8 +87,22 @@ type MCPConnection struct {
 	// under (ContentConsentVersion or MediaConsentVersion); 0 for metadata.
 	ConsentVersion int
 	// Media says a content connection's consent includes attachments. Only
-	// a MediaConsentVersion consent can; a renewal never changes it.
+	// a MediaConsentVersion consent or a later one can; a renewal never
+	// changes it.
 	Media bool
+	// SendMode is what a content connection's consent says about sending:
+	// SendModeDraft, SendModeDirect (S3) or empty for none. Only a
+	// SendConsentVersion consent carries it, and a renewal never changes it,
+	// nor SendSelf and SendGroups.
+	SendMode string
+	// SendSelf says the consent includes notes to the number's own chat, and
+	// SendGroups that groups are eligible for drafts.
+	SendSelf, SendGroups bool
+	// SendPausedAt is when the pause was switched on; nil while not paused.
+	SendPausedAt *time.Time
+	// SendChats counts the chats on direct send's list that were not
+	// removed (S3).
+	SendChats int
 }
 
 // Connection kinds. A metadata connection reads through a key with no
@@ -103,11 +117,14 @@ const (
 	// for the person to renew.
 	KeyModeEphemeral = "ephemeral"
 	// ContentConsentVersion is the consent text a content connection was
-	// given under before attachments, and MediaConsentVersion the one that
-	// followed it: the only one that can include them. A content connection
-	// is given under one of the two, and keeps it for its whole life.
+	// given under before attachments, MediaConsentVersion the one that
+	// followed it, the first that can include them, and
+	// SendConsentVersion the one with sending: the only one that carries
+	// it, and it only with sending. A content connection is given under
+	// one of the three, and keeps it for its whole life.
 	ContentConsentVersion = 1
 	MediaConsentVersion   = 2
+	SendConsentVersion    = 3
 	// maxContentLifetime bounds a content consent: ninety days, plus an hour
 	// for the console's clock and the moment it took to click.
 	maxContentLifetime = 90*24*time.Hour + time.Hour
@@ -165,9 +182,15 @@ type CreateMCPConnection struct {
 	KeyMode        string
 	ConsentVersion int
 	// Media is set when the consent includes attachments, which only a
-	// MediaConsentVersion consent can. Whether the workspace may have them
-	// is the handler's to decide.
+	// MediaConsentVersion consent or a later one can. Whether the workspace
+	// may have them is the handler's to decide.
 	Media bool
+	// SendMode, SendSelf and SendGroups are the consent's sending, which
+	// only a SendConsentVersion consent carries and it always does:
+	// SendModeDraft, since direct send (S3) is not taken yet. Whether the
+	// workspace may send is the handler's to decide.
+	SendMode             string
+	SendSelf, SendGroups bool
 	// ReaderPublicKey is the per-request key the reader attested when the
 	// console prepared the consent; the service account's public key must
 	// be exactly this.
@@ -214,13 +237,15 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 	switch {
 	case in.Kind != KindMetadata && !content:
 		return MCPConnection{}, fmt.Errorf("store: %q is not a connection kind", in.Kind)
-	case !content && (in.ServiceUserID != uuid.Nil || in.KeyMode != "" || in.ConsentVersion != 0 || in.ReaderPublicKey != nil || in.Media):
-		return MCPConnection{}, errors.New("store: a metadata connection carries no service account, key mode, consent version or media")
+	case !content && (in.ServiceUserID != uuid.Nil || in.KeyMode != "" || in.ConsentVersion != 0 || in.ReaderPublicKey != nil || in.Media ||
+		in.SendMode != "" || in.SendSelf || in.SendGroups):
+		return MCPConnection{}, errors.New("store: a metadata connection carries no service account, key mode, consent version, media or sending")
 	case content && (in.Reader == HostedReader || in.ServiceUserID == uuid.Nil || in.KeyMode != KeyModeEphemeral ||
-		!validConsentVersion(in.ConsentVersion) || in.Media && in.ConsentVersion != MediaConsentVersion || len(in.ReaderPublicKey) != 32):
+		!validConsentVersion(in.ConsentVersion) || in.Media && in.ConsentVersion < MediaConsentVersion || len(in.ReaderPublicKey) != 32 ||
+		!validConsentSend(in.ConsentVersion, in.SendMode, in.SendSelf, in.SendGroups)):
 		// The handler gates content to attested readers and checks the
-		// body; this is the backstop, and the migration's CHECK the one
-		// behind it for media.
+		// body; this is the backstop, and the migrations' CHECKs the ones
+		// behind it for media and sending.
 		return MCPConnection{}, ErrMCPKeyUnsuitable
 	case content && in.ExpiresAt.After(time.Now().Add(maxContentLifetime)):
 		return MCPConnection{}, ErrInvalidExpiry
@@ -235,6 +260,7 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		service := in.ServiceUserID
 		out.ServiceUserID, out.KeyMode = &service, in.KeyMode
 		out.ConsentVersion, out.Media = in.ConsentVersion, in.Media
+		out.SendMode, out.SendSelf, out.SendGroups = in.SendMode, in.SendSelf, in.SendGroups
 	}
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
@@ -293,10 +319,11 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		}
 		err = tx.QueryRow(ctx, `INSERT INTO mcp_connections
 			(tenant_id, request_id, api_key_id, created_by, client_name, redirect_host, device_count, reader_kid, status, expires_at,
-			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16) RETURNING id::text, created_at`,
+			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media, send_mode, send_self, send_groups)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($17,''),$18,$19)
+			RETURNING id::text, created_at`,
 			tenant, in.RequestID, out.APIKeyID, actor, in.ClientName, in.RedirectHost, in.DeviceCount, in.ReaderKID, in.ExpiresAt,
-			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media).
+			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media, in.SendMode, in.SendSelf, in.SendGroups).
 			Scan(&out.ID, &out.CreatedAt)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -329,34 +356,42 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 // A revoked connection is part of the answer to "what has reached this
 // archive", exactly like a revoked key.
 func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConnection, error) {
-	// Neither table carries a row-level policy, so the WHERE is the whole of
-	// the isolation, as it is for api_keys.
-	rows, err := m.pool.Query(ctx, `
-		SELECT c.id::text, c.tenant_id::text, c.request_id, c.api_key_id, c.created_by, k.prefix,
-		       c.client_name, c.redirect_host, c.device_count, c.reader_kid, c.status,
-		       c.created_at, c.activated_at, c.revoked_at, c.last_seen_at, c.expires_at,
-		       c.reader, coalesce(c.reader_measurement, ''), c.kind, c.service_user_id, coalesce(c.key_mode, ''),
-		       coalesce(c.revoke_reason, ''), c.resealed_at, c.renewed_at, coalesce(c.consent_version, 0), c.media
-		  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
-		 WHERE c.tenant_id = $1
-		 ORDER BY c.created_at DESC, c.id DESC`, tenant)
-	if err != nil {
-		return nil, fmt.Errorf("store: list mcp connections: %w", err)
-	}
-	defer rows.Close()
 	out := []MCPConnection{}
-	for rows.Next() {
-		var c MCPConnection
-		if err := rows.Scan(&c.ID, &c.TenantID, &c.RequestID, &c.APIKeyID, &c.CreatedBy, &c.KeyPrefix,
-			&c.ClientName, &c.RedirectHost, &c.DeviceCount, &c.ReaderKID, &c.Status,
-			&c.CreatedAt, &c.ActivatedAt, &c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt,
-			&c.Reader, &c.ReaderMeasurement, &c.Kind, &c.ServiceUserID, &c.KeyMode,
-			&c.RevokeReason, &c.ResealedAt, &c.RenewedAt, &c.ConsentVersion, &c.Media); err != nil {
-			return nil, fmt.Errorf("store: list mcp connections: %w", err)
+	// Neither mcp_connections nor api_keys carries a row-level policy, so the
+	// WHERE is the whole of their isolation, as it is for api_keys. The
+	// count of direct send's chats is under one, hence the tenant
+	// transaction: outside it the count would read zero, silently.
+	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT c.id::text, c.tenant_id::text, c.request_id, c.api_key_id, c.created_by, k.prefix,
+			       c.client_name, c.redirect_host, c.device_count, c.reader_kid, c.status,
+			       c.created_at, c.activated_at, c.revoked_at, c.last_seen_at, c.expires_at,
+			       c.reader, coalesce(c.reader_measurement, ''), c.kind, c.service_user_id, coalesce(c.key_mode, ''),
+			       coalesce(c.revoke_reason, ''), c.resealed_at, c.renewed_at, coalesce(c.consent_version, 0), c.media,
+			       coalesce(c.send_mode, ''), c.send_self, c.send_groups, c.send_paused_at,
+			       (SELECT count(*) FROM mcp_send_chats s WHERE s.connection_id = c.id AND s.removed_at IS NULL)
+			  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
+			 WHERE c.tenant_id = $1
+			 ORDER BY c.created_at DESC, c.id DESC`, tenant)
+		if err != nil {
+			return err
 		}
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var c MCPConnection
+			if err := rows.Scan(&c.ID, &c.TenantID, &c.RequestID, &c.APIKeyID, &c.CreatedBy, &c.KeyPrefix,
+				&c.ClientName, &c.RedirectHost, &c.DeviceCount, &c.ReaderKID, &c.Status,
+				&c.CreatedAt, &c.ActivatedAt, &c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt,
+				&c.Reader, &c.ReaderMeasurement, &c.Kind, &c.ServiceUserID, &c.KeyMode,
+				&c.RevokeReason, &c.ResealedAt, &c.RenewedAt, &c.ConsentVersion, &c.Media,
+				&c.SendMode, &c.SendSelf, &c.SendGroups, &c.SendPausedAt, &c.SendChats); err != nil {
+				return err
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("store: list mcp connections: %w", err)
 	}
 	return out, nil

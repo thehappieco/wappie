@@ -66,6 +66,21 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		} else if services > 0 {
 			a.log.Info("mcp service accounts removed", "accounts", services)
 		}
+		// Drafts nobody decided expire with their text, a send whose
+		// request died is uncertain, and the ledger forgets after a year.
+		settled, err := store.SettleMCPOutbound(ctx, a.pools.API)
+		if err != nil {
+			a.log.Warn("mcp ledger settling failed", "error", err)
+		}
+		for _, row := range settled.Expired {
+			a.log.Info("mcp_draft_expired", "connection", row[0], "draft", row[1])
+		}
+		for _, row := range settled.Uncertain {
+			a.log.Warn("mcp_send_uncertain", "connection", row[0], "send", row[1], "reason", "no outcome recorded")
+		}
+		if settled.Deleted > 0 {
+			a.log.Info("mcp ledger rows past retention removed", "rows", settled.Deleted)
+		}
 	}
 
 	// Retry confirmed orphan objects even when no new retention purge occurs.
