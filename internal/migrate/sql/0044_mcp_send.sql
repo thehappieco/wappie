@@ -125,7 +125,7 @@ CREATE TABLE mcp_outbound (
 CREATE INDEX mcp_outbound_connection ON mcp_outbound (connection_id, created_at DESC, id DESC);
 CREATE INDEX mcp_outbound_pending ON mcp_outbound (expires_at) WHERE status = 'pending';
 CREATE INDEX mcp_outbound_message ON mcp_outbound (tenant_id, message_uid) WHERE message_uid IS NOT NULL;
-CREATE INDEX mcp_outbound_tenant_sends ON mcp_outbound (tenant_id, created_at) WHERE kind <> 'draft';
+CREATE INDEX mcp_outbound_tenant_sends ON mcp_outbound (tenant_id, created_at) WHERE kind <> 'draft' AND status <> 'refused';
 
 DO $$
 DECLARE t text;

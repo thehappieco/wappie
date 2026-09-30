@@ -70,9 +70,10 @@ const (
 	maxRefusalsPerDay = 100
 	// outboundRetention is how long a ledger row is kept.
 	outboundRetention = 365 * 24 * time.Hour
-	// staleSending is how long a send may stay in flight before the janitor
-	// calls it uncertain: its request died with its process, and nobody
-	// knows whether WhatsApp took it.
+	// staleSending is how long a send may stay in flight, from when it
+	// started or its draft was claimed, before the janitor calls it
+	// uncertain: its request died with its process, and nobody knows
+	// whether WhatsApp took it.
 	staleSending = 10 * time.Minute
 	// MaxPendingDraftsListed bounds the console's list of pending drafts,
 	// which is also the image's DRAFTS_PENDING_MAX.
@@ -188,7 +189,21 @@ type lockedSending struct {
 
 // lockSendingTx locks a connection's row for the rest of the transaction:
 // two drafts or sends of one connection pass the limits one after the other.
+//
+// The workspace's row comes first, FOR KEY SHARE, in the order every path
+// that ends a connection takes its locks (the tenants row FOR UPDATE, then
+// the connection's). The ledger row a draft, send or refusal then inserts
+// references tenants, and that foreign key takes the same share lock; taken
+// only there, after the connection's lock, it closed a cycle with an ending
+// that already held the workspace and waited for the connection, and the
+// deadlock detector aborted the ending. KEY SHARE blocks no other draft or
+// send. An end that commits first leaves the connection revoked for this
+// transaction to read; one that comes second waits, and revokes what this
+// one wrote.
 func lockSendingTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id string) (lockedSending, error) {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR KEY SHARE`, tenant); err != nil {
+		return lockedSending{}, err
+	}
 	var l lockedSending
 	err := tx.QueryRow(ctx, `SELECT status, expires_at, api_key_id, created_by, coalesce(send_mode, ''), send_self, send_groups,
 		send_paused_at IS NOT NULL FROM mcp_connections WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, id, tenant).
@@ -954,11 +969,14 @@ type ClaimedDraft struct {
 // transaction under the draft's lock (docs/mcp-enclave.md §17.7a): it must
 // be the person who consented to the draft's connection
 // (ErrOutboundNotFound otherwise, whoever else asks); the draft is waiting
-// (ErrDraftState); the connection is live, has sending, is not paused and
-// sendAllowed says its workspace may send (ErrSendNotAllowed); the frame
-// names the draft's number and chat (ErrDraftMismatch); and the person may
-// send on the number now (ErrMembershipForbidden). The draft is then sending,
-// its envelope gone, so a second confirmation finds it taken.
+// (ErrDraftState); the connection is active, or resealed by a release,
+// inside its lifetime, has sending, is not paused and sendAllowed says its
+// workspace may send (ErrSendNotAllowed); the frame names the draft's number
+// and chat (ErrDraftMismatch); and the person may send on the number now
+// (ErrMembershipForbidden). The draft is then sending, its envelope gone, so
+// a second confirmation finds it taken, and decided_at is the claim: the
+// draft was written up to a day before, and the janitor ages a send in
+// flight from when it started, not from when its draft was written.
 func (m *MCPConnections) ClaimDraft(ctx context.Context, tenant, user, id, device uuid.UUID, chat string, sendAllowed func(uuid.UUID) bool) (ClaimedDraft, error) {
 	claimed := ClaimedDraft{ID: id}
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -981,7 +999,7 @@ func (m *MCPConnections) ClaimDraft(ctx context.Context, tenant, user, id, devic
 			return ErrOutboundNotFound
 		case status != OutboundPending || expires == nil || !expires.After(time.Now()):
 			return ErrDraftState
-		case !liveStatus(connStatus) || !connExpires.After(time.Now()) || mode == "" || paused || sendAllowed == nil || !sendAllowed(tenant):
+		case connStatus != statusActive && connStatus != statusReseal || !connExpires.After(time.Now()) || mode == "" || paused || sendAllowed == nil || !sendAllowed(tenant):
 			return ErrSendNotAllowed
 		case device != draftDevice || chat != chatKey:
 			return ErrDraftMismatch
@@ -993,7 +1011,7 @@ func (m *MCPConnections) ClaimDraft(ctx context.Context, tenant, user, id, devic
 		if !ok {
 			return ErrMembershipForbidden
 		}
-		_, err = tx.Exec(ctx, `UPDATE mcp_outbound SET status = 'sending', sealed = NULL, decided_by = $2 WHERE id = $1`, id, user)
+		_, err = tx.Exec(ctx, `UPDATE mcp_outbound SET status = 'sending', sealed = NULL, decided_by = $2, decided_at = now() WHERE id = $1`, id, user)
 		return err
 	})
 	if err != nil {
@@ -1039,7 +1057,9 @@ type SettledOutbound struct {
 // its own transaction: a draft past its expiry becomes expired and loses its
 // envelope; a send in flight for longer than any send takes becomes
 // uncertain, since nobody knows whether it left; and rows written more than
-// 365 days ago go.
+// 365 days ago go. A send is in flight from when it started (an own-chat
+// send's row is written then, with no decided_at) or from when its draft
+// was claimed (decided_at), never from when the draft was written.
 func SettleMCPOutbound(ctx context.Context, pool *pgxpool.Pool) (SettledOutbound, error) {
 	var out SettledOutbound
 	// The ledger forces row-level security; the connections, which carry
@@ -1071,7 +1091,7 @@ func SettleMCPOutbound(ctx context.Context, pool *pgxpool.Pool) (SettledOutbound
 				return err
 			}
 			if settled.Uncertain, err = settledRows(ctx, tx, `UPDATE mcp_outbound SET status = 'uncertain', decided_at = now()
-				WHERE status = 'sending' AND created_at < now() - $1::interval RETURNING connection_id::text, id::text`, staleSending); err != nil {
+				WHERE status = 'sending' AND coalesce(decided_at, created_at) < now() - $1::interval RETURNING connection_id::text, id::text`, staleSending); err != nil {
 				return err
 			}
 			tag, err := tx.Exec(ctx, `DELETE FROM mcp_outbound WHERE created_at < now() - $1::interval`, outboundRetention)

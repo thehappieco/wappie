@@ -508,3 +508,52 @@ func TestSendTextForTheSendRoute(t *testing.T) {
 		t.Fatalf("a transport error = %v", err)
 	}
 }
+
+// A chat's timer that cannot be read is logged by the number, never by the
+// chat (docs/mcp-enclave.md §17.12): every send comes through it, an
+// assistant's own-chat note included, and the message still leaves without
+// a timer. The archive here is a database nobody listens on.
+func TestChatTimerFailureLogsNoJID(t *testing.T) {
+	ctx := context.Background()
+	unreachable, err := pgxpool.New(ctx, "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(unreachable.Close)
+	var logged strings.Builder
+	var mu sync.Mutex
+	server := NewServer(Config{Messages: store.NewMessages(unreachable), Log: slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return logged.Write(p)
+	}), nil))})
+	tenant, device := uuid.New(), uuid.New()
+	fake := fakewa.New()
+	live, err := wa.NewDevice(wa.DeviceConfig{ID: device.String(), TenantID: tenant.String(), Client: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.device = func(id string) (*wa.Device, bool) { return live, id == device.String() }
+
+	const own = "5511900000000@s.whatsapp.net"
+	out, err := server.SendText(ctx, Text{Tenant: tenant, Device: device, Chat: own, Body: "nota"})
+	if err != nil || out.WAID == "" {
+		t.Fatalf("sent = %+v %v", out, err)
+	}
+	if last := fake.LastSent(); last.To.String() != own || last.Message.GetEphemeralMessage() != nil {
+		t.Fatalf("sent = %+v", last)
+	}
+	mu.Lock()
+	text := logged.String()
+	mu.Unlock()
+	if !strings.Contains(text, "could not read a chat's disappearing timer") || !strings.Contains(text, "device="+device.String()) {
+		t.Fatalf("log = %q", text)
+	}
+	if strings.Contains(text, "5511900000000") || strings.Contains(text, "whatsapp.net") {
+		t.Fatalf("the log names the chat: %q", text)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

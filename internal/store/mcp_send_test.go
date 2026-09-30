@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -855,6 +856,215 @@ func TestSettleMCPOutbound(t *testing.T) {
 	if !gone {
 		t.Fatal("a row past retention was kept")
 	}
+}
+
+// A draft is in flight from when a person claimed it, not from when the
+// assistant wrote it, up to a day before: the janitor leaves a draft written
+// long ago and claimed now to its send, whose outcome is then recorded, and
+// makes one claimed more than ten minutes ago uncertain.
+func TestSettleLeavesAClaimedDraftToItsSend(t *testing.T) {
+	f := newSendFixture(t)
+	ctx := context.Background()
+	conn, key, _ := f.sendingConsent(ctx, t, f.owner, nil)
+	late, err := f.draft(ctx, conn, key, friendChat, roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost, err := f.draft(ctx, conn, key, friendChat, roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.inTenant(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE mcp_outbound SET created_at=now()-interval '11 minutes' WHERE id = ANY($1)`, []uuid.UUID{late, lost})
+		return err
+	})
+	for _, id := range []uuid.UUID{late, lost} {
+		if _, err := f.conns.ClaimDraft(ctx, f.tenant, f.owner, id, f.device, friendChat, func(uuid.UUID) bool { return true }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.inTenant(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE mcp_outbound SET decided_at=now()-interval '11 minutes' WHERE id=$1`, lost)
+		return err
+	})
+	settled, err := store.SettleMCPOutbound(ctx, f.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settled.Uncertain) != 1 || settled.Uncertain[0] != [2]string{conn.ID, lost.String()} {
+		t.Fatalf("uncertain = %+v", settled.Uncertain)
+	}
+	uid := uuid.New()
+	if err := f.conns.FinishDraft(ctx, f.tenant, late, store.DraftOutcome{Status: store.OutboundSent, MessageUID: &uid, WAID: "3EB2", At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[uuid.UUID]string{late: store.OutboundSent, lost: store.OutboundUncertain} {
+		if status, _, _ := f.ledger(ctx, t, id); status != want {
+			t.Fatalf("%s = %s, want %s", id, status, want)
+		}
+	}
+	rows, _, err := f.conns.ListOutbound(ctx, f.tenant, conn.ID, store.OutboundQuery{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == late && (row.MessageUID == nil || *row.MessageUID != uid) {
+			t.Fatalf("the sent draft lost its message: %+v", row)
+		}
+	}
+}
+
+// A release puts a connection in reseal, and its drafts stay confirmable
+// until they expire (docs/mcp-enclave.md §17.14); a connection that is no
+// longer active or resealed confirms nothing.
+func TestClaimDraftAfterARelease(t *testing.T) {
+	f := newSendFixture(t)
+	ctx := context.Background()
+	conn, key, _ := f.sendingConsent(ctx, t, f.owner, nil)
+	resealed, err := f.draft(ctx, conn, key, friendChat, roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended, err := f.draft(ctx, conn, key, friendChat, roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus := func(status string) {
+		t.Helper()
+		if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET status=$2 WHERE id=$1`, conn.ID, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claim := func(id uuid.UUID) error {
+		_, err := f.conns.ClaimDraft(ctx, f.tenant, f.owner, id, f.device, friendChat, func(uuid.UUID) bool { return true })
+		return err
+	}
+	setStatus("reseal")
+	if err := claim(resealed); err != nil {
+		t.Fatalf("in reseal = %v", err)
+	}
+	setStatus("pending")
+	if err := claim(ended); !errors.Is(err, store.ErrSendNotAllowed) {
+		t.Fatalf("pending = %v", err)
+	}
+}
+
+// A draft, a send or a refusal and a connection's end take their locks in
+// one order (docs/mcp-enclave.md §17.19): the workspace's row, then the
+// connection's. An end that holds the workspace while a draft waits goes on
+// and commits, and the draft then reads the connection as ended: nothing
+// deadlocks, and the end never loses to the draft.
+func TestSendingAndEndingDoNotDeadlock(t *testing.T) {
+	f := newSendFixture(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		start func(store.SendConnection, uuid.UUID) error
+		want  error
+	}{
+		{"draft", func(conn store.SendConnection, key uuid.UUID) error {
+			_, err := f.draft(ctx, conn, key, friendChat, roomy)
+			return err
+		}, store.ErrMCPConnectionState},
+		{"send", func(conn store.SendConnection, key uuid.UUID) error {
+			_, _, err := f.selfSend(ctx, conn, key, newRef(), roomy)
+			return err
+		}, store.ErrMCPConnectionState},
+		{"refusal", func(conn store.SendConnection, _ uuid.UUID) error {
+			_, err := f.conns.RecordRefusal(ctx, f.tenant, conn.ID, store.Refusal{Kind: store.OutboundSelf, Device: f.device, Code: "text_not_allowed"})
+			return err
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, key, _ := f.sendingConsent(ctx, t, f.owner, withSelf)
+			// An end, as every ending path takes its locks: the workspace's
+			// row (lockWorkspaceAccess, lockWorkspaceManager), then, once the
+			// draft is waiting, the connection's (endMCPConnectionTx).
+			ending, err := f.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = ending.Rollback(ctx) }()
+			if _, err := ending.Exec(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, f.tenant); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.start(conn, key) }()
+			waitForALockWait(ctx, t, f)
+			if _, err := ending.Exec(ctx, `SELECT status FROM mcp_connections WHERE id=$1 FOR UPDATE`, conn.ID); err != nil {
+				t.Fatalf("the end: %v", err)
+			}
+			if _, err := ending.Exec(ctx, `UPDATE mcp_connections SET status='revoked', revoked_at=now(), revoke_reason='console' WHERE id=$1`, conn.ID); err != nil {
+				t.Fatalf("the end: %v", err)
+			}
+			if err := ending.Commit(ctx); err != nil {
+				t.Fatalf("the end: %v", err)
+			}
+			if err := <-done; !errors.Is(err, tc.want) {
+				t.Fatalf("%s after the end = %v, want %v", tc.name, err, tc.want)
+			}
+		})
+	}
+
+	// And the real paths, raced: the reader's revocation (endInTenant) and
+	// the console's against a draft and a send of the same connection.
+	for i := range 8 {
+		conn, key, _ := f.sendingConsent(ctx, t, f.owner, withSelf)
+		errs := make(chan error, 3)
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			if _, err := f.draft(ctx, conn, key, friendChat, roomy); err != nil && !errors.Is(err, store.ErrMCPConnectionState) {
+				errs <- fmt.Errorf("draft: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, _, err := f.selfSend(ctx, conn, key, newRef(), roomy); err != nil && !errors.Is(err, store.ErrMCPConnectionState) {
+				errs <- fmt.Errorf("send: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			var err error
+			if i%2 == 0 {
+				err = f.conns.RevokeByID(ctx, "enclave", conn.ID, store.ReasonReader)
+			} else {
+				_, err = f.conns.Revoke(ctx, f.tenant, f.owner, conn.ID)
+			}
+			if err != nil {
+				errs <- fmt.Errorf("end: %w", err)
+			}
+		}()
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("round %d: %v", i, err)
+		}
+		if row := f.row(ctx, t, conn.ID); row.Status != "revoked" {
+			t.Fatalf("round %d: the connection is %s", i, row.Status)
+		}
+	}
+}
+
+// waitForALockWait returns once another session of the test's database
+// waits on a lock, and fails the test after five seconds.
+func waitForALockWait(ctx context.Context, t *testing.T, f *sendFixture) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("nothing waited on the end's lock")
 }
 
 // Refusals are recorded up to a hundred a connection a day; past that they

@@ -309,8 +309,11 @@ func (srv *Server) applyChatTimer(ctx context.Context, log *slog.Logger, t sendT
 	if opts.Expiration == 0 {
 		seconds, err := srv.cfg.Messages.ChatTimer(ctx, t.tenant, t.deviceID, t.chat.String())
 		if err != nil {
+			// The device, never the chat: every send path comes through
+			// here, an assistant's own-chat note included, whose log never
+			// names a chat key or a JID (docs/mcp-enclave.md §17.12).
 			log.Warn("could not read a chat's disappearing timer",
-				"chat", t.chat, "error", err)
+				"device", t.deviceID, "error", err)
 			return
 		}
 		if seconds <= 0 {

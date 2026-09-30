@@ -4641,11 +4641,26 @@ open; each binds S1 as the rest of §17 does.
   connection's key 400.
 - **In flight.** The revocation cascade leaves `sending` rows to their
   request. The janitor, hourly beside `ExpireMCPConnections`, makes a
-  `sending` row older than 10 minutes `uncertain` (`mcp_send_uncertain`,
-  "no outcome recorded"), gives an expired draft `decided_at =
-  expires_at`, and deletes rows past 365 days; `mcp_refusals_dropped` is
-  logged hourly by the handler's own ticker. A draft still `pending` past its expiry reads as `expired`,
+  `sending` row whose send started or was claimed more than 10 minutes ago
+  `uncertain` (`coalesce(decided_at, created_at)`: an own-chat send's row
+  is written as it starts, with no `decided_at`, and a claimed draft's
+  `decided_at` is the claim, §17.7a, since its `created_at` is when the
+  assistant wrote it) (`mcp_send_uncertain`, "no outcome recorded"), gives
+  an expired draft `decided_at = expires_at`, and deletes rows past 365
+  days; `mcp_refusals_dropped` is logged hourly by the handler's own
+  ticker. A draft still `pending` past its expiry reads as `expired`,
   without its envelope, before the janitor writes it.
+- **Lock order.** A draft, a send and a refusal lock the workspace's
+  `tenants` row `FOR KEY SHARE` before the connection's row `FOR UPDATE`,
+  the order in which every path that ends a connection locks them
+  (`lockWorkspaceAccess` or `lockWorkspaceManager`, then
+  `endMCPConnectionTx`). The ledger row they insert references `tenants`,
+  and that foreign key's share lock, taken only after the connection's,
+  closed a cycle in which the deadlock detector aborted the end. An end
+  now either commits first, and the draft reads the connection as ended,
+  or waits for the draft and revokes it in its cascade.
+- **Logs.** The send core logs a chat timer it could not read by the
+  device, never by the chat, on every path (§17.12).
 - **The confirmation** (§17.7a). The frame is checked as any send is
   (scope, the device, the person's send permission, the number running, the
   quote's and mentions' JIDs) before the draft is taken, so a refused frame
