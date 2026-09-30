@@ -291,6 +291,10 @@ test('a media connection\'s open_attachment: a stored transcript, one made inlin
   // Go picks the authorization for this connection's creator: the job runs inline.
   const other = await voiceNote(w)
   w.go.ai.picks.set(`${media.connectionId}|${vector.device}|audio`, { authorization_id: auth.connectionId, requester_id: randomUUID(), state: 'active' })
+  // An answer about the attachment is kept (§16.9): the same call still hears ai_not_enabled, with no new pick asked.
+  const asked = w.go.ai.calls.filter(call => call.route === 'ai').length
+  assert.match((await open(w, media, { uid: note.row.uid })).value.content[0].text, /\(ai_not_enabled\)/)
+  assert.equal(w.go.ai.calls.filter(call => call.route === 'ai').length, asked)
   const inline = (await open(w, media, { uid: other.row.uid })).value
   assert.equal(inline.isError, undefined, inline.content[0].text)
   const header = headerOf(inline)

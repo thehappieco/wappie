@@ -575,7 +575,12 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         const connector = ai ? ai(record) : null
         const feature = connector ? aiFunctionOf(row) : null
         if (feature && row.view_once !== true) {
-          const answered = await transcriptOf(record, state, id, key, request, row, link, facts, feature, access, host, started, connector)
+          let answered
+          try { answered = await transcriptOf(record, state, id, key, request, row, link, facts, feature, access, host, started, connector) } catch (error) {
+            // Every answer about this message names it (§16.7), a failure of Go's reads included.
+            if (error instanceof ArchiveError && !error.facts) error.facts = facts
+            throw error
+          }
           if (answered) return answered
         }
         const plan = checkRow(row, request, state.mediaOff, link)
