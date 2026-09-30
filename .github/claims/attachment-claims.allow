@@ -44,6 +44,8 @@ unrelated .github/workflows/ci.yml :: sentence saying attachments are never open
 text docs/mcp-enclave.md :: content is opened inside an attested Wappie reader; attachment contents are unavailable (on version-1 and version-2 text connections
 text docs/mcp-enclave.md :: the sentences "Attachment contents are unavailable
 text docs/mcp-enclave.md :: calls or attachment downloads are available." of
+text docs/mcp-enclave.md :: attachment downloads are available." on text connections, "No sending,
+text docs/mcp-enclave.md :: - then, on a text connection: "No other mutations, calls or attachment
 text docs/mcp-enclave.md :: | §15.6 | the content-mode sentence that attachment contents are unavailable stays
 text docs/mcp-enclave.md :: refresh; the personal contacts snapshot, attachment bytes and sending are
 text docs/mcp-enclave.md :: **out** (attachment bytes for 2b: stage A opens them for media connections
