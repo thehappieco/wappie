@@ -192,6 +192,10 @@ on rows whose `reader` equals the caller's id; any other row is 404.
 | `GET /v1/mcp/enclave/cimd?url=<escaped>` | none | 200 document bytes (`application/json`) | 400, 502 `cimd_unavailable` |
 | `GET /v1/mcp/enclave/state/{name}` | none | 200 `application/octet-stream`, body = envelope (§8), header `X-Wappie-Generation: <n>` | 404 (never written) |
 | `PUT /v1/mcp/enclave/state/{name}?if_generation=<n>` | `application/octet-stream` envelope, at most 12 MiB (12,582,912 bytes) | 200 `{"generation": n+1}` | 409 `{"code":"generation_mismatch","generation":<current or 0>}`, 413, 400 (bad name or `if_generation`) |
+| `POST /v1/mcp/enclave/connections/{id}/drafts` | since S0, with the connection's key as a bearer: §17.7 | 201 | §17.7 |
+| `POST /v1/mcp/enclave/connections/{id}/send` | since S0, likewise: §17.7 | 200 | §17.7 |
+| `POST /v1/mcp/enclave/connections/{id}/refusals` | since S0, likewise: §17.7 | 204 | §17.7 |
+| `GET /v1/mcp/enclave/connections/{id}/outbound` | since S0, likewise: §17.7 | 200 | §17.7 |
 
 `name` is one of `as-clients`, `as-connections`, `as-tokens` or `infra`. The
 generation travels in the query rather than in `If-Match` so that the signature
@@ -209,6 +213,7 @@ handler streams the body under its own 12 MiB cap and never goes through
 | `POST /v1/mcp/requests/{id}/prepare` | **New, public**, rate-limited like the descriptor (`DescriptorLimits`, subject `prepare:<id>`). Body `{"nonce": b64url}` with strict keys, 16 to 64 bytes decoded. For an enclave request: 200 with the enclave's prepared descriptor verbatim, after Go checks that it is a JSON object with the same `request_id`, the reader's `resource`, and an `attestation.document` of at most 16 KiB. For a `hosted` request: 409 `attestation_unsupported`, without calling the reader. 404 and 429 as for the descriptor; 502 `reader_unavailable` |
 | `POST /v1/mcp/connections` | Same body (`DisallowUnknownFields` stays). Go resolves the reader. For a non-hosted reader it answers 403 `tenant_not_allowed` if the tenant is outside `TENANTS`, and 409 `attestation_required` unless this Go process served a prepare for this id whose `kid` equals `body.kid`. `resource` is checked per reader, and `complete_url = <reader PUBLIC_ORIGIN>/mcp/authorize/complete`. The row records `reader` and `reader_measurement` |
 | `DELETE /v1/mcp/connections/{id}` | Revokes in the ledger, then tells the row's own reader |
+| `GET /v1/mcp/drafts/{id}`, `POST /v1/mcp/drafts/{id}/discard`, `GET /v1/mcp/connections/{id}/drafts`, `GET /v1/mcp/connections/{id}/outbound`, `PATCH /v1/mcp/connections/{id}/send`, `GET /v1/mcp/outbound/messages` | **New since S0**, a signed-in person's session: §17.7 |
 
 **Which reader owns a request id.** Go keeps an in-memory map from request id to
 `{reader, kid, pcr0, document_sha256}`, with a 30-minute TTL and at most 10,000
@@ -743,7 +748,8 @@ by construction: `'provided'` is unchanged and nothing reachable from
 A connection's **kind** is `metadata` (every 2a and hosted connection) or
 `content`. A content connection has `key_mode = 'ephemeral'`,
 `consent_version = 1` (1 or 2 since stage A, with `media` only on 2: §16.2,
-§16.4) and its own **service account** (`service_user_id`),
+§16.4; 1, 2 or 3 since S0, with `media` on 2 or 3 and sending only and
+always on 3: §17.2, §17.4) and its own **service account** (`service_user_id`),
 created for it and never reused. A new status, **`reseal`** (content only),
 means consented but no key in the enclave; the connection id and the token
 family survive it. "Live" becomes `pending`, `active` or `reseal` in every
@@ -963,7 +969,8 @@ a content variant that never mentions a local setting. A media connection
 
 **Consent body.** `POST /v1/mcp/connections` gains `kind` (default
 `metadata`) and, for content, `service_user_id`, `key_mode: 'ephemeral'` and
-`consent_version: 1` (since stage A, 1 or 2, and `media`: §16.3). Content
+`consent_version: 1` (since stage A, 1 or 2, and `media`: §16.3; since S0, 1,
+2 or 3, and the send fields: §17.3). Content
 `expires_at` is at most 90 days + 1 h ahead. The request cache entry that
 prepare fills also keeps the **full** `reader_public_key` (32 bytes).
 
@@ -1027,7 +1034,8 @@ copies).
 
 **Status** (`GET /v1/mcp/enclave/connections/{id}`) answers
 `{"status","expires_at","kind","service_user_id"}`, and since stage A
-`"media","media_off"` (§16.3) (the hosted route keeps two fields);
+`"media","media_off"` (§16.3), and since S0 `"send","send_self"` (§17.3)
+(the hosted route keeps two fields);
 `service_user_id` is `null` for a metadata row, and `expires_at` is always
 RFC 3339 in UTC (`Z`), whatever the host's zone. For content it runs
 under `pg.InTenantTx` of the row's tenant and decides in this order: an ended
@@ -1048,12 +1056,15 @@ the reader revoked itself are marked notified at once.
 
 **Listing.** Rows add `kind`, `key_mode`, `revoke_reason` and `renewable`
 (content, `active` or `reseal`, viewer is `created_by`, content allowed), and
-since stage A `consent_version` and `media` (§16.3); the listed status is the
+since stage A `consent_version` and `media` (§16.3), and since S0
+`send_mode`, `send_self`, `send_groups`, `send_paused` and `send_chats`
+(§17.3); the listed status is the
 row's own (the kill switch only makes `renewable` false), with `active` or
 `reseal` past the deadline listed as `expired`.
 `GET /v1/mcp/content` (session, any role) answers
 `{"enabled": bool, "attested": bool}` for the session's workspace (and since
-stage A `"media": bool`, §16.3). `enabled` is true only when the `enclave`
+stage A `"media": bool`, §16.3; since S0 `"send"`, `"send_self"` and
+`"send_direct"`, §17.3). `enabled` is true only when the `enclave`
 reader is configured, the switch is on, and
 the workspace is in `WS_MCP_CONTENT_TENANTS` and allowed by that reader's
 `TENANTS` (which may be `*`). `attested` is true when the `enclave` reader is
@@ -1679,9 +1690,11 @@ meaning false. In order, each a 400:
 
 - metadata with `media`: `bad_request`, like the other content-only fields;
 - content with `consent_version` other than 1 or 2: `bad_request`
-  ("consent_version must be 1 or 2");
+  ("consent_version must be 1 or 2"; since S0, 1, 2 or 3, and version 3
+  only with sending: §17.3);
 - `media` without `consent_version: 2`: `bad_request` ("media requires
-  consent_version 2");
+  consent_version 2"; since S0, 2 or 3: "media requires consent_version 2
+  or 3");
 - after the content gate (403 `content_not_allowed`), `media` while
   `MediaAllowed(tenant)` is false: `media_not_allowed` ("media is not enabled
   for this workspace"), before the ledger and before the reader.
@@ -4514,6 +4527,85 @@ Its interface is reserved now:
   2026-07-28 revision.
 - **Out of scope:** mentions, reactions, forwarding, edits, deletions and
   attachments (S5).
+
+### 17.19 Recorded during S0
+
+What the server's implementation settled where the sections above left it
+open; each binds S1 as the rest of §17 does.
+
+- **Where it lives.** The routes are `internal/mcpauth/send.go`, the text
+  rules `internal/mcpauth/textrules.go`, the ledger
+  `internal/store/mcp_send.go`, the confirmation and the send core
+  `internal/wsapi/mcpsend.go`. The send core is `sendText`, shared by
+  `handleSend`, the confirmation and the exported
+  `(*wsapi.Server).SendText(ctx, wsapi.Text) (wsapi.TextSent, error)`, which
+  `main` hands the handler as `SendText`. The permission of §17.5 is read in
+  each route's own transaction by the rule `access.Allows` applies to a
+  person (`devicePermissionTx`), so it holds at the moment of the insert.
+- **The shapes** are pinned in `packages/mcp-http/enclave/test/
+  go-s0-shapes.json`: the relays, the status answers and the send routes'
+  answers (`draft_created`, `send_sent`, `rate_limited`, `outbound_page`).
+  `go-s0-shapes.test.mjs` feeds them to 0.4.x: a relay with any send field is
+  its `bad_request` (fail closed, before any grant proof), and every status
+  answer reads as it did before S0. `go-a0-shapes.json` stays as the record
+  of what A0 to S0 sent, no longer pinned against Go.
+- **Eligibility** (§17.5). "The other side wrote" counts rows of `kind =
+  'message'` only, and reads the chat's other half too (the same person by
+  phone number and by LID, as `ChatTimer` folds them); a reply's target
+  likewise. The own chat is never a group. A device outside the
+  connection's key is `chat_not_eligible`.
+- **The send route's refusals.** Go writes its own 4xx of steps 3 to 6 to
+  the ledger as the draft route does, without the `client_ref`, so asking
+  again under the same reference is decided again (nothing was sent). A
+  refusal after the row is written keeps the reference and answers the same
+  way again, with `"duplicate": true`: `device_offline` (409) and a new
+  code, `storage_paused` (409), for a workspace whose archive capture is
+  paused, which the WebSocket refuses for every send as well; a send that
+  failed before it left for any other reason is recorded `refused` with code
+  `internal` and answers 500. `kind: "send"` answers 403 `send_not_allowed`
+  until S3. An own-chat text over `SELF_TEXT_MAX_CHARS` UTF-16 code units is
+  `text_not_allowed`. A replayed `sent` answers its `decided_at` as
+  `timestamp`, which Go records as WhatsApp's send time. Times carry
+  microseconds.
+- **Text rules** (§17.10). The shared vectors are
+  `packages/mcp-http/enclave/test/send-text-vectors.json`, printable ASCII
+  with every other character escaped. A text is refused, in this order, for
+  control characters (lone surrogates included), for text-direction
+  controls, for being empty once trimmed as JavaScript's `trim()` trims, and,
+  where links are refused, for a link. Go reads `text` exactly: a lone
+  surrogate escape, which `encoding/json` turns into U+FFFD, is refused.
+- **No ledger without sending.** The draft and send routes answer a content
+  connection whose consent has no sending `send_not_allowed` and write
+  nothing; the refusals route answers it 404, and a `device_id` outside the
+  connection's key 400.
+- **In flight.** The revocation cascade leaves `sending` rows to their
+  request. The janitor, hourly beside `ExpireMCPConnections`, makes a
+  `sending` row older than 10 minutes `uncertain` (`mcp_send_uncertain`,
+  "no outcome recorded"), gives an expired draft `decided_at =
+  expires_at`, and deletes rows past 365 days; `mcp_refusals_dropped` is
+  logged hourly by the handler's own ticker. A draft still `pending` past its expiry reads as `expired`,
+  without its envelope, before the janitor writes it.
+- **The confirmation** (§17.7a). The frame is checked as any send is
+  (scope, the device, the person's send permission, the number running, the
+  quote's and mentions' JIDs) before the draft is taken, so a refused frame
+  never leaves a draft `sending`; `view_once` is refused first. An unknown
+  draft, or another person's, answers `not_authorized`. Once taken, the send
+  and its record run with the socket's context detached, for up to 60 s.
+- **The WebSocket denial** (§17.3) looks the key up at the hello; a failed
+  lookup fails the hello. It runs before every other check of a frame but
+  the storage gate.
+- **Rate limits** answer `retry_at` as the moment the refused request would
+  first pass: the expiry of the draft that frees a place, an hour (a day)
+  after the draft (send) that leaves the window, or the last send plus the
+  interval.
+- **The console.** `PATCH …/send` answers 403 `not_authorized` to whom
+  §17.7 does not name, and 400 to `remove_chats` until S3.
+  `GET /v1/mcp/connections/{id}/outbound` takes `limit` and `before` only.
+  `GET /v1/mcp/outbound/messages` asks the person's read permission and key
+  as `access.Allows` does.
+- **Not in S0**: Kind 0x0E and `DraftRow` (S1, with the client's), the
+  host probe, and `release.py`'s `migration44_sha256` and the runbook
+  (commercial repository).
 
 ## 18. AI integrations: on request (0.5.0)
 
