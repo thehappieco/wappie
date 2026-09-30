@@ -414,6 +414,9 @@ func serve() error {
 	switch {
 	case err == nil:
 		web.ExternalServers = a.cfg.Web.ExternalServers
+		// The console reads an AI key's model list from the provider, from
+		// the person's browser: only while discovery advertises AI.
+		web.AIModelLists = advertisedMCP(a.cfg.MCP).AI
 		a.web = web
 		a.log.Info("serving the web client", "dir", web.Dir())
 	case errors.Is(err, webui.ErrNotBuilt):
