@@ -6036,8 +6036,9 @@ job every 3 s, up to 5 minutes, then offers "Ver de novo" / "Check
 again". A failure is worded for its reader: the integration's creator is
 told what to do and offered the AI area, anyone else who can fix it; after
 `ai_paused`, `ai_not_enabled` or `ai_budget_reached` the console reads
-`GET /v1/ai/available` again and holds the button with the reason, and it
-holds it too for an attachment whose claimed length or size is past
+`GET /v1/ai/available` again and holds the button with the reason for 60 s
+(the age of the reader's status, within which a lifted limit or an undone
+pause reaches it), and it holds it too for an attachment whose claimed length or size is past
 `AI_MAX_SECONDS` or `AI_CAP_BYTES`, which it mirrors.
 
 **The card** (drafts for the owner's approval in pt and en; the other three
