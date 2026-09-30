@@ -705,9 +705,9 @@ func TestAIAvailableAndProcess(t *testing.T) {
 				t.Fatalf("paused = %s", r.body)
 			}
 		case "ai_budget_reached":
-			// Which limit it met passes on when the reader says, and only then.
+			// The authorization, and which limit it met when the reader says, and only then.
 			if limit, _ := tc.reply.(map[string]any)["limit"].(string); strings.Contains(string(r.body), `"limit"`) != (limit != "") ||
-				limit != "" && !strings.Contains(string(r.body), `"limit":"`+limit+`"`) {
+				limit != "" && !strings.Contains(string(r.body), `"limit":"`+limit+`"`) || !strings.Contains(string(r.body), `"authorization_id":"`+id+`"`) {
 				t.Fatalf("budget = %s", r.body)
 			}
 		case "":
@@ -860,8 +860,18 @@ func TestAIUsageRoute(t *testing.T) {
 		r.into(t, &out)
 		return out.Month, out.Items
 	}
-	if m, items := usage(ownerToken); m != month || len(items) != 2 || len(items[0]) != 15 {
+	if m, items := usage(ownerToken); m != month || len(items) != 2 || len(items[0]) != 17 {
 		t.Fatalf("an owner's = %s %v", m, items)
+	}
+	// Today's calls, answered and failed, beside the month's counters.
+	if err := h.ai.RecordAIUsage(ctx, h.tenant, mine, store.AIUsage{DeviceID: h.device, Feature: "audio", Provider: "google", Model: "gemini-3.8-flash",
+		Origin: "console", RequesterID: h.owner.ID, Failures: 2, CostMicrocents: 5}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range func() []map[string]any { _, items := usage(ownerToken); return items }() {
+		if item["authorization_id"] == mine && (item["items_today"] != float64(1) || item["failures_today"] != float64(2) || item["items"] != float64(1)) {
+			t.Fatalf("today = %v", item)
+		}
 	}
 	member := h.person(t, "member")
 	if _, items := usage(h.session(t, member)); len(items) != 0 {

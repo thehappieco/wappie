@@ -108,7 +108,8 @@ func (a *AI) AIMonthUsage(ctx context.Context, tenant uuid.UUID, authorization s
 }
 
 // AIUsageRow is a month's counters for one authorization, number, function,
-// provider, model, key, origin and requester.
+// provider, model, key, origin and requester, with today's (UTC) calls
+// answered and failed, which the console shows against the daily cap.
 type AIUsageRow struct {
 	AuthorizationID, DeviceID uuid.UUID
 	Feature, Provider, Model  string
@@ -118,6 +119,7 @@ type AIUsageRow struct {
 	Items, Reused, Failures   int64
 	InputTokens, OutputTokens int64
 	Seconds, CostMicrocents   int64
+	ItemsToday, FailuresToday int64
 }
 
 // AIUsageMonth lists a month's (UTC) counters: all of the workspace's when
@@ -129,7 +131,9 @@ func (a *AI) AIUsageMonth(ctx context.Context, tenant, viewer uuid.UUID, all boo
 	err := pg.InTenantTx(ctx, a.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT u.authorization_id, u.device_id, u.feature, u.provider, u.model, u.keychain_id, u.origin, u.requester_id,
 			       sum(u.items)::bigint, sum(u.reused)::bigint, sum(u.failures)::bigint, sum(u.input_tokens)::bigint,
-			       sum(u.output_tokens)::bigint, sum(u.seconds)::bigint, sum(u.cost_microcents)::bigint
+			       sum(u.output_tokens)::bigint, sum(u.seconds)::bigint, sum(u.cost_microcents)::bigint,
+			       coalesce(sum(u.items) FILTER (WHERE u.day = (now() AT TIME ZONE 'UTC')::date), 0)::bigint,
+			       coalesce(sum(u.failures) FILTER (WHERE u.day = (now() AT TIME ZONE 'UTC')::date), 0)::bigint
 			FROM ai_usage_daily u JOIN mcp_connections c ON c.id = u.authorization_id
 			WHERE u.tenant_id=$1 AND u.day >= $2 AND u.day < $3 AND ($4 OR c.created_by=$5)
 			GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
@@ -141,7 +145,7 @@ func (a *AI) AIUsageMonth(ctx context.Context, tenant, viewer uuid.UUID, all boo
 		for rows.Next() {
 			var r AIUsageRow
 			if err := rows.Scan(&r.AuthorizationID, &r.DeviceID, &r.Feature, &r.Provider, &r.Model, &r.KeychainID, &r.Origin, &r.RequesterID,
-				&r.Items, &r.Reused, &r.Failures, &r.InputTokens, &r.OutputTokens, &r.Seconds, &r.CostMicrocents); err != nil {
+				&r.Items, &r.Reused, &r.Failures, &r.InputTokens, &r.OutputTokens, &r.Seconds, &r.CostMicrocents, &r.ItemsToday, &r.FailuresToday); err != nil {
 				return err
 			}
 			out = append(out, r)

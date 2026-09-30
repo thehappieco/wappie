@@ -511,12 +511,13 @@ type pausedError struct {
 	AuthorizationID string `json:"authorization_id"`
 }
 
-// budgetError is ai_budget_reached with the limit it met, "month" or
-// "day", when the reader says which.
+// budgetError is ai_budget_reached with the authorization it concerns and
+// the limit it met, "month" or "day", when the reader says which.
 type budgetError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Limit   string `json:"limit,omitempty"`
+	Code            string `json:"code"`
+	Message         string `json:"message"`
+	AuthorizationID string `json:"authorization_id"`
+	Limit           string `json:"limit,omitempty"`
 }
 
 // busyError is ai_busy with when to come back.
@@ -592,7 +593,7 @@ func (h *Handler) process(w http.ResponseWriter, r *http.Request) {
 		send(w, http.StatusTooManyRequests, busyError{Code: "ai_busy", Message: "the reader is busy with other AI requests", RetryAfter: retry})
 		return
 	case errors.As(err, &refused) && refused.Code == "ai_budget_reached":
-		send(w, http.StatusConflict, budgetError{Code: "ai_budget_reached", Message: "this AI integration reached its limit for now", Limit: refused.Limit})
+		send(w, http.StatusConflict, budgetError{Code: "ai_budget_reached", Message: "this AI integration reached its limit for now", AuthorizationID: pick.AuthorizationID, Limit: refused.Limit})
 		return
 	case errors.As(err, &refused), errors.Is(err, mcpauth.ErrReaderNotFound):
 		// Paused at the reader, or a record it does not hold (it restarted
@@ -827,6 +828,10 @@ type usageItem struct {
 	OutputTokens    int64  `json:"output_tokens"`
 	Seconds         int64  `json:"seconds"`
 	CostMicrocents  int64  `json:"cost_microcents"`
+	// ItemsToday and FailuresToday are today's (UTC) calls of the line,
+	// answered and failed: what the reader counts against the daily cap.
+	ItemsToday    int64 `json:"items_today"`
+	FailuresToday int64 `json:"failures_today"`
 }
 
 type usageReply struct {
@@ -859,7 +864,7 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 			AuthorizationID: u.AuthorizationID.String(), DeviceID: u.DeviceID.String(), Feature: u.Feature, Provider: u.Provider,
 			Model: u.Model, KeychainID: u.KeychainID.String(), Origin: u.Origin, RequesterID: u.RequesterID.String(),
 			Items: u.Items, Reused: u.Reused, Failures: u.Failures, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-			Seconds: u.Seconds, CostMicrocents: u.CostMicrocents,
+			Seconds: u.Seconds, CostMicrocents: u.CostMicrocents, ItemsToday: u.ItemsToday, FailuresToday: u.FailuresToday,
 		})
 	}
 	send(w, http.StatusOK, out)
