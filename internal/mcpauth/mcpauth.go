@@ -120,6 +120,19 @@ type Handler struct {
 	// send core, handed in by main. Nil sends nothing, and the send route
 	// refuses every send.
 	SendText func(ctx context.Context, in OutboundText) (OutboundSent, error)
+	// AIAllowed reports whether a workspace may have AI integrations right
+	// now: the AI switch and its workspace list, on top of MediaAllowed.
+	// Nil allows none. It is asked on every AI consent, renewal, status
+	// check and AI route, never cached.
+	AIAllowed func(tenant uuid.UUID) bool
+	// AIOffProviders and AIOffFeatures are the providers and functions
+	// switched off everywhere, sorted; every AI status answer carries them,
+	// and no consent or renewal may use them.
+	AIOffProviders []string
+	AIOffFeatures  []string
+	// AI keeps the AI integrations' results and usage. Nil refuses the
+	// reader's AI routes.
+	AI *store.AI
 
 	// Set up by Mount.
 	readers  []reader
@@ -197,6 +210,9 @@ type createRequest struct {
 	SendSelf   bool            `json:"send_self"`
 	SendGroups bool            `json:"send_groups"`
 	SendChats  json.RawMessage `json:"send_chats"`
+	// AIConfig is an AI authorization's configuration (kind "ai" only): the
+	// mirror of what the browser sealed, which this server checks and keeps.
+	AIConfig json.RawMessage `json:"ai_config"`
 }
 
 type createReply struct {
@@ -413,6 +429,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if req.Kind == store.KindAI {
+		h.createAI(w, r, user, req)
+		return
+	}
 	in, ok := checkCreate(w, req)
 	if !ok {
 		return
@@ -471,7 +491,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		// to the key it named; the kid it sends must be the one prepared
 		// here, or the bundle is sealed to a key nothing attested.
 		entry, ok := h.requests.get(in.RequestID, time.Now())
-		if !ok || !entry.prepared || entry.reader != rd.id || entry.kid != req.KID || entry.connection != "" ||
+		if !ok || !entry.prepared || entry.reader != rd.id || entry.kid != req.KID || entry.connection != "" || entry.kind != "" ||
 			content && len(entry.publicKey) != readerPublicKeyLen {
 			fail(w, http.StatusConflict, "attestation_required", "this connector must be verified before a consent; reload the consent page")
 			return
@@ -585,6 +605,9 @@ func checkCreate(w http.ResponseWriter, req createRequest) (store.CreateMCPConne
 		ReaderKID: req.KID, ExpiresAt: at.UTC(), Kind: store.KindMetadata,
 	}
 	sending := req.Send != "" || req.SendSelf || req.SendGroups || len(req.SendChats) > 0
+	if len(req.AIConfig) > 0 {
+		return bad("ai_config is for an AI authorization only")
+	}
 	switch req.Kind {
 	case "", store.KindMetadata:
 		if req.ServiceUserID != "" || req.KeyMode != "" || req.ConsentVersion != 0 || req.Media || sending {
@@ -748,15 +771,20 @@ func (h *Handler) connectionStatus(w http.ResponseWriter, r *http.Request, reade
 	if !ok {
 		return
 	}
-	var allowed func(uuid.UUID) bool
+	var allowed store.StatusAllowed
 	rd, known := h.readerByID(readerID)
 	attested := known && rd.attested != nil
 	if attested {
-		allowed = func(tenant uuid.UUID) bool { return h.contentAllowed(rd, tenant) }
+		allowed.Content = func(tenant uuid.UUID) bool { return h.contentAllowed(rd, tenant) }
+		allowed.AI = func(tenant uuid.UUID) bool { return h.aiAllowed(rd, tenant) }
 	}
-	a, err := h.Connections.Status(r.Context(), readerID, id, allowed)
+	a, err := h.Connections.StatusFor(r.Context(), readerID, id, allowed)
 	if err != nil {
 		h.connectionError(w, err)
+		return
+	}
+	if attested && a.Kind == store.KindAI {
+		send(w, http.StatusOK, aiStanding(a, h.MediaOff, h.AIOffFeatures, h.AIOffProviders))
 		return
 	}
 	var now standingNow
@@ -920,9 +948,11 @@ func (h *Handler) readerError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrReaderNotFound):
 		fail(w, http.StatusNotFound, "not_found", "that request is no longer waiting for a consent; start again from the assistant")
-	case errors.As(err, &refusal) && (refusal.Code == "invalid_bundle" || refusal.Code == "grant_proof_failed"):
+	case errors.As(err, &refusal) && slices.Contains(aiRefusals, refusal.Code):
 		// The reader opened the bundle and it was not what the consent
-		// promised, or a grant in it did not open with the attested key.
+		// promised, or a grant in it did not open with the attested key,
+		// or, for an AI authorization, a key or a model the provider did
+		// not take.
 		fail(w, http.StatusBadRequest, refusal.Code, "the reader refused the sealed bundle; start again from the assistant")
 	case errors.Is(err, ErrReaderRefused):
 		fail(w, http.StatusBadRequest, "bad_request", "the reader refused the sealed bundle; start again from the assistant")

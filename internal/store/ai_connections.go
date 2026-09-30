@@ -351,6 +351,21 @@ func (m *MCPConnections) AIAuthorizations(ctx context.Context, tenant, viewer uu
 	return out, rows.Err()
 }
 
+// AIAuthorization reads one of the workspace's AI authorizations as the
+// console lists it; another workspace's, or another kind's, is
+// ErrMCPConnectionNotFound.
+func (m *MCPConnections) AIAuthorization(ctx context.Context, tenant uuid.UUID, id string) (AIAuthorization, error) {
+	a, err := scanAIAuthorization(m.pool.QueryRow(ctx, `SELECT `+aiAuthorizationColumns+` FROM mcp_connections
+		WHERE id=$1 AND tenant_id=$2 AND kind='ai'`, id, tenant))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AIAuthorization{}, ErrMCPConnectionNotFound
+	}
+	if err != nil {
+		return AIAuthorization{}, fmt.Errorf("store: read an AI authorization: %w", err)
+	}
+	return a, nil
+}
+
 // aiAuthorizationTx reads one AI authorization in the caller's transaction.
 func aiAuthorizationTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id string) (AIAuthorization, error) {
 	a, err := scanAIAuthorization(tx.QueryRow(ctx, `SELECT `+aiAuthorizationColumns+` FROM mcp_connections
@@ -410,7 +425,7 @@ func (m *MCPConnections) SetAIControls(ctx context.Context, tenant, actor uuid.U
 				off = append(off, feature)
 			}
 		}
-		slices.SortFunc(off, func(a, b string) int { return slices.Index(AIFeatures, a) - slices.Index(AIFeatures, b) })
+		slices.Sort(off)
 		in.Off = &off
 	}
 	if in.CapSet && in.Cap != nil && (*in.Cap < 1 || *in.Cap > aiMonthlyCentsMax) {

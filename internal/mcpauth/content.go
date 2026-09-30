@@ -96,17 +96,19 @@ func (h *Handler) attestedFor(tenant uuid.UUID) bool {
 // content connection fetches attachment ciphertext only while the connection
 // is live, its consent includes attachments and mediaAllowed says its
 // workspace may open them now; any other content connection's key is refused
-// before the attachment is looked up. So is every other key that acts as a
-// connection service account: a renewal's new key, which the reader holds
-// while it proves the grants and before the ledger points at it, would
-// otherwise pass as nobody's. Keys that are neither are not this gate's to
-// judge and pass to the handler's usual checks.
+// before the attachment is looked up. The key of an AI authorization
+// (§18.4) fetches only while the authorization is active, not paused and
+// aiAllowed says its workspace may have AI now. So is every other key that
+// acts as a connection service account refused: a renewal's new key, which
+// the reader holds while it proves the grants and before the ledger points
+// at it, would otherwise pass as nobody's. Keys that are neither are not
+// this gate's to judge and pass to the handler's usual checks.
 //
 // It ships before any reader asks for an attachment, and it can only deny:
 // the reader's own checks stand behind it, and it in front of them, so an
 // operator's switch reaches a connection's key even if the reader were
 // wrong about it.
-func MediaGate(conns *store.MCPConnections, mediaAllowed func(tenant uuid.UUID) bool) func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
+func MediaGate(conns *store.MCPConnections, mediaAllowed, aiAllowed func(tenant uuid.UUID) bool) func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
 	return func(ctx context.Context, tenant, key uuid.UUID) (bool, error) {
 		c, err := conns.ContentConnectionByAPIKey(ctx, tenant, key)
 		if errors.Is(err, store.ErrMCPConnectionNotFound) {
@@ -114,6 +116,9 @@ func MediaGate(conns *store.MCPConnections, mediaAllowed func(tenant uuid.UUID) 
 		}
 		if err != nil {
 			return false, err
+		}
+		if c.Kind == store.KindAI {
+			return c.Active && !c.Paused && c.TenantID == tenant && aiAllowed != nil && aiAllowed(tenant), nil
 		}
 		return c.Live && c.Media && c.TenantID == tenant && mediaAllowed != nil && mediaAllowed(tenant), nil
 	}
@@ -126,6 +131,7 @@ type contentReply struct {
 	Send       bool `json:"send"`
 	SendSelf   bool `json:"send_self"`
 	SendDirect bool `json:"send_direct"`
+	AI         bool `json:"ai"`
 }
 
 // content answers the console: may this workspace let an assistant read
@@ -136,7 +142,9 @@ type contentReply struct {
 // the same answer for attachments: one of the three conditions for the
 // attachments toggle, with the discovery capability and a reader release
 // that declares it (§16.2). Send, SendSelf and SendDirect are the same
-// answers for the send toggles (§17.2 rule 10).
+// answers for the send toggles (§17.2 rule 10), and AI whether the workspace
+// may have AI integrations now (§18.4), one of the three conditions for the
+// console's AI area.
 func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {
@@ -145,7 +153,7 @@ func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 	sending, self, direct := h.sendEnabledFor(user.TenantID)
 	send(w, http.StatusOK, contentReply{
 		Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID), Media: h.mediaEnabledFor(user.TenantID),
-		Send: sending, SendSelf: self, SendDirect: direct,
+		Send: sending, SendSelf: self, SendDirect: direct, AI: h.AIAllowedFor(user.TenantID),
 	})
 }
 
@@ -153,12 +161,13 @@ func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 // Renewal
 // ---------------------------------------------------------------------------
 
-// renewal asks a content connection's reader for a new, attested key: the
-// reader restarted and lost the old one, or the person wants to. Only the
-// person who consented, still an owner or admin, may renew, and only while
-// content is allowed. Rate-limited like a prepare, which it is for an
-// existing connection. The reader's answer is relayed verbatim after a shape
-// check, and what it attested is remembered under the renewal id.
+// renewal asks a content connection's or an AI authorization's reader for a
+// new, attested key: the reader restarted and lost the old one, or the
+// person wants to. Only the person who consented, still an owner or admin,
+// may renew, and only while content (for an AI authorization, AI) is
+// allowed. Rate-limited like a prepare, which it is for an existing
+// connection. The reader's answer is relayed verbatim after a shape check,
+// and what it attested is remembered under the renewal id.
 func (h *Handler) renewal(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {
@@ -190,8 +199,7 @@ func (h *Handler) renewal(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "not_found", "no such key or connection in this workspace")
 		return
 	}
-	if !h.contentAllowed(rd, user.TenantID) {
-		fail(w, http.StatusForbidden, "content_not_allowed", "this workspace may not let an assistant read message text right now")
+	if !h.renewalAllowed(w, rd, conn.Kind, user.TenantID) {
 		return
 	}
 	raw, err := rd.attested.Relay.Renewal(ctx, id, req.Nonce)
@@ -203,7 +211,7 @@ func (h *Handler) renewal(w http.ResponseWriter, r *http.Request) {
 		h.readerError(w, err)
 		return
 	}
-	renewalID, entry, err := checkRenewal(raw, id, rd)
+	renewalID, entry, err := checkRenewal(raw, id, rd, conn.Kind)
 	if err != nil {
 		h.log().Warn("an attested reader answered a renewal with the wrong shape", "reader", rd.id, "connection", id, "error", err)
 		fail(w, http.StatusBadGateway, "reader_unavailable", "the assistant connector answered with something unexpected; try again in a moment")
@@ -215,13 +223,32 @@ func (h *Handler) renewal(w http.ResponseWriter, r *http.Request) {
 }
 
 // renewRequest is the console's renewal: the new key and service account,
-// and the bundle sealed to the key the renewal attested.
+// and the bundle sealed to the key the renewal attested; for an AI
+// authorization, its new configuration too.
 type renewRequest struct {
-	RenewalID     string `json:"renewal_id"`
-	KeyPrefix     string `json:"key_prefix"`
-	ServiceUserID string `json:"service_user_id"`
-	KID           string `json:"kid"`
-	Sealed        string `json:"sealed"`
+	RenewalID     string          `json:"renewal_id"`
+	KeyPrefix     string          `json:"key_prefix"`
+	ServiceUserID string          `json:"service_user_id"`
+	KID           string          `json:"kid"`
+	Sealed        string          `json:"sealed"`
+	AIConfig      json.RawMessage `json:"ai_config"`
+}
+
+// renewalAllowed answers a renewal the switches refuse: content for a
+// content connection, AI for an AI authorization.
+func (h *Handler) renewalAllowed(w http.ResponseWriter, rd reader, kind string, tenant uuid.UUID) bool {
+	if kind == store.KindAI {
+		if !h.aiAllowed(rd, tenant) {
+			fail(w, http.StatusForbidden, "ai_not_allowed", "AI integrations are not enabled for this workspace right now")
+			return false
+		}
+		return true
+	}
+	if !h.contentAllowed(rd, tenant) {
+		fail(w, http.StatusForbidden, "content_not_allowed", "this workspace may not let an assistant read message text right now")
+		return false
+	}
+	return true
 }
 
 type renewReply struct {
@@ -232,11 +259,13 @@ type renewReply struct {
 
 // renew records a renewal. The order mirrors create's: the renewal must be
 // one this process prepared for this connection with this kid; the new key
-// and account are checked before the reader is bothered; the reader takes
-// the bundle, proves every grant opens and stages the key; and only then
-// does the ledger swap the key and account, in one transaction. A reader
-// that refuses leaves the old connection as it was, and the new account is
-// removed so nothing it was given outlives the attempt.
+// and account, and an AI authorization's new configuration, are checked
+// before the reader is bothered; the reader takes the bundle, proves every
+// grant opens (for AI, every tag, key and model) and stages the key; and
+// only then does the ledger swap the key and account, and the
+// configuration, in one transaction. A reader that refuses leaves the old
+// connection as it was, and the new account is removed so nothing it was
+// given outlives the attempt.
 func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {
@@ -283,9 +312,29 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "not_found", "no such key or connection in this workspace")
 		return
 	}
-	if !h.contentAllowed(rd, user.TenantID) {
-		fail(w, http.StatusForbidden, "content_not_allowed", "this workspace may not let an assistant read message text right now")
+	if !h.renewalAllowed(w, rd, conn.Kind, user.TenantID) {
 		return
+	}
+	var aiConfig *store.AIConfig
+	switch {
+	case conn.Kind != store.KindAI && len(req.AIConfig) > 0:
+		fail(w, http.StatusBadRequest, "bad_request", "ai_config is for an AI authorization only")
+		return
+	case conn.Kind == store.KindAI:
+		cfg, err := store.ParseAIConfig(req.AIConfig)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "bad_request", aiConfigMessage(err))
+			return
+		}
+		if cfg.Request != req.RenewalID || cfg.KID != req.KID {
+			fail(w, http.StatusBadRequest, "bad_request", "ai_config must name this renewal and its kid")
+			return
+		}
+		if cfg.FunctionsOff(h.AIOffFeatures, h.AIOffProviders) {
+			fail(w, http.StatusForbidden, "ai_not_allowed", "a function or provider this integration uses is switched off here")
+			return
+		}
+		aiConfig = &cfg
 	}
 	entry, ok := h.requests.get(req.RenewalID, time.Now())
 	if !ok || !entry.prepared || entry.reader != rd.id || entry.connection != id || entry.kid != req.KID {
@@ -294,10 +343,10 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	in := store.RenewMCPConnection{
 		KeyPrefix: req.KeyPrefix, ServiceUserID: service, ReaderKID: req.KID,
-		ReaderMeasurement: entry.measurement(), ReaderPublicKey: append([]byte(nil), entry.publicKey...),
+		ReaderMeasurement: entry.measurement(), ReaderPublicKey: append([]byte(nil), entry.publicKey...), AIConfig: aiConfig,
 	}
 	if err := h.Connections.CheckRenewal(ctx, user.TenantID, user.ID, id, in); err != nil {
-		h.connectionError(w, err)
+		h.aiConnectionError(w, err)
 		return
 	}
 	// The expiry is the connection's, unchanged, in UTC as the consent's
@@ -308,10 +357,22 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 		ConnectionID: id, TenantID: user.TenantID.String(), KID: req.KID, Sealed: req.Sealed,
 		ExpiresAt: conn.ExpiresAt.UTC(), Kind: store.KindContent,
 	}
-	if err := rd.attested.Relay.RenewalBundle(ctx, id, req.RenewalID, relay); err != nil {
+	if conn.Kind == store.KindAI {
+		// An AI renewal's bundle is checked against the providers too: the
+		// wait is the AI consent's.
+		relay.Kind = store.KindAI
+		err = rd.attested.Relay.AIRenewalBundle(ctx, id, req.RenewalID, relay)
+	} else {
+		err = rd.attested.Relay.RenewalBundle(ctx, id, req.RenewalID, relay)
+	}
+	if err != nil {
 		h.discardService(ctx, user.TenantID, service, id)
 		h.log().Warn("the reader did not take a renewal bundle", "connection", id, "reader", rd.id, "error", err)
-		h.readerError(w, err)
+		if conn.Kind == store.KindAI {
+			h.aiReaderError(w, err)
+		} else {
+			h.readerError(w, err)
+		}
 		return
 	}
 	renewed, err := h.Connections.Renew(ctx, user.TenantID, user.ID, id, in)
@@ -319,7 +380,7 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 		// Something changed between the check and now. The reader's stage
 		// dies with its lifetime; the new account goes now.
 		h.discardService(ctx, user.TenantID, service, id)
-		h.connectionError(w, err)
+		h.aiConnectionError(w, err)
 		return
 	}
 	h.log().Info("mcp connection renewed", "connection", id, "reader", rd.id)

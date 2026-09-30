@@ -483,8 +483,8 @@ func (c AIConfig) Devices() []uuid.UUID {
 }
 
 // OffFunctions is what a status answer calls off for this configuration:
-// the sorted union of the functions switched off everywhere, the row's own,
-// and the functions whose provider is switched off.
+// the union of the functions switched off everywhere, the row's own, and the
+// functions whose provider is switched off, sorted as WS_AI_OFF_FEATURES is.
 func (c AIConfig) OffFunctions(offFeatures, offProviders, rowOff []string) []string {
 	out := []string{}
 	add := func(feature string) {
@@ -503,7 +503,7 @@ func (c AIConfig) OffFunctions(offFeatures, offProviders, rowOff []string) []str
 			add(feature)
 		}
 	}
-	slices.SortFunc(out, func(a, b string) int { return slices.Index(AIFeatures, a) - slices.Index(AIFeatures, b) })
+	slices.Sort(out)
 	return out
 }
 

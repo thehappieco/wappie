@@ -77,6 +77,23 @@ type fakeEnclave struct {
 	renewalKey     []byte
 	renewalBundles map[string]map[string]any
 	renewals       int
+	// renewalExtra is merged into every renewal's answer: an AI
+	// authorization's says kind "ai".
+	renewalExtra map[string]any
+	// The AI routes: pending AI requests by id with the key each attested,
+	// the AI bundles taken by request id, and the jobs asked for. onAIBundle
+	// runs before an AI bundle is answered 204, as the enclave activates the
+	// authorization before it answers; jobReply and jobState, when set,
+	// answer the job routes.
+	aiRequests map[string]map[string]any
+	aiBundles  map[string]map[string]any
+	onAIBundle func(body map[string]any)
+	jobs       []map[string]any
+	jobReply   func(body map[string]any) (int, any)
+	jobState   func(job, requester string) (int, any)
+	// bundleDelay holds every bundle hand-off (consent or renewal, content
+	// or AI) this long before it answers.
+	bundleDelay time.Duration
 }
 
 func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
@@ -86,6 +103,7 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 		requests: map[string]map[string]any{}, bundles: map[string]map[string]any{},
 		documents: map[string][]byte{}, prepares: map[string]int{},
 		renewalBundles: map[string]map[string]any{},
+		aiRequests:     map[string]map[string]any{}, aiBundles: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/requests/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +163,7 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		time.Sleep(f.bundleDelay)
 		if _, ok := f.requests[r.PathValue("id")]; !ok {
 			http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
 			return
@@ -188,7 +207,7 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 			t.Error(err)
 		}
 		f.documents[renewalID] = document
-		writeJSON(t, w, http.StatusOK, map[string]any{
+		answer := map[string]any{
 			"renewal_id": renewalID, "connection_id": r.PathValue("id"), "kid": enclaveRenewalKID,
 			"reader_public_key": base64.RawURLEncoding.EncodeToString(f.renewalKey), "resource": f.origin + "/mcp",
 			"device_ids": []string{}, "expires_at": time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339),
@@ -198,7 +217,11 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 				"request_id": renewalID, "resource": f.origin + "/mcp", "reader_id": f.id, "reader_version": "0.3.0",
 				"tls_spki_sha256": strings.Repeat("a", 64), "policy_sha256": strings.Repeat("b", 64), "pcr0": enclavePCR0,
 			},
-		})
+		}
+		for k, v := range f.renewalExtra {
+			answer[k] = v
+		}
+		writeJSON(t, w, http.StatusOK, answer)
 	})
 	mux.HandleFunc("POST /internal/connections/{id}/renewal/{renewal}/bundle", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -208,12 +231,99 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		time.Sleep(f.bundleDelay)
 		if f.bundleStatus != 0 {
 			writeJSON(t, w, f.bundleStatus, map[string]string{"code": f.bundleCode})
 			return
 		}
 		f.renewalBundles[r.PathValue("renewal")] = body
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /internal/ai/requests", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Nonce string `json:"nonce"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.lastNonce = body.Nonce
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			t.Error(err)
+		}
+		id := base64.RawURLEncoding.EncodeToString(raw)
+		document := make([]byte, 4000)
+		if _, err := rand.Read(document); err != nil {
+			t.Error(err)
+		}
+		f.documents[id] = document
+		pub := make([]byte, 32)
+		if _, err := rand.Read(pub); err != nil {
+			t.Error(err)
+		}
+		descriptor := map[string]any{
+			"request_id": id, "kind": "ai", "reader_public_key": base64.RawURLEncoding.EncodeToString(pub), "kid": enclaveKID,
+			"resource": f.origin + "/mcp", "reader_version": "0.5.0", "expires_at": time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339),
+			"attestation": map[string]any{
+				"format": "aws-nitro-v1", "document": base64.RawURLEncoding.EncodeToString(document),
+				"request_id": id, "resource": f.origin + "/mcp", "reader_id": f.id, "reader_version": "0.5.0",
+				"tls_spki_sha256": strings.Repeat("a", 64), "policy_sha256": strings.Repeat("b", 64), "pcr0": enclavePCR0,
+			},
+		}
+		f.aiRequests[id] = descriptor
+		writeJSON(t, w, http.StatusOK, descriptor)
+	})
+	mux.HandleFunc("POST /internal/ai/requests/{id}/bundle", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		time.Sleep(f.bundleDelay)
+		if _, ok := f.aiRequests[r.PathValue("id")]; !ok {
+			http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
+			return
+		}
+		if f.bundleStatus != 0 {
+			writeJSON(t, w, f.bundleStatus, map[string]string{"code": f.bundleCode})
+			return
+		}
+		f.aiBundles[r.PathValue("id")] = body
+		if f.onAIBundle != nil {
+			f.onAIBundle(body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /internal/ai/jobs", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.jobs = append(f.jobs, body)
+		if f.jobReply != nil {
+			status, reply := f.jobReply(body)
+			writeJSON(t, w, status, reply)
+			return
+		}
+		writeJSON(t, w, http.StatusAccepted, map[string]string{"job": "job-" + strings.Repeat("7", 16)})
+	})
+	mux.HandleFunc("GET /internal/ai/jobs/{job}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.jobState != nil {
+			status, reply := f.jobState(r.PathValue("job"), r.URL.Query().Get("requester_id"))
+			writeJSON(t, w, status, reply)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, map[string]string{"state": "running"})
 	})
 	mux.HandleFunc("GET /internal/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
@@ -337,7 +447,10 @@ type attestedHarness struct {
 	// switch on top of it, listing the same workspace.
 	contentOn atomic.Bool
 	mediaOn   atomic.Bool
-	handler   *mcpauth.Handler
+	// aiOn is the AI switch on top of attachments, listing the same
+	// workspace.
+	aiOn    atomic.Bool
+	handler *mcpauth.Handler
 }
 
 func newAttestedHarness(t *testing.T) *attestedHarness {
@@ -379,6 +492,10 @@ func newAttestedHarness(t *testing.T) *attestedHarness {
 		MediaAllowed: func(tenant uuid.UUID) bool {
 			return h.mediaOn.Load() && tenant == h.tenant
 		},
+		AIAllowed: func(tenant uuid.UUID) bool {
+			return h.aiOn.Load() && tenant == h.tenant
+		},
+		AI: store.NewAI(h.pool),
 	}
 	h.handler.Mount(h.mux)
 	h.srv.Close()

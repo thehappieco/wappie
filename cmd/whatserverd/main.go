@@ -710,6 +710,13 @@ func (a *app) routes() http.Handler {
 			SendDirectAllowed: a.cfg.MCP.SendDirectAllowed,
 			SendLimits:        sendLimits(a.cfg.MCP.SendLimits),
 			SendText:          mcpSendText(a.ws),
+			// AI integrations, on top of attachments, behind their own
+			// switch and list; what is off everywhere goes into every
+			// status answer.
+			AIAllowed:      a.cfg.MCP.AIAllowed,
+			AIOffProviders: a.cfg.MCP.AIOffProviders,
+			AIOffFeatures:  a.cfg.MCP.AIOffFeatures,
+			AI:             store.NewAI(a.pools.API),
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)
@@ -731,7 +738,7 @@ func (a *app) routes() http.Handler {
 	// when its consent includes attachments and the switch allows them; the
 	// gate is wired whether or not the connector is mounted, so rows left
 	// from a time it was stay refused.
-	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.cfg.MCP.MediaAllowed)
+	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.cfg.MCP.MediaAllowed, a.cfg.MCP.AIAllowed)
 	mux.Handle("GET /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
 		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,

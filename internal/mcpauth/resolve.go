@@ -140,6 +140,10 @@ type requestEntry struct {
 	// issued for. A consent's entry has none, and neither kind of entry
 	// answers for the other.
 	connection string
+	// kind is "ai" for a pending AI request, whose consent must come from
+	// user, the person it was prepared for; empty for an assistant's.
+	kind string
+	user uuid.UUID
 }
 
 // measurement is the ledger's record of what the reader declared, for
@@ -346,19 +350,25 @@ type renewalDescriptor struct {
 	preparedDescriptor
 	RenewalID    string `json:"renewal_id"`
 	ConnectionID string `json:"connection_id"`
+	Kind         string `json:"kind"`
 }
 
 // checkRenewal reads what the reader attested for a renewal and checks its
 // shape as checkPrepared does: a renewal id of a request id's shape, this
-// connection, this reader's resource, and an attestation over the renewal
-// id. The renewal id comes back with the entry to remember under it.
-func checkRenewal(raw json.RawMessage, connectionID string, rd reader) (string, requestEntry, error) {
+// connection, of its kind (an AI authorization's says "ai", a content
+// connection's does not), this reader's resource, and an attestation over
+// the renewal id. The renewal id comes back with the entry to remember
+// under it.
+func checkRenewal(raw json.RawMessage, connectionID string, rd reader, kind string) (string, requestEntry, error) {
 	var p renewalDescriptor
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return "", requestEntry{}, errors.New("the renewal is not the expected object")
 	}
 	if !validRequestID(p.RenewalID) || p.ConnectionID != connectionID || p.Resource != rd.resource() {
 		return "", requestEntry{}, errors.New("the renewal is for another connection or resource, or its id is malformed")
+	}
+	if (p.Kind == store.KindAI) != (kind == store.KindAI) {
+		return "", requestEntry{}, errors.New("the renewal is for another kind of connection")
 	}
 	if p.Attestation != nil && p.Attestation.RequestID != p.RenewalID {
 		return "", requestEntry{}, errors.New("the renewal's attestation is for another request")

@@ -332,7 +332,7 @@ func TestAIConfigOffFunctions(t *testing.T) {
 	if got := cfg.OffFunctions(nil, nil, nil); len(got) != 0 {
 		t.Fatalf("nothing off = %v", got)
 	}
-	if got := cfg.OffFunctions([]string{"video"}, []string{"anthropic"}, []string{"image", "video"}); strings.Join(got, ",") != "video,image,document" {
+	if got := cfg.OffFunctions([]string{"video"}, []string{"anthropic"}, []string{"image", "video"}); strings.Join(got, ",") != "document,image,video" {
 		t.Fatalf("off = %v", got)
 	}
 	if !cfg.FunctionsOff(nil, []string{"google"}) || !cfg.FunctionsOff([]string{"document"}, nil) || cfg.FunctionsOff([]string{"video"}, []string{"openai"}) {
