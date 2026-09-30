@@ -10,7 +10,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { bytes } from '@whatserver2/client'
 import { openDerived } from '@whatserver2/mcp/reader'
 import { contentFixture } from '@whatserver2/mcp/test/content-fixture'
 import { vector, workspace } from '@whatserver2/mcp/test/fixture'
