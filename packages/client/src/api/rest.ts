@@ -166,12 +166,25 @@ export class ArchiveClient {
     valid(Array.isArray(result.devices) && result.devices.every(device => record(device) && isID(device.id) && typeof device.label === 'string' && device.label.length <= 8192 && typeof device.status === 'string'))
     return result
   }
-  async listChats(deviceID: string, options: { limit?: number } = {}): Promise<ArchiveChats> {
+  /**
+   * One number's chats, most recent first. `chatKey` narrows the list to that
+   * chat (docs/mcp-enclave.md §17.3): the answer holds it or nothing, never
+   * truncated, and `limit` does not apply. A chat under another key is a
+   * server answering another question, so it is refused as `chat_mismatch`.
+   */
+  async listChats(deviceID: string, options: { limit?: number; chatKey?: string } = {}): Promise<ArchiveChats> {
     const id = identifier(deviceID)
-    const result = await this.get<ArchiveChats>(`/v1/devices/${id}/chats`, { limit: String(limit(options.limit, 100, 3000)) })
-    valid(isID(result.device_id) && Array.isArray(result.chats) && result.chats.length <= limit(options.limit, 100, 3000) && result.chats.every(chat => record(chat) && isID(chat.uid) && typeof chat.chat_key === 'string' && nonnegative(chat.last_seq)) &&
+    const count = limit(options.limit, 100, 3000)
+    const query: Record<string, string> = { limit: String(count) }
+    if (options.chatKey !== undefined) {
+      if (!routingKey(options.chatKey)) throw new ArchiveError('invalid_chat')
+      query.chat_key = options.chatKey
+    }
+    const result = await this.get<ArchiveChats>(`/v1/devices/${id}/chats`, query)
+    valid(isID(result.device_id) && Array.isArray(result.chats) && result.chats.length <= (options.chatKey === undefined ? count : 1) && result.chats.every(chat => record(chat) && isID(chat.uid) && typeof chat.chat_key === 'string' && nonnegative(chat.last_seq)) &&
       typeof result.truncated === 'boolean' && nonnegative(result.limit))
     if (result.device_id !== id) throw new ArchiveError('device_mismatch')
+    if (options.chatKey !== undefined && (result.truncated || result.chats.some(chat => chat.chat_key !== options.chatKey))) throw new ArchiveError('chat_mismatch')
     return result
   }
   async listMessages(deviceID: string, options: { chatKey: string; limit?: number; before?: ArchiveCursor }): Promise<ArchivePage> {

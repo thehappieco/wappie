@@ -360,7 +360,11 @@ workspace owners consented to, and those keys can be revoked from the console
 at any time.
 
 The attested reader, for any connection: an archive private key, a password, a
-contact snapshot, a way to send. For a `content` connection it holds, in
+contact snapshot, a WhatsApp session. It sends nothing itself: a connection
+whose consent includes sending (docs/mcp-enclave.md §17) asks the archive
+server's send routes, with its own key, to record a draft (sealed to the
+number's archive key, which only the person's browser opens) or to send a
+note to the number's own chat, and the server decides each one. For a `content` connection it holds, in
 enclave memory only, the key its service account's grants are sealed to, and
 opens text only while that connection is live. Only for a media connection
 does it hold an attachment's plaintext, for the length of one open, in memory

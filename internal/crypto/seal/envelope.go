@@ -117,6 +117,13 @@ const (
 	// received: WhatsApp serves these over plain HTTP without encryption,
 	// unlike message media.
 	KindAvatar Kind = 0x0D
+
+	// KindMcpDraft is a message an assistant drafted through an MCP
+	// connection, sealed inside the attested reader to the number's archive
+	// key (docs/mcp-enclave.md §17.6). This server stores it and cannot open
+	// it; the person reads it in the console before anything is sent. 0x0F
+	// stays reserved.
+	KindMcpDraft Kind = 0x0E
 )
 
 // String renders a kind for error messages.
@@ -148,6 +155,8 @@ func (k Kind) String() string {
 		return "business_name"
 	case KindAvatar:
 		return "avatar"
+	case KindMcpDraft:
+		return "mcp_draft"
 	default:
 		return fmt.Sprintf("kind(%#x)", byte(k))
 	}

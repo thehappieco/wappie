@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { createServer as createNetServer } from 'node:net'
 import { join } from 'node:path'
 import { bytes, hpke, seal } from '@whatserver2/client'
+import { deviceCheck, deviceScope } from '@whatserver2/mcp/bundle'
 import { fixture, vector, workspace } from '@whatserver2/mcp/test/fixture'
 import { pkce, proof, sealBundle } from '../../test/harness.mjs'
 import { attest } from '../attest.mjs'
@@ -237,4 +238,44 @@ export async function openAttachment(w, done, args) {
   const response = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'open_attachment', arguments: { device_id: vector.device, ...args } } })
   assert.equal(response.status, 200, response.body)
   return { response, value: result(response.body) }
+}
+
+// ---- Sending (S1) ------------------------------------------------------------------
+
+/** The number's device key, as the creator's browser holds it: the fixture's archive key. */
+export const DSK = () => bytes.fromBase64(vector.private_key)
+
+/**
+ * The device checks the creator's browser computes (§17.2 rule 3) for
+ * `bundle` (the fields the scope reads), with the DSK the grants carry, under
+ * the consent's request id (or a renewal's id) and the attested key's id.
+ */
+export function deviceChecks(bundle, { request, kid, epoch = 1, dsk = DSK(), devices = bundle.device_ids }) {
+  return Object.fromEntries(devices.map(device => [device, deviceCheck(dsk, { namespace: vector.tenant, deviceID: device, epoch,
+    scope: deviceScope(bundle, { deviceID: device, epoch, request, kid }) })]))
+}
+
+/**
+ * A content consent with sending (§17.2): version 3, `send: 'draft'` plus
+ * `options.send` (send_self, send_groups, media), a device check per number,
+ * and Go relaying the same fields. `options.scope` changes only what the
+ * checks were computed over (a forged or stale scope), `options.checks`
+ * replaces them. Go's row takes the connection's API key and a status that
+ * says sending is on.
+ */
+export async function connectSending(w, options = {}) {
+  const request = options.request ?? await prepareRequest(w)
+  const service = options.service ?? randomUUID()
+  const token = options.token ?? newApiKey()
+  const expiresAt = options.expiresAt ?? new Date(Date.now() + 30 * DAY).toISOString()
+  const fields = { consent_version: 3, send: 'draft', ...options.send }
+  const scoped = { workspace_id: workspace, service_user_id: service, device_ids: [vector.device], expires_at: expiresAt, ...fields, ...options.scope }
+  const checks = options.checks ?? deviceChecks(scoped, { request: options.checkRequest ?? request.id, kid: request.prepared.kid, devices: options.bundle?.device_ids ?? [vector.device] })
+  const relay = { send: 'draft', ...(fields.send_self ? { send_self: true } : {}), ...(fields.send_groups ? { send_groups: true } : {}), ...(fields.media ? { media: true } : {}), ...options.relay }
+  for (const name of Object.keys(relay)) if (relay[name] === undefined) delete relay[name]
+  const done = await connectContent(w, { ...options, request, service, token, expiresAt, bundle: { ...fields, device_checks: checks, ...options.bundle }, relay })
+  const row = w.go.connections.get(done.connectionId)
+  row.api_key = token
+  row.extra = { media: fields.media === true, media_off: [], send: 'draft', send_self: fields.send_self === true, send_groups: fields.send_groups === true }
+  return done
 }

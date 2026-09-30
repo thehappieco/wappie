@@ -5,10 +5,12 @@ useDefault = true
 description = "Generated cryptographic interoperability vectors; these test keys protect no real data"
 paths = [
  '''internal/crypto/seal/testdata/vectors\.json$''',
+ '''internal/crypto/seal/testdata/draft-vectors\.json$''',
  '''internal/crypto/wamedia/testdata/vectors\.json$''',
  '''internal/wsapi/testdata/frames\.json$''',
  '''web/testdata/browser-grant\.json$''',
- '''packages/client/testdata/browser-grant\.json$'''
+ '''packages/client/testdata/browser-grant\.json$''',
+ '''packages/client/testdata/node-draft\.json$'''
 ]
 
 [[allowlists]]

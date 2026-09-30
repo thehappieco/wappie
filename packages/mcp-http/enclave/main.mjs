@@ -8,7 +8,9 @@
 // Go are HMAC-signed over WebPKI, every consent request gets its own key and a
 // fresh attestation, and logs leave only through the schema-checked sink.
 // Content connections (content.mjs, §15) keep their keys in this process's
-// memory only; after any restart they wait in `reseal` for a renewal.
+// memory only; after any restart they wait in `reseal` for a renewal. Those
+// whose consent includes sending (§17) draft and send through Go's routes
+// with their own key, and keep their fingerprints and dedupe in memory too.
 //
 // Boot order (§10.2): boot.json; credentials and the RSA recipient key; the
 // relay secret; the key policy hash (not fatal); the sealed state; the ACME
@@ -121,7 +123,7 @@ export async function startEnclave(options = {}) {
     log, now, started: now(),
     probe: () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now }),
     fields: () => ({
-      ...mediaHealth(),
+      ...mediaHealth(), ...(facts.content?.sending.counts() ?? {}),
       cert_days_left: facts.certificates?.daysLeft() ?? undefined,
       connections: facts.state?.connections.size, pending: facts.state?.pending.size, state_dirty: facts.state?.dirty(),
       relay_secrets: facts.secrets?.count(), acme_account_id: accountId(facts.acmeUri) ?? undefined,
@@ -131,6 +133,8 @@ export async function startEnclave(options = {}) {
       content_connections: facts.content?.counts().connections, content_keys: facts.content?.counts().keys,
     }),
   })
+  // The sending fields (§17.12) are the send service's: `drafts` and `sends`
+  // since the last line, `fp_entries` held now across all connections.
   /** The attachment fields of the health line (§16.10): counts since the last line. */
   function mediaHealth() {
     const media = facts.content?.media

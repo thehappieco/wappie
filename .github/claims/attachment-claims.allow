@@ -70,6 +70,8 @@ metadata,text packages/mcp/README.md :: and the local reader do not have the too
 # coverage note and tool descriptions, which hold on every connection.
 text packages/mcp/server.mjs :: const withoutAttachments = 'Attachment contents are unavailable: only filenames and metadata are returned.
 metadata,text packages/mcp/server.mjs :: 'No sending, mutations, calls or attachment downloads are available. Use resolve_contact
+text packages/mcp/server.mjs :: if (!send) return media ? 'No sending, mutations or calls are available.'
+text packages/mcp/server.mjs :: 'No other mutations, calls or attachment downloads are available.'].join(' ')
 media packages/mcp/server.mjs :: const openAttachmentDescription = 'Open one attachment of an archived message inside the attested Wappie reader.
 media packages/mcp/server.mjs :: case 'media_unavailable': return 'The reader cannot open attachments at the moment.
 text,media packages/mcp/server.mjs :: or attachment filenames, opened inside the attested Wappie reader; not semantic similarity or file contents.
@@ -82,6 +84,8 @@ metadata,text,media packages/mcp/reader.mjs :: Structured payloads and attachmen
 # connection.
 text packages/mcp/test/content.test.mjs :: /Attachment contents are unavailable/
 text packages/mcp/test/media.test.mjs :: /Attachment contents are unavailable: only filenames and metadata are returned
+text packages/mcp/test/send.test.mjs :: No other mutations, calls or attachment downloads are available.
+text packages/mcp/test/send.test.mjs :: Attachment contents are unavailable: only filenames and metadata are returned. ${tail}
 text packages/mcp/test/media.test.mjs :: assert.doesNotMatch(instructions, /Attachment contents are unavailable|attachment downloads/)
 media packages/mcp/test/media.test.mjs :: assert.equal(tool.description, 'Open one attachment of an archived message inside the attested Wappie reader.
 media packages/mcp/test/media.test.mjs :: [refusal('media_unavailable'), 'The reader cannot open attachments at the moment.

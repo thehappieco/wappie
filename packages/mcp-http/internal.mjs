@@ -22,9 +22,10 @@ export class RelayError extends Error {
  * target, body)` replaces the bearer header when given (the enclave signs
  * every request). `call` and `body` are exposed for the enclave's state routes.
  * `mediaKinds` (the attested reader's, docs/mcp-enclave.md §16.9) makes
- * `status` read the attachment fields too.
+ * `status` read the attachment fields too, and `send` (the attested reader's
+ * from 0.5.0, §17.3) the sending fields.
  */
-export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor, reasons = false, mediaKinds }) {
+export function createRelay({ archive, secret, fetch = globalThis.fetch, timeoutMs = 5000, prefix = '/v1/mcp/internal', headersFor, reasons = false, mediaKinds, send = false }) {
   const base = archive.replace(/\/$/, '')
   async function call(method, path, query, { body: payload, timeout = timeoutMs, headers: extra = {} } = {}) {
     const url = new URL(base + prefix + path)
@@ -57,7 +58,9 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
      * An attested reader's route also names the row's `kind` and
      * `service_user_id`; they are passed on when well formed. With
      * `mediaKinds`, `media` (true only for JSON true) and `media_off` (the
-     * known kinds Go names, sorted, else []) are always there.
+     * known kinds Go names, sorted, else []) are always there; with `send`,
+     * `send` ('draft' or 'direct', else null: a missing field reads as null)
+     * and `send_self` (true only for JSON true).
      */
     async status(id) {
       const response = await call('GET', `/connections/${encodeURIComponent(id)}`)
@@ -73,6 +76,10 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
       if (mediaKinds) {
         answer.media = parsed.media === true
         answer.media_off = Array.isArray(parsed.media_off) ? [...new Set(parsed.media_off.filter(word => mediaKinds.includes(word)))].sort() : []
+      }
+      if (send) {
+        answer.send = parsed.send === 'draft' || parsed.send === 'direct' ? parsed.send : null
+        answer.send_self = parsed.send_self === true
       }
       return answer
     },

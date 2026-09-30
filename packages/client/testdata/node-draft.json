@@ -1,0 +1,15 @@
+{
+  "note": "Sealed by packages/client/test/draft.spec.ts as the attested reader seals a draft, opened by Go in internal/crypto/seal/draft_test.go. Regenerate with: cd packages/client && WS_REGEN_VECTORS=1 npm test",
+  "tenant": "018f3a2b-0000-7000-8000-000000000011",
+  "device": "018f3a2b-0000-7000-8000-000000000012",
+  "connection": "018f3a2b-0000-7000-8000-000000000013",
+  "draft": "0b6f8a52-1c1e-4b3f-9d6a-3c0e2a7f4d11",
+  "reply_to_uid": "018f3a2b-0000-7000-8000-000000000014",
+  "chat_key": "120363041234567890@g.us",
+  "epoch": 2,
+  "archive_private_key": "iKr+nDObz+EE1/TduP4KGpxbkwFFMUZ8ZZFzcClRNFg=",
+  "archive_public_key": "d2RqGUCGz9UVPXR9rujwx2C7MRYKtyvZAHnhGehJtwc=",
+  "draft_row": "fbd4321a-88a8-5d99-986a-f67b20e4b293",
+  "plaintext": "{\"v\":1,\"connection_id\":\"018f3a2b-0000-7000-8000-000000000013\",\"device_id\":\"018f3a2b-0000-7000-8000-000000000012\",\"chat_key\":\"120363041234567890@g.us\",\"reply_to_uid\":\"018f3a2b-0000-7000-8000-000000000014\",\"text\":\"Combinado: sexta às 15h.\\nLevo os documentos.\",\"created_at\":\"2026-10-01T09:30:15.123Z\",\"cross_chat\":[]}",
+  "sealed": "V1MBAQEAAgBMC9aIugnESZmc5Y4fF1Vgz6SRVA0RoV6HnJE4mvN8FObZRqtl4fEEZnxvg/gV9JXwBoHg7uROU9Gcv+lPps6i3VtFOEDkI8FC+yP4KN0ljtK1WuRdbdhQtlXsYf4R+Ci64Tv6Zug4OsnnDhqW3cFOCBCvVe+tfX7qmBr83XGzBPo3nZA0SNF4e0zBZb+3CNAEhPVGOfYz3GXbcB9iLrRxRuA7l6rxHqtzcztCYwLNvMvhjQ9irzxwqm/hCRiyKJq005JFspR8im/BjH0sOMrfXIzdKW23GV6JLLYY+Mra3BzoRA8f6r8zCcJ9FoNjekOItk50vUBhcHycvzJjDlZbbsgI34cxPEzJCxBhXUq1nu5Y7goVm3UCbR4/pdK3uDhfxHMqmFTtrzu6JkTjB3G+WZEqpryXXK4q+lCnIPXNLRN0P4fmBT7sgTp29JKHEZurli2dcV8CXM12BkWaSYusqh3MQGm190ed80cG"
+}

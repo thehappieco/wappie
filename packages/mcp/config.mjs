@@ -24,6 +24,10 @@ const schema = z.strictObject({
   // Attachment contents (docs/mcp-enclave.md §16): only the attested reader
   // opens them, for a connection whose sealed consent says so.
   media: z.boolean().default(false),
+  // Sending (docs/mcp-enclave.md §17.8): drafts ('draft'; 'direct' is S3's)
+  // and own-chat sends, on the attested reader only, as the sealed consent says.
+  send: z.enum(['draft', 'direct']).nullable().default(null),
+  send_self: z.boolean().default(false),
 })
 const credentialFiles = ['session_file', 'token_file', 'password_file', 'service_key_file', 'contacts_file']
 export class LocalConfigError extends Error {
@@ -59,7 +63,8 @@ export function validateConfig(value, base = process.cwd()) {
     if (credentialFiles.some(field => config[field]) || config.allow_plaintext !== true ||
       !config.service_user_id || !config.device_ids) throw new LocalConfigError('enclave_credentials_invalid')
   }
-  if (config.media && config.credential_source !== 'enclave') throw new LocalConfigError('enclave_credentials_invalid')
+  if ((config.media || config.send !== null || config.send_self) && config.credential_source !== 'enclave') throw new LocalConfigError('enclave_credentials_invalid')
+  if (config.send_self && config.send === null) throw new LocalConfigError('invalid_config')
   if (config.credential_source === 'files') {
     if (Boolean(config.session_file) === Boolean(config.token_file)) throw new LocalConfigError('choose_one_credential')
     if ((config.session_file && (config.service_key_file || config.service_user_id)) ||

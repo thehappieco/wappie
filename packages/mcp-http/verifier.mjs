@@ -23,6 +23,12 @@ export const STATUS_TTL_MS = 60_000
  * `{answer, media, media_off}` from the `serve` answer cached with them, and a
  * fresh status check when there is none younger than the TTL. `media` is
  * false and `media_off` [] unless the answer is 'serve'.
+ *
+ * `checkActive.sendStatus(id)` is a draft's or a send's gate (§17.8 step 2),
+ * the same way: `{answer, send, send_self}`, `send` null and `send_self`
+ * false unless the answer is 'serve'. Go answers `send: null` for a paused
+ * connection or a workspace whose switch is off, so both reach the enclave
+ * within the TTL; Go refuses them itself at once.
  */
 /**
  * The deadline to keep for a connection given the one Go answers. Go's is
@@ -55,7 +61,10 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
       if (state.wipeConnection(id)) { await state.save(); await onWiped(id) }
       return false
     }
-    if (answer === 'serve') cache.set(id, { at: now(), media: current.media === true, media_off: Array.isArray(current.media_off) ? [...current.media_off] : [] })
+    if (answer === 'serve') {
+      cache.set(id, { at: now(), media: current.media === true, media_off: Array.isArray(current.media_off) ? [...current.media_off] : [],
+        send: current.send === 'draft' || current.send === 'direct' ? current.send : null, send_self: current.send_self === true })
+    }
     // Go's expiry is authoritative (within the consent); keep the local copy in step with it.
     if (connection && connection.expires_at !== deadline) { connection.expires_at = deadline; void state.save().catch(() => {}) }
     return answer
@@ -68,6 +77,15 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
       cached = cache.get(id)
     }
     return cached ? { answer: 'serve', media: cached.media, media_off: [...cached.media_off] } : { answer: false, media: false, media_off: [] }
+  }
+  checkActive.sendStatus = async id => {
+    let cached = cache.get(id)
+    if (!fresh(cached) || content?.pending(id)) {
+      const answer = await checkActive(id, { force: true })
+      if (answer !== 'serve') return { answer, send: null, send_self: false }
+      cached = cache.get(id)
+    }
+    return cached ? { answer: 'serve', send: cached.send, send_self: cached.send_self && cached.send !== null } : { answer: false, send: null, send_self: false }
   }
   return checkActive
 }

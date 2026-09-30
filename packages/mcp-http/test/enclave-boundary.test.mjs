@@ -77,6 +77,21 @@ test('attachments stay in the enclave: nothing the pilot or the reader reaches o
   assert.equal(configFor(connection, 'https://api.wappie.thehappie.co').media, false)
 })
 
+test('sending stays in the enclave: nothing the pilot or the reader reaches names a send route or enclave/send, and the pilot provider has no send', async () => {
+  for (const [base, label] of [[root, 'mcp-http'], [readerRoot, 'mcp']]) {
+    for (const [file, text] of await reachable(base)) {
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1')
+      assert.equal(/enclave\/send/.test(code), false, `${label}/${file} names enclave/send`)
+      for (const route of ['/drafts', '/refusals', '/outbound', '/send', 'sending(']) assert.equal(code.includes(route), false, `${label}/${file} names ${route}`)
+      for (const name of ['createSendService', 'sealDraft', 'draftRow', 'createFingerprints', 'drafts_to']) assert.equal(text.includes(name), false, `${label}/${file} names ${name}`)
+    }
+  }
+  const connection = { connection_id: randomUUID(), workspace_id: workspace, device_ids: [vector.device], timezone: 'UTC', api_key: 'k', send: 'draft', send_self: true }
+  assert.equal(providerFor(connection).send, undefined)
+  const config = configFor(connection, 'https://api.wappie.thehappie.co')
+  assert.deepEqual([config.send, config.send_self], [null, false])
+})
+
 test('the published files leave enclave/ out', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(manifest.files.some(file => file.startsWith('enclave')), false)

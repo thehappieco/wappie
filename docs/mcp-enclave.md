@@ -3854,7 +3854,7 @@ authorizes a send: §17.5 is.
 |---|---|---|---|
 | `POST /v1/mcp/enclave/connections/{id}/drafts` | `{"id","device_id","chat_key","reply_to_uid"?,"epoch","sealed"}` (`sealed` unpadded base64url of at most 16,384 bytes) | 201 `{"id","expires_at"}` | 403 `send_not_allowed`; 404; 409 `connection_state`, `draft_exists`; 422 `chat_not_eligible`, `group_not_allowed`, `reply_not_found`; 429 `rate_limited` `{"retry_at"}` |
 | `POST /v1/mcp/enclave/connections/{id}/send` | `{"client_ref","kind":"self"}` plus `"device_id","text"`; S3 adds `{"kind":"send","chat_key","reply_to_uid"?,"reply_body"?}` | 200 `{"id","message_uid"\|null,"wa_id","timestamp","duplicate"}` | 403 `send_not_allowed`; 404; 409 `connection_state`, `device_offline`, `send_in_progress`; 422 `chat_not_eligible`, `chat_not_allowed`, `group_not_allowed`, `text_not_allowed`, `reply_not_found`; 429 `rate_limited` `{"retry_at"}`; 502 `send_uncertain` |
-| `POST /v1/mcp/enclave/connections/{id}/refusals` | `{"kind":"draft"\|"self"\|"send","device_id","chat_key","code"}` (`chat_key` absent for `self`, required otherwise), `code` one of `text_not_allowed`, `cross_chat_blocked`, `chat_not_allowed`, `recipient_mismatch`, `rate_limited` | 204 | 400; 404 |
+| `POST /v1/mcp/enclave/connections/{id}/refusals` | `{"kind":"draft"\|"self"\|"send","device_id","chat_key","code"}` (`chat_key` absent for `self`, required otherwise), `code` one of `text_not_allowed`, `cross_chat_blocked`, `chat_not_allowed`, `recipient_mismatch`, `rate_limited`, `chat_not_eligible`, `group_not_allowed` | 204 | 400; 404 |
 | `GET /v1/mcp/enclave/connections/{id}/outbound?limit=&before=&status=&device_id=` | none; `limit` 1 to 50 (default 20), `before` a previous `next` | 200 `{"items":[{"id","kind","status","code","device_id","chat_key","reply_to_uid","created_at","decided_at","edited","message_uid"}],"next"}` (never `sealed`) | 400; 404 |
 
 `next` is an opaque string of at most 64 characters (Go encodes
@@ -4056,9 +4056,10 @@ table below; nothing is sealed before step 6):
 4. Dedupe (§17.11): a hit answers the recorded result with
    `duplicate: true`.
 5. The chat: `listChats(device_id, {chatKey})`; no chat is
-   `chat_not_eligible`; the chat's name is opened (as `list_chats` opens
-   it) for `chat_name`, and `is_group` read. The enclave's own
-   `DRAFTS_PER_HOUR` count, else `rate_limited`, recorded.
+   `chat_not_eligible`, and a group the record's `send_groups` leaves out
+   `group_not_allowed`, each recorded; the chat's name is opened (as
+   `list_chats` opens it) for `chat_name`, and `is_group` read. The
+   enclave's own `DRAFTS_PER_HOUR` count, else `rate_limited`, recorded.
 6. Fingerprints (§17.11) give `cross_chat`; the plaintext is built and
    sealed (§17.6) with a fresh draft id.
 7. `POST …/drafts`; its 4xx is the answer's code (Go recorded it).
@@ -4071,7 +4072,11 @@ link pattern; dedupe; the enclave's own `SENDS_PER_DAY` and
 `SEND_MIN_INTERVAL_MS`, else `rate_limited`, recorded; a fresh
 `client_ref` (16 random bytes, base64url); `POST …/send` with
 `kind: "self"`; the answer. A lost answer (a network error or timeout
-after the request was sent) is `send_uncertain`: never repeated.
+after the request was sent), and any answer Go did not write (a proxy's
+502 or 504, a status without Go's JSON code, a 200 that does not parse),
+is `send_uncertain`: it counts and is never repeated. Only Go's own
+refusals (a 4xx with Go's code, or Go's 500 `internal`, §17.19) say
+nothing left, and give the enclave's place back.
 
 **Results.** One text block holding the JSON result, then, for
 `draft_message`, one line; never `structuredContent` (§16.7's reasons).
@@ -4156,7 +4161,7 @@ measured in PCR0; the ceilings of Go's `WS_MCP_SEND_*` (§17.3):
 | `SENDS_PER_DAY` | `20` | own-chat and direct sends per connection, rolling 24 h |
 | `SEND_MIN_INTERVAL_MS` | `30_000` | between two sends of a connection |
 | `DEDUPE_WINDOW_MS` | `600_000` | §17.11 |
-| `FP_TTL_MS`, `FP_MAX_PER_CONNECTION`, `FP_SHINGLE_WORDS`, `FP_CROSS_CHAT_MAX` | `3_600_000`, `20_000`, `8`, `5` | §17.11 |
+| `FP_TTL_MS`, `FP_SHINGLES_PER_CONNECTION`, `FP_ENTITIES_PER_CONNECTION`, `FP_SHINGLE_WORDS`, `FP_SHINGLES_PER_TEXT`, `FP_TEXT_MAX_CHARS`, `FP_CROSS_CHAT_MAX` | `3_600_000`, `20_000`, `5_000`, `8`, `2_000`, `16_384`, `5` | §17.11 |
 | `LIST_OUTGOING_MAX` | `50` | items per `list_outgoing` page |
 | S3: `SEND_TEXT_MAX_CHARS`, `SENDS_PER_CHAT_PER_DAY`, `SEND_CHATS_MAX`, `REPLY_BODY_MAX_CHARS`, `DIRECT_SEND_HOSTS` | `1_000`, `5`, `20`, `1_024`, §17.15 | direct send |
 
@@ -4195,25 +4200,37 @@ after `\r\n` and `\r` become `\n`:
   - **Key.** Per connection, a random 32-byte `k_fp`, in memory only,
     wiped with the connection.
   - **Sources.** Every text the reader returns to the assistant that
-    belongs to one chat: message bodies, captions, `open_attachment` text
-    and AI results (§18.12). Chat and contact names are not sources.
+    belongs to one chat: message bodies, captions, file names,
+    `open_attachment` text and AI results (§18.12). Chat and contact names
+    are not sources.
   - **Normalization.** NFKC, case-folded, split into words on white space
     and punctuation. Every window of `FP_SHINGLE_WORDS` words is
     fingerprinted, and so is every entity found in the text: URLs (host
     and path), e-mail addresses, runs of 8 or more digits (phone numbers),
     currency amounts, and PIX-like keys (random-key UUIDs, CPF and CNPJ
-    digit patterns).
+    digit patterns). Anyone who can message a number writes these texts,
+    and they are read on the reader's one thread before an answer leaves:
+    every pattern is linear in the text (it starts only where its run
+    starts, and bounds every run it repeats), and a text longer than
+    `FP_TEXT_MAX_CHARS` code units, before or after normalization, is
+    fingerprinted by its first and last halves of that.
   - **Fingerprint.** The first 8 bytes of `HMAC-SHA256(k_fp, kind ‖ 0x00 ‖
     normalized)`, mapped to the set of `(device_id, chat_key)` it came
-    from. Entries expire after `FP_TTL_MS`; past `FP_MAX_PER_CONNECTION`
-    the oldest go first.
+    from. Entries expire after `FP_TTL_MS`. Shingles and entities have
+    their own per-connection budgets (`FP_SHINGLES_PER_CONNECTION`,
+    `FP_ENTITIES_PER_CONNECTION`), so shingles never push out a key or a
+    link; past a budget the chat holding the most entries loses its least
+    recently seen, so one long text or one noisy chat pushes out its own
+    entries, never another chat's few. One text adds every entity it has
+    and at most `FP_SHINGLES_PER_TEXT` shingles, evenly spaced across it.
   - **Check.** A draft's or send's text is fingerprinted the same way;
     any match with a chat other than the target is a hit. The own chat as a
     target is never marked. A draft records up to `FP_CROSS_CHAT_MAX` hit
     chats in its sealed `cross_chat`. A direct send with a hit is refused
     (S3). `send_to_self` is exempt.
-  - **Limits.** It catches copies, not paraphrases, and covers only the
-    last hour of this connection's reads. The card says so.
+  - **Limits.** It catches copies, not paraphrases, covers only the last
+    hour of this connection's reads, and of a long text only its first and
+    last `FP_TEXT_MAX_CHARS / 2` code units. The consent card says so.
 
 ### 17.12 Logs, health and what leaks
 
@@ -4248,18 +4265,44 @@ of the URL once read. No link carries a secret, and each works only with
 the person's own session and keys.
 
 **Draft card** (the conversation, opened by `mcp_draft`, or from the
-pending list): a header "Rascunho do {client_name}" / "Draft by
-{client_name}" naming the recipient (the chat name opened in the browser
-from the plaintext's `chat_key`, and the number); for a group, a badge
-with the participant count; the quoted message, opened from the archive by
-the plaintext's `reply_to_uid`; when `cross_chat` is not empty, the banner
-"Este rascunho repete trechos da conversa com {nome}" / "This draft
-repeats parts of your chat with {name}"; the exact text with white space
-kept, with links (their full host), phone numbers, e-mails, amounts and
-PIX-like keys as chips and the kept invisible characters marked; and three
-buttons: Send (never the default focus), Edit (moves the text into the
-composer and sends with `mcp_edited: true`) and Discard. Sent, expired,
-revoked, discarded and uncertain drafts open read-only.
+pending list). It leads with the recipient, since checking it is the
+person's last defence against a draft an assistant was talked into: a dim
+"Rascunho do {client_name}" / "Draft by {client_name}", then the heading
+"Para {name}" / "To {name}" (the chat name opened in the browser from the
+plaintext's `chat_key`). A name that is only the one the other person gave
+themselves on WhatsApp (no saved or local name, no verified business name)
+is written "~{name}", with "O nome que a pessoa escolheu; não está nos
+seus contatos" / "The name they chose; not in your contacts". A line with
+the phone number (the chat's `chat_pn`, else any key of the chat at
+`s.whatsapp.net`), or, for a chat known only by LID, "LID {digits} · O
+WhatsApp não mostra o número deste contato" / "… WhatsApp does not show
+this contact's number", and "Remetente: {number}" / "Sender: {number}".
+For a group, a warning "Grupo: todos os {count} participantes vão ver esta
+mensagem." / "Group: all {count} participants will see this message.";
+when another chat of the number shows the same name, "Outra conversa deste
+número tem o mesmo nome: confira o número antes de enviar." / "Another
+chat on this number has the same name: check the number before sending."
+When `cross_chat` is not empty, one banner naming every chat as a list:
+"Este rascunho repete trechos da conversa com {name}. Se você não pediu
+isso, uma mensagem de lá pode ter enganado o {assistant}: confira o
+destinatário, os links e os valores, ou descarte." / "This draft repeats
+text from your chat with {name}. If you did not ask for that, a message
+there may have misled {assistant}: check the recipient, links and
+amounts, or discard it." Then the quoted message, opened from the archive
+by the plaintext's `reply_to_uid`; the exact text with white space kept,
+with links (their full host in ASCII, an `xn--` host flagged; a bare
+domain is a link too, as WhatsApp makes it one), phone numbers, e-mails,
+amounts and PIX-like keys as chips and the kept invisible characters
+marked, and a line saying what the highlights and the red tags are; and
+three buttons: "Enviar para {name}" / "Send to {name}" (never the default
+focus, and not the primary button when `cross_chat` is not empty), Edit
+and Discard. Edit moves the text into the composer, which names the
+recipient and sends with `mcp_edited: true`; while editing, the card folds
+its text into "Rascunho original" / "Original draft" and has no Send of
+its own, and a reply or a correction started from a message ends the
+edit. Sent, expired, revoked, discarded and uncertain drafts open
+read-only, each with its own sentence ("Este rascunho expirou sem ser
+enviado.", …).
 
 **Pending list** (`mcp_drafts`): the connection's pending drafts one at a
 time, "{i} de {n}" / "{i} of {n}", each with the full card; moving on never
@@ -4267,49 +4310,69 @@ sends, and there is no "send all": each send is its own `message.send`
 frame.
 
 **Activity**, per connection, in `MCPPanel.vue` and on the assistant page
-(`MCPConnectPage.vue`): the ledger (time; draft, own-chat send or send;
-the chat, its name opened in the browser; the status: waiting, sent,
-edited and sent, discarded, expired, uncertain, or refused with its code;
-the message link). A connection in `reseal` shows "parado: renove com a
-senha" / "stopped: renew with your password", with the renewal link. The
-conversation marks a message whose uid is in the ledger with "via
-{client_name}".
+(`MCPConnectPage.vue`): the ledger (time; the kind as a noun: "Rascunho" /
+"Draft", "Envio para a própria conversa" / "Own-chat note", "Envio
+direto" / "Direct send"; for a draft, the chat, its name opened in the
+browser; the status: waiting, sent, edited and sent, discarded, expired
+without being sent, uncertain, or refused with its code; the message
+link). A connection in `reseal` shows "Parado: o leitor da Wappie
+reiniciou. Renove com a sua senha; …" / "Stopped: the Wappie reader
+restarted. Renew with your password; …", with the renewal link. A
+content connection without sending, where the workspace may draft, says
+it only reads and that drafting takes a new connection (the old one then
+revoked). The conversation marks a message whose uid is in the ledger with
+"via {client_name}".
 
 **Toggles**, on the consent card, all off by default: "Também preparar
-mensagens" / "Also draft messages", with "Incluir grupos" / "Include
-groups"; beneath it, "Enviar para a minha própria conversa" / "Send to my
-own chat". The pause is a per-connection switch in the activity. The cards
-(drafts for the owner's approval in pt and en; es, fr and de follow; legal
-review does not block drafts):
+mensagens" / "Also draft messages"; nested under it, and shown only while
+it is on, "Incluir grupos" / "Include groups" ("Desligado: rascunhos só
+para conversas com uma pessoa. Ligado: um rascunho para um grupo chega a
+todos os participantes.") and "Enviar para a minha própria conversa" /
+"Send to my own chat" ("Notas enviadas na hora, sem pedir sua
+confirmação, só para a sua conversa com o próprio número; até {n} por
+dia."). Neither turns drafts on, and both go off with them. The pause is a
+per-connection switch in the activity. The cards (drafts for the owner's
+approval in pt and en; es, fr and de follow; legal review does not block
+drafts):
 
 > pt: "Também preparar mensagens. O {assistant} poderá escrever rascunhos
 > para conversas destes números em que a outra pessoa já escreveu{,
 > incluindo grupos}. Nada é enviado sem que você abra o rascunho no console
-> da Wappie, confira o texto e o destinatário e toque em Enviar. O
-> {assistant} escolhe a conversa e pode ser enganado por uma mensagem que
-> leu: confira sempre o destinatário, os links e os valores. Os rascunhos
-> ficam cifrados até você decidir e expiram em 24 horas. Quando você envia,
-> o servidor da Wappie que fala com o WhatsApp vê o texto, como em qualquer
-> mensagem enviada pelo console."
+> da Wappie, confira o texto e o destinatário e aperte Enviar; só você pode
+> enviá-los. O {assistant} escolhe a conversa e pode ser enganado por uma
+> mensagem que leu: confira sempre o destinatário, os links e os valores. A
+> Wappie avisa quando um rascunho copia texto de outra conversa lida na
+> última hora, mas não quando o texto é reescrito. O {assistant} guarda o
+> que escreveu e pode ver se você enviou, editou ou descartou cada
+> rascunho. Na Wappie, os rascunhos ficam cifrados até você decidir e
+> expiram em 24 horas. Quando você envia, o servidor da Wappie que fala com
+> o WhatsApp vê o texto, como em qualquer mensagem enviada pelo console.
+> Você pode pausar o envio a qualquer momento na atividade desta conexão."
 
 > en: "Also draft messages. {assistant} will be able to write drafts for
 > chats of these numbers where the other side has already written{, groups
 > included}. Nothing is sent until you open the draft in the Wappie
-> console, check the text and the recipient, and press Send. {assistant}
-> picks the chat and can be misled by a message it read: always check the
-> recipient, the links and the amounts. Drafts stay encrypted until you
-> decide, and expire after 24 hours. When you send one, the Wappie server
-> that talks to WhatsApp sees the text, as for any message sent from the
-> console."
+> console, check the text and the recipient, and press Send; only you can
+> send them. {assistant} picks the chat and can be misled by a message it
+> read: always check the recipient, the links and the amounts. Wappie warns
+> when a draft copies text from another chat read in the last hour, but not
+> when the text is reworded. {assistant} keeps what it drafted and can see
+> whether you sent, edited or discarded each draft. In Wappie, drafts stay
+> encrypted until you decide, and expire after 24 hours. When you send one,
+> the Wappie server that talks to WhatsApp sees the text, as for any
+> message sent from the console. You can pause sending at any time from
+> this connection's activity."
 
 > pt: "Enviar para a minha própria conversa. O {assistant} poderá mandar
-> mensagens de texto, sem links, para a sua conversa com você mesmo nestes
-> números, sem passar pelo console: até {n} por dia. O servidor da Wappie
-> vê o texto de cada envio."
+> notas de texto, sem links, para a sua conversa com o próprio número, em
+> cada um destes números, na hora e sem pedir sua confirmação: até {n} por
+> dia, e nunca para outra pessoa. O servidor da Wappie vê o texto de cada
+> envio."
 
-> en: "Send to my own chat. {assistant} will be able to send text messages,
-> without links, to your chat with yourself on these numbers, without the
-> console: up to {n} a day. The Wappie server sees the text of each one."
+> en: "Send to my own chat. {assistant} will be able to send text notes,
+> without links, to your chat with your own number on each of these
+> numbers, at once and without asking you: up to {n} a day, and never to
+> anyone else. The Wappie server sees the text of each one."
 
 **New codes** in five locales: `send_not_allowed`, `draft_mismatch`,
 `draft_state`, `chat_not_eligible`, `group_not_allowed`, `text_not_allowed`,
@@ -4472,7 +4535,12 @@ Its interface is reserved now:
   and a test holding DSK′ cannot open it; dedupe within and past the
   window; fingerprints (a copied 8-word run, a copied PIX key and a copied
   URL from chat A mark a draft to chat B; the same text to A, or to the own
-  chat, is not marked); text rules (a ZWJ emoji and RTL with LRM pass;
+  chat, is not marked; a key planted in a file name is marked; a long read
+  or a flood from another chat keeps chat A's key; every pattern finishes
+  65,536 hostile characters in under 50 ms); a send answered by a proxy's
+  502 or 504, or a 200 that does not parse, is `send_uncertain` and never
+  sent again; a draft to a chat the number does not have, or to a group
+  without the switch, is in the ledger; text rules (a ZWJ emoji and RTL with LRM pass;
   U+202E and U+2066 refused; the shared vectors); no send tool without the
   capability or on the pilot; `send_not_allowed` while the status answers
   `send: null`; `send_uncertain` on a lost answer, never repeated; the
@@ -4483,9 +4551,13 @@ Its interface is reserved now:
   metadata and local); exact descriptions and sentences; the
   `review_url` and `drafts_url` shapes and the `CONSOLE_URL?` check.
 - **CONSOLE** (vitest): `draft_mismatch` when Go's row differs from the
-  sealed draft; the recipient and quote rendered from the plaintext; the
-  chips, the marks and the `cross_chat` banner; the pending list sends one
-  frame per draft and has no send-all; Send not focused; `mcp_edited`;
+  sealed draft; the recipient and quote rendered from the plaintext; a name
+  only the other side chose marked, the number or that WhatsApp hides it,
+  a name another chat shares flagged; the chips (a bare look-alike domain
+  with its `xn--` host), the marks and the `cross_chat` banner; the pending
+  list sends one frame per draft and has no send-all; Send not focused; a
+  reply or a correction ends a draft's edit and never sends as the draft;
+  `mcp_edited`;
   the device checks computed as §17.2 over fixture DSKs (the enclave's
   vectors); the gating conditions; "parado" on `reseal`; the links
   surviving sign-in and dropped for another workspace; cleanup at every
@@ -4682,6 +4754,92 @@ open; each binds S1 as the rest of §17 does.
 - **Not in S0**: Kind 0x0E and `DraftRow` (S1, with the client's), the
   host probe, and `release.py`'s `migration44_sha256` and the runbook
   (commercial repository).
+
+### 17.20 Recorded during S1
+
+What the client, reader and enclave settled where the sections above left
+it open; each binds S3 and the console as the rest of §17 does.
+
+- **Vectors.** Go writes `internal/crypto/seal/testdata/draft-vectors.json`
+  (rows, a draft it sealed, seven negatives: another chat, reply, none,
+  connection, draft, number, kind), which the client opens; the client
+  seals `packages/client/testdata/node-draft.json` in Node, as the enclave
+  does, which Go opens and refuses moved. The device check's vectors,
+  `packages/mcp-http/enclave/test/device-check-vectors.json`, come from an
+  independent WebCrypto generator; the reader reproduces them, and they are
+  the console's too. `draftRow` refuses an id that is not 16 bytes.
+- **Where it lives.** The device check is `packages/mcp/bundle.mjs`
+  (`deviceScope`, `deviceCheck`), which the enclave and the console share.
+  Beside §17.1's files, `enclave/send/service.mjs` builds `provider.send`,
+  the gate, the refusal recorder and Go's answers as codes; the draft steps
+  are `drafts.mjs`, the own-chat steps and the enclave's windows `sends.mjs`.
+  `proveGrants` resolves to `{epochs, draftsTo}`.
+- **The chat lookup.** `provider.send.draft(input, archive)` takes a second
+  argument, as `provider.media.open` does: `archive.chat()`, asked at step 5
+  only, is the reader's (`reader.mjs`): the chat by §17.3's filter, its name
+  opened with the connection's grants as `list_chats` opens it, every key it
+  is known by (`chat_pn`, `chat_lid`, `keys`), and whether it is the number's
+  own chat (its key is `<pn user>@s.whatsapp.net` or `<lid user>@lid` of the
+  devices route). The own chat is never marked; a chat under another of the
+  target's keys is the target. The enclave refuses a chat key Go's ledger
+  would not hold (`chat_not_eligible`) without a call or a row, since the
+  ledger cannot hold that key either. It refuses no chat
+  (`chat_not_eligible`: the usual outcome of a number an injected message
+  supplied) and a group the record's `send_groups` leaves out
+  (`group_not_allowed`) without a draft, and records both through the
+  refusals route, whose codes gained them, so the person sees them in the
+  activity and `list_outgoing`.
+- **Observation.** The reader shows `observe` every opened body of
+  `get_message`, `list_messages` and `list_revisions` (a caption is the
+  body), every search hit's body, every `list_chats` preview, and
+  `open_attachment`'s text part, file name and caption, and every opened
+  attachment file name `get_message`, `list_messages`, `list_revisions` and
+  search hits return; a kept answer that read no row learns the message's
+  chat with one `GET /v1/messages/{uid}`. Chat and contact names are not
+  sources. Words split on white space and `\p{P}`; entities are URLs (scheme,
+  `www.`, query and fragment dropped), e-mail addresses, digit runs with the
+  separators of phone numbers, CPF and CNPJ (each space-free group counted
+  on its own too; dates left out), amounts with a currency sign or word, and
+  UUIDs, CPF and CNPJ as PIX keys. Hits are ordered by matches, then key.
+- **Refusal words.** An empty text (white space only) answers
+  `text_not_allowed` with its own guidance ("The text is empty once white
+  space is removed. …"), recorded like the rest. Two codes join §17.8's
+  table: `storage_paused` (Go's, §17.19) and `send_failed` (Go answered
+  something else, or not at all for a draft). Go's 409 `connection_state` is
+  `send_not_allowed`, its 404 `unauthorized`; a `retry_at` that is not RFC
+  3339 UTC never reaches the model. `list_outgoing` reads the ledger on any
+  served connection, sending paused or not; its failures are `read_failed`.
+- **Dedupe and limits.** Dedupe joins an identical call still running, keeps
+  a `send_uncertain` outcome (answered again, never sent), and forgets every
+  other refusal. The enclave's windows take a place at the check and give it
+  back when Go refuses before anything left, which only Go's own refusals
+  say (a 4xx with Go's code, or its 500 `internal`); a send answered with
+  anything else but a well-formed 200 is `send_uncertain`, kept by dedupe
+  and counted. A draft id Go already has is drawn again once. Route
+  timeouts are image constants in `policy.mjs`: 15 s for a draft, 75 s for
+  a send (past Go's minute), 10 s for the ledger; the proxy in front of
+  Go's enclave routes waits longer than the send's (the commercial
+  deploy's `proxy_read_timeout` is 90 s).
+- **Relay and renewal.** A relayed `send_chats` (at most 100 entries of
+  `{device_id, chat_key}`) is parsed and compared as a set; 0.5.0's schema
+  refuses it in a bundle, so a direct consent fails closed. The renewal
+  descriptor carries `send`, and `send_self` and `send_groups` only when
+  true. A failed proof logs `device_check_failed` or `grant_proof_failed` by
+  what failed. The status reads `send` as null unless it is `"draft"` or
+  `"direct"`, and `send_self` as true only for JSON true.
+- **Logs.** `draft_refused` and `send_refused` carry the codes the send
+  service decided or passed on; a number outside the connection and a
+  reseal are the reader's refusals, before it, as for every tool.
+- **The cards, after review.** §17.13's consent paragraphs now say that only
+  the person who connects the assistant sends, what the copy check misses
+  and what the assistant keeps, and the own-chat one that it sends without
+  asking; the own-chat toggle sits under drafts; the draft card leads with
+  the recipient, marks a name only the other side gave themselves, always
+  shows a number or that WhatsApp hides it, names the recipient on Send,
+  and tells the person what to do about a cross-chat copy. Every one of
+  those texts, in pt and en (es, fr and de drafted), awaits the owner's
+  approval as §17.13's first ones did. The console copies §17.13 word for
+  word, so a wording the owner changes lands in both.
 
 ## 18. AI integrations: on request (0.5.0)
 

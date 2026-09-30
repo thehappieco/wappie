@@ -26,7 +26,9 @@ export const contactKey = n => `${String(n).padStart(6, '0')}@lid`
  * `state.maxHistoryInFlight` records the most history requests open at once.
  * `addMedia(fields)` adds a message with an attachment, served only by
  * `GET /v1/messages/{uid}`, its media key, preview, filename and caption
- * sealed like the archive seals them. `token` replaces the bearer it accepts.
+ * sealed like the archive seals them. `addChat(fields)` adds a chat, and
+ * `state.number` fields (`pn`, `lid`) join the number's device row. `token`
+ * replaces the bearer it accepts.
  */
 export async function contentFixture({ rows: rowCount = 120, contacts: contactCount = 2200, scanPage = 40, token: bearer = token } = {}) {
   const account = await hpke.generateKeyPair()
@@ -85,7 +87,20 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
     messages.set(id, row)
     return row
   }
-  const state = { requests: [], grantEpoch: 1, historyDelayMs: 0, historyInFlight: 0, maxHistoryInFlight: 0 }
+  /**
+   * Chats the chats route serves (none unless added): `addChat` seals a
+   * chat's name under its uid and its preview under `last_uid`, as the
+   * archive does; `chat_key=` narrows the list to one, as §17.3's filter does.
+   */
+  const chats = []
+  async function addChat({ chat_key, name, preview, is_group = false, chat_pn, chat_lid, keys, uid: id = uid(70_000 + chats.length) } = {}) {
+    const chat = { uid: id, chat_key, last_seq: 1, is_group, ...(chat_pn ? { chat_pn } : {}), ...(chat_lid ? { chat_lid } : {}), ...(keys ? { keys } : {}) }
+    if (name !== undefined) { chat.name_key_id = keyID; chat.name_sealed = await encrypt(id, seal.Kind.ContactName, name) }
+    if (preview !== undefined) { chat.last_uid = uid(80_000 + chats.length); chat.last_body_key_id = keyID; chat.last_body_sealed = await encrypt(chat.last_uid, seal.Kind.Body, preview) }
+    chats.push(chat)
+    return chat
+  }
+  const state = { requests: [], grantEpoch: 1, historyDelayMs: 0, historyInFlight: 0, maxHistoryInFlight: 0, number: {} }
   const http = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost'), path = url.pathname
     state.requests.push({ method: request.method, target: request.url, path })
@@ -102,9 +117,12 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
       const row = messages.get(path.slice('/v1/messages/'.length)) ?? rows.find(item => path.endsWith(item.uid))
       return row ? reply(row) : send({ code: 'not_found' }, 404)
     }
-    if (path === '/v1/devices') return reply({ devices: [{ id: device, label: 'Número autorizado', status: 'online' }] })
+    if (path === '/v1/devices') return reply({ devices: [{ id: device, label: 'Número autorizado', status: 'online', ...state.number }] })
     if (path === '/v1/grants') return reply({ user_id: service, grants: [{ device_id: device, epoch: state.grantEpoch, archive_tenant_id: vector.tenant, sealed_dsk: grants[state.grantEpoch] }] })
-    if (path.endsWith('/chats')) return reply({ device_id: device, limit: Number(url.searchParams.get('limit')), truncated: false, chats: [] })
+    if (path.endsWith('/chats')) {
+      const key = url.searchParams.get('chat_key')
+      return reply({ device_id: device, limit: Number(url.searchParams.get('limit')), truncated: false, chats: key === null ? chats : chats.filter(chat => chat.chat_key === key) })
+    }
     if (path.endsWith('/keys')) return reply({ device_id: device, archive_tenant_id: vector.tenant,
       keys: (url.searchParams.get('ids') ?? '').split(',').includes(String(keyID)) ? [{ id: keyID, epoch: 1, sealed: bytes.toBase64(sealedKey) }] : [] })
     if (path.endsWith('/contacts')) {
@@ -142,7 +160,7 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
   const secret = Buffer.from(account.privateKey)
   account.privateKey.fill(0)
   return {
-    state, server, rows, contacts, addMedia,
+    state, server, rows, contacts, addMedia, addChat,
     /** The service key as the attested reader holds it: a non-extractable handle. */
     handle: () => hpke.importArchiveKey(Buffer.from(secret)),
     /** The raw service key, for tests that prove bytes are refused. */

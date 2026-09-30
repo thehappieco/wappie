@@ -11,12 +11,20 @@
 // §16): the sealed record says so, and such a connection's reader gets the
 // media service (media/service.mjs), which opens them in jailed workers.
 //
+// A consent of version 3 includes sending (§17): drafts, and the own chat
+// when the person turned it on. Its bundle carries a device check per number,
+// which only a holder of that number's key can make and which binds the whole
+// scope; the key a draft is sealed to is pinned here, at install, from the
+// DSK the grant proof opened. Such a connection's reader gets the sending
+// service (send/service.mjs).
+//
 // This file is reachable from enclave/main.mjs only. The hosted reader
 // (../server.mjs on the pilot) never imports it: there a bundle labelled
 // `content` is a bad request, `link.openBundle` refuses anything but v1, and
 // '../provider.mjs' refuses every content-opening read.
+import { timingSafeEqual } from 'node:crypto'
 import { ArchiveClient, bytes, hpke, seal } from '@whatserver2/client'
-import { validateContentBundle } from '@whatserver2/mcp/bundle'
+import { deviceCheck, deviceScope, validateContentBundle } from '@whatserver2/mcp/bundle'
 import { LocalConfigError } from '@whatserver2/mcp/config'
 import { validTimezone } from '@whatserver2/mcp/time'
 import { RelayError } from '../internal.mjs'
@@ -28,6 +36,7 @@ import { padResponse } from './media/pad.mjs'
 import { createMediaService } from './media/service.mjs'
 import { contentConfigFor, contentProviderFor } from './provider.mjs'
 import { createRenewals } from './renew.mjs'
+import { createSendService } from './send/service.mjs'
 
 export const CONSENT_INFO = Buffer.from('wappie-mcp-connect/v2')
 export const RENEW_INFO = Buffer.from('wappie-mcp-renew/v1')
@@ -47,15 +56,40 @@ const RESEAL_BACKOFF_START_MS = 1000, RESEAL_BACKOFF_MAX_MS = 60_000
 /** The grant proof's archive call gives up first: Go waits 10 s for the bundle relay it runs inside. */
 export const PROOF_TIMEOUT_MS = 8000
 
+const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** A relayed `send_chats` (S3): a list of `{device_id, chat_key}`, or null. */
+function relayedChats(value) {
+  if (!Array.isArray(value) || value.length > 100) return null
+  const chats = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length !== 2 || typeof item.device_id !== 'string' || !uuidShape.test(item.device_id) ||
+      typeof item.chat_key !== 'string' || item.chat_key.length < 1 || item.chat_key.length > 128) return null
+    chats.push({ device_id: item.device_id, chat_key: item.chat_key })
+  }
+  return chats
+}
+/** Two chat lists as sets. */
+const sameChats = (a, b) => {
+  const key = chat => `${chat.device_id}\n${chat.chat_key}`
+  const left = new Set(a.map(key)), right = new Set(b.map(key))
+  return left.size === right.size && [...left].every(item => right.has(item))
+}
+
 /**
- * The relayed body: 2a's BundleRelay plus `"kind": "content"`, and `"media":
+ * The relayed body: 2a's BundleRelay plus `"kind": "content"`, `"media":
  * true` when the consent includes attachments (Go leaves it out otherwise;
- * absent is false, §16.2 rule 3).
+ * absent is false, §16.2 rule 3), and the sending fields of a version-3
+ * consent (§17.2 rule 4): `send`, with `send_self`, `send_groups` and (S3)
+ * `send_chats`, each only when present. A renewal's relay carries none.
  */
 export function parseRelay(body, { now }) {
   if (!body || typeof body !== 'object' || Array.isArray(body) || body.kind !== 'content') throw new LinkError('bad_request')
-  const { kind: _kind, media, ...rest } = body
+  const { kind: _kind, media, send, send_self, send_groups, send_chats, ...rest } = body
   if (media !== undefined && typeof media !== 'boolean') throw new LinkError('bad_request')
+  if ((send !== undefined && send !== 'draft' && send !== 'direct') || [send_self, send_groups].some(flag => flag !== undefined && typeof flag !== 'boolean') ||
+    (send === undefined && (send_self !== undefined || send_groups !== undefined || send_chats !== undefined))) throw new LinkError('bad_request')
+  const chats = send_chats === undefined ? [] : relayedChats(send_chats)
+  if (!chats) throw new LinkError('bad_request')
   const parsed = bundleBody.safeParse(rest)
   if (!parsed.success) throw new LinkError('bad_request')
   const { connection_id, tenant_id, kid, sealed: encoded, expires_at } = parsed.data
@@ -63,8 +97,12 @@ export function parseRelay(body, { now }) {
   if (sealed.toString('base64url') !== encoded || sealed.length < ENC_LEN + TAG_LEN) throw new LinkError('bad_request')
   const expiry = Date.parse(expires_at)
   if (!Number.isFinite(expiry) || expiry <= now() || expiry > now() + MAX_CONTENT_MS) throw new LinkError('bad_request')
-  return { connection_id, tenant_id, kid, sealed, expiry, media: media === true }
+  return { connection_id, tenant_id, kid, sealed, expiry, media: media === true, send: send ?? null, send_self: send_self === true, send_groups: send_groups === true, send_chats: chats }
 }
+
+/** Whether what Go relays and what the owner sealed say the same about attachments and sending (§16.2 rule 3, §17.2 rule 5). */
+export const relayMatches = (relayed, bundle) => relayed.media === (bundle.media === true) && relayed.send === (bundle.send ?? null) &&
+  relayed.send_self === (bundle.send_self === true) && relayed.send_groups === (bundle.send_groups === true) && sameChats(relayed.send_chats, bundle.send_chats ?? [])
 
 /**
  * Opens a v2 bundle sealed to `recipient` under `info` and `aad`, validates it
@@ -88,7 +126,8 @@ export async function openContentBundle(recipient, sealed, { info, aad, purpose,
     // The reader's schema is the rule; these are what binds the bundle to this
     // request, checked here again whatever the schema says.
     if (bundle.version !== 2 || bundle.kind !== 'content' || bundle.purpose !== purpose || bundle.key_mode !== KEY_MODE ||
-      (bundle.consent_version !== 1 && bundle.consent_version !== 2) || (bundle.media === true && bundle.consent_version !== 2) ||
+      ![1, 2, 3].includes(bundle.consent_version) || (bundle.media === true && bundle.consent_version < 2) ||
+      (bundle.consent_version === 3) !== (bundle.send !== undefined) || (bundle.send !== undefined) !== (bundle.device_checks !== undefined) ||
       bundle.server_url !== origin || bundle.workspace_id !== tenant || !Array.isArray(bundle.device_ids) || bundle.device_ids.length === 0 ||
       new Set(bundle.device_ids).size !== bundle.device_ids.length || typeof bundle.service_user_id !== 'string' || typeof bundle.token !== 'string' ||
       !Number.isFinite(Date.parse(bundle.expires_at)) || (bundle.timezone !== undefined && !validTimezone(bundle.timezone))) throw new LinkError('invalid_bundle')
@@ -102,10 +141,19 @@ export async function openContentBundle(recipient, sealed, { info, aad, purpose,
 /**
  * The grant proof (§15.4 step 4): with the bundle's key, the grants Go serves
  * belong to the bundle's service, name exactly its numbers, and each opens
- * with `privateKey` at its epoch. Every opened device key is zeroed at once;
- * only the epochs are kept. Any failure is LinkError('grant_proof_failed').
+ * with `privateKey` at its epoch. Any failure is LinkError('grant_proof_failed').
+ *
+ * A version-3 bundle's device checks (§17.2 rules 3 and 5) are recomputed
+ * from each DSK as it opens, before it is zeroed, over the scope with
+ * `request` (the consent's request id or the renewal id) and `kid`: a
+ * mismatch is LinkError('invalid_bundle') with `deviceCheck` set, and
+ * nothing is kept. On success each number's pin is kept, `{pub, ns, epoch}`:
+ * the X25519 public key of its DSK, the namespace its grant opens under and
+ * the epoch, the only key a draft is ever sealed to. Every opened device key
+ * is zeroed at once. Resolves to `{epochs, draftsTo}` (`draftsTo` null
+ * without checks).
  */
-export async function proveGrants(privateKey, bundle, { archive, fetch, timeoutMS = PROOF_TIMEOUT_MS }) {
+export async function proveGrants(privateKey, bundle, { archive, fetch, timeoutMS = PROOF_TIMEOUT_MS, request, kid }) {
   const failed = () => new LinkError('grant_proof_failed')
   let grants
   try { grants = await new ArchiveClient({ serverURL: archive, workspaceID: bundle.workspace_id, token: bundle.token, timeoutMS, ...(fetch ? { fetch } : {}) }).grants() } catch { throw failed() }
@@ -113,19 +161,31 @@ export async function proveGrants(privateKey, bundle, { archive, fetch, timeoutM
   const devices = grants.grants.map(grant => grant.device_id.toLowerCase())
   if (new Set(devices).size !== devices.length || devices.length !== bundle.device_ids.length || !bundle.device_ids.every(device => devices.includes(device))) throw failed()
   const epochs = {}
+  const checks = bundle.device_checks ?? null
+  const draftsTo = checks ? {} : null
   const service = bytes.parseUUID(bundle.service_user_id)
   for (const grant of grants.grants) {
     if (!Number.isSafeInteger(grant.epoch) || grant.epoch < 1 || grant.epoch > 65535) throw failed()
-    let dsk
+    const device = grant.device_id.toLowerCase()
+    let dsk, mismatch = false
     try {
-      const namespace = bytes.parseUUID(grant.archive_tenant_id || bundle.workspace_id)
+      const ns = (grant.archive_tenant_id || bundle.workspace_id).toLowerCase()
+      const namespace = bytes.parseUUID(ns)
       const row = await seal.grantRow(namespace, bytes.parseUUID(grant.device_id), service, grant.epoch)
       dsk = await seal.openDirect(privateKey, seal.Kind.DeviceGrant, namespace, row, bytes.fromBase64(grant.sealed_dsk))
       if (dsk.length !== 32) throw failed()
+      if (checks) {
+        const scope = deviceScope(bundle, { deviceID: device, epoch: grant.epoch, request, kid })
+        const expected = Buffer.from(deviceCheck(dsk, { namespace: ns, deviceID: device, epoch: grant.epoch, scope }))
+        const given = Buffer.from(typeof checks[device] === 'string' ? checks[device] : '')
+        mismatch = expected.length !== given.length || !timingSafeEqual(expected, given)
+        if (!mismatch) draftsTo[device] = { pub: Buffer.from(await hpke.publicFromPrivate(dsk)).toString('base64url'), ns, epoch: grant.epoch }
+      }
     } catch { throw failed() } finally { dsk?.fill(0) }
-    epochs[grant.device_id.toLowerCase()] = grant.epoch
+    if (mismatch) throw Object.assign(new LinkError('invalid_bundle'), { deviceCheck: true })
+    epochs[device] = grant.epoch
   }
-  return epochs
+  return { epochs, draftsTo }
 }
 
 /**
@@ -148,14 +208,21 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     log, now, archive, consoleURL, ...(fetch ? { fetch } : {}), ...(jail ? { jail } : {}),
     checkActive: { mediaStatus: id => (statusCheck ? statusCheck.mediaStatus(id) : Promise.resolve({ answer: false, media: false, media_off: [] })) },
   })
+  const sending = createSendService({
+    log, now, relay, consoleURL,
+    checkActive: { sendStatus: id => (statusCheck ? statusCheck.sendStatus(id) : Promise.resolve({ answer: false, send: null, send_self: false })) },
+  })
+  /** The proof's failure, logged by what failed: a device check, or the grants. */
+  const proofFailed = (id, error) => log.event(error?.deviceCheck ? 'device_check_failed' : 'grant_proof_failed', conn(id))
 
   const renewals = createRenewals({
     state, connkeys, log, now, resource, attestor, newRecipient,
     open: (recipient, sealed, options) => openContentBundle(recipient, sealed, { ...options, info: RENEW_INFO, purpose: 'renewal', origin, now }),
-    prove: (privateKey, bundle) => proveGrants(privateKey, bundle, { archive, fetch }),
+    prove: (privateKey, bundle, binding) => proveGrants(privateKey, bundle, { archive, fetch, ...binding }),
     parseRelay: body => parseRelay(body, { now }),
     renewAAD,
     onCommit: id => log.event('renewal_committed', conn(id)),
+    onProofFailed: proofFailed,
   })
 
   // Connections whose reseal Go has not heard yet, retried with §8's backoff.
@@ -168,6 +235,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     renewals.forget(id)
     resealQueue.delete(id)
     media.wipe(id)
+    sending.wipe(id)
     return wipeState(id)
   }
 
@@ -228,19 +296,20 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
           info: CONSENT_INFO, aad: consentAAD(pending.id, relayed.kid, pending.resource), purpose: 'consent', origin, tenant: relayed.tenant_id, now,
         })
         // What Go records and what the owner sealed must say the same about
-        // attachments, before anything is proven against the archive.
-        if (relayed.media !== (bundle.media === true)) throw new LinkError('invalid_bundle')
+        // attachments and sending, before anything is proven against the archive.
+        if (!relayMatches(relayed, bundle)) throw new LinkError('invalid_bundle')
         const expiry = Math.min(Date.parse(bundle.expires_at), relayed.expiry)
-        let epochs
-        try { epochs = await proveGrants(pending.recipient.privateKey, bundle, { archive, fetch }) } catch (error) {
-          log.event('grant_proof_failed', conn(relayed.connection_id))
+        let proven
+        try { proven = await proveGrants(pending.recipient.privateKey, bundle, { archive, fetch, request: pending.id, kid: relayed.kid }) } catch (error) {
+          proofFailed(relayed.connection_id, error)
           throw error
         }
+        const { epochs, draftsTo } = proven
         pending.tenant_id = relayed.tenant_id
         pending.connection_id = relayed.connection_id
         pending.bundle = { sealed: relayed.sealed, kid: relayed.kid, connection_id: relayed.connection_id, expires_at: new Date(expiry).toISOString(), kind: 'content' }
         // Only until the proof: the consent completion takes it from here.
-        pending.content = { bundle, epochs }
+        pending.content = { bundle, epochs, draftsTo }
         log.event('content_accepted', { ...conn(relayed.connection_id), numbers: bundle.device_ids.length })
         return { connection_id: relayed.connection_id }
       } finally { delete pending.accepting }
@@ -259,14 +328,16 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
 
     /** After Go activated the connection: the record's content fields, and the request's key moves into memory for it. */
     install(pending, record) {
-      const { bundle, epochs } = pending.content
+      const { bundle, epochs, draftsTo } = pending.content
       // The deadline the owner consented to (the earlier of the bundle's and
       // Go's at relay time): Go's status answers may bring it forward, never
       // past this, and a renewal keeps it.
-      // `consent_version`, `media` and `redirect_host` are the consent's: no renewal writes them.
+      // `consent_version`, `media`, the send fields and `redirect_host` are the consent's: no renewal writes them.
       Object.assign(record, {
         kind: 'content', service_user_id: bundle.service_user_id, key_mode: KEY_MODE, consent_version: bundle.consent_version, media: bundle.media === true,
         redirect_host: pending.redirect_host, epochs: { ...epochs }, consented_expires_at: pending.bundle.expires_at,
+        // Sending (§17.2 rule 6), and the keys drafts are sealed to, pinned from the DSKs the proof opened.
+        ...(bundle.send ? { send: bundle.send, send_self: bundle.send_self === true, send_groups: bundle.send_groups === true, drafts_to: structuredClone(draftsTo) } : {}),
       })
       connkeys.set(record.connection_id, pending.recipient.privateKey)
       delete pending.content
@@ -279,6 +350,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
       provider: contentProviderFor(record, connkeys, consoleURL, {
         onStaleGrant: () => log.event('stale_grant', conn(record.connection_id)),
         ...(record.media === true ? { media: media.forConnection(record) } : {}),
+        ...(record.send === 'draft' || record.send === 'direct' ? { send: sending.forConnection(record) } : {}),
       }),
     }),
     /** Pads a media connection's /mcp responses (router.mjs, §16.10). */
@@ -287,6 +359,8 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     useStatusCheck(checkActive) { statusCheck = checkActive },
     /** The attachment service: main.mjs runs its boot check and reads its counts. */
     media,
+    /** The sending service: main.mjs reads its counts. */
+    sending,
 
     /**
      * The status rules (§15.8) for a content record, given Go's live answer
@@ -296,7 +370,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     async decide(record, status) {
       const id = record.connection_id
       if (status.kind !== 'content' || (status.status !== 'active' && status.status !== 'reseal')) return false
-      if (status.status === 'reseal') { dropKey(id); media.wipe(id, 'reseal'); return 'reseal' }
+      if (status.status === 'reseal') { dropKey(id); media.wipe(id, 'reseal'); sending.wipe(id); return 'reseal' }
       // Attachments follow every answer: off, or narrowed to the kinds still on (§16.9). Text is untouched.
       if (record.media === true) {
         if (status.media !== true) media.wipe(id, 'media_off')
@@ -345,6 +419,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
       resealQueue.clear()
       renewals.clear()
       media.close()
+      sending.close()
       connkeys.wipeAll()
     },
     /** For tests: the key holder (the enclave never hands it out). */

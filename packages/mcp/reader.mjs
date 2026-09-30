@@ -83,7 +83,14 @@ async function bounded(items, limit, work) {
  *   (docs/mcp-enclave.md §16.5): `openAttachment` hands it the call and an
  *   `archive` of the two reads it needs, every attachment the reader
  *   describes says whether it opens, and get_message's also names the
- *   console link where the user sees the original.
+ *   console link where the user sees the original. On a connection whose
+ *   sealed consent includes sending (`config.send`), `send` is the enclave's
+ *   `{mode, self, consoleURL, draft(input, archive), sendSelf(input),
+ *   outgoing(query), observe(device, chatKey, text)}` (§17.8): the three
+ *   sending methods hand it the call, `draft` with an `archive` whose
+ *   `chat()` looks the named chat up, and every message body, caption and
+ *   file name the reader returns is shown to `observe` first, the source of
+ *   the cross-chat fingerprints (§17.11).
  * A local (files) config ignores the provider.
  */
 export async function createReader(config, provider) {
@@ -111,6 +118,17 @@ export async function createReader(config, provider) {
   if (content && (typeof provider.serviceKey !== 'function' || typeof provider.expectedEpoch !== 'function')) throw new LocalConfigError('credential_provider_required')
   // Attachments open only on the attested reader, for a consent that includes them.
   const media = content && config.media === true && typeof provider.media?.open === 'function' ? provider.media : null
+  // Sending too, for a consent that includes it (§17.8).
+  const send = content && (config.send === 'draft' || config.send === 'direct') && typeof provider.send?.draft === 'function' ? provider.send : null
+  /**
+   * Every opened text of one chat that goes back to the assistant is shown to
+   * the fingerprint store before it leaves (§17.11), best effort: a failure
+   * there never fails a read.
+   */
+  function observe(device, chatKey, value) {
+    if (!send || value?.state !== 'ok' || typeof chatKey !== 'string') return
+    try { send.observe(device, chatKey, value.value) } catch { /* best effort */ }
+  }
   const api = new ArchiveClient({ serverURL: config.server, workspaceID: config.workspace, token: credential.token })
   const allowed = device => !config.device_ids || config.device_ids.includes(device)
   function permit(device) { if (!allowed(device)) throw new ArchiveError('not_authorized', 403) }
@@ -203,11 +221,17 @@ export async function createReader(config, provider) {
   async function messages(rows, device, opener, { link = false } = {}) {
     if (rows.some(row => row.device_id !== device)) throw new ArchiveError('device_mismatch')
     await opener?.prefetch(rows.map(row => row.content_key_id))
-    return Promise.all(rows.map(async row => ({ ...metadata(row),
-      body: row.body_sealed ? opener ? openedValue(await opener.body(row)) : locked() : omitted(),
-      ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(await opener.fileName(row)) : locked() : omitted(), link) } : {}),
-      structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
-    })))
+    return Promise.all(rows.map(async row => {
+      const body = row.body_sealed && opener ? await opener.body(row) : null
+      const filename = row.media?.filename_sealed && opener ? await opener.fileName(row) : null
+      observe(device, row.chat_key, body)
+      observe(device, row.chat_key, filename)
+      return { ...metadata(row),
+        body: row.body_sealed ? opener ? openedValue(body) : locked() : omitted(),
+        ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(filename) : locked() : omitted(), link) } : {}),
+        structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
+      }
+    }))
   }
   async function personalContacts(serviceKey) {
     // A personal snapshot is a local file only. No hosted mode has one, and
@@ -304,18 +328,22 @@ export async function createReader(config, provider) {
             if (!query || matchesText(searchable, query)) {
               counters.matched++
               if (fixedWindow && hits.length >= limit) omittedHits++
-              else hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : opener ? openedValue(body) : body,
-                ...(row.media ? { attachment: attachmentOf(row, opener ? openedValue(filename) : filename) } : {}),
-                structured_content: row.payload_sealed ? { state: 'unsupported' } : omitted(),
-                // Filled after the scan (see below); the key keeps its place.
-                archive_status: fixedWindow ? { state: 'not_checked' } : undefined,
-                // A local install's server is the address its user reads the
-                // archive at, so the citation links to it. A hosted reader's is
-                // the API on the host's loopback: an internal address the
-                // assistant can neither reach nor has any use for.
-                source: { ...(hosted ? {} : { server: config.server, url: `${config.server}/v1/messages/${row.uid}` }),
-                  workspace_id: config.workspace, device_id, message_uid: row.uid, chat_key: row.chat_key },
-              })
+              else {
+                observe(device_id, row.chat_key, body)
+                observe(device_id, row.chat_key, filename)
+                hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : opener ? openedValue(body) : body,
+                  ...(row.media ? { attachment: attachmentOf(row, opener ? openedValue(filename) : filename) } : {}),
+                  structured_content: row.payload_sealed ? { state: 'unsupported' } : omitted(),
+                  // Filled after the scan (see below); the key keeps its place.
+                  archive_status: fixedWindow ? { state: 'not_checked' } : undefined,
+                  // A local install's server is the address its user reads the
+                  // archive at, so the citation links to it. A hosted reader's is
+                  // the API on the host's loopback: an internal address the
+                  // assistant can neither reach nor has any use for.
+                  source: { ...(hosted ? {} : { server: config.server, url: `${config.server}/v1/messages/${row.uid}` }),
+                    workspace_id: config.workspace, device_id, message_uid: row.uid, chat_key: row.chat_key },
+                })
+              }
             }
           }
           const deadlinePassed = Date.now() > deadline
@@ -348,6 +376,28 @@ export async function createReader(config, provider) {
         has_more: hasMore, ...(next ? { next } : {}),
       }
     }, true)
+  }
+  /** The user part of a JID or phone number: before any '@' and any ':' device suffix. */
+  const userOf = jid => (typeof jid === 'string' ? jid.split('@')[0].split(':')[0] : '')
+  /**
+   * One chat of a number by key (§17.3's filter), for a draft: null when the
+   * number has none, else its keys, whether it is a group or the number's
+   * own chat (`<pn>@s.whatsapp.net` or `<lid>@lid`, §17.5), and its name
+   * opened as list_chats opens it (null when it has none or it stays locked).
+   */
+  async function chatByKey(device, chatKey) {
+    const reply = await api.listChats(device, { chatKey })
+    const chat = reply.chats[0]
+    if (!chat) return null
+    const number = (await api.listDevices()).devices.find(item => item.id === device)
+    const own = [userOf(number?.pn) && `${userOf(number.pn)}@s.whatsapp.net`, userOf(number?.lid) && `${userOf(number.lid)}@lid`].filter(Boolean)
+    const keys = [...new Set([chat.chat_key, chat.chat_pn, chat.chat_lid, ...(Array.isArray(chat.keys) ? chat.keys : [])].filter(key => typeof key === 'string' && key))]
+    return withOpener(device, async opener => {
+      await opener?.prefetch([chat.name_key_id])
+      const name = chat.name_sealed && opener ? await opener.chatName(chat) : null
+      return { chat_key: chat.chat_key, keys, is_group: chat.is_group === true, own: chat.is_group !== true && keys.some(key => own.includes(key)),
+        name: name?.state === 'ok' ? name.value : null }
+    })
   }
   return {
     searchMessages(input) { return scan(input) },
@@ -424,11 +474,16 @@ export async function createReader(config, provider) {
       return withOpener(device_id, async opener => {
         await opener?.prefetch(reply.chats.flatMap(chat => [chat.name_key_id, chat.last_body_key_id]))
         return { workspace_id: config.workspace, device_id, truncated: reply.truncated,
-          chats: await Promise.all(reply.chats.map(async chat => ({
-            uid: chat.uid, chat_key: chat.chat_key, chat_pn: chat.chat_pn, chat_lid: chat.chat_lid, keys: chat.keys, is_group: chat.is_group === true, last_ts: chat.last_ts,
-            name: chat.name_sealed ? opener ? openedValue(await opener.chatName(chat)) : locked() : omitted(),
-            preview: chat.last_body_sealed ? opener ? openedValue(await opener.chatPreview(chat)) : locked() : omitted(),
-          }))),
+          chats: await Promise.all(reply.chats.map(async chat => {
+            const preview = chat.last_body_sealed && opener ? await opener.chatPreview(chat) : null
+            // A preview is the chat's last message body: a source, unlike its name.
+            observe(device_id, chat.chat_key, preview)
+            return {
+              uid: chat.uid, chat_key: chat.chat_key, chat_pn: chat.chat_pn, chat_lid: chat.chat_lid, keys: chat.keys, is_group: chat.is_group === true, last_ts: chat.last_ts,
+              name: chat.name_sealed ? opener ? openedValue(await opener.chatName(chat)) : locked() : omitted(),
+              preview: chat.last_body_sealed ? opener ? openedValue(preview) : locked() : omitted(),
+            }
+          })),
         }
       })
     },
@@ -458,6 +513,7 @@ export async function createReader(config, provider) {
     async openAttachment({ device_id, uid, cursor, pages, images = true }) {
       permit(device_id)
       if (!media) throw new ArchiveError('media_not_allowed')
+      let chat = null
       const archive = {
         async row() {
           let row
@@ -466,6 +522,7 @@ export async function createReader(config, provider) {
             throw error
           }
           if (row.device_id !== device_id || !row.media || typeof row.media !== 'object') throw new ArchiveError('attachment_not_found', 404)
+          chat = row.chat_key
           return row
         },
         open(row, what) {
@@ -482,7 +539,39 @@ export async function createReader(config, provider) {
           })
         },
       }
-      return media.open({ device_id, uid, cursor, pages, images }, archive)
+      const result = await media.open({ device_id, uid, cursor, pages, images }, archive)
+      if (send) {
+        // An answer the enclave kept (a cache, or a parallel call's open) read
+        // no row in this call: the message says which chat its text belongs to.
+        if (chat === null) {
+          try { const row = await api.getMessage(uid); if (row.device_id === device_id) chat = row.chat_key } catch { /* best effort */ }
+        }
+        for (const text of [result.body, result.header?.filename, result.header?.caption]) if (typeof text === 'string' && text) observe(device_id, chat, { state: 'ok', value: text })
+      }
+      return result
+    },
+    /**
+     * draft_message (§17.8): the enclave runs every step. `archive.chat()` is
+     * step 5's lookup, asked only once the cheaper refusals passed: the chat
+     * under that key on that number or null, its name opened as list_chats
+     * opens it, every key it is known by, and whether it is the number's own.
+     */
+    async draftMessage(input) {
+      permit(input.device_id)
+      if (!send) throw new ArchiveError('send_not_allowed')
+      return send.draft(input, { chat: () => chatByKey(input.device_id, input.chat_key) })
+    },
+    /** send_to_self (§17.8): the enclave runs every step; Go resolves the own chat. */
+    async sendToSelf(input) {
+      permit(input.device_id)
+      if (!send || config.send_self !== true || typeof send.sendSelf !== 'function') throw new ArchiveError('send_not_allowed')
+      return send.sendSelf(input)
+    },
+    /** list_outgoing (§17.8): a page of the connection's ledger, from Go through the enclave. */
+    async listOutgoing(input) {
+      if (input.device_id !== undefined) permit(input.device_id)
+      if (!send) throw new ArchiveError('send_not_allowed')
+      return send.outgoing(input)
     },
     async listRevisions({ device_id, uid, limit = 50 }) {
       permit(device_id)
