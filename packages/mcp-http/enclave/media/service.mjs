@@ -45,6 +45,19 @@ import {
 const FORGOTTEN = new Set(['attachment_pending', 'read_failed', 'reconsent_required', 'stale_grant', 'unauthorized', 'rate_limited', 'media_busy', 'media_not_allowed'])
 const safeCode = error => ((error instanceof ArchiveError || error instanceof LocalConfigError) && /^[a-z][a-z0-9_]{0,47}$/.test(error.code) ? error.code : 'read_failed')
 const keeps = outcome => (outcome.result ? outcome.result.header.images_withheld !== 'kind_off' : !FORGOTTEN.has(safeCode(outcome.error)))
+/**
+ * What a call answers when its connection's media ended under it, by the
+ * wipe's reason (§16.9): the switch or a kind turned off is the workspace's
+ * choice, `media_not_allowed`; a reseal lost the connection's key, so
+ * `reconsent_required`, as every tool answers then; any other wipe (a
+ * revocation, an expiry, a status that ends the connection, the reader
+ * closing) is `unauthorized`, a failure like every other tool's.
+ */
+function ended(reason, facts) {
+  const error = reason === 'media_off' ? refusal('media_not_allowed') : reason === 'reseal' ? new LocalConfigError('reconsent_required') : refusal('unauthorized')
+  if (facts !== undefined) error.facts = facts
+  return error
+}
 
 /**
  * The per-connection key of an open (§16.9): identical calls share it. The
@@ -83,7 +96,8 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
   const budgets = createBudgets({ now })
   // connection id -> { opens: Map(open key -> open), active: its open in the
   // slot or the slot's queue, line: its opens waiting behind that one, first in
-  // first out, mediaOff: the last media_off seen }
+  // first out, mediaOff: the last media_off seen, ended: the reason of the
+  // wipe that forgot it, for a call that still holds it }
   const connections = new Map()
   // The ids of connections whose open left with a line behind it that has not
   // gone in yet, in the order they left: the next free place is theirs, in turn.
@@ -110,17 +124,18 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     if (state?.opens.get(open.key) === open) state.opens.delete(open.key)
     const index = state ? state.line.indexOf(open) : -1
     if (index >= 0) state.line.splice(index, 1)
-    if (open.controller.signal.aborted) outcome = { error: refusal('media_not_allowed', { facts: open.facts }) }
+    if (open.controller.signal.aborted) outcome = { error: ended(open.reason, open.facts) }
     else if (keeps(outcome)) caches.result.set(open.id, open.key, { outcome, kinds: open.kinds })
     if (outcome.result) { counters.opens++; log.event('media_opened', conn(open.id)) }
     open.outcome = outcome
     open.resolve()
   }
   /**
-   * Ends an open for `reason` ('revoked' or 'media_off'): its callers answer
-   * now, its job dies on SIGTERM. One waiting in the slot's queue leaves it at
-   * once and hands its connection's place to the next of its line; one
-   * running hands it over when its job has died (`leave`).
+   * Ends an open for `reason` ('revoked', 'reseal' or 'media_off'): its
+   * callers answer now (`ended`), its job dies on SIGTERM. One waiting in
+   * the slot's queue leaves it at once and hands its connection's place to
+   * the next of its line; one running hands it over when its job has died
+   * (`leave`).
    */
   function abort(open, reason) {
     if (open.done) return
@@ -167,7 +182,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     if (outcome.output) return outcome.output
     throw refusal(outcome.code, { facts: { ...open.facts, ...outcome.facts } })
   }
-  const live = open => { if (open.controller.signal.aborted) throw refusal('media_not_allowed') }
+  const live = open => { if (open.controller.signal.aborted) throw ended(open.reason) }
 
   /** The text cache's windows of a PDF that still live. */
   const windowsOf = entry => (entry?.windows ?? []).filter(window => window.expires > now())
@@ -427,7 +442,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       if (!ready()) throw refusal('media_unavailable')
       const status = await checkActive.mediaStatus(id)
       if (status.answer === 'reseal') throw new LocalConfigError('reconsent_required')
-      if (status.answer !== 'serve' || status.media !== true) throw refusal('media_not_allowed')
+      // Go no longer serves the connection (revoked, expired, gone): it fails as every tool does then.
+      if (status.answer !== 'serve') throw refusal('unauthorized')
+      if (status.media !== true) throw refusal('media_not_allowed')
       const state = stateOf(id)
       state.mediaOff = knownKinds(status.media_off)
       const key = numbered(input.device_id, openKey(input)), textKey = numbered(input.device_id, input.uid)
@@ -452,8 +469,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         // Steps 5 and 7 again, with nothing awaited from here to the queue:
         // while the text cache and the row were read, a parallel call of this
         // connection may have started or finished this key's open, or started
-        // another, and a wipe may have ended the connection's media.
-        if (connections.get(id) !== state) throw refusal('media_not_allowed', { facts })
+        // another, and a wipe may have ended the connection (which answers
+        // as its reason says; a switch turned off keeps the state).
+        if (connections.get(id) !== state) throw ended(state.ended, facts)
         found = known(state, id, key)
         if (!found) {
           budget(state, id, facts)
@@ -501,15 +519,23 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         resultMaxBytes: RESULT_MAX_BYTES,
       }
     },
-    /** Ends everything of a connection's media: its open, its queue entries, both caches (§16.9). */
+    /**
+     * Ends everything of a connection's media: its open, its queue entries,
+     * both caches (§16.9). `reason` is 'revoked' (the connection ended),
+     * 'reseal' (its key is gone) or 'media_off' (the switch turned off); the
+     * first two forget the connection, and every waiting call answers as
+     * `ended` says.
+     */
     wipe(id, reason = 'revoked') {
       const state = connections.get(id)
       // Its line first, so that the open leaving the slot's queue hands nothing in.
       for (const open of state?.line.splice(0) ?? []) abort(open, reason)
       for (const open of [...(state?.opens.values() ?? [])]) abort(open, reason)
       caches.drop(id)
-      if (reason === 'revoked') { connections.delete(id); budgets.forget(id) }
-      else if (state) state.opens.clear()
+      if (reason === 'revoked' || reason === 'reseal') {
+        if (state) state.ended = reason
+        connections.delete(id); budgets.forget(id)
+      } else if (state) state.opens.clear()
     },
     /** A status answer's `media_off`: the open and the cache entries of a kind now off go. */
     narrow(id, mediaOff) {

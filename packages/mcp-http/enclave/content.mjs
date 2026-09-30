@@ -296,7 +296,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     async decide(record, status) {
       const id = record.connection_id
       if (status.kind !== 'content' || (status.status !== 'active' && status.status !== 'reseal')) return false
-      if (status.status === 'reseal') { dropKey(id); media.wipe(id); return 'reseal' }
+      if (status.status === 'reseal') { dropKey(id); media.wipe(id, 'reseal'); return 'reseal' }
       // Attachments follow every answer: off, or narrowed to the kinds still on (§16.9). Text is untouched.
       if (record.media === true) {
         if (status.media !== true) media.wipe(id, 'media_off')

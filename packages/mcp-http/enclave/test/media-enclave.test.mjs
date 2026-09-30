@@ -198,7 +198,9 @@ test('revocation kills a job in flight; the sweep empties an idle connection\'s 
   const revoked = await w.internal(`/internal/connections/${done.connectionId}/revoke`, { method: 'POST' })
   assert.equal(revoked.status, 204)
   const { value } = await call
-  assert.match(value.content[0].text, /^Could not open the attachment \(media_not_allowed\)\./)
+  // The connection no longer exists: a failed call, as every other tool's, not the workspace's answer.
+  assert.match(value.content[0].text, /^Could not open the attachment \(unauthorized\)\. Check that this connection is still authorized/)
+  assert.equal(value.isError, true)
   assert.ok(Date.now() - started < 6000, 'the call did not wait for the job')
   while (e.facts.content.media.scheduler.running()) await new Promise(resolve => setTimeout(resolve, 20))
   assert.ok(events(w).some(entry => entry.event === 'media_job_killed' && entry.code === 'revoked'))
@@ -210,6 +212,25 @@ test('revocation kills a job in flight; the sweep empties an idle connection\'s 
   w.go.connections.get(idle.connectionId).status = 'revoked'
   assert.equal((await e.reader.contentSweep()).wiped, 1)
   assert.equal(e.facts.content.media.caches.bytes(idle.connectionId), 0)
+})
+
+test('a reseal kills a job in flight, and the waiting call asks for the renewal as every tool does then', async t => {
+  const { w, e } = await mediaWorld(t)
+  const done = await connectMedia(w)
+  const slow = await photo(w, { sleep_ms: 8000 })
+  const call = open(w, done, { uid: slow.uid })
+  const started = Date.now()
+  while (!w.go.archiveRequests.some(item => item.path === `/v1/media/${slow.uid}`)) await new Promise(resolve => setTimeout(resolve, 20))
+  await new Promise(resolve => setTimeout(resolve, 500))
+  w.go.connections.get(done.connectionId).status = 'reseal'
+  assert.equal(await e.reader.checkActive(done.connectionId, { force: true }), 'reseal')
+  const { value } = await call
+  assert.match(value.content[0].text, /^Could not open the attachment \(reconsent_required\)\. The Wappie reader restarted and cleared this connection's key\./)
+  assert.equal(value.isError, true)
+  assert.ok(Date.now() - started < 6000, 'the call did not wait for the job')
+  while (e.facts.content.media.scheduler.running()) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.ok(events(w).some(entry => entry.event === 'media_job_killed' && entry.code === 'revoked'), 'a reseal ends the job as a revocation')
+  assert.ok(events(w).some(entry => entry.event === 'media_refused' && entry.code === 'reconsent_required'))
 })
 
 test('a boot whose jail check fails: logged once, media_jail false, every open is media_unavailable, and text serves', async t => {
