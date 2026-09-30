@@ -305,9 +305,9 @@ func TestAIConsentRefusals(t *testing.T) {
 	t.Run("a provider or function switched off", func(t *testing.T) {
 		c := h.prepareAI(t, h.owner, nil)
 		h.handler.AIOffProviders = []string{"anthropic"}
-		expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", c.body, bearer(h.ownerToken)), http.StatusForbidden, "ai_not_allowed")
+		expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", c.body, bearer(h.ownerToken)), http.StatusBadRequest, "bad_request")
 		h.handler.AIOffProviders, h.handler.AIOffFeatures = nil, []string{"audio"}
-		expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", c.body, bearer(h.ownerToken)), http.StatusForbidden, "ai_not_allowed")
+		expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", c.body, bearer(h.ownerToken)), http.StatusBadRequest, "bad_request")
 		h.handler.AIOffFeatures = []string{"video"}
 		expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", c.body, bearer(h.ownerToken)), http.StatusCreated, "")
 		h.handler.AIOffFeatures = nil
@@ -575,6 +575,11 @@ func TestAIRenewal(t *testing.T) {
 			expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections/"+id+"/renew", b, bearer(h.ownerToken)), http.StatusBadRequest, "bad_request")
 		})
 	}
+	// A provider switched off since the consent refuses the renewal too.
+	h.handler.AIOffProviders = []string{"google"}
+	expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections/"+id+"/renew", body(renewalID, service, prefix, c.keys, nil), bearer(h.ownerToken)),
+		http.StatusBadRequest, "bad_request")
+	h.handler.AIOffProviders = nil
 	// The enclave's AI refusal reaches the console with its code, and the
 	// new account goes.
 	h.enclave.mu.Lock()

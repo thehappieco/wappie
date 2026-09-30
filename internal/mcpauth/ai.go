@@ -162,9 +162,9 @@ var aiRefusals = []string{"invalid_bundle", "grant_proof_failed", "ai_key_reject
 
 // createAI records an AI authorization and hands the enclave its bundle
 // (docs/mcp-enclave.md §18.7 step 5). The request must be one this process
-// prepared for this person; AI must be allowed and none of the
-// configuration's functions or providers off; the key, the service account
-// and the configuration are held to the store's rules in one transaction;
+// prepared for this person; AI must be allowed; none of the configuration's
+// functions or providers may be off; the key, the service account and the
+// configuration are held to the store's rules in one transaction;
 // and only then is the bundle relayed, with a 30-second wait. A refusal
 // undoes the consent.
 func (h *Handler) createAI(w http.ResponseWriter, r *http.Request, user store.User, req createRequest) {
@@ -185,7 +185,8 @@ func (h *Handler) createAI(w http.ResponseWriter, r *http.Request, user store.Us
 		return
 	}
 	if in.AIConfig.FunctionsOff(h.AIOffFeatures, h.AIOffProviders) {
-		fail(w, http.StatusForbidden, "ai_not_allowed", "a function or provider this integration uses is switched off here")
+		// Part of the configuration's checks: 400, as its other refusals.
+		fail(w, http.StatusBadRequest, "bad_request", "a function or provider this integration uses is switched off here")
 		return
 	}
 	keys, err := h.APIKeys.List(ctx, user.TenantID.String())

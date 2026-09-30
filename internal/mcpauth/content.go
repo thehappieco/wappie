@@ -331,7 +331,7 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if cfg.FunctionsOff(h.AIOffFeatures, h.AIOffProviders) {
-			fail(w, http.StatusForbidden, "ai_not_allowed", "a function or provider this integration uses is switched off here")
+			fail(w, http.StatusBadRequest, "bad_request", "a function or provider this integration uses is switched off here")
 			return
 		}
 		aiConfig = &cfg

@@ -298,7 +298,7 @@ type AIAlert struct {
 	At       time.Time `json:"at"`
 }
 
-// AI alert codes, as the reader reports them.
+// AIAlertCodes are what the reader reports about an authorization.
 var AIAlertCodes = []string{"ai_key_rejected", "ai_model_unavailable", "ai_quota"}
 
 const aiAuthorizationColumns = `id::text, created_by, status, expires_at, device_count, ai_config::text, ai_paused_at,

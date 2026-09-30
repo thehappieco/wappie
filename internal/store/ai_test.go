@@ -441,8 +441,8 @@ func TestCreateAIConnectionInvariants(t *testing.T) {
 		})
 		refuse(t, c, store.ErrAIConfig)
 	})
+	admin, member := f.member(t, "admin"), f.member(t, "member")
 	t.Run("another person's key", func(t *testing.T) {
-		admin := f.member(t, "admin")
 		theirs := f.aiKeys(ctx, t, admin)
 		refuse(t, f.prepareAI(ctx, t, f.owner, theirs, nil), store.ErrAIConfig)
 	})
@@ -459,7 +459,6 @@ func TestCreateAIConnectionInvariants(t *testing.T) {
 	})
 	t.Run("a member", func(t *testing.T) {
 		// In B1 only an owner or an admin makes one.
-		member := f.member(t, "member")
 		c := f.prepareAI(ctx, t, f.owner, keys, nil)
 		if _, err := f.conns.Create(ctx, f.tenant, member, c.in); !errors.Is(err, store.ErrMembershipForbidden) {
 			t.Fatalf("a member made an authorization: %v", err)
