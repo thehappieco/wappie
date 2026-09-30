@@ -6416,7 +6416,12 @@ the private repository, drafts for the owner.
   `reused` reuses and `failures` calls that failed (never charged). A
   record's `usage` holds the counts it was charged for, a missing field's
   bound included. Go's usage is read at install, at a renewal's commit and
-  with every status the 60 s sweep reads.
+  with every status the 60 s sweep reads. A job's gate reads Go's status
+  (its `ai_off`, the pause and a lower `monthly_usd_cents`) at most
+  `STATUS_TTL_MS` (60 s) old, so a narrowing made in the console reaches the
+  next job within a minute; a revocation reaches it at once, since Go relays
+  it and the wipe aborts the jobs in flight (the local B1 run of 2026-09-30
+  saw both).
 - **Reuse** takes a stored refusal and a transcript without speech too:
   both are stored so the file is not sent again. A redo skips the stored
   read and the reuse, and its record carries the flag `redo`.
