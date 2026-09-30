@@ -415,6 +415,17 @@ that reader is never given a key. On the attested reader (`"enclave"`) content
 opens with the connection's key, and a value that key cannot open is `locked`
 with the reason "The key this connection holds could not open this content."
 
+Every mode names the Wappie icon in its `initialize` answer
+(`serverInfo.icons`, MCP 2025-11-25): the 180-pixel PNG as a `data:` URI,
+and on the attested reader also `https://mcp.wappie.thehappie.co/favicon.svg`
+and `…/apple-touch-icon.png`, which that reader serves itself with
+`/favicon.ico` ([its public routes](../../docs/mcp-enclave.md#54-public-routes-on-the-enclave-listener-5443)).
+Whether a host shows it is the host's choice: none is confirmed to yet
+([open points](../../docs/mcp-enclave.md#13-open-points-unconfirmed)). ChatGPT's
+developer-mode app form may take an uploaded icon (third-party guides;
+UNCONFIRMED, see the open points); if it does, `icons/apple-touch-icon.png` is
+the one to give it.
+
 `list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
 defaulting to 50. For `list_messages`, pass
 `next` as `before` in the next request, preserving `ts` and `seq`. Chat listing
@@ -624,6 +635,21 @@ message's `attachment` also carries `seconds`, `width` and `height` when the
 archive has them, and `openable`, with `why` (`view_once`, `unsupported`,
 `not_transcribed`, `expired`, `pending`, `unverifiable`, `too_large` or
 `kind_off`) when it is `false`, so the assistant can tell before it asks.
+
+Since reader 0.4.2 a refusal that is the answer about the attachment is a
+result rather than a tool error, so the host shows the call as done:
+`view_once_excluded`, `transcription_unavailable`, `attachment_expired`,
+`attachment_unverifiable`, `attachment_pending`, `attachment_unsupported`,
+`attachment_too_large`, `attachment_encrypted`, `attachment_locked` and
+`media_not_allowed`. Failures keep `isError`: `attachment_tampered`,
+`parser_failed`, `media_unavailable`, `rate_limited`, `media_busy`,
+`attachment_not_found`, `invalid_cursor`, `read_failed` and the connection's
+own codes, `reconsent_required` among them. A call still waiting when its
+connection is revoked or loses its key fails with the connection's own code
+(`unauthorized`, or `reconsent_required` with the renewal link), never
+`media_not_allowed`, which is only ever the workspace's choice. The text is
+the same either way
+([answers and failures](../../docs/mcp-enclave.md#167-tool-open_attachment-a1)).
 
 The original never leaves the enclave, and the assistant cannot send it to
 the user. What it can give them is a link: every answer about a message,

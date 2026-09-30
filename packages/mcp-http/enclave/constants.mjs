@@ -9,7 +9,7 @@
 // image that still carries a marker refuses to boot (constants_invalid). They
 // are ARNs by key id, never aliases: an UpdateAlias would swap the key.
 export const READER_ID = 'enclave'
-export const READER_VERSION = '0.4.1'
+export const READER_VERSION = '0.4.2'
 // What this release can do, for the console (build.sh writes it into
 // measurements.json as `capabilities`, docs/mcp-enclave.md §16.2): consent
 // version 2, and attachments for a consent that includes them.

@@ -146,12 +146,17 @@ export function runWorker({ worker, job, input, signal, spawn = spawnProcess }) 
 /**
  * What a job's end means for the call (§16.11 "Exit and outcome"): `{output}`
  * or `{code, facts?, log}`, where `log` is the `media_job_killed` code or null.
- * `reason` is why an 'aborted' job was ended: 'revoked' or 'media_off'.
+ * `reason` is why an 'aborted' job was ended: 'revoked', 'reseal' or
+ * 'media_off' (service.mjs `ended`: only a switch turned off is the answer
+ * `media_not_allowed`; a reseal logs as a revocation).
  */
 export function outcomeOf(output, reason = 'revoked') {
   if (output.killed === 'bad_output') return { code: 'parser_failed', log: 'bad_output' }
   if (output.killed === 'watchdog') return { code: 'parser_failed', log: 'watchdog' }
-  if (output.killed === 'aborted') return { code: 'media_not_allowed', log: reason }
+  if (output.killed === 'aborted') {
+    if (reason === 'media_off') return { code: 'media_not_allowed', log: 'media_off' }
+    return { code: reason === 'reseal' ? 'reconsent_required' : 'unauthorized', log: 'revoked' }
+  }
   if (output.exit === 0) return { output }
   if (output.exit === 2) {
     const code = output.error.code

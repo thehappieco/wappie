@@ -201,8 +201,8 @@ test('every call refusal comes before a key is opened or ciphertext asked for (Â
   h.status.media_off = ['pdf', 'office', 'text', 'zip', 'image']
   await assert.rejects(document.open(), refusedWith('media_not_allowed'))
   h.status.media_off = []
-  // The gate: media off in Go, a status that no longer serves, a reseal, and this boot's jail.
-  for (const [status, code] of [[{ answer: 'serve', media: false }, 'media_not_allowed'], [{ answer: false, media: false }, 'media_not_allowed'], [{ answer: 'reseal', media: false }, 'reconsent_required']]) {
+  // The gate: media off in Go (the workspace's choice), a status that no longer serves (the connection's failure), a reseal, and this boot's jail.
+  for (const [status, code] of [[{ answer: 'serve', media: false }, 'media_not_allowed'], [{ answer: false, media: false }, 'unauthorized'], [{ answer: 'reseal', media: false }, 'reconsent_required']]) {
     Object.assign(h.status, status)
     const since = h.quiet()
     await assert.rejects(photo.open(), refusedWith(code), code)
@@ -308,12 +308,14 @@ test('parallel calls of one connection: two, then five, all answered inline, one
   assert.deepEqual(h.fetches.slice(mark).map(item => item.url), five.map(item => `${ARCHIVE}/v1/media/${item.uid}`), 'one fetch each, in arrival order')
   assert.equal(most, 1, 'one key opened at a time')
   assert.equal(h.events().filter(entry => entry.event === 'media_refused').length, 0)
-  // A wipe while the row is read ends the call before anything opens.
-  const late = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }), 100)
-  const call = late.open()
-  await new Promise(resolve => setTimeout(resolve, 20))
-  h.service.wipe(h.record.connection_id)
-  await assert.rejects(call, refusedWith('media_not_allowed'))
+  // A wipe while the row is read ends the call before anything opens, as its reason says: a revocation fails, a reseal asks for the renewal.
+  for (const [reason, code] of [['revoked', 'unauthorized'], ['reseal', 'reconsent_required']]) {
+    const late = h.slowRow(h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }), 100)
+    const call = late.open()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    h.service.wipe(h.record.connection_id, reason)
+    await assert.rejects(call, refusedWith(code, error => error.facts?.open_url === linkTo(late.uid)), reason)
+  }
   assert.equal(h.fetches.length, mark + 5)
 })
 
@@ -416,12 +418,13 @@ test('the host\'s wait holds for a queued open too: 40 s on claude.ai, 25 s on C
   assert.deepEqual(h.waits, [25_000, 25_000])
 })
 
-test('revocation and media off with a queue: the running job dies, the queued opens are dropped unopened, and every waiting call answers media_not_allowed', async t => {
+test('revocation, reseal and media off with a queue: the running job dies, the queued opens are dropped unopened, and every waiting call answers as the wipe\'s reason says', async t => {
   const h = await harness(t)
   const id = h.record.connection_id
   const until = async condition => { while (!condition()) await new Promise(resolve => setTimeout(resolve, 20)) }
   const killed = () => h.events().filter(entry => entry.event === 'media_job_killed').map(entry => entry.code)
-  for (const reason of ['revoked', 'media_off']) {
+  // Only the switch turned off is the workspace's answer; a revocation fails, and a reseal asks for the renewal.
+  for (const [reason, code] of [['revoked', 'unauthorized'], ['reseal', 'reconsent_required'], ['media_off', 'media_not_allowed']]) {
     const running = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 5000 }) })
     const queued = [h.attachment({ plaintext: withScenario(JPEG_MAGIC, {}) }), h.attachment({ type: 'document', plaintext: withScenario(ZIP_MAGIC, { office: { sniffed: 'docx', text: 'never' } }) })]
     const calls = [running.open(), ...queued.map(item => item.open()), queued[0].open()]
@@ -430,11 +433,11 @@ test('revocation and media off with a queue: the running job dies, the queued op
     const since = h.quiet()
     const started = Date.now()
     h.service.wipe(id, reason)
-    for (const settled of await Promise.allSettled(calls)) refusedWith('media_not_allowed')(settled.reason)
+    for (const settled of await Promise.allSettled(calls)) refusedWith(code)(settled.reason)
     await until(() => !h.service.scheduler.running())
     assert.ok(Date.now() - started < 4000, `${reason}: the job died on SIGTERM`)
     assert.deepEqual(since(), { fetches: 0, opens: 0, rows: 0 }, `${reason}: nothing of the queued attachments was opened`)
-    assert.equal(killed().at(-1), reason)
+    assert.equal(killed().at(-1), reason === 'media_off' ? 'media_off' : 'revoked', `${reason}: a reseal ends the job as a revocation`)
     assert.equal(h.service.counts().queue, 0)
     assert.equal(h.service.caches.bytes(id), 0)
   }
@@ -762,13 +765,13 @@ test('wiping: a revocation kills the fetch or the job in flight and empties the 
   const docx = h.attachment({ type: 'document', plaintext: withScenario(ZIP_MAGIC, { office: { sniffed: 'docx', text: 'kept' } }) })
   await docx.open()
   assert.ok(h.service.caches.bytes(id) > 0)
-  // During a job: the waiting call answers media_not_allowed, the job dies on SIGTERM, nothing is cached.
+  // During a job: the waiting call fails (unauthorized), the job dies on SIGTERM, nothing is cached.
   const slow = h.attachment({ plaintext: withScenario(JPEG_MAGIC, { sleep_ms: 5000 }) })
   const waiting = slow.open()
   await new Promise(resolve => setTimeout(resolve, 400))
   const started = Date.now()
   h.service.wipe(id)
-  await assert.rejects(waiting, refusedWith('media_not_allowed'))
+  await assert.rejects(waiting, refusedWith('unauthorized', error => error.facts?.open_url === linkTo(slow.uid)))
   assert.equal(h.service.caches.bytes(id), 0)
   await until(() => !h.service.scheduler.running())
   assert.ok(Date.now() - started < 4000, 'the job died on SIGTERM')
@@ -783,7 +786,7 @@ test('wiping: a revocation kills the fetch or the job in flight and empties the 
   const fetching = stalled.open()
   await until(() => h.fetches.some(item => item.url.endsWith(stalled.uid)))
   h.service.wipe(id)
-  await assert.rejects(fetching, refusedWith('media_not_allowed'))
+  await assert.rejects(fetching, refusedWith('unauthorized'))
   await until(() => aborted)
   await until(() => !h.service.scheduler.running())
   // A kind switched off kills that kind's open, with its own code, and drops its cache entries; the others stay.

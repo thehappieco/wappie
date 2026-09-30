@@ -226,6 +226,12 @@ what differs from the hosted reader:
   attestation document binding that key, the browser's nonce, the TLS SPKI
   and the live KMS key policy hash (`attestation.mjs`, `enclave/policy.mjs`).
   `GET /attestation?nonce=` serves the same without a key, for anyone.
+- The public listener also serves the Wappie icon files (`/favicon.ico`,
+  `/favicon.svg`, `/apple-touch-icon.png`, from `@whatserver2/mcp/icons`)
+  with no auth behind the same Host check, and `initialize` names them in
+  `serverInfo.icons` (`docs/mcp-enclave.md` section 5.4). The hosted reader
+  serves none and names only the `data:` icon: its proxy routes `/mcp` and
+  discovery here, nothing else.
 - Logs leave only through the vsock sink, each line checked against the
   parent's schema (`enclave/logsink.mjs`), with a health line every minute
   that includes the clock's skew against KMS's `Date` (`enclave/health.mjs`).

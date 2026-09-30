@@ -417,8 +417,8 @@ test('the health line\'s memory minimum: sampled, the lowest of the window, roun
   assert.equal(off.take(), undefined)
 })
 
-test('the release: reader 0.4.1 declares consent version 2 and media, as 0.4.0 did', () => {
-  assert.equal(READER_VERSION, '0.4.1')
+test('the release: reader 0.4.2 declares consent version 2 and media, as 0.4.0 and 0.4.1 did', () => {
+  assert.equal(READER_VERSION, '0.4.2')
   assert.deepEqual(READER_CAPABILITIES, ['consent_v2', 'media'])
   assert.equal(Object.isFrozen(READER_CAPABILITIES), true)
 })

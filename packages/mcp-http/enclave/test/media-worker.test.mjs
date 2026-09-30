@@ -171,7 +171,8 @@ test('exit codes map as §16.11\'s table says, and an abort ends the job at once
   assert.ok(Date.now() - started < 5_000, 'ended by SIGTERM, not by its own end')
   assert.equal(aborted.killed, 'aborted')
   assert.deepEqual(outcomeOf(aborted, 'media_off'), { code: 'media_not_allowed', log: 'media_off' })
-  assert.deepEqual(outcomeOf(aborted), { code: 'media_not_allowed', log: 'revoked' })
+  assert.deepEqual(outcomeOf(aborted), { code: 'unauthorized', log: 'revoked' })
+  assert.deepEqual(outcomeOf(aborted, 'reseal'), { code: 'reconsent_required', log: 'revoked' })
   const already = new AbortController(); already.abort()
   assert.equal((await run('pdf', jobs.pdfText, [header, done], 0, { delayMs: 10_000, run: { signal: already.signal } })).killed, 'aborted')
   // A media-jail that cannot be started is a jail error, whether spawn throws or the binary is missing.

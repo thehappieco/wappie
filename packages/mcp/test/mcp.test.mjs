@@ -4,6 +4,7 @@ import { mkdtemp, rm, chmod, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, loadCredential, readPrivateFile, validateConfig } from '../config.mjs'
+import { serverIcons } from '../icons.mjs'
 import { fixture, call, parsed, noSecrets, privateFile, vector, body, chatName, workspace, user, hiddenDevice, token, password, plain } from './fixture.mjs'
 
 test('stdio initializes and lists eight bounded read-only tools; locked metadata never asks for keys', async () => {
@@ -11,6 +12,7 @@ test('stdio initializes and lists eight bounded read-only tools; locked metadata
   try {
     const { client, stderr } = await f.connect()
     assert.equal(client.getServerVersion().name, 'wappie-readonly')
+    assert.deepEqual(client.getServerVersion().icons, serverIcons(), 'the local reader names the data: icon only')
     const listing = await client.listTools()
     assert.deepEqual(listing.tools.map(tool => tool.name), ['list_numbers', 'list_chats', 'list_messages', 'get_message', 'list_revisions', 'resolve_contact', 'search_messages', 'activity_summary'])
     for (const tool of listing.tools) {
