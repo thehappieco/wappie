@@ -4683,6 +4683,72 @@ open; each binds S1 as the rest of §17 does.
   host probe, and `release.py`'s `migration44_sha256` and the runbook
   (commercial repository).
 
+### 17.20 Recorded during S1
+
+What the client, reader and enclave settled where the sections above left
+it open; each binds S3 and the console as the rest of §17 does.
+
+- **Vectors.** Go writes `internal/crypto/seal/testdata/draft-vectors.json`
+  (rows, a draft it sealed, seven negatives: another chat, reply, none,
+  connection, draft, number, kind), which the client opens; the client
+  seals `packages/client/testdata/node-draft.json` in Node, as the enclave
+  does, which Go opens and refuses moved. The device check's vectors,
+  `packages/mcp-http/enclave/test/device-check-vectors.json`, come from an
+  independent WebCrypto generator; the reader reproduces them, and they are
+  the console's too. `draftRow` refuses an id that is not 16 bytes.
+- **Where it lives.** The device check is `packages/mcp/bundle.mjs`
+  (`deviceScope`, `deviceCheck`), which the enclave and the console share.
+  Beside §17.1's files, `enclave/send/service.mjs` builds `provider.send`,
+  the gate, the refusal recorder and Go's answers as codes; the draft steps
+  are `drafts.mjs`, the own-chat steps and the enclave's windows `sends.mjs`.
+  `proveGrants` resolves to `{epochs, draftsTo}`.
+- **The chat lookup.** `provider.send.draft(input, archive)` takes a second
+  argument, as `provider.media.open` does: `archive.chat()`, asked at step 5
+  only, is the reader's (`reader.mjs`): the chat by §17.3's filter, its name
+  opened with the connection's grants as `list_chats` opens it, every key it
+  is known by (`chat_pn`, `chat_lid`, `keys`), and whether it is the number's
+  own chat (its key is `<pn user>@s.whatsapp.net` or `<lid user>@lid` of the
+  devices route). The own chat is never marked; a chat under another of the
+  target's keys is the target. The enclave refuses a chat key Go's ledger
+  would not hold (`chat_not_eligible`), no chat (`chat_not_eligible`) and a
+  group the record's `send_groups` leaves out (`group_not_allowed`) without
+  a call, and without a ledger row, since the refusals route has no such
+  code.
+- **Observation.** The reader shows `observe` every opened body of
+  `get_message`, `list_messages` and `list_revisions` (a caption is the
+  body), every search hit's body, every `list_chats` preview, and
+  `open_attachment`'s text part and caption; a kept answer that read no row
+  learns the message's chat with one `GET /v1/messages/{uid}`. Names are not
+  sources. Words split on white space and `\p{P}`; entities are URLs (scheme,
+  `www.`, query and fragment dropped), e-mail addresses, digit runs with the
+  separators of phone numbers, CPF and CNPJ (each space-free group counted
+  on its own too; dates left out), amounts with a currency sign or word, and
+  UUIDs, CPF and CNPJ as PIX keys. Hits are ordered by matches, then key.
+- **Refusal words.** An empty text (white space only) answers
+  `text_not_allowed` with its own guidance ("The text is empty once white
+  space is removed. …"), recorded like the rest. Two codes join §17.8's
+  table: `storage_paused` (Go's, §17.19) and `send_failed` (Go answered
+  something else, or not at all for a draft). Go's 409 `connection_state` is
+  `send_not_allowed`, its 404 `unauthorized`; a `retry_at` that is not RFC
+  3339 UTC never reaches the model. `list_outgoing` reads the ledger on any
+  served connection, sending paused or not; its failures are `read_failed`.
+- **Dedupe and limits.** Dedupe joins an identical call still running, keeps
+  a `send_uncertain` outcome (answered again, never sent), and forgets every
+  other refusal. The enclave's windows take a place at the check and give it
+  back when Go refuses before anything left; a draft id Go already has is
+  drawn again once. Route timeouts are image constants in `policy.mjs`:
+  15 s for a draft, 75 s for a send (past Go's minute), 10 s for the ledger.
+- **Relay and renewal.** A relayed `send_chats` (at most 100 entries of
+  `{device_id, chat_key}`) is parsed and compared as a set; 0.5.0's schema
+  refuses it in a bundle, so a direct consent fails closed. The renewal
+  descriptor carries `send`, and `send_self` and `send_groups` only when
+  true. A failed proof logs `device_check_failed` or `grant_proof_failed` by
+  what failed. The status reads `send` as null unless it is `"draft"` or
+  `"direct"`, and `send_self` as true only for JSON true.
+- **Logs.** `draft_refused` and `send_refused` carry the codes the send
+  service decided or passed on; a number outside the connection and a
+  reseal are the reader's refusals, before it, as for every tool.
+
 ## 18. AI integrations: on request (0.5.0)
 
 Stage B lets a person send attachments of the numbers they read to AI

@@ -407,9 +407,14 @@ default to UTC.
 | `search_messages` | Bounded lexical search and metadata filtering across a number's archived chats. |
 | `activity_summary` | Page-level counts of archived original message events by chat, sender and direction. |
 | `open_attachment` | One attachment's contents, opened inside the attested reader; [media connections](#open-attachments-on-a-media-connection) only. |
+| `draft_message` | A message for the user to review and send in the Wappie console; nothing is sent. [Sending connections](#drafts-and-own-chat-notes-on-a-sending-connection) only. |
+| `send_to_self` | A text note sent at once to the number's own chat and nowhere else; sending connections whose consent switched it on only. |
+| `list_outgoing` | The connection's drafts and sent notes, with their status; sending connections only. |
 
-The remote HTTP transport exposes the same eight tools, and `open_attachment`
-on a media connection of the attested reader only. On the hosted metadata
+The remote HTTP transport exposes the same eight tools, `open_attachment`
+on a media connection of the attested reader only, and `draft_message`,
+`list_outgoing` and `send_to_self` on a sending connection of the attested
+reader only. On the hosted metadata
 connector (`"provided"`) sealed content is always reported as `locked`, because
 that reader is never given a key. On the attested reader (`"enclave"`) content
 opens with the connection's key, and a value that key cannot open is `locked`
@@ -676,6 +681,34 @@ a minute; it cannot erase what the assistant already received. The enclave's
 side, the jail and every limit are in
 [the contract](../../docs/mcp-enclave.md#16-stage-a-attachments).
 
+### Drafts and own-chat notes on a sending connection
+
+A **sending connection** is a content connection of the attested reader
+(reader 0.5.0 on) whose consent, card version 3, switched on **Also draft
+messages**, and maybe **Send to my own chat** and **Include groups**. It has
+`draft_message` and `list_outgoing`, and `send_to_self` when the own chat is
+on. Every other connection, the hosted metadata connector and the local
+reader have none of them. An existing connection never gains sending: the
+user connects again with the new card and revokes the old one.
+
+`draft_message` never sends. The enclave checks the text (no control or
+text-direction characters), seals it to the number's archive key, which only
+the user's browser opens, and hands the envelope to the archive server's
+ledger; the answer carries `review_url`, which opens the draft in the Wappie
+console, where the user checks the exact text and recipient and presses Send.
+A draft goes only to a chat of that number where the other side has already
+written (groups only when the consent includes them), expires after 24 hours,
+and is marked in the console when its text copies another chat the assistant
+read in the last hour. `send_to_self` sends a text without links at once to
+the number's own chat, and nowhere else; a lost answer is `send_uncertain` and
+is never repeated. Both are limited per connection, and the archive server
+decides every one: the workspace can pause or switch sending off at any time,
+and the person who consented must still be allowed to send on that number.
+Messages the assistant reads are untrusted data, never instructions: the tool
+descriptions and the instructions tell it to draft only what the user asked
+for in the conversation. The contract is
+[§17](../../docs/mcp-enclave.md#17-sending-drafts-050-and-direct-send-planned).
+
 ### Example prompts
 
 After choosing an authorized number, examples in Portuguese are:
@@ -699,9 +732,10 @@ The proposed persistent encrypted index and semantic retrieval are described
 separately in [Encrypted contextual search](../../docs/encrypted-context-search.md).
 They are future architecture, not capabilities of these tools.
 
-There are no tools to send messages, mark them as read, make calls, delete
-content, grant access, switch workspaces or request phone history, and none
-hands over an attachment's file. Attachments expose metadata and, when
+Apart from the drafts and own-chat notes of a sending connection, there are
+no tools to send messages, mark them as read, make calls, delete content,
+grant access, switch workspaces or request phone history, and none hands over
+an attachment's file. Attachments expose metadata and, when
 authorized, their opened filename. Only `open_attachment`, on a media
 connection of the attested reader, opens their contents, and no tool searches
 them; in every other mode, this local one included, they are never fetched.
