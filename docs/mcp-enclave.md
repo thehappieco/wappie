@@ -4901,9 +4901,11 @@ bound by the owner's decisions of 2026-09-30. The steps:
   HPKE mode_auth: `packages/client`'s HPKE is base mode only
   (`crypto/hpke.ts`), and a key only the account private key derives gives
   the same property (Go cannot make an item).
-- The spending cap is enforced in the enclave from **rates** the console
-  put in the tagged bundle (its price table, an estimate): no price is an
-  image constant, as no model name is.
+- The cap is a safety lock in **tokens** and attachments, set in the
+  tagged bundle and enforced in the enclave: Wappie keeps and shows no
+  price and no dollars, since prices vary with each person's plan and
+  model and billing is the person's account's at each provider (the
+  owner's decision of 2026-09-30, §18.20).
 - The install checks the keys and models synchronously; Go's relay waits
   30 s for the AI bundle routes.
 - The derived records' namespace, the device checks' (§17.2) and the tags'
@@ -4918,11 +4920,12 @@ bound by the owner's decisions of 2026-09-30. The steps:
 - Revised after the contract's review: model lists are read whole, page by
   page (§18.9); the output limits hold a reasoning model's reasoning, and
   an empty answer is never stored (§18.9, §18.14); the error map pins the
-  documented codes (§18.9); what is charged follows the provider's
-  measure, never the sender's claim alone (§18.10); an authorization
-  covers at most 25 numbers (`AI_DEVICES_MAX`); after a release the
-  connector gives the renewal link instead of saying AI was never turned
-  on (§18.10, §18.12); and reuse keys on the language too (§18.8).
+  documented codes (§18.9); what is counted toward the cap follows the
+  provider's measure, never the sender's claim alone (§18.10); an
+  authorization covers at most 25 numbers (`AI_DEVICES_MAX`); after a
+  release the connector gives the renewal link instead of saying AI was
+  never turned on (§18.10, §18.12); and reuse keys on the language too
+  (§18.8).
 
 ### 18.1 Workstreams and interfaces
 
@@ -4932,7 +4935,7 @@ bound by the owner's decisions of 2026-09-30. The steps:
 | **CLIENT** | `packages/client/src/crypto/{jcs,derived,aikeychain}.ts` and their exports, tests and cross vectors |
 | **READER** | `packages/mcp/**`: `bundle.mjs` (`validateAIBundle`), `server.mjs` (open_attachment's AI answers, notes, codes and sentences), `reader.mjs` (`openDerived`, the stored-result read) |
 | **ENCLAVE** | `packages/mcp-http/**`: `internal.mjs` (the `/internal/ai/*` routes, the status's `ai_off`), `enclave/relay.mjs`, `enclave/{content,renew,provider,constants,health,main}.mjs`, and the new `enclave/ai/{policy,requests,install,egress,jobs,derived,dedupe,budget,tags,service}.mjs` and `enclave/ai/providers/{anthropic,openai,google}.mjs` (B1 added `service.mjs` and touched `media/{service,gate,result}.mjs`, `verifier.mjs` and `server.mjs`, §18.20) |
-| **CONSOLE** | `commercial/web/**`: the AI area (keys, integrations, usage), the authorization flow and card, the tags, the buttons and results in the conversation, the deep links, the price table (`src/state/aiPrices.ts`), five locales |
+| **CONSOLE** | `commercial/web/**`: the AI area (keys, integrations, usage), the authorization flow and card, the tags, the buttons and results in the conversation, the deep links, five locales (no price table: §18.20) |
 | **DEPLOY** | `deploy/enclave/entrypoint.sh` (three hosts and bridges), `commercial/deploy/enclave/{vsock-proxy.yaml,bootstrap.sh,log-sink.py,test_log_sink.py}` (three proxies, the events and health fields) |
 | **DOCSOPS** | `docs/mcp.md`, `SECURITY.md`, `docs/media-security.md` (what each provider receives), `commercial/docs/**` (runbook, the key guidance per provider, the Terms and DPA drafts), `commercial/scripts/release.py` (`migration45_sha256`) |
 
@@ -4968,17 +4971,17 @@ and sentences (§18.12: READER); the log schema (§18.15: ENCLAVE, DEPLOY).
   `file_sha256` (the sender's claim, stored readable) is never used.
 - **I7.** Every provider, host, route, prompt, provider-function pairing
   and limit is a frozen constant of `enclave/ai/policy.mjs`, measured in
-  PCR0, `store: false` and the storage-API ban included. Model names and
-  prices are not: each is the person's pick, tagged, and the models are
-  re-checked at install.
+  PCR0, `store: false` and the storage-API ban included. Model names are
+  not: each is the person's pick, tagged, and the models are re-checked at
+  install. No price is anywhere: the cap counts tokens (§18.10).
 - **I8.** Logs carry no content, prompt, output, model name, provider
   error body, key or key suffix.
-- **I9.** Spend per authorization is bounded by the enclave's own
-  counters: `used = max(enclave, go)` and `cap = min(bundle, go)`, checked
-  before every attempt at a provider call, with every 200 answer charged by
-  the provider's own usage or an upper bound of it, and every call that left
-  and was never answered charged at that bound, never by a sender's claim
-  alone (§18.9, §18.10).
+- **I9.** Use per authorization is bounded by the enclave's own counters, in
+  tokens and attachments: `used = max(enclave, go)` and `cap = min(bundle,
+  go)`, checked before every attempt at a provider call, with every 200
+  answer counted by the tokens the provider reports or an upper bound of
+  them, and every call that left and was never answered counted at that
+  bound, never by a sender's claim alone (§18.9, §18.10).
 
 ### 18.3 Functions and providers
 
@@ -5031,7 +5034,7 @@ for a kind that is off) and `ai_off =
 {"functions": <sorted union of WS_AI_OFF_FEATURES, the row's ai_off, and
 the functions whose provider is in WS_AI_OFF_PROVIDERS>, "providers":
 <WS_AI_OFF_PROVIDERS>, "paused": <ai_paused_at is set>,
-"monthly_usd_cents": <ai_cap_cents or null>}`. A reader older than 0.5.0
+"monthly_tokens": <ai_cap_tokens or null>}`. A reader older than 0.5.0
 never holds an `ai` record it serves (§18.16).
 
 **The media gate** (§16.3, `internal/media/http.go`): a key that is the
@@ -5088,16 +5091,16 @@ ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_revoke_reason_check C
     'console', 'reader', 'reuse_detected', 'relay_failed', 'pending_expired', 'expired', 'service_removed',
     'service_disabled', 'member_removed', 'member_disabled', 'access_lost', 'ai_key_deleted'));
 ALTER TABLE mcp_connections
-    ADD COLUMN ai_config    jsonb       CHECK (octet_length(ai_config::text) <= 32768),
-    ADD COLUMN ai_paused_at timestamptz,
-    ADD COLUMN ai_off       text[]      NOT NULL DEFAULT '{}'
-                                        CHECK (ai_off <@ ARRAY['audio', 'video', 'image', 'document']),
-    ADD COLUMN ai_cap_cents integer     CHECK (ai_cap_cents BETWEEN 1 AND 100000),
-    ADD COLUMN ai_alerts    jsonb       NOT NULL DEFAULT '{}' CHECK (octet_length(ai_alerts::text) <= 4096);
+    ADD COLUMN ai_config     jsonb       CHECK (octet_length(ai_config::text) <= 32768),
+    ADD COLUMN ai_paused_at  timestamptz,
+    ADD COLUMN ai_off        text[]      NOT NULL DEFAULT '{}'
+                                         CHECK (ai_off <@ ARRAY['audio', 'video', 'image', 'document']),
+    ADD COLUMN ai_cap_tokens bigint      CHECK (ai_cap_tokens BETWEEN 1 AND 1000000000),
+    ADD COLUMN ai_alerts     jsonb       NOT NULL DEFAULT '{}' CHECK (octet_length(ai_alerts::text) <= 4096);
 ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_ai_coherent CHECK (
     (kind = 'ai' AND ai_config IS NOT NULL AND NOT media AND redirect_host = 'console' AND consent_version = 1)
  OR (kind <> 'ai' AND ai_config IS NULL AND ai_paused_at IS NULL AND ai_off = '{}'
-     AND ai_cap_cents IS NULL AND ai_alerts = '{}'));
+     AND ai_cap_tokens IS NULL AND ai_alerts = '{}'));
 
 -- A person's API keys, sealed in their browser (§18.6). Go stores an opaque envelope.
 CREATE TABLE ai_keychain (
@@ -5151,7 +5154,7 @@ CREATE TABLE ai_usage_daily (
     input_tokens     bigint  NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
     output_tokens    bigint  NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
     seconds          integer NOT NULL DEFAULT 0 CHECK (seconds >= 0),
-    cost_microcents  bigint  NOT NULL DEFAULT 0 CHECK (cost_microcents >= 0),
+    charged_tokens   bigint  NOT NULL DEFAULT 0 CHECK (charged_tokens >= 0),   -- counted toward the cap (§18.10)
     PRIMARY KEY (tenant_id, day, authorization_id, device_id, feature, provider, model, keychain_id, origin, requester_id)
 );
 
@@ -5206,7 +5209,7 @@ DROP TABLE ai_keychain;
 DELETE FROM mcp_connections WHERE kind = 'ai';
 ALTER TABLE mcp_connections DROP CONSTRAINT mcp_connections_ai_coherent;
 ALTER TABLE mcp_connections DROP COLUMN ai_config, DROP COLUMN ai_paused_at, DROP COLUMN ai_off,
-    DROP COLUMN ai_cap_cents, DROP COLUMN ai_alerts;
+    DROP COLUMN ai_cap_tokens, DROP COLUMN ai_alerts;
 ALTER TABLE mcp_connections DROP CONSTRAINT mcp_connections_revoke_reason_check;
 ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_revoke_reason_check CHECK (revoke_reason IN (
     'console', 'reader', 'reuse_detected', 'relay_failed', 'pending_expired', 'expired', 'service_removed',
@@ -5319,7 +5322,7 @@ any failure `invalid_bundle`). A strict object:
 | `keys` | a strict object `{anthropic?, openai?, google?}`, each `/^[!-~]{20,256}$/`; exactly the providers `functions` names |
 | `functions` | a strict object `{audio?, video?, image?, document?}`, at least one, each `{provider, model}`: `provider` allowed for that function by `AI_FEATURES`; `model` matching `AI_MODEL_RE`, and with no `:` for `google` |
 | `features` | an object with exactly the keys `device_ids`, each a strict object `{audio?, video?, image?, document?}` of `{mode: 'request', lang?: /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/, requesters: 'self' \| 'readers' \| 'console'}`, each function present in `functions`; `mode: 'auto'` is B2's and refused |
-| `budget` | `{monthly_usd_cents: 1 to 100000, request_items_per_day: 1 to 1000, rates}`, where `rates` has exactly one key `"<provider>:<model>"` per distinct pair of `functions`, each `{in, out, sec}`, integers 0 to 100,000,000: US cents per million input tokens, per million output tokens, and per 1,000 seconds of audio or video |
+| `budget` | a strict object `{monthly_tokens: 1 to 1,000,000,000 (AI_MONTHLY_TOKENS_MAX), request_items_per_day: 1 to 1000 (AI_REQUEST_ITEMS_PER_DAY_MAX)}`, integers: the tokens a month counted as §18.10 says, and the attempts at a provider call a day. A safety cap, never money: no rate, price or amount of any currency (§18.20) |
 | `cfg_tags` | an object with exactly the keys `device_ids`, each 43 canonical base64url characters |
 
 `auto` (B2) is absent; any other key is `invalid_bundle`. Sealing: HPKE base
@@ -5408,12 +5411,11 @@ and the record's `functions`, `features` and `budget` (not attested; a
 wrong value only fails the renewal). The console seals a `purpose:
 'renewal'` AI bundle with fresh `cfg_tags` (`request` = the `renewal_id`),
 and sends `ai_config` with `POST /v1/mcp/connections/{id}/renew`. The
-bundle must carry the record's `features`, `budget.monthly_usd_cents`,
-`budget.request_items_per_day` and each function's provider unchanged; it
-may change a key within the same provider (rotation) and a function's
-`model` within the same provider (a retired or better model), with
-`budget.rates` following the models (one entry per pair, as always). A new
-provider, function or number is a new authorization. Go checks the new
+bundle must carry the record's `features`, `budget` (`monthly_tokens` and
+`request_items_per_day`) and each function's provider unchanged; it may
+change a key within the same provider (rotation) and a function's `model`
+within the same provider (a retired or better model). A new provider,
+function or number is a new authorization. Go checks the new
 `ai_config` as at consent (step 5, `AI_DEVICES_MAX` included). The enclave
 checks as for a consent (tags, models), then
 stages `{key, aikeys, service_user_id, epochs, ns, config}`; Go's relay
@@ -5596,16 +5598,18 @@ text, white space is trimmed, and the text is cut at `AI_TEXT_MAX_CHARS`
    `max_output_tokens`, Google `finishReason: "MAX_TOKENS"`) flags
    `partial`, and the record is stored.
 
-**Charges.** Every 200 answer is charged by its usage (§18.10), whatever
-it holds: empty, refused and failed ones included, since the provider
-billed the input and the reasoning. A non-200 answer is never charged. A
-call that left and was never answered (a timeout, a dropped connection,
-an abort of its job, an answer over `AI_RESPONSE_MAX_BYTES`) is charged at
-§18.10's bound for an answer without usage: the parent relays the
-provider's TLS bytes, sees when the upload is done and can stall or drop
-the answer after it, and the provider bills what it received (§18.20).
-Each attempt, a retry included, is a call: the budget is checked before
-it leaves and it counts toward `request_items_per_day`.
+**Charges** (in tokens, toward §18.10's cap; the money is the person's
+account's at each provider, never Wappie's). Every 200 answer is charged
+by its usage (§18.10), whatever it holds: empty, refused and failed ones
+included, since the provider billed the input and the reasoning. A
+non-200 answer is never charged. A call that left and was never answered
+(a timeout, a dropped connection, an abort of its job, an answer over
+`AI_RESPONSE_MAX_BYTES`) is charged at §18.10's bound for an answer without
+usage: the parent relays the provider's TLS bytes, sees when the upload is
+done and can stall or drop the answer after it, and the provider bills
+what it received (§18.20). Each attempt, a retry included, is a call: the
+budget is checked before it leaves and it counts toward
+`request_items_per_day`.
 
 **Error map** (the first row that matches wins; `AI_ERROR_RULES` in
 `policy.mjs` pins each row's matchers per provider, from the documented
@@ -5663,8 +5667,9 @@ for in B1, the console offers `console` as "só eu" / "only me" (the
 default) and `readers` as "quem lê o número" / "whoever reads the number"
 (the review of 2026-09-30). For a connector the requester is the connection's
 `created_by`, and the connection must be a live media connection. A wrong
-pick costs money, never confidentiality: every candidate's owner consented
-to that number going to that provider.
+pick uses another authorization's cap and its owner's provider account,
+never confidentiality: every candidate's owner consented to that number
+going to that provider.
 
 **A job** (`enclave/ai/jobs.mjs`) is one function run for one message under
 one authorization. Its key is `${authorization_id}|${device_id}|${uid}|${feature}`;
@@ -5728,56 +5733,62 @@ stored, and only a provider call it had sent is charged, at its bound
 (§18.9's charges).
 
 **Budget** (`enclave/ai/budget.mjs`), per authorization, in memory:
-`{month (UTC YYYY-MM), cost_microcents, day (UTC), items_day}`. At install
-(and after a restart's renewal) they start from Go's
-`GET …/ai/usage` answer, which Go can only understate. Before each
-provider call, `used = max(enclave, go_latest)`, where `go_latest` is
-Go's answer as the 60 s sweep last read it, and `cap = min(bundle's
-monthly_usd_cents, status's monthly_usd_cents) × 1,000,000`: the call is
-refused (`ai_budget_reached`) when `used ≥ cap`, or when `items_day` has
-reached `request_items_per_day` (the refusal says which: `limit` is
-`month` or `day`, §18.20); each attempt is checked so, and counts one item
-as it leaves. After each 200 answer, and after each attempt sent and never
-answered (a non-200 answer is never charged), `cost_microcents += in ×
-input_tokens + out × output_tokens + sec × seconds × 1,000` with the pair's
-`rates`; an attempt never answered has no usage and takes the bounds
-below. The tokens are the
-provider's usage fields (B0's, §18.19: Anthropic `input_tokens`,
-`output_tokens`; OpenAI Responses `input_tokens`, `output_tokens`;
-OpenAI transcription `usage.type` `tokens` with `input_tokens` and
-`output_tokens`, or `duration` with `seconds`; Google
-`promptTokenCount`, `candidatesTokenCount`, `thoughtsTokenCount`), the
-reasoning or thinking tokens included in the output; a missing field is charged as `ceil(request
-body bytes / 4)` input tokens and `AI_OUTPUT_MAX_TOKENS[f]` output tokens.
-`seconds`, for audio and video (else 0), is never the sender's claim
-alone, since a voice note that claims 1 s may hold 25 minutes:
+`{month (UTC YYYY-MM), tokens, day (UTC), items_day}`. It is a safety cap
+in tokens and attachments, never money: prices vary with each person's plan
+and model, and billing is the person's account's at each provider, where
+the console tells them to set their spending limits (the owner's decision
+of 2026-09-30, §18.20). At install (and after a restart's renewal) the
+counters start from Go's `GET …/ai/usage` answer, which Go can only
+understate. Before each provider call, `used = max(enclave, go_latest)`,
+where `go_latest` is Go's answer as the 60 s sweep last read it, and `cap =
+min(bundle's monthly_tokens, status's monthly_tokens)`: the call is refused
+(`ai_budget_reached`) when `used ≥ cap`, or when `items_day` has reached
+`request_items_per_day` (the refusal says which: `limit` is `month` or
+`day`, §18.20); each attempt is checked so, and counts one item as it
+leaves. After each 200 answer, and after each attempt sent and never
+answered (a non-200 answer is never charged), `tokens += charged`, where
+`charged` is:
 
-- the provider's own measure when the answer carries one: OpenAI's
-  transcription `usage.seconds` (a model billed by duration: B0 saw
-  `whisper-1` and `gpt-transcribe`), or Google's audio tokens
-  (`usageMetadata.promptTokensDetails`, modality `AUDIO`) ÷
-  `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` (25). B0 found Google counts a
-  video's prompt as modality `VIDEO` only, never `AUDIO` (§18.20), so a
-  Gemini video has no measured seconds;
-- else `max(claimed, ceil(plaintext bytes ÷ AI_MIN_BYTES_PER_SECOND))`, an
-  upper bound on the length no sender can shrink (250 bytes a second is
-  2 kbit/s, below every speech codec the providers decode), which may
-  overcharge and never undercharges.
+- the tokens the provider reports, input plus output, its reasoning or
+  thinking tokens included (B0's fields, §18.19: Anthropic `input_tokens`,
+  `output_tokens`; OpenAI Responses `input_tokens`, `output_tokens`, whose
+  reasoning tokens are in the output; OpenAI transcription `usage.type`
+  `tokens` with `input_tokens` and `output_tokens`; Google
+  `promptTokenCount`, and `candidatesTokenCount` plus `thoughtsTokenCount`);
+- for an answer billed by duration (OpenAI's transcription `usage.type`
+  `duration`: B0 saw `whisper-1` and `gpt-transcribe`), its `seconds` ×
+  `AI_DURATION_TOKENS_PER_SECOND` (25, Google's measured audio rate,
+  §18.19), never the sender's claim alone;
+- for what the answer does not report, an upper bound: a missing input
+  count is `ceil(request body bytes / 4)` tokens, and a missing output
+  count `AI_OUTPUT_MAX_TOKENS[f]`; for audio and video, an answer with
+  neither count (a call never answered has none) counts at least the
+  length bound × `AI_DURATION_TOKENS_PER_SECOND`, and a duration answer
+  without its `seconds` exactly that, where the length bound is
+  `max(claimed, ceil(plaintext bytes ÷ AI_MIN_BYTES_PER_SECOND))`: an upper
+  bound on the length no sender can shrink (250 bytes a second is 2 kbit/s,
+  below every speech codec the providers decode), since a voice note that
+  claims 1 s may hold 25 minutes. It may overcount and never undercounts.
 
-A pair billed by tokens (every Gemini model, OpenAI's token-billed
-transcribers) has `sec` 0 in the console's price table, and its audio is
-in `input_tokens` already. So the charge follows what the provider bills,
-whatever the row claims, and the worst case is one full budget per
-renewal: Go can understate the counts and the claims, never raise the
-cap. Alerts at 80% and 100% are the console's, from the usage it reads.
+An answer billed by tokens (every Gemini model, OpenAI's token-billed
+transcribers) has its audio in its input tokens already, so Google's audio
+seconds are reported, never counted. So what is counted follows what the
+provider measures, whatever the row claims, and the worst case is one full
+cap per renewal: Go can understate the counts and the claims, never raise
+the cap. Alerts at 80% and 100% are the console's, from the usage it reads.
 
-What the usage row and the record's `usage` **report** is not always what
-was charged: the provider's own counts where the answer has them; else,
-for a count the pair's rate never charges, what is known without a bound
-(the claimed length for `seconds` when `sec` is 0; 0 tokens when `in` or
-`out` is 0); else the bound. So a Gemini video shows its claimed minutes,
-not `ceil(bytes ÷ 250)`, and a transcriber billed by duration shows no
-tokens (§18.20).
+What the usage row and the record's `usage` **report** is apart from what
+was counted: the tokens the provider reported (0 in the usage row and
+absent from the record where it reported none), and for audio and video
+the seconds it measured, else the claimed length. Its measure is OpenAI's
+transcription `usage.seconds`, or Google's audio tokens
+(`usageMetadata.promptTokensDetails`, modality `AUDIO`) ÷
+`AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` (25); B0 found Google counts a video's
+prompt as modality `VIDEO` only, never `AUDIO` (§18.20), so a Gemini video
+has no measured seconds. The usage row adds `charged_tokens`, what the cap
+counted. So a Gemini video shows its claimed minutes, not `ceil(bytes ÷
+250)`, and a transcriber billed by duration shows no tokens, beside the
+tokens its seconds counted (§18.20).
 
 ### 18.11 Routes
 
@@ -5795,8 +5806,8 @@ the enclave's public listener.
 | `POST /v1/ai/requests/{id}/models` | the request's user | `{"provider","sealed"}` → 200 `{"models":[{"id"}]}` (not built in B1: B0 found every list answers the browser, §18.7) | 400; 404; 502 |
 | `POST /v1/mcp/connections` | an owner or admin | §18.7 step 5 → 201 | 400 (with the reader's codes); 403; 409; 502 |
 | `POST /v1/mcp/connections/{id}/renewal`, `…/renew` | as §15.9 | + `ai_config` on renew | as §15.9 |
-| `GET /v1/ai/authorizations` | any person: their own; owners and admins: all | → 200 `{"authorizations":[{"id","created_by","status","expires_at","device_count","ai_config","paused","off","cap_cents","alerts","revoke_reason","renewable","created_at"}]}` | 401 |
-| `PATCH /v1/ai/authorizations/{id}` | pause and narrow: the creator, an owner or admin; unpause and undo a narrowing: the creator | `{"paused"?: bool, "off"?: [functions], "cap_cents"?: int\|null}` → 200 the row | 400; 403; 404; 409 `connection_state` |
+| `GET /v1/ai/authorizations` | any person: their own; owners and admins: all | → 200 `{"authorizations":[{"id","created_by","status","expires_at","device_count","ai_config","paused","off","cap_tokens","alerts","revoke_reason","renewable","created_at"}]}` (`cap_tokens`: the lower monthly cap in tokens, or null) | 401 |
+| `PATCH /v1/ai/authorizations/{id}` | pause and narrow: the creator, an owner or admin; unpause and undo a narrowing: the creator | `{"paused"?: bool, "off"?: [functions], "cap_tokens"?: 1 to 1,000,000,000\|null}` → 200 the row | 400; 403; 404; 409 `connection_state` |
 | `DELETE /v1/ai/authorizations/{id}?delete_results=true\|false` | the creator, an owner or admin | → 204 (ends the row, reason `console`; with `true`, deletes its `ai_derived` rows) | 403; 404 |
 | `GET /v1/ai/available?device_id=` | a person who reads the device | → 200 `{"features":[…],"renew":[{"feature","authorization_id"}]}`: the functions `PickAIAuthorization` admits for them from the console with `state: "active"` in `features`, and those it answers with `state: "reseal"` in `renew`, where the console offers Renew (`ai_renew`) instead of the button | 400; 403 |
 | `POST /v1/ai/process` | a person who reads the device; 30 a minute | `{"device_id","uid","feature","redo"?}` → 202 `{"job","authorization_id"}` or 200 `{"stored":true}` | 400; 403 `ai_not_enabled`; 404; 409 `ai_paused` `{"authorization_id"}` (a `reseal` pick), `ai_budget_reached` `{"authorization_id","limit"?: "month"\|"day"}`; 422 `ai_unsupported`, `view_once_excluded`; 429 `ai_busy`; 502 |
@@ -5804,7 +5815,7 @@ the enclave's public listener.
 | `GET /v1/ai/derived?device_id=&uids=` | a person who reads the device; 1 to 100 uids | → 200 `{"items":[{"message_uid","feature","device_id","epoch","sealed","authorization_id","created_at"}]}` | 400; 403 |
 | `DELETE /v1/ai/derived/{uid}/{feature}` | the record's authorization's creator, an owner or admin | → 204 | 403; 404 |
 | `POST /v1/ai/derived/delete` | `{"authorization_id"}`: its creator, an owner or admin; `{"device_id"}`: an owner or admin | → 200 `{"deleted"}` | 400; 403 |
-| `GET /v1/ai/usage?month=YYYY-MM` | any person: their own authorizations; owners and admins: all | → 200 `{"month","items":[{"authorization_id","device_id","feature","provider","model","keychain_id","origin","requester_id","items","reused","failures","input_tokens","output_tokens","seconds","cost_microcents","items_today","failures_today"}]}` (today's UTC calls of the line, answered and failed, for the daily cap) | 400 |
+| `GET /v1/ai/usage?month=YYYY-MM` | any person: their own authorizations; owners and admins: all | → 200 `{"month","items":[{"authorization_id","device_id","feature","provider","model","keychain_id","origin","requester_id","items","reused","failures","input_tokens","output_tokens","seconds","charged_tokens","items_today","failures_today"}]}` (the tokens each provider reported, and those counted toward the cap; today's UTC calls of the line, answered and failed, for the daily cap; never money) | 400 |
 
 `/v1/ai/*` answers 404 while `WS_AI_ENABLED` is off, except the keychain,
 the listing, the revocation and the deletions: a person can still see and
@@ -5831,8 +5842,8 @@ api_key>` as §17.7; the row is the path's):
 | `GET /v1/mcp/enclave/connections/{id}/ai/derived?device_id=&uid=` | a media connection or an `ai` row | → 200 `{"items":[{"message_uid","feature","device_id","epoch","sealed","created_at"}]}`, only for devices of the row's key | 400; 404 |
 | `GET /v1/mcp/enclave/connections/{id}/ai/derived?feature=&tags=<device_id>.<tag>,…` | an `ai` row | 1 to `AI_DEVICES_MAX` (25) pairs, `tag` 43 base64url → 200 as above | 400; 404 |
 | `PUT /v1/mcp/enclave/connections/{id}/ai/derived/{uid}/{feature}` | an `ai` row | `{"device_id","epoch","sealed","dedupe_tag","redo"}` (`sealed` and `dedupe_tag` unpadded base64url, §17.7's form and the `tags` query's), at most 768 KiB → 204: with `redo: true` it inserts or replaces; without, it inserts only | 400 (the uid not on that device, or the type not the function's); 404; 409 `storage_paused`, `derived_exists` (not a redo, and a record for `(uid, feature)` is stored: another authorization finished first, and the enclave answers with that record) |
-| `POST /v1/mcp/enclave/connections/{id}/ai/usage` | an `ai` row | `{"device_id","feature","provider","model","origin","requester_id","items","reused","failures","input_tokens","output_tokens","seconds","cost_microcents"}` → 204 (added to today's row, whose `keychain_id` Go takes from the row's `ai_config.keys.<provider>.keychain_id` as it records) | 400; 404 |
-| `GET /v1/mcp/enclave/connections/{id}/ai/usage?month=` | an `ai` row | → 200 `{"month","cost_microcents","items_today"}` | 404 |
+| `POST /v1/mcp/enclave/connections/{id}/ai/usage` | an `ai` row | `{"device_id","feature","provider","model","origin","requester_id","items","reused","failures","input_tokens","output_tokens","seconds","charged_tokens"}` (`charged_tokens` at most 2,000,000,000) → 204 (added to today's row, whose `keychain_id` Go takes from the row's `ai_config.keys.<provider>.keychain_id` as it records) | 400; 404 |
+| `GET /v1/mcp/enclave/connections/{id}/ai/usage?month=` | an `ai` row | → 200 `{"month","charged_tokens","items_today"}` | 404 |
 | `POST /v1/mcp/enclave/connections/{id}/ai/alerts` | an `ai` row | `{"code":"ai_key_rejected"\|"ai_model_unavailable"\|"ai_quota","feature"?,"provider"?}` → 204 (kept in `ai_alerts` until a renewal) | 400; 404 |
 
 ### 18.12 The reader: `open_attachment` and AI results (B1, media connections)
@@ -5914,7 +5925,7 @@ The `next_cursor` and `open_url` notes follow as §16.7 has them.
 | `ai_paused` | `true` | `AI transcription on this number is paused until its owner renews or resumes it in the Wappie console, under AI integrations. Tell the user; do not retry.` |
 | `ai_paused` with `renew_url` | `true` | `AI transcription on this number is paused since the reader was updated or restarted, until the user renews it with their password. Give the user renew_url exactly as returned; do not retry.` |
 | `ai_output_limit` | `true` | `The AI model used its whole output limit before it answered, which a reasoning model can do. Tell the user they can redo it or pick another model in the Wappie console, under AI integrations; do not retry.` |
-| `ai_budget_reached` | `true` | with `limit: "month"`: `The AI integration for this number reached its monthly spending limit, which starts again on the 1st (UTC). Tell the user; do not retry before then.`; with `limit: "day"`: `The AI integration for this number reached its attachments for today, which start again at 00:00 UTC. Tell the user; do not retry before then.`; without: `The AI integration for this number reached its limit: its monthly spending (starts again on the 1st, UTC) or its attachments for today (starts again at 00:00 UTC). Tell the user; do not retry before then.` (§18.20) |
+| `ai_budget_reached` | `true` | with `limit: "month"`: `The AI integration for this number reached its tokens for this month, which start again on the 1st (UTC). Tell the user; do not retry before then.`; with `limit: "day"`: `The AI integration for this number reached its attachments for today, which start again at 00:00 UTC. Tell the user; do not retry before then.`; without: `The AI integration for this number reached its limit: its tokens for this month (start again on the 1st, UTC) or its attachments for today (start again at 00:00 UTC). Tell the user; do not retry before then.` (§18.20) |
 | `ai_key_rejected` | `true` | `The AI provider rejected the key the user gave it. Tell the user to replace the key in the Wappie console, under AI integrations; do not retry.` |
 | `ai_model_unavailable` | `true` | `The AI model chosen for this is no longer available with the user's key. Tell the user to pick another model in the Wappie console, under AI integrations; do not retry.` |
 | `ai_quota` | `true` | `The user's account at the AI provider has no quota or credit left. Tell the user; do not retry.` |
@@ -5974,7 +5985,9 @@ servidor. Você ainda pode apagar as suas chaves, revogar integrações e
 apagar os resultados delas." / "AI integrations are switched off on this
 server. You can still delete your keys, revoke integrations and delete
 their results."). Its tabs ("Chaves dos provedores" / "Provider keys",
-"Integrações" / "Integrations", "Uso e custo" / "Usage and cost"):
+"Integrações" / "Integrations", "Uso" / "Usage"). Wappie shows no prices
+and no dollars anywhere in it (the owner's decision of 2026-09-30,
+§18.20):
 
 - **Keys.** The person's items (provider, label, `…suffix`); Add (provider,
   label, key; the key is checked by listing its models, then sealed,
@@ -5984,7 +5997,10 @@ their results."). Its tabs ("Chaves dos provedores" / "Provider keys",
   stops (§18.18 has which exist); for Gemini, a project with billing on
   (the free tier lets Google use the content and people read it; the
   person confirms, decision 5); a Claude Pro or ChatGPT Plus subscription
-  is not an API key.
+  is not an API key (keys come from each provider's developer console,
+  billed separately). The guidance and the card keep saying that each
+  provider bills the person's own account, where the spending limits are
+  set.
 - **Integrations.** Each authorization: the numbers; per function its
   provider and model; status, expiry, alerts; verified or "não
   verificada"; Renew, Pause, Revoke (with "apagar também os resultados" /
@@ -5997,27 +6013,42 @@ their results."). Its tabs ("Chaves dos provedores" / "Provider keys",
   list, a language (audio and video: the spoken language, optional; an
   image: the description's, the console's own by default; a document: the
   summary's, the document's own by default) and who may ask (§18.10); the
-  monthly budget (default US$ 10, which restarts on the 1st at 00:00 UTC
-  and can later be lowered, never raised) with the daily item cap
-  (default 100; every request to a provider counts, retries and failures
-  included), the rates from the price table (`aiPrices.ts`, "estimate;
-  the bill is the provider's"; a model the table does not know takes the
-  provider's highest listed rates, and the form says so), what a minute of
-  audio or video costs at them and how many one-minute voice notes the
-  budget buys; the expiry, which a renewal does not extend; the card; the
-  password. With no key at all the form attests nothing and says to add
+  limits ("Limites" / "Limits"), a safety lock with no price anywhere:
+  "Tokens por mês, no máximo" / "Tokens a month, at most" (default
+  5,000,000, shown and read with the locale's grouping, "5.000.000" /
+  "5,000,000"; it restarts on the 1st at 00:00 UTC and can later be
+  lowered, never raised) and "Anexos por dia, no máximo" / "Attachments a
+  day, at most" (default 100; every request to a provider counts, retries
+  and failures included), under the owner's sentence (§18.20): "Os preços
+  variam com o seu plano e o modelo, e a cobrança é da sua conta em cada
+  provedor: defina lá os seus limites de gasto. A Wappie conta os tokens
+  que cada provedor informa e para no limite abaixo, como trava de
+  segurança." / "Prices vary with your plan and the model, and billing is
+  your account's at each provider: set your spending limits there. Wappie
+  counts the tokens each provider reports and stops at the limit below as
+  a safety lock."; the expiry, which a renewal does not extend; the card;
+  the password. With no key at all the form attests nothing and says to add
   one; a function no held key's provider does says which do ("o Google ou
   a OpenAI fazem isto" / "Google or OpenAI do this").
-  An integration's row shows its month against its budget and today's
-  calls against its cap; its lower monthly limit accepts only a value
-  below the authorized budget, and a pause, a function turned off or a new
-  limit applies within a minute (§18.20); someone who is not its creator
-  confirms a pause, which only the creator can undo.
+  An integration's row shows its limit ("Até {n} tokens por mês" / "Up
+  to {n} tokens a month"), its month's tokens against it ("{usados} de
+  {limite} tokens em {mês} ({n}%)" / "{used} of {limit} tokens in {month}
+  ({n}%)") and today's calls against its cap; its lower monthly limit, in
+  tokens ("Baixar o limite mensal (tokens)" / "Lower the monthly limit
+  (tokens)"), accepts only a value below the authorized one, and a pause,
+  a function turned off or a new limit applies within a minute (§18.20);
+  someone who is not its creator confirms a pause, which only the creator
+  can undo.
 - **Usage.** The month by provider, key, model, number and function:
-  attachments, minutes (audio and video), tokens, the estimated cost and
-  what reuse saved, one card per line on a phone; above it, each live
-  integration's month against its budget and today's calls against its
-  daily cap; alerts at 80% and 100% of each budget.
+  attachments (and those reused or failed), minutes (audio and video), the
+  input and output tokens each provider reported, and the tokens counted
+  toward the limit ("Contados no limite" / "Counted toward the limit": the
+  reported tokens, or an upper bound where a provider reported none), one
+  card per line on a phone; above it, each live integration's month in
+  tokens against its limit and today's calls against its daily cap; alerts
+  at 80% and 100% of each limit; below it, the owner's sentence with "no
+  limite de cada integração" / "at each integration's limit" for "no
+  limite abaixo" / "at the limit below". Never money.
 
 **In the conversation.** Under an attachment whose function
 `GET /v1/ai/available` lists for the viewer: "Transcrever" / "Transcribe"
@@ -6041,8 +6072,8 @@ told what to do and offered the AI area, anyone else who can fix it; after
 pause reaches it), and it holds it too for an attachment whose claimed length or size is past
 `AI_MAX_SECONDS` or `AI_CAP_BYTES`, which it mirrors.
 
-**The card** (drafts for the owner's approval in pt and en; the other three
-locales follow):
+**The card** (approved by the owner on 2026-09-30 in pt and en; the other
+three locales follow):
 
 > pt: "Integração com IA ({função → provedor, uma por linha}). Anexos
 > destes números (conforme as funções escolhidas: áudios, notas de voz,
@@ -6103,8 +6134,8 @@ people's personal data; where results are stored and who reads them, with
 function's line without the provider as a subject ("**Áudios e notas de
 voz → Google** (modelo). Recebe o áudio ou a nota de voz como foi
 enviado."), and per provider what it keeps in the same order (the
-account's terms, then the figure the provider reports), all drafts for
-the owner (the review of 2026-09-30).
+account's terms, then the figure the provider reports), from the review
+of 2026-09-30 and approved by the owner the same day.
 
 **The attachments consent card** (§16.2's `mediaCard`), on a release that
 declares `ai_v1`, replaces "Áudios, notas de voz e vídeos ainda não são
@@ -6119,10 +6150,10 @@ arquivo." / "Voice notes and audio, and the speech and picture of videos,
 reach {assistant} only as AI transcripts and descriptions, on numbers
 where an AI integration lets connected assistants ask; the provider
 chosen there receives the file. Otherwise, of a video only the preview
-image stored in the archive is sent." A card amendment for the owner: an
-assistant connected with attachments gets these on any number where an
-integration lets connectors ask, another member's in `readers` mode
-included, which the old sentence denied.
+image stored in the archive is sent." A card amendment, approved by the
+owner on 2026-09-30: an assistant connected with attachments gets these on
+any number where an integration lets connectors ask, another member's in
+`readers` mode included, which the old sentence denied.
 
 **New codes** in five locales: `ai_not_allowed`, `ai_not_enabled`,
 `ai_key_rejected`, `ai_model_unavailable`, `ai_quota`,
@@ -6149,8 +6180,9 @@ included, which the old sentence denied.
 | `AI_GOOGLE_REQUEST_MAX_BYTES` | `20_000_000` |
 | `AI_OPENAI_AUDIO_MAX_BYTES` | `26_214_400` |
 | `AI_MAX_SECONDS` | `{audio: 1_400, video: 600}` (checked against the claimed `seconds` before the call; the charge never rests on the claim, §18.10; 1,400 is the ceiling `gpt-4o-transcribe` answered B0 with, below the 1,500 reported before) |
-| `AI_MIN_BYTES_PER_SECOND` | `250` (audio and video: the charge's upper bound on a length, §18.10) |
-| `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` | `25` (measured by B0 on four lengths, 14.5 s to 15 min, `gemini-3.8-flash`; the 32 assumed before would have understated every length by a fifth) |
+| `AI_MIN_BYTES_PER_SECOND` | `250` (audio and video: the upper bound on a length where no measure is, §18.10) |
+| `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` | `25` (measured by B0 on four lengths, 14.5 s to 15 min, `gemini-3.8-flash`; the 32 assumed before would have understated every length by a fifth): Google's audio seconds, reported |
+| `AI_DURATION_TOKENS_PER_SECOND` | `25` (`AI_GOOGLE_AUDIO_TOKENS_PER_SECOND`: the tokens a second counts toward the cap for an answer billed by duration and for the length bound, §18.10) |
 | `AI_TEXT_MAX_CHARS` | `200_000` |
 | `AI_RESPONSE_MAX_BYTES` | `2_097_152` |
 | `AI_CALL_TIMEOUT_MS` | `120_000` |
@@ -6163,7 +6195,7 @@ included, which the old sentence denied.
 | `AI_CALLS_IN_FLIGHT`, `AI_LINE_MAX`, `AI_QUEUE_MAX` | `4`, `4`, `16` |
 | `AI_JOB_TTL_MS` | `600_000` |
 | `AI_REQUESTS_PENDING_MAX` | `20` |
-| `AI_REQUEST_ITEMS_PER_DAY_MAX`, `AI_MONTHLY_USD_CENTS_MAX` | `1_000`, `100_000` (the bundle's ceilings) |
+| `AI_REQUEST_ITEMS_PER_DAY_MAX`, `AI_MONTHLY_TOKENS_MAX` | `1_000`, `1_000_000_000` (the bundle's ceilings; no price, rate or currency is a constant, nor in the bundle) |
 
 `HOST_WAIT_MS` and `RETRY_AFTER_S` are §16.8's. **Prompts** (version 1,
 but `video` version 2 since B1's review, §18.20; exact; `lang` set adds a
@@ -6318,15 +6350,17 @@ the password; the two fronts therefore share one train.
   `renew` and `/v1/ai/process`'s 409 `ai_paused` on a `reseal` pick; the
   derived routes (only the row's devices, the uid on that device and of the
   function's type, replace on redo, `derived_exists` for a second insert
-  without it, `storage_paused`); usage upserts, `keychain_id` taken from
-  the row's `ai_config` and kept through a renewal that rotates the key,
-  and the month total; the keychain (own items only, 20 at most, deletion
-  ends the rows with `ai_key_deleted`); `ai_config` at `AI_DEVICES_MAX`
-  with four functions and the longest fields accepted (its CHECK and the
-  64 KiB body), and one device more refused at consent and at renewal; the
-  storage count and the device transfer moving `ai_derived` with
-  `authorization_id` NULL; 0045 down as its header documents it, then up,
-  first in the 0044 to 0041 down-step tests.
+  without it, `storage_paused`); usage upserts in tokens (input, output
+  and charged), `keychain_id` taken from the row's `ai_config` and kept
+  through a renewal that rotates the key, and the month's charged tokens;
+  the lower cap in tokens (`cap_tokens`, its CHECK and ceiling) and a
+  budget in money or with rates refused; the keychain (own items only, 20
+  at most, deletion ends the rows with `ai_key_deleted`); `ai_config` at
+  `AI_DEVICES_MAX` with four functions and the longest fields accepted (its
+  CHECK and the 64 KiB body), and one device more refused at consent and at
+  renewal; the storage count and the device transfer moving `ai_derived`
+  with `authorization_id` NULL; 0045 down as its header documents it, then
+  up, first in the 0044 to 0041 down-step tests.
 - **CLIENT:** JCS (RFC 8785's vectors and ours); the derived record sealed
   in Node and opened in the browser and in `reader.mjs`, and failing for
   another message, function, device, epoch or namespace; the dedupe tag,
@@ -6351,7 +6385,8 @@ the password; the two fronts therefore share one train.
   host, and an OpenAI body without `store: false` fail inside the
   enclave. **N-AI-8**, a sentinel transcript, key, suffix and model
   name never reach the sink. **N-AI-9**, Go reports usage 0 and a cap ×10:
-  the enclave stops at the bundle's cap. **N-AI-11**, Google for `audio`
+  the enclave stops at the bundle's cap in tokens, and a call never
+  answered counts its bound. **N-AI-11**, Google for `audio`
   and OpenAI for `document`: a voice note never reaches the OpenAI stub, a
   document never reaches Google's, and neither key reaches the other's
   host; a bundle naming `anthropic` for `audio` or `openai` for `video`
@@ -6362,10 +6397,12 @@ the password; the two fronts therefore share one train.
   pages is `ai_provider_failed`; a renewal changing a model within the
   provider passes with fresh tags; one changing a function's provider is
   refused. **N-AI-13**, a voice note whose row claims 1 s and whose file
-  holds 25 minutes: with a provider stub that reports the duration, the
-  charge is the reported one; with one that reports none, it is the bytes
-  bound; the cap trips where the real spend would. **N-AI-14**, one test
-  per row of §18.9's error map and per stop of its "Answers" (each
+  holds 25 minutes: with a provider stub billed by duration, the tokens
+  counted are its seconds × `AI_DURATION_TOKENS_PER_SECOND`; with a
+  duration answer without its seconds, the bytes bound at that rate, never
+  the claim; with no usage at all, the input and output bounds, never below
+  the length bound; the cap trips where the real use would. **N-AI-14**,
+  one test per row of §18.9's error map and per stop of its "Answers" (each
   documented code; a 400 naming the model, the endpoint, a parameter or
   an input type; Anthropic's 402 and credit-balance 400; Google's per-day
   and per-minute `RESOURCE_EXHAUSTED`; any other 4xx neither retried nor
@@ -6378,8 +6415,10 @@ the password; the two fronts therefore share one train.
   refused; `AI_DEVICES_MAX` + 1 devices refused by `validateAIBundle`; the
   queue, lines and `ai_busy`; a revocation during a provider call aborts
   the job, stores nothing, and the next call fails within 60 s; a PUT
-  answered `derived_exists` answering the stored record; the budget's
-  charges with and without usage fields.
+  answered `derived_exists` answering the stored record; the tokens
+  counted with and without usage fields, an answer billed by duration and
+  one with Google's audio seconds (reported, never counted); no price,
+  rate or currency in `policy.mjs`.
 - **READER:** the AI bundle's schema matrix; open_attachment on a voice
   note with a stored record, with a job answered inline, with `pending`
   then the stored result, with no authorization (`ai_not_enabled`
@@ -6393,7 +6432,11 @@ the password; the two fronts therefore share one train.
   function; the models from a fixture list of two pages, the picked model
   on the second; the picker stopping at `AI_DEVICES_MAX`; Renew in place
   of the button for a `renew` function; the card per function; the
-  area's gating; the links; cleanup at every failure point of the flow.
+  limits in tokens and attachments (5,000,000 and 100 by default, the
+  locale's grouping read and written, the lower limit only below the
+  authorized one), the usage in tokens and attachments, and no price, rate
+  or dollar anywhere (the price table and its specs are gone); the area's
+  gating; the links; cleanup at every failure point of the flow.
 - **SPAM:** 500 voice notes to one number: the daily cap and the budget
   hold, and the text tools meet §16.13's gate while jobs run.
 - **LIVE (B1 acceptance)** on claude.ai and ChatGPT, with two functions on
@@ -6463,7 +6506,8 @@ What the client, reader, enclave and Go settled where the sections above
 left it open, or changed after the build; each binds the other tracks and
 the console as the rest of §18 does. The console's texts (the AI area, the
 card, the buttons, results and errors in five locales) are CONSOLE's, in
-the private repository, drafts for the owner.
+the private repository; the owner approved them on 2026-09-30, and the
+token texts follow the owner's wording of the same day (below).
 
 - **Where it lives.** `packages/client/src/crypto/derived.ts` opens records
   (`openDerived`, `sealDerived` for tests and symmetry, `validateDerivedRecord`)
@@ -6532,10 +6576,12 @@ the private repository, drafts for the owner.
   is checked before each attempt (the review of 2026-09-30, below); the
   usage row's `items` counts 200 answers, `reused` reuses and `failures`
   attempts that failed, never charged unless sent and never answered. A
-  record's `usage` and the usage row hold the reported counts (§18.10),
-  the charge the bounds. Go's usage is read at install, at a renewal's commit and
-  with every status the 60 s sweep reads. A job's gate reads Go's status
-  (its `ai_off`, the pause and a lower `monthly_usd_cents`) at most
+  record's `usage` holds the tokens the provider reported and, for audio
+  and video, the seconds; the usage row the same counts (0 for tokens not
+  reported) and `charged_tokens`, what the cap counted, bounds included
+  (§18.10). Go's usage is read at install, at a renewal's commit and with
+  every status the 60 s sweep reads. A job's gate reads Go's status (its
+  `ai_off`, the pause and a lower `monthly_tokens`) at most
   `STATUS_TTL_MS` (60 s) old, so a narrowing made in the console reaches the
   next job within a minute; a revocation reaches it at once, since Go relays
   it and the wipe aborts the jobs in flight (the local B1 run of 2026-09-30
@@ -6606,7 +6652,8 @@ the private repository, drafts for the owner.
   and the provider stubs of `ai-stubs.mjs`.
 
 **The review of B1 (2026-09-30)** changed the contract so (core and
-console; the console's texts are drafts for the owner):
+console; the console's texts were drafts then, approved by the owner the
+same day):
 
 - **Every attempt is a call, and a call never answered is charged (I9).**
   Before, one item was counted per job and only a 200 was charged, while a
@@ -6643,6 +6690,8 @@ console; the console's texts are drafts for the owner):
   counts a video only as modality `VIDEO` (video.mp4: `TEXT` 68, `VIDEO`
   1092), so §18.10's "a video's included" is struck: a Gemini video has no
   measured seconds, and before this a 43 s video showed as 986 minutes.
+  (The rates are gone since, with the token cap below: the usage row
+  reports the provider's counts and adds `charged_tokens`.)
 - **OpenAI's context window.** A 400 `context_length_exceeded` (a
   document's text past the model's context, up to `JOB_TEXT_MAX_BYTES`) is
   `ai_too_large`, as Anthropic's "prompt is too long" and Google's token
@@ -6664,16 +6713,16 @@ console; the console's texts are drafts for the owner):
   false), which the console's form marks "Desligado neste servidor" /
   "Switched off on this server" and skips, instead of a 400 after the
   password.
-- **The console** (CONSOLE, drafts): the price table lists OpenAI's
-  families explicitly and charges an id it does not know at the provider's
-  highest rates (o1-pro's), as §18.13 says; renewal and New integration
-  take a key only for its own provider's slot (I1) and renewal runs the
-  step-8 check itself; with AI switched off a reduced area still lists and
-  deletes keys, revokes integrations and deletes their results (§18.11);
-  the attachments consent card's sentence on voice notes and video changes
-  on `ai_v1` readers (§18.13); the model pickers group the likely fits and
-  hide families that cannot take the function's input (§18.7 step 2); and
-  the texts of §18.10 and §18.13 as amended. For it, Go's `GET
+- **The console** (CONSOLE): the price table listed OpenAI's families
+  explicitly and charged an id it did not know at the provider's highest
+  rates (o1-pro's; the table is gone since, below); renewal and New
+  integration take a key only for its own provider's slot (I1) and renewal
+  runs the step-8 check itself; with AI switched off a reduced area still
+  lists and deletes keys, revokes integrations and deletes their results
+  (§18.11); the attachments consent card's sentence on voice notes and video
+  changes on `ai_v1` readers (§18.13); the model pickers group the likely
+  fits and hide families that cannot take the function's input (§18.7 step
+  2); and the texts of §18.10 and §18.13 as amended. For it, Go's `GET
   /v1/ai/usage` adds each line's `items_today` and `failures_today`, and
   `POST /v1/ai/process`'s 409 `ai_budget_reached` names its
   `authorization_id`, as `ai_paused` does (§18.11).
@@ -6749,6 +6798,67 @@ console; the console's texts are drafts for the owner):
   `ai_shapes_test.go`, `internal/aiapi/aiapi_test.go`,
   `internal/media/gate_test.go`, `cmd/whatserverd/discovery_test.go` and
   `internal/webui/webui_test.go` (the CSP).
+
+**The owner's decisions of 2026-09-30, after B1's merge** (core and
+console; reader 0.5.0 is not released and 0045 was applied nowhere but in
+local tests, so it is edited in place, and the release records its
+checksum):
+
+- **No prices, no dollars.** Prices vary with each person's plan and
+  model, and billing is the person's account's at each provider, so Wappie
+  keeps and shows no price: the console's price table
+  (`src/state/aiPrices.ts`), every US$ figure, the rates, the per-minute
+  estimates and the charge of an unknown model at its provider's highest
+  rates are gone, from the bundle, the enclave, Go, the routes and the
+  console.
+- **The budget is a safety cap in tokens.** `budget = {monthly_tokens,
+  request_items_per_day}` (§18.7 step 3), strict, with no rates: 1 to
+  `AI_MONTHLY_TOKENS_MAX` (1,000,000,000) tokens a month and 1 to
+  `AI_REQUEST_ITEMS_PER_DAY_MAX` (1,000) attachments a day; the console's
+  defaults are 5,000,000 and 100. A renewal keeps the whole budget.
+- **What is counted** (§18.10): the tokens the provider reports, input
+  plus output, reasoning or thinking included; an answer billed by
+  duration (OpenAI's `usage.type` `duration`: `whisper-1` and
+  `gpt-transcribe`) counts its seconds × `AI_DURATION_TOKENS_PER_SECOND`
+  (25, Google's measured audio rate, §18.19), and one without its seconds
+  the length bound at that rate, never the sender's claim alone; a missing
+  count and a call never answered keep §18.10's upper bounds, in tokens.
+  OpenAI's module marks a duration answer's usage `duration: true`
+  (`provider-shapes.json` pins it). Every fix of B1's review stands: each
+  attempt checked and counted, a call never answered charged at its
+  bound, `used = max(enclave, go)`, `cap = min(bundle, go)`, and which
+  limit was met.
+- **Go.** 0045 and its down-step header: `mcp_connections.ai_cap_tokens
+  bigint CHECK (ai_cap_tokens BETWEEN 1 AND 1000000000)` in place of
+  `ai_cap_cents`, and `ai_usage_daily.charged_tokens` in place of
+  `cost_microcents`. The status's `ai_off.monthly_tokens` (§18.4); `GET
+  /v1/ai/authorizations`' and `PATCH`'s `cap_tokens`, and the usage
+  routes' `charged_tokens` (§18.11), an increment's at most 2,000,000,000
+  (a call's two token bounds together); `ai_config`'s budget parsed
+  strictly, so a budget in money or with rates is refused (400).
+- **The reader** words `ai_budget_reached` in tokens (§18.12): with `limit:
+  "month"`, "reached its tokens for this month, which start again on the
+  1st (UTC)"; without `limit`, "its tokens for this month (start again on
+  the 1st, UTC) or its attachments for today (start again at 00:00 UTC)".
+- **The console.** The owner approved every other AI text on 2026-09-30
+  (the header of `web/src/ui/aiText.ts` records it); the token texts follow
+  the owner's wording of the same day, pt and en first, then es, fr and
+  de (§18.13): the limits ("Limites" / "Limits") in tokens a month and
+  attachments a day under the owner's sentence ("Os preços variam com o seu
+  plano e o modelo, e a cobrança é da sua conta em cada provedor: defina lá
+  os seus limites de gasto. A Wappie conta os tokens que cada provedor
+  informa e para no limite abaixo, como trava de segurança." / "Prices vary
+  with your plan and the model, and billing is your account's at each
+  provider: set your spending limits there. Wappie counts the tokens each
+  provider reports and stops at the limit below as a safety lock."); the
+  lower limit and each integration's row in tokens; the Usage tab ("Uso" /
+  "Usage") in tokens and attachments, per integration and per month; and
+  `ai_budget_reached` in tokens. The key guidance and the card keep saying
+  that each provider bills the person's own account.
+- **Vectors and logs.** `enclave/test/ai-config-vectors.json` is
+  regenerated with the token budget by an independent WebCrypto generator,
+  which `bundle.mjs` and the console reproduce; the parent's `log-sink.py`
+  also drops a line that names `charged_tokens`.
 
 ### Amendments to §§1 to 16
 
