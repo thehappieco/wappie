@@ -18,6 +18,11 @@
 // DSK the grant proof opened. Such a connection's reader gets the sending
 // service (send/service.mjs).
 //
+// On a release that declares `ai_v1` (§18), this side also holds the AI
+// authorizations (ai/service.mjs): records of kind `ai`, which never serve
+// /mcp, whose keys and provider keys live beside the connections' in memory
+// only, and whose results media connections read as transcripts.
+//
 // This file is reachable from enclave/main.mjs only. The hosted reader
 // (../server.mjs on the pilot) never imports it: there a bundle labelled
 // `content` is a bad request, `link.openBundle` refuses anything but v1, and
@@ -31,7 +36,9 @@ import { RelayError } from '../internal.mjs'
 import { bundleBody, connectionTaken, LinkError, proofFor, proofMatches } from '../link.mjs'
 import { fingerprint } from '../log.mjs'
 import { newRecipient as mintRecipient } from '../state.mjs'
+import { createAIService } from './ai/service.mjs'
 import { createConnKeys } from './connkeys.mjs'
+import { READER_CAPABILITIES } from './constants.mjs'
 import { padResponse } from './media/pad.mjs'
 import { createMediaService } from './media/service.mjs'
 import { contentConfigFor, contentProviderFor } from './provider.mjs'
@@ -195,18 +202,29 @@ export async function proveGrants(privateKey, bundle, { archive, fetch, timeoutM
  * key, its renewals and its attachments. `attestor` is createAttestor's;
  * `fetch` reaches the archive for grant proofs and ciphertext (tests inject
  * it; the enclave uses the global one), and `jail` replaces media-jail in
- * tests.
+ * tests. `capabilities` are the release's (READER_CAPABILITIES): with
+ * `ai_v1` the AI authorizations exist, `aiTransport` replacing the global
+ * fetch for the providers in tests only; `readerVersion` and `pendingTTLMs`
+ * are the image's, for AI requests. `mediaDelay` replaces open_attachment's
+ * inline wait timer in tests.
  */
-export function createContent({ state, relay, log, now = Date.now, archive, consoleURL, resource, attestor, fetch, newRecipient = mintRecipient, jail }) {
+export function createContent({ state, relay, log, now = Date.now, archive, consoleURL, resource, attestor, fetch, newRecipient = mintRecipient, jail,
+  capabilities = READER_CAPABILITIES, readerVersion, pendingTTLMs = 1_200_000, aiTransport, mediaDelay }) {
   const connkeys = createConnKeys()
   const origin = new URL(resource).origin
   const conn = id => ({ conn: fingerprint(id) })
   function dropKey(id) { if (connkeys.wipe(id)) log.event('connkey_wiped', conn(id)) }
   // startReader binds the status check once it exists (useStatusCheck).
   let statusCheck = null
+  // AI integrations (§18), on a release that declares them.
+  const ai = capabilities.includes('ai_v1')
+    ? createAIService({ state, relay, log, now, archive, consoleURL, resource, attestor, readerVersion, pendingTTLMs, newRecipient, connkeys,
+      ...(fetch ? { fetch } : {}), ...(aiTransport ? { transport: aiTransport } : {}), media: () => media })
+    : null
   const media = createMediaService({
-    log, now, archive, consoleURL, ...(fetch ? { fetch } : {}), ...(jail ? { jail } : {}),
+    log, now, archive, consoleURL, ...(fetch ? { fetch } : {}), ...(jail ? { jail } : {}), ...(mediaDelay ? { delay: mediaDelay } : {}),
     checkActive: { mediaStatus: id => (statusCheck ? statusCheck.mediaStatus(id) : Promise.resolve({ answer: false, media: false, media_off: [] })) },
+    ...(ai ? { ai: record => ai.connectorFor(record) } : {}),
   })
   const sending = createSendService({
     log, now, relay, consoleURL,
@@ -223,6 +241,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     renewAAD,
     onCommit: id => log.event('renewal_committed', conn(id)),
     onProofFailed: proofFailed,
+    ...(ai ? { ai: ai.renewalHooks } : {}),
   })
 
   // Connections whose reseal Go has not heard yet, retried with §8's backoff.
@@ -236,6 +255,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     resealQueue.delete(id)
     media.wipe(id)
     sending.wipe(id)
+    ai?.wipe(id)
     return wipeState(id)
   }
 
@@ -257,7 +277,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
   async function retryReseals() {
     let changed = false
     for (const id of [...resealQueue]) {
-      if (!state.connections.has(id) || connkeys.has(id)) { resealQueue.delete(id); continue }
+      if (!state.connections.has(id) || (state.connections.get(id).kind === 'ai' ? ai?.holds(id) : connkeys.has(id))) { resealQueue.delete(id); continue }
       try {
         const kept = await requestReseal(id)
         resealQueue.delete(id)
@@ -274,8 +294,8 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
   }
 
   return {
-    /** Whether this process holds a key for the connection. */
-    holds: id => connkeys.has(id),
+    /** Whether this process holds a key for the connection (and, for an AI authorization, its provider keys). */
+    holds: id => (state.connections.get(id)?.kind === 'ai' ? ai?.holds(id) === true : connkeys.has(id)),
     counts() {
       let connections = 0
       for (const record of state.connections.values()) if (record.kind === 'content') connections++
@@ -355,8 +375,10 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     }),
     /** Pads a media connection's /mcp responses (router.mjs, §16.10). */
     padResponse,
-    /** startReader's status check, which attachment calls ask for `media` and `media_off`. */
-    useStatusCheck(checkActive) { statusCheck = checkActive },
+    /** startReader's status check, which attachment calls ask for `media` and `media_off`, and AI jobs for `ai_off`. */
+    useStatusCheck(checkActive) { statusCheck = checkActive; ai?.useStatusCheck(checkActive) },
+    /** The AI authorizations (ai/service.mjs), on a release that declares `ai_v1`; null otherwise. */
+    ai,
     /** The attachment service: main.mjs runs its boot check and reads its counts. */
     media,
     /** The sending service: main.mjs reads its counts. */
@@ -369,8 +391,11 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
      */
     async decide(record, status) {
       const id = record.connection_id
-      if (status.kind !== 'content' || (status.status !== 'active' && status.status !== 'reseal')) return false
-      if (status.status === 'reseal') { dropKey(id); media.wipe(id, 'reseal'); sending.wipe(id); return 'reseal' }
+      // An AI authorization follows the same rules (§18.7), with its provider keys wiped wherever its key is.
+      const isAI = record.kind === 'ai'
+      if (isAI && !ai) return false
+      if (status.kind !== record.kind || (status.status !== 'active' && status.status !== 'reseal')) return false
+      if (status.status === 'reseal') { dropKey(id); media.wipe(id, 'reseal'); sending.wipe(id); ai?.wipe(id, 'reseal'); return 'reseal' }
       // Attachments follow every answer: off, or narrowed to the kinds still on (§16.9). Text is untouched.
       if (record.media === true) {
         if (status.media !== true) media.wipe(id, 'media_off')
@@ -381,8 +406,12 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
         log.event('service_mismatch', conn(id))
         return false
       }
-      if (connkeys.has(id)) return 'serve'
+      if (isAI ? ai.holds(id) : connkeys.has(id)) {
+        if (isAI) ai.narrow(record, status)
+        return 'serve'
+      }
       // Active in Go with no key here: Go must learn that the key is gone.
+      if (isAI) { dropKey(id); ai.wipe(id, 'reseal') }
       try { if (!(await requestReseal(id))) return false } catch (error) {
         if (!(error instanceof RelayError)) throw error
       }
@@ -411,8 +440,8 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
 
     renewal: { prepare: renewals.prepare, acceptBundle: renewals.acceptBundle, commit: renewals.commit },
 
-    /** Drops expired renewals; the 60 s content sweep calls it. */
-    sweep() { renewals.sweep() },
+    /** Drops expired renewals and AI requests; the 60 s content sweep calls it. */
+    sweep() { renewals.sweep(); ai?.sweep() },
 
     close() {
       if (resealTimer) { clearTimeout(resealTimer); resealTimer = null }
@@ -420,6 +449,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
       renewals.clear()
       media.close()
       sending.close()
+      ai?.close()
       connkeys.wipeAll()
     },
     /** For tests: the key holder (the enclave never hands it out). */

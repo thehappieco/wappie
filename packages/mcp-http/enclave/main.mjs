@@ -11,6 +11,8 @@
 // memory only; after any restart they wait in `reseal` for a renewal. Those
 // whose consent includes sending (§17) draft and send through Go's routes
 // with their own key, and keep their fingerprints and dedupe in memory too.
+// AI authorizations (§18) keep their keys and their providers' keys the same
+// way, and reach the providers only through ai/egress.mjs.
 //
 // Boot order (§10.2): boot.json; credentials and the RSA recipient key; the
 // relay secret; the key policy hash (not fatal); the sealed state; the ACME
@@ -31,7 +33,7 @@ import { attest as nsmAttest } from './attest.mjs'
 import { parseBootJson, readLocal as readLocalPort } from './boot.mjs'
 import { imageConstants, PORTS } from './constants.mjs'
 import { createContent } from './content.mjs'
-import { createHealthLine, createMemSampler, clockSkew, prefix } from './health.mjs'
+import { createHealthLine, createMemSampler, clockSkew, HEALTH_EVERY_MS, prefix } from './health.mjs'
 import { createHmacGuard } from './hmac.mjs'
 import { codeOf, createKms, kmsClient, recipientKeys, roleCredentials } from './kms.mjs'
 import { createSinkWriter } from './logsink.mjs'
@@ -83,6 +85,8 @@ async function persist(collection, wait) {
  * Boots the reader. Production passes nothing. Tests inject: `constants`,
  * `sink` (a writer), `readLocal(port)`, `kms` (decrypt/dataKey/keyPolicy),
  * `attest` (NSM), `fetch`, `jail` (media-jail's boot check and jobs),
+ * `aiTransport` (the providers' fetch, a stub: the hosts stay the image's),
+ * `mediaDelay` (the inline wait's timer of open_attachment),
  * `exit(code)`, `wait`, and `overrides` for the archive URL, ACME directory,
  * run directory, ports and clock URL.
  */
@@ -123,7 +127,7 @@ export async function startEnclave(options = {}) {
     log, now, started: now(),
     probe: () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now }),
     fields: () => ({
-      ...mediaHealth(), ...(facts.content?.sending.counts() ?? {}),
+      ...mediaHealth(), ...(facts.content?.sending.counts() ?? {}), ...(facts.content?.ai?.counts() ?? {}),
       cert_days_left: facts.certificates?.daysLeft() ?? undefined,
       connections: facts.state?.connections.size, pending: facts.state?.pending.size, state_dirty: facts.state?.dirty(),
       relay_secrets: facts.secrets?.count(), acme_account_id: accountId(facts.acmeUri) ?? undefined,
@@ -144,6 +148,7 @@ export async function startEnclave(options = {}) {
   }
   health.start()
   memory.start()
+  let reachTimer = null
 
   try {
     // 1. boot.json
@@ -225,10 +230,17 @@ export async function startEnclave(options = {}) {
     const resource = `${c.PUBLIC_ORIGIN}/mcp`
     const content = createContent({
       state, relay, log, now, archive, consoleURL: c.CONSOLE_URL, resource, fetch: options.fetch, jail: options.jail,
+      capabilities: c.READER_CAPABILITIES, readerVersion: c.READER_VERSION, pendingTTLMs: c.PENDING_TTL_MS, aiTransport: options.aiTransport, mediaDelay: options.mediaDelay,
       attestor: createAttestor({ attest, readerId: c.READER_ID, readerVersion: c.READER_VERSION, resource, spki: () => certificates.spkiSha256(), policy: () => policy.current() }),
     })
     facts.content = content
     await content.media.start()
+    // The providers' reach, probed at boot and with every health line; never fatal.
+    if (content.ai) {
+      void content.ai.probe().catch(() => {})
+      reachTimer = setInterval(() => { void content.ai.probe().catch(() => {}) }, HEALTH_EVERY_MS)
+      reachTimer.unref?.()
+    }
 
     // 8. The HTTPS listeners, answering 503 `starting` until the reader takes over.
     const servers = { public: httpServer(), internal: httpServer() }
@@ -248,6 +260,8 @@ export async function startEnclave(options = {}) {
         ok: true, reader_id: c.READER_ID, reader_version: c.READER_VERSION, boot_id: material.bootId, state: facts.ready ? 'ready' : 'loading',
         pcr0: facts.pcr0, tls_spki_sha256: certificates.spkiSha256(), cert_not_after: certificates.notAfter() ? new Date(certificates.notAfter()).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
         policy_sha256: policy.current(), acme_account_uri: facts.acmeUri, relay_secrets: secrets.count(),
+        // Each AI provider's host reached over verified TLS by the last probe (§18.16), on a release with ai_v1.
+        ...(content.ai ? { ai_reach: content.ai.reach() } : {}),
       }),
     }
     const reader = await startReader({
@@ -261,6 +275,7 @@ export async function startEnclave(options = {}) {
       material, names, secrets, state, certificates, policy, health, facts,
       async close() {
         health.stop(); memory.stop(); policy.stop(); certificates.stop()
+        if (reachTimer) clearInterval(reachTimer)
         await reader.close()
         for (const server of [...Object.values(listeners), challengeServer]) await new Promise(resolve => server.close(() => resolve()))
         await infra.close()
@@ -269,6 +284,7 @@ export async function startEnclave(options = {}) {
   } catch (error) {
     health.stop()
     memory.stop()
+    if (reachTimer) clearInterval(reachTimer)
     const code = error instanceof BootFailure ? error.code : 'boot_failed'
     log.event('boot_failed', { code })
     await sink.drain?.()

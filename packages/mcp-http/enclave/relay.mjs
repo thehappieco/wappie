@@ -5,10 +5,12 @@
 // store (stateGet, statePut) that openSealedState uses and, for content
 // connections, `reseal`. `revoke(id, 'reuse_detected')` tells Go why. Its
 // status answers carry `media` and `media_off` (docs/mcp-enclave.md §16.9),
-// and `send` and `send_self` (§17.3); `sending` reaches the send routes
-// (§17.7) with the connection's own key.
+// and `send` and `send_self` (§17.3), and an `ai` row's `ai_off` (§18.4);
+// `sending` reaches the send routes (§17.7) and `ai` the AI routes (§18.11),
+// each with the connection's own key.
 import { createRelay, RelayError } from '../internal.mjs'
 import { StateError } from '../state.mjs'
+import { AI_FUNCTIONS, AI_PROVIDERS } from './ai/policy.mjs'
 import { signedHeaders } from './hmac.mjs'
 import { MEDIA_KINDS } from './media/policy.mjs'
 
@@ -17,10 +19,21 @@ export const STATE_MAX_BYTES = 12 * 1024 * 1024
 const generationShape = /^[1-9][0-9]{0,15}$/
 const names = new Set(['as-clients', 'as-connections', 'as-tokens', 'infra'])
 const SEND_ROUTES = new Set(['drafts', 'send', 'refusals', 'outbound'])
+/** The AI routes of a connection (§18.11): the pick, the derived records (and one record by uid and function), the usage and the alerts. */
+const AI_ROUTE = /^(?:ai|ai\/derived|ai\/derived\/[0-9a-f-]{36}\/(?:audio|video|image|document)|ai\/usage|ai\/alerts)$/
+/** Go waits for its own database only; a PUT of a record carries up to 768 KiB. */
+export const AI_ROUTE_TIMEOUT_MS = 15_000
+/**
+ * The largest answer of an AI route: a dedupe lookup's 25 records at most
+ * (AI_DEVICES_MAX), each at most 524,323 bytes as unpadded base64url, and
+ * their fields.
+ */
+export const AI_ROUTE_MAX_BYTES = 18 * 1024 * 1024
 
 export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.fetch, timeoutMs = 10_000, now = Date.now }) {
   const headersFor = (method, target, body) => signedHeaders({ secret: secrets.current, direction: 'to-go', readerId, method, target, body, now })
-  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true, mediaKinds: MEDIA_KINDS, send: true })
+  const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true, mediaKinds: MEDIA_KINDS, send: true,
+    ai: { functions: AI_FUNCTIONS, providers: Object.keys(AI_PROVIDERS) } })
   const statePath = name => {
     if (!names.has(name)) throw new StateError('state_name_invalid')
     return `/state/${name}`
@@ -57,6 +70,26 @@ export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.
         body: payload, timeout, headers: { authorization: `Bearer ${apiKey}`, ...(payload ? { 'content-type': 'application/json' } : {}) },
       })
       const data = await relay.body(response)
+      let parsed = null
+      try { parsed = data.length ? JSON.parse(data.toString('utf8')) : null } catch { parsed = null }
+      return { status: response.status, data: parsed }
+    },
+
+    /**
+     * One of the AI routes of connection `id` (§18.11): `route` is 'ai',
+     * 'ai/derived', 'ai/derived/{uid}/{feature}', 'ai/usage' or 'ai/alerts'.
+     * Signed like every call, with the connection's own API key as a bearer
+     * (a media connection's for the pick and its derived reads, the `ai`
+     * row's for the rest). Resolves to `{status, data}`; RelayError when no
+     * whole answer came.
+     */
+    async ai(id, apiKey, method, route, { body, query, timeout = AI_ROUTE_TIMEOUT_MS } = {}) {
+      if (!AI_ROUTE.test(route)) throw new RelayError('relay_failed')
+      const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body))
+      const response = await relay.call(method, `/connections/${encodeURIComponent(id)}/${route}`, query, {
+        body: payload, timeout, headers: { authorization: `Bearer ${apiKey}`, ...(payload ? { 'content-type': 'application/json' } : {}) },
+      })
+      const data = await relay.body(response, AI_ROUTE_MAX_BYTES)
       let parsed = null
       try { parsed = data.length ? JSON.parse(data.toString('utf8')) : null } catch { parsed = null }
       return { status: response.status, data: parsed }

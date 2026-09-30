@@ -14,17 +14,26 @@
 // runs the checks, the sniff and one or two jailed jobs. The reader's Node
 // itself never parses anything: it checks magic bytes, decodes plain text and
 // reads worker frames.
+//
+// On a release that declares `ai_v1` (docs/mcp-enclave.md §18.12), a voice
+// note, an audio and a video (not a GIF) are answered with an AI transcript
+// instead: a stored one this connection's own grant opens, or an interactive
+// job on the AI authorization Go picks for the connection's creator, waited
+// for until the host's wait is over. Those jobs run in the AI queue, not in
+// the slot; the slot runs their jailed preparation of images and documents
+// (`inSlot`), one job at a time like any open.
 import { ArchiveError } from '@whatserver2/client'
 import { LocalConfigError } from '@whatserver2/mcp/config'
 import { fingerprint } from '../../log.mjs'
+import { AI_CAP_BYTES } from '../ai/policy.mjs'
 import { CONSOLE_URL } from '../constants.mjs'
-import { messageURL } from '../provider.mjs'
+import { aiRenewURL, messageURL } from '../provider.mjs'
 import { createCaches } from './cache.mjs'
 import { fetchCiphertext } from './fetch.mjs'
 import { checkRow, hostOf, knownKinds, parseRequest, refusal, rowFacts, waitFor, whyNot } from './gate.mjs'
 import { checkJail, outcomeOf, runWorker } from './jail.mjs'
 import { createBudgets, createScheduler, retryAfter } from './jobs.mjs'
-import { charPart, factsOf, finish, lastPage, pagesPart, pdfPart, pdfWindow, pending, renderOffice } from './result.mjs'
+import { charPart, factsOf, finish, lastPage, pagesPart, pdfPart, pdfWindow, pending, renderOffice, transcript } from './result.mjs'
 import { decodeText, sniff } from './sniff.mjs'
 import { createMediaStream } from './wamedia-stream.mjs'
 import {
@@ -85,12 +94,29 @@ const officeJob = allow => ({ v: 1, op: 'text', allow, limits: { text_bytes: JOB
 export const JOBS = Object.freeze({ imageJob, pdfTextJob, pdfImagesJob, officeJob })
 
 /**
+ * AI answers the result cache keeps (§18.12): a transcript, and the four
+ * codes that are the answer about the attachment. Every other AI code is
+ * answered once and forgotten (`ai_paused`, with or without `renew_url`, and
+ * `ai_output_limit` among them).
+ */
+const AI_KEPT = new Set(['ai_not_enabled', 'ai_too_large', 'ai_refused', 'ai_unsupported'])
+/** The AI function of a row for a media connection (§18.12): audio and voice notes, and videos but GIFs; images and documents are the console's. */
+const aiFunctionOf = row => {
+  const type = row?.media?.media_type
+  if (type === 'audio' || type === 'ptt') return 'audio'
+  if ((type === 'video' || type === 'ptv') && row.media.is_gif !== true) return 'video'
+  return null
+}
+
+/**
  * `checkActive.mediaStatus(id)` is verifier.mjs's; `archive` is the ARCHIVE
  * origin; `consoleURL` is CONSOLE_URL, where a result's `open_url` points;
  * `jail` is {checkJail, runWorker} (tests replace it, and may pass `spawn`
- * for runWorker); `delay(ms, signal)` is the inline wait's timer.
+ * for runWorker); `delay(ms, signal)` is the inline wait's timer. `ai(record)`
+ * (ai/service.mjs `connectorFor`, on a release that declares ai_v1) gives a
+ * media connection its AI transcripts (§18.12).
  */
-export function createMediaService({ log, now = Date.now, checkActive, archive, consoleURL = CONSOLE_URL, fetch = globalThis.fetch, jail = { checkJail, runWorker }, delay = defaultDelay }) {
+export function createMediaService({ log, now = Date.now, checkActive, archive, consoleURL = CONSOLE_URL, fetch = globalThis.fetch, jail = { checkJail, runWorker }, delay = defaultDelay, ai = null }) {
   const caches = createCaches({ now })
   const scheduler = createScheduler()
   const budgets = createBudgets({ now })
@@ -107,7 +133,7 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
   const conn = id => ({ conn: fingerprint(id) })
   const stateOf = id => {
     let state = connections.get(id)
-    if (!state) connections.set(id, state = { opens: new Map(), active: null, line: [], mediaOff: [] })
+    if (!state) connections.set(id, state = { opens: new Map(), active: null, line: [], mediaOff: [], aiWaits: new Set(), aiOnce: new Map() })
     return state
   }
   /** The console link of a row's message on this connection (§16.7), or null. */
@@ -432,6 +458,94 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     return pending(open.uid, open.facts.media_type, retryOf(open), open.link)
   }
 
+  // ---- AI transcripts (§18.12) ------------------------------------------------
+
+  /** A job's outcome as the call answers it: a transcript, or its refusal (with the row's facts). */
+  function aiAnswer(outcome, row, request, link, facts) {
+    if (outcome.error) {
+      const code = safeCode(outcome.error)
+      const error = refusal(code, { facts, ...(Number.isInteger(outcome.error.retry_after_s) ? { retry_after_s: outcome.error.retry_after_s } : {}) })
+      throw error
+    }
+    if (outcome.result.flags.includes('refused')) throw refusal('ai_refused', { facts })
+    return transcript(row, outcome.result, request, link)
+  }
+  /** Keeps what §18.12 keeps (a transcript, the four answer codes); any other code is answered once, to the next call. */
+  function keepAI(state, id, aiKey, outcome, job) {
+    const code = outcome.error ? safeCode(outcome.error) : null
+    if (!code || AI_KEPT.has(code)) caches.result.set(id, aiKey, { outcome: { ai: outcome }, kinds: [aiKey.slice(aiKey.lastIndexOf('|') + 1)] })
+    else if (job) state.aiOnce.set(aiKey, { job, outcome })
+  }
+  /**
+   * §18.12's two steps for an audio or video row, after §16.5 step 10: a
+   * stored record this connection's grant opens, else Go's pick and an
+   * interactive job on it, waited for until the call's start plus the host's
+   * wait, then `pending`. Resolves to the answer, or null when a video takes
+   * the preview path (no AI integration covers it, or kind `video` is off).
+   */
+  async function transcriptOf(record, state, id, key, request, row, link, facts, feature, access, host, started, connector) {
+    if (state.mediaOff.includes(feature)) {
+      if (feature === 'audio') throw refusal('media_not_allowed', { facts })
+      return null
+    }
+    if (request.pages || request.cursor?.unit === 'page') throw refusal('invalid_cursor', { facts })
+    const aiKey = `${key}|${feature}`
+    const kept = caches.result.get(id, aiKey)
+    if (kept?.outcome.ai) return aiAnswer(kept.outcome.ai, row, request, link, facts)
+    const once = state.aiOnce.get(aiKey)
+    if (once) { state.aiOnce.delete(aiKey); return aiAnswer(once.outcome, row, request, link, facts) }
+    // 1. Stored: opened with this connection's own grant.
+    const stored = await connector.stored(row, feature, access)
+    if (stored) {
+      const outcome = { result: stored }
+      keepAI(state, id, aiKey, outcome)
+      return aiAnswer(outcome, row, request, link, facts)
+    }
+    // 2. On request: the authorization Go picks for the connection's creator.
+    const pick = await connector.pick(row.device_id, feature)
+    if (!pick) {
+      if (feature === 'video') return null
+      const outcome = { error: refusal('ai_not_enabled') }
+      keepAI(state, id, aiKey, outcome)
+      return aiAnswer(outcome, row, request, link, facts)
+    }
+    if (pick.state === 'reseal') {
+      const error = refusal('ai_paused', { facts })
+      const renew = aiRenewURL(consoleURL, record.tenant_id, pick.authorization_id)
+      if (renew) error.renew_url = renew
+      throw error
+    }
+    let job
+    try { job = await connector.run(pick, { device_id: row.device_id, uid: row.uid, feature }) } catch (error) {
+      const outcome = { error }
+      keepAI(state, id, aiKey, outcome)
+      return aiAnswer(outcome, row, request, link, facts)
+    }
+    if (!job.watched) {
+      job.watched = true
+      job.settled.then(outcome => keepAI(state, id, aiKey, outcome.error ? outcome : { result: outcome.record }, job))
+    }
+    // The call waits until its start plus the host's wait; the job goes on after that.
+    const entry = { controller: new AbortController(), reason: null }
+    state.aiWaits.add(entry)
+    try {
+      const remaining = started + waitFor(host) - now()
+      const done = () => job.state === 'done' || job.state === 'failed'
+      if (!done() && remaining > 0) {
+        const stop = new AbortController()
+        const aborted = new Promise(resolve => entry.controller.signal.addEventListener('abort', resolve, { once: true }))
+        await Promise.race([job.settled, delay(remaining, stop.signal), aborted])
+        stop.abort()
+      }
+      if (entry.controller.signal.aborted) throw ended(entry.reason, facts)
+      if (done()) {
+        if (state.aiOnce.get(aiKey)?.job === job) state.aiOnce.delete(aiKey)
+        return aiAnswer(job.outcome.error ? job.outcome : { result: job.outcome.record }, row, request, link, facts)
+      }
+      return pending(row.uid, row.media.media_type, connector.retryOf(job), link, true)
+    } finally { state.aiWaits.delete(entry) }
+  }
+
   /** One open_attachment call (§16.5 "A call"), steps 3 to 18. */
   async function call(record, input, access, host) {
     const id = record.connection_id
@@ -457,6 +571,13 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
         // From here every answer names this message: it carries the console link (§16.7).
         const link = linkOf(record, row)
         const facts = rowFacts(row, link)
+        // On readers that declare ai_v1, audio and video after step 10 (§18.12).
+        const connector = ai ? ai(record) : null
+        const feature = connector ? aiFunctionOf(row) : null
+        if (feature && row.view_once !== true) {
+          const answered = await transcriptOf(record, state, id, key, request, row, link, facts, feature, access, host, started, connector)
+          if (answered) return answered
+        }
         const plan = checkRow(row, request, state.mediaOff, link)
         if (plan.preview && !plan.hasPreview) {
           const seconds = typeof row.media.seconds === 'number' && Number.isFinite(row.media.seconds) && row.media.seconds >= 0 ? row.media.seconds : undefined
@@ -509,7 +630,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       const host = hostOf(record.redirect_host)
       return {
         host,
-        why: row => whyNot(row, connections.get(record.connection_id)?.mediaOff ?? []),
+        why: row => whyNot(row, connections.get(record.connection_id)?.mediaOff ?? [], ai ? AI_CAP_BYTES.audio : undefined),
+        // On a release that declares ai_v1 (§18.12): transcripts, and get_message's `derived`.
+        ...(ai ? { ai: true, derivedOf: row => ai(record).derivedOf(row) } : {}),
         /** The console link of the row's message, or null (§16.7). */
         openURL: row => linkOf(record, row),
         /** CONSOLE_URL: every link above begins with it and `?`, as the instructions tell the model (§16.7). */
@@ -528,6 +651,9 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
      */
     wipe(id, reason = 'revoked') {
       const state = connections.get(id)
+      // A call waiting for an AI job answers now, as its reason says; the job is its authorization's and goes on.
+      for (const entry of state?.aiWaits ?? []) { entry.reason = reason; entry.controller.abort() }
+      state?.aiOnce.clear()
       // Its line first, so that the open leaving the slot's queue hands nothing in.
       for (const open of state?.line.splice(0) ?? []) abort(open, reason)
       for (const open of [...(state?.opens.values() ?? [])]) abort(open, reason)
@@ -546,6 +672,34 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
       for (const open of [...state.opens.values()]) if (open.kinds.some(kind => off.includes(kind))) abort(open, 'media_off')
       caches.dropKinds(id, off)
     },
+    /**
+     * The jailed preparation of an AI job (§18.10 step 7), in the slot like
+     * an open: `work(run)` runs when the slot is free, `run(worker, header,
+     * input)` being one jailed job under `signal` (its output, or the refusal
+     * its end means), and the slot is released when `work` settles, before
+     * the provider call. `media_unavailable` when the jail failed its boot
+     * check, `media_busy` when the slot's queue is full.
+     */
+    async inSlot(signal, work) {
+      if (!ready()) throw refusal('media_unavailable')
+      const entry = { id: null, controller: new AbortController(), reason: 'revoked' }
+      signal?.addEventListener('abort', () => entry.controller.abort(), { once: true })
+      let resolve, reject
+      const settled = new Promise((ok, fail) => { resolve = ok; reject = fail })
+      const run = async (worker, header, input) => {
+        const output = await jail.runWorker({ worker, job: header, input, signal: entry.controller.signal, ...(jail.spawn ? { spawn: jail.spawn } : {}) })
+        const outcome = outcomeOf(output, 'revoked')
+        if (outcome.log) { counters.killed++; log.event('media_job_killed', { code: outcome.log }) }
+        if (outcome.output) return outcome.output
+        throw refusal(outcome.code === 'attachment_unsupported' || outcome.code === 'attachment_encrypted' ? 'ai_unsupported' : outcome.code)
+      }
+      const start = () => (signal?.aborted ? Promise.reject(refusal('unauthorized')) : work(run)).then(resolve, reject)
+      if (!scheduler.admit(entry, start, () => handIn())) throw refusal('media_busy', { retry_after_s: 20 })
+      return settled
+    },
+    /** The jobs' headers (§16.11), for the AI jobs' preparation. */
+    JOBS,
+
     /** Opens finished and jobs killed since the last call, and opens waiting now (the slot's queue and every connection's line). */
     counts() {
       let queue = scheduler.queued()
