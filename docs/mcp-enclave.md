@@ -4855,7 +4855,8 @@ B. It was proposed by the owner-facing design of 2026-09-29
 bound by the owner's decisions of 2026-09-30. The steps:
 
 - **B0**, probes with the owner's keys and a probe enclave, before 0.5.0,
-  with no reader release (§18.16).
+  with no reader release (§18.16). Run on 2026-09-30 with synthetic media;
+  the results are §18.19.
 - **B1**, on request, in reader 0.5.0 with reader 0.4.2's changes and
   §17's S1 and S1b (0.5.1 if it slips, §18.16): a person asks in the
   console, or a media connection asks through `open_attachment` for audio
@@ -4995,7 +4996,7 @@ and a model, and `features` sets its mode per number.
 | Provider | `audio` | `video` | `image` | `document` |
 |---|---|---|---|---|
 | `anthropic` (Claude) | no: the API takes no audio | no | yes | yes |
-| `openai` | yes (`/v1/audio/transcriptions`; ogg is UNCONFIRMED until B0, and if B0 finds it refused, `audio` leaves this row before the release) | no in B1: later, with A2's ffmpeg, unless B0 finds a model that takes an mp4 on `/v1/responses` (§18.18) | yes | yes |
+| `openai` | yes (`/v1/audio/transcriptions`; B0 confirmed ogg/opus on four transcription models, §18.19) | no in B1: B0 found no model that takes an mp4 on `/v1/responses`, the flagship included (§18.19); later, with A2's ffmpeg | yes | yes |
 | `google` (Gemini) | yes | yes, recommended | yes | yes |
 
 View-once media is never processed (`view_once_excluded`), and neither is
@@ -5275,9 +5276,17 @@ the models with the person's key straight from the browser, every page, by
 `https://generativelanguage.googleapis.com` with `x-goog-api-key`), and
 offers the ids that match `AI_MODEL_RE` (Google's `models/<id>` taken as
 `<id>`, only those whose `supportedGenerationMethods` hold
-`generateContent`). It may order them by a hint, never hide one. A
-provider that B0 finds refusing a browser call is listed through the
-enclave instead, with the same calls: `POST /v1/ai/requests/{id}/models
+`generateContent`). It may order them by a hint, never hide one, with
+one exception: OpenAI's list says nothing of a model's inputs, and it
+names realtime models like transcribers (B0 found `gpt-live-transcribe`
+listed, and `/v1/audio/transcriptions` answering it 404 `Invalid URL`), so
+the `audio` picker for OpenAI offers only the ids that contain
+`transcribe` or `whisper` and none of `live`, `realtime`, `diarize` or
+`tts`. The model row of §18.9's error map still catches any unfit pick at
+its first call. B0 found all three lists answer a browser call from the
+console's origin (§18.19), so B1 builds no enclave listing: the fallback
+below is specified, not built, for a provider that later stops answering
+the browser: `POST /v1/ai/requests/{id}/models
 {"provider","sealed"}` → `POST /internal/ai/requests/{id}/models`, `sealed`
 = HPKE base mode to the request's key, info `wappie-ai-models/v1`, AAD
 UTF-8 of `JSON.stringify(['wappie/ai-models', 1, request_id, kid,
@@ -5512,8 +5521,9 @@ body needs. **Never used:** OpenAI Assistants, Files, Batch, and
 `/v1/responses` with `store` true or `previous_response_id`; Gemini Files
 and cachedContents.
 
-**Bodies** (B0 pins each byte for byte in
-`packages/mcp-http/enclave/ai/test/provider-shapes.json`; `P` is the
+**Bodies** (B1 pins each byte for byte in
+`packages/mcp-http/enclave/ai/test/provider-shapes.json`, from the bodies
+B0 sent and the providers accepted, §18.19; `P` is the
 function's prompt and `U` the text part sent beside the media, both of
 `AI_PROMPTS`, §18.14):
 
@@ -5578,15 +5588,16 @@ network error is never charged.
 
 **Error map** (the first row that matches wins; `AI_ERROR_RULES` in
 `policy.mjs` pins each row's matchers per provider, from the documented
-codes below, and B0 confirms them with real bodies; a test per row):
+codes below, confirmed by B0's real bodies where §18.19 lists one; a
+test per row):
 
 | Provider answer | Code | Effect |
 |---|---|---|
 | 401, 403; Google 400 whose `ErrorInfo.reason` is `API_KEY_INVALID` | `ai_key_rejected` | that provider's functions pause for this authorization until renewal; alert |
-| OpenAI 429 with `error.code: "insufficient_quota"`; Anthropic 402 (`billing_error`), or a 400 `invalid_request_error` whose message names the credit balance; Google 429 `RESOURCE_EXHAUSTED` whose `QuotaFailure` names a per-day `quotaId` | `ai_quota` | that provider's functions pause until renewal; alert |
+| OpenAI 429 whose `error.type` or `error.code` is `insufficient_quota` (B0's body: type `insufficient_quota`, code `credit_balance_exhausted`); Anthropic 402 (`billing_error`), or a 400 `invalid_request_error` whose message names the credit balance; Google 429 `RESOURCE_EXHAUSTED` whose `QuotaFailure` names a per-day `quotaId` | `ai_quota` | that provider's functions pause until renewal; alert |
 | 429 otherwise (Google's per-minute quotas included), 5xx (Anthropic's 529 included), a timeout or a network error | retried per `AI_RETRIES`, then `ai_provider_failed` | none; a failure is counted, never charged |
-| 413; a 400 about the request's, a file's or an image's size; OpenAI's transcription 400 about the audio's duration | `ai_too_large` | none |
-| 404; a 400 or 422 naming the model, the endpoint or method, an unsupported parameter or value, or an unsupported input type or format (OpenAI `model_not_found`, `unsupported_parameter`, `unsupported_value`, or `invalid_value` on the model or input; Anthropic `not_found_error`, or an `invalid_request_error` about the model or a content block's type; Google `NOT_FOUND`, or `INVALID_ARGUMENT` about the model, the method or a MIME type) | `ai_model_unavailable` | that function pauses until a renewal picks another model; alert |
+| 413; a 400 about the request's, a file's or an image's size; OpenAI's transcription 400 about the audio's duration (B0's body: `invalid_value`, "audio duration … seconds is longer than 1400 seconds which is the maximum for this model", matched by its message before the next row's `invalid_value`) | `ai_too_large` | none |
+| 404 (OpenAI's transcription route answers a model that cannot serve it with 404 `Invalid URL (POST /v1/audio/transcriptions)`, B0); a 400 or 422 naming the model, the endpoint or method, an unsupported parameter or value, or an unsupported input type or format (OpenAI `model_not_found`, `unsupported_parameter`, `unsupported_value`, or `invalid_value` on the model or input; Anthropic `not_found_error`, or an `invalid_request_error` about the model or a content block's type; Google `NOT_FOUND`, or `INVALID_ARGUMENT` about the model, the method or a MIME type) | `ai_model_unavailable` | that function pauses until a renewal picks another model; alert |
 | any other 4xx | `ai_provider_failed` | not retried, never charged |
 | a 200 answer: §18.9's "Answers" | stored, or its code there | charged by its usage |
 
@@ -5695,16 +5706,21 @@ refused (`ai_budget_reached`) when `used ≥ cap`, or when `items_day` has
 reached `request_items_per_day`. After each 200 answer (anything else is
 never charged), `cost_microcents += in × input_tokens + out × output_tokens
 + sec × seconds × 1,000` with the pair's `rates`. The tokens are the
-provider's usage fields (B0 records which), the reasoning or thinking
-tokens included in the output; a missing field is charged as `ceil(request
+provider's usage fields (B0's, §18.19: Anthropic `input_tokens`,
+`output_tokens`; OpenAI Responses `input_tokens`, `output_tokens`;
+OpenAI transcription `usage.type` `tokens` with `input_tokens` and
+`output_tokens`, or `duration` with `seconds`; Google
+`promptTokenCount`, `candidatesTokenCount`, `thoughtsTokenCount`), the
+reasoning or thinking tokens included in the output; a missing field is charged as `ceil(request
 body bytes / 4)` input tokens and `AI_OUTPUT_MAX_TOKENS[f]` output tokens.
 `seconds`, for audio and video (else 0), is never the sender's claim
 alone, since a voice note that claims 1 s may hold 25 minutes:
 
 - the provider's own measure when the answer carries one: OpenAI's
-  transcription `usage.seconds` (a model billed by duration), or Google's
-  audio tokens (`usageMetadata.promptTokensDetails`, modality `AUDIO`, a
-  video's included) ÷ `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` (32);
+  transcription `usage.seconds` (a model billed by duration: B0 saw
+  `whisper-1` and `gpt-transcribe`), or Google's audio tokens
+  (`usageMetadata.promptTokensDetails`, modality `AUDIO`, a video's
+  included) ÷ `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` (25);
 - else `max(claimed, ceil(plaintext bytes ÷ AI_MIN_BYTES_PER_SECOND))`, an
   upper bound on the length no sender can shrink (250 bytes a second is
   2 kbit/s, below every speech codec the providers decode), which may
@@ -5730,7 +5746,7 @@ the enclave's public listener.
 | `POST /v1/ai/keychain` | any person | `{"id","provider","label","suffix","envelope"}` → 201 | 400; 409 `keychain_full`, `keychain_exists` |
 | `DELETE /v1/ai/keychain/{id}` | the item's owner | → 204 (ends the rows using it, §18.6) | 404 |
 | `POST /v1/ai/requests` | an owner or admin | `{"nonce"}` → 200 the prepared descriptor | 403 `ai_not_allowed`; 429; 502 `reader_unavailable` |
-| `POST /v1/ai/requests/{id}/models` | the request's user | `{"provider","sealed"}` → 200 `{"models":[{"id"}]}` (only if B0 needs it) | 400; 404; 502 |
+| `POST /v1/ai/requests/{id}/models` | the request's user | `{"provider","sealed"}` → 200 `{"models":[{"id"}]}` (not built in B1: B0 found every list answers the browser, §18.7) | 400; 404; 502 |
 | `POST /v1/mcp/connections` | an owner or admin | §18.7 step 5 → 201 | 400 (with the reader's codes); 403; 409; 502 |
 | `POST /v1/mcp/connections/{id}/renewal`, `…/renew` | as §15.9 | + `ai_config` on renew | as §15.9 |
 | `GET /v1/ai/authorizations` | any person: their own; owners and admins: all | → 200 `{"authorizations":[{"id","created_by","status","expires_at","device_count","ai_config","paused","off","cap_cents","alerts","revoke_reason","renewable","created_at"}]}` | 401 |
@@ -6014,13 +6030,13 @@ the content and people may read it."
 | `AI_FEATURES` | `{anthropic: ['image', 'document'], openai: ['audio', 'image', 'document'], google: ['audio', 'video', 'image', 'document']}` |
 | `AI_MODEL_RE` | `/^[a-z0-9][a-z0-9._:-]{0,63}$/` (a shape check; which models exist is each key's list) |
 | `AI_PROMPTS` | per function, `{version, text, user}` (below): the prompt and the text part sent beside the media; `prompt_version` is `<function>/<version>` |
-| `AI_OUTPUT_MAX_TOKENS` | `{image: 4_000, document: 8_000, video: 8_000, audio: 16_000}`: OpenAI's `max_output_tokens` and Gemini's `maxOutputTokens` count the reasoning or thinking tokens too, and no body sets a reasoning control (§18.9), so each holds a thinking model's reasoning as well as the answer, whose length the prompt and `AI_TEXT_MAX_CHARS` bound. UNCONFIRMED until B0 measures the reasoning and thought tokens per function (§18.16). OpenAI's transcription endpoint takes no such field |
+| `AI_OUTPUT_MAX_TOKENS` | `{image: 4_000, document: 8_000, video: 8_000, audio: 16_000}`: OpenAI's `max_output_tokens` and Gemini's `maxOutputTokens` count the reasoning or thinking tokens too, and no body sets a reasoning control (§18.9), so each holds a thinking model's reasoning as well as the answer, whose length the prompt and `AI_TEXT_MAX_CHARS` bound. B0 measured at most 4,020 output and thought tokens together (15 minutes of audio on Gemini), 1,692 for a document, 811 for a video and 725 for an image (§18.19). OpenAI's transcription endpoint takes no such field |
 | `AI_CAP_BYTES` | `{audio: 26_214_400, video: 14_950_848, image: CAP_BYTES.image, document: CAP_BYTES.document}` (plaintext; video is what fits Google's inline request once base64 is added) |
 | `AI_GOOGLE_REQUEST_MAX_BYTES` | `20_000_000` |
 | `AI_OPENAI_AUDIO_MAX_BYTES` | `26_214_400` |
-| `AI_MAX_SECONDS` | `{audio: 1_500, video: 600}` (checked against the claimed `seconds` before the call; the charge never rests on the claim, §18.10; 1,500 is the reported ceiling of OpenAI's transcription models, UNCONFIRMED until B0) |
+| `AI_MAX_SECONDS` | `{audio: 1_400, video: 600}` (checked against the claimed `seconds` before the call; the charge never rests on the claim, §18.10; 1,400 is the ceiling `gpt-4o-transcribe` answered B0 with, below the 1,500 reported before) |
 | `AI_MIN_BYTES_PER_SECOND` | `250` (audio and video: the charge's upper bound on a length, §18.10) |
-| `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` | `32` (Google's documented rate; B0 confirms it) |
+| `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` | `25` (measured by B0 on four lengths, 14.5 s to 15 min, `gemini-3.8-flash`; the 32 assumed before would have understated every length by a fifth) |
 | `AI_TEXT_MAX_CHARS` | `200_000` |
 | `AI_RESPONSE_MAX_BYTES` | `2_097_152` |
 | `AI_CALL_TIMEOUT_MS` | `120_000` |
@@ -6115,7 +6131,12 @@ the password; the two fronts therefore share one train.
    compares a real voice note's Ogg parameters with the synthetic one's
    and checks real WhatsApp videos for location atoms, sending neither;
    §17's host probe; the parent's three vsock proxies and allowlist
-   entries (inert until an image bridges to them).
+   entries (inert until an image bridges to them). B0 ran from the owner's
+   Mac on 2026-09-30 (§18.19); the egress from an enclave to the three
+   hosts moves to 0.5.0's deploy, where the health route's per-provider
+   TLS reach proves it before any switch is on, and the two local checks
+   stay the owner's, optional (a video sent as a `document` stays out of
+   B1 either way).
 2. **Reader 0.5.0:** the public PR (`READER_VERSION` 0.5.0, the
    capabilities of §18.14, reader 0.4.2's changes, §17's S1 and S1b,
    §18's B1, the entrypoint's hosts and bridges); `deploy-enclave.sh build
@@ -6257,26 +6278,14 @@ the password; the two fronts therefore share one train.
 
 ### 18.18 Open points
 
-- **B0 settles** (UNCONFIRMED): ogg/opus on OpenAI's transcription endpoint
-  (if refused, `audio` leaves OpenAI's row and the console offers Gemini);
-  each model list from a browser (CORS) and what it says of a model's
-  inputs (OpenAI's gives ids only, so a model unfit for a function is found
-  at its first call, `ai_model_unavailable`); Gemini's inline video under
-  15 MB, its latency and whether one call returns both the speech and a
-  description; whether an OpenAI flagship model (not only a mini one)
-  takes an mp4 as `input_file` on `/v1/responses`, and if one does,
-  whether `AI_FEATURES.openai` gains `video` through that route in B1
-  instead of waiting for ffmpeg (the owner's example puts video on an
-  OpenAI model); the usage fields, the reasoning and thought tokens that
-  size `AI_OUTPUT_MAX_TOKENS`, and the error bodies per provider and row;
-  whether the restricted keys the console will recommend reach every
-  route the enclave calls; `AI_MAX_SECONDS.audio` and whether
-  `AI_CALL_TIMEOUT_MS` covers the longest audio; which
-  providers offer a spending limit that stops (an Anthropic workspace
-  limit, an OpenAI project budget, reportedly alert-only, Google's daily
-  quota); location atoms in WhatsApp videos; providers' retention
-  (Anthropic's for flagged content, reportedly up to 2 years; Gemini's paid
-  abuse logging, reportedly about 55 days).
+- **After B0** (§18.19), still open: which providers offer a spending
+  limit that stops (an Anthropic workspace limit, an OpenAI project
+  budget, reportedly alert-only, Google's daily quota), for the console's
+  key guidance; providers' retention (Anthropic's for flagged content,
+  reportedly up to 2 years; Gemini's paid abuse logging, reportedly about
+  55 days), for the Terms; location atoms in real WhatsApp videos and a
+  real voice note's Ogg parameters, the owner's local checks; the egress
+  from the enclave, at 0.5.0's deploy (§18.16).
 - **Members' own authorizations.** B1 lets an owner or admin create one,
   as for content connections; a member's own needs a service-account path
   for members.
@@ -6290,6 +6299,37 @@ the password; the two fronts therefore share one train.
   `AI_FEATURES` changes in a release.
 - **Legal:** the controller clause in the Terms and DPA, and the transfer
   basis under LGPD art. 33 (decision 7).
+
+### 18.19 B0 results (2026-09-30)
+
+Three runs of the B0 probe (`sonda v2`) from the owner's Mac, synthetic
+media only: speech from macOS's voice, Ogg/Opus built like a WhatsApp
+voice note, H.264 mp4s, a PNG and a PDF drawn by the script. The first run
+found the OpenAI account without credit; the second picked
+`gpt-live-transcribe` for audio, which the transcription route does not
+serve; the third fixed the audio model with `--modelo
+openai.audio=gpt-4o-transcribe`. Keys were typed by the owner into hidden
+prompts and never written. Models used: `gemini-3.8-flash`,
+`claude-sonnet-5-5`, `gpt-4o-transcribe` (and `gpt-transcribe`,
+`gpt-4o-mini-transcribe`, `whisper-1` for the voice note),
+`gpt-5.4-mini`, `gpt-6.1-sol`.
+
+| Question | Result | Effect here |
+|---|---|---|
+| Ogg/Opus voice note on OpenAI's transcription route | accepted by `gpt-4o-transcribe`, `gpt-transcribe`, `gpt-4o-mini-transcribe` and `whisper-1`, 1.2 to 2.3 s for 14.5 s (one cold call took 32.9 s); webm, m4a and wav also accepted | `audio` stays in `AI_FEATURES.openai` |
+| A listed OpenAI model unfit for transcription | `gpt-live-transcribe` is listed and answers 404 `Invalid URL (POST /v1/audio/transcriptions)`; `gpt-5.4-mini` the same | the console's OpenAI audio picker filter (§18.7); the 404 is the model row (§18.9) |
+| Audio length and latency | OpenAI `gpt-4o-transcribe`: 60 s in 4.2 s, 5 min in 14.1 s, 15 min in 31.5 s, 1,510 s refused (400, "longer than 1400 seconds"). Gemini: 60 s in 4.5 s, 5 min in 6.1 s, 15 min in 20.6 s | `AI_MAX_SECONDS.audio` 1,400; `AI_CALL_TIMEOUT_MS` (120 s) holds with room; a long audio often outlasts ChatGPT's 25 s host wait and answers `pending` (§16.8) |
+| Video | Gemini: 12 s (1.1 MB) in 9.5 s and 43 s (14.8 MB, a 19.7 MB request) in 8.3 s, both with "Transcript:" and "Shown:" in one call. OpenAI `/v1/responses`: an mp4 as `input_file` refused by `gpt-6.1-sol` and `gpt-5.4-mini` (400 `invalid_value`, "valid file MIME type"); the transcription route took the mp4 and heard its speech (26.3 s for 12 s) | video is Gemini's in B1; OpenAI's waits for A2's ffmpeg, as §18.3 says |
+| Images and documents | all 200: Anthropic 3.6 to 7.4 s, OpenAI `gpt-5.4-mini` 2.6 to 3.4 s, Gemini 6.5 to 8.9 s; text, text with a page image, and a PDF's text each gave the expected figures | no change |
+| Audio on Anthropic | 400 `invalid_request_error` (a document block takes only `application/pdf`) | `audio` stays out of `AI_FEATURES.anthropic` |
+| Usage fields | as §18.10 now lists; OpenAI transcription answers `usage.type` `tokens` (`gpt-4o-transcribe`, mini) or `duration` with `seconds` (`whisper-1`, `gpt-transcribe`); Google counts 25 audio tokens a second on every length | §18.10's measure; `AI_GOOGLE_AUDIO_TOKENS_PER_SECOND` 25 |
+| Reasoning and thought tokens | Gemini thoughts 277 to 1,138 a call; Anthropic thinking 0 to 251; OpenAI `gpt-5.4-mini` reasoning 0; the largest output with thoughts 4,020 tokens (Gemini, 15 min of audio) | `AI_OUTPUT_MAX_TOKENS` unchanged, with room at every function |
+| Model lists from a browser | OpenAI 200, `Access-Control-Allow-Origin: *`, 135 ids, one page, fields `id`, `created`, `owned_by`, `shutdown_date` (nothing on inputs); Google 200, allow-origin the console's origin, 61 models, one page of `pageSize=1000`, with `supportedGenerationMethods` and token limits; Anthropic 200, allow-origin `*` only with `anthropic-dangerous-direct-browser-access` (401 without), 13 models with `capabilities`. Every id passes `AI_MODEL_RE` | the console lists from the browser; no enclave listing in B1 (§18.7, §18.11) |
+| `store` on `/v1/responses` | with `store: false` the response is not kept (a later GET answers 404); without the field it is (`store: true`) and a DELETE removes it | `store: false` as §18.9 has it |
+| Restricted keys | OpenAI restricted and Gemini API-restricted keys reached every route the enclave calls; Anthropic's key is per workspace | the console's key guidance |
+| Error bodies | 401: OpenAI `invalid_api_key`, Anthropic `authentication_error`; Google 400 `API_KEY_INVALID`; 404: OpenAI `model_not_found`, Anthropic `not_found_error`, Google `NOT_FOUND`; OpenAI 429 type `insufficient_quota`, code `credit_balance_exhausted`; Google 400 `INVALID_ARGUMENT` "Audio input modality is not enabled" for a speech model | `AI_ERROR_RULES` (§18.9) |
+| Size limits | above the documented ones, OpenAI took a 27 MB WAV, Gemini a 21.1 MB request, Anthropic a 5.9 MB PNG | none: the constants keep the documented limits |
+| Transport | `Accept-Encoding: identity` honored, no redirect, no answer over 2 MiB, no call over 120 s | as §18.9 |
 
 ### Amendments to §§1 to 16
 
