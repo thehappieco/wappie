@@ -4331,9 +4331,9 @@ todos os participantes.") and "Enviar para a minha própria conversa" /
 "Send to my own chat" ("Notas enviadas na hora, sem pedir sua
 confirmação, só para a sua conversa com o próprio número; até {n} por
 dia."). Neither turns drafts on, and both go off with them. The pause is a
-per-connection switch in the activity. The cards (drafts for the owner's
-approval in pt and en; es, fr and de follow; legal review does not block
-drafts):
+per-connection switch in the activity. The cards (approved by the owner
+on 2026-09-30 in pt and en, with es, fr and de as translated; legal review
+does not block them):
 
 > pt: "Também preparar mensagens. O {assistant} poderá escrever rascunhos
 > para conversas destes números em que a outra pessoa já escreveu{,
@@ -4837,9 +4837,9 @@ it open; each binds S3 and the console as the rest of §17 does.
   the recipient, marks a name only the other side gave themselves, always
   shows a number or that WhatsApp hides it, names the recipient on Send,
   and tells the person what to do about a cross-chat copy. Every one of
-  those texts, in pt and en (es, fr and de drafted), awaits the owner's
-  approval as §17.13's first ones did. The console copies §17.13 word for
-  word, so a wording the owner changes lands in both.
+  those texts, in pt and en (es, fr and de translated), was approved by the
+  owner on 2026-09-30, as were §17.13's first ones. The console copies
+  §17.13 word for word, so a wording the owner changes later lands in both.
 
 ## 18. AI integrations: on request (0.5.0)
 
