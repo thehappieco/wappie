@@ -15,11 +15,11 @@ import (
 // egress proxy and the consent check compute the same registrable domain for
 // every host. It is refreshed with each reader release.
 //
-//go:embed psl/psl-2026-02-06.json
+//go:embed psl/psl-2026-09-24.json
 var pslSnapshot []byte
 
 // PSLFile is the embedded snapshot's name, for the tests that pin it.
-const PSLFile = "psl/psl-2026-02-06.json"
+const PSLFile = "psl/psl-2026-09-24.json"
 
 // section is where a rule comes from in the List.
 type section uint8

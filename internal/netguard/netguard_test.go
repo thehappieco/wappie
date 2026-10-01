@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -17,7 +15,7 @@ import (
 
 // PSL_SHA256 pins the snapshot: the enclave's suite pins the same value for
 // its copy at packages/mcp-http/psl/, so the two cannot drift apart.
-const pslSHA256 = "3021a4c2d408263837156a824c0335e5b26228bdcfac33567e416bf4f2763769"
+const pslSHA256 = "c525730712d4db475211ced98ddac44b06e4b288e50d95b69c68adb1e4e83e80"
 
 func TestTheSnapshotIsPinned(t *testing.T) {
 	raw, err := os.ReadFile(netguard.PSLFile)
@@ -27,15 +25,11 @@ func TestTheSnapshotIsPinned(t *testing.T) {
 	if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != pslSHA256 {
 		t.Fatalf("the snapshot's SHA-256 is %x, pinned %s: a refresh changes both copies and both pins", sum, pslSHA256)
 	}
-	// The enclave's copy, once its track has committed it, is the same
-	// file, byte for byte: the three host checks read one list.
+	// The enclave's copy is the same file, byte for byte: the three host
+	// checks read one list.
 	copies, err := filepath.Glob(readerPSL)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(copies) == 0 {
-		t.Log("packages/mcp-http/psl/ has no snapshot yet; only Go's copy is checked")
-		return
 	}
 	reader, err := os.ReadFile(filepath.Join("..", "..", "packages", "mcp-http", netguard.PSLFile))
 	if err != nil || len(copies) != 1 || !bytes.Equal(raw, reader) {
@@ -172,24 +166,14 @@ func runVectors(t *testing.T, path string) int {
 	return len(vectors)
 }
 
+// The shared vectors the enclave and the egress proxy run too
+// (docs/mcp-enclave.md §19.5): one file, packages/mcp-http/test/vectors/,
+// so the three host checks cannot disagree.
 func TestCIMDIDVectors(t *testing.T) {
-	if n := runVectors(t, filepath.Join("testdata", "cimd-ids.json")); n < 100 {
+	path := filepath.Join("..", "..", "packages", "mcp-http", "test", "vectors", "cimd-ids.json")
+	if n := runVectors(t, path); n < 200 {
 		t.Fatalf("only %d vectors", n)
 	}
-}
-
-// The shared vectors the enclave and the egress proxy run too
-// (docs/mcp-enclave.md §19.5). The reader's track writes them; until it
-// has, there is nothing to compare.
-func TestSharedCIMDIDVectors(t *testing.T) {
-	path := filepath.Join("..", "..", "packages", "mcp-http", "test", "vectors", "cimd-ids.json")
-	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		if copies, _ := filepath.Glob(readerPSL); len(copies) > 0 {
-			t.Fatal("the reader carries a snapshot but not the shared vectors")
-		}
-		t.Skip("packages/mcp-http/test/vectors/cimd-ids.json is not in this tree yet")
-	}
-	runVectors(t, path)
 }
 
 // The host predicate on its own, as the egress proxy applies it to a

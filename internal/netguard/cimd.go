@@ -246,7 +246,7 @@ func whatwgIPv6(addr netip.Addr) string {
 // its spellings.
 func canonicalPath(path string) bool {
 	for i := 0; i < len(path); i++ {
-		if c := path[i]; c < 0x20 || c >= 0x7f || strings.IndexByte("\"<>`{} ", c) >= 0 {
+		if c := path[i]; c < 0x20 || c >= 0x7f || strings.IndexByte("\"<>^`{} ", c) >= 0 {
 			return false
 		}
 	}

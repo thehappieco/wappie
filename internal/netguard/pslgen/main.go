@@ -1,8 +1,8 @@
 // Command pslgen turns publicsuffix.org's public_suffix_list.dat into the
 // snapshot internal/netguard embeds (docs/mcp-enclave.md §19.5):
 //
-//	go run ./internal/netguard/pslgen -date 2026-02-06 -revision <git sha> \
-//	    < public_suffix_list.dat > internal/netguard/psl/psl-2026-02-06.json
+//	go run ./internal/netguard/pslgen -date 2026-09-24 -revision <git sha> \
+//	    < public_suffix_list.dat > internal/netguard/psl/psl-2026-09-24.json
 //
 // The snapshot is a JSON object with the list's date and git revision and
 // two arrays of rules, the ICANN section's and the private section's, each in

@@ -11,7 +11,7 @@ import (
 // The committed snapshot is what this generator writes for its own rules,
 // byte for byte: a refresh from the List is the same command.
 func TestTheSnapshotIsThisGeneratorsOutput(t *testing.T) {
-	committed, err := os.ReadFile("../psl/psl-2026-02-06.json")
+	committed, err := os.ReadFile("../psl/psl-2026-09-24.json")
 	if err != nil {
 		t.Fatal(err)
 	}

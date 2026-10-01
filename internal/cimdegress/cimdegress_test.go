@@ -241,11 +241,7 @@ var hostReasons = []string{"host_chars", "host_labels", "ip_literal", "special_u
 // refused by the host predicate gets host_refused, before any budget or
 // resolution.
 func TestSharedVectors(t *testing.T) {
-	paths := []string{filepath.Join("..", "netguard", "testdata", "cimd-ids.json")}
-	if shared := filepath.Join("..", "..", "packages", "mcp-http", "test", "vectors", "cimd-ids.json"); fileExists(shared) {
-		paths = append(paths, shared)
-	}
-	for _, path := range paths {
+	for _, path := range []string{filepath.Join("..", "..", "packages", "mcp-http", "test", "vectors", "cimd-ids.json")} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -281,11 +277,6 @@ func TestSharedVectors(t *testing.T) {
 			t.Fatalf("%s: %d accepted, %d refused", path, accepted, refused)
 		}
 	}
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 // One resolution: any address that is not public, or that is the
