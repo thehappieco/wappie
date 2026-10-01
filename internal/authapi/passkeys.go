@@ -2,7 +2,6 @@ package authapi
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +13,8 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
+	"github.com/thehappieco/kit/passkey"
+	"github.com/thehappieco/kit/profiles/wappie"
 
 	"whatserver2/internal/config"
 	"whatserver2/internal/store"
@@ -49,7 +50,8 @@ func NewPasskeyProvider(cfg config.Passkeys) (*PasskeyProvider, error) {
 	}
 	// One public salt per RP permits discoverable login without enumerating
 	// credentials. The PRF is still secret and unique to each credential.
-	salt := sha256.Sum256([]byte("wappie/passkey-vault/v1/" + cfg.RPID))
+	// SHA-256("wappie/passkey-vault/v1/" + RP ID), Wappie's profile in the kit.
+	salt := passkey.PRFSalt(wappie.Passkey(), cfg.RPID)
 	p := &PasskeyProvider{web: web, rpID: cfg.RPID, origins: map[string]bool{}, salt: salt[:]}
 	for _, origin := range cfg.Origins {
 		p.origins[origin] = true

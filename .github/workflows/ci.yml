@@ -76,6 +76,7 @@ jobs:
       # The whatsapp_server2 project rotted when a half-finished migration left
       # API_ttt/ and mongo_ttt/ beside the real packages forever.
       - run: make lint-layout
+      - run: make fixtures-check
       - uses: golangci/golangci-lint-action@v9.3.0
         with: {version: v2.13.2}
       - name: govulncheck
