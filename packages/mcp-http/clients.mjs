@@ -255,14 +255,41 @@ export function makeRoomUnknown(state, registrable) {
     const mine = unknown.filter(client => client.registrable === registrable)
     const crowded = mine.length >= UNKNOWN_CLIENTS_PER_DOMAIN ? mine : unknown.length >= UNKNOWN_CLIENTS_MAX ? unknown : null
     if (!crowded) return true
-    const named = new Set([...state.connections.values()].map(connection => connection.client_id))
-    const evictable = crowded.filter(client => !named.has(client.client_id))
-    if (evictable.length === 0) return false
-    const rank = client => [client.authorized_at ? 1 : 0, client.last_used_at]
-    state.clients.delete(evictable.reduce((oldest, client) => {
-      const [a, b] = [rank(client), rank(oldest)]
-      return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]) ? client : oldest
-    }).client_id)
+    if (!evictOne(state, crowded)) return false
+  }
+}
+
+/**
+ * Forgets the oldest of `crowded` that no live connection names, one nobody
+ * consented to before one somebody did (§19.10); false when each of them
+ * serves a live connection.
+ */
+function evictOne(state, crowded) {
+  const named = new Set([...state.connections.values()].map(connection => connection.client_id))
+  const evictable = crowded.filter(client => !named.has(client.client_id))
+  if (evictable.length === 0) return false
+  const rank = client => [client.authorized_at ? 1 : 0, client.last_used_at]
+  state.clients.delete(evictable.reduce((oldest, client) => {
+    const [a, b] = [rank(client), rank(oldest)]
+    return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]) ? client : oldest
+  }).client_id)
+  return true
+}
+
+/**
+ * Room for one more registration on `host` under reader 0.6.0's rule
+ * (§19.10): MAX_CLIENTS registrations and MAX_CLIENTS_PER_HOST per host, DCR
+ * records only (fetched documents have caps of their own). At a cap the
+ * oldest record no live connection names makes way, one nobody consented to
+ * before one somebody did; a consent alone no longer protects a record. False
+ * only when every record under the cap serves a live connection.
+ */
+export function makeRoomRegistered(state, host) {
+  for (;;) {
+    const all = [...state.clients.values()].filter(client => client.source === 'dcr'), mine = all.filter(client => client.redirect_host === host)
+    const crowded = mine.length >= MAX_CLIENTS_PER_HOST ? mine : all.length >= MAX_CLIENTS ? all : null
+    if (!crowded) return true
+    if (!evictOne(state, crowded)) return false
   }
 }
 
@@ -306,7 +333,7 @@ export function createClients(state, { now = Date.now, hosts, policy }) {
     const existing = live().find(client => client.source === 'dcr' && client.tested_id === entry.id && client.claimed_name === claimed_name && client.redirect_uris.slice().sort().join(' ') === key)
     if (existing) { existing.last_used_at = now(); return existing }
     const host = new URL(uris[0]).hostname
-    if (!makeRoom(state, host)) {
+    if (!makeRoomRegistered(state, host)) {
       const error = new RegistrationError('too_many_clients', 'client registrations are full; try again later')
       error.status = 429
       throw error

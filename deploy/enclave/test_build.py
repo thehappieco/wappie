@@ -34,10 +34,13 @@ def dependencies_program():
 
 
 MANIFEST = {"locks": [{"file": "packages/mcp-http/enclave/package-lock.json", "sha256": "0" * 64, "packages": []}], "tarballs": []}
+TABLES = {"tested_clients": [{"id": "claude", "kind": "cimd", "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata", "name": "Claude",
+                              "local": False, "profile": "claude.ai", "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]}],
+          "client_limits": {tier: {"calls_per_minute": 20} for tier in ("web_tested", "local_tested", "unknown", "token")}}
 
 
 class MeasurementsTest(unittest.TestCase):
-    def build(self, previous, policy_pcr0s=None, capabilities=None, manifest=MANIFEST):
+    def build(self, previous, policy_pcr0s=None, capabilities=None, manifest=MANIFEST, tables=None):
         out = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
         blobs = out / "blobs"
         blobs.mkdir()
@@ -51,7 +54,7 @@ class MeasurementsTest(unittest.TestCase):
                 args += ["--pcr0", value]
             (out / f"reader-key-policy.{phase}.json").write_text(subprocess.run(args, check=True, capture_output=True, text=True).stdout)
         constants = json.dumps({"version": "0.2.0", "reader_id": "enclave", "origin": "https://mcp.example", "region": "eu-west-1",
-                                "reader_key_arn": "arn:r", "boot_key_arn": "arn:b", "capabilities": capabilities})
+                                "reader_key_arn": "arn:r", "boot_key_arn": "arn:b", "capabilities": capabilities, **(tables or {})})
         (out / "dependencies.json").write_text(json.dumps(manifest))
         result = subprocess.run(
             [sys.executable, "-", str(out), "wappie-reader-0.2.0.eif", "0.2.0", "0" * 40, "", "node@sha256:x", "rust@sha256:y",
@@ -94,6 +97,26 @@ class MeasurementsTest(unittest.TestCase):
             error = self.build(PREVIOUS, capabilities=bad)
             self.assertIsInstance(error, str, bad)
             self.assertIn("READER_CAPABILITIES", error)
+
+    def test_any_client_release_carries_its_tested_clients_and_limits_unchanged(self):
+        built = self.build(PREVIOUS, capabilities=["consent_v2", "any_client_v1"], tables=TABLES)
+        self.assertEqual(built["tested_clients"], TABLES["tested_clients"])
+        self.assertEqual(built["client_limits"], TABLES["client_limits"])
+
+    def test_other_releases_carry_no_client_tables(self):
+        built = self.build(PREVIOUS, capabilities=["consent_v2"])
+        self.assertNotIn("tested_clients", built)
+        self.assertNotIn("client_limits", built)
+        error = self.build(PREVIOUS, capabilities=["consent_v2"], tables=TABLES)
+        self.assertIsInstance(error, str)
+        self.assertIn("without any_client_v1", error)
+
+    def test_refuses_an_any_client_release_without_well_formed_tables(self):
+        for tables in ({}, {"tested_clients": TABLES["tested_clients"]}, {**TABLES, "tested_clients": []},
+                       {**TABLES, "tested_clients": TABLES["tested_clients"] * 2},
+                       {**TABLES, "client_limits": {"unknown": {}}}):
+            error = self.build(PREVIOUS, capabilities=["any_client_v1"], tables=tables)
+            self.assertIsInstance(error, str, tables)
 
     def test_carries_the_dependency_manifest(self):
         self.assertEqual(self.build(PREVIOUS)["dependencies"], MANIFEST)
