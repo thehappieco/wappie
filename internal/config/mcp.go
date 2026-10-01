@@ -40,9 +40,26 @@ type MCP struct {
 	PublicOrigin string
 	// RedirectHosts are the exact hosts an OAuth client may redirect to and
 	// whose client metadata documents this server will fetch on the reader's
-	// behalf. The reader carries the same list under its own name; the
-	// runbook says they must match.
+	// behalf, for a reader before 0.6.0: a version-1 descriptor's consent is
+	// checked against them, and the metadata relay fetches only from them.
+	// The reader carries the same list under its own name; the runbook says
+	// they must match. A 0.6.0 reader fetches documents itself and describes
+	// its clients in a version-2 descriptor (docs/mcp-enclave.md §19.21), so
+	// the list goes with the last reader before it.
 	RedirectHosts []string
+	// CIMDMode is WS_MCP_CIMD_MODE: CIMDModeAllowlist (the default) refuses
+	// every consent for a client Wappie has not tested, console tokens
+	// included; CIMDModeAny admits them. BlockedClients are tested clients'
+	// ids (WS_MCP_BLOCKED_CLIENTS) refused whatever the mode. DCRHosts are
+	// the hosts a dynamically registered client may be identified by
+	// (WS_MCP_DCR_HOSTS). All three can only refuse what a reader admitted.
+	CIMDMode       string
+	BlockedClients []string
+	DCRHosts       []string
+	// NoticeOrigin is this server's public origin (WS_MCP_NOTICE_ORIGIN),
+	// where a new-assistant e-mail's revoke-only link points. Unset, no
+	// notice e-mail goes, and so no untested client or token is given text.
+	NoticeOrigin string
 	// OpenAIAppsChallenge is the domain-verification token OpenAI's plugin
 	// portal issues for the MCP server's origin, served verbatim at
 	// /.well-known/openai-apps-challenge. Empty until a submission asks for
@@ -134,6 +151,10 @@ type MCP struct {
 	mediaOffErr      error
 	sendTenantErr    error
 	sendLimitErrs    []error
+	// blockedErr and dcrHostErr are what was wrong with
+	// WS_MCP_BLOCKED_CLIENTS and WS_MCP_DCR_HOSTS.
+	blockedErr error
+	dcrHostErr error
 	// aiTenantErr, aiOffProvidersErr and aiOffFeaturesErr are the same for
 	// the AI block.
 	aiTenantErr       error
@@ -257,6 +278,7 @@ func loadMCP(errs *[]error) MCP {
 	m.SendDirectEnabled = boolean("WS_MCP_SEND_DIRECT_ENABLED", false, errs)
 	m.SendLimits, m.sendLimitErrs = sendLimits()
 	loadAI(&m, errs)
+	loadClients(&m)
 	return m
 }
 
@@ -461,6 +483,7 @@ func (m MCP) Validate(prod bool) error {
 	errs = append(errs, m.validateMedia()...)
 	errs = append(errs, m.validateSend()...)
 	errs = append(errs, m.validateAI()...)
+	errs = append(errs, m.validateClients(prod)...)
 	return errors.Join(errs...)
 }
 
@@ -770,6 +793,7 @@ func (m MCP) String() string {
 		fmt.Fprintf(&b, " reader=%s origin=%s relay_secret=%s", m.ReaderURL, m.PublicOrigin, setOrUnset(m.RelaySecret))
 	}
 	fmt.Fprintf(&b, " redirect_hosts=%s readers=%s", strings.Join(m.RedirectHosts, ","), strings.Join(m.Readers, ","))
+	b.WriteString(m.clientsString())
 	for _, r := range m.Attested {
 		b.WriteString(" ")
 		b.WriteString(r.String())
