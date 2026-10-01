@@ -698,7 +698,7 @@ func perRevision(versions []VersionTime, delivered map[string]time.Time,
 		// Confirmed starts false here, unlike the flat field, which starts
 		// true to mean "nothing was claimed". This one qualifies a Read, and a
 		// true sitting next to an absent read is a value a template can render
-		// as "confirmado" for a version nobody looked at.
+		// as "confirmado" (confirmed) for a version nobody looked at.
 		rev := ReaderRevision{Revision: v.Revision}
 		if d, ok := delivered[v.WAID]; ok {
 			t := d

@@ -178,7 +178,7 @@ func (r *Router) Reproject(ctx context.Context, tenant, device uuid.UUID,
 		// path with the same signature, so there is no second address to try.
 		// The message stops being "unsupported" either way, which is the part
 		// that was wrong.
-		out.Note = "anexo enfileirado para download; a url pode ter expirado"
+		out.Note = "attachment queued for download; the URL may have expired"
 		if r.cfg.Media != nil {
 			if err := r.cfg.Media.Enqueue(ctx, tenant, uid); err != nil {
 				r.log.Debug("could not nudge the media worker", "error", err)

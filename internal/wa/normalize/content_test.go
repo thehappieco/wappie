@@ -220,8 +220,8 @@ func TestAButtonsMessageKeepsItsLabels(t *testing.T) {
 }
 
 func TestAListMessagePutsItsRowsWhereLabelsGo(t *testing.T) {
-	// The rows are what was offered. "Manhã" alone does not read; "Horários ›
-	// Manhã" does.
+	// The rows are what was offered. "Manhã" (Morning) alone does not read;
+	// "Horários › Manhã" (Times › Morning) does.
 	env := live(t, &waE2E.Message{ListMessage: &waE2E.ListMessage{
 		Title:      proto.String("Escolha um horário"),
 		ButtonText: proto.String("Ver opções"),

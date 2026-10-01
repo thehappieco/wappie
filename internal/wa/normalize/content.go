@@ -391,7 +391,8 @@ func albumInto(env domain.Envelope, a *waE2E.AlbumMessage) domain.Envelope {
 // message whose content is somewhere this archive cannot reach.
 //
 // The buttons are content: they are labels somebody wrote, and a message
-// offering "Confirmar" and "Cancelar" reads very differently without them.
+// offering "Confirmar" and "Cancelar" (Confirm and Cancel) reads very
+// differently without them.
 func templateInto(env domain.Envelope, t *waE2E.TemplateMessage) domain.Envelope {
 	env.Type = domain.TypeTemplate
 	h := t.GetHydratedTemplate()

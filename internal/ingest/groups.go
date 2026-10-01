@@ -160,10 +160,11 @@ func audienceOf(g *types.GroupInfo) int {
 
 // handleGroupInfo records a change somebody made to a group.
 //
-// This is where "who removed Fulano" comes from, and it is the only place it
-// can come from: WhatsApp delivers a group's current composition and its live
-// changes, never its past. So the record starts when this archive does, and the
-// panel says so rather than presenting an empty history as a peaceful one.
+// This is where "who removed Fulano" (so-and-so) comes from, and it is the only
+// place it can come from: WhatsApp delivers a group's current composition and
+// its live changes, never its past. So the record starts when this archive
+// does, and the panel says so rather than presenting an empty history as a
+// peaceful one.
 //
 // Every branch carries the actor and the time from the event. A change with no
 // author is recorded with none rather than attributed to a guess — WhatsApp

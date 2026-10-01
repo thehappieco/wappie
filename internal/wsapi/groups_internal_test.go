@@ -37,7 +37,7 @@ func TestAcceptingAnInvitationIsGated(t *testing.T) {
 		{
 			// Without it there is nothing to join with, and the request would
 			// reach WhatsApp as a malformed stanza rather than a refusal.
-			name: "sem código",
+			name: "no code",
 			req:  GroupJoinRequest{GroupJID: group.String(), Inviter: person.String()},
 			chat: group,
 			want: ErrCodeBadRequest,
@@ -46,7 +46,7 @@ func TestAcceptingAnInvitationIsGated(t *testing.T) {
 			// The sharp one. Nothing else checks that the target is a group,
 			// so a caller naming a person here would have this server issue a
 			// group-join stanza against a direct chat.
-			name: "alvo não é grupo",
+			name: "target is not a group",
 			req:  GroupJoinRequest{GroupJID: person.String(), Inviter: person.String(), Code: "X"},
 			chat: person,
 			want: ErrCodeBadRequest,
@@ -54,14 +54,14 @@ func TestAcceptingAnInvitationIsGated(t *testing.T) {
 		{
 			// WhatsApp validates the code against the pair, so a missing
 			// inviter is a refusal rather than something to guess at.
-			name: "sem quem convidou",
+			name: "no inviter",
 			req:  GroupJoinRequest{GroupJID: group.String(), Code: "X"},
 			chat: group,
 			want: ErrCodeBadRequest,
 		},
 		{
-			name: "quem convidou não é JID",
-			req:  GroupJoinRequest{GroupJID: group.String(), Inviter: "fulano", Code: "X"},
+			name: "inviter is not a JID",
+			req:  GroupJoinRequest{GroupJID: group.String(), Inviter: "someone", Code: "X"},
 			chat: group,
 			want: ErrCodeBadRequest,
 		},
@@ -69,7 +69,7 @@ func TestAcceptingAnInvitationIsGated(t *testing.T) {
 			// A stale code is refused here so the answer names something the
 			// person can act on. WhatsApp would reject it too, a round trip
 			// later, with nothing useful to show.
-			name: "convite expirado",
+			name: "expired invite",
 			req: GroupJoinRequest{
 				GroupJID: group.String(), Inviter: person.String(), Code: "X",
 				Expiration: now.Add(-time.Second).Unix(),
@@ -80,11 +80,11 @@ func TestAcceptingAnInvitationIsGated(t *testing.T) {
 	} {
 		_, code, reason := checkJoin(c.req, c.chat, now)
 		if reason == "" {
-			t.Errorf("%s: aceito, deveria recusar", c.name)
+			t.Errorf("%s: accepted, should refuse", c.name)
 			continue
 		}
 		if code != c.want {
-			t.Errorf("%s: código %q, queria %q", c.name, code, c.want)
+			t.Errorf("%s: code %q, want %q", c.name, code, c.want)
 		}
 	}
 }

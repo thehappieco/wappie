@@ -1200,9 +1200,11 @@ never updated. A renewal renews the key, never the consent: Go never changes
   - fr: "Un lecteur Wappie, exécutant du code publié (version {version}) et vérifié par ce navigateur, pourra ouvrir **tous** les messages, noms de conversations, contacts et fichiers de ces numéros, passés et futurs, jusqu'au {date}. Wappie ne reçoit pas la clé. Pour lire sans ce lecteur, Wappie devrait remplacer le certificat de l'adresse du connecteur, ce qui est enregistré publiquement. Révoquer empêche de nouvelles lectures ; cela n'efface pas ce que l'assistant a déjà lu. Si vous quittez cet espace de travail ou êtes désactivé, la connexion est révoquée."
   - de: "Ein Wappie-Leser, der veröffentlichten und von diesem Browser geprüften Code (Version {version}) ausführt, kann bis {date} **alle** Nachrichten, Chatnamen, Kontakte und Dateien dieser Nummern öffnen, vergangene und künftige. Wappie erhält den Schlüssel nicht. Um ohne diesen Leser zu lesen, müsste Wappie das Zertifikat der Adresse des Connectors austauschen, was öffentlich protokolliert wird. Widerrufen verhindert neue Lesezugriffe; es löscht nicht, was der Assistent bereits gelesen hat. Wenn Sie diesen Workspace verlassen oder deaktiviert werden, wird die Verbindung widerrufen."
 
-  Under the card, in each locale (pt shown): "Quando o leitor da Wappie
-  reiniciar, o assistente pedirá que você renove aqui com a sua senha; não é
-  preciso reconectar o assistente."
+  Under the card, in each locale (pt and en shown): "Quando o leitor da
+  Wappie reiniciar, o assistente pedirá que você renove aqui com a sua
+  senha; não é preciso reconectar o assistente." / "When the Wappie reader
+  restarts, the assistant will ask you to renew here with your password;
+  you do not need to reconnect the assistant."
 - **Renewal** (`mcp_renew`): §15.9, with the same card and the existing expiry.
 - **Alerts** (`MCPPanel.vue`): a `reseal` row says the reader restarted and
   offers Renew when `renewable`; a row revoked with `reuse_detected` says a
@@ -3449,7 +3451,7 @@ GO and ENCLAVE); the log schema (§17.12, ENCLAVE and DEPLOY).
    | `send_self` | boolean. Only with `send` |
    | `send_groups` | boolean. Only with `send`: groups are eligible for drafts |
    | `send_chats` | S3, only with `send: 'direct'`: 1 to `SEND_CHATS_MAX` unique `{device_id, chat_key}`, each `device_id` in `device_ids`, each `chat_key` 1 to 128 characters |
-   | `send_signature` | S3, only with `send: 'direct'`: the whole signature line as the console rendered it in the creator's locale ("— enviado pelo assistente de Ana"), 1 to 80 characters, no control characters, no `/(?:https?:\/\/\|www\.)/i`; absent means no signature |
+   | `send_signature` | S3, only with `send: 'direct'`: the whole signature line as the console rendered it in the creator's locale (pt "— enviado pelo assistente de Ana", that is "— sent by Ana's assistant"), 1 to 80 characters, no control characters, no `/(?:https?:\/\/\|www\.)/i`; absent means no signature |
    | `device_checks` | required when `consent_version` is 3, absent otherwise: an object with exactly one key per `device_ids` entry, each 43 canonical base64url characters (rule 3) |
 
    `CONTENT_CONSENT_VERSIONS = [1, 2, 3]`, refined so that:
@@ -4302,7 +4304,7 @@ its text into "Rascunho original" / "Original draft" and has no Send of
 its own, and a reply or a correction started from a message ends the
 edit. Sent, expired, revoked, discarded and uncertain drafts open
 read-only, each with its own sentence ("Este rascunho expirou sem ser
-enviado.", …).
+enviado." / "This draft expired without being sent.", …).
 
 **Pending list** (`mcp_drafts`): the connection's pending drafts one at a
 time, "{i} de {n}" / "{i} of {n}", each with the full card; moving on never
@@ -4327,13 +4329,15 @@ revoked). The conversation marks a message whose uid is in the ledger with
 mensagens" / "Also draft messages"; nested under it, and shown only while
 it is on, "Incluir grupos" / "Include groups" ("Desligado: rascunhos só
 para conversas com uma pessoa. Ligado: um rascunho para um grupo chega a
-todos os participantes.") and "Enviar para a minha própria conversa" /
-"Send to my own chat" ("Notas enviadas na hora, sem pedir sua
-confirmação, só para a sua conversa com o próprio número; até {n} por
-dia."). Neither turns drafts on, and both go off with them. The pause is a
-per-connection switch in the activity. The cards (approved by the owner
-on 2026-09-30 in pt and en, with es, fr and de as translated; legal review
-does not block them):
+todos os participantes." / "Off: drafts only for chats with one person.
+On: a group draft reaches everyone in the group.") and "Enviar para a
+minha própria conversa" / "Send to my own chat" ("Notas enviadas na hora,
+sem pedir sua confirmação, só para a sua conversa com o próprio número;
+até {n} por dia." / "Notes sent at once, without asking you, only to your
+chat with your own number; up to {n} a day."). Neither turns drafts on,
+and both go off with them. The pause is a per-connection switch in the
+activity. The cards (approved by the owner on 2026-09-30 in pt and en,
+with es, fr and de as translated; legal review does not block them):
 
 > pt: "Também preparar mensagens. O {assistant} poderá escrever rascunhos
 > para conversas destes números em que a outra pessoa já escreveu{,
@@ -4487,6 +4491,23 @@ Its interface is reserved now:
   > aceitável. Uma mensagem entregue não pode ser desfeita. {Assinatura: As
   > mensagens levam a assinatura "{send_signature}".} O servidor da Wappie
   > vê o texto de cada envio."
+
+  An English rendering, for reading only (it is not the en card the owner
+  approves):
+
+  > "Direct send. {assistant} will be able to send text messages, without
+  > links, only to the chats marked above and without going through the
+  > console: up to {n} a day. Before each send, {assistant} asks for your
+  > approval in its own window, with the recipient and the text; if you
+  > tell it to remember the approval, it does not ask again in this
+  > conversation. WhatsApp's Terms forbid automated messages; using this
+  > may get this number blocked. A malicious message that {assistant}
+  > reads may try to make it send something to these chats, including what
+  > it read in other chats; copies of other chats are blocked, summaries in
+  > other words are not. Check the recipient and the text at each approval
+  > and mark only chats where a mistake would be acceptable. A delivered
+  > message cannot be undone. {Signature: The messages carry the signature
+  > "{send_signature}".} Wappie's server sees the text of each send."
 - **Tests** (added to §17.16): relay equality of `send_chats`; `to_name`
   naming another chat, or no chat, is `recipient_mismatch` and recorded,
   while a case or spacing difference passes; a chat off the list, and one
@@ -6017,8 +6038,8 @@ and no dollars anywhere in it (the owner's decision of 2026-09-30,
   under the person's account there.
 - **Integrations.** Each authorization: the numbers; per function its
   provider and model; status, expiry, alerts; verified or "não
-  verificada"; Renew, Pause, Revoke (with "apagar também os resultados" /
-  "also delete the results", unchecked). **New integration**: the numbers
+  verificada" / "not verified"; Renew, Pause, Revoke (with "apagar também
+  os resultados" / "also delete the results", unchecked). **New integration**: the numbers
   (those the person reads, at most `AI_DEVICES_MAX`, 25; the picker says
   so and stops there); per function: off, or a provider among those
   that do it (§18.3), the person holds a key for and the server has not
@@ -6118,9 +6139,10 @@ and no dollars anywhere in it (the owner's decision of 2026-09-30,
 attachment, opened with the viewer's DSK (`openDerived`), labelled "Gerado
 por IA ({provider}, {model}); pode conter erros" / "AI-generated
 ({provider}, {model}); may contain errors", with "Transcrever de novo" /
-"Transcribe again" (and "Descrever de novo", "Resumir de novo"; `redo:
-true`, also under a result no key of the viewer's opens) and "Apagar
-transcrição" / "Delete transcript" (or "descrição", "resumo") for those
+"Transcribe again" (and "Descrever de novo" / "Describe again", "Resumir
+de novo" / "Summarize again"; `redo: true`, also under a result no key of
+the viewer's opens) and "Apagar transcrição" / "Delete transcript" (or
+"descrição" / "description", "resumo" / "summary") for those
 §18.11 allows. A description's or summary's Markdown shows as headings,
 bold and lists (never as HTML), and a video's `video/2` sections under
 "Fala" / "Speech" and "Na imagem" / "On screen". The console polls the
@@ -6198,9 +6220,11 @@ people's personal data; where results are stored and who reads them, with
 "may contain errors"; what Wappie's server sees; how to stop), each
 function's line without the provider as a subject ("**Áudios e notas de
 voz → Google** (modelo). Recebe o áudio ou a nota de voz como foi
-enviado."), and per provider what it keeps in the same order (the
-account's terms, then the figure the provider reports), from the review
-of 2026-09-30 and approved by the owner the same day.
+enviado." / "**Audio and voice notes → Google** (model). Receives the
+audio or voice note as it was sent."), and per provider what it keeps in
+the same order (the account's terms, then the figure the provider
+reports), from the review of 2026-09-30 and approved by the owner the same
+day.
 
 **The attachments consent card** (§16.2's `mediaCard`), on a release that
 declares `ai_v1`, replaces "Áudios, notas de voz e vídeos ainda não são
@@ -6494,8 +6518,8 @@ the password; the two fronts therefore share one train.
   with and without the function (the preview path); `media_off` `audio`
   and `video`; every note, code and sentence word for word; `transcription_unavailable` still on a reader without
   `ai_v1`; `derived` in get_message.
-- **CONSOLE** (vitest): the tags recomputed and "não verificada" for a
-  mirror with a changed key hash or limit; the providers offered per
+- **CONSOLE** (vitest): the tags recomputed and "não verificada" / "not
+  verified" for a mirror with a changed key hash or limit; the providers offered per
   function; the models from a fixture list of two pages, the picked model
   on the second; the picker stopping at `AI_DEVICES_MAX`; Renew in place
   of the button for a `renew` function; the card per function; the

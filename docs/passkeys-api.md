@@ -5,9 +5,10 @@ device grants and token permissions continue to determine archive access.
 Registration and deletion require a valid bearer session and the current
 password-derived `auth_key`. Password authentication remains available.
 
-In the console, open **Minha conta → Passkeys → Adicionar passkey**. Confirm
-the current password once and follow the browser's prompts. Future visits use
-**Entrar com passkey** without typing an email or password. The authenticator
+In the console, open **Minha conta → Passkeys → Adicionar passkey** (My account
+→ Passkeys → Add passkey). Confirm the current password once and follow the
+browser's prompts. Future visits use **Entrar com passkey** (Sign in with
+passkey) without typing an email or password. The authenticator
 must support WebAuthn PRF to unlock the account; unsupported providers do not
 complete registration. Chrome/Safari password forms also retain standard
 `username`, `current-password` and `new-password` autocomplete semantics.
