@@ -171,3 +171,44 @@ test('sealed state: at most one write in flight per collection, the last change 
   unloaded.bind(() => Buffer.from('{}'))
   assert.throws(() => unloaded.save(), { code: 'state_not_loaded' }, 'never PUT a collection that was not loaded')
 })
+
+/**
+ * 0.5.0's loader, as reader 0.5.0 (packages/mcp-http/state.mjs, recordsOf)
+ * checks an `as-*` plaintext before it reads a record: version 1, its own
+ * name, a list of records and nothing else, or state_auth_failed, which ends
+ * the boot.
+ */
+function loader050(plain, name) {
+  const parsed = JSON.parse(plain.toString('utf8'))
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.version !== 1 || parsed.name !== name ||
+    !Array.isArray(parsed.records) || Object.keys(parsed).length !== 3) throw new StateError('state_auth_failed')
+  return parsed.records
+}
+
+test('sealed-state version 2 (docs/mcp-enclave.md §19.17): 0.6.0 reads version 1 and writes version 2, which 0.5.0\'s loader refuses', async () => {
+  const kms = fakeKms(), store = memoryStore(), log = quietLog()
+  const sealer = createSealer({ kms, keyArn: READER_KEY, readerId: 'enclave', origin: ORIGIN })
+  // What 0.5.0 left: version-1 plaintexts.
+  const legacy = { connection_id: 'k1', api_key: 'secret-api-key', expires_at: '2026-12-01T00:00:00.000Z', client_id: 'c1', created_at: 1 }
+  for (const [name, records] of [['as-clients', [{ client_id: 'c1' }]], ['as-connections', [legacy]], ['as-tokens', [{ hash: 'h1', connection_id: 'k1' }]]]) {
+    store.rows.set(name, { generation: 1, blob: await sealer.seal(name, 1, Buffer.from(JSON.stringify({ version: 1, name, records }))) })
+  }
+  const state = await openSealedState({ store, sealer, log, wait: noWait })
+  assert.deepEqual(state.connections.get('k1'), legacy, 'a record 0.5.0 wrote reads as it was')
+  // The first save writes version 2, every collection at once.
+  state.connections.set('k2', { connection_id: 'k2', client_kind: 'cimd', trust: 'unknown', limits_tier: 'unknown', history_days: 30 })
+  await state.save()
+  for (const name of ['as-clients', 'as-connections', 'as-tokens']) {
+    const row = store.rows.get(name)
+    assert.equal(row.generation, 2, name)
+    const plain = await sealer.open(name, row.generation, row.blob)
+    assert.equal(JSON.parse(plain.toString('utf8')).version, 2, name)
+    assert.throws(() => loader050(plain, name), { code: 'state_auth_failed' }, `0.5.0 refuses ${name}`)
+  }
+  await state.close()
+  const reopened = await openSealedState({ store, sealer, log, wait: noWait })
+  assert.deepEqual([reopened.connections.size, reopened.connections.get('k2').history_days], [2, 30], '0.6.0 reads what it wrote')
+  // Any other version is a tampered state.
+  store.rows.set('as-tokens', { generation: 3, blob: await sealer.seal('as-tokens', 3, Buffer.from(JSON.stringify({ version: 3, name: 'as-tokens', records: [] }))) })
+  await assert.rejects(openSealedState({ store, sealer, log, wait: noWait }), { code: 'state_auth_failed' })
+})

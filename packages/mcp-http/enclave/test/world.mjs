@@ -38,9 +38,10 @@ export const LEGACY_POLICY = Object.freeze({ mode: 'allowlist', hosts: ['claude.
  * otherwise before a start: the tests written before reader 0.6.0 run the
  * rules they were written for, and the 0.6.0 tests (any-enclave.test.mjs)
  * set `{}` for the image's `any` policy, with `w.cimdFetcher` answering for
- * the parent's egress proxy.
+ * the parent's egress proxy. `constants` replaces image constants (a test's
+ * smaller CLIENT_LIMITS, say), as a rebuilt image would.
  */
-export async function world(t, { bootJson, archive } = {}) {
+export async function world(t, { bootJson, archive, constants: replaced = {} } = {}) {
   const apiKey = `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
   const f = await (archive ?? (token => fixture({ token })))(apiKey)
   const relaySecret = randomBytes(32).toString('base64url')
@@ -59,7 +60,7 @@ export async function world(t, { bootJson, archive } = {}) {
   const lines = [], exits = []
   const sink = { write: line => { lines.push(line); if (process.env.ENCLAVE_TEST_DEBUG) process.stderr.write(line + '\n') }, dropped: () => 0, drain: async () => {} }
   const boot = Buffer.from(bootJson ?? JSON.stringify({ relay_secret_ciphertext: bootCiphertext.toString('base64') }))
-  const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY }
+  const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY, ...replaced }
   const w = {
     f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, jail: null, aiTransport: null, mediaDelay: null,
     clientPolicy: LEGACY_POLICY, cimdFetcher: null,

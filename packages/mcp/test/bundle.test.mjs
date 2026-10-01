@@ -2,7 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { canonicalJSON } from '@whatserver2/client/crypto/jcs'
-import { bundleSchema, contentBundleSchema, deviceCheck, deviceScope, validateBundle, validateContentBundle, CONTENT_CONSENT_VERSIONS, SEND_MODES } from '../bundle.mjs'
+import {
+  bundleSchema, contentBundleSchema, deviceCheck, deviceScope, formatAddress, inNetwork, parseAddress, parseCIDR, validateBundle, validateContentBundle,
+  validateLinkBundleV2, validateTokenBundle, CONSOLE_TOKEN_CLIENT_ID, CONTENT_CONSENT_VERSIONS, SEND_MODES,
+} from '../bundle.mjs'
 
 const workspace = '018f3a2b-2222-7000-8000-00000000bbbb'
 const device = '018f3a2b-2222-7000-8000-00000000dddd'
@@ -190,4 +193,121 @@ test('the device check changes with every field of the scope, the key, the names
   assert.equal(of({ ...v.bundle, send_chats: [{ device_id: '0199b3c4-0000-7000-8000-000000000001', chat_key: 'x@s.whatsapp.net' }] }), v.check)
   for (const bad of [Buffer.alloc(31), 'x'.repeat(32), null]) assert.throws(() => deviceCheck(bad, { namespace: v.namespace, deviceID: v.device_id, epoch: v.epoch, scope: deviceScope(v.bundle, at) }), { code: 'invalid_bundle' })
   for (const epoch of [0, 65536, 1.5]) assert.throws(() => deviceCheck(dsk, { namespace: v.namespace, deviceID: v.device_id, epoch, scope: deviceScope(v.bundle, at) }), { code: 'invalid_bundle' })
+})
+
+// ---- Consent version 4, link bundle v2 and the console token (docs/mcp-enclave.md §19.15, §19.18) ----
+
+const bearer = 'a60aed65d2620a197e14f253c6406048e638b0cc9d9e437b01fd7476bf167966'
+const tested = (fields = {}) => ({ ...consent(), consent_version: 4, device_checks: { [device]: check }, client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata',
+  client_kind: 'cimd', client_local: false, trust: 'tested', started_ack: true, unknown_ack: false, history_days: null, ...fields })
+const unknown = (fields = {}) => tested({ client_id: 'https://agent.example.com/oauth/client.json', client_local: true, trust: 'unknown', unknown_ack: true, history_days: 30, ...fields })
+const tokenConsent = (fields = {}) => {
+  const { link_secret: _secret, ...base } = unknown({ client_id: CONSOLE_TOKEN_CLIENT_ID, client_kind: 'token', client_local: false, history_days: 7 })
+  return { ...base, purpose: 'token', bearer_sha256: bearer, allowed_networks: ['198.51.100.0/24', '2001:db8::/48'], ...fields }
+}
+
+test('consent version 4 (§19.15): the client it was given to, the tier, the ticks, the window and the device checks', () => {
+  const web = validateContentBundle(tested({ send: 'draft', send_self: true, media: true }), now)
+  assert.deepEqual([web.consent_version, web.trust, web.client_kind, web.started_ack, web.unknown_ack, web.history_days, web.send], [4, 'tested', 'cimd', true, false, null, 'draft'])
+  assert.equal(validateContentBundle(tested(), now).send, undefined, 'text alone still carries the device checks')
+  const text = validateContentBundle(unknown({ media: true }), now)
+  assert.deepEqual([text.trust, text.unknown_ack, text.history_days, text.client_local], ['unknown', true, 30, true])
+  const renewed = validateContentBundle({ ...unknown(), purpose: 'renewal', connection_id: connection, link_secret: undefined }, now)
+  assert.equal(renewed.purpose, 'renewal')
+  const token = validateContentBundle(tokenConsent(), now)
+  assert.deepEqual([token.purpose, token.client_id, token.bearer_sha256, token.allowed_networks], ['token', CONSOLE_TOKEN_CLIENT_ID, bearer, ['198.51.100.0/24', '2001:db8::/48']])
+  assert.ok(Object.isFrozen(token.allowed_networks))
+  assert.equal(validateContentBundle(tokenConsent({ allowed_networks: [] }), now).allowed_networks.length, 0, 'no networks: any network')
+})
+
+test('the version 4 matrix: every member with version 4 only, sending for a tested web client only, the second tick and the window for an unknown one, a token as §19.18 has it', () => {
+  const invalid = (value, label) => assert.throws(() => validateContentBundle(value, now), error => error.code === 'invalid_bundle', label)
+  for (const name of ['client_id', 'client_kind', 'client_local', 'trust', 'started_ack', 'unknown_ack', 'history_days']) {
+    invalid(tested({ [name]: undefined }), `version 4 without ${name}`)
+    invalid({ ...sending(), [name]: tested()[name] }, `${name} on version 3`)
+  }
+  for (const [label, value] of Object.entries({
+    without_checks: tested({ device_checks: undefined }),
+    started_false: tested({ started_ack: false }),
+    send_unknown: unknown({ send: 'draft' }), send_local: tested({ client_local: true, send: 'draft' }),
+    send_token: tokenConsent({ send: 'draft' }), self_without_send: tested({ send_self: true }),
+    unknown_without_tick: unknown({ unknown_ack: false }), unknown_whole_history: unknown({ history_days: null }),
+    tested_window: tested({ history_days: 30 }), window_zero: unknown({ history_days: 0 }), window_long: unknown({ history_days: 367 }), window_float: unknown({ history_days: 7.5 }),
+    kind_other: tested({ client_kind: 'legacy' }), trust_other: tested({ trust: 'trusted' }),
+    token_kind_other_id: tested({ client_kind: 'token' }), token_id_other_kind: tested({ client_id: CONSOLE_TOKEN_CLIENT_ID }),
+    client_id_long: tested({ client_id: 'https://example.com/' + 'é'.repeat(250) }), client_id_empty: tested({ client_id: '' }),
+    bearer_on_consent: tested({ bearer_sha256: bearer }), networks_on_consent: tested({ allowed_networks: [] }),
+    token_without_bearer: tokenConsent({ bearer_sha256: undefined }), token_without_networks: tokenConsent({ allowed_networks: undefined }),
+    token_bearer_upper: tokenConsent({ bearer_sha256: bearer.toUpperCase() }), token_link_secret: tokenConsent({ link_secret: linkSecret }),
+    token_connection: tokenConsent({ connection_id: connection }), token_tested: tokenConsent({ trust: 'tested', unknown_ack: false, history_days: null }),
+    token_local: tokenConsent({ client_local: true }), token_version_3: { ...tokenConsent(), consent_version: 3, send: 'draft' },
+    token_other_client: tokenConsent({ client_id: 'https://agent.example.com/oauth/client.json', client_kind: 'cimd' }),
+    networks_unsorted: tokenConsent({ allowed_networks: ['2001:db8::/48', '198.51.100.0/24'] }), networks_twice: tokenConsent({ allowed_networks: ['198.51.100.0/24', '198.51.100.0/24'] }),
+    networks_eleven: tokenConsent({ allowed_networks: Array.from({ length: 11 }, (_, n) => `10.${n}.0.0/16`).sort() }),
+    network_host_bits: tokenConsent({ allowed_networks: ['198.51.100.1/24'] }), network_not_canonical: tokenConsent({ allowed_networks: ['2001:0db8::/48'] }),
+    network_no_prefix: tokenConsent({ allowed_networks: ['198.51.100.0'] }), network_mapped: tokenConsent({ allowed_networks: ['::ffff:198.51.100.0/120'] }),
+  })) invalid(value, label)
+})
+
+test('the version-4 device scope adds the client, the tier, the ticks, the window and a token\'s hash and networks, each null when absent, and each changes the check', () => {
+  const v4 = vectors.filter(v => v.bundle.consent_version === 4)
+  assert.equal(v4.length, 3)
+  const v = v4[0], dsk = Buffer.from(v.dsk, 'base64url')
+  const at = { deviceID: v.device_id, epoch: v.epoch, request: v.request, kid: v.kid }
+  const scope = deviceScope(v.bundle, at)
+  assert.deepEqual([scope.consent_version, scope.bearer_sha256, scope.allowed_networks], [4, null, null])
+  assert.equal(deviceScope({ ...v.bundle, send: undefined }, at).send, null, 'no sending is null on version 4')
+  const of = bundle => deviceCheck(dsk, { namespace: v.namespace, deviceID: v.device_id, epoch: v.epoch, scope: deviceScope(bundle, at) })
+  assert.equal(of(v.bundle), v.check)
+  const changed = ['client_id', 'client_kind', 'client_local', 'trust', 'started_ack', 'unknown_ack', 'history_days', 'bearer_sha256', 'allowed_networks', 'send', 'consent_version']
+    .map(name => of({ ...v.bundle, [name]: { client_id: 'https://claude.ai/other', client_kind: 'dcr', client_local: true, trust: 'unknown', started_ack: null, unknown_ack: true,
+      history_days: 30, bearer_sha256: bearer, allowed_networks: [], send: undefined, consent_version: 3 }[name] }))
+  for (const value of changed) assert.notEqual(value, v.check)
+  assert.equal(new Set(changed).size, changed.length)
+})
+
+test('link bundle v2 (§19.15): a metadata consent to 0.6.0 names its client, tier, tick and window, and no 0.5.0 path opens one', async () => {
+  const link = (fields = {}) => ({ version: 2, kind: 'metadata', server_url: 'https://archive.example.test', workspace_id: workspace, device_ids: [device], token,
+    allow_plaintext: false, link_secret: linkSecret, client_id: 'https://agent.example.com/oauth/client.json', trust: 'unknown', started_ack: true, history_days: 30, ...fields })
+  const accepted = validateLinkBundleV2(link({ timezone: 'America/Sao_Paulo' }))
+  assert.deepEqual([accepted.version, accepted.trust, accepted.history_days, accepted.timezone], [2, 'unknown', 30, 'America/Sao_Paulo'])
+  assert.ok(Object.isFrozen(accepted) && Object.isFrozen(accepted.device_ids))
+  assert.equal(validateLinkBundleV2(link({ trust: 'tested', history_days: null })).history_days, null)
+  for (const [label, value] of Object.entries({
+    version_1: link({ version: 1 }), content: link({ kind: 'content' }), no_kind: link({ kind: undefined }), started_false: link({ started_ack: false }), no_tick: link({ started_ack: undefined }),
+    plaintext: link({ allow_plaintext: true }), no_client: link({ client_id: undefined }), long_client: link({ client_id: 'x'.repeat(513) }), trust_other: link({ trust: 'token' }),
+    no_window: link({ history_days: undefined }), bad_token: link({ token: token.slice(0, 51) + '=' }), bad_secret: link({ link_secret: linkSecret.slice(1) }),
+    service_key: link({ service_private_key: linkSecret }), extra: link({ unknown_ack: true }), twice: link({ device_ids: [device, device] }), timezone: link({ timezone: 'Mars/Olympus' }),
+  })) assert.throws(() => validateLinkBundleV2(JSON.parse(JSON.stringify(value))), { code: 'invalid_bundle' }, label)
+  await assert.rejects(validateBundle(link()), { code: 'invalid_bundle' })
+})
+
+test('the token\'s metadata bundle (§19.18 step 4): its expiry, window, networks and hash, and no link secret', () => {
+  const metadata = (fields = {}) => ({ version: 1, kind: 'metadata', purpose: 'token', server_url: 'https://mcp.wappie.thehappie.co', workspace_id: workspace, device_ids: [device],
+    token, expires_at: new Date(now + 30 * day).toISOString(), history_days: 30, allowed_networks: [], bearer_sha256: bearer, ...fields })
+  const accepted = validateTokenBundle(metadata({ timezone: 'UTC', allowed_networks: ['203.0.113.0/24'] }), now)
+  assert.deepEqual([accepted.history_days, accepted.allowed_networks, accepted.bearer_sha256], [30, ['203.0.113.0/24'], bearer])
+  for (const [label, value] of Object.entries({
+    link_secret: metadata({ link_secret: linkSecret }), consent_purpose: metadata({ purpose: 'consent' }), content: metadata({ kind: 'content' }), version_2: metadata({ version: 2 }),
+    no_bearer: metadata({ bearer_sha256: undefined }), no_networks: metadata({ allowed_networks: undefined }), no_window: metadata({ history_days: undefined }),
+    past: metadata({ expires_at: new Date(now - 1000).toISOString() }), too_far: metadata({ expires_at: new Date(now + 91 * day).toISOString() }),
+    http: metadata({ server_url: 'http://mcp.wappie.thehappie.co' }), connection: metadata({ connection_id: connection }), plaintext: metadata({ allow_plaintext: false }),
+    networks_unsorted: metadata({ allowed_networks: ['203.0.113.0/24', '198.51.100.0/24'] }),
+  })) assert.throws(() => validateTokenBundle(value, now), { code: 'invalid_bundle' }, label)
+})
+
+test('networks (§19.15): canonical CIDRs only, RFC 5952 for IPv6, no host bit set, and membership never across families', () => {
+  for (const text of ['198.51.100.0/24', '0.0.0.0/0', '203.0.113.7/32', '2001:db8::/48', '::/0', '2001:db8:0:1::/64', 'fe80::/10', '2001:db8::1:0:0:1/128']) assert.ok(parseCIDR(text), text)
+  for (const text of ['198.51.100.1/24', '198.51.100.0/33', '198.51.100.0/024', '198.051.100.0/24', '2001:DB8::/48', '2001:0db8::/48', '2001:db8:0:0:0:0:0:0/48',
+    '2001:db8::0:1/128', '::ffff:198.51.100.0/120', '198.51.100.0', '/24', '198.51.100.0/', 'example.com/24', '2001:db8::/129']) assert.equal(parseCIDR(text), null, text)
+  assert.equal(formatAddress(parseAddress('2001:0DB8:0:0:1:0:0:1')), '2001:db8::1:0:0:1', 'the first longest run of zeros')
+  assert.equal(formatAddress(parseAddress('2001:db8:0:1:1:1:1:1')), '2001:db8:0:1:1:1:1:1', 'a single zero group is not compressed')
+  assert.deepEqual(parseAddress('::ffff:203.0.113.9'), { family: 4, bytes: Uint8Array.from([203, 0, 113, 9]) }, 'an IPv4-mapped address is IPv4')
+  assert.equal(inNetwork(parseAddress('198.51.100.77'), parseCIDR('198.51.100.0/24')), true)
+  assert.equal(inNetwork(parseAddress('::ffff:198.51.100.77'), parseCIDR('198.51.100.0/24')), true)
+  assert.equal(inNetwork(parseAddress('198.51.101.77'), parseCIDR('198.51.100.0/24')), false)
+  assert.equal(inNetwork(parseAddress('2001:db8:0:ffff::1'), parseCIDR('2001:db8::/48')), true)
+  assert.equal(inNetwork(parseAddress('2001:db9::1'), parseCIDR('2001:db8::/48')), false)
+  assert.equal(inNetwork(parseAddress('198.51.100.77'), parseCIDR('::/0')), false, 'never across families')
+  assert.equal(inNetwork(parseAddress('not an address'), parseCIDR('0.0.0.0/0')), false)
 })

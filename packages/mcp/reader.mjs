@@ -419,7 +419,9 @@ export async function createReader(config, provider) {
     let empty = false
     if (since !== null) {
       if (!(Date.parse(range.until) > since)) empty = true
-      else if (!(Date.parse(range.from) >= since)) range = { ...range, from: new Date(since).toISOString() }
+      else if (!(Date.parse(range.from) >= since)) {
+        range = { ...range, from: new Date(since).toISOString(), ...(range.definition ? { definition: `${range.definition} This connection reads only the last ${config.history_days} days.` } : {}) }
+      }
     }
     return withOpener(device_id, async opener => {
       const counters = { examined: 0, matched: 0, locked: 0, tampered: 0, structured_content_unsearched: 0, missing_sent_time: 0 }

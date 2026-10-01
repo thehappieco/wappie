@@ -93,8 +93,8 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
    * archive does; `chat_key=` narrows the list to one, as §17.3's filter does.
    */
   const chats = []
-  async function addChat({ chat_key, name, preview, is_group = false, chat_pn, chat_lid, keys, uid: id = uid(70_000 + chats.length) } = {}) {
-    const chat = { uid: id, chat_key, last_seq: 1, is_group, ...(chat_pn ? { chat_pn } : {}), ...(chat_lid ? { chat_lid } : {}), ...(keys ? { keys } : {}) }
+  async function addChat({ chat_key, name, preview, is_group = false, chat_pn, chat_lid, keys, last_ts, uid: id = uid(70_000 + chats.length) } = {}) {
+    const chat = { uid: id, chat_key, last_seq: 1, is_group, ...(chat_pn ? { chat_pn } : {}), ...(chat_lid ? { chat_lid } : {}), ...(keys ? { keys } : {}), ...(last_ts ? { last_ts } : {}) }
     if (name !== undefined) { chat.name_key_id = keyID; chat.name_sealed = await encrypt(id, seal.Kind.ContactName, name) }
     if (preview !== undefined) { chat.last_uid = uid(80_000 + chats.length); chat.last_body_key_id = keyID; chat.last_body_sealed = await encrypt(chat.last_uid, seal.Kind.Body, preview) }
     chats.push(chat)
