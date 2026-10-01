@@ -10,7 +10,10 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { CLIENT_LIMITS, OWN_DOMAINS, SHARED_HOSTS, TESTED_CLIENTS, UNKNOWN_LIVE_MAX } from '../enclave/constants.mjs'
 import { cacheTTL, CIMD_FETCHES_PER_DOMAIN, CIMD_FETCHES_PER_MINUTE, cimdIdentity, readDocument } from '../cimd.mjs'
-import { claimedName, classifyRedirect, dcrEntryFor, highlyRestrictive, pins, redirectAllowed, testedFor } from '../clients.mjs'
+import {
+  claimedName, classifyRedirect, dcrEntryFor, highlyRestrictive, makeRoomRegistered, makeRoomUnknown, MAX_CLIENTS_PER_HOST, pins, redirectAllowed, testedFor,
+  UNKNOWN_CLIENTS_MAX, UNKNOWN_CLIENTS_PER_DOMAIN,
+} from '../clients.mjs'
 import { PENDING_PER_CLIENT, resourceOf, scopeAcceptable } from '../as.mjs'
 import { sameNetwork } from '../limits.mjs'
 import { createPSL, loadPSL, PSL_FILE } from '../psl.mjs'
@@ -550,4 +553,42 @@ test('link bundle v2 (§19.15): a metadata consent of a tested and an unknown cl
   const code = new URL(testedDone.completed.location).searchParams.get('code')
   const pair = (await exchange(h, { code, clientId: CLAUDE, verifier: tested.verifier, redirectUri })).json()
   assert.equal((await rpc(h, pair.access_token)).status, 200)
+})
+
+test('client caps (§19.10): 20 documents per registrable domain and 300 in all, 200 registrations per host; the oldest record no live connection names makes way, unconsented first', () => {
+  const state = { clients: new Map(), connections: new Map() }
+  const add = (id, fields) => state.clients.set(id, { client_id: id, ...fields })
+  for (let n = 0; n < UNKNOWN_CLIENTS_PER_DOMAIN; n++) add(`https://a${n}.crowded.com/c`, { source: 'cimd', client_host: `a${n}.crowded.com`, registrable: 'crowded.com', last_used_at: n, ...(n < 2 ? { authorized_at: 1 } : {}) })
+  // A consent alone protects nothing; a live connection does.
+  state.connections.set('k', { connection_id: 'k', client_id: 'https://a2.crowded.com/c' })
+  assert.equal(makeRoomUnknown(state, 'crowded.com'), true)
+  assert.equal(state.clients.has('https://a3.crowded.com/c'), false, 'the oldest unconsented record no connection names')
+  add('https://a3.crowded.com/c', { source: 'cimd', client_host: 'a3.crowded.com', registrable: 'crowded.com', last_used_at: 50 })
+  assert.equal(state.clients.has('https://a2.crowded.com/c'), true, 'a live connection protects its record')
+  // Room is made before each record goes in, as cimd.mjs does.
+  for (let n = 0; n < 20; n++) { assert.equal(makeRoomUnknown(state, 'crowded.com'), true); add(`https://b${n}.crowded.com/c`, { source: 'cimd', client_host: `b${n}.crowded.com`, registrable: 'crowded.com', last_used_at: 100 + n }) }
+  assert.equal([...state.clients.values()].filter(client => client.registrable === 'crowded.com').length, UNKNOWN_CLIENTS_PER_DOMAIN)
+  assert.equal(state.clients.has('https://a0.crowded.com/c'), true, 'a consented record outlasts every unconsented one, even newer')
+  assert.equal(state.clients.has('https://b0.crowded.com/c'), false)
+  assert.equal(state.clients.has('https://b19.crowded.com/c'), true)
+  // Only consented and connected records left: the oldest consented one with no live connection goes next.
+  for (let n = 3; n < 20; n++) state.clients.get(`https://b${n}.crowded.com/c`).authorized_at = 2
+  assert.equal(makeRoomUnknown(state, 'crowded.com'), true)
+  assert.equal(state.clients.has('https://a0.crowded.com/c'), false, 'consented, but no live connection: it goes once the unconsented have')
+  assert.equal(makeRoomUnknown(state, 'other.com'), true, 'another domain has room')
+  // Every record of the domain serving a live connection: no room.
+  const full = { clients: new Map(), connections: new Map() }
+  for (let n = 0; n < UNKNOWN_CLIENTS_PER_DOMAIN; n++) {
+    full.clients.set(`https://f${n}.full.com/c`, { client_id: `https://f${n}.full.com/c`, source: 'cimd', client_host: `f${n}.full.com`, registrable: 'full.com', last_used_at: n })
+    full.connections.set(String(n), { connection_id: String(n), client_id: `https://f${n}.full.com/c` })
+  }
+  assert.equal(makeRoomUnknown(full, 'full.com'), false)
+  assert.equal(UNKNOWN_CLIENTS_MAX, 300)
+  // Registrations count apart from documents: 200 a host.
+  const dcr = { clients: new Map(), connections: new Map() }
+  for (let n = 0; n < MAX_CLIENTS_PER_HOST; n++) dcr.clients.set(`r${n}`, { client_id: `r${n}`, source: 'dcr', redirect_host: 'claude.ai', last_used_at: n })
+  for (let n = 0; n < 50; n++) dcr.clients.set(`d${n}`, { client_id: `d${n}`, source: 'cimd', client_host: 'x.example.com', registrable: 'example.com', redirect_host: 'claude.ai', last_used_at: n })
+  dcr.connections.set('k', { connection_id: 'k', client_id: 'r0' })
+  assert.equal(makeRoomRegistered(dcr, 'claude.ai'), true)
+  assert.deepEqual([dcr.clients.has('r0'), dcr.clients.has('r1'), dcr.clients.size], [true, false, MAX_CLIENTS_PER_HOST - 1 + 50])
 })

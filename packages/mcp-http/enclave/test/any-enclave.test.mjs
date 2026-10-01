@@ -434,3 +434,25 @@ test('the descriptor vectors\' shapes are the reader\'s: each kind of attest-v2.
   for (const shape of keys('ai')) assert.deepEqual(shape, Object.keys(ai).sort())
   assert.deepEqual(TESTED_CLIENTS.map(entry => entry.id), ['claude', 'chatgpt', 'chatgpt_cb', 'codex', 'claude_code', 'claude_dcr', 'chatgpt_dcr'])
 })
+
+test('public wildcard names that resolve inside (127.0.0.1.nip.io, 169.254.169.254.sslip.io) pass the host check and die at the parent\'s proxy: one uniform refusal, the domain remembered', async t => {
+  const { w } = await anyWorld(t)
+  // The parent's proxy resolves the name, finds a private address and answers 403 private_address; the enclave sees proxy_refused.
+  const proxy = w.cimdFetcher
+  const refused = new Set(['127.0.0.1.nip.io', '169.254.169.254.sslip.io', '10.0.0.5.nip.io'])
+  const real = proxy.fetch
+  proxy.fetch = async request => (refused.has(request.host) ? (proxy.calls.push(`https://${request.host}${request.path}`), { ok: false, code: 'proxy_refused', network: true }) : real(request))
+  const bodies = new Set()
+  for (const host of ['127.0.0.1.nip.io', '169.254.169.254.sslip.io']) {
+    const answer = await authorize(w, { clientId: `https://${host}/client.json`, redirectUri: `https://${host}/cb` })
+    assert.equal(answer.response.status, 400, host)
+    bodies.add(answer.response.body)
+  }
+  assert.equal(bodies.size, 1)
+  assert.match([...bodies][0], /invalid_client/)
+  // A network failure is remembered for the registrable domain: another name under nip.io is not fetched within the minute.
+  const again = await authorize(w, { clientId: 'https://10.0.0.5.nip.io/client.json', redirectUri: 'https://10.0.0.5.nip.io/cb' })
+  assert.equal(again.response.status, 400)
+  assert.deepEqual(proxy.calls, ['https://127.0.0.1.nip.io/client.json', 'https://169.254.169.254.sslip.io/client.json'])
+  assert.deepEqual(events(w, 'cimd_fetch').map(entry => entry.code), ['proxy_refused', 'proxy_refused'])
+})
