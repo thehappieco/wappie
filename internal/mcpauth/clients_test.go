@@ -376,11 +376,30 @@ func TestVersion2Text(t *testing.T) {
 	// Sending switched on, so that what refuses a draft is the client.
 	h.handler.SendAllowed = func(uuid.UUID) bool { return true }
 
+	untested := func() bool {
+		t.Helper()
+		r := h.call(t, http.MethodGet, "/v1/mcp/content", nil, bearer(h.ownerToken))
+		expect(t, r, http.StatusOK, "")
+		var c struct {
+			UntestedText bool `json:"untested_text"`
+		}
+		r.into(t, &c)
+		return c.UntestedText
+	}
 	_, body := h.v2Content(t, nil)
+	if untested() {
+		t.Fatal("an unverified address may give an untested assistant text")
+	}
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", body, bearer(h.ownerToken)), http.StatusForbidden, "email_unverified")
 	h.verify(t, h.owner)
+	if !untested() {
+		t.Fatal("a verified address may not give an untested assistant text")
+	}
 	h.handler.NoticeOrigin = ""
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", body, bearer(h.ownerToken)), http.StatusForbidden, "email_unverified")
+	if untested() {
+		t.Fatal("untested text with no notice e-mail")
+	}
 	h.handler.NoticeOrigin = noticeOrigin
 	for name, mutate := range map[string]func(map[string]any){
 		"version 3": func(b map[string]any) { b["consent_version"], b["send"] = 3, "draft" },

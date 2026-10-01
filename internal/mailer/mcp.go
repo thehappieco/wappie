@@ -90,6 +90,8 @@ var limitWords = map[string]string{
 }
 
 // tierWords describe a tier, never with anything the client said of itself.
+//
+//nolint:gosec // G101: words for a reader, not a credential
 var tierWords = map[string]string{
 	"tested":  "tested by Wappie",
 	"local":   "an app on a computer, tested by Wappie",

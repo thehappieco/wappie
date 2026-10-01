@@ -225,8 +225,9 @@ func (p *Proxy) open(client net.Conn) (host, code string, buffered []byte) {
 		return h, CodeBusy, nil
 	}
 	if n := reader.Buffered(); n > 0 {
-		buffered, _ = reader.Peek(n)
-		buffered = append([]byte(nil), buffered...)
+		if peeked, err := reader.Peek(n); err == nil {
+			buffered = append([]byte(nil), peeked...)
+		}
 	}
 	return h, "", buffered
 }
@@ -317,7 +318,10 @@ func (p *Proxy) copyCapped(dst, src net.Conn, already []byte) bool {
 	}
 	// The budget is spent; one byte more is over it, and is not sent.
 	var more [1]byte
-	m, _ := src.Read(more[:])
+	m, err := src.Read(more[:])
+	if err != nil && m == 0 {
+		return false
+	}
 	return m > 0
 }
 
@@ -348,7 +352,7 @@ func (p *Proxy) journal(host, code string, start time.Time) {
 	if p.Log == nil {
 		return
 	}
-	p.Log.Info("cimd egress", "host", host, "code", code, "ms", time.Now().Sub(start).Milliseconds())
+	p.Log.Info("cimd egress", "host", host, "code", code, "ms", time.Since(start).Milliseconds())
 }
 
 // negativeCache remembers, for a while, the hosts whose name or connection

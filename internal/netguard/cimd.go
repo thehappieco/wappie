@@ -199,7 +199,7 @@ func endsInNumber(host string) bool {
 		return true
 	}
 	hex, isHex := strings.CutPrefix(strings.ToLower(last), "0x")
-	return isHex && !strings.ContainsFunc(hex, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') })
+	return isHex && !strings.ContainsFunc(hex, func(r rune) bool { return (r < '0' || r > '9') && (r < 'a' || r > 'f') })
 }
 
 // whatwgIPv6 serializes an IPv6 address as WHATWG does: eight groups of

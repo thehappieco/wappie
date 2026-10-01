@@ -184,6 +184,10 @@ func (h *harness) connect(t *testing.T, request string) (int, string, net.Conn, 
 	if err != nil {
 		t.Fatalf("%q: %v", request, err)
 	}
+	// A CONNECT's answer has no body: what follows a 200 is the tunnel.
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	return resp.StatusCode, resp.Header.Get("X-Wappie-Egress"), closed, reader
 }
 

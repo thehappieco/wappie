@@ -728,7 +728,7 @@ func (a *app) routes() http.Handler {
 			UnknownAllowed:   a.cfg.MCP.UnknownAllowed(),
 			BlockedClients:   a.cfg.MCP.BlockedClients,
 			DCRHosts:         a.cfg.MCP.DCRHosts,
-			LiveListLimits:   ratelimit.New(10, 10),
+			LiveListLimits:   ratelimit.New(mcpauth.LiveListPerMinute, mcpauth.LiveListPerMinute),
 			RevokeLinkLimits: &ratelimit.Auth{PerIP: ratelimit.New(30, 10), Proxies: a.cfg.TrustedProxies},
 		}
 		// The new-assistant e-mail goes only with a mail server and this

@@ -40,6 +40,8 @@ var revokePage = template.Must(template.New("revoke").Parse(`<!doctype html>
 // revokeTexts are the page's texts by language: the question, its body for a
 // client and for a token, the button, the answer and its bodies, the dead
 // link, and the footer. {host} is the client's verified host.
+//
+//nolint:gosec // G101: words for a reader, not a credential
 var revokeTexts = map[string]map[string]string{
 	"en": {
 		"ask": "Revoke this assistant connection?", "ask_body": "This revokes only the connection of {host} to your Wappie. Nothing else changes.",

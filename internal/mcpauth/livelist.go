@@ -22,8 +22,8 @@ import (
 // and the console compares the ids with the ledger's. It detects; it does
 // not remove.
 
-// liveListPerMinute bounds the relay per workspace.
-const liveListPerMinute = 10
+// LiveListPerMinute bounds the relay per workspace.
+const LiveListPerMinute = 10
 
 // liveListBody is the console's request and the relay's: its nonce.
 type liveListBody struct {

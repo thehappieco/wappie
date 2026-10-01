@@ -220,9 +220,9 @@ func (m *MCPConnections) MarkSeen(ctx context.Context, tenant, viewer uuid.UUID,
 	})
 }
 
-// Notice events (mcp_connection_notices.event): a connection's activation,
-// and each reading limit its reader says it reached (docs/mcp-enclave.md
-// §19.19), by the budget_hit code.
+// NoticeActivated is the notice event (mcp_connection_notices.event) of a
+// connection's activation; the others are the reading limits its reader says
+// it reached (docs/mcp-enclave.md §19.19), by their budget_hit codes.
 const NoticeActivated = "activated"
 
 // BudgetHitCodes are the budget_hit codes a reader reports: the daily and

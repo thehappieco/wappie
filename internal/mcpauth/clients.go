@@ -1,7 +1,6 @@
 package mcpauth
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -232,20 +231,6 @@ func (h *Handler) clientRefusal(trust, tested string) string {
 		return "client_not_allowed"
 	}
 	return ""
-}
-
-// strictObject decodes raw into v and refuses an unknown member or trailing
-// data.
-func strictObject(raw []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return err
-	}
-	if dec.More() {
-		return errors.New("trailing data")
-	}
-	return nil
 }
 
 // checkClientConsent holds a consent to a version-2 descriptor to the client

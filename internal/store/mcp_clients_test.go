@@ -560,10 +560,29 @@ func TestMigration0046(t *testing.T) {
 	if oldKind != store.ClientLegacy || oldTrust != nil {
 		t.Fatalf("old insert = %s %v", oldKind, oldTrust)
 	}
+	// An AI row as an older binary writes it: every column it knows, none
+	// of 0046's. The trigger makes it ai, and trust stays NULL.
 	ai, _ := f.consentAI(ctx, t, f.owner, f.aiKeys(ctx, t, f.owner), nil)
 	var aiKind string
-	if err := f.pool.QueryRow(ctx, `UPDATE mcp_connections SET client_kind='ai' WHERE id=$1 RETURNING client_kind`, ai.ID).Scan(&aiKind); err != nil || aiKind != "ai" {
-		t.Fatalf("ai row = %s %v", aiKind, err)
+	var aiTrust *string
+	if err := pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
+		var columns string
+		if err := tx.QueryRow(ctx, `SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'mcp_connections'
+			  AND column_name NOT IN ('client_kind','client_id','client_host','client_local','trust','claimed_name','history_days',
+			                          'first_used_at','revoke_link_sha256')`).Scan(&columns); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `CREATE TEMP TABLE old_ai ON COMMIT DROP AS SELECT * FROM mcp_connections WHERE id = $1`, ai.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM mcp_connections WHERE id = $1`, ai.ID); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `INSERT INTO mcp_connections (`+columns+`) SELECT `+columns+` FROM old_ai RETURNING client_kind, trust`).
+			Scan(&aiKind, &aiTrust)
+	}); err != nil || aiKind != store.ClientAI || aiTrust != nil {
+		t.Fatalf("an older binary's AI insert = %s %v %v", aiKind, aiTrust, err)
 	}
 	var forced int
 	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM pg_class WHERE relname IN ('mcp_connection_seen', 'mcp_connection_notices')
