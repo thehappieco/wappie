@@ -95,7 +95,7 @@ wiped locally. Refresh always asks Go.
 | `WAPPIE_MCP_STATE_DIR` | `/var/lib/wappie-mcp` | `0700` directory holding `keys/recipient.key`, `keys/recipient.previous`, `keys/state.key` and `state.json.enc` |
 | `WAPPIE_MCP_RELAY_SECRET_FILE` | required | `0600` file with the secret shared with the API (`WS_MCP_RELAY_SECRET`), at least 32 characters |
 | `WAPPIE_MCP_ARCHIVE_URL` | `http://127.0.0.1:18090` | the API base for both the archive REST calls and `/v1/mcp/internal/*` |
-| `WAPPIE_MCP_REDIRECT_HOSTS` | `claude.ai,chatgpt.com` | hosts a `redirect_uri` or CIMD `client_id` may use; must equal the API's `WS_MCP_REDIRECT_HOSTS` |
+| `WAPPIE_MCP_REDIRECT_HOSTS` | `claude.ai,chatgpt.com` | hosts a `redirect_uri` or CIMD `client_id` may use; must equal the API's `WS_MCP_REDIRECT_HOSTS`, which the API applies to this reader's (version-1) descriptors only |
 | `WAPPIE_MCP_CIMD` | `on` | advertise and resolve Client ID Metadata Documents (fetched by the API relay, cached for a day) |
 | `WAPPIE_MCP_PENDING_TTL_SECONDS` | `1200` | how long a consent may stay pending |
 
@@ -340,6 +340,40 @@ providers' keys in memory only (`aikeys` beside `connkeys`, wiped with it).
   `/internal/ai/jobs`. The log adds `ai_*` events with a fingerprint and a
   code, the health line `ai_records`, `ai_keys`, `ai_jobs`, `ai_failed`,
   `ai_queue` and `ai_in_flight`, and the health object `ai_reach`.
+
+**Any MCP client** (reader 0.6.0, `docs/mcp-enclave.md` section 19). The
+enclave admits a Client ID Metadata Document on any https host that passes
+the host check of section 19.5 (no IP literal, special-use name, public
+suffix, host shared by path, or host under `thehappie.co`), with web
+redirects on exactly the document's host and loopback redirects on any port;
+dynamic registration takes only the pinned Claude and ChatGPT redirects.
+
+- **Constants** (`enclave/constants.mjs`): `CLIENT_POLICY`, the tested list
+  `TESTED_CLIENTS` (pending the live baseline on 0.5.0), the tier limits
+  `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS` and
+  `CIMD_EGRESS`, all measured and copied into `measurements.json`. The
+  shared modules take a policy object; the hosted path keeps
+  `{ mode: 'allowlist', hosts }`.
+- **Fetching**: a tested client asked with a pinned redirect is never
+  fetched. Any other document is fetched by the enclave itself, over TLS it
+  verifies against Node's bundled roots, through `CONNECT` to the parent's
+  egress proxy (`cmd/cimd-egress`, vsock 8007), which reaches public
+  addresses on port 443 only; one `GET`, no redirects, 8 KiB at most.
+- **Tiers and limits**: each request is `tested` or `unknown`, and its
+  limits tier (`web_tested`, `local_tested`, `unknown` or `token`) sets the
+  refresh idle time, the ceiling, the calls a minute, the history window and
+  the daily and first-hour budgets, applied by the enclave whatever a
+  bundle says.
+- **Attestation**: every descriptor is version 2 and bound whole by user_data
+  v2, so the console verifies every field the card shows. Consent version 4
+  seals the "I started this" and "untested text" ticks, the client binding
+  and the history window under the device checks; the sealed state is
+  version 2, which 0.5.0 refuses.
+- **Console token** (`wmcp_k_`, with a CRC-32 check digit): made in the
+  browser, only its hash sealed to the enclave, verified like an access
+  token, revocable through `/mcp/revoke`.
+- **Attested live list**: the enclave signs the workspace's live connection
+  ids for the console to compare with Go's list.
 
 What the assistant receives, and what is never opened (view-once media,
 audio and voice notes on readers without AI transcripts, `gone` attachments, keyless

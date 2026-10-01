@@ -11,8 +11,10 @@ console verifies an attestation document before it seals anything to the reader.
 Milestone 2b (message text inside the enclave, ephemeral keys) is §15, which
 extends this contract, and stage A (attachments) is §16, which extends §15.
 Reader 0.5.0 adds sending (§17: drafts and own-chat sends, with direct send
-planned right after) and AI integrations on request (§18), both extending
-§16.
+planned after them) and AI integrations on request (§18), both extending
+§16. Reader 0.6.0 admits any MCP client that identifies itself with a Client
+ID Metadata Document, in two trust tiers, with a console connection token
+for tools without OAuth (§19).
 
 This document is the contract between five workstreams that implement 2a in
 parallel. Where it states a byte layout, a field name, a limit or a status code,
@@ -3352,7 +3354,8 @@ one is off until the person who consents turns it on:
   text and the recipient, and presses Send there.
 - **Own chat** (S1b, reader 0.5.0). The tool `send_to_self` sends a text at
   once to the number's own chat ("message yourself"), and nowhere else.
-- **Direct send** (S3, planned right after S2: a reader 0.5.x or 0.6.0).
+- **Direct send** (S3, planned after reader 0.6.0, which is §19's: a 0.6.x
+  or 0.7.0, decision D11 of 2026-10-01).
   The tool `send_message` sends a text at once to a chat on a closed list
   the person chose, from Claude or ChatGPT, each call behind the host's own
   tool-approval prompt, under the same destination rules, limits,
@@ -3410,7 +3413,8 @@ otherwise carried over):
 - Frames about drafts answer the stable WebSocket codes `draft_state` and
   `send_not_allowed`, added to the protocol's list.
 - Revised after the contract's review: direct send's host list keys on the
-  connection's OAuth redirect host, not on `clientInfo`, which the
+  connection's OAuth redirect host (since §19, on its tested entry), not on
+  `clientInfo`, which the
   reader's per-request servers never see (§17.15); a host qualifies when
   it asks by default and any remembered approval is the person's explicit
   choice, and a failing claude.ai or ChatGPT goes to the owner (§17.16,
@@ -3970,9 +3974,10 @@ the enclave builds from the record (`contentConfigFor` passes `send`,
 - `draft_message` and `list_outgoing` when `send` is `'draft'` or
   `'direct'`;
 - `send_to_self` when `send_self` is true;
-- `send_message` (S3, §17.15) when `send === 'direct'` and the record's
-  `redirect_host` is in `DIRECT_SEND_HOSTS`. Both are the record's, fixed
-  at consent, so a connection's tool list is the same on every request.
+- `send_message` (S3, §17.15) when `send === 'direct'`, the record's
+  `tested_id` names a `TESTED_CLIENTS` entry with `direct_send` and its
+  `client_local` is false (§19). All are the record's, fixed at consent, so
+  a connection's tool list is the same on every request.
 
 None is registered in `local` or `hosted-metadata` mode, and the pilot
 (`server.mjs` as `wappie-mcp`) never has `provider.send`: nothing reachable
@@ -4165,7 +4170,7 @@ measured in PCR0; the ceilings of Go's `WS_MCP_SEND_*` (§17.3):
 | `DEDUPE_WINDOW_MS` | `600_000` | §17.11 |
 | `FP_TTL_MS`, `FP_SHINGLES_PER_CONNECTION`, `FP_ENTITIES_PER_CONNECTION`, `FP_SHINGLE_WORDS`, `FP_SHINGLES_PER_TEXT`, `FP_TEXT_MAX_CHARS`, `FP_CROSS_CHAT_MAX` | `3_600_000`, `20_000`, `5_000`, `8`, `2_000`, `16_384`, `5` | §17.11 |
 | `LIST_OUTGOING_MAX` | `50` | items per `list_outgoing` page |
-| S3: `SEND_TEXT_MAX_CHARS`, `SENDS_PER_CHAT_PER_DAY`, `SEND_CHATS_MAX`, `REPLY_BODY_MAX_CHARS`, `DIRECT_SEND_HOSTS` | `1_000`, `5`, `20`, `1_024`, §17.15 | direct send |
+| S3: `SEND_TEXT_MAX_CHARS`, `SENDS_PER_CHAT_PER_DAY`, `SEND_CHATS_MAX`, `REPLY_BODY_MAX_CHARS`, and the `direct_send` flag of a `TESTED_CLIENTS` entry (§19.3) | `1_000`, `5`, `20`, `1_024`, §17.15 | direct send |
 
 **Text rules** (`enclave/send/textrules.mjs`, and Go's
 `internal/mcpauth/textrules.go` with the same table and shared vectors in
@@ -4396,9 +4401,11 @@ with es, fr and de as translated; legal review does not block them):
 
 ### 17.15 Direct send (S3, planned)
 
-Direct send ships right after S2, in a reader 0.5.x or in 0.6.0 (with
-§18's B2 if they meet), with `send_direct_v1`. It needs neither 2c nor B2.
-Its interface is reserved now:
+Direct send ships after reader 0.6.0, which is §19's any MCP client (the
+owner's decision D11 of 2026-10-01), in a 0.6.x or 0.7.0, with
+`send_direct_v1`. It needs neither 2c nor B2. Its interface is reserved now,
+as §19 corrected it (2026-10-01): the gate is a flag on a tested web entry,
+not a list of redirect hosts.
 
 - **Consent.** `send: 'direct'` with `send_chats` (1 to 20 chats the person
   picks in the console, each eligible and named by device) and
@@ -4409,30 +4416,33 @@ Its interface is reserved now:
   `mcp_send_chats`; the send route's `kind: "send"` branch (§17.7);
   `PATCH …/send` `remove_chats`; `GET /v1/mcp/content`'s `send_direct`.
   0044 already holds every table and column it needs.
-- **Which hosts.** `DIRECT_SEND_HOSTS` is an image constant of OAuth
-  redirect hosts, for example `['claude.ai', 'chatgpt.com']`, filled from
-  the S0 probe; a change is a release. A host enters it only when every
-  surface that reaches the reader under that redirect host asks by
-  default before each call of a write tool, and any "remember" or "always
-  allow" is an explicit choice the person makes for that tool, whose scope
-  (the conversation, the tool, for good) the probe records (§17.16). The
-  key is the connection's `redirect_host`, which the authorization server
-  checked at consent and §16.2 rule 13 seals in the record (the host
-  profile reads it too), not `clientInfo.name`: the reader builds a new MCP
-  server for every HTTP request (`createMcpHandler` in `router.mjs`), and
-  one that never saw `initialize` holds no `clientInfo`, so the
-  `tools/list` that decides registration has none; `clientInfo` is also the
-  client's own statement, and several surfaces may share one connector.
-  `clientInfo` stays probe evidence only. A loopback redirect (Claude Code
-  and other local clients) names no host and is never on the list.
+- **Which clients.** Only a tested **web** entry of `TESTED_CLIENTS`
+  (§19.3) with `direct_send: true`; that flag is set from the S0 probe, and
+  a change is a release. An entry gets it only when every surface that
+  reaches the reader through that client asks by default before each call
+  of a write tool, and any "remember" or "always allow" is an explicit
+  choice the person makes for that tool, whose scope (the conversation, the
+  tool, for good) the probe records (§17.16). The key is the connection's
+  `tested_id` with `client_local: false`, which the authorization server
+  decided at consent from the exact pinned redirect and §19.17 seals in the
+  record, not `clientInfo.name`: the reader builds a new MCP server for
+  every HTTP request (`createMcpHandler` in `router.mjs`), and one that
+  never saw `initialize` holds no `clientInfo`, so the `tools/list` that
+  decides registration has none; `clientInfo` is also the client's own
+  statement, and several surfaces may share one connector. `clientInfo`
+  stays probe evidence only. A local (loopback), unknown or token
+  connection **never** sends directly. (This corrects the earlier text,
+  which keyed on `redirect_host` and said a loopback client names no host:
+  0.5.0 records a loopback client under its vouching host, `claude.ai` for
+  Claude Code, so `redirect_host` cannot tell it from the web client.)
 - **Enclave.** `send_message` is registered in its direct form when the
-  record's `send` is `'direct'` and its `redirect_host` is in
-  `DIRECT_SEND_HOSTS`. `content.install` refuses a direct consent whose
-  redirect host is off the list (`invalid_bundle`), and the console shows
-  the direct-send toggle only when the prepared descriptor's
-  `redirect_host` is on the list of the attested release
-  (`reader-releases.json` carries it beside the capabilities), so a
-  connection that sends directly always has the tool. The destination
+  record's `send` is `'direct'`, its `tested_id` names an entry with
+  `direct_send` and its `client_local` is false. `content.install` refuses
+  any other direct consent (`invalid_bundle`), and the console shows the
+  direct-send toggle only when the prepared descriptor's `tested_id` names
+  such an entry in the attested release's `tested_clients` and its
+  `client_local` is false, so a connection that sends directly always has
+  the tool. The destination
   rules, limits and cross-chat block hold on every host. Before a send the
   enclave opens the chat's name the way `list_chats` returns it and
   compares it with `to_name`, both NFKC-normalized, case-folded and with
@@ -4512,9 +4522,10 @@ Its interface is reserved now:
   naming another chat, or no chat, is `recipient_mismatch` and recorded,
   while a case or spacing difference passes; a chat off the list, and one
   removed, refused; a cross-chat hit refused; the signature appended and
-  counted; a direct consent from a redirect host off `DIRECT_SEND_HOSTS`,
-  or a loopback one, refused `invalid_bundle`, and a record with `send:
-  'direct'` and such a host has no `send_message`; the tool list the same
+  counted; a direct consent from a client whose tested entry lacks
+  `direct_send`, or from a local, unknown or token connection, refused
+  `invalid_bundle`, and a record with `send: 'direct'` and such a client
+  has no `send_message`; the tool list the same
   whether or not the request follows an `initialize`, and whatever
   `clientInfo` says; per-chat limits under concurrency; the live S3 corpus
   (§17.16).
@@ -4597,7 +4608,7 @@ Its interface is reserved now:
   allow" it offers and its scope (the conversation, the tool, for good),
   and whether choosing it is the person's explicit act for that tool; the
   arguments the prompt shows; the `clientInfo` it sends; and the OAuth
-  redirect host of its connector. A host enters `DIRECT_SEND_HOSTS` by
+  redirect host of its connector. A tested web entry gets `direct_send` by
   §17.15's rule, only if every surface behind it asks. The results go in
   `commercial/docs/`; if claude.ai or ChatGPT fails, §17.18 gains an owner
   decision before S3 (the owner's condition is direct send from both).
@@ -4626,8 +4637,8 @@ Its interface is reserved now:
   §18's B1, in one renewal round (§18.16 has the whole order). Then
   `WS_MCP_SEND_ENABLED=true`, `WS_MCP_SEND_SELF_ENABLED=true` and
   `WS_MCP_SEND_TENANTS=<the test workspace>`, and S2.
-- **S3** ships right after S2, in a 0.5.x or in 0.6.0, with
-  `send_direct_v1` and `WS_MCP_SEND_DIRECT_ENABLED`.
+- **S3** ships after reader 0.6.0 (§19, decision D11), in a 0.6.x or
+  0.7.0, with `send_direct_v1` and `WS_MCP_SEND_DIRECT_ENABLED`.
 - **Rollback, fastest first:** (1) `WS_MCP_SEND_ENABLED=false`, or
   `WS_MCP_SEND_SELF_ENABLED=false` (S3: `WS_MCP_SEND_DIRECT_ENABLED=false`),
   and a server restart: effective at Go at once and at the reader within
@@ -4664,8 +4675,8 @@ Its interface is reserved now:
   limits and the cross-chat block still hold. A remembered approval is the
   person's explicit choice for that tool, which §17.15's rule admits;
   a host that sends without ever asking is not. The server cannot see
-  whether a host asked: `DIRECT_SEND_HOSTS` rests on the probe and on the
-  connection's redirect host.
+  whether a host asked: the `direct_send` flag rests on the probe and on
+  the connection's tested entry (§19.3).
 - **If claude.ai or ChatGPT fails the probe** (a surface behind it runs a
   write tool unasked by default), it is not dropped from direct send
   silently: the owner decides before S3, for example direct send there
@@ -4883,8 +4894,9 @@ bound by the owner's decisions of 2026-09-30. The steps:
   console, or a media connection asks through `open_attachment` for audio
   and video. Its server part (migration 0045, the routes, every AI switch
   off) deploys before the reader, as A0 did.
-- **B2**, automatic, in reader 0.6.0 after 2c, and **B3**, always on, with
-  2c: reserved here (`auto`, `ai_auto`, `ai_persisted`), not specified.
+- **B2**, automatic, in a reader after 0.6.0 (0.6.0 is §19's any MCP
+  client, decision D11 of 2026-10-01) and after 2c, and **B3**, always on,
+  with 2c: reserved here (`auto`, `ai_auto`, `ai_persisted`), not specified.
 - **Later**, not planned: video through OpenAI, which needs audio
   extraction and keyframes in the enclave, that is ffmpeg, A2's deferred
   stack.
@@ -6400,7 +6412,8 @@ the password; the two fronts therefore share one train.
 4. **If B1 slips**, 0.5.0 ships without `ai_v1` and without
    `enclave/ai/` in the image (the server's AI switch stays off), and B1
    ships in 0.5.1, one more renewal round.
-5. **Later:** §17's S3 (0.5.x or 0.6.0); 2c; reader 0.6.0 with B2.
+5. **Later:** reader 0.6.0, any MCP client (§19); then §17's S3 (0.6.x or
+   0.7.0), 2c, and B2 in a later reader.
 
 **Rollback, fastest first:**
 
@@ -7039,3 +7052,2019 @@ es, fr and de):
 | §16.7 | `ai_not_enabled` replaces `transcription_unavailable` on `ai_v1` readers; the sentence and description changes; get_message's `openable` and `derived`; the "No sending" sentence on send connections (§17.9) | 0.5.0 (in place) |
 | §16.8 | `READER_VERSION` 0.5.0 and its capabilities (§18.14) | 0.5.0 (in place) |
 | §16.9 | the open key gains the AI function | B1 (in place) |
+
+## 19. Any MCP client (0.6.0)
+
+Reader 0.6.0 admits any MCP client that identifies itself with a Client ID
+Metadata Document on an https host of its own, where 0.5.0 admits only
+`claude.ai` and `chatgpt.com`. The two-host allowlist was the whole defence
+against forged identities and against the document fetch reaching inside
+the network; its place is taken by six things: a consent card led by the
+client's verified domain; two trust tiers, tested and unknown, with a middle
+level for apps on the person's own computer; text that starts locked for
+unknown clients, with a history window and daily reading limits; documents
+the attested reader fetches itself, over TLS it verifies, so that neither Go
+nor the parent can forge one; short lifetimes; and a notice for every new
+connection, with a list the console checks against the reader's own. Tools
+that cannot run an OAuth flow get a connection token made in the console.
+Sections 1 to 18 still hold; where this section differs, it wins from reader
+0.6.0. It was proposed by the owner-facing plan of 2026-10-01
+(`plano-qualquer-assistente.md`, its technical annex `annex-any-client.md`
+and the client survey `clients-research.md`), revised after a security and
+design review the same day, and approved by the owner on 2026-10-01 ("aprovo
+as recomendações", "I approve the recommendations"): every recommendation, D1
+to D18. Facts about each client (which ones publish a document, their
+redirects, whether they can send a fixed header) come from that survey.
+
+The steps:
+
+- **P0**, retiring `https://api.wappie.thehappie.co/mcp` after the kit, is a
+  separate task with its own record. Nothing in this section depends on the
+  hosted reader or adds to it.
+- **P1**, the server and console groundwork, with no reader release and no
+  PCR0 change: migration 0046, `internal/netguard` (the media guard moves
+  into it), `create()` and the console accepting descriptors v1 and v2, the
+  list's new columns, the banner, and the e-mail with a revoke-only link,
+  which also serve 0.5.0's connections. Its gates: SMTP confirmed or
+  configured with SPF, DKIM and DMARC `p=reject` for the sending domain, and
+  the parent's subnet checked (§19.9). `WS_MCP_CIMD_MODE` stays `allowlist`.
+- **B**, the baseline on 0.5.0, live: §19.4's script with Claude, ChatGPT,
+  Codex and Claude Code. It freezes `TESTED_CLIENTS` before 0.6.0's image is
+  built.
+- **P2**, reader 0.6.0 and the parent's document egress proxy: the rest of
+  this section, the console connection token included.
+- **P4**, the live tests on 0.6.0, the final docs and the message to the
+  site session.
+- **Later**, not in this contract: §17's direct send (S3) and §18's automatic
+  AI (B2), in readers after 0.6.0; open dynamic registration; a console
+  "turn text on" for an existing connection; browser-based MCP clients;
+  honouring ChatGPT's `private_key_jwt`.
+
+**Fixed by the owner (2026-10-01), binding here:**
+
+- **D1.** Dynamic client registration (DCR) only for the pinned Claude and
+  ChatGPT redirect URIs. Tools that only register dynamically connect with
+  the console token.
+- **D2.** The tested list (`TESTED_CLIENTS`) and the tier limits
+  (`CLIENT_LIMITS`) are image constants, measured in PCR0 and written into
+  `measurements.json`.
+- **D3.** The initial tested list is Claude, ChatGPT, Codex and Claude Code,
+  each only if it passes the full script on 0.5.0 (the web clients also the
+  cross-session test). The list is final only after baseline B.
+- **D4.** An unknown client reads metadata once the person ticks "I started
+  this"; text and attachments only after a second, deliberate tick and with
+  a verified e-mail address; never drafts, own-chat notes or sending.
+- **D5.** The lifetime, refresh and reading-limit tables of §19.19 for
+  unknown clients and tokens (20 calls a minute; a history window of 7, 30
+  or 90 days, 30 by default; 2,000 messages and 50 attachments a day; 300
+  and 10 in the first hour), and intermediate lifetimes for local apps.
+- **D6.** The console connection token ships in 0.6.0 (it was approved
+  before the build): minted in the browser, only its hash sealed to the
+  reader, always the unknown tier, text valid 1 day by default, optional
+  allowed networks, a check digit, revocation within a minute.
+- **D7.** The new-assistant banner, always; the e-mail with a revoke-only
+  link and no login link; SMTP confirmed in P1; text for an unknown client
+  or a token needs a verified e-mail; the console's list checked against
+  the reader's attested list.
+- **D8.** A web redirect must be on exactly the document's host.
+- **D9.** Subdomains of shared hosting (`github.io`) are admitted with a
+  warning; public suffixes themselves and hosts shared by path are refused.
+- **D10.** The card, banner, e-mail and site texts in five languages; the
+  owner approves them, pt and en first. Every text in this section is a
+  draft.
+- **D11.** Any client is 0.6.0. Direct send and automatic AI come after it,
+  and direct send only ever for a tested web entry.
+- **D12.** 10 live connections per workspace, at most 3 of them unknown or
+  tokens.
+- **D13.** The unknown-tier test client lives on `thehappieco.github.io`.
+- **D14.** No in-browser clients: `Origin` stays refused on `/mcp`.
+- **D15.** The enclave fetches documents itself, over its own verified TLS,
+  through a byte-only egress proxy on the parent. Go no longer fetches them.
+- **D16.** To turn text on later, the person reconnects the assistant.
+- **D17.** The "I started this" tick on every consent, tested clients
+  included.
+- **D18.** The sealed-state format changes, and a rollback to 0.5.0 wipes the
+  state: every connection reconnects.
+
+**What this section settles beyond the plan** (the annex's text is otherwise
+carried over, with its line references replaced by function and file names):
+
+- The token ships in 0.6.0 with `console_token_v1`. The annex's 0.6.1 is not
+  a release, and its P3 folds into P2.
+- `TESTED_CLIENTS` is written with D3's candidate entries and marked pending
+  baseline B in the code (§19.3); the lead fills the exact pinned redirect
+  URIs and client ids from the baseline's record.
+- `CLIENT_LIMITS` is written out whole, the card's duration choices
+  included, so that the attested descriptor states every number the card
+  shows (§19.3). `UNKNOWN_LIVE_MAX = 3` is a constant of its own.
+- An old console cannot reach 0.6.0 (its allowlist lacks it), so 0.6.0 takes
+  only consent version 4 and link bundle v2 for a new consent, as D17
+  requires; versions 1 to 3 remain only to renew records 0.5.0 wrote
+  (§19.15).
+- The metadata link bundle v2 carries `kind: 'metadata'` beside `version: 2`
+  (§19.15).
+- The descriptor kinds are `connect`, `renewal`, `ai`, `ai_renewal`, `token`
+  and `live_list`, one strict schema each (§19.12).
+- The renewal descriptor and the sealed record carry the display fields an
+  unknown client's renewal card shows (`registrable`, `shared_suffix`,
+  `client_name`, `claimed_name`), so those are attested too (§19.16,
+  §19.17).
+- The person's history window reaches Go's ledger (`history_days`, in 0046
+  and in the relayed consent body, which the enclave compares with the
+  sealed value), because the list shows it (§19.20).
+- What the reading limits count, the at-limit rule and the window refusal
+  `outside_window` (§19.19).
+- `budget_hit` reaches Go on a connection route,
+  `POST /v1/mcp/enclave/connections/{id}/budget-hit`, like the other
+  connection routes (the annex had `/v1/mcp/enclave/budget-hit`).
+- `mcp_connection_seen` gets forced row-level security like `mcp_send_chats`;
+  `mcp_connections` itself has none (0040), contrary to the annex's note.
+- The Public Suffix List snapshot is two byte-identical files, one per
+  language, because `go:embed` cannot reach outside its package (§19.5).
+- The refusal reasons of the CIMD-id vectors, the token's checksum encoding
+  and a user_data v2 vector are fixed here (§19.5, §19.18, §19.13).
+- The completion's network check compares `ipKey` values, which is what the
+  pending request already holds (§19.12).
+
+### 19.1 Workstreams and interfaces
+
+| Workstream | Owns (edits only these) |
+|---|---|
+| **READER** | `packages/mcp-http/**`: the shared `clients.mjs`, `cimd.mjs`, `as.mjs`, `link.mjs`, `tokens.mjs`, `verifier.mjs`, `router.mjs`, `state.mjs`, `attestation.mjs` and `log.mjs`; `enclave/{constants,main,content,renew,relay,health,logsink}.mjs` and new modules under `enclave/` for the fetcher, the reading limits, the live list and token requests; the snapshot `packages/mcp-http/psl/`; the vectors `packages/mcp-http/test/vectors/{cimd-ids,attest-v2}.json`. `packages/mcp/**`: `bundle.mjs` (consent version 4, link bundle v2, `validateTokenBundle`, the v4 `deviceScope`) and `server.mjs` (the history floor, `limit_reached`, `outside_window`, `profile`) |
+| **CLIENT** | `packages/client/src/crypto/attestation.ts` (user_data v2, `descriptorSHA256`, `attestation_descriptor`), its tests and its exports |
+| **GO** | `internal/**`: the new `internal/netguard` (with the snapshot's Go copy), `internal/mcpauth`, `internal/config/mcp.go`, `internal/store/mcp.go`, `internal/mailer` (the `MCPConnected` message); `cmd/**`, with the new `cmd/cimd-egress`; `internal/migrate/sql/0046_mcp_clients.sql`; `.env.example` |
+| **CONSOLE** | `commercial/web/**`: `MCPConsentCard.vue`, `MCPRenewalCard.vue`, `MCPPanel.vue`, `MCPConnectPage.vue`, the new `MCPNewConnectionNotice.vue` and token page, `mcpConnect.ts`, the generated `readerMeasurements.ts` and its generator, the five locales |
+| **DEPLOY** | `deploy/enclave/{entrypoint.sh,build.sh,Dockerfile}`, `commercial/deploy/enclave/{bootstrap.sh,log-sink.py,test_log_sink.py}` (the egress unit, the events and health fields), `commercial/scripts/release.py` (`migration46_sha256`) |
+| **DOCSOPS** | `docs/mcp.md`, `SECURITY.md`, `docs/media-security.md`, `docs/decisions.md`, `README.md`, `packages/mcp-http/README.md`, `.github/claims/*` and their allowlists, `commercial/docs/**` |
+
+The three build tracks are the reader (READER, CLIENT, and DEPLOY's enclave
+side), the server (GO, and DEPLOY's parent side) and the console (CONSOLE).
+The interfaces, fixed here: the constants and measurements (§19.3: READER,
+DEPLOY, CONSOLE); the CIMD-id algorithm, its snapshot and its vectors
+(§19.5: READER, GO); descriptor v2 and user_data v2 (§19.12, §19.13: READER,
+CLIENT, CONSOLE, and GO for the shape checks); consent version 4, link
+bundle v2 and the token bundle (§19.15, §19.18: READER, CONSOLE); the egress
+proxy (§19.9: READER, GO, DEPLOY); migration 0046 and the routes (§19.20,
+§19.21: GO, CONSOLE, READER); the log schema (§19.24: READER, DEPLOY).
+
+### 19.2 Invariants
+
+- **I1.** Go and the parent can refuse or delay a client. They can never
+  admit one, forge its document, or change what a card shows.
+- **I2.** Every field the consent card, the renewal card, the token card and
+  the live-list check display or compare is attested: user_data v2 binds the
+  whole descriptor (§19.13).
+- **I3.** A request is `tested` only when a measured `TESTED_CLIENTS` entry
+  pins its `client_id` and the exact redirect it asked for; anything else is
+  `unknown`. The console accepts `tested` only when the attested release's
+  `tested_clients` agrees, and `unknown` always.
+- **I4.** An unknown, local or token connection never drafts, notes to its
+  own chat or sends. An unknown or token connection reads text only from a
+  version-4 bundle with `unknown_ack: true` under the device checks.
+- **I5.** The limits are image constants the enclave applies whatever a
+  bundle says. A bundle, and Go, can only narrow them.
+- **I6.** No domain, client name or URL leaves the enclave in a log line.
+- **I7.** A token's bearer exists only in the person's browser and in what
+  they copy. The reader keeps its SHA-256 only inside the sealed state; Go
+  never sees either.
+- **I8.** A rollback cannot serve a connection 0.6.0 made under 0.5.0's
+  rules (§19.17).
+
+### 19.3 Image constants and measurements
+
+`packages/mcp-http/enclave/constants.mjs` replaces `REDIRECT_HOSTS` and
+`CIMD` with:
+
+```js
+export const READER_VERSION = '0.6.0'
+export const READER_CAPABILITIES = Object.freeze(['consent_v2', 'media', 'consent_v3', 'send_draft_v1', 'ai_v1',
+  'any_client_v1', 'descriptor_attest_v2', 'consent_v4', 'client_limits_v1', 'live_list_v1', 'console_token_v1'])
+// cimd 'any' admits a CIMD client on any host that passes §19.5; 'allowlist'
+// is 0.5.0's rule, kept for the tests and the hosted path. dcr 'pinned'
+// admits only the pinned DCR redirects (§19.8).
+export const CLIENT_POLICY = Object.freeze({ cimd: 'any', dcr: 'pinned' })
+// TODO(baseline B on reader 0.5.0, docs/mcp-enclave.md §19.4): PENDING.
+// These are D3's candidates, not yet the tested list. An entry stays only if
+// its client passed the whole script on 0.5.0; the lead replaces each
+// client_id and redirect with the exact values the baseline recorded and
+// removes any client that failed. A change is a release. build.sh copies this
+// list and CLIENT_LIMITS into measurements.json.
+export const TESTED_CLIENTS = deepFreeze([
+  { id: 'claude', kind: 'cimd', client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata', name: 'Claude', local: false, profile: 'claude.ai',
+    redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
+  { id: 'chatgpt', kind: 'cimd', client_id: 'https://chatgpt.com/oauth/client.json', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
+    redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'] },
+  { id: 'chatgpt_cb', kind: 'cimd_pattern', client_id: 'https://chatgpt.com/oauth/{cb}/client.json', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
+    redirect_uris: ['https://chatgpt.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
+  { id: 'codex', kind: 'cimd', client_id: 'https://chatgpt.com/oauth/codex/client.json', name: 'Codex', local: true, profile: 'chatgpt.com',
+    loopback: [['127.0.0.1', '/callback'], ['localhost', '/callback']] },
+  { id: 'claude_code', kind: 'cimd', client_id: 'https://claude.ai/oauth/claude-code-client-metadata', name: 'Claude Code', local: true, profile: 'claude.ai',
+    loopback: [['localhost', '/callback'], ['127.0.0.1', '/callback']] },
+  { id: 'claude_dcr', kind: 'dcr', name: 'Claude', local: false, profile: 'claude.ai',
+    redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
+  { id: 'chatgpt_dcr', kind: 'dcr', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
+    redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect', 'https://chatgpt.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
+])
+export const CLIENT_LIMITS = deepFreeze({
+  web_tested: {
+    idle_days: { metadata: 30, content: 7 }, ceiling_hours: { metadata: 366 * 24, content: 90 * 24 + 1 },
+    durations_days: { metadata: { choices: [30, 90, 365], default: 90 }, content: { choices: [1, 30, 90], default: 30 } },
+    calls_per_minute: 60, history_days: null, daily: null, first_hour: null },
+  local_tested: {
+    idle_days: { metadata: 7, content: 7 }, ceiling_hours: { metadata: 90 * 24 + 1, content: 30 * 24 + 1 },
+    durations_days: { metadata: { choices: [7, 30, 90], default: 30 }, content: { choices: [1, 7, 30], default: 7 } },
+    calls_per_minute: 60, history_days: null, daily: null, first_hour: null },
+  unknown: {
+    idle_days: { metadata: 7, content: 3 }, ceiling_hours: { metadata: 90 * 24 + 1, content: 30 * 24 + 1 },
+    durations_days: { metadata: { choices: [7, 30, 90], default: 30 }, content: { choices: [1, 7, 30], default: 7 } },
+    calls_per_minute: 20, history_days: { choices: [7, 30, 90], default: 30 },
+    daily: { messages: 2000, attachments: 50 }, first_hour: { messages: 300, attachments: 10 } },
+  token: {
+    idle_days: null, ceiling_hours: { metadata: 90 * 24 + 1, content: 30 * 24 + 1 },
+    durations_days: { metadata: { choices: [7, 30, 90], default: 30 }, content: { choices: [1, 7, 30], default: 1 } },
+    calls_per_minute: 20, history_days: { choices: [7, 30, 90], default: 30 },
+    daily: { messages: 2000, attachments: 50 }, first_hour: { messages: 300, attachments: 10 } },
+})
+// Live unknown and token connections per workspace, inside Go's cap of 10 (§19.10).
+export const UNKNOWN_LIVE_MAX = 3
+// Hosts that serve many tenants by path, let an uploader set the content
+// type, or log every request: refused as CIMD hosts, as the host or any
+// subdomain (§19.5 step 4.8).
+export const SHARED_HOSTS = Object.freeze(['amazonaws.com', 'storage.googleapis.com', 'firebasestorage.googleapis.com',
+  'googleusercontent.com', 'githubusercontent.com', 'webhook.site', 'cdn.jsdelivr.net', 'unpkg.com', 'raw.githack.com',
+  'pipedream.net', 'requestbin.com', 'beeceptor.com'])
+// Registrable domains that are Wappie's own: every host under them is refused.
+export const OWN_DOMAINS = Object.freeze(['thehappie.co'])
+// The document egress proxy on the parent (§19.9).
+export const CIMD_EGRESS = Object.freeze({ address: '127.0.0.8', port: 3128, vsock: 8007 })
+```
+
+`deepFreeze` freezes every nested object and array. A tested entry's members:
+
+| Member | Rule |
+|---|---|
+| `id` | `^[a-z][a-z0-9_]{0,31}$`, unique; it is the request's `tested_id` |
+| `kind` | `cimd` (an exact `client_id`), `cimd_pattern` (a `client_id` with one `{cb}`) or `dcr` (no `client_id`: a registration whose every redirect is pinned here) |
+| `name` | the verified display name the card and every other surface show |
+| `local` | `true` for an app on the person's computer, whose redirects are loopback |
+| `profile` | the host profile of §16.7 (`claude.ai`, `chatgpt.com` or `default`): the inline wait and the image note's wording |
+| `redirect_uris` | the pinned https redirects: exact strings, or with `{cb}` |
+| `loopback` | the pinned loopback redirects as `[hostname, path]`, matched with any port |
+| `cb` | the pattern a `{cb}` value must match, for an entry that has one |
+| `direct_send` | §17.15's S3 flag; absent from every entry in 0.6.0 |
+
+`CLIENT_LIMITS` holds one object per limits tier (§19.6): `idle_days` (how
+long a refresh token lives unused, per kind; `null` for no refresh),
+`ceiling_hours` (the furthest expiry a consent may ask, per kind),
+`durations_days` (the card's choices and default, per kind),
+`calls_per_minute`, `history_days` (`null` for the whole history, else the
+card's choices and default), `daily` and `first_hour` (`null` for none, else
+messages and attachments). §19.19 says how each applies.
+
+`imageConstants()` returns `CLIENT_POLICY`, `TESTED_CLIENTS`,
+`CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS` and
+`CIMD_EGRESS`, and no longer `REDIRECT_HOSTS` or `CIMD`. `enclave/main.mjs`
+passes `{ clientPolicy, testedClients, limits }` to `startReader` where it
+passed `hosts` and `cimd`. The shared modules (`clients.mjs`, `cimd.mjs`,
+`as.mjs`) take a policy object: `{ mode: 'allowlist', hosts }`, or
+`{ mode: 'any', tested, limits, shared, own, psl, fetcher }`. The hosted
+path (`server.mjs` from `WAPPIE_MCP_REDIRECT_HOSTS`) passes the first,
+unchanged.
+
+**Measurements.** `deploy/enclave/build.sh` reads `TESTED_CLIENTS` and
+`CLIENT_LIMITS` from the built constants, as it reads `READER_CAPABILITIES`
+(§16.2 rule 8), and writes them into `measurements.json` as
+`tested_clients` and `client_limits`, unchanged. The schema stays
+`wappie-reader-measurements/v1`. The console generator
+(`commercial/web/scripts/reader-measurements.mjs`) requires both fields for a
+release whose `capabilities` include `any_client_v1`, refuses them on any
+other release, and carries them per release in `readerMeasurements.ts`
+(`tested_clients`, `client_limits`); `--check` validates their shapes
+against the tables above.
+
+### 19.4 What "tested" means, and baseline B
+
+An entry is tested when its client passed the live acceptance script on
+0.5.0 in phase B, before the 0.6.0 image is built. The run is recorded in
+`commercial/docs/mcp-enclave-operations.md` with the date, the client's
+version, the `client_id`, its log fingerprint (`fingerprint()` in
+`log.mjs`: the first 12 hex characters of SHA-256, so it can be computed
+offline) and the result of each step. It runs in the dedicated test
+workspace `01a08e0e-c546-7db3-9c44-e6352636d330` only. The script:
+
+1. Discovery, then CIMD (or DCR) resolution.
+2. The card shows the right domain, name and tier.
+3. The code exchange with PKCE and `resource`.
+4. `tools/list` and **at least three tool calls**, one of them a content
+   tool.
+5. A refresh after the 15-minute access token expires, with rotation and no
+   reuse error.
+6. A console revocation stops the next call within 60 seconds.
+7. For content, renewal after an enclave restart without reconnecting the
+   assistant.
+8. For loopback, two runs on different ports both work.
+9. **For a web client, a `state` from another browser session.** The owner
+   starts the connection in browser profile A, signed in to the vendor;
+   copies the authorize URL before approving; opens it in profile B, signed
+   in to the console and to a second vendor account (or to none); and
+   approves. The vendor must refuse the callback.
+10. The console-link variant: the `?mcp_connect=` link from profile A,
+    opened over another network, is refused by the network check (0.6.0
+    only; on 0.5.0 the step records that it succeeds).
+
+The rules for the list:
+
+- An entry enters only when its client passes the whole script on 0.5.0. A
+  web client that accepts a `state` from another browser session (step 9)
+  is **not listed**, and is served as `unknown` until the vendor fixes it
+  and a later release lists it.
+- Codex: `docs/mcp.md` records Codex listing the tools without calling them.
+  Phase B budgets time to diagnose it. If it is not solved, Codex is not
+  listed in 0.6.0; it still connects, as an unknown local client.
+- There is one enclave environment, so a client cannot be tried on 0.6.0
+  before 0.6.0 is live. A listed client that fails on 0.6.0 stays listed
+  until the next release; if the failure is a security one, the operator
+  refuses that entry at once with Go's deny-only `WS_MCP_BLOCKED_CLIENTS`
+  (§19.21). Go can always refuse, never admit.
+- `{cb}` is a callback id: the same value, matching `cb`, in the `client_id`
+  and in the redirect. Exact entries are tried before patterns, so
+  `https://chatgpt.com/oauth/codex/client.json` is always Codex. The CIMD and
+  DCR forms of a ChatGPT callback id have the same tier.
+- The `claude.com` callback is a variant the survey found only in a search
+  snippet. It is pinned on purpose: `claude.com` is Anthropic's domain, so a
+  code sent there reaches only Anthropic, and if Claude moves its callback
+  there it keeps working without a release.
+- **A tested id with a pinned redirect is never fetched.** The enclave uses
+  the entry as the document. This removes, for the tested clients, any
+  dependence on the fetch path, its budgets, its caches and any party that
+  could answer it. It departs from the CIMD rule that the server validates
+  redirects against the live document; the departure is safe because every
+  pinned https redirect is on the vendor's own domain and every pinned
+  loopback redirect stays on the person's machine.
+
+Live status on 2026-10-01: only the claude.ai web connector is confirmed
+live, on the hosted reader; Codex's document with a loopback redirect was
+accepted at authorize on the hosted reader, with tool calls unconfirmed;
+ChatGPT and Claude Code are untested; nothing has run on the enclave reader
+yet.
+
+Rejected (D2): a list the console holds, because Go serves the console and
+could then mark any client tested without a measurement change, and the
+enclave could not apply the unknown tier's limits on its own; and trust by
+domain alone, because ChatGPT serves a valid document at
+`https://chatgpt.com/oauth/<anything>/client.json`, `claude.ai` vouches for
+both the Claude web client and Claude Code, and a host-only entry would let a
+forged or edited document send a tested client's code to any path on the
+host.
+
+### 19.5 Which `client_id` is a CIMD identifier
+
+Words: **H** is the host of a CIMD `client_id`; **R** is H's registrable
+domain (its public suffix plus one label), computed from the snapshot below.
+
+The enclave (`cimd.mjs` `cimdURL`), the parent's egress proxy (§19.9) and
+Go's `create()` (§19.21) apply the same algorithm to a string `S`. The first
+failing step gives the refusal reason in brackets:
+
+1. `S` is 1 to 512 bytes and contains no white space or control character
+   [`shape`].
+2. `S` starts with `https://`. Parsed, it has no userinfo, no port, no query
+   (no `?` at all) and no fragment (no `#` at all), and it equals its
+   canonical serialization (`new URL(S).href === S`; in Go, `u.String() == S`
+   with the same checks) [`shape`].
+3. `H` is the text between `https://` and the next `/`, and the path `P` is
+   the rest. `P` is not `/` [`path_root`].
+4. **Host predicate** on `H`:
+   1. 4 to 253 characters, all in `[a-z0-9.-]`: lower case and ASCII, so an
+      internationalized name must arrive in its `xn--` form and an IPv6
+      literal fails on `[` [`host_chars`].
+   2. At least two labels separated by `.`, none empty, so a leading,
+      trailing or doubled dot is refused [`host_labels`].
+   3. Each label 1 to 63 characters, not starting or ending with `-`
+      [`host_labels`].
+   4. The last label is at least 2 characters and is either all letters or
+      starts with `xn--`. This refuses every IPv4 form, including those
+      WHATWG normalizes (`0x7f.1` serializes as `127.0.0.1`) [`ip_literal`].
+   5. `H` is not, and does not end in `.` followed by, any of `localhost`,
+      `localdomain`, `local`, `internal`, `intranet`, `private`, `corp`,
+      `home`, `lan`, `arpa`, `test`, `example`, `invalid`, `onion`, `alt`
+      [`special_use`].
+   6. `R` is not in `OWN_DOMAINS`: every host under `thehappie.co` is
+      refused (the site, `id.`, `app.`, `api.`, `mcp.`), so no card shows
+      Wappie's own domain and no fetch loops back into Wappie [`own_domain`].
+   7. `H` is not itself a public suffix, in the ICANN or the private section
+      of the List (`co.uk`, `github.io`, `s3.amazonaws.com`): a suffix has no
+      registrable domain to show [`public_suffix`].
+   8. `H` is not, and does not end in `.` followed by, any `SHARED_HOSTS`
+      entry. Those hosts serve many tenants by path
+      (`s3.amazonaws.com/<bucket>`, `storage.googleapis.com/<bucket>`), let an
+      uploader choose the `Content-Type`, or log every request with its query
+      (`webhook.site`), so the domain identifies nobody and a code could land
+      in an attacker's log. The List's private section only describes tenants
+      on separate subdomains, so it cannot detect them [`shared_host`].
+5. `P` is 2 to 1,024 characters from `[A-Za-z0-9._~!$&'()*+,;=:@%/-]`, has no
+   empty segment (`//`), no `.` or `..` segment, and no `%2e`, `%2f` or
+   `%5c` in either case [`path_chars`].
+
+An accepted `S` yields `{ host: H, registrable: R, shared_suffix }`, where
+`shared_suffix` is H's public suffix when it comes from the List's private
+section (`github.io` for `team.github.io`) and `null` when it comes from the
+ICANN section. With `mode: 'allowlist'`, `H` must also be in `hosts`
+(0.5.0's rule).
+
+**Vectors.** `packages/mcp-http/test/vectors/cimd-ids.json` is an array of
+`{"id": S, "ok": true, "host", "registrable", "shared_suffix"}` and
+`{"id": S, "ok": false, "reason"}`, with `reason` one of the bracketed codes
+above. The reader's, the proxy's and `create()`'s tests all run it (the Go
+tests read it from that path). It covers IP literals in every form, single
+labels, `localhost`, every special-use suffix, a trailing dot, upper case,
+punycode, ports, userinfo, a query, a fragment, `/`, `//`, `.`, `..` and
+`%2e`, the length bounds, every host under `thehappie.co`, hosts that are
+themselves suffixes (`github.io`, `s3.amazonaws.com`, `co.uk`), and each
+`SHARED_HOSTS` entry and a subdomain of it.
+
+**The Public Suffix List snapshot** is generated at a pinned date as
+`psl-<date>.json` (about 230 KB) and committed twice, byte for byte: at
+`packages/mcp-http/psl/` (the enclave image carries it, so it is measured)
+and at `internal/netguard/psl/` (Go embeds it with `go:embed` for `create()`
+and the egress proxy; `go:embed` cannot reach outside its package). Both
+test suites pin its SHA-256 as `PSL_SHA256`, so the copies cannot drift, and
+neither side uses another source (`golang.org/x/net/publicsuffix` is not
+used), so the three checks never disagree. The console needs none: the
+enclave puts `registrable` and `shared_suffix` into the attested descriptor
+(§19.12). The snapshot is refreshed with each release.
+
+### 19.6 Documents, matching and tier
+
+A document is fetched (§19.9) for every CIMD `client_id` except a tested id
+asked with a pinned redirect. The enclave (`cimd.mjs`, `clients.mjs`):
+
+1. Parses the body as JSON; it must be an object with `client_id === S`.
+2. Reads `redirect_uris`, an array of 1 to 10 strings, and classifies each:
+   - **https**: `new URL(v).href === v`, protocol `https:`, no userinfo, no
+     port, no fragment, at most 2,048 bytes, and **hostname exactly `H`**
+     (D8). A query is allowed, as in 0.5.0.
+   - **loopback**: protocol `http:`, hostname `127.0.0.1`, `[::1]` or
+     `localhost`, any port or none, no userinfo, query or fragment, at most
+     2,048 bytes.
+   - **anything else** (another host, a custom scheme such as `cursor://`, a
+     malformed string) is **ignored**, not admitted. The document is kept
+     when at least one usable entry remains and refused otherwise. A request
+     that names an ignored entry is refused (`invalid_redirect_uri`).
+
+   https and loopback entries may be mixed (VS Code's document lists both),
+   which 0.5.0 refused, as it refused a loopback entry with a port. Ignoring
+   rather than refusing means a vendor that adds an unusual entry to its
+   document does not lock its users out.
+3. `client_name`, when present, is a string. It is normalized to NFC and must
+   then be 1 to 100 code points, without leading or trailing white space or
+   two consecutive spaces, with no code point of general category `Cc`, `Cf`,
+   `Zl`, `Zp`, `Co` or `Cs` (bidi controls, zero-width characters, U+FEFF,
+   tag characters), and its scripts must satisfy UTS #39's *Highly
+   Restrictive* level: one script, or Latin with Han, Hiragana and Katakana,
+   or Latin with Han and Bopomofo, or Latin with Han and Hangul, Common and
+   Inherited allowed throughout (no `Сlaude` with a Cyrillic `С`). **A name
+   that fails is dropped, not fatal**: `claimed_name` is `null`,
+   `name_dropped` is `true`, and the card says so (§19.14). Go's
+   `clientNameChar` and the DCR path's `validateClientName` apply the same
+   rule. Unassigned code points are not tested on either side, so a Unicode
+   version difference between Go and Node cannot split them.
+4. Every other member (`logo_uri`, `client_uri`, `jwks_uri`, `grant_types`,
+   `token_endpoint_auth_method`, …) is ignored. Every client is public
+   (`none`) whatever it declares, and `logo_uri` is never fetched or shown.
+5. A refused document is remembered for 60 seconds (`CIMD_NEGATIVE_TTL_MS`,
+   unchanged). The browser gets the same static `invalid_client` page and
+   status for every reason, never sooner than one second after the request
+   began, so the answer does not tell a prober why.
+
+**Matching a request** (`redirectAllowed`): an https redirect must equal a
+listed one exactly. A loopback redirect must have the same hostname (there is
+no `127.0.0.1`/`localhost` equivalence) and the same path as a listed
+loopback entry, with any port (RFC 8252 §7.3).
+
+**Tier, per request** (`classify`), not per client:
+
+1. `client_id` is a tested CIMD entry (exact, or a pattern with the same
+   `{cb}` in the redirect) **and** the requested redirect is one of its pinned
+   ones: `trust: 'tested'`, with `tested_id`, `client_local` and `profile`
+   from the entry. No fetch.
+2. `client_id` is a tested id but the requested redirect is not pinned: the
+   real document is fetched. If it lists the redirect as a usable entry, the
+   request is `trust: 'unknown'` with `drift: true`, and the health counter
+   `tested_drift` grows; otherwise it is refused. The client keeps working,
+   under the unknown tier's card and limits, until a release pins the new
+   redirect.
+3. A DCR `client_id`: the record's tier. Every DCR record is pinned, so
+   `tested` (§19.8).
+4. Any other CIMD `client_id`: fetched; `trust: 'unknown'`; `client_local`
+   true when the requested redirect is loopback; `profile: 'default'`.
+
+The **limits tier** follows: `tested` and not local is `web_tested`; `tested`
+and local is `local_tested`; `unknown`, web or local, is `unknown`; a console
+token is `token` (§19.18).
+
+**Client record** in `state.clients` for a fetched document:
+`{ client_id, source: 'cimd', client_host: H, registrable: R, shared_suffix, redirect_uris (the usable ones only), ignored_uris (a count), claimed_name, name_dropped, created_at, last_used_at, cimd_fetched_at, cimd_ttl_ms, authorized_at }`.
+Tested ids served from the constants need no record.
+
+### 19.7 Loopback and local apps
+
+- Loopback is admitted only from a CIMD document or a pinned entry, on any
+  host that passes §19.5. DCR never gets loopback (§19.8).
+- A request's `client_local` is `true` when the requested redirect is a
+  loopback one: per request, since a document may list both kinds.
+- **Every loopback request gets local limits** (§19.19): Codex and Claude
+  Code, if listed, get `local_tested`; an unknown local client gets
+  `unknown`. A local connection is never offered drafts, own-chat notes or
+  direct send, and §17.15 says a loopback connection never gets direct send.
+- **What the domain proves for a local app: nothing on the machine.** The
+  Claude Code and Codex `client_id`s are public. Any local process can bind
+  a port and open the authorize URL, including a package's install script or
+  an editor extension: they cannot read the Wappie password, but they can
+  receive a code the person approves. The MCP specification says the server
+  SHOULD warn about localhost-only redirects. The card therefore names the
+  app "Claude Code (cannot be confirmed on this computer)" and requires the
+  "I started this" tick (§19.14).
+- **A remote attacker can gain something too.** Every loopback port is
+  accepted, including in an attacker's own document. A crafted authorize
+  link that names the attacker's document can deliver a code to any listener
+  on the victim's machine (a development server with an open redirect, a
+  request log) within the code's 60-second life, and the attacker holds the
+  PKCE verifier. The defences are the tick, the warning, the unknown tier's
+  limits and the notice; the residual risk is in `docs/mcp.md`'s "Who can
+  read what".
+- `localhost` stays admitted: Claude Code asks for it.
+- 0.5.0 records a loopback client under its vouching host (`redirect_host =
+  'claude.ai'` for Claude Code), so the ledger, the media host profile and
+  the planned direct-send gate cannot tell it from the web client. 0.6.0
+  records `client_host` and `client_local` (§19.17) and keys every behaviour
+  on the tested entry and `client_local`, never on `redirect_host`, which is
+  still written, with the same value as before, for consumers that predate
+  0.6.0.
+
+### 19.8 DCR: pinned redirects only (D1)
+
+**What DCR proves.** Once the descriptor is attested with the full
+`redirect_uri` (§19.13), an https DCR client is identified by "the code goes
+to this exact address on host X". That is weaker than CIMD in one way:
+registering a redirect needs no control of X, only an address on X, so an
+open redirect anywhere on X is enough to put X on the card, while a CIMD
+client needs to publish a JSON document on X. For loopback, both are only
+claims. DCR also grows state without bound, opens a denial-of-service
+surface, and is deprecated: the MCP revision of 2026-07-28 deprecates it,
+with removal no earlier than the first revision released on or after
+2027-07-28.
+
+**0.5.0's hole, closed.** `/mcp/register` accepts any path on `claude.ai` or
+`chatgpt.com`, so anyone can register `https://claude.ai/<an open-redirect
+path>`; the card then says `claude.ai` and the code continues to the
+attacker.
+
+**The rule.** `/mcp/register` accepts a registration only when every
+redirect URI equals a pinned DCR redirect or matches a DCR pattern (the
+`claude_dcr` and `chatgpt_dcr` entries), and refuses everything else with
+`invalid_redirect_uri`. `REGISTER_PER_IP` (5 a minute), `MAX_CLIENTS` (500)
+and `MAX_CLIENTS_PER_HOST` (200) stay. Every DCR record is `tested`, with the
+entry's id as `tested_id`; `client_kind` is `dcr`; `client_host` is the host
+of the requested redirect; a missing or dropped `client_name` gives
+`claimed_name: null` (0.5.0 named it `MCP client`).
+
+**What stays out.** By the console token instead: Cursor, Windsurf, Gemini
+CLI, n8n, OpenCode, mcp-remote, Copilot Studio (header key) and Le Chat
+(form unconfirmed). Not at all: the Gemini app, Perplexity (unconfirmed),
+Cline (header support unconfirmed) and browser-based clients.
+
+**Measuring DCR use** (P4): count `POST /mcp/register` lines in the enclave
+journal, and compare the authorize line's `client` fingerprint with the
+fingerprints of the tested `client_id`s. The authorize line also gains the
+boolean `cimd`.
+
+### 19.9 Fetching documents (D15)
+
+**Why this changes.** In 0.5.0 the Go API fetches documents for the enclave
+(`relay.cimd`, `internal/mcpauth/cimd.go`, `GET /v1/mcp/enclave/cimd`), and
+the enclave believes the body. With any host admitted, Go could present a
+document for **any** host H (`google.com`, the person's employer,
+`whatsapp.com`) listing any path on H. If H has an open redirect anywhere,
+which is common on large domains, the code continues to Go, and Go, having
+started the authorize request, holds the PKCE verifier and can exchange it.
+The card would show H; only a phished approval and the ticks would stand in
+the way, and the bait would be better than any outsider's, because no
+outsider can publish a document on those domains. The same-host rule does
+not stop this: it binds the redirect to the document's host, not the
+document to its host. So the enclave fetches over TLS it verifies itself,
+through an egress proxy on the parent: Go and the parent can refuse or delay
+a fetch, never forge one.
+
+**Enclave side** (the fetcher `cimd.mjs` is given):
+
+1. **Budgets**, before any connection: 3 a minute per address
+   (`CIMD_FETCH_PER_IP`, unchanged), 30 a minute across all callers, 10 a
+   minute per registrable domain R, and at most 4 in flight. A request over a
+   budget, or a fifth in flight, answers the 429 `too_many_requests` page,
+   logged `rate_limited` or `cimd_busy`. Tested ids with pinned redirects
+   never reach this point, so no flood can lock them out.
+2. `CONNECT H:443 HTTP/1.1` (with `Host: H:443`) to the parent proxy at
+   `127.0.0.8:3128`, which `deploy/enclave/entrypoint.sh` bridges to vsock
+   `3:8007` (`bridge TCP-LISTEN:3128,bind=127.0.0.8,reuseaddr,fork
+   VSOCK-CONNECT:3:8007`, measured in PCR0). No `/etc/hosts` line: the
+   enclave dials the proxy's address and names H only in `CONNECT` and in the
+   TLS SNI. vsock 8003 stays reserved for Amazon S3 in 2d, and 8004 to 8006
+   are the AI providers (§18.9).
+3. TLS 1.2 or later, SNI H, verified against Node's bundled root store
+   (`tls.rootCertificates`, part of the measured image, as for the AI
+   providers), hostname checked.
+4. One HTTP/1.1 `GET P` with `Accept: application/json` and `User-Agent:
+   wappie-cimd/1`; no cookies and no other header.
+5. Only 200; a 3xx is refused (redirects are never followed); the media type
+   must be `application/json` (parameters such as `charset` ignored); the
+   body at most 8 KiB (`CIMD_MAX_BYTES`); the response headers within 3 s;
+   the body complete within 2 s of the headers; everything within 5 s.
+6. The cache lifetime comes from the answer's `Cache-Control` (§19.10).
+7. The event `cimd_fetch` carries only the result code and the duration,
+   never the host. The codes: `ok`, `proxy_refused`, `tls_failed`,
+   `status`, `redirect`, `content_type`, `too_large`, `timeout`, `json`,
+   `client_id_mismatch`, `no_usable_redirect`.
+
+**Parent side**: a new unit `wappie-cimd-egress`, a small Go program
+(`cmd/cimd-egress`, sharing `internal/netguard`, the snapshot and §19.5's
+vectors; the unit and its vsock listener are added by
+`commercial/deploy/enclave/bootstrap.sh`):
+
+1. It accepts only `CONNECT <host>:443` on vsock 8007 from the enclave (CID
+   16); any other method or port answers 405. It listens on nothing else.
+2. It applies §19.5 step 4 to the host (the same snapshot, `SHARED_HOSTS`
+   and `OWN_DOMAINS`).
+3. Budgets: 60 a minute overall (burst 20), 10 a minute per R, 4 tunnels at
+   once; a negative cache of 60 s per host for DNS and connect failures (at
+   most 2,000 entries, the oldest dropped).
+4. It resolves the name once (1.5 s). If **any** address is not public
+   (`netguard.Public`, below) or is one of the deployment's own addresses
+   (`WS_CIMD_EGRESS_OWN_ADDRESSES`: at least the parent's Elastic IP and the
+   pilot API host's address), it refuses with `private_address`: a name with
+   mixed records is not a document host.
+5. It dials each validated address in order, 1.5 s per attempt and 3 s in
+   all, port 443 only, and never resolves the name again, so a DNS answer
+   that changes between check and connect (rebinding) is never used. Trying
+   every address keeps dual-stack hosts working when one family is broken.
+6. It pipes bytes for at most 6 s and 16 KiB in each direction, then closes.
+   Proxy variables in the environment are ignored.
+7. A refusal answers `403` with the header `X-Wappie-Egress: <code>`, one of
+   `host_refused`, `private_address`, `dns_failed`, `connect_failed`,
+   `busy`, `rate_limited` or `negative_cached`; the enclave logs only
+   `proxy_refused`. A success answers `200 Connection established`.
+8. It writes one journal line per tunnel: the host, the result code and the
+   duration. The parent sees the host, the timing and the sizes, as Go does
+   today; it cannot read or change the document.
+9. **Egress address.** The tunnels leave from the parent instance's own
+   public address, not from the pilot API host, which other systems share
+   and whose address other services may trust. P1 checks that the parent's
+   subnet routes no VPC endpoint (S3 or interface endpoints keyed on
+   `aws:SourceVpce`) and that no allowlist anywhere names that address.
+   `SHARED_HOSTS` refuses the whole `amazonaws.com` subtree as well.
+
+**Addresses refused** (the new package `internal/netguard`,
+`Public(netip.Addr) bool`, which unmaps IPv4-mapped addresses first):
+
+- IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`,
+  `169.254.0.0/16` (EC2 instance metadata included), `172.16.0.0/12`,
+  `192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24`, `192.168.0.0/16`,
+  `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`,
+  `240.0.0.0/4`, `255.255.255.255/32`.
+- IPv6: `::/128`, `::1/128`, `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64),
+  `100::/64`, `2001::/23` (Teredo and IETF assignments), `2001:db8::/32`,
+  `2002::/16` (6to4), `fc00::/7` (EC2's `fd00:ec2::254` included),
+  `fe80::/10`, `fec0::/10`, `ff00::/8`.
+
+`internal/media/origin.go`'s `public()` moves to the same package. That also
+closes gaps in the media guard: it does not block `0.0.0.0/8` beyond
+`0.0.0.0`, `192.0.0.0/24`, `240.0.0.0/4`, the broadcast address, NAT64, 6to4
+or Teredo, although its comment claims 6to4. The media client's transport
+also sets `Proxy: nil`.
+
+**What this costs.** The enclave gains a path to arbitrary public hosts on
+port 443. §§16 to 18 kept egress to fixed hosts on purpose, and this is the
+first general destination. The measured code uses it for one `GET` of at
+most 8 KiB per document, and the parent enforces the port, the addresses and
+the budgets. The alternative, hardening the Go relay instead, was rejected
+(D15): "Who can read what" would then have to say that Wappie's staff could
+read "only if you approve an assistant Wappie has not tested; the card can
+then show any domain that has an open redirect".
+
+The Go relay keeps serving 0.5.0 (allowlist mode) until 0.5.0 leaves the
+console allowlist; it is deleted then (§19.27).
+
+### 19.10 Caches, budgets and caps
+
+- **Positive cache.** TTL = clamp(the answer's `max-age`, 300 s, 86,400 s);
+  `no-store` and `no-cache` count as 300 s; 86,400 s when the answer says
+  nothing (0.5.0: always 24 h, `CIMD_TTL_MS`). There is no stale serving: the
+  tested ids are not fetched, and an unknown client gets none.
+- **Negative cache.** 60 s per `client_id` (unchanged), plus 60 s per R when
+  the fetch fails at the network level.
+- **Fetch budgets.** §19.9 enclave step 1, counted per registrable domain so
+  that wildcard subdomains do not multiply them.
+- **Client caps.** DCR records: `MAX_CLIENTS` 500 and `MAX_CLIENTS_PER_HOST`
+  200, as 0.5.0. Unknown CIMD records: `UNKNOWN_CLIENTS_MAX` 300 and
+  `UNKNOWN_CLIENTS_PER_DOMAIN` 20 per R. Eviction takes the oldest
+  unconsented record first. A consented record is protected only while a
+  live connection names its `client_id`; 0.5.0 protected it for 30 days
+  after consent (`CLIENT_IDLE_MS`), even once revoked.
+- **Pending requests.** `PENDING_MAX` 1,000, `PENDING_UNCONSENTED_MAX` 200 and
+  `PENDING_PER_IP` 10 are unchanged. New: `PENDING_PER_CLIENT`, at most 20
+  unconsented pending requests per unknown `client_id`, so one phishing
+  campaign cannot evict every other open consent tab.
+- **Live unknown connections.** At most `UNKNOWN_LIVE_MAX` (3) live
+  connections per workspace with `trust: 'unknown'` or `client_kind:
+  'token'` together, counted by the enclave over its own records at install
+  (`too_many_unknown`, 409), inside Go's workspace cap of 10, which Go
+  applies along with the same 3 (§19.21).
+
+### 19.11 Request checks loosened for compatibility
+
+- **`resource`** (`as.mjs` at authorize and at token):
+  - **absent**: taken as the reader's own resource,
+    `https://mcp.wappie.thehappie.co/mcp`, at both authorize and token. This
+    server has exactly one resource, so RFC 8707 lets it apply that default
+    with no loss; several clients' behaviour is unconfirmed, and mcp-remote
+    can turn the parameter off. The authorize line logs the boolean
+    `resource_default`, to learn who omits it.
+  - **present**: compared after lower-casing the scheme and the host and
+    removing one trailing `/` (the specification asks servers to accept an
+    upper-case scheme and host). Any other value is still `invalid_target`.
+- **`scope`**: absent, or 1 to 10 space-separated RFC 6749 scope tokens of at
+  most 64 characters each. Whatever is asked, the grant and every token
+  response say `wappie:read`. `invalid_scope` is now only for a malformed
+  string; 0.5.0 refused anything but `wappie:read`, which rejected a client
+  that adds `offline_access` or `openid`.
+- **Unchanged:** PKCE S256 required, `response_type=code`, `state` of at most
+  512 characters (`MAX_STATE_CHARS`), `iss` on every redirect, `Origin`
+  refused on `/mcp` (D14), `/mcp/authorize/complete` only from the console
+  origin.
+
+### 19.12 Pending request, network check and descriptor v2
+
+`as.mjs` `authorize()` adds to the pending record: `client_kind` (`cimd` or
+`dcr`), `client_host`, `registrable`, `shared_suffix`, `client_local`,
+`trust`, `tested_id`, `drift`, `client_name` (the display name below),
+`claimed_name`, `name_dropped`, `profile` and `limits_tier`. `redirect_uri`
+(the full requested redirect) and `ip` (the `ipKey` of the PROXY v2 source)
+are already there; `redirect_local` is taken from the requested redirect.
+
+**Network check at completion.** An attacker can start a flow from their own
+browser, then send the victim the console's `?mcp_connect=` link instead of
+the authorize URL; the pending request was then created from the attacker's
+address. `/mcp/authorize/complete` compares the `ipKey` of its own PROXY v2
+source with `pending.ip` by network prefix: the first three octets for IPv4,
+the first 56 bits for IPv6 (both values are `ipKey`s, and an IPv6 key is
+already its /64); different address families count as a mismatch. On a
+mismatch the pending request is dropped and the browser gets a static page
+with the code `ip_mismatch`, the link back to the console, and the sentence
+"This authorization was opened on a different network from the one that
+started the connection. Go back to the assistant and click Connect again."
+(pt, the plan's draft: "Esta autorização foi aberta numa rede diferente da
+que começou a conexão. Volte ao assistente e clique em Conectar de novo.").
+It is the image's only page with a sentence, and the owner approves both. The
+complete line logs the boolean `ip_mismatch`. The live tests measure false
+refusals (a phone changing networks, a company with several egress
+addresses); if they appear, the prefixes widen to /16 and /48 before anything
+weaker is considered.
+
+**Descriptor v2.** For a 0.6.0 reader every descriptor carries
+`descriptor_version: 2` and a `kind`, and each kind has one strict schema.
+`link.mjs` `descriptor()` returns, for a request (`kind: 'connect'`):
+
+```json
+{ "descriptor_version": 2, "kind": "connect", "request_id": "…", "kid": "…", "reader_public_key": "…",
+  "client_kind": "cimd", "client_id": "https://example.com/oauth/client.json", "tested_id": null,
+  "client_host": "example.com", "registrable": "example.com", "shared_suffix": null, "client_local": false,
+  "client_name": "example.com", "claimed_name": "Example Agent", "name_dropped": false,
+  "trust": "unknown", "drift": false,
+  "redirect_uri": "https://example.com/oauth/callback", "redirect_host": "example.com", "redirect_local": false,
+  "limits_tier": "unknown", "limits": { "…": "CLIENT_LIMITS.unknown" },
+  "code_challenge": "…", "resource": "https://mcp.wappie.thehappie.co/mcp", "expires_at": "…" }
+```
+
+- `client_name` is the **display name, always a verified string**: the tested
+  entry's `name` for a tested request, otherwise `client_host`. It is never
+  the claimed name. Go's ledger, the renewal card, the draft notices,
+  `Composer.vue`, `mcpVia.ts`, e-mails and Go's logs all print `client_name`
+  today, so a surface that is missed, or an older console build, still shows
+  a domain rather than an attacker's "Claude".
+- `claimed_name` is what the document or the registration declared, or
+  `null`. New surfaces show it only in quotes, as "calls itself “…”".
+- `redirect_uri` is the full requested redirect, attested; for loopback, with
+  the requested port. `redirect_host` keeps 0.5.0's value (the vouching host
+  for a loopback client) for consumers that predate 0.6.0.
+- `limits` is the tier's object from `CLIENT_LIMITS`, so the card states the
+  limits and Go cannot misstate them.
+
+The other kinds:
+
+| `kind` | Members besides `descriptor_version`, `kind` and, prepared, `attestation` |
+|---|---|
+| `connect` | as above |
+| `renewal` | §15.9 step 3's members (with §16.2 rule 7's and §17.2 rule 7's) and §19.16's |
+| `ai` | §18.7 step 1's members (`request_id`, `reader_public_key`, `kid`, `resource`, `reader_version`, `expires_at`) |
+| `ai_renewal` | §18.7 step 7's renewal members (the renewal's, with `functions`, `features` and `budget`) |
+| `token` | §19.18 step 1's |
+| `live_list` | §19.22's |
+
+An unknown or missing member is `attestation_descriptor` at the console
+(§19.13). Go relays every descriptor verbatim; its shape checks (§5.3,
+§15.9, §18.7) accept versions 1 and 2, and for version 2 also check
+`descriptor_version` and `kind`.
+
+### 19.13 Attestation `user_data` v2
+
+In 0.5.0, `user_data` binds the request, the resource, the TLS key, the key
+policy and the version (§6.2). It does not bind `client_id`,
+`client_name`, `redirect_host` or `redirect_local`, and §6.4 rule 4 has the
+console take them from the descriptor Go relays; only `client_id` is bound,
+indirectly, through the completion's HMAC proof (`proofFor`). Go could
+therefore change the name and domain the card shows. The measured allowlist
+limits the harm to `claude.ai` and `chatgpt.com` today; with any host
+admitted it must be closed.
+
+**Preimage v2** (UTF-8, fields joined by 0x00, none may contain 0x00):
+
+```
+"wappie-mcp-attest/v2" 0x00 request_id 0x00 resource 0x00 tls_spki_sha256 0x00 policy_sha256 0x00 reader_version 0x00 descriptor_sha256
+```
+
+`descriptor_sha256` is the lowercase hex SHA-256 of the JCS (RFC 8785)
+serialization of the descriptor without its `attestation` member, or `""`
+for `GET /attestation`, which has no descriptor. `user_data` =
+SHA-256(preimage). **Every 0.6.0 attestation made for a descriptor uses v2
+over that descriptor**: `connect` and `token` with their `request_id`,
+`renewal` and `ai_renewal` with `request_id` = the `renewal_id`, `ai` with
+its `request_id`, and `live_list` with `request_id` = `""` and no
+`public_key` in the document. Vectors: with `request_id =
+AAAAAAAAAAAAAAAAAAAAAA`, `resource = https://mcp.wappie.thehappie.co/mcp`,
+`tls_spki_sha256 = "a"×64`, `policy_sha256 = "b"×64`, version `0.6.0` and
+`descriptor_sha256 = "c"×64`, `user_data =
+41500bb32148a8d4444a741847b034c9121311db4109a7c7d9c024ba0c8193be`; for
+`/attestation` (`request_id` and `descriptor_sha256` both `""`), the same
+other fields give
+`9d9b4e435ae1127de6651fcc85202c7856102b1b97d371249cdca01cee916a29`. The
+implementation commits vectors for every kind, with whole descriptors, in
+`packages/mcp-http/test/vectors/attest-v2.json`, and the console verifier's
+tests read the same file.
+
+**Verifier** (CLIENT, `packages/client/src/crypto/attestation.ts`):
+
+```ts
+export function descriptorSHA256(descriptor: Record<string, unknown>): Promise<string>             // JCS without `attestation`, lowercase hex
+export function attestationUserDataV2(fields: AttestationFields, descriptorSha256: string): Promise<Uint8Array>
+// VerifyOptions gains: descriptor?: Record<string, unknown>
+```
+
+With `descriptor` set, `verifyAttestation` requires `user_data` to equal v2
+over `fields` and `descriptorSHA256(descriptor)`; without it, v1, as today.
+`AttestationCode` adds `attestation_descriptor`, which CONSOLE translates in
+five languages.
+
+**Console** (`mcpConnect.ts` `attestDescriptor`, `attestRenewal`, and the
+token and live-list verifications):
+
+- **No downgrade.** A descriptor with `descriptor_version: 2` is verified
+  with `descriptor`; one without, as v1. Once the matching release is known,
+  the console requires `descriptor_version: 2` exactly when that release
+  declares `descriptor_attest_v2`; otherwise `attestation_descriptor`.
+- Each descriptor is parsed strictly against its kind's v2 schema; an
+  unknown or missing member is `attestation_descriptor`.
+- **The trust check is one-way.** `trust: 'tested'` is accepted only when the
+  release's `tested_clients` has the entry whose `id` is `tested_id`, with
+  `name` equal to `client_name` and `local` equal to `client_local`, and:
+  for a `cimd` or `cimd_pattern` entry, its `client_id` equals the
+  descriptor's (for a pattern, with the same `{cb}` value as the redirect);
+  for a `dcr` entry, `client_kind` is `dcr`; and, on a `connect` descriptor,
+  the entry pins `redirect_uri` (an https redirect exactly or with that
+  `{cb}`, a loopback one by hostname and path). A renewal descriptor carries
+  no redirect: the redirect was checked at consent, and the record keeps the
+  tier it was given. `trust: 'unknown'` is always acceptable, because the
+  enclave rightly degrades a drifted tested client. A renewal of a record
+  0.5.0 wrote (`client_kind: 'legacy'`, §19.17) is the one `tested` with no
+  entry, and only on the renewal kinds.
+- For a CIMD client, `client_host` equals the host of `client_id`; on a
+  `connect` descriptor, for a DCR client it equals the host of
+  `redirect_uri`, and an unknown client's https redirect has `client_host`
+  as its host; `client_host` equals `registrable` or ends with
+  `.` followed by `registrable`; `limits_tier` follows §19.6 from `trust`,
+  `client_local` and `client_kind`; `limits` deep-equals the release's
+  `client_limits[limits_tier]`. Any mismatch is `attestation_descriptor`.
+- For older releases the console keeps v1 and shows the 0.5.0 card.
+- §6.4 rule 4 becomes: seal to `result.publicKey`, and every displayed field
+  is attested.
+
+### 19.14 The consent card (`commercial/web/src/components/MCPConsentCard.vue`)
+
+**Header**, every field from the attested descriptor:
+
+- **Domain**, large: `client_host` in ASCII, in a typeface that tells `l`,
+  `I` and `1`, and `0` and `O`, apart. A long host is truncated only from
+  the left, so the end, which carries the real domain, always shows.
+- **Main domain**, on its own line, bold: `registrable`, so
+  `claude.ai.example.com` reads as `example.com`. An `xn--` label is shown as
+  it is, never decoded, with the line "International characters in the
+  address".
+- **Badge**: "Tested by Wappie" (tested web), "App on this computer" (tested
+  local), "Not tested by Wappie" (unknown, amber) or "Token".
+- **Who**: tested web, the entry's name ("Claude"); tested local, "Claude
+  Code (cannot be confirmed on this computer)"; unknown, "Calls itself
+  “…”", "Gives no name", or "The name it gave was dropped (characters not
+  accepted)".
+- **Identity and return address**, for unknown clients always visible, never
+  collapsed: the full `client_id` URL and the full `redirect_uri`.
+- **Where the code goes**: web, "After you authorize, you go back to {host
+  of redirect_uri}"; local, "The access goes to an app on this computer,
+  identified by {client_host}. Any program on this computer can present
+  itself this way, including an installer or an editor extension: continue
+  only if you just started this connection in that app."
+- **Shared hosting**: when `shared_suffix` is set, "Anyone can publish pages
+  under {shared_suffix}." Hosts that are themselves suffixes, and hosts
+  shared by path, never reach the card (§19.5).
+- **Look-alike checks** (unknown only):
+  - The console compares the UTS #39 confusable skeletons of the claimed
+    name's words and of R's labels with the skeletons of the vendor terms
+    (`claude`, `anthropic`, `chatgpt`, `openai`, `codex`, `wappie`,
+    `thehappie`) and the vendor domains (`claude.ai`, `claude.com`,
+    `anthropic.com`, `chatgpt.com`, `openai.com`, `thehappie.co`), at an
+    edit distance of 2 or less (1 or less for terms of five letters or
+    fewer). This catches `cl4ude.ai`, `chatgtp.com`, `anthrop1c.com` and a
+    Cyrillic `С`. The confusables table is the UTS #39 data of a Unicode
+    version the console pins, generated into a committed module.
+  - When R **is** a vendor domain (an untested `chatgpt.com` callback-id
+    document, or a drifted tested client): amber, "On {R}, but not a client
+    Wappie tested (it may be someone else's {vendor} setup)." Never "not
+    theirs", which would be false.
+  - Otherwise, on a match: red, "This name or address looks like {vendor},
+    but {R} is not {vendor}'s domain."
+  - Otherwise, when the claimed name shares no word of three or more letters
+    with R's labels: amber, "The name it gives does not appear in its
+    domain; check that you know {R}." This fires on VS Code's `vscode.dev`,
+    which is the point: the person should recognise the domain, not the
+    name.
+- **First time**: the card reads the workspace's connection list (any member
+  who may list it, `GET /v1/mcp/connections`). If no row ever named this
+  `client_host`, it shows "First time {client_host} asks for access to this
+  workspace."
+- **Limits**, in plain words, from `limits`: for an unknown client, "It can
+  read the last {history} days, at most {n} messages a day."
+- "To turn text on later, reconnect the assistant." (D16)
+- **Details**, collapsed: the verified-reader block, unchanged.
+
+**Ticks.**
+
+- **Tick 1, "I started this"**, on every consent (D17). **Authorize** stays
+  disabled until it is ticked. Its text by case:
+  - tested web: "I clicked Connect in {name} myself, just now; nobody sent
+    me this link."
+  - local: "I started this connection myself, just now, in the app
+    identified by {client_host}."
+  - unknown web: "I started this connection myself, just now, at
+    {client_host}; nobody sent me this link."
+
+  It is sealed as `started_ack: true` (§19.15).
+- **Tick 2, unknown text**: the text option stays locked until "I understand
+  that Wappie has not tested {client_host}, and I want it to read message
+  text." It is sealed as `unknown_ack: true`. With it, text also needs the
+  password and a verified e-mail address (§19.21); without a verified
+  address the card says "Confirm your e-mail to let an untested assistant
+  read text."
+
+**Defaults and options by limits tier:**
+
+| | Tested web | App on this computer (tested) | Unknown (web or local) | Console token (§19.18) |
+|---|---|---|---|---|
+| Tick 1 | yes (D17) | yes | yes | not applicable (made in the console) |
+| Metadata | always | always | always | always |
+| Message text | off; offered | off; offered | off; locked until tick 2 | off; locked until the same tick |
+| Attachments | off; offered under text | off; offered under text | off; offered under text after tick 2 | the same |
+| Drafts and own chat | off; offered when allowed (§17) | not offered | not offered | not offered |
+| Direct send (S3, later) | only for an entry with `direct_send` | never | never | never |
+| Duration, metadata | 30 / 90 / 365 days (default 90) | 7 / 30 / 90 (default 30) | 7 / 30 / 90 (default 30) | 7 / 30 / 90 (default 30) |
+| Duration, text | 1 / 30 / 90 days (default 30) | 1 / 7 / 30 (default 7) | 1 / 7 / 30 (default 7) | 1 / 7 / 30 (default **1**) |
+| History it can reach | all | all | 7 / 30 / 90 days (default 30) | 7 / 30 / 90 days (default 30) |
+| Password | for text | for text | for text | for text |
+
+The durations and history choices come from `limits.durations_days` and
+`limits.history_days`. Every option already starts off for every client
+today. AI authorizations (§18) are separate consents and do not change. A
+media connection reads AI transcripts (§18.12), so an unknown client reads
+them only once the person turned attachments on after tick 2, and they count
+against its attachment budget (§19.19).
+
+**Renewal card** (`MCPRenewalCard.vue`). For an unknown-tier text
+connection, the renewal shows the full unknown header (domain, main domain,
+identity address, badge, claimed name in quotes) and asks for tick 2 again
+before the password; it is never a one-line "renew {name}". For a token, the
+first option is "Create a new token and revoke this one" (§19.18).
+
+**Texts.** Every new string (about 30) goes through
+`src/ui/locales/en-source/mcp-connect.json` in all five languages, and the
+owner approves the card's text, pt and en first. The en texts above are
+drafts; the plan's pt drafts (D10), for the owner, are:
+
+| Text | pt draft |
+|---|---|
+| Badges | "Testado pela Wappie", "App neste computador", "Não testado pela Wappie", "Token" |
+| Main domain | "Domínio principal: {registrable}" |
+| Who, tested web | "{name} pede acesso ao Wappie." ("{name} asks for access to Wappie.") |
+| Who, local | "{name} (não dá para confirmar neste computador)." |
+| Who, unknown | "Diz chamar-se “{claimed_name}”.", "Não informa nome", "O nome informado foi descartado" |
+| Identity and return | "Identidade: {client_id}" and "Volta para: {redirect_uri}" ("Identity", "Returns to") |
+| Unknown warning | "A Wappie não testou este assistente. Ele vai receber o que você permitir abaixo, e o acesso volta para {client_host}. Continue só se você conhece {client_host} e foi você que começou esta conexão agora." ("Wappie has not tested this assistant. It will receive what you allow below, and the access goes back to {client_host}. Continue only if you know {client_host} and you started this connection just now.") |
+| Tick 1, tested web | "Fui eu que cliquei em Conectar no {name} agora há pouco; ninguém me mandou este link." |
+| Tick 1, local | "Fui eu que comecei esta conexão agora, no app identificado por {client_host}." |
+| Tick 1, unknown | "Fui eu que comecei esta conexão agora, em {client_host}; ninguém me mandou este link." |
+| Tick 2 | "Entendo que a Wappie não testou {client_host} e quero que ele leia o texto das mensagens." |
+| Local return | "O acesso vai para um app neste computador, identificado por {client_host}. Qualquer programa neste computador pode se apresentar assim, inclusive um instalador ou uma extensão de editor: continue só se você acabou de começar a conexão nesse app." |
+| Look-alike | "Este nome ou endereço parece com {vendor}, mas {R} não é o domínio deles." |
+| On a vendor's domain | "Está em {R}, mas não é um cliente que a Wappie testou (pode ser a configuração de outra pessoa no {vendor})." |
+| Name not in domain | "O nome informado não aparece no domínio; confira se você conhece {R}." |
+| Shared hosting | "Qualquer pessoa pode publicar páginas em {shared_suffix}." |
+| Text later | "Para ligar o texto depois, reconecte o assistente." |
+
+The banner's and the e-mail's drafts are in §19.22. The other strings are
+drafted by CONSOLE in the five languages for the owner.
+
+### 19.15 Consent version 4 and link bundle v2
+
+**Content bundle v2, consent version 4** (`packages/mcp/bundle.mjs`
+`contentBundleSchema`). `CONTENT_CONSENT_VERSIONS = [1, 2, 3, 4]`, and
+`purpose` adds `'token'` (§19.18). Version 4 adds:
+
+| Field | Rule |
+|---|---|
+| `client_id` | the descriptor's `client_id`, 1 to 512 bytes, or `wappie-console-token` for a token |
+| `client_kind` | `cimd`, `dcr` or `token` |
+| `client_local` | boolean |
+| `trust` | `tested` or `unknown`; `unknown` for a token |
+| `started_ack` | literal `true` (D17) |
+| `unknown_ack` | boolean; `true` required when `trust` is `unknown` |
+| `history_days` | `null` (the whole history, tested only) or one of the tier's `history_days.choices` (unknown and token: required) |
+| `bearer_sha256` | 64 lowercase hex; token only, required there |
+| `allowed_networks` | token only, required there: 0 to 10 canonical CIDRs (`198.51.100.0/24`, `2001:db8::/48`), unique, sorted as strings |
+| `device_checks` | **required on every version-4 consent**, text-only included |
+
+Refined so that: `consent_version === 4 ⇔` the client members are present;
+`consent_version === 4 ⇒ device_checks` present (version 3 ties them to
+`send`, version 4 does not); `send` on version 4 only with `trust:
+'tested'` and `client_local: false`; `purpose: 'token' ⇒ consent_version: 4,
+client_kind: 'token', trust: 'unknown'`, with `bearer_sha256` and
+`allowed_networks`, and without `link_secret` and `connection_id`. Versions 1
+and 2 have no device checks, so Go could seal a scope of its own for them;
+version 4 closes that for every consent.
+
+**Device scope v4.** `deviceScope` (which writes `consent_version: 3` today)
+builds, for a version-4 bundle, §17.2 rule 3's scope with `consent_version:
+4` and these members added, each `null` when absent: `client_id`,
+`client_kind`, `client_local`, `trust`, `started_ack`, `unknown_ack`,
+`history_days`, `bearer_sha256` and `allowed_networks`. So only a holder of
+each number's DSK makes the acknowledgements, the history window, the client
+binding and a token's hash and networks. The send members stay as §17.2 has
+them (`null`, `false` or `[]` when absent).
+
+**Link bundle v2** (a metadata consent to a 0.6.0 reader): the setup bundle
+`bundleSchema` (`version: 1`) gets a sibling, `linkBundleV2Schema`, a strict
+object `{version: 2, kind: 'metadata', server_url, workspace_id, device_ids,
+token, allow_plaintext: false, timezone?, link_secret, client_id, trust,
+started_ack: true, history_days}`. 0.5.0's `validateBundle` accepts
+`version: 1` only, so it refuses v2. It has no number keys, so Go could make
+one of its own; Go already holds every metadata row in the archive, so that
+gains it nothing, the enclave applies the tier from its own pending record,
+and the bundle can only narrow the history. It is sealed as today's link
+bundle (info `wappie-mcp-connect/v1`).
+
+**Relay.** For a request whose descriptor is version 2, Go's relayed consent
+body (`POST /internal/requests/{id}/bundle`) adds `trust`, `client_local` and
+`history_days`; it never sends them to an older reader, whose `parseRelay` is
+strict. The enclave requires them equal to the sealed values and to the
+pending request's.
+
+**Enclave acceptance** (`content.mjs` `acceptBundle`, `link.mjs`
+`acceptBundle`), for 0.6.0:
+
+- **A new consent** takes a version-4 content bundle or a link bundle v2
+  only, with `started_ack: true` (D17), and `client_id`, `client_kind`,
+  `client_local` and `trust` equal to the pending request's. Versions 1 to 3,
+  and a version-1 link bundle, answer `invalid_bundle`: a console that
+  predates 0.6.0 cannot attest 0.6.0 (its allowlist lacks it), so no
+  legitimate consent is lost.
+- **Unknown**: text needs `unknown_ack: true`; `send`, drafts and own chat
+  absent; `history_days` in the tier's choices; expiry within the tier's
+  `ceiling_hours`; the workspace below `UNKNOWN_LIVE_MAX` live unknown or
+  token connections (409 `too_many_unknown`).
+- **Tested local**: `send`, drafts and own chat absent; `history_days`
+  `null`; expiry within `local_tested`'s ceiling.
+- **Tested web**: as 0.5.0 for `media` and the send fields (§16.2, §17.2);
+  `history_days` `null`; expiry within `web_tested`'s ceiling.
+- A renewal of a record 0.5.0 wrote takes that record's version (1 to 3),
+  as §15.9 says (§19.16).
+
+### 19.16 Renewing a version-4 consent
+
+Every text connection made on 0.6.0 is version 4, and every text connection
+goes to `reseal` after an enclave restart, so version-4 renewal works from
+the first day. In 0.5.0 it would not: `renew.mjs` describes only
+`consent_version`, `media` and the send fields, its `acceptBundle` requires
+the bundle's `consent_version` to equal the record's, `mcpConnect.ts`
+`validRenewal` accepts versions 1 to 3 only, and `deviceScope` writes 3.
+
+- The sealed record stores the members of §19.17 (written once, at
+  completion or install), and for a token `bearer_sha256` and
+  `allowed_networks`.
+- **The renewal descriptor** (`descriptor_version: 2`, `kind: 'renewal'`)
+  adds to §15.9 step 3's members: `consent_version` (now up to 4),
+  `client_kind`, `client_id`, `tested_id`, `client_host`, `registrable`,
+  `shared_suffix`, `client_local`, `client_name`, `claimed_name`, `trust`,
+  `limits_tier`, `limits`, `unknown_ack` and `history_days`, all attested
+  (§19.13), so the unknown renewal card's header is verified. For a record
+  0.5.0 wrote, the record's version with `client_kind: 'legacy'`, `trust:
+  'tested'`, `limits_tier: 'web_tested'`, the `web_tested` limits,
+  `unknown_ack: false`, `history_days: null`, and `null` for `tested_id`,
+  `client_host`, `registrable`, `shared_suffix`, `client_name` and
+  `claimed_name` (the console shows the ledger's name, as today).
+- `validRenewal` accepts `consent_version` 1 to 4 and, for 4, rebuilds the v4
+  device scope with `request` = the `renewal_id`.
+- `bearer_sha256` and `allowed_networks` are **not** carried by a renewal:
+  the record pins them and a renewal cannot change them, so they are `null`
+  in the renewal's scope and Go never sees them.
+- `renew.mjs` `acceptBundle` compares each new member with the record, as it
+  does `consent_version` and `media`, and takes only version 4 for a
+  version-4 record.
+- The unknown renewal asks for tick 2 again (§19.14) and seals `unknown_ack:
+  true`.
+
+### 19.17 Connection records and sealed-state version 2
+
+Every connection record, metadata and content, gains `client_kind`,
+`client_host`, `registrable`, `shared_suffix`, `client_local`,
+`client_name`, `claimed_name`, `trust`, `tested_id`, `profile`,
+`limits_tier`, `started_ack`, `unknown_ack` and `history_days`. They are
+written once, at completion (`as.mjs` `complete`) or install
+(`content.install`), and never by a renewal (§16.2 rule 13 extended: `commit`
+writes none of them). A record written by 0.5.0 or earlier reads as
+`client_kind: 'legacy'`, `trust: 'tested'`, `limits_tier: 'web_tested'`,
+`profile: hostOf(redirect_host)` and `history_days: null`, which is today's
+behaviour.
+
+**Sealed-state version 2.** 0.6.0 writes the `as-clients`, `as-connections`
+and `as-tokens` plaintexts as `{"version":2,"name":…,"records":[…]}` and reads
+versions 1 and 2. `infra` stays version 1. 0.5.0's loader
+(`openSealedState` in `state.mjs`) checks `version === 1`, the name and each
+record's key; without the bump it would load 0.6.x's records as they are and
+serve unknown-tier and token connections under 0.5.0's refresh times and
+ceilings, with no reading limits. With the bump, 0.5.0 meets `version: 2`,
+raises `state_auth_failed`, which is final, and exits (§8). A rollback
+therefore cannot silently loosen the limits: it must delete the sealed `as-*`
+collections, and every connection reconnects (§19.27, D18).
+
+### 19.18 Console connection token (`console_token_v1`)
+
+For tools that cannot run an OAuth flow but can send a fixed
+`Authorization` header: Cursor, Windsurf, Gemini CLI, n8n, OpenCode,
+mcp-remote, Copilot Studio, Claude Code and Codex (also by header), and the
+Anthropic Messages API and OpenAI Responses API connectors. ChatGPT cannot
+send a header; it uses OAuth. The precedent is the AI authorization (§18.7):
+a console-made, attested request with no OAuth client.
+
+**Flow:**
+
+1. **Request.** Console → Go `POST /v1/mcp/token-requests {"nonce"}` (16 to
+   64 bytes; an owner or admin session; rate-limited like prepare, subject
+   `token-request:<user>`). Go relays `POST /internal/token-requests
+   {"nonce"}` (§4 HMAC). The enclave makes a pending token request in
+   memory: a `request_id` (22 base64url characters), a fresh
+   `newRecipient()`, TTL `PENDING_TTL_MS`, at most
+   `TOKEN_REQUESTS_PENDING_MAX` (20) live, else 429 `too_many_prepares`. It
+   answers the descriptor `{descriptor_version: 2, kind: 'token',
+   request_id, kid, reader_public_key, client_kind: 'token', trust:
+   'unknown', limits_tier: 'token', limits, resource, reader_version,
+   expires_at, attestation}`, attested with user_data v2. Go checks its shape
+   and caches it under the id as §5.3's map does, with the user.
+2. **Card.** The console verifies the descriptor (§19.13). The person
+   chooses: a label (the §19.6 name rules, up to 100 characters, for example
+   "Cursor on the laptop"); the numbers; metadata or text, with attachments
+   as an option under text, behind the same tick as §19.14's tick 2; the
+   validity (§19.19); the history window (7, 30 or 90 days); and,
+   optionally, **allowed networks** (up to 10 IPv4 or IPv6 ranges, for n8n
+   and servers). Text needs the password and a verified e-mail address
+   (§19.21).
+3. **The bearer is born in the browser.** It is `wmcp_k_`, then 43 base64url
+   characters (32 bytes from `crypto.getRandomValues`), then 6 base62
+   characters of the CRC-32 (IEEE, as zlib computes it) of the UTF-8 of
+   everything before them: 56 characters. The base62 alphabet is
+   `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz`, most
+   significant digit first, left-padded with `0` to 6. Vector: the 43
+   characters `A`×43 give CRC-32 `0x7d2d0f22` and the token
+   `wmcp_k_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2I7pFC`, whose
+   `bearer_sha256` is
+   `a60aed65d2620a197e14f253c6406048e638b0cc9d9e437b01fd7476bf167966`. The
+   checksum lets a secret scanner recognise a real token offline. The browser
+   computes `bearer_sha256` (lowercase hex SHA-256 of the whole string).
+4. **Bundle.** For text: content bundle v2 with `consent_version: 4`,
+   `purpose: 'token'`, `client_id: 'wappie-console-token'`, `client_kind:
+   'token'`, `client_local: false`, `trust: 'unknown'`, `started_ack: true`,
+   `unknown_ack: true`, `history_days`, `allowed_networks` and
+   `bearer_sha256`, with device checks over the v4 scope (`request` = the
+   `request_id`). For metadata: the strict object `validateTokenBundle`
+   checks, `{version: 1, kind: 'metadata', purpose: 'token', server_url,
+   workspace_id, device_ids, token, timezone?, expires_at, history_days,
+   allowed_networks, bearer_sha256}` (no `link_secret`: there is no
+   completion proof). Sealing, for both: HPKE base mode to the request's
+   key, info `wappie-mcp-token/v1`, AAD the UTF-8 of
+   `JSON.stringify(['wappie/mcp-token', 1, request_id, kid, resource])`.
+5. **Relay.** Console → Go `POST /v1/mcp/token-requests/{id}/bundle` with
+   `{"kind", "key_prefix", "expires_at", "kid", "sealed", "label",
+   "history_days", "media"}` and, for text, the content consent's
+   `service_user_id`, `key_mode` and `consent_version: 4` (§15.7). Go
+   requires the request in its cache with this user (409
+   `attestation_required`), applies §15.7's key and service invariants, the
+   expiry caps and the caps of §19.21, creates the ledger row (`kind`
+   `metadata` or `content`, `client_kind = 'token'`, `trust = 'unknown'`,
+   `client_name` = the label, `redirect_host = 'token'`, status `pending`),
+   and relays `POST /internal/token-requests/{id}/bundle` (the `BundleRelay`
+   plus `kind`, `history_days` and `media`), waiting up to 30 s. A 400 is
+   passed to the console with its code; anything else is 502
+   `reader_unavailable`; either way Go undoes the row.
+6. **Enclave.** It opens and validates the bundle (`purpose: 'token'`,
+   `server_url` the resource's origin, `workspace_id` the relayed tenant,
+   the relayed `history_days` and `media` equal to the sealed ones). For
+   text it proves the grants (`proveGrants`) with the device checks. It
+   refuses a `bearer_sha256` already known (`invalid_bundle`) and a
+   workspace already at `UNKNOWN_LIVE_MAX` (409 `too_many_unknown`). It calls
+   `relay.activate(connection_id)`, and on failure revokes, as the AI path
+   does. Then it installs the connection record `{…, client_id:
+   'wappie-console-token', client_kind: 'token', trust: 'unknown',
+   limits_tier: 'token', client_host: null, client_local: false, client_name:
+   null, profile: 'default', history_days, allowed_networks, family_id:
+   <random>}` and the token record `{hash: bearer_sha256, kind: 'key',
+   connection_id, client_id: 'wappie-console-token', family_id, expires_at:
+   <absolute>}`, saves the sealed state and answers 204.
+7. **Shown once.** The console shows the bearer once, with copy buttons and
+   the snippets below, then zeroes it. It is never sent to Go and never
+   stored by the console.
+
+There is no completion proof and no PKCE: the sealed bundle, made in the
+person's browser, is the consent. For text, the device checks stop Go from
+sealing a token bundle of its own. For metadata, Go could seal one, but Go
+already holds every metadata row in the archive, so that gains it nothing.
+
+**Verification.**
+
+- `tokens.mjs`: `prefixes.key = 'wmcp_k_'` with the shape
+  `^wmcp_k_[A-Za-z0-9_-]{43}[0-9A-Za-z]{6}$`, and `tokens.key(token)`: the
+  shape, the checksum, the hash lookup, `kind === 'key'`, not expired.
+- `verifier.mjs` `verifyAccessToken` accepts an `access` or a `key` record,
+  both through `boundTo`.
+- **Allowed networks**, when set, are checked on every `/mcp` call against
+  the PROXY v2 source; a call from elsewhere is 401 and counts as a
+  `budget_hit` with the code `network`.
+- `/mcp/token` refuses a `wmcp_k_` value (`invalid_grant`): it is not a
+  refresh token.
+- RFC 7009 `/mcp/revoke` with the bearer ends the family (`killFamily`) and
+  revokes the connection, so a tool or a person holding the token can kill
+  it.
+- The unclaimed-connection sweep (`startReader` in `server.mjs`) skips it,
+  because `family_id` is set at install.
+- The `token` tier's reading limits apply (§19.19).
+
+**Scope.** Numbers: 1 to 100, as content consents. Permissions: metadata,
+or metadata and text, optionally with attachments. Never drafts, own chat or
+direct send. The tier is always `unknown`, so §19.15's checks apply.
+
+**Lifetime.** The token's validity is the connection's expiry: metadata 7,
+30 or 90 days (default 30), text 1, 7 or 30 days (**default 1**). The enclave
+refuses more than 90 days + 1 hour (metadata) or 30 days + 1 hour (text), and
+Go applies the same caps. There is no refresh and no rotation: the token
+works until it expires or is revoked. This is the one exception to short-lived
+access (D6). It is limited by the short choices; the narrow scope and the
+history window; the reading limits; allowed networks when set; only a hash
+stored, and only inside the sealed state; "last used" in the list;
+revocation within the 60-second status cache; leak detection; and the
+new-assistant notice on activation.
+
+**Restarts and renewal.** A metadata token's record and hash live in the
+sealed state and survive an enclave restart. A text token's record goes to
+`reseal` like any content connection (the key lives in memory only), and its
+tool calls answer `reconsent_required` with the console link. The renewal
+card offers first "Create a new token and revoke this one" (a fresh request),
+which keeps text tokens short in practice; a plain renewal (§19.16) keeps the
+bearer.
+
+**How tools present it.** Only as `Authorization: Bearer wmcp_k_…`, never in
+a URL or a query string (the MCP specification forbids access tokens in
+query strings, and URLs end up in logs). **No snippet writes the literal
+token into a configuration file, a shell history or a command line.** The
+console stores nothing; the person keeps the token in the operating system's
+keychain (macOS: `security add-generic-password -s wappie-mcp -a "$USER"
+-w`, which prompts for it) or in a file only they can read (`chmod 600`).
+The snippets:
+
+- **Claude Code**: `claude mcp add --transport http --header 'Authorization:
+  Bearer ${WAPPIE_TOKEN}' wappie https://mcp.wappie.thehappie.co/mcp`. The
+  single quotes keep the shell from expanding the variable, so the stored
+  configuration holds `${WAPPIE_TOKEN}` and Claude Code expands it when it
+  connects; the live test checks that `~/.claude.json` and any `.mcp.json`
+  hold no `wmcp_k_`. Better still, `headersHelper` with a script that prints
+  the header from the keychain.
+- **Codex**: `bearer_token_env_var = "WAPPIE_TOKEN"` in `config.toml`, or
+  `http_headers_helper` reading the keychain.
+- **VS Code**: `headers` with `${input:wappie-token}`, declared with
+  `"password": true`, which VS Code keeps in its secret storage.
+- **Cursor**: `headers` with `${env:WAPPIE_TOKEN}`.
+- **Gemini CLI**: `headers`; if it does not expand variables, a settings
+  file with mode 0600 outside any repository (to confirm in P4).
+- **mcp-remote**: `--header`, with the value taken from the environment of
+  the host that launches it.
+- **curl**, for a check: `curl -H @wappie-header.txt …`, where the 0600 file
+  holds the header line, so the token is never on a command line that `ps`
+  and the history see.
+
+The variable itself is set from the keychain by the launcher (`export
+WAPPIE_TOKEN="$(security find-generic-password -s wappie-mcp -w)"`), never
+written as a literal into a shell start-up file. The console warns: "Keep
+this out of repositories and shared settings. claude.ai's organization
+headers are sent for every member, so never put it there." With a configured
+header, a 401 from `/mcp` still carries `WWW-Authenticate` with the resource
+metadata; Zed and others start OAuth only when no `Authorization` header is
+set.
+
+**Leak detection.** The checksum lets scanners tell a real `wmcp_k_` token
+from noise. Wappie applies to GitHub's secret scanning partner programme for
+the `wmcp_k_` prefix; acceptance is GitHub's decision (§19.28). Once
+accepted, GitHub sends matches to a Go endpoint, `POST
+/v1/mcp/token-leaks`, which verifies GitHub's signature and passes the token
+to the enclave's RFC 7009 `/mcp/revoke` (the token is public by then); the
+banner and the e-mail say "a token was found in a public repository and
+revoked". The endpoint ships when GitHub accepts the prefix.
+
+**What Go sees.** The ledger row (kind, numbers, expiry, label,
+`client_kind = 'token'`, history window) and the sealed bundle, which it
+cannot open. It never sees the bearer, its hash or its allowed networks,
+except a token GitHub reports, which is public by then.
+
+### 19.19 Lifetimes, refresh and reading limits (`client_limits_v1`)
+
+**Lifetimes** (`CLIENT_LIMITS[*].idle_days` and `ceiling_hours`):
+
+| | Tested web | App on this computer (tested) | Unknown (web or local) | Token |
+|---|---|---|---|---|
+| Access token | 15 min | 15 min | 15 min | the bearer itself |
+| Refresh token dies unused after, metadata / text | 30 / 7 days (unchanged) | **7 / 7 days** | **7 / 3 days** | no refresh |
+| Refresh rotation and reuse detection | every use, 30 s grace (unchanged) | the same | the same | none |
+| Connection ceiling, metadata / text (enclave and Go) | 366 days / 90 days + 1 h (unchanged) | **90 days + 1 h / 30 days + 1 h** | **90 days + 1 h / 30 days + 1 h** | 90 days + 1 h / 30 days + 1 h |
+| Status check | every refresh and every 60 s (unchanged) | the same | the same | every 60 s |
+
+**Reading limits** (`calls_per_minute`, `history_days`, `daily`,
+`first_hour`):
+
+| | Tested web | App on this computer (tested) | Unknown (web or local) | Token |
+|---|---|---|---|---|
+| Calls a minute per connection | 60 (unchanged) | 60 | **20** | **20** |
+| History it can reach | all | all | 7 / 30 / 90 days, chosen on the card (default 30) | the same |
+| Per rolling 24 hours | none | none | **2,000 messages and 50 attachments** | the same |
+| First hour after activation | none | none | **300 messages and 10 attachments** | the same |
+| Live per workspace | within 10 | within 10 | at most 3 unknown and token together, within 10 | the same |
+
+Why: `/mcp` allows 60 calls a minute (`MCP_PER_MINUTE` in `router.mjs`) and
+the list and search tools return up to 50 items a call, about 3,000 messages
+a minute across the whole history of every chosen number. An approved
+unknown client, or a leaked token, could copy the archive in hours, and the
+notice, the e-mail and revocation all act after the fact. The limits bound
+what can leave before anyone looks.
+
+**How they work.**
+
+- The person's `history_days` is sealed in the bundle (§19.15), bound by the
+  device checks for text. The tier's numbers are image constants the enclave
+  applies whatever a bundle says.
+- **The history floor.** For a connection with `history_days`, `packages/mcp`
+  sets `since` = now − `history_days` days at each call. `list_messages`,
+  `search_messages`, `activity_summary` and `list_revisions` clamp their
+  lower bound to it; `list_chats` leaves out chats with no message at or
+  after it; `get_message` and `open_attachment` refuse an older message
+  with `outside_window` and the sentence "This message is outside the window
+  this connection may read." A message's time is its timestamp, or its
+  archive arrival time when it has none, as search uses.
+- **What counts.** Messages: each message a tool returns (each item of
+  `list_messages`, each hit of `search_messages`, `get_message`'s one, each
+  revision of `list_revisions`); chat previews and `activity_summary`'s
+  counts are not counted. Attachments: each `open_attachment` that returns
+  content, an AI transcript included. A call is checked before it runs: one
+  that starts under the limit is served in full and counted, so a counter
+  passes its limit by at most one call's items.
+- Counters are per connection and in memory, the daily one over a rolling
+  24 hours in one-minute buckets, the first hour from the record's
+  `created_at`. An enclave restart resets them; text connections go to
+  `reseal` at a restart anyway, so only metadata counters restart early,
+  which is accepted.
+- At a limit the tool answers `limit_reached` with the time it resets ("This
+  connection reached its reading limit for now; it resets at {time}."), and
+  the enclave sends Go a count-only `budget_hit` through the signed relay,
+  `POST /v1/mcp/enclave/connections/{id}/budget-hit {"code"}`, with `code`
+  one of `daily_messages`, `daily_attachments`, `first_hour_messages`,
+  `first_hour_attachments` or `network` (§19.18), at most once per
+  connection, code and window. Go records it and raises the banner and the
+  e-mail (§19.22). The per-minute rate stays a plain 429, with no notice.
+
+**Where the code changes:** `tokens.mjs` `pairFor` takes the idle time from
+`limits_tier` (and issues no refresh token for `token`); `link.mjs`
+`acceptBundle` and `content.mjs` take the ceiling by tier (in place of
+`366 * 24 * 3_600_000` and `MAX_CONTENT_MS`); `router.mjs` takes the rate
+from `limits.calls_per_minute` (in place of `MCP_PER_MINUTE`); Go's expiry
+caps take the tier from the descriptor (§19.21). Everything else in
+`tokens.mjs` is unchanged: access tokens of 15 minutes (`ACCESS_TTL_MS`),
+codes of 60 seconds (`CODE_TTL_MS`), one family per connection, a
+`client_id` mismatch on refresh counted as reuse, and reuse killing the
+family and revoking the connection with `reuse_detected`.
+
+### 19.20 Migration `0046_mcp_clients.sql`
+
+```sql
+ALTER TABLE mcp_connections
+    ADD COLUMN client_kind        text     NOT NULL DEFAULT 'legacy'
+                                           CHECK (client_kind IN ('legacy', 'cimd', 'dcr', 'token', 'ai')),
+    ADD COLUMN client_id          text     CHECK (client_id IS NULL OR (octet_length(client_id) <= 512 AND client_id LIKE 'https://%')),
+    ADD COLUMN client_host        text     CHECK (client_host IS NULL OR client_host ~ '^[a-z0-9.-]{4,253}$'),
+    ADD COLUMN client_local       boolean  NOT NULL DEFAULT false,
+    ADD COLUMN trust              text     CHECK (trust IS NULL OR trust IN ('tested', 'unknown')),
+    ADD COLUMN claimed_name       text     CHECK (claimed_name IS NULL OR char_length(claimed_name) <= 100),
+    ADD COLUMN history_days       smallint CHECK (history_days IS NULL OR history_days IN (7, 30, 90)),
+    ADD COLUMN first_used_at      timestamptz,
+    ADD COLUMN revoke_link_sha256 text     CHECK (revoke_link_sha256 IS NULL OR revoke_link_sha256 ~ '^[0-9a-f]{64}$');
+UPDATE mcp_connections SET client_kind = 'ai' WHERE kind = 'ai';
+UPDATE mcp_connections SET trust = 'tested' WHERE kind <> 'ai';
+-- Any binary, old or new, inserts AI rows coherently.
+CREATE FUNCTION mcp_connections_ai_kind() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN IF NEW.kind = 'ai' THEN NEW.client_kind := 'ai'; END IF; RETURN NEW; END $$;
+CREATE TRIGGER mcp_connections_ai_kind BEFORE INSERT ON mcp_connections
+    FOR EACH ROW EXECUTE FUNCTION mcp_connections_ai_kind();
+ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_client_coherent CHECK (
+    (client_kind = 'ai') = (kind = 'ai')
+    AND (client_kind <> 'cimd' OR client_id IS NOT NULL)
+    AND (client_kind <> 'token' OR (trust = 'unknown' AND client_id IS NULL AND redirect_host = 'token')));
+CREATE TABLE mcp_connection_seen (
+    connection_id uuid        NOT NULL REFERENCES mcp_connections(id) ON DELETE CASCADE,
+    tenant_id     uuid        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id       uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    seen_at       timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (connection_id, user_id));
+-- Forced row-level security with the tenant_isolation policy, as 0044 gives
+-- mcp_send_chats and mcp_outbound. mcp_connections itself keeps none (0040).
+```
+
+- `trust` has **no default**. The insert in `internal/store/mcp.go` (the
+  only one, AI rows included) sets `client_kind` and `trust` explicitly.
+  `NULL` marks a row written by a binary that predates 0046, and the console
+  shows it as "Legacy", never as "Tested", so a forgotten field fails
+  closed.
+- Old binaries keep working during the deploy window and after a Go
+  rollback: `client_kind` defaults to `legacy`, the trigger fixes AI rows,
+  and `trust` stays `NULL`.
+- `client_id` holds a CIMD URL only. A DCR id is random and a token has
+  none, so neither is stored.
+- `history_days` is the person's window for unknown and token rows (`NULL`
+  for the whole history); the list shows it.
+- The down-step drops the trigger, the function, the table, the constraint
+  and the columns, behind a checksum gate as for 0040 to 0045;
+  `commercial/scripts/release.py` records `migration46_sha256`.
+- `maxLiveMCPConnections` (`internal/store/mcp.go`) goes from 5 to 10,
+  tokens included, AI rows still outside it, and a new
+  `maxUnknownMCPConnections = 3` counts the live rows with `trust =
+  'unknown'` (tokens included) in the same locked count (D12).
+
+### 19.21 Go (`internal/mcpauth`, `internal/config`, `internal/mailer`)
+
+- **`create()`** is keyed on the descriptor's `descriptor_version`, never on
+  reader capabilities, which Go does not read:
+  - version 1: today's checks, with `WS_MCP_REDIRECT_HOSTS`;
+  - version 2: `client_host` passes §19.5 step 4 (the same snapshot and
+    vectors); for `cimd`, `client_host` equals the host of `client_id`;
+    `trust` is `tested` or `unknown`; for `dcr`, `client_host` is in
+    `WS_MCP_DCR_HOSTS`.
+  - **Deny-only switches**, which Go can always apply because Go can always
+    refuse: a version-2 descriptor with `trust: 'unknown'` is refused (403
+    `client_not_allowed`) unless `WS_MCP_CIMD_MODE=any`, and one whose
+    `tested_id` is in `WS_MCP_BLOCKED_CLIENTS` is refused the same way. They
+    turn unknown clients, or one tested client, off without a release.
+  - **Notice precondition** (D7): an unknown-tier or token connection with
+    text is refused (403 `email_unverified`) unless SMTP is configured
+    (`config.SMTP.Configured()`) and the consenting user has a verified
+    e-mail address.
+  - The caps: 10 live, of which at most 3 unknown or token (409
+    `too_many_connections`, as today, and `too_many_unknown`).
+  - Go cannot verify the attestation; these checks catch drift, and the
+    security comes from the measured image and the console.
+  - The console's create request adds `trust`, `client_host`,
+    `client_local`, `claimed_name` and `history_days`. The first four, and
+    `client_name`, must equal the descriptor's (Go relayed it and cached
+    it), as `client_name` must today; Go takes `client_kind`, `client_id`
+    and `tested_id` from the cached descriptor. The ledger's `client_name`
+    is the descriptor's verified display name (§19.12).
+  - The expiry caps follow §19.19, by the descriptor's `limits_tier`, from
+    Go's own copy of the ceilings.
+- **`connectionInfo`** (`listedConnection`) adds `client_kind`,
+  `client_id`, `client_host`, `client_local`, `trust`, `claimed_name`,
+  `history_days`, `first_used_at`, `created_by_email` and `seen` (whether
+  the viewer has seen the row).
+- **`POST /v1/mcp/connections/{id}/seen`**: any member who may list; it
+  inserts into `mcp_connection_seen` and is idempotent (204).
+- **`first_used_at`** is set on the first status call that answers `active`.
+- **Token routes** (§19.18): `POST /v1/mcp/token-requests` and `POST
+  /v1/mcp/token-requests/{id}/bundle`, with the relays `POST
+  /internal/token-requests` and `POST /internal/token-requests/{id}/bundle`;
+  later, `POST /v1/mcp/token-leaks`.
+- **Enclave events**: `POST /v1/mcp/enclave/connections/{id}/budget-hit
+  {"code"}` (HMAC `to-go`, the caller's own rows only, strict body, 204)
+  records the event and raises the notice.
+- **Live list relay**: `POST /v1/mcp/workspaces/{id}/live-list {"nonce"}` →
+  `POST /internal/workspaces/{id}/live-list {"nonce"}` (§19.22), 10 a minute
+  per workspace.
+- **Revoke-only link**: `GET /v1/mcp/revoke-link/{token}` shows a page with
+  one button and no other link; `POST` to the same path revokes that one
+  connection. No session and no password are needed. The token is 32 random
+  bytes (43 base64url characters), stored as SHA-256 in
+  `revoke_link_sha256`; it is minted for the first notice of a connection and
+  replaced by each later one, works once, and ends with the connection; a
+  replaced, used or unknown token answers the same page, "This link is no
+  longer valid." A mail scanner's `GET` changes nothing. Go logs the route,
+  never the token, and rate-limits the path per address.
+- **Configuration** (`internal/config/mcp.go`; the startup line prints each):
+  - `WS_MCP_REDIRECT_HOSTS` stays only while a version-1 reader exists and is
+    deleted with it. Its uses are the version-1 `create()` check and the Go
+    CIMD relay's host list (`CIMD{Hosts}`).
+  - `WS_MCP_CIMD_MODE`: `allowlist` (default) or `any`.
+  - `WS_MCP_BLOCKED_CLIENTS`: a comma list of tested ids
+    (`^[a-z][a-z0-9_]{0,31}$`), empty by default.
+  - `WS_MCP_DCR_HOSTS`: a comma list of hosts, default
+    `claude.ai,claude.com,chatgpt.com`.
+- **The egress proxy** (`cmd/cimd-egress`, §19.9) reads
+  `WS_CIMD_EGRESS_OWN_ADDRESSES` (a comma list of IP addresses, required) and
+  nothing else of Go's configuration.
+
+### 19.22 The console list, the new-assistant notice and the attested live list
+
+**The list** (`commercial/web/src/components/MCPPanel.vue`, and the same
+list on the standalone assistant page `MCPConnectPage.vue`):
+
+- Each row shows: the domain (`client_host`, ASCII) and the main domain in
+  bold; the badge, "Tested", "App on this computer", "Not tested", "Token"
+  or "Legacy" (a row with `trust` `NULL`); the name, which is the verified
+  display name, plus "calls itself “…”" in quotes for unknown rows, or the
+  label for a token; the number count; the scope pills (metadata, text,
+  attachments, drafts); the history window; who connected it; created,
+  first used, last used and expires; and the status.
+- A "New" badge shows until the viewer marks the row seen.
+- Revoke: owners and admins, unchanged.
+- "Revoke all untested" sits above the list whenever an unknown or token row
+  is live.
+- Near the list: "Wappie never asks for your password from an e-mail."
+- The other places that print `client_name` (`MCPRenewalCard.vue`,
+  `MCPDraftCard.vue`, `MCPDraftNotice.vue`, `Composer.vue`, `mcpVia.ts`) now
+  receive a verified string (§19.12) and add the badge where there is room.
+- The connection guide (`MCPPanel.vue`, `AdminView.vue`) becomes generic:
+  the address works in any MCP client; the tested clients are named; others
+  connect with a warning when they identify themselves by a document; tools
+  without OAuth use a token.
+
+**The new-assistant notice.** It fires on every successful activation of an
+OAuth or token connection (`connectionActivate`, and the enclave's
+activation of a token, §19.18 step 6), on a `budget_hit` (§19.19), and when a
+leaked token is revoked (§19.18). AI authorizations are made in the console
+and are not announced.
+
+- **Console banner**, always on: a global `MCPNewConnectionNotice.vue`,
+  mounted in `App.vue` beside `MCPDraftNotice`, lists the workspace's live
+  connections this manager has not seen. It loads on console load, on
+  websocket reconnect and every 5 minutes. It shows "New assistant
+  connected: {client_host} ({tier}), by {email}, {date}, {n} numbers,
+  {scopes}" with the buttons "That's right" (marks the row seen) and
+  "Revoke". Every owner and admin sees it, the person who connected
+  included. The plan's pt draft: "Novo assistente conectado: {client_host}
+  ({tier}), por {email}, {date}, {n} números, {scopes}. [Está certo]
+  [Revogar]".
+- **E-mail** (D7): a new `internal/mailer` message, `MCPConnected`, sent to
+  the person who consented and to the workspace owners with a verified
+  address, at most one per connection and event, and at most 20 a day per
+  workspace. It carries the domain and the tier, the number count, what can
+  be read, the validity and the time; **never the claimed name** (an
+  attacker's text sent from Wappie's domain) and never message content. It
+  has **no link that leads to a login page**: only the revoke-only link
+  ("Don't recognise it? Revoke only this connection"), which needs no login
+  and no password and can do nothing but revoke. A spoofed e-mail that
+  teaches people to click "revoke" and then type a password would be worse
+  than any MCP leak: the Wappie password opens the number keys. So the
+  account template's home link is left out, and the console's address is
+  plain text. The footer: "Wappie never asks for your password from an
+  e-mail. To see your assistants, open the console yourself at
+  app.wappie.thehappie.co." The plan's pt draft of the whole message: "Um
+  novo assistente se conectou ao seu Wappie: {client_host} (não testado pela
+  Wappie), {n} números, {scopes}, até {date}. Não reconhece? [Revogar só
+  esta conexão] — A Wappie nunca pede sua senha por e-mail. Para ver seus
+  assistentes, abra o console você mesmo em app.wappie.thehappie.co."
+- **P1 gate**: SMTP confirmed on the pilot (`WS_SMTP_ADDR`, `WS_MAIL_FROM`,
+  `internal/config/signup.go`) or configured, with SPF, DKIM and **DMARC
+  `p=reject`** published for the sending domain. The mailer change stays
+  minimal; `id.thehappie.co` takes mail over later.
+- **Precondition** (D7): text for an unknown client or a token needs SMTP
+  working and a verified address for the consenting person (§19.21).
+  Accounts created by invitation may lack one.
+- **Rejected:** a WhatsApp note to the person's own chat. It would be archived
+  and readable by every content assistant on that number, it would carry an
+  attacker-chosen name (a prompt-injection carrier), it needs the number
+  online and capture not paused, it raises a WhatsApp Terms risk, and it
+  reaches a number, not a person.
+
+**The attested live list** (`live_list_v1`). The list and the banner come
+from Go's ledger, so a compromised Go could hide a row, and the e-mail does
+not help, because Go's mailer sends it. The enclave is the only party that
+knows every live connection without trusting Go.
+
+- The console asks `POST /v1/mcp/workspaces/{id}/live-list {"nonce"}` (16 to
+  64 random bytes) when the MCP tab opens and when the banner loads; Go
+  relays it to `POST /internal/workspaces/{id}/live-list`.
+- The enclave answers `{descriptor_version: 2, kind: 'live_list',
+  workspace_id, nonce, connection_ids: [the workspace's live ids, sorted],
+  at, attestation}`, attested with user_data v2 (§19.13; the document's
+  `nonce` is the console's, and it carries no `public_key`). AI records are
+  not listed, as Go's list leaves them out.
+- The console verifies the attestation, the nonce and the workspace, and
+  compares the ids with Go's list. An id the enclave holds that Go's list
+  lacks raises a red banner ("The server's list is missing a connection the
+  verified reader knows: {id}") and an operator alert.
+- What it proves: detection, not removal. Revoking still goes through Go; a
+  person who sees the red banner knows the server is not telling the truth.
+
+### 19.23 Behaviours that keyed on `claude.ai` and `chatgpt.com`
+
+| Place | 0.5.0 | 0.6.0 |
+|---|---|---|
+| `enclave/constants.mjs` | `REDIRECT_HOSTS`, `CIMD` | `CLIENT_POLICY`, `TESTED_CLIENTS`, `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS`, `CIMD_EGRESS` (§19.3) |
+| `clients.mjs` (`redirectHost`, `loopbackRedirect`, `validateRedirectURIs`, `makeRoom`) | the redirect host in the allowlist; one host; loopback only when vouched and without a port; a per-host cap | DCR: pinned redirects only. CIMD: same-host https and loopback with any port, mixed allowed, other entries ignored. The caps of §19.10 |
+| `cimd.mjs` (`cimdURL`, `createCIMD`) | the document host in the allowlist; the body Go relays is believed; `redirect_host` = the vouching host | §19.5; tested ids from the constants; others fetched by the enclave over its own TLS (§19.9); `client_host`, `client_local` |
+| `server.mjs` (hosted path) | `WAPPIE_MCP_REDIRECT_HOSTS` | unchanged, in allowlist mode; P0 decides its fate |
+| `internal/config/mcp.go`, `create()`, `internal/mcpauth/cimd.go` | the allowlist checks consent and fetch | §19.21; the Go relay serves 0.5.0 only, then is deleted (§19.9) |
+| `router.mjs` (`MCP_PER_MINUTE`) | 60 calls a minute for every connection | by limits tier (§19.19) |
+| `enclave/media/gate.mjs` (`hostOf`), `enclave/media/policy.mjs` (`HOST_WAIT_MS`) | `hostOf(redirect_host)`: 25 s ChatGPT, 40 s Claude, 25 s default | `record.profile` from the tested entry; unknown and token get `default` (25 s); legacy records keep `hostOf(redirect_host)` |
+| `packages/mcp/server.mjs` (the image note's wording) | `host === 'chatgpt.com'` | `profile === 'chatgpt.com'` |
+| `DIRECT_SEND_HOSTS` (S3, planned, §17.15) | redirect hosts, though a loopback client is recorded under its vouching host | a `direct_send: true` flag on a tested **web** entry only; never for a local, unknown or token connection (§17.15 is corrected) |
+| `MCPPanel.vue`, `AdminView.vue` | a guide for Claude and ChatGPT only | a generic guide (§19.22) |
+| The site, wappie.thehappie.co | Claude and ChatGPT text | made generic by the site session after P4 |
+| `docs/mcp.md` (Codex lists tools it cannot call) | a note | diagnosed in phase B and updated |
+
+### 19.24 Logs, health and what leaks
+
+- **The authorize line** gains the booleans `unknown`, `local`, `cimd`,
+  `drift` and `resource_default`; the complete line gains `ip_mismatch`.
+- **New events** (§10.4): `client_resolved {unknown, local, cimd, drift,
+  name_dropped, ignored_uris}` (the last a count); `cimd_fetch {code, ms}`;
+  `budget_hit {conn, code}`; `token_installed {conn}` and
+  `token_install_failed {conn, code}`.
+- **The health line** gains `clients_unknown`, `connections_unknown`,
+  `connections_local`, `connections_token`, `cimd_fetches`, `cimd_refusals`,
+  `tested_drift`, `ip_mismatches` and `budget_hits`.
+- **The log sink's schema** (`enclave/logsink.mjs`, `log-sink.py`) is
+  unchanged: no domain, name or URL ever leaves the enclave as a log line.
+  `test_log_sink.py` lists the new events and health fields, and a sentinel
+  test checks that no line names a host.
+- **Go** logs `client_host` and `trust` on consent and activation, and the
+  `budget_hit` codes; never a token, a revoke-link token or a claimed name.
+  The parent's egress proxy logs the fetched host (§19.9).
+
+**What leaks**, declared:
+
+| Observable | By whom | Treatment |
+|---|---|---|
+| Which client each connection is (`client_host`, `client_id`, `claimed_name`, `trust`, the history window) | Go (the ledger, its logs) | inherent: the list shows them |
+| Which document hosts are fetched, when, and the sizes | the parent (the egress journal, SNI, TLS sizes) | inherent; the enclave's own lines carry booleans and codes only |
+| Who hit a reading limit, and which | Go (`budget_hit`) | a count-only code, by design: it raises the notice |
+| When the console asked for the live list | Go | inherent |
+| A token's bearer, its hash, its allowed networks | nobody but the person and the enclave | the hash only inside the sealed state (§19.18) |
+| The person's network prefix at authorize and at completion | the enclave only | compared in memory, never logged or relayed |
+
+### 19.25 Threats added by open admission, and their defences
+
+- **A. Go or the parent forges a CIMD document.** The enclave fetches over
+  TLS it verifies, so a forged body fails; tested clients are served from
+  measured constants and never fetched; DCR accepts only pinned redirects;
+  the descriptor, the full redirect included, is attested. Residual: Go and
+  the parent can refuse or delay a fetch, as Go can today.
+- **B. Go rewrites the card's name, domain, redirect or limits.** user_data
+  v2 binds every descriptor field, and the console's trust check is one-way
+  (§19.13).
+- **C. Consent phishing with an attacker's client** (a document with
+  `client_name: "Claude"` and an https redirect to the attacker's host, and a
+  Wappie authorize link sent to the person). The card: the domain large and
+  the main domain on its own line; the full identity and return addresses;
+  `xn--` shown as it is; suffix hosts and path-shared hosts refused; the
+  shared-hosting line; the look-alike checks; "Not tested"; tick 1. Text is
+  off and locked behind tick 2, and sending is never offered. Shorter
+  ceilings and idle times, the history window and the daily limits. The
+  notice on activation, the list, revocation, and "first time" on the card.
+- **D. Consent phishing with a legitimate client.** The attacker starts the
+  flow in their own claude.ai or ChatGPT account and sends the victim the
+  authorize URL or the console's `?mcp_connect=` link; both are on Wappie's
+  own domains, and the card says "claude.ai · Tested by Wappie". The
+  authorize-URL variant works only if the vendor does not tie `state` to the
+  browser session: §19.4 step 9 makes that a release gate for each web entry.
+  The console-link variant: the network check at completion (§19.12). Tick 1
+  on every consent; the notice, the list and revocation. Residual: a vendor
+  that regresses after listing; `WS_MCP_BLOCKED_CLIENTS` turns it off at
+  once, and the next release drops it.
+- **E. A local program poses as a native app over loopback** (a package's
+  install script or an editor extension is enough). It cannot read the Wappie
+  password, but it can receive a code the person approves; a remote attacker
+  can also deliver a code to a local listener with an open redirect or a
+  request log (§19.7). The "cannot be confirmed on this computer" label;
+  tick 1; the `local_tested` middle limits, or the unknown ones; no drafts,
+  own chat or direct send; the notice.
+- **F. SSRF through the fetch.** §19.9: the host predicate, refused addresses
+  at dial time, one resolution, port 443, a dedicated egress address, the
+  `amazonaws.com` subtree refused, uniform refusals.
+- **G. Registration and fetch floods.** Budgets and caps per registrable
+  domain (§19.9, §19.10); tested clients never depend on a fetch.
+- **H. A leaked console token.** The safe snippets, the checksum and secret
+  scanning, allowed networks, a one-day default for text, the reading
+  limits, revocation (§19.18).
+- **I. An unknown client misuses what it reads** (injected instructions,
+  exfiltration). Text off by default, no sending, the history window and the
+  daily limits. The rest is inherent to giving any assistant text.
+- **J. Bulk copy by an approved unknown client or a token.** The reading
+  limits, sealed for text and applied by the enclave; `budget_hit` raises the
+  notice. Residual: up to one day's budget within the window.
+- **K. A spoofed "new assistant" e-mail used to phish the password.** No
+  login link in the notice, the revoke-only link, DMARC `p=reject`, and the
+  "never asks for your password" line in the e-mail and in the console.
+- **L. Go hides a row from the list.** The attested live list (§19.22).
+- **M. A rollback relaxes the limits.** Sealed-state version 2: 0.5.0 refuses
+  the state, and a rollback means everyone reconnects (§19.17).
+- **N. A vendor edits its document.** Tested clients are served from the
+  constants; a redirect that is not pinned degrades to unknown (drift);
+  unusable entries are ignored, not fatal; a bad name is dropped, not fatal.
+
+### 19.26 Tests
+
+**Reader** (`packages/mcp-http/test`, `packages/mcp-http/enclave/test`,
+`packages/mcp/test`):
+
+- **CIMD ids**: the shared vectors (§19.5).
+- **Documents.** Accepted: same-host https; loopback with and without a
+  port; mixed. Kept with entries ignored: Claude's document plus a
+  `claude.com` callback; Codex's document plus an https entry on another
+  host; a custom scheme next to a usable entry; a request naming an ignored
+  entry refused. Refused: no usable entry; a `client_id` mismatch; more than
+  8 KiB; not JSON. Names: a bidi control, a zero-width character, a double
+  space, a mixed script (`Сlaude`) and an emoji with a zero-width joiner all
+  give `claimed_name: null` and `name_dropped: true`, and the client works; a
+  missing name gives `null`.
+- **Matching.** Loopback with varying ports; no `127.0.0.1`/`localhost`
+  equivalence; https exact.
+- **Tier.** Each tested id with each pinned redirect is tested and not
+  fetched (the fetcher spy sees no call). A tested id with another redirect
+  is fetched and becomes unknown with `drift`. The ChatGPT callback-id
+  pattern and the DCR pattern give the same tier; a mismatched `{cb}` is
+  refused. DCR on an unpinned path is refused.
+- **Fetcher**, through a fake CONNECT proxy: TLS verified against a test
+  root; a wrong certificate refused; a 3xx, a wrong type, an oversize body,
+  slow headers, a trickling body and a 5 s overrun all refused;
+  `Cache-Control` parsing; the budgets per address, overall and per
+  registrable domain; the uniform refusal page and its timing.
+- **Caps and pending**, as §19.10, the 3 live unknown or token connections
+  per workspace included.
+- **Request checks.** `resource` absent (the default and
+  `resource_default`), normalized, and different; scope leniency.
+- **Network check.** The same prefix accepted; another /24, another /56 and
+  another family refused with `ip_mismatch`.
+- **Descriptor v2 and user_data v2**: the vectors for every kind.
+- **Consent version 4 and link bundle v2.** Every new consent to 0.6.0
+  without `started_ack`, or of versions 1 to 3, refused. Unknown: refused
+  without `unknown_ack` for text, with `send`, drafts or own chat, with a
+  mismatched `client_id`, `client_local` or `trust`, with a bad
+  `history_days`, past the 30-day text ceiling, or as a fourth live unknown
+  connection. Tested local: refused with `send`, drafts or own chat, or past
+  30 days. Tested web: version 4 with `send` accepted. The device-check
+  scope with the new members.
+- **Version-4 renewal**, for tested web, local, unknown and token: the
+  renewal descriptor, `acceptBundle` comparing each new member,
+  `bearer_sha256` absent from the scope, a version-3 renewal of a version-4
+  record refused, and a 0.5.0 record renewed at its own version.
+- **Lifetimes and reading limits**, by tier: idle times, ceilings, the
+  20-call rate, the history floor on every tool and `outside_window`, the
+  daily and first-hour budgets, `limit_reached`, `budget_hit` once per
+  window.
+- **Sealed state.** 0.6.0 reads version 1 and writes version 2; a version-2
+  plaintext given to 0.5.0's loader raises `state_auth_failed`.
+- **Host profile**: by `profile`, and legacy records by `hostOf`.
+- **Live list**: the ids, the nonce, the attestation, AI records left out.
+- **Token.** Request, bundle, install and verify; the prefix, the shape and
+  the checksum (the vector of §19.18); allowed networks; revocation through
+  the console and through RFC 7009; a restart (metadata survives; text goes
+  to `reseal`, then renewal or a new token); expiry; a duplicate
+  `bearer_sha256`; `/mcp/token` refusing `wmcp_k_`; the unclaimed sweep
+  skipping it.
+- **Logs.** No domain in any enclave line (the sink's schema test extended).
+
+**Go:**
+
+- `netguard.Public` over every range of §19.9, and the media client with
+  `Proxy: nil`.
+- The egress proxy: the shared vectors; a fake resolver for a public answer,
+  a private answer, a mixed answer, the deployment's own address and a
+  rebinding attempt (the second resolution is never made); each address
+  dialed in order; `HTTPS_PROXY` ignored; the budgets per registrable
+  domain; the 6 s and 16 KiB limits; the journal line.
+- `create()` with descriptors v1 and v2: accepted, drift refusals, the
+  expiry caps by tier, `WS_MCP_CIMD_MODE`, `WS_MCP_BLOCKED_CLIENTS`, the SMTP
+  and verified-e-mail precondition, the caps of 10 and 3.
+- The token routes, `budget-hit`, the live-list relay, `seen`,
+  `first_used_at`, and the revoke-only link (a GET changes nothing; a POST
+  revokes once; a second POST and a replaced token fail).
+- Migration 0046 up and down; an insert by the old code path (no
+  `client_kind`, no `trust`) for metadata and AI rows; the forced RLS on
+  `mcp_connection_seen`; the new CHECKs; the connection caps.
+- The `MCPConnected` mail's rendering (no claimed name, no login link, the
+  footer) and its rate cap.
+- The existing allowlist tests (`internal/config/mcp_test.go`,
+  `mcpauth_test.go`, `enclave_test.go`) keep allowlist mode for version-1
+  descriptors.
+
+**Console:**
+
+- The card per case (tested web, tested local, unknown web, unknown local,
+  drifted tested, token): the domain, the main domain, `xn--`, the identity
+  and return addresses, the shared-hosting line, each look-alike rule
+  (including no "not theirs" on a vendor's domain), first time, the ticks
+  gating Authorize and text, the options and limits, left-only truncation.
+- The verifier v2: a tampered descriptor field; `trust: 'tested'` for an
+  unpinned redirect (refused); `trust: 'unknown'` for a tested id
+  (accepted); `client_host` disagreeing with `client_id`; `limits`
+  disagreeing with the release; a v1 descriptor from a release that declares
+  `descriptor_attest_v2` (refused).
+- The version-4 renewal: `validRenewal` with version 4, the rebuilt scope,
+  the unknown renewal header and tick 2.
+- The token page: the bearer never appears in any request body or console
+  log (a network spy in the test); shown once; each snippet keeps the
+  literal token out of the command and the configuration.
+- The list's columns, "New" and seen; the banner; "Revoke all untested";
+  the live-list comparison and its red banner.
+- The strings in five languages.
+
+**Live** (the dedicated test workspace only):
+
+- **Phase B, on 0.5.0, before P2's image:** the whole §19.4 script for
+  Claude (web), ChatGPT (developer mode), Codex (CLI) and Claude Code, with
+  at least three tool calls each, the 15-minute refresh, a revocation, and
+  the cross-session test for Claude and ChatGPT (two browser profiles,
+  ideally a second vendor account). Time is budgeted to diagnose Codex's
+  "lists tools, cannot call them". Only the clients that pass are listed.
+  The loopback steps need the owner at the Mac where Codex and Claude Code
+  run, because the code returns to that machine's `localhost`.
+- **On 0.6.0:** the §19.4 script for each again, the console-link network
+  check, and the ChatGPT journal check (CIMD or DCR).
+- **Unknown tier**, with clients that do not run OAuth from a browser page
+  (MCP Inspector does, and the enclave sends no CORS headers on `/mcp/token`
+  and refuses any `Origin` on `/mcp`, so it would fail for unrelated
+  reasons): mcp-remote with `--client-metadata-url` pointing at a test
+  document (loopback); Zed and goose with their real documents; optionally
+  VS Code (mixed https and loopback with a port); and, for the https unknown
+  card, a CIMD document and a static callback page on
+  `thehappieco.github.io` (D13), with the code exchange finished by `curl`
+  and the PKCE verifier. Checked: the warning, the identity and return
+  addresses, the ticks, text locked, sending absent, the 30-day ceiling, the
+  3-day idle refresh (clock-shifted in tests, observed live as a refresh
+  issued with the shorter expiry), the history window, a daily budget hit and
+  its notice.
+- **Token**: Claude Code with the single-quoted header and with
+  `headersHelper`, Codex with `bearer_token_env_var`, curl with `-H @file`.
+  The owner creates the token in the console and saves it to the keychain or
+  a 0600 file that the agent reads without printing; after the test the
+  owner revokes it. Metadata and text; allowed networks; revocation; expiry;
+  renewal after a restart; a search of the stored configurations for
+  `wmcp_k_`.
+- **Negative, with the owner's approval before anything touches the pilot:**
+  a phishing link with a look-alike name (`Сlaude`, `cl4ude`); documents on
+  public wildcard names that resolve to internal addresses
+  (`127.0.0.1.nip.io`, `169.254.169.254.sslip.io`, a VPC address the same
+  way), which the egress proxy refuses with `private_address` (a mixed set
+  only if a test domain with its own DNS exists, otherwise in the automated
+  tests only); a host under `thehappie.co`, a public suffix and a
+  path-shared host, refused; a bidi name, dropped.
+
+### 19.27 Release and rollback
+
+**P1** (a pilot release, no PCR0 change): migration 0046,
+`internal/netguard` (with the media guard moved into it), Go's `create()`
+and the console accepting descriptors v1 and v2, the list, the banner and
+the e-mail with the revoke-only link (which also work for 0.5.0
+connections). Gates: SMTP confirmed or configured, with SPF, DKIM and DMARC
+`p=reject`; the parent's subnet checked for VPC endpoints and its address for
+allowlists that name it. `WS_MCP_CIMD_MODE` stays `allowlist`.
+
+**B**: the baseline of §19.26 on 0.5.0. It freezes `TESTED_CLIENTS`; the
+lead writes the list from the baseline's record and removes the pending
+marker.
+
+**P2 (0.6.0)**, in this order:
+
+1. (Done in P1) the server and console release that accepts descriptors v1
+   and v2.
+2. The image, the measurements and the release `reader-v0.6.0`; the
+   transition key policy for {0.5.0, 0.6.0}, as 0.5.0 did; the private PR
+   (`web/reader-releases.json`, `make reader-measurements`, the card, the
+   token page, the list, the banner); the console allowlist gains 0.6.0.
+   Deploy `wappie-cimd-egress` on the parent, then the enclave.
+3. Set `WS_MCP_CIMD_MODE=any`.
+4. The live script (§19.26).
+5. The renewal round for content connections.
+6. The steady policy after about seven days; 0.5.0 drops from the console
+   allowlist, and the Go CIMD relay (`relay.cimd`,
+   `internal/mcpauth/cimd.go`, `GET /v1/mcp/enclave/cimd`) is deleted.
+
+**P4**: the live tests, the final docs, and the message to the site session
+once the tested clients pass on 0.6.0 (the list of names holds only the
+clients that passed).
+
+**Rollback from 0.6.0 to 0.5.0:**
+
+1. Set `WS_MCP_CIMD_MODE=allowlist`.
+2. Revoke, through Go, every live connection created under 0.6.0.
+3. Delete the sealed `as-*` collections in Go's store (`mcp_reader_state`):
+   0.5.0 cannot read version 2 and exits on it (§19.17), so it must start
+   empty. Every connection reconnects; there are no customers yet, and this
+   is the price of a rollback that cannot loosen the limits (D18). `infra`
+   stays, with the ACME account.
+4. Then the usual order (§16.12, §18.16) under the transition policy, and
+   stop the egress proxy.
+5. Migration 0046 can stay: `client_kind` defaults to `legacy`, the trigger
+   handles AI rows and `trust` may be `NULL`, so the old binary's inserts
+   work.
+
+### 19.28 Open points
+
+1. Whether ChatGPT, in the owner's setup, registers by DCR or by CIMD (the
+   journal, phase B and P4).
+2. Whether claude.ai and ChatGPT tie the OAuth `state` to their own browser
+   session: a release gate (§19.4 step 9), measured in phase B.
+3. Resolved by reading `openSealedState` in `state.mjs`: 0.5.0's loader
+   accepts records with new members, which is why 0.6.0 bumps the plaintext
+   version (§19.17).
+4. Whether SMTP is configured on the pilot (`WS_SMTP_ADDR`, `WS_MAIL_FROM`):
+   a P1 gate. Resolved by reading: `internal/mailer` has one English template
+   (`templates/account.html`) and no locale, so `MCPConnected` needs a
+   template of its own without the home link, and its languages are the
+   console's to decide with the owner.
+5. Codex listing tools it cannot call: diagnosed in phase B.
+6. The `claude.com/api/mcp/auth_callback` variant: pinned in Claude's
+   entries; to be seen live.
+7. Whether Gemini CLI expands variables in `headers` (§19.18).
+8. Whether GitHub accepts the `wmcp_k_` prefix into secret scanning.
+9. Whether the parent's subnet routes any VPC endpoint (P1, §19.9).
+10. The footer "Wappie never asks for your password from an e-mail" must be
+    true of every Wappie e-mail: today's verification and invitation e-mails
+    link to console pages where a password is typed. The owner words the
+    sentence, or those e-mails change, before the notice ships.
+11. Whether `cmd/cimd-egress` listens on vsock 8007 itself or behind a socat
+    bridge to loopback, as the parent's credential and `boot.json` units
+    are: GO and DEPLOY decide; the contract fixes only vsock 8007 and that
+    nothing else listens.
+12. **The kit:** `CLIENT_POLICY`, the tiers, the limits and the token belong
+    in the generic reader core the kit evaluates for Mailie, so the names
+    stay product-neutral (`wappie-console-token` would become
+    `<product>-console-token`).
+13. **Deferred:** open DCR (D1's options b and c); a console "turn text on"
+    for an existing connection (a new version-4 consent for the same
+    `client_id` that replaces the record, about 2 person-days, D16; today a
+    connection's kind is fixed for life and a renewal never changes scope);
+    honouring ChatGPT's `private_key_jwt`; browser-based MCP clients
+    (`Origin` on `/mcp`, D14).
+
+### Amendments to §§1 to 18
+
+| Where | Amendment | When |
+|---|---|---|
+| Opening | reader 0.6.0 admits any MCP client (§19) | now (in place) |
+| §1 | one more hop, `127.0.0.8:3128` to vsock 8007: the parent's document egress proxy (`wappie-cimd-egress`), which tunnels `CONNECT <host>:443` to public addresses only, the enclave's first egress to hosts that are not fixed (§19.9) | 0.6.0 |
+| §3 | `WS_MCP_REDIRECT_HOSTS` applies to version-1 descriptors only and is deleted with the last version-1 reader; `WS_MCP_CIMD_MODE`, `WS_MCP_BLOCKED_CLIENTS` and `WS_MCP_DCR_HOSTS` are added (§19.21) | P1 |
+| §5.1 | `POST /internal/token-requests`, `POST /internal/token-requests/{id}/bundle` and `POST /internal/workspaces/{id}/live-list`; the descriptors are version 2 (§19.12) | 0.6.0 |
+| §5.2 | `POST /v1/mcp/enclave/connections/{id}/budget-hit`; `GET /v1/mcp/enclave/cimd` serves 0.5.0 only and is deleted after it (§19.9) | 0.6.0 |
+| §5.3 | the token, live-list, `seen` and revoke-link routes; `create()`'s version-2 checks and new body fields (§19.21) | P1 and 0.6.0 |
+| §5.4 | the CIMD and loopback rules of §19.5 to §19.8; `resource` and `scope` loosened (§19.11); the network check at completion (§19.12) | 0.6.0 |
+| §6.2, §6.3 | user_data v2 over the whole descriptor, for every kind (§19.13); the prepared descriptor is version 2 (§19.12) | 0.6.0 |
+| §6.4 | rule 4: seal to `result.publicKey`, and every displayed field is attested; the console's v2 checks (§19.13) | 0.6.0 |
+| §8 | the `as-*` plaintexts are version 2; 0.6.0 reads 1 and 2; `infra` stays 1 (§19.17) | 0.6.0 |
+| §9 | `measurements.json` adds `tested_clients` and `client_limits`, and `readerMeasurements.ts` carries them (§19.3) | 0.6.0 |
+| §10.1 | `REDIRECT_HOSTS` and `CIMD` give way to §19.3's constants | 0.6.0 |
+| §10.4 | the events and health fields of §19.24 | 0.6.0 |
+| §11 | `VerifyOptions.descriptor`, `descriptorSHA256`, `attestationUserDataV2`, and `attestation_descriptor` (§19.13) | 0.6.0 |
+| §15.2, §16.4 | migration 0046: the client columns, `history_days`, `mcp_connection_seen`; the cap of live connections is 10, at most 3 unknown or token (§19.20) | P1 |
+| §15.4, §16.2, §17.2 | `CONTENT_CONSENT_VERSIONS = [1, 2, 3, 4]`; `purpose: 'token'`; the version-4 fields and device scope; link bundle v2 (§19.15) | 0.6.0 |
+| §15.9 | the renewal descriptor is version 2 and attested, with §19.16's members | 0.6.0 |
+| §15.13, §16.10, §17.12, §18.15 | what leaks adds the client host and tier in Go's logs and ledger, the fetched hosts in the parent's egress journal, and the booleans in the enclave's lines (§19.24) | 0.6.0 |
+| §16.2 rule 13, §16.7 | the record also carries the client fields of §19.17, written once; the host profile is the record's `profile`, `hostOf(redirect_host)` for legacy records (§19.23) | 0.6.0 |
+| §16.8, §18.14 | `READER_VERSION` 0.6.0 and its capabilities (§19.3) | 0.6.0 |
+| §17, §17.15, §17.17 | direct send comes after 0.6.0 (D11), only for a tested web entry with `direct_send`, never for a local, unknown or token connection | now (in place) |
+| §18, §18.16 | B2 comes after 0.6.0 (D11) | now (in place) |
+| §18.7 | the AI request and renewal descriptors are version 2 (`ai`, `ai_renewal`) and attested with user_data v2, so `functions`, `features` and `budget` become attested | 0.6.0 |

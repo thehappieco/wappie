@@ -54,10 +54,27 @@ connections with it. Live ingestion is not blind (the server that receives
 messages from WhatsApp sees them before sealing), and the archive REST API
 still never opens archived content.
 
+From reader 0.6.0 ([contract §19](mcp-enclave.md#19-any-mcp-client-060)) the
+attested reader admits any assistant that identifies itself with a client
+document on its own https domain, and a connection token made in the
+console. These rows add to the table above, for every connection on that
+reader, with or without text:
+
+| Who | Reads? | How, or why not |
+| --- | --- | --- |
+| An assistant you approved that Wappie has not tested | Yes, what you allowed | Metadata once you tick "I started this"; text and attachments only after a second, deliberate tick, with your password and a confirmed e-mail address. Never drafts, notes or sending. At most the last 7, 30 or 90 days (30 by default), 2,000 messages and 50 attachments a day (300 and 10 in the first hour), 20 calls a minute, text for 30 days at most, and its access lapses after 3 days unused (7 for metadata). |
+| Someone who tricked you into approving their assistant | Yes, what was approved, within those limits, until you revoke it or it expires | The consent card leads with the verified domain and its main domain, shows the full identity and return addresses, warns about look-alike names and shared hosting, and refuses public suffixes, hosts shared by path and Wappie's own domain. Every new connection raises a banner in the console and an e-mail with a link that can only revoke it. |
+| Someone who started a connection in their own Claude or ChatGPT and got you to approve it | Only if that assistant accepts a sign-in it did not start | Each release tests this for every web assistant it lists, and an assistant that fails is not listed. You tick "I started this" on every consent, and the reader refuses an approval completed from a different network than the one that started the connection. The banner, the e-mail and revocation. |
+| A program on your computer posing as an app such as Claude Code or Codex (an installer script is enough) | Yes, what you approved for that app | Nothing can confirm which program on your computer receives the access, and the card says so. You tick "I started this"; such apps get shorter lifetimes (text 30 days at most, refresh lapsing after 7 days unused) and never drafts, notes or sending. |
+| Whoever holds a connection token | Yes, within its numbers, scope, networks, history window, limits and validity | The token is shown once and Wappie keeps only its hash, inside the reader's sealed state. A text token lasts 1 day by default and 30 at most. Revocation takes effect within a minute. |
+| Wappie's staff forging an assistant's identity document | No | The verified reader fetches the document itself over a connection it checks; the assistants Wappie tested are pinned in its published image and never fetched. Staff can only block a document. |
+| Wappie's staff hiding a connection from the list | Detected | The console compares the list with the one the verified reader signs, and shows a red warning when a connection is missing. |
+
 ## Connect an assistant
 
 The console's **MCP** panel shows workspace owners and administrators one
-connector address and how to add it in Claude or ChatGPT. The assistant then
+connector address and how to add it in Claude or ChatGPT (from reader 0.6.0,
+in any MCP client: [below](#any-mcp-client-reader-060)). The assistant then
 sends the browser back to the console to choose the numbers and approve the
 connection; nothing runs on the person's computer. See the
 [remote connector](../packages/mcp-http/README.md) and the steps below.
@@ -111,8 +128,10 @@ connection can see, and not to read WhatsApp through the screen to get around a
 locked result.
 
 Native apps such as Codex and Claude Code identify themselves with a Client ID
-Metadata Document on an allowed host and take the code on a loopback port
-(RFC 8252); open registration never gets loopback redirects.
+Metadata Document and take the code on a loopback port (RFC 8252); open
+registration never gets loopback redirects. Up to reader 0.5.0 the document
+must sit on an allowed host (`claude.ai` or `chatgpt.com`); from reader 0.6.0
+any https host that passes the reader's checks qualifies, as below.
 
 The server advertises the connector's address in `/v1/discovery` as
 `endpoints.mcp_server`, because the console runs on another origin than the
@@ -131,6 +150,44 @@ archive decryption key ever reaches it; on the attested reader a text
 connection's key exists only inside the enclave. A [manual setup](../packages/mcp/README.md#manual-configuration)
 also works with public API/CLI credentials, without the commercial console.
 
+### Any MCP client (reader 0.6.0)
+
+From reader 0.6.0 ([contract §19](mcp-enclave.md#19-any-mcp-client-060)) the
+attested reader's address works in any MCP client that identifies itself
+with a Client ID Metadata Document on its own https domain (VS Code, Zed,
+goose, an in-house agent), as well as in Claude, ChatGPT, Codex and Claude
+Code. The consent card always leads with the client's verified domain.
+
+- **Tested by Wappie.** The clients Wappie has tested are pinned, with their
+  exact return addresses, in the reader's published image. The first list
+  (Claude, ChatGPT, Codex and Claude Code) is final only after a live
+  baseline on reader 0.5.0, and only the clients that pass it are listed.
+  Claude and ChatGPT show "Tested by Wappie". Codex and Claude Code show
+  "App on this computer": an app on your computer cannot be identified
+  there, so they get shorter lifetimes and no drafts or notes.
+- **Not tested by Wappie.** Any other client connects with an amber card:
+  its domain and main domain, the full addresses it identifies itself with
+  and returns to, the name it gives in quotes, and warnings for look-alike
+  names and shared hosting. Text and attachments stay locked until a second,
+  deliberate tick and a confirmed e-mail address, sending is never offered,
+  and the reading limits in [who can read what](#who-can-read-what) apply.
+- **Connection token**, for tools that cannot sign in with OAuth but can
+  send a fixed header (Cursor, Windsurf, Gemini CLI, n8n, OpenCode,
+  mcp-remote, scripts): in the console's MCP tab, an owner or administrator
+  creates a token, chooses its numbers, what it may read, its validity (text
+  1 day by default), its history window and, optionally, the networks it may
+  be used from, and copies it once into the computer's keychain. The tool
+  sends it only as `Authorization: Bearer`, never in a URL. A token is
+  always "not tested".
+- **Not supported:** clients that run inside a web page (the reader refuses
+  any `Origin` on `/mcp`), and clients that can only register dynamically
+  and cannot send a header (the Gemini app; Perplexity, unconfirmed).
+- Every consent asks you to tick "I started this", and every new connection
+  raises a banner in the console and an e-mail whose only link revokes that
+  connection. Wappie never asks for your password from an e-mail.
+- A workspace holds at most ten live connections, of which at most three
+  are untested assistants or tokens.
+
 ### Approving a remote connection
 
 The assistant redirects the browser to the console with a one-time request id.
@@ -141,9 +198,10 @@ console issues a read-only API key restricted to those numbers, seals it to
 the reader's public key in the browser, and hands the reader a proof that the
 same browser approved that same request. The archive server relays the sealed
 bundle as an opaque blob and records the connection; it never sees the key
-inside. A workspace can hold five live connections; each is listed in the
-console's MCP panel and can be revoked there, which revokes its API key in the
-same transaction. Revocation stops future reads; it cannot retract metadata
+inside. A workspace can hold five live connections (ten from the server
+release that prepares reader 0.6.0, of which at most three untested
+assistants or tokens); each is listed in the console's MCP panel and can be
+revoked there, which revokes its API key in the same transaction. Revocation stops future reads; it cannot retract metadata
 already returned. An approval that is not completed within twenty minutes
 expires with its provisional key.
 

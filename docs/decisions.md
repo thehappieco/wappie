@@ -1148,6 +1148,11 @@ confirmations from the Wappie reader or another linked client.
 > containers and of every `metadata` connection. For the attested reader at
 > `https://mcp.wappie.thehappie.co/mcp`, "Message text inside an attested
 > reader (2026-09-26)" below supersedes it.
+>
+> Its paragraph on dynamic client registration and client metadata documents
+> (the two-host allowlist and the Go relay that fetches documents) is
+> superseded for the attested reader, from reader 0.6.0, by "Any MCP client,
+> identified by its own document (2026-10-01)" below.
 
 The local stdio MCP stays exactly as it is: keys on your computer, plaintext
 optional, nothing to revise. The hosted connector is a second transport, not a
@@ -1274,3 +1279,77 @@ any workspace other than the test workspace is listed.
 The local stdio MCP is unchanged. `docs/rest-api.md` still holds: the archive
 server never opens archived content or receives archive private keys. The
 enclave reads the archive through that same REST API, as a client would.
+
+## Any MCP client, identified by its own document (2026-10-01)
+
+The connector admitted two hosts, `claude.ai` and `chatgpt.com`, and that
+allowlist was the whole defence against forged identities and against the
+document fetch reaching inside the network. Every other MCP client was
+locked out, VS Code, Zed and goose included, although each publishes a
+document on its own domain. The owner asked for any client and approved the
+plan's recommendations on 2026-10-01 (D1 to D18,
+[§19](mcp-enclave.md#19-any-mcp-client-060)). From reader 0.6.0 the attested
+reader admits a Client ID Metadata Document on any https host that passes a
+host check, and the security moves into what the person sees and what the
+reader enforces.
+
+**The domain is the identity; the name is a claim.** A web redirect must sit
+on exactly the document's host, and a loopback redirect may use any port. The
+consent card leads with the domain and its main domain, shows the full
+identity and return addresses of a client Wappie has not tested, and prints
+the name a client gives only in quotes. A public suffix on its own, a host
+shared by path (`s3.amazonaws.com`, `webhook.site`) and every host under
+Wappie's own domain are refused; a subdomain of shared hosting (`github.io`)
+is admitted with a warning.
+
+**The reader fetches documents itself.** With any host admitted, a Go relay
+that fetches documents could present one for any large domain that has an
+open redirect anywhere, and the card would show that domain while the code
+went to Go. So the enclave fetches over TLS it verifies, through an egress
+proxy on its parent that passes bytes only to public addresses on port 443,
+resolves each name once and follows no redirect: the parent and Go can refuse
+or delay a document, never forge one. The browser checks that every field the
+card shows is attested.
+
+**Tested clients are pinned, not trusted by domain.** ChatGPT serves a valid
+document at any path under `chatgpt.com/oauth/`, and `claude.ai` vouches for
+two different clients, so a domain alone pins nothing. The clients Wappie
+has tested are image constants with their exact redirects, measured and
+published, and are never fetched; a tested client that asks for another
+redirect is served as untested. The first list (Claude, ChatGPT, Codex and
+Claude Code) is final only after a live baseline on the current reader, and a
+web client that accepts a sign-in it did not start is not listed.
+
+**Dynamic registration only for the pinned redirects.** It proves only that a
+code goes to an address on a host, which an open redirect fakes, and the
+specification has deprecated it. Registration accepts the pinned Claude and
+ChatGPT redirects and nothing else, which also closes the hole where any path
+on those hosts could be registered.
+
+**What an untested client may do is narrower.** Metadata once the person
+ticks "I started this"; text and attachments only after a second, deliberate
+tick and with a confirmed e-mail address; never drafts, notes or sending; a
+history window of 7, 30 or 90 days; 2,000 messages and 50 attachments a day;
+20 calls a minute; shorter lifetimes; at most three per workspace. Apps on the
+person's own computer cannot be identified there, so even tested ones get
+intermediate lifetimes and no drafts or notes. Every consent carries the "I
+started this" tick, tested clients included.
+
+**Every connection is announced, and the list is checked.** A banner in the
+console and an e-mail whose only link revokes that one connection, with no
+link that leads to a login page, because an e-mail that teaches people to
+type their password after a click would cost more than any connector leak.
+The console compares Go's list with the one the reader signs, so a hidden
+connection is detected.
+
+**A token for tools without OAuth.** Minted in the browser, shown once, only
+its hash sealed to the reader, always untested, text valid one day by
+default, optionally bound to networks.
+
+**A rollback costs a reconnect.** The reader's sealed state changes format,
+so the previous reader refuses it rather than serving the new connections
+under looser rules; rolling back means deleting the state, and every
+connection reconnects.
+
+`docs/rest-api.md` still holds: the archive server never opens archived
+content or receives archive private keys.

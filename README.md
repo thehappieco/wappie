@@ -178,7 +178,9 @@ content locked; plaintext requires explicit local configuration and authorized
 keys. See the [REST contract](docs/rest-api.md) and [MCP setup](docs/mcp.md).
 
 `packages/mcp-http` runs the same reader over Streamable HTTP for remote
-connectors (claude.ai, ChatGPT, Codex). It is an OAuth 2.1 resource *and*
+connectors (claude.ai, ChatGPT, Codex, Claude Code and, from reader 0.6.0,
+any MCP client that identifies itself with a Client ID Metadata Document). It
+is an OAuth 2.1 resource *and*
 authorization server in its own process, so the Go server never mints tokens.
 It runs in two places, and they differ in what they can read:
 
@@ -207,6 +209,12 @@ It runs in two places, and they differ in what they can read:
   Content, and attachments on top of it, are enabled per workspace by the
   operator; see
   [attested MCP reader](docs/mcp-enclave.md) and [MCP setup](docs/mcp.md#attachments).
+  From reader 0.6.0 it admits any MCP client in two trust tiers: the clients
+  Wappie has tested, pinned in its published image, and every other client,
+  which reads text only after a second, deliberate tick and within a history
+  window and daily limits; it fetches client documents itself over TLS it
+  verifies, and a console connection token serves tools without OAuth
+  ([§19](docs/mcp-enclave.md#19-any-mcp-client-060)).
 
 ```
 make client-install
