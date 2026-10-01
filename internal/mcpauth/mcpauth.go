@@ -7,9 +7,14 @@
 // owner gives, on a read-only API key restricted to named numbers; relays
 // the sealed bundle from the browser to the reader over loopback, because
 // the browser's connect-src allows this origin only; answers the reader's
-// questions about a connection's standing; and fetches client metadata
-// documents on the reader's behalf, since the reader has no network of its
-// own.
+// questions about a connection's standing; and, for a reader before 0.6.0,
+// fetches client metadata documents on its behalf, since that reader has no
+// network of its own. A 0.6.0 reader fetches them itself, over TLS it
+// verifies, through the parent's egress proxy (cmd/cimd-egress), so that
+// this server can refuse or delay a document but never forge one
+// (docs/mcp-enclave.md §19.9); it describes each client in a version-2
+// descriptor, which this server holds to the host predicate and the
+// operator's switches (clients.go) and never to the two-host allowlist.
 //
 // Two audiences, two guards. The console routes take a signed-in session and
 // leave owner-or-admin to the store, like membership changes. The internal
@@ -37,12 +42,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/mailer"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/store"
 )
@@ -79,7 +86,9 @@ type Handler struct {
 	// States keeps the attested readers' sealed state.
 	States *store.MCPReaderStates
 	// RedirectHosts are the hosts an assistant may redirect to and whose
-	// metadata documents may be fetched. Same list as the reader's.
+	// metadata documents may be fetched, for a reader before 0.6.0: a
+	// version-1 descriptor's consent is checked against them. Same list as
+	// that reader's.
 	RedirectHosts []string
 	// CIMDTransport carries metadata fetches; nil is the default. Tests
 	// hand in one that answers locally.
@@ -133,12 +142,33 @@ type Handler struct {
 	// AI keeps the AI integrations' results and usage. Nil refuses the
 	// reader's AI routes.
 	AI *store.AI
+	// UnknownAllowed is WS_MCP_CIMD_MODE=any: a client Wappie has not
+	// tested, or a console token, may connect. BlockedClients are the
+	// tested clients refused whatever the mode (WS_MCP_BLOCKED_CLIENTS),
+	// and DCRHosts the hosts a registered client may be identified by
+	// (WS_MCP_DCR_HOSTS). They only refuse (docs/mcp-enclave.md §19.21).
+	UnknownAllowed bool
+	BlockedClients []string
+	DCRHosts       []string
+	// MailNotice sends a new-assistant e-mail to one address, and
+	// NoticeOrigin is this server's public origin, where its revoke-only
+	// link points. Without both no notice e-mail goes, and so no untested
+	// client or token is given text (§19.21, §19.22).
+	MailNotice   func(ctx context.Context, to string, n mailer.MCPNotice) error
+	NoticeOrigin string
+	// LiveListLimits bounds the attested live list per workspace, and
+	// RevokeLinkLimits the revoke-only link per address. Nil allows
+	// everything, for tests.
+	LiveListLimits   *ratelimit.Limiter
+	RevokeLinkLimits *ratelimit.Auth
 
 	// Set up by Mount.
 	readers  []reader
 	requests *requestCache
 	replay   *replayCache
 	dropped  *refusalDrops
+	// notices are the notice e-mails on their way, for WaitNotices.
+	notices sync.WaitGroup
 }
 
 // Mount registers the routes on a mux. Call it once, after the fields are
@@ -153,6 +183,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/mcp/connections", h.create)
 	mux.HandleFunc("GET /v1/mcp/connections", h.list)
 	mux.HandleFunc("DELETE /v1/mcp/connections/{id}", h.remove)
+	mux.HandleFunc("POST /v1/mcp/connections/{id}/seen", h.seen)
+	mux.HandleFunc("POST /v1/mcp/token-requests", h.tokenRequest)
+	mux.HandleFunc("POST /v1/mcp/token-requests/{id}/bundle", h.tokenBundle)
+	mux.HandleFunc("POST /v1/mcp/workspaces/{id}/live-list", h.liveList)
+	mux.HandleFunc("GET /v1/mcp/revoke-link/{token}", h.revokeLinkPage)
+	mux.HandleFunc("POST /v1/mcp/revoke-link/{token}", h.revokeLinkPost)
 	mux.HandleFunc("POST /v1/mcp/connections/{id}/renewal", h.renewal)
 	mux.HandleFunc("POST /v1/mcp/connections/{id}/renew", h.renew)
 	mux.HandleFunc("GET /v1/mcp/content", h.content)
@@ -213,6 +249,22 @@ type createRequest struct {
 	// AIConfig is an AI authorization's configuration (kind "ai" only): the
 	// mirror of what the browser sealed, which this server checks and keeps.
 	AIConfig json.RawMessage `json:"ai_config"`
+	// The client, for a consent to a version-2 descriptor only
+	// (docs/mcp-enclave.md §19.21): Trust, ClientHost, ClientLocal and
+	// ClaimedName must equal the descriptor's, null claimed_name for none;
+	// HistoryDays is the window an untested client reads (7, 30 or 90),
+	// null for a tested one. All absent or null for version 1.
+	Trust       *string `json:"trust"`
+	ClientHost  *string `json:"client_host"`
+	ClientLocal *bool   `json:"client_local"`
+	ClaimedName *string `json:"claimed_name"`
+	HistoryDays *int    `json:"history_days"`
+}
+
+// hasClient reports whether a consent carries any of the version-2 client
+// fields.
+func (r createRequest) hasClient() bool {
+	return r.Trust != nil || r.ClientHost != nil || r.ClientLocal != nil || r.ClaimedName != nil || r.HistoryDays != nil
 }
 
 type createReply struct {
@@ -256,6 +308,30 @@ type connectionInfo struct {
 	// Renewable is set on a live content connection the viewer consented
 	// to, while content is allowed for the workspace.
 	Renewable bool `json:"renewable"`
+	// The client (docs/mcp-enclave.md §19.21): ClientKind is legacy, cimd,
+	// dcr or token; ClientID a client id document's address, null for
+	// every other kind; ClientHost the verified host, null for a legacy
+	// row and a token; Trust tested or unknown, null for a row written
+	// before migration 0046 (Legacy, never Tested); ClaimedName what the
+	// client called itself, null for none; HistoryDays the window an
+	// untested client or a token reads, null for the whole history.
+	ClientKind  string  `json:"client_kind"`
+	ClientID    *string `json:"client_id"`
+	ClientHost  *string `json:"client_host"`
+	ClientLocal bool    `json:"client_local"`
+	Trust       *string `json:"trust"`
+	ClaimedName *string `json:"claimed_name"`
+	HistoryDays *int    `json:"history_days"`
+	// FirstUsedAt is the first status check that answered active.
+	FirstUsedAt *time.Time `json:"first_used_at"`
+	// CreatedByEmail is the address of the person who consented, null
+	// when the account is gone; Seen says the viewer marked the row seen,
+	// for the console's new-assistant banner.
+	CreatedByEmail *string `json:"created_by_email"`
+	Seen           bool    `json:"seen"`
+	// BudgetHits are the reading limits the reader said this connection
+	// reached, each with when it last did (§19.19).
+	BudgetHits []store.BudgetHit `json:"budget_hits"`
 }
 
 type connectionsReply struct {
@@ -510,7 +586,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var d descriptor
-	if json.Unmarshal(raw, &d) != nil || d.RequestID != in.RequestID || d.RedirectHost == "" {
+	version, _, verr := descriptorVersion(raw)
+	if verr != nil || json.Unmarshal(raw, &d) != nil || d.RequestID != in.RequestID || d.RedirectHost == "" {
 		fail(w, http.StatusBadGateway, "reader_unavailable", "the reader answered with a descriptor for another request")
 		return
 	}
@@ -531,13 +608,39 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "client_name does not match the request")
 		return
 	}
-	if !slices.Contains(h.RedirectHosts, strings.ToLower(d.RedirectHost)) {
-		// The reader and this server carry the same list; a request for
-		// a host outside it means they have drifted apart.
-		fail(w, http.StatusBadRequest, "bad_request", "the request's redirect host is not allowed here")
-		return
-	}
 	in.RedirectHost = strings.ToLower(d.RedirectHost)
+	switch version {
+	case descriptorV1:
+		// A reader before 0.6.0, with its two-host allowlist.
+		if e, _ := h.requests.get(in.RequestID, time.Now()); rd.attested != nil && e.version == descriptorV2 {
+			fail(w, http.StatusBadGateway, "reader_unavailable", "the reader described this request in two versions")
+			return
+		}
+		if req.hasClient() || in.ConsentVersion == store.ClientConsentVersion {
+			fail(w, http.StatusBadRequest, "bad_request", "the client fields and consent_version 4 are for a reader that describes its client")
+			return
+		}
+		if !slices.Contains(h.RedirectHosts, in.RedirectHost) {
+			// The reader and this server carry the same list; a request
+			// for a host outside it means they have drifted apart.
+			fail(w, http.StatusBadRequest, "bad_request", "the request's redirect host is not allowed here")
+			return
+		}
+	case descriptorV2:
+		var entry requestEntry
+		if rd.attested != nil {
+			entry, _ = h.requests.get(in.RequestID, time.Now())
+		}
+		if entry.version != descriptorV2 || entry.client == nil {
+			// Only an attested reader describes its client, and only a
+			// prepared request has its description in hand.
+			fail(w, http.StatusConflict, "attestation_required", "this connector must be verified before a consent; reload the consent page")
+			return
+		}
+		if !h.checkClientConsent(w, r, user, entry.client, req, &in) {
+			return
+		}
+	}
 
 	conn, err := h.Connections.Create(ctx, user.TenantID, user.ID, in)
 	if err != nil {
@@ -549,6 +652,13 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		relay.Kind, relay.Media = store.KindContent, in.Media
 		relay.Send, relay.SendSelf, relay.SendGroups = in.SendMode, in.SendSelf, in.SendGroups
 	}
+	if version == descriptorV2 {
+		// Never to an older reader, whose strict body would refuse them.
+		relay.Client = &RelayClient{Trust: in.Trust, ClientLocal: in.ClientLocal}
+		if in.HistoryDays != 0 {
+			relay.Client.HistoryDays = &in.HistoryDays
+		}
+	}
 	if err := rd.relay.Bundle(ctx, in.RequestID, relay); err != nil {
 		if derr := h.Connections.DeleteFailed(ctx, conn.ID); derr != nil {
 			// The row stays pending and the janitor revokes it with its
@@ -559,8 +669,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.readerError(w, err)
 		return
 	}
-	h.log().Info("mcp connection consented", "connection", conn.ID, "client", in.RedirectHost,
-		"devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id, "kind", in.Kind, "media", in.Media,
+	h.log().Info("mcp connection consented", "connection", conn.ID, "client", in.RedirectHost, "client_host", in.ClientHost,
+		"trust", in.Trust, "devices", in.DeviceCount, "expires_at", conn.ExpiresAt, "reader", rd.id, "kind", in.Kind, "media", in.Media,
 		"send", in.SendMode, "send_self", in.SendSelf, "send_groups", in.SendGroups)
 	send(w, http.StatusCreated, createReply{
 		ID: conn.ID, Status: conn.Status, ExpiresAt: conn.ExpiresAt,
@@ -625,15 +735,15 @@ func checkCreate(w http.ResponseWriter, req createRequest) (store.CreateMCPConne
 			return bad("key_mode must be ephemeral")
 		}
 		switch req.ConsentVersion {
-		case store.ContentConsentVersion, store.MediaConsentVersion, store.SendConsentVersion:
+		case store.ContentConsentVersion, store.MediaConsentVersion, store.SendConsentVersion, store.ClientConsentVersion:
 		default:
-			return bad("consent_version must be 1, 2 or 3")
+			return bad("consent_version must be 1, 2, 3 or 4")
 		}
-		if (req.Send != "") != (req.ConsentVersion == store.SendConsentVersion) {
-			return bad("consent version 3 carries sending, and only it does")
+		if req.ConsentVersion == store.SendConsentVersion && req.Send == "" || req.ConsentVersion < store.SendConsentVersion && req.Send != "" {
+			return bad("consent version 3 carries sending, version 4 may, and versions 1 and 2 never do")
 		}
 		if req.Media && req.ConsentVersion < store.MediaConsentVersion {
-			return bad("media requires consent_version 2 or 3")
+			return bad("media requires consent_version 2 or later")
 		}
 		switch {
 		case req.Send == store.SendModeDirect || len(req.SendChats) > 0:
@@ -665,7 +775,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Connections.List(r.Context(), user.TenantID)
+	rows, err := h.Connections.ListFor(r.Context(), user.TenantID, user.ID)
 	if err != nil {
 		h.log().Error("could not list mcp connections", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not list the connections")
@@ -709,6 +819,17 @@ func listedConnection(c store.MCPConnection, viewer uuid.UUID, allowed bool, now
 	info.SendSelf, info.SendGroups, info.SendPaused, info.SendChats = c.SendSelf, c.SendGroups, c.SendPausedAt != nil, c.SendChats
 	if c.RevokeReason != "" {
 		info.RevokeReason = &c.RevokeReason
+	}
+	info.ClientKind, info.ClientLocal, info.FirstUsedAt, info.Seen = c.ClientKind, c.ClientLocal, c.FirstUsedAt, c.Seen
+	info.ClientID, info.ClientHost, info.Trust = optional(c.ClientID), optional(c.ClientHost), optional(c.Trust)
+	info.ClaimedName, info.CreatedByEmail = optional(c.ClaimedName), optional(c.CreatedByEmail)
+	if c.HistoryDays != 0 {
+		days := c.HistoryDays
+		info.HistoryDays = &days
+	}
+	info.BudgetHits = c.BudgetHits
+	if info.BudgetHits == nil {
+		info.BudgetHits = []store.BudgetHit{}
 	}
 	return info
 }
@@ -857,6 +978,9 @@ func (h *Handler) connectionActivate(w http.ResponseWriter, r *http.Request, rea
 		return
 	}
 	h.log().Info("mcp connection activated", "connection", id, "reader", readerID)
+	// Every activation is announced (docs/mcp-enclave.md §19.22): an OAuth
+	// connection's handshake and a console token's install alike.
+	h.announce(r.Context(), readerID, id, store.NoticeActivated)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -925,6 +1049,10 @@ func (h *Handler) connectionError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusForbidden, "not_authorized", "this action requires a workspace owner or an authorized administrator")
 	case errors.Is(err, store.ErrTooManyMCPConnections):
 		fail(w, http.StatusConflict, "too_many_connections", "this workspace already has as many live assistant connections as it may; revoke one first")
+	case errors.Is(err, store.ErrTooManyUnknownMCPConnections):
+		fail(w, http.StatusConflict, "too_many_unknown", "this workspace already has as many untested assistants and tokens as it may; revoke one first")
+	case errors.Is(err, store.ErrMCPClient):
+		fail(w, http.StatusBadRequest, "bad_request", "the consent's client does not hold together")
 	case errors.Is(err, store.ErrMCPKeyUnsuitable), errors.Is(err, store.ErrInvalidKey):
 		fail(w, http.StatusUnprocessableEntity, "key_unsuitable",
 			"the key must be read-only, restricted to named numbers, be live and carry a provisional deadline; for metadata it carries no service account, for content it acts as the connection's own")
@@ -948,6 +1076,9 @@ func (h *Handler) readerError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrReaderNotFound):
 		fail(w, http.StatusNotFound, "not_found", "that request is no longer waiting for a consent; start again from the assistant")
+	case errors.As(err, &refusal) && refusal.Code == "too_many_unknown":
+		// The reader counts its own records too (§19.10).
+		fail(w, http.StatusConflict, "too_many_unknown", "this workspace already has as many untested assistants and tokens as it may; revoke one first")
 	case errors.As(err, &refusal) && slices.Contains(aiRefusals, refusal.Code):
 		// The reader opened the bundle and it was not what the consent
 		// promised, or a grant in it did not open with the attested key,

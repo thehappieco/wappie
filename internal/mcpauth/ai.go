@@ -62,6 +62,10 @@ func checkPreparedAI(raw json.RawMessage, rd reader) (string, requestEntry, erro
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return "", requestEntry{}, errors.New("the AI request is not the expected object")
 	}
+	// Version 1 or 2, the kind is "ai" in both (§19.12).
+	if _, _, err := descriptorVersion(raw); err != nil {
+		return "", requestEntry{}, err
+	}
 	if p.Kind != store.KindAI || !validRequestID(p.RequestID) || p.Resource != rd.resource() {
 		return "", requestEntry{}, errors.New("the AI request is of another kind or resource, or its id is malformed")
 	}
@@ -129,6 +133,8 @@ func checkAICreate(w http.ResponseWriter, req createRequest) (store.CreateMCPCon
 		return bad("an AI authorization carries no media and no sending")
 	case len(req.AIConfig) == 0:
 		return bad("ai_config is required")
+	case req.hasClient():
+		return bad("an AI authorization carries no client fields")
 	}
 	service, err := uuid.Parse(req.ServiceUserID)
 	if err != nil || len(req.ServiceUserID) != 36 || service == uuid.Nil {

@@ -86,6 +86,34 @@ type BundleRelay struct {
 	Send       string `json:"send,omitempty"`
 	SendSelf   bool   `json:"send_self,omitempty"`
 	SendGroups bool   `json:"send_groups,omitempty"`
+	// Client is what a consent to a version-2 descriptor adds
+	// (docs/mcp-enclave.md §19.15): sent only then, every member present,
+	// for a reader before 0.6.0 parses this body strictly. Never on a
+	// renewal.
+	Client *RelayClient `json:"-"`
+}
+
+// RelayClient is the client a consent was given to, as the person chose
+// and the reader compares with the sealed bundle and its pending request:
+// the tier, the locality, and the history window (null for the whole
+// history).
+type RelayClient struct {
+	Trust       string `json:"trust"`
+	ClientLocal bool   `json:"client_local"`
+	HistoryDays *int   `json:"history_days"`
+}
+
+// MarshalJSON writes the relay's body, with the client's three members when
+// there is one.
+func (b BundleRelay) MarshalJSON() ([]byte, error) {
+	type plain BundleRelay
+	if b.Client == nil {
+		return json.Marshal(plain(b))
+	}
+	return json.Marshal(struct {
+		plain
+		RelayClient
+	}{plain(b), *b.Client})
 }
 
 // RefusalError is a reader refusing what it was handed, with its code. It
@@ -93,6 +121,8 @@ type BundleRelay struct {
 type RefusalError struct {
 	// Code is the reader's error code, "unspecified" when it gave none.
 	Code string
+	// Status is the reader's answer, 400 or 409; 0 when it was not said.
+	Status int
 }
 
 func (e *RefusalError) Error() string { return ErrReaderRefused.Error() + ": " + e.Code }
@@ -144,7 +174,7 @@ func bundleAnswer(status int, body []byte) error {
 	case http.StatusNotFound:
 		return ErrReaderNotFound
 	case http.StatusBadRequest, http.StatusConflict:
-		return &RefusalError{Code: readerCode(body)}
+		return &RefusalError{Code: readerCode(body), Status: status}
 	default:
 		return fmt.Errorf("%w: bundle answered %d", ErrReaderUnavailable, status)
 	}

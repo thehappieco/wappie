@@ -356,6 +356,15 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "attestation_required", "this renewal must be verified first; reload the renewal page")
 		return
 	}
+	if entry.client != nil {
+		// The switches reach a renewal too: an untested client or a
+		// token, or a blocked tested client, is not renewed while they
+		// say no (docs/mcp-enclave.md §19.21).
+		if code := h.clientRefusal(entry.client.Trust, deref(entry.client.TestedID)); code != "" {
+			fail(w, http.StatusForbidden, code, "this assistant may not be renewed on this server right now")
+			return
+		}
+	}
 	in := store.RenewMCPConnection{
 		KeyPrefix: req.KeyPrefix, ServiceUserID: service, ReaderKID: req.KID,
 		ReaderMeasurement: entry.measurement(), ReaderPublicKey: append([]byte(nil), entry.publicKey...), AIConfig: aiConfig,
