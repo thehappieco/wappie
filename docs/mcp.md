@@ -184,7 +184,7 @@ Code. The consent card always leads with the client's verified domain.
   and cannot send a header (the Gemini app; Perplexity, unconfirmed).
 - Every consent asks you to tick "I started this", and every new connection
   raises a banner in the console and an e-mail whose only link revokes that
-  connection. Wappie never asks for your password from an e-mail.
+  connection. Wappie's e-mails about assistants never ask for your password.
 - A workspace holds at most ten live connections, of which at most three
   are untested assistants or tokens.
 

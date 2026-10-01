@@ -7520,22 +7520,39 @@ asked with a pinned redirect. The enclave (`cimd.mjs`, `clients.mjs`):
    then be 1 to 100 code points, without leading or trailing white space or
    two consecutive spaces, with no code point of general category `Cc`, `Cf`,
    `Zl`, `Zp`, `Co` or `Cs` (bidi controls, zero-width characters, U+FEFF,
-   tag characters), and its scripts must satisfy UTS #39's *Highly
-   Restrictive* level: one script, or Latin with Han, Hiragana and Katakana,
-   or Latin with Han and Bopomofo, or Latin with Han and Hangul, Common and
-   Inherited allowed throughout (no `Сlaude` with a Cyrillic `С`). **A name
-   that fails is dropped, not fatal**: `claimed_name` is `null`,
-   `name_dropped` is `true`, and the card says so (§19.14). Go's
-   `clientNameChar` and the DCR path's `validateClientName` apply the same
-   rule. Unassigned code points are not tested on either side, so a Unicode
-   version difference between Go and Node cannot split them.
+   tag characters), and its scripts, taken over each code point's
+   `Script_Extensions`, must satisfy UTS #39's *Highly Restrictive* level:
+   one script, or Latin with Han, Hiragana and Katakana, or Latin with Han
+   and Bopomofo, or Latin with Han and Hangul, Common and Inherited allowed
+   throughout (no `Сlaude` with a Cyrillic `С`). **A name that fails is
+   dropped, not fatal**: `claimed_name` is `null`, `name_dropped` is `true`,
+   and the card says so (§19.14). The DCR path's `validateClientName`
+   applies the same rule. Go's `validClientName` (a version-2 descriptor's
+   `claimed_name` and `client_name`, a token's label) applies every part of
+   it **but the scripts**, which are the attested reader's to judge: Go's
+   tables carry the `Script` property alone, under which a name the reader
+   rightly keeps (`ޅކ ١٢`, Thaana with Arabic-Indic digits whose
+   `Script_Extensions` include Thaana) would read as two scripts and fail a
+   valid consent with 502. Whatever the reader keeps, Go accepts; both
+   suites run the shared vectors `packages/mcp-http/test/vectors/client-names.json`
+   (amended 2026-10-01, review finding). Unassigned code points are not
+   tested on either side, so a Unicode version difference between Go and
+   Node cannot split them.
 4. Every other member (`logo_uri`, `client_uri`, `jwks_uri`, `grant_types`,
    `token_endpoint_auth_method`, …) is ignored. Every client is public
    (`none`) whatever it declares, and `logo_uri` is never fetched or shown.
 5. A refused document is remembered for 60 seconds (`CIMD_NEGATIVE_TTL_MS`,
    unchanged). The browser gets the same static `invalid_client` page and
    status for every reason, never sooner than one second after the request
-   began, so the answer does not tell a prober why.
+   began, so the answer does not tell a prober why. The page (fixed in the
+   image, a draft for the owner, D10) has a viewport, one sentence in the
+   five console languages, the person's `Accept-Language` first and then pt,
+   en, es, fr, de ("Wappie could not accept this assistant. It may not
+   publish the identity page Wappie needs, or its address is not allowed.
+   Nothing was shared. You can connect a tested assistant, or create a
+   connection token in the Wappie console."), the console link, and the
+   code in small print for support. The language order is the only thing
+   that varies, and it varies only with the request's own header.
 
 **Matching a request** (`redirectAllowed`): an https redirect must equal a
 listed one exactly. A loopback redirect must have the same hostname (there is
@@ -7674,8 +7691,10 @@ a fetch, never forge one.
 3. TLS 1.2 or later, SNI H, verified against Node's bundled root store
    (`tls.rootCertificates`, part of the measured image, as for the AI
    providers), hostname checked.
-4. One HTTP/1.1 `GET P` with `Accept: application/json` and `User-Agent:
-   wappie-cimd/1`; no cookies and no other header.
+4. One HTTP/1.1 `GET P` with exactly these headers: `Host: H`, `Accept:
+   application/json`, `User-Agent: wappie-cimd/1` and `Connection: close`
+   (set by `cimd-fetch.mjs` itself, not left to Node); no cookies, no
+   credentials and no other header.
 5. Only 200; a 3xx is refused (redirects are never followed); the media type
    must be `application/json` (parameters such as `charset` ignored); the
    body at most 8 KiB (`CIMD_MAX_BYTES`); the response headers within 3 s;
@@ -7819,13 +7838,18 @@ source with `pending.ip` by network prefix: the first three octets for IPv4,
 the first 56 bits for IPv6 (both values are `ipKey`s, and an IPv6 key is
 already its /64); different address families count as a mismatch. On a
 mismatch the pending request is dropped and the browser gets a static page
-with the code `ip_mismatch`, the link back to the console, and the sentence
-"This authorization was opened on a different network from the one that
-started the connection. Go back to the assistant and click Connect again."
-(pt, the plan's draft: "Esta autorização foi aberta numa rede diferente da
-que começou a conexão. Volte ao assistente e clique em Conectar de novo.").
-It is the image's only page with a sentence, and the owner approves both. The
-complete line logs the boolean `ip_mismatch`. The live tests measure false
+with a viewport, the link back to the console, the code `ip_mismatch` in
+small print, and the sentence "This authorization was opened on a different
+network from the one that started the connection. Go back to the assistant
+and click Connect again. If you use a VPN or iCloud Private Relay, turn it
+off for this step and try again." (pt: "Esta autorização foi aberta numa
+rede diferente da que começou a conexão. Volte ao assistente e clique em
+Conectar de novo. Se você usa VPN ou a Retransmissão Privada do iCloud,
+desligue para esta etapa e tente de novo."), in the five console languages,
+the request's `Accept-Language` first. It and §19.6 step 5's refusal are the
+image's two pages with sentences; the owner approves them before the 0.6.0
+build, since they are measured in PCR0. The complete line logs the boolean
+`ip_mismatch`. The live tests measure false
 refusals (a phone changing networks, a company with several egress
 addresses); if they appear, the prefixes widen to /16 and /48 before anything
 weaker is considered.
@@ -7854,8 +7878,16 @@ weaker is considered.
 - `claimed_name` is what the document or the registration declared, or
   `null`. New surfaces show it only in quotes, as "calls itself “…”".
 - `redirect_uri` is the full requested redirect, attested; for loopback, with
-  the requested port. `redirect_host` keeps 0.5.0's value (the vouching host
-  for a loopback client) for consumers that predate 0.6.0.
+  the requested port. `redirect_host` keeps 0.5.0's value for consumers that
+  predate 0.6.0: **the host of an https redirect**, and the vouching host
+  (`client_host`) for a loopback client. A tested client asked with a pinned
+  redirect on another host than its document's (Claude's
+  `https://claude.com/api/mcp/auth_callback`, whose `client_host` is
+  `claude.ai`) therefore has `redirect_host: claude.com`. Go (`create()`)
+  and the console's one-way check (§19.13) both require a web request's
+  `redirect_host` to equal its redirect's host, so all three sides check the
+  same thing (amended 2026-10-01: the first build wrote `client_host` here,
+  and Go refused that consent with 502).
 - `limits` is the tier's object from `CLIENT_LIMITS`, so the card states the
   limits and Go cannot misstate them.
 
@@ -7893,9 +7925,11 @@ admitted it must be closed.
 ```
 
 `descriptor_sha256` is the lowercase hex SHA-256 of the JCS (RFC 8785)
-serialization of the descriptor without its `attestation` member, or `""`
-for `GET /attestation`, which has no descriptor. `user_data` =
-SHA-256(preimage). **Every 0.6.0 attestation made for a descriptor uses v2
+serialization of the descriptor without its `attestation` member. `user_data` =
+SHA-256(preimage). **`GET /attestation`, which has no descriptor, keeps
+`user_data` v1** (§6.2), as does the console verifier when it is given no
+descriptor (amended 2026-10-01: an earlier text gave it v2 with an empty
+`descriptor_sha256`, which no route ever used). **Every 0.6.0 attestation made for a descriptor uses v2
 over that descriptor**: `connect` and `token` with their `request_id`,
 `renewal` and `ai_renewal` with `request_id` = the `renewal_id`, `ai` with
 its `request_id`, and `live_list` with `request_id` = `""` and no
@@ -7903,11 +7937,11 @@ its `request_id`, and `live_list` with `request_id` = `""` and no
 AAAAAAAAAAAAAAAAAAAAAA`, `resource = https://mcp.wappie.thehappie.co/mcp`,
 `tls_spki_sha256 = "a"×64`, `policy_sha256 = "b"×64`, version `0.6.0` and
 `descriptor_sha256 = "c"×64`, `user_data =
-41500bb32148a8d4444a741847b034c9121311db4109a7c7d9c024ba0c8193be`; for
-`/attestation` (`request_id` and `descriptor_sha256` both `""`), the same
-other fields give
-`9d9b4e435ae1127de6651fcc85202c7856102b1b97d371249cdca01cee916a29`. The
-implementation commits vectors for every kind, with whole descriptors, in
+41500bb32148a8d4444a741847b034c9121311db4109a7c7d9c024ba0c8193be`; with
+`request_id` and `descriptor_sha256` both `""`, the same other fields give
+`9d9b4e435ae1127de6651fcc85202c7856102b1b97d371249cdca01cee916a29`, a form
+no route uses, kept in the vectors only to pin the preimage's empty fields.
+The implementation commits vectors for every kind, with whole descriptors, in
 `packages/mcp-http/test/vectors/attest-v2.json`, and the console verifier's
 tests read the same file.
 
@@ -7949,7 +7983,9 @@ token and live-list verifications):
 - For a CIMD client, `client_host` equals the host of `client_id`; on a
   `connect` descriptor, for a DCR client it equals the host of
   `redirect_uri`, and an unknown client's https redirect has `client_host`
-  as its host; `client_host` equals `registrable` or ends with
+  as its host; on a `connect` descriptor, `redirect_host` is the host of an
+  https `redirect_uri` and `client_host` for a loopback one (§19.12);
+  `client_host` equals `registrable` or ends with
   `.` followed by `registrable`; `limits_tier` follows §19.6 from `trust`,
   `client_local` and `client_kind`; `limits` deep-equals the release's
   `client_limits[limits_tier]`. Any mismatch is `attestation_descriptor`.
@@ -7962,22 +7998,39 @@ token and live-list verifications):
 **Header**, every field from the attested descriptor:
 
 - **Domain**, large: `client_host` in ASCII, in a typeface that tells `l`,
-  `I` and `1`, and `0` and `O`, apart. A long host is truncated only from
-  the left, so the end, which carries the real domain, always shows.
-- **Main domain**, on its own line, bold: `registrable`, so
-  `claude.ai.example.com` reads as `example.com`. An `xn--` label is shown as
+  `I` and `1`, and `0` and `O`, apart. A long host wraps onto more lines
+  rather than being clipped, at a size that fits a 375 px phone; only past a
+  hard cap of 64 characters is it truncated, from the left with a visible
+  leading "…", so the end, which carries the real domain, always shows.
+- **Main domain**, on its own line, bold, when it differs from the host:
+  `registrable`, so `claude.ai.example.com` reads as `example.com`. An
+  `xn--` label is shown as
   it is, never decoded, with the line "International characters in the
   address".
 - **Badge**: "Tested by Wappie" (tested web), "App on this computer" (tested
   local), "Not tested by Wappie" (unknown, amber) or "Token".
-- **Who**: tested web, the entry's name ("Claude"); tested local, "Claude
+- **Heading**: a tested client by its verified name, "{name} asks to
+  connect to Wappie"; an unknown one, whose domain follows in large type,
+  "An untested assistant asks to connect to Wappie". No article before a
+  name or domain (pt "{name} pede para se conectar ao Wappie").
+- **Who**: tested web, no line (the heading names it); tested local, "Claude
   Code (cannot be confirmed on this computer)"; unknown, "Calls itself
   “…”", "Gives no name", or "The name it gave was dropped (characters not
-  accepted)".
+  accepted)"; an unknown renewal, which carries no `name_dropped`, "No name
+  shown".
 - **Identity and return address**, for unknown clients always visible, never
-  collapsed: the full `client_id` URL and the full `redirect_uri`.
+  collapsed: "Identifies itself with: {client_id}" and "Sends you back to:
+  {redirect_uri}", both in full.
+- **Unknown warning** (amber): "Wappie has not tested this assistant. Wappie
+  will hand {client_host} what you allow below. Continue only if you know
+  {client_host} and you started this connection just now." On a renewal,
+  which the assistant asked for: "Wappie has not tested this assistant.
+  Renewing lets {client_host} read message text again until {date}. Renew
+  only if you still use {client_host}."
 - **Where the code goes**: web, "After you authorize, you go back to {host
-  of redirect_uri}"; local, "The access goes to an app on this computer,
+  of redirect_uri}", left out for an unknown web client whose redirect host
+  is `client_host` (D8 makes it so; the warning already names it); local,
+  "The access goes to an app on this computer,
   identified by {client_host}. Any program on this computer can present
   itself this way, including an installer or an editor extension: continue
   only if you just started this connection in that app."
@@ -7998,8 +8051,14 @@ token and live-list verifications):
     document, or a drifted tested client): amber, "On {R}, but not a client
     Wappie tested (it may be someone else's {vendor} setup)." Never "not
     theirs", which would be false.
-  - Otherwise, on a match: red, "This name or address looks like {vendor},
-    but {R} is not {vendor}'s domain."
+  - Each hyphen-separated part of R's labels, after the skeleton fold, is
+    compared too, so `claude-ai.com`, `claude-connector.com`,
+    `chatgpt-plus.app` and `anthropic-mcp.com` are caught with no claimed
+    name.
+  - Otherwise, on a match: red, "Warning: This name or address looks like
+    {vendor}, but {R} is not {vendor}'s domain." ("Warning:" so it does not
+    rest on colour alone; the red and amber texts use the text-safe tokens
+    `--danger-text` and `--warn-text`, at least 4.5:1 in both themes.)
   - Otherwise, when the claimed name shares no word of three or more letters
     with R's labels: amber, "The name it gives does not appear in its
     domain; check that you know {R}." This fires on VS Code's `vscode.dev`,
@@ -8008,19 +8067,34 @@ token and live-list verifications):
 - **First time**: the card reads the workspace's connection list (any member
   who may list it, `GET /v1/mcp/connections`). If no row ever named this
   `client_host`, it shows "First time {client_host} asks for access to this
-  workspace."
+  workspace." An empty list counts: a version-2 descriptor implies a Go
+  with migration 0046, so it is the workspace's very first assistant. Only
+  a non-empty list whose rows carry no `client_host` (a server before 0046)
+  says nothing.
+- **Caps, up front**: from the same list, a workspace at 10 live
+  connections, or an unknown client's consent with 3 live untested
+  connections and tokens, says so before anything is ticked ("This workspace
+  already has three untested assistants or tokens. Revoke one before
+  connecting another.") and Authorize stays disabled; the server's 409 stays
+  the authority.
 - **Limits**, in plain words, from `limits`: for an unknown client, "It can
   read the last {history} days, at most {n} messages a day."
-- "To turn text on later, reconnect the assistant." (D16)
+- "To turn text on later, reconnect the assistant." (D16), only while text
+  is off.
 - **Details**, collapsed: the verified-reader block, unchanged.
 
 **Ticks.**
 
-- **Tick 1, "I started this"**, on every consent (D17). **Authorize** stays
-  disabled until it is ticked. Its text by case:
+- **Tick 1, "I started this"**, on every consent (D17), placed **last, just
+  above Authorize**, which stays disabled until it is ticked and, while it
+  waits, says why beside the button ("Tick the box above to authorize.",
+  linked with `aria-describedby`). Its text by case:
   - tested web: "I clicked Connect in {name} myself, just now; nobody sent
     me this link."
-  - local: "I started this connection myself, just now, in the app
+  - tested local: "I started this connection myself, just now, in {name} on
+    this computer." (the verified name: "claude.ai" means nothing to a
+    Claude Code user)
+  - unknown local: "I started this connection myself, just now, in the app
     identified by {client_host}."
   - unknown web: "I started this connection myself, just now, at
     {client_host}; nobody sent me this link."
@@ -8028,10 +8102,17 @@ token and live-list verifications):
   It is sealed as `started_ack: true` (§19.15).
 - **Tick 2, unknown text**: the text option stays locked until "I understand
   that Wappie has not tested {client_host}, and I want it to read message
-  text." It is sealed as `unknown_ack: true`. With it, text also needs the
-  password and a verified e-mail address (§19.21); without a verified
-  address the card says "Confirm your e-mail to let an untested assistant
-  read text."
+  text." It is sealed as `unknown_ack: true`, and its small print says
+  "You will also type your password below." Attachments are locked with
+  text. Text also needs the notice e-mail (§19.21), and the card says why
+  it is missing by Go's `untested_text_reason`, never blaming the person
+  for the server: `notices_off`, "On this server, untested assistants read
+  metadata only for now: it cannot yet send the e-mail that warns you when
+  one connects." (the text and attachment options are then hidden);
+  `email_unverified`, "To let an untested assistant read text, Wappie must
+  be able to e-mail you when one connects, and your address {email} is not
+  confirmed yet. Ask Wappie support to confirm it." (the options show
+  "Locked: needs a confirmed e-mail address (see above).").
 
 **Defaults and options by limits tier:**
 
@@ -8057,9 +8138,11 @@ against its attachment budget (§19.19).
 
 **Renewal card** (`MCPRenewalCard.vue`). For an unknown-tier text
 connection, the renewal shows the full unknown header (domain, main domain,
-identity address, badge, claimed name in quotes) and asks for tick 2 again
-before the password; it is never a one-line "renew {name}". For a token, the
-first option is "Create a new token and revoke this one" (§19.18).
+identity address, badge, claimed name in quotes) with the renewal's warning
+above, and asks for tick 2 again before the password; it is never a
+one-line "renew {name}", and it prints the limits once. For a token, the
+first option is "Create a new token and revoke this one" (§19.18), with
+"The tool stops working until you give it the new token."
 
 **Texts.** Every new string (about 30) goes through
 `src/ui/locales/en-source/mcp-connect.json` in all five languages, and the
@@ -8087,7 +8170,10 @@ drafts; the plan's pt drafts (D10), for the owner, are:
 | Text later | "Para ligar o texto depois, reconecte o assistente." |
 
 The banner's and the e-mail's drafts are in §19.22. The other strings are
-drafted by CONSOLE in the five languages for the owner.
+drafted by CONSOLE in the five languages for the owner. Where the table above
+and the bullets differ, the bullets are the build (amended 2026-10-01 after
+the review; the console's `en-source/mcp-clients.json` holds every current
+string with its pt, es, fr and de drafts).
 
 ### 19.15 Consent version 4 and link bundle v2
 
@@ -8385,9 +8471,35 @@ The snippets:
 
 The variable itself is set from the keychain by the launcher (`export
 WAPPIE_TOKEN="$(security find-generic-password -s wappie-mcp -w)"`), never
-written as a literal into a shell start-up file. The console warns: "Keep
-this out of repositories and shared settings. claude.ai's organization
-headers are sent for every member, so never put it there." With a configured
+written as a literal into a shell start-up file. What the console says
+(amended 2026-10-01 after the review; drafts for the owner, in the five
+languages):
+
+- Above "Create token": "Whoever has this token can read what you choose
+  here, from any network unless you limit it above, until it expires. Treat
+  it like a password." Each reason Create token waits is said beside it
+  (an invalid label, more than 10 networks, a private range, which never
+  matches the public address the reader sees), the ranges are shown as they
+  will be saved ("Allowed: 203.0.113.0/24"), and the caps of §19.19 are
+  said before the form is filled in.
+- The shown screen starts with "Anyone who copies this token can read these
+  numbers until {date}, without your password. Don't paste it into chats,
+  e-mails, tickets or shared files. If someone may have seen it, revoke it
+  below and create a new one.", and warns "Never put it in a repository, a
+  shared settings file or a claude.ai organization connector: every member
+  would send it." Its tabs are named ("macOS Keychain", "Claude Code",
+  "Codex", "VS Code", "Cursor", "mcp-remote", "Test with curl"), with a
+  Windows and Linux note (a 0600 file or a password manager). The token is
+  not in a live region; "Token created" is announced apart.
+- The token stays on screen through a websocket reconnection and the
+  console's other tabs, and goes only with "I saved it", another account or
+  workspace, or the page (leaving it asks first). If it is ever hidden
+  before "I saved it", the next card says: "The token was hidden before you
+  confirmed you saved it. Revoke “{label}” below and create a new one."
+- Its intro adds that Claude Code and Codex can also sign in normally, which
+  keeps their longer history and limits.
+
+With a configured
 header, a 401 from `/mcp` still carries `WWW-Authenticate` with the resource
 metadata; Zed and others start OAuth only when no `Authorization` header is
 set.
@@ -8456,6 +8568,26 @@ what can leave before anyone looks.
   content, an AI transcript included. A call is checked before it runs: one
   that starts under the limit is served in full and counted, so a counter
   passes its limit by at most one call's items.
+- **Reserved before the work, settled after** (amended 2026-10-01; the first
+  build checked recorded counts only, so every call in flight passed one
+  check, and a JSON-RPC batch ran thousands at once). `budgets.mjs`
+  `forConnection(record).reserve(kind, most)` holds the most a call may
+  return (its `limit` argument, 50 by default and at most 100 for
+  `list_messages`; 1 for `get_message` and `open_attachment`) and answers a
+  ticket; `ticket.settle(n)` counts what the call returned and frees the
+  reservation, `ticket.release()` frees it uncounted on any failure. A call
+  is refused at the limit as before; when calls are already running, one
+  starts only if the recorded count plus the running reservations is still
+  under the limit, in the first hour and in the day, and otherwise waits for
+  one of them to settle and looks again. So concurrent calls and a batch's
+  elements cannot all pass a check made before any of them was counted, and
+  a counter still passes its limit by at most one call's items.
+- **JSON-RPC batches** (removed from MCP in 2025-06-18; the tested clients
+  never send them) are still parsed by the SDK, so `router.mjs` counts a
+  batch's elements against the minute's calls: a POST whose JSON body is an
+  array takes one call per element from the `mcp` bucket, all or none, and
+  one larger than the tier's `calls_per_minute` is refused whole with 400
+  "Too many calls in one batch." (logged `batch_too_large`).
 - Counters are per connection and in memory, the daily one over a rolling
   24 hours in one-minute buckets, the first hour from the record's
   `created_at`. An enclave restart resets them; text connections go to
@@ -8493,8 +8625,7 @@ ALTER TABLE mcp_connections
     ADD COLUMN trust              text     CHECK (trust IS NULL OR trust IN ('tested', 'unknown')),
     ADD COLUMN claimed_name       text     CHECK (claimed_name IS NULL OR char_length(claimed_name) <= 100),
     ADD COLUMN history_days       smallint CHECK (history_days IS NULL OR history_days IN (7, 30, 90)),
-    ADD COLUMN first_used_at      timestamptz,
-    ADD COLUMN revoke_link_sha256 text     CHECK (revoke_link_sha256 IS NULL OR revoke_link_sha256 ~ '^[0-9a-f]{64}$');
+    ADD COLUMN first_used_at      timestamptz;
 UPDATE mcp_connections SET client_kind = 'ai' WHERE kind = 'ai';
 UPDATE mcp_connections SET trust = 'tested' WHERE kind <> 'ai';
 -- Any binary, old or new, inserts AI rows coherently.
@@ -8514,7 +8645,25 @@ CREATE TABLE mcp_connection_seen (
     PRIMARY KEY (connection_id, user_id));
 -- Forced row-level security with the tenant_isolation policy, as 0044 gives
 -- mcp_send_chats and mcp_outbound. mcp_connections itself keeps none (0040).
+-- mcp_connection_notices: see §19.21's note on the merge.
+CREATE TABLE mcp_revoke_links (
+    sha256        text        PRIMARY KEY CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+    connection_id uuid        NOT NULL REFERENCES mcp_connections(id) ON DELETE CASCADE,
+    tenant_id     uuid        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    event         text        NOT NULL CHECK (event IN ('activated', 'daily_messages', 'daily_attachments',
+                                                        'first_hour_messages', 'first_hour_attachments', 'network')),
+    created_at    timestamptz NOT NULL DEFAULT now());
+CREATE INDEX mcp_revoke_links_connection ON mcp_revoke_links (connection_id);
 ```
+
+`mcp_revoke_links` replaces the sketch's `revoke_link_sha256` column, which
+held only the latest link, so a later e-mail killed an earlier one's button
+while the assistant still read (amended 2026-10-01, review finding). It has
+one row per notice e-mail; any of a live connection's links revokes it,
+once, and every link of a connection is deleted when it ends (the same
+transaction as `endMCPConnectionTx`). Like `mcp_connections` and the
+sessions, it has no row-level security: it is looked up by the hash of a
+256-bit secret before anyone knows the workspace.
 
 - `trust` has **no default**. The insert in `internal/store/mcp.go` (the
   only one, AI rows included) sets `client_kind` and `trust` explicitly.
@@ -8528,7 +8677,7 @@ CREATE TABLE mcp_connection_seen (
   none, so neither is stored.
 - `history_days` is the person's window for unknown and token rows (`NULL`
   for the whole history); the list shows it.
-- The down-step drops the trigger, the function, the table, the constraint
+- The down-step drops the trigger, the function, the tables, the constraint
   and the columns, behind a checksum gate as for 0040 to 0045;
   `commercial/scripts/release.py` records `migration46_sha256`.
 - `maxLiveMCPConnections` (`internal/store/mcp.go`) goes from 5 to 10,
@@ -8587,11 +8736,34 @@ CREATE TABLE mcp_connection_seen (
   one button and no other link; `POST` to the same path revokes that one
   connection. No session and no password are needed. The token is 32 random
   bytes (43 base64url characters), stored as SHA-256 in
-  `revoke_link_sha256`; it is minted for the first notice of a connection and
-  replaced by each later one, works once, and ends with the connection; a
-  replaced, used or unknown token answers the same page, "This link is no
-  longer valid." A mail scanner's `GET` changes nothing. Go logs the route,
-  never the token, and rate-limits the path per address.
+  `mcp_revoke_links` (§19.20); each notice e-mail mints its own, and every
+  one of a live connection's links works until one of them is used or the
+  connection ends. A used or unknown token, or one whose connection ended,
+  answers the same page: "This link no longer works", with "It was used
+  already, or the connection it named has ended. Nothing else changed. To
+  check your assistants, open the Wappie console yourself." A mail
+  scanner's `GET` changes nothing. Go logs the route, never the token, and
+  rate-limits the path per address.
+  - **The form posts from the page itself, so the page's referrer policy is
+    `same-origin`** (header and meta), never `no-referrer`: a browser sends
+    a form POST from a no-referrer document with `Origin: null`, which the
+    API's browser-origin guard (`browserorigin.Policy.Wrap`, around every
+    `/v1/` path) refuses with 403, so the button would never revoke.
+    `same-origin` sends the page's own origin, which the guard accepts as
+    the request's `Host` over https (nginx forwards `Host $host` to the
+    API); the page links nowhere and loads nothing, so the token in the path
+    still never leaves in a `Referer`. The Go test mounts the handler behind
+    the guard and posts with the page's origin and with `Origin: null`
+    (amended 2026-10-01: the first build was refused in every real browser).
+  - The page's texts (five languages, the person's `Accept-Language`;
+    drafts for the owner): "Revoke this assistant connection?", "This
+    revokes only the connection of {host} to your Wappie. Nothing else
+    changes." (a token: "…only the console connection token “{label}”…"),
+    "Revoke only this connection"; then "Connection revoked", "{host} loses
+    access to your Wappie within a minute." (the reader's status cache); the
+    German uses Sie, as the console does. Its footer is the console's and
+    the e-mail's: "Wappie's e-mails about assistants never ask for your
+    password. Their only button revokes one connection."
 - **Configuration** (`internal/config/mcp.go`; the startup line prints each):
   - `WS_MCP_REDIRECT_HOSTS` stays only while a version-1 reader exists and is
     deleted with it. Its uses are the version-1 `create()` check and the Go
@@ -8611,16 +8783,23 @@ the interfaces above, which the console and the deploy rely on:
 - Migration 0046 also creates `mcp_connection_notices` (connection, tenant,
   event, first and last time, count, when it was mailed; forced row-level
   security), so the e-mail's caps (once per connection and event, 20 a day
-  per workspace) survive a restart, and a unique partial index on
-  `revoke_link_sha256`.
+  per workspace) survive a restart, and `mcp_revoke_links`, one row per
+  e-mail's revoke-only link (§19.20; it replaced the `revoke_link_sha256`
+  column and its unique partial index after the review).
 - `WS_MCP_NOTICE_ORIGIN` is this server's public origin, where the
   revoke-only link points; a notice e-mail goes only with it and SMTP set,
   and without them text for an unknown client or a token is refused
   (`email_unverified`).
 - `GET /v1/mcp/content` adds `untested_text` (the notice e-mail can go and
-  this person's address is verified), so the card says "Confirm your e-mail
-  to let an untested assistant read text" before a consent; each listed
-  connection adds `budget_hits` (`[{code, at}]`).
+  this person's address is verified) and `untested_text_reason`:
+  `notices_off` (no SMTP or no `WS_MCP_NOTICE_ORIGIN`, the server's doing),
+  `email_unverified` (this person's address), or `""` when `untested_text`
+  is true, so the card blames the right thing before a consent (§19.14).
+  `create()` still answers 403 `email_unverified` for both. Each listed
+  connection adds `budget_hits` (`[{code, at}]`), `registrable`
+  (`client_host`'s registrable domain from Go's copy of the reader's
+  snapshot, `null` with no host) and `revoked_at` (for the live list's
+  grace, §19.22).
 - `cmd/cimd-egress` listens on vsock 8007 itself and serves CID 16 only
   (open point 11).
 - The Public Suffix List snapshot is `psl-2026-09-24.json` (the List at
@@ -8633,25 +8812,39 @@ the interfaces above, which the console and the deploy rely on:
 **The list** (`commercial/web/src/components/MCPPanel.vue`, and the same
 list on the standalone assistant page `MCPConnectPage.vue`):
 
-- Each row shows: the domain (`client_host`, ASCII) and the main domain in
-  bold; the badge, "Tested", "App on this computer", "Not tested", "Token"
-  or "Legacy" (a row with `trust` `NULL`); the name, which is the verified
-  display name, plus "calls itself “…”" in quotes for unknown rows, or the
-  label for a token; the number count; the scope pills (metadata, text,
-  attachments, drafts); the history window; who connected it; created,
-  first used, last used and expires; and the status.
-- A "New" badge shows until the viewer marks the row seen.
+- Each row shows: the domain (`client_host`, ASCII, wrapping rather than
+  clipped) and, when it differs, the main domain in bold (Go's
+  `registrable`); the badge, "Tested", "App on this computer", "Not
+  tested", "Token" or "Older connection" (a row with `trust` `NULL`); the
+  verified display name when it is not the domain, or "Calls itself “…”" in
+  quotes for unknown rows; a token is headed "Token “{label}”" in the body
+  font, with no second line; the number count ("1 number", "{count}
+  numbers"); the scope pills ("Who and when", text, attachments, drafts);
+  the history window; the latest reading limit reached ("Daily message
+  limit reached {date}", a token's other network in red); who connected
+  it; created, first used, last used and expires; and the status.
+- A "New" badge shows until the viewer marks the row seen ("Yes, I know
+  it").
 - Revoke: owners and admins, unchanged.
-- "Revoke all untested" sits above the list whenever an unknown or token row
-  is live.
-- Near the list: "Wappie never asks for your password from an e-mail."
+- "Revoke all untested assistants and tokens" sits above the list whenever
+  an unknown or token row is live.
+- Near the list: "Wappie's e-mails about assistants never ask for your
+  password. Their only button revokes one connection." (amended
+  2026-10-01: the earlier "Wappie never asks for your password from an
+  e-mail" was false, since the verification and invitation e-mails link to
+  pages where a password is typed; open point 10.) The same sentence ends
+  the notice e-mail and the revoke page.
 - The other places that print `client_name` (`MCPRenewalCard.vue`,
   `MCPDraftCard.vue`, `MCPDraftNotice.vue`, `Composer.vue`, `mcpVia.ts`) now
   receive a verified string (§19.12) and add the badge where there is room.
 - The connection guide (`MCPPanel.vue`, `AdminView.vue`) becomes generic:
-  the address works in any MCP client; the tested clients are named; others
-  connect with a warning when they identify themselves by a document; tools
-  without OAuth use a token.
+  "This address works in any assistant that supports MCP. Wappie has tested
+  {names}. Other assistants can connect too if they publish their own
+  identity page: the card then marks them “Not tested by Wappie” and limits
+  what they read. If an assistant shows “invalid_client”, it cannot connect
+  this way; use a connection token (below)." `{names}` comes from the
+  `tested_clients` that every release the console accepts lists, never a
+  fixed sentence; with no list, the sentence names none.
 
 **The new-assistant notice.** It fires on every successful activation of an
 OAuth or token connection (`connectionActivate`, and the enclave's
@@ -8662,32 +8855,68 @@ and are not announced.
 - **Console banner**, always on: a global `MCPNewConnectionNotice.vue`,
   mounted in `App.vue` beside `MCPDraftNotice`, lists the workspace's live
   connections this manager has not seen. It loads on console load, on
-  websocket reconnect and every 5 minutes. It shows "New assistant
-  connected: {client_host} ({tier}), by {email}, {date}, {n} numbers,
-  {scopes}" with the buttons "That's right" (marks the row seen) and
+  websocket reconnect and every 5 minutes. Each row says what raised it,
+  the newest `budget_hit` at or after its activation, or else the
+  activation, and has the buttons "Yes, I know it" (marks the row seen) and
   "Revoke". Every owner and admin sees it, the person who connected
-  included. The plan's pt draft: "Novo assistente conectado: {client_host}
-  ({tier}), por {email}, {date}, {n} números, {scopes}. [Está certo]
-  [Revogar]".
+  included. The lines (drafts for the owner; {who} is a tested client's
+  verified name, "{name} (app on this computer)" for a tested local one,
+  "{host} (not tested)" for an unknown one, "Token “{label}”" for a token):
+  - activation: "New assistant connected: {who}, by {email}, {date},
+    {numbers}, {scopes}", "by you" when the viewer connected it (pt "Novo
+    assistente conectado: {who}, {by}, {date}, {numbers}, {scopes}");
+  - `daily_messages`: "{who} reached its daily limit of messages at {time}.
+    It reads no more messages until {reset} at the latest." (pt "…atingiu o
+    limite diário de mensagens às {time}…"), and the same for attachments;
+  - `first_hour_*`: "{who} reached its limit of messages for its first hour
+    at {time}. It reads no more messages until {reset}.";
+  - `network`, shown as an alert: "{who} was used from a network it does
+    not allow at {time}. Wappie refused the call. If you don't know why,
+    revoke it."
+- **It keeps out of the way.** On a phone (760 px or less) and while the MCP
+  tab, whose list has every row, is open, the rows fold into one line,
+  "{count} new assistants connected." ("1 new assistant connected.", or
+  "{count} notices about your assistants." when a limit raised one) with
+  "Review", which opens the MCP tab; elsewhere one row shows at a time, then
+  "{count} more notices about your assistants." with "Review". A token's
+  other-network alert and the live list's red alert always show in full.
 - **E-mail** (D7): a new `internal/mailer` message, `MCPConnected`, sent to
   the person who consented and to the workspace owners with a verified
   address, at most one per connection and event, and at most 20 a day per
-  workspace. It carries the domain and the tier, the number count, what can
-  be read, the validity and the time; **never the claimed name** (an
-  attacker's text sent from Wappie's domain) and never message content. It
-  has **no link that leads to a login page**: only the revoke-only link
-  ("Don't recognise it? Revoke only this connection"), which needs no login
-  and no password and can do nothing but revoke. A spoofed e-mail that
-  teaches people to click "revoke" and then type a password would be worse
-  than any MCP leak: the Wappie password opens the number keys. So the
-  account template's home link is left out, and the console's address is
-  plain text. The footer: "Wappie never asks for your password from an
-  e-mail. To see your assistants, open the console yourself at
-  app.wappie.thehappie.co." The plan's pt draft of the whole message: "Um
-  novo assistente se conectou ao seu Wappie: {client_host} (não testado pela
-  Wappie), {n} números, {scopes}, até {date}. Não reconhece? [Revogar só
-  esta conexão] — A Wappie nunca pede sua senha por e-mail. Para ver seus
-  assistentes, abra o console você mesmo em app.wappie.thehappie.co."
+  workspace. It carries the domain and the tier (a token: its label, the
+  admin's own words, "Token “{label}”"), the workspace's name, the number
+  count, what can be read ("metadata only (who, when and how much), without
+  the text", "message text", or "message text and attachments", with the
+  history window), the validity and the time (UTC); **never the claimed
+  name** (an attacker's text sent from Wappie's domain) and never message
+  content. The intro says what it may read: "{who} can now see who wrote to
+  whom and when, but not the text, on {numbers} in the workspace
+  “{workspace}”." for metadata, "{who} can now read message text on
+  {numbers} in the workspace “{workspace}”, from the last {days} days." for
+  text. It has **no link that leads to a login page**, and no console
+  address at all: only the revoke-only link ("Don't recognize it? Revoke
+  only this connection"), which needs no login and no password and can do
+  nothing but revoke. A spoofed e-mail that teaches people to click "revoke"
+  and then type a password would be worse than any MCP leak: the Wappie
+  password opens the number keys. So the account template's home link is
+  left out, and so is the console's address, which mail clients would turn
+  into a link; in the HTML part a zero-width non-joiner follows each dot
+  inside a name (the client's domain, a workspace named like one), so no
+  mail client links those either. The footer (amended 2026-10-01, open point
+  10): "Wappie's e-mails about assistants never ask for your password. Their
+  only button revokes one connection. To see your assistants, open the
+  Wappie console yourself." It is true of these e-mails, unlike the earlier
+  "Wappie never asks for your password from an e-mail", which the
+  verification and invitation e-mails contradict.
+- **Language.** One language per message: the recipient's preferred locale
+  when the account has one this server knows, English otherwise. Accounts
+  carry no locale on the server today (the console keeps its language in
+  the browser), so every notice goes in English; the mailer already holds
+  the Portuguese words (pt: "Um novo assistente se conectou", "Não
+  reconhece? Revogar só esta conexão", footer "Os e-mails da Wappie sobre
+  assistentes nunca pedem sua senha. O único botão deles revoga uma
+  conexão. Para ver seus assistentes, abra você mesmo o console da
+  Wappie."), and a locale a later change stores picks them (open point 14).
 - **P1 gate**: SMTP confirmed on the pilot (`WS_SMTP_ADDR`, `WS_MAIL_FROM`,
   `internal/config/signup.go`) or configured, with SPF, DKIM and **DMARC
   `p=reject`** published for the sending domain. The mailer change stays
@@ -8715,9 +8944,30 @@ knows every live connection without trusting Go.
   `nonce` is the console's, and it carries no `public_key`). AI records are
   not listed, as Go's list leaves them out.
 - The console verifies the attestation, the nonce and the workspace, and
-  compares the ids with Go's list. An id the enclave holds that Go's list
-  lacks raises a red banner ("The server's list is missing a connection the
-  verified reader knows: {id}") and an operator alert.
+  compares the ids with the rows of Go's list **that should be live** (live
+  status and not past `expires_at`). An id the enclave holds that Go's list
+  lacks, or that the list shows as revoked or expired for longer than two
+  minutes (the reader's minute of status cache, and margin; `revoked_at`
+  says when), raises a red alert that always shows: "Warning: Wappie's
+  server is not showing you every assistant connected to this workspace.
+  The verified Wappie reader holds {count} connection(s) the list leaves
+  out. Don't connect new assistants, and contact Wappie support now." (pt
+  "Atenção: o servidor da Wappie não está mostrando todos os assistentes
+  conectados a este espaço de trabalho…"), or "Warning: Wappie's server
+  shows as ended {count} connection(s) the verified Wappie reader still
+  serves. …", with the ids under a collapsed "Reference", and an operator
+  alert. So a Go that marks a connection revoked in its ledger while it
+  keeps answering `active` to the enclave cannot hide it behind a row.
+- **It fails closed** (amended 2026-10-01, review finding). Once the console
+  can expect the list, because every release it accepts declares
+  `live_list_v1` or this workspace's verified reader answered in this
+  browser before, any missing answer (404, 409, 429, 5xx, no answer) shows
+  the amber "Wappie could not check the verified reader's list of
+  assistants just now. Reload the page; if this stays, contact Wappie
+  support." with "Check again", never agreement. Only while a release
+  without the list is still accepted, and none answered for this workspace,
+  may a 404 or 409 (a server or reader from before the route) pass
+  silently.
 - What it proves: detection, not removal. Revoking still goes through Go; a
   person who sees the red banner knows the server is not telling the truth.
 
@@ -8741,7 +8991,8 @@ knows every live connection without trusting Go.
 ### 19.24 Logs, health and what leaks
 
 - **The authorize line** gains the booleans `unknown`, `local`, `cimd`,
-  `drift` and `resource_default`; the complete line gains `ip_mismatch`.
+  `drift` and `resource_default`; the complete line gains `ip_mismatch`;
+  a `/mcp` line may carry the code `batch_too_large` (§19.19).
 - **New events** (§10.4): `client_resolved {unknown, local, cimd, drift,
   name_dropped, ignored_uris}` (the last a count); `cimd_fetch {code, ms}`;
   `budget_hit {conn, code}`; `token_installed {conn}` and
@@ -8877,7 +9128,10 @@ knows every live connection without trusting Go.
 - **Lifetimes and reading limits**, by tier: idle times, ceilings, the
   20-call rate, the history floor on every tool and `outside_window`, the
   daily and first-hour budgets, `limit_reached`, `budget_hit` once per
-  window.
+  window; calls running at once and a JSON-RPC batch's elements, which
+  cannot all pass one check (a reservation each, a failed call freeing its
+  own); a batch taking one call a minute per element, and one larger than
+  the minute's calls refused whole.
 - **Sealed state.** 0.6.0 reads version 1 and writes version 2; a version-2
   plaintext given to 0.5.0's loader raises `state_auth_failed`.
 - **Host profile**: by `profile`, and legacy records by `hostOf`.
@@ -8903,8 +9157,13 @@ knows every live connection without trusting Go.
   expiry caps by tier, `WS_MCP_CIMD_MODE`, `WS_MCP_BLOCKED_CLIENTS`, the SMTP
   and verified-e-mail precondition, the caps of 10 and 3.
 - The token routes, `budget-hit`, the live-list relay, `seen`,
-  `first_used_at`, and the revoke-only link (a GET changes nothing; a POST
-  revokes once; a second POST and a replaced token fail).
+  `first_used_at`, and the revoke-only link behind the API's browser-origin
+  guard (a GET changes nothing; a POST with the page's own origin revokes
+  once, with an earlier e-mail's link as well as a later one; `Origin:
+  null` is refused; a second POST, and every link of an ended connection,
+  fail).
+- Go's name rule on the shared vectors `client-names.json`, which the
+  reader's suite runs too: every name the reader keeps, Go accepts.
 - Migration 0046 up and down; an insert by the old code path (no
   `client_kind`, no `trust`) for metadata and AI rows; the forced RLS on
   `mcp_connection_seen`; the new CHECKs; the connection caps.
@@ -9041,14 +9300,19 @@ clients that passed).
    console's to decide with the owner.
 5. Codex listing tools it cannot call: diagnosed in phase B.
 6. The `claude.com/api/mcp/auth_callback` variant: pinned in Claude's
-   entries; to be seen live.
+   entries, and since 2026-10-01 accepted end to end (the descriptor's
+   `redirect_host` is `claude.com`, §19.12; reader, Go and console tests and
+   the attest-v2 vector cover it); to be seen live.
 7. Whether Gemini CLI expands variables in `headers` (§19.18).
 8. Whether GitHub accepts the `wmcp_k_` prefix into secret scanning.
 9. Whether the parent's subnet routes any VPC endpoint (P1, §19.9).
-10. The footer "Wappie never asks for your password from an e-mail" must be
-    true of every Wappie e-mail: today's verification and invitation e-mails
-    link to console pages where a password is typed. The owner words the
-    sentence, or those e-mails change, before the notice ships.
+10. The footer "Wappie never asks for your password from an e-mail" was
+    false of today's verification and invitation e-mails, which link to
+    console pages where a password is typed. Until the owner decides, the
+    console, the notice e-mail and the revoke page say only what is true:
+    "Wappie's e-mails about assistants never ask for your password. Their
+    only button revokes one connection." (§19.22). The owner approves that
+    wording, or changes those e-mails and restores the broader sentence.
 11. Whether `cmd/cimd-egress` listens on vsock 8007 itself or behind a socat
     bridge to loopback, as the parent's credential and `boot.json` units
     are: GO and DEPLOY decide; the contract fixes only vsock 8007 and that
@@ -9063,6 +9327,15 @@ clients that passed).
     connection's kind is fixed for life and a renewal never changes scope);
     honouring ChatGPT's `private_key_jwt`; browser-based MCP clients
     (`Origin` on `/mcp`, D14).
+14. **The notice e-mail's language.** It follows the recipient's preferred
+    locale when the account has one the server knows, English otherwise;
+    accounts carry none today, so it goes in English. Storing the console's
+    language on the account (and es, fr and de words for the mailer) is the
+    owner's call.
+15. **Confirming an existing address.** An invited account, or one whose
+    signup row housekeeping removed, reads as unverified, and the console
+    has no flow to confirm it; until one exists the card says "Ask Wappie
+    support to confirm it." (§19.14).
 
 ### Amendments to §§1 to 18
 
