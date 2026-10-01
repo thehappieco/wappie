@@ -92,6 +92,7 @@ type AIMonthTotal struct {
 
 // monthBounds is a month's first day and the next month's, in UTC.
 func monthBounds(month time.Time) (time.Time, time.Time) {
+	month = month.UTC()
 	start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
 	return start, start.AddDate(0, 1, 0)
 }

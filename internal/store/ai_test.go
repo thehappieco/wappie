@@ -1222,9 +1222,10 @@ func TestAIUsage(t *testing.T) {
 	if last, err := f.ai.AIMonthUsage(ctx, f.tenant, conn.ID, time.Now().AddDate(0, -1, 0)); err != nil || last.ChargedTokens != 0 || last.ItemsToday != 3 {
 		t.Fatalf("last month = %+v %v", last, err)
 	}
-	// Yesterday's items are not today's.
+	// Yesterday's items are not today's. Both authorizations' rows move, so
+	// the month read below is yesterday's for all of them, even on the 1st.
 	f.inTenant(ctx, t, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE ai_usage_daily SET day = day - 1 WHERE authorization_id=$1`, conn.ID)
+		_, err := tx.Exec(ctx, `UPDATE ai_usage_daily SET day = day - 1 WHERE authorization_id IN ($1, $2)`, conn.ID, theirs.ID)
 		return err
 	})
 	if total, err := f.ai.AIMonthUsage(ctx, f.tenant, conn.ID, time.Now().Add(-24*time.Hour)); err != nil || total.ItemsToday != 0 || total.ChargedTokens != 3600 {
