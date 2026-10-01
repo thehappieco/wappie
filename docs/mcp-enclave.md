@@ -621,7 +621,10 @@ The pinned root has SHA-256 fingerprint `64:1A:03:21:A3:E2:44:EF:E4:56:46:31:95:
 
 **DEPLOY ↔ ENCLAVE:** the image runs `node /app/packages/mcp-http/enclave/main.mjs`,
 with the enclave dependencies from `packages/mcp-http/enclave/package-lock.json`
-installed `--omit=dev`. `nsm-attest` is at `/usr/local/bin/nsm-attest`, with
+installed `--omit=dev`. The client's come from `packages/client/package-lock.json`,
+which takes the shared kit (`@thehappieco/kit`, the envelope, HPKE and the
+account scheme) from its GitHub release asset, pinned by integrity: a kit
+bump that changes a shipped file is a new PCR0. `nsm-attest` is at `/usr/local/bin/nsm-attest`, with
 the spike's argument and exit-code contract.
 
 ## 12. DNS records the owner adds at GoDaddy
@@ -2217,8 +2220,10 @@ enclave package's dependencies are exactly
 `@aws-sdk/client-kms` and `asn1js`; and, with `--jail` (privileged, arm64,
 cgroup v2 host), the §16.13 corpus through `runWorker` under media-jail.
 `build.sh` writes `capabilities` (`READER_CAPABILITIES`) and a dependency
-manifest into `measurements.json`: both npm locks, and the sha256 of every
-tarball the worker lock pins from outside the npm registry.
+manifest into `measurements.json`: every npm lock the image is installed
+from (client, mcp, mcp-http, the reader's and the workers'), and the sha256
+of every tarball a lock pins from outside the npm registry (the kit's release
+asset, SheetJS).
 
 **Kernel requirements.** Required, and present on the blob:
 `CONFIG_MEMCG`, `CONFIG_CGROUP_PIDS`, `CONFIG_SECCOMP_FILTER`,
@@ -3102,7 +3107,7 @@ images. The plan note stays: Plus, Pro, Business, Enterprise and Edu.
    only for a fault in the server itself.
 
 **Parser CVEs.** `measurements.json` carries the dependency manifest
-(§16.6); DOCSOPS runs OSV and `npm audit` over both locks weekly, and the
+(§16.6); DOCSOPS runs OSV and `npm audit` over its locks weekly, and the
 §16.13 corpus with a fuzzer nightly. Dependency updates ship in a monthly
 batched release. An exploited or critical CVE in a parser: that kind goes
 into `WS_MCP_MEDIA_OFF_KINDS` at once (rollback 1), and a security release

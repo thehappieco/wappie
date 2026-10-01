@@ -133,16 +133,20 @@ out=${out:-$root/dist/reader-$version}
 [ ! -e "$out" ] || die "$out exists; keep each release's output, choose another --out"
 mkdir -p "$out"
 
-# The dependency manifest (§16.12 "Parser CVEs"): the reader's and the
-# attachment workers' npm locks as built, each package with its version and
-# integrity, and the sha256 of every tarball the worker lock takes from
-# outside the npm registry (SheetJS, from its CDN), fetched here and checked
-# against the lock's own integrity first.
+# The dependency manifest (§16.12 "Parser CVEs"): every npm lock the image is
+# installed from, as built (the client's, whose dependencies include the
+# shared kit, mcp's, mcp-http's, the reader's and the attachment workers'),
+# each package with its version and integrity, and the sha256 of every
+# tarball a lock takes from outside the npm registry (the kit, a release
+# asset of github.com/thehappieco/kit; SheetJS, from its CDN), fetched here
+# and checked against the lock's own integrity first. Links between these
+# packages (file:../client) are recorded, not fetched.
 python3 - "$context" "$context/dependencies.json" <<'PY'
 import base64, hashlib, json, pathlib, sys, urllib.request
 
 context, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-LOCKS = ("packages/mcp-http/enclave/package-lock.json", "packages/mcp-http/enclave/media/worker/package-lock.json")
+LOCKS = ("packages/client/package-lock.json", "packages/mcp/package-lock.json", "packages/mcp-http/package-lock.json",
+         "packages/mcp-http/enclave/package-lock.json", "packages/mcp-http/enclave/media/worker/package-lock.json")
 REGISTRY = "https://registry.npmjs.org/"
 locks, tarballs = [], []
 for name in LOCKS:
@@ -155,7 +159,7 @@ for name in LOCKS:
         packages.append({"path": path, "version": entry.get("version"), "resolved": entry.get("resolved"),
                          "integrity": entry.get("integrity")})
         url = entry.get("resolved") or ""
-        if url and not url.startswith(REGISTRY):
+        if url and not entry.get("link") and not url.startswith(REGISTRY):
             if not url.startswith("https://") or not entry.get("integrity"):
                 sys.exit(f"build.sh: {name}: {path} comes from {url!r} without https and an integrity")
             # The CDN refuses urllib's default User-Agent.

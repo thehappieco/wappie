@@ -441,9 +441,10 @@ func runKitSealer(t *testing.T, in kitSealIn, rawOut json.RawMessage, pub seal.P
 }
 
 // TestFixturesMatchTheKit holds Wappie's own fixtures to the copies the kit
-// took of them. A fixture regenerated here (go test -update rewrites both
-// seal files with fresh keys) fails this rather than drifting silently from
-// the vectors the kit proves itself against.
+// took of them, and the TypeScript client's copies of the kit's vectors to
+// the kit version Go imports. A fixture regenerated here (go test -update
+// rewrites both seal files with fresh keys) fails this rather than drifting
+// silently from the vectors the kit proves itself against.
 func TestFixturesMatchTheKit(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	same := func(local, inKit string) {
@@ -469,6 +470,14 @@ func TestFixturesMatchTheKit(t *testing.T) {
 		"packages/client/testdata/node-derived.json":       "wappie/legacy/node-derived.json",
 	} {
 		same(local, inKit)
+	}
+	copies, err := filepath.Glob(filepath.Join(root, "packages/client/test/kit/*.json"))
+	if err != nil || len(copies) == 0 {
+		t.Fatalf("no copies of the kit's vectors in packages/client/test/kit: %v", err)
+	}
+	for _, path := range copies {
+		name := filepath.Base(path)
+		same(filepath.Join("packages/client/test/kit", name), "wappie/golden/"+name)
 	}
 }
 

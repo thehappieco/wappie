@@ -10,7 +10,9 @@ paths = [
  '''internal/wsapi/testdata/frames\.json$''',
  '''web/testdata/browser-grant\.json$''',
  '''packages/client/testdata/browser-grant\.json$''',
- '''packages/client/testdata/node-draft\.json$'''
+ '''packages/client/testdata/node-draft\.json$''',
+ # Copies of the shared kit's vectors (github.com/thehappieco/kit, vectors/wappie/golden).
+ '''packages/client/test/kit/[a-z-]+\.json$'''
 ]
 
 [[allowlists]]
