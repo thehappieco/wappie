@@ -364,7 +364,8 @@ func sha(token string) string {
 }
 
 // One e-mail per connection and event, twenty a day per workspace, none for
-// an ended connection; each claim carries the link that replaces the last.
+// an ended connection; each claim carries a link of its own, which works
+// beside the earlier ones.
 func TestClaimNoticeMail(t *testing.T) {
 	f := newMCPFixture(t)
 	ctx := context.Background()
@@ -384,8 +385,8 @@ func TestClaimNoticeMail(t *testing.T) {
 	if ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, store.NoticeActivated, sha("one")); err != nil || !ok {
 		t.Fatalf("first claim: %v %v", ok, err)
 	}
-	if host, err := f.conns.RevokeLinkTarget(ctx, sha("one")); err != nil || host != "claude.ai" {
-		t.Fatalf("the link names %q %v", host, err)
+	if target, err := f.conns.RevokeLinkTarget(ctx, sha("one")); err != nil || target != (store.RevokeTarget{Host: "claude.ai"}) {
+		t.Fatalf("the link names %+v %v", target, err)
 	}
 	if ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, store.NoticeActivated, sha("two")); err != nil || ok {
 		t.Fatalf("a second e-mail for the same event: %v %v", ok, err)
@@ -402,9 +403,11 @@ func TestClaimNoticeMail(t *testing.T) {
 	if ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, "daily_messages", sha("three")); err != nil || !ok {
 		t.Fatalf("a new event: %v %v", ok, err)
 	}
-	// The later link replaces the earlier one.
-	if _, err := f.conns.RevokeLinkTarget(ctx, sha("one")); !errors.Is(err, store.ErrMCPConnectionNotFound) {
-		t.Fatalf("a replaced link still works: %v", err)
+	// The later link joins the earlier one: both name the connection.
+	for _, link := range []string{"one", "three"} {
+		if target, err := f.conns.RevokeLinkTarget(ctx, sha(link)); err != nil || target.Host != "claude.ai" {
+			t.Fatalf("link %s names %+v %v", link, target, err)
+		}
 	}
 	if _, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, store.NoticeActivated, "not hex"); err == nil {
 		t.Fatal("a link that is not a hash was stored")
@@ -451,8 +454,9 @@ func TestClaimNoticeMail(t *testing.T) {
 	}
 }
 
-// The revoke-only link: looking changes nothing, the first POST revokes the
-// one connection with its key, and nothing after it does.
+// The revoke-only link: looking changes nothing, the first POST of any of a
+// connection's links revokes the one connection with its key, and spends
+// them all; nothing after it does.
 func TestRevokeByLink(t *testing.T) {
 	f := newContentFixture(t)
 	ctx := context.Background()
@@ -466,9 +470,15 @@ func TestRevokeByLink(t *testing.T) {
 	if ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, store.NoticeActivated, sha("link")); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
+	if _, err := f.conns.RaiseNotice(ctx, "enclave", conn.ID, "daily_messages"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, "daily_messages", sha("later")); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
 	for range 2 {
-		if host, err := f.conns.RevokeLinkTarget(ctx, sha("link")); err != nil || host != "claude.ai" {
-			t.Fatalf("target = %q %v", host, err)
+		if target, err := f.conns.RevokeLinkTarget(ctx, sha("link")); err != nil || target.Host != "claude.ai" || target.Token {
+			t.Fatalf("target = %+v %v", target, err)
 		}
 	}
 	if s := f.row(ctx, t, conn.ID).Status; s != "active" {
@@ -495,8 +505,13 @@ func TestRevokeByLink(t *testing.T) {
 	if _, _, err := f.conns.RevokeByLink(ctx, sha("link")); !errors.Is(err, store.ErrMCPConnectionNotFound) {
 		t.Fatalf("a second POST: %v", err)
 	}
-	if _, err := f.conns.RevokeLinkTarget(ctx, sha("link")); !errors.Is(err, store.ErrMCPConnectionNotFound) {
-		t.Fatalf("a spent link still names its connection: %v", err)
+	for _, link := range []string{"link", "later"} {
+		if _, err := f.conns.RevokeLinkTarget(ctx, sha(link)); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+			t.Fatalf("a spent link (%s) still names its connection: %v", link, err)
+		}
+		if _, _, err := f.conns.RevokeByLink(ctx, sha(link)); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+			t.Fatalf("a spent link (%s) revoked: %v", link, err)
+		}
 	}
 	if s := f.row(ctx, t, other.ID).Status; s != "active" {
 		t.Fatalf("the other connection is %s", s)
@@ -570,7 +585,7 @@ func TestMigration0046(t *testing.T) {
 		if err := tx.QueryRow(ctx, `SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) FROM information_schema.columns
 			WHERE table_schema = current_schema() AND table_name = 'mcp_connections'
 			  AND column_name NOT IN ('client_kind','client_id','client_host','client_local','trust','claimed_name','history_days',
-			                          'first_used_at','revoke_link_sha256')`).Scan(&columns); err != nil {
+			                          'first_used_at')`).Scan(&columns); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `CREATE TEMP TABLE old_ai ON COMMIT DROP AS SELECT * FROM mcp_connections WHERE id = $1`, ai.ID); err != nil {
@@ -596,16 +611,17 @@ func TestMigration0046(t *testing.T) {
 	}
 
 	for name, stmt := range map[string]string{
-		"a token that is tested":        `UPDATE mcp_connections SET client_kind='token', trust='tested', redirect_host='token' WHERE request_id='old-binary'`,
-		"a token with a redirect":       `UPDATE mcp_connections SET client_kind='token', trust='unknown' WHERE request_id='old-binary'`,
-		"cimd without a client id":      `UPDATE mcp_connections SET client_kind='cimd' WHERE request_id='old-binary'`,
-		"an assistant marked ai":        `UPDATE mcp_connections SET client_kind='ai' WHERE request_id='old-binary'`,
-		"a client id over http":         `UPDATE mcp_connections SET client_id='http://x.example/c' WHERE request_id='old-binary'`,
-		"an upper-case host":            `UPDATE mcp_connections SET client_host='Example.com' WHERE request_id='old-binary'`,
-		"fourteen days":                 `UPDATE mcp_connections SET history_days=14 WHERE request_id='old-binary'`,
-		"a trust that is not one":       `UPDATE mcp_connections SET trust='verified' WHERE request_id='old-binary'`,
-		"a claimed name of 101":         `UPDATE mcp_connections SET claimed_name=repeat('a', 101) WHERE request_id='old-binary'`,
-		"a revoke link that is not hex": `UPDATE mcp_connections SET revoke_link_sha256='LINK' WHERE request_id='old-binary'`,
+		"a token that is tested":   `UPDATE mcp_connections SET client_kind='token', trust='tested', redirect_host='token' WHERE request_id='old-binary'`,
+		"a token with a redirect":  `UPDATE mcp_connections SET client_kind='token', trust='unknown' WHERE request_id='old-binary'`,
+		"cimd without a client id": `UPDATE mcp_connections SET client_kind='cimd' WHERE request_id='old-binary'`,
+		"an assistant marked ai":   `UPDATE mcp_connections SET client_kind='ai' WHERE request_id='old-binary'`,
+		"a client id over http":    `UPDATE mcp_connections SET client_id='http://x.example/c' WHERE request_id='old-binary'`,
+		"an upper-case host":       `UPDATE mcp_connections SET client_host='Example.com' WHERE request_id='old-binary'`,
+		"fourteen days":            `UPDATE mcp_connections SET history_days=14 WHERE request_id='old-binary'`,
+		"a trust that is not one":  `UPDATE mcp_connections SET trust='verified' WHERE request_id='old-binary'`,
+		"a claimed name of 101":    `UPDATE mcp_connections SET claimed_name=repeat('a', 101) WHERE request_id='old-binary'`,
+		"a revoke link that is not hex": `INSERT INTO mcp_revoke_links (sha256, connection_id, tenant_id, event)
+			SELECT 'LINK', id, tenant_id, 'activated' FROM mcp_connections WHERE request_id='old-binary'`,
 	} {
 		var pgErr *pgconn.PgError
 		if _, err := f.pool.Exec(ctx, stmt); !errors.As(err, &pgErr) || pgErr.Code != "23514" {
@@ -643,10 +659,10 @@ func TestMigration0046(t *testing.T) {
 	var left int
 	if err := f.pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema()
-		   AND table_name IN ('mcp_connection_seen', 'mcp_connection_notices'))
+		   AND table_name IN ('mcp_connection_seen', 'mcp_connection_notices', 'mcp_revoke_links'))
 		+ (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='mcp_connections'
 		   AND column_name IN ('client_kind','client_id','client_host','client_local','trust','claimed_name','history_days',
-		                       'first_used_at','revoke_link_sha256'))
+		                       'first_used_at'))
 		+ (SELECT count(*) FROM pg_constraint WHERE conname='mcp_connections_client_coherent' AND connamespace=current_schema()::regnamespace)
 		+ (SELECT count(*) FROM pg_proc WHERE proname='mcp_connections_ai_kind' AND pronamespace=current_schema()::regnamespace)`).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("%d things left %v", left, err)

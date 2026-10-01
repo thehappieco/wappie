@@ -24,9 +24,6 @@
 --   history_days        the history window the person chose for an unknown
 --                       client or a token (7, 30 or 90); NULL for all of it.
 --   first_used_at       the first status check that answered active.
---   revoke_link_sha256  the SHA-256 of the revoke-only link in the latest
---                       notice e-mail; the link works once, for this one
---                       connection, and ends with it.
 --
 --   mcp_connection_seen which workspace managers marked a connection seen,
 --                       for the new-assistant banner. Forced row-level
@@ -42,6 +39,17 @@
 --                       Forced row-level security as well. Not in the
 --                       contract's sketch of 0046: the e-mail's caps need a
 --                       record that outlives a restart.
+--   mcp_revoke_links    the SHA-256 of each revoke-only link a notice e-mail
+--                       carried, one per e-mail: any of a live connection's
+--                       links revokes it, once, and all of them are spent
+--                       when it ends, so a later e-mail never turns an
+--                       earlier one's button into a dead end while the
+--                       assistant still reads. No row-level security, as
+--                       mcp_connections (0040) and sessions: it is looked up
+--                       by the hash of a 256-bit secret, before anyone knows
+--                       the workspace. In place of the contract sketch's
+--                       revoke_link_sha256 column (docs/mcp-enclave.md
+--                       §19.20), which held only the latest link.
 --
 -- Existing rows become client_kind 'ai' (AI authorizations) or stay 'legacy'
 -- with trust 'tested': every one of them was made under 0.5.0's two-host
@@ -86,6 +94,7 @@
 --      END $$;
 --      UPDATE mcp_connections SET status = 'revoked', revoked_at = now()
 --       WHERE trust = 'unknown' AND status IN ('pending', 'active', 'reseal');
+--      DROP TABLE mcp_revoke_links;
 --      DROP TABLE mcp_connection_notices;
 --      DROP TABLE mcp_connection_seen;
 --      DROP TRIGGER mcp_connections_ai_kind ON mcp_connections;
@@ -93,7 +102,7 @@
 --      ALTER TABLE mcp_connections DROP CONSTRAINT mcp_connections_client_coherent;
 --      ALTER TABLE mcp_connections DROP COLUMN client_kind, DROP COLUMN client_id, DROP COLUMN client_host,
 --          DROP COLUMN client_local, DROP COLUMN trust, DROP COLUMN claimed_name, DROP COLUMN history_days,
---          DROP COLUMN first_used_at, DROP COLUMN revoke_link_sha256;
+--          DROP COLUMN first_used_at;
 --      DELETE FROM schema_migrations WHERE version = 46;
 --      COMMIT;
 --
@@ -110,8 +119,7 @@ ALTER TABLE mcp_connections
     ADD COLUMN trust              text     CHECK (trust IS NULL OR trust IN ('tested', 'unknown')),
     ADD COLUMN claimed_name       text     CHECK (claimed_name IS NULL OR char_length(claimed_name) <= 100),
     ADD COLUMN history_days       smallint CHECK (history_days IS NULL OR history_days IN (7, 30, 90)),
-    ADD COLUMN first_used_at      timestamptz,
-    ADD COLUMN revoke_link_sha256 text     CHECK (revoke_link_sha256 IS NULL OR revoke_link_sha256 ~ '^[0-9a-f]{64}$');
+    ADD COLUMN first_used_at      timestamptz;
 UPDATE mcp_connections SET client_kind = 'ai' WHERE kind = 'ai';
 UPDATE mcp_connections SET trust = 'tested' WHERE kind <> 'ai';
 -- Any binary, old or new, inserts AI rows coherently.
@@ -123,10 +131,6 @@ ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_client_coherent CHECK
     (client_kind = 'ai') = (kind = 'ai')
     AND (client_kind <> 'cimd' OR client_id IS NOT NULL)
     AND (client_kind <> 'token' OR (trust = 'unknown' AND client_id IS NULL AND redirect_host = 'token')));
--- A revoke-only link names one connection: its hash is looked up, never
--- scanned for.
-CREATE UNIQUE INDEX mcp_connections_revoke_link ON mcp_connections (revoke_link_sha256)
-    WHERE revoke_link_sha256 IS NOT NULL;
 
 CREATE TABLE mcp_connection_seen (
     connection_id uuid        NOT NULL REFERENCES mcp_connections(id) ON DELETE CASCADE,
@@ -158,3 +162,14 @@ ALTER TABLE mcp_connection_notices FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON mcp_connection_notices
     USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+
+-- A revoke-only link names one connection: its hash is looked up, never
+-- scanned for, and a connection's links go when it ends.
+CREATE TABLE mcp_revoke_links (
+    sha256        text        PRIMARY KEY CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+    connection_id uuid        NOT NULL REFERENCES mcp_connections(id) ON DELETE CASCADE,
+    tenant_id     uuid        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    event         text        NOT NULL CHECK (event IN ('activated', 'daily_messages', 'daily_attachments',
+                                                        'first_hour_messages', 'first_hour_attachments', 'network')),
+    created_at    timestamptz NOT NULL DEFAULT now());
+CREATE INDEX mcp_revoke_links_connection ON mcp_revoke_links (connection_id);

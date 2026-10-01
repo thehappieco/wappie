@@ -77,11 +77,13 @@ func endMCPConnectionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id, st
 		return false, err
 	}
 	if liveStatus(current) {
-		// A revoke-only link ends with its connection (0046).
 		if _, err := tx.Exec(ctx, `UPDATE mcp_connections
-			SET status=$3, revoked_at=CASE WHEN $3='revoked' THEN now() ELSE revoked_at END, revoke_reason=$4,
-			    revoke_link_sha256=NULL
+			SET status=$3, revoked_at=CASE WHEN $3='revoked' THEN now() ELSE revoked_at END, revoke_reason=$4
 			WHERE id=$1 AND tenant_id=$2`, id, tenant, status, reason); err != nil {
+			return false, err
+		}
+		// Its revoke-only links end with it (0046).
+		if _, err := tx.Exec(ctx, `DELETE FROM mcp_revoke_links WHERE connection_id=$1 AND tenant_id=$2`, id, tenant); err != nil {
 			return false, err
 		}
 		ended = true

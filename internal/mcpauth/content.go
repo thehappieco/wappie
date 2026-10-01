@@ -135,9 +135,13 @@ type contentReply struct {
 	AIOff      aiOffReply `json:"ai_off"`
 	// UntestedText says whether this person may let an assistant Wappie has
 	// not tested, or a token, read text now: the notice e-mail can go and
-	// their address is verified (docs/mcp-enclave.md §19.21). False is the
-	// card's "Confirm your e-mail to let an untested assistant read text".
-	UntestedText bool `json:"untested_text"`
+	// their address is verified (docs/mcp-enclave.md §19.21).
+	// UntestedTextReason says why not, so the card blames the right thing:
+	// "notices_off" (this server cannot send the notice e-mail: no SMTP or
+	// no WS_MCP_NOTICE_ORIGIN) or "email_unverified" (this person's address
+	// is not confirmed); "" when UntestedText is true.
+	UntestedText       bool   `json:"untested_text"`
+	UntestedTextReason string `json:"untested_text_reason"`
 }
 
 // aiOffReply is which AI functions and providers this server switched off
@@ -171,17 +175,20 @@ func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 		off.Features = append(off.Features, h.AIOffFeatures...)
 		off.Providers = append(off.Providers, h.AIOffProviders...)
 	}
-	untested := false
+	untested, reason := false, "notices_off"
 	if h.noticesReady() {
 		verified, err := h.Users.EmailVerified(r.Context(), user.TenantID, user.ID)
 		if err != nil {
 			h.log().Error("could not read whether an address is verified", "error", err)
 		}
-		untested = verified
+		untested, reason = verified, "email_unverified"
+		if verified {
+			reason = ""
+		}
 	}
 	send(w, http.StatusOK, contentReply{
 		Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID), Media: h.mediaEnabledFor(user.TenantID),
-		Send: sending, SendSelf: self, SendDirect: direct, AI: ai, AIOff: off, UntestedText: untested,
+		Send: sending, SendSelf: self, SendDirect: direct, AI: ai, AIOff: off, UntestedText: untested, UntestedTextReason: reason,
 	})
 }
 

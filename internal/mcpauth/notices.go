@@ -25,9 +25,10 @@ import (
 // the event and clears the managers' seen marks, so the console's banner
 // shows the connection again; its e-mail goes once per connection and event,
 // at most twenty a day per workspace, to the person who consented and the
-// owners with a verified address, carrying a revoke-only link that replaces
-// the connection's last one. The e-mail goes after the answer: a reader's
-// activation or budget_hit never waits on a mail server.
+// owners with a verified address, carrying a revoke-only link of its own,
+// which works beside the connection's earlier ones until one is used or the
+// connection ends. The e-mail goes after the answer: a reader's activation
+// or budget_hit never waits on a mail server.
 
 // noticeMailTimeout bounds one notice's e-mails, every recipient included.
 const noticeMailTimeout = 2 * time.Minute
@@ -81,13 +82,18 @@ func (h *Handler) mailNotice(ctx context.Context, n store.MCPNotice) {
 		return
 	}
 	notice := mailer.MCPNotice{
-		Event: n.Event, ClientHost: n.ClientHost, Tier: noticeTier(n), Numbers: n.DeviceCount,
+		Event: n.Event, ClientHost: n.ClientHost, Workspace: n.Workspace, Tier: noticeTier(n), Numbers: n.DeviceCount,
 		Text: n.Kind == store.KindContent, Attachments: n.Kind == store.KindContent && n.Media,
 		HistoryDays: n.HistoryDays, ExpiresAt: n.ExpiresAt, At: time.Now(),
 		RevokeLink: strings.TrimRight(h.NoticeOrigin, "/") + revokeLinkPath + token,
+		// The recipient's preferred locale would choose the language; accounts
+		// carry none on this server (the console keeps its language in the
+		// browser), so every notice goes in English (§19.22).
+		Lang: "",
 	}
+	// A token is named by its label, the admin's own words; it has no host.
 	if n.ClientKind == store.ClientToken {
-		notice.ClientHost = ""
+		notice.ClientHost, notice.Label = "", n.ClientName
 	}
 	sent := 0
 	for _, to := range n.Recipients {

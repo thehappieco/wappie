@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/browserorigin"
 	"whatserver2/internal/mailer"
 	"whatserver2/internal/mcpauth"
 	"whatserver2/internal/ratelimit"
@@ -190,6 +191,7 @@ type listedClient struct {
 	ClientKind     string            `json:"client_kind"`
 	ClientID       *string           `json:"client_id"`
 	ClientHost     *string           `json:"client_host"`
+	Registrable    *string           `json:"registrable"`
 	ClientLocal    bool              `json:"client_local"`
 	Trust          *string           `json:"trust"`
 	ClaimedName    *string           `json:"claimed_name"`
@@ -232,6 +234,7 @@ func TestVersion2Consent(t *testing.T) {
 	}
 	c := h.client(t, h.ownerToken, id)
 	if c.ClientKind != "cimd" || deref(c.ClientID) != "https://agent.example.com/oauth/client.json" || deref(c.ClientHost) != "agent.example.com" ||
+		deref(c.Registrable) != "example.com" ||
 		deref(c.Trust) != "unknown" || deref(c.ClaimedName) != "Example Agent" || c.HistoryDays == nil || *c.HistoryDays != 30 ||
 		c.ClientName != "agent.example.com" || c.RedirectHost != "agent.example.com" || deref(c.CreatedByEmail) != h.owner.Email ||
 		c.Seen || c.FirstUsedAt != nil || c.BudgetHits == nil || len(c.BudgetHits) != 0 {
@@ -259,6 +262,29 @@ func TestVersion2Consent(t *testing.T) {
 	}
 	if h.enclave.bundle(requestID)["client_local"] != true {
 		t.Fatal("client_local was not relayed")
+	}
+
+	// Claude's document client on its pinned claude.com callback: the
+	// client is claude.ai's, the redirect host the callback's (§19.12).
+	claudeCom := map[string]any{
+		"client_kind": "cimd", "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata", "tested_id": "claude", "client_host": "claude.ai",
+		"registrable": "claude.ai", "client_name": "Claude", "claimed_name": nil, "trust": "tested", "redirect_uri": "https://claude.com/api/mcp/auth_callback",
+		"redirect_host": "claude.com", "limits_tier": "web_tested",
+	}
+	requestID, prefix = h.prepareV2(t, claudeCom)
+	id = created(t, h.call(t, http.MethodPost, "/v1/mcp/connections", v2Body(t, requestID, prefix, claudeCom), bearer(h.ownerToken)))
+	if c := h.client(t, h.ownerToken, id); c.ClientKind != "cimd" || deref(c.ClientHost) != "claude.ai" || c.RedirectHost != "claude.com" || c.ClientName != "Claude" ||
+		deref(c.Registrable) != "claude.ai" {
+		t.Fatalf("listed = %+v", c)
+	}
+
+	// An untested client whose name the reader kept under Script_Extensions
+	// (Thaana with Arabic-Indic digits): Go does not judge scripts.
+	thaana := map[string]any{"claimed_name": "\u0785\u0786 \u0661\u0662"}
+	requestID, prefix = h.prepareV2(t, thaana)
+	id = created(t, h.call(t, http.MethodPost, "/v1/mcp/connections", v2Body(t, requestID, prefix, thaana), bearer(h.ownerToken)))
+	if c := h.client(t, h.ownerToken, id); deref(c.ClaimedName) != "\u0785\u0786 \u0661\u0662" {
+		t.Fatalf("listed = %+v", c)
 	}
 
 	// A version-1 descriptor gets none of it, and refuses the members.
@@ -320,8 +346,13 @@ func TestVersion2ConsentRefusals(t *testing.T) {
 		"a tier that does not follow": {map[string]any{"limits_tier": "web_tested"}, nil, 502, "reader_unavailable"},
 		"an untested redirect elsewhere": {map[string]any{"redirect_uri": "https://evil.example.net/cb", "redirect_host": "evil.example.net"},
 			nil, 502, "reader_unavailable"},
-		"an untested name":     {map[string]any{"client_name": "Claude"}, func(b map[string]any) { b["client_name"] = "Claude" }, 502, "reader_unavailable"},
-		"a mixed-script claim": {map[string]any{"claimed_name": "Сlaude"}, func(b map[string]any) { b["claimed_name"] = "Сlaude" }, 502, "reader_unavailable"},
+		"an untested name":            {map[string]any{"client_name": "Claude"}, func(b map[string]any) { b["client_name"] = "Claude" }, 502, "reader_unavailable"},
+		"a claim with a bidi control": {map[string]any{"claimed_name": "Cl\u202eaude"}, func(b map[string]any) { b["claimed_name"] = "Cl\u202eaude" }, 502, "reader_unavailable"},
+		"a redirect host not the redirect's": {map[string]any{"client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata", "tested_id": "claude",
+			"client_host": "claude.ai", "registrable": "claude.ai", "client_name": "Claude", "claimed_name": nil, "trust": "tested",
+			"redirect_uri": "https://claude.com/api/mcp/auth_callback", "redirect_host": "claude.ai", "limits_tier": "web_tested"}, func(b map[string]any) {
+			b["client_host"], b["client_name"], b["claimed_name"], b["trust"], b["history_days"] = "claude.ai", "Claude", nil, "tested", nil
+		}, 502, "reader_unavailable"},
 		"a DCR host not listed": {map[string]any{"client_kind": "dcr", "client_id": "dcr-1", "tested_id": "evil", "client_host": "example.org",
 			"registrable": "example.org", "client_name": "Evil", "claimed_name": nil, "trust": "tested", "redirect_uri": "https://example.org/cb",
 			"redirect_host": "example.org", "limits_tier": "web_tested"}, func(b map[string]any) {
@@ -376,29 +407,36 @@ func TestVersion2Text(t *testing.T) {
 	// Sending switched on, so that what refuses a draft is the client.
 	h.handler.SendAllowed = func(uuid.UUID) bool { return true }
 
+	reason := ""
 	untested := func() bool {
 		t.Helper()
 		r := h.call(t, http.MethodGet, "/v1/mcp/content", nil, bearer(h.ownerToken))
 		expect(t, r, http.StatusOK, "")
 		var c struct {
-			UntestedText bool `json:"untested_text"`
+			UntestedText       bool    `json:"untested_text"`
+			UntestedTextReason *string `json:"untested_text_reason"`
 		}
 		r.into(t, &c)
+		if c.UntestedTextReason == nil {
+			t.Fatal("no untested_text_reason")
+		}
+		reason = *c.UntestedTextReason
 		return c.UntestedText
 	}
 	_, body := h.v2Content(t, nil)
-	if untested() {
-		t.Fatal("an unverified address may give an untested assistant text")
+	if untested() || reason != "email_unverified" {
+		t.Fatalf("an unverified address may give an untested assistant text, or is not told so (%q)", reason)
 	}
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", body, bearer(h.ownerToken)), http.StatusForbidden, "email_unverified")
 	h.verify(t, h.owner)
-	if !untested() {
-		t.Fatal("a verified address may not give an untested assistant text")
+	if !untested() || reason != "" {
+		t.Fatalf("a verified address may not give an untested assistant text (%q)", reason)
 	}
 	h.handler.NoticeOrigin = ""
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", body, bearer(h.ownerToken)), http.StatusForbidden, "email_unverified")
-	if untested() {
-		t.Fatal("untested text with no notice e-mail")
+	// The server, not the person: the card says so rather than asking to confirm an address.
+	if untested() || reason != "notices_off" {
+		t.Fatalf("untested text with no notice e-mail, or the wrong reason (%q)", reason)
 	}
 	h.handler.NoticeOrigin = noticeOrigin
 	for name, mutate := range map[string]func(map[string]any){
@@ -573,8 +611,14 @@ func TestBudgetHit(t *testing.T) {
 }
 
 // The revoke-only link: a look changes nothing, the first POST revokes that
-// one connection and tells its reader, and the link is dead after it, as an
-// unknown or malformed one is. The page carries one form and no link.
+// one connection and tells its reader, and every link of the connection is
+// dead after it, as an unknown or malformed one is. Each notice e-mail
+// carries a link of its own, and an earlier one keeps working after a later
+// one went. The page carries one form and no link, and is served behind the
+// API's browser-origin guard as in production: the form posts from the page
+// itself, whose same-origin referrer policy lets the browser send the page's
+// own origin (a no-referrer page would send Origin: null, which the guard
+// refuses).
 func TestRevokeLink(t *testing.T) {
 	h := newClientsHarness(t)
 	h.verify(t, h.owner)
@@ -584,46 +628,74 @@ func TestRevokeLink(t *testing.T) {
 	a, _ := h.signedCall(t, http.MethodPost, "/v1/mcp/enclave/connections/"+id+"/activate", asEnclave(t))
 	expect(t, a, http.StatusNoContent, "")
 	h.handler.WaitNotices()
+	// A reading limit later the same hour: a second e-mail, a second link.
+	limit := asEnclave(t)
+	limit.body = []byte(`{"code":"first_hour_messages"}`)
+	hit, _ := h.signedCall(t, http.MethodPost, "/v1/mcp/enclave/connections/"+id+"/budget-hit", limit)
+	expect(t, hit, http.StatusNoContent, "")
+	h.handler.WaitNotices()
 	mails := h.mail.mails()
-	if len(mails) != 1 {
+	if len(mails) != 2 || mails[0].n.RevokeLink == mails[1].n.RevokeLink {
 		t.Fatalf("mails = %+v", mails)
 	}
-	path := strings.TrimPrefix(mails[0].n.RevokeLink, noticeOrigin)
+	first := strings.TrimPrefix(mails[0].n.RevokeLink, noticeOrigin)
+	later := strings.TrimPrefix(mails[1].n.RevokeLink, noticeOrigin)
 
-	page := func(method, path, lang string) *httptest.ResponseRecorder {
+	const apiHost = "api.wappie.thehappie.co"
+	guarded := browserorigin.Policy{}.Wrap(h.mux)
+	page := func(method, path, lang, origin string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, nil)
+		req.Host = apiHost
 		req.RemoteAddr = "198.51.100.7:4242"
 		if lang != "" {
 			req.Header.Set("Accept-Language", lang)
 		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
 		w := httptest.NewRecorder()
-		h.mux.ServeHTTP(w, req)
+		guarded.ServeHTTP(w, req)
 		return w
 	}
-	for range 2 {
-		w := page(http.MethodGet, path, "")
+	for _, path := range []string{first, later, first} {
+		w := page(http.MethodGet, path, "", "")
 		body := w.Body.String()
 		if w.Code != http.StatusOK || !strings.Contains(body, "agent.example.com") || !strings.Contains(body, "Revoke only this connection") ||
-			strings.Contains(body, "<a ") || strings.Count(body, "<form") != 1 || !strings.Contains(body, `method="post"`) {
+			strings.Contains(body, "<a ") || strings.Count(body, "<form") != 1 || !strings.Contains(body, `method="post"`) ||
+			!strings.Contains(body, `<meta name="referrer" content="same-origin">`) || strings.Contains(body, "no-referrer") ||
+			!strings.Contains(body, "Wappie&#39;s e-mails about assistants never ask for your password. Their only button revokes one connection.") {
 			t.Fatalf("page = %d %s", w.Code, body)
 		}
 		if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "form-action 'self'") ||
-			w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "no-referrer" {
+			w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "same-origin" {
 			t.Fatalf("headers = %v", w.Header())
 		}
 	}
 	if c := h.client(t, h.ownerToken, id); c.Status != "active" {
 		t.Fatalf("a look changed the status to %s", c.Status)
 	}
-	if w := page(http.MethodGet, path, "pt-BR,pt;q=0.9,en;q=0.5"); !strings.Contains(w.Body.String(), "Revogar só esta conexão") || !strings.Contains(w.Body.String(), `lang="pt"`) {
+	if w := page(http.MethodGet, first, "pt-BR,pt;q=0.9,en;q=0.5", ""); !strings.Contains(w.Body.String(), "Revogar só esta conexão") || !strings.Contains(w.Body.String(), `lang="pt"`) {
 		t.Fatalf("Portuguese page = %s", w.Body.String())
 	}
-	if w := page(http.MethodGet, path, "de;q=0.2, fr"); !strings.Contains(w.Body.String(), `lang="fr"`) {
+	if w := page(http.MethodGet, first, "de;q=0.2, fr", ""); !strings.Contains(w.Body.String(), `lang="fr"`) {
 		t.Fatalf("French page = %s", w.Body.String())
 	}
+	if w := page(http.MethodGet, first, "de", ""); !strings.Contains(w.Body.String(), "zu Ihrem Wappie") || strings.Contains(w.Body.String(), "dein") {
+		t.Fatalf("German page = %s", w.Body.String())
+	}
 
-	w := page(http.MethodPost, path, "")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Connection revoked") || strings.Contains(w.Body.String(), "<form") {
+	// What a browser sends from a no-referrer page is refused by the guard
+	// and revokes nothing.
+	if w := page(http.MethodPost, first, "", "null"); w.Code != http.StatusForbidden {
+		t.Fatalf("Origin null = %d %s", w.Code, w.Body.String())
+	}
+	if c := h.client(t, h.ownerToken, id); c.Status != "active" {
+		t.Fatalf("a refused POST changed the status to %s", c.Status)
+	}
+	// The page's own origin, as its form sends it: the earlier e-mail's link revokes.
+	w := page(http.MethodPost, first, "", "https://"+apiHost)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Connection revoked") ||
+		!strings.Contains(w.Body.String(), "agent.example.com loses access to your Wappie within a minute.") || strings.Contains(w.Body.String(), "<form") {
 		t.Fatalf("revoked page = %d %s", w.Code, w.Body.String())
 	}
 	if c := h.client(t, h.ownerToken, id); c.Status != "revoked" {
@@ -632,18 +704,19 @@ func TestRevokeLink(t *testing.T) {
 	if got := h.enclave.revocations(); len(got) != 1 || got[0] != id {
 		t.Fatalf("the reader was told %v", got)
 	}
-	for _, p := range []string{path, path[:len(path)-1] + "x", "/v1/mcp/revoke-link/short", "/v1/mcp/revoke-link/" + strings.Repeat("A", 43)} {
+	// Every link of the connection is spent with it.
+	for _, p := range []string{first, later, first[:len(first)-1] + "x", "/v1/mcp/revoke-link/short", "/v1/mcp/revoke-link/" + strings.Repeat("A", 43)} {
 		for _, method := range []string{http.MethodGet, http.MethodPost} {
-			if w := page(method, p, ""); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "This link is no longer valid.") ||
-				strings.Contains(w.Body.String(), "<form") {
+			if w := page(method, p, "", ""); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "This link no longer works") ||
+				!strings.Contains(w.Body.String(), "open the Wappie console yourself") || strings.Contains(w.Body.String(), "<form") {
 				t.Fatalf("%s %s = %d %s", method, p, w.Code, w.Body.String())
 			}
 		}
 	}
 	// The path is limited per address.
 	h.handler.RevokeLinkLimits = &ratelimit.Auth{PerIP: ratelimit.New(1, 1)}
-	page(http.MethodGet, path, "")
-	if w := page(http.MethodGet, path, ""); w.Code != http.StatusTooManyRequests {
+	page(http.MethodGet, first, "", "")
+	if w := page(http.MethodGet, first, "", ""); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("no limit: %d", w.Code)
 	}
 }
@@ -746,13 +819,22 @@ func TestConsoleToken(t *testing.T) {
 		t.Fatalf("relayed = %v", relayed)
 	}
 	c := h.client(t, h.ownerToken, made.ID)
-	if c.ClientKind != "token" || deref(c.Trust) != "unknown" || c.ClientHost != nil || c.ClientName != "Cursor on the laptop" ||
+	if c.ClientKind != "token" || deref(c.Trust) != "unknown" || c.ClientHost != nil || c.Registrable != nil || c.ClientName != "Cursor on the laptop" ||
 		c.RedirectHost != "token" || c.HistoryDays == nil || *c.HistoryDays != 30 {
 		t.Fatalf("listed = %+v", c)
 	}
 	h.handler.WaitNotices()
-	if mails := h.mail.mails(); len(mails) != 1 || mails[0].n.Tier != "token" || mails[0].n.ClientHost != "" {
+	mails := h.mail.mails()
+	if len(mails) != 1 || mails[0].n.Tier != "token" || mails[0].n.ClientHost != "" || mails[0].n.Label != "Cursor on the laptop" {
 		t.Fatalf("mails = %+v", mails)
+	}
+	// Its revoke-only link names the token by its label, never a host.
+	look := httptest.NewRequest(http.MethodGet, strings.TrimPrefix(mails[0].n.RevokeLink, noticeOrigin), nil)
+	look.RemoteAddr = "198.51.100.8:4242"
+	page := httptest.NewRecorder()
+	h.mux.ServeHTTP(page, look)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "console connection token “Cursor on the laptop”") {
+		t.Fatalf("token page = %d %s", page.Code, page.Body.String())
 	}
 	// A request is answered once.
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/token-requests/"+requestID+"/bundle", tokenBody(t, prefix), bearer(h.ownerToken)),

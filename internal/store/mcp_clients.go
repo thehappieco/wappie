@@ -253,10 +253,12 @@ type MCPNotice struct {
 	// display name (a token's label).
 	ClientKind, Trust, ClientHost, ClientName string
 	ClientLocal                               bool
-	DeviceCount                               int
-	ExpiresAt                                 time.Time
-	HistoryDays                               int
-	CreatedBy                                 uuid.UUID
+	// Workspace is the workspace's name.
+	Workspace   string
+	DeviceCount int
+	ExpiresAt   time.Time
+	HistoryDays int
+	CreatedBy   uuid.UUID
 	// Recipients are the person who consented and the workspace's owners,
 	// active, whose address is verified, each once.
 	Recipients []string
@@ -277,13 +279,13 @@ func (m *MCPConnections) RaiseNotice(ctx context.Context, reader, id, event stri
 	}
 	n := MCPNotice{ConnectionID: id, TenantID: tenant, Event: event}
 	err = pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT kind, media, client_kind, coalesce(trust, ''), coalesce(client_host, redirect_host),
-			       client_name, client_local, device_count, expires_at, coalesce(history_days, 0), created_by
-			  FROM mcp_connections
-			 WHERE id=$1 AND tenant_id=$2 AND reader=$3 AND kind <> 'ai' AND status IN ('pending','active','reseal')
-			   FOR UPDATE`, id, tenant, reader).
+		err := tx.QueryRow(ctx, `SELECT c.kind, c.media, c.client_kind, coalesce(c.trust, ''), coalesce(c.client_host, c.redirect_host),
+			       c.client_name, c.client_local, c.device_count, c.expires_at, coalesce(c.history_days, 0), c.created_by, t.name
+			  FROM mcp_connections c JOIN tenants t ON t.id = c.tenant_id
+			 WHERE c.id=$1 AND c.tenant_id=$2 AND c.reader=$3 AND c.kind <> 'ai' AND c.status IN ('pending','active','reseal')
+			   FOR UPDATE OF c`, id, tenant, reader).
 			Scan(&n.Kind, &n.Media, &n.ClientKind, &n.Trust, &n.ClientHost, &n.ClientName, &n.ClientLocal, &n.DeviceCount,
-				&n.ExpiresAt, &n.HistoryDays, &n.CreatedBy)
+				&n.ExpiresAt, &n.HistoryDays, &n.CreatedBy, &n.Workspace)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrMCPConnectionNotFound
 		}
@@ -311,8 +313,9 @@ func (m *MCPConnections) RaiseNotice(ctx context.Context, reader, id, event stri
 // is still live, no e-mail went for this connection and event before, and
 // the workspace sent fewer than twenty in the last day. A claim is recorded
 // at once, with the hash of the revoke-only link the e-mail carries, which
-// replaces the connection's previous one; the e-mail goes after, and one that
-// fails is not sent again. False with no error is a refusal.
+// joins the connection's earlier ones: each works until one is used or the
+// connection ends. The e-mail goes after, and one that fails is not sent
+// again. False with no error is a refusal.
 func (m *MCPConnections) ClaimNoticeMail(ctx context.Context, tenant uuid.UUID, id, event, revokeLinkSHA256 string) (bool, error) {
 	if !revokeLinkPattern.MatchString(revokeLinkSHA256) {
 		return false, errors.New("store: a revoke link is stored as its SHA-256 in lower-case hex")
@@ -337,8 +340,9 @@ func (m *MCPConnections) ClaimNoticeMail(ctx context.Context, tenant uuid.UUID, 
 		if err != nil || tag.RowsAffected() != 1 {
 			return err
 		}
-		tag, err = tx.Exec(ctx, `UPDATE mcp_connections SET revoke_link_sha256=$3
-			WHERE id=$1 AND tenant_id=$2 AND kind <> 'ai' AND status IN ('pending','active','reseal')`, id, tenant, revokeLinkSHA256)
+		tag, err = tx.Exec(ctx, `INSERT INTO mcp_revoke_links (sha256, connection_id, tenant_id, event)
+			SELECT $3, id, tenant_id, $4 FROM mcp_connections
+			 WHERE id=$1 AND tenant_id=$2 AND kind <> 'ai' AND status IN ('pending','active','reseal')`, id, tenant, revokeLinkSHA256, event)
 		if err != nil {
 			return err
 		}
@@ -408,38 +412,53 @@ func (u *Users) EmailVerified(ctx context.Context, tenant, user uuid.UUID) (bool
 // revokeLinkPattern is a link token's SHA-256 in lower-case hex.
 var revokeLinkPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// RevokeLinkTarget is what a revoke-only link would revoke: the verified
-// host of its connection (the redirect host for a row without one, "" for a
-// token, which has none), while the link is the latest one minted for a
-// connection that is still live. A replaced, spent or unknown link is
-// ErrMCPConnectionNotFound.
-func (m *MCPConnections) RevokeLinkTarget(ctx context.Context, sha256Hex string) (host string, err error) {
+// RevokeLinkTarget is what a revoke-only link would revoke, while its
+// connection is live: the client's verified host (the redirect host for a
+// row without one), or for a console token its label. Any link a notice
+// e-mail of the connection carried names it. A spent or unknown link, and
+// one whose connection ended, is ErrMCPConnectionNotFound.
+func (m *MCPConnections) RevokeLinkTarget(ctx context.Context, sha256Hex string) (RevokeTarget, error) {
 	if !revokeLinkPattern.MatchString(sha256Hex) {
-		return "", ErrMCPConnectionNotFound
+		return RevokeTarget{}, ErrMCPConnectionNotFound
 	}
-	err = m.pool.QueryRow(ctx, `SELECT CASE WHEN client_kind = 'token' THEN '' ELSE coalesce(client_host, redirect_host) END
-		FROM mcp_connections WHERE revoke_link_sha256=$1 AND kind <> 'ai' AND status IN ('pending','active','reseal')`, sha256Hex).Scan(&host)
+	var target RevokeTarget
+	err := m.pool.QueryRow(ctx, `SELECT c.client_kind = 'token', coalesce(c.client_host, c.redirect_host), c.client_name
+		FROM mcp_revoke_links l JOIN mcp_connections c ON c.id = l.connection_id AND c.tenant_id = l.tenant_id
+		WHERE l.sha256=$1 AND c.kind <> 'ai' AND c.status IN ('pending','active','reseal')`, sha256Hex).Scan(&target.Token, &target.Host, &target.Label)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrMCPConnectionNotFound
+		return RevokeTarget{}, ErrMCPConnectionNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("store: revoke link: %w", err)
+		return RevokeTarget{}, fmt.Errorf("store: revoke link: %w", err)
 	}
-	return host, nil
+	if target.Token {
+		target.Host = ""
+	} else {
+		target.Label = ""
+	}
+	return target, nil
+}
+
+// RevokeTarget names the connection a revoke-only link revokes: a client's
+// verified host, or a console token's label.
+type RevokeTarget struct {
+	Token       bool
+	Host, Label string
 }
 
 // RevokeByLink ends the one connection a revoke-only link names, with its
-// key and, for content, its service account, as a console revocation does,
-// and spends the link. It returns the connection and its reader, which is
-// the one to tell. A replaced, spent or unknown link, and one whose
-// connection already ended, is ErrMCPConnectionNotFound.
+// key and, for content, its service account, as a console revocation does;
+// every link of the connection is spent with it. It returns the connection
+// and its reader, which is the one to tell. A spent or unknown link, and one
+// whose connection already ended, is ErrMCPConnectionNotFound.
 func (m *MCPConnections) RevokeByLink(ctx context.Context, sha256Hex string) (id, reader string, err error) {
 	if !revokeLinkPattern.MatchString(sha256Hex) {
 		return "", "", ErrMCPConnectionNotFound
 	}
 	var tenant uuid.UUID
-	err = m.pool.QueryRow(ctx, `SELECT id::text, tenant_id, reader FROM mcp_connections WHERE revoke_link_sha256=$1 AND kind <> 'ai'`,
-		sha256Hex).Scan(&id, &tenant, &reader)
+	err = m.pool.QueryRow(ctx, `SELECT c.id::text, c.tenant_id, c.reader
+		FROM mcp_revoke_links l JOIN mcp_connections c ON c.id = l.connection_id AND c.tenant_id = l.tenant_id
+		WHERE l.sha256=$1 AND c.kind <> 'ai'`, sha256Hex).Scan(&id, &tenant, &reader)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrMCPConnectionNotFound
 	}
@@ -451,9 +470,9 @@ func (m *MCPConnections) RevokeByLink(ctx context.Context, sha256Hex string) (id
 			return err
 		}
 		// The link is spent in the same transaction that ends the
-		// connection, and only if it is still this connection's.
-		tag, err := tx.Exec(ctx, `UPDATE mcp_connections SET revoke_link_sha256=NULL
-			WHERE id=$1 AND tenant_id=$2 AND revoke_link_sha256=$3`, id, tenant, sha256Hex)
+		// connection, and only if it is still one of this connection's;
+		// endMCPConnectionTx spends the others.
+		tag, err := tx.Exec(ctx, `DELETE FROM mcp_revoke_links WHERE sha256=$3 AND connection_id=$1 AND tenant_id=$2`, id, tenant, sha256Hex)
 		if err != nil {
 			return err
 		}

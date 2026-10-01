@@ -50,6 +50,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatserver2/internal/mailer"
+	"whatserver2/internal/netguard"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/store"
 )
@@ -304,7 +305,11 @@ type connectionInfo struct {
 	SendPaused bool    `json:"send_paused"`
 	SendChats  int     `json:"send_chats"`
 	// RevokeReason says why an ended connection ended; null otherwise.
-	RevokeReason *string `json:"revoke_reason"`
+	// RevokedAt is when a revoked one was, so the console allows the
+	// reader's minute of status cache before calling a revoked connection
+	// the verified reader still holds a hidden one (§19.22).
+	RevokeReason *string    `json:"revoke_reason"`
+	RevokedAt    *time.Time `json:"revoked_at"`
 	// Renewable is set on a live content connection the viewer consented
 	// to, while content is allowed for the workspace.
 	Renewable bool `json:"renewable"`
@@ -315,9 +320,13 @@ type connectionInfo struct {
 	// before migration 0046 (Legacy, never Tested); ClaimedName what the
 	// client called itself, null for none; HistoryDays the window an
 	// untested client or a token reads, null for the whole history.
-	ClientKind  string  `json:"client_kind"`
-	ClientID    *string `json:"client_id"`
-	ClientHost  *string `json:"client_host"`
+	ClientKind string  `json:"client_kind"`
+	ClientID   *string `json:"client_id"`
+	ClientHost *string `json:"client_host"`
+	// Registrable is ClientHost's registrable domain, from the same
+	// snapshot as the reader's, so the list can show the main domain (§19.22);
+	// null with ClientHost.
+	Registrable *string `json:"registrable"`
 	ClientLocal bool    `json:"client_local"`
 	Trust       *string `json:"trust"`
 	ClaimedName *string `json:"claimed_name"`
@@ -802,7 +811,7 @@ func listedConnection(c store.MCPConnection, viewer uuid.UUID, allowed bool, now
 	info := connectionInfo{
 		ID: c.ID, ClientName: c.ClientName, RedirectHost: c.RedirectHost, Status: status,
 		DeviceCount: c.DeviceCount, KeyPrefix: c.KeyPrefix, CreatedAt: c.CreatedAt,
-		ActivatedAt: c.ActivatedAt, ExpiresAt: c.ExpiresAt, LastSeenAt: c.LastSeenAt,
+		ActivatedAt: c.ActivatedAt, ExpiresAt: c.ExpiresAt, LastSeenAt: c.LastSeenAt, RevokedAt: c.RevokedAt,
 		Kind:      c.Kind,
 		Renewable: c.Kind == store.KindContent && (status == "active" || status == "reseal") && c.CreatedBy == viewer && allowed,
 	}
@@ -822,6 +831,11 @@ func listedConnection(c store.MCPConnection, viewer uuid.UUID, allowed bool, now
 	}
 	info.ClientKind, info.ClientLocal, info.FirstUsedAt, info.Seen = c.ClientKind, c.ClientLocal, c.FirstUsedAt, c.Seen
 	info.ClientID, info.ClientHost, info.Trust = optional(c.ClientID), optional(c.ClientHost), optional(c.Trust)
+	if c.ClientHost != "" {
+		if host, reason := netguard.CheckHost(c.ClientHost); reason == "" {
+			info.Registrable = &host.Registrable
+		}
+	}
 	info.ClaimedName, info.CreatedByEmail = optional(c.ClaimedName), optional(c.CreatedByEmail)
 	if c.HistoryDays != 0 {
 		days := c.HistoryDays
