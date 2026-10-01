@@ -10,7 +10,9 @@ import * as client from '../src/index.js'
 import {
   AttestationError,
   attestationUserData,
+  attestationUserDataV2,
   awsNitroRoot,
+  descriptorSHA256,
   decodeAttestationDocument,
   verifyAttestation,
   type AllowEntry,
@@ -45,6 +47,7 @@ import {
   p384,
   userData,
 } from './attestationFixtures.mjs'
+import { canonicalJSON } from '../src/crypto/jcs.js'
 
 const dir = fileURLToPath(new URL('../testdata/attestation/', import.meta.url))
 const b64file = (name: string) => new Uint8Array(Buffer.from(readFileSync(dir + name, 'utf8').trim(), 'base64'))
@@ -174,6 +177,48 @@ describe('attestationUserData', () => {
   })
 })
 
+// ---- user_data v2 (reader 0.6.0, docs/mcp-enclave.md section 19.13) -------------
+
+// The vectors the reader's tests and the console's read too: whole descriptors
+// of every kind, their JCS, descriptor_sha256 and user_data.
+interface V2Vector { name: string; kind: string; fields: AttestationFields; descriptor: Record<string, unknown>; jcs: string; descriptor_sha256: string; user_data: string }
+const v2 = JSON.parse(readFileSync(fileURLToPath(new URL('../../mcp-http/test/vectors/attest-v2.json', import.meta.url)), 'utf8')) as {
+  contract: { name: string; fields: AttestationFields; descriptor_sha256: string; user_data: string }[]
+  descriptors: V2Vector[]
+}
+
+describe('user_data v2', () => {
+  it('matches the contract vectors, with and without a descriptor', async () => {
+    expect(v2.contract.length).toBe(2)
+    for (const item of v2.contract) expect(hex(await attestationUserDataV2(item.fields, item.descriptor_sha256)), item.name).toBe(item.user_data)
+  })
+
+  it('hashes a descriptor of every kind as the shared vectors do, leaving its attestation out', async () => {
+    expect([...new Set(v2.descriptors.map(item => item.kind))].sort()).toEqual(['ai', 'ai_renewal', 'connect', 'live_list', 'renewal', 'token'])
+    for (const item of v2.descriptors) {
+      const { attestation, ...bare } = item.descriptor
+      expect(attestation, item.name).toBeTypeOf('object')
+      expect(canonicalJSON(bare), item.name).toBe(item.jcs)
+      expect(await descriptorSHA256(item.descriptor), item.name).toBe(item.descriptor_sha256)
+      expect(await descriptorSHA256(bare), item.name).toBe(item.descriptor_sha256)
+      expect(hex(await attestationUserDataV2(item.fields, item.descriptor_sha256)), item.name).toBe(item.user_data)
+    }
+  })
+
+  it('refuses what JCS refuses, a descriptor that is not an object and a malformed descriptor_sha256', async () => {
+    const descriptor = v2.descriptors[0].descriptor
+    expect(await codeOf(() => descriptorSHA256({ ...descriptor, claimed_name: 'a\uD800b' }))).toBe('attestation_descriptor')
+    expect(await codeOf(() => descriptorSHA256({ ...descriptor, extra: undefined }))).toBe('attestation_descriptor')
+    expect(await codeOf(() => descriptorSHA256([] as unknown as Record<string, unknown>))).toBe('attestation_descriptor')
+    expect(await codeOf(() => descriptorSHA256(null as unknown as Record<string, unknown>))).toBe('attestation_descriptor')
+    const fields = v2.contract[0].fields
+    expect(await codeOf(() => attestationUserDataV2(fields, 'C'.repeat(64)))).toBe('attestation_descriptor')
+    expect(await codeOf(() => attestationUserDataV2(fields, 'c'.repeat(63)))).toBe('attestation_descriptor')
+    expect(await codeOf(() => attestationUserDataV2({ ...fields, resource: 'a\0b' }, 'c'.repeat(64)))).toBe('attestation_user_data')
+    expect(await codeOf(() => attestationUserDataV2({ ...fields, reader_version: '0.6' }, 'c'.repeat(64)))).toBe('attestation_version')
+  })
+})
+
 // ---- synthetic chain -----------------------------------------------------------
 
 const pki = buildPki()
@@ -224,6 +269,48 @@ describe('genuine synthetic documents', () => {
   it('are exported from the package entry as attestation', () => {
     expect(client.attestation.verifyAttestation).toBe(verifyAttestation)
     expect(client.attestation.AttestationError).toBe(AttestationError)
+  })
+})
+
+describe('documents made for a descriptor (user_data v2)', () => {
+  const connect = v2.descriptors.find(item => item.kind === 'connect')!
+  const liveList = v2.descriptors.find(item => item.kind === 'live_list')!
+  // A document whose user_data is the vector's: the synthetic chain, the vector's fields.
+  async function verifyV2(item: V2Vector, descriptor: Record<string, unknown> | undefined, { userDataHex = item.user_data, publicKey = true } = {}) {
+    const { raw, pcrs } = buildDoc(pki, { set: { user_data: Buffer.from(userDataHex, 'hex'), ...(publicKey ? {} : { public_key: null }) } })
+    return verifyAttestation(raw, item.fields, optionsFor(pki, pcrs, {
+      allow: [entryFor(pcrs, '0.6.0')], requestId: item.fields.request_id, requirePublicKey: publicKey, ...(descriptor === undefined ? {} : { descriptor }),
+    }))
+  }
+  const codeV2 = (...args: Parameters<typeof verifyV2>) => codeOf(() => verifyV2(...args))
+
+  it('pass with the whole descriptor, with or without its attestation member', async () => {
+    const result = await verifyV2(connect, connect.descriptor)
+    expect(result.entry.version).toBe('0.6.0')
+    const { attestation: _attestation, ...bare } = connect.descriptor
+    expect(await codeV2(connect, bare)).toBe('passed')
+    expect(await codeV2(liveList, liveList.descriptor, { publicKey: false })).toBe('passed')
+  })
+
+  it('refuse any field the console shows or compares, changed by whoever relayed it', async () => {
+    const changes: Record<string, unknown>[] = [
+      { client_host: 'claude.ai.example.com' }, { registrable: 'example.com' }, { client_name: 'Claude Code' }, { claimed_name: 'Claude' },
+      { trust: 'unknown' }, { tested_id: 'chatgpt' }, { client_local: true }, { redirect_uri: 'https://claude.ai/other' },
+      { limits: { ...(connect.descriptor.limits as object), calls_per_minute: 600 } }, { shared_suffix: 'github.io' }, { extra: true },
+    ]
+    for (const change of changes) expect(await codeV2(connect, { ...connect.descriptor, ...change }), JSON.stringify(change)).toBe('attestation_user_data')
+    const { client_name: _name, ...missing } = connect.descriptor
+    expect(await codeV2(connect, missing)).toBe('attestation_user_data')
+  })
+
+  it('refuse a v2 document checked as v1, and a v1 document checked with a descriptor: no downgrade either way', async () => {
+    expect(await codeV2(connect, undefined)).toBe('attestation_user_data')
+    expect(await codeV2(connect, connect.descriptor, { userDataHex: hex(userData(connect.fields)) })).toBe('attestation_user_data')
+  })
+
+  it('refuse a descriptor that is not an object before reading the document', async () => {
+    expect(await codeV2(connect, null as unknown as Record<string, unknown>)).toBe('attestation_descriptor')
+    expect(await codeV2(connect, [] as unknown as Record<string, unknown>)).toBe('attestation_descriptor')
   })
 })
 

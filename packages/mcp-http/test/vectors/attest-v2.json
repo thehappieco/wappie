@@ -1,0 +1,791 @@
+{
+  "schema": "wappie-attest-v2-vectors/v1",
+  "label": "wappie-mcp-attest/v2",
+  "note": "user_data = SHA-256(\"wappie-mcp-attest/v2\" 0x00 request_id 0x00 resource 0x00 tls_spki_sha256 0x00 policy_sha256 0x00 reader_version 0x00 descriptor_sha256); descriptor_sha256 = lowercase hex SHA-256 of the JCS of the descriptor without its attestation member (docs/mcp-enclave.md §19.13). The descriptors are whole, one per kind of §19.12; their attestation documents are placeholders.",
+  "contract": [
+    {
+      "name": "the contract vector (§19.13)",
+      "fields": {
+        "request_id": "AAAAAAAAAAAAAAAAAAAAAA",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "user_data": "41500bb32148a8d4444a741847b034c9121311db4109a7c7d9c024ba0c8193be"
+    },
+    {
+      "name": "no request and no descriptor (§19.13)",
+      "fields": {
+        "request_id": "",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor_sha256": "",
+      "user_data": "9d9b4e435ae1127de6651fcc85202c7856102b1b97d371249cdca01cee916a29"
+    }
+  ],
+  "descriptors": [
+    {
+      "name": "connect, tested web (Claude)",
+      "kind": "connect",
+      "fields": {
+        "request_id": "Q2xhdWRlV2ViVGVzdGVkMQ",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "connect",
+        "request_id": "Q2xhdWRlV2ViVGVzdGVkMQ",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "client_kind": "cimd",
+        "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata",
+        "tested_id": "claude",
+        "client_host": "claude.ai",
+        "registrable": "claude.ai",
+        "shared_suffix": null,
+        "client_local": false,
+        "client_name": "Claude",
+        "claimed_name": null,
+        "name_dropped": false,
+        "trust": "tested",
+        "drift": false,
+        "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+        "redirect_host": "claude.ai",
+        "redirect_local": false,
+        "limits_tier": "web_tested",
+        "limits": {
+          "idle_days": {
+            "metadata": 30,
+            "content": 7
+          },
+          "ceiling_hours": {
+            "metadata": 8784,
+            "content": 2161
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                30,
+                90,
+                365
+              ],
+              "default": 90
+            },
+            "content": {
+              "choices": [
+                1,
+                30,
+                90
+              ],
+              "default": 30
+            }
+          },
+          "calls_per_minute": 60,
+          "history_days": null,
+          "daily": null,
+          "first_hour": null
+        },
+        "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "Q2xhdWRlV2ViVGVzdGVkMQ",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"claimed_name\":null,\"client_host\":\"claude.ai\",\"client_id\":\"https://claude.ai/oauth/mcp-oauth-client-metadata\",\"client_kind\":\"cimd\",\"client_local\":false,\"client_name\":\"Claude\",\"code_challenge\":\"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\",\"descriptor_version\":2,\"drift\":false,\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"kid\":\"0123456789abcdef\",\"kind\":\"connect\",\"limits\":{\"calls_per_minute\":60,\"ceiling_hours\":{\"content\":2161,\"metadata\":8784},\"daily\":null,\"durations_days\":{\"content\":{\"choices\":[1,30,90],\"default\":30},\"metadata\":{\"choices\":[30,90,365],\"default\":90}},\"first_hour\":null,\"history_days\":null,\"idle_days\":{\"content\":7,\"metadata\":30}},\"limits_tier\":\"web_tested\",\"name_dropped\":false,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"redirect_host\":\"claude.ai\",\"redirect_local\":false,\"redirect_uri\":\"https://claude.ai/api/mcp/auth_callback\",\"registrable\":\"claude.ai\",\"request_id\":\"Q2xhdWRlV2ViVGVzdGVkMQ\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"shared_suffix\":null,\"tested_id\":\"claude\",\"trust\":\"tested\"}",
+      "descriptor_sha256": "6df62b7b84c91c9b1731c44b3caa0ec7471289806acae43caaaaf04b198dc578",
+      "user_data": "df285955b3f707a4162eed4b416a8fc9176514dcd5df34d99cdd27b9f99f2286"
+    },
+    {
+      "name": "connect, unknown local app on a shared host, a claimed name",
+      "kind": "connect",
+      "fields": {
+        "request_id": "VW5rbm93bkxvY2FsQWdlbnQ",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "connect",
+        "request_id": "VW5rbm93bkxvY2FsQWdlbnQ",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "client_kind": "cimd",
+        "client_id": "https://team.github.io/agent/client.json",
+        "tested_id": null,
+        "client_host": "team.github.io",
+        "registrable": "team.github.io",
+        "shared_suffix": "github.io",
+        "client_local": true,
+        "client_name": "team.github.io",
+        "claimed_name": "Agente Ação “local”",
+        "name_dropped": false,
+        "trust": "unknown",
+        "drift": false,
+        "redirect_uri": "http://127.0.0.1:49152/callback",
+        "redirect_host": "team.github.io",
+        "redirect_local": true,
+        "limits_tier": "unknown",
+        "limits": {
+          "idle_days": {
+            "metadata": 7,
+            "content": 3
+          },
+          "ceiling_hours": {
+            "metadata": 2161,
+            "content": 721
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                7,
+                30,
+                90
+              ],
+              "default": 30
+            },
+            "content": {
+              "choices": [
+                1,
+                7,
+                30
+              ],
+              "default": 7
+            }
+          },
+          "calls_per_minute": 20,
+          "history_days": {
+            "choices": [
+              7,
+              30,
+              90
+            ],
+            "default": 30
+          },
+          "daily": {
+            "messages": 2000,
+            "attachments": 50
+          },
+          "first_hour": {
+            "messages": 300,
+            "attachments": 10
+          }
+        },
+        "code_challenge": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "VW5rbm93bkxvY2FsQWdlbnQ",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"claimed_name\":\"Agente Ação “local”\",\"client_host\":\"team.github.io\",\"client_id\":\"https://team.github.io/agent/client.json\",\"client_kind\":\"cimd\",\"client_local\":true,\"client_name\":\"team.github.io\",\"code_challenge\":\"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk\",\"descriptor_version\":2,\"drift\":false,\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"kid\":\"0123456789abcdef\",\"kind\":\"connect\",\"limits\":{\"calls_per_minute\":20,\"ceiling_hours\":{\"content\":721,\"metadata\":2161},\"daily\":{\"attachments\":50,\"messages\":2000},\"durations_days\":{\"content\":{\"choices\":[1,7,30],\"default\":7},\"metadata\":{\"choices\":[7,30,90],\"default\":30}},\"first_hour\":{\"attachments\":10,\"messages\":300},\"history_days\":{\"choices\":[7,30,90],\"default\":30},\"idle_days\":{\"content\":3,\"metadata\":7}},\"limits_tier\":\"unknown\",\"name_dropped\":false,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"redirect_host\":\"team.github.io\",\"redirect_local\":true,\"redirect_uri\":\"http://127.0.0.1:49152/callback\",\"registrable\":\"team.github.io\",\"request_id\":\"VW5rbm93bkxvY2FsQWdlbnQ\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"shared_suffix\":\"github.io\",\"tested_id\":null,\"trust\":\"unknown\"}",
+      "descriptor_sha256": "b5f9f0946b824c35dbd30f9a5ae1c895a88582ff467151df8ae96d543ca7eed1",
+      "user_data": "f946cd4b7feceb2655397bef0a7809771c80439fbe399b1ebb2e363905696a86"
+    },
+    {
+      "name": "connect, tested DCR on claude.com, a dropped name",
+      "kind": "connect",
+      "fields": {
+        "request_id": "RGNyQ2xhdWRlQ29tVGVzdDE",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "connect",
+        "request_id": "RGNyQ2xhdWRlQ29tVGVzdDE",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "client_kind": "dcr",
+        "client_id": "Zm9yLWEtZGNyLWNsaWVudA",
+        "tested_id": "claude_dcr",
+        "client_host": "claude.com",
+        "registrable": "claude.com",
+        "shared_suffix": null,
+        "client_local": false,
+        "client_name": "Claude",
+        "claimed_name": null,
+        "name_dropped": true,
+        "trust": "tested",
+        "drift": false,
+        "redirect_uri": "https://claude.com/api/mcp/auth_callback",
+        "redirect_host": "claude.com",
+        "redirect_local": false,
+        "limits_tier": "web_tested",
+        "limits": {
+          "idle_days": {
+            "metadata": 30,
+            "content": 7
+          },
+          "ceiling_hours": {
+            "metadata": 8784,
+            "content": 2161
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                30,
+                90,
+                365
+              ],
+              "default": 90
+            },
+            "content": {
+              "choices": [
+                1,
+                30,
+                90
+              ],
+              "default": 30
+            }
+          },
+          "calls_per_minute": 60,
+          "history_days": null,
+          "daily": null,
+          "first_hour": null
+        },
+        "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "RGNyQ2xhdWRlQ29tVGVzdDE",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"claimed_name\":null,\"client_host\":\"claude.com\",\"client_id\":\"Zm9yLWEtZGNyLWNsaWVudA\",\"client_kind\":\"dcr\",\"client_local\":false,\"client_name\":\"Claude\",\"code_challenge\":\"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\",\"descriptor_version\":2,\"drift\":false,\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"kid\":\"0123456789abcdef\",\"kind\":\"connect\",\"limits\":{\"calls_per_minute\":60,\"ceiling_hours\":{\"content\":2161,\"metadata\":8784},\"daily\":null,\"durations_days\":{\"content\":{\"choices\":[1,30,90],\"default\":30},\"metadata\":{\"choices\":[30,90,365],\"default\":90}},\"first_hour\":null,\"history_days\":null,\"idle_days\":{\"content\":7,\"metadata\":30}},\"limits_tier\":\"web_tested\",\"name_dropped\":true,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"redirect_host\":\"claude.com\",\"redirect_local\":false,\"redirect_uri\":\"https://claude.com/api/mcp/auth_callback\",\"registrable\":\"claude.com\",\"request_id\":\"RGNyQ2xhdWRlQ29tVGVzdDE\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"shared_suffix\":null,\"tested_id\":\"claude_dcr\",\"trust\":\"tested\"}",
+      "descriptor_sha256": "74f456f21348909fd17be43ef863fbd6a3a8a04983bf34c1c1afc5ae4e347250",
+      "user_data": "4a1bc38af896a85bfb9e4bda68784e5bee703edc4efdd34e177347f473bff1c9"
+    },
+    {
+      "name": "renewal, version-4 unknown text connection",
+      "kind": "renewal",
+      "fields": {
+        "request_id": "UmVuZXdhbFVua25vd25WNA",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "renewal",
+        "renewal_id": "UmVuZXdhbFVua25vd25WNA",
+        "connection_id": "3b6f1e2a-9c8d-4e7f-a6b5-c4d3e2f1a0b9",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "device_ids": [
+          "5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f"
+        ],
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "connection_expires_at": "2026-10-08T12:00:00.000Z",
+        "consent_version": 4,
+        "media": true,
+        "client_kind": "cimd",
+        "client_id": "https://agent.example.com/oauth/client.json",
+        "tested_id": null,
+        "client_host": "agent.example.com",
+        "registrable": "example.com",
+        "shared_suffix": null,
+        "client_local": false,
+        "client_name": "agent.example.com",
+        "claimed_name": "Example Agent",
+        "trust": "unknown",
+        "limits_tier": "unknown",
+        "limits": {
+          "idle_days": {
+            "metadata": 7,
+            "content": 3
+          },
+          "ceiling_hours": {
+            "metadata": 2161,
+            "content": 721
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                7,
+                30,
+                90
+              ],
+              "default": 30
+            },
+            "content": {
+              "choices": [
+                1,
+                7,
+                30
+              ],
+              "default": 7
+            }
+          },
+          "calls_per_minute": 20,
+          "history_days": {
+            "choices": [
+              7,
+              30,
+              90
+            ],
+            "default": 30
+          },
+          "daily": {
+            "messages": 2000,
+            "attachments": 50
+          },
+          "first_hour": {
+            "messages": 300,
+            "attachments": 10
+          }
+        },
+        "unknown_ack": true,
+        "history_days": 30,
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "UmVuZXdhbFVua25vd25WNA",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"claimed_name\":\"Example Agent\",\"client_host\":\"agent.example.com\",\"client_id\":\"https://agent.example.com/oauth/client.json\",\"client_kind\":\"cimd\",\"client_local\":false,\"client_name\":\"agent.example.com\",\"connection_expires_at\":\"2026-10-08T12:00:00.000Z\",\"connection_id\":\"3b6f1e2a-9c8d-4e7f-a6b5-c4d3e2f1a0b9\",\"consent_version\":4,\"descriptor_version\":2,\"device_ids\":[\"5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f\"],\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"history_days\":30,\"kid\":\"0123456789abcdef\",\"kind\":\"renewal\",\"limits\":{\"calls_per_minute\":20,\"ceiling_hours\":{\"content\":721,\"metadata\":2161},\"daily\":{\"attachments\":50,\"messages\":2000},\"durations_days\":{\"content\":{\"choices\":[1,7,30],\"default\":7},\"metadata\":{\"choices\":[7,30,90],\"default\":30}},\"first_hour\":{\"attachments\":10,\"messages\":300},\"history_days\":{\"choices\":[7,30,90],\"default\":30},\"idle_days\":{\"content\":3,\"metadata\":7}},\"limits_tier\":\"unknown\",\"media\":true,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"registrable\":\"example.com\",\"renewal_id\":\"UmVuZXdhbFVua25vd25WNA\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"shared_suffix\":null,\"tested_id\":null,\"trust\":\"unknown\",\"unknown_ack\":true}",
+      "descriptor_sha256": "473d1fc278ca46686fea43229954531589cdca6d2581ea3f9a006d7e17270cad",
+      "user_data": "7d3417f8600db44370d4f930fd0f77c27320a974efe42b7ac9c516423853f26c"
+    },
+    {
+      "name": "renewal, a version-3 record 0.5.0 wrote, with drafts",
+      "kind": "renewal",
+      "fields": {
+        "request_id": "UmVuZXdhbExlZ2FjeVYzUw",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "renewal",
+        "renewal_id": "UmVuZXdhbExlZ2FjeVYzUw",
+        "connection_id": "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "device_ids": [
+          "5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f",
+          "a4e3d2c1-b0a9-4f8e-8d7c-6b5a49382716"
+        ],
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "connection_expires_at": "2026-12-01T00:00:00.000Z",
+        "consent_version": 3,
+        "media": false,
+        "send": "draft",
+        "send_self": true,
+        "client_kind": "legacy",
+        "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata",
+        "tested_id": null,
+        "client_host": null,
+        "registrable": null,
+        "shared_suffix": null,
+        "client_local": false,
+        "client_name": null,
+        "claimed_name": null,
+        "trust": "tested",
+        "limits_tier": "web_tested",
+        "limits": {
+          "idle_days": {
+            "metadata": 30,
+            "content": 7
+          },
+          "ceiling_hours": {
+            "metadata": 8784,
+            "content": 2161
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                30,
+                90,
+                365
+              ],
+              "default": 90
+            },
+            "content": {
+              "choices": [
+                1,
+                30,
+                90
+              ],
+              "default": 30
+            }
+          },
+          "calls_per_minute": 60,
+          "history_days": null,
+          "daily": null,
+          "first_hour": null
+        },
+        "unknown_ack": false,
+        "history_days": null,
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "UmVuZXdhbExlZ2FjeVYzUw",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"claimed_name\":null,\"client_host\":null,\"client_id\":\"https://claude.ai/oauth/mcp-oauth-client-metadata\",\"client_kind\":\"legacy\",\"client_local\":false,\"client_name\":null,\"connection_expires_at\":\"2026-12-01T00:00:00.000Z\",\"connection_id\":\"7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f\",\"consent_version\":3,\"descriptor_version\":2,\"device_ids\":[\"5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f\",\"a4e3d2c1-b0a9-4f8e-8d7c-6b5a49382716\"],\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"history_days\":null,\"kid\":\"0123456789abcdef\",\"kind\":\"renewal\",\"limits\":{\"calls_per_minute\":60,\"ceiling_hours\":{\"content\":2161,\"metadata\":8784},\"daily\":null,\"durations_days\":{\"content\":{\"choices\":[1,30,90],\"default\":30},\"metadata\":{\"choices\":[30,90,365],\"default\":90}},\"first_hour\":null,\"history_days\":null,\"idle_days\":{\"content\":7,\"metadata\":30}},\"limits_tier\":\"web_tested\",\"media\":false,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"registrable\":null,\"renewal_id\":\"UmVuZXdhbExlZ2FjeVYzUw\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"send\":\"draft\",\"send_self\":true,\"shared_suffix\":null,\"tested_id\":null,\"trust\":\"tested\",\"unknown_ack\":false}",
+      "descriptor_sha256": "015e84dd720b2ef0bc6a96784fc69399816bc39248e00b01a9520ce71a5ce272",
+      "user_data": "6d8329c5920707f8ec67193b781c93e003663bd1cebfd1f0217ce82271e397ab"
+    },
+    {
+      "name": "renewal, a text console token",
+      "kind": "renewal",
+      "fields": {
+        "request_id": "UmVuZXdhbFRva2VuVGV4dA",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "renewal",
+        "renewal_id": "UmVuZXdhbFRva2VuVGV4dA",
+        "connection_id": "0e9d8c7b-6a5f-4e3d-9c2b-1a0f9e8d7c6b",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "device_ids": [
+          "a4e3d2c1-b0a9-4f8e-8d7c-6b5a49382716"
+        ],
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "connection_expires_at": "2026-10-02T12:00:00.000Z",
+        "consent_version": 4,
+        "media": false,
+        "client_kind": "token",
+        "client_id": "wappie-console-token",
+        "tested_id": null,
+        "client_host": null,
+        "registrable": null,
+        "shared_suffix": null,
+        "client_local": false,
+        "client_name": null,
+        "claimed_name": null,
+        "trust": "unknown",
+        "limits_tier": "token",
+        "limits": {
+          "idle_days": null,
+          "ceiling_hours": {
+            "metadata": 2161,
+            "content": 721
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                7,
+                30,
+                90
+              ],
+              "default": 30
+            },
+            "content": {
+              "choices": [
+                1,
+                7,
+                30
+              ],
+              "default": 1
+            }
+          },
+          "calls_per_minute": 20,
+          "history_days": {
+            "choices": [
+              7,
+              30,
+              90
+            ],
+            "default": 30
+          },
+          "daily": {
+            "messages": 2000,
+            "attachments": 50
+          },
+          "first_hour": {
+            "messages": 300,
+            "attachments": 10
+          }
+        },
+        "unknown_ack": true,
+        "history_days": 7,
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "UmVuZXdhbFRva2VuVGV4dA",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"claimed_name\":null,\"client_host\":null,\"client_id\":\"wappie-console-token\",\"client_kind\":\"token\",\"client_local\":false,\"client_name\":null,\"connection_expires_at\":\"2026-10-02T12:00:00.000Z\",\"connection_id\":\"0e9d8c7b-6a5f-4e3d-9c2b-1a0f9e8d7c6b\",\"consent_version\":4,\"descriptor_version\":2,\"device_ids\":[\"a4e3d2c1-b0a9-4f8e-8d7c-6b5a49382716\"],\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"history_days\":7,\"kid\":\"0123456789abcdef\",\"kind\":\"renewal\",\"limits\":{\"calls_per_minute\":20,\"ceiling_hours\":{\"content\":721,\"metadata\":2161},\"daily\":{\"attachments\":50,\"messages\":2000},\"durations_days\":{\"content\":{\"choices\":[1,7,30],\"default\":1},\"metadata\":{\"choices\":[7,30,90],\"default\":30}},\"first_hour\":{\"attachments\":10,\"messages\":300},\"history_days\":{\"choices\":[7,30,90],\"default\":30},\"idle_days\":null},\"limits_tier\":\"token\",\"media\":false,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"registrable\":null,\"renewal_id\":\"UmVuZXdhbFRva2VuVGV4dA\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"shared_suffix\":null,\"tested_id\":null,\"trust\":\"unknown\",\"unknown_ack\":true}",
+      "descriptor_sha256": "186182ad8df62cdf2ce37fbc9cb24ff1823196bec9ed21d512f7e831f7946b94",
+      "user_data": "7be300681c62891ca57e562c80d0728f2665fff1e83bba9a082383ff560fbae0"
+    },
+    {
+      "name": "ai, a request",
+      "kind": "ai",
+      "fields": {
+        "request_id": "QWlSZXF1ZXN0MDAwMDAwMQ",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "ai",
+        "request_id": "QWlSZXF1ZXN0MDAwMDAwMQ",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "kid": "0123456789abcdef",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "reader_version": "0.6.0",
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "QWlSZXF1ZXN0MDAwMDAwMQ",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"descriptor_version\":2,\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"kid\":\"0123456789abcdef\",\"kind\":\"ai\",\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"reader_version\":\"0.6.0\",\"request_id\":\"QWlSZXF1ZXN0MDAwMDAwMQ\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\"}",
+      "descriptor_sha256": "325105b9e10bb79c31a3068fb9e2233be1f47ec8adda657885d9afe83caa0b33",
+      "user_data": "9a3e1f615873b8f346110d9fec1d20ff15ec2da6039cf06603f8471e88e5b556"
+    },
+    {
+      "name": "ai_renewal, an AI authorization",
+      "kind": "ai_renewal",
+      "fields": {
+        "request_id": "QWlSZW5ld2FsMDAwMDAwMQ",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "ai_renewal",
+        "renewal_id": "QWlSZW5ld2FsMDAwMDAwMQ",
+        "connection_id": "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "device_ids": [
+          "5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f"
+        ],
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "connection_expires_at": "2026-12-30T00:00:00.000Z",
+        "consent_version": 1,
+        "media": false,
+        "functions": {
+          "audio": {
+            "provider": "openai",
+            "model": "gpt-4o-transcribe"
+          }
+        },
+        "features": {
+          "5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f": {
+            "audio": {
+              "mode": "request",
+              "lang": "pt-BR",
+              "requesters": "readers"
+            }
+          }
+        },
+        "budget": {
+          "monthly_tokens": 2000000,
+          "request_items_per_day": 200
+        },
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "QWlSZW5ld2FsMDAwMDAwMQ",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"budget\":{\"monthly_tokens\":2000000,\"request_items_per_day\":200},\"connection_expires_at\":\"2026-12-30T00:00:00.000Z\",\"connection_id\":\"9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a\",\"consent_version\":1,\"descriptor_version\":2,\"device_ids\":[\"5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f\"],\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"features\":{\"5f0b2c1e-8d6a-4b3f-9e2d-1c0a9b8e7d6f\":{\"audio\":{\"lang\":\"pt-BR\",\"mode\":\"request\",\"requesters\":\"readers\"}}},\"functions\":{\"audio\":{\"model\":\"gpt-4o-transcribe\",\"provider\":\"openai\"}},\"kid\":\"0123456789abcdef\",\"kind\":\"ai_renewal\",\"media\":false,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"renewal_id\":\"QWlSZW5ld2FsMDAwMDAwMQ\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\"}",
+      "descriptor_sha256": "f6b59b492603cd70fd72243c9f03deb014979ff75ecd1115dee8cd2b0f486bd7",
+      "user_data": "b0b53b46349443d85cc54a77da647ee0081ecc5c0ea052a218f66aa148b06c67"
+    },
+    {
+      "name": "token, a console token request",
+      "kind": "token",
+      "fields": {
+        "request_id": "VG9rZW5SZXF1ZXN0MDAwMQ",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "token",
+        "request_id": "VG9rZW5SZXF1ZXN0MDAwMQ",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "client_kind": "token",
+        "trust": "unknown",
+        "limits_tier": "token",
+        "limits": {
+          "idle_days": null,
+          "ceiling_hours": {
+            "metadata": 2161,
+            "content": 721
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                7,
+                30,
+                90
+              ],
+              "default": 30
+            },
+            "content": {
+              "choices": [
+                1,
+                7,
+                30
+              ],
+              "default": 1
+            }
+          },
+          "calls_per_minute": 20,
+          "history_days": {
+            "choices": [
+              7,
+              30,
+              90
+            ],
+            "default": 30
+          },
+          "daily": {
+            "messages": 2000,
+            "attachments": 50
+          },
+          "first_hour": {
+            "messages": 300,
+            "attachments": 10
+          }
+        },
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "reader_version": "0.6.0",
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "VG9rZW5SZXF1ZXN0MDAwMQ",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"client_kind\":\"token\",\"descriptor_version\":2,\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"kid\":\"0123456789abcdef\",\"kind\":\"token\",\"limits\":{\"calls_per_minute\":20,\"ceiling_hours\":{\"content\":721,\"metadata\":2161},\"daily\":{\"attachments\":50,\"messages\":2000},\"durations_days\":{\"content\":{\"choices\":[1,7,30],\"default\":1},\"metadata\":{\"choices\":[7,30,90],\"default\":30}},\"first_hour\":{\"attachments\":10,\"messages\":300},\"history_days\":{\"choices\":[7,30,90],\"default\":30},\"idle_days\":null},\"limits_tier\":\"token\",\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"reader_version\":\"0.6.0\",\"request_id\":\"VG9rZW5SZXF1ZXN0MDAwMQ\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"trust\":\"unknown\"}",
+      "descriptor_sha256": "4efb42083a6a9e5140c765a15ee51776445272dee5805f57c3fce0b891c2e1ad",
+      "user_data": "c7a2fec50490fe7e87d08f8eb5d1016542930f1f515b3630292fff1f303198af"
+    },
+    {
+      "name": "live_list, a workspace's live connections",
+      "kind": "live_list",
+      "fields": {
+        "request_id": "",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "live_list",
+        "workspace_id": "01a08e0e-c546-7db3-9c44-e6352636d330",
+        "nonce": "bm9uY2Utb2YtdGhlLWNvbnNvbGUtMzJieXRlcy0hISE",
+        "connection_ids": [
+          "0e9d8c7b-6a5f-4e3d-9c2b-1a0f9e8d7c6b",
+          "3b6f1e2a-9c8d-4e7f-a6b5-c4d3e2f1a0b9",
+          "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+        ],
+        "at": "2026-10-01T12:00:00.000Z",
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"at\":\"2026-10-01T12:00:00.000Z\",\"connection_ids\":[\"0e9d8c7b-6a5f-4e3d-9c2b-1a0f9e8d7c6b\",\"3b6f1e2a-9c8d-4e7f-a6b5-c4d3e2f1a0b9\",\"7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f\"],\"descriptor_version\":2,\"kind\":\"live_list\",\"nonce\":\"bm9uY2Utb2YtdGhlLWNvbnNvbGUtMzJieXRlcy0hISE\",\"workspace_id\":\"01a08e0e-c546-7db3-9c44-e6352636d330\"}",
+      "descriptor_sha256": "bea092cf549a39a3158f66b18bcbaa5fed2a57ea4a03df719da8a30af4453788",
+      "user_data": "41e9f444076dcc746d94de0964abf545e437cb5b8f93df17495b04f242d0374e"
+    }
+  ]
+}
