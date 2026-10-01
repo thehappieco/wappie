@@ -16,9 +16,9 @@ import (
 //
 // The history only starts when this archive does. WhatsApp delivers a group's
 // current composition and its live changes, never its past, so "who removed
-// Fulano" is answerable from the moment we began listening and not before. That
-// is stated in the UI rather than smoothed over: an empty history is not a
-// peaceful one.
+// Fulano" (so-and-so) is answerable from the moment we began listening and not
+// before. That is stated in the UI rather than smoothed over: an empty history
+// is not a peaceful one.
 type Groups struct{ pool *pgxpool.Pool }
 
 // NewGroups returns the group store.
