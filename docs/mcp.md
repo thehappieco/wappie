@@ -428,7 +428,7 @@ sees a key or a word of the content.
 `AIAllowed(workspace)` is attachments allowed for the workspace, the switch
 on and the workspace listed. An AI authorization is an `ai` row of the
 connections ledger with its own service account, created by an owner or an
-admin in the console; it is left out of the cap of five live connections and
+admin in the console; it is left out of the cap of ten live connections and
 out of `GET /v1/mcp/connections`, and is listed by `GET /v1/ai/authorizations`.
 While `AIAllowed` is false its status reads `reseal` (computed, never
 written) and the enclave wipes its API keys within a minute; every status
@@ -446,6 +446,62 @@ when any is off, `ai_off_providers=` and `ai_off_features=`. Stored results
 go with their message and count toward the storage quota; the daily usage
 counters are deleted 400 days after their day, and deleted keychain items 30
 days after their deletion.
+
+Any MCP client ([contract](mcp-enclave.md#19-any-mcp-client-060)): reader
+0.6.0 admits any client that identifies itself with a client metadata
+document on an https host of its own, in two tiers (tested and not tested by
+Wappie), and a console connection token for tools without OAuth. It
+describes each request in a version-2 descriptor and attests all of it; the
+server keys its checks on the descriptor's version, never on what a reader
+declares. A version-1 descriptor (a reader before 0.6.0) is checked against
+`WS_MCP_REDIRECT_HOSTS`, as before. A version-2 one is held to the host
+predicate and the Public Suffix List snapshot the reader uses
+(`internal/netguard`), to what each kind of client carries, and to these
+switches, every one of which can only refuse:
+
+| Variable | Rule |
+|---|---|
+| `WS_MCP_CIMD_MODE` | `allowlist` (default) or `any`. In `allowlist` mode every consent, renewal and token request for a client Wappie has not tested, and every console token, is refused with `403 client_not_allowed`. Set `any` once a 0.6.0 reader serves; back to `allowlist` turns them off without a release (live ones are revoked from the console) |
+| `WS_MCP_BLOCKED_CLIENTS` | tested clients' ids from the image's `TESTED_CLIENTS` (`^[a-z][a-z0-9_]{0,31}$`), comma separated, refused the same way whatever the mode; empty by default |
+| `WS_MCP_DCR_HOSTS` | the hosts a dynamically registered client may be identified by, each one a client's host by the predicate; default `claude.ai,claude.com,chatgpt.com` |
+| `WS_MCP_NOTICE_ORIGIN` | this server's public https origin (`https://api.wappie.thehappie.co`), where the new-assistant e-mail's revoke-only link points. Optional; without it, or without `WS_SMTP_ADDR` and `WS_MAIL_FROM`, no notice e-mail goes |
+
+The console's consent to a version-2 descriptor carries `trust`,
+`client_host`, `client_local` and `claimed_name`, which must equal the
+descriptor's, and `history_days` (7, 30 or 90 for an untested client, `null`
+for a tested one); text is `consent_version: 4`, drafting is a tested web
+client's only, and the ceilings follow the tier: ninety days for metadata
+and thirty for text, with an hour's margin, for every tier but a tested web
+client's. Text for an untested client or a token is refused with `403
+email_unverified` unless the notice e-mail can go and the consenting person
+confirmed their address at sign-up. A workspace has at most ten live
+assistant connections, of which at most three untested ones and tokens
+(`409 too_many_unknown`). Every activation, and every reading limit the
+reader reports (`POST /v1/mcp/enclave/connections/{id}/budget-hit`), raises
+the new-assistant notice: the console's banner shows the connection again,
+and an e-mail goes once per connection and event, at most twenty a day per
+workspace, to the person who consented and the owners with a confirmed
+address. It names the client's verified domain and tier, never the name the
+client gave itself, and its only link is a revoke-only link
+(`GET`/`POST /v1/mcp/revoke-link/{token}`) that needs no session, ends that
+one connection once, and is replaced by the next notice. The list adds the
+client, who consented, the viewer's seen mark (`POST
+/v1/mcp/connections/{id}/seen`), the first use and the limits reached. The
+console token's routes are `POST /v1/mcp/token-requests` and `POST
+/v1/mcp/token-requests/{id}/bundle`, and the attested list of live
+connections is relayed by `POST /v1/mcp/workspaces/{id}/live-list`, ten a
+minute per workspace. The startup line prints `cimd_mode`,
+`blocked_clients`, `dcr_hosts` and `notice_origin`.
+
+A 0.6.0 reader fetches documents itself, over TLS it verifies, through the
+document egress proxy on the enclave's parent instance, `cmd/cimd-egress`: a
+process of its own, listening on vsock 8007 for the enclave (CID 16) only,
+reading `WS_CIMD_EGRESS_OWN_ADDRESSES` (the deployment's own addresses, never
+dialed; required) and nothing else. It tunnels `CONNECT <host>:443` to hosts
+that pass the same predicate, resolved once to public addresses only, with
+budgets overall and per registrable domain, and 16 KiB and 6 seconds per
+tunnel. The server's own metadata relay (`/v1/mcp/enclave/cimd`) serves
+readers before 0.6.0 only and goes with them.
 
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's
