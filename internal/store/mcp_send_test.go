@@ -432,8 +432,10 @@ func TestDraftLimitsUnderConcurrency(t *testing.T) {
 	}
 	_, err := f.draft(ctx, conn, key, friendChat, pending)
 	var rl *store.RateLimitError
-	if !errors.As(err, &rl) || rl.RetryAt.Sub(time.Now().Add(store.DraftTTL)).Abs() > time.Minute {
-		t.Fatalf("retry = %v", err)
+	// A place frees when the soonest waiting draft expires.
+	soonest := f.dbTime(ctx, t, `SELECT min(expires_at) FROM mcp_outbound WHERE connection_id=$1 AND status='pending'`, conn.ID)
+	if !errors.As(err, &rl) || !rl.RetryAt.Equal(soonest) {
+		t.Fatalf("retry = %v, want %v", err, soonest.UTC())
 	}
 
 	// Per hour: decided drafts still count; refusals do not.
@@ -453,8 +455,10 @@ func TestDraftLimitsUnderConcurrency(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.draft(ctx, conn2, key2, friendChat, hourly); !errors.As(err, &rl) || rl.RetryAt.Sub(time.Now().Add(time.Hour)).Abs() > time.Minute {
-		t.Fatalf("after discarding = %v", err)
+	// The hour's first draft frees its place an hour after it was made.
+	first := f.dbTime(ctx, t, `SELECT min(created_at) FROM mcp_outbound WHERE connection_id=$1 AND kind='draft'`, conn2.ID)
+	if _, err := f.draft(ctx, conn2, key2, friendChat, hourly); !errors.As(err, &rl) || !rl.RetryAt.Equal(first.Add(time.Hour)) {
+		t.Fatalf("after discarding = %v, want %v", err, first.Add(time.Hour).UTC())
 	}
 	if _, err := f.conns.RecordRefusal(ctx, f.tenant, conn2.ID, store.Refusal{Kind: store.OutboundDraft, Device: f.device, ChatKey: friendChat, Code: "rate_limited"}); err != nil {
 		t.Fatal(err)
@@ -518,8 +522,10 @@ func TestSendLimitsUnderConcurrency(t *testing.T) {
 	}
 	_, _, err := f.selfSend(ctx, conn2, key2, newRef(), spaced)
 	var rl *store.RateLimitError
-	if !errors.As(err, &rl) || rl.RetryAt.Sub(time.Now().Add(time.Hour)).Abs() > time.Minute {
-		t.Fatalf("interval retry = %v", err)
+	// The next send may go the interval after the last one.
+	last := f.dbTime(ctx, t, `SELECT max(created_at) FROM mcp_outbound WHERE connection_id=$1 AND status <> 'refused'`, conn2.ID)
+	if !errors.As(err, &rl) || !rl.RetryAt.Equal(last.Add(spaced.MinInterval)) {
+		t.Fatalf("interval retry = %v, want %v", err, last.Add(spaced.MinInterval).UTC())
 	}
 
 	// The workspace: two fresh connections, one day's budget of four between
