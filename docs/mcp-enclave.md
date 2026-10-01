@@ -6042,8 +6042,8 @@ and no dollars anywhere in it (the owner's decision of 2026-09-30,
   and the model, and each provider bills your own account: set your
   spending limits there. Wappie counts the tokens each provider reports
   and, as a safeguard, stops at the limit below.", which the tokens field
-  is described by. Under that field, what the limit is not (awaiting the
-  owner's approval, §18.20): "É um limite de tokens, não de dinheiro: os
+  is described by. Under that field, what the limit is not (approved by
+  the owner on 2026-09-30, §18.20): "É um limite de tokens, não de dinheiro: os
   mesmos tokens custam mais em alguns modelos, e ele só conta o que esta
   integração envia pela Wappie, não outros usos da sua chave. O pedido em
   andamento quando o limite chega ainda termina. Em Uso, você vê os tokens
@@ -6076,8 +6076,8 @@ and no dollars anywhere in it (the owner's decision of 2026-09-30,
   its creator confirms a pause, which only the creator can undo.
 - **Renewal.** Beside the card, the renewal's own sentence, with the limit
   the integration keeps (the authorized one, or a lower one set since),
-  since another model may cost more for the same tokens (awaiting the
-  owner's approval, §18.20): "Os preços variam com o seu plano e o modelo,
+  since another model may cost more for the same tokens (approved by the
+  owner on 2026-09-30, §18.20): "Os preços variam com o seu plano e o modelo,
   e a cobrança é da sua conta em cada provedor: defina lá os seus limites
   de gasto. Esta integração mantém o limite de {n} tokens por mês; outro
   modelo pode custar mais pelos mesmos tokens." / "Prices vary with your
@@ -6948,19 +6948,19 @@ checksum):
 
 **The review of the token texts (2026-09-30)** (core and console; the
 owner's pt sentence is kept word for word; the rewordings follow the
-owner's wording of the same day, as the token texts do, and the two new
-sentences below await the owner's approval; pt and en first, then es, fr
-and de):
+owner's wording of the same day, as the token texts do, and the owner
+approved the two new sentences below on 2026-09-30; pt and en first, then
+es, fr and de):
 
 - **What the limit is not** (§18.13), under "Tokens a month, at most", new
-  and **awaiting the owner's approval**: a limit on tokens, not money (the
+  and approved by the owner on 2026-09-30: a limit on tokens, not money (the
   same tokens cost more on some models), counting only what the
   integration sends through Wappie, not other uses of the key, and a
   request under way when it is reached still finishes (each attempt is
   checked before it leaves, §18.10); the Usage tab gives the scale, in
   place of the model estimates the owner removed.
-- **The renewal's sentence** (§18.13), new and **awaiting the owner's
-  approval**: the billing as in the owner's sentence, then the limit in
+- **The renewal's sentence** (§18.13), new and approved by the owner on
+  2026-09-30: the billing as in the owner's sentence, then the limit in
   tokens the integration keeps, since another model may cost more for the
   same tokens. The renewal showed the Usage tab's sentence before.
 - **An invalid limit is named.** The tokens field is text, so a limit that
