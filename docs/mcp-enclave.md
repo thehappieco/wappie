@@ -8605,6 +8605,29 @@ CREATE TABLE mcp_connection_seen (
   `WS_CIMD_EGRESS_OWN_ADDRESSES` (a comma list of IP addresses, required) and
   nothing else of Go's configuration.
 
+**Settled when the tracks were merged (2026-10-01).** What the build added to
+the interfaces above, which the console and the deploy rely on:
+
+- Migration 0046 also creates `mcp_connection_notices` (connection, tenant,
+  event, first and last time, count, when it was mailed; forced row-level
+  security), so the e-mail's caps (once per connection and event, 20 a day
+  per workspace) survive a restart, and a unique partial index on
+  `revoke_link_sha256`.
+- `WS_MCP_NOTICE_ORIGIN` is this server's public origin, where the
+  revoke-only link points; a notice e-mail goes only with it and SMTP set,
+  and without them text for an unknown client or a token is refused
+  (`email_unverified`).
+- `GET /v1/mcp/content` adds `untested_text` (the notice e-mail can go and
+  this person's address is verified), so the card says "Confirm your e-mail
+  to let an untested assistant read text" before a consent; each listed
+  connection adds `budget_hits` (`[{code, at}]`).
+- `cmd/cimd-egress` listens on vsock 8007 itself and serves CID 16 only
+  (open point 11).
+- The Public Suffix List snapshot is `psl-2026-09-24.json` (the List at
+  revision `a179a48c`), committed in both places, and the Go suites, the
+  egress proxy's included, run the one vector file
+  `packages/mcp-http/test/vectors/cimd-ids.json`.
+
 ### 19.22 The console list, the new-assistant notice and the attested live list
 
 **The list** (`commercial/web/src/components/MCPPanel.vue`, and the same
