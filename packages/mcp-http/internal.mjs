@@ -168,14 +168,20 @@ export function decodeCiphertext(value) {
  *   relayed with `"kind": "content"` and adds the two renewal routes. Without
  *   it a `kind` field is an unknown key and the bundle is a bad request.
  *   Its `ai` (a release that declares ai_v1, docs/mcp-enclave.md §18.11)
- *   adds `/internal/ai/*`: AI requests and their bundles, and console jobs.
+ *   adds `/internal/ai/*`: AI requests and their bundles, and console jobs;
+ *   its `tokens` (console_token_v1, §19.18) adds `/internal/token-requests`
+ *   and their bundles.
+ * - `liveList` (live_list_v1, §19.22) adds `POST /internal/workspaces/{id}/live-list`.
+ * - `unknownLiveMax` is the live connections a workspace may hold of
+ *   clients nobody tested and console tokens together (§19.10).
  */
-export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content }) {
+export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content, unknownLiveMax, liveList }) {
   const refused = (meta, error) => {
     meta.code = error.code
     return json({ code: error.code, ...(Number.isInteger(error.retry_after_s) ? { retry_after_s: error.retry_after_s } : {}), ...(error.limit === 'month' || error.limit === 'day' ? { limit: error.limit } : {}) }, error.status)
   }
   const ai = content?.ai ?? null
+  const tokens = content?.tokens ?? null
   const guard = auth ?? ((request, info) => internalGuard(request, info, secret))
   return async (request, info, meta) => {
     const path = new URL(request.url).pathname
@@ -224,14 +230,15 @@ export function internalRoutes({ state, secret, now, pendingFor, auth, health, p
       meta.client = pending.client_id
       let body
       try { body = await request.json() } catch { meta.code = 'bad_request'; return json({ code: 'bad_request' }, 400) }
-      const labelled = content && body && typeof body === 'object' && !Array.isArray(body) ? body.kind : undefined
+      // An attested reader's Go labels every relay, and so does Go for a request whose descriptor is version 2.
+      const labelled = (content || pending.descriptor_version === 2) && body && typeof body === 'object' && !Array.isArray(body) ? body.kind : undefined
       try {
         let accepted
-        if (labelled === 'content') accepted = await content.acceptBundle(pending, body)
+        if (labelled === 'content' && content) accepted = await content.acceptBundle(pending, body)
         else {
           // An attested reader's Go labels every relay; a metadata one is the 2a bundle.
           if (labelled === 'metadata') { const { kind: _kind, ...rest } = body; body = rest }
-          accepted = await acceptBundle(state, pending, body, { now })
+          accepted = await acceptBundle(state, pending, body, { now, unknownLiveMax })
         }
         meta.connection = accepted.connection_id
         return noContent()
@@ -302,6 +309,37 @@ export function internalRoutes({ state, secret, now, pendingFor, auth, health, p
       const answer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requester) ? ai.jobState(match[1], requester) : null
       if (!answer) { meta.code = 'not_found'; return json({ code: 'not_found' }, 404) }
       return json(answer)
+    }
+    if (tokens && path === '/internal/token-requests' && request.method === 'POST') {
+      meta.route = 'POST /internal/token-requests'
+      const body = await strictBody(request, ['nonce'])
+      try { return json(await tokens.request(body && decodeNonce(body.nonce))) } catch (error) {
+        if (error instanceof LinkError || error instanceof AttestationError) return refused(meta, error)
+        throw error
+      }
+    }
+    if (tokens && (match = /^\/internal\/token-requests\/([A-Za-z0-9_-]{22})\/bundle$/.exec(path)) && request.method === 'POST') {
+      meta.route = 'POST /internal/token-requests/{id}/bundle'
+      let body
+      try { body = await request.json() } catch { meta.code = 'bad_request'; return json({ code: 'bad_request' }, 400) }
+      if (body && typeof body === 'object' && typeof body.connection_id === 'string') meta.connection = body.connection_id.toLowerCase()
+      try {
+        await tokens.acceptBundle(match[1], body)
+        return noContent()
+      } catch (error) {
+        if (error instanceof LinkError) return refused(meta, error)
+        throw error
+      }
+    }
+    if (liveList && (match = /^\/internal\/workspaces\/([0-9a-f-]{36})\/live-list$/.exec(path)) && request.method === 'POST') {
+      meta.route = 'POST /internal/workspaces/{id}/live-list'
+      const body = await strictBody(request, ['nonce'])
+      const nonce = body && decodeNonce(body.nonce)
+      if (!uuidShape.test(match[1]) || !nonce) { meta.code = 'bad_request'; return json({ code: 'bad_request' }, 400) }
+      try { return json(await liveList.list(match[1].toLowerCase(), nonce, body.nonce)) } catch (error) {
+        if (error instanceof LinkError || error instanceof AttestationError) return refused(meta, error)
+        throw error
+      }
     }
     if ((match = /^\/internal\/connections\/([0-9a-f-]{36})\/revoke$/.exec(path)) && request.method === 'POST') {
       meta.route = 'POST /internal/connections/{id}/revoke'

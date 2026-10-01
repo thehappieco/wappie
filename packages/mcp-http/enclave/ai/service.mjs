@@ -36,10 +36,11 @@ const codeOf = jobCode
  * `fetch` reaches the archive; `media()` returns the media service (its
  * slot and jail, for images and documents).
  */
-export function createAIService({ state, relay, log, now = Date.now, archive, consoleURL, resource, attestor, readerVersion, pendingTTLMs, newRecipient, connkeys, fetch, transport, media }) {
+export function createAIService({ state, relay, log, now = Date.now, archive, consoleURL, resource, attestor, readerVersion, pendingTTLMs, newRecipient, connkeys, fetch, transport, media,
+  attestWhole = false }) {
   const origin = new URL(resource).origin
   const egress = createEgress({ ...(transport ? { transport } : {}), log })
-  const requests = createAIRequests({ now, ttlMs: pendingTTLMs, newRecipient, attestor, resource, readerVersion })
+  const requests = createAIRequests({ now, ttlMs: pendingTTLMs, newRecipient, attestor, resource, readerVersion, attestWhole })
   const budgets = createBudgets({ now })
   const queue = createQueue({ now })
   const aikeys = new Map()
@@ -166,7 +167,7 @@ export function createAIService({ state, relay, log, now = Date.now, archive, co
 
   // ---- Renewal (§18.7 step 7), through renew.mjs --------------------------------
   const renewalHooks = {
-    /** The descriptor's AI fields: not attested; a wrong value only fails the renewal. */
+    /** The descriptor's AI fields: attested from reader 0.6.0 (§19.13); a wrong value would only have failed the renewal before. */
     describe: record => ({ kind: 'ai', consent_version: 1, media: false, functions: record.functions, features: record.features, budget: record.budget }),
     /**
      * Opens and checks a renewal's AI bundle (§18.7 step 7): the same

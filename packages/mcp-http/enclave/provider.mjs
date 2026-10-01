@@ -30,6 +30,8 @@ export function contentConfigFor(record, archive) {
     server: archive, workspace: record.workspace_id, device_ids: record.device_ids, timezone: record.timezone,
     allow_plaintext: true, credential_source: 'enclave', service_user_id: record.service_user_id, max_scan_messages: CONTENT_MAX_SCAN,
     media: record.media === true, send, send_self: send !== null && record.send_self === true,
+    // The history window the person chose (§19.19), for a client Wappie has not tested or a token.
+    history_days: record.history_days ?? null,
   })
 }
 
@@ -92,9 +94,10 @@ export function messageURLs(consoleURL, tenantID) {
  * `media` (media/service.mjs forConnection, docs/mcp-enclave.md §16.5) is
  * given only to a record whose sealed consent includes attachments, and
  * `send` (send/service.mjs forConnection, §17.8) only to one whose sealed
- * consent includes sending.
+ * consent includes sending. `limits` (budgets.mjs forConnection, §19.19) only
+ * to one whose tier has reading limits.
  */
-export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media, send } = {}) {
+export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media, send, limits } = {}) {
   const id = record.connection_id
   const held = () => {
     const stored = connkeys.get(id)
@@ -112,5 +115,6 @@ export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant,
     onStaleGrant: () => { onStaleGrant?.() },
     ...(media ? { media } : {}),
     ...(send ? { send } : {}),
+    ...(limits ? { limits } : {}),
   }
 }

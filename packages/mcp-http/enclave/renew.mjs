@@ -21,6 +21,14 @@
 // features and budget, its bundle is an AI bundle under its own labels with
 // fresh configuration tags and its models checked again, and the commit also
 // swaps its provider keys.
+//
+// From reader 0.6.0 (§19.16) the descriptor is version 2, of kind `renewal`
+// (or `ai_renewal`), and attested whole (user_data v2), so every field the
+// renewal card shows is the image's word: the consent's version and scope,
+// and the client and tier the record was given (a record 0.5.0 wrote reads as
+// `legacy`, tested, under the tested web limits). A version-4 record renews
+// with a version-4 bundle that names the same client, tier, ticks and history
+// window; a token's hash and networks are never part of a renewal.
 import { randomBytes } from 'node:crypto'
 import { LinkError } from '../link.mjs'
 import { fingerprint } from '../log.mjs'
@@ -37,6 +45,38 @@ export function contentDeadline(record) {
 }
 
 /**
+ * The client members of a renewal descriptor (§19.16) for a content record:
+ * the record's own, written once at completion or install, or, for a record
+ * 0.5.0 wrote, `legacy`, tested and the tested web limits, with nulls where
+ * the ledger's name is shown instead. `limits` is CLIENT_LIMITS.
+ */
+export function clientDescription(record, limits) {
+  if (!record.client_kind) {
+    return { client_kind: 'legacy', client_id: record.client_id ?? null, tested_id: null, client_host: null, registrable: null, shared_suffix: null,
+      client_local: false, client_name: null, claimed_name: null, trust: 'tested', limits_tier: 'web_tested', limits: structuredClone(limits.web_tested),
+      unknown_ack: false, history_days: null }
+  }
+  return {
+    client_kind: record.client_kind, client_id: record.client_id, tested_id: record.tested_id ?? null, client_host: record.client_host ?? null,
+    registrable: record.registrable ?? null, shared_suffix: record.shared_suffix ?? null, client_local: record.client_local === true,
+    client_name: record.client_name ?? null, claimed_name: record.claimed_name ?? null, trust: record.trust, limits_tier: record.limits_tier,
+    limits: structuredClone(limits[record.limits_tier]), unknown_ack: record.unknown_ack === true, history_days: record.history_days ?? null,
+  }
+}
+
+/**
+ * Whether a version-4 renewal bundle renews this version-4 record's consent
+ * as it is (§19.16): the same client, kind, locality and tier, the "I
+ * started this" tick, the same second tick (sealed again for a client Wappie
+ * has not tested) and the same history window, and no token hash or
+ * networks, which the record pins and no renewal carries.
+ */
+export const renewalFits = (record, bundle) => bundle.client_id === record.client_id && bundle.client_kind === record.client_kind &&
+  bundle.client_local === (record.client_local === true) && bundle.trust === record.trust && bundle.started_ack === true &&
+  bundle.unknown_ack === (record.unknown_ack === true) && bundle.history_days === (record.history_days ?? null) &&
+  bundle.bearer_sha256 === undefined && bundle.allowed_networks === undefined
+
+/**
  * `open(recipient, sealed, {aad, tenant, connectionID})` and
  * `prove(privateKey, bundle, {request, kid})` are content.mjs's, bound to the
  * renewal labels and the archive; `parseRelay(body)` checks the relayed body;
@@ -44,10 +84,12 @@ export function contentDeadline(record) {
  * given, renews `ai` records too: `describe(record)` adds the descriptor's
  * fields, `accept({record, renewal, body, renewalID, connectionID})` opens,
  * checks and proves the bundle and resolves to the stage (with its `ai`
- * part), and `apply(record, stage.ai)` commits that part.
+ * part), and `apply(record, stage.ai)` commits that part. `limits` (the
+ * image's CLIENT_LIMITS, from reader 0.6.0) makes every descriptor version
+ * 2, attested whole; without it they are 0.5.0's.
  */
 export function createRenewals({ state, connkeys, log, now = Date.now, resource, attestor, newRecipient, open, prove, parseRelay, renewAAD, onCommit = () => {},
-  onProofFailed = id => log.event('grant_proof_failed', { conn: fingerprint(id) }), ai = null }) {
+  onProofFailed = id => log.event('grant_proof_failed', { conn: fingerprint(id) }), ai = null, limits = null }) {
   const renewals = new Map()
   // connection id -> times of the renewals prepared in the last hour.
   const history = new Map()
@@ -74,25 +116,30 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
       history.set(connectionID, recent)
       const recipient = await newRecipient()
       const renewalID = randomBytes(16).toString('base64url')
-      const attestation = await attestor.attestation({ requestId: renewalID, publicKey: recipient.publicKey, nonce })
-      // At most three live per connection: the oldest makes way.
-      const current = forConnection(connectionID).filter(live).sort((a, b) => a.created_at - b.created_at)
-      while (current.length >= RENEWALS_LIVE_MAX) drop(current.shift().renewal_id)
-      const renewal = { renewal_id: renewalID, connection_id: connectionID, recipient, created_at: at, expires_at: at + RENEWAL_TTL_MS }
-      renewals.set(renewalID, renewal)
-      log.event('renewal_prepared', conn(connectionID))
-      // The consent the renewal must seal again (§16.2 rule 7, §17.2 rule 7):
-      // not attested, so a wrong value can only make acceptBundle refuse the
-      // renewal. The send fields are there only when the consent has them.
-      return {
+      const expiresAt = at + RENEWAL_TTL_MS
+      // The consent the renewal must seal again (§16.2 rule 7, §17.2 rule 7).
+      // The send fields are there only when the consent has them. On 0.5.0
+      // these were not attested, so a wrong value could only make
+      // acceptBundle refuse the renewal; from 0.6.0 the whole descriptor is.
+      const described = {
         renewal_id: renewalID, connection_id: connectionID, kid: recipient.kid, reader_public_key: recipient.publicKeyEncoded, resource,
-        device_ids: [...record.device_ids], expires_at: new Date(renewal.expires_at).toISOString(), connection_expires_at: contentDeadline(record),
+        device_ids: [...record.device_ids], expires_at: new Date(expiresAt).toISOString(), connection_expires_at: contentDeadline(record),
         ...(record.kind === 'ai' ? ai.describe(record) : {
           consent_version: record.consent_version ?? 1, media: record.media === true,
           ...(record.send ? { send: record.send, ...(record.send_self === true ? { send_self: true } : {}), ...(record.send_groups === true ? { send_groups: true } : {}) } : {}),
         }),
-        attestation,
       }
+      const descriptor = limits
+        ? { descriptor_version: 2, ...described, kind: record.kind === 'ai' ? 'ai_renewal' : 'renewal', ...(record.kind === 'ai' ? {} : clientDescription(record, limits)) }
+        : described
+      const attestation = await attestor.attestation({ requestId: renewalID, publicKey: recipient.publicKey, nonce, ...(limits ? { descriptor } : {}) })
+      // At most three live per connection: the oldest makes way.
+      const current = forConnection(connectionID).filter(live).sort((a, b) => a.created_at - b.created_at)
+      while (current.length >= RENEWALS_LIVE_MAX) drop(current.shift().renewal_id)
+      const renewal = { renewal_id: renewalID, connection_id: connectionID, recipient, created_at: at, expires_at: expiresAt }
+      renewals.set(renewalID, renewal)
+      log.event('renewal_prepared', conn(connectionID))
+      return { ...descriptor, attestation }
     },
 
     /** POST /internal/connections/{id}/renewal/{renewal_id}/bundle: stages the new key after the grant proof (204). */
@@ -125,6 +172,8 @@ export function createRenewals({ state, connkeys, log, now = Date.now, resource,
           !sameSet(bundle.device_ids, record.device_ids) || bundle.consent_version !== (record.consent_version ?? 1) ||
           (bundle.media === true) !== (record.media === true) || (bundle.send ?? null) !== (record.send ?? null) ||
           (bundle.send_self === true) !== (record.send_self === true) || (bundle.send_groups === true) !== (record.send_groups === true) ||
+          // A version-4 consent renews as it is: the same client, tier, ticks and window (§19.16).
+          (bundle.consent_version === 4 && !renewalFits(record, bundle)) ||
           Math.min(Date.parse(bundle.expires_at), relayed.expiry) !== Date.parse(contentDeadline(record))) throw new LinkError('invalid_bundle')
         let proven
         try { proven = await prove(renewal.recipient.privateKey, bundle, { request: renewalID, kid: relayed.kid }) } catch (error) {

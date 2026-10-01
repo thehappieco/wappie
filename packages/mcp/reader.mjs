@@ -245,6 +245,14 @@ export async function createReader(config, provider) {
     try { send.observe(device, chatKey, value.value) } catch { /* best effort */ }
   }
   const api = new ArchiveClient({ serverURL: config.server, workspaceID: config.workspace, token: credential.token })
+  /**
+   * The history floor (docs/mcp-enclave.md §19.19): a connection with
+   * `history_days` reads nothing older than that many days before this call.
+   * A message's time is its timestamp, or its archive arrival time when it
+   * has none, as search uses; a row with neither is outside.
+   */
+  const since = Number.isInteger(config.history_days) ? Date.now() - config.history_days * 86_400_000 : null
+  const inWindow = row => since === null || Date.parse(row?.ts ?? row?.order_ts) >= since
   const allowed = device => !config.device_ids || config.device_ids.includes(device)
   function permit(device) { if (!allowed(device)) throw new ArchiveError('not_authorized', 403) }
   /** The refusal for a grant this connection's key no longer fits, after telling the provider (best effort). */
@@ -407,13 +415,19 @@ export async function createReader(config, provider) {
     if (before && (!input.from || !input.until || input.period)) throw new LocalConfigError('continuation_requires_fixed_range')
     let range
     try { range = resolveRange(input, config.timezone) } catch { throw new LocalConfigError('invalid_time_range') }
+    // The history floor: the range's lower bound never reaches before it.
+    let empty = false
+    if (since !== null) {
+      if (!(Date.parse(range.until) > since)) empty = true
+      else if (!(Date.parse(range.from) >= since)) range = { ...range, from: new Date(since).toISOString() }
+    }
     return withOpener(device_id, async opener => {
       const counters = { examined: 0, matched: 0, locked: 0, tampered: 0, structured_content_unsearched: 0, missing_sent_time: 0 }
       const hits = [], groups = new Map(), seen = new Set()
       let cursor = before, hasMore = false, stopped = false, omittedHits = 0, deadlineReached = false
       const deadline = Date.now() + 45_000
       const budget = config.max_scan_messages
-      while (counters.examined < budget && !stopped) {
+      while (!empty && counters.examined < budget && !stopped) {
         const reply = await archiveRead('archive_scan', () => api.scanMessages(device_id, {
           from: range.from, until: range.until, limit: Math.min(100, budget - counters.examined), before: cursor,
           chatKey: input.chat_key, senderKeys: input.sender_keys, direction: input.direction, type: input.type,
@@ -622,10 +636,12 @@ export async function createReader(config, provider) {
     async listChats({ device_id, limit }) {
       permit(device_id)
       const reply = await api.listChats(device_id, { limit })
+      // Under a history floor, a chat with no message at or after it is left out.
+      const chats = since === null ? reply.chats : reply.chats.filter(chat => Date.parse(chat.last_ts) >= since)
       return withOpener(device_id, async opener => {
-        await opener?.prefetch(reply.chats.flatMap(chat => [chat.name_key_id, chat.last_body_key_id]))
+        await opener?.prefetch(chats.flatMap(chat => [chat.name_key_id, chat.last_body_key_id]))
         return { workspace_id: config.workspace, device_id, truncated: reply.truncated,
-          chats: await Promise.all(reply.chats.map(async chat => {
+          chats: await Promise.all(chats.map(async chat => {
             const preview = chat.last_body_sealed && opener ? await opener.chatPreview(chat) : null
             // A preview is the chat's last message body: a source, unlike its name.
             observe(device_id, chat.chat_key, preview)
@@ -641,15 +657,18 @@ export async function createReader(config, provider) {
     async listMessages({ device_id, chat_key, limit, before }) {
       permit(device_id)
       const reply = await api.listMessages(device_id, { chatKey: chat_key, limit, before })
+      // Under a history floor the page stops at it: what is older does not exist for this connection.
+      const rows = reply.messages.filter(inWindow), more = reply.has_more && rows.length === reply.messages.length
       return withOpener(device_id, async opener => ({ workspace_id: config.workspace, device_id, chat_key: reply.chat_key,
-        messages: await messages(reply.messages, device_id, opener), has_more: reply.has_more,
-        ...(reply.has_more && reply.next_ts && reply.next_seq !== undefined ? { next: { ts: reply.next_ts, seq: reply.next_seq } } : {}),
+        messages: await messages(rows, device_id, opener), has_more: more,
+        ...(more && reply.next_ts && reply.next_seq !== undefined ? { next: { ts: reply.next_ts, seq: reply.next_seq } } : {}),
       }))
     },
     async getMessage({ device_id, uid }) {
       permit(device_id)
       const reply = await api.getMessage(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
+      if (!inWindow(reply)) throw new ArchiveError('outside_window')
       const result = await withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener, { link: true }))[0] }))
       // On readers with AI (§18.12): the functions whose result is stored for
       // this attachment, from one derived read; lists and searches leave it out.
@@ -674,9 +693,17 @@ export async function createReader(config, provider) {
       permit(device_id)
       if (!media) throw new ArchiveError('media_not_allowed')
       let chat = null
+      // Under a history floor the message is read first, whatever the enclave
+      // keeps: an older one is refused before anything opens.
+      let first = null
+      if (since !== null) {
+        first = await attachmentRow(device_id, uid)
+        if (!inWindow(first)) throw new ArchiveError('outside_window')
+      }
       const archive = {
         async row() {
-          const row = await attachmentRow(device_id, uid)
+          const row = first ?? await attachmentRow(device_id, uid)
+          first = null
           chat = row.chat_key
           return row
         },
@@ -785,11 +812,13 @@ export async function createReader(config, provider) {
       const reply = await api.history(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
       return withOpener(device_id, async opener => {
-        const versions = reply.versions.slice(0, limit)
+        // Under a history floor, the versions older than it are left out.
+        const visible = reply.versions.filter(version => inWindow(version.message))
+        const versions = visible.slice(0, limit)
         const opened = await messages(versions.map(version => version.message), device_id, opener)
         return { workspace_id: config.workspace, device_id, chat_key: reply.chat_key,
           revisions: versions.map((version, index) => ({ revision: version.revision, from: version.from, until: version.until, message: opened[index] })),
-          truncated: reply.versions.length > limit, deleted: Boolean(reply.deletion),
+          truncated: visible.length > limit, deleted: Boolean(reply.deletion),
         }
       })
     },

@@ -213,6 +213,17 @@ export async function openState(dir) {
 
 /** The durable collections under their stored names; `infra` is the enclave's own. */
 export const SEALED_NAMES = { clients: 'as-clients', connections: 'as-connections', tokens: 'as-tokens' }
+/**
+ * The `as-*` plaintexts' version: 2 from reader 0.6.0 (docs/mcp-enclave.md
+ * §19.17), whose records carry the client tiers, the history windows and the
+ * console tokens. 0.6.0 reads 1 and 2 and writes 2; 0.5.0's loader takes 1
+ * only, so a rollback refuses state 0.6.0 wrote (state_auth_failed) instead
+ * of serving its connections under 0.5.0's lifetimes with no reading limits
+ * (D18): the rollback deletes the collections and every connection
+ * reconnects. `infra` stays version 1.
+ */
+export const SEALED_VERSION = 2
+const SEALED_READS = [1, 2]
 export const SEALED_MAX_PLAINTEXT = 11 * 1024 * 1024
 export const BACKOFF_START_MS = 1000
 export const BACKOFF_MAX_MS = 60_000
@@ -303,7 +314,7 @@ function recordsOf(plain, name) {
   let parsed
   try { parsed = JSON.parse(plain.toString('utf8')) } catch { throw new StateError('state_auth_failed') }
   finally { plain.fill(0) }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.version !== 1 || parsed.name !== name ||
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !SEALED_READS.includes(parsed.version) || parsed.name !== name ||
     !Array.isArray(parsed.records) || Object.keys(parsed).length !== 3) throw new StateError('state_auth_failed')
   return parsed.records
 }
@@ -318,7 +329,7 @@ export async function openSealedState({ store, sealer, log, onConflict = () => {
   const state = liveState({})
   const collections = Object.entries(SEALED_NAMES).map(([field, name]) => {
     const collection = sealedCollection({ store, sealer, name, log, onConflict, wait })
-    collection.bind(() => Buffer.from(JSON.stringify({ version: 1, name, records: [...state[field].values()] })))
+    collection.bind(() => Buffer.from(JSON.stringify({ version: SEALED_VERSION, name, records: [...state[field].values()] })))
     return [field, collection]
   })
   for (const [field, collection] of collections) {

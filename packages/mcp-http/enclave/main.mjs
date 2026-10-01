@@ -26,15 +26,19 @@ import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { createAttestor, decodeAttestationDocument } from '../attestation.mjs'
 import { createLog } from '../log.mjs'
+import { loadPSL } from '../psl.mjs'
 import { startReader } from '../server.mjs'
 import { openSealedState, sealedCollection, StateError } from '../state.mjs'
 import { accountId, createAcmeClient, createChallenges, newAccountKey } from './acme.mjs'
 import { attest as nsmAttest } from './attest.mjs'
 import { parseBootJson, readLocal as readLocalPort } from './boot.mjs'
 import { imageConstants, PORTS } from './constants.mjs'
+import { createReadingLimits } from './budgets.mjs'
+import { createCIMDFetcher } from './cimd-fetch.mjs'
 import { createContent } from './content.mjs'
 import { createHealthLine, createMemSampler, clockSkew, HEALTH_EVERY_MS, prefix } from './health.mjs'
 import { createHmacGuard } from './hmac.mjs'
+import { createLiveList } from './livelist.mjs'
 import { codeOf, createKms, kmsClient, recipientKeys, roleCredentials } from './kms.mjs'
 import { createSinkWriter } from './logsink.mjs'
 import { createPolicyWatch } from './policy.mjs'
@@ -88,7 +92,10 @@ async function persist(collection, wait) {
  * `aiTransport` (the providers' fetch, a stub: the hosts stay the image's),
  * `mediaDelay` (the inline wait's timer of open_attachment),
  * `exit(code)`, `wait`, and `overrides` for the archive URL, ACME directory,
- * run directory, ports and clock URL.
+ * run directory, ports and clock URL, the client documents' fetcher
+ * (`cimdFetcher`: never the parent's proxy in a test) and the client policy
+ * (`clientPolicy`: 0.5.0's `{mode: 'allowlist', hosts}` for the tests that
+ * predate 0.6.0, or fields that replace the image's `any` policy).
  */
 export async function startEnclave(options = {}) {
   // An image that still carries a build marker (or a bad ARN) is a boot
@@ -113,7 +120,7 @@ export async function startEnclave(options = {}) {
   }
   const readLocal = options.readLocal ?? (port => readLocalPort(port))
   const counters = { proxyRejected: 0 }
-  const facts = { pcr0: null, state: null, secrets: null, certificates: null, policy: null, acmeUri: null, content: null, ready: false }
+  const facts = { pcr0: null, state: null, secrets: null, certificates: null, policy: null, acmeUri: null, content: null, reader: null, budgets: null, ready: false }
 
   // Every document the NSM signs carries PCR0; the first one tells the reader its own.
   const attest = async fields => {
@@ -135,8 +142,32 @@ export async function startEnclave(options = {}) {
       pcr0: prefix(facts.pcr0), spki: prefix(facts.certificates?.spkiSha256()),
       log_dropped: sink.dropped?.(), proxy_rejected: counters.proxyRejected,
       content_connections: facts.content?.counts().connections, content_keys: facts.content?.counts().keys,
+      ...clientHealth(),
     }),
   })
+  /**
+   * Any client's numbers (§19.24): clients and live connections by kind now,
+   * and since the last line the document fetches and refusals, the tested
+   * clients asked an unpinned redirect, the completions from another network
+   * and the reading limits hit. Counts only: no domain, name or URL.
+   */
+  function clientHealth() {
+    const state = facts.state, reader = facts.reader
+    if (!state || !reader) return {}
+    let clients = 0, unknown = 0, local = 0, token = 0
+    for (const client of state.clients.values()) if (client.source === 'cimd' && client.client_host !== undefined) clients++
+    for (const record of state.connections.values()) {
+      if (record.client_kind === 'token') token++
+      else if (record.trust === 'unknown') unknown++
+      if (record.client_local === true) local++
+    }
+    const since = reader.takeCounters()
+    return {
+      clients_unknown: clients, connections_unknown: unknown, connections_local: local, connections_token: token,
+      cimd_fetches: since.cimd_fetches ?? 0, cimd_refusals: since.cimd_refusals ?? 0, tested_drift: since.tested_drift ?? 0, ip_mismatches: since.ip_mismatches ?? 0,
+      budget_hits: facts.budgets?.takeHits() ?? 0,
+    }
+  }
   // The sending fields (§17.12) are the send service's: `drafts` and `sends`
   // since the last line, `fp_entries` held now across all connections.
   /** The attachment fields of the health line (§16.10): counts since the last line. */
@@ -228,10 +259,11 @@ export async function startEnclave(options = {}) {
     // anything listens: a failure keeps attachments off for this boot, logged
     // once, and text serves as before.
     const resource = `${c.PUBLIC_ORIGIN}/mcp`
+    const attestor = createAttestor({ attest, readerId: c.READER_ID, readerVersion: c.READER_VERSION, resource, spki: () => certificates.spkiSha256(), policy: () => policy.current() })
     const content = createContent({
       state, relay, log, now, archive, consoleURL: c.CONSOLE_URL, resource, fetch: options.fetch, jail: options.jail,
       capabilities: c.READER_CAPABILITIES, readerVersion: c.READER_VERSION, pendingTTLMs: c.PENDING_TTL_MS, aiTransport: options.aiTransport, mediaDelay: options.mediaDelay,
-      attestor: createAttestor({ attest, readerId: c.READER_ID, readerVersion: c.READER_VERSION, resource, spki: () => certificates.spkiSha256(), policy: () => policy.current() }),
+      attestor, limits: c.CLIENT_LIMITS, unknownLiveMax: c.UNKNOWN_LIVE_MAX,
     })
     facts.content = content
     await content.media.start()
@@ -250,9 +282,16 @@ export async function startEnclave(options = {}) {
       await listen(listeners[name], port, host)
     }
 
-    // 9. The reader: reconciles with Go, then serves.
+    // 9. The reader: reconciles with Go, then serves. Any client that
+    // identifies itself by a document (§19.3): the measured tested list and
+    // limits, the Public Suffix List the image carries, and documents fetched
+    // over the enclave's own TLS through the parent's egress proxy.
+    const clientPolicy = overrides.clientPolicy?.mode === 'allowlist' ? overrides.clientPolicy : {
+      mode: 'any', tested: c.TESTED_CLIENTS, limits: c.CLIENT_LIMITS, unknownLiveMax: c.UNKNOWN_LIVE_MAX, shared: c.SHARED_HOSTS, own: c.OWN_DOMAINS,
+      psl: loadPSL(), fetcher: overrides.cimdFetcher ?? createCIMDFetcher({ address: c.CIMD_EGRESS.address, port: c.CIMD_EGRESS.port }), ...overrides.clientPolicy,
+    }
     const config = {
-      publicOrigin: c.PUBLIC_ORIGIN, consoleURL: c.CONSOLE_URL, archive, hosts: [...c.REDIRECT_HOSTS], cimd: c.CIMD, pendingTTLMs: c.PENDING_TTL_MS,
+      publicOrigin: c.PUBLIC_ORIGIN, consoleURL: c.CONSOLE_URL, archive, hosts: clientPolicy.hosts, cimd: true, clientPolicy, pendingTTLMs: c.PENDING_TTL_MS,
       readerId: c.READER_ID, readerVersion: c.READER_VERSION,
       listenerHosts: { public: c.PUBLIC_LISTENER_HOST, internal: c.INTERNAL_LISTENER_HOST },
       spki: () => certificates.spkiSha256(), policy: () => policy.current(),
@@ -264,10 +303,16 @@ export async function startEnclave(options = {}) {
         ...(content.ai ? { ai_reach: content.ai.reach() } : {}),
       }),
     }
+    // The tiers' reading limits (§19.19), which tell Go of every limit hit; the attested live list (§19.22).
+    const budgets = createReadingLimits({ limits: c.CLIENT_LIMITS, now, log, onHit: (id, code) => relay.budgetHit(id, code) })
+    facts.budgets = budgets
     const reader = await startReader({
       config, now, logSink, secrets, state, relay, servers, keys: 'per-request', attest, content,
       internalAuth: createHmacGuard({ readerId: c.READER_ID, secrets, now }),
+      readingLimits: c.READER_CAPABILITIES.includes('client_limits_v1') ? budgets : undefined,
+      liveList: c.READER_CAPABILITIES.includes('live_list_v1') ? createLiveList({ state, attestor, now }) : undefined,
     })
+    facts.reader = reader
     facts.ready = true
     log.event('enclave_ready', { ...(facts.pcr0 ? { pcr0: prefix(facts.pcr0) } : {}), ...(certificates.spkiSha256() ? { spki: prefix(certificates.spkiSha256()) } : {}) })
     return {

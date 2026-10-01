@@ -25,12 +25,20 @@ export const CONSOLE_ORIGIN = 'https://app.wappie.thehappie.co'
 export const REDIRECT_URI = 'https://claude.ai/api/mcp/auth_callback'
 export const POLICY = '{"Version":"2012-10-17","Statement":[{"Sid":"EnclaveUse","Effect":"Allow"}]}'
 export const relayContext = { purpose: 'wappie-mcp-relay', reader_id: 'enclave' }
+/** 0.5.0's client rule, which the tests written before reader 0.6.0 run under (main.mjs's `overrides.clientPolicy`). */
+export const LEGACY_POLICY = Object.freeze({ mode: 'allowlist', hosts: ['claude.ai', 'chatgpt.com'] })
 
 /**
  * Everything the enclave talks to, plus a way to (re)start it the way
  * entrypoint.sh would. `archive(apiKey)` replaces the synthetic archive (it
  * returns a fixture with `server` and `close`); `w.jail`, when set before a
  * start, replaces media-jail (media tests).
+ *
+ * The client policy is 0.5.0's allowlist unless `w.clientPolicy` says
+ * otherwise before a start: the tests written before reader 0.6.0 run the
+ * rules they were written for, and the 0.6.0 tests (any-enclave.test.mjs)
+ * set `{}` for the image's `any` policy, with `w.cimdFetcher` answering for
+ * the parent's egress proxy.
  */
 export async function world(t, { bootJson, archive } = {}) {
   const apiKey = `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
@@ -54,6 +62,7 @@ export async function world(t, { bootJson, archive } = {}) {
   const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY }
   const w = {
     f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, jail: null, aiTransport: null, mediaDelay: null,
+    clientPolicy: LEGACY_POLICY, cimdFetcher: null,
     async start() {
       w.enclave = await startEnclave({
         constants: c, sink, kms, attest: nsm, now: () => Date.now() + w.skew, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
@@ -62,7 +71,8 @@ export async function world(t, { bootJson, archive } = {}) {
         aiTransport: (url, init) => (w.aiTransport ? w.aiTransport(url, init) : Promise.reject(new TypeError('fetch failed'))),
         ...(w.mediaDelay ? { mediaDelay: w.mediaDelay } : {}),
         readLocal: async port => { if (port === 7001) return boot; throw new Error('unexpected port') },
-        overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort } },
+        overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort },
+          clientPolicy: w.clientPolicy, cimdFetcher: w.cimdFetcher ?? { fetch: async () => ({ ok: false, code: 'proxy_refused', network: true }) } },
       })
       return w.enclave
     },

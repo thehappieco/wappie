@@ -9,8 +9,9 @@
 // demands its exact Host. The PROXY v2 source is the client address there, so
 // X-Forwarded-For is never consulted. The public one also serves the Wappie
 // icon files, with no auth, for hosts that show an icon beside the connector.
-import { createMcpHandler, hostHeaderValidationResponse, requireBearerAuth } from '@whatserver2/mcp/sdk'
+import { bearerAuthChallengeResponse, createMcpHandler, hostHeaderValidationResponse, OAuthError, OAuthErrorCode, requireBearerAuth } from '@whatserver2/mcp/sdk'
 import { createServer } from '@whatserver2/mcp'
+import { inNetwork, parseAddress, parseCIDR } from '@whatserver2/mcp/bundle'
 import { ICON_FILES } from '@whatserver2/mcp/icons'
 import { AttestationError, decodeNonce } from './attestation.mjs'
 import { clientIP, ipKey } from './limits.mjs'
@@ -19,6 +20,16 @@ import { configFor, providerFor } from './provider.mjs'
 export const BODY_LIMITS = { mcp: 1024 * 1024, link: 96 * 1024, as: 16 * 1024 }
 export const MCP_PER_MINUTE = 60
 export const ATTESTATION_PER_MINUTE = 10
+
+/** A record's limits tier (docs/mcp-enclave.md §19.6); a record 0.5.0 wrote is tested web. */
+const tierOf = record => (typeof record?.limits_tier === 'string' ? record.limits_tier : 'web_tested')
+
+/** Whether `address` lies in one of a console token's allowed networks (§19.18); an empty list allows every network. */
+export function networkAllowed(networks, address) {
+  if (!Array.isArray(networks) || networks.length === 0) return true
+  const parsed = parseAddress(address)
+  return networks.some(network => inNetwork(parsed, parseCIDR(network)))
+}
 
 /** The body cap for a request, decided before any byte is read. */
 export function bodyLimitFor(path) {
@@ -56,19 +67,27 @@ function iconResponse(request, { type, bytes }) {
  * response of one whose consent includes attachments (docs/mcp-enclave.md
  * §16.10). Without `content` such a record is never served: the metadata
  * configuration and provider are the only ones this file builds.
+ *
+ * From reader 0.6.0 (docs/mcp-enclave.md §19.19) `clientLimits` (the image's
+ * CLIENT_LIMITS) sets each connection's calls a minute by its tier, and
+ * `readingLimits` (enclave/budgets.mjs) hands each connection whose tier has
+ * them its reading limits; a console token with allowed networks is refused
+ * from anywhere else (§19.18).
  */
-export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content }) {
+export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content,
+  clientLimits, readingLimits }) {
   const gate = requireBearerAuth({ verifier, requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
   const icons = listenerHosts ? { iconOrigin: new URL(metadata.resource).origin } : {}
   const handler = createMcpHandler(ctx => {
     const connection = state.connections.get(ctx.authInfo?.extra?.connection_id)
     if (!connection) throw new Error('unknown connection')
+    const limits = readingLimits?.forConnection(connection) ?? undefined
     if (connection.kind === 'content') {
       if (!content) throw new Error('content connection without a content reader')
-      const { config, provider } = content.serverFor(connection)
+      const { config, provider } = content.serverFor(connection, { limits })
       return createServer(config, provider, icons)
     }
-    return createServer(configFor(connection, archive), providerFor(connection), icons)
+    return createServer(configFor(connection, archive), providerFor(connection, { limits }), icons)
   }, { responseMode: 'json', keepAliveMs: 0, onerror: () => log.event('mcp_error') })
   return {
     close: () => handler.close(),
@@ -88,7 +107,8 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
       const served = metadata.respond(request)
       if (served) { meta.route = `${request.method} /.well-known`; return served }
       if (listenerHosts && Object.hasOwn(ICON_FILES, path)) { meta.route = `${request.method} ${path}`; return iconResponse(request, ICON_FILES[path]) }
-      const ip = ipKey(clientIP(info.remoteAddress, trustForwarded ? request.headers.get('x-forwarded-for') : null))
+      const source = clientIP(info.remoteAddress, trustForwarded ? request.headers.get('x-forwarded-for') : null)
+      const ip = ipKey(source)
       if (path === '/attestation' && attestation) {
         meta.route = `${request.method} /attestation`
         if (request.method !== 'GET') return refuse(405, 'method_not_allowed')
@@ -111,12 +131,22 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
           if (auth instanceof Response) { meta.code = auth.status === 401 ? 'unauthorized' : auth.status === 403 ? 'insufficient_scope' : 'auth_failed'; return auth }
           meta.connection = auth.extra.connection_id
           meta.client = auth.clientId
+          const connection = state.connections.get(auth.extra.connection_id)
+          // A console token used from outside its allowed networks: refused as an unknown token, and Go hears of it.
+          if (connection && !networkAllowed(connection.allowed_networks, source)) {
+            meta.code = 'network_refused'
+            readingLimits?.network(connection)
+            return bearerAuthChallengeResponse(new OAuthError(OAuthErrorCode.InvalidToken, 'This token is not allowed from this network'),
+              { requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
+          }
           // The parent sees response sizes: a media connection's are padded to
           // buckets, all but a subscriptions/listen stream, which never ends.
-          const pads = content?.padResponse && state.connections.get(auth.extra.connection_id)?.media === true &&
+          const pads = content?.padResponse && connection?.media === true &&
             !(await request.clone().json().then(body => body?.method === 'subscriptions/listen', () => false))
           const padded = response => (pads ? content.padResponse(response) : response)
-          const taken = limiter.take('mcp', auth.extra.connection_id, MCP_PER_MINUTE)
+          // The calls a minute of the connection's tier (§19.19), 60 for a tested client as before.
+          const perMinute = clientLimits?.[tierOf(connection)]?.calls_per_minute ?? MCP_PER_MINUTE
+          const taken = limiter.take('mcp', auth.extra.connection_id, perMinute)
           if (!taken.ok) { meta.code = 'rate_limited'; return padded(rpcError(429, 'Too many requests.', { 'Retry-After': String(taken.retryAfter) })) }
           return padded(await handler.fetch(request, { authInfo: auth }))
         }

@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import { hpke } from '@whatserver2/client'
 import { fixture, vector, workspace } from '@whatserver2/mcp/test/fixture'
-import { startReader } from '../server.mjs'
+import { readEnv, startReader } from '../server.mjs'
 
 export { vector, workspace }
 export const REDIRECT_URI = 'https://claude.ai/api/mcp/auth_callback'
@@ -75,7 +75,11 @@ export function createFakeGo({ upstream, secret, now }) {
   return go
 }
 
-/** Boots archive + fake Go + reader; `t.after` tears everything down. */
+/**
+ * Boots archive + fake Go + reader; `t.after` tears everything down.
+ * `options.clientPolicy` runs the reader under that policy (reader 0.6.0's
+ * `any`, docs/mcp-enclave.md §19.3) over the same environment.
+ */
 export async function harness(t, options = {}) {
   const clock = options.clock ?? fakeClock()
   const key = apiKey()
@@ -92,7 +96,9 @@ export async function harness(t, options = {}) {
     WAPPIE_MCP_RELAY_SECRET_FILE: secretFile, WAPPIE_MCP_ARCHIVE_URL: go.url, WAPPIE_MCP_REDIRECT_HOSTS: 'claude.ai,chatgpt.com',
     WAPPIE_MCP_CIMD: 'on', WAPPIE_MCP_PENDING_TTL_SECONDS: '1200', ...options.env,
   }
-  const start = () => startReader({ env, now: clock.now, logSink: line => logs.push(line) })
+  const start = () => (options.clientPolicy
+    ? startReader({ config: { ...readEnv(env), clientPolicy: options.clientPolicy }, now: clock.now, logSink: line => logs.push(line) })
+    : startReader({ env, now: clock.now, logSink: line => logs.push(line) }))
   let reader = await start()
   const h = {
     f, go, clock, secret, directory, stateDir, env, logs, responses, apiKey: key, workspace, consoleOrigin: CONSOLE_ORIGIN,

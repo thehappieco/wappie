@@ -106,11 +106,16 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
   return checkActive
 }
 
-/** OAuthTokenVerifier for requireBearerAuth: hash lookup plus the connection check. */
+/**
+ * OAuthTokenVerifier for requireBearerAuth: hash lookup plus the connection
+ * check. A bearer is an access token or, from reader 0.6.0, a console
+ * connection token (`key`, docs/mcp-enclave.md §19.18); both must be of their
+ * connection's own family and client.
+ */
 export function createVerifier({ tokens, state, resource, checkActive }) {
   return {
     async verifyAccessToken(token) {
-      const record = tokens.access(token)
+      const record = tokens.access(token) ?? tokens.key?.(token) ?? null
       const connection = record && state.connections.get(record.connection_id)
       // The token must be of the connection's own family and client, not merely name its id.
       if (!connection || !boundTo(record, connection)) throw new OAuthError(OAuthErrorCode.InvalidToken, 'Unknown or expired token')

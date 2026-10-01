@@ -9,7 +9,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { chatName, plain, vector, workspace } from '@whatserver2/mcp/test/fixture'
-import { decodeAttestationDocument } from '../../attestation.mjs'
+import { attestationUserDataV2, decodeAttestationDocument, descriptorSHA256 } from '../../attestation.mjs'
+import { CLIENT_LIMITS } from '../constants.mjs'
 import { CONTENT_SWEEP_MS } from '../../server.mjs'
 import { CONTENT_REFRESH_IDLE_MS } from '../../tokens.mjs'
 import { PROOF_TIMEOUT_MS, proveGrants } from '../content.mjs'
@@ -286,7 +287,13 @@ test('renewal after a restart: attested per-renewal key, staged bundle, Go swaps
   const renewed = await renew(w, done)
   assert.equal(renewed.prepared.status, 200, renewed.prepared.body)
   const { renewal } = renewed
-  assert.deepEqual(Object.keys(renewal), ['renewal_id', 'connection_id', 'kid', 'reader_public_key', 'resource', 'device_ids', 'expires_at', 'connection_expires_at', 'consent_version', 'media', 'attestation'])
+  // A version-2 descriptor (§19.16): a record 0.5.0's rules wrote renews as `legacy`, tested, under the tested web limits.
+  assert.deepEqual(Object.keys(renewal), ['descriptor_version', 'renewal_id', 'connection_id', 'kid', 'reader_public_key', 'resource', 'device_ids', 'expires_at',
+    'connection_expires_at', 'consent_version', 'media', 'kind', 'client_kind', 'client_id', 'tested_id', 'client_host', 'registrable', 'shared_suffix', 'client_local',
+    'client_name', 'claimed_name', 'trust', 'limits_tier', 'limits', 'unknown_ack', 'history_days', 'attestation'])
+  assert.deepEqual([renewal.descriptor_version, renewal.kind, renewal.client_kind, renewal.trust, renewal.limits_tier, renewal.unknown_ack, renewal.history_days, renewal.client_host],
+    [2, 'renewal', 'legacy', 'tested', 'web_tested', false, null, null])
+  assert.deepEqual(renewal.limits, CLIENT_LIMITS.web_tested)
   assert.equal(renewal.consent_version, 1)
   assert.equal(renewal.media, false)
   assert.match(renewal.renewal_id, /^[A-Za-z0-9_-]{22}$/)
@@ -298,6 +305,7 @@ test('renewal after a restart: attested per-renewal key, staged bundle, Go swaps
   const document = decodeAttestationDocument(Buffer.from(renewal.attestation.document, 'base64url'))
   assert.deepEqual(document.publicKey, Buffer.from(renewal.reader_public_key, 'base64url'))
   assert.deepEqual(document.nonce, renewed.nonce)
+  assert.deepEqual(document.userData, attestationUserDataV2(renewal.attestation, descriptorSHA256(renewal)), 'attested whole')
   assert.notEqual(renewal.reader_public_key, done.prepared.reader_public_key)
   assert.equal(renewed.relayed.status, 204, renewed.relayed.body)
   assert.equal(eventCount(w, 'renewal_staged'), 1)

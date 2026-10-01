@@ -118,8 +118,28 @@ function attachmentGuidance(code, error) {
     case 'ai_provider_failed': return 'The AI provider did not answer. Try once more later; if it fails again, tell the user.'
     case 'ai_busy': return Number.isInteger(retry) ? `The reader is busy with other AI requests; nothing is wrong with this one. Wait ${retry} seconds, then call open_attachment again with the same arguments.` : null
     case 'grant_mismatch': return 'The reader could not confirm this number\'s AI settings with its key, so nothing was sent to the provider. Tell the user; do not retry.'
+    // The reading limits and the history window (docs/mcp-enclave.md §19.19).
+    case 'limit_reached': return limitSentence(error)
+    case 'outside_window': return WINDOW_SENTENCE
     default: return null
   }
+}
+/**
+ * The reading limits of a connection Wappie has not tested, or of a console
+ * token, and its history window (docs/mcp-enclave.md §19.19): the model is
+ * told when the limit resets, never what the limit is.
+ */
+const WINDOW_SENTENCE = 'This message is outside the window this connection may read.'
+const limitSentence = error => `This connection reached its reading limit for now; it resets at ${retryAtShape.test(error?.reset_at) ? error.reset_at : 'a later time'}.`
+/**
+ * What each tool's reading limit counts (§19.19): every message it returns
+ * (an item of list_messages, a hit of search_messages, get_message's one, a
+ * revision of list_revisions). Chat previews and activity counts are not
+ * counted; open_attachment counts attachments, on its own.
+ */
+const countedMessages = {
+  list_messages: data => data.messages.length, search_messages: data => (Array.isArray(data.messages) ? data.messages.length : 0),
+  get_message: () => 1, list_revisions: data => data.revisions.length,
 }
 /**
  * Refusals that are the answer about this attachment (reader 0.4.2, §16.7):
@@ -173,9 +193,9 @@ function aiNotes(header) {
   return notes
 }
 /** The reader's notes for a header, in §16.7's order; an AI answer's (`ai`) come first (§18.12). */
-function attachmentNotes(header, { host, request, suggest, dropped, ai = false }) {
+function attachmentNotes(header, { profile, request, suggest, dropped, ai = false }) {
   const notes = ai ? aiNotes(header) : []
-  if (header.images > 0) notes.push(host === 'chatgpt.com'
+  if (header.images > 0) notes.push(profile === 'chatgpt.com'
     ? `Images attached after this text: ${header.images}. If you cannot see them, tell the user that this ChatGPT model does not receive images and suggest a model with reasoning (Thinking or Pro); never guess what they show.`
     : `Images attached after this text: ${header.images}. If you cannot see them, tell the user so; never guess what they show.`)
   if (header.animated) notes.push('Animated image: only its first frame is shown.')
@@ -217,12 +237,12 @@ function attachmentNotes(header, { host, request, suggest, dropped, ai = false }
  * is present. Past `maxBytes`, images go from the end, with
  * `images_withheld: "cap"`.
  */
-function attachmentAnswer(result, request, { host, maxBytes, consoleURL }) {
+function attachmentAnswer(result, request, { profile, maxBytes, consoleURL }) {
   const header = { ...result.header }
   if (!consoleLink(header.open_url, consoleURL)) delete header.open_url
   const images = [...result.images], dropped = []
   for (;;) {
-    const notes = attachmentNotes(header, { host, request, suggest: result.suggest_pages, dropped, ai: result.ai === true })
+    const notes = attachmentNotes(header, { profile, request, suggest: result.suggest_pages, dropped, ai: result.ai === true })
     const text = JSON.stringify({ ...header, ...(notes.length ? { notes } : {}), source: 'untrusted third-party file' }) + '\n' + result.body
     const content = [{ type: 'text', text }, ...images.map(image => ({ type: 'image', data: Buffer.from(image.data).toString('base64'), mimeType: image.mimeType }))]
     if (!images.length || Buffer.byteLength(JSON.stringify({ content }), 'utf8') <= maxBytes) {
@@ -398,17 +418,25 @@ export function createServer(config, provider, { iconOrigin } = {}) {
     const safeAuthCode = error instanceof auth.AuthError && ['kdf_cost_exceeded', 'response_too_large', 'not_authorized', 'no_grant', 'unauthorized'].includes(error.code)
     return error instanceof ArchiveError || error instanceof LocalConfigError || safeAuthCode ? error.code : 'read_failed'
   }
+  /**
+   * A tool. On a connection with reading limits (`provider.limits`,
+   * §19.19), a tool that returns messages is checked before it runs and
+   * counted once it has: a call that starts under the limit is served whole.
+   */
   function tool(name, description, schema, method) {
     server.registerTool(name, { title: titles[name], description, inputSchema: schema, annotations: { ...annotations, title: titles[name] } }, async input => {
       try {
+        const counted = provider?.limits && countedMessages[name]
+        if (counted) provider.limits.before('messages')
         const reader = await createReader(config, provider)
         const data = await reader[method](input)
         const text = JSON.stringify(data)
         if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new ArchiveError('result_too_large')
+        if (counted) provider.limits.count('messages', counted(data))
         return { content: [{ type: 'text', text }], structuredContent: data }
       } catch (error) {
         const code = codeOf(error)
-        const guidance = await guidanceFor(code)
+        const guidance = code === 'limit_reached' ? limitSentence(error) : code === 'outside_window' ? WINDOW_SENTENCE : await guidanceFor(code)
         return { isError: true, content: [{ type: 'text', text: `Could not read the archive (${code}). ${guidance}` }] }
       }
     })
@@ -432,8 +460,12 @@ export function createServer(config, provider, { iconOrigin } = {}) {
     }) }, async input => {
       try {
         const reader = await createReader(config, provider)
+        // The reading limits (§19.19): checked before, counted when content comes back (a pending answer has none).
+        provider.limits?.before('attachments')
         const result = await reader.openAttachment(input)
-        return attachmentAnswer(result, input, { host: provider.media.host, maxBytes: provider.media.resultMaxBytes, consoleURL: provider.media.consoleURL })
+        if (result.header?.status !== 'pending') provider.limits?.count('attachments', 1)
+        // The host profile (§19.23): the tested entry's, `default` for any other client; 0.5.0's media.host before it.
+        return attachmentAnswer(result, input, { profile: provider.media.profile ?? provider.media.host, maxBytes: provider.media.resultMaxBytes, consoleURL: provider.media.consoleURL })
       } catch (error) {
         const code = codeOf(error)
         const guidance = attachmentGuidance(code, { ...error, retry_after_s: error?.retry_after_s, facts: error?.facts,

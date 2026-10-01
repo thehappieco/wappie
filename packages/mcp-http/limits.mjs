@@ -38,6 +38,22 @@ export function ipKey(address) {
   return groups.slice(0, 4).map(group => parseInt(group, 16).toString(16)).join(':') + '::/64'
 }
 
+/**
+ * Whether two ipKey values share a network (docs/mcp-enclave.md §19.12): the
+ * first three octets for IPv4, the first 56 bits for IPv6 (whose key is
+ * already its /64). Different families, or a key that is no address, differ.
+ */
+export function sameNetwork(a, b) {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/, v6 = /^([0-9a-f]{1,4}):([0-9a-f]{1,4}):([0-9a-f]{1,4}):([0-9a-f]{1,4})::\/64$/
+  const [a4, b4] = [v4.exec(a ?? ''), v4.exec(b ?? '')]
+  if (a4 && b4) return a4.slice(1, 4).join('.') === b4.slice(1, 4).join('.')
+  const [a6, b6] = [v6.exec(a ?? ''), v6.exec(b ?? '')]
+  if (!a6 || !b6) return false
+  const groups = match => match.slice(1, 5).map(group => parseInt(group, 16))
+  const [x, y] = [groups(a6), groups(b6)]
+  return x[0] === y[0] && x[1] === y[1] && x[2] === y[2] && x[3] >> 8 === y[3] >> 8
+}
+
 /** Buckets refill continuously at `perMinute`; a full bucket is forgotten on sweep. */
 export function createLimiter(now = Date.now) {
   const buckets = new Map()

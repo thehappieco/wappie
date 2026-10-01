@@ -37,7 +37,7 @@ const consent = () => ({ version: 2, kind: 'content', purpose: 'consent', server
 const renewal = () => { const value = { ...consent(), purpose: 'renewal', connection_id: connection }; delete value.link_secret; return value }
 
 test('content bundle v2 accepts a consent and a renewal and returns them frozen', () => {
-  assert.deepEqual(CONTENT_CONSENT_VERSIONS, [1, 2, 3])
+  assert.deepEqual(CONTENT_CONSENT_VERSIONS, [1, 2, 3, 4])
   const accepted = validateContentBundle(consent(), now)
   assert.ok(Object.isFrozen(accepted) && Object.isFrozen(accepted.device_ids))
   assert.equal(accepted.link_secret, linkSecret)
