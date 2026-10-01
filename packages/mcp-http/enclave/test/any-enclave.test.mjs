@@ -456,3 +456,37 @@ test('public wildcard names that resolve inside (127.0.0.1.nip.io, 169.254.169.2
   assert.deepEqual(proxy.calls, ['https://127.0.0.1.nip.io/client.json', 'https://169.254.169.254.sslip.io/client.json'])
   assert.deepEqual(events(w, 'cimd_fetch').map(entry => entry.code), ['proxy_refused', 'proxy_refused'])
 })
+
+test('the version-4 renewal of a tested web client with drafts (§19.16): the send fields and the client\'s renew under the v4 scope; a check over the consent\'s request is refused', async t => {
+  const { w, e } = await anyWorld(t)
+  const started = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT })
+  const done = await consentContent(w, started, { fields: { send: 'draft' } })
+  assert.equal(done.completed?.status, 302, done.relayed.body)
+  w.go.connections.get(done.connectionId).api_key = done.token
+  await e.close()
+  await w.start()
+  const nonce = randomBytes(32)
+  const prepare = async () => JSON.parse((await w.internal(`/internal/connections/${done.connectionId}/renewal`, { method: 'POST', body: { nonce: nonce.toString('base64url') } })).body)
+  const renewWith = async (renewal, { request = renewal.renewal_id, fields = {} } = {}) => {
+    const service = randomUUID(), token = newApiKey()
+    await contentGrants(w, renewal.reader_public_key, { service, token })
+    const connection = w.go.connections.get(done.connectionId)
+    const bundle = { version: 2, kind: 'content', purpose: 'renewal', server_url: ORIGIN, workspace_id: workspace, service_user_id: service, device_ids: [vector.device], token,
+      key_mode: 'ephemeral', consent_version: 4, expires_at: connection.expires_at, connection_id: done.connectionId, send: 'draft',
+      client_id: CLAUDE, client_kind: 'cimd', client_local: false, trust: 'tested', started_ack: true, unknown_ack: false, history_days: null, ...fields }
+    bundle.device_checks = deviceChecks(bundle, { request, kid: renewal.kid })
+    const { sealed } = await sealContent(renewal.reader_public_key, bundle, renewLabels(renewal.renewal_id, done.connectionId, renewal.kid))
+    return w.internal(`/internal/connections/${done.connectionId}/renewal/${renewal.renewal_id}/bundle`, { method: 'POST', body: {
+      connection_id: done.connectionId, tenant_id: workspace, kid: renewal.kid, sealed, expires_at: connection.expires_at, kind: 'content' } })
+  }
+  const stale = await renewWith(await prepare(), { request: started.id })
+  assert.deepEqual([stale.status, JSON.parse(stale.body).code], [400, 'invalid_bundle'], 'checks made for the consent, not this renewal')
+  const dropped = await renewWith(await prepare(), { fields: { send: undefined } })
+  assert.equal(dropped.status, 400, 'a renewal never changes the consent')
+  const renewal = await prepare()
+  assert.deepEqual([renewal.kind, renewal.consent_version, renewal.send, renewal.trust, renewal.tested_id, renewal.client_name, renewal.limits_tier, renewal.history_days],
+    ['renewal', 4, 'draft', 'tested', 'claude', 'Claude', 'web_tested', null])
+  assertAttestedWhole(renewal)
+  const accepted = await renewWith(renewal)
+  assert.equal(accepted.status, 204, accepted.body)
+})

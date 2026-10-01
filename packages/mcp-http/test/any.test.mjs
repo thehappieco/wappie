@@ -18,6 +18,7 @@ import { PENDING_PER_CLIENT, resourceOf, scopeAcceptable } from '../as.mjs'
 import { sameNetwork } from '../limits.mjs'
 import { createPSL, loadPSL, PSL_FILE } from '../psl.mjs'
 import { attestationUserDataV2, descriptorSHA256, userDataPreimageV2 } from '../attestation.mjs'
+import { CONTENT_REFRESH_IDLE_MS, idleFor, REFRESH_IDLE_MS } from '../tokens.mjs'
 import { authorizeURL, DAY, exchange, harness, pkce, proof, register, rpc, sealBundle, vector } from './harness.mjs'
 
 /** The snapshot's SHA-256, pinned here and in Go's netguard tests: the copies cannot drift (§19.5). */
@@ -591,4 +592,13 @@ test('client caps (§19.10): 20 documents per registrable domain and 300 in all,
   dcr.connections.set('k', { connection_id: 'k', client_id: 'r0' })
   assert.equal(makeRoomRegistered(dcr, 'claude.ai'), true)
   assert.deepEqual([dcr.clients.has('r0'), dcr.clients.has('r1'), dcr.clients.size], [true, false, MAX_CLIENTS_PER_HOST - 1 + 50])
+})
+
+test('refresh idle times by tier (§19.19): tested web as 0.5.0, a local app a week, an unknown client a week and three days for text; a record 0.5.0 wrote as before', () => {
+  const idle = (limits_tier, kind) => idleFor({ limits_tier, ...(kind ? { kind } : {}) }, CLIENT_LIMITS) / DAY
+  assert.deepEqual([idle('web_tested'), idle('web_tested', 'content')], [30, 7])
+  assert.deepEqual([idle('local_tested'), idle('local_tested', 'content')], [7, 7])
+  assert.deepEqual([idle('unknown'), idle('unknown', 'content')], [7, 3])
+  assert.deepEqual([idleFor({}, CLIENT_LIMITS), idleFor({ kind: 'content' }, CLIENT_LIMITS)], [REFRESH_IDLE_MS, CONTENT_REFRESH_IDLE_MS])
+  assert.deepEqual([idleFor({ limits_tier: 'unknown' }), idleFor({ limits_tier: 'token' }, CLIENT_LIMITS)], [REFRESH_IDLE_MS, REFRESH_IDLE_MS], 'no table, or a tier with no refresh: 0.5.0\'s')
 })
