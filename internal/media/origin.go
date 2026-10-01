@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"whatserver2/internal/netguard"
 )
 
 // Origins decides where this process is willing to fetch from.
@@ -93,7 +95,7 @@ func (o Origins) Check(raw string) error {
 	if !o.AllowPrivateAddresses {
 		// A literal address gets checked here, before any dial. A name is
 		// checked when it resolves, in dial.
-		if addr, err := netip.ParseAddr(host); err == nil && !public(addr) {
+		if addr, err := netip.ParseAddr(host); err == nil && !netguard.Public(addr) {
 			return fmt.Errorf("%w: %s is not a public address", ErrOrigin, host)
 		}
 	}
@@ -129,6 +131,9 @@ func (o Origins) Client(timeout time.Duration, maxRedirects int) *http.Client {
 	} else {
 		transport = &http.Transport{}
 	}
+	// No proxy from the environment: a proxy would resolve the name itself,
+	// and dial would check the proxy's address instead of the origin's.
+	transport.Proxy = nil
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return o.dial(ctx, dialer, network, addr)
 	}
@@ -163,7 +168,7 @@ func (o Origins) dial(ctx context.Context, d *net.Dialer, network, addr string) 
 	var lastErr error
 	for _, ip := range addrs {
 		ip = ip.Unmap()
-		if !public(ip) {
+		if !netguard.Public(ip) {
 			lastErr = fmt.Errorf("%w: %s resolves to %s", ErrOrigin, host, ip)
 			continue
 		}
@@ -178,27 +183,3 @@ func (o Origins) dial(ctx context.Context, d *net.Dialer, network, addr string) 
 	}
 	return nil, lastErr
 }
-
-// public reports whether an address is one a CDN could plausibly answer from.
-func public(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	switch {
-	case !ip.IsValid(), ip.IsUnspecified(), ip.IsLoopback(), ip.IsPrivate(),
-		ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(), ip.IsMulticast(),
-		ip.IsInterfaceLocalMulticast():
-		return false
-	}
-	// Carrier-grade NAT and the IPv4-mapped/6to4 ranges are not private by the
-	// standard library's definition and are not reachable CDNs either.
-	if ip.Is4() {
-		if cgnat.Contains(ip) || benchmarking.Contains(ip) {
-			return false
-		}
-	}
-	return true
-}
-
-var (
-	cgnat        = netip.MustParsePrefix("100.64.0.0/10")
-	benchmarking = netip.MustParsePrefix("198.18.0.0/15")
-)
