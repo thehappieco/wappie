@@ -225,8 +225,9 @@ photograph turns into a placeholder.
 text message with no media fields, and what a recipient's WhatsApp does when one
 arrives to replace a photograph is not something this system decides. Our own
 archive would look right either way — the picture with the new caption and an
-"editada" tag — which is exactly why it is refused rather than attempted: the
-archive would not be evidence that anything reached the other side.
+"editada" ("edited") tag — which is exactly why it is refused rather than
+attempted: the archive would not be evidence that anything reached the other
+side.
 
 **A reader asks who an identifier is; the list is not reloaded.** The contact
 directory is fetched once when the archive is unlocked, so every conversation
@@ -280,17 +281,17 @@ inbound path seals it.
 way out, and rows from a history sync — or from a client that wrote the timer
 without the wrapper — carry one and not the other. Reading only the flag is why
 the marker appeared on some disappearing messages and not on others that all had
-an expiry date. Past `expires_at` the chip becomes "expirada", which is
-deliberately not "apagada": nothing was deleted, and the message is still here.
-It says the text is gone everywhere else in the conversation.
+an expiry date. Past `expires_at` the chip becomes "expirada" ("expired"), which
+is deliberately not "apagada" ("deleted"): nothing was deleted, and the message
+is still here. It says the text is gone everywhere else in the conversation.
 
 **Mentions are highlighted in the sentence, and the directory is still not
-reactive.** They used to be a "menciona Fulano" footnote because the body renders
-as plain text runs — no `v-html`, since the premise is that nothing untrusted
-becomes markup. The tokenizer matches `@digits` against the JIDs the message
-actually carried, so an `@11` meaning eleven o'clock stays text; mentions whose
-number is not in the body at all keep the footnote, because an edit can replace
-a text and leave its mention list behind.
+reactive.** They used to be a "menciona Fulano" ("mentions so-and-so") footnote
+because the body renders as plain text runs — no `v-html`, since the premise is
+that nothing untrusted becomes markup. The tokenizer matches `@digits` against
+the JIDs the message actually carried, so an `@11` meaning eleven o'clock stays
+text; mentions whose number is not in the body at all keep the footnote, because
+an edit can replace a text and leave its mention list behind.
 
 The redraw is the half that is easy to miss. The directory is a plain `Map` on
 purpose — making five thousand people reactive to catch the handful that change
@@ -410,10 +411,10 @@ nothing.
 
 **A group's history starts when this archive does, and the panel says so.**
 WhatsApp delivers a group's current composition and its live changes, never its
-past, so "who removed Fulano" is answerable from the moment we began listening
-and not before. An empty history is not a peaceful one and a reader cannot tell
-the two apart by looking, so the first snapshot writes a marker and the panel
-prints the date the record begins.
+past, so "who removed Fulano" (so-and-so) is answerable from the moment we began
+listening and not before. An empty history is not a peaceful one and a reader
+cannot tell the two apart by looking, so the first snapshot writes a marker and
+the panel prints the date the record begins.
 
 **An empty snapshot is not everybody leaving.** A membership answer with nobody
 in it is a request that failed, a group this account was removed from, or an
@@ -505,7 +506,8 @@ them.** A reader's flat `delivered` is the earliest across every version — the
 answer to "did this reach them at all" — and it was being drawn under a heading
 about one revision, where it says the correction arrived on the strength of the
 original having done so. The panel now offers only per-version lists, and each
-carries recebido / lido / tocado for that version alone.
+carries recebido / lido / tocado (delivered / read / played) for that version
+alone.
 
 **A receipt's id names the revision, and that is the strongest evidence here.**
 Editing a message makes it unread again on the recipient's phone; reading it
@@ -557,7 +559,8 @@ row is never `unsupported` and reprojection only reopens rows that are. Widening
 reprojection, or storing the count as a pointer, would let a future disagreement
 be settled from the archive instead of from argument.
 
-**A "Tocado" section appears when the type allows it OR when a receipt exists.**
+**A "Tocado" ("Played") section appears when the type allows it OR when a
+receipt exists.**
 The type rule is voice notes and view-once media and nothing else, because a
 photograph never earns a third tick. But this client reports played when any
 sound finishes, ordinary audio included, and other clients are under no

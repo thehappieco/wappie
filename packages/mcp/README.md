@@ -743,22 +743,25 @@ for in the conversation. The contract is
 
 ### Example prompts
 
-After choosing an authorized number, examples in Portuguese are:
+After choosing an authorized number, try prompts like these. A search term
+is written in the language of the messages, so the first one keeps the
+Portuguese “atraso entrega” (late delivery):
 
-> Procure “atraso entrega” em todas as conversas desse número ontem à noite.
-> Mostre o fuso, os trechos e as fontes. Continue as páginas e avise se a busca
-> ficar incompleta. Confira se os resultados foram editados ou apagados.
+> Search for “atraso entrega” in every chat of this number last night. Show
+> the time zone, the excerpts and the sources. Keep going through the pages
+> and say if the search is incomplete. Check whether the results were edited
+> or deleted.
 
-> Mostre a atividade de ontem por conversa, participante e direção. Some as
-> páginas e deixe claro que são eventos originais arquivados.
+> Show yesterday's activity by chat, participant and direction. Add up the
+> pages and make clear that these are original archived events.
 
-> Resolva “Ana” nos contatos disponíveis. Se houver mais de uma candidata,
-> mostre as opções antes de escolher.
+> Resolve “Ana” in the available contacts. If there is more than one
+> candidate, show the options before choosing.
 
 On a media connection:
 
-> Abra o PDF mais recente que a Ana mandou e diga o total e o vencimento. Se
-> não conseguir abrir, diga o motivo.
+> Open the latest PDF Ana sent and tell me the total and the due date. If you
+> cannot open it, say why.
 
 The proposed persistent encrypted index and semantic retrieval are described
 separately in [Encrypted contextual search](../../docs/encrypted-context-search.md).

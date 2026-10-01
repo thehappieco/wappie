@@ -386,11 +386,11 @@ acts as it.
 ```
 
 The system registers its public key with that invite under "Registrar um
-sistema" on the sign-in screen. In the console an owner grants it devices —
-the same button as for a person; the device key is sealed to the system's
-public key in the owner's browser — and mints an API key that *acts as* the
-account, with the narrowest scope that works. The system then asks for its
-grants and opens them with the private key that never left it:
+sistema" ("Register a system") on the sign-in screen. In the console an owner
+grants it devices — the same button as for a person; the device key is sealed
+to the system's public key in the owner's browser — and mints an API key that
+*acts as* the account, with the narrowest scope that works. The system then
+asks for its grants and opens them with the private key that never left it:
 
 ```
 WS_API_KEY=... ./bin/wsctl grants -service-key <PRIVATE>            # what it may open
