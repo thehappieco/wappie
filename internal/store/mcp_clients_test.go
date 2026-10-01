@@ -648,7 +648,7 @@ func TestMigration0046(t *testing.T) {
 		   AND column_name IN ('client_kind','client_id','client_host','client_local','trust','claimed_name','history_days',
 		                       'first_used_at','revoke_link_sha256'))
 		+ (SELECT count(*) FROM pg_constraint WHERE conname='mcp_connections_client_coherent' AND connamespace=current_schema()::regnamespace)
-		+ (SELECT count(*) FROM pg_proc WHERE proname='mcp_connections_ai_kind')`).Scan(&left); err != nil || left != 0 {
+		+ (SELECT count(*) FROM pg_proc WHERE proname='mcp_connections_ai_kind' AND pronamespace=current_schema()::regnamespace)`).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("%d things left %v", left, err)
 	}
 	statuses := map[string]string{}
