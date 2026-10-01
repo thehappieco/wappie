@@ -312,7 +312,7 @@ var nameDot = regexp.MustCompile(`([A-Za-z0-9-])\.([A-Za-z0-9])`)
 
 // noAutolink keeps a mail client from making a link of a name in the text:
 // a zero-width non-joiner after each dot inside it, which nobody sees.
-func noAutolink(s string) string { return nameDot.ReplaceAllString(s, "$1.‌$2") }
+func noAutolink(s string) string { return nameDot.ReplaceAllString(s, "$1.\u200c$2") }
 
 func (m mcpEmail) render() (string, string, error) {
 	view := m
