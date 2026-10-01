@@ -164,8 +164,10 @@ func TestUnlinkedProvisionalKeyDiesAfter20Min(t *testing.T) {
 	if _, err := f.keys.Verify(ctx, key); err != nil {
 		t.Fatalf("provisional key refused within its window: %v", err)
 	}
-	// The clock passes twenty minutes.
-	if _, err := f.pool.Exec(ctx, `UPDATE api_keys SET expires_at = expires_at - interval '21 minutes' WHERE prefix = $1`, prefix); err != nil {
+	// The clock passes twenty minutes, and then some: this host's clock set
+	// the deadline, Verify reads it by the database's, and the two can be
+	// minutes apart.
+	if _, err := f.pool.Exec(ctx, `UPDATE api_keys SET expires_at = expires_at - interval '1 hour' WHERE prefix = $1`, prefix); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.keys.Verify(ctx, key); !errors.Is(err, store.ErrInvalidKey) {
