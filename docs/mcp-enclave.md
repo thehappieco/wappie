@@ -3910,11 +3910,15 @@ is the own chat's JID `<devices.pn user>@s.whatsapp.net` (a device with no
 (5) the §17.10 text rules again (422 `text_not_allowed`); (6) in one short
 transaction under the row lock: the connection's sends in the rolling day
 below `PER_DAY`, the chat's below `PER_CHAT_PER_DAY` (S3), the last send at
-least `MIN_INTERVAL` ago, and the workspace's below `TENANT_PER_DAY`
+least `MIN_INTERVAL` ago (both ends are `clock_timestamp()` under the lock,
+never a transaction's start: a send that began first and waited behind the
+last one is held to the time since it, and no two sends are closer than
+`MIN_INTERVAL` in the ledger), and the workspace's below `TENANT_PER_DAY`
 (counted under `pg_advisory_xact_lock(hashtextextended('mcp_send:' ||
 tenant_id, 0))`, so two connections cannot pass it together); then insert
-`sending` with `client_ref` (and, for `self`, the own chat's JID as
-`chat_key`), commit. A repeated `client_ref` answers
+`sending` with `created_at = clock_timestamp()` and `client_ref` (and, for
+`self`, the own chat's JID as `chat_key`), commit. A repeated
+`client_ref` answers
 the recorded outcome with `duplicate: true` (200 for `sent`, 502
 `send_uncertain` for `uncertain`, the recorded 4xx for `refused`) or 409
 `send_in_progress` for `sending`; (7) the registry: a device not running
