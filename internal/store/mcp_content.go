@@ -38,17 +38,20 @@ func liveStatus(status string) bool {
 // validConsentVersion is the consent texts a content connection can be
 // given under.
 func validConsentVersion(version int) bool {
-	return version == ContentConsentVersion || version == MediaConsentVersion || version == SendConsentVersion
+	return version >= ContentConsentVersion && version <= ClientConsentVersion
 }
 
 // validConsentSend is the sending a consent version carries: version 3
-// carries sending, and only it does; the own chat and groups ride on it.
-// Direct send (S3) is not taken yet.
+// always carries sending, version 4 may, and the others never do; the own
+// chat and groups ride on it. Direct send (S3) is not taken yet.
 func validConsentSend(version int, mode string, self, groups bool) bool {
-	if version != SendConsentVersion {
-		return mode == "" && !self && !groups
+	switch version {
+	case SendConsentVersion:
+		return mode == SendModeDraft
+	case ClientConsentVersion:
+		return mode == SendModeDraft || mode == "" && !self && !groups
 	}
-	return mode == SendModeDraft
+	return mode == "" && !self && !groups
 }
 
 // endMCPConnectionTx ends one connection: status (statusRevoked or
@@ -74,8 +77,10 @@ func endMCPConnectionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id, st
 		return false, err
 	}
 	if liveStatus(current) {
+		// A revoke-only link ends with its connection (0046).
 		if _, err := tx.Exec(ctx, `UPDATE mcp_connections
-			SET status=$3, revoked_at=CASE WHEN $3='revoked' THEN now() ELSE revoked_at END, revoke_reason=$4
+			SET status=$3, revoked_at=CASE WHEN $3='revoked' THEN now() ELSE revoked_at END, revoke_reason=$4,
+			    revoke_link_sha256=NULL
 			WHERE id=$1 AND tenant_id=$2`, id, tenant, status, reason); err != nil {
 			return false, err
 		}
@@ -270,33 +275,47 @@ func (m *MCPConnections) Status(ctx context.Context, reader, id string, contentA
 // (docs/mcp-enclave.md §18.4), and answers its configuration and narrowing
 // whatever its status.
 func (m *MCPConnections) StatusFor(ctx context.Context, reader, id string, allowed StatusAllowed) (StatusAnswer, error) {
-	var a StatusAnswer
+	a, used, err := m.status(ctx, reader, id, allowed)
+	if err != nil || used || a.Status != statusActive {
+		return a, err
+	}
+	// The first answer that lets the reader serve is the connection's first
+	// use, which the console lists (docs/mcp-enclave.md §19.21).
+	if _, err := m.pool.Exec(ctx, `UPDATE mcp_connections SET first_used_at=now() WHERE id=$1 AND reader=$2 AND first_used_at IS NULL`,
+		id, reader); err != nil {
+		return StatusAnswer{}, fmt.Errorf("store: mcp connection first use: %w", err)
+	}
+	return a, nil
+}
+
+// status is StatusFor's answer, and whether the connection was used before.
+func (m *MCPConnections) status(ctx context.Context, reader, id string, allowed StatusAllowed) (a StatusAnswer, used bool, err error) {
 	var tenant uuid.UUID
 	var media, sendSelf, sendPaused bool
 	var sendMode string
 	var aiConfig []byte
-	err := m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1 AND reader=$2
+	err = m.pool.QueryRow(ctx, `UPDATE mcp_connections SET last_seen_at=now() WHERE id=$1 AND reader=$2
 		RETURNING tenant_id, status, expires_at, kind, service_user_id, media,
 		          coalesce(send_mode, ''), send_self, send_paused_at IS NOT NULL,
-		          ai_config::text, ai_off, ai_paused_at IS NOT NULL, ai_cap_tokens`, id, reader).
+		          ai_config::text, ai_off, ai_paused_at IS NOT NULL, ai_cap_tokens, first_used_at IS NOT NULL`, id, reader).
 		Scan(&tenant, &a.Status, &a.ExpiresAt, &a.Kind, &a.ServiceUserID, &media, &sendMode, &sendSelf, &sendPaused,
-			&aiConfig, &a.AIOff, &a.AIPaused, &a.AICapTokens)
+			&aiConfig, &a.AIOff, &a.AIPaused, &a.AICapTokens, &used)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return StatusAnswer{}, ErrMCPConnectionNotFound
+		return StatusAnswer{}, false, ErrMCPConnectionNotFound
 	}
 	if err != nil {
-		return StatusAnswer{}, fmt.Errorf("store: mcp connection status: %w", err)
+		return StatusAnswer{}, false, fmt.Errorf("store: mcp connection status: %w", err)
 	}
 	a.TenantID = tenant
 	if aiConfig != nil {
 		c, err := storedAIConfig(aiConfig)
 		if err != nil {
-			return StatusAnswer{}, err
+			return StatusAnswer{}, false, err
 		}
 		a.AIConfig = &c
 	}
 	if !liveStatus(a.Status) {
-		return a, nil
+		return a, used, nil
 	}
 	contentAllowed := allowed.Content
 	if a.Kind == KindAI {
@@ -306,16 +325,16 @@ func (m *MCPConnections) StatusFor(ctx context.Context, reader, id string, allow
 		if a.Status == statusActive && !a.ExpiresAt.After(time.Now()) {
 			a.Status = statusExpired
 		}
-		return a, nil
+		return a, used, nil
 	}
 	if !a.ExpiresAt.After(time.Now()) {
 		// Checked before access: at the deadline the key runs out with the
 		// connection, which is an expiry, not a lost access.
 		if err := m.endInTenant(ctx, tenant, id, statusExpired, ReasonExpired, true); err != nil {
-			return StatusAnswer{}, fmt.Errorf("store: expire mcp connection: %w", err)
+			return StatusAnswer{}, false, fmt.Errorf("store: expire mcp connection: %w", err)
 		}
 		a.Status = statusExpired
-		return a, nil
+		return a, used, nil
 	}
 	var lost bool
 	err = pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -331,21 +350,21 @@ func (m *MCPConnections) StatusFor(ctx context.Context, reader, id string, allow
 			FROM mcp_connections c WHERE c.id=$1 AND c.tenant_id=$2`, id, tenant).Scan(&lost)
 	})
 	if err != nil {
-		return StatusAnswer{}, fmt.Errorf("store: mcp connection access: %w", err)
+		return StatusAnswer{}, false, fmt.Errorf("store: mcp connection access: %w", err)
 	}
 	if lost {
 		if err := m.endInTenant(ctx, tenant, id, statusRevoked, ReasonAccessLost, true); err != nil {
-			return StatusAnswer{}, fmt.Errorf("store: revoke mcp connection: %w", err)
+			return StatusAnswer{}, false, fmt.Errorf("store: revoke mcp connection: %w", err)
 		}
 		a.Status = statusRevoked
-		return a, nil
+		return a, used, nil
 	}
 	if contentAllowed == nil || !contentAllowed(tenant) {
 		a.Status = statusReseal
 	}
 	a.Media = media
 	a.SendMode, a.SendSelf, a.SendPaused = sendMode, sendSelf, sendPaused
-	return a, nil
+	return a, used, nil
 }
 
 // ContentKey is what the ledger says about an API key that belongs to a

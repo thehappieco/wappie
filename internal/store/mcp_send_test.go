@@ -183,7 +183,6 @@ func TestCreateSendingConnection(t *testing.T) {
 		"groups alone":              func(in *store.CreateMCPConnection) { in.SendGroups = true },
 		"direct before S3":          func(in *store.CreateMCPConnection) { in.ConsentVersion, in.SendMode = 3, store.SendModeDirect },
 		"not a mode":                func(in *store.CreateMCPConnection) { in.ConsentVersion, in.SendMode = 3, "broadcast" },
-		"version 4":                 func(in *store.CreateMCPConnection) { in.ConsentVersion, in.SendMode = 4, store.SendModeDraft },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := f.prepareContent(ctx, t, f.owner)
@@ -192,6 +191,14 @@ func TestCreateSendingConnection(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			}
 		})
+	}
+	// Version 4 is a 0.6.0 reader's, for a client it described: sending on
+	// it is a tested web client's (mcp_clients_test.go), never a legacy
+	// consent's.
+	v4 := f.prepareContent(ctx, t, f.owner)
+	v4.in.ConsentVersion, v4.in.SendMode = 4, store.SendModeDraft
+	if _, err := f.conns.Create(ctx, f.tenant, f.owner, v4.in); !errors.Is(err, store.ErrMCPClient) {
+		t.Fatalf("version 4 on a legacy consent: err = %v", err)
 	}
 	_, prefix := f.provisionalKey(ctx, t, "meta")
 	meta := consent(prefix)
@@ -1292,6 +1299,9 @@ func TestMigration0044DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
+		t.Fatalf("0046 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
 		t.Fatalf("0045 down-step: %v", err)
 	}

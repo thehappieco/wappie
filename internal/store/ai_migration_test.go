@@ -67,6 +67,9 @@ func TestMigration0045DownStep(t *testing.T) {
 		t.Fatalf("the result was not counted: %d, before %d %v", with.ArchiveBytes, before.ArchiveBytes, err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
+		t.Fatalf("0046 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
 		t.Fatalf("down-step: %v", err)
 	}

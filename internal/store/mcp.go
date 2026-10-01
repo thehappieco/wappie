@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -40,11 +41,21 @@ var (
 	// ErrMCPKeyUnsuitable means the key exists in this workspace but is not
 	// the kind a hosted assistant may ride on.
 	ErrMCPKeyUnsuitable = errors.New("store: api key is not suitable for an mcp connection")
+	// ErrTooManyUnknownMCPConnections means the workspace already has as many
+	// live connections of clients Wappie has not tested, tokens included, as
+	// it is allowed.
+	ErrTooManyUnknownMCPConnections = errors.New("store: too many live mcp connections of untested clients")
 )
 
-// maxLiveMCPConnections caps pending and active connections per workspace.
-// Five is room for a couple of assistants and a retry, not for a fleet.
-const maxLiveMCPConnections = 5
+// maxLiveMCPConnections caps live connections per workspace, tokens
+// included and AI authorizations not: room for a few assistants, a token or
+// two and a retry, not for a fleet (docs/mcp-enclave.md §19.20, D12).
+const maxLiveMCPConnections = 10
+
+// maxUnknownMCPConnections caps, within it, the live connections of clients
+// Wappie has not tested and the console tokens together: the enclave's
+// UNKNOWN_LIVE_MAX, which it counts over its own records too.
+const maxUnknownMCPConnections = 3
 
 // maxProvisionalKeyLifetime is how far out the deadline of a key may be for
 // a consent to bind it. The console mints the key twenty minutes before the
@@ -103,6 +114,35 @@ type MCPConnection struct {
 	// SendChats counts the chats on direct send's list that were not
 	// removed (S3).
 	SendChats int
+	// The client, as the reader described it (docs/mcp-enclave.md §19.20):
+	// ClientKind is ClientLegacy, ClientCIMD, ClientDCR, ClientToken or
+	// ClientAI; ClientID a CIMD URL or empty; ClientHost the verified host,
+	// empty for legacy rows and tokens; Trust TrustTested, TrustUnknown or
+	// empty for a row written before 0046 (Legacy, never Tested) and for AI;
+	// ClaimedName what the client called itself, empty for none;
+	// HistoryDays the window an unknown client or a token may read, 0 for
+	// all of it.
+	ClientKind, ClientID, ClientHost string
+	ClientLocal                      bool
+	Trust, ClaimedName               string
+	HistoryDays                      int
+	// FirstUsedAt is the first status check that answered active.
+	FirstUsedAt *time.Time
+	// CreatedByEmail is the address of the person who consented, when the
+	// lister may still see it; empty otherwise. Seen says the lister marked
+	// the connection seen. Both are List's only.
+	CreatedByEmail string
+	Seen           bool
+	// BudgetHits are the reading limits the reader said the connection
+	// reached, each with when it last did, by code; List's only.
+	BudgetHits []BudgetHit
+}
+
+// BudgetHit is a reading limit a connection reached (docs/mcp-enclave.md
+// §19.19): its budget_hit code, and when the reader last said so.
+type BudgetHit struct {
+	Code string    `json:"code"`
+	At   time.Time `json:"at"`
 }
 
 // Connection kinds. A metadata connection reads through a key with no
@@ -119,12 +159,16 @@ const (
 	// ContentConsentVersion is the consent text a content connection was
 	// given under before attachments, MediaConsentVersion the one that
 	// followed it, the first that can include them, and
-	// SendConsentVersion the one with sending: the only one that carries
-	// it, and it only with sending. A content connection is given under
-	// one of the three, and keeps it for its whole life.
+	// SendConsentVersion the one with sending, which it always carries.
+	// ClientConsentVersion is reader 0.6.0's (docs/mcp-enclave.md §19.15):
+	// the client binding and the "I started this" tick on every consent,
+	// sending optional and for a tested web client only. A content
+	// connection is given under one of the four, and keeps it for its whole
+	// life.
 	ContentConsentVersion = 1
 	MediaConsentVersion   = 2
 	SendConsentVersion    = 3
+	ClientConsentVersion  = 4
 	// maxContentLifetime bounds a content consent: ninety days, plus an hour
 	// for the console's clock and the moment it took to click.
 	maxContentLifetime = 90*24*time.Hour + time.Hour
@@ -198,6 +242,14 @@ type CreateMCPConnection struct {
 	// AIConfig is an AI authorization's configuration (KindAI only): its
 	// numbers are the key's, and its keychain items the actor's.
 	AIConfig *AIConfig
+	// The client (docs/mcp-enclave.md §19.20), from the reader's descriptor:
+	// ClientKind empty is ClientLegacy, or ClientAI for an AI
+	// authorization; Trust empty is TrustTested for a legacy row and
+	// nothing for AI. See checkClient for what each kind carries.
+	ClientKind, ClientID, ClientHost string
+	ClientLocal                      bool
+	Trust, ClaimedName               string
+	HistoryDays                      int
 }
 
 // Create records a consent and promotes its key from the provisional deadline
@@ -262,6 +314,12 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 	case content && in.ExpiresAt.After(time.Now().Add(maxContentLifetime)):
 		return MCPConnection{}, ErrInvalidExpiry
 	}
+	if err := checkClient(&in); err != nil {
+		return MCPConnection{}, err
+	}
+	if in.ExpiresAt.After(time.Now().Add(MaxLifetime(in.Kind, LimitsTier(in.Trust, in.ClientLocal, in.ClientKind)))) {
+		return MCPConnection{}, ErrInvalidExpiry
+	}
 	if ai {
 		if err := checkAIConsent(*in.AIConfig, in); err != nil {
 			return MCPConnection{}, err
@@ -272,6 +330,8 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		KeyPrefix: in.KeyPrefix, ClientName: in.ClientName, RedirectHost: in.RedirectHost,
 		DeviceCount: in.DeviceCount, ReaderKID: in.ReaderKID, Status: statusPending, ExpiresAt: in.ExpiresAt,
 		Reader: in.Reader, ReaderMeasurement: in.ReaderMeasurement, Kind: in.Kind,
+		ClientKind: in.ClientKind, ClientID: in.ClientID, ClientHost: in.ClientHost, ClientLocal: in.ClientLocal,
+		Trust: in.Trust, ClaimedName: in.ClaimedName, HistoryDays: in.HistoryDays,
 	}
 	if content {
 		service := in.ServiceUserID
@@ -329,13 +389,18 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 			// UPDATE for the rest of the transaction: two consents on one
 			// workspace run one after the other, whoever the actors are.
 			// AI authorizations are not assistants and are not counted.
-			var live int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM mcp_connections
-				WHERE tenant_id=$1 AND kind <> 'ai' AND status IN ('pending','active','reseal') AND expires_at > now()`, tenant).Scan(&live); err != nil {
+			// The untested clients and the tokens are counted again on
+			// their own, within the same lock.
+			var live, unknown int
+			if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE trust = 'unknown') FROM mcp_connections
+				WHERE tenant_id=$1 AND kind <> 'ai' AND status IN ('pending','active','reseal') AND expires_at > now()`, tenant).Scan(&live, &unknown); err != nil {
 				return err
 			}
 			if live >= maxLiveMCPConnections {
 				return ErrTooManyMCPConnections
+			}
+			if in.Trust == TrustUnknown && unknown >= maxUnknownMCPConnections {
+				return ErrTooManyUnknownMCPConnections
 			}
 		}
 		var service *uuid.UUID
@@ -344,13 +409,19 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		if content {
 			service, keyMode, consentVersion = &in.ServiceUserID, &in.KeyMode, &in.ConsentVersion
 		}
+		// client_kind and trust are always written, AI rows included:
+		// NULL trust is what a binary before 0046 leaves, and reads as
+		// Legacy.
 		err = tx.QueryRow(ctx, `INSERT INTO mcp_connections
 			(tenant_id, request_id, api_key_id, created_by, client_name, redirect_host, device_count, reader_kid, status, expires_at,
-			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media, send_mode, send_self, send_groups, ai_config)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($17,''),$18,$19,$20::jsonb)
+			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media, send_mode, send_self, send_groups, ai_config,
+			 client_kind, client_id, client_host, client_local, trust, claimed_name, history_days)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($17,''),$18,$19,$20::jsonb,
+			        $21,NULLIF($22,''),NULLIF($23,''),$24,NULLIF($25,''),NULLIF($26,''),NULLIF($27,0))
 			RETURNING id::text, created_at`,
 			tenant, in.RequestID, out.APIKeyID, actor, in.ClientName, in.RedirectHost, in.DeviceCount, in.ReaderKID, in.ExpiresAt,
-			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media, in.SendMode, in.SendSelf, in.SendGroups, aiConfig).
+			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media, in.SendMode, in.SendSelf, in.SendGroups, aiConfig,
+			in.ClientKind, in.ClientID, in.ClientHost, in.ClientLocal, in.Trust, in.ClaimedName, in.HistoryDays).
 			Scan(&out.ID, &out.CreatedAt)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -388,11 +459,18 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 // archive", exactly like a revoked key. AI authorizations are not
 // assistants' connections: AIAuthorizations lists them.
 func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConnection, error) {
+	return m.ListFor(ctx, tenant, uuid.Nil)
+}
+
+// ListFor is List as viewer sees it: each row says whether viewer marked it
+// seen (docs/mcp-enclave.md §19.22).
+func (m *MCPConnections) ListFor(ctx context.Context, tenant, viewer uuid.UUID) ([]MCPConnection, error) {
 	out := []MCPConnection{}
 	// Neither mcp_connections nor api_keys carries a row-level policy, so the
 	// WHERE is the whole of their isolation, as it is for api_keys. The
-	// count of direct send's chats is under one, hence the tenant
-	// transaction: outside it the count would read zero, silently.
+	// count of direct send's chats, the seen marks and the consenting
+	// person's address are under one, hence the tenant transaction: outside
+	// it they would read zero, false and empty, silently.
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT c.id::text, c.tenant_id::text, c.request_id, c.api_key_id, c.created_by, k.prefix,
@@ -401,23 +479,37 @@ func (m *MCPConnections) List(ctx context.Context, tenant uuid.UUID) ([]MCPConne
 			       c.reader, coalesce(c.reader_measurement, ''), c.kind, c.service_user_id, coalesce(c.key_mode, ''),
 			       coalesce(c.revoke_reason, ''), c.resealed_at, c.renewed_at, coalesce(c.consent_version, 0), c.media,
 			       coalesce(c.send_mode, ''), c.send_self, c.send_groups, c.send_paused_at,
-			       (SELECT count(*) FROM mcp_send_chats s WHERE s.connection_id = c.id AND s.removed_at IS NULL)
+			       (SELECT count(*) FROM mcp_send_chats s WHERE s.connection_id = c.id AND s.removed_at IS NULL),
+			       c.client_kind, coalesce(c.client_id, ''), coalesce(c.client_host, ''), c.client_local,
+			       coalesce(c.trust, ''), coalesce(c.claimed_name, ''), coalesce(c.history_days, 0), c.first_used_at,
+			       coalesce(u.email, ''),
+			       EXISTS(SELECT 1 FROM mcp_connection_seen v WHERE v.connection_id = c.id AND v.user_id = $2),
+			       (SELECT coalesce(json_agg(json_build_object('code', n.event, 'at', n.last_at) ORDER BY n.event), '[]')
+			          FROM mcp_connection_notices n WHERE n.connection_id = c.id AND n.event <> 'activated')
 			  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
+			  LEFT JOIN users u ON u.id = c.created_by
 			 WHERE c.tenant_id = $1 AND c.kind <> 'ai'
-			 ORDER BY c.created_at DESC, c.id DESC`, tenant)
+			 ORDER BY c.created_at DESC, c.id DESC`, tenant, viewer)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var c MCPConnection
+			var hits []byte
 			if err := rows.Scan(&c.ID, &c.TenantID, &c.RequestID, &c.APIKeyID, &c.CreatedBy, &c.KeyPrefix,
 				&c.ClientName, &c.RedirectHost, &c.DeviceCount, &c.ReaderKID, &c.Status,
 				&c.CreatedAt, &c.ActivatedAt, &c.RevokedAt, &c.LastSeenAt, &c.ExpiresAt,
 				&c.Reader, &c.ReaderMeasurement, &c.Kind, &c.ServiceUserID, &c.KeyMode,
 				&c.RevokeReason, &c.ResealedAt, &c.RenewedAt, &c.ConsentVersion, &c.Media,
-				&c.SendMode, &c.SendSelf, &c.SendGroups, &c.SendPausedAt, &c.SendChats); err != nil {
+				&c.SendMode, &c.SendSelf, &c.SendGroups, &c.SendPausedAt, &c.SendChats,
+				&c.ClientKind, &c.ClientID, &c.ClientHost, &c.ClientLocal,
+				&c.Trust, &c.ClaimedName, &c.HistoryDays, &c.FirstUsedAt,
+				&c.CreatedByEmail, &c.Seen, &hits); err != nil {
 				return err
+			}
+			if err := json.Unmarshal(hits, &c.BudgetHits); err != nil {
+				return fmt.Errorf("store: a connection's budget hits: %w", err)
 			}
 			out = append(out, c)
 		}
