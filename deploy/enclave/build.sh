@@ -133,16 +133,24 @@ out=${out:-$root/dist/reader-$version}
 [ ! -e "$out" ] || die "$out exists; keep each release's output, choose another --out"
 mkdir -p "$out"
 
-# The dependency manifest (§16.12 "Parser CVEs"): the reader's and the
-# attachment workers' npm locks as built, each package with its version and
-# integrity, and the sha256 of every tarball the worker lock takes from
-# outside the npm registry (SheetJS, from its CDN), fetched here and checked
-# against the lock's own integrity first.
-python3 - "$context" "$context/dependencies.json" <<'PY'
-import base64, hashlib, json, pathlib, sys, urllib.request
+# The dependency manifest (§16.12 "Parser CVEs"): every npm lock the image is
+# installed from, as built (the client's, whose dependencies include the
+# shared kit, mcp's, mcp-http's, the reader's and the attachment workers'),
+# each package with its version and integrity, and the sha256 of every
+# tarball a lock takes from outside the npm registry (the kit, a release
+# asset of github.com/thehappieco/kit; SheetJS, from its CDN), fetched here
+# and checked against the lock's own integrity first. Each such tarball is
+# also kept, as $out/tarballs/<name>, and published on the reader release
+# (docs/mcp-enclave.md §9): a third party rebuilding this image then needs
+# nothing beyond Wappie's release. Links between these packages
+# (file:../client) are recorded, not fetched.
+python3 - "$context" "$context/dependencies.json" "$out/tarballs" <<'PY'
+import base64, hashlib, json, pathlib, re, sys, urllib.request
 
-context, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-LOCKS = ("packages/mcp-http/enclave/package-lock.json", "packages/mcp-http/enclave/media/worker/package-lock.json")
+context, target, mirror = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+mirror.mkdir(parents=True, exist_ok=True)
+LOCKS = ("packages/client/package-lock.json", "packages/mcp/package-lock.json", "packages/mcp-http/package-lock.json",
+         "packages/mcp-http/enclave/package-lock.json", "packages/mcp-http/enclave/media/worker/package-lock.json")
 REGISTRY = "https://registry.npmjs.org/"
 locks, tarballs = [], []
 for name in LOCKS:
@@ -155,7 +163,7 @@ for name in LOCKS:
         packages.append({"path": path, "version": entry.get("version"), "resolved": entry.get("resolved"),
                          "integrity": entry.get("integrity")})
         url = entry.get("resolved") or ""
-        if url and not url.startswith(REGISTRY):
+        if url and not entry.get("link") and not url.startswith(REGISTRY):
             if not url.startswith("https://") or not entry.get("integrity"):
                 sys.exit(f"build.sh: {name}: {path} comes from {url!r} without https and an integrity")
             # The CDN refuses urllib's default User-Agent.
@@ -165,8 +173,17 @@ for name in LOCKS:
             algorithm, _, expected = entry["integrity"].split()[0].partition("-")
             if base64.b64encode(hashlib.new(algorithm, data).digest()).decode() != expected:
                 sys.exit(f"build.sh: {url} does not match its {algorithm} integrity in {name}")
+            # Kept only after the check, under the name the URL gives it.
+            file = url.rsplit("/", 1)[-1]
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.tgz", file):
+                sys.exit(f"build.sh: {url} does not end in a tarball name")
+            kept = mirror / file
+            if kept.exists() and kept.read_bytes() != data:
+                sys.exit(f"build.sh: two different tarballs are both named {file}")
+            kept.write_bytes(data)
             tarballs.append({"package": path.rsplit("node_modules/", 1)[-1], "version": entry.get("version"), "url": url,
-                             "integrity": entry["integrity"], "sha256": hashlib.sha256(data).hexdigest()})
+                             "integrity": entry["integrity"], "sha256": hashlib.sha256(data).hexdigest(),
+                             "file": f"tarballs/{file}"})
     locks.append({"file": name, "sha256": hashlib.sha256(raw).hexdigest(), "packages": packages})
 target.write_text(json.dumps({"locks": locks, "tarballs": tarballs}))
 PY
@@ -269,7 +286,7 @@ measurements = {
 }
 (out / "measurements.json").write_text(json.dumps(measurements, indent=2) + "\n")
 PY
-(cd "$out" && sha256sum -- *.json "$eif" > SHA256SUMS)
+(cd "$out" && sha256sum -- *.json "$eif" tarballs/*.tgz > SHA256SUMS)
 
 echo "reader $version from $commit"
 echo "  PCR0 $pcr0"
