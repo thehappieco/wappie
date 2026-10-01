@@ -214,3 +214,56 @@ test('restarts, expiry, Go\'s revocation and the unclaimed sweep (§19.18): meta
   w.skew += 2 * DAY
   assert.equal((await rpc(w, text.bearer)).status, 401)
 })
+
+test('a text token\'s version-4 renewal (§19.16): the same bearer reads again once Go swaps; a renewal carrying the hash or the networks, or changing the window, is refused', async t => {
+  const { w, e } = await tokenWorld(t)
+  const text = await installToken(w, { kind: 'content', networks: ['203.0.113.0/24'] })
+  assert.equal(text.relayed.status, 204, text.relayed.body)
+  const source = { source: '203.0.113.9' }
+  const before = e.state.connections.get(text.connectionId)
+  const family = before.family_id
+  await e.close()
+  const again = await w.start()
+  const call = () => w.public('/mcp', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${text.bearer}` },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_numbers', arguments: {} } }), ...source })
+  assert.match((await call()).body, /reconsent_required/)
+  const renew = async (fields = {}) => {
+    const prepared = await w.internal(`/internal/connections/${text.connectionId}/renewal`, { method: 'POST', body: { nonce: randomBytes(32).toString('base64url') } })
+    assert.equal(prepared.status, 200, prepared.body)
+    const renewal = JSON.parse(prepared.body)
+    const service = randomUUID(), token = newApiKey()
+    await contentGrants(w, renewal.reader_public_key, { service, token })
+    const connection = w.go.connections.get(text.connectionId)
+    const bundle = { version: 2, kind: 'content', purpose: 'renewal', server_url: ORIGIN, workspace_id: workspace, service_user_id: service, device_ids: [vector.device], token,
+      key_mode: 'ephemeral', consent_version: 4, expires_at: connection.expires_at, connection_id: text.connectionId,
+      client_id: CONSOLE_TOKEN_CLIENT_ID, client_kind: 'token', client_local: false, trust: 'unknown', started_ack: true, unknown_ack: true, history_days: 30, ...fields }
+    for (const name of Object.keys(bundle)) if (bundle[name] === undefined) delete bundle[name]
+    bundle.device_checks = deviceChecks(bundle, { request: renewal.renewal_id, kid: renewal.kid })
+    const labels = { info: 'wappie-mcp-renew/v1', aad: JSON.stringify(['wappie/mcp-renew', 1, renewal.renewal_id, text.connectionId, renewal.kid, RESOURCE]) }
+    const { sealed } = await sealContent(renewal.reader_public_key, bundle, labels)
+    const relayed = await w.internal(`/internal/connections/${text.connectionId}/renewal/${renewal.renewal_id}/bundle`, { method: 'POST', body: {
+      connection_id: text.connectionId, tenant_id: workspace, kid: renewal.kid, sealed, expires_at: connection.expires_at, kind: 'content' } })
+    return { renewal, service, relayed }
+  }
+  for (const [label, fields] of [
+    ['the bearer\'s hash', { bearer_sha256: sha256(text.bearer) }], ['the allowed networks', { allowed_networks: [] }],
+    ['another window', { history_days: 7 }], ['text without the second tick', { unknown_ack: false }],
+  ]) {
+    const refused = await renew(fields)
+    assert.deepEqual([refused.relayed.status, JSON.parse(refused.relayed.body).code], [400, 'invalid_bundle'], label)
+  }
+  const renewed = await renew()
+  assert.deepEqual([renewed.renewal.client_kind, renewed.renewal.limits_tier, 'bearer_sha256' in renewed.renewal, 'allowed_networks' in renewed.renewal], ['token', 'token', false, false])
+  assert.equal(renewed.relayed.status, 204, renewed.relayed.body)
+  // Go swaps, and the next call with the same bearer commits: the token keeps its hash, family and networks.
+  const connection = w.go.connections.get(text.connectionId)
+  connection.service_user_id = renewed.service
+  connection.status = 'active'
+  const answer = await call()
+  assert.equal(answer.status, 200, answer.body)
+  assert.doesNotMatch(answer.body, /reconsent_required|isError":true/)
+  const record = again.state.connections.get(text.connectionId)
+  assert.deepEqual([record.client_kind, record.limits_tier, record.family_id, record.allowed_networks, record.history_days], ['token', 'token', family, ['203.0.113.0/24'], 30])
+  assert.equal([...again.state.tokens.values()].filter(item => item.kind === 'key' && item.connection_id === text.connectionId && item.hash === sha256(text.bearer)).length, 1)
+  assert.equal((await w.public('/mcp', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${text.bearer}` }, body: '{}', source: '198.51.100.7' })).status, 401, 'still bound to its networks')
+})

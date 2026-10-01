@@ -139,14 +139,18 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
             return bearerAuthChallengeResponse(new OAuthError(OAuthErrorCode.InvalidToken, 'This token is not allowed from this network'),
               { requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
           }
+          const body = await request.clone().json().catch(() => null)
           // The parent sees response sizes: a media connection's are padded to
           // buckets, all but a subscriptions/listen stream, which never ends.
-          const pads = content?.padResponse && connection?.media === true &&
-            !(await request.clone().json().then(body => body?.method === 'subscriptions/listen', () => false))
+          const pads = content?.padResponse && connection?.media === true && body?.method !== 'subscriptions/listen'
           const padded = response => (pads ? content.padResponse(response) : response)
-          // The calls a minute of the connection's tier (§19.19), 60 for a tested client as before.
+          // The calls a minute of the connection's tier (§19.19), 60 for a tested client as before. A
+          // JSON-RPC batch (MCP before 2025-06-18) runs its elements at once, so each takes one call: a
+          // batch is never a way past the rate, and one larger than a minute's calls is refused whole.
           const perMinute = clientLimits?.[tierOf(connection)]?.calls_per_minute ?? MCP_PER_MINUTE
-          const taken = limiter.take('mcp', auth.extra.connection_id, perMinute)
+          const calls = Array.isArray(body) ? Math.max(1, body.length) : 1
+          if (calls > perMinute) { meta.code = 'batch_too_large'; return padded(rpcError(400, 'Too many calls in one batch.')) }
+          const taken = limiter.take('mcp', auth.extra.connection_id, perMinute, calls)
           if (!taken.ok) { meta.code = 'rate_limited'; return padded(rpcError(429, 'Too many requests.', { 'Retry-After': String(taken.retryAfter) })) }
           return padded(await handler.fetch(request, { authInfo: auth }))
         }

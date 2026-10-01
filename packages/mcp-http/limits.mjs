@@ -65,16 +65,20 @@ export function createLimiter(now = Date.now) {
     for (const [key, bucket] of buckets) if (bucket.tokens + (at - bucket.updated) * bucket.rate >= bucket.capacity) buckets.delete(key)
   }
   return {
-    /** Takes one token from `name:key`; on refusal reports the seconds until one is back. */
-    take(name, key, perMinute) {
+    /**
+     * Takes `count` tokens (one by default, never more than `perMinute`) from
+     * `name:key`, all or none; on refusal reports the seconds until they are back.
+     */
+    take(name, key, perMinute, count = 1) {
       sweep()
       const at = now(), id = `${name}:${key}`
       let bucket = buckets.get(id)
       if (!bucket) { bucket = { capacity: perMinute, rate: perMinute / 60_000, tokens: perMinute, updated: at }; buckets.set(id, bucket) }
       bucket.tokens = Math.min(bucket.capacity, bucket.tokens + Math.max(0, at - bucket.updated) * bucket.rate)
       bucket.updated = at
-      if (bucket.tokens >= 1) { bucket.tokens -= 1; return { ok: true } }
-      return { ok: false, retryAfter: Math.max(1, Math.ceil((1 - bucket.tokens) / bucket.rate / 1000)) }
+      const need = Math.min(Math.max(1, count), bucket.capacity)
+      if (bucket.tokens >= need) { bucket.tokens -= need; return { ok: true } }
+      return { ok: false, retryAfter: Math.max(1, Math.ceil((need - bucket.tokens) / bucket.rate / 1000)) }
     },
     size: () => buckets.size,
   }

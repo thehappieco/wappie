@@ -6,7 +6,8 @@
 // checks the host, resolves it once and dials only public addresses), then TLS
 // 1.2 or later with SNI the client's host, verified here against Node's
 // bundled root store (part of the measured image) with the hostname checked,
-// then one HTTP/1.1 `GET` with `Accept` and `User-Agent` and nothing else a
+// then one HTTP/1.1 `GET` with exactly `Host`, `Accept: application/json`,
+// `User-Agent: wappie-cimd/1` and `Connection: close`, and nothing else a
 // server could tie to a person: no cookies, no credentials. Only a 200 with an
 // `application/json` body of at most 8 KiB is a document; a redirect is never
 // followed. The headers must come within 3 s of the request, the body within
@@ -104,7 +105,7 @@ function get({ tls, host, path, signal, headersMs, bodyMs }) {
     // header is the client's host alone, as on port 443 it must be.
     const req = httpRequest({
       host, path, method: 'GET', createConnection: () => tls, setHost: false, maxHeaderSize: HEADERS_MAX, insecureHTTPParser: false,
-      headers: { Host: host, Accept: 'application/json', 'User-Agent': CIMD_USER_AGENT },
+      headers: { Host: host, Accept: 'application/json', 'User-Agent': CIMD_USER_AGENT, Connection: 'close' },
     })
     timer = setTimeout(() => done(new FetchFailure('timeout', true)), headersMs)
     req.once('error', error => done(error instanceof FetchFailure ? error : new FetchFailure(error?.code === 'HPE_HEADER_OVERFLOW' ? 'too_large' : 'status')))

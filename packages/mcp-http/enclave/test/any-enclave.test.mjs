@@ -290,8 +290,10 @@ test('the network check (§19.12) in the enclave: the PROXY v2 source of the com
   assert.equal(refused.status, 400)
   assert.match(refused.body, /ip_mismatch/)
   assert.equal(w.go.connections.get(connectionId).status, 'revoked')
-  const line = w.lines.map(entry => JSON.parse(entry)).findLast(entry => entry.route === 'POST /mcp/authorize/complete')
-  assert.equal(line.ip_mismatch, true)
+  // The request line is written once the response has gone, so it may follow the answer by a moment.
+  const refusedLine = () => w.lines.map(entry => JSON.parse(entry)).find(entry => entry.route === 'POST /mcp/authorize/complete' && entry.code === 'ip_mismatch')
+  for (let n = 0; n < 100 && !refusedLine(); n++) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(refusedLine()?.ip_mismatch, true)
 })
 
 test('the version-4 renewal (§19.16): an unknown text connection renews with its own client, tier and window under fresh checks; a version-3 bundle and a changed window are refused', async t => {
@@ -372,6 +374,45 @@ test('reading limits in the enclave (§19.19): the tier\'s first-hour budget ans
   const statuses = []
   for (let n = 0; n < 21; n++) statuses.push((await rpc(w, unknown.tokens.access_token)).status)
   assert.deepEqual([statuses.slice(0, 20).every(status => status === 200), statuses[20]], [true, 429], '20 calls a minute, then 429')
+})
+
+test('reading limits under concurrency (§19.19): a JSON-RPC batch takes one call a minute per element and its tool calls cannot all pass one check; a batch larger than a minute is refused whole', async t => {
+  const limits = structuredClone(CLIENT_LIMITS)
+  limits.web_tested.first_hour = { messages: 2, attachments: 1 }
+  const { w } = await anyWorld(t, { constants: { CLIENT_LIMITS: limits } })
+  const done = await consentMetadata(w, await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT }))
+  assert.equal(done.completed.status, 302)
+  const call = id => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'list_messages', arguments: { device_id: vector.device, chat_key: '5511999990000@s.whatsapp.net' } } })
+  // Eight calls in one POST, all run at once: two start under the limit (one message each), six are refused.
+  const batch = await rpc(w, done.tokens.access_token, Array.from({ length: 8 }, (_, n) => call(n + 1)))
+  assert.equal(batch.status, 200, batch.body)
+  const answers = batch.body.startsWith('event:')
+    ? batch.body.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).flat()
+    : JSON.parse(batch.body)
+  assert.equal(answers.length, 8)
+  const texts = answers.map(answer => answer.result.content[0].text)
+  assert.equal(texts.filter(text => !text.startsWith('Could not read')).length, 2, texts.join('\n'))
+  assert.equal(texts.filter(text => text.startsWith('Could not read the archive (limit_reached)')).length, 6)
+  assert.deepEqual(w.go.budgetHits, [{ id: done.connectionId, code: 'first_hour_messages' }])
+  // Calls sent at once in separate requests are held the same way.
+  const again = await consentMetadata(w, await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT }))
+  const parallel = await Promise.all(Array.from({ length: 6 }, () => callTool(w, again.tokens.access_token, 'list_messages', { device_id: vector.device, chat_key: '5511999990000@s.whatsapp.net' })))
+  assert.equal(parallel.filter(result => !result.isError).length, 2, parallel.map(result => result.text).join('\n'))
+  // The batch took eight of the minute's 60 calls: 52 more pass, then 429.
+  const statuses = []
+  for (let n = 0; n < 53; n++) statuses.push((await rpc(w, done.tokens.access_token)).status)
+  assert.deepEqual([statuses.slice(0, 52).every(status => status === 200), statuses[52]], [true, 429])
+  // An untested client's 20 a minute: a batch of 21 is refused whole and takes nothing; one of 20 takes them all.
+  const unknown = await consentMetadata(w, await authorize(w, { clientId: AGENT, redirectUri: AGENT_REDIRECT }))
+  const list = n => Array.from({ length: n }, (_, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'tools/list', params: {} }))
+  const large = await rpc(w, unknown.tokens.access_token, list(21))
+  assert.deepEqual([large.status, JSON.parse(large.body).error.message], [400, 'Too many calls in one batch.'])
+  assert.equal((await rpc(w, unknown.tokens.access_token, list(20))).status, 200)
+  assert.equal((await rpc(w, unknown.tokens.access_token)).status, 429)
+  // Each request's line is written once its response has gone: the last one may follow by a moment.
+  const codes = () => w.lines.map(line => JSON.parse(line)).filter(entry => entry.route === 'POST /mcp').map(entry => entry.code).filter(Boolean)
+  for (let n = 0; n < 100 && !codes().includes('rate_limited'); n++) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.ok(codes().includes('batch_too_large') && codes().includes('rate_limited'), JSON.stringify(codes()))
 })
 
 test('the attested live list (§19.22): the workspace\'s live ids sorted, AI records left out, the console\'s nonce, user_data v2 and no public key', async t => {
@@ -489,4 +530,54 @@ test('the version-4 renewal of a tested web client with drafts (§19.16): the se
   assertAttestedWhole(renewal)
   const accepted = await renewWith(renewal)
   assert.equal(accepted.status, 204, accepted.body)
+})
+
+test('the version-4 renewal of a tested local app (§19.16): a Codex loopback text connection renews as the app it is; a bundle adding drafts or changing the client is refused', async t => {
+  const { w, e } = await anyWorld(t)
+  const started = await authorize(w, { clientId: CODEX, redirectUri: 'http://127.0.0.1:49152/callback' })
+  assert.deepEqual([started.prepared.trust, started.prepared.client_local, started.prepared.limits_tier, started.prepared.tested_id], ['tested', true, 'local_tested', 'codex'])
+  const done = await consentContent(w, started)
+  assert.equal(done.completed?.status, 302, done.relayed.body)
+  await e.close()
+  const again = await w.start()
+  assert.match((await callTool(w, done.tokens.access_token, 'list_numbers')).text, /reconsent_required/)
+  const renew = async (fields = {}) => {
+    const prepared = await w.internal(`/internal/connections/${done.connectionId}/renewal`, { method: 'POST', body: { nonce: randomBytes(32).toString('base64url') } })
+    assert.equal(prepared.status, 200, prepared.body)
+    const renewal = JSON.parse(prepared.body)
+    const service = randomUUID(), token = newApiKey()
+    await contentGrants(w, renewal.reader_public_key, { service, token })
+    const connection = w.go.connections.get(done.connectionId)
+    const bundle = { version: 2, kind: 'content', purpose: 'renewal', server_url: ORIGIN, workspace_id: workspace, service_user_id: service, device_ids: [vector.device], token,
+      key_mode: 'ephemeral', consent_version: 4, expires_at: connection.expires_at, connection_id: done.connectionId,
+      client_id: CODEX, client_kind: 'cimd', client_local: true, trust: 'tested', started_ack: true, unknown_ack: false, history_days: null, ...fields }
+    for (const name of Object.keys(bundle)) if (bundle[name] === undefined) delete bundle[name]
+    bundle.device_checks = deviceChecks(bundle, { request: renewal.renewal_id, kid: renewal.kid })
+    const { sealed } = await sealContent(renewal.reader_public_key, bundle, renewLabels(renewal.renewal_id, done.connectionId, renewal.kid))
+    const relayed = await w.internal(`/internal/connections/${done.connectionId}/renewal/${renewal.renewal_id}/bundle`, { method: 'POST', body: {
+      connection_id: done.connectionId, tenant_id: workspace, kid: renewal.kid, sealed, expires_at: connection.expires_at, kind: 'content' } })
+    return { renewal, service, relayed }
+  }
+  for (const [label, fields] of [
+    ['drafts on a local app', { send: 'draft' }], ['a web client', { client_local: false }], ['another app', { client_id: 'https://claude.ai/oauth/claude-code-client-metadata' }],
+    ['a window it never had', { history_days: 30 }],
+  ]) {
+    const refused = await renew(fields)
+    assert.equal(refused.relayed.status, 400, label)
+    assert.equal(JSON.parse(refused.relayed.body).code, 'invalid_bundle', label)
+  }
+  const renewed = await renew()
+  const r = renewed.renewal
+  assert.deepEqual([r.kind, r.consent_version, r.client_kind, r.client_id, r.tested_id, r.client_local, r.client_name, r.trust, r.limits_tier, r.history_days],
+    ['renewal', 4, 'cimd', CODEX, 'codex', true, 'Codex', 'tested', 'local_tested', null])
+  assert.deepEqual(r.limits, CLIENT_LIMITS.local_tested)
+  assertAttestedWhole(r)
+  assert.equal(renewed.relayed.status, 204, renewed.relayed.body)
+  const connection = w.go.connections.get(done.connectionId)
+  connection.service_user_id = renewed.service
+  connection.status = 'active'
+  const numbers = await callTool(w, done.tokens.access_token, 'list_numbers')
+  assert.equal(numbers.isError, false, numbers.text)
+  const record = again.state.connections.get(done.connectionId)
+  assert.deepEqual([record.client_local, record.trust, record.limits_tier, record.tested_id, record.send ?? null], [true, 'tested', 'local_tested', 'codex', null])
 })

@@ -138,8 +138,10 @@ const limitSentence = error => `This connection reached its reading limit for no
  * counted; open_attachment counts attachments, on its own.
  */
 const countedMessages = {
-  list_messages: data => data.messages.length, search_messages: data => (Array.isArray(data.messages) ? data.messages.length : 0),
-  get_message: () => 1, list_revisions: data => data.revisions.length,
+  list_messages: { count: data => data.messages.length, most: input => input.limit },
+  search_messages: { count: data => (Array.isArray(data.messages) ? data.messages.length : 0), most: input => input.limit },
+  get_message: { count: () => 1, most: () => 1 },
+  list_revisions: { count: data => data.revisions.length, most: input => input.limit },
 }
 /**
  * Refusals that are the answer about this attachment (reader 0.4.2, §16.7):
@@ -420,24 +422,28 @@ export function createServer(config, provider, { iconOrigin } = {}) {
   }
   /**
    * A tool. On a connection with reading limits (`provider.limits`,
-   * §19.19), a tool that returns messages is checked before it runs and
-   * counted once it has: a call that starts under the limit is served whole.
+   * §19.19), a tool that returns messages reserves the most it can return
+   * before it runs and is counted once it has: a call that starts under the
+   * limit is served whole, and a failed one frees its reservation uncounted.
    */
   function tool(name, description, schema, method) {
     server.registerTool(name, { title: titles[name], description, inputSchema: schema, annotations: { ...annotations, title: titles[name] } }, async input => {
+      let ticket = null
       try {
         const counted = provider?.limits && countedMessages[name]
-        if (counted) provider.limits.before('messages')
+        if (counted) ticket = await provider.limits.reserve('messages', counted.most(input))
         const reader = await createReader(config, provider)
         const data = await reader[method](input)
         const text = JSON.stringify(data)
         if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new ArchiveError('result_too_large')
-        if (counted) provider.limits.count('messages', counted(data))
+        ticket?.settle(counted.count(data))
         return { content: [{ type: 'text', text }], structuredContent: data }
       } catch (error) {
         const code = codeOf(error)
         const guidance = code === 'limit_reached' ? limitSentence(error) : code === 'outside_window' ? WINDOW_SENTENCE : await guidanceFor(code)
         return { isError: true, content: [{ type: 'text', text: `Could not read the archive (${code}). ${guidance}` }] }
+      } finally {
+        ticket?.release()
       }
     })
   }
@@ -458,12 +464,13 @@ export function createServer(config, provider, { iconOrigin } = {}) {
       images: z.boolean().default(true)
         .describe('false returns text only.'),
     }) }, async input => {
+      let ticket = null
       try {
         const reader = await createReader(config, provider)
-        // The reading limits (§19.19): checked before, counted when content comes back (a pending answer has none).
-        provider.limits?.before('attachments')
+        // The reading limits (§19.19): reserved before, counted when content comes back (a pending answer has none).
+        ticket = (await provider.limits?.reserve('attachments', 1)) ?? null
         const result = await reader.openAttachment(input)
-        if (result.header?.status !== 'pending') provider.limits?.count('attachments', 1)
+        ticket?.settle(result.header?.status !== 'pending' ? 1 : 0)
         // The host profile (§19.23): the tested entry's, `default` for any other client; 0.5.0's media.host before it.
         return attachmentAnswer(result, input, { profile: provider.media.profile ?? provider.media.host, maxBytes: provider.media.resultMaxBytes, consoleURL: provider.media.consoleURL })
       } catch (error) {
@@ -481,6 +488,8 @@ export function createServer(config, provider, { iconOrigin } = {}) {
         const link = consoleLink(facts.open_url, provider.media.consoleURL)
         if (link) seen.open_url = link
         return { ...(answers.has(code) ? {} : { isError: true }), content: [{ type: 'text', text: `Could not open the attachment (${code}). ${guidance}\n${JSON.stringify(seen)}${link ? `\n${linkLine(link, code)}` : ''}` }] }
+      } finally {
+        ticket?.release()
       }
     })
   }

@@ -16,7 +16,7 @@
       "user_data": "41500bb32148a8d4444a741847b034c9121311db4109a7c7d9c024ba0c8193be"
     },
     {
-      "name": "no request and no descriptor (§19.13)",
+      "name": "request_id and descriptor_sha256 both empty: no route uses this form (GET /attestation keeps user_data v1, §19.13)",
       "fields": {
         "request_id": "",
         "resource": "https://mcp.wappie.thehappie.co/mcp",
@@ -111,6 +111,89 @@
       "jcs": "{\"claimed_name\":null,\"client_host\":\"claude.ai\",\"client_id\":\"https://claude.ai/oauth/mcp-oauth-client-metadata\",\"client_kind\":\"cimd\",\"client_local\":false,\"client_name\":\"Claude\",\"code_challenge\":\"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\",\"descriptor_version\":2,\"drift\":false,\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"kid\":\"0123456789abcdef\",\"kind\":\"connect\",\"limits\":{\"calls_per_minute\":60,\"ceiling_hours\":{\"content\":2161,\"metadata\":8784},\"daily\":null,\"durations_days\":{\"content\":{\"choices\":[1,30,90],\"default\":30},\"metadata\":{\"choices\":[30,90,365],\"default\":90}},\"first_hour\":null,\"history_days\":null,\"idle_days\":{\"content\":7,\"metadata\":30}},\"limits_tier\":\"web_tested\",\"name_dropped\":false,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"redirect_host\":\"claude.ai\",\"redirect_local\":false,\"redirect_uri\":\"https://claude.ai/api/mcp/auth_callback\",\"registrable\":\"claude.ai\",\"request_id\":\"Q2xhdWRlV2ViVGVzdGVkMQ\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"shared_suffix\":null,\"tested_id\":\"claude\",\"trust\":\"tested\"}",
       "descriptor_sha256": "6df62b7b84c91c9b1731c44b3caa0ec7471289806acae43caaaaf04b198dc578",
       "user_data": "df285955b3f707a4162eed4b416a8fc9176514dcd5df34d99cdd27b9f99f2286"
+    },
+    {
+      "name": "connect, tested web (Claude) on its pinned claude.com callback",
+      "kind": "connect",
+      "fields": {
+        "request_id": "Q2xhdWRlQ29tQ2FsbGJhY2",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reader_version": "0.6.0"
+      },
+      "descriptor": {
+        "descriptor_version": 2,
+        "kind": "connect",
+        "request_id": "Q2xhdWRlQ29tQ2FsbGJhY2",
+        "kid": "0123456789abcdef",
+        "reader_public_key": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+        "client_kind": "cimd",
+        "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata",
+        "tested_id": "claude",
+        "client_host": "claude.ai",
+        "registrable": "claude.ai",
+        "shared_suffix": null,
+        "client_local": false,
+        "client_name": "Claude",
+        "claimed_name": null,
+        "name_dropped": false,
+        "trust": "tested",
+        "drift": false,
+        "redirect_uri": "https://claude.com/api/mcp/auth_callback",
+        "redirect_host": "claude.com",
+        "redirect_local": false,
+        "limits_tier": "web_tested",
+        "limits": {
+          "idle_days": {
+            "metadata": 30,
+            "content": 7
+          },
+          "ceiling_hours": {
+            "metadata": 8784,
+            "content": 2161
+          },
+          "durations_days": {
+            "metadata": {
+              "choices": [
+                30,
+                90,
+                365
+              ],
+              "default": 90
+            },
+            "content": {
+              "choices": [
+                1,
+                30,
+                90
+              ],
+              "default": 30
+            }
+          },
+          "calls_per_minute": 60,
+          "history_days": null,
+          "daily": null,
+          "first_hour": null
+        },
+        "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        "resource": "https://mcp.wappie.thehappie.co/mcp",
+        "expires_at": "2026-10-01T12:20:00.000Z",
+        "attestation": {
+          "format": "aws-nitro-v1",
+          "document": "AAAA",
+          "request_id": "Q2xhdWRlQ29tQ2FsbGJhY2",
+          "resource": "https://mcp.wappie.thehappie.co/mcp",
+          "reader_id": "enclave",
+          "reader_version": "0.6.0",
+          "tls_spki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pcr0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "jcs": "{\"claimed_name\":null,\"client_host\":\"claude.ai\",\"client_id\":\"https://claude.ai/oauth/mcp-oauth-client-metadata\",\"client_kind\":\"cimd\",\"client_local\":false,\"client_name\":\"Claude\",\"code_challenge\":\"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\",\"descriptor_version\":2,\"drift\":false,\"expires_at\":\"2026-10-01T12:20:00.000Z\",\"kid\":\"0123456789abcdef\",\"kind\":\"connect\",\"limits\":{\"calls_per_minute\":60,\"ceiling_hours\":{\"content\":2161,\"metadata\":8784},\"daily\":null,\"durations_days\":{\"content\":{\"choices\":[1,30,90],\"default\":30},\"metadata\":{\"choices\":[30,90,365],\"default\":90}},\"first_hour\":null,\"history_days\":null,\"idle_days\":{\"content\":7,\"metadata\":30}},\"limits_tier\":\"web_tested\",\"name_dropped\":false,\"reader_public_key\":\"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c\",\"redirect_host\":\"claude.com\",\"redirect_local\":false,\"redirect_uri\":\"https://claude.com/api/mcp/auth_callback\",\"registrable\":\"claude.ai\",\"request_id\":\"Q2xhdWRlQ29tQ2FsbGJhY2\",\"resource\":\"https://mcp.wappie.thehappie.co/mcp\",\"shared_suffix\":null,\"tested_id\":\"claude\",\"trust\":\"tested\"}",
+      "descriptor_sha256": "5f80144a231deb0abb4238d5c0adaf128ece526df6597a14470a45b76452b0be",
+      "user_data": "5cd92b7d6626aa53054d51942179e213f1cac1b1f4ad3c9a4da8387a1167ced5"
     },
     {
       "name": "connect, unknown local app on a shared host, a claimed name",

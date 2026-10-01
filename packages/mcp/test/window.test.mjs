@@ -86,11 +86,15 @@ test('the history floor: a search\'s lower bound is clamped to it, a range wholl
   } finally { await f.close() }
 })
 
-/** A fake `provider.limits`: counts what it is told, refuses `before` once `refuse` names the kind. */
+/** A fake `provider.limits`: records each reservation and what settles it, refuses `reserve` once `refuse` names the kind. */
 function fakeLimits() {
-  const limits = { counted: [], checked: [], refuse: null,
-    before(kind) { this.checked.push(kind); if (this.refuse === kind) throw Object.assign(new ArchiveError('limit_reached', 429), { reset_at: '2026-09-21T00:00:00Z' }) },
-    count(kind, n) { this.counted.push([kind, n]) } }
+  const limits = { counted: [], checked: [], most: [], released: 0, refuse: null,
+    async reserve(kind, most) {
+      this.checked.push(kind); this.most.push(most)
+      if (this.refuse === kind) throw Object.assign(new ArchiveError('limit_reached', 429), { reset_at: '2026-09-21T00:00:00Z' })
+      let open = true
+      return { settle: n => { if (open) { open = false; if (n > 0) limits.counted.push([kind, n]) } }, release: () => { if (open) { open = false; limits.released++ } } }
+    } }
   return limits
 }
 async function connect(config, provider) {
@@ -115,7 +119,13 @@ test('reading limits: the tools that return messages are checked first and count
     await call(client, 'list_chats', { device_id: vector.device })
     await call(client, 'list_numbers', {})
     assert.deepEqual(limits.checked, ['messages', 'messages', 'messages'])
+    assert.deepEqual(limits.most, [50, 1, 50], 'each call reserves the most it can return: its limit, or one message')
     assert.deepEqual(limits.counted, [['messages', 1], ['messages', 1], ['messages', 2]])
+    assert.equal(limits.released, 0, 'every served call settled its reservation')
+    // A call that fails frees its reservation uncounted.
+    const failed = await call(client, 'get_message', { device_id: vector.device, uid: '00000000-0000-4000-8000-000000000000' })
+    assert.equal(failed.isError, true)
+    assert.deepEqual([limits.counted.length, limits.released], [3, 1])
     limits.refuse = 'messages'
     const before = f.state.requests.length
     const refused = await call(client, 'list_messages', input)

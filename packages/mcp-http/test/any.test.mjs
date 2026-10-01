@@ -179,6 +179,13 @@ test('client documents (§19.6): same-host https and loopback kept, every other 
     assert.deepEqual(claimedName(name), { claimed_name: name, name_dropped: false }, name)
   }
   assert.equal(claimedName('Café').claimed_name, 'Café', 'normalized to NFC')
+  // The vectors Go's suite runs too: whatever the reader keeps, Go accepts (Script_Extensions decides here, never there).
+  const names = JSON.parse(readFileSync(new URL('./vectors/client-names.json', import.meta.url), 'utf8'))
+  assert.equal(names.schema, 'wappie-client-names/v1')
+  for (const item of names.names) {
+    assert.equal(claimedName(item.name).claimed_name === item.name, item.reader, item.why)
+    assert.ok(!item.reader || item.go, item.why)
+  }
   assert.equal(highlyRestrictive('Latin Ελληνικά'), false)
   assert.deepEqual(read(doc([AGENT_REDIRECT], { logo_uri: 'https://x/logo.png', jwks_uri: 'https://x', token_endpoint_auth_method: 'private_key_jwt' })).ok, true)
 })
@@ -262,6 +269,8 @@ test('a tested client asked with a pinned redirect is tested and never fetched; 
     assert.deepEqual([d.descriptor_version, d.kind, d.trust, d.tested_id, d.client_name, d.client_local, d.client_host, d.registrable, d.claimed_name, d.drift, d.client_kind],
       [2, 'connect', 'tested', testedId, name, local, host, host, null, false, 'cimd'], clientId)
     assert.equal(d.redirect_uri, redirectUri)
+    // 0.5.0's redirect_host: a web client's redirect host (Claude's claude.com callback is claude.com's, as Go checks), a native app's vouching host.
+    assert.equal(d.redirect_host, local ? host : new URL(redirectUri).hostname)
     assert.equal(d.limits_tier, local ? 'local_tested' : 'web_tested')
     assert.deepEqual(d.limits, CLIENT_LIMITS[d.limits_tier])
   }
@@ -375,7 +384,17 @@ test('refusals (§19.6 step 5): one static invalid_client page for every reason,
     bodies.add(refused.response.body)
   }
   assert.equal(bodies.size, 1)
-  assert.match([...bodies][0], /invalid_client/)
+  const body = [...bodies][0]
+  assert.match(body, /<small>Wappie MCP: invalid_client<\/small>/)
+  assert.match(body, /<meta name="viewport" content="width=device-width, initial-scale=1">/)
+  assert.match(body, /<p lang="pt">A Wappie não pôde aceitar este assistente\./)
+  assert.match(body, /<p lang="en">Wappie could not accept this assistant\. It may not publish the identity page Wappie needs, or its address is not allowed\. Nothing was shared\./)
+  for (const tag of ['es', 'fr', 'de']) assert.match(body, new RegExp(`<p lang="${tag}">`))
+  assert.match(body, new RegExp(`<a href="${h.consoleOrigin}/[^"]*">`), 'the way back is the console')
+  // The person's language first, whatever the reason; the same page otherwise.
+  const english = await start(h, { clientId: 'https://127.0.0.1/x', redirectUri: AGENT_REDIRECT, address: { headers: { ...fresh().headers, 'accept-language': 'en-GB,en;q=0.9,pt;q=0.5' } } })
+  assert.match(english.response.body, /<\/style><p lang="en">/)
+  assert.equal(english.response.body.replace(/<p lang="[a-z]{2}">[^<]*<\/p>/g, ''), body.replace(/<p lang="[a-z]{2}">[^<]*<\/p>/g, ''))
   // Both the client_id and, after a network failure, its registrable domain are remembered for a minute.
   const fetched = h.fetcher.calls.length
   h.fetcher.docs.set('https://other.example.com/client.json', { body: { client_id: 'https://other.example.com/client.json', redirect_uris: ['https://other.example.com/cb'] } })
@@ -472,9 +491,11 @@ test('the network check (§19.12): the same /24 completes; another /24, /56 or f
     const started = await start(h, { clientId: CLAUDE, redirectUri, address: from(first) })
     const refused = await consentV2(h, started, { address: from(second) })
     assert.equal(refused.completed.status, 400)
-    assert.match(refused.completed.body, /ip_mismatch/)
-    assert.match(refused.completed.body, /different network/)
-    assert.match(refused.completed.body, /rede diferente/)
+    assert.match(refused.completed.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
+    assert.match(refused.completed.body, /different network.*If you use a VPN or iCloud Private Relay, turn it off for this step and try again\./)
+    assert.match(refused.completed.body, /rede diferente.*Retransmissão Privada do iCloud/)
+    for (const tag of ['es', 'fr', 'de']) assert.match(refused.completed.body, new RegExp(`<p lang="${tag}">`))
+    assert.match(refused.completed.body, /name="viewport"/)
     assert.equal(h.reader.state.pending.has(started.id), false, 'the request is dropped')
     assert.equal(h.go.connections.get(refused.connectionId).status, 'revoked')
     assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).ip_mismatch, true)

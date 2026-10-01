@@ -61,22 +61,45 @@ const escapeHTML = value => value.replace(/[&<>"]/g, character => ({ '&': '&amp;
  * way back strands the owner on this page with a consent already half made, so
  * the routes a browser reaches pass the console here.
  */
-const page = (status, code, back = '') => new Response(`<!doctype html><meta charset="utf-8"><title>Wappie MCP</title>` +
-  `<p>Wappie MCP: ${code}.</p>` + (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : ''),
-  { status, headers: { ...noStore, 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' } })
+const htmlHead = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Wappie MCP</title>' +
+  '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 16px;overflow-wrap:anywhere}small{color:#555}</style>'
+const htmlHeaders = { ...noStore, 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }
+const page = (status, code, back = '') => new Response(`${htmlHead}<p>Wappie MCP: ${code}.</p>` + (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : ''),
+  { status, headers: htmlHeaders })
 const redirect = location => new Response(null, { status: 302, headers: { ...noStore, Location: location } })
 const text = value => (typeof value === 'string' ? value : undefined)
+/** The page languages (§19.14's five), the person's first when Accept-Language names one, then the console's order. */
+export const PAGE_LANGUAGES = Object.freeze(['pt', 'en', 'es', 'fr', 'de'])
+export function pageLanguages(acceptLanguage) {
+  const first = String(acceptLanguage ?? '').split(',').map(item => item.trim().slice(0, 2).toLowerCase()).find(tag => PAGE_LANGUAGES.includes(tag))
+  return first ? [first, ...PAGE_LANGUAGES.filter(tag => tag !== first)] : [...PAGE_LANGUAGES]
+}
 /**
- * The completion refused on another network (§19.12): the image's only page
- * with a sentence, in English and Portuguese. Both are drafts the owner
- * approves (D10).
+ * The two pages with sentences, fixed in the image and drafts the owner
+ * approves (D10): the `any` policy's refusal of a client (one page for every
+ * reason, §19.6 step 5) and the completion refused on another network
+ * (§19.12). The code stays, in small print, for support.
  */
-const networkPage = back => new Response(`<!doctype html><meta charset="utf-8"><title>Wappie MCP</title>` +
-  `<p>Wappie MCP: ip_mismatch.</p>` +
-  `<p lang="en">This authorization was opened on a different network from the one that started the connection. Go back to the assistant and click Connect again.</p>` +
-  `<p lang="pt">Esta autorização foi aberta numa rede diferente da que começou a conexão. Volte ao assistente e clique em Conectar de novo.</p>` +
-  `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>`,
-{ status: 400, headers: { ...noStore, 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' } })
+const SENTENCES = {
+  invalid_client: {
+    pt: 'A Wappie não pôde aceitar este assistente. Ele pode não publicar a página de identidade de que a Wappie precisa, ou o endereço dele não é permitido. Nada foi compartilhado. Você pode conectar um assistente testado ou criar um token de conexão no console da Wappie.',
+    en: 'Wappie could not accept this assistant. It may not publish the identity page Wappie needs, or its address is not allowed. Nothing was shared. You can connect a tested assistant, or create a connection token in the Wappie console.',
+    es: 'Wappie no pudo aceptar este asistente. Puede que no publique la página de identidad que Wappie necesita, o que su dirección no esté permitida. No se compartió nada. Puedes conectar un asistente probado o crear un token de conexión en la consola de Wappie.',
+    fr: 'Wappie n’a pas pu accepter cet assistant. Il ne publie peut-être pas la page d’identité dont Wappie a besoin, ou son adresse n’est pas autorisée. Rien n’a été partagé. Vous pouvez connecter un assistant testé ou créer un jeton de connexion dans la console Wappie.',
+    de: 'Wappie konnte diesen Assistenten nicht annehmen. Vielleicht veröffentlicht er nicht die Identitätsseite, die Wappie braucht, oder seine Adresse ist nicht erlaubt. Es wurde nichts geteilt. Sie können einen getesteten Assistenten verbinden oder in der Wappie-Konsole ein Verbindungstoken erstellen.',
+  },
+  ip_mismatch: {
+    pt: 'Esta autorização foi aberta numa rede diferente da que começou a conexão. Volte ao assistente e clique em Conectar de novo. Se você usa VPN ou a Retransmissão Privada do iCloud, desligue para esta etapa e tente de novo.',
+    en: 'This authorization was opened on a different network from the one that started the connection. Go back to the assistant and click Connect again. If you use a VPN or iCloud Private Relay, turn it off for this step and try again.',
+    es: 'Esta autorización se abrió en una red distinta de la que inició la conexión. Vuelve al asistente y haz clic en Conectar de nuevo. Si usas una VPN o Relay privado de iCloud, desactívalo para este paso y vuelve a intentarlo.',
+    fr: 'Cette autorisation a été ouverte sur un autre réseau que celui qui a lancé la connexion. Revenez à l’assistant et cliquez de nouveau sur Connecter. Si vous utilisez un VPN ou le Relais privé iCloud, désactivez-le pour cette étape et réessayez.',
+    de: 'Diese Freigabe wurde in einem anderen Netzwerk geöffnet als dem, in dem die Verbindung begann. Gehen Sie zurück zum Assistenten und klicken Sie erneut auf Verbinden. Wenn Sie ein VPN oder iCloud Privat-Relay nutzen, schalten Sie es für diesen Schritt aus und versuchen Sie es noch einmal.',
+  },
+}
+const sentencePage = (code, back, acceptLanguage) => new Response(htmlHead +
+  pageLanguages(acceptLanguage).map(tag => `<p lang="${tag}">${escapeHTML(SENTENCES[code][tag])}</p>`).join('') +
+  `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p><p><small>Wappie MCP: ${code}</small></p>`,
+{ status: 400, headers: htmlHeaders })
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 /** Parses a form body, refusing anything but urlencoded and any repeated field. */
@@ -105,13 +128,14 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
   /**
    * The `any` policy's `invalid_client`: one static page and status for every
    * reason, never sooner than REFUSAL_FLOOR_MS after the request began, so a
-   * prober learns nothing from it.
+   * prober learns nothing from it. `started` is when the request began and
+   * the languages it accepts, which order the page's sentences and nothing else.
    */
   async function refuseClient(meta, started) {
     meta.code = 'invalid_client'
-    const left = (policy.refusalFloorMs ?? REFUSAL_FLOOR_MS) - (performance.now() - started)
+    const left = (policy.refusalFloorMs ?? REFUSAL_FLOOR_MS) - (performance.now() - started.at)
     if (left > 0) await sleep(left)
-    return page(400, 'invalid_client')
+    return sentencePage('invalid_client', consoleURL, started.language)
   }
   /**
    * §19.6's classification of one request under the `any` policy:
@@ -217,8 +241,9 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     const recipient = newRecipient ? await newRecipient() : undefined
     state.pending.set(id, {
       id, descriptor_version: 2, client_id: clientID, ...client, limits: structuredClone(policy.limits[client.limits_tier]),
-      // 0.5.0's consumers read the host a connection is recorded under: the client's (for a native app, the host vouching for it).
-      redirect_uri: redirectURI, redirect_host: client.client_host, redirect_local: client.client_local,
+      // 0.5.0's consumers read the host a connection is recorded under: a web client's redirect host, as 0.5.0 wrote it
+      // (Claude's pinned claude.com callback is claude.com's), and for a native app the host vouching for it.
+      redirect_uri: redirectURI, redirect_host: client.client_local ? client.client_host : new URL(redirectURI).hostname, redirect_local: client.client_local,
       state: stateParam ?? undefined, code_challenge: challenge, resource, scope: SCOPE, ip,
       created_at: now(), expires_at: now() + pendingTTLMs, proof_attempts: 0,
       ...(recipient ? { recipient, prepares: 0 } : {}),
@@ -252,7 +277,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     },
 
     async authorize(request, ip, meta) {
-      const started = performance.now()
+      const started = { at: performance.now(), language: request.headers.get('accept-language') }
       if (request.method !== 'GET') return page(405, 'method_not_allowed')
       // The address budget is spent before anything is looked at, so a refused
       // request (or one that would make the relay fetch a document) costs the
@@ -333,7 +358,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (pending.descriptor_version === 2) {
         const mismatch = !sameNetwork(pending.ip, ip)
         meta.flags = { ip_mismatch: mismatch }
-        if (mismatch) { count('ip_mismatches'); expirePending(id, pending); meta.code = 'ip_mismatch'; return networkPage(consoleURL) }
+        if (mismatch) { count('ip_mismatches'); expirePending(id, pending); meta.code = 'ip_mismatch'; return sentencePage('ip_mismatch', consoleURL, request.headers.get('accept-language')) }
       }
       const withContent = pending.bundle.kind === 'content'
       let bundle = null
