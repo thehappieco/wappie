@@ -546,6 +546,62 @@ func TestSendLimitsUnderConcurrency(t *testing.T) {
 	}
 }
 
+// The interval runs between the moments two sends passed the connection's
+// lock: a send whose transaction began before the last send was recorded,
+// and waited behind it, is not refused for having begun first, and is
+// recorded when it passed, at least the interval after the last.
+func TestSendIntervalRunsFromTheLock(t *testing.T) {
+	f := newSendFixture(t)
+	ctx := context.Background()
+	conn, key, _ := f.sendingConsent(ctx, t, f.owner, withSelf)
+	type result struct {
+		started store.StartedSend
+		err     error
+	}
+	done := make(chan result, 1)
+	var last time.Time
+	f.inTenant(ctx, t, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM mcp_connections WHERE id=$1 FOR UPDATE`, conn.ID); err != nil {
+			return err
+		}
+		go func() {
+			started, _, err := f.selfSend(ctx, conn, key, newRef(), roomy)
+			done <- result{started, err}
+		}()
+		// Asked from another session: this transaction's view of
+		// pg_stat_activity is a snapshot that would miss a new connection.
+		holder := tx.Conn().PgConn().PID()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			var waiting bool
+			if err := f.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+				WHERE $1 = ANY(pg_blocking_pids(pid)))`, holder).Scan(&waiting); err != nil {
+				return err
+			}
+			if waiting {
+				break
+			}
+			if time.Now().After(deadline) {
+				return errors.New("the send never waited on the connection's lock")
+			}
+		}
+		// The send has begun; another is recorded before it gets the lock.
+		return tx.QueryRow(ctx, `INSERT INTO mcp_outbound (id, tenant_id, connection_id, device_id, kind, status, client_ref, created_at)
+			VALUES (uuidv7(), $1, $2, $3, 'self', 'sent', $4, clock_timestamp()) RETURNING created_at`,
+			f.tenant, conn.ID, f.device, newRef()).Scan(&last)
+	})
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("the send that waited = %v", r.err)
+	}
+	var at time.Time
+	f.inTenant(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT created_at FROM mcp_outbound WHERE id=$1`, r.started.ID).Scan(&at)
+	})
+	if gap := at.Sub(last); gap < roomy.MinInterval {
+		t.Fatalf("recorded %v after the last send", gap)
+	}
+}
+
 // A reference already recorded answers what was recorded, and never makes a
 // second send.
 func TestSendReferenceAnswersTheRecord(t *testing.T) {
