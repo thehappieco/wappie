@@ -81,46 +81,55 @@ function secure({ socket, host, ca, signal }) {
   })
 }
 
-/** The one GET over an open TLS socket; resolves to `{status, contentType, cacheControl, body}`. */
+/**
+ * The one GET over an open TLS socket; resolves to `{body, cacheControl}`.
+ * Every outcome settles first and only then closes the socket, so the
+ * events a close raises cannot change what the fetch says.
+ */
 function get({ tls, host, path, signal, headersMs, bodyMs }) {
   return new Promise((resolve, reject) => {
-    let settled = false, timer = null
+    let settled = false, timer = null, response = null
     const done = (error, value) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)
-      if (error) { tls.destroy(); reject(error) } else resolve(value)
+      if (error) { response?.destroy(); tls.destroy(); reject(error) } else resolve(value)
     }
     const onAbort = () => done(new FetchFailure('timeout', true))
     signal.addEventListener('abort', onAbort, { once: true })
+    // No agent at all, so the request goes over the tunnel's TLS socket and
+    // nowhere else: with `agent: false` Node would make an agent of its own,
+    // which ignores createConnection and dials the host itself. The Host
+    // header is the client's host alone, as on port 443 it must be.
     const req = httpRequest({
-      host, path, method: 'GET', agent: false, createConnection: () => tls, maxHeaderSize: HEADERS_MAX, insecureHTTPParser: false,
-      headers: { Accept: 'application/json', 'User-Agent': CIMD_USER_AGENT },
+      host, path, method: 'GET', createConnection: () => tls, setHost: false, maxHeaderSize: HEADERS_MAX, insecureHTTPParser: false,
+      headers: { Host: host, Accept: 'application/json', 'User-Agent': CIMD_USER_AGENT },
     })
     timer = setTimeout(() => done(new FetchFailure('timeout', true)), headersMs)
     req.once('error', error => done(error instanceof FetchFailure ? error : new FetchFailure(error?.code === 'HPE_HEADER_OVERFLOW' ? 'too_large' : 'status')))
-    req.once('response', response => {
+    req.once('response', answer => {
+      response = answer
       clearTimeout(timer)
-      const status = response.statusCode
-      if (status >= 300 && status < 400) { response.destroy(); return done(new FetchFailure('redirect')) }
-      if (status !== 200) { response.destroy(); return done(new FetchFailure('status')) }
-      const type = String(response.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
-      const encoding = String(response.headers['content-encoding'] ?? 'identity').trim().toLowerCase()
-      if (type !== 'application/json' || encoding !== 'identity') { response.destroy(); return done(new FetchFailure('content_type')) }
-      const declared = Number(response.headers['content-length'])
-      if (Number.isFinite(declared) && declared > CIMD_MAX_BYTES) { response.destroy(); return done(new FetchFailure('too_large')) }
-      timer = setTimeout(() => { response.destroy(); done(new FetchFailure('timeout', true)) }, bodyMs)
+      const status = answer.statusCode
+      if (status >= 300 && status < 400) return done(new FetchFailure('redirect'))
+      if (status !== 200) return done(new FetchFailure('status'))
+      const type = String(answer.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
+      const encoding = String(answer.headers['content-encoding'] ?? 'identity').trim().toLowerCase()
+      if (type !== 'application/json' || encoding !== 'identity') return done(new FetchFailure('content_type'))
+      const declared = Number(answer.headers['content-length'])
+      if (Number.isFinite(declared) && declared > CIMD_MAX_BYTES) return done(new FetchFailure('too_large'))
+      timer = setTimeout(() => done(new FetchFailure('timeout', true)), bodyMs)
       const chunks = []
       let size = 0
-      response.on('data', chunk => {
+      answer.on('data', chunk => {
         size += chunk.length
-        if (size > CIMD_MAX_BYTES) { response.destroy(); return done(new FetchFailure('too_large')) }
+        if (size > CIMD_MAX_BYTES) return done(new FetchFailure('too_large'))
         chunks.push(chunk)
       })
-      response.once('error', () => done(new FetchFailure('status')))
-      response.once('aborted', () => done(new FetchFailure('status')))
-      response.once('end', () => done(null, { body: Buffer.concat(chunks, size), cacheControl: typeof response.headers['cache-control'] === 'string' ? response.headers['cache-control'] : undefined }))
+      answer.once('error', () => done(new FetchFailure('status')))
+      answer.once('aborted', () => done(new FetchFailure('status')))
+      answer.once('end', () => done(null, { body: Buffer.concat(chunks, size), cacheControl: typeof answer.headers['cache-control'] === 'string' ? answer.headers['cache-control'] : undefined }))
     })
     req.end()
   })
@@ -136,16 +145,20 @@ export function createCIMDFetcher({ address = CIMD_EGRESS.address, port = CIMD_E
   return {
     async fetch({ host, path }) {
       const signal = AbortSignal.timeout(totalMs)
-      let tls = null
+      let socket = null, tls = null
       try {
-        const socket = await tunnel({ address, port, host, signal })
+        socket = await tunnel({ address, port, host, signal })
         tls = await secure({ socket, host, ca, signal })
         const { body, cacheControl } = await get({ tls, host, path, signal, headersMs, bodyMs })
         return { ok: true, body, cacheControl }
       } catch (error) {
         if (error instanceof FetchFailure) return { ok: false, code: error.code, network: error.network }
         return { ok: false, code: 'proxy_refused', network: true }
-      } finally { tls?.destroy() }
+      } finally {
+        // The TLS socket and the tunnel under it: one document, one connection, closed at once.
+        tls?.destroy()
+        socket?.destroy()
+      }
     },
   }
 }
