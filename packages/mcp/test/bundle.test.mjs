@@ -158,7 +158,9 @@ test('the version 3 matrix: sending and its checks come with version 3 and only 
   })) invalid(value, label)
 })
 
-const vectors = JSON.parse(await readFile(new URL('../../mcp-http/enclave/test/device-check-vectors.json', import.meta.url), 'utf8')).vectors
+const shared = JSON.parse(await readFile(new URL('../../mcp-http/enclave/test/device-check-vectors.json', import.meta.url), 'utf8'))
+/** Version 3's vectors, then version 4's (§19.15), which the file keeps apart. */
+const vectors = [...shared.vectors, ...shared.version_4]
 
 test('the device check reproduces the shared vectors, scope and HMAC (§17.2 rule 3)', () => {
   assert.ok(vectors.length >= 3)
@@ -250,8 +252,9 @@ test('the version 4 matrix: every member with version 4 only, sending for a test
 })
 
 test('the version-4 device scope adds the client, the tier, the ticks, the window and a token\'s hash and networks, each null when absent, and each changes the check', () => {
-  const v4 = vectors.filter(v => v.bundle.consent_version === 4)
+  const v4 = shared.version_4
   assert.equal(v4.length, 3)
+  assert.ok(v4.every(v => v.bundle.consent_version === 4) && shared.vectors.every(v => v.bundle.consent_version === 3))
   const v = v4[0], dsk = Buffer.from(v.dsk, 'base64url')
   const at = { deviceID: v.device_id, epoch: v.epoch, request: v.request, kid: v.kid }
   const scope = deviceScope(v.bundle, at)
