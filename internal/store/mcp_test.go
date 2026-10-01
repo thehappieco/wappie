@@ -194,16 +194,17 @@ func TestCreateConnectionInvariants(t *testing.T) {
 	if listed, err := f.conns.List(ctx, f.tenant); err != nil || len(listed) != 2 {
 		t.Fatalf("refused consents left rows behind: %+v %v", listed, err)
 	}
-	t.Run("sixth connection", func(t *testing.T) {
-		for i := 0; i < 3; i++ {
+	t.Run("eleventh connection", func(t *testing.T) {
+		// Ten live connections per workspace (docs/mcp-enclave.md §19.20).
+		for i := 0; i < 8; i++ {
 			_, prefix := f.provisionalKey(ctx, t, "live")
 			if _, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix)); err != nil {
 				t.Fatal(err)
 			}
 		}
-		_, prefix := f.provisionalKey(ctx, t, "sixth")
+		_, prefix := f.provisionalKey(ctx, t, "eleventh")
 		if _, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix)); !errors.Is(err, store.ErrTooManyMCPConnections) {
-			t.Fatalf("sixth live connection: err = %v", err)
+			t.Fatalf("eleventh live connection: err = %v", err)
 		}
 		// Ending one frees the slot.
 		listed, err := f.conns.List(ctx, f.tenant)

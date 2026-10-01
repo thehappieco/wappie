@@ -279,7 +279,12 @@ func Housekeeping(ctx context.Context, pool *pgxpool.Pool, grace time.Duration) 
 		return sessions, 0, fmt.Errorf("store: housekeeping invites: %w", err)
 	}
 	invites = tag.RowsAffected()
-	if _, err = pool.Exec(ctx, `DELETE FROM email_signup_verifications WHERE expires_at<$1`, cutoff); err != nil {
+	// A completed verification is the record that an address was
+	// confirmed (an untested assistant may read text only for a person
+	// with one, mcp_clients.go), so it stays while the address still has a
+	// login; an unconsumed one goes once dead.
+	if _, err = pool.Exec(ctx, `DELETE FROM email_signup_verifications v WHERE v.expires_at<$1
+		AND (v.completed_at IS NULL OR NOT EXISTS(SELECT 1 FROM user_logins l WHERE l.email=v.email))`, cutoff); err != nil {
 		return sessions, invites, fmt.Errorf("store: housekeeping email verifications: %w", err)
 	}
 	return sessions, invites, nil

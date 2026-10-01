@@ -140,10 +140,16 @@ type requestEntry struct {
 	// issued for. A consent's entry has none, and neither kind of entry
 	// answers for the other.
 	connection string
-	// kind is "ai" for a pending AI request, whose consent must come from
-	// user, the person it was prepared for; empty for an assistant's.
+	// kind is "ai" for a pending AI request and "token" for a console
+	// token's, whose consent must come from user, the person it was
+	// prepared for; empty for an assistant's.
 	kind string
 	user uuid.UUID
+	// version is the prepared descriptor's (descriptorV1 or descriptorV2),
+	// and client what a version-2 descriptor attested of the client: for a
+	// consent, the client it is for; for a renewal, the record's.
+	version int
+	client  *describedClient
 }
 
 // measurement is the ledger's record of what the reader declared, for
@@ -299,7 +305,9 @@ func validPrepareNonce(nonce string) bool {
 
 // checkPrepared reads what the reader attested and checks its shape: this
 // request, this reader's resource, a document of bounded size and a PCR0 of
-// the right length. It does not verify the document; the browser does.
+// the right length; a version-2 descriptor is a connect one, and its client
+// is remembered with the entry. It does not verify the document; the browser
+// does.
 func checkPrepared(raw json.RawMessage, id string, rd reader) (requestEntry, error) {
 	var p preparedDescriptor
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -308,7 +316,24 @@ func checkPrepared(raw json.RawMessage, id string, rd reader) (requestEntry, err
 	if p.RequestID != id || p.Resource != rd.resource() {
 		return requestEntry{}, errors.New("the prepared descriptor is for another request or resource")
 	}
-	return p.entry(rd, false)
+	version, kind, err := descriptorVersion(raw)
+	if err != nil {
+		return requestEntry{}, err
+	}
+	e, err := p.entry(rd, false)
+	if err != nil {
+		return requestEntry{}, err
+	}
+	e.version = version
+	if version == descriptorV2 {
+		if kind != kindConnect {
+			return requestEntry{}, errors.New("a version-2 prepared descriptor is not a connect one")
+		}
+		if e.client, err = parseClient(raw); err != nil {
+			return requestEntry{}, err
+		}
+	}
+	return e, nil
 }
 
 // entry checks the fields a prepared descriptor and a renewal share and
@@ -367,8 +392,25 @@ func checkRenewal(raw json.RawMessage, connectionID string, rd reader, kind stri
 	if !validRequestID(p.RenewalID) || p.ConnectionID != connectionID || p.Resource != rd.resource() {
 		return "", requestEntry{}, errors.New("the renewal is for another connection or resource, or its id is malformed")
 	}
-	if (p.Kind == store.KindAI) != (kind == store.KindAI) {
-		return "", requestEntry{}, errors.New("the renewal is for another kind of connection")
+	// Before 0.6.0 an AI renewal says kind "ai" and a content one no kind;
+	// a version-2 renewal says renewal or ai_renewal (§19.12).
+	version, _, err := descriptorVersion(raw)
+	if err != nil {
+		return "", requestEntry{}, err
+	}
+	switch version {
+	case descriptorV1:
+		if (p.Kind == store.KindAI) != (kind == store.KindAI) {
+			return "", requestEntry{}, errors.New("the renewal is for another kind of connection")
+		}
+	case descriptorV2:
+		want := kindRenewal
+		if kind == store.KindAI {
+			want = kindAIRenewal
+		}
+		if p.Kind != want {
+			return "", requestEntry{}, errors.New("the renewal is for another kind of connection")
+		}
 	}
 	if p.Attestation != nil && p.Attestation.RequestID != p.RenewalID {
 		return "", requestEntry{}, errors.New("the renewal's attestation is for another request")
@@ -377,6 +419,14 @@ func checkRenewal(raw json.RawMessage, connectionID string, rd reader, kind stri
 	if err != nil {
 		return "", requestEntry{}, err
 	}
-	e.connection = connectionID
+	e.connection, e.version = connectionID, version
+	if version == descriptorV2 && kind != store.KindAI {
+		if e.client, err = parseClient(raw); err != nil {
+			return "", requestEntry{}, err
+		}
+		if e.client.ClientKind != store.ClientLegacy && e.client.Trust != store.TrustTested && e.client.Trust != store.TrustUnknown {
+			return "", requestEntry{}, errors.New("the renewal's trust is neither tested nor unknown")
+		}
+	}
 	return p.RenewalID, e, nil
 }

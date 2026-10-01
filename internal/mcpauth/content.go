@@ -133,6 +133,11 @@ type contentReply struct {
 	SendDirect bool       `json:"send_direct"`
 	AI         bool       `json:"ai"`
 	AIOff      aiOffReply `json:"ai_off"`
+	// UntestedText says whether this person may let an assistant Wappie has
+	// not tested, or a token, read text now: the notice e-mail can go and
+	// their address is verified (docs/mcp-enclave.md §19.21). False is the
+	// card's "Confirm your e-mail to let an untested assistant read text".
+	UntestedText bool `json:"untested_text"`
 }
 
 // aiOffReply is which AI functions and providers this server switched off
@@ -166,9 +171,17 @@ func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 		off.Features = append(off.Features, h.AIOffFeatures...)
 		off.Providers = append(off.Providers, h.AIOffProviders...)
 	}
+	untested := false
+	if h.noticesReady() {
+		verified, err := h.Users.EmailVerified(r.Context(), user.TenantID, user.ID)
+		if err != nil {
+			h.log().Error("could not read whether an address is verified", "error", err)
+		}
+		untested = verified
+	}
 	send(w, http.StatusOK, contentReply{
 		Enabled: h.contentEnabledFor(user.TenantID), Attested: h.attestedFor(user.TenantID), Media: h.mediaEnabledFor(user.TenantID),
-		Send: sending, SendSelf: self, SendDirect: direct, AI: ai, AIOff: off,
+		Send: sending, SendSelf: self, SendDirect: direct, AI: ai, AIOff: off, UntestedText: untested,
 	})
 }
 
@@ -355,6 +368,15 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 	if !ok || !entry.prepared || entry.reader != rd.id || entry.connection != id || entry.kid != req.KID {
 		fail(w, http.StatusConflict, "attestation_required", "this renewal must be verified first; reload the renewal page")
 		return
+	}
+	if entry.client != nil {
+		// The switches reach a renewal too: an untested client or a
+		// token, or a blocked tested client, is not renewed while they
+		// say no (docs/mcp-enclave.md §19.21).
+		if code := h.clientRefusal(entry.client.Trust, deref(entry.client.TestedID)); code != "" {
+			fail(w, http.StatusForbidden, code, "this assistant may not be renewed on this server right now")
+			return
+		}
 	}
 	in := store.RenewMCPConnection{
 		KeyPrefix: req.KeyPrefix, ServiceUserID: service, ReaderKID: req.KID,

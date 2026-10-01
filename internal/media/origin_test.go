@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"whatserver2/internal/media"
 	"whatserver2/internal/store"
@@ -114,5 +115,38 @@ func TestANameResolvingToAPrivateAddressIsRefused(t *testing.T) {
 	_, _, err := f.Fetch(context.Background(), store.Pending{URL: "http://localhost:1/blob"})
 	if !errors.Is(err, media.ErrOrigin) {
 		t.Fatalf("err = %v, want ErrOrigin from the dialer", err)
+	}
+}
+
+// The ranges the shared guard (internal/netguard) closed that this one left
+// open: the rest of 0.0.0.0/8, IETF assignments, reserved space and the
+// broadcast address, NAT64, 6to4 and Teredo.
+func TestTheReservedRangesAreRefused(t *testing.T) {
+	o := media.Origins{}
+	for _, u := range []string{
+		"https://0.1.2.3/x",
+		"https://192.0.0.8/x",
+		"https://240.0.0.1/x",
+		"https://255.255.255.255/x",
+		"https://[64:ff9b::a9fe:a9fe]/x",
+		"https://[2002:a9fe:a9fe::1]/x",
+		"https://[2001::a9fe:a9fe]/x",
+		"https://[fd00:ec2::254]/x",
+	} {
+		err := o.Check(u)
+		if !errors.Is(err, media.ErrOrigin) || !strings.Contains(err.Error(), "public address") {
+			t.Errorf("%s: err = %v, want a refusal about a public address", u, err)
+		}
+	}
+}
+
+// HTTPS_PROXY on this host must not become a hop: a proxy would resolve the
+// name itself, past the dialer's address check.
+func TestTheFetchClientIgnoresProxyVariables(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	transport, ok := media.WhatsAppOrigins().Client(time.Second, 3).Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil {
+		t.Fatalf("the transport takes a proxy: %v", ok)
 	}
 }

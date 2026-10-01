@@ -94,6 +94,17 @@ type fakeEnclave struct {
 	// bundleDelay holds every bundle hand-off (consent or renewal, content
 	// or AI) this long before it answers.
 	bundleDelay time.Duration
+	// The token routes (docs/mcp-enclave.md §19.18): pending token
+	// requests by id, the bundles taken, and onTokenBundle, which answers a
+	// bundle as the enclave would after it installed and activated the
+	// token (204 when nil).
+	tokenRequests map[string]map[string]any
+	tokenBundles  map[string]map[string]any
+	onTokenBundle func(body map[string]any) (int, any)
+	// liveLists are the workspaces asked for, and liveListReply, when set,
+	// answers them; the default is an attested empty list.
+	liveLists     []string
+	liveListReply func(workspace, nonce string) (int, any)
 }
 
 func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
@@ -104,6 +115,7 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 		documents: map[string][]byte{}, prepares: map[string]int{},
 		renewalBundles: map[string]map[string]any{},
 		aiRequests:     map[string]map[string]any{}, aiBundles: map[string]map[string]any{},
+		tokenRequests: map[string]map[string]any{}, tokenBundles: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/requests/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -325,6 +337,85 @@ func newFakeEnclave(t *testing.T, id, secret, origin string) *fakeEnclave {
 		}
 		writeJSON(t, w, http.StatusOK, map[string]string{"state": "running"})
 	})
+	mux.HandleFunc("POST /internal/token-requests", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Nonce string `json:"nonce"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.lastNonce = body.Nonce
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			t.Error(err)
+		}
+		id := base64.RawURLEncoding.EncodeToString(raw)
+		document := make([]byte, 4000)
+		if _, err := rand.Read(document); err != nil {
+			t.Error(err)
+		}
+		f.documents[id] = document
+		descriptor := map[string]any{
+			"descriptor_version": 2, "kind": "token", "request_id": id, "kid": enclaveKID,
+			"reader_public_key": base64.RawURLEncoding.EncodeToString(randomBytes(t, 32)),
+			"client_kind":       "token", "trust": "unknown", "limits_tier": "token", "limits": map[string]any{"calls_per_minute": 20},
+			"resource": f.origin + "/mcp", "reader_version": "0.6.0", "expires_at": time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339),
+			"attestation": map[string]any{
+				"format": "aws-nitro-v1", "document": base64.RawURLEncoding.EncodeToString(document),
+				"request_id": id, "resource": f.origin + "/mcp", "reader_id": f.id, "reader_version": "0.6.0",
+				"tls_spki_sha256": strings.Repeat("a", 64), "policy_sha256": strings.Repeat("b", 64), "pcr0": enclavePCR0,
+			},
+		}
+		f.tokenRequests[id] = descriptor
+		writeJSON(t, w, http.StatusOK, descriptor)
+	})
+	mux.HandleFunc("POST /internal/token-requests/{id}/bundle", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		_, ok := f.tokenRequests[r.PathValue("id")]
+		if ok {
+			f.tokenBundles[r.PathValue("id")] = body
+		}
+		hook := f.onTokenBundle
+		f.mu.Unlock()
+		if !ok {
+			http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
+			return
+		}
+		if hook != nil {
+			if status, reply := hook(body); status != http.StatusNoContent {
+				writeJSON(t, w, status, reply)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /internal/workspaces/{id}/live-list", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Nonce string `json:"nonce"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"code":"bad_request"}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		workspace := r.PathValue("id")
+		f.liveLists = append(f.liveLists, workspace)
+		if f.liveListReply != nil {
+			status, reply := f.liveListReply(workspace, body.Nonce)
+			writeJSON(t, w, status, reply)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, liveListDocument(t, f, workspace, body.Nonce, []string{}))
+	})
 	mux.HandleFunc("GET /internal/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
 			"ok": true, "reader_id": f.id, "reader_version": "0.2.0", "boot_id": "0011223344556677", "state": "ready",
@@ -395,6 +486,44 @@ func (f *fakeEnclave) pending(t *testing.T) string {
 		"expires_at": time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339),
 	}
 	f.mu.Unlock()
+	return id
+}
+
+// liveListDocument is a live list as the enclave attests it.
+func liveListDocument(t *testing.T, f *fakeEnclave, workspace, nonce string, ids []string) map[string]any {
+	t.Helper()
+	return map[string]any{
+		"descriptor_version": 2, "kind": "live_list", "workspace_id": workspace, "nonce": nonce, "connection_ids": ids,
+		"at": time.Now().UTC().Format(time.RFC3339),
+		"attestation": map[string]any{
+			"format": "aws-nitro-v1", "document": base64.RawURLEncoding.EncodeToString(randomBytes(t, 4000)),
+			"request_id": "", "resource": f.origin + "/mcp", "reader_id": f.id, "reader_version": "0.6.0",
+			"tls_spki_sha256": strings.Repeat("a", 64), "policy_sha256": strings.Repeat("b", 64), "pcr0": enclavePCR0,
+		},
+	}
+}
+
+// pendingV2 registers a request as a 0.6.0 enclave would, its descriptor of
+// version 2 describing client, which overrides the defaults: an untested
+// client on the web, identified by its document at agent.example.com.
+func (f *fakeEnclave) pendingV2(t *testing.T, pub []byte, client map[string]any) string {
+	t.Helper()
+	id := f.pendingKey(t, pub)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.requests[id]
+	for k, v := range map[string]any{
+		"descriptor_version": 2, "kind": "connect", "client_kind": "cimd", "client_id": "https://agent.example.com/oauth/client.json",
+		"tested_id": nil, "client_host": "agent.example.com", "registrable": "example.com", "shared_suffix": nil, "client_local": false,
+		"client_name": "agent.example.com", "claimed_name": "Example Agent", "name_dropped": false, "trust": "unknown", "drift": false,
+		"redirect_uri": "https://agent.example.com/oauth/callback", "redirect_host": "agent.example.com", "redirect_local": false,
+		"limits_tier": "unknown", "limits": map[string]any{"calls_per_minute": 20},
+	} {
+		d[k] = v
+	}
+	for k, v := range client {
+		d[k] = v
+	}
 	return id
 }
 

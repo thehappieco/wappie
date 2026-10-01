@@ -459,16 +459,16 @@ func TestCreateAIConnectionInvariants(t *testing.T) {
 		}
 	})
 
-	// The cap of five does not count AI authorizations, and does not stop
+	// The cap of ten does not count AI authorizations, and does not stop
 	// one either.
-	for range 5 {
+	for range 10 {
 		f.consentContent(ctx, t, f.owner)
 	}
 	if _, err := f.conns.Create(ctx, f.tenant, f.owner, f.prepareContent(ctx, t, f.owner).in); !errors.Is(err, store.ErrTooManyMCPConnections) {
-		t.Fatalf("a sixth assistant: %v", err)
+		t.Fatalf("an eleventh assistant: %v", err)
 	}
 	f.consentAI(ctx, t, f.owner, keys, nil)
-	if listed, err := f.conns.List(ctx, f.tenant); err != nil || len(listed) != 5 {
+	if listed, err := f.conns.List(ctx, f.tenant); err != nil || len(listed) != 10 {
 		t.Fatalf("listed = %d %v", len(listed), err)
 	}
 	if all, err := f.conns.AIAuthorizations(ctx, f.tenant, f.owner, true); err != nil || len(all) != 2 {
