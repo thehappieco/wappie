@@ -364,7 +364,8 @@ func TestAGroupIdentifierAndRetryCannotBecomeReaders(t *testing.T) {
 
 func TestARevisionWithNoReadIsNotConfirmedAnything(t *testing.T) {
 	// Confirmed qualifies a read. A true sitting next to an absent read is a
-	// value a template renders as "confirmado" for a version nobody looked at.
+	// value a template renders as "confirmado" (confirmed) for a version
+	// nobody looked at.
 	const phone = "224437861388494:12@lid"
 
 	readers := readersOf(editedTwice(), []ReceiptRow{

@@ -72,9 +72,9 @@ from it, keeps the half that opens things, and sends only the half that proves
 who it is. Print the recovery code it offers — it is the other way back.
 
 For a service invite: the system generates a keypair ("wsctl service-key"),
-registers the public half with this code under "Registrar um sistema" on the
-sign-in screen, and an owner then grants it devices and mints an API key that
-acts as it in the console.
+registers the public half with this code under "Registrar um sistema"
+("Register a system") on the sign-in screen, and an owner then grants it
+devices and mints an API key that acts as it in the console.
 `, tenant, *role, code, inviteTTL)
 	return nil
 }

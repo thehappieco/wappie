@@ -117,7 +117,8 @@ func TestAConversationWithNothingToPreview(t *testing.T) {
 	const chat = "5511999999999@s.whatsapp.net"
 
 	// A revoke carries no body. The row must still be named, so the client can
-	// say "apagou" rather than showing the previous message as if it stood.
+	// say "apagou" (deleted) rather than showing the previous message as if it
+	// stood.
 	res, err := messages.Insert(context.Background(), store.InsertMessage{
 		UID: uuid.New(), TenantID: tenant, DeviceID: device,
 		WAID: "D1", ChatKey: chat, ChatPN: chat,

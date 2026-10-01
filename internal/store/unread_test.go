@@ -105,16 +105,16 @@ func TestOnlyRealIncomingMessagesCount(t *testing.T) {
 		name string
 		in   store.InsertMessage
 	}{
-		{"nossa própria mensagem", store.InsertMessage{IsFromMe: true}},
-		{"uma reação", store.InsertMessage{Kind: domain.KindReaction, Type: domain.TypeReaction}},
-		{"uma edição", store.InsertMessage{Kind: domain.KindEdit}},
-		{"uma exclusão", store.InsertMessage{Kind: domain.KindDelete}},
-		{"um voto de enquete", store.InsertMessage{Type: domain.TypePollVote}},
-		{"um status", store.InsertMessage{ChatKey: "status@broadcast"}},
+		{"our own message", store.InsertMessage{IsFromMe: true}},
+		{"a reaction", store.InsertMessage{Kind: domain.KindReaction, Type: domain.TypeReaction}},
+		{"an edit", store.InsertMessage{Kind: domain.KindEdit}},
+		{"a delete", store.InsertMessage{Kind: domain.KindDelete}},
+		{"a poll vote", store.InsertMessage{Type: domain.TypePollVote}},
+		{"a status post", store.InsertMessage{ChatKey: "status@broadcast"}},
 	} {
 		res := arrive(t, m, tenant, device, "X"+c.name, c.in)
 		if res.CountsUnread {
-			t.Errorf("%s contou para o badge", c.name)
+			t.Errorf("%s counted toward the badge", c.name)
 		}
 	}
 

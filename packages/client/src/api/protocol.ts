@@ -366,12 +366,13 @@ export interface SendRequest extends SendOptions {
  */
 export interface SendOptions {
   /**
-   * Forwarded draws the "encaminhada" badge on the recipient's screen.
+   * Forwarded draws the "encaminhada" (forwarded) badge on the recipient's
+   * screen.
    *
    * forwarding_score alone does nothing: the server only reads the score inside
    * `if opts.Forwarded`, so a score without this flag produces an ordinary
    * message with no badge. Five or more is what WhatsApp renders as
-   * "encaminhada muitas vezes".
+   * "encaminhada muitas vezes" (forwarded many times).
    */
   forwarded?: boolean
   forwarding_score?: number

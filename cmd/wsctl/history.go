@@ -167,7 +167,7 @@ func printHistory(ctx context.Context, h wsapi.History, o *opener) {
 		for _, r := range h.Readers {
 			who := userPart(r.Key)
 			if r.IsFromMe {
-				who = "eu (outro aparelho)"
+				who = "me (another device)"
 			}
 			line := fmt.Sprintf("    %-20s", truncate(who, 20))
 			line += "  delivered " + stampOr(r.Delivered, "-")

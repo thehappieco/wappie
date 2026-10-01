@@ -39,9 +39,10 @@ func cmdServiceKey(_ context.Context, args []string) error {
 private  %s
 
 Register the PUBLIC half with a service invite ("whatserverd invite -role
-service"), under "Registrar um sistema" on the sign-in screen. Keep the
-private half where this system keeps secrets: every device granted to the
-account opens with it, and it cannot be recovered from the server.
+service"), under "Registrar um sistema" ("Register a system") on the sign-in
+screen. Keep the private half where this system keeps secrets: every device
+granted to the account opens with it, and it cannot be recovered from the
+server.
 `, base64.StdEncoding.EncodeToString(pub.Bytes()), base64.RawURLEncoding.EncodeToString(raw))
 	return nil
 }

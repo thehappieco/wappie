@@ -122,7 +122,7 @@ func cmdWatch(ctx context.Context, args []string) error {
 func printReceipt(r wsapi.ReceiptEvent) {
 	who := userPart(r.ReaderKey)
 	if r.IsFromMe {
-		who = "eu (outro aparelho)"
+		who = "me (another device)"
 	}
 	ids := make([]string, 0, len(r.WAIDs))
 	for _, id := range r.WAIDs {
