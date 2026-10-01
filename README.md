@@ -315,6 +315,15 @@ vectors through them. `make fixtures-check` holds every cross-language
 fixture to the hash the kit recorded, so a regenerated one fails CI rather
 than drifting from the vectors.
 
+A kit bump moves both pins at once, which `TestKitVersionsAgree` checks:
+`go get github.com/thehappieco/kit@vX.Y.Z && go mod tidy`; in
+`packages/client`, delete the lock's `node_modules/@thehappieco/kit` entry and
+`npm install --save-exact` the new release asset (its integrity comes from the
+asset, never from a local build); `npm install` in `packages/cli`,
+`packages/mcp`, `packages/mcp-http` and `tools/reader-verify`; then
+`node packages/client/test/kit/copy.mjs`. A bump that changes the kit's
+JavaScript changes the reader's PCR0, so it ships in a reader release.
+
 Regenerate a fixture deliberately, never as a way to make a test pass (and,
 for the seal and frame fixtures, in the kit as well):
 

@@ -20,6 +20,7 @@ function translated(err: unknown): unknown {
     case 'bad_key':
       return new Error(t('Chave da conta inválida.'))
     case 'bad_envelope':
+    case 'bad_aad': // never from passkeyAAD, which binds the RP, the user and the credential
       return new Error(t('O registro desta passkey está inválido. Entre com sua senha.'))
     case 'open_failed':
       return new Error(t('Esta passkey não conseguiu abrir seus dados. Entre com sua senha e cadastre uma passkey compatível.'))

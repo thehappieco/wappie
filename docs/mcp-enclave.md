@@ -440,7 +440,12 @@ the state out, then drop).
 
 Each reader release publishes on the public GitHub release `reader-v<version>`
 (`thehappieco/wappie`): the EIF, `measurements.json`, the canonical policies
-and their hashes. The image goes to `ghcr.io/thehappieco/wappie-reader@sha256:…`.
+and their hashes, `SHA256SUMS`, and every file of `tarballs/`: each npm
+tarball the image installs from outside the registry (the shared kit's
+release asset `thehappieco-kit-<v>.tgz`, SheetJS's `xlsx-<v>.tgz`), exactly
+as `build.sh` fetched it and checked it against its lock's integrity. A third
+party rebuilding the image then needs only this release, the source commit
+and the registry. The image goes to `ghcr.io/thehappieco/wappie-reader@sha256:…`.
 `deploy/enclave/build.sh` (DEPLOY) writes `measurements.json`:
 
 ```json
@@ -2223,7 +2228,8 @@ cgroup v2 host), the §16.13 corpus through `runWorker` under media-jail.
 manifest into `measurements.json`: every npm lock the image is installed
 from (client, mcp, mcp-http, the reader's and the workers'), and the sha256
 of every tarball a lock pins from outside the npm registry (the kit's release
-asset, SheetJS).
+asset, SheetJS), each kept as `tarballs/<name>` (its `file`) for the reader
+release (§9).
 
 **Kernel requirements.** Required, and present on the blob:
 `CONFIG_MEMCG`, `CONFIG_CGROUP_PIDS`, `CONFIG_SECCOMP_FILTER`,

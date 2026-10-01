@@ -296,13 +296,15 @@ describe('kit passkey-ts.json', () => {
       switch (c.op) {
         case 'passkey.key': {
           // The derived key is never exposed: an envelope sealed under the
-          // recorded key, with the AAD Wappie binds, must open through the wrapper.
+          // recorded key, with the AAD Wappie binds, must open through the
+          // wrapper. These cases name only the RP; any user and credential do.
           const iv = new Uint8Array(12) as Bytes
-          const aad = new TextEncoder().encode(JSON.stringify(['wappie/passkey-vault', 1, binding.rpID, binding.userID, binding.credentialID]))
+          const bound = { ...binding, userID: 'user', credentialID: 'credential' }
+          const aad = new TextEncoder().encode(JSON.stringify(['wappie/passkey-vault', 1, bound.rpID, bound.userID, bound.credentialID]))
           const key = await crypto.subtle.importKey('raw', b64(c.out.key_b64), 'AES-GCM', false, ['encrypt'])
           const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, new Uint8Array(32)))
           const envelope = new Uint8Array([1, ...iv, ...sealed]) as Bytes
-          expect(toB64(await unwrapPasskey(envelope, b64(i.prf_b64), binding))).toBe(toB64(new Uint8Array(32)))
+          expect(toB64(await unwrapPasskey(envelope, b64(i.prf_b64), bound))).toBe(toB64(new Uint8Array(32)))
           return
         }
         case 'passkey.wrap': {

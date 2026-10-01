@@ -1,7 +1,8 @@
 // Copies the shared kit's vectors that test/kit.spec.ts runs through this
-// client's wrappers into this directory, from the kit version the Go module
-// requires (go.mod at the repository root), checked against the kit's own
-// MANIFEST.sha256. The npm tarball carries no vectors, so this is how the
+// client's wrappers into this directory, and the request HMAC cases Go wrote
+// into packages/mcp-http/enclave/test/kit for the reader's own hmac.mjs, from
+// the kit version the Go module requires (go.mod at the repository root),
+// checked against the kit's own MANIFEST.sha256. The npm tarball carries no vectors, so this is how the
 // TypeScript side gets the same files Go embeds; Go's
 // internal/crypto/seal TestFixturesMatchTheKit fails if the copies and the
 // kit version drift apart. They live under test/ so that neither the npm
@@ -12,14 +13,19 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const FILES = ['seal-go.json', 'seal-ts.json', 'account-ts.json', 'passkey-ts.json', 'browser-account-ts.json']
-
 const here = fileURLToPath(new URL('.', import.meta.url))
 const root = join(here, '..', '..', '..', '..')
+const enclave = join(root, 'packages', 'mcp-http', 'enclave', 'test', 'kit')
+
+// Where each file of the kit's vectors/wappie/golden goes.
+const FILES = [
+  ['seal-go.json', here], ['seal-ts.json', here], ['account-ts.json', here], ['passkey-ts.json', here], ['browser-account-ts.json', here],
+  ['reqhmac-go.json', enclave],
+]
 const go = (...args) => JSON.parse(execFileSync('go', args, { cwd: root, encoding: 'utf8' }))
 
 let kit = go('list', '-m', '-json', 'github.com/thehappieco/kit')
@@ -33,11 +39,12 @@ for (const line of readFileSync(join(vectors, 'MANIFEST.sha256'), 'utf8').split(
   if (path) manifest.set(path, sum)
 }
 
-for (const name of FILES) {
+for (const [name, dir] of FILES) {
   const path = `wappie/golden/${name}`
   const data = readFileSync(join(vectors, path))
   const sum = createHash('sha256').update(data).digest('hex')
   if (manifest.get(path) !== sum) throw new Error(`${path} does not match the kit's MANIFEST.sha256`)
-  writeFileSync(join(here, name), data)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, name), data)
 }
 console.log(`copied ${FILES.length} vector files from github.com/thehappieco/kit ${kit.Version ?? '(local)'} (${kit.Dir})`)

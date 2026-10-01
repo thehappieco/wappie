@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"testing"
@@ -478,6 +479,71 @@ func TestFixturesMatchTheKit(t *testing.T) {
 	for _, path := range copies {
 		name := filepath.Base(path)
 		same(filepath.Join("packages/client/test/kit", name), "wappie/golden/"+name)
+	}
+	// The reader's own request HMAC (packages/mcp-http/enclave/hmac.mjs) runs
+	// the cases Go wrote, from the same copy script.
+	same("packages/mcp-http/enclave/test/kit/reqhmac-go.json", "wappie/golden/reqhmac-go.json")
+}
+
+// TestKitVersionsAgree: one kit tag covers both languages, but Wappie pins it
+// twice, in go.mod and in the release asset packages/client installs. A bump
+// of one side alone would test the TypeScript client against vectors of
+// another kit than the one it runs, and the vectors being append-only, an
+// older kit would still pass them.
+func TestKitVersionsAgree(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	read := func(path string, v any) {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, v); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+	}
+	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^\s*github\.com/thehappieco/kit v(\S+)`).FindSubmatch(gomod)
+	if m == nil {
+		t.Fatal("go.mod does not require github.com/thehappieco/kit")
+	}
+	version := string(m[1])
+	url := "https://github.com/thehappieco/kit/releases/download/v" + version + "/thehappieco-kit-" + version + ".tgz"
+
+	var manifest struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	read("packages/client/package.json", &manifest)
+	if got := manifest.Dependencies["@thehappieco/kit"]; got != url {
+		t.Errorf("packages/client/package.json installs %q; go.mod requires v%s, whose asset is %s", got, version, url)
+	}
+	type lockfile struct {
+		Packages map[string]struct {
+			Version      string            `json:"version"`
+			Resolved     string            `json:"resolved"`
+			Dependencies map[string]string `json:"dependencies"`
+		} `json:"packages"`
+	}
+	var lock lockfile
+	read("packages/client/package-lock.json", &lock)
+	if kit := lock.Packages["node_modules/@thehappieco/kit"]; kit.Version != version || kit.Resolved != url {
+		t.Errorf("packages/client/package-lock.json resolves the kit %s from %q; go.mod requires v%s (%s)", kit.Version, kit.Resolved, version, url)
+	}
+	if got := lock.Packages[""].Dependencies["@thehappieco/kit"]; got != url {
+		t.Errorf("packages/client/package-lock.json declares %q, want %s", got, url)
+	}
+	// The packages that link the client repeat its declared dependency.
+	for consumer, client := range map[string]string{
+		"packages/cli": "../client", "packages/mcp": "../client", "packages/mcp-http": "../client", "tools/reader-verify": "../../packages/client",
+	} {
+		var l lockfile
+		read(consumer+"/package-lock.json", &l)
+		if got := l.Packages[client].Dependencies["@thehappieco/kit"]; got != url {
+			t.Errorf("%s/package-lock.json has the client declaring %q, want %s (npm install there after a bump)", consumer, got, url)
+		}
 	}
 }
 

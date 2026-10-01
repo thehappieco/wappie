@@ -124,7 +124,8 @@ class DependenciesTest(unittest.TestCase):
         program = dependencies_program()
         if allow_file_urls:
             program = program.replace('url.startswith("https://")', '(url.startswith("https://") or url.startswith("file://"))')
-        result = subprocess.run([sys.executable, "-", str(context), str(context / "out.json")], input=program, text=True,
+        self.mirror = context / "out" / "tarballs"
+        result = subprocess.run([sys.executable, "-", str(context), str(context / "out.json"), str(self.mirror)], input=program, text=True,
                                 capture_output=True)
         if result.returncode:
             return result.stderr
@@ -141,7 +142,7 @@ class DependenciesTest(unittest.TestCase):
         self.assertEqual([l["file"] for l in manifest["locks"]], LOCKS)
         self.assertEqual(manifest["locks"][3]["packages"][0]["path"], "node_modules/asn1js")
         self.assertEqual(manifest["tarballs"], [{"package": "xlsx", "version": "0.20.3", "url": url, "integrity": integrity,
-                                                 "sha256": hashlib.sha256(b"sheetjs").hexdigest()}])
+                                                 "sha256": hashlib.sha256(b"sheetjs").hexdigest(), "file": "tarballs/xlsx-0.20.3.tgz"}])
 
     def test_records_the_kit_tarball_and_the_links(self):
         url, integrity = self.tarball(b"kit", "thehappieco-kit-0.1.0.tgz")
@@ -150,7 +151,11 @@ class DependenciesTest(unittest.TestCase):
                                  client_packages={"": {}, "node_modules/@noble/hashes": NOBLE,
                                                   "node_modules/@thehappieco/kit": {"version": "0.1.0", "resolved": url, "integrity": integrity}})
         self.assertEqual(manifest["tarballs"][0], {"package": "@thehappieco/kit", "version": "0.1.0", "url": url, "integrity": integrity,
-                                                   "sha256": hashlib.sha256(b"kit").hexdigest()})
+                                                   "sha256": hashlib.sha256(b"kit").hexdigest(), "file": "tarballs/thehappieco-kit-0.1.0.tgz"})
+        # Kept for the reader release, so a rebuild needs nothing beyond it.
+        self.assertEqual(sorted(p.name for p in self.mirror.iterdir()), ["thehappieco-kit-0.1.0.tgz", "xlsx-0.20.3.tgz"])
+        self.assertEqual((self.mirror / "thehappieco-kit-0.1.0.tgz").read_bytes(), b"kit")
+        self.assertEqual((self.mirror / "xlsx-0.20.3.tgz").read_bytes(), b"sheetjs")
         self.assertEqual(manifest["locks"][1]["packages"], [{"path": "node_modules/@whatserver2/client", "version": None,
                                                              "resolved": "../client", "integrity": None}])
 
@@ -169,6 +174,15 @@ class DependenciesTest(unittest.TestCase):
         error = self.run_step({"": {}, "node_modules/xlsx": {"version": "0.20.3", "resolved": url, "integrity": other}})
         self.assertIsInstance(error, str)
         self.assertIn("does not match", error)
+        self.assertEqual(list(self.mirror.iterdir()), [], "a tarball that failed its check was kept")
+
+    def test_refuses_two_different_tarballs_of_one_name(self):
+        url, integrity = self.tarball(b"kit", "thehappieco-kit-0.1.0.tgz")
+        other_url, other_integrity = self.tarball(b"not the kit", "thehappieco-kit-0.1.0.tgz")
+        error = self.run_step({"": {}, "node_modules/x": {"version": "0.1.0", "resolved": other_url, "integrity": other_integrity}},
+                              client_packages={"": {}, "node_modules/@thehappieco/kit": {"version": "0.1.0", "resolved": url, "integrity": integrity}})
+        self.assertIsInstance(error, str)
+        self.assertIn("two different tarballs", error)
 
     def test_refuses_a_tarball_without_https_or_integrity(self):
         url, _ = self.tarball(b"sheetjs")

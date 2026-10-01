@@ -4,7 +4,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { attestationUserData, createAttestor, decodeAttestationDocument, decodeNonce, userDataPreimage } from '../../attestation.mjs'
 import { createLog } from '../../log.mjs'
@@ -68,6 +69,38 @@ test('hmac: both contract vectors', () => {
   const headers = signedHeaders({ secret: SECRET, direction: 'to-reader', readerId: 'enclave', method: 'POST', target, body, now: () => 1790300000_000 })
   assert.match(headers['x-wappie-nonce'], /^[A-Za-z0-9_-]{22}$/)
   assert.equal(headers['x-wappie-signature'], goHeaders(SECRET, { method: 'POST', target, body, now: 1790300000_000, nonce: headers['x-wappie-nonce'] })['x-wappie-signature'])
+})
+
+// The cases Go's side of the scheme wrote (the shared kit's
+// vectors/wappie/golden/reqhmac-go.json, copied by
+// packages/client/test/kit/copy.mjs at the kit version go.mod requires; Go's
+// TestFixturesMatchTheKit holds the copy to it). This file is the other
+// implementation of wappie-mcp-hmac/v1, so it must reproduce every signature
+// and canonical string Go does.
+test('hmac: every signing case of the kit\'s Go vectors', () => {
+  const file = JSON.parse(readFileSync(new URL('./kit/reqhmac-go.json', import.meta.url), 'utf8'))
+  assert.equal(file.format, 'thehappieco-kit-vectors/1')
+  const fieldsOf = i => ({ direction: i.direction, readerId: i.sender, method: i.method, target: i.target, timestamp: i.timestamp, nonce: i.nonce,
+    bodySha256: createHash('sha256').update(Buffer.from(i.body_b64, 'base64')).digest('hex') })
+  // Not this file's: Go's header grammar (this guard also takes the timestamp "0" and caps
+  // timestamps at 16 digits, which only changes which refusal is logged), Go's replay cache
+  // and Go's seeded signer.
+  const notHere = new Set(['reqhmac.read', 'reqhmac.replay', 'reqhmac.sign'])
+  let ran = 0
+  for (const c of file.cases) {
+    if (notHere.has(c.op)) continue
+    const fields = fieldsOf(c.in)
+    if (c.op === 'reqhmac.signature') {
+      assert.equal(fields.bodySha256, c.out.body_sha256_hex, c.id)
+      assert.equal(canonicalString(fields), c.out.canonical, c.id)
+      assert.equal(signature(c.in.secret, fields), c.out.signature, c.id)
+    } else if (c.op === 'reqhmac.signed_by') {
+      const matches = c.in.secrets.filter(secret => timingSafeEqual(Buffer.from(signature(secret, fields)), Buffer.from(c.in.signature)))
+      assert.equal(matches.length > 0, c.out.ok, c.id)
+    } else assert.fail(`${c.id}: op ${c.op} is not handled here`)
+    ran++
+  }
+  assert.equal(ran, 22)
 })
 
 test('hmac guard: missing, stale (±60 s), wrong secret, wrong reader, tampered body or target, replay, and a full cache fails closed', async () => {
