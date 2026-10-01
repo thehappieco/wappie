@@ -43,3 +43,11 @@ packages/mcp-http/server.mjs
 packages/mcp-http/test/http.test.mjs
 # Contrasts the enclave's content provider with the pilot's metadata provider.
 packages/mcp-http/enclave/provider.mjs
+
+# The any-client notice e-mail and card (docs/mcp-enclave.md 19.14, 19.22):
+# what one connection of kind 'metadata' can see, and the card's line for a
+# server that cannot send the notice e-mail, where an untested assistant's
+# connection stays of kind 'metadata'. Neither describes a connector.
+internal/mailer/mcp.go :: metadata only (who, when and how much)
+docs/mcp-enclave.md :: what can be read ("metadata only (who, when and how much)
+docs/mcp-enclave.md :: metadata only for now: it cannot yet send the e-mail
