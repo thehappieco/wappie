@@ -8,6 +8,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -44,6 +45,12 @@ type Config struct {
 	Web            Web
 	Passkeys       Passkeys
 	Signup         Signup
+	// LoginDecoyKey keys the sign-in challenge answered for an address with
+	// no account, so that answer cannot be computed from the address alone.
+	// It has to persist: a decoy that changes on restart, while a real salt
+	// never does, gives the answer away. Required in prod; without it a dev
+	// server uses a key that lasts as long as the process.
+	LoginDecoyKey []byte
 	// MCP is the hosted assistant connector, off unless a reader runs here.
 	MCP MCP
 	Log Log
@@ -138,6 +145,7 @@ func Load() (Config, error) {
 		CallsEnabled:   boolean("WS_CALLS_ENABLED", true, &errs),
 		WADeviceName:   strings.TrimSpace(str("WS_WA_DEVICE_NAME", "whappie")),
 		Signup:         loadSignup(&errs),
+		LoginDecoyKey:  hexKey("WS_LOGIN_DECOY_KEY_HEX", &errs),
 		MCP:            loadMCP(&errs),
 		Passkeys:       Passkeys{RPID: strings.TrimSpace(os.Getenv("WS_PASSKEY_RP_ID"))},
 		Env:            env,
@@ -242,6 +250,11 @@ func Load() (Config, error) {
 		if cfg.Log.Wire {
 			bad("WS_LOG_WIRE: the WhatsApp wire log carries message plaintext " +
 				"and is not allowed in prod")
+		}
+		if len(cfg.LoginDecoyKey) == 0 {
+			bad("WS_LOGIN_DECOY_KEY_HEX is required in prod: without it the sign-in " +
+				"challenge for an address with no account changes on every restart, " +
+				"which tells anyone watching across one that the address has none")
 		}
 	}
 
@@ -395,6 +408,20 @@ func prefixes(key string, errs *[]error) []netip.Prefix {
 		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
 	}
 	return out
+}
+
+// hexKey reads an optional 32-byte key written as hex.
+func hexKey(key string, errs *[]error) []byte {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	b, err := hex.DecodeString(v)
+	if err != nil || len(b) != 32 {
+		*errs = append(*errs, fmt.Errorf("%s must be a 32-byte hex key", key))
+		return nil
+	}
+	return b
 }
 
 func boolean(key string, def bool, errs *[]error) bool {
