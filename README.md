@@ -388,7 +388,10 @@ Who may reach what, on the server side:
 Sign-in attempts are rate-limited per address and per account, on the HTTP
 endpoints and on the websocket hello alike: each attempt costs the server an
 Argon2id derivation and each wrong one is a guess. Behind a reverse proxy, set
-`WS_TRUSTED_PROXIES` so the limit sees the client and not the proxy.
+`WS_TRUSTED_PROXIES` so the limit sees the client and not the proxy. The
+challenge that starts a sign-in answers every address, with a decoy salt for
+one that has no account; the decoy is keyed with `WS_LOGIN_DECOY_KEY_HEX`,
+required in prod, so it cannot be computed from the address.
 
 Attachment URLs come from the message that carries them — from the sender —
 and are fetched only from `*.whatsapp.net` over TLS, with every redirect and

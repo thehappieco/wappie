@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +37,9 @@ import (
 type Users struct {
 	pool                *pgxpool.Pool
 	inviteEncryptionKey []byte
+	// decoyKey keys the challenge for addresses with no password; see
+	// decoySalt. Empty means the per-process key.
+	decoyKey []byte
 }
 
 func NewUsers(pool *pgxpool.Pool) *Users { return &Users{pool: pool} }
@@ -189,8 +194,8 @@ func (u *Users) Create(ctx context.Context, in NewUser) (User, error) {
 // Challenge returns the client-side derivation parameters for an address.
 //
 // It answers for addresses that do not exist, with a salt derived from the
-// address itself. Otherwise the shape of the reply would tell an unauthenticated
-// caller which addresses have accounts, one request at a time.
+// address under a server secret. Otherwise the shape of the reply would tell an
+// unauthenticated caller which addresses have accounts, one request at a time.
 func (u *Users) Challenge(ctx context.Context, email string) ([]byte, KDFParams, error) {
 	email = normaliseEmail(email)
 
@@ -199,7 +204,7 @@ func (u *Users) Challenge(ctx context.Context, email string) ([]byte, KDFParams,
 	err := u.pool.QueryRow(ctx,
 		`SELECT tenant_id, user_id FROM user_logins WHERE email = $1`, email).Scan(&tenant, &userID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return decoySalt(email), DefaultKDFParams(), nil
+		return u.decoySalt(email), DefaultKDFParams(), nil
 	}
 	if err != nil {
 		return nil, KDFParams{}, fmt.Errorf("store: login challenge: %w", err)
@@ -217,7 +222,7 @@ func (u *Users) Challenge(ctx context.Context, email string) ([]byte, KDFParams,
 	if salt == nil || raw == nil {
 		// A service account: no password, so no derivation to reproduce.
 		// Answered like an address with no account, for the same reason.
-		return decoySalt(email), DefaultKDFParams(), nil
+		return u.decoySalt(email), DefaultKDFParams(), nil
 	}
 	var params KDFParams
 	if err := json.Unmarshal(raw, &params); err != nil {
@@ -226,11 +231,45 @@ func (u *Users) Challenge(ctx context.Context, email string) ([]byte, KDFParams,
 	return salt, params, nil
 }
 
-// decoySalt is stable per address, so an attacker probing the same address
-// twice cannot tell a made-up answer from a real one by watching it change.
-func decoySalt(email string) []byte {
-	sum := sha256.Sum256([]byte("whatserver2/login-decoy/" + email))
-	return sum[:saltLenUser]
+// SetLoginDecoyKey sets the server secret that keys decoy challenges. Empty
+// leaves the per-process key; anything else must be 32 bytes.
+func (u *Users) SetLoginDecoyKey(key []byte) error {
+	if len(key) != 0 && len(key) != 32 {
+		return errors.New("login decoy key must be 32 bytes")
+	}
+	u.decoyKey = append([]byte(nil), key...)
+	return nil
+}
+
+// processDecoyKey keys the decoys of a Users that was given no key. Random, so
+// nobody outside can compute them either, but new on every start: whoever
+// watches an address across a restart sees its decoy change, and a real salt
+// never does. That is why production requires a key that persists.
+var processDecoyKey = sync.OnceValue(func() []byte {
+	key := make([]byte, 32)
+	// crypto/rand.Read never returns an error in Go 1.24+; it panics on a
+	// failing entropy source, which is the correct outcome here anyway.
+	if _, err := rand.Read(key); err != nil {
+		panic("store: entropy source failed: " + err.Error())
+	}
+	return key
+})
+
+// decoySalt is the salt a challenge reports for an address with no password.
+//
+// It is stable per address, so an attacker probing the same address twice
+// cannot tell a made-up answer from a real one by watching it change. And it
+// is an HMAC under a server secret, not a plain hash: from a public input
+// anybody could compute the expected decoy and compare, a match meaning no
+// account and a mismatch meaning one.
+func (u *Users) decoySalt(email string) []byte {
+	key := u.decoyKey
+	if len(key) == 0 {
+		key = processDecoyKey()
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("whatserver2/login-decoy/" + email))
+	return mac.Sum(nil)[:saltLenUser]
 }
 
 // Authenticate checks an auth key and returns the account.

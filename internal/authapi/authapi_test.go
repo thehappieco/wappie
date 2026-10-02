@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -313,6 +314,12 @@ func TestTheChallengeDoesNotRevealWhoHasAnAccount(t *testing.T) {
 	}
 	if ghost.Params != known.Params {
 		t.Error("the decoy parameters differ from a real account's")
+	}
+	// Anybody can hash an address. Were the decoy that hash, comparing it with
+	// the answer would say whether the address has an account.
+	unkeyed := sha256.Sum256([]byte("whatserver2/login-decoy/ghost@example.com"))
+	if ghost.Salt == base64.StdEncoding.EncodeToString(unkeyed[:16]) {
+		t.Error("the decoy salt can be computed from the address alone")
 	}
 }
 
