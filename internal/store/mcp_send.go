@@ -565,8 +565,10 @@ func (m *MCPConnections) StartSend(ctx context.Context, conn SendConnection, key
 			return err
 		}
 		started.ChatKey = pn
-		return tx.QueryRow(ctx, `INSERT INTO mcp_outbound (id, tenant_id, connection_id, device_id, chat_key, kind, status, client_ref)
-			VALUES (uuidv7(), $1, $2, $3, $4, $5, 'sending', $6) RETURNING id`,
+		// Recorded at the moment it passed, under the lock: the interval runs
+		// from here (sendLimitsTx), not from when this transaction began.
+		return tx.QueryRow(ctx, `INSERT INTO mcp_outbound (id, tenant_id, connection_id, device_id, chat_key, kind, status, client_ref, created_at)
+			VALUES (uuidv7(), $1, $2, $3, $4, $5, 'sending', $6, clock_timestamp()) RETURNING id`,
 			conn.TenantID, conn.ID, in.Device, pn, in.Kind, in.ClientRef).Scan(&started.ID)
 	})
 	if err != nil {
@@ -580,7 +582,14 @@ func (m *MCPConnections) StartSend(ctx context.Context, conn SendConnection, key
 const counted = `kind IN ('self', 'send') AND status IN ('sending', 'sent', 'uncertain')`
 
 // sendLimitsTx checks a connection's send limits and the workspace's, under
-// the connection's lock and then the workspace's.
+// the connection's lock and then the workspace's. The rolling days end at
+// the transaction's start (now()): a send written by a transaction that
+// began later is still inside them. The interval is measured at the lock
+// (clock_timestamp()) from the last send, which StartSend records at its
+// own lock: a transaction that began before the last send's and waited
+// behind it is held to the time since that send, never refused for having
+// begun first, and two sends of a connection are never closer than
+// MinInterval in the ledger.
 func sendLimitsTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, connection string, limits SendLimits) error {
 	var today int
 	var last *time.Time
@@ -600,7 +609,7 @@ func sendLimitsTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, connection s
 	if last != nil {
 		var wait bool
 		var at time.Time
-		if err := tx.QueryRow(ctx, `SELECT $1::timestamptz + $2::interval > now(), $1::timestamptz + $2::interval`,
+		if err := tx.QueryRow(ctx, `SELECT $1::timestamptz + $2::interval > clock_timestamp(), $1::timestamptz + $2::interval`,
 			*last, limits.MinInterval).Scan(&wait, &at); err != nil {
 			return err
 		}

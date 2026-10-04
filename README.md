@@ -311,7 +311,32 @@ So neither side is trusted to agree with itself:
   message under the contact-name kind. Get any of those wrong and everything
   comes back as tampered with the correct key in hand.
 
-Regenerate a fixture deliberately, never as a way to make a test pass:
+The envelope, the account scheme, the passkey wrap and the request signature
+now live in the shared kit, [github.com/thehappieco/kit](https://github.com/thehappieco/kit),
+which took these fixtures as its vectors before any code moved and proves its
+Go and TypeScript against them. Wappie imports it by version: Go through
+`go.mod`, the client through the kit's release asset pinned by integrity in
+`packages/client/package-lock.json`. `internal/crypto/seal`,
+`internal/mcpauth/hmac.go` and `packages/client/src/crypto` keep their names
+as thin wrappers that bind Wappie's labels, and their tests run the kit's
+vectors through them. `make fixtures-check` holds every cross-language
+fixture to the hash the kit recorded, so a regenerated one fails CI rather
+than drifting from the vectors. The one exception is the device-check
+vectors, which reader 0.6.0 extended with `version_4` and which are held
+at that hash; their `vectors`, the cases the kit took JCS texts from, are
+unchanged.
+
+A kit bump moves both pins at once, which `TestKitVersionsAgree` checks:
+`go get github.com/thehappieco/kit@vX.Y.Z && go mod tidy`; in
+`packages/client`, delete the lock's `node_modules/@thehappieco/kit` entry and
+`npm install --save-exact` the new release asset (its integrity comes from the
+asset, never from a local build); `npm install` in `packages/cli`,
+`packages/mcp`, `packages/mcp-http` and `tools/reader-verify`; then
+`node packages/client/test/kit/copy.mjs`. A bump that changes the kit's
+JavaScript changes the reader's PCR0, so it ships in a reader release.
+
+Regenerate a fixture deliberately, never as a way to make a test pass (and,
+for the seal and frame fixtures, in the kit as well):
 
 ```
 go test ./internal/crypto/seal -run Vectors -update
@@ -374,7 +399,10 @@ Who may reach what, on the server side:
 Sign-in attempts are rate-limited per address and per account, on the HTTP
 endpoints and on the websocket hello alike: each attempt costs the server an
 Argon2id derivation and each wrong one is a guess. Behind a reverse proxy, set
-`WS_TRUSTED_PROXIES` so the limit sees the client and not the proxy.
+`WS_TRUSTED_PROXIES` so the limit sees the client and not the proxy. The
+challenge that starts a sign-in answers every address, with a decoy salt for
+one that has no account; the decoy is keyed with `WS_LOGIN_DECOY_KEY_HEX`,
+required in prod, so it cannot be computed from the address.
 
 Attachment URLs come from the message that carries them — from the sender —
 and are fetched only from `*.whatsapp.net` over TLS, with every redirect and
@@ -511,8 +539,9 @@ is.
   retroactive, and that is not built yet.
 
 - **One dependency handles the password**, `@noble/hashes` for Argon2id, because
-  WebCrypto has nothing memory-hard. Everything else in the client — HPKE, the
-  envelope format, the media scheme — is WebCrypto and no packages.
+  WebCrypto has nothing memory-hard. It arrives through the shared kit
+  (`@thehappieco/kit`), the client's one runtime dependency. Everything else
+  in the client — HPKE, the envelope format, the media scheme — is WebCrypto.
 
 - **Lose every access path and the archive is gone.** Permanently, for everyone,
   including the operator. That is the trade the design makes.
@@ -730,7 +759,7 @@ internal/obs           logging and metrics
 internal/pg            three pools, tenant transactions for RLS
 internal/migrate       versioned migrations, checksummed, advisory-locked
 internal/crypto/wamedia WhatsApp's media scheme
-internal/crypto/seal   HPKE envelopes and content keys
+internal/crypto/seal   HPKE envelopes and content keys (Wappie's names over github.com/thehappieco/kit)
 internal/wa            whatsmeow wrapper; upstream_contract_test.go pins the API
 internal/ingest        the one canonical event pipeline
 internal/store         persistence and projection

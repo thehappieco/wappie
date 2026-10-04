@@ -175,9 +175,19 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		closeAll()
 		return nil, nil, fmt.Errorf("invitation configuration: %w", err)
 	}
+	if err := a.users.SetLoginDecoyKey(cfg.LoginDecoyKey); err != nil {
+		closeAll()
+		return nil, nil, fmt.Errorf("login configuration: %w", err)
+	}
 
 	if !withWA {
 		return a, closeAll, nil
+	}
+	if len(cfg.LoginDecoyKey) == 0 {
+		// Load refuses this in prod. In dev it is said out loud, for the same
+		// reason as the role check above.
+		lg.Warn("WS_LOGIN_DECOY_KEY_HEX is unset: sign-in challenges for unknown " +
+			"addresses change on every restart; this would be refused in prod")
 	}
 
 	a.metrics = obs.NewMetrics()

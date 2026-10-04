@@ -1,0 +1,1289 @@
+{
+  "format": "thehappieco-kit-vectors/1",
+  "module": "reqhmac",
+  "profile": "wappie",
+  "generated_by": {
+    "lang": "go",
+    "source": "github.com/thehappieco/wappie@8c0c1f74103bc6bb65a93b13613ad1964d4399c4 internal/mcpauth/hmac.go",
+    "toolchain": "go1.26.7",
+    "randomness": "testing/cryptotest.SetGlobalRandom, reset to in.seed before each sign",
+    "generator": "vectors/wappie/_generators/go/internal/mcpauth/kitgen_internal_test.go"
+  },
+  "note": "Wappie's request HMAC (wappie-mcp-hmac/v1), captured from internal/mcpauth. The secrets are fixture material. Errors are the codes hmac.go returns (Wappie logs them).",
+  "cases": [
+    {
+      "id": "reqhmac/signature/contract-to-reader",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "eyJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ==",
+        "direction": "to-reader",
+        "method": "POST",
+        "nonce": "BBBBBBBBBBBBBBBBBBBBBB",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/internal/requests/AAAAAAAAAAAAAAAAAAAAAA/prepare",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "body_sha256_hex": "5abfe6385851c7e99e840bf25362e735b4adc8b617704a5cab1c8cf3aeae5a8f",
+        "canonical": "wappie-mcp-hmac/v1\nto-reader\nenclave\nPOST\n/internal/requests/AAAAAAAAAAAAAAAAAAAAAA/prepare\n1790300000\nBBBBBBBBBBBBBBBBBBBBBB\n5abfe6385851c7e99e840bf25362e735b4adc8b617704a5cab1c8cf3aeae5a8f",
+        "signature": "v1=4966d2e42ab13456589657b9df8429cd70b95f1ec2f9273e6e27b76aabe53456"
+      }
+    },
+    {
+      "id": "reqhmac/signature/contract-to-go",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-go",
+        "method": "GET",
+        "nonce": "CCCCCCCCCCCCCCCCCCCCCC",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/v1/mcp/enclave/cimd?url=https%3A%2F%2Fclaude.ai%2Foauth%2Fmcp-oauth-client-metadata",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nenclave\nGET\n/v1/mcp/enclave/cimd?url=https%3A%2F%2Fclaude.ai%2Foauth%2Fmcp-oauth-client-metadata\n1790300000\nCCCCCCCCCCCCCCCCCCCCCC\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=9d67d123516b7dc431b14a28223a654d8f57299cc83022ae17cbc4554baef616"
+      }
+    },
+    {
+      "id": "reqhmac/signature/method-lowercase",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-go",
+        "method": "get",
+        "nonce": "n",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/x",
+        "timestamp": "1"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nenclave\nGET\n/x\n1\nn\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=c36407eca533f1c1ef22e934ec914fa6ee192c830c5f762bf0bdf4fd8b77288a"
+      }
+    },
+    {
+      "id": "reqhmac/signature/method-uppercase",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-go",
+        "method": "GET",
+        "nonce": "n",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/x",
+        "timestamp": "1"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nenclave\nGET\n/x\n1\nn\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=c36407eca533f1c1ef22e934ec914fa6ee192c830c5f762bf0bdf4fd8b77288a"
+      }
+    },
+    {
+      "id": "reqhmac/signature/method-mixed",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "e30=",
+        "direction": "to-reader",
+        "method": "Patch",
+        "nonce": "DDDDDDDDDDDDDDDDDDDDDD",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/v1/x",
+        "timestamp": "1790300001"
+      },
+      "out": {
+        "body_sha256_hex": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "wappie-mcp-hmac/v1\nto-reader\nenclave\nPATCH\n/v1/x\n1790300001\nDDDDDDDDDDDDDDDDDDDDDD\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "signature": "v1=157acee37b3167e775a37dcb491c9987aebb237f2ac94fc7afb80d061090e4ad"
+      }
+    },
+    {
+      "id": "reqhmac/signature/empty-body-vs-nil",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-reader",
+        "method": "POST",
+        "nonce": "DDDDDDDDDDDDDDDDDDDDDD",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/v1/x",
+        "timestamp": "1790300001"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-reader\nenclave\nPOST\n/v1/x\n1790300001\nDDDDDDDDDDDDDDDDDDDDDD\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=509bd73600397ccc37e50acc247c7a936b1b3463274571de0347e61af4efbfed"
+      }
+    },
+    {
+      "id": "reqhmac/signature/binary-body",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "AB8+XXybutn4FzZVdJOy0fAPLk1si6rJ6AcmRWSDosHg/x49XHuaudj3FjVUc5Kx0O8OLUxriqnI5wYlRGOCocDf/h08W3qZuNf2FTRTcpGwz+4NLEtqiajH5gUkQ2KBoL/e/Rw7WnmYt9b1FDNScZCvzu0MK0ppiKfG5QQjQmGAn77d/Bs6WXiXttX0EzJRcI+uzewLKkloh6bF5AMiQWB/nr3c+xo5WHeWtdTzEjFQb46tzOsKKUhnhqXE4wIhQF9+nbzb+hk4V3aVtNPyETBPbo2sy+oJKEdmhaTD4gEgP159nLva+Rg3VnWUs9LxEC9ObYyryukIJ0ZlhKPC4QAfPl18m7rZ+Bc2VXSTstHwDy5NbIuqyegHJkVkg6LB4P8ePVx7mrnY9xY1VHOSsdDvDi1Ma4qpyOcGJURjgqHA3/4dPFt6mbjX9hU0U3KRsM/uDSxLaomox+YFJENigaC/3v0cO1p5mLfW9RQzUnGQr87tDCtKaYinxuUEI0JhgJ++3fwbOll4l7bV9BMyUXCPrs3sCypJaIemxeQDIkFgf5693PsaOVh3lrXU8xIxUG+OrczrCilIZ4alxOMCIUBffp282/oZOFd2lbTT8hEwT26NrMvqCShHZoWkw+IBID9efZy72vkYN1Z1lLPS8RAvTm2Mq8rpCCdGZYSjwuEAHz5dfJu62fgXNlV0k7LR8A8uTWyLqsnoByZFZIOiweD/Hj1ce5q52PcWNVRzkrHQ7w4tTGuKqcjnBiVEY4KhwN/+HTxbepm41/YVNFNykbDP7g0sS2qJqMfmBSRDYoGgv979HDtaeZi31vUUM1JxkK/O7QwrSmmIp8blBCNCYYCfvt38GzpZeJe21fQTMlFwj67N7AsqSWiHpsXkAyJBYH+evdz7GjlYd5a11PMSMVBvjq3M6wopSGeGpcTjAiFAX36dvNv6GThXdpW00/IRME9ujazL6gkoR2aFpMPiASA/Xn2cu9r5GDdWdZSz0vEQL05tjKvK6QgnRmWEo8LhAB8+XXybutn4FzZVdJOy0fAPLk1si6rJ6AcmRWSDosHg/x49XHuaudj3FjVUc5Kx0O8OLUxriqnI5wYlRGOCocDf/h08W3qZuNf2FTRTcpGwz+4NLEtqiajH5gUkQ2KBoL/e/Rw7WnmYt9b1FDNScZCvzu0MK0ppiKfG5QQjQmGAn77d/Bs6WXiXttX0EzJRcI+uzewLKkloh6bF5AMiQWB/nr3c+xo5WHeWtdTzEjFQb46tzOsKKUhnhqXE4wIhQF9+nbzb+hk4V3aVtNPyETBPbo2sy+oJKEdmhaTD4gEgP159nLva+Rg3VnWUs9LxEC9ObYyryukIJ0ZlhKPC4Q==",
+        "direction": "to-reader",
+        "method": "PUT",
+        "nonce": "EEEEEEEEEEEEEEEEEEEEEE",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "staging",
+        "target": "/internal/state",
+        "timestamp": "1790300002"
+      },
+      "out": {
+        "body_sha256_hex": "b54e72e83904b84eb645c6c4b7a55f73b85871cdc9a74645979cd7c1be411b40",
+        "canonical": "wappie-mcp-hmac/v1\nto-reader\nstaging\nPUT\n/internal/state\n1790300002\nEEEEEEEEEEEEEEEEEEEEEE\nb54e72e83904b84eb645c6c4b7a55f73b85871cdc9a74645979cd7c1be411b40",
+        "signature": "v1=91322f5b244b7a940d79fb6803a4dfb5afff30a0e4240dd6cbfea524577fb771"
+      }
+    },
+    {
+      "id": "reqhmac/signature/query-and-escapes",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-go",
+        "method": "GET",
+        "nonce": "abcdefghijklmnopqrstuv",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/v1/mcp/enclave/x?a=1&b=%2F%20&c=%C3%A9",
+        "timestamp": "1790300003"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nenclave\nGET\n/v1/mcp/enclave/x?a=1&b=%2F%20&c=%C3%A9\n1790300003\nabcdefghijklmnopqrstuv\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=43f933282ac68e1f0b1d49b22653e42628816e97374d66ab56771f712d0c4297"
+      }
+    },
+    {
+      "id": "reqhmac/signature/root-target",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-go",
+        "method": "DELETE",
+        "nonce": "-_-_-_-_-_-_-_-_-_-_-_",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/",
+        "timestamp": "9999999999"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nenclave\nDELETE\n/\n9999999999\n-_-_-_-_-_-_-_-_-_-_-_\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=9477f2ad417f7b8fcbaae42421144d77af0f9cf457a062f687e024af9678fd80"
+      }
+    },
+    {
+      "id": "reqhmac/signature/multibyte-secret",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "b2zDoQ==",
+        "direction": "to-reader",
+        "method": "POST",
+        "nonce": "FFFFFFFFFFFFFFFFFFFFFF",
+        "secret": "segredo-çãø-🔑-0123456789",
+        "sender": "enclave",
+        "target": "/internal/x",
+        "timestamp": "1790300004"
+      },
+      "out": {
+        "body_sha256_hex": "9b186e077c7c6d044f5789d76e6d8070a5b0aaa902ebc608bc34170722dba903",
+        "canonical": "wappie-mcp-hmac/v1\nto-reader\nenclave\nPOST\n/internal/x\n1790300004\nFFFFFFFFFFFFFFFFFFFFFF\n9b186e077c7c6d044f5789d76e6d8070a5b0aaa902ebc608bc34170722dba903",
+        "signature": "v1=4955ca6198f1b5981ecaac2f5e14a26032cb1a2e7c40f1e8a410777da6cb91d1"
+      }
+    },
+    {
+      "id": "reqhmac/signature/empty-secret",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-reader",
+        "method": "POST",
+        "nonce": "FFFFFFFFFFFFFFFFFFFFFF",
+        "secret": "",
+        "sender": "enclave",
+        "target": "/internal/x",
+        "timestamp": "1790300004"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-reader\nenclave\nPOST\n/internal/x\n1790300004\nFFFFFFFFFFFFFFFFFFFFFF\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=103738ebde7a289f56ff300ed5b74b6749a209a6df0f6783797138756209d9cf"
+      }
+    },
+    {
+      "id": "reqhmac/signature/long-secret",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "eA==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "GGGGGGGGGGGGGGGGGGGGGG",
+        "secret": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "sender": "r",
+        "target": "/internal/x",
+        "timestamp": "1790300005"
+      },
+      "out": {
+        "body_sha256_hex": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nr\nPOST\n/internal/x\n1790300005\nGGGGGGGGGGGGGGGGGGGGGG\n2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "signature": "v1=14867f02422edfb0181d236da796a33fc1d59c7a96fded7ff99fa61cb8bb3a31"
+      }
+    },
+    {
+      "id": "reqhmac/signature/sender-with-dash",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "HHHHHHHHHHHHHHHHHHHHHH",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "reader-2",
+        "target": "/v1/mcp/enclave/connections/a/revoke",
+        "timestamp": "1790300006"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nreader-2\nPOST\n/v1/mcp/enclave/connections/a/revoke\n1790300006\nHHHHHHHHHHHHHHHHHHHHHH\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=0c791ac163d38edcfb3995c61c1ed8466245b544434a5156262c394feefb0bc7"
+      }
+    },
+    {
+      "id": "reqhmac/signature/18-digit-timestamp",
+      "op": "reqhmac.signature",
+      "in": {
+        "body_b64": "",
+        "direction": "to-go",
+        "method": "GET",
+        "nonce": "IIIIIIIIIIIIIIIIIIIIII",
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "sender": "enclave",
+        "target": "/",
+        "timestamp": "100000000000000000"
+      },
+      "out": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canonical": "wappie-mcp-hmac/v1\nto-go\nenclave\nGET\n/\n100000000000000000\nIIIIIIIIIIIIIIIIIIIIII\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "signature": "v1=777dbc0c55ba12182abb2e90ce58d6b49a173201837f7fc5b8ee9e5e43293e27"
+      }
+    },
+    {
+      "id": "reqhmac/read/ok",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "out": {
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "signature": "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "timestamp": "1790300000",
+        "unix": 1790300000
+      }
+    },
+    {
+      "id": "reqhmac/read/ok-skew-plus-60",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300060"
+          ]
+        },
+        "now": 1790300000
+      },
+      "out": {
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "signature": "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "timestamp": "1790300060",
+        "unix": 1790300060
+      }
+    },
+    {
+      "id": "reqhmac/read/ok-skew-minus-60",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790299940"
+          ]
+        },
+        "now": 1790300000
+      },
+      "out": {
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "signature": "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "timestamp": "1790299940",
+        "unix": 1790299940
+      }
+    },
+    {
+      "id": "reqhmac/read/stale-plus-61",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300061"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_stale"
+    },
+    {
+      "id": "reqhmac/read/stale-minus-61",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790299939"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_stale"
+    },
+    {
+      "id": "reqhmac/read/timestamp-empty",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            ""
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-zero",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "0"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-leading-zero",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "01"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-18-digits",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "100000000000000000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_stale"
+    },
+    {
+      "id": "reqhmac/read/timestamp-19-digits",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1000000000000000000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-plus-sign",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "+1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-minus-sign",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "-1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-space",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            " 1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-decimal",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000.5"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-missing",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/timestamp-twice",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000",
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/nonce-21",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/nonce-23",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/nonce-base64url-alphabet",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "azAZ09-_azAZ09-_azAZ09"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "out": {
+        "nonce": "azAZ09-_azAZ09-_azAZ09",
+        "signature": "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "timestamp": "1790300000",
+        "unix": 1790300000
+      }
+    },
+    {
+      "id": "reqhmac/read/nonce-padding",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAA=="
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/nonce-standard-alphabet",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAA+/"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/nonce-missing",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/nonce-twice",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA",
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-wrong-prefix",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v2=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-no-prefix",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-uppercase-hex",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "V1=0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-uppercase-digest",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-63-digits",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-65-digits",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-missing",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/signature-twice",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/read/empty-value-twice",
+      "op": "reqhmac.read",
+      "in": {
+        "headers": {
+          "X-Wappie-Nonce": [
+            "AAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "X-Wappie-Signature": [
+            "v1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "X-Wappie-Timestamp": [
+            "",
+            "1790300000"
+          ]
+        },
+        "now": 1790300000
+      },
+      "error": "hmac_missing"
+    },
+    {
+      "id": "reqhmac/signed-by/one-right",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [
+          "wappie-test-relay-secret-0123456789abcdefghij"
+        ],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ec",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": true
+      }
+    },
+    {
+      "id": "reqhmac/signed-by/next-then-current",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [
+          "another-secret",
+          "wappie-test-relay-secret-0123456789abcdefghij"
+        ],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ec",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": true
+      }
+    },
+    {
+      "id": "reqhmac/signed-by/current-then-next",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [
+          "wappie-test-relay-secret-0123456789abcdefghij",
+          "another-secret"
+        ],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ec",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": true
+      }
+    },
+    {
+      "id": "reqhmac/signed-by/only-wrong",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [
+          "another-secret"
+        ],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ec",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": false
+      }
+    },
+    {
+      "id": "reqhmac/signed-by/none",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ec",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": false
+      }
+    },
+    {
+      "id": "reqhmac/signed-by/same-secret-twice",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [
+          "wappie-test-relay-secret-0123456789abcdefghij",
+          "wappie-test-relay-secret-0123456789abcdefghij"
+        ],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ec",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": true
+      }
+    },
+    {
+      "id": "reqhmac/signed-by/other-direction",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-reader",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [
+          "wappie-test-relay-secret-0123456789abcdefghij"
+        ],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ec",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": false
+      }
+    },
+    {
+      "id": "reqhmac/signed-by/flipped-digit",
+      "op": "reqhmac.signed_by",
+      "in": {
+        "body_b64": "Yg==",
+        "direction": "to-go",
+        "method": "POST",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "secrets": [
+          "wappie-test-relay-secret-0123456789abcdefghij"
+        ],
+        "sender": "enclave",
+        "signature": "v1=cea90978c214b721352e8b94d65ffe02e2b6d83cfbcc73cfda652abc449ba4ed",
+        "target": "/v1/x",
+        "timestamp": "1790300000"
+      },
+      "out": {
+        "ok": false
+      }
+    },
+    {
+      "id": "reqhmac/replay/wappie-internal-test",
+      "op": "reqhmac.replay",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "capacity": 2,
+        "lifetime_seconds": 61,
+        "steps": [
+          {
+            "direction": "to-go",
+            "nonce": "a",
+            "now": 1790300000,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "a",
+            "now": 1790300000,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-reader",
+            "nonce": "a",
+            "now": 1790300000,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "a",
+            "now": 1790300000,
+            "sender": "staging",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "a",
+            "now": 1790300061,
+            "sender": "staging",
+            "timestamp": 1790300061
+          },
+          {
+            "direction": "to-go",
+            "nonce": "a",
+            "now": 1790300061,
+            "sender": "enclave",
+            "timestamp": 1790300061
+          }
+        ]
+      },
+      "out": {
+        "len": 2,
+        "results": [
+          null,
+          "hmac_replay",
+          null,
+          "replay_cache_full",
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "id": "reqhmac/replay/lifetime-edge",
+      "op": "reqhmac.replay",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "capacity": 4,
+        "lifetime_seconds": 61,
+        "steps": [
+          {
+            "direction": "to-go",
+            "nonce": "n1",
+            "now": 1790300000,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "n1",
+            "now": 1790300060,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "n1",
+            "now": 1790300061,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "n2",
+            "now": 1790300000,
+            "sender": "enclave",
+            "timestamp": 1790299940
+          },
+          {
+            "direction": "to-go",
+            "nonce": "n2",
+            "now": 1790300001,
+            "sender": "enclave",
+            "timestamp": 1790299940
+          }
+        ]
+      },
+      "out": {
+        "len": 2,
+        "results": [
+          null,
+          "hmac_replay",
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "id": "reqhmac/replay/full-then-drains",
+      "op": "reqhmac.replay",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "capacity": 1,
+        "lifetime_seconds": 61,
+        "steps": [
+          {
+            "direction": "to-go",
+            "nonce": "n1",
+            "now": 1790300000,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "n2",
+            "now": 1790300000,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "n1",
+            "now": 1790300030,
+            "sender": "enclave",
+            "timestamp": 1790300000
+          },
+          {
+            "direction": "to-go",
+            "nonce": "n2",
+            "now": 1790300061,
+            "sender": "enclave",
+            "timestamp": 1790300061
+          }
+        ]
+      },
+      "out": {
+        "len": 1,
+        "results": [
+          null,
+          "replay_cache_full",
+          "hmac_replay",
+          null
+        ]
+      }
+    },
+    {
+      "id": "reqhmac/sign/0",
+      "op": "reqhmac.sign",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "body_b64": "eyJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ==",
+        "direction": "to-reader",
+        "method": "POST",
+        "now": 1790300000,
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "seed": 100,
+        "sender": "enclave",
+        "target": "/internal/requests/AAAAAAAAAAAAAAAAAAAAAA/prepare"
+      },
+      "out": {
+        "headers": {
+          "X-Wappie-Nonce": "3zs5ihc6DDLS21an0N2-EQ",
+          "X-Wappie-Reader": "enclave",
+          "X-Wappie-Signature": "v1=22468c9e9230a3ac89f9d117d1f0dae8e6ffb58c4acf4e0c972dbd3aa0820535",
+          "X-Wappie-Timestamp": "1790300000"
+        }
+      }
+    },
+    {
+      "id": "reqhmac/sign/1",
+      "op": "reqhmac.sign",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "body_b64": "",
+        "direction": "to-reader",
+        "method": "GET",
+        "now": 1790300000,
+        "secret": "wappie-test-relay-secret-0123456789abcdefghij",
+        "seed": 101,
+        "sender": "enclave",
+        "target": "/internal/state?since=4&x=%2F"
+      },
+      "out": {
+        "headers": {
+          "X-Wappie-Nonce": "U_jtfbR6HGg1Vvi67hGkYg",
+          "X-Wappie-Reader": "enclave",
+          "X-Wappie-Signature": "v1=63b784a9cba0405c5fb48a65bc1303c9acdff59d2fdd245aa75a564f21a47f22",
+          "X-Wappie-Timestamp": "1790300000"
+        }
+      }
+    }
+  ]
+}

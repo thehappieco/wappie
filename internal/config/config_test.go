@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,8 @@ func minimalEnv(t *testing.T) {
 		"WS_S3_BUCKET":     "whatserver2-media",
 		"WS_S3_ACCESS_KEY": "whatserver",
 		"WS_S3_SECRET_KEY": "devdevdev",
+		// Required in prod, so set here for the tests that load prod.
+		"WS_LOGIN_DECOY_KEY_HEX": strings.Repeat("5a", 32),
 	} {
 		t.Setenv(k, v)
 	}
@@ -101,6 +104,8 @@ func TestInvalidValues(t *testing.T) {
 		"bad duration":  {"WS_PG_STATEMENT_TIMEOUT", "30 seconds"},
 		"zero duration": {"WS_PG_STATEMENT_TIMEOUT", "0s"},
 		"bad bool":      {"WS_S3_USE_SSL", "yes-please"},
+		"short key":     {"WS_LOGIN_DECOY_KEY_HEX", strings.Repeat("ab", 16)},
+		"non-hex key":   {"WS_LOGIN_DECOY_KEY_HEX", strings.Repeat("zz", 32)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			minimalEnv(t)
@@ -144,6 +149,27 @@ func TestProdGuards(t *testing.T) {
 			t.Errorf("error = %v", err)
 		}
 	})
+	t.Run("requires the login decoy key", func(t *testing.T) {
+		minimalEnv(t)
+		t.Setenv("WS_ENV", "prod")
+		t.Setenv("WS_POSTGRES_DSN", "postgres://user:pw@db/whatserver2")
+		t.Setenv("WS_LOGIN_DECOY_KEY_HEX", "")
+		err := mustFail(t)
+		if !strings.Contains(err.Error(), "WS_LOGIN_DECOY_KEY_HEX") {
+			t.Errorf("error = %v", err)
+		}
+	})
+	t.Run("runs without the login decoy key in dev", func(t *testing.T) {
+		minimalEnv(t)
+		t.Setenv("WS_LOGIN_DECOY_KEY_HEX", "")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("dev should run with a per-process decoy key: %v", err)
+		}
+		if cfg.LoginDecoyKey != nil {
+			t.Errorf("LoginDecoyKey = %x, want none", cfg.LoginDecoyKey)
+		}
+	})
 	t.Run("allows both in dev", func(t *testing.T) {
 		minimalEnv(t)
 		t.Setenv("WS_S3_ENDPOINT", "http://localhost:9000")
@@ -152,6 +178,23 @@ func TestProdGuards(t *testing.T) {
 			t.Fatalf("dev should allow local plaintext: %v", err)
 		}
 	})
+}
+
+// The decoy key is a secret: if it leaked, decoys could be computed again.
+func TestLoginDecoyKeyNeverRendered(t *testing.T) {
+	minimalEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.LoginDecoyKey) != 32 {
+		t.Fatalf("LoginDecoyKey has %d bytes, want 32", len(cfg.LoginDecoyKey))
+	}
+	for _, s := range []string{cfg.String(), fmt.Sprint(cfg), fmt.Sprintf("%+v", cfg)} {
+		if strings.Contains(s, "5a5a") || strings.Contains(s, "ZZZZ") || strings.Contains(s, "90 90") {
+			t.Fatalf("the decoy key is rendered: %s", s)
+		}
+	}
 }
 
 func mustFail(t *testing.T) error {

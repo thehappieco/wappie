@@ -1,0 +1,475 @@
+{
+  "format": "thehappieco-kit-vectors/1",
+  "module": "seal",
+  "profile": "wappie",
+  "generated_by": {
+    "lang": "ts",
+    "source": "github.com/thehappieco/wappie@8c0c1f74103bc6bb65a93b13613ad1964d4399c4 packages/client/src/crypto/seal.ts",
+    "toolchain": "node v25.6.1; @noble/hashes 2.4.0; vitest 3.2.7 (sources transpiled by vitest)",
+    "randomness": "crypto.getRandomValues and X25519 crypto.subtle.generateKey replaced for each case by an HMAC-SHA256 counter stream keyed by the case id (kitgen-random.ts); each case records the bytes it consumed",
+    "generator": "vectors/wappie/_generators/ts/packages/client/test/kitgen.spec.ts"
+  },
+  "note": "The reverse direction: grants and drafts sealed by Wappie's TypeScript (the browser seals grants, the attested reader seals drafts with this code in Node), for Go to open. Each seal records the ephemeral X25519 private key it consumed.",
+  "keys": {
+    "account-1": {
+      "private_key_b64": "jNdxW7ci+lqMAo+vhGVl3v2+o3MvKtTYcO9iSjxLLL4=",
+      "public_key_b64": "/Katq9VB2i18/2SMUGzJdHBgR4arv6xsnJr2qjAMJ0o=",
+      "x25519_private_key_b64": "jNdxW7ci+lqMAo+vhGVl3v2+o3MvKtTYcO9iSjxLLL4="
+    },
+    "account-2": {
+      "private_key_b64": "xU05W49I/3sebceCZaEu/aU7tAtHo7gB/tjP3YZ4q7U=",
+      "public_key_b64": "NUBSXaZERONc22SH3QMJDI7Ef2s8mEnwJo+A0QSc2FU=",
+      "x25519_private_key_b64": "xU05W49I/3sebceCZaEu/aU7tAtHo7gB/tjP3YZ4q7U="
+    }
+  },
+  "cases": [
+    {
+      "id": "seal/grant-row/user-0/epoch-0",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "018f3a2b-0000-7000-8000-000000000003",
+        "epoch": 0
+      },
+      "out": {
+        "row": "ee41d7a3-3d98-5146-aea5-2027e0b09bf1"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-1/epoch-0",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "00000000-0000-4000-8000-0000000000aa",
+        "epoch": 0
+      },
+      "out": {
+        "row": "343c1edf-ac0d-5dd8-a2b4-1a3a2a36003a"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-0/epoch-1",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "018f3a2b-0000-7000-8000-000000000003",
+        "epoch": 1
+      },
+      "out": {
+        "row": "f3b1adcb-437d-516c-9d27-b393fc19203f"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-1/epoch-1",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "00000000-0000-4000-8000-0000000000aa",
+        "epoch": 1
+      },
+      "out": {
+        "row": "9830f85b-664a-5e47-97d7-ec55a5d5c656"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-0/epoch-2",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "018f3a2b-0000-7000-8000-000000000003",
+        "epoch": 2
+      },
+      "out": {
+        "row": "8918ff29-7534-5d5c-b068-c8766f76f298"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-1/epoch-2",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "00000000-0000-4000-8000-0000000000aa",
+        "epoch": 2
+      },
+      "out": {
+        "row": "29b10563-3e27-5cfa-ac79-039cea6a8a3a"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-0/epoch-3",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "018f3a2b-0000-7000-8000-000000000003",
+        "epoch": 3
+      },
+      "out": {
+        "row": "32358cba-6677-5535-bc21-761e88814b4b"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-1/epoch-3",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "00000000-0000-4000-8000-0000000000aa",
+        "epoch": 3
+      },
+      "out": {
+        "row": "5f6e51fb-c954-5b38-b1a3-7f35404d9fee"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-0/epoch-255",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "018f3a2b-0000-7000-8000-000000000003",
+        "epoch": 255
+      },
+      "out": {
+        "row": "2f003511-48ed-58ed-bc2d-ed92c57f0c64"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-1/epoch-255",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "00000000-0000-4000-8000-0000000000aa",
+        "epoch": 255
+      },
+      "out": {
+        "row": "de90010f-f8db-5bf6-a1e0-c89bb3a21db4"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-0/epoch-256",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "018f3a2b-0000-7000-8000-000000000003",
+        "epoch": 256
+      },
+      "out": {
+        "row": "c75717c8-3afb-5d61-a3e2-87d626ebfd60"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-1/epoch-256",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "00000000-0000-4000-8000-0000000000aa",
+        "epoch": 256
+      },
+      "out": {
+        "row": "c5dd49d3-ad47-513b-80e6-570fca7af9cd"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-0/epoch-65535",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "018f3a2b-0000-7000-8000-000000000003",
+        "epoch": 65535
+      },
+      "out": {
+        "row": "ac90834a-b010-5964-9f7b-3df9c986169e"
+      }
+    },
+    {
+      "id": "seal/grant-row/user-1/epoch-65535",
+      "op": "seal.grant_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "user": "00000000-0000-4000-8000-0000000000aa",
+        "epoch": 65535
+      },
+      "out": {
+        "row": "6ebc6fec-35f1-5c70-b622-3c61bf89a0c2"
+      }
+    },
+    {
+      "id": "wappie/draft-row/direct",
+      "op": "wappie.draft_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "connection": "018f3a2b-0000-7000-8000-000000000013",
+        "draft": "0b6f8a52-1c1e-4b3f-9d6a-3c0e2a7f4d11",
+        "reply": null,
+        "chat_key": "5511999990000@s.whatsapp.net"
+      },
+      "out": {
+        "row": "e5638610-7ec3-5b2e-92c9-fc7c1a402c2b"
+      }
+    },
+    {
+      "id": "wappie/draft-row/reply",
+      "op": "wappie.draft_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "connection": "018f3a2b-0000-7000-8000-000000000013",
+        "draft": "0b6f8a52-1c1e-4b3f-9d6a-3c0e2a7f4d11",
+        "reply": "018f3a2b-0000-7000-8000-000000000014",
+        "chat_key": "5511999990000@s.whatsapp.net"
+      },
+      "out": {
+        "row": "f7b702c6-b3eb-5ba8-913c-84ae1a5c47ab"
+      }
+    },
+    {
+      "id": "wappie/draft-row/group",
+      "op": "wappie.draft_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "connection": "018f3a2b-0000-7000-8000-000000000013",
+        "draft": "0b6f8a52-1c1e-4b3f-9d6a-3c0e2a7f4d11",
+        "reply": null,
+        "chat_key": "120363041234567890@g.us"
+      },
+      "out": {
+        "row": "e5de9e71-7a7a-5149-86da-443a14d7edfa"
+      }
+    },
+    {
+      "id": "wappie/draft-row/lid",
+      "op": "wappie.draft_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "connection": "018f3a2b-0000-7000-8000-000000000013",
+        "draft": "0b6f8a52-1c1e-4b3f-9d6a-3c0e2a7f4d11",
+        "reply": null,
+        "chat_key": "240392312345678@lid"
+      },
+      "out": {
+        "row": "5f71d940-a15c-5ad4-9268-a1ec9e29a2a9"
+      }
+    },
+    {
+      "id": "wappie/draft-row/non-ascii",
+      "op": "wappie.draft_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "connection": "018f3a2b-0000-7000-8000-000000000013",
+        "draft": "0b6f8a52-1c1e-4b3f-9d6a-3c0e2a7f4d11",
+        "reply": null,
+        "chat_key": "ação@s.whatsapp.net"
+      },
+      "out": {
+        "row": "4b7f2409-74f9-529e-a8cc-ab293df9a549"
+      }
+    },
+    {
+      "id": "wappie/draft-row/empty-chat",
+      "op": "wappie.draft_row",
+      "in": {
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "device": "018f3a2b-0000-7000-8000-000000000002",
+        "connection": "018f3a2b-0000-7000-8000-000000000013",
+        "draft": "0b6f8a52-1c1e-4b3f-9d6a-3c0e2a7f4d11",
+        "reply": "018f3a2b-0000-7000-8000-000000000014",
+        "chat_key": ""
+      },
+      "out": {
+        "row": "1cd392ef-5ccb-531f-8e27-690817dd3cf4"
+      }
+    },
+    {
+      "id": "seal/direct/grant/user-0/epoch-1",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-1",
+        "kind": 7,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "f3b1adcb-437d-516c-9d27-b393fc19203f",
+        "epoch": 1,
+        "plaintext_b64": "AQQHCg0QExYZHB8iJSgrLjE0Nzo9QENGSUxPUlVYW14=",
+        "ephemeral_private_key_b64": "g8zKI0TZckL7ljkOb46mt38wXDf+N7JjjbkNiaApHns="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAQCNE7p+IX+9CxbJHiImtfxwhZfFyLWh6dZOeItjiunAMxyn+6nhuMgEaMnmsgERv+/KL9pyOE5km0DxIgclkqmvUl9hH0NjmgwLFS+sMYhf6Q=="
+      }
+    },
+    {
+      "id": "seal/direct/grant/user-1/epoch-1",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-2",
+        "kind": 7,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "9830f85b-664a-5e47-97d7-ec55a5d5c656",
+        "epoch": 1,
+        "plaintext_b64": "AQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX0=",
+        "ephemeral_private_key_b64": "IJJ8JO0DcSNZgLm2FvoB4lwVqaJU/4CWuxToR7iECpc="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAQCznh9QORfU4c0iP8Gs7weWIXFS5bj4yHPiqCKw9vDnDKch8L0Q5Lf9PvQe1Xt70pluabvV1XeRcyDyyA+KEwuLhIUgQoowxfBL6tXQ3HHO3Q=="
+      }
+    },
+    {
+      "id": "seal/direct/grant/user-0/epoch-3",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-1",
+        "kind": 7,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "32358cba-6677-5535-bc21-761e88814b4b",
+        "epoch": 3,
+        "plaintext_b64": "AwYJDA8SFRgbHiEkJyotMDM2OTw/QkVIS05RVFdaXWA=",
+        "ephemeral_private_key_b64": "zc2Lg/hvS6r7godCIuNrR5+v+guF4Ysx9I6hVTX+Qyg="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAwDx54ME+Q3FAq9ULohrr+G7digv0r756lyqliD+fDZ6RlxKgEfbNntdAFbv2+kJAoBLAzcMWVrJYyvwhXVxaCxHjTeUFLK/o1e4oxfe6wdgMQ=="
+      }
+    },
+    {
+      "id": "seal/direct/grant/user-1/epoch-3",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-2",
+        "kind": 7,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "5f6e51fb-c954-5b38-b1a3-7f35404d9fee",
+        "epoch": 3,
+        "plaintext_b64": "AwcLDxMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e38=",
+        "ephemeral_private_key_b64": "351Y66jXGt2J7uJ2ObsIfvGfLegiFZoxBRQd8dZIxe8="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAwBYF+ul2T9/ibF6XWfG8pHlZPdP71RN1ulvo5c+RkeNZu+UNJsjs7OHByOd9+/h9bBWNc4rOkut7p9yaeRQqkQCIHMbqjSIJr/HZj5ptrsGOQ=="
+      }
+    },
+    {
+      "id": "seal/direct/grant/user-0/epoch-65535",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-1",
+        "kind": 7,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "ac90834a-b010-5964-9f7b-3df9c986169e",
+        "epoch": 65535,
+        "plaintext_b64": "/wIFCAsOERQXGh0gIyYpLC8yNTg7PkFER0pNUFNWWVw=",
+        "ephemeral_private_key_b64": "kZgF+lWNff7MKqVBbgmJQ5cpCP9bYkWKUphkfHMD5BQ="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQH//wABTrBGH1oZd1nwD7nmtsbUIdhShP1aSOqyMpfwuYt7FAewMAywpfKTwXp/TJE1trZQYjo3wa3jJ3Eia/KSHCv6JLqqDKtO4VmUSeBuyYaYqQ=="
+      }
+    },
+    {
+      "id": "seal/direct/grant/user-1/epoch-65535",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-2",
+        "kind": 7,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "6ebc6fec-35f1-5c70-b622-3c61bf89a0c2",
+        "epoch": 65535,
+        "plaintext_b64": "/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3s=",
+        "ephemeral_private_key_b64": "7iBqMMc0KyqKBmU8DmsFX2V1WgDbb3bjgYweYNXASWY="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQH//wBPQv1fnqPleTULaENBpjtf+Ybr8Lg/ShzA/Oco7qsjSIUNkMxBjzqqzhpUK7Mdo/ncnzfi4WGl8fjQhaIe6gZ6ua/93bqnv8mFNXqcsV3CBw=="
+      }
+    },
+    {
+      "id": "seal/direct/draft/direct",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-1",
+        "kind": 14,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "e5638610-7ec3-5b2e-92c9-fc7c1a402c2b",
+        "epoch": 2,
+        "plaintext_b64": "eyJ2IjoxLCJjb25uZWN0aW9uX2lkIjoiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDEzIiwiZGV2aWNlX2lkIjoiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAyIiwiY2hhdF9rZXkiOiI1NTExOTk5OTkwMDAwQHMud2hhdHNhcHAubmV0IiwicmVwbHlfdG9fdWlkIjpudWxsLCJ0ZXh0IjoiQ29tYmluYWRvOiBzZXh0YSDDoHMgMTVoLlxuTGV2byBvcyBkb2N1bWVudG9zLiIsImNyZWF0ZWRfYXQiOiIyMDI2LTEwLTAxVDA5OjMwOjE1LjEyM1oiLCJjcm9zc19jaGF0IjpbXX0=",
+        "ephemeral_private_key_b64": "h9BwEfYkcdmtYCW6BmZOSobp0tpuPxvG8ICxrQkub4w="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAgBZcuAiAxHNtspxrvuQ5xY/u1xDiKp1HYmvOwzNLASgR7UKxm+PPZyhG9IrU3Ck00Z6yg3dciccE5reuNKL20Bnq/4gJ9vsI24SvjzZ1Ix7ZmONr5G09bICsdnrrtRVGKNDD/YX3c5OuBSVthmO52s10QvCqQ6z5jD5p0p+w8RCtlicrSQ3SkIb16LA/MEvM5hs8uGGirR1HWLMJi1M+q8zE+rsghJFqx8NwYUNZzTur905ZKptcQ/DWt4KlzMDXdrSMjopWwwi/KBFDq51zkEqKIe4Q7Ba/U4DPnHfGOeQov6sn8NsDbh1ERZfpty/+CfP0ISX2Gbu40heWvFQlSnd+ohz8pYlbfN+HQ5vqrl7/3KnR8qC5dRN1pTOnBP4nJb8Qz18Uev4iPGZfiaW5VhyEOIDK/i43JQZlblUqqKEynR2RnM7Cvy2VFwMR1WhJg=="
+      }
+    },
+    {
+      "id": "seal/direct/draft/reply",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-1",
+        "kind": 14,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "f7b702c6-b3eb-5ba8-913c-84ae1a5c47ab",
+        "epoch": 2,
+        "plaintext_b64": "eyJ2IjoxLCJjb25uZWN0aW9uX2lkIjoiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDEzIiwiZGV2aWNlX2lkIjoiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAyIiwiY2hhdF9rZXkiOiI1NTExOTk5OTkwMDAwQHMud2hhdHNhcHAubmV0IiwicmVwbHlfdG9fdWlkIjoiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDE0IiwidGV4dCI6IkNvbWJpbmFkbzogc2V4dGEgw6BzIDE1aC5cbkxldm8gb3MgZG9jdW1lbnRvcy4iLCJjcmVhdGVkX2F0IjoiMjAyNi0xMC0wMVQwOTozMDoxNS4xMjNaIiwiY3Jvc3NfY2hhdCI6W119",
+        "ephemeral_private_key_b64": "GTEK7l8oK+5n8bVP1TrfVDv0jN4b6frPkSw66y3DpKg="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAgAha/+T6CKrBmy516Q+0MJV431U6R74h3MLSboWlhAEMGotSKtR0wtE5OcHgjM3IaLlKtrfnBu+Ggnfk/9FV0Rxi7TRE0im3PPRcqRoJDV6vzzkhzbvjaMDk1C3iz5ylC9+refC8VF4ImDCInul8WURa5HNCkIH3phnqfGzwEiWa9ZbYJmUVQUlJoG7qHm5BoEOElbnSSjYS25Yb4oxyTSgZqdUtTG4bQDBRbvchC34BbL7l3+U2lQM2yEMfSevTw5RMLGNYYa98VNbKpuw4Z++CX8inxCzijHJmIm8b7MdDKhiUxmG3qbKY/fYD0jKvBHAm+xRX1+6nWbCtMrG8Ma111lEKDFwFzFRJGi3aovs/8lUXt1QaSmUfEYWSr8aPnJBlxY0ShlLx1T80SnWjIDB9agf3kgb//lq1N/7X+qb4M/KuU2HIu1dmuC+1nVP9mWqu7p6JEI8hGjeWteyC0KCdMaGvK0nTDUyOO0NnM9ZCoA="
+      }
+    },
+    {
+      "id": "seal/direct/draft/group",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-1",
+        "kind": 14,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "e5de9e71-7a7a-5149-86da-443a14d7edfa",
+        "epoch": 2,
+        "plaintext_b64": "eyJ2IjoxLCJjb25uZWN0aW9uX2lkIjoiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDEzIiwiZGV2aWNlX2lkIjoiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAyIiwiY2hhdF9rZXkiOiIxMjAzNjMwNDEyMzQ1Njc4OTBAZy51cyIsInJlcGx5X3RvX3VpZCI6bnVsbCwidGV4dCI6IkNvbWJpbmFkbzogc2V4dGEgw6BzIDE1aC5cbkxldm8gb3MgZG9jdW1lbnRvcy4iLCJjcmVhdGVkX2F0IjoiMjAyNi0xMC0wMVQwOTozMDoxNS4xMjNaIiwiY3Jvc3NfY2hhdCI6W119",
+        "ephemeral_private_key_b64": "f5X2l4UQkbtFF7osTj4a25F52wPQcqQX7tUGGqAxrHg="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAgBRqmLJ4uA9m1U0UjOowf87eNMWj/8nAlmm3sHoviqSGv2Yo72ylGV4ZUfSR/9dtLJHGXY3jLp1htr/I5bVgj6ScSIDbcsDHBuD/S0ibL/vv51k7GPrfUKlYvFFYwrjEDucsCeA7F8WhR/qsyDLSRnhWHFFGBKzVIc5dTINdB9uNe53Ff2GfffnJ18bmyeGVqVC9f8o8Cyj1ewJgotShj1OeBS8iMJSR5+XiVy+j767UDCXE9gmppSY5Uljs7vxGhk7JDph1DQirQryyqb45NXUPvMNiQu+aCaP4SP5qA9KDEAQVQY0O6re+QS+Nkn9BekKOQ5Po8lH7kK4kgU7gJMShCpqYiO16KmpskwzLNeb0nT/3zvYEHyhHOgkkgjW45tEbr7lCY7dDmXItJC8tGpk1KluY/p4z4FqT9PpiDdXpa19J5Gs3AFVNLA="
+      }
+    },
+    {
+      "id": "seal/direct/content-key-kind",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-1",
+        "kind": 6,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "11111111-1111-7111-8111-111111111111",
+        "epoch": 1,
+        "plaintext_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "ephemeral_private_key_b64": "mveh5QOYff+zTGNQl9dvhn8bF2iyxRBejdxVdBrhuGQ="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEAAQCPEFIQDDRGMjXNwrTPaXGRB1pOLZEYR4Swoe6aJyKJQXE+L3K6kKOYNyqKN7k7IdfSENIEb53mw9SG5eiDgZhJxKpZ2Vq5EOhKLp2x+x+Kew=="
+      }
+    },
+    {
+      "id": "seal/direct/reserved-kind",
+      "op": "seal.seal_direct",
+      "in": {
+        "key": "account-2",
+        "kind": 15,
+        "tenant": "018f3a2b-0000-7000-8000-000000000001",
+        "row": "22222222-2222-7222-8222-222222222222",
+        "epoch": 9,
+        "plaintext_b64": "",
+        "ephemeral_private_key_b64": "l4iF/cvjfK43bCdMJc6FhdKOfql9mDdAaLs91yhvabg="
+      },
+      "out": {
+        "envelope_b64": "V1MBAQEACQDNqZq8/M8aZjJzB5n0SJrjXyKhcu4S1CTqYazhREnEOkBXjzysDyzpmtLv3r4+rns="
+      }
+    }
+  ]
+}

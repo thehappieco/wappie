@@ -134,12 +134,11 @@ func TestRotationClosesThePreviousKey(t *testing.T) {
 func TestKeyRotatesOnAge(t *testing.T) {
 	pub, _ := keys(t)
 	store := newMemKeys()
-	s, err := seal.NewSealer(tenant, testDevice, pub, 1, store)
+	now := time.Now()
+	s, err := seal.NewSealerWithClockForTest(tenant, testDevice, pub, 1, store, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now()
-	seal.SetClockForTest(s, func() time.Time { return now })
 
 	ctx := context.Background()
 	if _, err := s.Seal(ctx, seal.KindBody, rowA, []byte("x")); err != nil {

@@ -1,0 +1,249 @@
+{
+  "format": "thehappieco-kit-vectors/1",
+  "module": "browser_account",
+  "profile": "wappie",
+  "generated_by": {
+    "lang": "ts",
+    "source": "github.com/thehappieco/wappie@8c0c1f74103bc6bb65a93b13613ad1964d4399c4 packages/client/src/crypto/browserAccount.ts",
+    "toolchain": "node v25.6.1; @noble/hashes 2.4.0; vitest 3.2.7 (sources transpiled by vitest)",
+    "randomness": "none recorded: the AES key is generated non-extractable and cannot be replayed",
+    "generator": "vectors/wappie/_generators/ts/packages/client/test/kitgen.spec.ts"
+  },
+  "note": "The browser key-at-rest envelope. The key itself is non-extractable, so only its AAD (computed independently and proven by decryption) and the envelope validation are vectored.",
+  "cases": [
+    {
+      "id": "browser-account/aad/uuid",
+      "op": "browser_account.aad",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "user_id": "018f3a2b-0000-7000-8000-000000000003",
+        "public_key_b64": "azDUTrVP3+pkiArWDg9W9ACzIqfeQ7jQB/8RgDLJkxI="
+      },
+      "out": {
+        "aad_b64": "WyJ3YXBwaWUvYnJvd3Nlci1hY2NvdW50LWtleSIsMSwiMDE4ZjNhMmItMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAzIiwiYXpEVVRyVlAzK3BraUFyV0RnOVc5QUN6SXFmZVE3alFCLzhSZ0RMSmt4ST0iXQ=="
+      }
+    },
+    {
+      "id": "browser-account/aad/escapes",
+      "op": "browser_account.aad",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "user_id": "user \"one\"\\ ",
+        "public_key_b64": "azDUTrVP3+pkiArWDg9W9ACzIqfeQ7jQB/8RgDLJkxI="
+      },
+      "out": {
+        "aad_b64": "WyJ3YXBwaWUvYnJvd3Nlci1hY2NvdW50LWtleSIsMSwidXNlciBcIm9uZVwiXFzigKgiLCJhekRVVHJWUDMrcGtpQXJXRGc5VzlBQ3pJcWZlUTdqUUIvOFJnRExKa3hJPSJd"
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/valid",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": false,
+        "algorithm": "AES-GCM",
+        "length": 256,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 48,
+        "public_len": 32
+      },
+      "out": {
+        "valid": true
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/version-2",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 2,
+        "extractable": false,
+        "algorithm": "AES-GCM",
+        "length": 256,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 48,
+        "public_len": 32
+      },
+      "out": {
+        "valid": false
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/extractable",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": true,
+        "algorithm": "AES-GCM",
+        "length": 256,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 48,
+        "public_len": 32
+      },
+      "out": {
+        "valid": false
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/aes-128",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": false,
+        "algorithm": "AES-GCM",
+        "length": 128,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 48,
+        "public_len": 32
+      },
+      "out": {
+        "valid": false
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/decrypt-only",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": false,
+        "algorithm": "AES-GCM",
+        "length": 256,
+        "usages": [
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 48,
+        "public_len": 32
+      },
+      "out": {
+        "valid": false
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/nonce-11",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": false,
+        "algorithm": "AES-GCM",
+        "length": 256,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 11,
+        "ciphertext_len": 48,
+        "public_len": 32
+      },
+      "out": {
+        "valid": false
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/ciphertext-47",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": false,
+        "algorithm": "AES-GCM",
+        "length": 256,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 47,
+        "public_len": 32
+      },
+      "out": {
+        "valid": false
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/public-31",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": false,
+        "algorithm": "AES-GCM",
+        "length": 256,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 48,
+        "public_len": 31
+      },
+      "out": {
+        "valid": false
+      }
+    },
+    {
+      "id": "browser-account/valid-envelope/hmac-key",
+      "op": "browser_account.valid_envelope",
+      "langs": [
+        "ts"
+      ],
+      "in": {
+        "version": 1,
+        "extractable": false,
+        "algorithm": "HMAC",
+        "length": 256,
+        "usages": [
+          "encrypt",
+          "decrypt"
+        ],
+        "nonce_len": 12,
+        "ciphertext_len": 48,
+        "public_len": 32
+      },
+      "out": {
+        "valid": false
+      }
+    }
+  ]
+}

@@ -206,6 +206,17 @@ func (f *contentFixture) membershipExpiry(ctx context.Context, t *testing.T, use
 	return at
 }
 
+// dbTime reads one time in the workspace's transaction. A time the database
+// computed from now() is checked against the database's own clock or rows,
+// never against time.Now(): the database's clock can drift from this host's
+// (a Docker Desktop VM under load drifted by minutes).
+func (f *contentFixture) dbTime(ctx context.Context, t *testing.T, query string, args ...any) time.Time {
+	t.Helper()
+	var at time.Time
+	f.inTenant(ctx, t, func(tx pgx.Tx) error { return tx.QueryRow(ctx, query, args...).Scan(&at) })
+	return at
+}
+
 func allowAll(uuid.UUID) bool { return true }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +227,10 @@ func TestCreateContentConnectionInvariants(t *testing.T) {
 
 	t.Run("the consent the console builds", func(t *testing.T) {
 		c := f.prepareContent(ctx, t, f.owner)
-		// Provisional: the account's membership has the consent's window.
-		if at := f.membershipExpiry(ctx, t, c.service); at == nil || time.Until(*at) > store.ProvisionalServiceTTL || time.Until(*at) < 25*time.Minute {
+		// Provisional: the account's membership has the consent's window, by
+		// the clock that set it.
+		now := f.dbTime(ctx, t, `SELECT now()`)
+		if at := f.membershipExpiry(ctx, t, c.service); at == nil || at.Sub(now) > store.ProvisionalServiceTTL || at.Sub(now) < 25*time.Minute {
 			t.Fatalf("provisional membership expires %v", at)
 		}
 		conn, err := f.conns.Create(ctx, f.tenant, f.owner, c.in)

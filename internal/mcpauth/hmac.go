@@ -1,18 +1,11 @@
 package mcpauth
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
-	"encoding/hex"
-	"errors"
 	"net/http"
-	"strconv"
-	"strings"
-	"sync"
 	"time"
+
+	"github.com/thehappieco/kit/profiles/wappie"
+	"github.com/thehappieco/kit/reqhmac"
 )
 
 // Request authentication between this server and an attested reader.
@@ -24,14 +17,20 @@ import (
 // with a direction so that a request signed for one side cannot be replayed
 // to the other, and a receiver refuses anything stale or already seen. A
 // bearer secret would be replayable by anyone who ever saw one request.
+//
+// The scheme is the shared kit's request signature
+// (github.com/thehappieco/kit/reqhmac), which started as this file, under
+// Wappie's label wappie-mcp-hmac/v1 and headers. The refusal codes are the
+// ones this server has always logged.
 
 // Directions, as they appear in the canonical string.
 const (
-	DirectionToReader = "to-reader"
-	DirectionToGo     = "to-go"
+	DirectionToReader = wappie.DirectionToReader
+	DirectionToGo     = wappie.DirectionToGo
 )
 
-// The headers every signed request carries.
+// The headers every signed request carries: the scheme's own, named here as
+// constants for the routes and tests that set them.
 const (
 	HeaderReader    = "X-Wappie-Reader"
 	HeaderTimestamp = "X-Wappie-Timestamp"
@@ -39,55 +38,26 @@ const (
 	HeaderSignature = "X-Wappie-Signature"
 )
 
-const (
-	hmacScheme = "wappie-mcp-hmac/v1"
-	// hmacSkew is how far a timestamp may be from this server's clock.
-	hmacSkew = 60 * time.Second
-	// replayLifetime is how long a nonce is remembered past its timestamp:
-	// one second longer than any timestamp stays acceptable.
-	replayLifetime = hmacSkew + time.Second
-	// replayCap bounds the nonces held at once, after expired ones are
-	// swept. A reader at its rate limits sends a few per second; a hundred
-	// thousand live nonces is a flood, and the answer to a flood is 503.
-	replayCap = 100_000
-	// nonceLen is 16 random bytes in unpadded base64url.
-	nonceLen = 22
-)
+// mcpHMAC is the wappie-mcp-hmac/v1 scheme: its label, the four headers above
+// and a skew of sixty seconds either way of this server's clock.
+var mcpHMAC = wappie.MCPHMAC()
+
+// replayCap bounds the nonces held at once, after expired ones are swept. A
+// reader at its rate limits sends a few per second; a hundred thousand live
+// nonces is a flood, and the answer to a flood is 503.
+const replayCap = wappie.ReplayCapacity
 
 // Signature computes the v1 signature of one request: HMAC-SHA256, keyed with
 // the secret's bytes as written, over the canonical string. The target is
 // the raw path and query exactly as on the request line.
 func Signature(secret, direction, readerID, method, target, timestamp, nonce string, body []byte) string {
-	sum := sha256.Sum256(body)
-	canonical := strings.Join([]string{
-		hmacScheme, direction, readerID, strings.ToUpper(method), target, timestamp, nonce, hex.EncodeToString(sum[:]),
-	}, "\n")
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(canonical))
-	return "v1=" + hex.EncodeToString(mac.Sum(nil))
+	return mcpHMAC.Signature(secret, direction, readerID, method, target, timestamp, nonce, body)
 }
 
 // sign adds the four headers to an outgoing request. The target signed is
 // the one Go writes on the request line, so the receiver sees the same bytes.
 func sign(req *http.Request, secret, readerID string, body []byte, now time.Time) error {
-	nonce, err := newNonce()
-	if err != nil {
-		return err
-	}
-	timestamp := strconv.FormatInt(now.Unix(), 10)
-	req.Header.Set(HeaderReader, readerID)
-	req.Header.Set(HeaderTimestamp, timestamp)
-	req.Header.Set(HeaderNonce, nonce)
-	req.Header.Set(HeaderSignature, Signature(secret, DirectionToReader, readerID, req.Method, req.URL.RequestURI(), timestamp, nonce, body))
-	return nil
-}
-
-func newNonce() (string, error) {
-	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
+	return mcpHMAC.Sign(req.Header, secret, DirectionToReader, readerID, req.Method, req.URL.RequestURI(), body, now)
 }
 
 // signedHeaders is what a received request claims about itself.
@@ -98,104 +68,49 @@ type signedHeaders struct {
 	signature string
 }
 
-// errHMACMissing and errHMACStale are the two ways the headers alone fail.
-var (
-	errHMACMissing = errors.New("hmac_missing")
-	errHMACStale   = errors.New("hmac_stale")
-)
-
 // readSignedHeaders checks that the timestamp, nonce and signature are each
 // present once and well formed, and that the timestamp is within the skew.
-// The reader header is the caller's to check, before this.
+// The reader header is the caller's to check, before this. The two ways the
+// headers alone fail are reqhmac.ErrMissing and reqhmac.ErrStale, whose texts
+// (hmac_missing, hmac_stale) are the codes refuse logs.
 func readSignedHeaders(h http.Header, now time.Time) (signedHeaders, error) {
-	one := func(name string) (string, bool) {
-		values := h.Values(name)
-		return strings.Join(values, ""), len(values) == 1
-	}
-	timestamp, okT := one(HeaderTimestamp)
-	nonce, okN := one(HeaderNonce)
-	signature, okS := one(HeaderSignature)
-	if !okT || !okN || !okS || !validTimestamp(timestamp) || !validNonce(nonce) || !validSignature(signature) {
-		return signedHeaders{}, errHMACMissing
-	}
-	unix, err := strconv.ParseInt(timestamp, 10, 64)
+	got, err := mcpHMAC.Read(h, now)
 	if err != nil {
-		return signedHeaders{}, errHMACMissing
+		return signedHeaders{}, err
 	}
-	if skew := now.Unix() - unix; skew > int64(hmacSkew/time.Second) || skew < -int64(hmacSkew/time.Second) {
-		return signedHeaders{}, errHMACStale
-	}
-	return signedHeaders{timestamp: timestamp, unix: unix, nonce: nonce, signature: signature}, nil
-}
-
-// validTimestamp is decimal Unix seconds with no sign and no leading zero.
-func validTimestamp(s string) bool {
-	if s == "" || len(s) > 18 || s[0] == '0' {
-		return false
-	}
-	return !strings.ContainsFunc(s, func(c rune) bool { return c < '0' || c > '9' })
-}
-
-func validNonce(s string) bool {
-	return len(s) == nonceLen && !strings.ContainsFunc(s, func(c rune) bool { return !base64urlChar(c) })
-}
-
-func validSignature(s string) bool {
-	digest, ok := strings.CutPrefix(s, "v1=")
-	return ok && len(digest) == 64 && isHex(digest)
+	return signedHeaders{timestamp: got.Timestamp, unix: got.Unix, nonce: got.Nonce, signature: got.Signature}, nil
 }
 
 // signedBy reports whether any of the secrets produced the signature. Every
 // secret is tried, with no early exit, so the time taken does not say which
 // one matched or how close a guess came.
 func signedBy(secrets []string, got signedHeaders, direction, readerID, method, target string, body []byte) bool {
-	matched := 0
-	for _, secret := range secrets {
-		want := Signature(secret, direction, readerID, method, target, got.timestamp, got.nonce, body)
-		matched |= subtle.ConstantTimeCompare([]byte(want), []byte(got.signature))
-	}
-	return matched == 1
+	signed := reqhmac.Signed{Timestamp: got.timestamp, Unix: got.unix, Nonce: got.nonce, Signature: got.signature}
+	return mcpHMAC.SignedBy(secrets, signed, direction, readerID, method, target, body)
 }
 
 // replayCache remembers the nonces of accepted requests until they could no
 // longer be accepted anyway. It is filled only after a signature checks, so
 // nobody without a secret can put anything in it.
 type replayCache struct {
-	mu       sync.Mutex
-	seen     map[string]time.Time
-	capacity int
+	*reqhmac.ReplayCache
 }
 
 // errReplay and errReplayFull are the two refusals.
 var (
-	errReplay     = errors.New("hmac_replay")
-	errReplayFull = errors.New("replay_cache_full")
+	errReplay     = reqhmac.ErrReplay
+	errReplayFull = reqhmac.ErrReplayFull
 )
 
+// newReplayCache remembers each nonce one second longer than its timestamp
+// stays acceptable.
 func newReplayCache(capacity int) *replayCache {
-	return &replayCache{seen: map[string]time.Time{}, capacity: capacity}
+	return &replayCache{reqhmac.NewReplayCache(capacity, wappie.ReplayLifetime)}
 }
 
 // admit records a nonce, or says it was seen or that there is no room. A
 // full cache fails closed: refusing a genuine request is a retry, and
 // accepting one unremembered would be a replay window.
 func (c *replayCache) admit(direction, readerID, nonce string, timestamp int64, now time.Time) error {
-	key := direction + "\x00" + readerID + "\x00" + nonce
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if until, ok := c.seen[key]; ok && until.After(now) {
-		return errReplay
-	}
-	if len(c.seen) >= c.capacity {
-		for k, until := range c.seen {
-			if !until.After(now) {
-				delete(c.seen, k)
-			}
-		}
-		if len(c.seen) >= c.capacity {
-			return errReplayFull
-		}
-	}
-	c.seen[key] = time.Unix(timestamp, 0).Add(replayLifetime)
-	return nil
+	return c.Admit(direction, readerID, nonce, timestamp, now)
 }

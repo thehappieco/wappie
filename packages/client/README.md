@@ -2,8 +2,13 @@
 
 Apache-2.0 client for the public HTTP/WebSocket API, account authentication,
 passkeys, sealed archive and media formats. It has no Vue or private application
-dependency. The only runtime dependency is Argon2id (`@noble/hashes`); encryption
-uses WebCrypto. Node 22+ or a modern secure-context browser is required.
+dependency. The only runtime dependency is the shared kit, `@thehappieco/kit`
+(github.com/thehappieco/kit), installed from its release asset and pinned by
+integrity in `package-lock.json`: HPKE, the sealed envelope, the account scheme,
+passkey wraps and the key at rest, which `src/crypto` binds to Wappie's labels
+under the names this package has always exported. The kit brings Argon2id
+(`@noble/hashes`); everything else uses WebCrypto. Node 22+ or a modern
+secure-context browser is required.
 
 From this directory:
 
@@ -15,6 +20,10 @@ npm test
 
 The tests use the public server's committed Go vectors and a browser-created
 fixture in `testdata/browser-grant.json` which the Go tests independently open.
+`test/kit.spec.ts` runs the kit's own vectors through this package's wrappers,
+from copies in `test/kit` that `node test/kit/copy.mjs` takes from the kit
+version the Go module requires (run it after bumping the kit; Go's
+`TestFixturesMatchTheKit` fails until the copies match).
 The WebSocket tests run a real local server and check request routing and closes.
 
 ```ts
@@ -31,11 +40,14 @@ connection.close()
 ```
 
 Subpath exports include `api/auth`, `api/rest`, `api/passkeys`, `api/media`, `api/upload`,
-`api/opener`, `api/protocol`, and `crypto/{bytes,hpke,seal,account,passkey,wamedia,attestation,jcs,derived,aikeychain}`.
+`api/opener`, `api/protocol`, and `crypto/{bytes,hpke,seal,account,passkey,browserAccount,contactPack,wamedia,attestation,jcs,derived,aikeychain}`.
 `crypto/derived` opens the AI results the attested reader stores (and computes their
 dedupe tags); `crypto/aikeychain` seals and opens a person's AI provider keys under a
 key only their account's private key derives (docs/mcp-enclave.md §18.6, §18.8).
-Build output includes types and browser KDF worker source. Applications may call
+Build output includes types; the browser KDF worker is the kit's
+(`@thehappieco/kit/dist/kdf.worker.js`, started beside its account module), so a
+bundler that pre-bundles dependencies must leave `@thehappieco/kit` out of that
+step and serve this package's dependencies. Applications may call
 `setMessageResolver` from `messages` to translate diagnostics. Error codes and
 server diagnostic details remain available without any UI framework.
 

@@ -44,8 +44,8 @@ func TestReplayCache(t *testing.T) {
 	if err := c.admit(DirectionToGo, "enclave", "a", later.Unix(), later); err != nil {
 		t.Fatalf("a lapsed nonce is new again: %v", err)
 	}
-	if len(c.seen) != 2 {
-		t.Fatalf("cache holds %d entries after the sweep", len(c.seen))
+	if c.Len() != 2 {
+		t.Fatalf("cache holds %d entries after the sweep", c.Len())
 	}
 }
 

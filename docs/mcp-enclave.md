@@ -442,7 +442,12 @@ the state out, then drop).
 
 Each reader release publishes on the public GitHub release `reader-v<version>`
 (`thehappieco/wappie`): the EIF, `measurements.json`, the canonical policies
-and their hashes. The image goes to `ghcr.io/thehappieco/wappie-reader@sha256:…`.
+and their hashes, `SHA256SUMS`, and every file of `tarballs/`: each npm
+tarball the image installs from outside the registry (the shared kit's
+release asset `thehappieco-kit-<v>.tgz`, SheetJS's `xlsx-<v>.tgz`), exactly
+as `build.sh` fetched it and checked it against its lock's integrity. A third
+party rebuilding the image then needs only this release, the source commit
+and the registry. The image goes to `ghcr.io/thehappieco/wappie-reader@sha256:…`.
 `deploy/enclave/build.sh` (DEPLOY) writes `measurements.json`:
 
 ```json
@@ -623,7 +628,10 @@ The pinned root has SHA-256 fingerprint `64:1A:03:21:A3:E2:44:EF:E4:56:46:31:95:
 
 **DEPLOY ↔ ENCLAVE:** the image runs `node /app/packages/mcp-http/enclave/main.mjs`,
 with the enclave dependencies from `packages/mcp-http/enclave/package-lock.json`
-installed `--omit=dev`. `nsm-attest` is at `/usr/local/bin/nsm-attest`, with
+installed `--omit=dev`. The client's come from `packages/client/package-lock.json`,
+which takes the shared kit (`@thehappieco/kit`, the envelope, HPKE and the
+account scheme) from its GitHub release asset, pinned by integrity: a kit
+bump that changes a shipped file is a new PCR0. `nsm-attest` is at `/usr/local/bin/nsm-attest`, with
 the spike's argument and exit-code contract.
 
 ## 12. DNS records the owner adds at GoDaddy
@@ -2219,8 +2227,11 @@ enclave package's dependencies are exactly
 `@aws-sdk/client-kms` and `asn1js`; and, with `--jail` (privileged, arm64,
 cgroup v2 host), the §16.13 corpus through `runWorker` under media-jail.
 `build.sh` writes `capabilities` (`READER_CAPABILITIES`) and a dependency
-manifest into `measurements.json`: both npm locks, and the sha256 of every
-tarball the worker lock pins from outside the npm registry.
+manifest into `measurements.json`: every npm lock the image is installed
+from (client, mcp, mcp-http, the reader's and the workers'), and the sha256
+of every tarball a lock pins from outside the npm registry (the kit's release
+asset, SheetJS), each kept as `tarballs/<name>` (its `file`) for the reader
+release (§9).
 
 **Kernel requirements.** Required, and present on the blob:
 `CONFIG_MEMCG`, `CONFIG_CGROUP_PIDS`, `CONFIG_SECCOMP_FILTER`,
@@ -3104,7 +3115,7 @@ images. The plan note stays: Plus, Pro, Business, Enterprise and Edu.
    only for a fault in the server itself.
 
 **Parser CVEs.** `measurements.json` carries the dependency manifest
-(§16.6); DOCSOPS runs OSV and `npm audit` over both locks weekly, and the
+(§16.6); DOCSOPS runs OSV and `npm audit` over its locks weekly, and the
 §16.13 corpus with a fuzzer nightly. Dependency updates ship in a monthly
 batched release. An exploited or critical CVE in a parser: that kind goes
 into `WS_MCP_MEDIA_OFF_KINDS` at once (rollback 1), and a security release
@@ -3914,11 +3925,15 @@ is the own chat's JID `<devices.pn user>@s.whatsapp.net` (a device with no
 (5) the §17.10 text rules again (422 `text_not_allowed`); (6) in one short
 transaction under the row lock: the connection's sends in the rolling day
 below `PER_DAY`, the chat's below `PER_CHAT_PER_DAY` (S3), the last send at
-least `MIN_INTERVAL` ago, and the workspace's below `TENANT_PER_DAY`
+least `MIN_INTERVAL` ago (both ends are `clock_timestamp()` under the lock,
+never a transaction's start: a send that began first and waited behind the
+last one is held to the time since it, and no two sends are closer than
+`MIN_INTERVAL` in the ledger), and the workspace's below `TENANT_PER_DAY`
 (counted under `pg_advisory_xact_lock(hashtextextended('mcp_send:' ||
 tenant_id, 0))`, so two connections cannot pass it together); then insert
-`sending` with `client_ref` (and, for `self`, the own chat's JID as
-`chat_key`), commit. A repeated `client_ref` answers
+`sending` with `created_at = clock_timestamp()` and `client_ref` (and, for
+`self`, the own chat's JID as `chat_key`), commit. A repeated
+`client_ref` answers
 the recorded outcome with `duplicate: true` (200 for `sent`, 502
 `send_uncertain` for `uncertain`, the recorded 4xx for `refused`) or 409
 `send_in_progress` for `sending`; (7) the registry: a device not running
