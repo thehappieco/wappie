@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/hex"
 	"errors"
 	"net"
 	"net/mail"
@@ -30,20 +29,12 @@ type SMTP struct {
 func (s SMTP) Configured() bool { return s.Address != "" && s.From != "" }
 
 func loadSignup(errs *[]error) Signup {
-	s := Signup{
-		Enabled: boolean("WS_PUBLIC_SIGNUP", false, errs),
-		AppURL:  strings.TrimSpace(os.Getenv("WS_APP_URL")),
-		SMTP:    SMTP{Address: strings.TrimSpace(os.Getenv("WS_SMTP_ADDR")), Username: os.Getenv("WS_SMTP_USERNAME"), Password: os.Getenv("WS_SMTP_PASSWORD"), From: strings.TrimSpace(os.Getenv("WS_MAIL_FROM")), TLSMode: str("WS_SMTP_TLS", "starttls")},
+	return Signup{
+		Enabled:             boolean("WS_PUBLIC_SIGNUP", false, errs),
+		AppURL:              strings.TrimSpace(os.Getenv("WS_APP_URL")),
+		InviteEncryptionKey: hexKey("WS_INVITE_ENCRYPTION_KEY_HEX", errs),
+		SMTP:                SMTP{Address: strings.TrimSpace(os.Getenv("WS_SMTP_ADDR")), Username: os.Getenv("WS_SMTP_USERNAME"), Password: os.Getenv("WS_SMTP_PASSWORD"), From: strings.TrimSpace(os.Getenv("WS_MAIL_FROM")), TLSMode: str("WS_SMTP_TLS", "starttls")},
 	}
-	if value := os.Getenv("WS_INVITE_ENCRYPTION_KEY_HEX"); value != "" {
-		key, err := hex.DecodeString(value)
-		if err != nil || len(key) != 32 {
-			*errs = append(*errs, errors.New("WS_INVITE_ENCRYPTION_KEY_HEX must be a 32-byte hex key"))
-		} else {
-			s.InviteEncryptionKey = key
-		}
-	}
-	return s
 }
 
 func (s Signup) Validate(prod bool) error {

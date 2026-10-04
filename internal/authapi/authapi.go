@@ -267,8 +267,8 @@ func (h *Handler) challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Answers for addresses that have no account too, with a salt derived from
-	// the address. Otherwise this endpoint would tell an unauthenticated caller
-	// which addresses exist, one request at a time.
+	// the address under a server secret. Otherwise this endpoint would tell an
+	// unauthenticated caller which addresses exist, one request at a time.
 	send(w, http.StatusOK, challengeReply{Salt: b64(salt), Params: params})
 }
 

@@ -12,7 +12,10 @@ storage. Create the human account with the public CLI before pairing. Keep the
 application database role non-superuser and without BYPASSRLS.
 
 `WS_ENV=prod` requires verified TLS for PostgreSQL and HTTPS for configured object
-storage. Put the API behind an HTTPS proxy that preserves Host and WebSocket
+storage, and `WS_LOGIN_DECOY_KEY_HEX`: 32 random bytes in hex
+(`openssl rand -hex 32`), kept in the secret store and unchanged across
+restarts. It keys the sign-in challenge answered for an address with no
+account, so nobody can compute that answer and compare. Put the API behind an HTTPS proxy that preserves Host and WebSocket
 upgrades. Keep metrics on a private listener with `WS_METRICS_ADDR`.
 `deploy/compose.yaml` builds the public-only image and uses your external
 PostgreSQL/S3 settings from `.env`; `docker-compose.dev.yml` provides local test
