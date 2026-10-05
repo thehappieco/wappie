@@ -39,8 +39,19 @@
 --                            failed link attempts.
 --   security_events          refusals and links worth an operator's eye. No
 --                            token, key or address is ever stored here.
---   sessions.step_up_*       a recent re-authentication at the provider, for
---                            the step-ups of a later release; unused here.
+--   sessions.step_up_not_before
+--                            when this session last asked the provider to
+--                            re-authenticate its person, for the step-up of
+--                            step 4 (owner decision D3); unused here. The
+--                            proof itself is 0047's authenticated_at, the
+--                            one record every step-up writes, so this adds
+--                            no second one: a re-authentication counts only
+--                            if the provider's userinfo reports an
+--                            auth_time at or after this, which keeps an
+--                            earlier sign-in at the provider from passing
+--                            for one (internal/stepup). A session started
+--                            through the provider holds no proof until then
+--                            (authenticated_at is -infinity).
 --
 -- None of the new tables carries row-level security: each is read before a
 -- workspace is known, as sessions and user_logins are, and none holds a
@@ -59,8 +70,11 @@
 -- provider exists (one with no password to fall back to): delete those
 -- accounts explicitly first. A linked account becomes a local one again and
 -- signs in with its old password; its passkeys and sessions, revoked at the
--- link, stay revoked. The pins go with their table, so a later 0048 trusts
--- the provider's key again at each account's next first sign-in.
+-- link, stay revoked, and the sessions it started through the provider are
+-- signed out too: they hold no step-up proof (authenticated_at is -infinity,
+-- which the older binary cannot read), and they came through a provider the
+-- older binary does not know. The pins go with their table, so a later 0048
+-- trusts the provider's key again at each account's next first sign-in.
 --
 --      BEGIN;
 --      SELECT pg_advisory_xact_lock(6289348710053007958);
@@ -72,6 +86,7 @@
 --        END IF;
 --      END $$;
 --      UPDATE users SET auth_source = 'local' WHERE auth_source = 'platform';
+--      UPDATE sessions SET revoked_at = now() WHERE authenticated_at = '-infinity' AND revoked_at IS NULL;
 --      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 --      ALTER TABLE users FORCE ROW LEVEL SECURITY;
 --      DROP TABLE platform_login_tickets;
@@ -81,7 +96,7 @@
 --      DROP TABLE security_events;
 --      DROP FUNCTION platform_insert_only();
 --      DROP FUNCTION platform_identity_guard();
---      ALTER TABLE sessions DROP COLUMN step_up_at, DROP COLUMN step_up_not_before;
+--      ALTER TABLE sessions DROP COLUMN step_up_not_before;
 --      ALTER TABLE users DROP CONSTRAINT users_credentials_by_source;
 --      ALTER TABLE users ADD CONSTRAINT users_service_has_no_password CHECK (
 --          (role = 'service' AND auth_hash IS NULL AND wrapped_usk IS NULL)
@@ -159,7 +174,7 @@ CREATE TABLE security_events (
 );
 CREATE INDEX security_events_by_time ON security_events (created_at);
 
-ALTER TABLE sessions ADD COLUMN step_up_at timestamptz, ADD COLUMN step_up_not_before timestamptz;
+ALTER TABLE sessions ADD COLUMN step_up_not_before timestamptz;
 
 -- Insert only. A row of these tables is never changed or removed by the
 -- application; a removal is let through only when it cascades from an

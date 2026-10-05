@@ -440,8 +440,12 @@ func (h *Handler) accountKeyChanged(ctx context.Context, ui *oidcrp.Userinfo) {
 // page opens the account key from platform_wrap and has no use for it.
 // /v1/auth/me still returns it to the session (docs/platform-sign-in.md,
 // "The rollback window").
+//
+// The session holds no step-up proof: a sign-in through the provider proves
+// nothing to this server until step 4 takes the provider's re-authentication
+// (internal/stepup), so every write that needs one is refused until then.
 func (h *Handler) platformIssue(w http.ResponseWriter, r *http.Request, user store.User, reply platformReply) {
-	token, session, err := h.Users.StartSession(r.Context(), user, r.UserAgent())
+	token, session, err := h.Users.StartPlatformSession(r.Context(), user, r.UserAgent())
 	if err != nil {
 		h.log().Error("could not start a session", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not start a session")

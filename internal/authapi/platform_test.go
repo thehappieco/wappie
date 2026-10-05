@@ -23,6 +23,7 @@ import (
 	"whatserver2/internal/config"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 )
 
@@ -613,6 +614,94 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 	}
 }
 
+// An account that signs in through the provider steps up there (decision
+// D3, step 4), which this server does not take yet: its sign-in is no proof,
+// so a write that needs one is refused with step_up_required, the status
+// says provider, and its passkey and password step-ups, and a Wappie passkey
+// of its own, are refused by name. With the provider unset (a rollback), the
+// linked account's legacy password steps it up again.
+func TestPlatformAccountStepsUpAtTheProvider(t *testing.T) {
+	h := newPlatformHarness(t, config.LocalLoginOn)
+	provisional := map[string]any{"role": "service", "email": "", "provisional": true}
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	refused := func(name string, code int, want int, wantCode string) {
+		t.Helper()
+		if code != want || refusal.Code != wantCode {
+			t.Fatalf("%s: %d %+v, want %d %s", name, code, refusal, want, wantCode)
+		}
+		refusal.Code = ""
+	}
+	atProvider := func(name string, signed platformAnswer, legacyKey string) {
+		t.Helper()
+		token := signed.Token
+		var state stepUpState
+		if code := h.get(t, "/v1/auth/step-up", &state, token); code != http.StatusOK || state.Fresh || !state.Provider || state.Passkey || state.RemainingSeconds != 0 {
+			t.Fatalf("%s: status %d %+v", name, code, state)
+		}
+		refused(name+": a provisional invitation", h.post(t, "/v1/auth/workspaces/invites", provisional, &refusal, token), http.StatusForbidden, stepup.Code)
+		refused(name+": the password", h.post(t, "/v1/auth/step-up/password", map[string]string{"auth_key": legacyKey}, &refusal, token), http.StatusConflict, stepup.ProviderCode)
+		refused(name+": passkey options", h.request(t, "POST", "/v1/auth/step-up/passkey/options", passkeyApp, token, map[string]any{}, &refusal), http.StatusConflict, stepup.ProviderCode)
+		refused(name+": a passkey", h.request(t, "POST", "/v1/auth/step-up/passkey", passkeyApp, token, map[string]any{"flow_id": uuid.NewString()}, &refusal), http.StatusConflict, stepup.ProviderCode)
+		refused(name+": a Wappie passkey", h.request(t, "POST", "/v1/auth/passkeys/register/options", passkeyApp, token,
+			map[string]string{"auth_key": legacyKey, "label": "laptop"}, &refusal), http.StatusConflict, "passkeys_at_provider")
+		// A workspace switch inherits no proof.
+		var switched sessionReply
+		if code := h.post(t, "/v1/auth/workspaces/session", map[string]string{"tenant_id": signed.User.TenantID}, &switched, token); code != http.StatusOK {
+			t.Fatalf("%s: switch %d", name, code)
+		}
+		if code := h.get(t, "/v1/auth/step-up", &state, switched.Token); code != http.StatusOK || state.Fresh {
+			t.Fatalf("%s: a switch made a proof: %d %+v", name, code, state)
+		}
+	}
+
+	// An account created through the provider.
+	_, first := h.signIn(t, newPerson(t, "bea@example.com"), 1)
+	code, created, _, _ := h.createAccount(t, first.Ticket)
+	if code != http.StatusOK || created.Token == "" {
+		t.Fatalf("account: %d %+v", code, created)
+	}
+	atProvider("the new account", created, "")
+
+	// A linked legacy account, in its rollback window.
+	p := newPerson(t, "passkey@example.com")
+	_, answer := h.signIn(t, p, 1)
+	var linked platformAnswer
+	if code := h.pagePost(t, "/v1/auth/platform/link", map[string]string{"ticket": answer.Ticket, "email": "passkey@example.com",
+		"auth_key": h.account.AuthKey, "platform_wrap": randomWrap(t)}, &linked, "", nil); code != http.StatusOK || linked.Token == "" {
+		t.Fatalf("link: %d %+v", code, linked)
+	}
+	atProvider("the linked account", linked, h.account.AuthKey)
+	_, through := h.signIn(t, p, 1)
+	if through.Kind != "session" {
+		t.Fatalf("signing in again: %+v", through)
+	}
+	atProvider("a later sign-in through the provider", through, h.account.AuthKey)
+	// Both doors while WS_LOCAL_LOGIN=on: the legacy password signs the
+	// linked account in, and that sign-in is a proof like any password's.
+	var password sessionReply
+	if code := h.post(t, "/v1/auth/login", map[string]string{"email": "passkey@example.com", "auth_key": h.account.AuthKey}, &password, ""); code != http.StatusOK {
+		t.Fatalf("legacy sign-in: %d", code)
+	}
+	var state stepUpState
+	if code := h.get(t, "/v1/auth/step-up", &state, password.Token); code != http.StatusOK || !state.Fresh || !state.Provider {
+		t.Fatalf("a password sign-in of the linked account: %d %+v", code, state)
+	}
+
+	// The switch off: the linked account steps up with its legacy password.
+	h.handler.Platform = nil
+	if code := h.get(t, "/v1/auth/step-up", &state, through.Token); code != http.StatusOK || state.Provider || state.Fresh {
+		t.Fatalf("with the provider unset: %d %+v", code, state)
+	}
+	if code := h.post(t, "/v1/auth/step-up/password", map[string]string{"auth_key": h.account.AuthKey}, &state, through.Token); code != http.StatusOK || !state.Fresh {
+		t.Fatalf("the legacy password with the provider unset: %d %+v", code, state)
+	}
+	if code := h.post(t, "/v1/auth/workspaces/invites", provisional, nil, through.Token); code != http.StatusCreated {
+		t.Fatalf("a provisional invitation after it: %d", code)
+	}
+}
+
 func TestPlatformLinkWithTheRecoveryCode(t *testing.T) {
 	h := newPlatformHarness(t, config.LocalLoginLinkOnly)
 	p := newPerson(t, "another-address@example.com")
@@ -852,6 +941,10 @@ func TestLocalLoginModes(t *testing.T) {
 		{"POST", "/v1/auth/passkeys/register/finish", false},
 		{"POST", "/v1/auth/passkeys/login/options", false},
 		{"POST", "/v1/auth/passkeys/login/finish", false},
+		// The step-ups here are a passkey or the password: they close too.
+		{"POST", "/v1/auth/step-up/passkey/options", false},
+		{"POST", "/v1/auth/step-up/passkey", false},
+		{"POST", "/v1/auth/step-up/password", false},
 	}
 	for _, mode := range []config.LocalLogin{config.LocalLoginOn, config.LocalLoginLinkOnly, config.LocalLoginOff} {
 		t.Run(string(mode), func(t *testing.T) {

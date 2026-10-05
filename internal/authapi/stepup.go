@@ -22,6 +22,12 @@ import (
 // as at sign-in. A sign-in within the window counts as well, and asks for
 // nothing. Each proof is recorded on the session, on the database's clock,
 // and lasts stepup.Window.
+//
+// An account that signs in through the identity provider steps up there
+// instead (decision D3, step 4 of the sign-in plan): while the provider is
+// configured its passkey and password step-ups answer step_up_at_provider,
+// and the status says provider. Both proofs here are password routes, so
+// they close with WS_LOCAL_LOGIN as the others do (stepUpHere).
 
 func (h *Handler) mountStepUp(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/auth/step-up", h.stepUpStatus)
@@ -32,13 +38,42 @@ func (h *Handler) mountStepUp(mux *http.ServeMux) {
 }
 
 // stepUpReply is where a session's proof stands: fresh or not, the whole
-// seconds it still lasts, the window, and whether the account can step up
-// with a passkey on this server. The password always can.
+// seconds it still lasts, the window, whether the account can step up with a
+// passkey on this server, and whether it steps up at the identity provider
+// instead (then neither a passkey nor the password is taken here). The
+// password can otherwise.
 type stepUpReply struct {
 	Fresh            bool `json:"fresh"`
 	RemainingSeconds int  `json:"remaining_seconds"`
 	WindowSeconds    int  `json:"window_seconds"`
 	Passkey          bool `json:"passkey"`
+	Provider         bool `json:"provider"`
+}
+
+// stepsUpAtProvider reports whether an account's step-up is the identity
+// provider's re-authentication rather than a passkey or the password here:
+// an account that signs in through the provider, while the provider is
+// configured. With the provider unset (a rollback), a linked account signs
+// in with its legacy password again and steps up with it; one created
+// through the provider has no password and cannot sign in at all.
+func (h *Handler) stepsUpAtProvider(user store.User) bool {
+	return h.Platform != nil && authSource(user) == store.PlatformAuthSource
+}
+
+// stepUpHere reports whether this account may step up with a passkey or the
+// password on this server, and answers why not otherwise: step_up_at_provider
+// for an account that steps up at the identity provider (internal/stepup),
+// local_login_disabled once WS_LOCAL_LOGIN closes the password routes.
+func (h *Handler) stepUpHere(w http.ResponseWriter, user store.User) bool {
+	if h.stepsUpAtProvider(user) {
+		fail(w, http.StatusConflict, stepup.ProviderCode, stepup.ProviderMessage)
+		return false
+	}
+	if !h.localAllowed(false) {
+		localLoginRefused(w)
+		return false
+	}
+	return true
 }
 
 func (h *Handler) stepUpReply(w http.ResponseWriter, r *http.Request, session store.Session, user store.User) {
@@ -52,8 +87,8 @@ func (h *Handler) stepUpReply(w http.ResponseWriter, r *http.Request, session st
 		fail(w, http.StatusInternalServerError, "internal", "could not read your confirmation")
 		return
 	}
-	passkey := false
-	if h.Passkeys != nil {
+	provider, passkey := h.stepsUpAtProvider(user), false
+	if h.Passkeys != nil && !provider && h.localAllowed(false) {
 		u, err := h.passkeyUser(r.Context(), user)
 		if err != nil {
 			h.log().Warn("could not read passkeys for a step-up", "error", err)
@@ -61,7 +96,7 @@ func (h *Handler) stepUpReply(w http.ResponseWriter, r *http.Request, session st
 		passkey = len(u.credentials) > 0
 	}
 	send(w, http.StatusOK, stepUpReply{
-		Fresh: left > 0, RemainingSeconds: int(left.Seconds()), WindowSeconds: int(stepup.Window.Seconds()), Passkey: passkey,
+		Fresh: left > 0, RemainingSeconds: int(left.Seconds()), WindowSeconds: int(stepup.Window.Seconds()), Passkey: passkey, Provider: provider,
 	})
 }
 
@@ -85,7 +120,7 @@ func (h *Handler) stepUpPasskeyOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session, user, ok := h.authenticate(w, r)
-	if !ok || !h.allow(w, r, user.Email) {
+	if !ok || !h.stepUpHere(w, user) || !h.allow(w, r, user.Email) {
 		return
 	}
 	u, err := h.passkeyUser(r.Context(), user)
@@ -105,7 +140,9 @@ func (h *Handler) stepUpPasskeyOptions(w http.ResponseWriter, r *http.Request) {
 	h.savePasskeyFlow(w, r, stepUpFlow, origin, "", session, data, options.Response)
 }
 
-// stepUpFlow is a step-up's passkey_challenges kind (0047).
+// stepUpFlow is a step-up's passkey_challenges kind (0047). The provider's
+// step-up of step 4 keeps no flow here: it records
+// sessions.step_up_not_before (0048) instead.
 const stepUpFlow = "step_up"
 
 // stepUpPasskey finishes a passkey step-up: the flow must be this session's,
@@ -118,7 +155,7 @@ func (h *Handler) stepUpPasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session, user, ok := h.authenticate(w, r)
-	if !ok || !h.allow(w, r, user.Email) {
+	if !ok || !h.stepUpHere(w, user) || !h.allow(w, r, user.Email) {
 		return
 	}
 	var req passkeyFinishRequest
@@ -173,7 +210,7 @@ func (h *Handler) stepUpPasskey(w http.ResponseWriter, r *http.Request) {
 // budget. The password itself never arrives.
 func (h *Handler) stepUpPassword(w http.ResponseWriter, r *http.Request) {
 	session, user, ok := h.authenticate(w, r)
-	if !ok {
+	if !ok || !h.stepUpHere(w, user) {
 		return
 	}
 	var req struct {

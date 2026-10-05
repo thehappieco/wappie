@@ -21,6 +21,7 @@ type stepUpState struct {
 	RemainingSeconds int  `json:"remaining_seconds"`
 	WindowSeconds    int  `json:"window_seconds"`
 	Passkey          bool `json:"passkey"`
+	Provider         bool `json:"provider"`
 }
 
 func (h *harness) age(t *testing.T, token string) {

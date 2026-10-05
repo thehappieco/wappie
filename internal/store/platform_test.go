@@ -18,6 +18,7 @@ import (
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 )
 
@@ -342,6 +343,61 @@ func TestPlatformTicketsAreSingleUseAndBoundToTheirKind(t *testing.T) {
 	}
 }
 
+// A session started through the provider holds no step-up proof until step
+// 4 takes the provider's re-authentication (internal/stepup): it is never
+// fresh, nor is a workspace switch made from it, while a password sign-in of
+// the same linked account is; a step-up recorded on it counts as on any.
+func TestPlatformSessionHoldsNoStepUpProof(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	f.legacy(t, "lia@example.com", "lia-auth-key")
+	linked, err := f.users.LinkLegacy(ctx, store.LegacyLink{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "lia@id.example.com", uuid.Nil),
+		Proof: store.LegacyProof{Email: "lia@example.com", Secret: "lia-auth-key"}, Wrap: platformWrap(t)})
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	native, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "max@example.com", uuid.Nil),
+		PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
+	if err != nil {
+		t.Fatalf("new account: %v", err)
+	}
+	checker := stepup.Recent(f.users)
+	for name, user := range map[string]store.User{"the linked account": linked, "the new account": native} {
+		_, s, err := f.users.StartPlatformSession(ctx, user, "test")
+		if err != nil {
+			t.Fatalf("%s: session: %v", name, err)
+		}
+		if fresh, err := checker.Fresh(ctx, s.ID); err != nil || fresh {
+			t.Fatalf("%s: a sign-in through the provider is a proof: %v %v", name, fresh, err)
+		}
+		if left, err := f.users.StepUpRemaining(ctx, s.ID, stepup.Window); err != nil || left != 0 {
+			t.Fatalf("%s: remaining %v %v", name, left, err)
+		}
+		_, switched, err := f.users.StartWorkspaceSession(ctx, user, "test", s)
+		if err != nil {
+			t.Fatalf("%s: a workspace switch: %v", name, err)
+		}
+		if fresh, err := checker.Fresh(ctx, switched.ID); err != nil || fresh {
+			t.Fatalf("%s: a switch made a proof: %v %v", name, fresh, err)
+		}
+		if err := f.users.MarkStepUp(ctx, s.ID); err != nil {
+			t.Fatalf("%s: mark: %v", name, err)
+		}
+		if fresh, err := checker.Fresh(ctx, s.ID); err != nil || !fresh {
+			t.Fatalf("%s: after a recorded step-up: %v %v", name, fresh, err)
+		}
+	}
+	// Both doors: the linked account's legacy password proves the person at
+	// sign-in, as any password does.
+	_, s, err := f.users.StartSession(ctx, linked, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := checker.Fresh(ctx, s.ID); err != nil || !fresh {
+		t.Fatalf("a password sign-in of the linked account: %v %v", fresh, err)
+	}
+}
+
 // 0048's down-step, exactly as the migration's header documents it, as the
 // table owner: it refuses while an account created through the provider
 // exists; once that account is deleted it brings a linked account back to
@@ -352,9 +408,20 @@ func TestMigration0048DownStep(t *testing.T) {
 	ctx := context.Background()
 	legacy := f.legacy(t, "lia@example.com", "lia-auth-key")
 	linkSub := uuid.New()
-	if _, err := f.users.LinkLegacy(ctx, store.LegacyLink{Ticket: f.ticket(t, store.TicketNew, linkSub, "lia@id.example.com", uuid.Nil),
-		Proof: store.LegacyProof{Email: "lia@example.com", Secret: "lia-auth-key"}, Wrap: platformWrap(t)}); err != nil {
+	linked, err := f.users.LinkLegacy(ctx, store.LegacyLink{Ticket: f.ticket(t, store.TicketNew, linkSub, "lia@id.example.com", uuid.Nil),
+		Proof: store.LegacyProof{Email: "lia@example.com", Secret: "lia-auth-key"}, Wrap: platformWrap(t)})
+	if err != nil {
 		t.Fatalf("link: %v", err)
+	}
+	// A session through the provider (no proof: -infinity, which the older
+	// binary cannot read) and one with the old password.
+	_, throughProvider, err := f.users.StartPlatformSession(ctx, linked, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, withPassword, err := f.users.StartSession(ctx, linked, "test")
+	if err != nil {
+		t.Fatal(err)
 	}
 	native := uuid.New()
 	if _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, native, "max@example.com", uuid.Nil),
@@ -377,6 +444,22 @@ func TestMigration0048DownStep(t *testing.T) {
 	}
 	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 47 {
 		t.Fatalf("ledger at %d %v", version, err)
+	}
+	// The session through the provider is signed out; the password's stays,
+	// and every live session's proof reads as a plain time, as the older
+	// binary's workspace switch reads it.
+	for id, live := range map[uuid.UUID]bool{throughProvider.ID: false, withPassword.ID: true} {
+		var revoked bool
+		if err := f.pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM sessions WHERE id = $1`, id).Scan(&revoked); err != nil || revoked == live {
+			t.Fatalf("session %s revoked = %v %v", id, revoked, err)
+		}
+	}
+	rows, err := f.pool.Query(ctx, `SELECT authenticated_at FROM sessions WHERE revoked_at IS NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pgx.CollectRows(rows, pgx.RowTo[time.Time]); err != nil {
+		t.Fatalf("a live session's proof after the down-step: %v", err)
 	}
 	var left int
 	if err := f.pool.QueryRow(ctx, `SELECT

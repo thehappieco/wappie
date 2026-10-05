@@ -11,9 +11,9 @@ The Go side lives in the public core and does nothing until
 setup and the link ceremony) is in the private console only.
 
 This document covers steps 1 and 2 of the plan: the Go routes (shipped dark)
-and the console in development. Step-ups for consents and grants (step 4),
-the cutover (step 5) and the end of the rollback window (migration 0049,
-step 6) come later.
+and the console in development, and how its accounts meet the step-up of the
+fewer steps today. Step-ups through id. (step 4), the cutover (step 5) and
+the end of the rollback window (migration 0049, step 6) come later.
 
 ## What the provider gives and what Wappie keeps
 
@@ -87,8 +87,9 @@ Other changes:
   It allows: a service with no password; a local person with all of the
   password columns; a platform person with either all of them (linked, in the
   window) or none.
-- `sessions.step_up_at` and `step_up_not_before` are added for step 4 and are
-  not used yet.
+- `sessions.step_up_not_before` is added for step 4 and is not used yet (see
+  "Step-ups"). The proof itself is 0047's `sessions.authenticated_at`, so
+  0048 adds no second record of it.
 - None of the new tables carries row-level security. Each is read before a
   workspace is known, as `sessions` and `user_logins` are, and none holds a
   secret.
@@ -107,6 +108,10 @@ The migration header holds the down-step, checksum-gated against
   such an account has no password to fall back to. Delete those accounts
   explicitly first.
 - A linked account becomes local again, with its old password.
+- The sessions started through the provider are signed out: they hold no
+  step-up proof (`authenticated_at` is `-infinity`, which the older binary
+  cannot read) and came through a provider the older binary does not know.
+  The person signs in again with the old password.
 - It runs before the down-steps of 0047 (the fewer steps) and earlier.
 
 ## Configuration
@@ -348,6 +353,67 @@ It uses `@thehappieco/kit/oidc-rp` v0.3.0 (`begin`, `finishSignIn`,
    - The Vite proxy keeps `Host`, which is why `*.localhost` is a development
      loopback origin.
 
+## Step-ups
+
+One step-up serves every account: the fewer steps' `internal/stepup`
+(`docs/mcp-enclave.md` §19.30). A content consent, its renewal, an AI
+integration and its renewal, the provisional service invitation they write
+and every grant of a number's key need a proof of the person within the last
+ten minutes, recorded in `sessions.authenticated_at` on the database's clock
+and checked by the server. What differs by account is how its session earns
+that proof, never what a guarded write asks.
+
+| Account | Its proof |
+|---|---|
+| `auth_source` `local` | The sign-in that started the session's family, then a Wappie passkey (WebAuthn, user verification) or the password, checked by this server. |
+| `auth_source` `platform`, provider configured | A re-authentication at the provider (owner decision D3): step 4. Wappie runs no WebAuthn for these accounts (platform decision 0008) and takes no password from them. |
+| `auth_source` `platform`, provider unset (a rollback) | As a local account: a linked account signs in and steps up with its legacy password. An account created through id. cannot sign in. |
+
+**Until step 4.** A session started through the provider holds no proof
+(`authenticated_at` is `-infinity`; its workspace switches inherit that),
+because nothing in that sign-in proves to this server that the person is at
+the screen now: id. may have answered from a session of its own. So for such
+an account, today:
+
+- every guarded write answers `403 step_up_required`, as for any session
+  without a proof;
+- `GET /v1/auth/step-up` answers `provider: true` (and `passkey: false`), so
+  the console says the step is not available yet instead of asking for a
+  password;
+- `POST /v1/auth/step-up/passkey/options`, `/step-up/passkey` and
+  `/step-up/password` answer `409 step_up_at_provider`;
+- `POST /v1/auth/passkeys/register/options` answers `409
+  passkeys_at_provider`, so no Wappie passkey replaces the ones the link
+  revoked.
+
+A linked account that signs in with its legacy password while
+`WS_LOCAL_LOGIN=on` (both doors) has that sign-in as its proof for ten
+minutes, as any password sign-in does; its step-ups after that are still the
+provider's. Once `WS_LOCAL_LOGIN` narrows the password routes, the passkey
+and password step-ups close with them (`403 local_login_disabled`).
+
+**Step 4 plugs in behind the same interface.** Nothing that asks for a proof
+changes; only how a platform session earns one:
+
+1. `POST /v1/auth/platform/step-up/start` sets `sessions.step_up_not_before`
+   to now for the session.
+2. The console sends the person to id. with `prompt=login` and no key
+   delivery; id. asks for the password or a passkey there.
+3. `POST /v1/auth/platform/step-up/finish {access_token}` takes the token to
+   id.'s userinfo (never the ID token) and requires the linked `sub`, this
+   client and an `auth_time` at or after `step_up_not_before`, allowing for
+   the two clocks. It then records the proof as the passkey and password do
+   (`MarkStepUp`, `authenticated_at = now()`) and clears
+   `step_up_not_before`, so one start makes one proof.
+4. Optionally, `/platform/session` counts a sign-in as a proof from that
+   userinfo's `auth_time`, never from the session's creation.
+5. `GET /v1/auth/step-up` keeps `provider: true`; the console's step-up field
+   runs steps 1 to 3 where it shows "not available yet" today.
+
+Step 4 also has to stop `/v1/auth/me` handing a linked account's legacy
+password wrap to a session started through the provider (see "The rollback
+window").
+
 ## The rollback window
 
 A linked account keeps its legacy password columns (`auth_hash`, `kdf_salt`,
@@ -362,11 +428,14 @@ window (step 6). Steps 1 to 3 accept one consequence of that:
   there for, and someone who intercepts a token before the page uses it.
   For a linked account in the window, the pin's guarantee is only as strong
   as the old password.
-- It is accepted because the password step-ups (`withDeviceKeys` for
-  consents, grants and AI integrations, and the password, recovery and
-  passkey changes) read the wrap from `/v1/auth/me`, and they live in
-  `packages/client`, which is part of the attested reader's image. Handing
-  the wrap back only against the auth key would change that package.
+- It is accepted because the paths that still open the account key with the
+  password (`withDeviceKeys` for a member's grant and for a session without
+  an account key of its own, and the password, recovery and passkey changes)
+  read the wrap from `/v1/auth/me`, and they live in `packages/client`, which
+  is part of the attested reader's image. Handing the wrap back only against
+  the auth key would change that package. Consents, renewals and AI
+  integrations no longer need it: they seal with the session's account key
+  after a step-up (see "Step-ups").
 - The platform answers themselves (`session`, `account`, `link`) never carry
   it. An account created through id. has no such wrap.
 - Step 4 (step-ups through id.) must stop handing the wrap to a session
@@ -380,13 +449,14 @@ window (step 6). Steps 1 to 3 accept one consequence of that:
 |---|---|---|
 | Switch | Unset `WS_PLATFORM_ISSUER`, set `WS_LOCAL_LOGIN=on`, restart | Password sign-in is back for unlinked and linked accounts. Accounts created through id. cannot sign in until the switch returns. |
 | Release | A release that knows version 48 | As in `deployment.md` |
-| Schema | 0048's down-step | Refused while accounts created through id. exist |
+| Schema | 0048's down-step | Refused while accounts created through id. exist; signs out the sessions started through the provider |
 
 ## Not yet
 
-- **Step-ups (step 4).** A consent, a grant or an AI integration still asks
-  for the Wappie password (`withDeviceKeys`). An account created through id.
-  has no password, so it cannot give those consents yet.
+- **Step-ups through id. (step 4).** Until then an account that signs in
+  through id. is refused wherever a step-up is needed (see "Step-ups"): it
+  cannot give a content consent, renew one, add an AI integration or grant a
+  number's key.
 - **The cutover (step 5) and the end of the window (step 6).** Migration 0049
   will null the legacy credentials of linked accounts and delete their
   passkeys, with no down-step.

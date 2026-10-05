@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/pg"
@@ -661,14 +662,23 @@ const SessionTTL = 14 * 24 * time.Hour
 
 // StartSession issues a token. The token is returned once and stored hashed.
 func (u *Users) StartSession(ctx context.Context, user User, userAgent string) (string, Session, error) {
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil, nil)
+	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil, nil, true)
 }
 
 func (u *Users) StartPasskeySession(ctx context.Context, user User, userAgent string, passkeyID uuid.UUID) (string, Session, error) {
 	if passkeyID == uuid.Nil {
 		return "", Session{}, ErrNoSession
 	}
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), passkeyID, nil)
+	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), passkeyID, nil, true)
+}
+
+// StartPlatformSession starts the session of an account signed in through
+// the identity provider. That sign-in proves nothing to this server, so the
+// session holds no step-up proof (authenticated_at is -infinity, which its
+// workspace switches inherit) until the provider's re-authentication is
+// taken here, in step 4 of the sign-in plan (internal/stepup).
+func (u *Users) StartPlatformSession(ctx context.Context, user User, userAgent string) (string, Session, error) {
+	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil, nil, false)
 }
 
 // StartWorkspaceSession does not extend the authentication lifetime of the
@@ -679,10 +689,13 @@ func (u *Users) StartWorkspaceSession(ctx context.Context, user User, userAgent 
 	}
 	// The source is re-read while locked. A previously authenticated request
 	// cannot mint a new token after another tab has finished signing out.
-	return u.startSession(ctx, user, userAgent, time.Time{}, uuid.Nil, &source)
+	return u.startSession(ctx, user, userAgent, time.Time{}, uuid.Nil, &source, false)
 }
 
-func (u *Users) startSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, passkeyID uuid.UUID, source *Session) (string, Session, error) {
+// startSession issues a token. proved is whether a new sign-in proved its
+// person to this server (a password or a passkey); a workspace switch
+// (source) copies its source's proof instead.
+func (u *Users) startSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, passkeyID uuid.UUID, source *Session, proved bool) (string, Session, error) {
 	current, err := u.Get(ctx, user.TenantID, user.ID)
 	if errors.Is(err, ErrNotFound) {
 		return "", Session{}, ErrNoSession
@@ -734,10 +747,14 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 		if err := lockPasskeyRegistration(ctx, tx, user.ID); err != nil {
 			return err
 		}
-		// A new sign-in proves the person now; a workspace switch inherits the
-		// proof of its source, since selecting a space proves nothing
-		// (internal/stepup).
-		var authenticatedAt *time.Time
+		// A new sign-in proves the person now (NULL is now() below), unless it
+		// came through the identity provider, which leaves no proof here
+		// (-infinity); a workspace switch inherits the proof of its source,
+		// since selecting a space proves nothing (internal/stepup).
+		var authenticatedAt pgtype.Timestamptz
+		if source == nil && !proved {
+			authenticatedAt = pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+		}
 		if source == nil {
 			var err error
 			s.FamilyID, err = uuid.NewV7()
@@ -834,8 +851,9 @@ func (u *Users) ActiveSession(ctx context.Context, token string) (Session, User,
 
 // StepUpRemaining is how long a live session's last proof of its person
 // still counts within window, on the database's clock: the sign-in that
-// started its family, or a later step-up (MarkStepUp). Zero when it no
-// longer does; ErrNoSession for a session that is not live.
+// started its family (none for one through the identity provider), or a
+// later step-up (MarkStepUp). Zero when it no longer does; ErrNoSession for
+// a session that is not live.
 func (u *Users) StepUpRemaining(ctx context.Context, session uuid.UUID, window time.Duration) (time.Duration, error) {
 	var seconds float64
 	err := u.pool.QueryRow(ctx, `SELECT greatest(0, extract(epoch FROM authenticated_at + make_interval(secs => $2) - now()))::float8

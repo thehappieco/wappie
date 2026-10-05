@@ -9678,7 +9678,12 @@ workspace and public key, every requested device's grant found and opened or
 the whole set refused (never a device skipped as sign-in skips one), each key
 overwritten once used. A session without an account key of its own falls
 back to the password, which then also seals. When sign-in moves to
-id.thehappie.co (D3), its `prompt=login` replaces what is behind `Checker`.
+id.thehappie.co (D3), its `prompt=login` replaces what is behind `Checker`
+for the accounts that sign in there (`users.auth_source` `platform`): their
+passkey and password step-ups answer `409 step_up_at_provider`, `GET
+/v1/auth/step-up` says `provider`, and a session started through the
+provider holds no proof until step 4 takes id.'s re-authentication
+(platform-sign-in.md, "Step-ups").
 
 **A2: a switch per workspace (M4).** `WS_MCP_CONTENT_TENANTS`,
 `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired:

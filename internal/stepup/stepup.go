@@ -18,10 +18,32 @@
 // user verification) or the password, each checked by this server
 // (internal/authapi).
 //
-// This is interim (decision D3): once sign-in moves to id.thehappie.co the
-// proof becomes that provider's re-authentication (prompt=login). Only how a
-// session earns its proof changes then; every guarded write keeps asking a
-// Checker, and nothing else here.
+// This interface is the only one, for every account. What changes with the
+// account's source is how its session earns a proof, never what a guarded
+// write asks (owner decision D3, docs/platform-sign-in.md, "Step-ups"):
+//
+//   - An account with auth_source 'local' proves itself here, as above.
+//   - An account with auth_source 'platform' signs in through the identity
+//     provider (id.thehappie.co in the cloud), and proves itself there:
+//     Wappie runs no WebAuthn for it (platform decision 0008) and takes no
+//     password from it, so its passkey and password step-ups answer
+//     ProviderCode while the provider is configured. Step 4 of the sign-in
+//     plan adds its proof behind this same interface: a start route records
+//     sessions.step_up_not_before (migration 0048) for the session; the
+//     console sends the person to the provider with prompt=login; a finish
+//     route takes the access token to the provider's userinfo (never the ID
+//     token), requires the linked sub, this client and an auth_time at or
+//     after step_up_not_before, and records the proof as the passkey and
+//     password do, in sessions.authenticated_at (0047). A sign-in through
+//     the provider may count as a proof only from that userinfo's auth_time.
+//
+// Until step 4, a session started through the provider holds no proof
+// (authenticated_at is -infinity, store.Users.StartPlatformSession): every
+// guarded write answers Code for it, and the step-up routes answer
+// ProviderCode, so such an account is refused clearly wherever a proof is
+// needed. With the provider unconfigured (the switch off for a rollback), a
+// linked account signs in with its legacy password again and steps up as a
+// local one.
 package stepup
 
 import (
@@ -41,6 +63,15 @@ const Code = "step_up_required"
 // Message is the text beside Code.
 const Message = "confirm it is you first: use your passkey or your password, or sign in again; " +
 	"giving an assistant message text, or anyone a number's key, needs it within the last ten minutes"
+
+// ProviderCode is what a passkey or password step-up answers for an account
+// that signs in through the identity provider: its proof is the provider's
+// re-authentication (D3), which this server does not take yet (step 4).
+const ProviderCode = "step_up_at_provider"
+
+// ProviderMessage is the text beside ProviderCode.
+const ProviderMessage = "this account confirms it is you at the identity provider it signs in with, which this server " +
+	"does not offer yet; until it does, giving an assistant message text or anyone a number's key is not available to it"
 
 // Checker answers whether a session's person proved themselves within Window.
 type Checker interface {

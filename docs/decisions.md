@@ -1406,3 +1406,15 @@ this server and opened in the browser (decision D1: the owner's pilot is
 kept); an address is at most a hint shown to its verified owner. New
 accounts take `users.id = sub`; a linked account keeps its id, which grant
 AADs and foreign keys bind.
+
+**One step-up, the fewer steps'.** Sign-in moved onto the fewer steps (its
+migration became 0048) and drops its own `sessions.step_up_at`: the proof is
+`sessions.authenticated_at` for every account, and every guarded write asks
+`internal/stepup`'s `Checker`. What D3 changes is how an account that signs
+in through id. earns the proof: id.'s re-authentication with `prompt=login`,
+checked from userinfo's `auth_time` against `sessions.step_up_not_before`
+(kept in 0048 for that), replacing the passkey and the password, since
+Wappie runs no WebAuthn for those accounts (platform decision 0008). Until
+step 4 builds it, such a session holds no proof and is refused by name
+wherever one is needed, rather than counting a sign-in that id. may have
+answered without asking the person anything.
