@@ -9649,8 +9649,19 @@ renewal no longer ask for the Wappie password. The person confirms it is them
 server holds every write a grant of text goes into to it: `POST
 /v1/mcp/connections` of kind `content` or `ai`, `POST
 /v1/mcp/connections/{id}/renew`, a token's content bundle, the provisional
-service invitation and `grant.add` to a connection's service account answer
-403 `step_up_required` otherwise. A session is fresh for ten minutes after
+service invitation and every `grant.add` answer 403 `step_up_required`
+otherwise. Every grant, not only one to a connection's service account
+(review of 2026-10-05): a grant is a copy of a number's key, and given to a
+standing service account, whose registrant holds its private key, or to a
+member, it reads the archive for as long as it stands, so an open browser
+past the window could otherwise hand on a longer-lasting copy than any
+connection. The console's member grant (Members and permissions) already asks
+for the password, which then also serves as the step-up; `wsctl grant` more
+than ten minutes after `wsctl login` is refused until the person signs in
+again. What hands over no key waits for none: an invitation of any role, a
+role change, an API key (one acting as a service account reads only what that
+account was granted) and the pairing of a new number, which needs its phone.
+A session is fresh for ten minutes after
 the sign-in that started its family (`sessions.authenticated_at`, which a
 workspace switch copies, since selecting a space proves nothing) or after a
 step-up, on the database's clock. Past it, an account with a passkey steps up
@@ -9688,10 +9699,18 @@ refresh keeps the last answers, since a hiccup read as "off" would reseal
 every connection.
 
 **A3: the consent card's defaults** (console only). A workspace with one
-number starts with it chosen; the card remembers the numbers, options and
-duration last authorized per server, account and `client_id` in browser
-storage (never a confirming tick, never a secret, nothing if storage is
-blocked), and "Select all" sits beside the numbers.
+number starts with it chosen; the card remembers the numbers and the
+durations (the connection's, and an untested client's history window) last
+authorized per server, account and `client_id` in browser storage
+(`wappie.mcpConsentChoices.v2`; never a confirming tick, never a secret,
+nothing if storage is blocked), and "Select all" sits beside the numbers. It
+never remembers what opens content (message text, attachments, drafts,
+groups, the own chat): a CIMD `client_id` such as Claude's is the same for
+every user of that client, so a request someone started from their own
+account (threat D, consent phishing with a legitimate client) would
+otherwise open with text and the victim's numbers ticked. The person ticks
+those each time; the first version of the store, which kept them, is removed
+on the next write.
 
 **A4: a reconnect replaces (M6).** A version-2 consent may carry `replace:
 true` (the card's "Replace my previous <assistant> connection", ticked by
@@ -9704,14 +9723,30 @@ connections unused past their tier's idle time and a day are revoked as
 local or unknown client, 3 for an unknown client with text; tokens and AI
 integrations never. Use is the key's last read, the activation and the
 renewal (and, without text, the reader's last status check; a content
-connection's is asked every minute regardless).
+connection's is asked every minute regardless), on the database's clock.
+The sweep picks its candidates in one read and ends each only if it is still
+idle under its row's lock, in its workspace's transaction, so a renewal or a
+read between the pick and the end keeps the connection. "Replace" stays
+ticked by default (M6) even on a request from a flow this browser did not
+start: the console cannot tell one from the other, and with the remembered
+options gone (A3) the person still ticks text and confirms it is them.
 
-**A5: renewing in one go.** After an enclave boot the console shows a banner
-and **Renew all**: one confirmation (A1), then each waiting tested connection
-through its own renewal, one at a time; untested ones and tokens keep their
-own Renew. With SMTP configured each person gets one e-mail per workspace a
-few minutes after a reseal settles, at most one per twelve hours
-(`mcp_connections.reseal_mailed_at`).
+**A5: renewing in one go.** After an enclave boot, or once a workspace turned
+text off and on again, the console shows a banner and **Renew all**: one
+confirmation (A1), then each waiting tested connection through its own
+renewal, one at a time, the round stopping at the first one refused for a
+lapsed confirmation; untested ones and tokens keep their own Renew, and a
+banner over only those offers **Renew**. With SMTP configured each person
+gets one e-mail per workspace a few minutes after a reseal settles, at most
+one per twelve hours (`mcp_connections.reseal_mailed_at`), with no link. It
+names each connection by a name no client chose for itself, as the
+activation notice does (§19.22): a 0.6.0 row's verified `client_name` (a
+tested client's name from the reader's list, an untested one's host, a
+token's label), and an older row's host. It gives no cause (D10, point 7),
+sends to **Renew all** only what that button renews and an untested client
+or a token to its own **Renew**, and ends with the notice e-mails' footer
+word for word (D10, point 5). Its texts are drafts for the owner's approval,
+as the other e-mail's were.
 
 **A6: the plugin packages** (`thehappieco/wappie-plugins`) say what 0.6.0
 gives each client: Codex and Claude Code are local, so no drafts or own-chat
@@ -9725,14 +9760,30 @@ de); the new-connection and renewal e-mails go in it, English when it never
 said.
 
 **Tests.** `internal/store/mcp_friction_test.go` (the window, a switch that
-copies it, owner-only switches, replace and the cap, idle by tier, renewal
-notices, recipients' languages, the down-step, all under forced RLS),
-`internal/mcpauth/friction_test.go` (every guarded write without a step-up,
-the switches route and default, a reconnect, the renewal e-mail, the
-language), `internal/authapi/stepup_test.go` (password and passkey step-ups),
-`internal/wsapi/stepup_test.go`, the config and mailer tests; the console's
-`deviceGrants.spec.ts`, `stepUp.spec.ts`, `mcpFriction.spec.ts` and the
-consent card's defaults in `mcpConnect.spec.ts`.
+copies it, owner-only switches, replace and the cap, idle by tier with its
+day's grace, the re-check under the row's lock, renewal notices with their
+names and what Renew all leaves out, recipients' languages, the down-step and
+0047's backfill of existing sessions, all under forced RLS),
+`internal/mcpauth/friction_test.go` (every guarded write without a step-up, a
+token's content bundle included, the switches route and default, a
+reconnect, the renewal e-mail and the reseal that arms it, the language),
+`internal/authapi/stepup_test.go` (password and passkey step-ups),
+`internal/wsapi/stepup_test.go` (a grant to a connection's service, a standing
+service and a member), the config and mailer tests (the renewal e-mail's
+words: no cause, the footer, the apostrophe, Renew all or each one's own);
+the console's `deviceGrants.spec.ts`, `stepUp.spec.ts`, `grantStepUp.spec.ts`,
+`mcpFriction.spec.ts`, `mcpReplaceCard.spec.ts`, `mcpRenewAll.spec.ts`,
+`accountLocale.spec.ts`, and the consent card's defaults and the replace
+request in `mcpConnect.spec.ts`.
+
+**Left for the next image.** `packages/mcp-http/README.md` still tells
+operators to list workspaces in `WS_MCP_CONTENT_TENANTS` (its message text
+section) and `WS_MCP_MEDIA_TENANTS` (its attachments section). The file is
+copied into the measured image, so it is corrected with the next reader
+release; until then this section is the reference. The repositories'
+environment examples still name the retired lists as well, and are corrected
+apart from this change, with `WS_MCP_WORKSPACE_DEFAULT` and
+`WS_MCP_DENY_TENANTS` added.
 
 ### Amendments to §§1 to 18
 

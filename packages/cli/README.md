@@ -59,7 +59,7 @@ wsctl ws apikeys.list --reply apikeys --server https://archive.example
 wsctl grant --device DEVICE_UUID --user USER_UUID --server https://archive.example
 ```
 
-`grant` verifies the recipient against the workspace's user list, asks for your password again, opens an existing device grant locally, seals the device key to the recipient, and sends only the sealed grant. It does not create access to an archive you cannot already open. Optionally pin the expected recipient key using `--public-key BASE64`.
+`grant` verifies the recipient against the workspace's user list, asks for your password again, opens an existing device grant locally, seals the device key to the recipient, and sends only the sealed grant. It does not create access to an archive you cannot already open. Optionally pin the expected recipient key using `--public-key BASE64`. The server takes a grant only within ten minutes of signing in (its step-up): if it answers `step_up_required`, run `wsctl login` again and repeat the grant.
 
 `ws REQUEST_TYPE --reply RESPONSE_TYPE --json FILE` exposes the public request/reply protocol for device controls, permissions and API-key administration. For example, `grant.revoke` with `{"device_id":"...","user_id":"..."}` replies with `device.readers`. Wire names and payloads are defined in `packages/client/src/api/protocol.ts` and `internal/wsapi/protocol.go`. Long-lived subscription/pairing streams are not implemented by this one-request command; existing operator CLI workflows remain available.
 

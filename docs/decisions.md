@@ -1365,8 +1365,11 @@ step in each. The browser already holds the account key for the session, so
 it seals the grants with that; what the password proved, that the person at
 the screen is the one signed in, is now a sign-in within ten minutes, a
 passkey with user verification, or the password, checked by the server,
-which refuses every write a grant of text goes into without it. The archive
-server still never receives an archive key or the password.
+which refuses every write a grant of text goes into without it, and every
+grant of a number's key to anyone: given to a member or a standing service
+account, a grant reads the archive for as long as it stands, so a browser
+left open past the window must not make one either. The archive server still
+never receives an archive key or the password.
 
 **Each workspace decides, beneath the operator.** The operator's lists
 (`WS_MCP_CONTENT_TENANTS` and its kin) did not scale past the test workspace.
