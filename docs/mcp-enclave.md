@@ -9742,11 +9742,12 @@ one per twelve hours (`mcp_connections.reseal_mailed_at`), with no link. It
 names each connection by a name no client chose for itself, as the
 activation notice does (§19.22): a 0.6.0 row's verified `client_name` (a
 tested client's name from the reader's list, an untested one's host, a
-token's label), and an older row's host. It gives no cause (D10, point 7),
+token's label, written Token “label” as the activation notice writes it, so
+that a label such as "Claude" never reads as that tested assistant), and an
+older row's host. It gives no cause (D10, point 7),
 sends to **Renew all** only what that button renews and an untested client
 or a token to its own **Renew**, and ends with the notice e-mails' footer
-word for word (D10, point 5). Its texts are drafts for the owner's approval,
-as the other e-mail's were.
+word for word (D10, point 5). Its texts were approved on 2026-10-05 (below).
 
 **A6: the plugin packages** (`thehappieco/wappie-plugins`) say what 0.6.0
 gives each client: Codex and Claude Code are local, so no drafts or own-chat
@@ -9785,6 +9786,49 @@ release; until then this section is the reference. The core's
 names the retired lists only as retired (the owner approved editing the
 example on 2026-10-05); the console's `deploy/mcp.env.example` never listed
 them.
+
+**The texts, approved (2026-10-05).** The owner approved every text of this
+branch and of the platform sign-in that the list of 2026-10-05 collected
+(codes C- for the console, E- for the Go server, P- for the plugin package),
+with thirteen recommendations. Those that change this branch's texts are
+applied here; the sign-in's are recorded in `docs/platform-sign-in.md`.
+
+1. The measured image keeps "with your password" (M-MSG-02, M-MSG-03 and the
+   `ai_paused` refusal) until the next reader release. Nothing changes now.
+2. No text names a restart as the cause, wherever the key went (D10, point 7):
+   the consent and renewal cards say "If the Wappie reader loses this
+   connection’s key, the assistant will ask you to renew here…" (C-CONF-04);
+   the AI cards say that the reader no longer holds the integration's keys
+   (C-AI-01 to C-AI-03); the list and the activity panel lose "for example
+   after a restart" (C-LIST-15 and C-ACT-01, approved with 0.6.0), in all five
+   languages.
+3. Portuguese writes "a Wappie" where Wappie checks or receives, and "o
+   Wappie" for the app and the connector (the sign-in's texts).
+4. Portuguese says "entrar" for signing in: the step-up field's password note
+   reads "Conferida como ao entrar" (C-STEP-07); "acesso" stays for access to
+   numbers.
+5. The drafts switch says "a sua própria conversa", as the guide does
+   (C-SWITCH-09); the other languages already used the console's word.
+6. The renewal e-mail names a token as Token “label” (E-RENEW-05).
+7. The new languages of the new-assistant e-mail follow the revocation page
+   and the console word for word: the French button is "Révoquer uniquement
+   cette connexion" (E-MAIL-37); the German footer and button say "Button"
+   (E-REV-11, C-LIST-21), and German says "Netzwerk" (E-MAIL-13, 27, 28).
+8. One wording of the account-key alert, on the screen and in the e-mail, in
+   the account's language (the sign-in).
+9. No server English on the screen: Members and permissions' "Liberar
+   leitura" shows the step-up field's own sentence (C-STEP-08) when the grant
+   answers `step_up_required`, whatever the server's message; the sign-in's
+   callback has its own sentence for `rate_limited`.
+10. An account that signs in through The Happie Co is told so (C-STEP-13),
+    and the platform sign-in is not switched on in the pilot before its step
+    4 (the sign-in).
+11. The link ceremony says the account's passkeys stop working (the sign-in).
+12. The typographic apostrophe in every text a person reads: the console, the
+    e-mails and the plugin package (P-PLUG, P-SKILL, P-DOC). Error messages of
+    the API, which programs read, keep ASCII.
+13. The AI card's promise ends "You confirm it is you before it starts."
+    (C-AI-06), as written.
 
 ### Amendments to §§1 to 18
 

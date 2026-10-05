@@ -477,7 +477,19 @@ func TestRenewalNotices(t *testing.T) {
 		return conn.ID
 	}
 	tested, untested := v2(store.ClientDCR, store.TrustTested), v2(store.ClientCIMD, store.TrustUnknown)
-	for _, id := range []string{a.ID, b.ID, tested, untested} {
+	// A console token with text: named by its label and marked a token, so
+	// the e-mail can name it as the activation notice does.
+	tokenConsent := f.prepareContent(ctx, t, f.owner)
+	tokenConsent.in = clientConsent(tokenConsent.in, store.ClientToken, store.TrustUnknown)
+	tokenConsent.in.ExpiresAt = time.Now().Add(24 * time.Hour)
+	token, err := f.conns.Create(ctx, f.tenant, f.owner, tokenConsent.in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.conns.Activate(ctx, "enclave", token.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{a.ID, b.ID, tested, untested, token.ID} {
 		if err := f.conns.Reseal(ctx, "enclave", id); err != nil {
 			t.Fatal(err)
 		}
@@ -502,9 +514,17 @@ func TestRenewalNotices(t *testing.T) {
 	}
 	n := due[0]
 	names := slices.Sorted(slices.Values(n.Assistants))
-	if n.UserID != f.owner || n.TenantID != f.tenant || n.Locale != "de" || n.Workspace == "" || len(n.ConnectionIDs) != 4 ||
-		!slices.Equal(names, []string{"ChatGPT", "agent.example.com", "claude.ai", "claude.ai"}) || n.OneByOne != 1 || n.Email == "" {
+	if n.UserID != f.owner || n.TenantID != f.tenant || n.Locale != "de" || n.Workspace == "" || len(n.ConnectionIDs) != 5 ||
+		!slices.Equal(names, []string{"ChatGPT", "Cursor on the laptop", "agent.example.com", "claude.ai", "claude.ai"}) || n.OneByOne != 2 || n.Email == "" {
 		t.Fatalf("notice = %+v", n)
+	}
+	if len(n.Tokens) != len(n.ConnectionIDs) {
+		t.Fatalf("token marks = %v", n.Tokens)
+	}
+	for i, id := range n.ConnectionIDs {
+		if n.Tokens[i] != (id == token.ID) || n.Tokens[i] && n.Assistants[i] != "Cursor on the laptop" {
+			t.Errorf("connection %s (%q) marked a token: %v", id, n.Assistants[i], n.Tokens[i])
+		}
 	}
 	if claimed, err := f.conns.ClaimRenewalNotice(ctx, n.TenantID, n.UserID, n.ConnectionIDs); err != nil || !claimed {
 		t.Fatalf("claim = %v %v", claimed, err)
@@ -523,10 +543,10 @@ func TestRenewalNotices(t *testing.T) {
 	// Past them, the connection still waiting is due again; a renewed one
 	// is not.
 	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET reseal_mailed_at = now() - interval '13 hours' WHERE id = ANY($1::uuid[])`,
-		[]string{a.ID, b.ID, tested, untested}); err != nil {
+		[]string{a.ID, b.ID, tested, untested, token.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET status='active' WHERE id = ANY($1::uuid[])`, []string{b.ID, tested, untested}); err != nil {
+	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET status='active' WHERE id = ANY($1::uuid[])`, []string{b.ID, tested, untested, token.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if due, err := f.conns.DueRenewalNotices(ctx); err != nil || len(due) != 1 || len(due[0].ConnectionIDs) != 1 || due[0].ConnectionIDs[0] != a.ID {

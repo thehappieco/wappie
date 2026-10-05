@@ -237,9 +237,12 @@ type RenewalNotice struct {
 	TenantID, UserID         uuid.UUID
 	Email, Locale, Workspace string
 	// ConnectionIDs and Assistants are the waiting connections and their
-	// verified names, oldest reseal first; Since is when that was.
+	// verified names, oldest reseal first; Since is when that was. Tokens
+	// marks the console tokens among them, in the same order: the notice
+	// names a token by its label as the activation notice does.
 	ConnectionIDs []string
 	Assistants    []string
+	Tokens        []bool
 	Since         time.Time
 	// OneByOne is how many of them the console's Renew all leaves to their
 	// own Renew: an untested client's and a token's, whose renewal asks its
@@ -274,6 +277,7 @@ const renewalQuiet = 12 * time.Hour
 func (m *MCPConnections) DueRenewalNotices(ctx context.Context) ([]RenewalNotice, error) {
 	rows, err := m.pool.Query(ctx, `
 		SELECT c.tenant_id, c.created_by, array_agg(c.id::text ORDER BY c.resealed_at, c.id), array_agg(`+renewalName+` ORDER BY c.resealed_at, c.id),
+		       array_agg(c.client_kind = 'token' ORDER BY c.resealed_at, c.id),
 		       min(c.resealed_at), count(*) FILTER (WHERE c.trust = 'unknown' OR c.client_kind = 'token')
 		  FROM mcp_connections c
 		 WHERE c.kind = 'content' AND c.status = 'reseal' AND c.expires_at > now()
@@ -289,7 +293,7 @@ func (m *MCPConnections) DueRenewalNotices(ctx context.Context) ([]RenewalNotice
 	var due []RenewalNotice
 	for rows.Next() {
 		var n RenewalNotice
-		if err := rows.Scan(&n.TenantID, &n.UserID, &n.ConnectionIDs, &n.Assistants, &n.Since, &n.OneByOne); err != nil {
+		if err := rows.Scan(&n.TenantID, &n.UserID, &n.ConnectionIDs, &n.Assistants, &n.Tokens, &n.Since, &n.OneByOne); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("store: due renewal notices: %w", err)
 		}

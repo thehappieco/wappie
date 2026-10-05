@@ -70,7 +70,7 @@ func (h *Handler) SendRenewalNotices(ctx context.Context) {
 		if !claimed {
 			continue
 		}
-		if err := h.MailRenewal(ctx, n.Email, mailer.MCPRenewal{Workspace: n.Workspace, Assistants: n.Assistants, OneByOne: n.OneByOne,
+		if err := h.MailRenewal(ctx, n.Email, mailer.MCPRenewal{Workspace: n.Workspace, Assistants: n.Assistants, Tokens: n.Tokens, OneByOne: n.OneByOne,
 			Since: n.Since, Lang: n.Locale}); err != nil {
 			// The address is the recipient's; the error is the mail
 			// server's.

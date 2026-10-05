@@ -264,15 +264,57 @@ func TestMCPRenewalEmail(t *testing.T) {
 	if err != nil || one.Subject != "Seu assistente precisa ser renovado" || !strings.HasPrefix(one.Intro, "Uma conexão") {
 		t.Fatalf("one = %+v %v", one, err)
 	}
+	// A console token is named by its label as the activation notice names
+	// one (E-RENEW-05, approved 2026-10-05): a label such as "Claude" must
+	// not read as the tested assistant of that name.
+	for lang, want := range map[string]string{
+		"":   "Assistants: Claude, Token “Claude”, agent.example.com",
+		"pt": "Assistentes: Claude, Token “Claude”, agent.example.com",
+		"es": "Asistentes: Claude, Token “Claude”, agent.example.com",
+		"fr": "Assistants : Claude, Jeton « Claude », agent.example.com",
+		"de": "Assistenten: Claude, Token „Claude“, agent.example.com",
+	} {
+		model, err := mcpRenewalEmail(MCPRenewal{Workspace: "Acme", Assistants: []string{"Claude", "Claude", "agent.example.com"}, Tokens: []bool{false, true},
+			OneByOne: 2, Since: since, Lang: lang})
+		if err != nil || model.Facts[0] != want {
+			t.Errorf("%q names = %q %v", lang, model.Facts, err)
+		}
+	}
 	for name, n := range map[string]MCPRenewal{
 		"no workspace":        {Assistants: []string{"Claude"}},
 		"no connection":       {Workspace: "Acme"},
 		"more one by one":     {Workspace: "Acme", Assistants: []string{"Claude"}, OneByOne: 2},
 		"fewer than none one": {Workspace: "Acme", Assistants: []string{"Claude"}, OneByOne: -1},
+		"more tokens":         {Workspace: "Acme", Assistants: []string{"Claude"}, Tokens: []bool{false, true}},
 	} {
 		if _, err := mcpRenewalEmail(n); err == nil {
 			t.Errorf("%s: rendered", name)
 		}
+	}
+}
+
+// The new languages of the notice e-mail say what the revocation page it
+// opens (internal/mcpauth/revokelink.go) and the console say, word for word
+// (approved 2026-10-05): the French button is the page's, the German footer
+// and button are the page's and the console's ("Button", not
+// "Schaltfläche"), and German says "Netzwerk", as the console does.
+func TestMCPNoticeWordsFollowThePage(t *testing.T) {
+	fr, de := wordsFor("fr"), wordsFor("de")
+	if fr.action != "Révoquer uniquement cette connexion" {
+		t.Errorf("French button = %q", fr.action)
+	}
+	if de.action != "Nur diese Verbindung widerrufen" ||
+		de.footer != "E-Mails von Wappie zu Assistenten fragen nie nach Ihrem Passwort. Ihr einziger Button widerruft eine Verbindung. Um Ihre Assistenten zu sehen, öffnen Sie selbst die Wappie-Konsole." ||
+		!strings.HasPrefix(de.linkHelp, "Der Button widerruft nur diese eine Verbindung") {
+		t.Errorf("German button, footer or help = %q, %q, %q", de.action, de.footer, de.linkHelp)
+	}
+	for _, text := range []string{de.titles["network"], de.network, de.networkClient, de.linkHelp, de.footer} {
+		if strings.Contains(text, "Schaltfläche") || strings.Contains(text, " Netz ") {
+			t.Errorf("German text not as the console says it: %q", text)
+		}
+	}
+	if !strings.Contains(de.titles["network"], "Netzwerk") || !strings.Contains(de.network, "Netzwerk") || !strings.Contains(de.networkClient, "Netzwerk") {
+		t.Errorf("German network texts = %q, %q, %q", de.titles["network"], de.network, de.networkClient)
 	}
 }
 

@@ -293,7 +293,7 @@ var mcpLanguages = []mcpWords{
 			return fmt.Sprintf("%d %s %d, %s UTC", t.Day(), frMonths[t.Month()-1], t.Year(), t.Format("15:04"))
 		},
 		facts:    [6]string{"Assistant : ", "Espace de travail : ", "Numéros : ", "Ce qu’il peut lire : ", "Valable jusqu’au : ", "Quand : "},
-		question: "Vous ne le reconnaissez pas ?", action: "Révoquer seulement cette connexion",
+		question: "Vous ne le reconnaissez pas ?", action: "Révoquer uniquement cette connexion",
 		linkHelp: "Le bouton révoque seulement cette connexion, rien d’autre, et ne demande aucun mot de passe. S’il ne fonctionne pas, copiez cette adresse dans votre navigateur :",
 		footer:   "Les e-mails de Wappie sur les assistants ne demandent jamais votre mot de passe. Leur seul bouton révoque une connexion. Pour voir vos assistants, ouvrez vous-même la console Wappie.",
 	},
@@ -301,7 +301,7 @@ var mcpLanguages = []mcpWords{
 		lang: "de", kicker: "WAPPIE · ASSISTENTEN",
 		tiers:  map[string]string{"tested": "von Wappie getestet", "local": "eine App auf einem Computer, von Wappie getestet", "unknown": "nicht von Wappie getestet"},
 		limits: map[string]string{"daily_messages": "sein tägliches Limit an Nachrichten", "daily_attachments": "sein tägliches Limit an Anhängen", "first_hour_messages": "sein Limit an Nachrichten für die erste Stunde", "first_hour_attachments": "sein Limit an Anhängen für die erste Stunde"},
-		titles: map[string]string{"activated": "Ein neuer Assistent hat sich verbunden", "token": "Ein neues Verbindungstoken", "limit": "Ein Assistent hat sein Leselimit erreicht", "token_limit": "Ein Token hat sein Leselimit erreicht", "network": "Ein Token wurde aus einem anderen Netz verwendet"},
+		titles: map[string]string{"activated": "Ein neuer Assistent hat sich verbunden", "token": "Ein neues Verbindungstoken", "limit": "Ein Assistent hat sein Leselimit erreicht", "token_limit": "Ein Token hat sein Leselimit erreicht", "network": "Ein Token wurde aus einem anderen Netzwerk verwendet"},
 		token:  "Das Verbindungstoken der Konsole „%s“", assistant: "%s (%s)", tokenFact: "Token: „%s“",
 		numbers: func(n int) string { return plural(n, "1 Nummer", "%d Nummern") },
 		reads: func(text, attachments bool, days int) string {
@@ -324,16 +324,16 @@ var mcpLanguages = []mcpWords{
 		},
 		history:       ", aus den letzten {days} Tagen",
 		limit:         "{who} hat {limit} im Arbeitsbereich „{workspace}“ erreicht. Bis das Limit zurückgesetzt wird, wird nichts mehr gelesen.",
-		network:       "Jemand hat {who} aus einem Netz verwendet, das es nicht erlaubt, im Arbeitsbereich „{workspace}“. Wappie hat den Aufruf abgelehnt.",
-		networkClient: "Jemand hat die Verbindung von {who} aus einem Netz verwendet, das sie nicht erlaubt, im Arbeitsbereich „{workspace}“. Wappie hat den Aufruf abgelehnt.",
+		network:       "Jemand hat {who} aus einem Netzwerk verwendet, das es nicht erlaubt, im Arbeitsbereich „{workspace}“. Wappie hat den Aufruf abgelehnt.",
+		networkClient: "Jemand hat die Verbindung von {who} aus einem Netzwerk verwendet, das sie nicht erlaubt, im Arbeitsbereich „{workspace}“. Wappie hat den Aufruf abgelehnt.",
 		date: func(t time.Time) string {
 			t = t.UTC()
 			return fmt.Sprintf("%d. %s %d, %s UTC", t.Day(), deMonths[t.Month()-1], t.Year(), t.Format("15:04"))
 		},
 		facts:    [6]string{"Assistent: ", "Arbeitsbereich: ", "Nummern: ", "Was er lesen kann: ", "Gültig bis: ", "Wann: "},
 		question: "Kennen Sie ihn nicht?", action: "Nur diese Verbindung widerrufen",
-		linkHelp: "Die Schaltfläche widerruft nur diese eine Verbindung und sonst nichts, ohne Passwort. Wenn sie nicht funktioniert, kopieren Sie diese Adresse in Ihren Browser:",
-		footer:   "E-Mails von Wappie zu Assistenten fragen nie nach Ihrem Passwort. Ihre einzige Schaltfläche widerruft eine Verbindung. Um Ihre Assistenten zu sehen, öffnen Sie selbst die Wappie-Konsole.",
+		linkHelp: "Der Button widerruft nur diese eine Verbindung und sonst nichts, ohne Passwort. Wenn er nicht funktioniert, kopieren Sie diese Adresse in Ihren Browser:",
+		footer:   "E-Mails von Wappie zu Assistenten fragen nie nach Ihrem Passwort. Ihr einziger Button widerruft eine Verbindung. Um Ihre Assistenten zu sehen, öffnen Sie selbst die Wappie-Konsole.",
 	},
 }
 
@@ -484,6 +484,11 @@ type MCPRenewal struct {
 	// from the reader's list, an untested one's domain, a token's label), an
 	// older row's host. Never a name the client gave itself.
 	Assistants []string
+	// Tokens marks the console tokens among them: Tokens[i] is Assistants[i]'s,
+	// and a missing entry is false. A token is named by its label the way the
+	// activation notice names one (Token “label”), so that a label such as
+	// "Claude" never reads as the tested assistant of that name.
+	Tokens []bool
 	// OneByOne is how many of them the console's Renew all leaves to their
 	// own Renew: an untested client's and a token's.
 	OneByOne int
@@ -509,9 +514,11 @@ func (s Sender) MCPRenewalNotice(ctx context.Context, email string, n MCPRenewal
 // token's keeps its own Renew, so what the e-mail says depends on which
 // wait: all of the first (allOne, allMany), all of the second (eachOne,
 // eachMany), or some of each (mixed, never for one connection alone).
+// token names a console token in the list of names, by its label.
 type renewalWords struct {
 	titleOne, titleMany, introOne, introMany  string
 	facts                                     [3]string
+	token                                     string
 	question                                  string
 	allOne, allMany, eachOne, eachMany, mixed string
 }
@@ -523,6 +530,7 @@ var renewalLanguages = map[string]renewalWords{
 		introOne:  "One assistant connection in the workspace “{workspace}” stopped reading message text: the Wappie reader no longer holds its key. It still sees who, when and how much.",
 		introMany: "{count} assistant connections in the workspace “{workspace}” stopped reading message text: the Wappie reader no longer holds their keys. They still see who, when and how much.",
 		facts:     [3]string{"Assistants: ", "Workspace: ", "Since: "},
+		token:     "Token “%s”",
 		question:  "What to do",
 		allOne:    "Open the Wappie console yourself, go to the MCP tab and choose Renew all. One confirmation renews it; the assistant stays connected.",
 		allMany:   "Open the Wappie console yourself, go to the MCP tab and choose Renew all. One confirmation renews them all; the assistants stay connected.",
@@ -535,6 +543,7 @@ var renewalLanguages = map[string]renewalWords{
 		introOne:  "Uma conexão de assistente do espaço de trabalho “{workspace}” parou de ler o texto das mensagens: o leitor da Wappie não guarda mais a chave dela. Ela continua vendo quem, quando e quanto.",
 		introMany: "{count} conexões de assistentes do espaço de trabalho “{workspace}” pararam de ler o texto das mensagens: o leitor da Wappie não guarda mais as chaves delas. Elas continuam vendo quem, quando e quanto.",
 		facts:     [3]string{"Assistentes: ", "Espaço de trabalho: ", "Desde: "},
+		token:     "Token “%s”",
 		question:  "O que fazer",
 		allOne:    "Abra você mesmo o console da Wappie, vá à aba MCP e escolha Renovar todas. Uma só confirmação a renova; o assistente continua conectado.",
 		allMany:   "Abra você mesmo o console da Wappie, vá à aba MCP e escolha Renovar todas. Uma só confirmação renova todas; os assistentes continuam conectados.",
@@ -547,6 +556,7 @@ var renewalLanguages = map[string]renewalWords{
 		introOne:  "Una conexión de asistente del espacio de trabajo “{workspace}” dejó de leer el texto de los mensajes: el lector de Wappie ya no guarda su clave. Sigue viendo quién, cuándo y cuánto.",
 		introMany: "{count} conexiones de asistentes del espacio de trabajo “{workspace}” dejaron de leer el texto de los mensajes: el lector de Wappie ya no guarda sus claves. Siguen viendo quién, cuándo y cuánto.",
 		facts:     [3]string{"Asistentes: ", "Espacio de trabajo: ", "Desde: "},
+		token:     "Token “%s”",
 		question:  "Qué hacer",
 		allOne:    "Abre tú mismo la consola de Wappie, ve a la pestaña MCP y elige Renovar todas. Una sola confirmación la renueva; el asistente sigue conectado.",
 		allMany:   "Abre tú mismo la consola de Wappie, ve a la pestaña MCP y elige Renovar todas. Una sola confirmación las renueva todas; los asistentes siguen conectados.",
@@ -559,6 +569,7 @@ var renewalLanguages = map[string]renewalWords{
 		introOne:  "Une connexion d’assistant de l’espace de travail « {workspace} » ne lit plus le texte des messages : le lecteur Wappie n’en détient plus la clé. Elle voit toujours qui, quand et combien.",
 		introMany: "{count} connexions d’assistants de l’espace de travail « {workspace} » ne lisent plus le texte des messages : le lecteur Wappie n’en détient plus les clés. Elles voient toujours qui, quand et combien.",
 		facts:     [3]string{"Assistants : ", "Espace de travail : ", "Depuis : "},
+		token:     "Jeton « %s »",
 		question:  "Que faire",
 		allOne:    "Ouvrez vous-même la console Wappie, allez dans l’onglet MCP et choisissez Tout renouveler. Une seule confirmation la renouvelle ; l’assistant reste connecté.",
 		allMany:   "Ouvrez vous-même la console Wappie, allez dans l’onglet MCP et choisissez Tout renouveler. Une seule confirmation les renouvelle toutes ; les assistants restent connectés.",
@@ -571,6 +582,7 @@ var renewalLanguages = map[string]renewalWords{
 		introOne:  "Eine Assistentenverbindung im Arbeitsbereich „{workspace}“ liest den Text der Nachrichten nicht mehr: Der Wappie-Leser hat ihren Schlüssel nicht mehr. Sie sieht weiterhin, wer, wann und wie viel.",
 		introMany: "{count} Assistentenverbindungen im Arbeitsbereich „{workspace}“ lesen den Text der Nachrichten nicht mehr: Der Wappie-Leser hat ihre Schlüssel nicht mehr. Sie sehen weiterhin, wer, wann und wie viel.",
 		facts:     [3]string{"Assistenten: ", "Arbeitsbereich: ", "Seit: "},
+		token:     "Token „%s“",
 		question:  "Was zu tun ist",
 		allOne:    "Öffnen Sie selbst die Wappie-Konsole, gehen Sie zum Tab MCP und wählen Sie Alle erneuern. Eine Bestätigung erneuert sie; der Assistent bleibt verbunden.",
 		allMany:   "Öffnen Sie selbst die Wappie-Konsole, gehen Sie zum Tab MCP und wählen Sie Alle erneuern. Eine Bestätigung erneuert alle; die Assistenten bleiben verbunden.",
@@ -590,6 +602,9 @@ func mcpRenewalEmail(n MCPRenewal) (mcpEmail, error) {
 	}
 	if n.OneByOne < 0 || n.OneByOne > total {
 		return mcpEmail{}, errors.New("mailer: more connections renewed one by one than wait")
+	}
+	if len(n.Tokens) > total {
+		return mcpEmail{}, errors.New("mailer: more tokens than connections wait")
 	}
 	w := wordsFor(n.Lang)
 	r := renewalLanguages[w.lang]
@@ -611,9 +626,16 @@ func mcpRenewalEmail(n MCPRenewal) (mcpEmail, error) {
 		steps = r.mixed
 	}
 	intro = strings.NewReplacer("{count}", fmt.Sprint(total), "{workspace}", n.Workspace).Replace(intro)
+	names := make([]string, total)
+	for i, name := range n.Assistants {
+		names[i] = name
+		if i < len(n.Tokens) && n.Tokens[i] {
+			names[i] = fmt.Sprintf(r.token, name)
+		}
+	}
 	return mcpEmail{
 		Lang: w.lang, Kicker: w.kicker, Subject: title, Preheader: intro, Title: title, Intro: intro,
-		Facts:    []string{r.facts[0] + strings.Join(n.Assistants, ", "), r.facts[1] + n.Workspace, r.facts[2] + w.date(n.Since)},
+		Facts:    []string{r.facts[0] + strings.Join(names, ", "), r.facts[1] + n.Workspace, r.facts[2] + w.date(n.Since)},
 		Question: r.question, Steps: steps,
 		// The footer of every notice e-mail, word for word (D10, 5).
 		Footer: w.footer,

@@ -434,6 +434,10 @@ func TestRenewalNoticeSent(t *testing.T) {
 	if got.to != h.owner.Email || got.n.Lang != "pt" || len(got.n.Assistants) != 2 || got.n.Workspace != "acme" || got.n.Since.IsZero() {
 		t.Fatalf("notice = %+v", got)
 	}
+	// Neither is a console token: the e-mail names both as they are.
+	if len(got.n.Tokens) != 2 || got.n.Tokens[0] || got.n.Tokens[1] {
+		t.Fatalf("token marks = %v", got.n.Tokens)
+	}
 	if strings.Contains(strings.Join(got.n.Assistants, ","), "http") {
 		t.Fatal("a notice names an address")
 	}
