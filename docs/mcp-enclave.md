@@ -9780,10 +9780,11 @@ request in `mcpConnect.spec.ts`.
 operators to list workspaces in `WS_MCP_CONTENT_TENANTS` (its message text
 section) and `WS_MCP_MEDIA_TENANTS` (its attachments section). The file is
 copied into the measured image, so it is corrected with the next reader
-release; until then this section is the reference. The repositories'
-environment examples still name the retired lists as well, and are corrected
-apart from this change, with `WS_MCP_WORKSPACE_DEFAULT` and
-`WS_MCP_DENY_TENANTS` added.
+release; until then this section is the reference. The core's
+`.env.example` shows `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS` and
+names the retired lists only as retired (the owner approved editing the
+example on 2026-10-05); the console's `deploy/mcp.env.example` never listed
+them.
 
 ### Amendments to §§1 to 18
 

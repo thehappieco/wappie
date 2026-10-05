@@ -751,13 +751,21 @@ func TestContentVariablesDocumented(t *testing.T) {
 			t.Errorf("docs/mcp.md's readers' configuration does not list %s", name)
 		}
 	}
-	// .env.example is the operator's to edit (docs/mcp-enclave.md §19.30
-	// lists what it should show now); the switches it has always shown stay.
-	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_OFF_KINDS",
+	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_WORKSPACE_DEFAULT", "WS_MCP_DENY_TENANTS", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_OFF_KINDS",
 		"WS_MCP_SEND_ENABLED", "WS_MCP_SEND_SELF_ENABLED", "WS_MCP_SEND_DIRECT_ENABLED"} {
 		if !strings.Contains(env, "\n# "+name+"=") {
 			t.Errorf(".env.example does not show %s", name)
 		}
+	}
+	// A retired list is named in .env.example only as retired, never as a
+	// setting to fill in: a server that has one set refuses to start.
+	for _, name := range retiredLists {
+		if strings.Contains(env, "\n# "+name+"=") {
+			t.Errorf(".env.example still offers the retired %s", name)
+		}
+	}
+	if !strings.Contains(env, "# WS_MCP_WORKSPACE_DEFAULT=off\n") {
+		t.Error(".env.example does not show the workspaces' default")
 	}
 	for _, name := range retiredLists {
 		if !strings.Contains(section, "`"+name+"`") {
