@@ -66,18 +66,20 @@ func (h *Handler) mountPasskeys(mux *http.ServeMux) {
 			RPID    string   `json:"rp_id"`
 			Origins []string `json:"origins"`
 		}{Origins: []string{}}
-		if h.Passkeys != nil {
+		// Once WS_LOCAL_LOGIN narrows password sign-in, Wappie's own passkeys
+		// go with it: they unlock the same legacy wrap.
+		if h.Passkeys != nil && h.localAllowed(false) {
 			out.Enabled, out.RPID = true, h.Passkeys.rpID
 			out.Origins = append(out.Origins, h.Passkeys.web.Config.RPOrigins...)
 		}
 		send(w, http.StatusOK, out)
 	})
-	mux.HandleFunc("GET /v1/auth/passkeys", h.listPasskeys)
-	mux.HandleFunc("DELETE /v1/auth/passkeys/{id}", h.deletePasskey)
-	mux.HandleFunc("POST /v1/auth/passkeys/register/options", h.registerPasskeyOptions)
-	mux.HandleFunc("POST /v1/auth/passkeys/register/finish", h.registerPasskeyFinish)
-	mux.HandleFunc("POST /v1/auth/passkeys/login/options", h.loginPasskeyOptions)
-	mux.HandleFunc("POST /v1/auth/passkeys/login/finish", h.loginPasskeyFinish)
+	mux.HandleFunc("GET /v1/auth/passkeys", h.local(false, h.listPasskeys))
+	mux.HandleFunc("DELETE /v1/auth/passkeys/{id}", h.local(false, h.deletePasskey))
+	mux.HandleFunc("POST /v1/auth/passkeys/register/options", h.local(false, h.registerPasskeyOptions))
+	mux.HandleFunc("POST /v1/auth/passkeys/register/finish", h.local(false, h.registerPasskeyFinish))
+	mux.HandleFunc("POST /v1/auth/passkeys/login/options", h.local(false, h.loginPasskeyOptions))
+	mux.HandleFunc("POST /v1/auth/passkeys/login/finish", h.local(false, h.loginPasskeyFinish))
 }
 
 func (h *Handler) passkeyOrigin(w http.ResponseWriter, r *http.Request) (string, bool) {

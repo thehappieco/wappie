@@ -614,13 +614,10 @@ func TestMigration0047DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A later migration in the ledger comes down first: until it has, this
+	// 0048 (platform sign-in) comes down first: until it has, this
 	// down-step refuses and changes nothing.
-	if _, err := f.pool.Exec(ctx, `INSERT INTO schema_migrations (version, name, checksum, duration_ms) VALUES (48, 'later', 'x', 0)`); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err == nil || !strings.Contains(err.Error(), "after 0047 is applied") {
-		t.Fatalf("the down-step ran below a later migration: %v", err)
+		t.Fatalf("the down-step ran below 0048: %v", err)
 	}
 	var version, left int
 	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 47`).Scan(&left); err != nil || left != 1 {
@@ -630,10 +627,9 @@ func TestMigration0047DownStep(t *testing.T) {
 		AND table_name='sessions' AND column_name='authenticated_at'`).Scan(&left); err != nil || left != 1 {
 		t.Fatalf("a refused down-step dropped sessions.authenticated_at: %d %v", left, err)
 	}
-	if _, err := f.pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 48`); err != nil {
-		t.Fatal(err)
+	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
+		t.Fatalf("0048 down-step: %v", err)
 	}
-
 	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
 		t.Fatalf("down-step: %v", err)
 	}
@@ -664,7 +660,7 @@ func TestMigration0047DownStep(t *testing.T) {
 	// Up again: every session is as old as its family's first sign-in, and
 	// everything above works.
 	if err := migrate.Run(ctx, f.pool, slog.New(slog.DiscardHandler)); err != nil {
-		t.Fatalf("re-applying 0047: %v", err)
+		t.Fatalf("re-applying 0047 and 0048: %v", err)
 	}
 	if fresh, err := stepup.Recent(f.users).Fresh(ctx, s.ID); err != nil || !fresh {
 		t.Fatalf("after re-applying, the new session = %v %v", fresh, err)

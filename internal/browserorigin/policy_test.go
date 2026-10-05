@@ -98,3 +98,36 @@ func TestSameHostHTTPOnlyForDevelopmentLoopback(t *testing.T) {
 		}
 	}
 }
+
+// The identity provider's development stack serves the console at
+// app.wappie.thehappie.localhost: a name under .localhost is a loopback
+// development origin, in development only, and a look-alike is not.
+func TestDotLocalhostIsADevelopmentLoopback(t *testing.T) {
+	for _, tt := range []struct {
+		dev  bool
+		host string
+		want bool
+	}{
+		{true, "app.wappie.thehappie.localhost:5173", true},
+		{false, "app.wappie.thehappie.localhost:5173", false},
+		{true, "app.wappie.thehappie.localhost.evil.test:5173", false},
+		{true, "localhostevil.test:5173", false},
+		{true, "evil-localhost:5173", false},
+	} {
+		p, _ := Parse("", tt.dev)
+		r := httptest.NewRequest("GET", "http://"+tt.host+"/v1/ws", nil)
+		r.Header.Set("Origin", "http://"+tt.host)
+		if p.Allows(r) != tt.want {
+			t.Fatalf("same host %+v", tt)
+		}
+	}
+	if _, err := Parse("http://app.wappie.thehappie.localhost:5173", true); err != nil {
+		t.Fatalf("development refused a .localhost origin: %v", err)
+	}
+	if _, err := Parse("http://app.wappie.thehappie.localhost:5173", false); err == nil {
+		t.Fatal("production accepted a cleartext .localhost origin")
+	}
+	if _, err := Parse("http://.localhost:5173", true); err == nil {
+		t.Fatal("accepted an empty label before .localhost")
+	}
+}

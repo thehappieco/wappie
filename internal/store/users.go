@@ -86,9 +86,12 @@ type User struct {
 	// until a new code is generated.
 	RecoveryUsable bool
 
-	Role      string
-	Status    string
-	CreatedAt time.Time
+	Role   string
+	Status string
+	// AuthSource is "local" (a password, or a service) or "platform": the
+	// account signs in through the identity provider (platform.go).
+	AuthSource string
+	CreatedAt  time.Time
 }
 
 // NewUser is what signing up supplies. Everything secret in it was produced by
@@ -336,10 +339,10 @@ func (u *Users) verify(ctx context.Context, tenant, userID uuid.UUID, email, sec
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT `+column+`, kdf_salt, kdf_params, public_key, wrapped_usk,
-			       recovery_wrap, recovery_hash IS NOT NULL, role, status, created_at, name, avatar
+			       recovery_wrap, recovery_hash IS NOT NULL, role, status, created_at, name, avatar, auth_source
 			  FROM users WHERE id = $1`, userID).Scan(&stored, &out.KDFSalt, &raw,
 			&out.PublicKey, &out.WrappedUSK, &out.RecoveryWrap, &out.RecoveryUsable,
-			&out.Role, &out.Status, &out.CreatedAt, &out.Name, &out.Avatar)
+			&out.Role, &out.Status, &out.CreatedAt, &out.Name, &out.Avatar, &out.AuthSource)
 	})
 	if err != nil {
 		return User{}, fmt.Errorf("store: authenticate: %w", err)
@@ -573,12 +576,12 @@ func (u *Users) Get(ctx context.Context, tenant, id uuid.UUID) (User, error) {
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT u.email, u.kdf_salt, u.kdf_params, u.public_key, u.wrapped_usk,
-			       u.recovery_wrap, u.recovery_hash IS NOT NULL, m.role, u.status, u.created_at, u.name, u.avatar
+			       u.recovery_wrap, u.recovery_hash IS NOT NULL, m.role, u.status, u.created_at, u.name, u.avatar, u.auth_source
 			  FROM users u JOIN workspace_memberships m ON m.user_id = u.id
 			 WHERE u.id = $1 AND m.tenant_id = $2 AND m.status = 'active'
 			   AND (m.expires_at IS NULL OR m.expires_at > now())`, id, tenant).Scan(&out.Email, &out.KDFSalt, &raw,
 			&out.PublicKey, &out.WrappedUSK, &out.RecoveryWrap, &out.RecoveryUsable,
-			&out.Role, &out.Status, &out.CreatedAt, &out.Name, &out.Avatar)
+			&out.Role, &out.Status, &out.CreatedAt, &out.Name, &out.Avatar, &out.AuthSource)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound

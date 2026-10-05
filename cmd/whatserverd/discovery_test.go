@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+
+	"whatserver2/internal/authapi"
 )
 
 func TestDiscoveryDescribesProtocolWithoutWorkspaceData(t *testing.T) {
@@ -220,6 +222,40 @@ func TestDiscoveryAdvertisesAI(t *testing.T) {
 		}
 		if slices.Contains(doc.Capabilities, "mcp.remote.ai.v1") != tc.want {
 			t.Fatalf("%+v: %s", tc.endpoints, w.Body.String())
+		}
+	}
+}
+
+// Sign-in through the identity provider is advertised exactly when it is
+// configured, with what the console needs to begin one; password sign-in
+// stops being advertised only once WS_LOCAL_LOGIN is off.
+func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
+	type doc struct {
+		Capabilities  []string                   `json:"capabilities"`
+		PlatformLogin *authapi.PlatformDiscovery `json:"platform_login"`
+	}
+	read := func(t *testing.T, p *authapi.PlatformDiscovery) doc {
+		t.Helper()
+		w := httptest.NewRecorder()
+		discoveryWith(mcpEndpoints{}, p)(w, httptest.NewRequest("GET", "/.well-known/wappie", nil))
+		var d doc
+		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	off := read(t, nil)
+	if off.PlatformLogin != nil || slices.Contains(off.Capabilities, "auth.platform.v1") || !slices.Contains(off.Capabilities, "auth.password") {
+		t.Fatalf("unconfigured: %+v", off)
+	}
+	for _, local := range []string{"on", "link_only", "off"} {
+		d := read(t, &authapi.PlatformDiscovery{Issuer: "https://id.thehappie.co", ClientID: "wappie-app", Product: "wappie", LocalLogin: local})
+		if d.PlatformLogin == nil || d.PlatformLogin.Issuer != "https://id.thehappie.co" || d.PlatformLogin.ClientID != "wappie-app" ||
+			d.PlatformLogin.Product != "wappie" || d.PlatformLogin.LocalLogin != local || !slices.Contains(d.Capabilities, "auth.platform.v1") {
+			t.Fatalf("%s: %+v", local, d)
+		}
+		if slices.Contains(d.Capabilities, "auth.password") != (local != "off") {
+			t.Fatalf("%s: auth.password %v", local, d.Capabilities)
 		}
 	}
 }

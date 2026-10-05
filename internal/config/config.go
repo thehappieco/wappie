@@ -45,6 +45,9 @@ type Config struct {
 	Web            Web
 	Passkeys       Passkeys
 	Signup         Signup
+	// Platform is sign-in through an external identity provider (The Happie
+	// Co's id. in the cloud); off unless WS_PLATFORM_ISSUER is set.
+	Platform Platform
 	// LoginDecoyKey keys the sign-in challenge answered for an address with
 	// no account, so that answer cannot be computed from the address alone.
 	// It has to persist: a decoy that changes on restart, while a real salt
@@ -202,6 +205,10 @@ func Load() (Config, error) {
 	if err := cfg.Signup.Validate(env.IsProd()); err != nil {
 		errs = append(errs, err)
 	}
+	cfg.Platform = loadPlatform(cfg.Signup.AppURL)
+	if err := cfg.Platform.Validate(env.IsProd(), cfg.Signup.SMTP.Configured() && cfg.Signup.AppURL != ""); err != nil {
+		errs = append(errs, err)
+	}
 	if err := cfg.MCP.Validate(env.IsProd()); err != nil {
 		errs = append(errs, err)
 	}
@@ -288,11 +295,11 @@ func (p Postgres) RedactedDSN() string {
 // String renders the configuration for startup logs with every secret removed.
 func (c Config) String() string {
 	return fmt.Sprintf(
-		"env=%s http=%s postgres=%s pools=live:%d/history:%d/api:%d s3=%s/%s log=%s/%s %s",
+		"env=%s http=%s postgres=%s pools=live:%d/history:%d/api:%d s3=%s/%s log=%s/%s %s %s",
 		c.Env, c.HTTPAddr, c.Postgres.RedactedDSN(),
 		c.Postgres.LiveConns, c.Postgres.HistoryConns, c.Postgres.APIConns,
 		orDefault(c.Storage.Endpoint, "aws"), orDefault(c.Storage.Bucket, "unconfigured"),
-		c.Log.Level, c.Log.Format, c.MCP,
+		c.Log.Level, c.Log.Format, c.MCP, c.Platform,
 	)
 }
 

@@ -3,9 +3,12 @@ package mailer
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"html/template"
 	"net/url"
 	"strings"
+
+	"whatserver2/internal/config"
 )
 
 //go:embed templates/account.html
@@ -52,6 +55,27 @@ func invitationEmail(origin, email, code, workspace string) (accountEmail, error
 		Instructions: "To accept, sign in or create an account with this email address:",
 		Recipient:    email, Code: code, CodeLabel: "Already in Wappie? Open the workspace menu, choose to join a workspace and paste this invitation code:",
 		Footer: "Only the email address above can accept this invitation. If you were not expecting it, you can ignore this message.",
+	}, nil
+}
+
+// accountKeyChangedEmail is the alert of a sign-in refused because the
+// identity provider presented another account key than the one this
+// account signs in with (docs/platform-sign-in.md). It names no key, no
+// account id and no other address than the recipient's.
+func accountKeyChangedEmail(origin, email string) (accountEmail, error) {
+	u, err := config.AccountBrowserOrigin(origin, false)
+	if err != nil {
+		return accountEmail{}, errors.New("mailer: invalid browser origin")
+	}
+	home := u.String()
+	return accountEmail{
+		Subject: "A sign-in to Wappie was refused", Preheader: "A sign-in to Wappie was refused because your account key changed.",
+		Eyebrow: "Wappie security", Title: "A sign-in was refused",
+		Intro: "A sign-in to Wappie through The Happie Co was refused because it presented a different account key from the one your account has always used. Nothing was opened and no session was started.",
+		Link:  home, HomeURL: home, Action: "Open Wappie",
+		Expiry:       "If you reset your The Happie Co account key yourself, contact support before signing in again. If you did not, change your The Happie Co password now.",
+		Instructions: "This alert is for:", Recipient: email,
+		Footer: "Wappie never asks for your password or recovery code by e-mail.",
 	}, nil
 }
 

@@ -9,7 +9,7 @@ import (
 )
 
 func (h *Handler) signupConfig(w http.ResponseWriter, r *http.Request) {
-	send(w, http.StatusOK, map[string]bool{"enabled": h.PublicSignup && h.SendSignupVerification != nil, "email_verification_required": true})
+	send(w, http.StatusOK, map[string]bool{"enabled": h.PublicSignup && h.SendSignupVerification != nil && h.localAllowed(false), "email_verification_required": true})
 }
 func (h *Handler) signupVerification(w http.ResponseWriter, r *http.Request) {
 	if !h.PublicSignup || h.SendSignupVerification == nil {

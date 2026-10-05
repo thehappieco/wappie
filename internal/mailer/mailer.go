@@ -34,6 +34,16 @@ func (s Sender) WorkspaceInvite(ctx context.Context, email, code, workspace stri
 	return s.send(ctx, email, model)
 }
 
+// AccountKeyChanged alerts one address (the operator's, or the account's
+// own) that a sign-in was refused as account_key_changed.
+func (s Sender) AccountKeyChanged(ctx context.Context, email string) error {
+	model, err := accountKeyChangedEmail(s.AppURL, email)
+	if err != nil {
+		return err
+	}
+	return s.send(ctx, email, model)
+}
+
 func accountLink(base string, values url.Values) (string, error) {
 	u, err := config.AccountBrowserOrigin(base, false)
 	if err != nil {
