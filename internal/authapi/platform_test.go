@@ -871,3 +871,40 @@ func TestLocalLoginModes(t *testing.T) {
 		})
 	}
 }
+
+// A linked legacy account keeps its old address in the rollback window, so
+// an invitation addressed to the provider's verified address is accepted
+// by the link's address; one to a third address is still refused.
+func TestPlatformLinkedAccountAcceptsAnInvitationToItsProviderAddress(t *testing.T) {
+	h := newPlatformHarness(t, config.LocalLoginOn)
+	ctx := context.Background()
+	p := newPerson(t, "ana@id.example.com")
+	_, answer := h.signIn(t, p, 1)
+	var linked platformAnswer
+	if code := h.pagePost(t, "/v1/auth/platform/link", map[string]string{"ticket": answer.Ticket, "email": "passkey@example.com",
+		"auth_key": h.account.AuthKey, "platform_wrap": randomWrap(t)}, &linked, "", nil); code != http.StatusOK {
+		t.Fatalf("link: %d %+v", code, linked)
+	}
+	var beta uuid.UUID
+	if err := h.pool.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ('beta') RETURNING id`).Scan(&beta); err != nil {
+		t.Fatal(err)
+	}
+	other, err := h.users.CreateInvite(ctx, beta, "member", "someone@example.com", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out platformAnswer
+	if code := h.post(t, "/v1/auth/workspaces/accept-invite", map[string]string{"invite": other}, &out, linked.Token); code != http.StatusForbidden || out.Code != "invite_email_mismatch" {
+		t.Fatalf("an invitation to a third address: %d %+v", code, out)
+	}
+	mine, err := h.users.CreateInvite(ctx, beta, "member", "ana@id.example.com", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var joined struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if code := h.post(t, "/v1/auth/workspaces/accept-invite", map[string]string{"invite": mine}, &joined, linked.Token); code != http.StatusOK || joined.TenantID != beta.String() {
+		t.Fatalf("an invitation to the provider's address: %d %+v", code, joined)
+	}
+}

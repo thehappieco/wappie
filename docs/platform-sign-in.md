@@ -67,7 +67,8 @@ the browser vault as it does after a password sign-in, through
 - userinfo's address is the provider's current verified one at that sign-in.
   An account created through id. follows it (`users.email`). A linked legacy
   account keeps its `users.email`, because its legacy password wrap is bound
-  to it; the link row records id.'s address.
+  to it; the link row records id.'s address, and an invitation addressed to
+  that address is accepted too.
 
 ## The tables (migration 0048)
 
