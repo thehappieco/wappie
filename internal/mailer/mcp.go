@@ -330,8 +330,8 @@ var mcpLanguages = []mcpWords{
 			t = t.UTC()
 			return fmt.Sprintf("%d. %s %d, %s UTC", t.Day(), deMonths[t.Month()-1], t.Year(), t.Format("15:04"))
 		},
-		facts:    [6]string{"Assistent: ", "Arbeitsbereich: ", "Nummern: ", "Was er lesen kann: ", "Gültig bis: ", "Wann: "},
-		question: "Kennen Sie ihn nicht?", action: "Nur diese Verbindung widerrufen",
+		facts:    [6]string{"Assistent: ", "Arbeitsbereich: ", "Nummern: ", "Was die Verbindung lesen kann: ", "Gültig bis: ", "Wann: "},
+		question: "Kennen Sie diese Verbindung nicht?", action: "Nur diese Verbindung widerrufen",
 		linkHelp: "Der Button widerruft nur diese eine Verbindung und sonst nichts, ohne Passwort. Wenn er nicht funktioniert, kopieren Sie diese Adresse in Ihren Browser:",
 		footer:   "E-Mails von Wappie zu Assistenten fragen nie nach Ihrem Passwort. Ihr einziger Button widerruft eine Verbindung. Um Ihre Assistenten zu sehen, öffnen Sie selbst die Wappie-Konsole.",
 	},

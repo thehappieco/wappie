@@ -9840,10 +9840,11 @@ applied here; the sign-in's are recorded in `docs/platform-sign-in.md`.
 13. The AI card's promise ends "You confirm it is you before it starts."
     (C-AI-06), as written.
 
-**Left for the owner.** A German token notice says "Was er lesen kann:" and
-"Kennen Sie ihn nicht?" (E-MAIL-33, E-MAIL-36, approved as written), the
-assistant's masculine where das Token needs "es". None of the thirteen
-recommendations names them, so they stay until the owner decides.
+**German grammar fix.** E-MAIL-33 and E-MAIL-36 said "Was er lesen kann:" and
+"Kennen Sie ihn nicht?", the assistant's masculine, which is wrong for a token
+(das Token). Both now name the connection, which fits assistants and tokens
+alike and keeps the approved meaning: "Was die Verbindung lesen kann:" and
+"Kennen Sie diese Verbindung nicht?".
 
 ### Amendments to §§1 to 18
 
