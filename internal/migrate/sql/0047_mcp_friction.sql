@@ -58,10 +58,18 @@
 -- tenants do. So the table owner runs it as it is, outside any workspace's
 -- transaction. The connections that ended as replaced or idle keep their
 -- status and lose the reason: no older reason fits them. A step-up flow in
--- progress is dropped; the person asks again.
+-- progress is dropped; the person asks again. It refuses while the ledger
+-- holds a version above 47: a later migration's down-step may read what this
+-- one drops, so each of those comes down first.
 --
 --      BEGIN;
 --      SELECT pg_advisory_xact_lock(6289348710053007958);
+--      DO $$
+--      BEGIN
+--        IF EXISTS (SELECT 1 FROM schema_migrations WHERE version > 47) THEN
+--          RAISE EXCEPTION 'a migration after 0047 is applied; run its down-step first';
+--        END IF;
+--      END $$;
 --      UPDATE mcp_connections SET revoke_reason = NULL WHERE revoke_reason IN ('replaced', 'idle');
 --      ALTER TABLE mcp_connections DROP CONSTRAINT mcp_connections_revoke_reason_check;
 --      ALTER TABLE mcp_connections ADD CONSTRAINT mcp_connections_revoke_reason_check CHECK (revoke_reason IN (
@@ -82,7 +90,8 @@
 --      DELETE FROM schema_migrations WHERE version = 47;
 --      COMMIT;
 --
--- The order below 47 stands: 0047 down, then 0046 down, 0045 down, and so on.
+-- Every later down-step runs before this one; below 47 the order stands: 0047
+-- down, then 0046 down, 0045 down, and so on.
 
 ALTER TABLE sessions ADD COLUMN authenticated_at timestamptz;
 UPDATE sessions s SET authenticated_at = f.first
