@@ -9,9 +9,10 @@
 --                       themselves: the sign-in that started its family (a
 --                       workspace switch copies it, since selecting a space
 --                       proves nothing), or a later step-up with a passkey
---                       or the password. A content consent, a renewal and
---                       the grants and service invitation they write need it
---                       within the last ten minutes, on the database's clock.
+--                       or the password. A content consent, a renewal, the
+--                       service invitation they write and every grant of a
+--                       number's key need it within the last ten minutes, on
+--                       the database's clock.
 --                       Existing sessions take their family's first sign-in.
 --   passkey_challenges  a third kind, 'step_up': a WebAuthn assertion with
 --                       user verification for a signed-in session, which
@@ -51,10 +52,13 @@
 -- WS_MCP_CONTENT_TENANTS, WS_MCP_MEDIA_TENANTS, WS_MCP_SEND_TENANTS and
 -- WS_AI_TENANTS back in its environment: before 0047 they are what lets a
 -- workspace have text, and that binary refuses to start without them while
--- the switches are on. Nothing here is under row-level security, so the
--- table owner runs it as it is. The connections that ended as replaced or
--- idle keep their status and lose the reason: no older reason fits them. A
--- step-up flow in progress is dropped; the person asks again.
+-- the switches are on. Its data changes touch only mcp_connections,
+-- passkey_challenges and schema_migrations, none of them under row-level
+-- security; users, which forces it, only loses a column, as sessions and
+-- tenants do. So the table owner runs it as it is, outside any workspace's
+-- transaction. The connections that ended as replaced or idle keep their
+-- status and lose the reason: no older reason fits them. A step-up flow in
+-- progress is dropped; the person asks again.
 --
 --      BEGIN;
 --      SELECT pg_advisory_xact_lock(6289348710053007958);

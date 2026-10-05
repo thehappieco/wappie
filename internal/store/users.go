@@ -871,25 +871,6 @@ func (u *Users) MarkStepUp(ctx context.Context, session uuid.UUID) error {
 	return nil
 }
 
-// ConnectionService reports whether an account is a connection's service
-// account in a workspace: a service whose membership carries a deadline, as
-// every content connection's and AI authorization's does, provisional ones
-// included (0042). A grant to one hands an archive to an assistant's reader,
-// so it waits for a fresh step-up (internal/stepup).
-func (u *Users) ConnectionService(ctx context.Context, tenant, user uuid.UUID) (bool, error) {
-	var service bool
-	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
-		// workspace_memberships forces row-level security, hence the
-		// tenant transaction.
-		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_memberships
-			WHERE tenant_id=$1 AND user_id=$2 AND role='service' AND expires_at IS NOT NULL)`, tenant, user).Scan(&service)
-	})
-	if err != nil {
-		return false, fmt.Errorf("store: connection service account: %w", err)
-	}
-	return service, nil
-}
-
 // EndSession revokes one token.
 func (u *Users) EndSession(ctx context.Context, token string) error {
 	return u.endSession(ctx, token, false)

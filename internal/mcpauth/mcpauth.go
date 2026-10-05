@@ -184,9 +184,11 @@ type Handler struct {
 	dropped  *refusalDrops
 	// notices are the notice e-mails on their way, for WaitNotices.
 	notices sync.WaitGroup
-	// renewalTimer is the pending send of a renewal round's notices.
+	// renewalTimer is the pending send of a renewal round's notices, and
+	// renewalAfter what replaces renewalDelay in a test; zero is renewalDelay.
 	renewalMu    sync.Mutex
 	renewalTimer *time.Timer
+	renewalAfter time.Duration
 }
 
 // Mount registers the routes on a mux. Call it once, after the fields are

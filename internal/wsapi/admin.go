@@ -564,10 +564,10 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such account in this tenant")
 		return
 	}
-	// A grant to a connection's service account hands the number to an
-	// assistant's reader: it waits for the person's fresh step-up, as the
-	// connection does (internal/stepup).
-	if !s.stepUpForGrant(ctx, f.ReqID, who, tenantUUID, user) {
+	// Every grant hands the number's key on, to a person, a standing service
+	// account or an assistant's reader alike: it waits for the person's fresh
+	// step-up, as a connection does (internal/stepup).
+	if !s.stepUpForGrant(ctx, f.ReqID, who) {
 		return
 	}
 
@@ -794,25 +794,20 @@ func (s *Server) cancelDevicePairing(tenant, device string) {
 	}
 }
 
-// stepUpForGrant answers a grant to a connection's service account from a
-// session whose person has not proved themselves within the step-up window.
-// Any other grant passes.
-func (s *session) stepUpForGrant(ctx context.Context, reqID string, who actor, tenant, grantee uuid.UUID) bool {
-	service, err := s.srv.cfg.Accounts.ConnectionService(ctx, tenant, grantee)
-	if err != nil {
-		s.log.Error("reading whether a grantee is a connection's account failed", "error", err)
-		s.replyError(reqID, ErrCodeInternal, "could not check the account")
-		return false
-	}
-	if !service {
-		return true
-	}
+// stepUpForGrant answers a grant from a session whose person has not proved
+// themselves within the step-up window. Whoever receives it, a grant is a
+// copy of a number's key: given to an account whose private key someone
+// else holds (a standing service account, or a member who signed up from an
+// invitation), it reads the archive for as long as it stands, so a browser
+// left open must not be enough to make one.
+func (s *session) stepUpForGrant(ctx context.Context, reqID string, who actor) bool {
 	checker := s.srv.cfg.StepUp
 	if checker == nil && s.srv.cfg.Sessions != nil {
 		checker = stepup.Recent(s.srv.cfg.Sessions)
 	}
 	fresh := false
 	if checker != nil && who.person {
+		var err error
 		if fresh, err = checker.Fresh(ctx, who.sessionID); err != nil {
 			s.log.Error("reading a session's step-up failed", "error", err)
 			s.replyError(reqID, ErrCodeInternal, "could not check your confirmation")

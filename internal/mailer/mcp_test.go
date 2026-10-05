@@ -265,11 +265,72 @@ func TestMCPRenewalEmail(t *testing.T) {
 		t.Fatalf("one = %+v %v", one, err)
 	}
 	for name, n := range map[string]MCPRenewal{
-		"no workspace":  {Assistants: []string{"Claude"}},
-		"no connection": {Workspace: "Acme"},
+		"no workspace":        {Assistants: []string{"Claude"}},
+		"no connection":       {Workspace: "Acme"},
+		"more one by one":     {Workspace: "Acme", Assistants: []string{"Claude"}, OneByOne: 2},
+		"fewer than none one": {Workspace: "Acme", Assistants: []string{"Claude"}, OneByOne: -1},
 	} {
 		if _, err := mcpRenewalEmail(n); err == nil {
 			t.Errorf("%s: rendered", name)
+		}
+	}
+}
+
+// The renewal notice's words: the footer is every notice's own, word for
+// word (D10, 5); no text names a restart as the cause, since a workspace
+// that turned text off and on again waits the same way (D10, 7); English
+// uses the typographic apostrophe (D10, 9); and the steps name the console's
+// buttons for what waits. Renew all renews tested connections only, so an
+// untested client's or a token's is sent to its own Renew.
+func TestMCPRenewalWords(t *testing.T) {
+	since := time.Date(2026, 10, 5, 9, 30, 0, 0, time.UTC)
+	buttons := map[string][2]string{
+		"en": {"Renew all", "Renew beside"}, "pt": {"Renovar todas", "Renovar ao lado"}, "es": {"Renovar todas", "Renovar junto a"},
+		"fr": {"Tout renouveler", "Renouveler à côté"}, "de": {"Alle erneuern", "Erneuern"},
+	}
+	restart := []string{"restart", "reinici", "redémarr", "neu gestartet", "reinicia"}
+	for _, words := range mcpLanguages {
+		r, ok := renewalLanguages[words.lang]
+		if !ok {
+			t.Fatalf("%s has no renewal words", words.lang)
+		}
+		all := []string{r.titleOne, r.titleMany, r.introOne, r.introMany, r.question, r.allOne, r.allMany, r.eachOne, r.eachMany, r.mixed}
+		all = append(all, r.facts[:]...)
+		for _, text := range all {
+			for _, word := range restart {
+				if strings.Contains(strings.ToLower(text), word) {
+					t.Errorf("%s names a restart: %q", words.lang, text)
+				}
+			}
+			if words.lang == "en" && strings.Contains(text, "'") {
+				t.Errorf("an English text without the typographic apostrophe: %q", text)
+			}
+		}
+		for name, tc := range map[string]struct {
+			assistants []string
+			oneByOne   int
+			want       string
+			all, each  bool
+		}{
+			"one tested":     {[]string{"Claude"}, 0, r.allOne, true, false},
+			"tested":         {[]string{"Claude", "ChatGPT"}, 0, r.allMany, true, false},
+			"one untested":   {[]string{"agent.example.com"}, 1, r.eachOne, false, true},
+			"untested":       {[]string{"agent.example.com", "n8n"}, 2, r.eachMany, false, true},
+			"some of either": {[]string{"Claude", "n8n", "agent.example.com"}, 2, r.mixed, true, true},
+		} {
+			model, err := mcpRenewalEmail(MCPRenewal{Workspace: "Acme", Assistants: tc.assistants, OneByOne: tc.oneByOne, Since: since, Lang: words.lang})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if model.Steps != tc.want || model.Footer != words.footer {
+				t.Errorf("%s %s = steps %q, footer %q", words.lang, name, model.Steps, model.Footer)
+			}
+			if strings.Contains(model.Steps, buttons[words.lang][0]) != tc.all {
+				t.Errorf("%s %s: Renew all said %v: %q", words.lang, name, !tc.all, model.Steps)
+			}
+			if tc.each && !strings.Contains(model.Steps, buttons[words.lang][1]) {
+				t.Errorf("%s %s: no Renew of its own: %q", words.lang, name, model.Steps)
+			}
 		}
 	}
 }

@@ -95,8 +95,8 @@ type Config struct {
 	// right now, the switches of docs/mcp-enclave.md §17.3; asked on every
 	// draft confirmation. Nil allows none.
 	MCPSendAllowed func(tenant uuid.UUID) bool
-	// StepUp is what a grant to a connection's service account asks of the
-	// person's session (internal/stepup); nil is Sessions' own record.
+	// StepUp is what every grant asks of the person's session
+	// (internal/stepup); nil is Sessions' own record.
 	StepUp stepup.Checker
 }
 

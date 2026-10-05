@@ -219,7 +219,8 @@ func (h *Handler) mountWorkspaceSwitches(mux *http.ServeMux) {
 // workspaceSwitches shows the session's workspace's switches to any member,
 // and lets its owner change them. Turning text off stops every assistant's
 // text in the workspace within the readers' minute; the consents survive,
-// and come back when it is turned on again.
+// but the reader drops their keys, so once text is on again each connection
+// is renewed before it reads text.
 func (h *Handler) workspaceSwitches(w http.ResponseWriter, r *http.Request) {
 	_, user, ok := h.authenticate(w, r)
 	if !ok {

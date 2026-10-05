@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -98,31 +99,6 @@ func TestStepUpWindow(t *testing.T) {
 	}
 	if fresh, err := checker.Fresh(ctx, uuid.Nil); err != nil || fresh {
 		t.Fatalf("no session is fresh: %v %v", fresh, err)
-	}
-}
-
-// A connection's service account is what a grant needs a step-up for; a
-// person, and an ordinary service, are not.
-func TestConnectionService(t *testing.T) {
-	f := newContentFixture(t)
-	ctx := context.Background()
-	c := f.prepareContent(ctx, t, f.owner)
-	for name, want := range map[uuid.UUID]bool{c.service: true, f.owner: false} {
-		got, err := f.users.ConnectionService(ctx, f.tenant, name)
-		if err != nil || got != want {
-			t.Fatalf("%s = %v %v, want %v", name, got, err, want)
-		}
-	}
-	secret, err := f.users.CreateInvite(ctx, f.tenant, store.RoleService, "", &f.owner, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	erp, err := f.users.SignupService(ctx, secret, "erp", randomBytes(t, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := f.users.ConnectionService(ctx, f.tenant, erp.ID); err != nil || got {
-		t.Fatalf("an ordinary service = %v %v", got, err)
 	}
 }
 
@@ -337,15 +313,18 @@ func TestRevokeIdleConnections(t *testing.T) {
 	const day = 24 * time.Hour
 	idleText, itc := f.replaceConsent(ctx, t, f.owner, false)
 	usedText, utc := f.replaceConsent(ctx, t, f.owner, false)
-	for _, id := range []string{idleText.ID, usedText.ID} {
+	graceText, _ := f.replaceConsent(ctx, t, f.owner, false)
+	for _, id := range []string{idleText.ID, usedText.ID, graceText.ID} {
 		if err := f.conns.Activate(ctx, "enclave", id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Tested web text: seven days, and a day's grace. Its status was asked a
-	// minute ago, by the reader's sweep.
+	// minute ago, by the reader's sweep. Half the grace past its idle time,
+	// a connection stays.
 	f.setUse(ctx, t, idleText.ID, 9*day, 20*day, time.Minute)
 	f.setUse(ctx, t, usedText.ID, 2*day, 20*day, time.Minute)
+	f.setUse(ctx, t, graceText.ID, 7*day+12*time.Hour, 20*day, time.Minute)
 	meta := func(name string, keyUsed, seen time.Duration) string {
 		_, prefix := f.provisionalKey(ctx, t, name)
 		conn, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix))
@@ -383,7 +362,8 @@ func TestRevokeIdleConnections(t *testing.T) {
 	if len(ended) != 2 || !got[idleText.ID] || !got[idleMeta] {
 		t.Fatalf("ended = %+v", ended)
 	}
-	for id, want := range map[string]string{idleText.ID: "revoked", idleMeta: "revoked", usedText.ID: "active", seenMeta: "active", usedMeta: "active", token.ID: "active"} {
+	for id, want := range map[string]string{idleText.ID: "revoked", idleMeta: "revoked", usedText.ID: "active", graceText.ID: "active",
+		seenMeta: "active", usedMeta: "active", token.ID: "active"} {
 		row := f.row(ctx, t, id)
 		if row.Status != want || (want == "revoked") != (row.RevokeReason == store.ReasonIdle) {
 			t.Errorf("%s = %s %q, want %s", id, row.Status, row.RevokeReason, want)
@@ -403,6 +383,48 @@ func TestRevokeIdleConnections(t *testing.T) {
 	}
 	if again, err := store.RevokeIdleMCPConnections(ctx, f.pool); err != nil || len(again) != 0 {
 		t.Fatalf("again = %v %v", again, err)
+	}
+}
+
+// The sweep picks its candidates outside any lock and ends each only if it
+// is still idle under its row's lock: a connection renewed, or read with,
+// after the pick stays; one still idle ends once.
+func TestIdleSweepRechecksUnderTheLock(t *testing.T) {
+	f := newContentFixture(t)
+	ctx := context.Background()
+	const day = 24 * time.Hour
+	renewed, _ := f.replaceConsent(ctx, t, f.owner, false)
+	read, _ := f.replaceConsent(ctx, t, f.owner, false)
+	idle, _ := f.replaceConsent(ctx, t, f.owner, false)
+	for _, id := range []string{renewed.ID, read.ID, idle.ID} {
+		if err := f.conns.Activate(ctx, "enclave", id); err != nil {
+			t.Fatal(err)
+		}
+		f.setUse(ctx, t, id, 9*day, 20*day, time.Minute)
+	}
+	// What happened between the sweep's pick and its end of each row.
+	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET renewed_at = now() WHERE id=$1`, renewed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE api_keys SET last_used_at = now() WHERE id = (SELECT api_key_id FROM mcp_connections WHERE id=$1)`, read.ID); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{renewed.ID: false, read.ID: false, idle.ID: true} {
+		ended, err := f.conns.EndIfIdle(ctx, f.tenant, id)
+		if err != nil || ended != want {
+			t.Fatalf("%s ended = %v %v, want %v", id, ended, err, want)
+		}
+	}
+	for id, want := range map[string]string{renewed.ID: "active", read.ID: "active", idle.ID: "revoked"} {
+		if row := f.row(ctx, t, id); row.Status != want {
+			t.Errorf("%s = %s, want %s", id, row.Status, want)
+		}
+	}
+	if ended, err := f.conns.EndIfIdle(ctx, f.tenant, idle.ID); err != nil || ended {
+		t.Fatalf("an ended connection ended again: %v %v", ended, err)
+	}
+	if ended, err := f.conns.EndIfIdle(ctx, f.tenant, uuid.NewString()); err != nil || ended {
+		t.Fatalf("an unknown connection = %v %v", ended, err)
 	}
 }
 
@@ -435,7 +457,26 @@ func TestRenewalNotices(t *testing.T) {
 	}
 	a, _ := f.consentContent(ctx, t, f.owner)
 	b, _ := f.consentContent(ctx, t, f.owner)
-	for _, id := range []string{a.ID, b.ID} {
+	// A row an older reader wrote carries the name the client registered
+	// itself as: the notice names its host instead.
+	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET client_name = 'Wappie support: call +1 555 0100' WHERE id=$1`, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A 0.6.0 row's verified name: a tested client's, and an untested one's
+	// host, which Renew all leaves to its own Renew.
+	v2 := func(kind, trust string) string {
+		c := f.prepareContent(ctx, t, f.owner)
+		conn, err := f.conns.Create(ctx, f.tenant, f.owner, clientConsent(c.in, kind, trust))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.conns.Activate(ctx, "enclave", conn.ID); err != nil {
+			t.Fatal(err)
+		}
+		return conn.ID
+	}
+	tested, untested := v2(store.ClientDCR, store.TrustTested), v2(store.ClientCIMD, store.TrustUnknown)
+	for _, id := range []string{a.ID, b.ID, tested, untested} {
 		if err := f.conns.Reseal(ctx, "enclave", id); err != nil {
 			t.Fatal(err)
 		}
@@ -459,8 +500,9 @@ func TestRenewalNotices(t *testing.T) {
 		t.Fatalf("due = %+v %v", due, err)
 	}
 	n := due[0]
-	if n.UserID != f.owner || n.TenantID != f.tenant || n.Locale != "de" || n.Workspace == "" || len(n.ConnectionIDs) != 2 ||
-		len(n.Assistants) != 2 || n.Assistants[0] != "Claude" || n.Email == "" {
+	names := slices.Sorted(slices.Values(n.Assistants))
+	if n.UserID != f.owner || n.TenantID != f.tenant || n.Locale != "de" || n.Workspace == "" || len(n.ConnectionIDs) != 4 ||
+		!slices.Equal(names, []string{"ChatGPT", "agent.example.com", "claude.ai", "claude.ai"}) || n.OneByOne != 1 || n.Email == "" {
 		t.Fatalf("notice = %+v", n)
 	}
 	if claimed, err := f.conns.ClaimRenewalNotice(ctx, n.TenantID, n.UserID, n.ConnectionIDs); err != nil || !claimed {
@@ -479,10 +521,11 @@ func TestRenewalNotices(t *testing.T) {
 	}
 	// Past them, the connection still waiting is due again; a renewed one
 	// is not.
-	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET reseal_mailed_at = now() - interval '13 hours' WHERE id IN ($1, $2)`, a.ID, b.ID); err != nil {
+	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET reseal_mailed_at = now() - interval '13 hours' WHERE id = ANY($1::uuid[])`,
+		[]string{a.ID, b.ID, tested, untested}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET status='active' WHERE id=$1`, b.ID); err != nil {
+	if _, err := f.pool.Exec(ctx, `UPDATE mcp_connections SET status='active' WHERE id = ANY($1::uuid[])`, []string{b.ID, tested, untested}); err != nil {
 		t.Fatal(err)
 	}
 	if due, err := f.conns.DueRenewalNotices(ctx); err != nil || len(due) != 1 || len(due[0].ConnectionIDs) != 1 || due[0].ConnectionIDs[0] != a.ID {
@@ -534,6 +577,22 @@ func TestMigration0047DownStep(t *testing.T) {
 		t.Fatalf("a step-up flow: %v", err)
 	}
 
+	// A sign-in eleven minutes old, and a workspace switch made from it a
+	// moment ago: re-applying 0047 gives both their family's first sign-in,
+	// so neither counts as a step-up after a deploy.
+	_, early := f.session(ctx, t, f.owner)
+	if _, err := f.pool.Exec(ctx, `UPDATE sessions SET created_at = now() - interval '11 minutes' WHERE id=$1`, early.ID); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := f.users.Get(ctx, f.tenant, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, switched, err := f.users.StartWorkspaceSession(ctx, owner, "test", early)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
 		t.Fatalf("down-step: %v", err)
 	}
@@ -569,6 +628,11 @@ func TestMigration0047DownStep(t *testing.T) {
 	}
 	if fresh, err := stepup.Recent(f.users).Fresh(ctx, s.ID); err != nil || !fresh {
 		t.Fatalf("after re-applying, the new session = %v %v", fresh, err)
+	}
+	for name, id := range map[string]uuid.UUID{"the eleven-minute-old sign-in": early.ID, "a switch from it": switched.ID} {
+		if fresh, err := stepup.Recent(f.users).Fresh(ctx, id); err != nil || fresh {
+			t.Fatalf("after re-applying, %s is fresh: %v %v", name, fresh, err)
+		}
 	}
 	if _, err := f.conns.SetWorkspaceSwitches(ctx, f.tenant, f.owner, false, false, false, false); err != nil {
 		t.Fatal(err)

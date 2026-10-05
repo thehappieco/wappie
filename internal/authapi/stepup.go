@@ -15,12 +15,13 @@ import (
 )
 
 // The step-up (internal/stepup): a signed-in person proves again that they are
-// the one at the screen before a write that hands their archive to an
-// assistant's reader. Two proofs this server checks itself: a WebAuthn
-// assertion with user verification from one of the account's passkeys, and
-// the password's auth key, compared as at sign-in. A sign-in within the
-// window counts as well, and asks for nothing. Each proof is recorded on the
-// session, on the database's clock, and lasts stepup.Window.
+// the one at the screen before a write that hands their archive on, to an
+// assistant's reader or to anyone a number's key is granted to. Two proofs
+// this server checks itself: a WebAuthn assertion with user verification
+// from one of the account's passkeys, and the password's auth key, compared
+// as at sign-in. A sign-in within the window counts as well, and asks for
+// nothing. Each proof is recorded on the session, on the database's clock,
+// and lasts stepup.Window.
 
 func (h *Handler) mountStepUp(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/auth/step-up", h.stepUpStatus)

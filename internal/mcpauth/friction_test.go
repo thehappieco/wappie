@@ -2,6 +2,7 @@ package mcpauth_test
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"slices"
 	"strings"
@@ -76,6 +77,94 @@ func TestStepUpGuardsContentWrites(t *testing.T) {
 	h.handler.StepUp = never{}
 	fresh := h.session(t, h.owner)
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections/"+id+"/renew", map[string]any{}, bearer(fresh)), http.StatusForbidden, stepup.Code)
+}
+
+// A console token with text waits for the step-up too: refused before its
+// row is written or its bundle relayed, while a metadata token asks for
+// none; a step-up lets the same request through.
+func TestStepUpGuardsTokenText(t *testing.T) {
+	h := newClientsHarness(t)
+	ctx := context.Background()
+	h.verify(t, h.owner)
+	h.activateTokens(t)
+	h.contentOn.Store(true)
+	session := h.stale(t, h.ownerToken, 11*time.Minute)
+
+	requestID := h.tokenRequest(t, h.ownerToken)
+	h.enclave.mu.Lock()
+	pub, err := base64.RawURLEncoding.DecodeString(h.enclave.tokenRequests[requestID]["reader_public_key"].(string))
+	h.enclave.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _, prefix := h.serviceFor(t, h.owner.ID, pub)
+	text := tokenBody(t, prefix)
+	text["kind"], text["service_user_id"], text["key_mode"], text["consent_version"] = "content", service.String(), "ephemeral", 4
+	text["expires_at"] = time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	bundle := "/v1/mcp/token-requests/" + requestID + "/bundle"
+	expect(t, h.call(t, http.MethodPost, bundle, text, bearer(h.ownerToken)), http.StatusForbidden, stepup.Code)
+	if listed, err := h.conns.List(ctx, h.tenant); err != nil || len(listed) != 0 {
+		t.Fatalf("a refused token left rows: %d %v", len(listed), err)
+	}
+	h.enclave.mu.Lock()
+	_, relayed := h.enclave.tokenBundles[requestID]
+	h.enclave.mu.Unlock()
+	if relayed {
+		t.Fatal("a refused token reached the reader")
+	}
+
+	// Metadata opens nothing and asks for nothing.
+	metadata := h.tokenRequest(t, h.ownerToken)
+	_, metaPrefix := h.provisionalKey(t, "metadata token")
+	expect(t, h.call(t, http.MethodPost, "/v1/mcp/token-requests/"+metadata+"/bundle", tokenBody(t, metaPrefix), bearer(h.ownerToken)), http.StatusCreated, "")
+
+	if err := h.users.MarkStepUp(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	r := h.call(t, http.MethodPost, bundle, text, bearer(h.ownerToken))
+	expect(t, r, http.StatusCreated, "")
+	h.enclave.mu.Lock()
+	got := h.enclave.tokenBundles[requestID]
+	h.enclave.mu.Unlock()
+	if got["kind"] != "content" {
+		t.Fatalf("relayed = %v", got)
+	}
+}
+
+// A reseal arms the renewal round's send on its own: the notice goes once
+// the round settles, with no call from the maintenance loop.
+func TestResealSendsTheRenewalNotice(t *testing.T) {
+	h := newClientsHarness(t)
+	h.contentOn.Store(true)
+	h.verify(t, h.owner)
+	box := &renewalBox{}
+	h.handler.MailRenewal = box.send
+	h.handler.SetRenewalDelay(2 * time.Second)
+	id, _, _ := h.consentContent(t, h.owner)
+	rs, _ := h.signedCall(t, http.MethodPost, "/v1/mcp/enclave/connections/"+id+"/reseal", asEnclave(t))
+	expect(t, rs, http.StatusNoContent, "")
+	// The round settled long ago, as far as the store can tell.
+	if _, err := h.pool.Exec(context.Background(), `UPDATE mcp_connections SET resealed_at = now() - interval '5 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		box.mu.Lock()
+		sent := len(box.sent)
+		box.mu.Unlock()
+		if sent == 1 {
+			break
+		}
+		if sent > 1 || time.Now().After(deadline) {
+			t.Fatalf("the reseal's timer sent %d notices", sent)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	box.mu.Lock()
+	defer box.mu.Unlock()
+	if got := box.sent[0]; got.to != h.owner.Email || len(got.n.Assistants) != 1 {
+		t.Fatalf("notice = %+v", got)
+	}
 }
 
 type never struct{}

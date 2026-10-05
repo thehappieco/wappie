@@ -101,6 +101,16 @@ func IdleTime(kind, tier string) time.Duration {
 // ended: the reader counts from the last refresh, and this server sees reads.
 const idleGrace = 24 * time.Hour
 
+// idleLimit is how long a connection may go unused before the sweep ends it:
+// its tier's idle time and idleGrace; zero for one that never idles.
+func idleLimit(kind, trust string, local bool, clientKind string) time.Duration {
+	idle := IdleTime(kind, LimitsTier(trust, local, clientKind))
+	if idle <= 0 {
+		return 0
+	}
+	return idle + idleGrace
+}
+
 // RevokeIdleMCPConnections ends, as idle, every live connection unused for
 // longer than its tier's idle time and a day: by then its assistant's refresh
 // token has died in the reader, so the row only holds a place under the
@@ -109,15 +119,17 @@ const idleGrace = 24 * time.Hour
 // activation and its last renewal and, for a metadata connection, the
 // reader's last status check; a content connection's status is asked every
 // minute by the reader's sweep, used or idle, so it says nothing about use.
-// Each ends in its own workspace's transaction; it returns what it ended, for
-// the readers to be told (WatchRevocations tells them in any case).
+// Times are the database's. Each ends in its own workspace's transaction,
+// and only if it is still idle under its row's lock (endIfIdle); it returns
+// what it ended, for the readers to be told (WatchRevocations tells them in
+// any case).
 func RevokeIdleMCPConnections(ctx context.Context, pool *pgxpool.Pool) ([]EndedConnection, error) {
 	// The ledger and api_keys carry no policy, so the candidates are found
 	// across every workspace in one read.
 	rows, err := pool.Query(ctx, `
 		SELECT c.id::text, c.tenant_id, c.reader, c.kind, coalesce(c.trust, ''), c.client_local, c.client_kind,
-		       greatest(k.last_used_at, c.activated_at, c.renewed_at, c.created_at,
-		                CASE WHEN c.kind = 'metadata' THEN c.last_seen_at END)
+		       extract(epoch FROM now() - greatest(k.last_used_at, c.activated_at, c.renewed_at, c.created_at,
+		                CASE WHEN c.kind = 'metadata' THEN c.last_seen_at END))::float8
 		  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
 		 WHERE c.status IN ('active','reseal') AND c.kind <> 'ai' AND c.client_kind <> 'token' AND c.expires_at > now()
 		 ORDER BY c.id`)
@@ -127,21 +139,18 @@ func RevokeIdleMCPConnections(ctx context.Context, pool *pgxpool.Pool) ([]EndedC
 	type candidate struct {
 		EndedConnection
 		tenant uuid.UUID
-		idle   time.Duration
-		used   time.Time
 	}
 	var due []candidate
-	now := time.Now()
 	for rows.Next() {
 		var c candidate
 		var kind, trust, clientKind string
 		var local bool
-		if err := rows.Scan(&c.ID, &c.tenant, &c.Reader, &kind, &trust, &local, &clientKind, &c.used); err != nil {
+		var unused float64
+		if err := rows.Scan(&c.ID, &c.tenant, &c.Reader, &kind, &trust, &local, &clientKind, &unused); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("store: idle mcp connections: %w", err)
 		}
-		c.idle = IdleTime(kind, LimitsTier(trust, local, clientKind))
-		if c.idle > 0 && now.Sub(c.used) > c.idle+idleGrace {
+		if limit := idleLimit(kind, trust, local, clientKind); limit > 0 && time.Duration(unused*float64(time.Second)) > limit {
 			due = append(due, c)
 		}
 	}
@@ -154,16 +163,67 @@ func RevokeIdleMCPConnections(ctx context.Context, pool *pgxpool.Pool) ([]EndedC
 	var errs []error
 	for _, c := range due {
 		// One row failing must not keep the rest alive.
-		if err := m.endInTenant(ctx, c.tenant, c.ID, statusRevoked, ReasonIdle, false); err != nil {
+		ended, err := m.endIfIdle(ctx, c.tenant, c.ID)
+		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		out = append(out, c.EndedConnection)
+		if ended {
+			out = append(out, c.EndedConnection)
+		}
 	}
 	if err := errors.Join(errs...); err != nil {
 		return out, fmt.Errorf("store: idle mcp connections: %w", err)
 	}
 	return out, nil
+}
+
+// endIfIdle ends one connection as idle when, under its row's lock, it still
+// is: live and unexpired, of a kind and tier with an idle time, and unused
+// for longer than that and idleGrace. The sweep picks its candidates outside
+// any lock, so a person who renewed the connection, or an assistant that
+// read with it, between that pick and this keeps it. It reports whether
+// this call ended it.
+func (m *MCPConnections) endIfIdle(ctx context.Context, tenant uuid.UUID, id string) (bool, error) {
+	ended := false
+	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
+			return err
+		}
+		var status, kind, trust, clientKind string
+		var local, unexpired bool
+		err := tx.QueryRow(ctx, `SELECT status, kind, coalesce(trust, ''), client_local, client_kind, expires_at > now()
+			FROM mcp_connections WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, id, tenant).
+			Scan(&status, &kind, &trust, &local, &clientKind, &unexpired)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		limit := idleLimit(kind, trust, local, clientKind)
+		if (status != statusActive && status != statusReseal) || kind == KindAI || clientKind == ClientToken || !unexpired || limit <= 0 {
+			return nil
+		}
+		// A statement of its own, after the lock: it sees a renewal, or a
+		// read, that committed while this waited for the row.
+		var idleNow bool
+		if err := tx.QueryRow(ctx, `SELECT now() - greatest(k.last_used_at, c.activated_at, c.renewed_at, c.created_at,
+			       CASE WHEN c.kind = 'metadata' THEN c.last_seen_at END) > make_interval(secs => $3)
+			  FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
+			 WHERE c.id=$1 AND c.tenant_id=$2`, id, tenant, limit.Seconds()).Scan(&idleNow); err != nil {
+			return err
+		}
+		if !idleNow {
+			return nil
+		}
+		ended, err = endMCPConnectionTx(ctx, tx, tenant, id, statusRevoked, ReasonIdle)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: end an idle mcp connection: %w", err)
+	}
+	return ended, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +241,19 @@ type RenewalNotice struct {
 	ConnectionIDs []string
 	Assistants    []string
 	Since         time.Time
+	// OneByOne is how many of them the console's Renew all leaves to their
+	// own Renew: an untested client's and a token's, whose renewal asks its
+	// own confirmation.
+	OneByOne int
 }
+
+// renewalName is the name a renewal notice gives a connection, as the
+// activation notice never takes one from the client: a 0.6.0 row's verified
+// client_name (a tested client's name from the reader's list, an untested
+// one's host, a token's label), and for an older row, whose client_name is
+// whatever the client registered itself as, its host.
+const renewalName = `CASE WHEN c.client_kind IN ('cimd', 'dcr', 'token') THEN c.client_name
+	ELSE coalesce(c.client_host, c.redirect_host) END`
 
 // renewalSettle is how long a reseal waits before its notice may go: a
 // restarted reader reseals its connections one after the other, and one
@@ -201,8 +273,8 @@ const renewalQuiet = 12 * time.Hour
 // in each workspace's transaction.
 func (m *MCPConnections) DueRenewalNotices(ctx context.Context) ([]RenewalNotice, error) {
 	rows, err := m.pool.Query(ctx, `
-		SELECT c.tenant_id, c.created_by, array_agg(c.id::text ORDER BY c.resealed_at, c.id), array_agg(c.client_name ORDER BY c.resealed_at, c.id),
-		       min(c.resealed_at)
+		SELECT c.tenant_id, c.created_by, array_agg(c.id::text ORDER BY c.resealed_at, c.id), array_agg(`+renewalName+` ORDER BY c.resealed_at, c.id),
+		       min(c.resealed_at), count(*) FILTER (WHERE c.trust = 'unknown' OR c.client_kind = 'token')
 		  FROM mcp_connections c
 		 WHERE c.kind = 'content' AND c.status = 'reseal' AND c.expires_at > now()
 		   AND c.resealed_at <= now() - make_interval(secs => $1)
@@ -217,7 +289,7 @@ func (m *MCPConnections) DueRenewalNotices(ctx context.Context) ([]RenewalNotice
 	var due []RenewalNotice
 	for rows.Next() {
 		var n RenewalNotice
-		if err := rows.Scan(&n.TenantID, &n.UserID, &n.ConnectionIDs, &n.Assistants, &n.Since); err != nil {
+		if err := rows.Scan(&n.TenantID, &n.UserID, &n.ConnectionIDs, &n.Assistants, &n.Since, &n.OneByOne); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("store: due renewal notices: %w", err)
 		}

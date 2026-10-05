@@ -8,13 +8,15 @@ import (
 )
 
 // The renewal round (docs/mcp-enclave.md §19.30). When the attested reader
-// restarts, it reseals every content connection it held, one after the
-// other; each person who consented to one gets a single e-mail saying how
-// many wait, in their language, once the round has settled, and the console
-// shows a banner with "Renew all". The e-mail carries no link (renewing asks
+// holds no key for content connections (it restarted, or their workspace
+// turned text off and on again), it reseals them one after the other; each
+// person who consented to one gets a single e-mail saying how many wait, in
+// their language, once the round has settled, and the console shows a
+// banner that opens "Renew all". The e-mail carries no link (renewing asks
 // for a passkey or the password, and a spoofed copy would link to a page
-// like that); it says where to go instead. No mail server, no e-mail: the
-// banner alone.
+// like that); it says where to go instead, and which of the connections
+// Renew all leaves to their own Renew. No mail server, no e-mail: the banner
+// alone.
 
 // renewalDelay is how long after a reseal the notices are sent: past the
 // store's settling time, so one e-mail covers a whole restart.
@@ -32,7 +34,11 @@ func (h *Handler) scheduleRenewalNotices(ctx context.Context) {
 	if h.renewalTimer != nil {
 		return
 	}
-	h.renewalTimer = time.AfterFunc(renewalDelay, func() {
+	delay := renewalDelay
+	if h.renewalAfter > 0 {
+		delay = h.renewalAfter
+	}
+	h.renewalTimer = time.AfterFunc(delay, func() {
 		h.renewalMu.Lock()
 		h.renewalTimer = nil
 		h.renewalMu.Unlock()
@@ -64,7 +70,8 @@ func (h *Handler) SendRenewalNotices(ctx context.Context) {
 		if !claimed {
 			continue
 		}
-		if err := h.MailRenewal(ctx, n.Email, mailer.MCPRenewal{Workspace: n.Workspace, Assistants: n.Assistants, Since: n.Since, Lang: n.Locale}); err != nil {
+		if err := h.MailRenewal(ctx, n.Email, mailer.MCPRenewal{Workspace: n.Workspace, Assistants: n.Assistants, OneByOne: n.OneByOne,
+			Since: n.Since, Lang: n.Locale}); err != nil {
 			// The address is the recipient's; the error is the mail
 			// server's.
 			h.log().Warn("a renewal notice was not delivered", "tenant", n.TenantID, "connections", len(n.ConnectionIDs), "error", err)

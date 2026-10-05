@@ -74,7 +74,9 @@ func (m *MCPConnections) WorkspaceSwitchesOf(ctx context.Context, tenant uuid.UU
 // in it, every switch given. Only an active owner of an active workspace may;
 // anyone else is ErrMembershipForbidden. The connections already consented
 // keep their consent: the switches answer every status check, so what is
-// turned off stops within the readers' minute and comes back when turned on.
+// turned off stops within the readers' minute. The reader drops a key it may
+// no longer use, so once text is on again each content connection waits in
+// reseal until the person renews it.
 func (m *MCPConnections) SetWorkspaceSwitches(ctx context.Context, tenant, actor uuid.UUID, text, media, send, ai bool) (AssistantSwitches, error) {
 	var out AssistantSwitches
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
