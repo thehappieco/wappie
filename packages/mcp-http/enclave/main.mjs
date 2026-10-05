@@ -292,7 +292,7 @@ export async function startEnclave(options = {}) {
     }
     const config = {
       publicOrigin: c.PUBLIC_ORIGIN, consoleURL: c.CONSOLE_URL, archive, hosts: clientPolicy.hosts, cimd: true, clientPolicy, pendingTTLMs: c.PENDING_TTL_MS,
-      readerId: c.READER_ID, readerVersion: c.READER_VERSION,
+      readerId: c.READER_ID, readerVersion: c.READER_VERSION, links: c.SITE_LINKS,
       listenerHosts: { public: c.PUBLIC_LISTENER_HOST, internal: c.INTERNAL_LISTENER_HOST },
       spki: () => certificates.spkiSha256(), policy: () => policy.current(),
       health: () => ({

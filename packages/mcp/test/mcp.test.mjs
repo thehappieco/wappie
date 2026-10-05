@@ -1,18 +1,25 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, chmod, symlink } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, chmod, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, loadCredential, readPrivateFile, validateConfig } from '../config.mjs'
 import { serverIcons } from '../icons.mjs'
+import { PACKAGE_VERSION } from '../server.mjs'
 import { fixture, call, parsed, noSecrets, privateFile, vector, body, chatName, workspace, user, hiddenDevice, token, password, plain } from './fixture.mjs'
 
 test('stdio initializes and lists eight bounded read-only tools; locked metadata never asks for keys', async () => {
   const f = await fixture()
   try {
     const { client, stderr } = await f.connect()
-    assert.equal(client.getServerVersion().name, 'wappie-readonly')
-    assert.deepEqual(client.getServerVersion().icons, serverIcons(), 'the local reader names the data: icon only')
+    // The product's identity (§19.29); the local reader says this package's version.
+    const { icons, ...identity } = client.getServerVersion()
+    assert.deepEqual(identity, { name: 'wappie', title: 'Wappie', version: PACKAGE_VERSION, websiteUrl: 'https://wappie.thehappie.co',
+      description: 'The WhatsApp archive of one Wappie workspace, for the numbers its owner authorized.' })
+    assert.equal(PACKAGE_VERSION, JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version)
+    assert.deepEqual(icons, serverIcons(), 'the local reader names the data: icon only')
+    assert.deepEqual(client.getServerCapabilities().tools, { listChanged: false }, 'the tool list never changes during a connection')
+    assert.doesNotMatch(client.getInstructions(), /configured Wappie installation/)
     const listing = await client.listTools()
     assert.deepEqual(listing.tools.map(tool => tool.name), ['list_numbers', 'list_chats', 'list_messages', 'get_message', 'list_revisions', 'resolve_contact', 'search_messages', 'activity_summary'])
     for (const tool of listing.tools) {
@@ -24,6 +31,8 @@ test('stdio initializes and lists eight bounded read-only tools; locked metadata
     }
     const numbers = await call(client, 'list_numbers')
     assert.equal(parsed(numbers).numbers.length, 1)
+    // A local connection has no tier, deadline or renewal: only what it opens (§19.29).
+    assert.deepEqual(parsed(numbers).connection, { text: false, attachments: false, drafts: false, own_chat: false, tier: null, expires_at: null, history_days: null, renewal_needed: false })
     const result = await call(client, 'list_messages', { device_id: vector.device, chat_key: '5511999990000@s.whatsapp.net', limit: 3 })
     assert.equal(parsed(result).messages[0].body.state, 'locked')
     assert.equal(parsed(result).has_more, true)

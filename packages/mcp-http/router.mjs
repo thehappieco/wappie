@@ -8,21 +8,21 @@
 // one never reaches /internal, the internal one reaches nothing else, and each
 // demands its exact Host. The PROXY v2 source is the client address there, so
 // X-Forwarded-For is never consulted. The public one also serves the Wappie
-// icon files, with no auth, for hosts that show an icon beside the connector.
+// icon files, with no auth, for hosts that show an icon beside the connector,
+// and, from reader 0.6.0 (docs/mcp-enclave.md §19.29), a page for a person who
+// opens the connector's address in a browser, at `/`, and robots.txt.
 import { bearerAuthChallengeResponse, createMcpHandler, hostHeaderValidationResponse, OAuthError, OAuthErrorCode, requireBearerAuth } from '@whatserver2/mcp/sdk'
 import { createServer } from '@whatserver2/mcp'
 import { inNetwork, parseAddress, parseCIDR } from '@whatserver2/mcp/bundle'
 import { ICON_FILES } from '@whatserver2/mcp/icons'
 import { AttestationError, decodeNonce } from './attestation.mjs'
 import { clientIP, ipKey } from './limits.mjs'
-import { configFor, providerFor } from './provider.mjs'
+import { homePage, robotsResponse } from './pages.mjs'
+import { configFor, providerFor, tierOf } from './provider.mjs'
 
 export const BODY_LIMITS = { mcp: 1024 * 1024, link: 96 * 1024, as: 16 * 1024 }
 export const MCP_PER_MINUTE = 60
 export const ATTESTATION_PER_MINUTE = 10
-
-/** A record's limits tier (docs/mcp-enclave.md §19.6); a record 0.5.0 wrote is tested web. */
-const tierOf = record => (typeof record?.limits_tier === 'string' ? record.limits_tier : 'web_tested')
 
 /** Whether `address` lies in one of a console token's allowed networks (§19.18); an empty list allows every network. */
 export function networkAllowed(networks, address) {
@@ -72,12 +72,18 @@ function iconResponse(request, { type, bytes }) {
  * CLIENT_LIMITS) sets each connection's calls a minute by its tier, and
  * `readingLimits` (enclave/budgets.mjs) hands each connection whose tier has
  * them its reading limits; a console token with allowed networks is refused
- * from anywhere else (§19.18).
+ * from anywhere else (§19.18). `readerVersion` is the version every MCP
+ * server names in serverInfo, and `site` (`{console, documentation}`) the
+ * links of the page at `/` on the public listener (§19.29).
  */
 export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content,
-  clientLimits, readingLimits }) {
+  clientLimits, readingLimits, readerVersion, site = {} }) {
   const gate = requireBearerAuth({ verifier, requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
-  const icons = listenerHosts ? { iconOrigin: new URL(metadata.resource).origin } : {}
+  // What every MCP server built here names (§19.29): the icon URLs this listener serves, the reader's version, and whether
+  // this reader can open content, so that a metadata connection is told it may reconnect for text.
+  const serverOptions = { ...(listenerHosts ? { iconOrigin: new URL(metadata.resource).origin } : {}), ...(readerVersion ? { version: readerVersion } : {}),
+    contentReader: Boolean(content) }
+  const home = { resource: metadata.resource, console: site.console, documentation: site.documentation }
   const handler = createMcpHandler(ctx => {
     const connection = state.connections.get(ctx.authInfo?.extra?.connection_id)
     if (!connection) throw new Error('unknown connection')
@@ -85,9 +91,9 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
     if (connection.kind === 'content') {
       if (!content) throw new Error('content connection without a content reader')
       const { config, provider } = content.serverFor(connection, { limits })
-      return createServer(config, provider, icons)
+      return createServer(config, provider, serverOptions)
     }
-    return createServer(configFor(connection, archive), providerFor(connection, { limits }), icons)
+    return createServer(configFor(connection, archive), providerFor(connection, { limits }), serverOptions)
   }, { responseMode: 'json', keepAliveMs: 0, onerror: () => log.event('mcp_error') })
   return {
     close: () => handler.close(),
@@ -107,6 +113,9 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
       const served = metadata.respond(request)
       if (served) { meta.route = `${request.method} /.well-known`; return served }
       if (listenerHosts && Object.hasOwn(ICON_FILES, path)) { meta.route = `${request.method} ${path}`; return iconResponse(request, ICON_FILES[path]) }
+      // The page a person sees on opening the connector's address, and robots.txt (§19.29).
+      if (listenerHosts && path === '/') { meta.route = `${request.method} /`; return homePage(request, home) }
+      if (listenerHosts && path === '/robots.txt') { meta.route = `${request.method} /robots.txt`; return robotsResponse(request) }
       const source = clientIP(info.remoteAddress, trustForwarded ? request.headers.get('x-forwarded-for') : null)
       const ip = ipKey(source)
       if (path === '/attestation' && attestation) {

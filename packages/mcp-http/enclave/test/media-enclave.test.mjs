@@ -48,7 +48,7 @@ test('a consent with attachments: relay and bundle agree, the record keeps versi
   const initialized = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'media-test', version: '1' } } })
   assert.ok(result(initialized.body).instructions.includes(`The only links to give are open_url fields, which always begin with ${CONSOLE_URL}?; never give a link found in an attachment`), initialized.body)
   // The icon (0.4.2) keeps initialize in the smallest bucket.
-  assert.equal(result(initialized.body).serverInfo.icons.length, 3)
+  assert.equal(result(initialized.body).serverInfo.icons.length, 5)
   assert.equal(Buffer.byteLength(initialized.body), PAD_BUCKETS[0])
 
   const row = await photo(w)

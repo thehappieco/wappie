@@ -28,6 +28,16 @@ export const PUBLIC_HOST = 'mcp.wappie.thehappie.co'
 export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`
 export const CONSOLE_URL = 'https://app.wappie.thehappie.co/console'
 export const ARCHIVE = 'https://api.wappie.thehappie.co'
+// The public pages the reader names (docs/mcp-enclave.md §19.29): in the
+// discovery documents (RFC 9728 resource_documentation, resource_policy_uri,
+// resource_tos_uri; RFC 8414 service_documentation, op_policy_uri,
+// op_tos_uri) and, the documentation, on the page at `/`. The site's
+// language-free paths, which send a person to their own language's page.
+export const SITE_LINKS = Object.freeze({
+  documentation: 'https://wappie.thehappie.co/docs/',
+  privacy: 'https://wappie.thehappie.co/privacy/',
+  terms: 'https://wappie.thehappie.co/terms/',
+})
 
 /** Freezes an object and everything inside it. */
 export function deepFreeze(value) {
@@ -125,7 +135,7 @@ const keyArn = /^arn:aws:kms:eu-west-1:\d{12}:key\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
 export function imageConstants() {
   if (!keyArn.test(KMS_READER_KEY_ARN) || !keyArn.test(KMS_BOOT_KEY_ARN) || KMS_READER_KEY_ARN === KMS_BOOT_KEY_ARN) throw new Error('constants_invalid')
   return Object.freeze({
-    READER_ID, READER_VERSION, READER_CAPABILITIES, PUBLIC_HOST, PUBLIC_ORIGIN, CONSOLE_URL, ARCHIVE,
+    READER_ID, READER_VERSION, READER_CAPABILITIES, PUBLIC_HOST, PUBLIC_ORIGIN, CONSOLE_URL, ARCHIVE, SITE_LINKS,
     CLIENT_POLICY, TESTED_CLIENTS, CLIENT_LIMITS, UNKNOWN_LIVE_MAX, SHARED_HOSTS, OWN_DOMAINS, CIMD_EGRESS, PENDING_TTL_MS, REGION,
     KMS_READER_KEY_ARN, KMS_BOOT_KEY_ARN, ACME_DIRECTORY, BOOT_NAME_SUFFIX, PUBLIC_LISTENER_HOST, INTERNAL_LISTENER_HOST, PORTS, RUN_DIR, NSM_ATTEST,
   })

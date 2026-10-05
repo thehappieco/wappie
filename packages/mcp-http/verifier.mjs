@@ -4,8 +4,10 @@
 //
 // A content connection (the attested reader only, through the injected
 // `content`) has a third answer, `reseal`: consented, but no key in this
-// process. The bearer still authenticates (so tokens keep refreshing) and
-// every tool answers `reconsent_required`; only `serve` is ever cached.
+// process. The bearer still authenticates (so tokens keep refreshing), the
+// metadata tools read on with text locked and the renewal link on every
+// result, and whatever needs the key answers `reconsent_required`
+// (docs/mcp-enclave.md §19.29); only `serve` is ever cached.
 import { OAuthError, OAuthErrorCode } from '@whatserver2/mcp/sdk'
 import { RelayError } from './internal.mjs'
 import { boundTo } from './tokens.mjs'

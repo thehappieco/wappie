@@ -88,7 +88,9 @@ async function readRelaySecret(path) {
  * The enclave (enclave/main.mjs) injects the rest; nothing here imports it:
  * - `config` replaces readEnv (the image's constants, plus `readerId`,
  *   `readerVersion`, `listenerHosts` ({public, internal} exact Host values),
- *   and the `spki()`, `policy()` and `health()` getters);
+ *   `links` ({documentation, privacy, terms}, the pages the discovery
+ *   documents and the page at `/` name, docs/mcp-enclave.md §19.29), and the
+ *   `spki()`, `policy()` and `health()` getters);
  * - `secrets` (the relay secret holder, enclave/secrets.mjs) replaces the
  *   relay secret file, and its `rotate` adds POST /internal/relay-secret;
  * - `state` (openSealedState), `relay` (createSignedRelay) and
@@ -158,7 +160,7 @@ export async function startReader(options = {}) {
   const policy = config.clientPolicy ?? { mode: 'allowlist', hosts: config.hosts }
   // What the health line counts of clients and connections (§19.24): drift, refusals, fetches.
   const counters = {}
-  const metadata = createMetadata({ publicOrigin, cimd: config.cimd })
+  const metadata = createMetadata({ publicOrigin, cimd: config.cimd, links: config.links })
   const onWiped = async (id, reason) => {
     if (reason) log.event('family_reuse', { conn: fingerprint(id) })
     await relay.revoke(id, reason)
@@ -187,7 +189,8 @@ export async function startReader(options = {}) {
   const router = createRouter({ state, metadata, as, internal, verifier, limiter, log, archive: config.archive, publicHost: new URL(publicOrigin).hostname,
     listenerHosts: injected ? config.listenerHosts : undefined, trustForwarded: !injected,
     attestation: attestor && (({ nonce }) => attestor.attestation({ requestId: '', publicKey: null, nonce })), content,
-    clientLimits: policy.limits, readingLimits: options.readingLimits })
+    clientLimits: policy.limits, readingLimits: options.readingLimits, readerVersion: config.readerVersion,
+    site: { console: config.consoleURL, documentation: config.links?.documentation } })
 
   const handlerFor = listener => async (req, res) => {
     const started = now(), meta = {}

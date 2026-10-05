@@ -8,6 +8,13 @@ import { loadCredential, LocalConfigError, readerMode, readPrivateFile } from '.
 
 /** Contact pages of 500 a hosted-content resolve_contact reads per call, whatever matched. */
 export const CONTACT_PAGES = 4
+/** The limits tiers a hosted connection can have (docs/mcp-enclave.md §19.6), as list_numbers' connection block names them. */
+export const TIERS = Object.freeze(['web_tested', 'local_tested', 'unknown', 'token'])
+/** Why a value stays locked on a content connection whose key the attested reader does not hold (§19.29). */
+export const RESEALED_REASON = 'Locked until the user renews this connection: the Wappie reader restarted or was updated and holds no key for it.'
+/** An RFC 3339 deadline, as Go and the attested reader write it, in UTC; anything else is null. */
+const expiryShape = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
+const deadlineOf = value => (typeof value === 'string' && expiryShape.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null)
 /** History reads in flight at once when search hits are labelled (local and hosted-metadata). */
 export const HISTORY_CONCURRENCY = 4
 const omitted = () => ({ state: 'absent' })
@@ -205,7 +212,13 @@ async function bounded(items, limit, work) {
  *   sending methods hand it the call, `draft` with an `archive` whose
  *   `chat()` looks the named chat up, and every message body, caption and
  *   file name the reader returns is shown to `observe` first, the source of
- *   the cross-chat fingerprints (§17.11).
+ *   the cross-chat fingerprints (§17.11). From reader 0.6.0 (§19.29) the
+ *   optional `keyHeld()` says whether the reader holds this connection's
+ *   key: when it answers false the connection reads metadata only, with
+ *   every value that needs the key locked, until its user renews it.
+ * - Either hosted mode: the optional `connection()` returns `{tier,
+ *   expires_at}`, the connection's limits tier (§19.6) and deadline, which
+ *   list_numbers' connection block names.
  * A local (files) config ignores the provider.
  */
 export async function createReader(config, provider) {
@@ -214,27 +227,52 @@ export async function createReader(config, provider) {
   // internal address the assistant can neither reach nor has any use for.
   const hosted = mode !== 'local'
   const content = mode === 'hosted-content'
+  const credential = await loadCredential(config, provider)
+  if (content && (typeof provider.serviceKey !== 'function' || typeof provider.expectedEpoch !== 'function')) throw new LocalConfigError('credential_provider_required')
+  /**
+   * A content connection whose key the attested reader does not hold (after
+   * a restart, an update or a reseal, docs/mcp-enclave.md §19.29): its
+   * metadata reads go on with the connection's own read-only key, every
+   * value that needs the key stays locked, and whatever cannot run without
+   * it (a text query, an attachment, a draft) answers reconsent_required.
+   */
+  const resealed = content && typeof provider.keyHeld === 'function' && provider.keyHeld() !== true
   // Whether this reader opens anything. A provided credential never does, even
   // on a hand-built config that sets allow_plaintext: the guarantee is the mode's.
-  const opens = mode !== 'hosted-metadata' && config.allow_plaintext === true
+  const opens = !resealed && mode !== 'hosted-metadata' && config.allow_plaintext === true
   /**
    * Why a value is locked, in the words that are true of this connection. A
    * provided credential can never open content, so the reason must not read
    * like a setting somebody forgot to turn on; a local install with plaintext
-   * off really did leave one off; the attested reader tried and its key failed.
+   * off really did leave one off; the attested reader tried and its key
+   * failed, or holds no key until the user renews the connection.
    */
   const lockedReason = mode === 'hosted-metadata'
     ? 'Sealed content. This connection reads metadata only, and the key that opens it never leaves the devices of the user.'
-    : content ? contentLockedReason : 'Encrypted content. Local reading has not been enabled for this MCP server.'
+    : resealed ? RESEALED_REASON : content ? contentLockedReason : 'Encrypted content. Local reading has not been enabled for this MCP server.'
   const openedReason = content ? contentLockedReason : keyLockedReason
   const openedValue = value => openedText(value, config.max_text_chars, openedReason)
   const locked = () => ({ state: 'locked', reason: lockedReason })
-  const credential = await loadCredential(config, provider)
-  if (content && (typeof provider.serviceKey !== 'function' || typeof provider.expectedEpoch !== 'function')) throw new LocalConfigError('credential_provider_required')
-  // Attachments open only on the attested reader, for a consent that includes them.
-  const media = content && config.media === true && typeof provider.media?.open === 'function' ? provider.media : null
+  // Attachments open only on the attested reader, for a consent that includes them, while it holds the key.
+  const media = content && !resealed && config.media === true && typeof provider.media?.open === 'function' ? provider.media : null
   // Sending too, for a consent that includes it (§17.8).
-  const send = content && (config.send === 'draft' || config.send === 'direct') && typeof provider.send?.draft === 'function' ? provider.send : null
+  const send = content && !resealed && (config.send === 'draft' || config.send === 'direct') && typeof provider.send?.draft === 'function' ? provider.send : null
+  /** Refuses what needs the key while the reader holds none (§19.29). */
+  function needsKey() { if (resealed) throw new LocalConfigError('reconsent_required') }
+  /**
+   * list_numbers' connection block (§19.29): what this connection can open
+   * now, its tier and deadline as the attested reader recorded them, its
+   * history window, and whether it waits for a renewal.
+   */
+  function connectionBlock() {
+    let about = null
+    try { about = hosted && typeof provider?.connection === 'function' ? provider.connection() : null } catch { about = null }
+    return { text: opens, attachments: media !== null, drafts: send !== null,
+      own_chat: send !== null && config.send_self === true && typeof send.sendSelf === 'function',
+      tier: TIERS.includes(about?.tier) ? about.tier : null,
+      expires_at: deadlineOf(about?.expires_at),
+      history_days: Number.isInteger(config.history_days) ? config.history_days : null, renewal_needed: resealed }
+  }
   /**
    * Every opened text of one chat that goes back to the assistant is shown to
    * the fingerprint store before it leaves (§17.11), best effort: a failure
@@ -403,7 +441,7 @@ export async function createReader(config, provider) {
     permit(device_id)
     // Same refusal, two different truths: a local install can be opted in, a
     // provided credential never can, and the code is what the model quotes.
-    if (query && !opens) throw new LocalConfigError(mode === 'hosted-metadata' ? 'content_sealed_metadata_only' : 'plaintext_required_for_text_search')
+    if (query && !opens) throw new LocalConfigError(resealed ? 'reconsent_required' : mode === 'hosted-metadata' ? 'content_sealed_metadata_only' : 'plaintext_required_for_text_search')
     /**
      * Where the archive must not learn which messages matched. Stopping at
      * `limit`, or asking for the history of each hit, would tell the server
@@ -567,6 +605,8 @@ export async function createReader(config, provider) {
     })
   }
   return {
+    /** Whether this content connection waits for a renewal (§19.29): every result then says so. */
+    resealed,
     searchMessages(input) { return scan(input) },
     activitySummary(input) { return scan(input, true) },
     async resolveContact({ device_id, query, limit = 20, after_key }) {
@@ -580,7 +620,9 @@ export async function createReader(config, provider) {
       // its '@'; a name needs neither, and that is the whole test.
       if (!opens && /\p{L}/u.test(query) && !query.includes('@')) {
         return { workspace_id: config.workspace, device_id, candidates: [], omitted_candidates: 0, ambiguous: false, names_searchable: false,
-          instruction: mode === 'hosted-metadata'
+          instruction: resealed
+            ? 'Contact names stay locked until the user renews this connection, so no name can match and paging would find nothing. Give the user the renewal link, or ask for the phone number and resolve that instead.'
+            : mode === 'hosted-metadata'
             ? 'Contact names are sealed on this connection, so no name can match and paging would find nothing. Tell the user so, ask for the phone number, and resolve that instead.'
             : 'Contact names stay locked while local plaintext access is off, so no name can match. Resolve a phone number instead, or ask the user to enable plaintext in the local configuration.',
           coverage: { archived_contacts_examined: 0, unavailable_names: 0, archive_has_more: false, personal_snapshot: null, complete: false,
@@ -628,7 +670,7 @@ export async function createReader(config, provider) {
       // plaintext_enabled alone reads like a switch left off; plaintext_available
       // says whether the connection has a switch at all.
       return { workspace_id: config.workspace, plaintext_enabled: opens, plaintext_available: mode !== 'hosted-metadata',
-        timezone: config.timezone, now: new Date().toISOString(),
+        timezone: config.timezone, now: new Date().toISOString(), connection: connectionBlock(),
         numbers: reply.devices.filter(device => allowed(device.id)).map(device => ({
           id: device.id, name: device.label || device.push_name || device.pn || 'Unnamed number',
           phone: device.pn, status: device.status, paused: device.paused === true,
@@ -693,6 +735,7 @@ export async function createReader(config, provider) {
      */
     async openAttachment({ device_id, uid, cursor, pages, images = true }) {
       permit(device_id)
+      needsKey()
       if (!media) throw new ArchiveError('media_not_allowed')
       let chat = null
       // Under a history floor the message is read first, whatever the enclave
@@ -759,6 +802,7 @@ export async function createReader(config, provider) {
     async aiJob({ device_id, uid }, work) {
       permit(device_id)
       if (!content) throw new LocalConfigError('credential_provider_required')
+      needsKey()
       return withOpener(device_id, (opener, _serviceKey, keys) => work({ row: () => attachmentRow(device_id, uid), open: (row, what) => openedMedia(opener, row, what), keys }))
     },
     /**
@@ -769,6 +813,7 @@ export async function createReader(config, provider) {
      */
     async aiKeys(devices, work) {
       if (!content) throw new LocalConfigError('credential_provider_required')
+      needsKey()
       for (const device of devices) permit(device)
       const grants = await api.grants()
       if (grants.user_id !== config.service_user_id) throw new ArchiveError('account_mismatch')
@@ -794,18 +839,21 @@ export async function createReader(config, provider) {
      */
     async draftMessage(input) {
       permit(input.device_id)
+      needsKey()
       if (!send) throw new ArchiveError('send_not_allowed')
       return send.draft(input, { chat: () => chatByKey(input.device_id, input.chat_key) })
     },
     /** send_to_self (§17.8): the enclave runs every step; Go resolves the own chat. */
     async sendToSelf(input) {
       permit(input.device_id)
+      needsKey()
       if (!send || config.send_self !== true || typeof send.sendSelf !== 'function') throw new ArchiveError('send_not_allowed')
       return send.sendSelf(input)
     },
     /** list_outgoing (§17.8): a page of the connection's ledger, from Go through the enclave. */
     async listOutgoing(input) {
       if (input.device_id !== undefined) permit(input.device_id)
+      needsKey()
       if (!send) throw new ArchiveError('send_not_allowed')
       return send.outgoing(input)
     },

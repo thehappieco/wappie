@@ -12,7 +12,7 @@ import { attestationUserDataV2, decodeAttestationDocument, descriptorSHA256 } fr
 import { keyChecksum } from '../../tokens.mjs'
 import { CLIENT_LIMITS } from '../constants.mjs'
 import { TOKEN_REQUESTS_PENDING_MAX } from '../tokens.mjs'
-import { callTool, contentGrants, DAY, deviceChecks, form, newApiKey, ORIGIN, RESOURCE, rpc, sealContent, world } from './world.mjs'
+import { callTool, contentGrants, DAY, deviceChecks, form, newApiKey, ORIGIN, resealed, RESOURCE, result, rpc, sealContent, world } from './world.mjs'
 
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 /** A bearer as the console's browser mints it (§19.18 step 3): prefix, 43 random base64url characters, six of checksum. */
@@ -194,7 +194,8 @@ test('restarts, expiry, Go\'s revocation and the unclaimed sweep (§19.18): meta
   await e.close()
   const again = await w.start()
   assert.equal((await callTool(w, metadata.bearer, 'list_numbers')).isError, false, 'a metadata token survives a restart')
-  assert.match((await callTool(w, text.bearer, 'list_numbers')).text, /reconsent_required/, 'a text token waits for its renewal')
+  // A text token waits for its renewal: metadata reads on, text is refused with the link (§19.29).
+  assert.equal((await resealed(w, text.bearer, text.connectionId)).numbers.data.connection.tier, 'token')
   // Its renewal descriptor names the token, never its hash or networks.
   const renewal = JSON.parse((await w.internal(`/internal/connections/${text.connectionId}/renewal`, { method: 'POST', body: { nonce: randomBytes(32).toString('base64url') } })).body)
   assert.deepEqual([renewal.kind, renewal.client_kind, renewal.client_id, renewal.trust, renewal.limits_tier, renewal.history_days, renewal.unknown_ack],
@@ -226,7 +227,9 @@ test('a text token\'s version-4 renewal (§19.16): the same bearer reads again o
   const again = await w.start()
   const call = () => w.public('/mcp', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${text.bearer}` },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_numbers', arguments: {} } }), ...source })
-  assert.match((await call()).body, /reconsent_required/)
+  const waiting = result((await call()).body)
+  assert.equal(waiting.isError, undefined, 'metadata reads on while the token waits for its renewal (§19.29)')
+  assert.equal(waiting.structuredContent.renewal.renew_url, `https://app.wappie.thehappie.co/console?mcp_renew=${text.connectionId}`)
   const renew = async (fields = {}) => {
     const prepared = await w.internal(`/internal/connections/${text.connectionId}/renewal`, { method: 'POST', body: { nonce: randomBytes(32).toString('base64url') } })
     assert.equal(prepared.status, 200, prepared.body)
@@ -261,7 +264,7 @@ test('a text token\'s version-4 renewal (§19.16): the same bearer reads again o
   connection.status = 'active'
   const answer = await call()
   assert.equal(answer.status, 200, answer.body)
-  assert.doesNotMatch(answer.body, /reconsent_required|isError":true/)
+  assert.doesNotMatch(answer.body, /reconsent_required|isError":true|mcp_renew=/)
   const record = again.state.connections.get(text.connectionId)
   assert.deepEqual([record.client_kind, record.limits_tier, record.family_id, record.allowed_networks, record.history_days], ['token', 'token', family, ['203.0.113.0/24'], 30])
   assert.equal([...again.state.tokens.values()].filter(item => item.kind === 'key' && item.connection_id === text.connectionId && item.hash === sha256(text.bearer)).length, 1)

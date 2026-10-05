@@ -14,9 +14,14 @@ export function configFor(connection, archive) {
   })
 }
 
+/** A record's limits tier (docs/mcp-enclave.md §19.6); a record 0.5.0 wrote is tested web. */
+export const tierOf = record => (typeof record?.limits_tier === 'string' ? record.limits_tier : 'web_tested')
+
 export function providerFor(connection, { limits } = {}) {
   return {
     token: async () => ({ token: connection.api_key, kind: 'api_key' }),
+    // The tier and deadline list_numbers' connection block names (§19.29).
+    connection: () => ({ tier: tierOf(connection), expires_at: connection.expires_at }),
     serviceKey: () => { throw new LocalConfigError('plaintext_opt_in_required') },
     contactPack: () => { throw new LocalConfigError('plaintext_opt_in_required') },
     ...(limits ? { limits } : {}),

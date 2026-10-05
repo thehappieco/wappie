@@ -66,12 +66,22 @@ test('boot, consent through an attested prepare, tools, restart with tokens inta
   const listed = await rpc(w, done.tokens.access_token)
   assert.equal(listed.status, 200, listed.body)
   assert.equal(result(listed.body).tools.length, 8)
-  // serverInfo names the icon as data and by the URLs this listener serves.
+  // serverInfo names the product, its site and this reader's version (§19.29), and the icon as data and by the URLs this listener serves.
   const initialized = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 3, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'enclave-test', version: '1' } } })
-  assert.deepEqual(result(initialized.body).serverInfo, { name: 'wappie-readonly', version: '0.1.0', icons: serverIcons(constants.PUBLIC_ORIGIN) })
-  assert.deepEqual(result(initialized.body).serverInfo.icons.slice(1).map(icon => icon.src), ['https://mcp.wappie.thehappie.co/favicon.svg', 'https://mcp.wappie.thehappie.co/apple-touch-icon.png'])
+  assert.deepEqual(result(initialized.body).serverInfo, { name: 'wappie', title: 'Wappie', version: constants.READER_VERSION, websiteUrl: 'https://wappie.thehappie.co',
+    description: 'The WhatsApp archive of one Wappie workspace, for the numbers its owner authorized.', icons: serverIcons(constants.PUBLIC_ORIGIN) })
+  assert.deepEqual(result(initialized.body).serverInfo.icons.slice(1).map(icon => icon.src), ['https://mcp.wappie.thehappie.co/favicon.svg', 'https://mcp.wappie.thehappie.co/apple-touch-icon.png',
+    'https://mcp.wappie.thehappie.co/icon-512.png', 'https://mcp.wappie.thehappie.co/icon-192.png'])
+  assert.deepEqual(result(initialized.body).capabilities.tools, { listChanged: false })
+  // A metadata connection of this reader is told it may reconnect for text, never that nothing would unlock it.
+  assert.match(result(initialized.body).instructions, /tick "Also read message text"/)
+  assert.doesNotMatch(result(initialized.body).instructions, /none would unlock|configured Wappie installation/)
   const numbers = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_numbers', arguments: {} } })
   assert.equal(result(numbers.body).structuredContent.plaintext_enabled, false)
+  // The connection block: a metadata connection of a tested web client, its deadline the record's (§19.29).
+  const block = result(numbers.body).structuredContent.connection
+  assert.deepEqual({ ...block, expires_at: typeof block.expires_at }, { text: false, attachments: false, drafts: false, own_chat: false, tier: 'web_tested', expires_at: 'string', history_days: null, renewal_needed: false })
+  assert.equal(block.expires_at, new Date(e.state.connections.get(done.connectionId).expires_at).toISOString())
   assert.equal(w.go.activations, 1)
   assert.ok(w.f.state.requests.filter(item => item.path !== '/clock').every(item => item.auth === `Bearer ${w.apiKey}`), 'archive reads carry the bundled key (the clock probe carries nothing)')
 
@@ -127,6 +137,29 @@ test('listeners: /internal never on the public port, nothing else on the interna
   }
   assert.equal((await w.public('/favicon.png')).status, 404)
   assert.equal((await w.public('/favicon.svg/')).status, 404)
+  // The page a person sees at the connector's address, and robots.txt (§19.29): public, behind the same Host check, never on the internal port.
+  const home = await w.public('/', { headers: { 'accept-language': 'pt-BR,pt;q=0.9' } })
+  assert.equal(home.status, 200)
+  assert.equal(home.headers['content-type'], 'text/html; charset=utf-8')
+  assert.equal(home.headers['content-language'], 'pt-BR')
+  assert.match(home.headers['content-security-policy'], /^default-src 'none'; img-src 'self'; style-src 'sha256-[A-Za-z0-9+/]+=*'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'$/)
+  const page = home.bytes.toString('utf8')
+  for (const piece of ['Este é o endereço do conector da Wappie', '<code>https://mcp.wappie.thehappie.co/mcp</code>', `<a href="${constants.CONSOLE_URL}">`, `<a href="${constants.SITE_LINKS.documentation}">`, 'src="/icon-192.png"']) {
+    assert.ok(page.includes(piece), piece)
+  }
+  assert.ok((await w.public('/?lang=de')).bytes.toString('utf8').includes('Dies ist die Adresse des Wappie-Connectors'))
+  assert.equal((await w.public('/', { method: 'POST', body: '' })).status, 405)
+  assert.equal((await w.public('/', { headers: { host: 'evil.example' } })).status, 403)
+  assert.equal((await w.internal('/')).status, 404)
+  const robots = await w.public('/robots.txt')
+  assert.deepEqual([robots.status, robots.bytes.toString('utf8')], [200, 'User-agent: *\nAllow: /\nDisallow: /mcp\nDisallow: /attestation\n'])
+  // The discovery documents name the documentation, privacy policy and terms.
+  const documents = JSON.parse(prm.body)
+  assert.deepEqual([documents.resource_documentation, documents.resource_policy_uri, documents.resource_tos_uri],
+    [constants.SITE_LINKS.documentation, constants.SITE_LINKS.privacy, constants.SITE_LINKS.terms])
+  const server = JSON.parse((await w.public('/.well-known/oauth-authorization-server')).body)
+  assert.deepEqual([server.service_documentation, server.op_policy_uri, server.op_tos_uri], [constants.SITE_LINKS.documentation, constants.SITE_LINKS.privacy, constants.SITE_LINKS.terms])
+  assert.deepEqual(constants.SITE_LINKS, { documentation: 'https://wappie.thehappie.co/docs/', privacy: 'https://wappie.thehappie.co/privacy/', terms: 'https://wappie.thehappie.co/terms/' })
   // No signature, a wrong secret, a replay: 401 with no detail.
   const unsigned = await w.internal('/internal/healthz', { signed: {} })
   assert.equal(unsigned.status, 401)

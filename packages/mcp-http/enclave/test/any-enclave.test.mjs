@@ -14,7 +14,7 @@ import { pkce, proof, sealBundle } from '../../test/harness.mjs'
 import { CLIENT_LIMITS, TESTED_CLIENTS } from '../constants.mjs'
 import { lineAllowed } from '../logsink.mjs'
 import {
-  callTool, CONSOLE_ORIGIN, consentLabels, contentGrants, DAY, deviceChecks, form, newApiKey, ORIGIN, renewLabels, RESOURCE, rpc, sealContent, world,
+  callTool, CONSOLE_ORIGIN, consentLabels, contentGrants, DAY, deviceChecks, form, newApiKey, ORIGIN, renewLabels, resealed, RESOURCE, rpc, sealContent, world,
 } from './world.mjs'
 
 const CLAUDE = 'https://claude.ai/oauth/mcp-oauth-client-metadata'
@@ -302,7 +302,9 @@ test('the version-4 renewal (§19.16): an unknown text connection renews with it
   assert.equal(done.completed?.status, 302, done.relayed.body)
   await e.close()
   const again = await w.start()
-  assert.match((await callTool(w, done.tokens.access_token, 'list_numbers')).text, /reconsent_required/)
+  const waiting = (await resealed(w, done.tokens.access_token, done.connectionId)).numbers
+  // An unknown connection's block names its tier and the window the person chose (§19.29).
+  assert.deepEqual([waiting.data.connection.tier, waiting.data.connection.history_days], ['unknown', 30])
   const renew = async fields => {
     const nonce = randomBytes(32)
     const prepared = await w.internal(`/internal/connections/${done.connectionId}/renewal`, { method: 'POST', body: { nonce: nonce.toString('base64url') } })
@@ -540,7 +542,7 @@ test('the version-4 renewal of a tested local app (§19.16): a Codex loopback te
   assert.equal(done.completed?.status, 302, done.relayed.body)
   await e.close()
   const again = await w.start()
-  assert.match((await callTool(w, done.tokens.access_token, 'list_numbers')).text, /reconsent_required/)
+  assert.equal((await resealed(w, done.tokens.access_token, done.connectionId)).numbers.data.connection.tier, 'local_tested')
   const renew = async (fields = {}) => {
     const prepared = await w.internal(`/internal/connections/${done.connectionId}/renewal`, { method: 'POST', body: { nonce: randomBytes(32).toString('base64url') } })
     assert.equal(prepared.status, 200, prepared.body)

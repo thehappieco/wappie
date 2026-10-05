@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { auth, Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { McpServer } from '@whatserver2/mcp/sdk'
-import { createServer } from '@whatserver2/mcp'
+import { createServer, PACKAGE_VERSION } from '@whatserver2/mcp'
 import { serverIcons } from '@whatserver2/mcp/icons'
 import { harness, authorize, clientProvider, consent, call, parsed, raw, rpc, session, secretsAbsent, vector, workspace, DAY } from './harness.mjs'
 import { configFor, providerFor } from '../provider.mjs'
@@ -25,7 +25,9 @@ test('claude.ai-style client: discovery, DCR assigned none, consent, PKCE exchan
   const client = new Client({ name: 'synthetic-wappie-test', version: '1.0.0' }, { versionNegotiation: { mode: 'auto' } })
   await client.connect(transport)
   try {
-    assert.equal(client.getServerVersion().name, 'wappie-readonly')
+    // The product's identity (§19.29); the hosted reader has no READER_VERSION and says its package's.
+    assert.deepEqual([client.getServerVersion().name, client.getServerVersion().title, client.getServerVersion().version, client.getServerVersion().websiteUrl],
+      ['wappie', 'Wappie', PACKAGE_VERSION, 'https://wappie.thehappie.co'])
     // Its proxy routes only the reader's own paths, so only the data: icon is named (the enclave adds its URLs).
     assert.deepEqual(client.getServerVersion().icons, serverIcons())
     const listing = await client.listTools()
@@ -58,6 +60,8 @@ test('claude.ai-style client: discovery, DCR assigned none, consent, PKCE exchan
     for (const phrase of ['local plaintext access', 'local configuration', 'Local reading has not been enabled', 'plaintext_required']) {
       assert.equal(spoken.includes(phrase), false, `hosted wording still sends the user after a setting: ${phrase}`)
     }
+    // The hosted reader never opens text, so it never offers the attested reader's way to it (§19.29).
+    assert.equal(spoken.includes('Also read message text'), false)
     assert.match(parsed(chats).chats[0].name.reason, /metadata only/)
     const archive = h.f.state.requests
     assert.ok(archive.length >= 3)

@@ -9,9 +9,13 @@
 // renewal commit), and a read already in flight must keep the bytes it was
 // given rather than see them turn to zeros under it, while nothing handed out
 // can ever write into the stored copy. Without a held key (after a restart, a
-// `reseal`, or any wipe) the token itself is refused with
-// `reconsent_required`, so no archive call is made at all.
+// `reseal`, or any wipe) a content connection still reads metadata with its
+// own read-only API key, and every read that needs the key is refused with
+// `reconsent_required` (docs/mcp-enclave.md §19.29): `keyHeld()` tells the
+// reader which. An AI authorization (§18) reads nothing at all without its
+// key: its token is refused, as every connection's was before 0.6.0.
 import { LocalConfigError, validateConfig } from '@whatserver2/mcp/config'
+import { tierOf } from '../provider.mjs'
 
 /** The scan budget per text-search call: the REST sequence depends on it, never on what matched. */
 export const CONTENT_MAX_SCAN = 500
@@ -105,7 +109,9 @@ export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant,
     return stored
   }
   return {
-    token: async () => { held(); return { token: record.api_key, kind: 'api_key' } },
+    token: async () => { if (record.kind === 'ai') held(); return { token: record.api_key, kind: 'api_key' } },
+    keyHeld: () => connkeys.has(id),
+    connection: () => ({ tier: tierOf(record), expires_at: record.expires_at }),
     serviceKey: async () => { const stored = held(); return { key: stored.key, publicRaw: new Uint8Array(stored.publicRaw) } },
     expectedEpoch: device => (record.epochs && Object.hasOwn(record.epochs, device) ? record.epochs[device] : undefined),
     renewalURL: () => renewalURL(consoleURL, id),

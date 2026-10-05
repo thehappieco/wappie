@@ -38,6 +38,9 @@ packages/mcp/server.mjs
 packages/mcp/test/provider.test.mjs
 # Asserts that content-mode strings never say metadata only, and metadata mode does.
 packages/mcp/test/content.test.mjs
+# Pins the words of 'metadata' connections (docs/mcp-enclave.md 19.29): the
+# attested reader's, which may reconnect for text, and the hosted reader's.
+packages/mcp/test/identity.test.mjs
 packages/mcp-http/link.mjs
 packages/mcp-http/server.mjs
 packages/mcp-http/test/http.test.mjs

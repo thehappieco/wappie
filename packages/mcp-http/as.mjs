@@ -19,6 +19,7 @@ import { GrantError, hash, wellFormed } from './tokens.mjs'
 import { SCOPE } from './metadata.mjs'
 import { RelayError } from './internal.mjs'
 import { sameNetwork } from './limits.mjs'
+import { refusalPage } from './pages.mjs'
 
 export const PENDING_MAX = 1000
 export const PENDING_UNCONSENTED_MAX = 200
@@ -54,52 +55,17 @@ export const scopeAcceptable = value => value === null || (value.length <= 1024 
 })())
 
 const oauthError = (status, error, description, extra = {}) => Response.json({ error, error_description: description }, { status, headers: { ...noStore, ...extra } })
-const escapeHTML = value => value.replace(/[&<>"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[character])
 /**
- * Browser-facing failures get a static page; the code comes from a fixed set,
- * never from input, and `back` only ever from configuration. A refusal with no
- * way back strands the owner on this page with a consent already half made, so
- * the routes a browser reaches pass the console here.
+ * Browser-facing failures get a static page (pages.mjs, docs/mcp-enclave.md
+ * §19.29): the code comes from a fixed set, never from input, every code has
+ * a sentence in the five languages saying what to do next, the person's
+ * first, and `back` only ever comes from configuration. A refusal with no way
+ * back strands the owner on this page with a consent already half made, so
+ * the routes a browser reaches after the console pass the console here.
  */
-const htmlHead = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Wappie MCP</title>' +
-  '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 16px;overflow-wrap:anywhere}small{color:#555}</style>'
-const htmlHeaders = { ...noStore, 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }
-const page = (status, code, back = '') => new Response(`${htmlHead}<p>Wappie MCP: ${code}.</p>` + (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : ''),
-  { status, headers: htmlHeaders })
+export { PAGE_LANGUAGES, pageLanguages } from './pages.mjs'
 const redirect = location => new Response(null, { status: 302, headers: { ...noStore, Location: location } })
 const text = value => (typeof value === 'string' ? value : undefined)
-/** The page languages (§19.14's five), the person's first when Accept-Language names one, then the console's order. */
-export const PAGE_LANGUAGES = Object.freeze(['pt', 'en', 'es', 'fr', 'de'])
-export function pageLanguages(acceptLanguage) {
-  const first = String(acceptLanguage ?? '').split(',').map(item => item.trim().slice(0, 2).toLowerCase()).find(tag => PAGE_LANGUAGES.includes(tag))
-  return first ? [first, ...PAGE_LANGUAGES.filter(tag => tag !== first)] : [...PAGE_LANGUAGES]
-}
-/**
- * The two pages with sentences, fixed in the image and drafts the owner
- * approves (D10): the `any` policy's refusal of a client (one page for every
- * reason, §19.6 step 5) and the completion refused on another network
- * (§19.12). The code stays, in small print, for support.
- */
-const SENTENCES = {
-  invalid_client: {
-    pt: 'A Wappie não pôde aceitar este assistente. Ele pode não publicar a página de identidade de que a Wappie precisa, ou o endereço dele não é permitido. Nada foi compartilhado. Você pode conectar um assistente testado ou criar um token de conexão no console da Wappie.',
-    en: 'Wappie could not accept this assistant. It may not publish the identity page Wappie needs, or its address is not allowed. Nothing was shared. You can connect a tested assistant, or create a connection token in the Wappie console.',
-    es: 'Wappie no pudo aceptar este asistente. Puede que no publique la página de identidad que Wappie necesita, o que su dirección no esté permitida. No se compartió nada. Puedes conectar un asistente probado o crear un token de conexión en la consola de Wappie.',
-    fr: 'Wappie n’a pas pu accepter cet assistant. Il ne publie peut-être pas la page d’identité dont Wappie a besoin, ou son adresse n’est pas autorisée. Rien n’a été partagé. Vous pouvez connecter un assistant testé ou créer un jeton de connexion dans la console Wappie.',
-    de: 'Wappie konnte diesen Assistenten nicht annehmen. Vielleicht veröffentlicht er nicht die Identitätsseite, die Wappie braucht, oder seine Adresse ist nicht erlaubt. Es wurde nichts geteilt. Sie können einen getesteten Assistenten verbinden oder in der Wappie-Konsole ein Verbindungstoken erstellen.',
-  },
-  ip_mismatch: {
-    pt: 'Esta autorização foi aberta numa rede diferente da que começou a conexão. Volte ao assistente e clique em Conectar de novo. Se você usa VPN ou a Retransmissão Privada do iCloud, desligue para esta etapa e tente de novo.',
-    en: 'This authorization was opened on a different network from the one that started the connection. Go back to the assistant and click Connect again. If you use a VPN or iCloud Private Relay, turn it off for this step and try again.',
-    es: 'Esta autorización se abrió en una red distinta de la que inició la conexión. Vuelve al asistente y haz clic en Conectar de nuevo. Si usas una VPN o Relay privado de iCloud, desactívalo para este paso y vuelve a intentarlo.',
-    fr: 'Cette autorisation a été ouverte sur un autre réseau que celui qui a lancé la connexion. Revenez à l’assistant et cliquez de nouveau sur Connecter. Si vous utilisez un VPN ou le Relais privé iCloud, désactivez-le pour cette étape et réessayez.',
-    de: 'Diese Freigabe wurde in einem anderen Netzwerk geöffnet als dem, in dem die Verbindung begann. Gehen Sie zurück zum Assistenten und klicken Sie erneut auf Verbinden. Wenn Sie ein VPN oder iCloud Privat-Relay nutzen, schalten Sie es für diesen Schritt aus und versuchen Sie es noch einmal.',
-  },
-}
-const sentencePage = (code, back, acceptLanguage) => new Response(htmlHead +
-  pageLanguages(acceptLanguage).map(tag => `<p lang="${tag}">${escapeHTML(SENTENCES[code][tag])}</p>`).join('') +
-  `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p><p><small>Wappie MCP: ${code}</small></p>`,
-{ status: 400, headers: htmlHeaders })
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 /** Parses a form body, refusing anything but urlencoded and any repeated field. */
@@ -125,6 +91,8 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
   const consoleOrigin = new URL(consoleURL).origin
   const any = policy.mode === 'any'
   const count = name => { counters[name] = (counters[name] ?? 0) + 1 }
+  /** A refusal page in the request's languages (its Accept-Language); `back` (the console) on the routes a browser reaches after it. */
+  const page = (status, code, language, back = '') => refusalPage(status, code, { back, acceptLanguage: language, allowlist: !any })
   /**
    * The `any` policy's `invalid_client`: one static page and status for every
    * reason, never sooner than REFUSAL_FLOOR_MS after the request began, so a
@@ -135,7 +103,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     meta.code = 'invalid_client'
     const left = (policy.refusalFloorMs ?? REFUSAL_FLOOR_MS) - (performance.now() - started.at)
     if (left > 0) await sleep(left)
-    return sentencePage('invalid_client', consoleURL, started.language)
+    return refusalPage(400, 'invalid_client', { back: consoleURL, acceptLanguage: started.language })
   }
   /**
    * §19.6's classification of one request under the `any` policy:
@@ -151,7 +119,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       meta.client = dcr.client_id
       // Every DCR redirect is pinned, whenever the record was made: a 0.5.0 record's other paths are never served.
       const entry = typeof redirectURI === 'string' && dcr.redirect_uris.includes(redirectURI) ? dcrEntryFor(policy.tested, [redirectURI]) : null
-      if (!entry) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri') } }
+      if (!entry) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri', started.language) } }
       const domain = policy.psl.registrable(host(redirectURI))
       return { request: { client_kind: 'dcr', client_host: host(redirectURI), registrable: domain?.registrable ?? host(redirectURI), shared_suffix: domain?.shared_suffix ?? null,
         client_local: false, trust: 'tested', tested_id: entry.id, drift: false, client_name: entry.name, claimed_name: dcr.claimed_name ?? null,
@@ -168,10 +136,10 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
         profile: entry.profile, ignored_uris: 0 } }
     }
     const resolved = await cimd.resolveAny(clientID, identity, { ip })
-    if (resolved.busy) { meta.code = resolved.busy; return { response: page(429, 'too_many_requests') } }
+    if (resolved.busy) { meta.code = resolved.busy; return { response: page(429, 'too_many_requests', started.language) } }
     if (!resolved.record) return { response: await refuseClient(meta, started) }
     const record = resolved.record
-    if (!redirectAllowed(record, redirectURI)) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri') } }
+    if (!redirectAllowed(record, redirectURI)) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri', started.language) } }
     if (tested) count('tested_drift')
     return { request: { client_kind: 'cimd', client_host: record.client_host, registrable: record.registrable, shared_suffix: record.shared_suffix,
       client_local: loopbackRedirect(redirectURI) !== null, trust: 'unknown', tested_id: null, drift: Boolean(tested), client_name: record.client_host,
@@ -234,9 +202,9 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     if (client.trust === 'unknown') {
       let open = 0
       for (const pending of state.pending.values()) if (!pending.bundle && pending.client_id === clientID) open++
-      if (open >= PENDING_PER_CLIENT) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests') }
+      if (open >= PENDING_PER_CLIENT) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests', started.language) }
     }
-    if (!makeRoom()) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests') }
+    if (!makeRoom()) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests', started.language) }
     const id = randomBytes(16).toString('base64url')
     const recipient = newRecipient ? await newRecipient() : undefined
     state.pending.set(id, {
@@ -278,26 +246,26 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
 
     async authorize(request, ip, meta) {
       const started = { at: performance.now(), language: request.headers.get('accept-language') }
-      if (request.method !== 'GET') return page(405, 'method_not_allowed')
+      if (request.method !== 'GET') return page(405, 'method_not_allowed', started.language)
       // The address budget is spent before anything is looked at, so a refused
       // request (or one that would make the relay fetch a document) costs the
       // caller as much as an accepted one.
       const taken = limiter.take('authorize', ip, 20)
-      if (!taken.ok) { meta.code = 'rate_limited'; return page(429, 'too_many_requests') }
+      if (!taken.ok) { meta.code = 'rate_limited'; return page(429, 'too_many_requests', started.language) }
       let mine = 0
       for (const pending of state.pending.values()) if (pending.ip === ip) mine++
-      if (mine >= PENDING_PER_IP) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests') }
+      if (mine >= PENDING_PER_IP) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests', started.language) }
       const params = new URL(request.url).searchParams
-      for (const name of new Set(params.keys())) if (params.getAll(name).length > 1) { meta.code = 'invalid_request'; return page(400, 'invalid_request') }
+      for (const name of new Set(params.keys())) if (params.getAll(name).length > 1) { meta.code = 'invalid_request'; return page(400, 'invalid_request', started.language) }
       const clientID = params.get('client_id') ?? ''
       if (any) return authorizeAny(params, clientID, ip, meta, started)
       let starved = false
       const client = clients.get(clientID) ?? await cimd.resolve(clientID, { allowFetch: () => { const budget = limiter.take('cimd', ip, CIMD_FETCH_PER_IP); starved = !budget.ok; return budget.ok } })
-      if (starved) { meta.code = 'rate_limited'; return page(429, 'too_many_requests') }
-      if (!client) { meta.code = 'invalid_client'; return page(400, 'invalid_client') }
+      if (starved) { meta.code = 'rate_limited'; return page(429, 'too_many_requests', started.language) }
+      if (!client) { meta.code = 'invalid_client'; return page(400, 'invalid_client', started.language) }
       meta.client = client.client_id
       const redirectURI = params.get('redirect_uri')
-      if (!redirectAllowed(client, redirectURI)) { meta.code = 'invalid_redirect_uri'; return page(400, 'invalid_redirect_uri') }
+      if (!redirectAllowed(client, redirectURI)) { meta.code = 'invalid_redirect_uri'; return page(400, 'invalid_redirect_uri', started.language) }
       // From here on the redirect target is trusted, so errors travel back to the client.
       const fail = code => {
         meta.code = code
@@ -315,7 +283,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (scope !== null && (scope.trim() === '' || scope.split(' ').filter(Boolean).some(item => item !== SCOPE))) return fail('invalid_scope')
       const stateParam = params.get('state')
       if (stateParam !== null && (stateParam.length === 0 || stateParam.length > MAX_STATE_CHARS)) return fail('invalid_request')
-      if (!makeRoom()) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests') }
+      if (!makeRoom()) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests', started.language) }
       const id = randomBytes(16).toString('base64url')
       const recipient = newRecipient ? await newRecipient() : undefined
       state.pending.set(id, {
@@ -333,7 +301,8 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     },
 
     async complete(request, ip, meta) {
-      if (request.method !== 'POST') return page(405, 'method_not_allowed')
+      const language = request.headers.get('accept-language')
+      if (request.method !== 'POST') return page(405, 'method_not_allowed', language)
       // CSRF: the consent form is posted by the console, and only by the
       // console. A document served with `Referrer-Policy: no-referrer` makes
       // the browser send the literal `Origin: null` on a top-level post, so
@@ -342,15 +311,15 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       const sent = request.headers.get('origin')
       if (sent !== consoleOrigin) {
         meta.code = sent === null ? 'origin_missing' : sent === 'null' ? 'opaque_origin' : 'invalid_origin'
-        return page(400, meta.code, consoleURL)
+        return page(400, meta.code, language, consoleURL)
       }
       const taken = limiter.take('complete', ip, 10)
-      if (!taken.ok) { meta.code = 'rate_limited'; return page(429, 'too_many_requests', consoleURL) }
+      if (!taken.ok) { meta.code = 'rate_limited'; return page(429, 'too_many_requests', language, consoleURL) }
       const params = await form(request)
-      if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request', consoleURL) }
+      if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request', language, consoleURL) }
       const id = params.get('request') ?? '', proof = params.get('proof') ?? ''
       const pending = pendingFor(id)
-      if (!pending || !pending.bundle) { dummyProof(); meta.code = 'invalid_proof'; return page(400, 'invalid_proof', consoleURL) }
+      if (!pending || !pending.bundle) { dummyProof(); meta.code = 'invalid_proof'; return page(400, 'invalid_proof', language, consoleURL) }
       meta.client = pending.client_id
       meta.connection = pending.connection_id
       // §19.12: the consent completes from the network the request started on,
@@ -358,21 +327,21 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (pending.descriptor_version === 2) {
         const mismatch = !sameNetwork(pending.ip, ip)
         meta.flags = { ip_mismatch: mismatch }
-        if (mismatch) { count('ip_mismatches'); expirePending(id, pending); meta.code = 'ip_mismatch'; return sentencePage('ip_mismatch', consoleURL, request.headers.get('accept-language')) }
+        if (mismatch) { count('ip_mismatches'); expirePending(id, pending); meta.code = 'ip_mismatch'; return page(400, 'ip_mismatch', language, consoleURL) }
       }
       const withContent = pending.bundle.kind === 'content'
       let bundle = null
       try { bundle = withContent ? (content ? await content.verifyProof(pending, proof) : null) : await verifyProof(state, pending, proof) } catch (error) { if (!(error instanceof LinkError)) throw error }
       if (!bundle) {
         pending.proof_attempts++
-        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return page(400, 'invalid_proof', consoleURL) }
+        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return page(400, 'invalid_proof', language, consoleURL) }
         meta.code = 'invalid_proof'
-        return page(400, 'invalid_proof', consoleURL)
+        return page(400, 'invalid_proof', language, consoleURL)
       }
       // Go names the connection. The relay routes refuse an id already in use,
       // and this holds whatever interleaved since: a connection that exists
       // here is never replaced, because its tokens belong to another consent.
-      const inUse = () => { meta.code = 'connection_exists'; return page(400, 'connection_exists', consoleURL) }
+      const inUse = () => { meta.code = 'connection_exists'; return page(400, 'connection_exists', language, consoleURL) }
       if (state.connections.has(pending.connection_id)) { expirePending(id, pending); return inUse() }
       // Between leaving state.pending and landing in state.connections the id
       // sits in neither; state.activating keeps it reserved across the await,
@@ -385,14 +354,14 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
           if (!(error instanceof RelayError)) throw error
           void relay.revoke(pending.connection_id)
           meta.code = 'activation_failed'
-          return page(502, 'activation_failed', consoleURL)
+          return page(502, 'activation_failed', language, consoleURL)
         }
         if (state.connections.has(pending.connection_id)) { void relay.revoke(pending.connection_id); return inUse() }
         // §19.10: another unknown connection may have been installed since this one's bundle was accepted.
         if (pending.trust === 'unknown' && unknownLive(state, pending.tenant_id, pending) >= policy.unknownLiveMax) {
           void relay.revoke(pending.connection_id)
           meta.code = 'too_many_unknown'
-          return page(409, 'too_many_unknown', consoleURL)
+          return page(409, 'too_many_unknown', language, consoleURL)
         }
         const record = {
           connection_id: pending.connection_id, tenant_id: pending.tenant_id, workspace_id: bundle.workspace_id, device_ids: bundle.device_ids,

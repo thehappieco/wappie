@@ -1,7 +1,8 @@
 // The per-connection key holder and the content provider (docs/mcp-enclave.md
 // §15.5): only non-extractable handles are held, a wipe drops them, and the
 // provider hands the reader a handle with a copy of the public half, never
-// bytes of the key, refusing with reconsent_required once the key is gone.
+// bytes of the key, refusing with reconsent_required once the key is gone
+// (and, from 0.6.0, still reading metadata with the connection's own key).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -35,16 +36,25 @@ test('connkeys: non-extractable X25519 handles only; wipe drops the key and zero
   assert.equal(keys.size(), 0)
 })
 
-test('content provider: a handle and a copy, the consented epochs, the renewal link, no contacts, and reconsent_required without a key', async () => {
+test('content provider: a handle and a copy, the consented epochs, the renewal link, no contacts, and without a key only metadata reads', async () => {
   const keys = createConnKeys()
   const recipient = await newRecipient()
   const id = randomUUID(), device = randomUUID(), service = randomUUID()
-  const record = { connection_id: id, workspace_id: randomUUID(), device_ids: [device], timezone: 'UTC', api_key: 'key', service_user_id: service, epochs: { [device]: 3 } }
+  const record = { connection_id: id, workspace_id: randomUUID(), device_ids: [device], timezone: 'UTC', api_key: 'key', service_user_id: service, epochs: { [device]: 3 },
+    kind: 'content', limits_tier: 'unknown', expires_at: '2026-11-01T12:00:00.000Z' }
   const provider = contentProviderFor(record, keys, CONSOLE)
-  await assert.rejects(provider.token(), { name: 'LocalConfigError', code: 'reconsent_required' })
-  await assert.rejects(provider.serviceKey(), { code: 'reconsent_required' })
-  keys.set(id, recipient.privateKey)
+  // Without a key (§19.29): the read-only key still reads metadata, nothing that needs the key is handed out.
   assert.deepEqual(await provider.token(), { token: 'key', kind: 'api_key' })
+  assert.equal(provider.keyHeld(), false)
+  await assert.rejects(provider.serviceKey(), { name: 'LocalConfigError', code: 'reconsent_required' })
+  assert.deepEqual(provider.connection(), { tier: 'unknown', expires_at: '2026-11-01T12:00:00.000Z' })
+  assert.deepEqual(contentProviderFor({ ...record, limits_tier: undefined }, keys, CONSOLE).connection().tier, 'web_tested', 'a record 0.5.0 wrote is tested web')
+  // An AI authorization reads nothing at all without its key: its token is refused, as before 0.6.0.
+  await assert.rejects(contentProviderFor({ ...record, kind: 'ai' }, keys, CONSOLE).token(), { name: 'LocalConfigError', code: 'reconsent_required' })
+  keys.set(id, recipient.privateKey)
+  assert.equal(provider.keyHeld(), true)
+  assert.deepEqual(await provider.token(), { token: 'key', kind: 'api_key' })
+  assert.deepEqual(await contentProviderFor({ ...record, kind: 'ai' }, keys, CONSOLE).token(), { token: 'key', kind: 'api_key' })
   const handed = await provider.serviceKey()
   assert.equal(handed.key, recipient.privateKey.key)
   assert.equal(handed.key.extractable, false)
@@ -58,7 +68,8 @@ test('content provider: a handle and a copy, the consented epochs, the renewal l
   assert.equal(renewalURL(CONSOLE, id), `${CONSOLE}?mcp_renew=${id}`)
   assert.equal(await provider.contactPack(), null)
   keys.wipe(id)
-  await assert.rejects(provider.token(), { code: 'reconsent_required' })
+  assert.equal(provider.keyHeld(), false)
+  await assert.rejects(provider.serviceKey(), { code: 'reconsent_required' })
 
   const config = contentConfigFor(record, 'https://api.wappie.thehappie.co')
   assert.equal(config.credential_source, 'enclave')

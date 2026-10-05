@@ -239,6 +239,26 @@ export async function callTool(w, token, name, args = {}) {
   return { status: 200, isError: value.isError === true, data: value.structuredContent, text: value.content?.[0]?.text ?? '' }
 }
 
+/**
+ * A content connection whose key the reader does not hold (docs/mcp-enclave.md
+ * §19.29): list_numbers still answers, with nothing open and the renewal
+ * link, and a text search waits for the renewal, its link in the refusal.
+ * Returns both answers.
+ */
+export async function resealed(w, token, connectionId, { device = vector.device } = {}) {
+  const link = `${constants.CONSOLE_URL}?mcp_renew=${connectionId}`
+  const numbers = await callTool(w, token, 'list_numbers')
+  assert.equal(numbers.isError, false, numbers.text ?? numbers.body)
+  assert.equal(numbers.data.connection.renewal_needed, true, numbers.text)
+  assert.equal(numbers.data.connection.text, false, numbers.text)
+  assert.equal(numbers.data.renewal.renew_url, link, numbers.text)
+  const search = await callTool(w, token, 'search_messages', { device_id: device, query: 'anything', period: 'all' })
+  assert.equal(search.isError, true, search.text)
+  assert.match(search.text, /^Could not read the archive \(reconsent_required\)\./)
+  assert.ok(search.text.includes(link), search.text)
+  return { numbers, search }
+}
+
 // ---- Media connections (A1) --------------------------------------------------------
 
 /** A content consent that includes attachments (§16.2), and Go's status saying so. */
