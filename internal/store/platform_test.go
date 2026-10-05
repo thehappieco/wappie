@@ -190,6 +190,12 @@ func TestPlatformLinkRowsNeverChange(t *testing.T) {
 			t.Errorf("%s succeeded", stmt)
 		}
 	}
+	// TRUNCATE fires no row trigger: a statement trigger refuses it.
+	for _, table := range []string{"platform_key_pins", "platform_wraps", "platform_identities", "security_events"} {
+		if _, err := f.pool.Exec(ctx, `TRUNCATE `+table); err == nil || !strings.Contains(err.Error(), "insert-only") {
+			t.Errorf("TRUNCATE %s: %v", table, err)
+		}
+	}
 	if _, err := f.pool.Exec(ctx, `UPDATE platform_identities SET email = 'ivo@new.example.com', email_changed_at = now() WHERE sub = $1`, sub); err != nil {
 		t.Fatalf("the address may change: %v", err)
 	}
@@ -215,6 +221,86 @@ func deleteUser(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) error {
 		_, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
 		return err
 	})
+}
+
+// LinkLegacy checks the proof, then re-reads the account under its row lock
+// in the transaction that links it. A password change, or a disabled
+// account, that lands between the two is refused there. The test holds the
+// row lock until LinkLegacy, past its proof check, waits on it; then it
+// changes the row and lets go.
+func TestPlatformLinkRechecksTheAccountUnderItsLock(t *testing.T) {
+	f := newPlatformFixture(t)
+	for _, tc := range []struct{ name, change string }{
+		{"a new password", `UPDATE users SET auth_hash = 'changed in between' WHERE id = $1`},
+		{"a disabled account", `UPDATE users SET status = 'disabled' WHERE id = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			email := uuid.NewString() + "@example.com"
+			legacy := f.legacy(t, email, "auth-key")
+			ticket := f.ticket(t, store.TicketNew, uuid.New(), "linker@id.example.com", uuid.Nil)
+			wrap := platformWrap(t)
+			var home uuid.UUID
+			if err := f.pool.QueryRow(ctx, `SELECT tenant_id FROM user_logins WHERE user_id = $1`, legacy.ID).Scan(&home); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := f.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			var holder int
+			if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holder); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, home.String()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, legacy.ID); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := f.users.LinkLegacy(ctx, store.LegacyLink{Ticket: ticket, Proof: store.LegacyProof{Email: email, Secret: "auth-key"}, Wrap: wrap})
+				done <- err
+			}()
+			for deadline := time.Now().Add(10 * time.Second); ; {
+				var waiting int
+				if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid))`, holder).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting > 0 {
+					break
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("LinkLegacy returned before it waited on the account: %v", err)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("LinkLegacy never waited on the account's lock")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, err := tx.Exec(ctx, tc.change, legacy.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; !errors.Is(err, store.ErrBadCredentials) {
+				t.Fatalf("the link after %s: %v", tc.name, err)
+			}
+			var linked int
+			if err := f.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM platform_identities WHERE user_id = $1) + (SELECT count(*) FROM platform_wraps WHERE user_id = $1)`, legacy.ID).Scan(&linked); err != nil || linked != 0 {
+				t.Fatalf("%d link rows %v", linked, err)
+			}
+			// The refused transaction spent nothing.
+			if _, err := f.users.PlatformTicketFor(ctx, ticket, store.TicketNew); err != nil {
+				t.Fatalf("the ticket after a refused link: %v", err)
+			}
+		})
+	}
 }
 
 func TestPlatformTicketsAreSingleUseAndBoundToTheirKind(t *testing.T) {

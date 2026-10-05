@@ -355,11 +355,21 @@ func (h *Handler) platformSession(w http.ResponseWriter, r *http.Request) {
 // platformUnlinked answers a sub nobody here has: new, or link_required when
 // an unlinked password account already has the provider's address. That is
 // a hint shown to the verified owner of the address, never a link.
+//
+// With WS_LOCAL_LOGIN=off the link routes are closed, and a new account
+// cannot take an address another account holds, so such a sign-in has no
+// step left: it is answered legacy_account_unlinked, with no ticket, and the
+// operator opens link_only while the person links (docs/platform-sign-in.md).
 func (h *Handler) platformUnlinked(w http.ResponseWriter, r *http.Request, ui *oidcrp.Userinfo, sub uuid.UUID, pin *oidcrp.Answer) {
 	legacy, err := h.Users.UnlinkedLegacyAccount(r.Context(), ui.Email)
 	if err != nil {
 		h.log().Error("could not look for a legacy account", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not sign in")
+		return
+	}
+	if legacy && !h.localAllowed(true) {
+		fail(w, http.StatusForbidden, "legacy_account_unlinked",
+			"a Wappie account with this address still signs in with a password, which this server no longer accepts; ask its operator to let you link it")
 		return
 	}
 	kind, answer := store.TicketNew, platformKindNew
@@ -423,6 +433,13 @@ func (h *Handler) accountKeyChanged(ctx context.Context, ui *oidcrp.Userinfo) {
 
 // platformIssue starts a Wappie session for an account signed in through
 // the provider and answers kind session with it.
+//
+// The answer never carries wrapped_usk. A linked account keeps its legacy
+// password wrap through the rollback window, and this answer goes to whoever
+// holds an access token for the sub, with no proof of the old password; the
+// page opens the account key from platform_wrap and has no use for it.
+// /v1/auth/me still returns it to the session (docs/platform-sign-in.md,
+// "The rollback window").
 func (h *Handler) platformIssue(w http.ResponseWriter, r *http.Request, user store.User, reply platformReply) {
 	token, session, err := h.Users.StartSession(r.Context(), user, r.UserAgent())
 	if err != nil {
@@ -431,6 +448,7 @@ func (h *Handler) platformIssue(w http.ResponseWriter, r *http.Request, user sto
 		return
 	}
 	account := toAccount(user)
+	account.WrappedUSK = ""
 	reply.Kind, reply.Token, reply.ExpiresAt, reply.User = platformKindSession, token, &session.ExpiresAt, &account
 	send(w, http.StatusOK, reply)
 }

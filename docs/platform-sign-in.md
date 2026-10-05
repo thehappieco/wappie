@@ -74,11 +74,11 @@ the browser vault as it does after a password sign-in, through
 
 | Table | What it holds |
 |---|---|
-| `platform_key_pins` | The first `product_key` seen for each `(sub, product_key_id)`. Insert only: a trigger refuses every update and delete. No foreign key, so the pin outlives the account. |
-| `platform_identities` | The link `sub` ↔ `users.id`, one each way, with `linked_from` (`new` or `legacy`) and id.'s address. Only the address and when it changed may be updated. |
-| `platform_wraps` | The 61-byte wrap per account and epoch. Insert only. |
+| `platform_key_pins` | The first `product_key` seen for each `(sub, product_key_id)`. Insert only: a row trigger refuses every update and delete, and a statement trigger refuses `TRUNCATE`. No foreign key, so the pin outlives the account. |
+| `platform_identities` | The link `sub` ↔ `users.id`, one each way, with `linked_from` (`new` or `legacy`) and id.'s address. Only the address and when it changed may be updated; `TRUNCATE` is refused. |
+| `platform_wraps` | The 61-byte wrap per account and epoch. Insert only, `TRUNCATE` included. |
 | `platform_login_tickets` | What a sign-in with no session may do next. Stored as SHA-256, single use, five minutes, bound to the sub and the pinned key, at most five failed link attempts. |
-| `security_events` | `platform_account_key_changed` and `platform_linked`. Never a token, a key or an address. |
+| `security_events` | `platform_account_key_changed` and `platform_linked`. Never a token, a key or an address. Insert only, `TRUNCATE` included. |
 
 Other changes:
 
@@ -92,6 +92,13 @@ Other changes:
 - None of the new tables carries row-level security. Each is read before a
   workspace is known, as `sessions` and `user_logins` are, and none holds a
   secret.
+- "Insert only" holds against the application's own statements, not against
+  SQL run as the owner. The API's role runs the migrations and so owns these
+  tables; a session with its credentials can still
+  `ALTER TABLE … DISABLE TRIGGER` and then delete a pin, and the next sign-in
+  would then pin whatever key id. presents. Moving the pins to a role that
+  may only `SELECT` and `INSERT`, as kit `oidcrp` describes, needs a second
+  database role in the deployment and is not done yet.
 
 The migration header holds the down-step, checksum-gated against
 `migration48_sha256` in the release's `RELEASE.json`.
@@ -124,13 +131,22 @@ What `WS_LOCAL_LOGIN` leaves open:
 
 | Route | `on` | `link_only` | `off` |
 |---|---|---|---|
-| `/challenge`, `/recover/open` | yes | yes (the link needs a salt) | `local_login_disabled` |
-| `/login`, `/signup` (a person), `/signup/verification`, `/recover/finish`, `/password`, `/recovery`, `/rewrap`, every `/passkeys` route | yes | `local_login_disabled` | `local_login_disabled` |
+| `/challenge` | yes | yes (the link needs a salt) | `local_login_disabled` |
+| `/login`, `/signup` (a person), `/signup/verification`, `/recover/open`, `/recover/finish`, `/password`, `/recovery`, `/rewrap`, every `/passkeys` route | yes | `local_login_disabled` | `local_login_disabled` |
 | `/signup` for a service (an invitation and a name) | yes | yes | yes: content consents register their service this way |
 | `/platform/link/prepare`, `/platform/link` | yes | yes | `local_login_disabled` |
 
 `/passkeys/config` and `/signup/config` answer "disabled" unless local login
-is `on`.
+is `on`. The link ceremony proves a recovery code at `/platform/link/prepare`,
+behind its ticket, so `link_only` does not keep `/recover/open`.
+
+With `off`, the verified owner of an unlinked password account's address has
+no step left: the link routes are closed, and a new account cannot take an
+address another account holds. `/platform/session` answers
+`403 legacy_account_unlinked`, with no ticket, and the console explains it.
+The operator's procedure: set `WS_LOCAL_LOGIN=link_only` while the person
+links ("I already have a Wappie account" on the sign-in screen), then back to
+`off`.
 
 ## Routes
 
@@ -168,7 +184,8 @@ with no unknown member. Answers are `Cache-Control: no-store`.
 
 `pin` is the kit's `{sub, product_key_id, product_key}` (base64url). The page
 keeps `sk_p` only once that triple names it (`keepProductKey`). Other binary
-fields are standard base64, as in every auth reply.
+fields are standard base64, as in every auth reply. `user.wrapped_usk` is
+always empty in a platform answer (see "The rollback window").
 
 Refusals:
 
@@ -177,7 +194,9 @@ Refusals:
 - `403 wrong_client`.
 - `502 userinfo`: any other userinfo failure, or no verified address.
 - `400 bad_request`: not an access token. Nothing is sent to id.
-- `403 account_disabled`.
+- `403 account_disabled`, with no session.
+- `403 legacy_account_unlinked`: with local login `off`, an unlinked password
+  account has id.'s address (see Configuration).
 - `409 account_key_changed {product_key_id}`: the key differs from the pin.
   No session is started and the pin is kept. The alert (O1) is:
   - a `security_events` row;
@@ -261,7 +280,7 @@ Go logs no request URL. In the cloud, nginx's `location = /auth/callback` has
 
 All of it is behind the cloud build's aliases: `@signin` and `@platform`, in
 `commercial/web/vite.config.ts`. A console built without `WAPPIE_CLOUD_BUILD=1`
-contains no OpenID Connect code.
+contains no OpenID Connect code and none of its texts.
 
 It uses `@thehappieco/kit/oidc-rp` v0.3.0 (`begin`, `finishSignIn`,
 `keepProductKey`, `logoutURL`), in `commercial/web/platform/`:
@@ -274,7 +293,9 @@ It uses `@thehappieco/kit/oidc-rp` v0.3.0 (`begin`, `finishSignIn`,
    the flow. A workspace invitation never does: it waits in `sessionStorage`
    and is accepted after the sign-in.
 2. **`/auth/callback`** (`App.vue`'s restore is skipped):
-   - the kit drops the query and completes the flow;
+   - the page drops the query from the address bar as it loads, before
+     discovery or anything else can wait or fail, and the kit completes the
+     flow from the address it took;
    - the access token goes to `/platform/session`;
    - `sk_p` is kept only after the server's pin names it;
    - then: `session` opens the wrap and signs in; `new` offers account setup
@@ -326,6 +347,32 @@ It uses `@thehappieco/kit/oidc-rp` v0.3.0 (`begin`, `finishSignIn`,
      `WAPPIE_DEV_PLATFORM_ISSUER` for another one.
    - The Vite proxy keeps `Host`, which is why `*.localhost` is a development
      loopback origin.
+
+## The rollback window
+
+A linked account keeps its legacy password columns (`auth_hash`, `kdf_salt`,
+`wrapped_usk`, the recovery pair) until migration 0049 at the end of the
+window (step 6). Steps 1 to 3 accept one consequence of that:
+
+- `/v1/auth/me` hands a linked account's `wrapped_usk`, its key under the old
+  password, to any session of the account, including one started at
+  `/platform/session`. Anybody who can obtain an id. access token for the
+  sub, without `sk_p`, can therefore fetch that wrap and attack the old
+  password offline. That includes a compromised id., the case the pin is
+  there for, and someone who intercepts a token before the page uses it.
+  For a linked account in the window, the pin's guarantee is only as strong
+  as the old password.
+- It is accepted because the password step-ups (`withDeviceKeys` for
+  consents, grants and AI integrations, and the password, recovery and
+  passkey changes) read the wrap from `/v1/auth/me`, and they live in
+  `packages/client`, which is part of the attested reader's image. Handing
+  the wrap back only against the auth key would change that package.
+- The platform answers themselves (`session`, `account`, `link`) never carry
+  it. An account created through id. has no such wrap.
+- Step 4 (step-ups through id.) must stop handing the wrap to a session
+  started through the provider; 0049 ends it in any case.
+- Until then, link an account only once its old password is a strong one:
+  change a weak one before linking.
 
 ## Rollback
 

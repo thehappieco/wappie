@@ -22,8 +22,8 @@ const (
 	LocalLoginOn LocalLogin = "on"
 	// LocalLoginLinkOnly keeps only what the browser's link ceremony needs:
 	// the challenge (a salt to derive the old password's keys with) and the
-	// recovery open. Signing in, signing up, passkeys and credential changes
-	// answer local_login_disabled.
+	// link routes. Signing in, signing up, recovery, passkeys and credential
+	// changes answer local_login_disabled.
 	LocalLoginLinkOnly LocalLogin = "link_only"
 	// LocalLoginOff refuses every password route.
 	LocalLoginOff LocalLogin = "off"

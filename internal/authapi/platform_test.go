@@ -22,6 +22,7 @@ import (
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/config"
 	"whatserver2/internal/pg"
+	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/store"
 )
 
@@ -555,7 +556,8 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 	}
 	wrap := randomWrap(t)
 	code, linked := link("/v1/auth/platform/link", map[string]string{"auth_key": h.account.AuthKey, "platform_wrap": wrap})
-	if code != http.StatusOK || linked.Kind != "session" || linked.User.ID != legacyID || linked.User.AuthSource != "platform" || linked.Token == "" {
+	if code != http.StatusOK || linked.Kind != "session" || linked.User.ID != legacyID || linked.User.AuthSource != "platform" || linked.Token == "" ||
+		linked.User.WrappedUSK != "" {
 		t.Fatalf("link: %d %+v", code, linked)
 	}
 	// The old session, and the passkey, are gone.
@@ -581,6 +583,21 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 	code, again := h.signIn(t, p, 1)
 	if code != http.StatusOK || again.Kind != "session" || again.User.ID != legacyID || again.PlatformWrap != wrap {
 		t.Fatalf("signing in after the link: %d %+v", code, again)
+	}
+	// The sign-in's answer goes to whoever holds an access token for the
+	// sub: it never carries the legacy password wrap. /me still hands it to
+	// the session, for the password step-ups of steps 1 to 3
+	// (docs/platform-sign-in.md, "The rollback window").
+	if again.User.WrappedUSK != "" {
+		t.Fatal("the sign-in's answer carries the legacy password wrap")
+	}
+	var me struct {
+		User struct {
+			WrappedUSK string `json:"wrapped_usk"`
+		} `json:"user"`
+	}
+	if code := h.get(t, "/v1/auth/me", &me, again.Token); code != http.StatusOK || me.User.WrappedUSK != h.account.WrappedUSK {
+		t.Fatalf("me of a linked account in the window: %d %+v", code, me)
 	}
 	// Another id. account cannot take the same Wappie account.
 	q := newPerson(t, "someone-else@example.com")
@@ -812,14 +829,16 @@ func TestPlatformRewrapForANewEpoch(t *testing.T) {
 }
 
 // WS_LOCAL_LOGIN on every password route: link_only keeps only what the
-// link ceremony needs, off keeps none, and a service's registration stays.
+// link ceremony needs (the challenge; the ceremony proves a recovery code
+// at link/prepare, never at /recover/open), off keeps none, and a service's
+// registration stays.
 func TestLocalLoginModes(t *testing.T) {
 	routes := []struct {
 		method, path string
 		linkOnly     bool
 	}{
 		{"POST", "/v1/auth/challenge", true},
-		{"POST", "/v1/auth/recover/open", true},
+		{"POST", "/v1/auth/recover/open", false},
 		{"POST", "/v1/auth/login", false},
 		{"POST", "/v1/auth/signup", false},
 		{"POST", "/v1/auth/signup/verification", false},
@@ -868,6 +887,18 @@ func TestLocalLoginModes(t *testing.T) {
 			if (code == http.StatusForbidden && out.Code == "local_login_disabled") != (mode == config.LocalLoginOff) {
 				t.Errorf("link/prepare: %d %+v", code, out)
 			}
+			// The verified owner of an unlinked password account's address:
+			// offered the link while it is open, and told why there is no
+			// way in, with no ticket, once it is closed.
+			tickets := h.count(t, `SELECT count(*) FROM platform_login_tickets`)
+			code, owner := h.signIn(t, newPerson(t, "passkey@example.com"), 1)
+			if mode == config.LocalLoginOff {
+				if code != http.StatusForbidden || owner.Code != "legacy_account_unlinked" || owner.Ticket != "" || h.count(t, `SELECT count(*) FROM platform_login_tickets`) != tickets {
+					t.Errorf("the address of an unlinked password account: %d %+v", code, owner)
+				}
+			} else if code != http.StatusOK || owner.Kind != "link_required" || owner.Ticket == "" {
+				t.Errorf("the address of an unlinked password account: %d %+v", code, owner)
+			}
 		})
 	}
 }
@@ -906,5 +937,146 @@ func TestPlatformLinkedAccountAcceptsAnInvitationToItsProviderAddress(t *testing
 	}
 	if code := h.post(t, "/v1/auth/workspaces/accept-invite", map[string]string{"invite": mine}, &joined, linked.Token); code != http.StatusOK || joined.TenantID != beta.String() {
 		t.Fatalf("an invitation to the provider's address: %d %+v", code, joined)
+	}
+}
+
+// The rules of the steps after a sign-in that the other tests do not reach:
+// an expired "new" ticket, a member a route does not know, and a disabled
+// linked account.
+func TestPlatformStepRefusals(t *testing.T) {
+	h := newPlatformHarness(t, config.LocalLoginOn)
+	ctx := context.Background()
+
+	// A "new" ticket a second past its five minutes creates nothing.
+	late := newPerson(t, "late@example.com")
+	_, a := h.signIn(t, late, 1)
+	if _, err := h.pool.Exec(ctx, `UPDATE platform_login_tickets SET expires_at = now() - interval '1 second' WHERE used_at IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _, _ := h.createAccount(t, a.Ticket); code != http.StatusUnauthorized || out.Code != "ticket_invalid" || out.Token != "" {
+		t.Fatalf("an expired ticket: %d %+v", code, out)
+	}
+	if n := h.count(t, `SELECT count(*) FROM platform_identities WHERE sub = $1`, late.sub); n != 0 {
+		t.Fatalf("an expired ticket linked %d accounts", n)
+	}
+
+	// No unknown member: refused before the token goes to userinfo, and
+	// before a ticket is read.
+	p := newPerson(t, "mia@example.com")
+	before := h.id.requests.Load()
+	var out platformAnswer
+	if code := h.pagePost(t, "/v1/auth/platform/session", map[string]string{"access_token": h.id.issue(t, p.userinfo(t, 1)), "sub": p.sub}, &out, "", nil); code != http.StatusBadRequest || out.Code != "bad_request" || h.id.requests.Load() != before {
+		t.Fatalf("an unknown member at session: %d %+v, userinfo %d", code, out, h.id.requests.Load()-before)
+	}
+	_, b := h.signIn(t, p, 1)
+	if code := h.pagePost(t, "/v1/auth/platform/account", map[string]string{"ticket": b.Ticket, "public_key": randomKey(t), "platform_wrap": randomWrap(t), "role": "admin"}, &out, "", nil); code != http.StatusBadRequest || out.Code != "bad_request" {
+		t.Fatalf("an unknown member at account: %d %+v", code, out)
+	}
+
+	// The ticket the refusal did not read still makes the account; then the
+	// account is disabled, and its next sign-in is refused with no session.
+	if code, _, _, _ := h.createAccount(t, b.Ticket); code != http.StatusOK {
+		t.Fatalf("account: %d", code)
+	}
+	var home uuid.UUID
+	if err := h.pool.QueryRow(ctx, `SELECT tenant_id FROM user_logins WHERE user_id = $1`, p.sub).Scan(&home); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.InTenantTx(ctx, h.pool, home.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, p.sub)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sessions := h.count(t, `SELECT count(*) FROM sessions WHERE user_id = $1`, p.sub)
+	if code, out := h.signIn(t, p, 1); code != http.StatusForbidden || out.Code != "account_disabled" || out.Token != "" || out.PlatformWrap != "" {
+		t.Fatalf("a disabled account: %d %+v", code, out)
+	}
+	if n := h.count(t, `SELECT count(*) FROM sessions WHERE user_id = $1`, p.sub); n != sessions {
+		t.Fatalf("a disabled account got a session: %d -> %d", sessions, n)
+	}
+}
+
+// The link checks the proof again when it links: a password changed, or an
+// account disabled, after link/prepare links nothing.
+func TestPlatformLinkAfterTheAccountChanged(t *testing.T) {
+	ctx := context.Background()
+	for name, change := range map[string]func(h *platformHarness){
+		"a new password": func(h *platformHarness) {
+			if code := h.post(t, "/v1/auth/password", map[string]any{"auth_key": h.account.AuthKey, "new": fresh(t, "second", "w2", "", "")}, nil, h.signed.Token); code != http.StatusOK {
+				t.Fatalf("password change: %d", code)
+			}
+		},
+		"a disabled account": func(h *platformHarness) {
+			var home uuid.UUID
+			if err := h.pool.QueryRow(ctx, `SELECT tenant_id FROM user_logins WHERE user_id = $1`, h.signed.User.ID).Scan(&home); err != nil {
+				t.Fatal(err)
+			}
+			if err := pg.InTenantTx(ctx, h.pool, home.String(), func(tx pgx.Tx) error {
+				_, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, h.signed.User.ID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newPlatformHarness(t, config.LocalLoginOn)
+			_, a := h.signIn(t, newPerson(t, "passkey@example.com"), 1)
+			body := map[string]string{"ticket": a.Ticket, "email": "passkey@example.com", "auth_key": h.account.AuthKey}
+			if code := h.pagePost(t, "/v1/auth/platform/link/prepare", body, nil, "", nil); code != http.StatusOK {
+				t.Fatalf("prepare: %d", code)
+			}
+			change(h)
+			body["platform_wrap"] = randomWrap(t)
+			var out platformAnswer
+			if code := h.pagePost(t, "/v1/auth/platform/link", body, &out, "", nil); code != http.StatusUnauthorized || out.Code != "bad_credentials" || out.Token != "" {
+				t.Fatalf("link: %d %+v", code, out)
+			}
+			if n := h.count(t, `SELECT count(*) FROM platform_identities`); n != 0 {
+				t.Fatalf("%d links", n)
+			}
+		})
+	}
+}
+
+// The platform routes spend the address limit (session) and the address
+// and account limits (link/prepare), beside the ticket's five attempts.
+func TestPlatformRoutesAreRateLimited(t *testing.T) {
+	h := newPlatformHarness(t, config.LocalLoginOn)
+	p := newPerson(t, "nia@example.com")
+	h.handler.Limits = &ratelimit.Auth{PerIP: ratelimit.New(1, 2)}
+	for range 2 {
+		if code, out := h.signIn(t, p, 1); code != http.StatusOK {
+			t.Fatalf("within the limit: %d %+v", code, out)
+		}
+	}
+	before := h.id.requests.Load()
+	if code, out := h.signIn(t, p, 1); code != http.StatusTooManyRequests || out.Code != "rate_limited" || h.id.requests.Load() != before {
+		t.Fatalf("past the address limit: %d %+v, userinfo %d", code, out, h.id.requests.Load()-before)
+	}
+
+	h.handler.Limits = &ratelimit.Auth{PerIP: ratelimit.New(60, 100), PerSubject: ratelimit.New(1, 2)}
+	prepare := func(ticket string) (int, platformAnswer) {
+		var out platformAnswer
+		return h.pagePost(t, "/v1/auth/platform/link/prepare", map[string]string{"ticket": ticket, "email": "passkey@example.com", "auth_key": "wrong"}, &out, "", nil), out
+	}
+	_, a := h.signIn(t, newPerson(t, "oto@example.com"), 1)
+	for range 2 {
+		if code, out := prepare(a.Ticket); code != http.StatusUnauthorized || out.Code != "bad_credentials" {
+			t.Fatalf("a wrong password within the limit: %d %+v", code, out)
+		}
+	}
+	if code, out := prepare(a.Ticket); code != http.StatusTooManyRequests || out.Code != "rate_limited" {
+		t.Fatalf("past the account limit: %d %+v", code, out)
+	}
+	// The account's limit holds across tickets, and a refusal by it costs
+	// the ticket no attempt.
+	_, b := h.signIn(t, newPerson(t, "pia@example.com"), 1)
+	if code, out := prepare(b.Ticket); code != http.StatusTooManyRequests || out.Code != "rate_limited" {
+		t.Fatalf("another ticket past the account limit: %d %+v", code, out)
+	}
+	if n := h.count(t, `SELECT max(attempts) FROM platform_login_tickets`); n != 2 {
+		t.Fatalf("attempts %d", n)
 	}
 }

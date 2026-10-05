@@ -163,7 +163,11 @@ ALTER TABLE sessions ADD COLUMN step_up_at timestamptz, ADD COLUMN step_up_not_b
 
 -- Insert only. A row of these tables is never changed or removed by the
 -- application; a removal is let through only when it cascades from an
--- account's deletion (a trigger nested in the foreign key's).
+-- account's deletion (a trigger nested in the foreign key's). TRUNCATE skips
+-- row triggers, so a statement trigger refuses it on the four tables too. The
+-- application role owns these tables, so all of this guards against the
+-- application's own statements, not against SQL run as the owner, which can
+-- still disable a trigger (docs/platform-sign-in.md).
 CREATE FUNCTION platform_insert_only() RETURNS trigger AS $$
 BEGIN
     IF TG_OP = 'DELETE' AND pg_trigger_depth() > 1 AND TG_TABLE_NAME = 'platform_wraps' THEN
@@ -177,6 +181,14 @@ CREATE TRIGGER platform_wraps_insert_only BEFORE UPDATE OR DELETE ON platform_wr
     FOR EACH ROW EXECUTE FUNCTION platform_insert_only();
 CREATE TRIGGER security_events_insert_only BEFORE UPDATE OR DELETE ON security_events
     FOR EACH ROW EXECUTE FUNCTION platform_insert_only();
+CREATE TRIGGER platform_key_pins_no_truncate BEFORE TRUNCATE ON platform_key_pins
+    FOR EACH STATEMENT EXECUTE FUNCTION platform_insert_only();
+CREATE TRIGGER platform_wraps_no_truncate BEFORE TRUNCATE ON platform_wraps
+    FOR EACH STATEMENT EXECUTE FUNCTION platform_insert_only();
+CREATE TRIGGER platform_identities_no_truncate BEFORE TRUNCATE ON platform_identities
+    FOR EACH STATEMENT EXECUTE FUNCTION platform_insert_only();
+CREATE TRIGGER security_events_no_truncate BEFORE TRUNCATE ON security_events
+    FOR EACH STATEMENT EXECUTE FUNCTION platform_insert_only();
 
 -- The link: sub, user_id and how and when it was made never change; the
 -- provider's current e-mail may.

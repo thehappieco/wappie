@@ -81,9 +81,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/workspaces/invites/{inviteID}/reveal", h.invitationAction)
 	mux.HandleFunc("POST /v1/auth/workspaces/invites/{inviteID}/regenerate", h.invitationAction)
 	// The password routes answer local_login_disabled once WS_LOCAL_LOGIN
-	// narrows them; the challenge and the recovery open stay with link_only,
-	// for the link ceremony. A service's registration (signup with a name)
-	// stays in every mode.
+	// narrows them; only the challenge stays with link_only, for the link
+	// ceremony's salt (the ceremony proves a recovery code at
+	// /platform/link/prepare, behind its ticket, never at /recover/open). A
+	// service's registration (signup with a name) stays in every mode.
 	mux.HandleFunc("POST /v1/auth/challenge", h.local(true, h.challenge))
 	mux.HandleFunc("POST /v1/auth/signup", h.signup)
 	mux.HandleFunc("POST /v1/auth/login", h.local(false, h.login))
@@ -102,7 +103,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/workspaces/session", h.workspaceSession)
 	// The way back from a forgotten password, in two steps that share one
 	// proof: open returns the wrap, finish replaces everything.
-	mux.HandleFunc("POST /v1/auth/recover/open", h.local(true, h.recoverOpen))
+	mux.HandleFunc("POST /v1/auth/recover/open", h.local(false, h.recoverOpen))
 	mux.HandleFunc("POST /v1/auth/recover/finish", h.local(false, h.recoverFinish))
 	// For somebody signed in: a new password, or a new recovery code.
 	mux.HandleFunc("POST /v1/auth/password", h.local(false, h.password))
