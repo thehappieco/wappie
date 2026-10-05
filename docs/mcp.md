@@ -341,7 +341,10 @@ removing a workspace from the list) is the kill switch: the enclave's status
 checks answer `reseal` for that workspace's live content connections, so
 every key is dropped within a minute while the consents and the assistants'
 token families survive, and renewal is refused until content is allowed
-again. Discovery adds the capability `mcp.remote.content.v1` when
+again. From reader 0.6.0 those connections keep reading metadata meanwhile,
+as after a restart: the switch stops text, names, attachments and drafts,
+not the metadata their consent always covered (revoke a connection to stop
+it). Discovery adds the capability `mcp.remote.content.v1` when
 `enclave` is configured and the switch is on; the console asks
 `GET /v1/mcp/content` whether its own workspace may use it (`enabled`) and
 whether the `enclave` reader allows that workspace at all (`attested`), which
