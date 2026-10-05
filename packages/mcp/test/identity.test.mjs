@@ -141,7 +141,7 @@ test('a read result is its JSON once, as text: no structuredContent, no outputSc
     for (const { label, config, provider, options } of (await shapes(f)).filter(shape => shape.label !== 'local')) {
       const client = await connect(config, provider, options)
       for (const tool of (await client.listTools()).tools) assert.equal(tool.outputSchema, undefined, `${label}: ${tool.name}`)
-      let answered = 0
+      const answered = new Set()
       for (const [name, args] of calls) {
         const result = await client.callTool({ name, arguments: args })
         const where = `${label}: ${name} ${JSON.stringify(args)}`
@@ -153,10 +153,11 @@ test('a read result is its JSON once, as text: no structuredContent, no outputSc
         assert.equal(text(result).includes('workspace_id'), false, where)
         if (result.isError) continue
         assert.equal(typeof data(result), 'object', where)
-        answered++
+        answered.add(name)
       }
-      // Every shape answers most of them, so the checks above saw real results.
-      assert.ok(answered >= 7, `${label}: ${answered}`)
+      // Every shape answers every read tool, so the checks above saw a real result of each (a call may be refused by
+      // the shape, as resolve_contact by name is without the key, but never every call of one tool).
+      assert.deepEqual([...answered].sort(), [...new Set(calls.map(([name]) => name))].sort(), label)
       await client.close()
     }
   } finally { await f.close() }

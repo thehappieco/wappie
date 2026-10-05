@@ -63,7 +63,8 @@ const oauthError = (status, error, description, extra = {}) => Response.json({ e
  * back strands the owner on this page with a consent already half made, so
  * the routes a browser reaches after the console pass the console here; and
  * once a request is known, its assistant waits for an answer, so a refusal
- * then carries the way back to it instead (§19.30, `pageBack` below).
+ * to a browser tied to its starter carries the way back to it instead
+ * (§19.30, `pageBack` below).
  */
 export { PAGE_LANGUAGES, pageLanguages } from './pages.mjs'
 const redirect = location => new Response(null, { status: 302, headers: { ...noStore, Location: location } })
@@ -118,6 +119,14 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
    * and from where the link was opened. `request` is a pending request, or
    * `{redirect_uri, state}` of one being made; `back` (the console) only where
    * the sentence sends the person there first.
+   *
+   * The button carries the request's `state`, the client's CSRF binding (RFC
+   * 6749 §10.12), which never leaves otherwise but in the success redirect:
+   * an id holder who learned it, with the descriptor's code_challenge, could
+   * complete a flow of their own that the starter's browser would accept. So
+   * a completion gets the button only from a browser tied to the starter: one
+   * that passed the network check of a version-2 request (§19.12), or posted
+   * a valid proof. The authorize caps answer the browser that sent the state.
    */
   const pageBack = (status, code, language, request, error, back = '') =>
     refusalPage(status, code, { back, assistant: errorLocation(request.redirect_uri, error, request.state), acceptLanguage: language, allowlist: !any })
@@ -341,31 +350,40 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request', language, consoleURL) }
       const id = params.get('request') ?? '', proof = params.get('proof') ?? ''
       const pending = pendingFor(id)
-      // From here on every refusal names a request whose redirect was trusted,
-      // and gives the way back to the assistant instead of the console (§19.30):
-      // access_denied where Wappie refused it, server_error where it failed.
-      if (!pending || !pending.bundle) {
-        dummyProof(); meta.code = 'invalid_proof'
-        return pending ? pageBack(400, 'invalid_proof', language, pending, 'access_denied') : page(400, 'invalid_proof', language, consoleURL)
-      }
+      // A request with no bundle yet has nothing consented to refuse, and the
+      // console never posts a completion before its relay succeeded: the
+      // console link, as for a request that is gone. Its way back would hand
+      // the request's state to anyone holding the id, from anywhere (§19.30).
+      if (!pending || !pending.bundle) { dummyProof(); meta.code = 'invalid_proof'; return page(400, 'invalid_proof', language, consoleURL) }
       meta.client = pending.client_id
       meta.connection = pending.connection_id
       // §19.12: the consent completes from the network the request started on,
       // or a console link sent to someone else would complete an attacker's flow.
-      if (pending.descriptor_version === 2) {
+      // That browser is not the starter's, so neither is the state: the console link.
+      const tied = pending.descriptor_version === 2
+      if (tied) {
         const mismatch = !sameNetwork(pending.ip, ip)
         meta.flags = { ip_mismatch: mismatch }
-        if (mismatch) { count('ip_mismatches'); expirePending(id, pending); meta.code = 'ip_mismatch'; return pageBack(400, 'ip_mismatch', language, pending, 'access_denied') }
+        if (mismatch) { count('ip_mismatches'); expirePending(id, pending); meta.code = 'ip_mismatch'; return page(400, 'ip_mismatch', language, consoleURL) }
       }
       const withContent = pending.bundle.kind === 'content'
       let bundle = null
       try { bundle = withContent ? (content ? await content.verifyProof(pending, proof) : null) : await verifyProof(state, pending, proof) } catch (error) { if (!(error instanceof LinkError)) throw error }
+      // The request may have ended during that wait (a Cancel in another tab,
+      // the sweeper, another completion): then nothing is activated after all.
+      if (pendingFor(id) !== pending) { meta.code = 'request_gone'; return page(400, 'invalid_proof', language, consoleURL) }
       if (!bundle) {
         pending.proof_attempts++
-        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return pageBack(400, 'invalid_proof', language, pending, 'access_denied') }
+        // The way back only past the network check: a version-1 request (the
+        // allowlist policy) has none, so its page keeps the console link.
+        const refused = () => (tied ? pageBack(400, 'invalid_proof', language, pending, 'access_denied') : page(400, 'invalid_proof', language, consoleURL))
+        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return refused() }
         meta.code = 'invalid_proof'
-        return pageBack(400, 'invalid_proof', language, pending, 'access_denied')
+        return refused()
       }
+      // From here on the proof was valid, so this browser holds the consent:
+      // every refusal gives the way back to the assistant (§19.30),
+      // server_error where the server failed, access_denied where Wappie refused it.
       // Go names the connection. The relay routes refuse an id already in use,
       // and this holds whatever interleaved since: a connection that exists
       // here is never replaced, because its tokens belong to another consent.
@@ -417,12 +435,17 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
      * The console's Cancel (§19.30): the person declined, so the request ends
      * and the browser goes straight back to the assistant with access_denied,
      * its `state` and `iss`, which ends the assistant's wait. As strict as
-     * complete(): a form posted by the console's Origin and nobody else's, a
-     * per-address budget of the completion's size, a request id of the right
-     * shape that is pending, and, for a version-2 request, the network it
-     * started on; from
-     * another network the request ends too, but the browser gets the
-     * ip_mismatch page and its button instead of a redirect it did not choose.
+     * complete(): a form posted by the console's Origin and nobody else's,
+     * ten a minute per address in a bucket of its own, a pending request id
+     * of the right shape, and the network the request started on (§19.12),
+     * so the state goes back only to a browser there. Otherwise the browser
+     * goes back to the console, as Cancel did before 0.6.0, and the
+     * assistant waits as it did: from another network the request ends too;
+     * a request already gone has nothing to end; a version-1 request (the
+     * allowlist policy, whose console keeps the old Cancel) has no network
+     * check, so it is left as it is. None of them gets a page: every
+     * sentence a page could show asks the person to start again, which
+     * somebody who cancelled does not want.
      */
     async decline(request, ip, meta) {
       const language = request.headers.get('accept-language')
@@ -438,15 +461,14 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request', language, consoleURL) }
       const pending = pendingFor(params.get('request') ?? '')
       // Expired, completed or never made: nothing is waiting on it here any more.
-      if (!pending) { meta.code = 'request_not_found'; return page(400, 'invalid_request', language, consoleURL) }
+      if (!pending) { meta.code = 'request_not_found'; return redirect(consoleURL) }
       meta.client = pending.client_id
       meta.connection = pending.connection_id
+      if (pending.descriptor_version !== 2) { meta.code = 'not_declinable'; return redirect(consoleURL) }
       expirePending(pending.id, pending)
-      if (pending.descriptor_version === 2) {
-        const mismatch = !sameNetwork(pending.ip, ip)
-        meta.flags = { ip_mismatch: mismatch }
-        if (mismatch) { count('ip_mismatches'); meta.code = 'ip_mismatch'; return pageBack(400, 'ip_mismatch', language, pending, 'access_denied') }
-      }
+      const mismatch = !sameNetwork(pending.ip, ip)
+      meta.flags = { ip_mismatch: mismatch }
+      if (mismatch) { count('ip_mismatches'); meta.code = 'ip_mismatch'; return redirect(consoleURL) }
       meta.code = 'declined'
       return redirect(errorLocation(pending.redirect_uri, 'access_denied', pending.state))
     },

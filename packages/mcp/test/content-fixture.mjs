@@ -22,7 +22,8 @@ export const contactKey = n => `${String(n).padStart(6, '0')}@lid`
  * `rows` messages at seq 1..rows (even seqs carry `hitText`, odd ones
  * `missText`), `contacts` contacts served 500 per page in key order (the
  * first is named 'Archived Roberto'), and `scanPage`, the most rows one scan
- * page returns. `state.historyDelayMs` slows the history route, and
+ * page returns; one chat's page (`list_messages`) is its rows newest first.
+ * `state.historyDelayMs` slows the history route, and
  * `state.maxHistoryInFlight` records the most history requests open at once.
  * `addMedia(fields)` adds a message with an attachment, served only by
  * `GET /v1/messages/{uid}`, its media key, preview, filename and caption
@@ -132,6 +133,13 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
       const page = rest.slice(0, limit)
       const more = rest.length > limit
       return reply({ device_id: device, contacts: page, has_more: more, ...(more ? { next_key: page.at(-1).contact_key } : {}) })
+    }
+    // One chat's page, newest first, as `GET /v1/devices/{id}/messages` serves it (§17.3): every row is of one chat here.
+    if (path === `/v1/devices/${device}/messages`) {
+      const key = url.searchParams.get('chat_key'), limit = Number(url.searchParams.get('limit'))
+      const selected = rows.filter(row => row.chat_key === key).sort((a, b) => b.seq - a.seq)
+      const page = selected.slice(0, limit), more = selected.length > limit
+      return reply({ device_id: device, chat_key: key, messages: page, has_more: more, ...(more ? { next_ts: page.at(-1).order_ts, next_seq: page.at(-1).seq } : {}) })
     }
     if (path.endsWith('/messages/scan')) {
       const from = url.searchParams.get('from'), until = url.searchParams.get('until')

@@ -81,9 +81,11 @@ test('the way back to the assistant (§19.30): one button in the person\'s first
     // The href is the redirect exactly, escaped once: the state's quote and angle bracket stay percent-encoded.
     assert.equal(found[2], escapeHTML(new URL(assistant).href), String(header))
   }
-  // After the sentences, before the console link and the code; no script, no form, the CSP unchanged in kind.
+  // After the sentences and before the code; with the console link too, after it, since the sentence sends the person
+  // to the console first (too_many_unknown: revoke one, then start again). No script, no form, the CSP unchanged in kind.
   const both = await page({ acceptLanguage: 'en', back: 'https://console.example.test/console' }, 'too_many_unknown')
-  assert.ok(both.indexOf('class="back"') > both.lastIndexOf('<p lang=') && both.indexOf('class="back"') < both.indexOf('console.example.test') && both.indexOf('console.example.test') < both.indexOf('<small>'))
+  const at = { sentences: both.lastIndexOf('<p lang='), console: both.indexOf('href="https://console.example.test/console"'), button: both.indexOf('class="back"'), code: both.indexOf('<small>') }
+  assert.ok(at.sentences < at.console && at.console < at.button && at.button < at.code, JSON.stringify(at))
   assert.doesNotMatch(both, /<script|<form/)
   const response = refusalPage(400, 'ip_mismatch', { assistant })
   assert.equal(response.headers.get('content-security-policy'), `default-src 'none'; style-src ${hashOf(styleOf(await response.text()))}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`)

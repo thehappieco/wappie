@@ -10,9 +10,10 @@
 // and what to do next, then the ways back when there are any, then the code
 // in small print for support. Nothing on any page comes from the request but
 // the order of its languages. The way back to the console comes only from
-// configuration; the way back to the assistant (§19.30) only from a pending
-// request whose redirect the authorization server already trusted, built by
-// as.mjs, never from the request that is being refused.
+// configuration; the way back to the assistant (§19.30) only from a redirect
+// the authorization server already trusted, built by as.mjs: a pending
+// request's, or that of the authorize request it validated and is now
+// refusing.
 import { createHash } from 'node:crypto'
 
 /** The page languages (§19.14's five), in the console's order. */
@@ -179,15 +180,17 @@ function assistantButton(assistant, acceptLanguage) {
  * configuration, `assistant` the redirect back to the assistant that ends its
  * wait (§19.30), only ever built by as.mjs from a redirect it trusted,
  * `acceptLanguage` the request's header, which orders the sentences and picks
- * the button's language, nothing else.
+ * the button's language, nothing else. With both, the console comes first:
+ * as.mjs passes it beside the button only where the sentence sends the
+ * person to the console before the assistant (`too_many_unknown`).
  */
 export function refusalPage(status, code, { back = '', assistant = '', acceptLanguage = null, allowlist = false } = {}) {
   const key = code === 'invalid_client' && allowlist ? 'invalid_client_allowlist' : sentenceOf[code] ?? code
   const sentences = SENTENCES[key]
   if (!sentences) throw new Error(`no sentence for ${code}`)
   const button = assistant ? assistantButton(assistant, acceptLanguage) : null
-  const body = htmlHead + pageLanguages(acceptLanguage).map(tag => `<p lang="${tag}">${escapeHTML(sentences[tag])}</p>`).join('') + (button ?? '') +
-    (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : '') + `<p><small>Wappie MCP: ${code}</small></p>`
+  const body = htmlHead + pageLanguages(acceptLanguage).map(tag => `<p lang="${tag}">${escapeHTML(sentences[tag])}</p>`).join('') +
+    (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : '') + (button ?? '') + `<p><small>Wappie MCP: ${code}</small></p>`
   return new Response(body, { status, headers: pageHeaders })
 }
 

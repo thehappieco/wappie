@@ -7853,8 +7853,9 @@ source with `pending.ip` by network prefix: the first three octets for IPv4,
 the first 56 bits for IPv6 (both values are `ipKey`s, and an IPv6 key is
 already its /64); different address families count as a mismatch. On a
 mismatch the pending request is dropped and the browser gets a static page
-with a viewport, the button back to the assistant (§19.30; the link back to
-the console before it), the code `ip_mismatch` in
+with a viewport, the link back to the console (and no button back to the
+assistant, which would hand that browser the starter's `state`: §19.31),
+the code `ip_mismatch` in
 small print, and the sentence "This authorization was opened on a different
 network from the one that started the connection. Go back to the assistant
 and click Connect again. If you use a VPN or iCloud Private Relay, turn it
@@ -9392,6 +9393,13 @@ clients that passed).
     `keys`, `wa_id` and a number's `phone` stay on every result, or only
     where a chain needs them, is the owner's decision, and what stays goes
     into the Wappie privacy policy (point 16).
+20. **Who gets the way back** (§19.31): the `state` in the button and in the
+    decline's redirect goes to any browser on the starter's network, and the
+    parent writes the PROXY v2 source address the network check reads.
+    Binding both to a secret only the starter's browser holds (a value in
+    the console URL's fragment, which no server is sent) would close that,
+    and would give a VPN user the button too; it changes the console's URL
+    contract, so it is the owner's decision, after 0.6.0.
 
 ### 19.29 What the connector says about itself (M5)
 
@@ -9534,8 +9542,9 @@ cannot make), `ip_mismatch` (unchanged), `invalid_redirect_uri`,
 `opaque_origin` and `invalid_origin` (one sentence), `invalid_proof`,
 `connection_exists`, `activation_failed` and `too_many_unknown`. Like every
 text of this section (D10), the sentences are drafts the owner approves
-before the image is built. §19.30 gives the refusals after the redirect is
-trusted a button back to the assistant.
+before the image is built. §19.30 gives a refusal after the redirect is
+trusted a button back to the assistant, when the browser is tied to the
+request's starter (§19.31).
 
 **Discovery (B6).** `enclave/constants.mjs` `SITE_LINKS` names the site's
 language-free documentation page, `https://wappie.thehappie.co/docs/`, which
@@ -9683,7 +9692,8 @@ owner (§19.28 point 19).
 **The way back to the assistant.** Until now a refusal after the redirect
 was trusted rendered a Wappie page, and the assistant waited on
 "Authorizing…" until it timed out (the owner saw it on 2026-10-05). From
-0.6.0 each such refusal carries one button, "Back to <host>". It is a plain
+0.6.0 each such refusal to a browser tied to the request's starter (§19.31)
+carries one button, "Back to <host>". It is a plain
 link, since the page runs no script and posts no form, to the client's
 redirect with `error`, the request's own `state` and `iss` (RFC 6749
 §4.1.2.1, RFC 9207), and nothing else: no `error_description`. A redirect
@@ -9696,26 +9706,30 @@ five.
 | Code | Route | Status | `error` | Also |
 |---|---|---|---|---|
 | `too_many_requests` (an untested client's twenty open requests, or every slot held by a consent, §19.10) | authorize | 429 | `temporarily_unavailable` | |
-| `invalid_proof` (a pending request; also when the third try burns it) | complete | 400 | `access_denied` | |
-| `ip_mismatch` | complete, decline | 400 | `access_denied` | the request ends |
+| `invalid_proof` (a wrong proof of a version-2 request from the network it started on; also when the third try burns it) | complete | 400 | `access_denied` | |
 | `connection_exists` | complete | 400 | `server_error` | |
 | `activation_failed` | complete | 502 | `server_error` | |
-| `too_many_unknown` | complete | 409 | `access_denied` | the console link stays: the sentence sends the person there first |
+| `too_many_unknown` | complete | 409 | `access_denied` | the console link stays, before the button: the sentence sends the person there first |
 
 A button, never an automatic redirect, for every one of them: each approved
 sentence says what to do next (wait a minute, turn the VPN off, revoke one),
 which the assistant's own error would not; and in a flow somebody else may
-have started (a console link opened on another network, an untested client
-with twenty open requests) a redirect the person did not choose would tell
-its starter that the link was opened, when and from where. The link carries
-only what the client sent and the issuer publishes. `server_error` is for
+have started (an untested client with twenty open requests) a redirect the
+person did not choose would tell its starter that the link was opened, when
+and from where. The link carries only what the client sent and the issuer
+publishes, but the client sent `state` to this server alone: it is the
+client's CSRF binding (RFC 6749 §10.12), which is why only a browser tied to
+the starter gets it (§19.31). `server_error` is for
 the server's own failures (Go's activation, an id Go reused);
 `temporarily_unavailable`, RFC 6749's code for an overloaded server, for the
 open-request caps; `access_denied` for every refusal by Wappie's rules.
 Unchanged: the refusals before the redirect is trusted, the completion's
-origin, budget and form refusals (they never act on the request), and a
-completion that names no pending request (nothing to go back to); they keep
-the console link. The `fail()` errors of `GET /mcp/authorize`
+origin, budget and form refusals (they never act on the request), a
+completion that names no pending request (nothing to go back to), one
+before the console relayed a bundle, one from another network
+(`ip_mismatch`, which ends the request) and a wrong proof of a version-1
+request (§19.31); they keep the console link and never show the `state`.
+The `fail()` errors of `GET /mcp/authorize`
 (`unsupported_response_type`, `invalid_request`, `invalid_target`,
 `invalid_scope`) were already redirects.
 
@@ -9725,18 +9739,22 @@ listener (under `/mcp` on the hosted reader too), takes a form with
 `origin_missing`, `opaque_origin` or `invalid_origin`, and nothing changes),
 ten a minute per address in a bucket of its own, a form without repeated
 fields, and a pending request id of the right shape. An unknown, expired or
-completed request gets the `invalid_request` page (logged
-`request_not_found`). Otherwise the request ends, and its Go row is revoked
-when the console had relayed a bundle. A version-2 request declined from
-another network than it started on (§19.12) gets the `ip_mismatch` page and
-its button (counted in `ip_mismatches`, `ip_mismatch: true` on the line);
-any other gets a 302 to the redirect with `error=access_denied`, `state` and
-`iss`, logged `declined`. The route fits the log sink's route pattern.
-`MCPConsentCard.vue` posts it on Cancel only for a version-2 descriptor that
-has not expired, as a hidden top-level form like the completion, to the
-resource's origin; a version-1 descriptor (a reader before 0.6.0, the hosted
-reader) keeps the old Cancel, since the console cannot tell whether that
-reader serves the route.
+completed request gets a 302 to the console (logged `request_not_found`), and
+so does a version-1 request, which is left as it is (logged
+`not_declinable`: its console keeps the old Cancel, and with no network check
+its state would go to anyone holding the id). Otherwise the request ends,
+and its Go row is revoked when the console had relayed a bundle. Declined
+from another network than it started on (§19.12), it gets a 302 to the
+console (counted in `ip_mismatches`, `ip_mismatch: true` on the line); from
+its own network a 302 to the redirect with `error=access_denied`, `state`
+and `iss`, logged `declined`. Past those checks a Cancel never gets a page:
+every sentence one could show asks the person to start again. The route
+fits the log sink's route pattern. `MCPConsentCard.vue` posts it on Cancel
+only for a version-2 descriptor that has not expired and that the reader
+still holds (§19.31), as a hidden top-level form like the completion, to
+the resource's origin; a version-1 descriptor (a reader before 0.6.0, the
+hosted reader) keeps the old Cancel, since the console cannot tell whether
+that reader serves the route.
 
 **New text (D10).** Only the button's label waits for the owner's approval
 (`pages.mjs` `BACK_TO`): pt "Voltar para {host}", en "Back to {host}", es
@@ -9748,15 +9766,85 @@ hosted shape: one text block, no `structuredContent`, no `outputSchema`, the
 workspace id nowhere; the destructive hint), `search.test.mjs` and
 `content.test.mjs` (a hit's `source` without `workspace_id`) and
 `send.test.mjs`; `packages/mcp-http/test/pages.test.mjs` (the button: its
-languages, escaping, only https or loopback), `as.test.mjs` (the button on
-every refusal of a known request, the console link where none is known, the
-decline's rules), `any.test.mjs` (`ip_mismatch`, the open-request cap,
-`too_many_unknown` at completion, a decline from another network) and
-`link.test.mjs` (`connection_exists`); the enclave's `any-enclave.test.mjs`
-(the button and the decline on the real listener, the line through the
-sink's schema), `enclave.test.mjs` and `content.test.mjs` (text results
-without the workspace id); the console's `mcpConnect.spec.ts` (the decline
-URL and form) and `mcpDecline.spec.ts` (Cancel on the card).
+languages, escaping, only https or loopback, after the console link),
+`as.test.mjs` (the button after a valid proof and on the caps, the console
+link for a version-1 wrong proof and where no request is known, the
+decline's refusals, its version-1 and unknown requests, a decline during
+the proof check), `any.test.mjs` (the caps, a completion before the bundle
+and from another network, a wrong proof from the starter's network,
+`too_many_unknown` at completion; the decline from either network, after a
+relay, and its own budget) and `link.test.mjs` (`connection_exists`); the
+enclave's `any-enclave.test.mjs` (the button, the console link and the
+decline on the real listener, the line through the sink's schema),
+`enclave.test.mjs` and `content.test.mjs` (text results without the
+workspace id); the console's `mcpConnect.spec.ts` (the decline URL and
+form) and `mcpDecline.spec.ts` (Cancel on the card).
+
+### 19.31 Review of the way back (2026-10-05)
+
+The review of §19.30 before the build changed five things; §19.30 reads as
+amended.
+
+**The state stays with the starter.** Until §19.30 the client's `state`
+left the enclave only in the success redirect, to a browser that had posted
+a valid proof (from the starter's network, for a version-2 request).
+§19.30's first cut put it in the button of every refusal of a known
+request, and three of them answered whoever held the request id (the
+`?mcp_connect` link, and Go, which relays every request): a completion
+before the console relayed a bundle (any network, no try spent), the
+`ip_mismatch` page and the decline. The descriptor, which anyone with the
+id can fetch, carries `client_id`, `redirect_uri` and `code_challenge`, and
+never `state`.
+With the state too, an id holder could authorize with the victim's client,
+redirect, challenge and state from their own network, consent with their
+own workspace, and have the victim's browser load that callback while its
+flow is open: the victim's assistant would connect to the attacker's
+workspace (code injection, RFC 9700 §4.5), and a `send_to_self` would go to
+the attacker's number. §19.4 step 9 relies on the vendors' state check,
+which does not help against a state the attacker knows. So the button, and
+the decline's redirect, go only to a browser tied to the starter: past the
+network check of a version-2 request, or after a valid proof. The authorize
+caps answer the browser that sent the state. A version-1 request (the
+allowlist policy) has no network check, so its wrong proof keeps the
+console page and a decline leaves it as it is. A person whose completion
+crosses networks (a VPN, iCloud Private Relay) gets the 0.5.0 page, whose
+sentence says to connect again, and the assistant waits until its own
+timeout. What is left is §19.28 point 20.
+
+**A Cancel during the proof check.** `complete()` read the request, awaited
+the proof check (an HPKE open) and went on to activate it without looking
+again, so a decline in that wait (a second console tab) ended the request
+and revoked its Go row while the completion activated it. It now checks
+that the request is still the one it read, and otherwise answers
+`invalid_proof` with the console link (logged `request_gone`).
+
+**A Cancel lands in the console.** A decline from another network got the
+`ip_mismatch` page, whose approved sentence asks the person to connect
+again, and one for a request the reader no longer held got the
+`invalid_request` page, which says the same; D10 approved neither for a
+Cancel. Both, and a version-1 request, now get a 302 to the console, which
+Cancel left: the old Cancel, with no new text. The console posts the
+decline only once a descriptor fetch through Go, limited to five seconds,
+says the reader still holds the request, which also judges expiry by the
+reader's clock; on any failure Cancel stays in the console, so a reader
+that went away after the card loaded never leaves the person on the
+browser's error page.
+
+**`too_many_unknown`** shows the console link before the button, in the
+order its sentence gives.
+
+**What the assistant shows.** claude.ai documents one message for an OAuth
+flow that started and did not complete, "Authorization with the MCP server
+failed" with an `ofid_` reference
+(`claude.com/docs/connectors/building/troubleshooting`, read 2026-10-05),
+so a Cancel and every button most likely end there: better than
+"Authorizing…" until a timeout, but a
+failure screen, and neither Wappie's page nor the listing says so yet.
+OpenAI's troubleshooting page does not say what ChatGPT shows for an error
+on `connector_platform_oauth_redirect`; that waits for the reviewer
+workspace (M7). The site's troubleshooting row (listing
+`docs-and-legal.md` C5) is rewritten once both screens are known, as a
+follow-up for the site.
 
 ### Amendments to §§1 to 18
 
@@ -9786,7 +9874,7 @@ URL and form) and `mcpDecline.spec.ts` (Cancel on the card).
 | §18, §18.16 | B2 comes after 0.6.0 (D11) | now (in place) |
 | §18.7 | the AI request and renewal descriptors are version 2 (`ai`, `ai_renewal`) and attested with user_data v2, so `functions`, `features` and `budget` become attested | 0.6.0 |
 | §5.4 | the public listener adds `/icon-192.png`, `/icon-512.png`, the page at `/` and `/robots.txt`, and `serverInfo.icons` names the two PNGs (§19.29) | 0.6.0 |
-| §5.4 | the public listener adds `POST /mcp/authorize/decline`, the console's Cancel, and every refusal after the redirect is trusted carries a button back to the assistant (§19.30) | 0.6.0 |
+| §5.4 | the public listener adds `POST /mcp/authorize/decline`, the console's Cancel, and a refusal after the redirect is trusted carries a button back to the assistant when the browser is tied to the request's starter (§19.30, §19.31) | 0.6.0 |
 | §15.6, §16.7, §17.8 | read results are one text block, without `structuredContent` or `workspace_id`; `send_to_self`'s `destructiveHint` is true (§19.30) | 0.6.0 |
 | §15.5, §15.6, §15.8 | a content connection without its key reads metadata with its own read-only key, text locked and the renewal link on every result; only what needs the key answers `reconsent_required`, whose guidance no longer says the reader restarted (§19.29) | 0.6.0 |
 | §15.6, §16.7, §17.8 | `serverInfo`, the instructions, the tool descriptions, the parameters' descriptions, `type`'s enum, the hints of `send_to_self` and of an AI connection's `open_attachment`, and `list_numbers`' `connection` block (§19.29) | 0.6.0 |

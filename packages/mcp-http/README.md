@@ -71,15 +71,25 @@ dependency), and the `node:http` bridge is the small `node-adapter.mjs`.
    that is the CSRF check. Three wrong proofs burn the request and revoke the
    connection in Go. A good proof activates the connection, stores the API key
    in the encrypted state and redirects back to the client with a single-use
-   sixty-second code, the `state` and `iss`. A refusal of a request the reader
-   knows (a wrong proof, another network, a failed activation, a cap) is a
-   page with one button back to the assistant, whose link carries `error`
+   sixty-second code, the `state` and `iss`. A refusal after a good proof (a
+   failed activation, an id already in use, the cap of untested connections)
+   or a wrong proof from the network a version-2 request started on is a page
+   with one button back to the assistant, whose link carries `error`
    (`access_denied`, or `server_error` where the server failed), the `state`
-   and `iss`, so the assistant stops waiting.
+   and `iss`, so the assistant stops waiting; so is a refusal by the
+   open-request caps of `GET /mcp/authorize`, with `temporarily_unavailable`.
+   Every other refusal keeps the console link and never shows the `state`:
+   a completion before the console relayed a bundle, one from another network
+   (`ip_mismatch`, which also ends the request) and a wrong proof of a
+   version-1 request, since whoever holds a request id can post them.
    The console's Cancel posts `request` to `POST /mcp/authorize/decline`
-   under the same `Origin` rule: the request ends (its connection in Go is
-   revoked if the console had relayed one) and the browser is redirected to
-   the client with `error=access_denied`, the `state` and `iss`.
+   under the same `Origin` rule. From the network a version-2 request started
+   on, the request ends (its connection in Go is revoked if the console had
+   relayed one) and the browser is redirected to the client with
+   `error=access_denied`, the `state` and `iss`. From another network the
+   request ends too, but the browser is redirected to the console; so it is
+   for a request that is gone, and for a version-1 request, which is left as
+   it is.
 5. `POST /mcp/token` exchanges the code (all of `client_id`, `code_verifier`,
    `redirect_uri` and `resource` must match) for a fifteen-minute access token
    and a refresh token that idles out after thirty days and never outlives the

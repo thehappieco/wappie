@@ -14,12 +14,12 @@ import {
   claimedName, classifyRedirect, dcrEntryFor, highlyRestrictive, makeRoomRegistered, makeRoomUnknown, MAX_CLIENTS_PER_HOST, pins, redirectAllowed, testedFor,
   UNKNOWN_CLIENTS_MAX, UNKNOWN_CLIENTS_PER_DOMAIN,
 } from '../clients.mjs'
-import { PENDING_PER_CLIENT, resourceOf, scopeAcceptable } from '../as.mjs'
+import { PENDING_MAX, PENDING_PER_CLIENT, resourceOf, scopeAcceptable } from '../as.mjs'
 import { sameNetwork } from '../limits.mjs'
 import { createPSL, loadPSL, PSL_FILE } from '../psl.mjs'
 import { attestationUserDataV2, descriptorSHA256, userDataPreimageV2 } from '../attestation.mjs'
 import { CONTENT_REFRESH_IDLE_MS, idleFor, REFRESH_IDLE_MS } from '../tokens.mjs'
-import { authorizeURL, backButton, DAY, decline, exchange, harness, pkce, proof, register, rpc, sealBundle, vector } from './harness.mjs'
+import { authorizeURL, backButton, CONSOLE_URL, DAY, decline, exchange, harness, pkce, proof, register, rpc, sealBundle, vector } from './harness.mjs'
 
 /** The snapshot's SHA-256, pinned here and in Go's netguard tests: the copies cannot drift (§19.5). */
 export const PSL_SHA256 = 'c525730712d4db475211ced98ddac44b06e4b288e50d95b69c68adb1e4e83e80'
@@ -73,8 +73,11 @@ async function start(h, { clientId, redirectUri, address = fresh(), ...rest }) {
   return result
 }
 
-/** The console and Go after an authorize: link bundle v2 sealed and relayed, then (after `beforeComplete`, when given) the proof posted. */
-async function consentV2(h, started, { bundle = {}, relay = {}, address = started.address, expiresAt, beforeComplete } = {}) {
+/**
+ * The console and Go after an authorize: link bundle v2 sealed and relayed, then (after `beforeComplete`, when given) the proof
+ * posted, or `badProof` in its place; `until: 'bundle'` stops after the relay, with the proof the console would post.
+ */
+async function consentV2(h, started, { bundle = {}, relay = {}, address = started.address, expiresAt, beforeComplete, badProof, until } = {}) {
   const { descriptor } = started
   const linkSecret = randomBytes(32).toString('base64url')
   const history = descriptor.trust === 'unknown' ? descriptor.limits.history_days.default : null
@@ -91,9 +94,10 @@ async function consentV2(h, started, { bundle = {}, relay = {}, address = starte
   }) })
   const result = { relayed, connectionId, linkSecret }
   if (relayed.status !== 204) return result
+  result.proof = proof(linkSecret, { requestID: started.id, clientID: descriptor.client_id, codeChallenge: descriptor.code_challenge, sealedBytes })
+  if (until === 'bundle') return result
   await beforeComplete?.()
-  const signature = proof(linkSecret, { requestID: started.id, clientID: descriptor.client_id, codeChallenge: descriptor.code_challenge, sealedBytes })
-  result.completed = await h.request('/mcp/authorize/complete', { method: 'POST', body: new URLSearchParams({ request: started.id, proof: signature }).toString(),
+  result.completed = await h.request('/mcp/authorize/complete', { method: 'POST', body: new URLSearchParams({ request: started.id, proof: badProof ?? result.proof }).toString(),
     headers: { 'content-type': 'application/x-www-form-urlencoded', origin: h.consoleOrigin, ...address.headers } })
   return result
 }
@@ -511,7 +515,7 @@ test('the network check (§19.12): the same /24 completes; another /24, /56 or f
   assert.deepEqual([...refused.completed.body.matchAll(/<p lang="([a-z]{2})">/g)].map(match => match[1]), ['es', 'en', 'pt', 'fr', 'de'])
 })
 
-test('the way back (§19.30) under the any policy: ip_mismatch, the open-request cap and the untested cap give one button to the assistant; a decline from another network ends the request with the ip_mismatch page', async t => {
+test('the way back (§19.30) under the any policy: a button to the assistant only for a browser tied to the starter, and the state nowhere else', async t => {
   const h = await anyHarness(t)
   const redirectUri = 'https://claude.ai/api/mcp/auth_callback'
   h.fetcher.docs.set(AGENT, { body: { client_id: AGENT, redirect_uris: [AGENT_REDIRECT] } })
@@ -522,14 +526,56 @@ test('the way back (§19.30) under the any policy: ip_mismatch, the open-request
     assert.deepEqual(button.params, { error, state, iss: h.publicOrigin })
     return button
   }
-  // ip_mismatch, a flow perhaps somebody else started: the request ends, and the person, not a redirect, chooses to go back.
+  /** A refusal for a browser not tied to the starter: the console link, no button, and the request's state nowhere on it. */
+  const consolePage = (body, code, state) => {
+    assert.match(body, new RegExp(`<small>Wappie MCP: ${code}</small>`))
+    assert.equal(backButton(body), null, `${code}: no way back to the assistant`)
+    assert.ok(body.includes(h.consoleOrigin), `${code}: the console link`)
+    assert.equal(body.includes(state), false, `${code}: the state stays in the reader`)
+  }
+  // Every slot held by a consent in progress (the enclave's policy): the client hears the server is busy, from the page's button.
+  const fakes = Array.from({ length: PENDING_MAX }, (_, n) => [`fake-${n}`, { id: `fake-${n}`, bundle: {}, ip: 'elsewhere', created_at: h.clock.now(), expires_at: h.clock.now() + 600_000 }])
+  for (const [id, pending] of fakes) h.reader.state.pending.set(id, pending)
+  const full = await start(h, { clientId: CLAUDE, redirectUri, state: 'st-full' })
+  assert.equal(full.response.status, 429)
+  assert.match(full.response.body, /<small>Wappie MCP: too_many_requests<\/small>/)
+  back(full.response.body, redirectUri, 'temporarily_unavailable', 'st-full')
+  for (const [id] of fakes) h.reader.state.pending.delete(id)
+  // Before the console relayed a bundle, a completion from anywhere (another network, a console Origin any program can
+  // send, a garbage proof) learns nothing: the console page, and the request untouched, no try spent.
+  const early = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-early' })
+  for (const address of ['192.0.2.77', '198.18.0.77', '203.0.113.11']) {
+    const probed = await h.form('/mcp/authorize/complete', { request: early.id, proof: 'x' }, { origin: h.consoleOrigin, ...from(address).headers })
+    assert.equal(probed.status, 400, address)
+    consolePage(probed.body, 'invalid_proof', 'st-early')
+  }
+  assert.equal(h.reader.state.pending.get(early.id).proof_attempts, 0)
+  assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).code, 'invalid_proof')
+  // ip_mismatch: not the starter's network, so not the starter's state either: the console page, and the request ends.
   const elsewhere = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-network' })
   const mismatched = await consentV2(h, elsewhere, { address: from('203.0.114.10') })
   assert.equal(mismatched.completed.status, 400)
   assert.equal(mismatched.completed.location, null)
-  assert.deepEqual([back(mismatched.completed.body, redirectUri, 'access_denied', 'st-network').label], ['Back to claude.ai'])
-  assert.equal(mismatched.completed.body.includes(h.consoleOrigin), false)
+  consolePage(mismatched.completed.body, 'ip_mismatch', 'st-network')
+  assert.equal(h.reader.state.pending.has(elsewhere.id), false)
   for (const value of [mismatched.connectionId, mismatched.linkSecret, elsewhere.id]) assert.equal(mismatched.completed.body.includes(value), false, 'nothing of the consent on the page')
+  // A wrong proof from the starter's network: the button, in the person's first page language, on every try and when the
+  // third burns the request.
+  const near = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-near' })
+  const wrong = await consentV2(h, near, { address: from('203.0.113.20'), badProof: 'A'.repeat(43) })
+  assert.equal(wrong.completed.status, 400)
+  assert.equal(wrong.completed.location, null, 'a page, never a redirect')
+  assert.match(wrong.completed.body, /<small>Wappie MCP: invalid_proof<\/small>/)
+  const english = back(wrong.completed.body, redirectUri, 'access_denied', 'st-near')
+  assert.deepEqual([english.lang, english.label], ['en', 'Back to claude.ai'])
+  assert.equal(wrong.completed.body.includes(h.consoleOrigin), false, 'the assistant, not the console, is the way back')
+  const retry = (proofValue, language) => h.form('/mcp/authorize/complete', { request: near.id, proof: proofValue }, { origin: h.consoleOrigin, 'accept-language': language, ...from('203.0.113.20').headers })
+  const portuguese = backButton((await retry('B'.repeat(43), 'pt-BR,pt;q=0.9')).body)
+  assert.deepEqual([portuguese.lang, portuguese.label], ['pt', 'Voltar para claude.ai'])
+  const burned = await retry('C'.repeat(43), 'de')
+  assert.equal(backButton(burned.body).label, 'Zurück zu claude.ai')
+  back(burned.body, redirectUri, 'access_denied', 'st-near')
+  assert.equal(h.reader.state.pending.has(near.id), false)
   // The open-request cap of an untested client: the server is busy, and its host is where the button goes.
   for (let n = 0; n < PENDING_PER_CLIENT; n++) assert.equal((await start(h, { clientId: AGENT, redirectUri: AGENT_REDIRECT })).response.status, 302)
   const capped = await start(h, { clientId: AGENT, redirectUri: AGENT_REDIRECT, state: 'st-busy', address: { headers: { ...fresh().headers, 'accept-language': 'fr-CA,fr;q=0.9' } } })
@@ -546,24 +592,63 @@ test('the way back (§19.30) under the any policy: ip_mismatch, the open-request
   assert.equal(refused.completed.status, 409)
   assert.match(refused.completed.body, /<small>Wappie MCP: too_many_unknown<\/small>/)
   back(refused.completed.body, AGENT_REDIRECT, 'access_denied', 'st-crowded')
-  assert.ok(refused.completed.body.includes(h.consoleOrigin), 'the console link stays: the sentence sends the person there first')
+  const consoleAt = refused.completed.body.indexOf(`href="${CONSOLE_URL}"`)
+  assert.ok(consoleAt > 0 && consoleAt < refused.completed.body.indexOf('class="back"'), 'the console link comes first: the sentence sends the person there first')
   for (const id of others) h.reader.state.connections.delete(id)
-  // A decline from another network: the request ends, the browser gets the ip_mismatch page and its button, never the redirect.
-  const before = h.reader.counters.ip_mismatches
+})
+
+test('the console\'s Cancel (§19.30) under the any policy: from the starter\'s network straight back to the assistant; otherwise back to the console, and the state never leaves', async t => {
+  const h = await anyHarness(t)
+  const redirectUri = 'https://claude.ai/api/mcp/auth_callback'
+  const line = () => JSON.parse(h.logs.findLast(entry => entry.includes('/mcp/authorize/decline')))
+  // From the network the request started on: straight back to the assistant, nothing else in the redirect, and the request is gone.
+  const near = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-near' })
+  const declined = await decline(h, near.id, from('203.0.113.99').headers)
+  assert.equal(declined.status, 302)
+  const location = new URL(declined.location)
+  assert.equal(`${location.origin}${location.pathname}`, redirectUri)
+  assert.deepEqual(Object.fromEntries(location.searchParams), { error: 'access_denied', state: 'st-near', iss: h.publicOrigin })
+  assert.equal(h.reader.state.pending.has(near.id), false)
+  assert.deepEqual([line().route, line().status, line().code, line().ip_mismatch], ['POST /mcp/authorize/decline', 302, 'declined', false])
+  // Gone, or never made: back to the console, whose Cancel already dropped it.
+  for (const id of [near.id, 'AAAAAAAAAAAAAAAAAAAAAA']) {
+    const gone = await decline(h, id, from('203.0.113.99').headers)
+    assert.deepEqual([gone.status, gone.location, gone.body, line().code], [302, CONSOLE_URL, '', 'request_not_found'])
+  }
+  // From another network: the request ends, and the browser goes back to the console with nothing of the request.
+  const before = h.reader.counters.ip_mismatches ?? 0
   const far = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-far' })
   const farDecline = await decline(h, far.id, from('203.0.114.10').headers)
-  assert.equal(farDecline.status, 400)
-  assert.match(farDecline.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
-  back(farDecline.body, redirectUri, 'access_denied', 'st-far')
+  assert.deepEqual([farDecline.status, farDecline.location, farDecline.body], [302, CONSOLE_URL, ''])
   assert.equal(h.reader.state.pending.has(far.id), false)
   assert.equal(h.reader.counters.ip_mismatches, before + 1)
-  assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/decline'))).ip_mismatch, true)
-  // From the network the request started on: straight back to the assistant.
-  const near = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-near' })
-  const nearDecline = await decline(h, near.id, from('203.0.113.99').headers)
-  assert.equal(nearDecline.status, 302)
-  assert.deepEqual(Object.fromEntries(new URL(nearDecline.location).searchParams), { error: 'access_denied', state: 'st-near', iss: h.publicOrigin })
-  assert.equal(h.reader.state.pending.has(near.id), false)
+  assert.deepEqual([line().status, line().code, line().ip_mismatch], [302, 'ip_mismatch', true])
+  // A consent the console already relayed: its connection in Go is revoked with it, and a late completion is never activated.
+  const relayedStart = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-relayed' })
+  const relayed = await consentV2(h, relayedStart, { until: 'bundle' })
+  assert.equal(relayed.relayed.status, 204)
+  assert.equal((await decline(h, relayedStart.id, from('203.0.113.10').headers)).status, 302)
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(h.go.connections.get(relayed.connectionId).status, 'revoked')
+  const activations = h.go.activations
+  const late = await h.form('/mcp/authorize/complete', { request: relayedStart.id, proof: relayed.proof }, { origin: h.consoleOrigin, ...from('203.0.113.10').headers })
+  assert.equal(late.status, 400, 'a declined request never completes')
+  assert.equal(backButton(late.body), null)
+  assert.equal(h.go.activations, activations)
+  // The completion's ten a minute per address and the decline's ten are separate buckets.
+  const address = from('192.0.2.50').headers
+  for (let n = 0; n < 10; n++) await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, ...address })
+  assert.equal((await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, ...address })).status, 429)
+  for (let n = 0; n < 10; n++) assert.equal((await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', address)).status, 302, 'a full completion bucket leaves declines alone')
+  assert.equal((await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', address)).status, 429)
+  const other = from('192.0.2.51').headers
+  for (let n = 0; n < 10; n++) await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', other)
+  assert.equal((await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', other)).status, 429)
+  assert.equal((await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, ...other })).status, 400, 'and a full decline bucket leaves completions alone')
+  // The state left only in the redirect to the starter's network: no other answer of either route carries one.
+  for (const response of h.responses.filter(entry => ['/mcp/authorize/decline', '/mcp/authorize/complete'].includes(entry.path))) {
+    for (const state of ['st-near', 'st-far', 'st-relayed']) assert.equal(response.body.includes(state), false, `${response.path} ${response.status}`)
+  }
 })
 
 test('link bundle v2 (§19.15): a metadata consent of a tested and an unknown client, every refusal, and the record it writes', async t => {
