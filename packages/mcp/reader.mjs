@@ -525,7 +525,7 @@ export async function createReader(config, provider) {
                   // the API on the host's loopback: an internal address the
                   // assistant can neither reach nor has any use for.
                   source: { ...(hosted ? {} : { server: config.server, url: `${config.server}/v1/messages/${row.uid}` }),
-                    workspace_id: config.workspace, device_id, message_uid: row.uid, chat_key: row.chat_key },
+                    device_id, message_uid: row.uid, chat_key: row.chat_key },
                 })
               }
             }
@@ -548,7 +548,7 @@ export async function createReader(config, provider) {
       // the server already holds.
       if (!fixedWindow) await bounded(hits, HISTORY_CONCURRENCY, async hit => { hit.archive_status = await historyStatus(hit, device_id) })
       const next = hasMore && cursor ? { ...input, period: undefined, from: range.from, until: range.until, before: cursor } : undefined
-      return { workspace_id: config.workspace, device_id, range,
+      return { device_id, range,
         ...(activity ? { activity: [...groups.values()], counting: 'Archived original message events in this page only, grouped by chat, sender and direction. Counts are not totals for the full archive.' } : { messages: hits }),
         ...(fixedWindow ? { omitted_hits: omittedHits } : {}),
         coverage: { ...counters, scan_limit: budget, interval_exhausted: !hasMore, live_read: true,
@@ -609,6 +609,9 @@ export async function createReader(config, provider) {
         name: name?.state === 'ok' ? name.value : null }
     })
   }
+  // No result names the workspace (§19.30): a connection reads one only, and
+  // its id is an internal account id the model never needs; device_id is
+  // what every tool takes.
   return {
     /** Whether this content connection waits for a renewal (§19.29): every result then says so. */
     resealed,
@@ -624,7 +627,7 @@ export async function createReader(config, provider) {
       // nothing. A phone number has no letters and an explicit identifier keeps
       // its '@'; a name needs neither, and that is the whole test.
       if (!opens && /\p{L}/u.test(query) && !query.includes('@')) {
-        return { workspace_id: config.workspace, device_id, candidates: [], omitted_candidates: 0, ambiguous: false, names_searchable: false,
+        return { device_id, candidates: [], omitted_candidates: 0, ambiguous: false, names_searchable: false,
           instruction: resealed
             ? 'Contact names stay locked until the user renews this connection, so no name can match and paging would find nothing. Give the user the renewal link, or ask for the phone number and resolve that instead.'
             : mode === 'hosted-metadata'
@@ -661,7 +664,7 @@ export async function createReader(config, provider) {
           archived.push({ ...contact, names })
         }
         const result = contactCandidates(archived, pack?.contacts || [], query, limit)
-        return { workspace_id: config.workspace, device_id, ...result,
+        return { device_id, ...result,
           coverage: { archived_contacts_examined: contacts.length, unavailable_names: unavailable,
             archive_has_more: reply.has_more, personal_snapshot: pack ? { created_at: pack.created_at, contacts: pack.contacts.length } : null,
             complete: !reply.has_more && !result.omitted_candidates && !unavailable,
@@ -674,7 +677,7 @@ export async function createReader(config, provider) {
       const reply = await api.listDevices()
       // plaintext_enabled alone reads like a switch left off; plaintext_available
       // says whether the connection has a switch at all.
-      return { workspace_id: config.workspace, plaintext_enabled: opens, plaintext_available: mode !== 'hosted-metadata',
+      return { plaintext_enabled: opens, plaintext_available: mode !== 'hosted-metadata',
         timezone: config.timezone, now: new Date().toISOString(), connection: connectionBlock(),
         numbers: reply.devices.filter(device => allowed(device.id)).map(device => ({
           id: device.id, name: device.label || device.push_name || device.pn || 'Unnamed number',
@@ -689,7 +692,7 @@ export async function createReader(config, provider) {
       const chats = since === null ? reply.chats : reply.chats.filter(chat => Date.parse(chat.last_ts) >= since)
       return withOpener(device_id, async opener => {
         await opener?.prefetch(chats.flatMap(chat => [chat.name_key_id, chat.last_body_key_id]))
-        return { workspace_id: config.workspace, device_id, truncated: reply.truncated,
+        return { device_id, truncated: reply.truncated,
           chats: await Promise.all(chats.map(async chat => {
             const preview = chat.last_body_sealed && opener ? await opener.chatPreview(chat) : null
             // A preview is the chat's last message body: a source, unlike its name.
@@ -708,7 +711,7 @@ export async function createReader(config, provider) {
       const reply = await api.listMessages(device_id, { chatKey: chat_key, limit, before })
       // Under a history floor the page stops at it: what is older does not exist for this connection.
       const rows = reply.messages.filter(inWindow), more = reply.has_more && rows.length === reply.messages.length
-      return withOpener(device_id, async opener => ({ workspace_id: config.workspace, device_id, chat_key: reply.chat_key,
+      return withOpener(device_id, async opener => ({ device_id, chat_key: reply.chat_key,
         messages: await messages(rows, device_id, opener), has_more: more,
         ...(more && reply.next_ts && reply.next_seq !== undefined ? { next: { ts: reply.next_ts, seq: reply.next_seq } } : {}),
       }))
@@ -718,7 +721,7 @@ export async function createReader(config, provider) {
       const reply = await api.getMessage(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
       if (!inWindow(reply)) throw new ArchiveError('outside_window')
-      const result = await withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener, { link: true }))[0] }))
+      const result = await withOpener(device_id, async opener => ({ message: (await messages([reply], device_id, opener, { link: true }))[0] }))
       // On readers with AI (§18.12): the functions whose result is stored for
       // this attachment, from one derived read; lists and searches leave it out.
       if (result.message.attachment && typeof media?.derivedOf === 'function') {
@@ -871,7 +874,7 @@ export async function createReader(config, provider) {
         const visible = reply.versions.filter(version => inWindow(version.message))
         const versions = visible.slice(0, limit)
         const opened = await messages(versions.map(version => version.message), device_id, opener)
-        return { workspace_id: config.workspace, device_id, chat_key: reply.chat_key,
+        return { device_id, chat_key: reply.chat_key,
           revisions: versions.map((version, index) => ({ revision: version.revision, from: version.from, until: version.until, message: opened[index] })),
           truncated: visible.length > limit, deleted: Boolean(reply.deletion),
         }

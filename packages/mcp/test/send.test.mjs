@@ -107,8 +107,8 @@ test('titles, hints, descriptions and schemas, word for word (§17.8)', async ()
     const expected = {
       draft_message: ['Draft a WhatsApp message', { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         'Prepare a WhatsApp message for the user to review and send in the Wappie console; nothing is sent. Use it only when the user asked, in this conversation, for this message to this chat. Give them review_url as returned, and never say the message was sent.'],
-      // A note leaves at once through WhatsApp to every device of the number, and nothing recalls it (§19.29).
-      send_to_self: ['Send a note to my own WhatsApp chat', { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      // A note leaves at once through WhatsApp to every device of the number, and nothing recalls it (§19.29): destructive (§19.30).
+      send_to_self: ['Send a note to my own WhatsApp chat', { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         'Send a text at once to this number\'s own chat (the user\'s notes to themselves), and nowhere else. No links. Use it only when the user asked for it in this conversation; never repeat a call whose result was lost: check list_outgoing.'],
       list_outgoing: ['List drafts and sent messages', { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         'List this connection\'s drafts and sent messages, newest first, with their status and a link that opens each sent message in the Wappie console. Texts are not included: use get_message with message_uid.'],

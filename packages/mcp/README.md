@@ -476,11 +476,16 @@ From reader 0.6.0 ([docs/mcp-enclave.md §19.29](../../docs/mcp-enclave.md#1929-
   integrations (a file can go to the user's AI provider). `readOnlyHint` is
   `false` on `draft_message`, `send_to_self` and that same `open_attachment`
   (a transcript is a job on the user's AI authorization, which spends their
-  budget and is stored in Wappie).
+  budget and is stored in Wappie). `destructiveHint` is `true` only on
+  `send_to_self`: a note cannot be recalled once it left, so a host asks
+  before each one (§19.30).
 - **`list_numbers`' `connection` block**: `text`, `attachments`, `drafts` and
   `own_chat` (what opens now), `tier` (`web_tested`, `local_tested`,
   `unknown` or `token`; `null` on the local reader), `expires_at`,
   `history_days` (`null` for the whole history) and `renewal_needed`.
+- **Results** (§19.30): a read tool answers its JSON once, as one text block,
+  with no `structuredContent` and so no `outputSchema`; no result names the
+  workspace (`device_id` is what every tool takes).
 
 `list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
 defaulting to 50. For `list_messages`, pass

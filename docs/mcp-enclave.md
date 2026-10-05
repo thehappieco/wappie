@@ -7853,7 +7853,8 @@ source with `pending.ip` by network prefix: the first three octets for IPv4,
 the first 56 bits for IPv6 (both values are `ipKey`s, and an IPv6 key is
 already its /64); different address families count as a mismatch. On a
 mismatch the pending request is dropped and the browser gets a static page
-with a viewport, the link back to the console, the code `ip_mismatch` in
+with a viewport, the button back to the assistant (§19.30; the link back to
+the console before it), the code `ip_mismatch` in
 small print, and the sentence "This authorization was opened on a different
 network from the one that started the connection. Go back to the assistant
 and click Connect again. If you use a VPN or iCloud Private Relay, turn it
@@ -9384,6 +9385,13 @@ clients that passed).
     again with `packages/mcp/icons/icon-512.png` uploaded is the only way
     (a new plugin id and a new consent). A published plugin carries `logo`
     and `composerIcon` in its package.
+19. **The personal identifiers in results** (§19.30): which phone numbers,
+    WhatsApp ids and LIDs each tool returns, and which a tool chain needs,
+    is listed for the owner (the report of 2026-10-05). 0.6.0 removes only
+    `workspace_id`; whether `sender_pn`, `sender_lid`, `chat_pn`, `chat_lid`,
+    `keys`, `wa_id` and a number's `phone` stay on every result, or only
+    where a chain needs them, is the owner's decision, and what stays goes
+    into the Wappie privacy policy (point 16).
 
 ### 19.29 What the connector says about itself (M5)
 
@@ -9459,7 +9467,7 @@ top level and in `annotations.title`:
 | the eight read tools, `list_outgoing` | true | false | true | false |
 | `open_attachment` | **false on a connection of an `ai_v1` reader** (a call may run a job on the user's AI authorization, which spends their budget and stores a sealed transcript in Wappie, §18), true otherwise | false | true (a repeat call reuses the stored transcript) | **true on a connection of an `ai_v1` reader** (a file may go to the user's AI provider), false otherwise |
 | `draft_message` | false | false | true | false |
-| `send_to_self` | false | false | false | **true** (the note leaves through WhatsApp at once, to every device of the number, and nothing recalls it) |
+| `send_to_self` | false | **true** (§19.30: nothing recalls a note once it left, and OpenAI reads an irreversible send as destructive) | false | **true** (the note leaves through WhatsApp at once, to every device of the number, and nothing recalls it) |
 
 **The connection block (B2).** `list_numbers` adds `connection`, so the model
 can explain a limit and warn before a deadline:
@@ -9526,7 +9534,8 @@ cannot make), `ip_mismatch` (unchanged), `invalid_redirect_uri`,
 `opaque_origin` and `invalid_origin` (one sentence), `invalid_proof`,
 `connection_exists`, `activation_failed` and `too_many_unknown`. Like every
 text of this section (D10), the sentences are drafts the owner approves
-before the image is built.
+before the image is built. §19.30 gives the refusals after the redirect is
+trusted a button back to the assistant.
 
 **Discovery (B6).** `enclave/constants.mjs` `SITE_LINKS` names the site's
 language-free documentation page, `https://wappie.thehappie.co/docs/`, which
@@ -9632,6 +9641,123 @@ the nine recommendations that came with the list:
    is what may read the numbers;
 9. English texts use the typographic apostrophe.
 
+### 19.30 Before the build: directory review fixes (2026-10-05)
+
+The directory research of 2026-10-05 (`listing/requirements.md` §4, items
+3, 6, 7 and 11) found four things to change before the 0.6.0 image is
+built. All but the console's Cancel are in the measured image
+(`packages/mcp/server.mjs` and `reader.mjs`, `packages/mcp-http/as.mjs`,
+`pages.mjs` and `router.mjs`).
+
+**`send_to_self` is destructive.** `destructiveHint: true`; `readOnlyHint`
+false, `idempotentHint` false and `openWorldHint` true as before (§19.29's
+table). A note leaves at once and nothing recalls it, and OpenAI reads
+`true` for an irreversible send whether or not it only adds. A host then
+asks before each note. Its description and the instructions are unchanged.
+
+**Results: the JSON once, as text, and no workspace id.** A read tool
+answers `{content: [{type: 'text', text: <JSON>}]}`: no `structuredContent`,
+so no `outputSchema`. Text rather than structured, because:
+- the MCP specification (2025-11-25, Tools, Structured Content) says a tool
+  that returns structured content SHOULD also return it serialized as text,
+  so structured alone is the shape it advises against;
+- claude.ai never shows `structuredContent` to the model (§16's P1), and
+  Claude Code shows it instead of the content blocks (§16.7);
+- ChatGPT shows both to the model, so the same JSON went to it twice;
+- OpenAI asks for an `outputSchema` wherever `structuredContent` is
+  returned, and the SDK would then enforce an exact schema on every result,
+  `renewal` and `connection` included, turning any drift into a failed call;
+- no interface reads `structuredContent`.
+
+The 1 MiB cap now bounds the whole result. No result carries `workspace_id`
+any more (it was at the top of every read result and in each search hit's
+`source`): a connection reads one workspace, the id is an internal account
+id, no tool takes it, and `device_id` is what the model passes on. No
+model-facing text named it. The console links (`open_url`, `review_url`,
+`drafts_url`, an AI pause's `renew_url`) keep their `workspace=` parameter:
+the console opens the message in that workspace (§16.7's link contract), and
+the model hands the links on as they are. The phone numbers and WhatsApp
+identifiers each tool returns are unchanged; their inventory waits for the
+owner (§19.28 point 19).
+
+**The way back to the assistant.** Until now a refusal after the redirect
+was trusted rendered a Wappie page, and the assistant waited on
+"Authorizing…" until it timed out (the owner saw it on 2026-10-05). From
+0.6.0 each such refusal carries one button, "Back to <host>". It is a plain
+link, since the page runs no script and posts no form, to the client's
+redirect with `error`, the request's own `state` and `iss` (RFC 6749
+§4.1.2.1, RFC 9207), and nothing else: no `error_description`. A redirect
+the authorization server would never trust (neither https nor http to a
+loopback address) gets no button. `<host>` is the redirect's host
+(`claude.ai`, `chatgpt.com`, `127.0.0.1` for a local app); the label speaks
+the person's first page language, English when they ask for none of the
+five.
+
+| Code | Route | Status | `error` | Also |
+|---|---|---|---|---|
+| `too_many_requests` (an untested client's twenty open requests, or every slot held by a consent, §19.10) | authorize | 429 | `temporarily_unavailable` | |
+| `invalid_proof` (a pending request; also when the third try burns it) | complete | 400 | `access_denied` | |
+| `ip_mismatch` | complete, decline | 400 | `access_denied` | the request ends |
+| `connection_exists` | complete | 400 | `server_error` | |
+| `activation_failed` | complete | 502 | `server_error` | |
+| `too_many_unknown` | complete | 409 | `access_denied` | the console link stays: the sentence sends the person there first |
+
+A button, never an automatic redirect, for every one of them: each approved
+sentence says what to do next (wait a minute, turn the VPN off, revoke one),
+which the assistant's own error would not; and in a flow somebody else may
+have started (a console link opened on another network, an untested client
+with twenty open requests) a redirect the person did not choose would tell
+its starter that the link was opened, when and from where. The link carries
+only what the client sent and the issuer publishes. `server_error` is for
+the server's own failures (Go's activation, an id Go reused);
+`temporarily_unavailable`, RFC 6749's code for an overloaded server, for the
+open-request caps; `access_denied` for every refusal by Wappie's rules.
+Unchanged: the refusals before the redirect is trusted, the completion's
+origin, budget and form refusals (they never act on the request), and a
+completion that names no pending request (nothing to go back to); they keep
+the console link. The `fail()` errors of `GET /mcp/authorize`
+(`unsupported_response_type`, `invalid_request`, `invalid_target`,
+`invalid_scope`) were already redirects.
+
+**The console's Cancel.** `POST /mcp/authorize/decline`, on the public
+listener (under `/mcp` on the hosted reader too), takes a form with
+`request` under complete()'s rules: POST, the console's `Origin` (else
+`origin_missing`, `opaque_origin` or `invalid_origin`, and nothing changes),
+ten a minute per address in a bucket of its own, a form without repeated
+fields, and a pending request id of the right shape. An unknown, expired or
+completed request gets the `invalid_request` page (logged
+`request_not_found`). Otherwise the request ends, and its Go row is revoked
+when the console had relayed a bundle. A version-2 request declined from
+another network than it started on (§19.12) gets the `ip_mismatch` page and
+its button (counted in `ip_mismatches`, `ip_mismatch: true` on the line);
+any other gets a 302 to the redirect with `error=access_denied`, `state` and
+`iss`, logged `declined`. The route fits the log sink's route pattern.
+`MCPConsentCard.vue` posts it on Cancel only for a version-2 descriptor that
+has not expired, as a hidden top-level form like the completion, to the
+resource's origin; a version-1 descriptor (a reader before 0.6.0, the hosted
+reader) keeps the old Cancel, since the console cannot tell whether that
+reader serves the route.
+
+**New text (D10).** Only the button's label waits for the owner's approval
+(`pages.mjs` `BACK_TO`): pt "Voltar para {host}", en "Back to {host}", es
+"Volver a {host}", fr "Retour à {host}", de "Zurück zu {host}". Every
+sentence of §19.29 is unchanged.
+
+**Tests.** `packages/mcp/test/identity.test.mjs` (every read tool of every
+hosted shape: one text block, no `structuredContent`, no `outputSchema`, the
+workspace id nowhere; the destructive hint), `search.test.mjs` and
+`content.test.mjs` (a hit's `source` without `workspace_id`) and
+`send.test.mjs`; `packages/mcp-http/test/pages.test.mjs` (the button: its
+languages, escaping, only https or loopback), `as.test.mjs` (the button on
+every refusal of a known request, the console link where none is known, the
+decline's rules), `any.test.mjs` (`ip_mismatch`, the open-request cap,
+`too_many_unknown` at completion, a decline from another network) and
+`link.test.mjs` (`connection_exists`); the enclave's `any-enclave.test.mjs`
+(the button and the decline on the real listener, the line through the
+sink's schema), `enclave.test.mjs` and `content.test.mjs` (text results
+without the workspace id); the console's `mcpConnect.spec.ts` (the decline
+URL and form) and `mcpDecline.spec.ts` (Cancel on the card).
+
 ### Amendments to §§1 to 18
 
 | Where | Amendment | When |
@@ -9660,6 +9786,8 @@ the nine recommendations that came with the list:
 | §18, §18.16 | B2 comes after 0.6.0 (D11) | now (in place) |
 | §18.7 | the AI request and renewal descriptors are version 2 (`ai`, `ai_renewal`) and attested with user_data v2, so `functions`, `features` and `budget` become attested | 0.6.0 |
 | §5.4 | the public listener adds `/icon-192.png`, `/icon-512.png`, the page at `/` and `/robots.txt`, and `serverInfo.icons` names the two PNGs (§19.29) | 0.6.0 |
+| §5.4 | the public listener adds `POST /mcp/authorize/decline`, the console's Cancel, and every refusal after the redirect is trusted carries a button back to the assistant (§19.30) | 0.6.0 |
+| §15.6, §16.7, §17.8 | read results are one text block, without `structuredContent` or `workspace_id`; `send_to_self`'s `destructiveHint` is true (§19.30) | 0.6.0 |
 | §15.5, §15.6, §15.8 | a content connection without its key reads metadata with its own read-only key, text locked and the renewal link on every result; only what needs the key answers `reconsent_required`, whose guidance no longer says the reader restarted (§19.29) | 0.6.0 |
 | §15.6, §16.7, §17.8 | `serverInfo`, the instructions, the tool descriptions, the parameters' descriptions, `type`'s enum, the hints of `send_to_self` and of an AI connection's `open_attachment`, and `list_numbers`' `connection` block (§19.29) | 0.6.0 |
 | §9, §11 | 0.6.0 is the first image with the shared kit (0.5.0's client predates it): `packages/client` installs the kit's release asset `thehappieco-kit-0.3.0.tgz` (sha256 `acbcce7a87e3d4726cf93fc02398e576829c92a82e49bd4e33b69addbac5fa78`), which `tarballs/` publishes. Its Wappie profile and every byte that profile pins are v0.1.0's. v0.3.0 also ships the platform profile and `oidc-rp`, which the reader never imports but the image measures, and its `hpke` imports every X25519 private key through a PKCS#8 copy with bit 0 of the first byte set and asks `generateKey` again after an `OperationError` (WebKit for Linux refuses a key whose first byte is zero and fails 1 generation in 256). A later kit bump before the image is built changes this row | 0.6.0 |

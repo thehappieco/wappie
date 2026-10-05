@@ -39,6 +39,8 @@ async function connect(config, provider, options) {
   return client
 }
 const text = result => result.content[0].text
+/** A read tool's JSON: its one text block (§19.30). */
+const data = result => JSON.parse(text(result))
 /** Words no connection may say again: the metadata guarantee dressed as a dead end, and the cloud as an "installation". */
 const stale = /none would unlock|no setting changes|there is none|never suggest enabling|configured Wappie installation|wappie-readonly/i
 
@@ -109,7 +111,8 @@ test('every tool states all four hints and a title, every parameter where its va
     const tools = Object.fromEntries((await client.listTools()).tools.map(tool => [tool.name, tool.annotations]))
     assert.deepEqual(Object.entries(tools).filter(([, hints]) => hints.openWorldHint).map(([name]) => name), ['open_attachment', 'send_to_self'])
     assert.deepEqual(Object.entries(tools).filter(([, hints]) => !hints.readOnlyHint).map(([name]) => name), ['open_attachment', 'draft_message', 'send_to_self'])
-    assert.equal(Object.values(tools).some(hints => hints.destructiveHint), false)
+    // Destructive: only the note, which no tool can recall once it left (§19.30).
+    assert.deepEqual(Object.entries(tools).filter(([, hints]) => hints.destructiveHint).map(([name]) => name), ['send_to_self'])
     // A repeat call reuses what the first one made (the draft, the transcript), except a note, which leaves again.
     assert.deepEqual(Object.entries(tools).filter(([, hints]) => !hints.idempotentHint).map(([name]) => name), ['send_to_self'])
     await client.close()
@@ -124,6 +127,38 @@ test('every tool states all four hints and a title, every parameter where its va
     const refused = await reader.callTool({ name: 'search_messages', arguments: { ...interval, type: 'voice' } })
     assert.equal(refused.isError, true)
     await reader.close()
+  } finally { await f.close() }
+})
+
+test('a read result is its JSON once, as text: no structuredContent, no outputSchema, and never the workspace id (§19.30)', async () => {
+  const f = await contentFixture({ rows: 4, contacts: 2 })
+  try {
+    await f.addChat({ chat_key: '5511999990000@s.whatsapp.net', name: 'Ana', preview: 'Oi', last_ts: '2026-09-15T20:00:00.000Z' })
+    const calls = [['list_numbers', {}], ['list_chats', { device_id: device }], ['list_messages', { device_id: device, chat_key: '5511999990000@s.whatsapp.net' }],
+      ['get_message', { device_id: device, uid: f.rows[0].uid }], ['list_revisions', { device_id: device, uid: f.rows[0].uid }],
+      ['resolve_contact', { device_id: device, query: 'Roberto' }], ['resolve_contact', { device_id: device, query: '000001' }],
+      ['search_messages', { ...interval, limit: 2 }], ['search_messages', { ...interval, query: 'exame', limit: 2 }], ['activity_summary', interval]]
+    for (const { label, config, provider, options } of (await shapes(f)).filter(shape => shape.label !== 'local')) {
+      const client = await connect(config, provider, options)
+      for (const tool of (await client.listTools()).tools) assert.equal(tool.outputSchema, undefined, `${label}: ${tool.name}`)
+      let answered = 0
+      for (const [name, args] of calls) {
+        const result = await client.callTool({ name, arguments: args })
+        const where = `${label}: ${name} ${JSON.stringify(args)}`
+        assert.equal(result.structuredContent, undefined, where)
+        assert.deepEqual(result.content.map(block => block.type), ['text'], where)
+        // The connection reads one workspace: its id is an internal account id, in no result and no citation
+        // (the console links that carry it as a parameter, §16.7, are not among these fixtures' results).
+        assert.equal(text(result).includes(workspace), false, where)
+        assert.equal(text(result).includes('workspace_id'), false, where)
+        if (result.isError) continue
+        assert.equal(typeof data(result), 'object', where)
+        answered++
+      }
+      // Every shape answers most of them, so the checks above saw real results.
+      assert.ok(answered >= 7, `${label}: ${answered}`)
+      await client.close()
+    }
   } finally { await f.close() }
 })
 
@@ -202,10 +237,9 @@ test('a content connection whose key the reader lost reads metadata on, text loc
     assert.equal(RESEALED_REASON, 'Locked: the Wappie reader holds no key for this connection right now; the result\'s renewal says how text comes back.')
     const numbers = await client.callTool({ name: 'list_numbers', arguments: {} })
     assert.equal(numbers.isError, undefined, text(numbers))
-    assert.deepEqual(numbers.structuredContent.renewal, notice)
-    assert.equal(numbers.structuredContent.connection.renewal_needed, true)
-    assert.equal(numbers.structuredContent.plaintext_enabled, false)
-    assert.deepEqual(JSON.parse(text(numbers)), JSON.parse(JSON.stringify(numbers.structuredContent)))
+    assert.deepEqual(data(numbers).renewal, notice)
+    assert.equal(data(numbers).connection.renewal_needed, true)
+    assert.equal(data(numbers).plaintext_enabled, false)
     const chats = await client.callTool({ name: 'list_chats', arguments: { device_id: device } })
     const hits = await client.callTool({ name: 'search_messages', arguments: { ...interval, limit: 2 } })
     const counts = await client.callTool({ name: 'activity_summary', arguments: interval })
@@ -213,20 +247,20 @@ test('a content connection whose key the reader lost reads metadata on, text loc
     const versions = await client.callTool({ name: 'list_revisions', arguments: { device_id: device, uid: f.rows[0].uid } })
     for (const result of [chats, hits, counts, one, versions]) {
       assert.equal(result.isError, undefined, text(result))
-      assert.deepEqual(result.structuredContent.renewal, notice)
+      assert.deepEqual(data(result).renewal, notice)
     }
-    assert.deepEqual(chats.structuredContent.chats[0].name, { state: 'locked', reason: RESEALED_REASON })
-    assert.deepEqual(chats.structuredContent.chats[0].preview, { state: 'locked', reason: RESEALED_REASON })
-    assert.deepEqual(hits.structuredContent.messages[0].body, { state: 'locked', reason: RESEALED_REASON })
-    assert.equal(hits.structuredContent.messages.length, 2)
-    assert.equal(counts.structuredContent.activity.length, 1)
-    assert.deepEqual(one.structuredContent.message.body, { state: 'locked', reason: RESEALED_REASON })
-    assert.equal(versions.structuredContent.revisions[0].message.body.state, 'locked')
+    assert.deepEqual(data(chats).chats[0].name, { state: 'locked', reason: RESEALED_REASON })
+    assert.deepEqual(data(chats).chats[0].preview, { state: 'locked', reason: RESEALED_REASON })
+    assert.deepEqual(data(hits).messages[0].body, { state: 'locked', reason: RESEALED_REASON })
+    assert.equal(data(hits).messages.length, 2)
+    assert.equal(data(counts).activity.length, 1)
+    assert.deepEqual(data(one).message.body, { state: 'locked', reason: RESEALED_REASON })
+    assert.equal(data(versions).revisions[0].message.body.state, 'locked')
     // A name cannot match without the key: the answer says so instead of paging through every contact.
     const named = await client.callTool({ name: 'resolve_contact', arguments: { device_id: device, query: 'Roberto' } })
-    assert.equal(named.structuredContent.names_searchable, false)
-    assert.match(named.structuredContent.instruction, /until the user renews this connection/)
-    assert.deepEqual(named.structuredContent.renewal, notice)
+    assert.equal(data(named).names_searchable, false)
+    assert.match(data(named).instruction, /until the user renews this connection/)
+    assert.deepEqual(data(named).renewal, notice)
     // What needs the key waits for the renewal, with the link, and reaches neither the attachments nor the sending.
     const guidance = `The Wappie reader holds no key for this connection right now, and this call needs it. Give the user this link to renew with their password: ${renewal}. If Wappie says message text is not available for their workspace, the renewal waits until the workspace allows it again. The assistant does not need to reconnect; do not retry until they have renewed.`
     const query = await client.callTool({ name: 'search_messages', arguments: { ...interval, query: 'exame' } })
@@ -248,8 +282,8 @@ test('a content connection whose key the reader lost reads metadata on, text loc
     // With the key held again, nothing says renewal any more.
     const renewed = await connect(contentConfig(f.server), await contentProvider(f, { keyHeld: () => true }), { contentReader: true })
     const again = await renewed.callTool({ name: 'get_message', arguments: { device_id: device, uid: f.rows[0].uid } })
-    assert.equal(again.structuredContent.renewal, undefined)
-    assert.equal(again.structuredContent.message.body.state, 'ok')
+    assert.equal(data(again).renewal, undefined)
+    assert.equal(data(again).message.body.state, 'ok')
     await renewed.close()
   } finally { await f.close() }
 })

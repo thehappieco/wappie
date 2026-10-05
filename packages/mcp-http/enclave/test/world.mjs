@@ -231,12 +231,20 @@ export async function connectContent(w, overrides = {}) {
   return done
 }
 
-/** A tool call over JSON-RPC: the structured result, or the error text. */
+/**
+ * A tool call over JSON-RPC: a read tool's JSON, from its one text block
+ * (read results carry no structuredContent, docs/mcp-enclave.md §19.30), or
+ * the error text. `data` is undefined for a refusal and for a text that is not
+ * one JSON value (a draft's line, an attachment's body).
+ */
 export async function callTool(w, token, name, args = {}) {
   const response = await rpc(w, token, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name, arguments: args } })
   if (response.status !== 200) return { status: response.status, body: response.body }
   const value = result(response.body)
-  return { status: 200, isError: value.isError === true, data: value.structuredContent, text: value.content?.[0]?.text ?? '' }
+  const text = value.content?.[0]?.text ?? ''
+  let data
+  if (value.isError !== true) try { data = JSON.parse(text) } catch { data = undefined }
+  return { status: 200, isError: value.isError === true, data, text, structured: value.structuredContent }
 }
 
 /**

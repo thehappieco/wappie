@@ -7,9 +7,12 @@
 //
 // A refusal page carries one sentence per language, the person's own first
 // (D10, as the two pages 0.6.0 introduced did), each saying what happened
-// and what to do next, then the way back when there is one, then the code in
-// small print for support. Nothing on any page comes from the request but the
-// order of its languages; the way back comes only from configuration.
+// and what to do next, then the ways back when there are any, then the code
+// in small print for support. Nothing on any page comes from the request but
+// the order of its languages. The way back to the console comes only from
+// configuration; the way back to the assistant (§19.30) only from a pending
+// request whose redirect the authorization server already trusted, built by
+// as.mjs, never from the request that is being refused.
 import { createHash } from 'node:crypto'
 
 /** The page languages (§19.14's five), in the console's order. */
@@ -129,6 +132,14 @@ export const SENTENCES = Object.freeze({
     de: 'Dieser Arbeitsbereich hat bereits so viele Verbindungen ungetesteter Assistenten und Verbindungstokens, wie er behalten darf. Widerrufen Sie eine in der Wappie-Konsole und starten Sie die Verbindung dann erneut in Ihrem Assistenten.',
   }),
 })
+/**
+ * The label of the one button a refusal after the redirect was trusted
+ * carries (docs/mcp-enclave.md §19.30): back to the assistant, which then
+ * stops waiting. `{host}` is the host of the assistant's redirect; the label
+ * speaks the person's first page language, English when they ask for none of
+ * the five.
+ */
+export const BACK_TO = Object.freeze({ pt: 'Voltar para {host}', en: 'Back to {host}', es: 'Volver a {host}', fr: 'Retour à {host}', de: 'Zurück zu {host}' })
 /** The sentence each page code shows; a code without one would be a bug, and the tests list them all. */
 const sentenceOf = { origin_missing: 'origin', opaque_origin: 'origin', invalid_origin: 'origin' }
 export const PAGE_CODES = Object.freeze(['invalid_client', 'ip_mismatch', 'invalid_redirect_uri', 'invalid_request', 'too_many_requests', 'method_not_allowed',
@@ -137,7 +148,8 @@ export const PAGE_CODES = Object.freeze(['invalid_client', 'ip_mismatch', 'inval
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' })[character])
 const sha256 = text => createHash('sha256').update(text, 'utf8').digest('base64')
 /** A page's own style, allowed by its hash and nothing else: no script, no image, no request elsewhere. */
-const pageStyle = 'body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 16px;overflow-wrap:anywhere}small{color:#555}'
+const pageStyle = 'body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 16px;overflow-wrap:anywhere}small{color:#555}' +
+  '.back{display:inline-block;padding:10px 18px;border-radius:8px;background:#137659;color:#fff;font-weight:600;text-decoration:none}'
 const pageCSP = `default-src 'none'; style-src 'sha256-${sha256(pageStyle)}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
 const htmlHead = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Wappie MCP</title>' +
   `<style>${pageStyle}</style>`
@@ -146,16 +158,35 @@ export const pageHeaders = Object.freeze({ ...noStore, 'Content-Type': 'text/htm
   'Content-Security-Policy': pageCSP, 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' })
 
 /**
- * A refusal page: `code` from PAGE_CODES (the `invalid_client` of the 0.5.0
- * policy with `allowlist`), `back` only ever from configuration,
- * `acceptLanguage` the request's header, which orders the sentences and
- * nothing else.
+ * The button back to the assistant (§19.30): a plain link, since the page
+ * runs no script and posts no form, to `assistant`, the redirect that ends the
+ * client's wait with an error, `state` and `iss`; null for anything but an
+ * https URL or an http one to a loopback address, the only redirects the
+ * authorization server ever trusts.
  */
-export function refusalPage(status, code, { back = '', acceptLanguage = null, allowlist = false } = {}) {
+function assistantButton(assistant, acceptLanguage) {
+  let url
+  try { url = new URL(assistant) } catch { return null }
+  const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null
+  const tag = askedLanguages(acceptLanguage)[0] ?? 'en'
+  return `<p><a class="back" lang="${tag}" href="${escapeHTML(url.href)}">${escapeHTML(BACK_TO[tag].replace('{host}', url.hostname))}</a></p>`
+}
+
+/**
+ * A refusal page: `code` from PAGE_CODES (the `invalid_client` of the 0.5.0
+ * policy with `allowlist`), `back` (the console) only ever from
+ * configuration, `assistant` the redirect back to the assistant that ends its
+ * wait (§19.30), only ever built by as.mjs from a redirect it trusted,
+ * `acceptLanguage` the request's header, which orders the sentences and picks
+ * the button's language, nothing else.
+ */
+export function refusalPage(status, code, { back = '', assistant = '', acceptLanguage = null, allowlist = false } = {}) {
   const key = code === 'invalid_client' && allowlist ? 'invalid_client_allowlist' : sentenceOf[code] ?? code
   const sentences = SENTENCES[key]
   if (!sentences) throw new Error(`no sentence for ${code}`)
-  const body = htmlHead + pageLanguages(acceptLanguage).map(tag => `<p lang="${tag}">${escapeHTML(sentences[tag])}</p>`).join('') +
+  const button = assistant ? assistantButton(assistant, acceptLanguage) : null
+  const body = htmlHead + pageLanguages(acceptLanguage).map(tag => `<p lang="${tag}">${escapeHTML(sentences[tag])}</p>`).join('') + (button ?? '') +
     (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : '') + `<p><small>Wappie MCP: ${code}</small></p>`
   return new Response(body, { status, headers: pageHeaders })
 }

@@ -141,6 +141,8 @@ test('cross-chat search decrypts complete text and filenames, continues within p
     for (const result of [first, second, third, fourth, meeting]) {
       const json = JSON.stringify(result)
       for (const secret of [token, 'body_sealed', 'sealed_dsk', vector.private_key]) assert.equal(json.includes(secret), false)
+      // The local reader names no workspace either (§19.30).
+      assert.equal(json.includes(workspace), false)
     }
     assert.equal(f.state.requests.every(item => item.method === 'GET'), true)
   } finally { await f.close() }
@@ -236,10 +238,11 @@ test('hosted search hits cite the message, never the reader\'s own archive addre
     const reader = await createReader(config, { token: async () => ({ token, kind: 'api_key' }) })
     const result = await reader.searchMessages({ ...interval })
     assert.ok(result.messages.length > 0)
-    for (const hit of result.messages) assert.deepEqual(Object.keys(hit.source).sort(), ['chat_key', 'device_id', 'message_uid', 'workspace_id'])
+    for (const hit of result.messages) assert.deepEqual(Object.keys(hit.source).sort(), ['chat_key', 'device_id', 'message_uid'])
     assert.equal(JSON.stringify(result).includes(f.server), false, 'the archive address reached the result')
     // A local install keeps linking to the server its user reads the archive at.
     const local = parsed(await call(await f.connect({ allow_plaintext: false, service_key_file: undefined, service_user_id: undefined, contacts_file: undefined }), 'search_messages', interval))
     assert.equal(local.messages[0].source.server, f.server)
+    assert.deepEqual(Object.keys(local.messages[0].source).sort(), ['chat_key', 'device_id', 'message_uid', 'server', 'url'])
   } finally { await f.close() }
 })

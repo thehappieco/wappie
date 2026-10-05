@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { vector, workspace } from '@whatserver2/mcp/test/fixture'
 import { attestationUserData, attestationUserDataV2, decodeAttestationDocument, descriptorSHA256 } from '../../attestation.mjs'
-import { pkce, proof, sealBundle } from '../../test/harness.mjs'
+import { backButton, pkce, proof, sealBundle } from '../../test/harness.mjs'
 import { CLIENT_LIMITS, TESTED_CLIENTS } from '../constants.mjs'
 import { lineAllowed } from '../logsink.mjs'
 import {
@@ -294,6 +294,45 @@ test('the network check (§19.12) in the enclave: the PROXY v2 source of the com
   const refusedLine = () => w.lines.map(entry => JSON.parse(entry)).find(entry => entry.route === 'POST /mcp/authorize/complete' && entry.code === 'ip_mismatch')
   for (let n = 0; n < 100 && !refusedLine(); n++) await new Promise(resolve => setTimeout(resolve, 10))
   assert.equal(refusedLine()?.ip_mismatch, true)
+})
+
+test('the way back in the enclave (§19.30): an ip_mismatch page\'s button, and the console\'s Cancel, end the assistant\'s wait with access_denied, its state and iss', async t => {
+  const { w } = await anyWorld(t)
+  const decline = (started, source) => w.public('/mcp/authorize/decline', { ...form({ request: started.id }),
+    headers: { 'content-type': 'application/x-www-form-urlencoded', origin: CONSOLE_ORIGIN }, source })
+  const waitFor = async find => { for (let n = 0; n < 100 && !find(); n++) await new Promise(resolve => setTimeout(resolve, 10)); return find() }
+  const lines = () => w.lines.map(entry => JSON.parse(entry))
+  // A completion from another network: the page, and its one button back to the assistant.
+  const other = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10', query: { state: 'st-complete' } })
+  // consentMetadata posts the completion from `source`: here another network than the request's.
+  const done = await consentMetadata(w, { ...other, source: '198.51.101.10' })
+  assert.equal(done.relayed.status, 204, done.relayed.body)
+  assert.equal(done.completed.status, 400)
+  assert.equal(done.completed.headers.location, undefined)
+  const button = backButton(done.completed.body)
+  assert.deepEqual([button.base, button.params], [CLAUDE_REDIRECT, { error: 'access_denied', state: 'st-complete', iss: ORIGIN }])
+  // Cancel from the request's own network: the browser goes straight back, and the request is gone.
+  const cancelled = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10', query: { state: 'st-cancel' } })
+  const declined = await decline(cancelled, '198.51.100.20')
+  assert.equal(declined.status, 302)
+  const location = new URL(declined.headers.location)
+  assert.deepEqual([`${location.origin}${location.pathname}`, Object.fromEntries(location.searchParams)], [CLAUDE_REDIRECT, { error: 'access_denied', state: 'st-cancel', iss: ORIGIN }])
+  assert.equal((await w.internal(`/internal/requests/${cancelled.id}`)).status, 404)
+  const line = await waitFor(() => lines().find(entry => entry.route === 'POST /mcp/authorize/decline' && entry.code === 'declined'))
+  assert.deepEqual([line.status, line.ip_mismatch], [302, false])
+  assert.equal(w.lines.filter(entry => entry.includes('/mcp/authorize/decline')).every(entry => lineAllowed(entry)), true, 'the parent\'s sink admits the line')
+  // Cancel from another network: the request ends, with the ip_mismatch page instead of a redirect.
+  const far = await authorize(w, { clientId: AGENT, redirectUri: AGENT_REDIRECT, source: '198.51.100.10', query: { state: 'st-far' } })
+  const refused = await decline(far, '198.51.102.10')
+  assert.equal(refused.status, 400)
+  assert.match(refused.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
+  assert.deepEqual(backButton(refused.body).params, { error: 'access_denied', state: 'st-far', iss: ORIGIN })
+  assert.equal((await w.internal(`/internal/requests/${far.id}`)).status, 404)
+  // From anywhere but the console, nothing happens.
+  const kept = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10' })
+  const forged = await w.public('/mcp/authorize/decline', { ...form({ request: kept.id }), headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example' }, source: '198.51.100.10' })
+  assert.equal(forged.status, 400)
+  assert.equal((await w.internal(`/internal/requests/${kept.id}`)).status, 200)
 })
 
 test('the version-4 renewal (§19.16): an unknown text connection renews with its own client, tier and window under fresh checks; a version-3 bundle and a changed window are refused', async t => {

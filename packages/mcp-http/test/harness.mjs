@@ -218,6 +218,22 @@ export function secretsAbsent(h, { linkSecrets = [], proofs = [], tokens = [], e
     assert.equal('path' in entry || 'query' in entry || 'headers' in entry || 'body' in entry, false)
   }
 }
+/**
+ * A refusal page's one way back to the assistant (docs/mcp-enclave.md
+ * §19.30): `{lang, href, label, params}`, the link's attributes unescaped and
+ * its query's parameters by name, or null when the page has none.
+ */
+export function backButton(body) {
+  const buttons = [...body.matchAll(/<a class="back" lang="([a-z]{2})" href="([^"]*)">([^<]*)<\/a>/g)]
+  if (buttons.length === 0) return null
+  assert.equal(buttons.length, 1, 'one button at most')
+  const unescape = value => value.replace(/&(amp|lt|gt|quot|#39);/g, (_, name) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': '\'' })[name])
+  const [, lang, href, label] = buttons[0]
+  const url = new URL(unescape(href))
+  return { lang, href: unescape(href), label: unescape(label), params: Object.fromEntries(url.searchParams), base: `${url.origin}${url.pathname}` }
+}
+/** The console's Cancel: the decline form post, from the console's Origin unless `headers` say otherwise. */
+export const decline = (h, request, headers = {}) => h.form('/mcp/authorize/decline', { request }, { origin: CONSOLE_ORIGIN, ...headers })
 export const call = (client, name, args = {}) => client.callTool({ name, arguments: args })
 export const parsed = result => result.structuredContent || JSON.parse(result.content[0].text)
 

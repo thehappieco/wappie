@@ -375,11 +375,13 @@ const chatKey = z.string().min(1).max(128).regex(/^[^\s,]+$/)
  * workspace and an identical call within ten minutes returns the same one;
  * the ledger is read. An own-chat note leaves at once through WhatsApp's
  * network, to every device linked to the number, and no tool can recall it:
- * openWorldHint is true there (§19.29). None is destructive: each only adds.
+ * openWorldHint is true there (§19.29), and so is destructiveHint
+ * (§19.30): OpenAI reads true for an irreversible send, whether or not it
+ * only adds, and a host then asks before every note.
  */
 const sendAnnotations = {
   draft_message: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  send_to_self: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  send_to_self: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   list_outgoing: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }
 /** The sending tools' descriptions (§17.8, shortened in §19.29: the rules are the instructions'). */
@@ -554,6 +556,10 @@ export function createServer(config, provider, { iconOrigin, version, contentRea
    * §19.19), a tool that returns messages reserves the most it can return
    * before it runs and is counted once it has: a call that starts under the
    * limit is served whole, and a failed one frees its reservation uncounted.
+   * The result is its JSON as one text block, once (§19.30): no
+   * structuredContent and so no outputSchema. claude.ai never shows
+   * structuredContent to the model, Claude Code shows it instead of the
+   * text, and ChatGPT shows both, so the same JSON went to ChatGPT twice.
    */
   function tool(name, description, schema, method) {
     server.registerTool(name, { title: titles[name], description, inputSchema: schema, annotations: { ...annotations, title: titles[name] } }, async input => {
@@ -568,7 +574,7 @@ export function createServer(config, provider, { iconOrigin, version, contentRea
         const text = JSON.stringify(data)
         if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new ArchiveError('result_too_large')
         ticket?.settle(counted.count(data))
-        return { content: [{ type: 'text', text }], structuredContent: data }
+        return { content: [{ type: 'text', text }] }
       } catch (error) {
         const code = codeOf(error)
         const guidance = code === 'limit_reached' ? limitSentence(error) : code === 'outside_window' ? WINDOW_SENTENCE : await guidanceFor(code)

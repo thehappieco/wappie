@@ -73,7 +73,8 @@ test('a text query scans the whole budget and makes the same REST calls whatever
     for (const hit of fifty.messages) {
       assert.deepEqual(hit.archive_status, { state: 'not_checked' })
       assert.equal(hit.body.value, hitText)
-      assert.deepEqual(Object.keys(hit.source).sort(), ['chat_key', 'device_id', 'message_uid', 'workspace_id'])
+      // The citation names the message, never the workspace (§19.30).
+      assert.deepEqual(Object.keys(hit.source).sort(), ['chat_key', 'device_id', 'message_uid'])
     }
     assert.equal(JSON.stringify(fifty).includes(f.server), false)
     // Following next reads the rest of the range the same way.
@@ -175,10 +176,10 @@ test('content-mode words: attested, untrusted data, renewal guidance with the li
     const { tools } = await client.listTools()
     assert.equal(tools.length, 8)
     for (const tool of tools) assert.equal(/local|plaintext|metadata only|sealed on this connection/i.test(tool.description), false, `${tool.name}: ${tool.description}`)
-    const numbers = (await client.callTool({ name: 'list_numbers', arguments: {} })).structuredContent
+    const numbers = JSON.parse((await client.callTool({ name: 'list_numbers', arguments: {} })).content[0].text)
     assert.equal(numbers.plaintext_enabled, true)
     assert.equal(numbers.plaintext_available, true)
-    const found = (await client.callTool({ name: 'search_messages', arguments: { ...interval, query: 'exame' } })).structuredContent
+    const found = JSON.parse((await client.callTool({ name: 'search_messages', arguments: { ...interval, query: 'exame' } })).content[0].text)
     assert.equal(found.messages.length, 2)
     await client.close()
 

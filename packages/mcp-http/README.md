@@ -71,7 +71,15 @@ dependency), and the `node:http` bridge is the small `node-adapter.mjs`.
    that is the CSRF check. Three wrong proofs burn the request and revoke the
    connection in Go. A good proof activates the connection, stores the API key
    in the encrypted state and redirects back to the client with a single-use
-   sixty-second code, the `state` and `iss`.
+   sixty-second code, the `state` and `iss`. A refusal of a request the reader
+   knows (a wrong proof, another network, a failed activation, a cap) is a
+   page with one button back to the assistant, whose link carries `error`
+   (`access_denied`, or `server_error` where the server failed), the `state`
+   and `iss`, so the assistant stops waiting.
+   The console's Cancel posts `request` to `POST /mcp/authorize/decline`
+   under the same `Origin` rule: the request ends (its connection in Go is
+   revoked if the console had relayed one) and the browser is redirected to
+   the client with `error=access_denied`, the `state` and `iss`.
 5. `POST /mcp/token` exchanges the code (all of `client_id`, `code_verifier`,
    `redirect_uri` and `resource` must match) for a fifteen-minute access token
    and a refresh token that idles out after thirty days and never outlives the
@@ -142,7 +150,8 @@ In process: `/mcp` sixty requests a minute per connection; `/mcp/token` three
 hundred a minute per address before the grant is known (a `client_id` is
 public, so it never keys a bucket on its own), then twenty a minute per token
 family and per connection; `/mcp/authorize/complete` three proof attempts per
-request and ten posts a minute per address; `/mcp/authorize` twenty a minute
+request and ten posts a minute per address, and `/mcp/authorize/decline` ten
+a minute per address; `/mcp/authorize` twenty a minute
 and ten pending requests per address, taken before anything is looked at, and
 three uncached CIMD documents a minute per address (a document that failed to
 resolve is not asked for again for a minute); registration five a minute per

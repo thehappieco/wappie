@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { askedLanguages, escapeHTML, HOME, homeLanguage, homePage, PAGE_CODES, PAGE_LANGUAGES, pageLanguages, refusalPage, robotsResponse, ROBOTS, SENTENCES } from '../pages.mjs'
+import { askedLanguages, BACK_TO, escapeHTML, HOME, homeLanguage, homePage, PAGE_CODES, PAGE_LANGUAGES, pageLanguages, refusalPage, robotsResponse, ROBOTS, SENTENCES } from '../pages.mjs'
 import { createMetadata } from '../metadata.mjs'
 
 const hashOf = text => `'sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}'`
@@ -31,7 +31,8 @@ test('languages: Accept-Language by q-value, unknown and refused tags skipped, t
 test('every browser-facing code has a page: five sentences with a next step, the person\'s first, the way back and the code, under a strict CSP', async () => {
   // Every code as.mjs puts on a page is one of PAGE_CODES (the origin codes reach it as meta.code).
   const source = await readFile(new URL('../as.mjs', import.meta.url), 'utf8')
-  const used = new Set([...source.matchAll(/page\(\d{3}, '([a-z_]+)'/g), ...source.matchAll(/refusalPage\(\d{3}, '([a-z_]+)'/g)].map(match => match[1]))
+  const used = new Set([...source.matchAll(/(?:page|pageBack|refusalPage)\(\d{3}, '([a-z_]+)'/g)].map(match => match[1]))
+  assert.ok(used.has('ip_mismatch') && used.has('too_many_unknown'), 'the pages with a way back to the assistant are counted too')
   for (const code of used) assert.ok(PAGE_CODES.includes(code), code)
   for (const code of ['origin_missing', 'opaque_origin', 'invalid_origin']) assert.ok(source.includes(`'${code}'`), code)
   const nextStep = { pt: /assistente|console|suporte/, en: /assistant|console|support/, es: /asistente|consola|soporte/, fr: /assistant|console|assistance/, de: /Assistent|Konsole|Support/ }
@@ -65,6 +66,35 @@ test('every browser-facing code has a page: five sentences with a next step, the
   assert.ok((await refusalPage(429, 'too_many_requests').text()).includes('<p><small>Wappie MCP: too_many_requests</small></p>'))
   assert.doesNotMatch(await refusalPage(429, 'too_many_requests').text(), /<a href/, 'no way back unless one is given')
   assert.throws(() => refusalPage(400, 'not_a_code'), /no sentence/)
+})
+
+test('the way back to the assistant (§19.30): one button in the person\'s first language, English otherwise, escaped, only to an https or loopback redirect', async () => {
+  assert.deepEqual(Object.keys(BACK_TO), PAGE_LANGUAGES)
+  for (const label of Object.values(BACK_TO)) assert.match(label, /^\S.*\{host\}$/)
+  const assistant = 'https://claude.ai/api/mcp/auth_callback?error=access_denied&state=a%22b%3C&iss=https%3A%2F%2Fmcp.example.test'
+  const page = async (options, code = 'ip_mismatch') => (await refusalPage(400, code, { assistant, ...options }).text())
+  const button = body => /<p><a class="back" lang="([a-z]{2})" href="([^"]*)">([^<]*)<\/a><\/p>/.exec(body)
+  for (const [header, tag, label] of [['pt-BR,pt;q=0.9', 'pt', 'Voltar para claude.ai'], ['en', 'en', 'Back to claude.ai'], ['es-MX', 'es', 'Volver a claude.ai'],
+    ['fr', 'fr', 'Retour à claude.ai'], ['de-AT', 'de', 'Zurück zu claude.ai'], ['ja,ko', 'en', 'Back to claude.ai'], [null, 'en', 'Back to claude.ai']]) {
+    const found = button(await page({ acceptLanguage: header }))
+    assert.deepEqual([found[1], found[3]], [tag, label], String(header))
+    // The href is the redirect exactly, escaped once: the state's quote and angle bracket stay percent-encoded.
+    assert.equal(found[2], escapeHTML(new URL(assistant).href), String(header))
+  }
+  // After the sentences, before the console link and the code; no script, no form, the CSP unchanged in kind.
+  const both = await page({ acceptLanguage: 'en', back: 'https://console.example.test/console' }, 'too_many_unknown')
+  assert.ok(both.indexOf('class="back"') > both.lastIndexOf('<p lang=') && both.indexOf('class="back"') < both.indexOf('console.example.test') && both.indexOf('console.example.test') < both.indexOf('<small>'))
+  assert.doesNotMatch(both, /<script|<form/)
+  const response = refusalPage(400, 'ip_mismatch', { assistant })
+  assert.equal(response.headers.get('content-security-policy'), `default-src 'none'; style-src ${hashOf(styleOf(await response.text()))}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`)
+  // A native app's loopback redirect is named by its address.
+  assert.equal(button(await page({ assistant: 'http://127.0.0.1:53682/callback?error=access_denied&iss=x' }))[3], 'Back to 127.0.0.1')
+  assert.equal(button(await page({ assistant: 'http://[::1]:9/cb?error=access_denied' }))[3], 'Back to [::1]')
+  // Anything the authorization server would never trust gets no button at all.
+  for (const unsafe of ['javascript:alert(1)', 'http://claude.ai/cb', 'data:text/html,x', 'not a url', 'ftp://claude.ai/']) {
+    assert.equal(button(await page({ assistant: unsafe })), null, unsafe)
+  }
+  assert.equal(button(await refusalPage(400, 'ip_mismatch', { back: 'https://console.example.test/console' }).text()), null, 'none unless one is given')
 })
 
 test('the page at /: one language, what the address is for, the console and the documentation, nothing loaded from elsewhere', async () => {
