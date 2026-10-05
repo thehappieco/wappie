@@ -53,10 +53,10 @@ type PlatformLogin struct {
 	Pins   oidcrp.PinStore
 	// AppOrigin is the one page origin that may post here.
 	AppOrigin string
-	// Alert sends the "your account key changed" mail to one address; nil
-	// sends nothing. AlertEmail is the operator's address, beside the
-	// account's own.
-	Alert      func(ctx context.Context, to string) error
+	// Alert sends the "your account key changed" mail to one address, in
+	// lang (the account's locale; "" is English); nil sends nothing.
+	// AlertEmail is the operator's address, beside the account's own.
+	Alert      func(ctx context.Context, to, lang string) error
 	AlertEmail string
 }
 
@@ -395,6 +395,8 @@ func (h *Handler) platformTicket(ctx context.Context, t store.PlatformTicket) (s
 // accountKeyChanged is the alert (O1): the event row, an Error line with a
 // stable event name for log-based alerting, and a mail to the operator and
 // to the account. None of them names the key, the token or the address.
+// The account's mail goes in its language (users.locale), English when it
+// never said one; the operator's goes in English.
 func (h *Handler) accountKeyChanged(ctx context.Context, ui *oidcrp.Userinfo) {
 	h.log().Error("refused a sign-in whose account key differs from the pinned one",
 		slog.String("event", "platform_account_key_changed"), slog.String("product_key_id", ui.ProductKeyID))
@@ -403,14 +405,19 @@ func (h *Handler) accountKeyChanged(ctx context.Context, ui *oidcrp.Userinfo) {
 		return
 	}
 	var userID *uuid.UUID
-	recipients := []string{}
+	type recipient struct{ to, lang string }
+	recipients := []recipient{}
 	if h.Platform.AlertEmail != "" {
-		recipients = append(recipients, h.Platform.AlertEmail)
+		recipients = append(recipients, recipient{to: h.Platform.AlertEmail})
 	}
 	if ident, err := h.Users.PlatformIdentity(ctx, sub); err == nil {
 		userID = &ident.UserID
 		if user, err := h.Users.PlatformAccount(ctx, ident.UserID); err == nil && user.Email != "" {
-			recipients = append(recipients, user.Email)
+			lang := ""
+			if profile, err := h.Users.Profile(ctx, ident.UserID); err == nil {
+				lang = profile.Locale
+			}
+			recipients = append(recipients, recipient{to: user.Email, lang: lang})
 		}
 	}
 	if err := h.Users.RecordSecurityEvent(ctx, "platform_account_key_changed", userID, sub, map[string]string{"product_key_id": ui.ProductKeyID}); err != nil {
@@ -424,7 +431,7 @@ func (h *Handler) accountKeyChanged(ctx context.Context, ui *oidcrp.Userinfo) {
 		mailCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		for _, to := range recipients {
-			if err := alert(mailCtx, to); err != nil {
+			if err := alert(mailCtx, to.to, to.lang); err != nil {
 				h.log().Warn("could not send the account key alert", "event", "platform_account_key_changed", "error", err)
 			}
 		}

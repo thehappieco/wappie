@@ -35,9 +35,10 @@ func (s Sender) WorkspaceInvite(ctx context.Context, email, code, workspace stri
 }
 
 // AccountKeyChanged alerts one address (the operator's, or the account's
-// own) that a sign-in was refused as account_key_changed.
-func (s Sender) AccountKeyChanged(ctx context.Context, email string) error {
-	model, err := accountKeyChangedEmail(s.AppURL, email)
+// own) that a sign-in was refused as account_key_changed, in lang (a
+// locale such as "pt" or "pt-BR"; English when it has no words here).
+func (s Sender) AccountKeyChanged(ctx context.Context, email, lang string) error {
+	model, err := accountKeyChangedEmail(s.AppURL, email, lang)
 	if err != nil {
 		return err
 	}

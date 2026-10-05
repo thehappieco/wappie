@@ -177,7 +177,7 @@ func newPlatformHarness(t *testing.T, local config.LocalLogin) *platformHarness 
 		t.Fatal(err)
 	}
 	alerts := make(chan string, 8)
-	login.Alert = func(_ context.Context, to string) error { alerts <- to; return nil }
+	login.Alert = func(_ context.Context, to, lang string) error { alerts <- to + " " + lang; return nil }
 	provider, err := authapi.NewPasskeyProvider(config.Passkeys{RPID: passkeyRP, Origins: []string{passkeyApp, passkeyConsole}})
 	if err != nil {
 		t.Fatal(err)
@@ -409,6 +409,10 @@ func TestPlatformAccountKeyChangedIsRefusedAndRaised(t *testing.T) {
 		t.Fatalf("account: %d", code)
 	}
 	sessions := h.count(t, `SELECT count(*) FROM sessions WHERE user_id = $1`, p.sub)
+	// The account's alert goes in its language; the operator's in English.
+	if _, err := h.users.SetLocale(context.Background(), uuid.MustParse(p.sub), "pt"); err != nil {
+		t.Fatal(err)
+	}
 
 	swapped := p
 	swapped.root = make([]byte, 32)
@@ -442,7 +446,7 @@ func TestPlatformAccountKeyChangedIsRefusedAndRaised(t *testing.T) {
 			t.Fatalf("alerts sent: %v", got)
 		}
 	}
-	if !got["operator@example.com"] || !got["carla@example.com"] {
+	if !got["operator@example.com "] || !got["carla@example.com pt"] {
 		t.Fatalf("alerts sent: %v", got)
 	}
 	// And the right key still signs in.

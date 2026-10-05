@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{if .Lang}}{{.Lang}}{{else}}en{{end}}">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>{{.Subject}}</title></head>
 <body style="margin:0;padding:0;background-color:#f1f5f4;color:#172e2b;font-family:Arial,Helvetica,sans-serif;">
   <div style="display:none;font-size:1px;color:#f1f5f4;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{.Preheader}}</div>
@@ -18,10 +18,10 @@
         <p style="margin:0 0 8px;font-size:13px;line-height:21px;color:#50675f;">{{.Instructions}}</p>
         <p style="margin:0 0 24px;font-size:13px;line-height:21px;color:#173d34;word-break:break-all;"><strong>{{.Recipient}}</strong></p>
         {{if .Code}}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:18px;background-color:#f7f9f8;border:1px solid #e4ece8;border-radius:10px;"><p style="margin:0 0 10px;font-size:12px;line-height:18px;color:#638178;">{{.CodeLabel}}</p><div style="font-family:Consolas,Monaco,monospace;font-size:13px;line-height:22px;color:#173d34;word-break:break-all;overflow-wrap:anywhere;">{{.Code}}</div></td></tr></table>{{end}}
-        <p style="margin:24px 0 8px;font-size:12px;line-height:19px;color:#71857e;">If the button does not work, copy and paste this link into your browser:</p>
+        <p style="margin:24px 0 8px;font-size:12px;line-height:19px;color:#71857e;">{{if .LinkHelp}}{{.LinkHelp}}{{else}}If the button does not work, copy and paste this link into your browser:{{end}}</p>
         <p style="margin:0;font-size:11px;line-height:18px;word-break:break-all;overflow-wrap:anywhere;"><a href="{{.Link}}" style="color:#087f67;text-decoration:underline;word-break:break-all;overflow-wrap:anywhere;">{{.Link}}</a></p>
       </td></tr>
-      <tr><td style="padding:24px 12px 0;text-align:center;"><p style="margin:0 0 10px;font-size:12px;line-height:20px;color:#6c8278;">{{.Footer}}</p><p style="margin:0;font-size:11px;line-height:18px;color:#81938a;">Wappie · The Happie<br><a href="{{.HomeURL}}" style="color:#638178;text-decoration:underline;">Open Wappie</a></p></td></tr>
+      <tr><td style="padding:24px 12px 0;text-align:center;"><p style="margin:0 0 10px;font-size:12px;line-height:20px;color:#6c8278;">{{.Footer}}</p><p style="margin:0;font-size:11px;line-height:18px;color:#81938a;">Wappie · The Happie<br><a href="{{.HomeURL}}" style="color:#638178;text-decoration:underline;">{{if .HomeLabel}}{{.HomeLabel}}{{else}}Open Wappie{{end}}</a></p></td></tr>
     </table>
   </td></tr></table>
 </body>

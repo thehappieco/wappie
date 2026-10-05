@@ -15,6 +15,13 @@ and the console in development, and how its accounts meet the step-up of the
 fewer steps today. Step-ups through id. (step 4), the cutover (step 5) and
 the end of the rollback window (migration 0049, step 6) come later.
 
+**Not in the pilot before step 4.** The owner decided on 2026-10-05 that the
+platform sign-in is not switched on in the pilot (`WS_PLATFORM_ISSUER`)
+before step 4 exists. Until then an account that signs in through id. cannot
+give a content consent, renew one, add an AI integration or grant a number's
+key (see "Step-ups"), and a linked account loses the step-ups of its old
+password with its first sign-in through id.
+
 ## What the provider gives and what Wappie keeps
 
 When a sign-in asks for it (`account_key` scope, key delivery), id. gives the
@@ -215,7 +222,11 @@ Refusals:
   - a `security_events` row;
   - an Error log line with `event=platform_account_key_changed` and the
     product key id only;
-  - a mail to `WS_SECURITY_ALERT_EMAIL` and to the account's address.
+  - a mail to `WS_SECURITY_ALERT_EMAIL`, in English, and to the account's
+    address, in the account's language (`users.locale`: en, pt, es, fr or
+    de; English when it never said one). Its advice is the callback page's,
+    word for word: change the The Happie Co password now and contact Wappie
+    support before signing in again.
 
 ### `POST /v1/auth/platform/account {ticket, public_key, platform_wrap, display_name?}`
 
@@ -461,12 +472,52 @@ window (step 6). Steps 1 to 3 accept one consequence of that:
 | Release | A release that knows version 48 | As in `deployment.md` |
 | Schema | 0048's down-step, before 0047's and every older one | Refused while accounts created through id. exist; signs out the sessions started through the provider |
 
+## The texts (approved 2026-10-05)
+
+The owner approved every text of this branch and of the fewer steps that the
+list of 2026-10-05 collected (codes C- for the console, E- for the Go server),
+with thirteen recommendations; `docs/mcp-enclave.md` §19.30 lists all of
+them. Those that change this branch's texts:
+
+- **"a Wappie" and "o Wappie" (3).** Portuguese writes "a Wappie" where
+  Wappie checks or receives (C-AUTH-12, C-AUTH-19, C-SIGNIN-03, C-AUTHERR-06)
+  and keeps "o Wappie" for the app and the connector ("pelo Wappie",
+  "desbloqueia o Wappie", "conta Wappie"); the alert's button opens the app,
+  "Abrir o Wappie".
+- **"entrar" and "entrada" (4).** Portuguese says "entrada" for a sign-in
+  ("Entrada recusada", "Voltar para a entrada", "Este link de entrada já foi
+  usado ou expirou", and every other refusal of the callback page); "acesso"
+  stays for access to numbers. Spanish ("inicio de sesión") and German
+  ("Anmeldung") had no such ambiguity; French keeps "connexion", the
+  console's word for signing in.
+- **One security alert (8).** The callback page and the e-mail give the same
+  advice: "If you did not reset your The Happie Co account, change its
+  password now and contact Wappie support before signing in again."
+  (C-AUTHERR-04, E-ALERT-07). The e-mail goes in the account's language (see
+  "Routes").
+- **No server English on the screen (9).** The callback page says "Too many
+  attempts. Try again in a few minutes." for `rate_limited`, in the
+  console's five languages, instead of the server's message, and shows it
+  even when the refusal comes before any form.
+- **The Happie Co by name (10).** C-STEP-13 says "Your account signs in
+  through The Happie Co, and confirming it is you there is not available
+  yet." Members and permissions refuses a grant to such an account up front
+  with it, before its dialog asks for a Wappie password the account does not
+  have. The platform sign-in waits for step 4 in the pilot (above).
+- **The link ceremony (11).** "Its other sessions end and its Wappie passkeys
+  stop working." (C-AUTH-19), since the link revokes the passkeys.
+- **Wappie support (12).** The callback page, which only the cloud build
+  has, sends a password account that cannot be linked to Wappie support
+  (C-AUTHERR-10), and every text a person reads uses the typographic
+  apostrophe. The API's own messages (E-SIGNIN), which programs read, keep
+  ASCII and the operator.
+
 ## Not yet
 
 - **Step-ups through id. (step 4).** Until then an account that signs in
   through id. is refused wherever a step-up is needed (see "Step-ups"): it
   cannot give a content consent, renew one, add an AI integration or grant a
-  number's key.
+  number's key. The pilot does not switch the platform sign-in on before it.
 - **The cutover (step 5) and the end of the window (step 6).** Migration 0049
   will null the legacy credentials of linked accounts and delete their
   passkeys, with no down-step.
