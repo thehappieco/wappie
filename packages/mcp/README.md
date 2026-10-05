@@ -461,7 +461,7 @@ From reader 0.6.0 ([docs/mcp-enclave.md §19.29](../../docs/mcp-enclave.md#1929-
   call `list_numbers` first). They begin "Read-only access" only where every
   tool is read-only: no drafts or notes, and no AI integration. A metadata
   connection of the attested reader says that text can be read by connecting
-  Wappie again with "Also read message text" ticked (a console token: by a new
+  Wappie again with the option to also read message text turned on (a console token: by a new
   token a workspace manager makes), where Wappie offers it, and that an
   untested assistant and a token also need a confirmed e-mail address and a
   second confirmation; the hosted reader says it never opens text.

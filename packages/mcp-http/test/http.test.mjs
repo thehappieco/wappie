@@ -61,7 +61,7 @@ test('claude.ai-style client: discovery, DCR assigned none, consent, PKCE exchan
       assert.equal(spoken.includes(phrase), false, `hosted wording still sends the user after a setting: ${phrase}`)
     }
     // The hosted reader never opens text, so it never offers the attested reader's way to it (§19.29).
-    assert.equal(spoken.includes('Also read message text'), false)
+    assert.equal(spoken.includes('also read message text'), false)
     assert.match(parsed(chats).chats[0].name.reason, /metadata only/)
     const archive = h.f.state.requests
     assert.ok(archive.length >= 3)

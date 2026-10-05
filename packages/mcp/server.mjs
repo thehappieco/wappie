@@ -146,9 +146,9 @@ const contentInstructions = (media, consoleURL, send, ai) => [headSentences({ se
  * (§19.14), so the model does not send the user to a box that is not there.
  */
 function textLater(tier, wish = 'wants them read') {
-  if (tier === 'token') return `If the user ${wish}, a workspace manager can create a new connection token in the Wappie console with "Also read message text" ticked, where Wappie offers it (it needs a confirmed e-mail address and a second confirmation); nothing you call changes this.`
+  if (tier === 'token') return `If the user ${wish}, a workspace manager can create a new connection token in the Wappie console with the option to also read message text turned on, where Wappie offers it (it needs a confirmed e-mail address and a second confirmation); nothing you call changes this.`
   const untested = tier === 'web_tested' || tier === 'local_tested' ? '' : ' (an untested assistant also needs a confirmed e-mail address and a second confirmation)'
-  return `If the user ${wish}, they can reconnect Wappie from this assistant and tick "Also read message text" on Wappie's consent page, where Wappie offers it${untested}; nothing you call changes this.`
+  return `If the user ${wish}, they can reconnect Wappie from this assistant and turn on the option to also read message text on Wappie’s consent page, where Wappie offers it${untested}; nothing you call changes this.`
 }
 const metadataReading = 'Use resolve_contact with a phone number and ask about ambiguous candidates. Take chat_key from list_chats, and uid from list_messages or search_messages. Search is lexical, not semantic. Check timezone and now for relative dates; yesterday_evening means 18:00 to midnight. Follow next unchanged while has_more is true. Never present partial counts or empty incomplete searches as exhaustive. Search returns historical archive events: check archive_status and list_revisions before claiming a result is current.'
 function metadataInstructions(contentReader, tier) {

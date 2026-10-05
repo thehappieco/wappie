@@ -132,14 +132,14 @@ test('a metadata connection says how text can be read: reconnecting on the attes
   try {
     const cases = [
       ['enclave, untested', metadataProvider({ connection: () => ({ tier: 'unknown' }) }), { contentReader: true },
-        'If the user wants them read, they can reconnect Wappie from this assistant and tick "Also read message text" on Wappie\'s consent page, where Wappie offers it (an untested assistant also needs a confirmed e-mail address and a second confirmation); nothing you call changes this.',
-        'Message text is not readable on this connection: it was authorized for metadata only. Select with the filters and a time range instead. If the user wants text searched, they can reconnect Wappie from this assistant and tick "Also read message text" on Wappie\'s consent page, where Wappie offers it (an untested assistant also needs a confirmed e-mail address and a second confirmation); nothing you call changes this.'],
+        'If the user wants them read, they can reconnect Wappie from this assistant and turn on the option to also read message text on Wappie’s consent page, where Wappie offers it (an untested assistant also needs a confirmed e-mail address and a second confirmation); nothing you call changes this.',
+        'Message text is not readable on this connection: it was authorized for metadata only. Select with the filters and a time range instead. If the user wants text searched, they can reconnect Wappie from this assistant and turn on the option to also read message text on Wappie’s consent page, where Wappie offers it (an untested assistant also needs a confirmed e-mail address and a second confirmation); nothing you call changes this.'],
       ['enclave, tested', metadataProvider({ connection: () => ({ tier: 'web_tested' }) }), { contentReader: true },
-        'If the user wants them read, they can reconnect Wappie from this assistant and tick "Also read message text" on Wappie\'s consent page, where Wappie offers it; nothing you call changes this.',
-        'Message text is not readable on this connection: it was authorized for metadata only. Select with the filters and a time range instead. If the user wants text searched, they can reconnect Wappie from this assistant and tick "Also read message text" on Wappie\'s consent page, where Wappie offers it; nothing you call changes this.'],
+        'If the user wants them read, they can reconnect Wappie from this assistant and turn on the option to also read message text on Wappie’s consent page, where Wappie offers it; nothing you call changes this.',
+        'Message text is not readable on this connection: it was authorized for metadata only. Select with the filters and a time range instead. If the user wants text searched, they can reconnect Wappie from this assistant and turn on the option to also read message text on Wappie’s consent page, where Wappie offers it; nothing you call changes this.'],
       ['token', metadataProvider({ connection: () => ({ tier: 'token' }) }), { contentReader: true },
-        'If the user wants them read, a workspace manager can create a new connection token in the Wappie console with "Also read message text" ticked, where Wappie offers it (it needs a confirmed e-mail address and a second confirmation); nothing you call changes this.',
-        'Message text is not readable on this connection: it was authorized for metadata only. Select with the filters and a time range instead. If the user wants text searched, a workspace manager can create a new connection token in the Wappie console with "Also read message text" ticked, where Wappie offers it (it needs a confirmed e-mail address and a second confirmation); nothing you call changes this.'],
+        'If the user wants them read, a workspace manager can create a new connection token in the Wappie console with the option to also read message text turned on, where Wappie offers it (it needs a confirmed e-mail address and a second confirmation); nothing you call changes this.',
+        'Message text is not readable on this connection: it was authorized for metadata only. Select with the filters and a time range instead. If the user wants text searched, a workspace manager can create a new connection token in the Wappie console with the option to also read message text turned on, where Wappie offers it (it needs a confirmed e-mail address and a second confirmation); nothing you call changes this.'],
       ['hosted', metadataProvider(), undefined,
         'This connection reads metadata only: this server never opens message text, chat and contact names or filenames, so they stay locked. Never infer them.',
         'Message text is sealed and never opened on this connection. Select with the filters and a time range instead.'],
@@ -148,7 +148,7 @@ test('a metadata connection says how text can be read: reconnecting on the attes
       const client = await connect(metadataConfig(f.server), provider, options)
       const instructions = client.getInstructions()
       assert.ok(instructions.includes(sentence), label)
-      assert.equal(/Also read message text/.test(instructions), label !== 'hosted', label)
+      assert.equal(/also read message text/.test(instructions), label !== 'hosted', label)
       const refused = await client.callTool({ name: 'search_messages', arguments: { ...interval, query: 'exame' } })
       assert.equal(refused.isError, true, label)
       assert.equal(text(refused), `Could not read the archive (content_sealed_metadata_only). ${guidance}`, label)

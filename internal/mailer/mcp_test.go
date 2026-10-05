@@ -72,7 +72,7 @@ func mcpBodies(t *testing.T, n MCPNotice) (mcpEmail, string, string) {
 func TestMCPNoticeEmail(t *testing.T) {
 	const revoke = "https://api.wappie.thehappie.co/v1/mcp/revoke-link/" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	at := time.Date(2026, 10, 1, 13, 4, 0, 0, time.UTC)
-	const enFooter = "Wappie's e-mails about assistants never ask for your password. Their only button revokes one connection. To see your assistants, open the Wappie console yourself."
+	const enFooter = "Wappie’s e-mails about assistants never ask for your password. Their only button revokes one connection. To see your assistants, open the Wappie console yourself."
 	const ptFooter = "Os e-mails da Wappie sobre assistentes nunca pedem sua senha. O único botão deles revoga uma conexão. Para ver seus assistentes, abra você mesmo o console da Wappie."
 	for name, n := range map[string]MCPNotice{
 		"unknown text": {Event: "activated", ClientHost: "agent.example.com", Tier: "unknown", Workspace: "Acme", Numbers: 2, Text: true, Attachments: true,
@@ -87,7 +87,7 @@ func TestMCPNoticeEmail(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			model, plain, body := mcpBodies(t, n)
 			pt := n.Lang == "pt-BR"
-			wants := []string{model.Intro, "Numbers: ", "Valid until: ", "Don't recognize it? Revoke only this connection", enFooter, "Workspace: " + n.Workspace}
+			wants := []string{model.Intro, "Numbers: ", "Valid until: ", "Don’t recognize it? Revoke only this connection", enFooter, "Workspace: " + n.Workspace}
 			if pt {
 				wants = []string{model.Intro, "Números: ", "Válido até: ", "Não reconhece? Revogar só esta conexão", ptFooter, "Espaço de trabalho: " + n.Workspace}
 			}

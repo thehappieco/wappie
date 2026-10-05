@@ -61,7 +61,7 @@ var revokeTexts = map[string]map[string]string{
 		"done": "Connection revoked", "done_body": "{host} loses access to your Wappie within a minute.",
 		"done_token": "The token “{label}” stops working within a minute.",
 		"dead":       "This link no longer works", "dead_body": "It was used already, or the connection it named has ended. Nothing else changed. To check your assistants, open the Wappie console yourself.",
-		"footer": "Wappie's e-mails about assistants never ask for your password. Their only button revokes one connection.",
+		"footer": "Wappie’s e-mails about assistants never ask for your password. Their only button revokes one connection.",
 	},
 	"pt": {
 		"ask": "Revogar esta conexão de assistente?", "ask_body": "Isto revoga só a conexão de {host} ao seu Wappie. Nada mais muda.",

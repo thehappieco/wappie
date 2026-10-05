@@ -158,9 +158,9 @@ var mcpLanguages = []mcpWords{
 		networkClient: "Someone used the connection of {who} from a network it does not allow, in the workspace “{workspace}”. Wappie refused the call.",
 		date:          func(t time.Time) string { return t.UTC().Format("2 January 2006, 15:04 UTC") },
 		facts:         [6]string{"Assistant: ", "Workspace: ", "Numbers: ", "What it can read: ", "Valid until: ", "When: "},
-		question:      "Don't recognize it?", action: "Revoke only this connection",
+		question:      "Don’t recognize it?", action: "Revoke only this connection",
 		linkHelp: "The button revokes this one connection and nothing else. It needs no password. If it does not work, copy this address into your browser:",
-		footer:   "Wappie's e-mails about assistants never ask for your password. Their only button revokes one connection. To see your assistants, open the Wappie console yourself.",
+		footer:   "Wappie’s e-mails about assistants never ask for your password. Their only button revokes one connection. To see your assistants, open the Wappie console yourself.",
 	},
 	{
 		lang: "pt", kicker: "WAPPIE · ASSISTENTES",

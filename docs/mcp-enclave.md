@@ -9610,6 +9610,28 @@ listener), `content.test.mjs`, `any-enclave.test.mjs` and
 `token-enclave.test.mjs` (metadata during `reseal`, text refused with the
 link, and nothing asking for a renewal once one commits).
 
+**Texts approved (D10, 2026-10-05).** The owner approved every text of 0.6.0
+(the measured `M-` groups, the Go notice e-mail and revoke page, the console
+strings and the documentation) as listed for approval on 2026-10-04, with
+the nine recommendations that came with the list:
+1. the `too_many_unknown` page uses the console's word for a workspace
+   ("espaço de trabalho", "espacio de trabajo", "Arbeitsbereich");
+2. the instructions describe the text option ("the option to also read
+   message text") instead of quoting its English label, so the model words it
+   in the person's language;
+3. the measured list of tested assistants keeps only those that finish the
+   0.5.0 baseline (§2.1 of the plan's annex);
+4. the notice e-mail stays English until accounts store a language (A7);
+5. the footer "Wappie’s e-mails about assistants never ask for your
+   password" stays as it is;
+6. "ask Wappie support to confirm it" stays until a flow exists;
+7. the console's renewal card and its `reconsent_required` message no longer
+   name a restart as the cause;
+8. the Portuguese page at `/` names the connector in the masculine ("Conector
+   do Wappie", "O Wappie abre…"), as the console does, and says the assistant
+   is what may read the numbers;
+9. English texts use the typographic apostrophe.
+
 ### Amendments to §§1 to 18
 
 | Where | Amendment | When |

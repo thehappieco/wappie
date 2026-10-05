@@ -663,7 +663,7 @@ func TestRevokeLink(t *testing.T) {
 		if w.Code != http.StatusOK || !strings.Contains(body, "agent.example.com") || !strings.Contains(body, "Revoke only this connection") ||
 			strings.Contains(body, "<a ") || strings.Count(body, "<form") != 1 || !strings.Contains(body, `method="post"`) ||
 			!strings.Contains(body, `<meta name="referrer" content="same-origin">`) || strings.Contains(body, "no-referrer") ||
-			!strings.Contains(body, "Wappie&#39;s e-mails about assistants never ask for your password. Their only button revokes one connection.") {
+			!strings.Contains(body, "Wappie’s e-mails about assistants never ask for your password. Their only button revokes one connection.") {
 			t.Fatalf("page = %d %s", w.Code, body)
 		}
 		if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "form-action 'self'") ||

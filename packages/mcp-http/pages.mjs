@@ -122,11 +122,11 @@ export const SENTENCES = Object.freeze({
     de: 'Wappie konnte die Verbindung gerade nicht abschließen. Es wurde nichts geteilt. Warten Sie eine Minute und starten Sie die Verbindung dann erneut in Ihrem Assistenten.',
   }),
   too_many_unknown: Object.freeze({
-    pt: 'Este workspace já tem todas as conexões de assistentes não testados e tokens de conexão que pode manter. Revogue uma no console da Wappie e comece a conexão de novo pelo seu assistente.',
+    pt: 'Este espaço de trabalho já tem todas as conexões de assistentes não testados e tokens de conexão que pode manter. Revogue uma no console da Wappie e comece a conexão de novo pelo seu assistente.',
     en: 'This workspace already has as many connections of untested assistants and connection tokens as it may keep. Revoke one in the Wappie console, then start the connection again from your assistant.',
-    es: 'Este workspace ya tiene todas las conexiones de asistentes no probados y tokens de conexión que puede mantener. Revoca una en la consola de Wappie y vuelve a iniciar la conexión desde tu asistente.',
+    es: 'Este espacio de trabajo ya tiene todas las conexiones de asistentes no probados y tokens de conexión que puede mantener. Revoca una en la consola de Wappie y vuelve a iniciar la conexión desde tu asistente.',
     fr: 'Cet espace de travail a déjà autant de connexions d’assistants non testés et de jetons de connexion qu’il peut en garder. Révoquez-en une dans la console Wappie, puis relancez la connexion depuis votre assistant.',
-    de: 'Dieser Workspace hat bereits so viele Verbindungen ungetesteter Assistenten und Verbindungstokens, wie er behalten darf. Widerrufen Sie eine in der Wappie-Konsole und starten Sie die Verbindung dann erneut in Ihrem Assistenten.',
+    de: 'Dieser Arbeitsbereich hat bereits so viele Verbindungen ungetesteter Assistenten und Verbindungstokens, wie er behalten darf. Widerrufen Sie eine in der Wappie-Konsole und starten Sie die Verbindung dann erneut in Ihrem Assistenten.',
   }),
 })
 /** The sentence each page code shows; a code without one would be a bug, and the tests list them all. */
@@ -167,7 +167,7 @@ export function refusalPage(status, code, { back = '', acceptLanguage = null, al
  * none of the five is asked for.
  */
 export const HOME = Object.freeze({
-  pt: Object.freeze({ title: 'Conector da Wappie', lead: 'Este é o endereço do conector da Wappie. Adicione-o no seu assistente (Claude, ChatGPT ou outro app compatível com MCP): no Claude como conector personalizado, no ChatGPT como plugin no modo de desenvolvedor. A Wappie abre no seu navegador e pergunta quais números ele pode ler. O console da Wappie mostra os passos para cada assistente.',
+  pt: Object.freeze({ title: 'Conector do Wappie', lead: 'Este é o endereço do conector do Wappie. Adicione-o no seu assistente (Claude, ChatGPT ou outro app compatível com MCP): no Claude como conector personalizado, no ChatGPT como plugin no modo de desenvolvedor. O Wappie abre no seu navegador e pergunta quais números o assistente pode ler. O console da Wappie mostra os passos para cada assistente.',
     address: 'Endereço do conector', console: 'Abrir o console da Wappie', docs: 'Ler a documentação', name: 'Português' }),
   en: Object.freeze({ title: 'Wappie connector', lead: 'This is the address of Wappie’s connector. Add it in your assistant (Claude, ChatGPT or another app that supports MCP): in Claude as a custom connector, in ChatGPT as a developer-mode plugin. Wappie then opens in your browser and asks which numbers it may read. The Wappie console shows the steps for each assistant.',
     address: 'Connector address', console: 'Open the Wappie console', docs: 'Read the documentation', name: 'English' }),

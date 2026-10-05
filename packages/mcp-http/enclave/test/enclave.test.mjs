@@ -74,7 +74,7 @@ test('boot, consent through an attested prepare, tools, restart with tokens inta
     'https://mcp.wappie.thehappie.co/icon-512.png', 'https://mcp.wappie.thehappie.co/icon-192.png'])
   assert.deepEqual(result(initialized.body).capabilities.tools, { listChanged: false })
   // A metadata connection of this reader is told it may reconnect for text, never that nothing would unlock it.
-  assert.match(result(initialized.body).instructions, /tick "Also read message text"/)
+  assert.match(result(initialized.body).instructions, /turn on the option to also read message text/)
   assert.doesNotMatch(result(initialized.body).instructions, /none would unlock|configured Wappie installation/)
   const numbers = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_numbers', arguments: {} } })
   assert.equal(result(numbers.body).structuredContent.plaintext_enabled, false)
@@ -144,7 +144,7 @@ test('listeners: /internal never on the public port, nothing else on the interna
   assert.equal(home.headers['content-language'], 'pt-BR')
   assert.match(home.headers['content-security-policy'], /^default-src 'none'; img-src 'self'; style-src 'sha256-[A-Za-z0-9+/]+=*'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'$/)
   const page = home.bytes.toString('utf8')
-  for (const piece of ['Este é o endereço do conector da Wappie', '<code>https://mcp.wappie.thehappie.co/mcp</code>', `<a href="${constants.CONSOLE_URL}">`, `<a href="${constants.SITE_LINKS.documentation}">`, 'src="/icon-192.png"']) {
+  for (const piece of ['Este é o endereço do conector do Wappie', '<code>https://mcp.wappie.thehappie.co/mcp</code>', `<a href="${constants.CONSOLE_URL}">`, `<a href="${constants.SITE_LINKS.documentation}">`, 'src="/icon-192.png"']) {
     assert.ok(page.includes(piece), piece)
   }
   assert.ok((await w.public('/?lang=de')).bytes.toString('utf8').includes('Dies ist die Adresse des Wappie-Connectors'))
