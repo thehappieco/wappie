@@ -286,6 +286,7 @@ func (h *Handler) checkClientConsent(w http.ResponseWriter, r *http.Request, use
 	}
 	in.ClientKind, in.ClientHost, in.ClientLocal, in.Trust = c.ClientKind, c.host(), c.ClientLocal, c.Trust
 	in.ClaimedName = deref(c.ClaimedName)
+	in.Replaces = req.Replace
 	if c.ClientKind == store.ClientCIMD {
 		// A registered client's id is random and is not kept.
 		in.ClientID = deref(c.ClientID)

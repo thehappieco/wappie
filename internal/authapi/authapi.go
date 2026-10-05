@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 )
 
@@ -50,11 +51,15 @@ type Handler struct {
 	Limits   *ratelimit.Auth
 	Log      *slog.Logger
 	Passkeys *PasskeyProvider
+	// StepUp is what a content consent's service invitation asks before it
+	// is issued (internal/stepup); nil is the session store's own record.
+	StepUp stepup.Checker
 }
 
 // Mount registers the routes on a mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	h.mountPasskeys(mux)
+	h.mountStepUp(mux)
 	mux.HandleFunc("GET /v1/auth/workspaces/storage", h.storageUsage)
 	mux.HandleFunc("GET /v1/auth/workspaces/storage/{action}", h.storageUsage)
 	mux.HandleFunc("POST /v1/auth/workspaces/storage/{action}", h.storageUsage)

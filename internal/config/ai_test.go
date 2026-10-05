@@ -7,21 +7,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// aiMediaEnv is mediaEnv with attachments on for the test workspace, which
-// is what AI rides on.
+// aiMediaEnv is mediaEnv with attachments on, which is what AI rides on.
 func aiMediaEnv(t *testing.T) {
 	t.Helper()
 	mediaEnv(t)
 	t.Setenv("WS_MCP_MEDIA_ENABLED", "true")
-	t.Setenv("WS_MCP_MEDIA_TENANTS", testWorkspace)
 }
 
-// aiEnv is aiMediaEnv with AI on for the test workspace.
+// aiEnv is aiMediaEnv with AI on.
 func aiEnv(t *testing.T) {
 	t.Helper()
 	aiMediaEnv(t)
 	t.Setenv("WS_AI_ENABLED", "true")
-	t.Setenv("WS_AI_TENANTS", testWorkspace)
 }
 
 // AI is off unless switched on, nothing of its block is inspected while it
@@ -42,7 +39,7 @@ func TestAIOffByDefault(t *testing.T) {
 	if !cfg.MCP.MediaAllowed(workspace) {
 		t.Fatal("the AI switch turned attachments off")
 	}
-	if !strings.HasSuffix(cfg.MCP.String(), " ai=off ai_tenants=0") {
+	if !strings.HasSuffix(cfg.MCP.String(), " ai=off") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 	t.Setenv("WS_MCP_ENABLED", "false")
@@ -53,19 +50,15 @@ func TestAIOffByDefault(t *testing.T) {
 
 func TestAILoads(t *testing.T) {
 	aiEnv(t)
-	t.Setenv("WS_AI_TENANTS", " "+testWorkspace+" ,,"+testWorkspace)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	workspace := uuid.MustParse(testWorkspace)
-	if !cfg.MCP.AIEnabled || len(cfg.MCP.AITenants) != 1 || cfg.MCP.AITenants[0] != workspace {
-		t.Fatalf("ai = %v %v", cfg.MCP.AIEnabled, cfg.MCP.AITenants)
+	if !cfg.MCP.AIEnabled || !cfg.MCP.AIAllowed(workspace) || cfg.MCP.AIAllowed(uuid.New()) {
+		t.Fatal("AIAllowed does not follow attachments")
 	}
-	if !cfg.MCP.AIAllowed(workspace) || cfg.MCP.AIAllowed(uuid.New()) {
-		t.Fatal("AIAllowed does not follow the list")
-	}
-	if len(cfg.MCP.AIOffProviders) != 0 || len(cfg.MCP.AIOffFeatures) != 0 || !strings.HasSuffix(cfg.MCP.String(), " ai=on ai_tenants=1") {
+	if len(cfg.MCP.AIOffProviders) != 0 || len(cfg.MCP.AIOffFeatures) != 0 || !strings.HasSuffix(cfg.MCP.String(), " ai=on") {
 		t.Fatalf("nothing off = %v %v %q", cfg.MCP.AIOffProviders, cfg.MCP.AIOffFeatures, cfg.MCP.String())
 	}
 	// The off lists: any case and order, kept lower-cased, once each, sorted.
@@ -80,7 +73,7 @@ func TestAILoads(t *testing.T) {
 	if got := strings.Join(cfg.MCP.AIOffFeatures, ","); got != "audio,video" {
 		t.Fatalf("off features = %q", got)
 	}
-	if !strings.HasSuffix(cfg.MCP.String(), " ai=on ai_tenants=1 ai_off_providers=anthropic,openai ai_off_features=audio,video") {
+	if !strings.HasSuffix(cfg.MCP.String(), " ai=on ai_off_providers=anthropic,openai ai_off_features=audio,video") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 	// One list alone still prints both.
@@ -88,25 +81,14 @@ func TestAILoads(t *testing.T) {
 	if cfg, err = Load(); err != nil || !strings.HasSuffix(cfg.MCP.String(), " ai_off_providers= ai_off_features=audio,video") {
 		t.Fatalf("String = %v %q", err, cfg.MCP.String())
 	}
-	// A workspace with attachments but not listed for AI only opens them.
-	other := uuid.MustParse("0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee")
-	t.Setenv("WS_MCP_READER_ENCLAVE_TENANTS", "*")
-	t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace+","+other.String())
-	t.Setenv("WS_MCP_MEDIA_TENANTS", testWorkspace+","+other.String())
-	if cfg, err = Load(); err != nil || !cfg.MCP.MediaAllowed(other) || cfg.MCP.AIAllowed(other) || !cfg.MCP.AIAllowed(workspace) {
-		t.Fatalf("attachments without AI: %v", err)
-	}
-	// AI rides on attachments, content and the connector: any of them off
-	// turns it off whatever its own switch says.
+	// AI rides on attachments, content, the deny list and the connector: any
+	// of them off turns it off whatever its own switch says.
 	for name, mutate := range map[string]func(*MCP){
 		"media off":     func(m *MCP) { m.MediaEnabled = false },
 		"content off":   func(m *MCP) { m.ContentEnabled = false },
 		"connector off": func(m *MCP) { m.Enabled = false },
 		"switch off":    func(m *MCP) { m.AIEnabled = false },
-		"not listed":    func(m *MCP) { m.AITenants = nil },
-		"media unlisted": func(m *MCP) {
-			m.MediaTenants = []uuid.UUID{other}
-		},
+		"denied":        func(m *MCP) { m.DenyTenants = []uuid.UUID{workspace} },
 	} {
 		off := cfg.MCP
 		mutate(&off)
@@ -117,13 +99,8 @@ func TestAILoads(t *testing.T) {
 }
 
 func TestAIInvalid(t *testing.T) {
-	other := "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
 	for name, env := range map[string]map[string]string{
-		"no tenants":           {"WS_AI_TENANTS": ""},
-		"every workspace":      {"WS_AI_TENANTS": "*"},
-		"not a uuid":           {"WS_AI_TENANTS": "acme"},
-		"nil uuid":             {"WS_AI_TENANTS": "00000000-0000-0000-0000-000000000000"},
-		"without media":        {"WS_AI_TENANTS": testWorkspace + "," + other, "WS_MCP_READER_ENCLAVE_TENANTS": "*", "WS_MCP_CONTENT_TENANTS": testWorkspace + "," + other},
+		"a retired list":       {"WS_AI_TENANTS": testWorkspace},
 		"media off":            {"WS_MCP_MEDIA_ENABLED": "false"},
 		"unknown provider":     {"WS_AI_OFF_PROVIDERS": "openai,mistral"},
 		"every provider as *":  {"WS_AI_OFF_PROVIDERS": "*"},
@@ -165,7 +142,6 @@ func TestAIInvalid(t *testing.T) {
 	// needs neither the media nor the AI block tidied.
 	aiEnv(t)
 	t.Setenv("WS_MCP_CONTENT_ENABLED", "false")
-	t.Setenv("WS_MCP_CONTENT_TENANTS", "")
 	t.Setenv("WS_MCP_MEDIA_ENABLED", "false")
 	t.Setenv("WS_AI_TENANTS", "acme")
 	t.Setenv("WS_AI_OFF_FEATURES", "slides")
@@ -185,7 +161,7 @@ func TestAIInvalid(t *testing.T) {
 // The AI variables are documented where an operator looks, like the others.
 func TestAIVariablesDocumented(t *testing.T) {
 	section, env := readersDocs(t)
-	for _, name := range []string{"WS_AI_ENABLED", "WS_AI_TENANTS", "WS_AI_OFF_PROVIDERS", "WS_AI_OFF_FEATURES"} {
+	for _, name := range []string{"WS_AI_ENABLED", "WS_AI_OFF_PROVIDERS", "WS_AI_OFF_FEATURES"} {
 		if !strings.Contains(section, "| `"+name+"` |") {
 			t.Errorf("docs/mcp.md's readers' configuration does not list %s", name)
 		}

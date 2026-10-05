@@ -197,6 +197,11 @@ const (
 	ReasonMemberRemoved   = "member_removed"
 	ReasonMemberDisabled  = "member_disabled"
 	ReasonAccessLost      = "access_lost"
+	// ReasonReplaced is a connection a reconnect of the same person and
+	// client took the place of, and ReasonIdle one unused past its tier's
+	// idle time (0047, docs/mcp-enclave.md §19.30).
+	ReasonReplaced = "replaced"
+	ReasonIdle     = "idle"
 )
 
 // HostedReader is the reader id of the process on this host, and the one
@@ -250,6 +255,11 @@ type CreateMCPConnection struct {
 	ClientLocal                      bool
 	Trust, ClaimedName               string
 	HistoryDays                      int
+	// Replaces asks that the actor's earlier live connections of the same
+	// client in this workspace end once this one activates
+	// (ReplacePrevious); only a CIMD or a registered client's consent may.
+	// Those connections do not count against the cap meanwhile.
+	Replaces bool
 }
 
 // Create records a consent and promotes its key from the provisional deadline
@@ -316,6 +326,9 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 	}
 	if err := checkClient(&in); err != nil {
 		return MCPConnection{}, err
+	}
+	if in.Replaces && in.ClientKind != ClientCIMD && in.ClientKind != ClientDCR {
+		return MCPConnection{}, fmt.Errorf("%w: only an assistant's consent replaces an earlier connection", ErrMCPClient)
 	}
 	if in.ExpiresAt.After(time.Now().Add(MaxLifetime(in.Kind, LimitsTier(in.Trust, in.ClientLocal, in.ClientKind)))) {
 		return MCPConnection{}, ErrInvalidExpiry
@@ -391,9 +404,14 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 			// AI authorizations are not assistants and are not counted.
 			// The untested clients and the tokens are counted again on
 			// their own, within the same lock.
+			// The connections this consent replaces once it activates are
+			// left out: a reconnect at the cap must not be refused for the
+			// connection it takes the place of.
 			var live, unknown int
-			if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE trust = 'unknown') FROM mcp_connections
-				WHERE tenant_id=$1 AND kind <> 'ai' AND status IN ('pending','active','reseal') AND expires_at > now()`, tenant).Scan(&live, &unknown); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE trust = 'unknown') FROM mcp_connections c
+				WHERE tenant_id=$1 AND kind <> 'ai' AND status IN ('pending','active','reseal') AND expires_at > now()
+				  AND NOT coalesce($2 AND c.created_by = $3 AND c.status IN ('active','reseal') AND `+sameClient+`, false)`,
+				tenant, in.Replaces, actor, in.ClientKind, in.ClientID, in.ClientHost, in.ClientLocal).Scan(&live, &unknown); err != nil {
 				return err
 			}
 			if live >= maxLiveMCPConnections {
@@ -415,13 +433,13 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 		err = tx.QueryRow(ctx, `INSERT INTO mcp_connections
 			(tenant_id, request_id, api_key_id, created_by, client_name, redirect_host, device_count, reader_kid, status, expires_at,
 			 reader, reader_measurement, kind, service_user_id, key_mode, consent_version, media, send_mode, send_self, send_groups, ai_config,
-			 client_kind, client_id, client_host, client_local, trust, claimed_name, history_days)
+			 client_kind, client_id, client_host, client_local, trust, claimed_name, history_days, replaces)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($17,''),$18,$19,$20::jsonb,
-			        $21,NULLIF($22,''),NULLIF($23,''),$24,NULLIF($25,''),NULLIF($26,''),NULLIF($27,0))
+			        $21,NULLIF($22,''),NULLIF($23,''),$24,NULLIF($25,''),NULLIF($26,''),NULLIF($27,0),$28)
 			RETURNING id::text, created_at`,
 			tenant, in.RequestID, out.APIKeyID, actor, in.ClientName, in.RedirectHost, in.DeviceCount, in.ReaderKID, in.ExpiresAt,
 			in.Reader, in.ReaderMeasurement, in.Kind, service, keyMode, consentVersion, in.Media, in.SendMode, in.SendSelf, in.SendGroups, aiConfig,
-			in.ClientKind, in.ClientID, in.ClientHost, in.ClientLocal, in.Trust, in.ClaimedName, in.HistoryDays).
+			in.ClientKind, in.ClientID, in.ClientHost, in.ClientLocal, in.Trust, in.ClaimedName, in.HistoryDays, in.Replaces).
 			Scan(&out.ID, &out.CreatedAt)
 		if err != nil {
 			var pgErr *pgconn.PgError

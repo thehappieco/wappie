@@ -367,53 +367,73 @@ func TestMCPContentOffByDefault(t *testing.T) {
 	t.Setenv("WS_MCP_CONTENT_TENANTS", "not even a uuid")
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("an unused tenant list was inspected: %v", err)
+		t.Fatalf("a retired list was inspected with content off: %v", err)
 	}
 	if cfg.MCP.ContentEnabled || cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) {
 		t.Fatal("content allowed with the switch off")
 	}
-	if !strings.Contains(cfg.MCP.String(), " content=off content_tenants=0") {
+	if cfg.MCP.WorkspaceDefault || !strings.Contains(cfg.MCP.String(), " content=off workspace_default=off deny_tenants=0") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 }
 
+// With the switch on, the operator's half of the answer is the enclave's
+// TENANTS less the deny list; each workspace's own switch, which its owner
+// sets, comes on top (mcpauth.WorkspaceSwitches) and defaults to
+// WS_MCP_WORKSPACE_DEFAULT.
 func TestMCPContentLoads(t *testing.T) {
 	enclaveEnv(t)
 	t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
-	t.Setenv("WS_MCP_CONTENT_TENANTS", " "+testWorkspace+" ,,")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.MCP.ContentEnabled || len(cfg.MCP.ContentTenants) != 1 || cfg.MCP.ContentTenants[0].String() != testWorkspace {
-		t.Fatalf("content = %v %v", cfg.MCP.ContentEnabled, cfg.MCP.ContentTenants)
+	workspace := uuid.MustParse(testWorkspace)
+	if !cfg.MCP.ContentEnabled || !cfg.MCP.ContentAllowed(workspace) || cfg.MCP.ContentAllowed(uuid.New()) {
+		t.Fatal("ContentAllowed does not follow the enclave's workspaces")
 	}
-	if !cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) || cfg.MCP.ContentAllowed(uuid.New()) {
-		t.Fatal("ContentAllowed does not follow the list")
-	}
-	if !strings.Contains(cfg.MCP.String(), " content=on content_tenants=1") {
+	if !strings.Contains(cfg.MCP.String(), " content=on workspace_default=off deny_tenants=0") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
-	// An enclave open to every workspace still gives text only to the listed.
+	// An enclave open to every workspace lets every one have text.
 	t.Setenv("WS_MCP_READER_ENCLAVE_TENANTS", "*")
-	if cfg, err = Load(); err != nil || !cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) || cfg.MCP.ContentAllowed(uuid.New()) {
+	if cfg, err = Load(); err != nil || !cfg.MCP.ContentAllowed(workspace) || !cfg.MCP.ContentAllowed(uuid.New()) {
 		t.Fatalf("enclave for every workspace: %v", err)
+	}
+	// Except those the operator denies.
+	other := uuid.MustParse("0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee")
+	t.Setenv("WS_MCP_DENY_TENANTS", " "+other.String()+" ,,"+other.String())
+	if cfg, err = Load(); err != nil || cfg.MCP.ContentAllowed(other) || !cfg.MCP.ContentAllowed(workspace) || len(cfg.MCP.DenyTenants) != 1 {
+		t.Fatalf("deny list: %v %v", err, cfg.MCP.DenyTenants)
+	}
+	if !strings.Contains(cfg.MCP.String(), " deny_tenants=1") {
+		t.Fatalf("String = %q", cfg.MCP.String())
+	}
+	// Wappie Cloud's default.
+	for _, value := range []string{"on", " ON "} {
+		t.Setenv("WS_MCP_WORKSPACE_DEFAULT", value)
+		if cfg, err = Load(); err != nil || !cfg.MCP.WorkspaceDefault || !strings.Contains(cfg.MCP.String(), " workspace_default=on") {
+			t.Fatalf("default %q: %v %q", value, err, cfg.MCP.String())
+		}
+	}
+	t.Setenv("WS_MCP_WORKSPACE_DEFAULT", "off")
+	if cfg, err = Load(); err != nil || cfg.MCP.WorkspaceDefault {
+		t.Fatalf("default off: %v", err)
 	}
 	// The connector off turns content off whatever the switch says.
 	cfg.MCP.Enabled = false
-	if cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) {
+	if cfg.MCP.ContentAllowed(workspace) {
 		t.Fatal("content allowed with the connector off")
 	}
 }
 
 func TestMCPContentInvalid(t *testing.T) {
-	other := "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
 	for name, env := range map[string]map[string]string{
-		"no tenants":              {"WS_MCP_CONTENT_TENANTS": ""},
-		"every workspace":         {"WS_MCP_CONTENT_TENANTS": "*"},
-		"not a uuid":              {"WS_MCP_CONTENT_TENANTS": "acme"},
-		"nil uuid":                {"WS_MCP_CONTENT_TENANTS": "00000000-0000-0000-0000-000000000000"},
-		"outside the enclave":     {"WS_MCP_CONTENT_TENANTS": testWorkspace + "," + other},
+		"a retired list":          {"WS_MCP_CONTENT_TENANTS": testWorkspace},
+		"deny every workspace":    {"WS_MCP_DENY_TENANTS": "*"},
+		"deny not a uuid":         {"WS_MCP_DENY_TENANTS": "acme"},
+		"deny the nil uuid":       {"WS_MCP_DENY_TENANTS": "00000000-0000-0000-0000-000000000000"},
+		"default neither":         {"WS_MCP_WORKSPACE_DEFAULT": "true"},
 		"no enclave reader":       {"WS_MCP_READERS": "hosted"},
 		"another attested reader": {"WS_MCP_READERS": "hosted,staging"},
 		"switch not a boolean":    {"WS_MCP_CONTENT_ENABLED": "maybe"},
@@ -421,7 +441,6 @@ func TestMCPContentInvalid(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			enclaveEnv(t)
 			t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
-			t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace)
 			for k, v := range env {
 				t.Setenv(k, v)
 			}
@@ -435,21 +454,34 @@ func TestMCPContentInvalid(t *testing.T) {
 			}
 		})
 	}
-	// A disabled connector does not look at the switch either.
+	// A retired list says what replaced it, so nobody believes it still
+	// restricts.
+	t.Run("retired list message", func(t *testing.T) {
+		enclaveEnv(t)
+		t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
+		t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace)
+		if err := mustFail(t); !strings.Contains(err.Error(), "WS_MCP_CONTENT_TENANTS is no longer read") ||
+			!strings.Contains(err.Error(), "WS_MCP_WORKSPACE_DEFAULT") || !strings.Contains(err.Error(), "WS_MCP_DENY_TENANTS") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+	// A disabled connector does not look at the switch, the default or the
+	// deny list either.
 	minimalEnv(t)
 	t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
+	t.Setenv("WS_MCP_WORKSPACE_DEFAULT", "maybe")
+	t.Setenv("WS_MCP_DENY_TENANTS", "*")
 	if _, err := Load(); err != nil {
-		t.Fatalf("a disabled connector's content switch was inspected: %v", err)
+		t.Fatalf("a disabled connector's content block was inspected: %v", err)
 	}
 }
 
-// mediaEnv is enclaveEnv with content on for the test workspace, the only
-// workspace the enclave admits.
+// mediaEnv is enclaveEnv with content on; the enclave admits the test
+// workspace only.
 func mediaEnv(t *testing.T) {
 	t.Helper()
 	enclaveEnv(t)
 	t.Setenv("WS_MCP_CONTENT_ENABLED", "true")
-	t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace)
 }
 
 // Attachments are off unless switched on, and the startup line says which.
@@ -467,7 +499,7 @@ func TestMCPMediaOffByDefault(t *testing.T) {
 	if !cfg.MCP.ContentAllowed(uuid.MustParse(testWorkspace)) {
 		t.Fatal("the media switch turned content off")
 	}
-	if !strings.Contains(cfg.MCP.String(), " content=on content_tenants=1 media=off media_tenants=0 send=") {
+	if !strings.Contains(cfg.MCP.String(), " content=on workspace_default=off deny_tenants=0 media=off send=") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 }
@@ -475,32 +507,29 @@ func TestMCPMediaOffByDefault(t *testing.T) {
 func TestMCPMediaLoads(t *testing.T) {
 	mediaEnv(t)
 	t.Setenv("WS_MCP_MEDIA_ENABLED", "true")
-	t.Setenv("WS_MCP_MEDIA_TENANTS", " "+testWorkspace+" ,,")
 	t.Setenv("WS_MCP_MEDIA_OFF_KINDS", " Zip , pdf,,zip")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	workspace := uuid.MustParse(testWorkspace)
-	if !cfg.MCP.MediaEnabled || len(cfg.MCP.MediaTenants) != 1 || cfg.MCP.MediaTenants[0] != workspace {
-		t.Fatalf("media = %v %v", cfg.MCP.MediaEnabled, cfg.MCP.MediaTenants)
+	if !cfg.MCP.MediaEnabled {
+		t.Fatal("media off")
 	}
 	// Lower-cased, once each and sorted: the order the reader is told.
 	if got := strings.Join(cfg.MCP.MediaOffKinds, ","); got != "pdf,zip" {
 		t.Fatalf("off kinds = %q", got)
 	}
 	if !cfg.MCP.MediaAllowed(workspace) || cfg.MCP.MediaAllowed(uuid.New()) {
-		t.Fatal("MediaAllowed does not follow the list")
+		t.Fatal("MediaAllowed does not follow content")
 	}
-	if !strings.Contains(cfg.MCP.String(), " media=on media_tenants=1 media_off=pdf,zip send=") {
+	if !strings.Contains(cfg.MCP.String(), " media=on media_off=pdf,zip send=") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
-	// A workspace with content but not listed for media reads text only.
-	other := uuid.MustParse("0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee")
-	t.Setenv("WS_MCP_READER_ENCLAVE_TENANTS", "*")
-	t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace+","+other.String())
-	if cfg, err = Load(); err != nil || !cfg.MCP.ContentAllowed(other) || cfg.MCP.MediaAllowed(other) || !cfg.MCP.MediaAllowed(workspace) {
-		t.Fatalf("content without media: %v", err)
+	// A denied workspace opens no attachment either.
+	t.Setenv("WS_MCP_DENY_TENANTS", testWorkspace)
+	if cfg, err := Load(); err != nil || cfg.MCP.MediaAllowed(workspace) {
+		t.Fatalf("a denied workspace opens attachments: %v", err)
 	}
 	// Media rides on content: content off, or the connector off, turns it
 	// off whatever its own switch says.
@@ -515,6 +544,7 @@ func TestMCPMediaLoads(t *testing.T) {
 		t.Fatal("media allowed with the connector off")
 	}
 	// No kind off is the default.
+	t.Setenv("WS_MCP_DENY_TENANTS", "")
 	t.Setenv("WS_MCP_MEDIA_OFF_KINDS", "")
 	if cfg, err = Load(); err != nil || len(cfg.MCP.MediaOffKinds) != 0 || strings.Contains(cfg.MCP.String(), "media_off") {
 		t.Fatalf("no kinds off: %v %v %q", err, cfg.MCP.MediaOffKinds, cfg.MCP.String())
@@ -522,13 +552,8 @@ func TestMCPMediaLoads(t *testing.T) {
 }
 
 func TestMCPMediaInvalid(t *testing.T) {
-	other := "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
 	for name, env := range map[string]map[string]string{
-		"no tenants":           {"WS_MCP_MEDIA_TENANTS": ""},
-		"every workspace":      {"WS_MCP_MEDIA_TENANTS": "*"},
-		"not a uuid":           {"WS_MCP_MEDIA_TENANTS": "acme"},
-		"nil uuid":             {"WS_MCP_MEDIA_TENANTS": "00000000-0000-0000-0000-000000000000"},
-		"without content":      {"WS_MCP_MEDIA_TENANTS": testWorkspace + "," + other, "WS_MCP_READER_ENCLAVE_TENANTS": "*"},
+		"a retired list":       {"WS_MCP_MEDIA_TENANTS": testWorkspace},
 		"unknown kind":         {"WS_MCP_MEDIA_OFF_KINDS": "pdf,slides"},
 		"every kind as *":      {"WS_MCP_MEDIA_OFF_KINDS": "*"},
 		"switch not a boolean": {"WS_MCP_MEDIA_ENABLED": "maybe"},
@@ -536,7 +561,6 @@ func TestMCPMediaInvalid(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mediaEnv(t)
 			t.Setenv("WS_MCP_MEDIA_ENABLED", "true")
-			t.Setenv("WS_MCP_MEDIA_TENANTS", testWorkspace)
 			for k, v := range env {
 				t.Setenv(k, v)
 			}
@@ -546,10 +570,9 @@ func TestMCPMediaInvalid(t *testing.T) {
 		})
 	}
 	// Content off is the kill switch, and flipping it must not need the
-	// media block tidied first: its list and kinds are not inspected then.
+	// media block tidied first: its kinds are not inspected then.
 	mediaEnv(t)
 	t.Setenv("WS_MCP_CONTENT_ENABLED", "false")
-	t.Setenv("WS_MCP_CONTENT_TENANTS", "")
 	t.Setenv("WS_MCP_MEDIA_ENABLED", "true")
 	t.Setenv("WS_MCP_MEDIA_TENANTS", testWorkspace)
 	t.Setenv("WS_MCP_MEDIA_OFF_KINDS", "slides")
@@ -587,24 +610,22 @@ func TestMCPSendOffByDefault(t *testing.T) {
 	if cfg.MCP.SendLimits != (MCPSendLimits{DraftsPerHour: 30, DraftsPending: 20, PerDay: 20, PerChatPerDay: 5, MinInterval: 30 * time.Second, TenantPerDay: 100}) {
 		t.Fatalf("limits = %+v", cfg.MCP.SendLimits)
 	}
-	want := " send=off send_tenants=0 send_self=on send_direct=on" +
+	want := " send=off send_self=on send_direct=on" +
 		" send_limits=drafts_per_hour:30,drafts_pending:20,per_day:20,per_chat_per_day:5,min_interval:30s,tenant_per_day:100"
 	if !strings.Contains(cfg.MCP.String(), want+" ai=") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 }
 
-// sendEnv is mediaEnv with sending on for the test workspace.
+// sendEnv is mediaEnv with sending on.
 func sendEnv(t *testing.T) {
 	t.Helper()
 	mediaEnv(t)
 	t.Setenv("WS_MCP_SEND_ENABLED", "true")
-	t.Setenv("WS_MCP_SEND_TENANTS", testWorkspace)
 }
 
 func TestMCPSendLoads(t *testing.T) {
 	sendEnv(t)
-	t.Setenv("WS_MCP_SEND_TENANTS", " "+testWorkspace+" ,,")
 	for k, v := range map[string]string{
 		"WS_MCP_SEND_DRAFTS_PER_HOUR": "10", "WS_MCP_SEND_DRAFTS_PENDING": " 5 ", "WS_MCP_SEND_PER_DAY": "1",
 		"WS_MCP_SEND_PER_CHAT_PER_DAY": "2", "WS_MCP_SEND_MIN_INTERVAL": "5m", "WS_MCP_SEND_TENANT_PER_DAY": "1000",
@@ -616,11 +637,8 @@ func TestMCPSendLoads(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	workspace := uuid.MustParse(testWorkspace)
-	if !cfg.MCP.SendEnabled || len(cfg.MCP.SendTenants) != 1 || cfg.MCP.SendTenants[0] != workspace {
-		t.Fatalf("send = %v %v", cfg.MCP.SendEnabled, cfg.MCP.SendTenants)
-	}
-	if !cfg.MCP.SendAllowed(workspace) || cfg.MCP.SendAllowed(uuid.New()) {
-		t.Fatal("SendAllowed does not follow the list")
+	if !cfg.MCP.SendEnabled || !cfg.MCP.SendAllowed(workspace) || cfg.MCP.SendAllowed(uuid.New()) {
+		t.Fatal("SendAllowed does not follow content")
 	}
 	// The own-chat switch is off unless set; direct send is never on yet.
 	if cfg.MCP.SendSelfAllowed(workspace) || cfg.MCP.SendDirectAllowed(workspace) {
@@ -629,19 +647,17 @@ func TestMCPSendLoads(t *testing.T) {
 	if cfg.MCP.SendLimits != (MCPSendLimits{DraftsPerHour: 10, DraftsPending: 5, PerDay: 1, PerChatPerDay: 2, MinInterval: 5 * time.Minute, TenantPerDay: 1000}) {
 		t.Fatalf("limits = %+v", cfg.MCP.SendLimits)
 	}
-	if !strings.Contains(cfg.MCP.String(), " send=on send_tenants=1 send_self=off send_direct=off send_limits=drafts_per_hour:10,drafts_pending:5,per_day:1,per_chat_per_day:2,min_interval:5m0s,tenant_per_day:1000") {
+	if !strings.Contains(cfg.MCP.String(), " send=on send_self=off send_direct=off send_limits=drafts_per_hour:10,drafts_pending:5,per_day:1,per_chat_per_day:2,min_interval:5m0s,tenant_per_day:1000") {
 		t.Fatalf("String = %q", cfg.MCP.String())
 	}
 	t.Setenv("WS_MCP_SEND_SELF_ENABLED", "true")
 	if cfg, err = Load(); err != nil || !cfg.MCP.SendSelfAllowed(workspace) || cfg.MCP.SendSelfAllowed(uuid.New()) {
 		t.Fatalf("own chat: %v", err)
 	}
-	// A workspace with content but not listed for sending only reads.
-	other := uuid.MustParse("0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee")
-	t.Setenv("WS_MCP_READER_ENCLAVE_TENANTS", "*")
-	t.Setenv("WS_MCP_CONTENT_TENANTS", testWorkspace+","+other.String())
-	if cfg, err = Load(); err != nil || !cfg.MCP.ContentAllowed(other) || cfg.MCP.SendAllowed(other) || cfg.MCP.SendSelfAllowed(other) {
-		t.Fatalf("content without sending: %v", err)
+	// A denied workspace neither reads nor sends.
+	t.Setenv("WS_MCP_DENY_TENANTS", testWorkspace)
+	if cfg, err := Load(); err != nil || cfg.MCP.SendAllowed(workspace) || cfg.MCP.SendSelfAllowed(workspace) {
+		t.Fatalf("a denied workspace sends: %v", err)
 	}
 	// Sending rides on content and on the connector.
 	off := cfg.MCP
@@ -657,19 +673,14 @@ func TestMCPSendLoads(t *testing.T) {
 	// Direct send follows its switch where a configuration has it at all.
 	off = cfg.MCP
 	off.SendDirectEnabled = true
-	if !off.SendDirectAllowed(workspace) || off.SendDirectAllowed(other) {
-		t.Fatal("SendDirectAllowed does not follow the list")
+	if !off.SendDirectAllowed(workspace) || off.SendDirectAllowed(uuid.New()) {
+		t.Fatal("SendDirectAllowed does not follow content")
 	}
 }
 
 func TestMCPSendInvalid(t *testing.T) {
-	other := "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
 	for name, env := range map[string]map[string]string{
-		"no tenants":               {"WS_MCP_SEND_TENANTS": ""},
-		"every workspace":          {"WS_MCP_SEND_TENANTS": "*"},
-		"not a uuid":               {"WS_MCP_SEND_TENANTS": "acme"},
-		"nil uuid":                 {"WS_MCP_SEND_TENANTS": "00000000-0000-0000-0000-000000000000"},
-		"without content":          {"WS_MCP_SEND_TENANTS": testWorkspace + "," + other, "WS_MCP_READER_ENCLAVE_TENANTS": "*"},
+		"a retired list":           {"WS_MCP_SEND_TENANTS": testWorkspace},
 		"content off":              {"WS_MCP_CONTENT_ENABLED": "false"},
 		"direct before S3":         {"WS_MCP_SEND_DIRECT_ENABLED": "true"},
 		"switch not a boolean":     {"WS_MCP_SEND_ENABLED": "maybe"},
@@ -707,7 +718,7 @@ func TestMCPSendInvalid(t *testing.T) {
 	// of the block tidied first; a disabled connector looks at none of it.
 	sendEnv(t)
 	t.Setenv("WS_MCP_SEND_ENABLED", "false")
-	t.Setenv("WS_MCP_SEND_TENANTS", "")
+	t.Setenv("WS_MCP_SEND_TENANTS", testWorkspace)
 	t.Setenv("WS_MCP_SEND_DIRECT_ENABLED", "true")
 	t.Setenv("WS_MCP_SEND_PER_DAY", "500")
 	cfg, err := Load()
@@ -725,20 +736,32 @@ func TestMCPSendInvalid(t *testing.T) {
 	}
 }
 
-// The content switch and its workspace list are documented where an
-// operator looks: the readers' configuration section of docs/mcp.md and
-// .env.example, each with its rule. So are the attachments' three.
+// The content switch, the workspaces' default and the deny list are
+// documented where an operator looks: the readers' configuration section of
+// docs/mcp.md and .env.example, each with its rule. So are the attachments'
+// and sending's, and the retired lists are named in the section, with what
+// replaced them, for whoever still has them in an environment.
 func TestContentVariablesDocumented(t *testing.T) {
 	section, env := readersDocs(t)
-	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_CONTENT_TENANTS", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_TENANTS", "WS_MCP_MEDIA_OFF_KINDS",
-		"WS_MCP_SEND_ENABLED", "WS_MCP_SEND_TENANTS", "WS_MCP_SEND_SELF_ENABLED", "WS_MCP_SEND_DIRECT_ENABLED",
+	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_WORKSPACE_DEFAULT", "WS_MCP_DENY_TENANTS", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_OFF_KINDS",
+		"WS_MCP_SEND_ENABLED", "WS_MCP_SEND_SELF_ENABLED", "WS_MCP_SEND_DIRECT_ENABLED",
 		"WS_MCP_SEND_DRAFTS_PER_HOUR", "WS_MCP_SEND_DRAFTS_PENDING", "WS_MCP_SEND_PER_DAY", "WS_MCP_SEND_PER_CHAT_PER_DAY",
 		"WS_MCP_SEND_MIN_INTERVAL", "WS_MCP_SEND_TENANT_PER_DAY"} {
 		if !strings.Contains(section, "| `"+name+"` |") {
 			t.Errorf("docs/mcp.md's readers' configuration does not list %s", name)
 		}
+	}
+	// .env.example is the operator's to edit (docs/mcp-enclave.md §19.30
+	// lists what it should show now); the switches it has always shown stay.
+	for _, name := range []string{"WS_MCP_CONTENT_ENABLED", "WS_MCP_MEDIA_ENABLED", "WS_MCP_MEDIA_OFF_KINDS",
+		"WS_MCP_SEND_ENABLED", "WS_MCP_SEND_SELF_ENABLED", "WS_MCP_SEND_DIRECT_ENABLED"} {
 		if !strings.Contains(env, "\n# "+name+"=") {
 			t.Errorf(".env.example does not show %s", name)
+		}
+	}
+	for _, name := range retiredLists {
+		if !strings.Contains(section, "`"+name+"`") {
+			t.Errorf("docs/mcp.md's readers' configuration does not say %s is retired", name)
 		}
 	}
 	if !strings.Contains(env, "# WS_MCP_CONTENT_ENABLED=false\n") {

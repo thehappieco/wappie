@@ -244,7 +244,7 @@ func checkTokenBundle(w http.ResponseWriter, id string, req tokenBundleRequest) 
 // which the reader installs the token and activates the row; a refusal or a
 // failure undoes the row with its key.
 func (h *Handler) tokenBundle(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticate(w, r)
+	session, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
@@ -281,6 +281,9 @@ func (h *Handler) tokenBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	content := in.Kind == store.KindContent
+	if content && !h.stepUpFresh(w, r, session) {
+		return
+	}
 	if content && !h.contentAllowed(rd, user.TenantID) {
 		fail(w, http.StatusForbidden, "content_not_allowed", "this workspace may not let an assistant read message text yet")
 		return

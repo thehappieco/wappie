@@ -86,10 +86,6 @@ func (h *Handler) mailNotice(ctx context.Context, n store.MCPNotice) {
 		Text: n.Kind == store.KindContent, Attachments: n.Kind == store.KindContent && n.Media,
 		HistoryDays: n.HistoryDays, ExpiresAt: n.ExpiresAt, At: time.Now(),
 		RevokeLink: strings.TrimRight(h.NoticeOrigin, "/") + revokeLinkPath + token,
-		// The recipient's preferred locale would choose the language; accounts
-		// carry none on this server (the console keeps its language in the
-		// browser), so every notice goes in English (§19.22).
-		Lang: "",
 	}
 	// A token is named by its label, the admin's own words; it has no host.
 	if n.ClientKind == store.ClientToken {
@@ -97,6 +93,9 @@ func (h *Handler) mailNotice(ctx context.Context, n store.MCPNotice) {
 	}
 	sent := 0
 	for _, to := range n.Recipients {
+		// Each recipient reads it in the language their console was last
+		// set to, English when it never said (§19.30).
+		notice.Lang = n.Locales[to]
 		if err := h.MailNotice(ctx, to, notice); err != nil {
 			// The address is the recipient's; the error is the mail
 			// server's, and neither carries the link.

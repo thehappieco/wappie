@@ -1600,6 +1600,10 @@ const (
 	// ErrCodeSendNotAllowed is a draft whose connection may not send right
 	// now: paused, switched off, or no longer live.
 	ErrCodeSendNotAllowed = "send_not_allowed"
+	// ErrCodeStepUpRequired is a grant to a connection's service account
+	// from a session whose person has not proved themselves within the
+	// step-up window (internal/stepup): the console asks and tries again.
+	ErrCodeStepUpRequired = "step_up_required"
 )
 
 // Error is the failure payload.

@@ -731,6 +731,10 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 		if err := lockPasskeyRegistration(ctx, tx, user.ID); err != nil {
 			return err
 		}
+		// A new sign-in proves the person now; a workspace switch inherits the
+		// proof of its source, since selecting a space proves nothing
+		// (internal/stepup).
+		var authenticatedAt *time.Time
 		if source == nil {
 			var err error
 			s.FamilyID, err = uuid.NewV7()
@@ -738,9 +742,9 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 				return err
 			}
 		} else {
-			if err := tx.QueryRow(ctx, `SELECT family_id, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at
+			if err := tx.QueryRow(ctx, `SELECT family_id, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, authenticated_at
 				FROM sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, source.ID, user.ID).
-				Scan(&s.FamilyID, &s.PasskeyID, &s.ExpiresAt); err != nil {
+				Scan(&s.FamilyID, &s.PasskeyID, &s.ExpiresAt, &authenticatedAt); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					return ErrNoSession
 				}
@@ -769,8 +773,9 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 		}
 		// Return the timestamp actually stored: PostgreSQL preserves microseconds,
 		// while the sign-in clock may supply finer precision.
-		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id,family_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, expires_at`,
-			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(s.PasskeyID), s.FamilyID).Scan(&s.ID, &s.ExpiresAt)
+		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id,family_id,authenticated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::timestamptz, now())) RETURNING id, expires_at`,
+			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(s.PasskeyID), s.FamilyID, authenticatedAt).Scan(&s.ID, &s.ExpiresAt)
 	})
 	if err != nil {
 		return "", Session{}, fmt.Errorf("store: start session: %w", err)
@@ -822,6 +827,67 @@ func (u *Users) ActiveSession(ctx context.Context, token string) (Session, User,
 		return Session{}, User{}, ErrNoSession
 	}
 	return s, user, nil
+}
+
+// StepUpRemaining is how long a live session's last proof of its person
+// still counts within window, on the database's clock: the sign-in that
+// started its family, or a later step-up (MarkStepUp). Zero when it no
+// longer does; ErrNoSession for a session that is not live.
+func (u *Users) StepUpRemaining(ctx context.Context, session uuid.UUID, window time.Duration) (time.Duration, error) {
+	var seconds float64
+	err := u.pool.QueryRow(ctx, `SELECT greatest(0, extract(epoch FROM authenticated_at + make_interval(secs => $2) - now()))::float8
+		FROM sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at > now()`, session, window.Seconds()).Scan(&seconds)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNoSession
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: session step-up: %w", err)
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+// AuthenticatedWithin reports whether a live session's person proved
+// themselves within window (internal/stepup). A session that is not live has
+// not.
+func (u *Users) AuthenticatedWithin(ctx context.Context, session uuid.UUID, window time.Duration) (bool, error) {
+	left, err := u.StepUpRemaining(ctx, session, window)
+	if errors.Is(err, ErrNoSession) {
+		return false, nil
+	}
+	return left > 0, err
+}
+
+// MarkStepUp records that a live session's person proved themselves again,
+// now: a passkey assertion with user verification, or the password, that the
+// caller verified. ErrNoSession for a session that is not live.
+func (u *Users) MarkStepUp(ctx context.Context, session uuid.UUID) error {
+	tag, err := u.pool.Exec(ctx, `UPDATE sessions SET authenticated_at = now() WHERE id=$1 AND revoked_at IS NULL AND expires_at > now()`, session)
+	if err != nil {
+		return fmt.Errorf("store: record a step-up: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrNoSession
+	}
+	return nil
+}
+
+// ConnectionService reports whether an account is a connection's service
+// account in a workspace: a service whose membership carries a deadline, as
+// every content connection's and AI authorization's does, provisional ones
+// included (0042). A grant to one hands an archive to an assistant's reader,
+// so it waits for a fresh step-up (internal/stepup).
+func (u *Users) ConnectionService(ctx context.Context, tenant, user uuid.UUID) (bool, error) {
+	var service bool
+	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		// workspace_memberships forces row-level security, hence the
+		// tenant transaction.
+		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_memberships
+			WHERE tenant_id=$1 AND user_id=$2 AND role='service' AND expires_at IS NOT NULL)`, tenant, user).Scan(&service)
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: connection service account: %w", err)
+	}
+	return service, nil
 }
 
 // EndSession revokes one token.

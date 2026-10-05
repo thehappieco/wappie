@@ -177,10 +177,36 @@ func TestMCPNoticeEmail(t *testing.T) {
 	if model.Intro != "claude.ai (tested by Wappie) can now see who wrote to whom and when, but not the text, on 2 numbers in the workspace “Acme”." {
 		t.Errorf("metadata intro = %q", model.Intro)
 	}
-	// A locale without words, or none, is English.
-	for _, lang := range []string{"", "de", "fr-CA", "xx", "pt_PT"} {
-		if got := wordsFor(lang).lang; got != map[bool]string{true: "pt", false: "en"}[lang == "pt_PT"] {
-			t.Errorf("%q speaks %q", lang, got)
+	// The console's five languages have words, a region or a case aside; a
+	// locale without words, or none, is English.
+	for lang, want := range map[string]string{"": "en", "xx": "en", "it": "en", "pt_PT": "pt", "pt-BR": "pt", "es-MX": "es", "fr-CA": "fr", "DE": "de", "en-GB": "en"} {
+		if got := wordsFor(lang).lang; got != want {
+			t.Errorf("%q speaks %q, want %q", lang, got, want)
+		}
+	}
+	// Every language says every event, tier and fact, with no word left from
+	// another and no placeholder left unfilled.
+	for _, words := range mcpLanguages {
+		for name, n := range map[string]MCPNotice{
+			"text":    {Event: "activated", ClientHost: "agent.example.com", Tier: "unknown", Workspace: "Acme", Numbers: 2, Text: true, HistoryDays: 30, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"media":   {Event: "activated", ClientHost: "claude.ai", Tier: "tested", Workspace: "Acme", Numbers: 1, Text: true, Attachments: true, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"meta":    {Event: "activated", ClientHost: "chatgpt.com", Tier: "local", Workspace: "Acme", Numbers: 3, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"limit":   {Event: "daily_attachments", ClientHost: "agent.example.com", Tier: "unknown", Workspace: "Acme", Numbers: 1, Text: true, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"token":   {Event: "activated", Tier: "token", Label: "n8n", Workspace: "Acme", Numbers: 1, HistoryDays: 7, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"network": {Event: "network", Tier: "token", Label: "n8n", Workspace: "Acme", Numbers: 1, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"client":  {Event: "network", ClientHost: "agent.example.com", Tier: "unknown", Workspace: "Acme", Numbers: 1, ExpiresAt: at, At: at, RevokeLink: revoke},
+		} {
+			n.Lang = words.lang
+			model, plain, _ := mcpBodies(t, n)
+			if model.Lang != words.lang || model.Title == "" || model.Intro == "" || len(model.Facts) != 6 {
+				t.Errorf("%s %s = %+v", words.lang, name, model)
+			}
+			if strings.ContainsAny(plain, "{}") || strings.Contains(plain, "%!") || strings.Contains(plain, "%s") || strings.Contains(plain, "%d") {
+				t.Errorf("%s %s left a placeholder:\n%s", words.lang, name, plain)
+			}
+			if !strings.Contains(plain, words.footer) || !strings.Contains(plain, words.action) {
+				t.Errorf("%s %s lacks its own words:\n%s", words.lang, name, plain)
+			}
 		}
 	}
 	for name, n := range map[string]MCPNotice{
@@ -194,6 +220,55 @@ func TestMCPNoticeEmail(t *testing.T) {
 		"no workspace named": {Event: "activated", ClientHost: "a.example.com", Tier: "unknown", RevokeLink: revoke},
 	} {
 		if _, err := mcpNoticeEmail(n); err == nil {
+			t.Errorf("%s: rendered", name)
+		}
+	}
+}
+
+// The renewal notice: in the recipient's language, how many connections wait
+// and which, and where to go, with no link at all, since renewing asks for a
+// passkey or the password.
+func TestMCPRenewalEmail(t *testing.T) {
+	since := time.Date(2026, 10, 5, 9, 30, 0, 0, time.UTC)
+	for lang, want := range map[string][2]string{
+		"":   {"Your assistants need renewing", "2 assistant connections in the workspace “acme.com”"},
+		"pt": {"Seus assistentes precisam ser renovados", "2 conexões de assistentes do espaço de trabalho “acme.com”"},
+		"es": {"Tus asistentes necesitan renovarse", "2 conexiones de asistentes del espacio de trabajo “acme.com”"},
+		"fr": {"Vos assistants doivent être renouvelés", "2 connexions d’assistants de l’espace de travail « acme.com »"},
+		"de": {"Ihre Assistenten müssen erneuert werden", "2 Assistentenverbindungen im Arbeitsbereich „acme.com“"},
+	} {
+		model, err := mcpRenewalEmail(MCPRenewal{Workspace: "acme.com", Assistants: []string{"Claude", "agent.example.com"}, Since: since, Lang: lang})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.Subject != want[0] || !strings.HasPrefix(model.Intro, want[1]) || model.Link != "" || model.Steps == "" {
+			t.Errorf("%q = %+v", lang, model)
+		}
+		data, _, _, err := message("Wappie <accounts@example.com>", "owner@example.com", model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(data)
+		if strings.Contains(body, "href=") || strings.Contains(body, "http://") || strings.Contains(body, "https://") {
+			t.Errorf("%q carries a link", lang)
+		}
+		plain, _, err := model.render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plain, "Claude, agent.example.com") || !strings.Contains(plain, model.Steps) || strings.ContainsAny(plain, "{}") {
+			t.Errorf("%q plain =\n%s", lang, plain)
+		}
+	}
+	one, err := mcpRenewalEmail(MCPRenewal{Workspace: "Acme", Assistants: []string{"Claude"}, Since: since, Lang: "pt-BR"})
+	if err != nil || one.Subject != "Seu assistente precisa ser renovado" || !strings.HasPrefix(one.Intro, "Uma conexão") {
+		t.Fatalf("one = %+v %v", one, err)
+	}
+	for name, n := range map[string]MCPRenewal{
+		"no workspace":  {Assistants: []string{"Claude"}},
+		"no connection": {Workspace: "Acme"},
+	} {
+		if _, err := mcpRenewalEmail(n); err == nil {
 			t.Errorf("%s: rendered", name)
 		}
 	}

@@ -78,22 +78,26 @@ type MCP struct {
 	// content connection's key is dropped within a minute and no new one
 	// is consented, while the consents themselves survive.
 	ContentEnabled bool
-	// ContentTenants are the workspaces that may consent to content, each
-	// also allowed by the enclave reader's TENANTS. Required when
-	// ContentEnabled; "*" is not accepted.
-	ContentTenants []uuid.UUID
+	// WorkspaceDefault is WS_MCP_WORKSPACE_DEFAULT, "on" or "off" (the
+	// default): what each workspace's own assistant switches are until its
+	// owner sets them in the console (docs/mcp-enclave.md §19.30). On for
+	// Wappie Cloud, where every workspace may let assistants read text,
+	// attachments, drafts and AI; off for a self-hosted server, which keeps
+	// them off unless configured. Below the kill switches, the deny list and
+	// the enclave reader's TENANTS, which still decide first.
+	WorkspaceDefault bool
+	// DenyTenants (WS_MCP_DENY_TENANTS) are the workspaces refused text,
+	// attachments, drafts and AI whatever their own switches say: the
+	// operator's word on one workspace, where the kill switches speak for
+	// all. Empty by default.
+	DenyTenants []uuid.UUID
 	// MediaEnabled is the switch for attachments: a content connection
 	// whose consent carries media may open attachment contents inside the
 	// enclave reader. Off by default; off, the status of every media
 	// connection says media is not allowed within a minute, while its text
 	// keeps working and its consent survives. It rides on content: with
-	// ContentEnabled off it is off too, and its list and kinds are not
-	// inspected.
+	// ContentEnabled off it is off too, and its kinds are not inspected.
 	MediaEnabled bool
-	// MediaTenants are the workspaces whose content connections may open
-	// attachments, each also in ContentTenants. Required when MediaEnabled;
-	// "*" is not accepted.
-	MediaTenants []uuid.UUID
 	// MediaOffKinds are the attachment kinds switched off at the reader, a
 	// sorted subset of MediaKinds: the reader refuses them while text and
 	// the other kinds keep working. /v1/media does not look at kinds, so
@@ -107,10 +111,6 @@ type MCP struct {
 	// minute, while reading keeps working and the consent survives. It rides
 	// on content, and on is a configuration error while content is off.
 	SendEnabled bool
-	// SendTenants are the workspaces whose content connections may send,
-	// each also in ContentTenants. Required when SendEnabled; "*" is not
-	// accepted.
-	SendTenants []uuid.UUID
 	// SendSelfEnabled lets those connections send notes to the number's own
 	// chat as well, if their consent says so. Read only while SendEnabled.
 	SendSelfEnabled bool
@@ -127,9 +127,6 @@ type MCP struct {
 	// its keys within a minute, while the authorizations, the keychain and
 	// the stored results survive. It rides on attachments (see ai.go).
 	AIEnabled bool
-	// AITenants are the workspaces that may have AI integrations, each also
-	// in MediaTenants. Required when AIEnabled; "*" is not accepted.
-	AITenants []uuid.UUID
 	// AIOffProviders and AIOffFeatures are the providers and functions
 	// switched off everywhere, sorted subsets of AIProviders and AIFeatures:
 	// every AI status answer carries them, and no new authorization may use
@@ -142,22 +139,23 @@ type MCP struct {
 	// reported by Validate, because a disabled connector is not inspected.
 	readersErr  error
 	strayHosted []string
-	// contentTenantErr is a WS_MCP_CONTENT_TENANTS value that did not parse,
-	// mediaTenantErr a WS_MCP_MEDIA_TENANTS one and mediaOffErr a word of
-	// WS_MCP_MEDIA_OFF_KINDS that is not a kind. sendTenantErr and
-	// sendLimitErrs are the same for sending's list and limits.
-	contentTenantErr error
-	mediaTenantErr   error
-	mediaOffErr      error
-	sendTenantErr    error
-	sendLimitErrs    []error
+	// workspaceDefaultErr is a WS_MCP_WORKSPACE_DEFAULT that is neither on
+	// nor off, denyErr a WS_MCP_DENY_TENANTS value that did not parse,
+	// mediaOffErr a word of WS_MCP_MEDIA_OFF_KINDS that is not a kind and
+	// sendLimitErrs the sending limits that did not.
+	workspaceDefaultErr error
+	denyErr             error
+	mediaOffErr         error
+	sendLimitErrs       []error
+	// retiredLists are the operator's former workspace lists that are still
+	// set (WS_MCP_CONTENT_TENANTS and its kin): Validate refuses them while
+	// their switch is on, so nobody believes they still restrict anything.
+	retiredLists map[string]bool
 	// blockedErr and dcrHostErr are what was wrong with
 	// WS_MCP_BLOCKED_CLIENTS and WS_MCP_DCR_HOSTS.
 	blockedErr error
 	dcrHostErr error
-	// aiTenantErr, aiOffProvidersErr and aiOffFeaturesErr are the same for
-	// the AI block.
-	aiTenantErr       error
+	// aiOffProvidersErr and aiOffFeaturesErr are the same for the AI block.
 	aiOffProvidersErr error
 	aiOffFeaturesErr  error
 }
@@ -268,12 +266,17 @@ func loadMCP(errs *[]error) MCP {
 		}
 	}
 	m.ContentEnabled = boolean("WS_MCP_CONTENT_ENABLED", false, errs)
-	m.ContentTenants, m.contentTenantErr = workspaceList("WS_MCP_CONTENT_TENANTS", os.Getenv("WS_MCP_CONTENT_TENANTS"))
+	m.WorkspaceDefault, m.workspaceDefaultErr = onOrOff("WS_MCP_WORKSPACE_DEFAULT")
+	m.DenyTenants, m.denyErr = workspaceList("WS_MCP_DENY_TENANTS", os.Getenv("WS_MCP_DENY_TENANTS"))
+	m.retiredLists = map[string]bool{}
+	for _, name := range retiredLists {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			m.retiredLists[name] = true
+		}
+	}
 	m.MediaEnabled = boolean("WS_MCP_MEDIA_ENABLED", false, errs)
-	m.MediaTenants, m.mediaTenantErr = workspaceList("WS_MCP_MEDIA_TENANTS", os.Getenv("WS_MCP_MEDIA_TENANTS"))
 	m.MediaOffKinds, m.mediaOffErr = mediaKinds(os.Getenv("WS_MCP_MEDIA_OFF_KINDS"))
 	m.SendEnabled = boolean("WS_MCP_SEND_ENABLED", false, errs)
-	m.SendTenants, m.sendTenantErr = workspaceList("WS_MCP_SEND_TENANTS", os.Getenv("WS_MCP_SEND_TENANTS"))
 	m.SendSelfEnabled = boolean("WS_MCP_SEND_SELF_ENABLED", false, errs)
 	m.SendDirectEnabled = boolean("WS_MCP_SEND_DIRECT_ENABLED", false, errs)
 	m.SendLimits, m.sendLimitErrs = sendLimits()
@@ -321,10 +324,33 @@ func sendLimits() (MCPSendLimits, []error) {
 	return out, errs
 }
 
-// workspaceList parses WS_MCP_CONTENT_TENANTS or WS_MCP_MEDIA_TENANTS,
-// named by name: workspace UUIDs, comma separated. Every workspace is named;
-// "*" is refused, because content and attachments are opened one workspace
-// at a time, on purpose.
+// retiredLists are the operator's workspace lists that each workspace's own
+// switches replaced (docs/mcp-enclave.md §19.30).
+var retiredLists = []string{"WS_MCP_CONTENT_TENANTS", "WS_MCP_MEDIA_TENANTS", "WS_MCP_SEND_TENANTS", "WS_AI_TENANTS"}
+
+// retiredList is the refusal of a retired list that is still set.
+func retiredList(name string) error {
+	return fmt.Errorf("%s is no longer read: each workspace's owner now turns assistants' text, attachments, drafts and AI "+
+		"on or off in the console, starting from WS_MCP_WORKSPACE_DEFAULT (on for Wappie Cloud); refuse a workspace with "+
+		"WS_MCP_DENY_TENANTS (docs/mcp.md), and remove %s", name, name)
+}
+
+// onOrOff parses a setting that reads "on" or "off", in any case; empty is
+// off.
+func onOrOff(name string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "", "off":
+		return false, nil
+	case "on":
+		return true, nil
+	}
+	return false, fmt.Errorf("%s: %q is neither on nor off", name, os.Getenv(name))
+}
+
+// workspaceList parses a list of workspaces named by name
+// (WS_MCP_DENY_TENANTS): workspace UUIDs, comma separated. Every workspace is
+// named; "*" is refused, since every workspace at once is what the kill
+// switches are for.
 func workspaceList(name, raw string) ([]uuid.UUID, error) {
 	var out []uuid.UUID
 	var errs []error
@@ -479,6 +505,12 @@ func (m MCP) Validate(prod bool) error {
 	if !validChallenge(m.OpenAIAppsChallenge) {
 		errs = append(errs, errors.New("WS_MCP_OPENAI_APPS_CHALLENGE must be up to 256 printable characters without spaces"))
 	}
+	if m.workspaceDefaultErr != nil {
+		errs = append(errs, m.workspaceDefaultErr)
+	}
+	if m.denyErr != nil {
+		errs = append(errs, m.denyErr)
+	}
 	errs = append(errs, m.validateContent()...)
 	errs = append(errs, m.validateMedia()...)
 	errs = append(errs, m.validateSend()...)
@@ -487,37 +519,30 @@ func (m MCP) Validate(prod bool) error {
 	return errors.Join(errs...)
 }
 
-// validateContent checks the content switch. Off, the tenant list is not
-// inspected. On, it needs the enclave reader and a list of workspaces that
-// reader also admits.
+// validateContent checks the content switch. Off, nothing of it is
+// inspected. On, it needs the enclave reader, and WS_MCP_CONTENT_TENANTS,
+// which the workspaces' own switches replaced, must be gone.
 func (m MCP) validateContent() []error {
 	if !m.ContentEnabled {
 		return nil
 	}
 	var errs []error
-	if m.contentTenantErr != nil {
-		errs = append(errs, m.contentTenantErr)
+	if m.retiredLists["WS_MCP_CONTENT_TENANTS"] {
+		errs = append(errs, retiredList("WS_MCP_CONTENT_TENANTS"))
 	}
-	if len(m.ContentTenants) == 0 && m.contentTenantErr == nil {
-		errs = append(errs, errors.New("WS_MCP_CONTENT_TENANTS must list the workspaces that may consent to content when WS_MCP_CONTENT_ENABLED is set"))
-	}
-	enclave, ok := m.Reader(ContentReader)
-	if !ok {
-		return append(errs, fmt.Errorf("WS_MCP_CONTENT_ENABLED needs the %q reader in WS_MCP_READERS: content is opened only inside it", ContentReader))
-	}
-	for _, tenant := range m.ContentTenants {
-		if !enclave.AllTenants && !slices.Contains(enclave.Tenants, tenant) {
-			errs = append(errs, fmt.Errorf("WS_MCP_CONTENT_TENANTS: %s is not in WS_MCP_READER_%s_TENANTS", tenant, strings.ToUpper(ContentReader)))
-		}
+	if _, ok := m.Reader(ContentReader); !ok {
+		errs = append(errs, fmt.Errorf("WS_MCP_CONTENT_ENABLED needs the %q reader in WS_MCP_READERS: content is opened only inside it", ContentReader))
 	}
 	return errs
 }
 
-// ContentAllowed reports whether a workspace may have content connections
-// right now: the connector and the switch are on, the enclave reader is
-// configured and admits the workspace, and the workspace is listed.
+// ContentAllowed reports whether the operator lets a workspace have content
+// connections right now: the connector and the switch are on, the enclave
+// reader is configured and admits the workspace, and the workspace is not on
+// the deny list. The workspace's own switch, which its owner sets, comes on
+// top (mcpauth.WorkspaceSwitches); this is the operator's half alone.
 func (m MCP) ContentAllowed(tenant uuid.UUID) bool {
-	if !m.Enabled || !m.ContentEnabled || !slices.Contains(m.ContentTenants, tenant) {
+	if !m.Enabled || !m.ContentEnabled || slices.Contains(m.DenyTenants, tenant) {
 		return false
 	}
 	enclave, ok := m.Reader(ContentReader)
@@ -525,24 +550,16 @@ func (m MCP) ContentAllowed(tenant uuid.UUID) bool {
 }
 
 // validateMedia checks the attachments switch. It rides on content: while
-// either switch is off its list and kinds are not inspected, so turning
-// content off in a hurry never needs them tidied first. On, it needs a list
-// of workspaces that content also lists, and kinds that exist.
+// either switch is off its kinds are not inspected, so turning content off in
+// a hurry never needs them tidied first. On, it needs kinds that exist, and
+// WS_MCP_MEDIA_TENANTS gone.
 func (m MCP) validateMedia() []error {
 	if !m.ContentEnabled || !m.MediaEnabled {
 		return nil
 	}
 	var errs []error
-	if m.mediaTenantErr != nil {
-		errs = append(errs, m.mediaTenantErr)
-	}
-	if len(m.MediaTenants) == 0 && m.mediaTenantErr == nil {
-		errs = append(errs, errors.New("WS_MCP_MEDIA_TENANTS must list the workspaces that may open attachments when WS_MCP_MEDIA_ENABLED is set"))
-	}
-	for _, tenant := range m.MediaTenants {
-		if !slices.Contains(m.ContentTenants, tenant) {
-			errs = append(errs, fmt.Errorf("WS_MCP_MEDIA_TENANTS: %s is not in WS_MCP_CONTENT_TENANTS", tenant))
-		}
+	if m.retiredLists["WS_MCP_MEDIA_TENANTS"] {
+		errs = append(errs, retiredList("WS_MCP_MEDIA_TENANTS"))
 	}
 	if m.mediaOffErr != nil {
 		errs = append(errs, m.mediaOffErr)
@@ -550,19 +567,19 @@ func (m MCP) validateMedia() []error {
 	return errs
 }
 
-// MediaAllowed reports whether a workspace's content connections that
-// consented to attachments may open them right now: content is allowed for
-// the workspace, the media switch is on and the workspace is listed. Which
-// kinds are off is MediaOffKinds, and applies to every workspace.
+// MediaAllowed reports whether the operator lets a workspace's content
+// connections that consented to attachments open them right now: content is
+// allowed for the workspace and the media switch is on. Which kinds are off
+// is MediaOffKinds, and applies to every workspace.
 func (m MCP) MediaAllowed(tenant uuid.UUID) bool {
-	return m.ContentAllowed(tenant) && m.MediaEnabled && slices.Contains(m.MediaTenants, tenant)
+	return m.ContentAllowed(tenant) && m.MediaEnabled
 }
 
-// validateSend checks the sending switch. Off, its list, its limits and the
-// own-chat and direct switches are not inspected, so turning sending off in a
-// hurry never needs them tidied first. On, it needs content on, a list of
-// workspaces that content also lists, and limits within the reader's; direct
-// send cannot be switched on before its server exists.
+// validateSend checks the sending switch. Off, its limits and the own-chat
+// and direct switches are not inspected, so turning sending off in a hurry
+// never needs them tidied first. On, it needs content on, limits within the
+// reader's and WS_MCP_SEND_TENANTS gone; direct send cannot be switched on
+// before its server exists.
 func (m MCP) validateSend() []error {
 	if !m.SendEnabled {
 		return nil
@@ -571,16 +588,8 @@ func (m MCP) validateSend() []error {
 		return []error{errors.New("WS_MCP_SEND_ENABLED needs WS_MCP_CONTENT_ENABLED: a connection sends only what it may read")}
 	}
 	var errs []error
-	if m.sendTenantErr != nil {
-		errs = append(errs, m.sendTenantErr)
-	}
-	if len(m.SendTenants) == 0 && m.sendTenantErr == nil {
-		errs = append(errs, errors.New("WS_MCP_SEND_TENANTS must list the workspaces whose connections may send when WS_MCP_SEND_ENABLED is set"))
-	}
-	for _, tenant := range m.SendTenants {
-		if !slices.Contains(m.ContentTenants, tenant) {
-			errs = append(errs, fmt.Errorf("WS_MCP_SEND_TENANTS: %s is not in WS_MCP_CONTENT_TENANTS", tenant))
-		}
+	if m.retiredLists["WS_MCP_SEND_TENANTS"] {
+		errs = append(errs, retiredList("WS_MCP_SEND_TENANTS"))
 	}
 	if m.SendDirectEnabled {
 		errs = append(errs, errors.New("WS_MCP_SEND_DIRECT_ENABLED: direct send (docs/mcp-enclave.md §17.15) is not in this server yet; leave it false"))
@@ -588,11 +597,11 @@ func (m MCP) validateSend() []error {
 	return append(errs, m.sendLimitErrs...)
 }
 
-// SendAllowed reports whether a workspace's content connections that
-// consented to sending may draft and send right now: content is allowed for
-// the workspace, the send switch is on and the workspace is listed.
+// SendAllowed reports whether the operator lets a workspace's content
+// connections that consented to sending draft and send right now: content is
+// allowed for the workspace and the send switch is on.
 func (m MCP) SendAllowed(tenant uuid.UUID) bool {
-	return m.ContentAllowed(tenant) && m.SendEnabled && slices.Contains(m.SendTenants, tenant)
+	return m.ContentAllowed(tenant) && m.SendEnabled
 }
 
 // SendSelfAllowed is SendAllowed with the own-chat switch on as well.
@@ -798,21 +807,12 @@ func (m MCP) String() string {
 		b.WriteString(" ")
 		b.WriteString(r.String())
 	}
-	content := "off"
-	if m.ContentEnabled {
-		content = "on"
-	}
-	fmt.Fprintf(&b, " content=%s content_tenants=%d", content, len(m.ContentTenants))
-	media := "off"
-	if m.MediaEnabled {
-		media = "on"
-	}
-	fmt.Fprintf(&b, " media=%s media_tenants=%d", media, len(m.MediaTenants))
+	fmt.Fprintf(&b, " content=%s workspace_default=%s deny_tenants=%d", onOff(m.ContentEnabled), onOff(m.WorkspaceDefault), len(m.DenyTenants))
+	fmt.Fprintf(&b, " media=%s", onOff(m.MediaEnabled))
 	if len(m.MediaOffKinds) > 0 {
 		fmt.Fprintf(&b, " media_off=%s", strings.Join(m.MediaOffKinds, ","))
 	}
-	fmt.Fprintf(&b, " send=%s send_tenants=%d send_self=%s send_direct=%s", onOff(m.SendEnabled), len(m.SendTenants),
-		onOff(m.SendSelfEnabled), onOff(m.SendDirectEnabled))
+	fmt.Fprintf(&b, " send=%s send_self=%s send_direct=%s", onOff(m.SendEnabled), onOff(m.SendSelfEnabled), onOff(m.SendDirectEnabled))
 	l := m.SendLimits
 	fmt.Fprintf(&b, " send_limits=drafts_per_hour:%d,drafts_pending:%d,per_day:%d,per_chat_per_day:%d,min_interval:%s,tenant_per_day:%d",
 		l.DraftsPerHour, l.DraftsPending, l.PerDay, l.PerChatPerDay, l.MinInterval, l.TenantPerDay)

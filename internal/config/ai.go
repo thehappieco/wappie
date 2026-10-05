@@ -32,7 +32,6 @@ var AIFeatures = []string{"audio", "video", "image", "document"}
 // parsing; validateAI says what is wrong, and only while the block is used.
 func loadAI(m *MCP, errs *[]error) {
 	m.AIEnabled = boolean("WS_AI_ENABLED", false, errs)
-	m.AITenants, m.aiTenantErr = workspaceList("WS_AI_TENANTS", os.Getenv("WS_AI_TENANTS"))
 	m.AIOffProviders, m.aiOffProvidersErr = wordList("WS_AI_OFF_PROVIDERS", os.Getenv("WS_AI_OFF_PROVIDERS"), AIProviders, "an AI provider")
 	m.AIOffFeatures, m.aiOffFeaturesErr = wordList("WS_AI_OFF_FEATURES", os.Getenv("WS_AI_OFF_FEATURES"), AIFeatures, "an AI function")
 }
@@ -62,9 +61,8 @@ func wordList(name, raw string, words []string, what string) ([]string, error) {
 
 // validateAI checks the AI switch. While content is off nothing of it is
 // inspected, as for attachments, so content can be turned off in a hurry;
-// while the switch itself is off, likewise. On, it needs attachments on, a
-// list of workspaces that attachments also list, and off lists of known
-// words.
+// while the switch itself is off, likewise. On, it needs attachments on, off
+// lists of known words, and WS_AI_TENANTS gone.
 func (m MCP) validateAI() []error {
 	if !m.AIEnabled || !m.ContentEnabled {
 		return nil
@@ -73,16 +71,8 @@ func (m MCP) validateAI() []error {
 		return []error{errors.New("WS_AI_ENABLED needs WS_MCP_MEDIA_ENABLED: AI integrations open attachments as a media connection does")}
 	}
 	var errs []error
-	if m.aiTenantErr != nil {
-		errs = append(errs, m.aiTenantErr)
-	}
-	if len(m.AITenants) == 0 && m.aiTenantErr == nil {
-		errs = append(errs, errors.New("WS_AI_TENANTS must list the workspaces that may have AI integrations when WS_AI_ENABLED is set"))
-	}
-	for _, tenant := range m.AITenants {
-		if !slices.Contains(m.MediaTenants, tenant) {
-			errs = append(errs, fmt.Errorf("WS_AI_TENANTS: %s is not in WS_MCP_MEDIA_TENANTS", tenant))
-		}
+	if m.retiredLists["WS_AI_TENANTS"] {
+		errs = append(errs, retiredList("WS_AI_TENANTS"))
 	}
 	if m.aiOffProvidersErr != nil {
 		errs = append(errs, m.aiOffProvidersErr)
@@ -93,18 +83,18 @@ func (m MCP) validateAI() []error {
 	return errs
 }
 
-// AIAllowed reports whether a workspace may have AI integrations right now:
-// attachments are allowed for it, the AI switch is on and it is listed.
-// Which providers and functions are off is AIOffProviders and AIOffFeatures,
-// for every workspace.
+// AIAllowed reports whether the operator lets a workspace have AI
+// integrations right now: attachments are allowed for it and the AI switch is
+// on. Which providers and functions are off is AIOffProviders and
+// AIOffFeatures, for every workspace.
 func (m MCP) AIAllowed(tenant uuid.UUID) bool {
-	return m.MediaAllowed(tenant) && m.AIEnabled && slices.Contains(m.AITenants, tenant)
+	return m.MediaAllowed(tenant) && m.AIEnabled
 }
 
-// aiString is the AI part of the startup line: the switch, the number of
-// listed workspaces and, when any is off, what.
+// aiString is the AI part of the startup line: the switch and, when any is
+// off, what.
 func (m MCP) aiString() string {
-	out := fmt.Sprintf(" ai=%s ai_tenants=%d", onOff(m.AIEnabled), len(m.AITenants))
+	out := fmt.Sprintf(" ai=%s", onOff(m.AIEnabled))
 	if len(m.AIOffProviders) > 0 || len(m.AIOffFeatures) > 0 {
 		out += fmt.Sprintf(" ai_off_providers=%s ai_off_features=%s", strings.Join(m.AIOffProviders, ","), strings.Join(m.AIOffFeatures, ","))
 	}

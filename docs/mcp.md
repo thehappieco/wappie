@@ -327,17 +327,31 @@ state lives in `mcp_reader_state` as opaque blobs, written with a generation
 compare-and-swap and at most 12 MiB each. When `enclave` is configured,
 discovery adds `endpoints.mcp_server_attested`.
 
-Message text is a separate switch, with two variables:
+Message text is a separate switch. Who may use it is decided in two halves:
+the operator's, in these variables, and each workspace's own, which its
+owner sets in the console's MCP tab ("What assistants may do in this
+workspace", `GET` and `PUT /v1/mcp/workspace`) for text, attachments, drafts
+and AI ([contract](mcp-enclave.md#1930-fewer-steps-without-a-new-image-a1-to-a7)):
 
 | Variable | Rule |
 |---|---|
 | `WS_MCP_CONTENT_ENABLED` | boolean, default `false`; lets the `enclave` reader hold **content** connections. On without an `enclave` reader in `WS_MCP_READERS` is a configuration error |
-| `WS_MCP_CONTENT_TENANTS` | workspace UUIDs, comma separated, that may consent to content; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_READER_ENCLAVE_TENANTS` |
+| `WS_MCP_WORKSPACE_DEFAULT` | `on` or `off`, default `off`: what each workspace's own switches are until its owner sets them. Wappie Cloud sets `on`; a self-hosted server keeps text off unless configured. Anything else is a configuration error |
+| `WS_MCP_DENY_TENANTS` | workspace UUIDs, comma separated, refused text, attachments, drafts and AI whatever their own switches say; empty by default; `*` is refused (the switches above are for every workspace at once) |
+
+`WS_MCP_CONTENT_TENANTS`, `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and
+`WS_AI_TENANTS`, the lists that used to name every workspace allowed, are
+retired: set while their switch is on, each is a configuration error that
+names its replacement, so nobody believes it still restricts anything.
 
 The server allows a content consent only for a request the enclave holds,
-prepared by this process, with the switch on and the workspace listed;
-anything else is `403 content_not_allowed`. Turning the switch off (or
-removing a workspace from the list) is the kill switch: the enclave's status
+prepared by this process, with the switch on, the workspace admitted by
+`WS_MCP_READER_ENCLAVE_TENANTS`, not denied, and its own text switch on;
+anything else is `403 content_not_allowed`. A single hook, where the
+platform's workspace state (plans, trials and pauses, decided at the
+platform) will gate it later, answers yes for every workspace today: there is
+no plan check in Wappie. Turning the switch off (or denying a workspace, or
+its owner turning its text off) is the kill switch: the enclave's status
 checks answer `reseal` for that workspace's live content connections, so
 every key is dropped within a minute while the consents and the assistants'
 token families survive, and renewal is refused until content is allowed
@@ -349,7 +363,9 @@ it). Discovery adds the capability `mcp.remote.content.v1` when
 `GET /v1/mcp/content` whether its own workspace may use it (`enabled`) and
 whether the `enclave` reader allows that workspace at all (`attested`), which
 picks the one connector address the console shows. The startup line
-prints `content=on|off` and the number of listed workspaces.
+prints `content=on|off`, `workspace_default=on|off` and the number of
+denied workspaces. Each workspace's switches are read from memory, refreshed
+from the database every 15 seconds and at once on the owner's own change.
 
 Attachments are a third switch on top of content, with three variables
 ([contract](mcp-enclave.md#16-stage-a-attachments)). Reader 0.4.0 and later
@@ -358,28 +374,27 @@ connection can.
 
 | Variable | Rule |
 |---|---|
-| `WS_MCP_MEDIA_ENABLED` | boolean, default `false`; lets content connections whose consent includes attachments (`media`) open them inside the `enclave` reader. With `WS_MCP_CONTENT_ENABLED` off it is off too, and the other two are not inspected |
-| `WS_MCP_MEDIA_TENANTS` | workspace UUIDs, comma separated, whose content connections may open attachments; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_CONTENT_TENANTS` |
+| `WS_MCP_MEDIA_ENABLED` | boolean, default `false`; lets content connections whose consent includes attachments (`media`) open them inside the `enclave` reader, in the workspaces whose own attachments switch is on. With `WS_MCP_CONTENT_ENABLED` off it is off too, and the kinds are not inspected |
 | `WS_MCP_MEDIA_OFF_KINDS` | attachment kinds the reader refuses to open, any of `image`, `pdf`, `office`, `text`, `zip`, `audio`, `video`, comma separated; empty by default; an unknown word is a configuration error. Only the reader enforces it: `/v1/media` does not look at kinds and keeps serving their ciphertext to a media connection's key |
 
 A consent asks for attachments with `"media": true`, which needs
 `consent_version: 2`, and is refused with `400 media_not_allowed` unless both
-switches are on and the workspace is in both lists. The flag is recorded on
+switches are on and the workspace's own text and attachments switches too. The flag is recorded on
 the connection and never changes, a renewal included; attachments for an
 existing text connection take a new consent. The enclave's status checks
 answer `media` (whether that connection may open attachments right now) and
-`media_off` (the kinds switched off), so turning the switch off, removing a
+`media_off` (the kinds switched off), so turning a switch off, denying a
 workspace or switching a kind off reaches every reader within a minute while
 text keeps working. `/v1/media` refuses a content connection's key, with the
 same 404 as an attachment that is not the caller's, unless its consent
 includes attachments and the switch allows them now; it refuses any other key
 acting as a connection's service account (a renewal's new key before the
-connection points at it) the same way. The switch and the list reach
-`/v1/media` when the server restarts; the kinds reach only the reader.
+connection points at it) the same way. The operator's switch reaches
+`/v1/media` when the server restarts, a workspace's own at once; the kinds
+reach only the reader.
 Discovery adds `mcp.remote.media.v1` when content is advertised and the switch
 is on, and `GET /v1/mcp/content` adds `media` for the session's workspace. The
-startup line prints `media=on|off`, the number of listed workspaces and, when
-any are off, `media_off=`.
+startup line prints `media=on|off` and, when any are off, `media_off=`.
 
 Sending is a fourth switch on top of content
 ([contract](mcp-enclave.md#17-sending-drafts-050-and-direct-send-planned)).
@@ -388,8 +403,7 @@ before 0.5.0 drafts or sends, and a consent with sending fails closed on them.
 
 | Variable | Rule |
 |---|---|
-| `WS_MCP_SEND_ENABLED` | boolean, default `false`; lets content connections whose consent includes sending (`send`, consent version 3) draft messages for the person who consented to confirm in the console. On while `WS_MCP_CONTENT_ENABLED` is off is a configuration error; off, nothing below is inspected |
-| `WS_MCP_SEND_TENANTS` | workspace UUIDs, comma separated, whose content connections may send; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_CONTENT_TENANTS` |
+| `WS_MCP_SEND_ENABLED` | boolean, default `false`; lets content connections whose consent includes sending (`send`, consent version 3) draft messages for the person who consented to confirm in the console, in the workspaces whose own drafts switch is on. On while `WS_MCP_CONTENT_ENABLED` is off is a configuration error; off, nothing below is inspected |
 | `WS_MCP_SEND_SELF_ENABLED` | boolean, default `false`; also lets them send notes to the number's own chat, without the console, where their consent says so |
 | `WS_MCP_SEND_DIRECT_ENABLED` | boolean, default `false`; direct send to chats the person chose (S3). Until its server ships, `true` is a configuration error |
 | `WS_MCP_SEND_DRAFTS_PER_HOUR` | 1 to 30, default 30: drafts per connection in a rolling hour |
@@ -406,7 +420,7 @@ error. A consent asks for sending with `"send": "draft"` (and `"send_self"`,
 `403 send_not_allowed` unless the switches allow it for the workspace. The
 fields are recorded on the connection and never change, a renewal included;
 sending for an existing connection takes a new consent. The enclave's status
-checks answer `send` and `send_self`, so turning a switch off, removing a
+checks answer `send` and `send_self`, so turning a switch off, denying a
 workspace or pausing a connection reaches every reader within a minute while
 reading keeps working; the draft and send routes and the console's
 confirmation check the switches, the connection and the consenting person's
@@ -414,9 +428,8 @@ send permission on every request. A connection's own key, and any key a
 connection holds, is refused every WebSocket frame that sends or manages.
 Discovery adds `mcp.remote.send.v1` when content is advertised and the switch
 is on, and `GET /v1/mcp/content` adds `send`, `send_self` and `send_direct`
-for the session's workspace. The startup line prints `send=on|off`, the
-number of listed workspaces, `send_self=on|off`, `send_direct=on|off` and
-the limits in force. Pending drafts expire after 24 hours, and the ledger of
+for the session's workspace. The startup line prints `send=on|off`,
+`send_self=on|off`, `send_direct=on|off` and the limits in force. Pending drafts expire after 24 hours, and the ledger of
 drafts, sends and refusals keeps no message text and is deleted after 365
 days.
 
@@ -430,13 +443,12 @@ sees a key or a word of the content.
 
 | Variable | Rule |
 |---|---|
-| `WS_AI_ENABLED` | boolean, default `false`; lets the workspaces listed below have AI authorizations. On while `WS_MCP_MEDIA_ENABLED` is off (with content on) is a configuration error; while content or this switch is off, nothing below is inspected |
-| `WS_AI_TENANTS` | workspace UUIDs, comma separated; required and non-empty when the switch is on; `*` is refused, and each listed workspace must also be in `WS_MCP_MEDIA_TENANTS` |
+| `WS_AI_ENABLED` | boolean, default `false`; lets the workspaces whose own AI switch is on have AI authorizations. On while `WS_MCP_MEDIA_ENABLED` is off (with content on) is a configuration error; while content or this switch is off, nothing below is inspected |
 | `WS_AI_OFF_PROVIDERS` | a subset of `anthropic,openai,google`, any case and order, switched off for every workspace; an unknown word is a configuration error. Empty by default |
 | `WS_AI_OFF_FEATURES` | a subset of `audio,video,image,document`, likewise |
 
 `AIAllowed(workspace)` is attachments allowed for the workspace, the switch
-on and the workspace listed. An AI authorization is an `ai` row of the
+on and the workspace's own AI switch on. An AI authorization is an `ai` row of the
 connections ledger with its own service account, created by an owner or an
 admin in the console; it is left out of the cap of ten live connections and
 out of `GET /v1/mcp/connections`, and is listed by `GET /v1/ai/authorizations`.

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatserver2/internal/access"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -563,6 +564,12 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such account in this tenant")
 		return
 	}
+	// A grant to a connection's service account hands the number to an
+	// assistant's reader: it waits for the person's fresh step-up, as the
+	// connection does (internal/stepup).
+	if !s.stepUpForGrant(ctx, f.ReqID, who, tenantUUID, user) {
+		return
+	}
 
 	_, epoch, err := s.srv.cfg.Keys2.ArchiveKey(ctx, tenantUUID, deviceUUID)
 	if errors.Is(err, store.ErrNoArchiveKey) {
@@ -785,4 +792,36 @@ func (s *Server) cancelDevicePairing(tenant, device string) {
 			pair.Cancel()
 		}
 	}
+}
+
+// stepUpForGrant answers a grant to a connection's service account from a
+// session whose person has not proved themselves within the step-up window.
+// Any other grant passes.
+func (s *session) stepUpForGrant(ctx context.Context, reqID string, who actor, tenant, grantee uuid.UUID) bool {
+	service, err := s.srv.cfg.Accounts.ConnectionService(ctx, tenant, grantee)
+	if err != nil {
+		s.log.Error("reading whether a grantee is a connection's account failed", "error", err)
+		s.replyError(reqID, ErrCodeInternal, "could not check the account")
+		return false
+	}
+	if !service {
+		return true
+	}
+	checker := s.srv.cfg.StepUp
+	if checker == nil && s.srv.cfg.Sessions != nil {
+		checker = stepup.Recent(s.srv.cfg.Sessions)
+	}
+	fresh := false
+	if checker != nil && who.person {
+		if fresh, err = checker.Fresh(ctx, who.sessionID); err != nil {
+			s.log.Error("reading a session's step-up failed", "error", err)
+			s.replyError(reqID, ErrCodeInternal, "could not check your confirmation")
+			return false
+		}
+	}
+	if !fresh {
+		s.replyError(reqID, ErrCodeStepUpRequired, stepup.Message)
+		return false
+	}
+	return true
 }

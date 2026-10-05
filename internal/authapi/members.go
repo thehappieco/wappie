@@ -94,7 +94,7 @@ func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticate(w, r)
+	session, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
@@ -114,6 +114,12 @@ func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Provisional {
+		// A content consent's service account is the reader's way into the
+		// archive: it waits for the person's fresh step-up, as the grants
+		// sealed to it and the connection itself do (internal/stepup).
+		if !h.stepUpFresh(w, r, session) {
+			return
+		}
 		invite, invitation, err := h.Users.NewProvisionalServiceInvitation(r.Context(), user.TenantID, user.ID)
 		if err != nil {
 			h.memberError(w, err)
