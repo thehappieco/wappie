@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto'
 import { ArchiveClient, ArchiveError, auth, bytes, hpke, seal } from '@whatserver2/client'
 import { openContactPack, MAX_CONTACT_PACK_BYTES } from '@whatserver2/client/crypto/contactPack'
-import { contactCandidates, isPhoneQuery, matchesText, excerpt } from './contacts.mjs'
+import { contactCandidates, matchesText, excerpt } from './contacts.mjs'
 import { resolveRange } from './time.mjs'
 import { Opener } from '@whatserver2/client/api/opener'
 import { loadCredential, LocalConfigError, readerMode, readPrivateFile } from './config.mjs'
@@ -77,6 +77,54 @@ function replyIndex(chatOf = row => row.chat_key) {
 const quotes = row => typeof row?.reply_to === 'string' && row.reply_to !== ''
 /** A search hit's reply_to_uid until the scan ends: a place holder, filled or removed then. */
 const replyPending = row => (quotes(row) ? '' : undefined)
+/**
+ * activity_summary's groups (§19.32), by chat, sender and direction. A row
+ * archived before its sender's LID was known names the sender by phone JID
+ * only, so one person could count as two senders of one chat, a LID and a
+ * phone JID, with nothing in the result to join them. Where a row the same
+ * call read states both (its `sender_lid` and `sender_pn`, the archive's own
+ * alias), the phone JID's group is counted in the LID's group of the same
+ * chat and direction, whichever rows came first. Nothing is folded across
+ * chats or calls (a next page is a call of its own), nor where that chat and
+ * direction has no LID group (the phone JID is then the only sender_key
+ * those rows are found by), nor for a phone two LIDs state (as a wa_id two
+ * rows share names no reply).
+ */
+function activityGroups() {
+  const groups = new Map(), aliases = new Map(), ranks = new Map()
+  const keyOf = (chat, sender, direction) => JSON.stringify([chat, sender ?? '', direction])
+  let rank = 0
+  return {
+    /** Every row the call read, counted or not: the aliases it states. */
+    learn(row) {
+      const lid = row.sender_lid, pn = row.sender_pn
+      if (typeof lid === 'string' && lid && typeof pn === 'string' && pn && lid !== pn) aliases.set(pn, aliases.has(pn) && aliases.get(pn) !== lid ? null : lid)
+    },
+    /** A row counted, in its chat, sender and direction. */
+    add(row) {
+      const sender = senderOf(row), direction = row.is_from_me ? 'outgoing' : 'incoming', key = keyOf(row.chat_key, sender, direction)
+      // Rows come newest first: a group's first row is its newest, its last its oldest.
+      const item = groups.get(key) || { chat_key: row.chat_key, sender_key: sender, is_group: row.is_group === true, direction,
+        archived_messages: 0, first_order_ts: row.order_ts, last_order_ts: row.order_ts, sample_uid: row.uid }
+      if (!groups.has(key)) { groups.set(key, item); ranks.set(item, { newest: rank }) }
+      item.archived_messages++; item.first_order_ts = row.order_ts
+      ranks.get(item).oldest = rank++
+    },
+    list() {
+      for (const [key, item] of groups) {
+        const lid = aliases.get(item.sender_key)
+        const into = lid ? groups.get(keyOf(item.chat_key, lid, item.direction)) : undefined
+        if (!into) continue
+        const from = ranks.get(item), to = ranks.get(into)
+        into.archived_messages += item.archived_messages
+        if (from.newest < to.newest) { into.last_order_ts = item.last_order_ts; into.sample_uid = item.sample_uid; to.newest = from.newest }
+        if (from.oldest > to.oldest) { into.first_order_ts = item.first_order_ts; to.oldest = from.oldest }
+        groups.delete(key)
+      }
+      return [...groups.values()]
+    },
+  }
+}
 /**
  * resolve_contact's `next.after_key` (§19.32): the archive pages contacts by
  * key, so the cursor is the last contact's key, a third party's JID that has
@@ -549,7 +597,7 @@ export async function createReader(config, provider) {
     }
     return withOpener(device_id, async opener => {
       const counters = { examined: 0, matched: 0, locked: 0, tampered: 0, structured_content_unsearched: 0, missing_sent_time: 0 }
-      const hits = [], groups = new Map(), seen = new Set()
+      const hits = [], groups = activityGroups(), seen = new Set()
       // Every row examined, across chats, for the replies among the hits; the
       // hits' rows, to resolve them once the scan has seen the older rows.
       const replies = replyIndex(), hitRows = []
@@ -572,7 +620,7 @@ export async function createReader(config, provider) {
           if (seen.has(key) || (cursor && cursor.ts === row.order_ts && cursor.seq === row.seq)) throw new ArchiveError('invalid_response')
           seen.add(key)
           counters.examined++
-          if (!activity) replies.add(row)
+          if (activity) groups.learn(row); else replies.add(row)
           if (!row.ts) counters.missing_sent_time++
           if (row.payload_sealed) counters.structured_content_unsearched++
           cursor = { ts: row.order_ts, seq: row.seq }
@@ -582,12 +630,7 @@ export async function createReader(config, provider) {
             continue
           }
           if (activity) {
-            const groupKey = JSON.stringify([row.chat_key, senderOf(row) ?? '', row.is_from_me])
-            const item = groups.get(groupKey) || { chat_key: row.chat_key, sender_key: senderOf(row),
-              is_group: row.is_group === true, direction: row.is_from_me ? 'outgoing' : 'incoming', archived_messages: 0,
-              first_order_ts: row.order_ts, last_order_ts: row.order_ts, sample_uid: row.uid }
-            item.archived_messages++; item.first_order_ts = row.order_ts
-            groups.set(groupKey, item)
+            groups.add(row)
             counters.matched++
           } else {
             const body = row.body_sealed ? opener ? await opener.body(row) : locked() : omitted()
@@ -642,7 +685,7 @@ export async function createReader(config, provider) {
       if (!fixedWindow) await bounded(hits, HISTORY_CONCURRENCY, async hit => { hit.archive_status = await historyStatus(hit, device_id) })
       const next = hasMore && cursor ? { ...input, period: undefined, from: range.from, until: range.until, before: cursor } : undefined
       return { device_id, range,
-        ...(activity ? { activity: [...groups.values()], counting: 'Archived original message events in this page only, grouped by chat, sender and direction. Counts are not totals for the full archive.' } : { messages: hits }),
+        ...(activity ? { activity: groups.list(), counting: 'Archived original message events in this page only, grouped by chat, sender and direction. Counts are not totals for the full archive.' } : { messages: hits }),
         ...(fixedWindow ? { omitted_hits: omittedHits } : {}),
         coverage: { ...counters, scan_limit: budget, interval_exhausted: !hasMore, live_read: true,
           ...(query ? { text_search_complete: !hasMore && !counters.locked && !counters.tampered && !counters.structured_content_unsearched } : {}),
@@ -712,8 +755,6 @@ export async function createReader(config, provider) {
     activitySummary(input) { return scan(input, true) },
     async resolveContact({ device_id, query, limit = 20, after_key, include_phones = false }) {
       permit(device_id)
-      // A candidate's phones only for a phone query, or when the user asked for the number (§19.32).
-      const phones = include_phones === true || isPhoneQuery(query)
       const start = cursors.open(device_id, after_key)
       // Without plaintext no archived name is ever readable and no personal
       // snapshot exists (config.mjs refuses contacts_file without it), so a
@@ -743,7 +784,9 @@ export async function createReader(config, provider) {
           reply = await archiveRead('archive_contacts', () => api.listContacts(device_id, { limit: 500, afterKey }))
           await opener?.prefetch(reply.contacts.map(contact => contact.content_key_id))
           contacts.push(...reply.contacts)
-          if (!reply.has_more) break
+          // Without a next_key (which the client refuses anyway) a further page
+          // would start from the first again, as would a next without one.
+          if (!reply.has_more || typeof reply.next_key !== 'string' || !reply.next_key) break
           afterKey = reply.next_key
         }
         const pack = await personalContacts(serviceKey)
@@ -759,7 +802,8 @@ export async function createReader(config, provider) {
           } else if (contact.full_name_sealed || contact.push_name_sealed || contact.business_name_sealed) unavailable++
           archived.push({ ...contact, names })
         }
-        const result = contactCandidates(archived, pack?.contacts || [], query, limit, { phones })
+        // A candidate's phones when the user asked for the number, or for a phone query the ones typed (§19.32).
+        const result = contactCandidates(archived, pack?.contacts || [], query, limit, { includePhones: include_phones === true })
         return { device_id, ...result,
           coverage: { archived_contacts_examined: contacts.length, unavailable_names: unavailable,
             archive_has_more: reply.has_more, personal_snapshot: pack ? { created_at: pack.created_at, contacts: pack.contacts.length } : null,

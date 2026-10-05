@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
+import { ArchiveClient } from '@whatserver2/client'
 import { validateConfig } from '../config.mjs'
 import { createReader } from '../reader.mjs'
 import { createServer } from '../server.mjs'
@@ -146,6 +147,20 @@ test('a chat is its chat_key, name and preview; a number is its id and a name th
   } finally { await f.close() }
 })
 
+test('each number without a label or push name is named by its place in the list, never by its phone', async () => {
+  const f = await world()
+  try {
+    f.state.number = { label: '', pn: '5511900000001:7@s.whatsapp.net', lid: '99887766@lid' }
+    // A number this connection may not read sits between the two: it is not listed, so it takes no place.
+    f.state.moreNumbers = [{ id: '018f3a2b-2222-7000-8000-00000000dddd', label: '', status: 'online', pn: '5511900000003:2@s.whatsapp.net' },
+      { id: otherDevice, label: '', status: 'online', pn: '5511900000002:3@s.whatsapp.net', lid: '99887755@lid' }]
+    const reader = await createReader(contentConfig(f.server, { device_ids: [device, otherDevice] }), await contentProvider(f))
+    const listed = await reader.listNumbers()
+    assert.deepEqual(listed.numbers.map(number => [number.id, number.name]), [[device, 'Number 1'], [otherDevice, 'Number 2']])
+    for (const digits of ['5511900000001', '5511900000002', '5511900000003', '99887766', '99887755']) assert.equal(JSON.stringify(listed).includes(digits), false, digits)
+  } finally { await f.close() }
+})
+
 test('resolve_contact: phones for a phone query or include_phones only, no contact uid, and a sealed cursor bound to the connection and number', async () => {
   const f = await world({ contacts: 2200 })
   try {
@@ -188,7 +203,11 @@ test('resolve_contact: phones for a phone query or include_phones only, no conta
     // A changed cursor, another number's, another connection's: refused before anything is read.
     const flipped = cursor.slice(0, -2) + (cursor.at(-2) === 'A' ? 'B' : 'A') + cursor.at(-1)
     const guidance = 'Could not read the archive (invalid_cursor). Pass next.after_key exactly as returned, or call resolve_contact again without after_key.'
-    for (const args of [{ query: 'Roberto', after_key: flipped }, { query: 'Roberto', after_key: 'c1.' }, { device_id: otherDevice, query: 'Roberto', after_key: cursor }]) {
+    // Characters base64url decoding skips (padding, a dot, one inside) leave the same bytes: refused all the same.
+    const padded = [`${cursor}=`, `${cursor}.`, `${cursor.slice(0, 10)}~${cursor.slice(10)}`]
+    for (const value of padded) assert.deepEqual(Buffer.from(value.slice(3), 'base64url'), Buffer.from(cursor.slice(3), 'base64url'), value)
+    for (const args of [{ query: 'Roberto', after_key: flipped }, { query: 'Roberto', after_key: 'c1.' }, { device_id: otherDevice, query: 'Roberto', after_key: cursor },
+      ...padded.map(after_key => ({ query: 'Roberto', after_key }))]) {
       mark = f.state.requests.length
       const refused = await resolve(args)
       assert.equal(refused.isError, true, JSON.stringify(args))
@@ -198,6 +217,105 @@ test('resolve_contact: phones for a phone query or include_phones only, no conta
     const elsewhere = await createReader(contentConfig(f.server), await contentProvider(f, { token: async () => ({ token: `${token.split('.')[0]}.${Buffer.alloc(32, 7).toString('base64url')}`, kind: 'api_key' }) }))
     await assert.rejects(elsewhere.resolveContact({ device_id: device, query: 'Roberto', after_key: cursor }), { code: 'invalid_cursor' })
     await client.close()
+  } finally { await f.close() }
+})
+
+test('resolve_contact offers no next, and reads no page again, when the archive says has_more without a next_key', async () => {
+  const f = await world({ contacts: 600 })
+  try {
+    const reader = await createReader(contentConfig(f.server), await contentProvider(f))
+    // The client refuses such a page...
+    f.state.contactsWithoutNextKey = true
+    await assert.rejects(reader.resolveContact({ device_id: device, query: 'Roberto' }), { code: 'invalid_response' })
+    // ...and the reader does not lean on that: past the client's check, a next (or a further page) without the
+    // key would start from the first page again, so it stops after this one and offers none.
+    f.state.contactsWithoutNextKey = false
+    const original = ArchiveClient.prototype.listContacts
+    ArchiveClient.prototype.listContacts = async function (...args) {
+      const { next_key: _, ...reply } = await original.apply(this, args)
+      return reply
+    }
+    try {
+      const mark = f.state.requests.length
+      const found = await reader.resolveContact({ device_id: device, query: 'Roberto' })
+      assert.equal(Object.hasOwn(found, 'next'), false)
+      assert.equal(found.candidates.length, 1)
+      assert.deepEqual([found.coverage.archived_contacts_examined, found.coverage.archive_has_more, found.coverage.complete], [500, true, false])
+      assert.equal(f.since(mark).filter(call => call.includes('/contacts?')).length, 1)
+    } finally { ArchiveClient.prototype.listContacts = original }
+  } finally { await f.close() }
+})
+
+test('a chat\'s page names the quoted message across the chat\'s phone-JID and LID keys', async () => {
+  const f = await world()
+  try {
+    // seq 4, archived under the chat's LID, quotes seq 2, archived under its phone JID: one chat, whose page holds both.
+    const chatLID = '31313131@lid'
+    f.state.siblings = [[chat, chatLID]]
+    f.rows.find(row => row.seq === 4).chat_key = chatLID
+    const reader = await createReader(contentConfig(f.server), await contentProvider(f))
+    for (const key of [chat, chatLID]) {
+      const page = await reader.listMessages({ device_id: device, chat_key: key, limit: 50 })
+      const reply = page.messages.find(message => message.seq === 4)
+      assert.equal(reply.chat_key, chatLID, key)
+      assert.equal(reply.reply_to_uid, uid(2), key)
+      // Another chat's message is still never named (seq 5 quotes seq 6, of the group).
+      assert.equal(Object.hasOwn(page.messages.find(message => message.seq === 5), 'reply_to_uid'), false, key)
+    }
+  } finally { await f.close() }
+})
+
+test('a reply names an original message, never an edit or another control event, and never itself', async () => {
+  const f = await contentFixture({ rows: 5, contacts: 1 })
+  try {
+    const bySeq = seq => f.rows.find(row => row.seq === seq)
+    // seq 1 is an edit (with its own wa_id, as Go stores a control event); seq 2 quotes it, seq 3 itself, seq 4 seq 5 (a newer message).
+    Object.assign(bySeq(1), { kind: 'edit', target_uid: uid(5), target_rel: 'message' })
+    bySeq(2).reply_to = 'synthetic-1'
+    bySeq(3).reply_to = 'synthetic-3'
+    bySeq(4).reply_to = 'synthetic-5'
+    const reader = await createReader(contentConfig(f.server), await contentProvider(f))
+    const page = await reader.listMessages({ device_id: device, chat_key: chat, limit: 50 })
+    assert.deepEqual(Object.fromEntries(page.messages.map(message => [message.seq, message.reply_to_uid])),
+      { 5: undefined, 4: uid(5), 3: undefined, 2: undefined, 1: undefined })
+  } finally { await f.close() }
+})
+
+test('activity_summary counts a sender archived by phone JID and by LID once, under the LID, where the call reads the archive\'s alias', async () => {
+  const f = await contentFixture({ rows: 11, contacts: 1, scanPage: 4 })
+  try {
+    const groupA = '120363041234567890@g.us', groupB = '120363049999999999@g.us'
+    const otherPN = '5511944440000@s.whatsapp.net', lidOne = '5151@lid', lidTwo = '5252@lid'
+    const time = seq => `2026-09-15T${String(10 + seq).padStart(2, '0')}:00:00.000Z`
+    const phoneOnly = pn => ({ sender_key: pn, sender_pn: pn }), both = (lid, pn) => ({ sender_key: lid, sender_lid: lid, sender_pn: pn })
+    // seq 1 and 2 archived before the LID was known, 3 to 5 with both, 6 by LID only, 7 by phone again (newer
+    // than the alias rows): one person in group A. seq 8: the same phone in group B, which has no LID group.
+    // seq 9 to 11: a phone two LIDs state, which joins neither. seq 1, 2 and 6 have an attachment.
+    const senders = { 1: phoneOnly(senderPN), 2: phoneOnly(senderPN), 3: both(senderLID, senderPN), 4: both(senderLID, senderPN),
+      5: both(senderLID, senderPN), 6: { sender_key: senderLID, sender_lid: senderLID }, 7: phoneOnly(senderPN), 8: phoneOnly(senderPN),
+      9: phoneOnly(otherPN), 10: both(lidOne, otherPN), 11: both(lidTwo, otherPN) }
+    for (const row of f.rows) {
+      Object.assign(row, { chat_key: row.seq === 8 ? groupB : groupA, is_group: true, ts: time(row.seq), order_ts: time(row.seq) }, senders[row.seq])
+      if ([1, 2, 6].includes(row.seq)) row.media = { media_type: 'image', mimetype: 'image/jpeg', download_status: 'done' }
+    }
+    for (const [mode, config, provider] of [['content', contentConfig(f.server), await contentProvider(f)], ['metadata', metadataConfig(f.server), { token: async () => ({ token, kind: 'api_key' }) }]]) {
+      const reader = await createReader(config, provider)
+      const counts = await reader.activitySummary({ ...interval })
+      const groups = counts.activity.map(item => [item.chat_key, item.sender_key, item.archived_messages, item.first_order_ts, item.last_order_ts, item.sample_uid])
+        .sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1]))
+      assert.deepEqual(groups, [
+        [groupA, senderLID, 7, time(1), time(7), uid(7)],
+        [groupA, lidOne, 1, time(10), time(10), uid(10)],
+        [groupA, otherPN, 1, time(9), time(9), uid(9)],
+        [groupA, lidTwo, 1, time(11), time(11), uid(11)],
+        [groupB, senderPN, 1, time(8), time(8), uid(8)],
+      ].sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1])), mode)
+      assert.equal(counts.coverage.matched, 11)
+      // Only the rows with an attachment count, but the alias comes from every row the call read (seq 3 to 5).
+      const attached = await reader.activitySummary({ ...interval, has_attachment: true })
+      assert.deepEqual(attached.activity.map(item => [item.chat_key, item.sender_key, item.archived_messages, item.first_order_ts, item.last_order_ts, item.sample_uid]),
+        [[groupA, senderLID, 3, time(1), time(6), uid(6)]], mode)
+    }
   } finally { await f.close() }
 })
 

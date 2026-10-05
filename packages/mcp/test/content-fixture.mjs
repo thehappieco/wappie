@@ -28,8 +28,12 @@ export const contactKey = n => `${String(n).padStart(6, '0')}@lid`
  * `addMedia(fields)` adds a message with an attachment, served only by
  * `GET /v1/messages/{uid}`, its media key, preview, filename and caption
  * sealed like the archive seals them. `addChat(fields)` adds a chat, and
- * `state.number` fields (`pn`, `lid`) join the number's device row. `token`
- * replaces the bearer it accepts.
+ * `state.number` fields (`pn`, `lid`) join the number's device row;
+ * `state.moreNumbers` are further device rows, after it. `state.siblings`
+ * lists sets of chat keys that are one chat (a chat's phone JID and LID): a
+ * chat's page then holds the rows of every key of its set, as the archive's
+ * sibling keys do. `state.contactsWithoutNextKey` makes a contacts page with
+ * more after it leave out `next_key`. `token` replaces the bearer it accepts.
  */
 export async function contentFixture({ rows: rowCount = 120, contacts: contactCount = 2200, scanPage = 40, token: bearer = token } = {}) {
   const account = await hpke.generateKeyPair()
@@ -101,7 +105,7 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
     chats.push(chat)
     return chat
   }
-  const state = { requests: [], grantEpoch: 1, historyDelayMs: 0, historyInFlight: 0, maxHistoryInFlight: 0, number: {} }
+  const state = { requests: [], grantEpoch: 1, historyDelayMs: 0, historyInFlight: 0, maxHistoryInFlight: 0, number: {}, moreNumbers: [], siblings: [], contactsWithoutNextKey: false }
   const http = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost'), path = url.pathname
     state.requests.push({ method: request.method, target: request.url, path })
@@ -118,7 +122,7 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
       const row = messages.get(path.slice('/v1/messages/'.length)) ?? rows.find(item => path.endsWith(item.uid))
       return row ? reply(row) : send({ code: 'not_found' }, 404)
     }
-    if (path === '/v1/devices') return reply({ devices: [{ id: device, label: 'Número autorizado', status: 'online', ...state.number }] })
+    if (path === '/v1/devices') return reply({ devices: [{ id: device, label: 'Número autorizado', status: 'online', ...state.number }, ...state.moreNumbers] })
     if (path === '/v1/grants') return reply({ user_id: service, grants: [{ device_id: device, epoch: state.grantEpoch, archive_tenant_id: vector.tenant, sealed_dsk: grants[state.grantEpoch] }] })
     if (path.endsWith('/chats')) {
       const key = url.searchParams.get('chat_key')
@@ -132,12 +136,13 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
       const rest = after ? contacts.filter(item => item.contact_key > after) : contacts
       const page = rest.slice(0, limit)
       const more = rest.length > limit
-      return reply({ device_id: device, contacts: page, has_more: more, ...(more ? { next_key: page.at(-1).contact_key } : {}) })
+      return reply({ device_id: device, contacts: page, has_more: more, ...(more && !state.contactsWithoutNextKey ? { next_key: page.at(-1).contact_key } : {}) })
     }
-    // One chat's page, newest first, as `GET /v1/devices/{id}/messages` serves it (§17.3): every row is of one chat here.
+    // One chat's page, newest first, as `GET /v1/devices/{id}/messages` serves it (§17.3), its sibling keys' rows included.
     if (path === `/v1/devices/${device}/messages`) {
       const key = url.searchParams.get('chat_key'), limit = Number(url.searchParams.get('limit'))
-      const selected = rows.filter(row => row.chat_key === key).sort((a, b) => b.seq - a.seq)
+      const keys = state.siblings.find(set => set.includes(key)) ?? [key]
+      const selected = rows.filter(row => keys.includes(row.chat_key)).sort((a, b) => b.seq - a.seq)
       const page = selected.slice(0, limit), more = selected.length > limit
       return reply({ device_id: device, chat_key: key, messages: page, has_more: more, ...(more ? { next_ts: page.at(-1).order_ts, next_seq: page.at(-1).seq } : {}) })
     }

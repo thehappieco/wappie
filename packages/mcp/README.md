@@ -521,9 +521,14 @@ identify their source; results include the explicit JID aliases
 (`identifiers`, which `sender_keys` and `chat_key` take) and `ambiguous` when
 several candidates match. Ask the user which candidate they mean before
 choosing an identity. A candidate's E.164 `phones` come back only when the
-query is a phone number (7 to 15 digits, with `+`, spaces, dots, dashes and
-parentheses only) or the call passes `include_phones: true` because the user
-asked for the number; `identifiers` can still hold a phone JID.
+call passes `include_phones: true` because the user asked for the number
+(all of them), or when the query is a phone number (7 to 15 digits, with
+`+`, spaces, dots, dashes and parentheses only): then only the phones that
+are the number typed, the same digits or ending with them, as a number typed
+without its country or area code. A phone query can also match candidates
+whose number it is not (the same pieces in another order, a shared prefix, a
+LID's digits); those carry no `phones`. `identifiers` can still hold a phone
+JID.
 
 On the attested reader (`hosted-content`) each call reads exactly **four pages**
 of 500 archived contacts, following `has_more` whatever matched, so the archive
@@ -635,7 +640,12 @@ can change the archive between calls; pagination is a live read, not a snapshot.
 filters. It does not accept a text query, a `kind` override or a result `limit`.
 It scans up to `max_scan_messages` original `message` rows per call and groups
 them by chat, sender and direction. Group conversations and direct chats remain
-separate. It does not need message plaintext to count metadata.
+separate. It does not need message plaintext to count metadata. A sender
+archived by phone JID before its LID was known, and by LID since, counts once,
+under the LID, in each chat and direction where a row the same call read states
+both (the archive's alias); a later page is a call of its own, and a search by
+that `sender_key` still misses the phone-only rows (pass `resolve_contact`'s
+`identifiers` for every message of a person).
 
 These are **archived original message events**, including originals later edited
 or deleted while still retained in the archive. Edits, deletion controls and

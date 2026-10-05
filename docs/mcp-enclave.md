@@ -9391,9 +9391,12 @@ clients that passed).
     (§19.32): a result carries what a tool chain needs, once. What stays
     goes into the Wappie privacy policy (point 16): `chat_key` and
     `sender_key`, which show a phone where they are a phone JID, a
-    contact's `identifiers`, a contact's `phones` for a phone query or when
-    the user asked for the number, and the names and texts the connection
-    opens.
+    contact's `identifiers`, a contact's `phones` for a phone query (the
+    number typed) or when the user asked for the number, and the names and
+    texts the connection opens. Open for the owner: whether `identifiers`
+    keep a candidate's phone JID when its `phones` are withheld. Today they
+    do, since it is the only key a row archived before the sender's LID
+    matches, so `include_phones` withholds the E.164 form only (§19.33).
 20. **Who gets the way back** (§19.31): the `state` in the button and in the
     decline's redirect goes to any browser on the starter's network, and the
     parent writes the PROXY v2 source address the network check reads.
@@ -9402,12 +9405,12 @@ clients that passed).
     and would give a VPN user the button too; it changes the console's URL
     contract, so it is the owner's decision, after 0.6.0.
 21. **Messages deleted for everyone stay readable** (owner's decision,
-    2026-10-05: "mantem destravado, quero ler ainda", keep it unlocked, I
-    still want to read it). The text of a message its sender deleted for
-    everyone is not locked: `list_revisions` returns its archived versions
-    with `deleted: true`, and `get_message` and a search hit of the original
-    open its text as before (a hit says `archive_status` `deleted` where it
-    is checked). 0.6.0 changes nothing here.
+    2026-10-05: keep it unlocked, the owner still wants to read it). The
+    text of a message its sender deleted for everyone is not locked:
+    `list_revisions` returns its archived versions with `deleted: true`,
+    and `get_message` and a search hit of the original open its text as
+    before (a hit says `archive_status` `deleted` where it is checked).
+    0.6.0 changes nothing here.
 22. **One-time codes are not locked in 0.6.0** (owner's decision,
     2026-10-05). A message that carries a one-time code (a sign-in or
     payment verification code) reads like any other message: the reader
@@ -9880,10 +9883,10 @@ enclave's `send/sends.mjs`).
 |---|---|---|
 | a message (`list_messages`, `get_message`, `list_revisions`) and a search hit | `wa_id`, `sender_pn`, `sender_lid`, `reply_to` | `uid`, `device_id`, `chat_key`, `sender_key`, `target_uid`, and `reply_to_uid` where it is known |
 | a search hit's `source` | `device_id`, `message_uid` and `chat_key`, copies of the hit's own; on a hosted reader the object itself (the row's `source` string stays, as `list_messages` has it) | on a local install, `server` and `url` |
-| an `activity_summary` group | `sender_pn`, `sender_lid` | `chat_key`, `sender_key`, `sample_uid` |
+| an `activity_summary` group | `sender_pn`, `sender_lid` | `chat_key`, `sender_key`, `sample_uid`; a sender's phone-JID rows count in its LID group where the call read the alias |
 | a `list_chats` chat | `uid`, `chat_pn`, `chat_lid`, `keys` | `chat_key` |
 | a `list_numbers` number | `phone`, and the phone JID as the `name` of last resort | `id`; `name` is the console label, else the WhatsApp push name, else "Number 1", "Number 2"… by its place in the list |
-| a `resolve_contact` candidate | `contact_uid`; `phones`, unless the query is a phone number or `include_phones` is true | `identifiers` |
+| a `resolve_contact` candidate | `contact_uid`; `phones`, but those that are the number a phone query typed, or all of them with `include_phones` | `identifiers` |
 | `resolve_contact`'s `next.after_key` | the last contact's key, a third party's JID | a sealed cursor |
 | `send_to_self` | `wa_id` (the enclave keeps it out of its answer too) | `message_uid`, `timestamp`, `open_url` |
 
@@ -9895,23 +9898,44 @@ names its sender by phone only, and `sender_keys` matches exactly, so a
 search for every message of a person passes `resolve_contact`'s
 `identifiers` (LID and phone JID), not one message's `sender_key`.
 
+**One sender, two keys.** That same row would make one person of a chat
+two `activity_summary` groups, a LID and a phone JID, with nothing in the
+result to join them once `sender_pn` was gone. So a phone JID's group is
+counted in the LID group of the same chat and direction where a row the
+same call read states both (its `sender_lid` and `sender_pn`, the archive's
+own alias), whichever came first: the group keeps the LID as `sender_key`,
+the oldest and newest times of both, and the newer `sample_uid`. Nothing is
+folded across chats or calls (a `next` page is a call of its own), where
+that chat and direction has no LID group (the phone JID is then the only
+key those rows are found by), or for a phone two LIDs state. No field is
+added and no text changed. A search by a folded group's `sender_key` still
+misses its phone-only rows, as above.
+
 **`reply_to_uid`.** The archive has no lookup by WhatsApp id, and a lookup
 per reply would cost a read and, on a text query, tell the archive which
 rows matched. So the quoted message is named only when it is among the rows
 the same call read: a `list_messages` page or a `list_revisions` thread
-(one chat, aliases included), or a row the search examined in the reply's
-chat (older, so it is read after the hit; hits are resolved when the scan
-ends, and the field keeps its place). A WhatsApp id two rows share names
-nothing, and a row outside the history window is never read, so never
-named. `get_message` never carries it.
+(one chat, its phone-JID and LID keys included), or a row the search
+examined under the reply's `chat_key` (older, so it is read after the hit;
+hits are resolved when the scan ends, and the field keeps its place; a scan
+row names no sibling key, so there a direct chat's two keys are two chats).
+A WhatsApp id two rows share names nothing, and a row outside the history
+window is never read, so never named. `get_message` never carries it.
 
 **Phones.** A phone query has 7 to 15 digits (E.164's length) and nothing
 but digits, one leading `+`, spaces, dots, dashes and parentheses; fewer
-digits are part of a number at most. `include_phones` is new: "true only
-when the user asked for a contact's phone number: candidates then include
-phones. A query that is a phone number includes them anyway; omit it
-otherwise." `next` repeats it. `identifiers` keep the phone JID, the only
-key a pre-LID row matches.
+digits are part of a number at most. It shows only the phones that are the
+number typed: the same digits, or ending with them (a number typed without
+its country or area code). Matching is looser, each word of the query
+anywhere in a candidate's names, phones and identifiers, so a phone query
+also matches candidates whose number the user never typed (the pieces of
+another number, a mobile beside the landline typed, every contact sharing a
+prefix, a LID's digits); they carry no `phones`. `include_phones` is new:
+"true only when the user asked for a contact's phone number: candidates
+then include phones. A query that is a phone number includes them anyway;
+omit it otherwise." With it a candidate carries all its phones. `next`
+repeats it. `identifiers` keep the phone JID, the only key a pre-LID row
+matches (§19.28 point 19).
 
 **The cursor.** `c1.` and the base64url of a 12-byte IV, the AES-256-GCM
 ciphertext of the contact key and its tag, under HKDF-SHA256 of the
@@ -9942,7 +9966,47 @@ content and metadata modes: no removed field, the replies, chats, numbers,
 phones, the cursor, unchanged inputs, and no model-facing text naming a
 removed field), `contacts.test.mjs`, `search.test.mjs`, `content.test.mjs`
 and `send.test.mjs`; the enclave's `send-units.test.mjs` and
-`send-enclave.test.mjs`.
+`send-enclave.test.mjs`. §19.33 adds to them.
+
+### 19.33 Review of the identifiers (2026-10-05)
+
+The review of §19.32 changed three things and added tests; §19.32 reads as
+amended. None of it changes a text the model reads.
+
+**A phone query's phones.** `isPhoneQuery` counted 7 to 15 digits anywhere
+in the query, and matching only needs each word somewhere in a candidate,
+so `11 1234 9876` showed `+5511987651234`, `55 11 5555 0000` the mobile
+`+5511955550000`, a prefix such as `5511987` every phone sharing it (from
+four pages of contacts per call on the attested reader), and a LID's
+digits that contact's phone. A phone query now shows only the phones that
+are the number typed (`contacts.mjs`, `shownPhones`). The exposure was
+small while `identifiers` carry the phone JID (§19.28 point 19); it would
+have become a leak the day they stop.
+
+**One sender, two keys** (§19.32): an `activity_summary` group by phone JID
+is counted in its LID group where the call read the alias. The alternative,
+a sentence telling the model that one person can appear under two keys,
+would be new text for D10; it is not needed while the fold covers one call.
+
+**A contact page without `next_key`.** `resolve_contact` stops paging, as it
+already offered no `next`, when the archive says `has_more` without a
+`next_key`: either would start from the first page again. The client
+refuses such a page anyway (`invalid_response`); the test reaches the
+reader's check past it.
+
+**Tests that fail without each guard:** a reply under a chat's LID key
+quoting a message under its phone-JID key, on that chat's page; two
+unnamed numbers named "Number 1" and "Number 2" by their place among the
+listed ones; a reply quoting an edit, or itself, names nothing; a cursor
+with characters that base64url decoding skips (`=`, `.`, one inside) is
+refused; a phone query that is not the candidate's number (the cases
+above); the activity fold, in both modes and with an attachment filter.
+
+**Still open.** A search by one `sender_key` misses a person's rows under
+the other key (§19.32); what it would take is the owner's: the model told
+to pass `identifiers` (text, D10), or the reader widening `sender_keys`
+from aliases it reads. And whether `identifiers` keep the phone JID
+(§19.28 point 19).
 
 ### Amendments to §§1 to 18
 
@@ -9974,7 +10038,7 @@ and `send.test.mjs`; the enclave's `send-units.test.mjs` and
 | §5.4 | the public listener adds `/icon-192.png`, `/icon-512.png`, the page at `/` and `/robots.txt`, and `serverInfo.icons` names the two PNGs (§19.29) | 0.6.0 |
 | §5.4 | the public listener adds `POST /mcp/authorize/decline`, the console's Cancel, and a refusal after the redirect is trusted carries a button back to the assistant when the browser is tied to the request's starter (§19.30, §19.31) | 0.6.0 |
 | §15.6, §16.7, §17.8 | read results are one text block, without `structuredContent` or `workspace_id`; `send_to_self`'s `destructiveHint` is true (§19.30) | 0.6.0 |
-| §15.6, §16.7, §17.8 | results carry the identifiers a tool takes, once: no `wa_id`, `sender_pn`, `sender_lid`, `reply_to`, `chat_pn`, `chat_lid`, `keys`, chat `uid`, `contact_uid`, number `phone` or copies in a hit's `source`; `reply_to_uid` where the call read the quoted message; `resolve_contact`'s `phones` only for a phone query or `include_phones`, and a sealed `after_key`; `send_to_self` answers without `wa_id` (§19.32) | 0.6.0 |
+| §15.6, §16.7, §17.8 | results carry the identifiers a tool takes, once: no `wa_id`, `sender_pn`, `sender_lid`, `reply_to`, `chat_pn`, `chat_lid`, `keys`, chat `uid`, `contact_uid`, number `phone` or copies in a hit's `source`; `reply_to_uid` where the call read the quoted message; `resolve_contact`'s `phones` only those a phone query typed, or all with `include_phones`, and a sealed `after_key`; an `activity_summary` sender's phone-JID rows counted in its LID group where the call read the alias; `send_to_self` answers without `wa_id` (§19.32, §19.33) | 0.6.0 |
 | §15.5, §15.6, §15.8 | a content connection without its key reads metadata with its own read-only key, text locked and the renewal link on every result; only what needs the key answers `reconsent_required`, whose guidance no longer says the reader restarted (§19.29) | 0.6.0 |
 | §15.6, §16.7, §17.8 | `serverInfo`, the instructions, the tool descriptions, the parameters' descriptions, `type`'s enum, the hints of `send_to_self` and of an AI connection's `open_attachment`, and `list_numbers`' `connection` block (§19.29) | 0.6.0 |
 | §9, §11 | 0.6.0 is the first image with the shared kit (0.5.0's client predates it): `packages/client` installs the kit's release asset `thehappieco-kit-0.3.0.tgz` (sha256 `acbcce7a87e3d4726cf93fc02398e576829c92a82e49bd4e33b69addbac5fa78`), which `tarballs/` publishes. Its Wappie profile and every byte that profile pins are v0.1.0's. v0.3.0 also ships the platform profile and `oidc-rp`, which the reader never imports but the image measures, and its `hpke` imports every X25519 private key through a PKCS#8 copy with bit 0 of the first byte set and asks `generateKey` again after an `OperationError` (WebKit for Linux refuses a key whose first byte is zero and fails 1 generation in 256). A later kit bump before the image is built changes this row | 0.6.0 |
