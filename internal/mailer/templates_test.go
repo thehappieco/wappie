@@ -165,3 +165,29 @@ func TestTemplatesRefuseLocalhostEvenWhenSenderBypassesConfigLoad(t *testing.T) 
 		}
 	}
 }
+
+// The account e-mails' words, which a person reads, use the typographic
+// apostrophe, as the console and the assistant notices do (approved
+// 2026-10-05, recommendation 12).
+func TestAccountEmailsUseTheTypographicApostrophe(t *testing.T) {
+	const origin = "https://app.wappie.thehappie.co"
+	verification, err := signupEmail(origin, "person@example.com", "code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := invitationEmail(origin, "person@example.com", "code", "Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, model := range map[string]accountEmail{"verification": verification, "invitation": invite} {
+		for _, text := range []string{model.Subject, model.Preheader, model.Eyebrow, model.Title, model.Intro, model.Action, model.Expiry,
+			model.Instructions, model.CodeLabel, model.Footer} {
+			if strings.Contains(text, "'") {
+				t.Errorf("%s: a text without the typographic apostrophe: %q", name, text)
+			}
+		}
+	}
+	if !strings.Contains(verification.CodeLabel, "Wappie’s") {
+		t.Errorf("verification code label = %q", verification.CodeLabel)
+	}
+}

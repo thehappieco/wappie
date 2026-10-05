@@ -9799,21 +9799,29 @@ applied here; the sign-in's are recorded in `docs/platform-sign-in.md`.
    the consent and renewal cards say "If the Wappie reader loses this
    connection’s key, the assistant will ask you to renew here…" (C-CONF-04);
    the AI cards say that the reader no longer holds the integration's keys
-   (C-AI-01 to C-AI-03); the list and the activity panel lose "for example
-   after a restart" (C-LIST-15 and C-ACT-01, approved with 0.6.0), in all five
+   and that the integration pauses (C-AI-01 to C-AI-03; the English names
+   the integration, so that "it" never reads as the reader); the list and the
+   activity panel lose "for example after a restart" (C-LIST-15 and C-ACT-01,
+   approved with 0.6.0); and a lost AI request says only "The reader no
+   longer knows this request. Try again." (`ai_job_lost`). All five
    languages.
 3. Portuguese writes "a Wappie" where Wappie checks or receives, and "o
    Wappie" for the app and the connector (the sign-in's texts).
 4. Portuguese says "entrar" for signing in: the step-up field's password note
    reads "Conferida como ao entrar" (C-STEP-07); "acesso" stays for access to
-   numbers.
+   numbers. French, where "connexion" is above all an assistant's connection,
+   says it with the verb on the step-up field: "Vérification de la façon dont
+   vous vous êtes connecté…" (C-STEP-02) and "Vérifié comme lorsque vous vous
+   connectez : …" (C-STEP-07).
 5. The drafts switch says "a sua própria conversa", as the guide does
    (C-SWITCH-09); the other languages already used the console's word.
 6. The renewal e-mail names a token as Token “label” (E-RENEW-05).
 7. The new languages of the new-assistant e-mail follow the revocation page
    and the console word for word: the French button is "Révoquer uniquement
-   cette connexion" (E-MAIL-37); the German footer and button say "Button"
-   (E-REV-11, C-LIST-21), and German says "Netzwerk" (E-MAIL-13, 27, 28).
+   cette connexion" (E-MAIL-37), and the line under it says "uniquement"
+   too (E-MAIL-38); the German footer and link help say "Button" (E-REV-11,
+   C-LIST-21), and German says "Netzwerk" (E-MAIL-13, 27, 28), as the
+   console's token form now does too ("Erlaubte Netzwerke").
 8. One wording of the account-key alert, on the screen and in the e-mail, in
    the account's language (the sign-in).
 9. No server English on the screen: Members and permissions' "Liberar
@@ -9825,10 +9833,17 @@ applied here; the sign-in's are recorded in `docs/platform-sign-in.md`.
     4 (the sign-in).
 11. The link ceremony says the account's passkeys stop working (the sign-in).
 12. The typographic apostrophe in every text a person reads: the console, the
-    e-mails and the plugin package (P-PLUG, P-SKILL, P-DOC). Error messages of
-    the API, which programs read, keep ASCII.
+    e-mails and the plugin package (P-PLUG, P-SKILL, P-DOC), older texts
+    included (the consent card's paragraphs, the reader preferences, the
+    sign-up e-mail's code label). Error messages of the API, which programs
+    read, keep ASCII.
 13. The AI card's promise ends "You confirm it is you before it starts."
     (C-AI-06), as written.
+
+**Left for the owner.** A German token notice says "Was er lesen kann:" and
+"Kennen Sie ihn nicht?" (E-MAIL-33, E-MAIL-36, approved as written), the
+assistant's masculine where das Token needs "es". None of the thirteen
+recommendations names them, so they stay until the owner decides.
 
 ### Amendments to §§1 to 18
 

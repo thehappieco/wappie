@@ -294,7 +294,7 @@ var mcpLanguages = []mcpWords{
 		},
 		facts:    [6]string{"Assistant : ", "Espace de travail : ", "Numéros : ", "Ce qu’il peut lire : ", "Valable jusqu’au : ", "Quand : "},
 		question: "Vous ne le reconnaissez pas ?", action: "Révoquer uniquement cette connexion",
-		linkHelp: "Le bouton révoque seulement cette connexion, rien d’autre, et ne demande aucun mot de passe. S’il ne fonctionne pas, copiez cette adresse dans votre navigateur :",
+		linkHelp: "Le bouton révoque uniquement cette connexion, rien d’autre, et ne demande aucun mot de passe. S’il ne fonctionne pas, copiez cette adresse dans votre navigateur :",
 		footer:   "Les e-mails de Wappie sur les assistants ne demandent jamais votre mot de passe. Leur seul bouton révoque une connexion. Pour voir vos assistants, ouvrez vous-même la console Wappie.",
 	},
 	{

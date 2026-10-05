@@ -295,13 +295,14 @@ func TestMCPRenewalEmail(t *testing.T) {
 
 // The new languages of the notice e-mail say what the revocation page it
 // opens (internal/mcpauth/revokelink.go) and the console say, word for word
-// (approved 2026-10-05): the French button is the page's, the German footer
-// and button are the page's and the console's ("Button", not
-// "Schaltfläche"), and German says "Netzwerk", as the console does.
+// (approved 2026-10-05): the French button and the line under it say
+// "uniquement", as the page does, the German footer and link help say
+// "Button" as the page and the console do (not "Schaltfläche"), and German
+// says "Netzwerk", as the console does.
 func TestMCPNoticeWordsFollowThePage(t *testing.T) {
 	fr, de := wordsFor("fr"), wordsFor("de")
-	if fr.action != "Révoquer uniquement cette connexion" {
-		t.Errorf("French button = %q", fr.action)
+	if fr.action != "Révoquer uniquement cette connexion" || !strings.HasPrefix(fr.linkHelp, "Le bouton révoque uniquement cette connexion") {
+		t.Errorf("French button or help = %q, %q", fr.action, fr.linkHelp)
 	}
 	if de.action != "Nur diese Verbindung widerrufen" ||
 		de.footer != "E-Mails von Wappie zu Assistenten fragen nie nach Ihrem Passwort. Ihr einziger Button widerruft eine Verbindung. Um Ihre Assistenten zu sehen, öffnen Sie selbst die Wappie-Konsole." ||
