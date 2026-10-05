@@ -1,10 +1,11 @@
 # Wappie MCP HTTP: the hosted connector and the attested reader
 
 `@whatserver2/mcp-http` serves the same read-only tools as
-[`packages/mcp`](../mcp/README.md) over **Streamable HTTP**, so claude.ai and
-ChatGPT can connect to a Wappie installation as a remote MCP server. It is the
-open source half of the hosted connector: one Node process on loopback behind
-the reverse proxy, next to the Wappie API. Requires Node.js 22 or later.
+[`packages/mcp`](../mcp/README.md) over **Streamable HTTP**, so a remote
+assistant such as claude.ai can connect to a Wappie installation as an MCP
+server. It is the open source half of the hosted connector: one Node process
+on loopback behind the reverse proxy, next to the Wappie API. Requires
+Node.js 22 or later.
 
 `server.mjs`, the process this section and the next ones describe (Wappie's
 `https://api.wappie.thehappie.co/mcp` and every self-hosted container), never
@@ -378,10 +379,12 @@ enclave admits a Client ID Metadata Document on any https host that passes
 the host check of section 19.5 (no IP literal, special-use name, public
 suffix, host shared by path, or host under `thehappie.co`), with web
 redirects on exactly the document's host and loopback redirects on any port;
-dynamic registration takes only the pinned Claude and ChatGPT redirects.
+dynamic registration takes only the pinned Claude redirects.
 
 - **Constants** (`enclave/constants.mjs`): `CLIENT_POLICY`, the tested list
-  `TESTED_CLIENTS` (pending the live baseline on 0.5.0), the tier limits
+  `TESTED_CLIENTS` (Claude, by its document and by registration, and Claude
+  Code: the clients that passed the live baseline on 0.5.0; ChatGPT and Codex
+  connect untested, `docs/mcp-enclave.md` section 19.34), the tier limits
   `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS` and
   `CIMD_EGRESS`, all measured and copied into `measurements.json`. The
   shared modules take a policy object; the hosted path keeps

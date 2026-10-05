@@ -95,42 +95,6 @@ After a successful import, **delete the original download and remove it from the
 trash**. The importer leaves it in place. Keep the generated files private; host
 configuration below needs only the path to `config.json`, never its credentials.
 
-## Connect to ChatGPT
-
-This package speaks **stdio**. Connect it through OpenAI's Secure MCP Tunnel;
-the Wappie server's REST address is not an MCP endpoint. For a connector that
-needs no tunnel and no always-on computer, use one of the installation's
-hosted endpoints instead; see [remote HTTP MCP](../mcp-http/README.md) and
-[MCP setup](../../docs/mcp.md#ways-to-connect) for what each can read.
-
-1. Follow the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
-   to install `tunnel-client`, create a tunnel in the correct organization and
-   associate it with your ChatGPT workspace. Configure its runtime
-   `CONTROL_PLANE_API_KEY` as directed there. This is an OpenAI key, separate from
-   the Wappie token; do not put it in the Wappie setup.
-2. Replace the tunnel ID and every absolute path below, then initialize and
-   check the tunnel. Use paths without spaces for this command example:
-
-```sh
-tunnel-client init \
-  --sample sample_mcp_stdio_local \
-  --profile wappie \
-  --tunnel-id tunnel_REPLACE_ME \
-  --mcp-command "/ABSOLUTE/PATH/node /ABSOLUTE/PATH/wappie/packages/mcp/cli.mjs --config /ABSOLUTE/PATH/.wappie-mcp/config.json"
-tunnel-client doctor --profile wappie --explain
-tunnel-client run --profile wappie
-```
-
-3. Keep the tunnel running and the computer awake. If your account and workspace
-   allow it, enable developer mode in ChatGPT settings. In **Plugins**, add a
-   developer connection, choose **Tunnel**, select your tunnel and review its
-   tools. Enable the connection in a conversation, following the
-   [official ChatGPT connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
-
-If the tunnel is missing, check its workspace association and your **Tunnels
-Read + Use** permissions. Local installation does not establish ChatGPT access
-by itself; discovery and tool calls must still be verified in your workspace.
-
 ## Connect to Claude Desktop
 
 This section covers the desktop app. For claude.ai, add the hosted connector
@@ -167,6 +131,28 @@ where the consent includes them, attachments; see
 [MCP setup](../../docs/mcp.md#ways-to-connect).
 See also
 [Claude's local MCP support guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
+
+## Other MCP hosts
+
+Any other host that starts a local stdio MCP server can run the same
+command from its own MCP settings:
+
+```sh
+/ABSOLUTE/PATH/node /ABSOLUTE/PATH/wappie/packages/mcp/cli.mjs --config /ABSOLUTE/PATH/.wappie-mcp/config.json
+```
+
+Wappie has not tested them, ChatGPT and Codex included: the assistants
+Wappie tests are Claude and Claude Code
+([docs/mcp-enclave.md §19.34](../../docs/mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
+ChatGPT reaches a stdio server only through OpenAI's
+[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels),
+which needs this computer awake and an OpenAI key of its own: keep that key
+out of the Wappie setup. For a connector that needs no tunnel and no
+always-on computer, use one of the installation's hosted endpoints instead;
+see [remote HTTP MCP](../mcp-http/README.md) and
+[MCP setup](../../docs/mcp.md#ways-to-connect) for what each can read. A
+host's own setup does not establish access by itself; check discovery and the
+tool calls in your account, as below.
 
 ## First check
 
@@ -441,9 +427,9 @@ registrable domain (`thehappie.co`), never from anything this server sends
 (seen in the claude.ai bundle of 2026-10-02 and Claude Desktop's
 "connector-favicons" egress entry; right-click the tile, Copy image address,
 to check; anthropics/claude-ai-mcp#152 is the open request to read
-`serverInfo.icons`); ChatGPT shows the icon uploaded when the developer-mode
-plugin is created (`icons/icon-512.png` is the one to give it, as the console
-offers); the Codex desktop app reads `serverInfo`
+`serverInfo.icons`); ChatGPT, untested, shows the icon uploaded when the
+developer-mode plugin is created (`icons/icon-512.png` is the one to give it);
+the Codex desktop app, untested, reads `serverInfo`
 ([docs/mcp-enclave.md §19.29](../../docs/mcp-enclave.md#1929-what-the-connector-says-about-itself-m5)).
 
 ### What a connection says about itself
@@ -700,7 +686,7 @@ returns text only. An attachment that takes long to open answers
 Attachments asked for at the same time on one connection are opened one
 after another, in the order asked, with up to four waiting behind the one
 being opened: each call waits for its turn within the host's inline wait
-(40 seconds on claude.ai, 25 on ChatGPT) and answers `pending` if its turn
+(40 seconds on claude.ai, 25 elsewhere) and answers `pending` if its turn
 has not come by then. An identical call within ten minutes is answered from
 the enclave's memory without a second fetch. The reader opens photos and stickers up to 16 MB and
 documents up to 32 MB, and reads about 4 MB of text from one file, the first
@@ -897,9 +883,10 @@ cross-chat scans, continuation, contact ambiguity and historical event counts.
 Media tests check which connections get `open_attachment` and every sentence it
 shows the model, word for word, against a scripted enclave side; the enclave's
 own media and worker suites are described in `packages/mcp-http`. These
-local tests do not establish a live ChatGPT or Claude connection; complete the
-host-specific first check above in your own account. `packages/mcp-http` has
-its own protocol, OAuth and content-boundary regression suite; see its README.
+local tests do not establish a live connection with Claude or any other host;
+complete the host-specific first check above in your own account.
+`packages/mcp-http` has its own protocol, OAuth and content-boundary
+regression suite; see its README.
 
 References: [MCP SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/),
 [official stdio documentation](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio.html).

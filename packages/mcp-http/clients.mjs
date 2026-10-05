@@ -168,7 +168,7 @@ export function pins(entry, uri, cb = null) {
 /**
  * The tested CIMD entry a `client_id` names, with the request's `{cb}` and
  * whether its redirect is pinned, or null. Exact entries first, so a callback
- * id never shadows one of them (`…/oauth/codex/client.json` is Codex).
+ * id never shadows one of them.
  */
 export function testedFor(tested, clientID, redirectURI) {
   if (typeof clientID !== 'string') return null

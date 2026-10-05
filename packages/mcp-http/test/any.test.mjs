@@ -57,6 +57,9 @@ let addresses = 0
 const fresh = () => from(`198.51.${100 + (++addresses >> 8)}.${addresses & 255}`)
 const CLAUDE = 'https://claude.ai/oauth/mcp-oauth-client-metadata'
 const CODE = 'https://claude.ai/oauth/claude-code-client-metadata'
+// ChatGPT's and Codex's documents: not tested (§19.34), so served as any other client.
+const CHATGPT = 'https://chatgpt.com/oauth/client.json'
+const CHATGPT_REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect'
 const CODEX = 'https://chatgpt.com/oauth/codex/client.json'
 const AGENT = 'https://agent.example.com/oauth/client.json'
 const AGENT_REDIRECT = 'https://agent.example.com/oauth/callback'
@@ -207,27 +210,65 @@ test('matching (§19.6): https exactly, loopback by hostname and path with any p
   assert.equal(redirectAllowed(record, 'http://127.0.0.1:4444/callback/x'), false)
   assert.equal(classifyRedirect('http://[::1]:9/cb', 'x.com'), 'loopback')
   // The tested entries pin their redirects exactly, or by hostname and path for loopback.
-  const codex = TESTED_CLIENTS.find(entry => entry.id === 'codex')
-  assert.equal(pins(codex, 'http://127.0.0.1:1455/callback'), true)
-  assert.equal(pins(codex, 'http://localhost:1455/callback'), true)
-  assert.equal(pins(codex, 'http://[::1]:1455/callback'), false)
-  assert.equal(pins(codex, 'http://127.0.0.1:1455/auth/callback'), false)
+  const code = TESTED_CLIENTS.find(entry => entry.id === 'claude_code')
+  assert.equal(pins(code, 'http://127.0.0.1:1455/callback'), true)
+  assert.equal(pins(code, 'http://localhost:1455/callback'), true)
+  assert.equal(pins(code, 'http://[::1]:1455/callback'), false)
+  assert.equal(pins(code, 'http://127.0.0.1:1455/auth/callback'), false)
+  const claude = TESTED_CLIENTS.find(entry => entry.id === 'claude')
+  assert.equal(pins(claude, 'https://claude.com/api/mcp/auth_callback'), true)
+  assert.equal(pins(claude, 'https://claude.ai/api/mcp/auth_callback/'), false)
 })
 
+/**
+ * The rules a tested list may use (§19.3) beyond what the measured one does:
+ * an exact entry and a `cimd_pattern` entry under one path, and a DCR entry
+ * with a `{cb}`, on a host of the tests' own.
+ */
+const PATTERNED = [...TESTED_CLIENTS,
+  { id: 'agent_exact', kind: 'cimd', client_id: 'https://agent.example.com/oauth/app/client.json', name: 'Agent App', local: true, profile: 'default',
+    loopback: [['127.0.0.1', '/callback']] },
+  { id: 'agent_cb', kind: 'cimd_pattern', client_id: 'https://agent.example.com/oauth/{cb}/client.json', name: 'Agent', local: false, profile: 'default',
+    redirect_uris: ['https://agent.example.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
+  { id: 'agent_dcr', kind: 'dcr', name: 'Agent', local: false, profile: 'default',
+    redirect_uris: ['https://agent.example.com/connector_redirect', 'https://agent.example.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
+]
+
 test('tested entries (§19.4): exact before patterns, the same {cb} in the id and the redirect, DCR pinned only', () => {
-  assert.equal(testedFor(TESTED_CLIENTS, CODEX, 'http://127.0.0.1:1/callback').entry.id, 'codex', 'an exact entry wins over the callback-id pattern')
-  const cb = testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/abc_1/client.json', 'https://chatgpt.com/connector/oauth/abc_1')
-  assert.deepEqual([cb.entry.id, cb.cb, cb.pinned], ['chatgpt_cb', 'abc_1', true])
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/abc_1/client.json', 'https://chatgpt.com/connector/oauth/xyz').pinned, false)
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/a.b/client.json', 'https://chatgpt.com/connector/oauth/a.b'), null, 'the callback id\'s pattern')
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth//client.json', 'https://chatgpt.com/connector/oauth/'), null)
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/x/client.jsonx', 'https://chatgpt.com/connector/oauth/x'), null)
-  assert.equal(testedFor(TESTED_CLIENTS, AGENT, AGENT_REDIRECT), null)
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://chatgpt.com/connector/oauth/abc_1']).id, 'chatgpt_dcr')
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']).id, 'claude_dcr')
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://claude.ai/api/mcp/auth_callback', 'https://chatgpt.com/connector_platform_oauth_redirect']), null, 'one entry pins them all')
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://claude.ai/other']), null)
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['http://127.0.0.1/callback']), null, 'DCR never gets loopback')
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/app/client.json', 'http://127.0.0.1:1/callback').entry.id, 'agent_exact', 'an exact entry wins over the callback-id pattern')
+  const cb = testedFor(PATTERNED, 'https://agent.example.com/oauth/abc_1/client.json', 'https://agent.example.com/connector/oauth/abc_1')
+  assert.deepEqual([cb.entry.id, cb.cb, cb.pinned], ['agent_cb', 'abc_1', true])
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/abc_1/client.json', 'https://agent.example.com/connector/oauth/xyz').pinned, false)
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/a.b/client.json', 'https://agent.example.com/connector/oauth/a.b'), null, 'the callback id\'s pattern')
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth//client.json', 'https://agent.example.com/connector/oauth/'), null)
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/x/client.jsonx', 'https://agent.example.com/connector/oauth/x'), null)
+  assert.equal(testedFor(PATTERNED, AGENT, AGENT_REDIRECT), null)
+  assert.equal(dcrEntryFor(PATTERNED, ['https://agent.example.com/connector/oauth/abc_1']).id, 'agent_dcr')
+  assert.equal(dcrEntryFor(PATTERNED, ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']).id, 'claude_dcr')
+  assert.equal(dcrEntryFor(PATTERNED, ['https://claude.ai/api/mcp/auth_callback', 'https://agent.example.com/connector_redirect']), null, 'one entry pins them all')
+  assert.equal(dcrEntryFor(PATTERNED, ['https://claude.ai/other']), null)
+  assert.equal(dcrEntryFor(PATTERNED, ['http://127.0.0.1/callback']), null, 'DCR never gets loopback')
+})
+
+test('the measured list (§19.34): Claude by its document and its registration, and Claude Code; ChatGPT and Codex are not tested', () => {
+  assert.deepEqual(TESTED_CLIENTS.map(entry => [entry.id, entry.kind, entry.name, entry.local, entry.profile]),
+    [['claude', 'cimd', 'Claude', false, 'claude.ai'], ['claude_code', 'cimd', 'Claude Code', true, 'claude.ai'], ['claude_dcr', 'dcr', 'Claude', false, 'claude.ai']])
+  assert.deepEqual([...new Set(TESTED_CLIENTS.map(entry => entry.name))], ['Claude', 'Claude Code'], 'the names the card, the list and the guide show as tested')
+  // The fingerprints baseline B recorded are these client_ids' (log.mjs: the first 12 hex of SHA-256).
+  const fp = value => createHash('sha256').update(value).digest('hex').slice(0, 12)
+  assert.deepEqual(TESTED_CLIENTS.filter(entry => entry.client_id).map(entry => fp(entry.client_id)), ['87035c02ba6c', '569ea71ec53b'])
+  for (const entry of TESTED_CLIENTS) {
+    assert.equal(entry.direct_send, undefined, entry.id)
+    for (const uri of entry.redirect_uris ?? []) assert.ok(['claude.ai', 'claude.com'].includes(new URL(uri).hostname), uri)
+  }
+  // Every form ChatGPT and Codex identify themselves with is a document of their own now, never a tested entry.
+  for (const [clientID, redirect] of [[CHATGPT, CHATGPT_REDIRECT], ['https://chatgpt.com/oauth/abc_1/client.json', 'https://chatgpt.com/connector/oauth/abc_1'],
+    [CODEX, 'http://127.0.0.1:1455/callback'], [CODEX, 'http://localhost:1455/callback'], [CODEX, CHATGPT_REDIRECT]]) {
+    assert.equal(testedFor(TESTED_CLIENTS, clientID, redirect), null, `${clientID} ${redirect}`)
+  }
+  for (const uris of [[CHATGPT_REDIRECT], ['https://chatgpt.com/connector/oauth/abc_1'], [CHATGPT_REDIRECT, 'https://chatgpt.com/connector/oauth/abc_1']]) {
+    assert.equal(dcrEntryFor(TESTED_CLIENTS, uris), null, uris.join(' '))
+  }
 })
 
 test('the loosened request checks (§19.11) and the network comparison (§19.12)', () => {
@@ -261,11 +302,8 @@ test('a tested client asked with a pinned redirect is tested and never fetched; 
   const cases = [
     [CLAUDE, 'https://claude.ai/api/mcp/auth_callback', 'claude', 'Claude', false, 'claude.ai'],
     [CLAUDE, 'https://claude.com/api/mcp/auth_callback', 'claude', 'Claude', false, 'claude.ai'],
-    ['https://chatgpt.com/oauth/client.json', 'https://chatgpt.com/connector_platform_oauth_redirect', 'chatgpt', 'ChatGPT', false, 'chatgpt.com'],
-    ['https://chatgpt.com/oauth/Ab9_-x/client.json', 'https://chatgpt.com/connector/oauth/Ab9_-x', 'chatgpt_cb', 'ChatGPT', false, 'chatgpt.com'],
-    [CODEX, 'http://127.0.0.1:1455/callback', 'codex', 'Codex', true, 'chatgpt.com'],
-    [CODEX, 'http://localhost:9/callback', 'codex', 'Codex', true, 'chatgpt.com'],
     [CODE, 'http://localhost:54545/callback', 'claude_code', 'Claude Code', true, 'claude.ai'],
+    [CODE, 'http://127.0.0.1:9/callback', 'claude_code', 'Claude Code', true, 'claude.ai'],
   ]
   for (const [clientId, redirectUri, testedId, name, local, host] of cases) {
     const started = await start(h, { clientId, redirectUri })
@@ -301,23 +339,47 @@ test('a tested id with another redirect is fetched: unknown with drift when the 
   assert.equal(refused.response.status, 400)
   assert.match(refused.response.body, /invalid_redirect_uri/)
   assert.equal(h.fetcher.calls.length, 1, 'served from the cache')
-  // A callback-id pattern with a mismatched {cb}: the document decides, and this one does not list it.
-  const pattern = 'https://chatgpt.com/oauth/abc/client.json'
-  h.fetcher.docs.set(pattern, { body: { client_id: pattern, redirect_uris: ['https://chatgpt.com/connector/oauth/abc'] } })
-  const mismatched = await start(h, { clientId: pattern, redirectUri: 'https://chatgpt.com/connector/oauth/xyz' })
-  assert.equal(mismatched.response.status, 400)
   assert.equal(h.logs.map(line => JSON.parse(line)).filter(entry => entry.route === 'GET /mcp/authorize' && entry.drift === true).length, 1)
 })
 
-test('DCR (§19.8): pinned redirects only, tested with the entry\'s id; the ChatGPT callback forms share a tier', async t => {
-  const h = await anyHarness(t)
+test('a callback-id pattern (§19.4): the same {cb} in the id and the redirect is tested and never fetched; a mismatched one, the document decides', async t => {
+  const h = await anyHarness(t, { tested: PATTERNED })
+  const pinned = await start(h, { clientId: 'https://agent.example.com/oauth/Ab9_-x/client.json', redirectUri: 'https://agent.example.com/connector/oauth/Ab9_-x' })
+  assert.equal(pinned.response.status, 302, pinned.response.body)
+  assert.deepEqual([pinned.descriptor.trust, pinned.descriptor.tested_id, pinned.descriptor.client_name, pinned.descriptor.limits_tier], ['tested', 'agent_cb', 'Agent', 'web_tested'])
+  assert.deepEqual(h.fetcher.calls, [])
+  const pattern = 'https://agent.example.com/oauth/abc/client.json'
+  h.fetcher.docs.set(pattern, { body: { client_id: pattern, redirect_uris: ['https://agent.example.com/connector/oauth/abc'] } })
+  const mismatched = await start(h, { clientId: pattern, redirectUri: 'https://agent.example.com/connector/oauth/xyz' })
+  assert.equal(mismatched.response.status, 400)
+  assert.match(mismatched.response.body, /invalid_redirect_uri/)
+  assert.deepEqual(h.fetcher.calls, [pattern])
+  // The DCR and CIMD forms of one callback id share a tier.
+  h.clock.advance(13_000)
+  const registered = await register(h, { client_name: 'Agent', redirect_uris: ['https://agent.example.com/connector/oauth/cb_1'] })
+  assert.equal(registered.status, 201, registered.body)
+  const viaDCR = await start(h, { clientId: registered.json().client_id, redirectUri: 'https://agent.example.com/connector/oauth/cb_1' })
+  const viaCIMD = await start(h, { clientId: 'https://agent.example.com/oauth/cb_1/client.json', redirectUri: 'https://agent.example.com/connector/oauth/cb_1' })
+  assert.deepEqual([viaDCR.descriptor.trust, viaDCR.descriptor.tested_id, viaDCR.descriptor.limits_tier, viaDCR.descriptor.claimed_name], ['tested', 'agent_dcr', 'web_tested', 'Agent'])
+  assert.deepEqual([viaCIMD.descriptor.trust, viaCIMD.descriptor.tested_id, viaCIMD.descriptor.limits_tier], ['tested', 'agent_cb', 'web_tested'])
+  // A registered client asking for a redirect it did not register is refused.
+  const other = await start(h, { clientId: registered.json().client_id, redirectUri: 'https://agent.example.com/connector/oauth/cb_2' })
+  assert.equal(other.response.status, 400)
+  assert.match(other.response.body, /invalid_redirect_uri/)
+})
+
+test('DCR (§19.8): pinned redirects only, tested with the entry\'s id; ChatGPT\'s registration refused, a record of it given the invalid_client page', async t => {
+  const h = await anyHarness(t, { refusalFloorMs: undefined })
   for (const uris of [['https://claude.ai/other'], ['https://claude.ai/api/mcp/auth_callback', 'https://claude.ai/x'], ['http://127.0.0.1/callback'],
-    ['https://claude.ai/api/mcp/auth_callback', 'https://chatgpt.com/connector_platform_oauth_redirect'], ['https://agent.example.com/cb']]) {
+    ['https://claude.ai/api/mcp/auth_callback', 'https://chatgpt.com/connector_platform_oauth_redirect'], ['https://agent.example.com/cb'],
+    // ChatGPT's two callback forms: no `dcr` entry pins them since baseline B (§19.34).
+    [CHATGPT_REDIRECT], ['https://chatgpt.com/connector/oauth/cb_1'], [CHATGPT_REDIRECT, 'https://chatgpt.com/connector/oauth/cb_1']]) {
     h.clock.advance(13_000)
-    const refused = await register(h, { redirect_uris: uris })
+    const refused = await register(h, { client_name: 'ChatGPT', redirect_uris: uris })
     assert.equal(refused.status, 400, JSON.stringify(uris))
-    assert.equal(refused.json().error, 'invalid_redirect_uri')
+    assert.deepEqual(refused.json(), { error: 'invalid_redirect_uri', error_description: 'redirect_uris must be redirects this server pins for dynamic registration' }, JSON.stringify(uris))
   }
+  assert.equal([...h.reader.state.clients.values()].length, 0, 'a refused registration leaves no record')
   h.clock.advance(13_000)
   const claude = await register(h, { client_name: 'Сlaude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] })
   assert.equal(claude.status, 201, claude.body)
@@ -326,22 +388,42 @@ test('DCR (§19.8): pinned redirects only, tested with the entry\'s id; the Chat
   const d = started.descriptor
   assert.deepEqual([d.client_kind, d.trust, d.tested_id, d.client_name, d.claimed_name, d.name_dropped, d.client_host, d.registrable, d.limits_tier],
     ['dcr', 'tested', 'claude_dcr', 'Claude', null, true, 'claude.com', 'claude.com', 'web_tested'])
-  h.clock.advance(13_000)
-  const chatgpt = await register(h, { client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector/oauth/cb_1'] })
-  assert.equal(chatgpt.status, 201)
-  const viaDCR = await start(h, { clientId: chatgpt.json().client_id, redirectUri: 'https://chatgpt.com/connector/oauth/cb_1' })
-  const viaCIMD = await start(h, { clientId: 'https://chatgpt.com/oauth/cb_1/client.json', redirectUri: 'https://chatgpt.com/connector/oauth/cb_1' })
-  assert.deepEqual([viaDCR.descriptor.trust, viaDCR.descriptor.limits_tier, viaDCR.descriptor.claimed_name], ['tested', 'web_tested', 'ChatGPT'])
-  assert.deepEqual([viaCIMD.descriptor.trust, viaCIMD.descriptor.limits_tier], ['tested', 'web_tested'])
-  // A registered client asking for a redirect it did not register is refused.
-  const other = await start(h, { clientId: chatgpt.json().client_id, redirectUri: 'https://chatgpt.com/connector/oauth/cb_2' })
+  // A registered client asking for a redirect it did not register: the redirect page.
+  const other = await start(h, { clientId: claude.json().client_id, redirectUri: 'https://claude.ai/other' })
   assert.equal(other.response.status, 400)
-  assert.deepEqual(h.fetcher.calls, [])
-  // A 0.5.0 record that registered any path on an allowed host is served only for a pinned redirect.
+  assert.match(other.response.body, /<small>Wappie MCP: invalid_redirect_uri<\/small>/)
+  // The one page every client this reader does not accept gets (§19.6 step 5), for comparison.
+  const unknownBody = (await start(h, { clientId: 'not-a-client', redirectUri: CHATGPT_REDIRECT })).response.body
+  assert.match(unknownBody, /<small>Wappie MCP: invalid_client<\/small>/)
+  // Records made before the list lost an entry: a 0.5.0 record on any path of an allowed host, and ChatGPT's, as 0.5.0
+  // and a 0.6.0 image with its candidates wrote them. A redirect they registered that nothing pins now gets that page,
+  // no sooner than the refusal floor, and no request; a pinned one is served.
+  const at = h.clock.now()
   h.reader.state.clients.set('legacy-dcr-record-00000', { client_id: 'legacy-dcr-record-00000', source: 'dcr', client_name: 'Claude', redirect_host: 'claude.ai',
-    redirect_uris: ['https://claude.ai/open-redirect', 'https://claude.ai/api/mcp/auth_callback'], grant_types: ['authorization_code'], created_at: h.clock.now(), last_used_at: h.clock.now() })
-  assert.equal((await start(h, { clientId: 'legacy-dcr-record-00000', redirectUri: 'https://claude.ai/open-redirect' })).response.status, 400)
+    redirect_uris: ['https://claude.ai/open-redirect', 'https://claude.ai/api/mcp/auth_callback'], grant_types: ['authorization_code'], created_at: at, last_used_at: at })
+  h.reader.state.clients.set('legacy-chatgpt-dcr-0000', { client_id: 'legacy-chatgpt-dcr-0000', source: 'dcr', client_name: 'ChatGPT', redirect_host: 'chatgpt.com',
+    redirect_uris: [CHATGPT_REDIRECT], grant_types: ['authorization_code', 'refresh_token'], created_at: at, last_used_at: at, authorized_at: at })
+  h.reader.state.clients.set('candidate-chatgpt-dcr-0', { client_id: 'candidate-chatgpt-dcr-0', source: 'dcr', client_name: 'ChatGPT', claimed_name: 'ChatGPT', name_dropped: false,
+    redirect_host: 'chatgpt.com', tested_id: 'chatgpt_dcr', redirect_uris: ['https://chatgpt.com/connector/oauth/cb_1'], grant_types: ['authorization_code'], created_at: at, last_used_at: at })
+  const pending = h.reader.state.pending.size
+  for (const [clientId, redirectUri] of [['legacy-dcr-record-00000', 'https://claude.ai/open-redirect'], ['legacy-chatgpt-dcr-0000', CHATGPT_REDIRECT],
+    ['candidate-chatgpt-dcr-0', 'https://chatgpt.com/connector/oauth/cb_1']]) {
+    const begun = performance.now()
+    const refused = await start(h, { clientId, redirectUri })
+    assert.ok(performance.now() - begun >= 990, `${clientId} answered after ${performance.now() - begun} ms`)
+    assert.equal(refused.response.status, 400, clientId)
+    assert.equal(refused.response.body, unknownBody, clientId)
+  }
+  assert.equal(h.reader.state.pending.size, pending, 'no request was opened')
+  // Asked for a redirect it never registered, a ChatGPT record still gets the redirect page.
+  assert.match((await start(h, { clientId: 'legacy-chatgpt-dcr-0000', redirectUri: 'https://chatgpt.com/connector/oauth/cb_9' })).response.body, /invalid_redirect_uri/)
   assert.equal((await start(h, { clientId: 'legacy-dcr-record-00000', redirectUri: 'https://claude.ai/api/mcp/auth_callback' })).descriptor.trust, 'tested')
+  // Registering ChatGPT's callback again neither revives nor reuses its record.
+  h.clock.advance(13_000)
+  assert.equal((await register(h, { client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector/oauth/cb_1'] })).status, 400)
+  const codes = h.logs.map(line => JSON.parse(line)).filter(entry => entry.route === 'GET /mcp/authorize').map(entry => entry.code)
+  assert.equal(codes.filter(code => code === 'invalid_client').length, 4)
+  assert.deepEqual(h.fetcher.calls, [], 'nothing was fetched')
 })
 
 test('an unknown client: fetched, cached by Cache-Control, the display name its host, and its loopback requests local', async t => {
@@ -374,6 +456,52 @@ test('an unknown client: fetched, cached by Cache-Control, the display name its 
   h.fetcher.docs.set(pages, { body: { client_id: pages, redirect_uris: ['https://team.github.io/callback.html'] } })
   const shared = await start(h, { clientId: pages, redirectUri: 'https://team.github.io/callback.html' })
   assert.deepEqual([shared.descriptor.registrable, shared.descriptor.shared_suffix], ['team.github.io', 'github.io'])
+})
+
+test('ChatGPT and Codex (§19.34): their documents are fetched and land in the untested tier, with its limits, history window and second tick, like any MCP client', async t => {
+  const h = await anyHarness(t)
+  const callback = 'https://chatgpt.com/oauth/Ab9_-x/client.json'
+  h.fetcher.docs.set(CHATGPT, { body: { client_id: CHATGPT, client_name: 'ChatGPT', redirect_uris: [CHATGPT_REDIRECT] } })
+  h.fetcher.docs.set(callback, { body: { client_id: callback, client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector/oauth/Ab9_-x'] } })
+  // Codex's document as the vendor describes it (loopback), plus the chatgpt.com callback ChatGPT's Work mode used it with in baseline B.
+  h.fetcher.docs.set(CODEX, { body: { client_id: CODEX, client_name: 'Codex', redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback', CHATGPT_REDIRECT] } })
+  const cases = [
+    [CHATGPT, CHATGPT_REDIRECT, 'ChatGPT', false],
+    [callback, 'https://chatgpt.com/connector/oauth/Ab9_-x', 'ChatGPT', false],
+    [CODEX, 'http://127.0.0.1:1455/callback', 'Codex', true],
+    [CODEX, 'http://localhost:61000/callback', 'Codex', true],
+    [CODEX, CHATGPT_REDIRECT, 'Codex', false],
+  ]
+  const descriptors = []
+  for (const [clientId, redirectUri, claimed, local] of cases) {
+    const started = await start(h, { clientId, redirectUri })
+    assert.equal(started.response.status, 302, `${clientId} ${redirectUri}: ${started.response.body}`)
+    const d = started.descriptor
+    assert.deepEqual([d.client_kind, d.trust, d.tested_id, d.drift, d.client_name, d.claimed_name, d.client_host, d.registrable, d.shared_suffix, d.client_local, d.redirect_local, d.limits_tier],
+      ['cimd', 'unknown', null, false, 'chatgpt.com', claimed, 'chatgpt.com', 'chatgpt.com', null, local, local, 'unknown'], `${clientId} ${redirectUri}`)
+    assert.deepEqual(d.limits, CLIENT_LIMITS.unknown)
+    descriptors.push(started)
+  }
+  // The untested limits: a history window to choose, daily and first-hour reading limits, 20 calls a minute.
+  assert.deepEqual(CLIENT_LIMITS.unknown.history_days, { choices: [7, 30, 90], default: 30 })
+  assert.deepEqual([CLIENT_LIMITS.unknown.daily, CLIENT_LIMITS.unknown.first_hour, CLIENT_LIMITS.unknown.calls_per_minute],
+    [{ messages: 2000, attachments: 50 }, { messages: 300, attachments: 10 }, 20])
+  assert.deepEqual(h.fetcher.calls, [CHATGPT, callback, CODEX], 'each document fetched once, then cached')
+  assert.equal(h.reader.counters.tested_drift ?? 0, 0, 'no tested id asked: nothing drifted')
+  // A consent that treats ChatGPT as tested, or without a window, is refused; with the window it chose it is served as untested.
+  for (const options of [{ bundle: { trust: 'tested', history_days: null }, relay: { trust: 'tested', history_days: null } }, { bundle: { history_days: null }, relay: { history_days: null } }]) {
+    const refused = await consentV2(h, await start(h, { clientId: CHATGPT, redirectUri: CHATGPT_REDIRECT }), options)
+    assert.deepEqual([refused.relayed.status, refused.relayed.json().code], [400, 'invalid_bundle'], JSON.stringify(options))
+  }
+  const done = await consentV2(h, descriptors[0], { bundle: { history_days: 7 }, relay: { history_days: 7 } })
+  assert.equal(done.completed.status, 302, done.completed.body)
+  const record = h.reader.state.connections.get(done.connectionId)
+  assert.deepEqual([record.trust, record.tested_id ?? null, record.limits_tier, record.history_days, record.profile, record.client_host, record.claimed_name],
+    ['unknown', null, 'unknown', 7, 'default', 'chatgpt.com', 'ChatGPT'])
+  const local = await consentV2(h, descriptors[2])
+  assert.equal(local.completed.status, 302, local.completed.body)
+  const app = h.reader.state.connections.get(local.connectionId)
+  assert.deepEqual([app.trust, app.client_local, app.limits_tier, app.history_days, app.profile], ['unknown', true, 'unknown', 30, 'default'])
 })
 
 test('refusals (§19.6 step 5): one static invalid_client page for every reason, never sooner than a second, remembered for a minute', async t => {

@@ -154,9 +154,13 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     const dcr = clients.get(clientID)
     if (dcr) {
       meta.client = dcr.client_id
-      // Every DCR redirect is pinned, whenever the record was made: a 0.5.0 record's other paths are never served.
-      const entry = typeof redirectURI === 'string' && dcr.redirect_uris.includes(redirectURI) ? dcrEntryFor(policy.tested, [redirectURI]) : null
-      if (!entry) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri', started.language) } }
+      if (typeof redirectURI !== 'string' || !dcr.redirect_uris.includes(redirectURI)) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri', started.language) } }
+      // Every DCR redirect is pinned, whenever the record was made: a redirect
+      // the record registered that no `dcr` entry pins now (a 0.5.0 record's
+      // other paths, a client the list no longer has, such as ChatGPT's) is not
+      // served, and gets the page every client this reader does not accept gets.
+      const entry = dcrEntryFor(policy.tested, [redirectURI])
+      if (!entry) return { response: await refuseClient(meta, started) }
       const domain = policy.psl.registrable(host(redirectURI))
       return { request: { client_kind: 'dcr', client_host: host(redirectURI), registrable: domain?.registrable ?? host(redirectURI), shared_suffix: domain?.shared_suffix ?? null,
         client_local: false, trust: 'tested', tested_id: entry.id, drift: false, client_name: entry.name, claimed_name: dcr.claimed_name ?? null,

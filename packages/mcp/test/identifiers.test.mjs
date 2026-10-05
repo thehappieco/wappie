@@ -169,6 +169,9 @@ test('resolve_contact: phones for a phone query or include_phones only, no conta
     const tool = (await client.listTools()).tools.find(item => item.name === 'resolve_contact')
     assert.deepEqual(Object.keys(tool.inputSchema.properties), ['device_id', 'query', 'limit', 'include_phones', 'after_key'])
     assert.equal(tool.inputSchema.properties.include_phones.type, 'boolean')
+    // §19.32's wording, pending the owner's approval (D10), word for word.
+    assert.equal(tool.inputSchema.properties.include_phones.description, 'true only when the user asked for a contact\'s phone number: candidates then include their phones. ' +
+      'A query that is a phone number shows the phones that match it anyway; omit it otherwise.')
 
     const named = data(await resolve({ query: 'Roberto' }))
     assert.equal(named.candidates.length, 1)

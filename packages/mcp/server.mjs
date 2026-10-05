@@ -690,7 +690,7 @@ export function createServer(config, provider, { iconOrigin, version, contentRea
     : 'Find a contact of one number by name or phone number, among its archived contacts and an explicitly included local personal snapshot. No provider contact service is called. Follow next for more contacts. Never choose among ambiguous candidates yourself.', z.strictObject({
     ...device, query: z.string().trim().min(2).max(256).describe('A name, or a phone number in digits with or without +, 2 to 256 characters.'),
     limit: limitOf('Candidates', 50, 20),
-    include_phones: z.boolean().optional().describe('true only when the user asked for a contact\'s phone number: candidates then include phones. A query that is a phone number includes them anyway; omit it otherwise.'),
+    include_phones: z.boolean().optional().describe('true only when the user asked for a contact\'s phone number: candidates then include their phones. A query that is a phone number shows the phones that match it anyway; omit it otherwise.'),
     after_key: identity.optional().describe('next.after_key from the previous result, unchanged, to read more contacts.'),
   }), 'resolveContact')
   tool('search_messages', (content

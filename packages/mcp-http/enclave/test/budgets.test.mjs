@@ -141,7 +141,7 @@ test('a token used from another network is told to Go once a day; counters of co
 })
 
 test('the host profile (§19.23): a record\'s own profile from 0.6.0, its redirect host for a record 0.5.0 wrote', () => {
-  assert.equal(profileOf({ profile: 'chatgpt.com', redirect_host: 'claude.ai' }), 'chatgpt.com', 'Codex: chatgpt.com\'s profile, whatever the redirect')
+  assert.equal(profileOf({ profile: 'claude.ai', redirect_host: 'claude.com' }), 'claude.ai', 'Claude on its claude.com callback: claude.ai\'s profile, whatever the redirect')
   assert.equal(profileOf({ profile: 'default', redirect_host: 'claude.ai' }), 'default', 'an unknown client on claude.ai\'s host gets the default wait')
   assert.equal(profileOf({ profile: 'claude.ai' }), 'claude.ai')
   assert.equal(profileOf({ profile: 'evil.example' }), 'default')
