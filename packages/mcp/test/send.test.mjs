@@ -87,7 +87,8 @@ test('the sending tools exist only on a content connection whose sealed consent 
       assert.doesNotMatch(instructions, /No sending/, label)
       // "Read-only" only where nothing drafts or sends (§19.29).
       assert.doesNotMatch(instructions, /read-only/i, label)
-      assert.ok(instructions.startsWith(`Access to the WhatsApp archive of one Wappie workspace, for the numbers its owner authorized: it reads, and drafts messages the user sends from the Wappie console${tools.includes('send_to_self') ? ', and sends notes to a number\'s own chat' : ''}.`), label)
+      assert.ok(instructions.startsWith(`Access to the WhatsApp archive of one Wappie workspace, for the numbers its owner authorized: ${tools.includes('send_to_self')
+        ? 'it reads, prepares drafts the user reviews and sends in the Wappie console, and sends notes to a number\'s own chat' : 'it reads, and prepares drafts the user reviews and sends in the Wappie console'}.`), label)
       await client.close()
     }
     // A media connection: the sentences replace "No sending, mutations or calls are available." (§17.9).
@@ -193,9 +194,9 @@ test('every sending refusal: isError, what did not happen and why, word for word
     }
     failure = withFacts('text_not_allowed', { why: 'empty' })
     assert.match((await draft()).content[0].text, /^Could not draft the message \(text_not_allowed\)\. The text is empty once white space is removed\./)
-    // The codes of every other tool keep their words: a restart, a stale grant, a revoked number.
+    // The codes of every other tool keep their words: a lost key, a stale grant, a revoked number.
     failure = new LocalConfigError('reconsent_required')
-    assert.equal((await draft()).content[0].text, `Could not draft the message (reconsent_required). The Wappie reader restarted and cleared this connection's key. Give the user this link to renew with their password: ${renewal}. The assistant does not need to reconnect; do not retry until they have.\n{"device_id":"${device}","chat_key":"${chat}"}`)
+    assert.equal((await draft()).content[0].text, `Could not draft the message (reconsent_required). The Wappie reader holds no key for this connection right now, and this call needs it. Give the user this link to renew with their password: ${renewal}. If Wappie says message text is not available for their workspace, the renewal waits until the workspace allows it again. The assistant does not need to reconnect; do not retry until they have renewed.\n{"device_id":"${device}","chat_key":"${chat}"}`)
     failure = new ArchiveError('not_authorized', 403)
     assert.match((await self()).content[0].text, /^Could not send the message \(not_authorized\)\. Check that this connection is still authorized for that number in the Wappie console\.\n/)
     // Anything else is a failure with no detail of its own.

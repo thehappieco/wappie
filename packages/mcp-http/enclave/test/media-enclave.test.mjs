@@ -225,7 +225,7 @@ test('a reseal kills a job in flight, and the waiting call asks for the renewal 
   w.go.connections.get(done.connectionId).status = 'reseal'
   assert.equal(await e.reader.checkActive(done.connectionId, { force: true }), 'reseal')
   const { value } = await call
-  assert.match(value.content[0].text, /^Could not open the attachment \(reconsent_required\)\. The Wappie reader restarted and cleared this connection's key\./)
+  assert.match(value.content[0].text, /^Could not open the attachment \(reconsent_required\)\. The Wappie reader holds no key for this connection right now, and this call needs it\./)
   assert.equal(value.isError, true)
   assert.ok(Date.now() - started < 6000, 'the call did not wait for the job')
   while (e.facts.content.media.scheduler.running()) await new Promise(resolve => setTimeout(resolve, 20))

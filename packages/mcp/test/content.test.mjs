@@ -184,10 +184,10 @@ test('content-mode words: attested, untrusted data, renewal guidance with the li
 
     const cases = [
       [{ token: async () => { throw new LocalConfigError('reconsent_required') } }, 'reconsent_required',
-        `The Wappie reader restarted and cleared this connection's key. Give the user this link to renew with their password: ${renewal}. The assistant does not need to reconnect; do not retry until they have.`],
+        `The Wappie reader holds no key for this connection right now, and this call needs it. Give the user this link to renew with their password: ${renewal}. If Wappie says message text is not available for their workspace, the renewal waits until the workspace allows it again. The assistant does not need to reconnect; do not retry until they have renewed.`],
       [{ expectedEpoch: () => 7 }, 'stale_grant', `This connection's access to that number changed after consent. Ask the user to renew it: ${renewal}.`],
       [{ token: async () => { throw new LocalConfigError('reconsent_required') }, renewalURL: () => 'javascript:alert(1)' }, 'reconsent_required',
-        'The Wappie reader restarted and cleared this connection\'s key. Ask the user to renew it with their password in the Wappie console. The assistant does not need to reconnect; do not retry until they have.'],
+        'The Wappie reader holds no key for this connection right now, and this call needs it. Ask the user to renew it with their password in the Wappie console. If Wappie says message text is not available for their workspace, the renewal waits until the workspace allows it again. The assistant does not need to reconnect; do not retry until they have renewed.'],
       [{ expectedEpoch: () => 7, renewalURL: undefined }, 'stale_grant', 'This connection\'s access to that number changed after consent. Ask the user to renew it in the Wappie console.'],
       [{ expectedEpoch: () => 7, renewalURL: () => { throw new Error('no link') } }, 'stale_grant', 'This connection\'s access to that number changed after consent. Ask the user to renew it in the Wappie console.'],
     ]

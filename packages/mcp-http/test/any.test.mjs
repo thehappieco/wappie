@@ -503,6 +503,11 @@ test('the network check (§19.12): the same /24 completes; another /24, /56 or f
   const v6 = await start(h, { clientId: CLAUDE, redirectUri, address: from('2001:db8:1:ab::1') })
   assert.equal((await consentV2(h, v6, { address: from('2001:db8:1:cd::99') })).completed.status, 302, 'the same /56')
   assert.equal(h.reader.counters.ip_mismatches, 3)
+  // The page speaks the person's languages first, from the completion's Accept-Language (§19.29 B5).
+  const spanish = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10') })
+  const refused = await consentV2(h, spanish, { address: { headers: { ...from('203.0.114.10').headers, 'accept-language': 'es-MX,es;q=0.9,en;q=0.8' } } })
+  assert.match(refused.completed.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
+  assert.deepEqual([...refused.completed.body.matchAll(/<p lang="([a-z]{2})">/g)].map(match => match[1]), ['es', 'en', 'pt', 'fr', 'de'])
 })
 
 test('link bundle v2 (§19.15): a metadata consent of a tested and an unknown client, every refusal, and the record it writes', async t => {

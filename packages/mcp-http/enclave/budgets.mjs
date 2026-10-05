@@ -18,7 +18,11 @@
 //
 // Counters are per connection and in memory: the day is a rolling 24 hours in
 // one-minute buckets, the first hour runs from the record's `created_at`. A
-// restart resets them; text connections wait in `reseal` after one anyway.
+// restart resets them. From 0.6.0 a text connection the restart left without
+// its key keeps reading metadata (§19.29), under the fresh counters, as a
+// metadata connection always did after a restart; its text waits for the
+// renewal, which takes the creator's password. So a restart lets metadata be
+// read early, never text, which §19.19 accepts.
 //
 // At a limit the tool answers `limit_reached` with the time it resets, and Go
 // is told the code alone (`budget_hit`), at most once per connection, code and

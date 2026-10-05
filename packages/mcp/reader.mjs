@@ -10,8 +10,13 @@ import { loadCredential, LocalConfigError, readerMode, readPrivateFile } from '.
 export const CONTACT_PAGES = 4
 /** The limits tiers a hosted connection can have (docs/mcp-enclave.md §19.6), as list_numbers' connection block names them. */
 export const TIERS = Object.freeze(['web_tested', 'local_tested', 'unknown', 'token'])
-/** Why a value stays locked on a content connection whose key the attested reader does not hold (§19.29). */
-export const RESEALED_REASON = 'Locked until the user renews this connection: the Wappie reader restarted or was updated and holds no key for it.'
+/**
+ * Why a value stays locked on a content connection whose key the attested
+ * reader does not hold (§19.29): no cause, since a restart, an update and a
+ * workspace's message text switched off all read alike here, and the result's
+ * `renewal` says how text comes back.
+ */
+export const RESEALED_REASON = 'Locked: the Wappie reader holds no key for this connection right now; the result\'s renewal says how text comes back.'
 /** An RFC 3339 deadline, as Go and the attested reader write it, in UTC; anything else is null. */
 const expiryShape = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
 const deadlineOf = value => (typeof value === 'string' && expiryShape.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null)

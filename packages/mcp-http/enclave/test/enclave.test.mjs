@@ -153,13 +153,14 @@ test('listeners: /internal never on the public port, nothing else on the interna
   assert.equal((await w.internal('/')).status, 404)
   const robots = await w.public('/robots.txt')
   assert.deepEqual([robots.status, robots.bytes.toString('utf8')], [200, 'User-agent: *\nAllow: /\nDisallow: /mcp\nDisallow: /attestation\n'])
-  // The discovery documents name the documentation, privacy policy and terms.
+  // The discovery documents name the documentation, and no privacy policy or terms until the Wappie host serves them (§19.28 point 16).
   const documents = JSON.parse(prm.body)
-  assert.deepEqual([documents.resource_documentation, documents.resource_policy_uri, documents.resource_tos_uri],
-    [constants.SITE_LINKS.documentation, constants.SITE_LINKS.privacy, constants.SITE_LINKS.terms])
+  assert.equal(documents.resource_documentation, constants.SITE_LINKS.documentation)
+  for (const field of ['resource_policy_uri', 'resource_tos_uri']) assert.equal(field in documents, false, field)
   const server = JSON.parse((await w.public('/.well-known/oauth-authorization-server')).body)
-  assert.deepEqual([server.service_documentation, server.op_policy_uri, server.op_tos_uri], [constants.SITE_LINKS.documentation, constants.SITE_LINKS.privacy, constants.SITE_LINKS.terms])
-  assert.deepEqual(constants.SITE_LINKS, { documentation: 'https://wappie.thehappie.co/docs/', privacy: 'https://wappie.thehappie.co/privacy/', terms: 'https://wappie.thehappie.co/terms/' })
+  assert.equal(server.service_documentation, constants.SITE_LINKS.documentation)
+  for (const field of ['op_policy_uri', 'op_tos_uri']) assert.equal(field in server, false, field)
+  assert.deepEqual(constants.SITE_LINKS, { documentation: 'https://wappie.thehappie.co/docs/' })
   // No signature, a wrong secret, a replay: 401 with no detail.
   const unsigned = await w.internal('/internal/healthz', { signed: {} })
   assert.equal(unsigned.status, 401)

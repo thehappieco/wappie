@@ -29,14 +29,16 @@ export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`
 export const CONSOLE_URL = 'https://app.wappie.thehappie.co/console'
 export const ARCHIVE = 'https://api.wappie.thehappie.co'
 // The public pages the reader names (docs/mcp-enclave.md §19.29): in the
-// discovery documents (RFC 9728 resource_documentation, resource_policy_uri,
-// resource_tos_uri; RFC 8414 service_documentation, op_policy_uri,
-// op_tos_uri) and, the documentation, on the page at `/`. The site's
-// language-free paths, which send a person to their own language's page.
+// discovery documents (RFC 9728 resource_documentation; RFC 8414
+// service_documentation) and on the page at `/`. The site's language-free
+// path, which sends a person on to the page in their language where the site
+// has one (pt, es), English otherwise. Only pages that exist: the Wappie host
+// serves no privacy policy or terms yet (§19.28 point 16), and these values
+// are measured, so the policy and terms links (`privacy`, `terms`, which
+// metadata.mjs would publish as *_policy_uri and *_tos_uri) wait for a
+// release after those pages are served.
 export const SITE_LINKS = Object.freeze({
   documentation: 'https://wappie.thehappie.co/docs/',
-  privacy: 'https://wappie.thehappie.co/privacy/',
-  terms: 'https://wappie.thehappie.co/terms/',
 })
 
 /** Freezes an object and everything inside it. */

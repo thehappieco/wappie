@@ -225,7 +225,7 @@ test('refusals: every guidance sentence word for word, the JSON line of what the
       [refusal('invalid_cursor'), 'That cursor or page range does not fit this attachment. Omit cursor for the first part and pass next_cursor exactly as returned; pages takes one PDF page or a range of up to 4 (for example "3-6") and never goes with cursor.'],
       [refusal('read_failed'), 'The reader could not fetch this attachment from the archive. Try once more later; if it fails again, tell the user.'],
       [new Error('a bug with private words'), 'The reader could not fetch this attachment from the archive. Try once more later; if it fails again, tell the user.', {}, 'read_failed'],
-      [new LocalConfigError('reconsent_required'), `The Wappie reader restarted and cleared this connection's key. Give the user this link to renew with their password: ${renewal}. The assistant does not need to reconnect; do not retry until they have.`],
+      [new LocalConfigError('reconsent_required'), `The Wappie reader holds no key for this connection right now, and this call needs it. Give the user this link to renew with their password: ${renewal}. If Wappie says message text is not available for their workspace, the renewal waits until the workspace allows it again. The assistant does not need to reconnect; do not retry until they have renewed.`],
       [refusal('stale_grant'), `This connection's access to that number changed after consent. Ask the user to renew it: ${renewal}.`],
       [refusal('unauthorized', { status: 401 }), 'Check that this connection is still authorized for that number in the Wappie console.'],
     ]

@@ -209,7 +209,7 @@ test('refusals before Go: a number outside the connection, a paused or switched-
   // A reseal: every tool, these included, asks for the renewal.
   row.status = 'reseal'
   await e.reader.checkActive(done.connectionId, { force: true })
-  assert.match((await draft(w, done)).text, /^Could not draft the message \(reconsent_required\)\. The Wappie reader restarted/)
+  assert.match((await draft(w, done)).text, /^Could not draft the message \(reconsent_required\)\. The Wappie reader holds no key for this connection right now/)
   assert.equal(routes(w).length, 3)
   // What the send service decided is logged by code; a number outside the connection and a
   // reseal are the reader's refusals, before the service, as for every tool.

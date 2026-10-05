@@ -110,6 +110,15 @@ test('authorization request: exact redirect, S256 only, exact resource, bounded 
   await page({ redirectUri: REDIRECT_URI + '/' }, 'invalid_redirect_uri')
   await page({ redirectUri: 'https://claude.ai/api/mcp/auth_callback?x=1' }, 'invalid_redirect_uri')
   await page({ redirectUri: null }, 'invalid_redirect_uri')
+  // The refusal page puts the person's languages first, from the request's Accept-Language, then the console's order (§19.29 B5).
+  // From another address, so the limits below still count this one's requests alone.
+  const wrong = authorizeURL(h, { clientId, challenge, redirectUri: REDIRECT_URI + '/' })
+  const elsewhere = { 'x-forwarded-for': '198.51.100.250' }
+  const spanish = await h.request(wrong.pathname + wrong.search, { headers: { ...elsewhere, 'accept-language': 'es-MX,es;q=0.9,en;q=0.8' } })
+  assert.equal(spanish.status, 400)
+  assert.deepEqual([...spanish.body.matchAll(/<p lang="([a-z]{2})">/g)].map(match => match[1]), ['es', 'en', 'pt', 'fr', 'de'])
+  const unasked = await h.request(wrong.pathname + wrong.search, { headers: elsewhere })
+  assert.deepEqual([...unasked.body.matchAll(/<p lang="([a-z]{2})">/g)].map(match => match[1]), ['pt', 'en', 'es', 'fr', 'de'])
   await bounced({ code_challenge_method: 'plain' }, 'invalid_request')
   await bounced({ code_challenge_method: null }, 'invalid_request')
   await bounced({ challenge: 'short' }, 'invalid_request')
