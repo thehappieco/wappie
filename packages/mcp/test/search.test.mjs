@@ -50,7 +50,7 @@ async function fixture() {
       ts: '2026-09-15T20:00:00.000Z', order_ts: '2026-09-15T20:00:00.000Z', kind: 'message', type: seq === 3 ? 'document' : 'text', source: 'live', content_key_id: keyID }
     row.body_sealed = await encrypt(row.uid, seal.Kind.Body, seq === 4 ? 'x '.repeat(1000) + 'A reunião será amanhã.' : seq === 3 ? 'Segue o arquivo.' : 'Resultado do exame disponível.')
     if (seq === 3) row.media = { media_type: 'document', mimetype: 'application/vnd.ms-excel', file_length: 15, download_status: 'downloaded', filename_sealed: await encrypt(row.uid, seal.Kind.ContactName, 'planilha-exame.xlsx') }
-    if (seq === 4) row.reply_to = 'synthetic-reply-target'
+    if (seq === 4) row.reply_to = 'synthetic-1'
     rows.push(row)
   }
   const contact = { uid: uid(20), contact_key: lid, contact_lid: lid, contact_pn: phone, content_key_id: keyID,
@@ -136,8 +136,10 @@ test('cross-chat search decrypts complete text and filenames, continues within p
     const meeting = parsed(await call(client, 'search_messages', { ...interval, query: 'reuniao amanha' }))
     assert.equal(meeting.messages.length, 1)
     assert.match(meeting.messages[0].body.value, /reunião/)
-    assert.equal(meeting.messages[0].reply_to, 'synthetic-reply-target')
-    assert.equal(meeting.messages[0].source.device_id, device)
+    // The quoted message by uid, found among the rows the scan read after the hit (§19.32); WhatsApp's ids stay out.
+    assert.equal(meeting.messages[0].reply_to_uid, uid(1))
+    assert.equal(JSON.stringify(meeting).includes('synthetic-'), false)
+    assert.deepEqual(Object.keys(meeting.messages[0].source).sort(), ['server', 'url'])
     for (const result of [first, second, third, fourth, meeting]) {
       const json = JSON.stringify(result)
       for (const secret of [token, 'body_sealed', 'sealed_dsk', vector.private_key]) assert.equal(json.includes(secret), false)
@@ -187,12 +189,19 @@ test('contact resolution opens only a scoped optional snapshot, exposes explicit
     const result = parsed(await call(client, 'resolve_contact', { device_id: device, query: 'roberto' }))
     assert.equal(result.candidates.length, 1)
     assert.deepEqual(result.candidates[0].identifiers, [lid, phone])
+    // A name query: no phones, unless asked for (§19.32).
+    assert.equal(Object.hasOwn(result.candidates[0], 'phones'), false)
+    assert.deepEqual(parsed(await call(client, 'resolve_contact', { device_id: device, query: 'roberto', include_phones: true })).candidates[0].phones, ['+5511999990000'])
     assert.equal(result.candidates[0].names.some(item => item.name === 'Robérto Personal'), true)
     assert.equal(result.coverage.complete, true)
     f.state.contactsMore = true
     const partial = parsed(await call(client, 'resolve_contact', { device_id: device, query: 'unknown' }))
     assert.equal(partial.coverage.complete, false)
-    assert.equal(partial.next.after_key, lid)
+    assert.match(partial.next.after_key, /^c1\./)
+    assert.equal(JSON.stringify(partial).includes(lid), false, 'the cursor is sealed, not the last contact\'s key')
+    const mark = f.state.requests.length
+    parsed(await call(client, 'resolve_contact', partial.next))
+    assert.equal(f.state.requests.slice(mark).find(item => item.path.endsWith('/contacts')).query.after_key, lid)
     f.state.revokeAfterContacts = true
     const revoked = await call(client, 'resolve_contact', { device_id: device, query: 'roberto' })
     assert.equal(revoked.isError, true)
@@ -238,11 +247,12 @@ test('hosted search hits cite the message, never the reader\'s own archive addre
     const reader = await createReader(config, { token: async () => ({ token, kind: 'api_key' }) })
     const result = await reader.searchMessages({ ...interval })
     assert.ok(result.messages.length > 0)
-    for (const hit of result.messages) assert.deepEqual(Object.keys(hit.source).sort(), ['chat_key', 'device_id', 'message_uid'])
+    // The hit is its own citation: no source object copies its uid, chat_key or device_id (§19.32).
+    for (const hit of result.messages) assert.equal(hit.source, 'live')
     assert.equal(JSON.stringify(result).includes(f.server), false, 'the archive address reached the result')
     // A local install keeps linking to the server its user reads the archive at.
     const local = parsed(await call(await f.connect({ allow_plaintext: false, service_key_file: undefined, service_user_id: undefined, contacts_file: undefined }), 'search_messages', interval))
     assert.equal(local.messages[0].source.server, f.server)
-    assert.deepEqual(Object.keys(local.messages[0].source).sort(), ['chat_key', 'device_id', 'message_uid', 'server', 'url'])
+    assert.deepEqual(Object.keys(local.messages[0].source).sort(), ['server', 'url'])
   } finally { await f.close() }
 })

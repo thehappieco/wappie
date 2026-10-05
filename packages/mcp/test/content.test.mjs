@@ -73,8 +73,9 @@ test('a text query scans the whole budget and makes the same REST calls whatever
     for (const hit of fifty.messages) {
       assert.deepEqual(hit.archive_status, { state: 'not_checked' })
       assert.equal(hit.body.value, hitText)
-      // The citation names the message, never the workspace (§19.30).
-      assert.deepEqual(Object.keys(hit.source).sort(), ['chat_key', 'device_id', 'message_uid'])
+      // The hit is its own citation (uid, chat_key, device_id): no source object repeats them, and none names the
+      // workspace (§19.30, §19.32); source is the row's, as list_messages gives it.
+      assert.equal(hit.source, 'live')
     }
     assert.equal(JSON.stringify(fifty).includes(f.server), false)
     // Following next reads the rest of the range the same way.
@@ -125,12 +126,14 @@ test('resolve_contact on the attested reader always reads four pages, whatever m
       assert.equal(result.coverage.archived_contacts_examined, 2000)
       assert.equal(result.coverage.archive_has_more, true)
       assert.equal(result.coverage.personal_snapshot, null)
-      assert.equal(result.next.after_key, contactKey(2000), 'next follows the fourth page')
+      // next follows the fourth page, sealed: the last contact's key is a third party's JID (§19.32).
+      assert.match(result.next.after_key, /^c1\.[A-Za-z0-9_-]+$/)
+      assert.equal(Buffer.from(result.next.after_key.slice(3), 'base64url').includes(contactKey(2000)), false)
     }
     // The last 200 contacts: the archive ends before four pages, so fewer are read.
     const mark = f.state.requests.length
     const tail = await reader.resolveContact(missing.next)
-    assert.equal(f.since(mark).filter(call => call.includes('/contacts')).length, 1)
+    assert.deepEqual(f.since(mark).filter(call => call.includes('/contacts')), [`GET /v1/devices/${device}/contacts?limit=500&after_key=${encodeURIComponent(contactKey(2000))}`])
     assert.equal(tail.coverage.archived_contacts_examined, 200)
     assert.equal(tail.coverage.archive_has_more, false)
     assert.equal(tail.next, undefined)

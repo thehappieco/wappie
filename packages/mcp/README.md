@@ -486,6 +486,22 @@ From reader 0.6.0 ([docs/mcp-enclave.md §19.29](../../docs/mcp-enclave.md#1929-
 - **Results** (§19.30): a read tool answers its JSON once, as one text block,
   with no `structuredContent` and so no `outputSchema`; no result names the
   workspace (`device_id` is what every tool takes).
+- **Identifiers** ([§19.32](../../docs/mcp-enclave.md#1932-the-identifiers-a-result-carries-2026-10-05)):
+  a result carries the identifiers a tool takes, once. A message, a hit and
+  an activity group name their sender by `sender_key` only (the sender's LID
+  when the archive knows it, else its phone JID) and their chat by
+  `chat_key`; a chat is its `chat_key`, `is_group`, `last_ts`, name and
+  preview; a number is its `id`, `name`, `status` and `paused`, and its
+  `name` is the console label, else the WhatsApp push name, else
+  "Number 1", "Number 2"…, never its phone. A reply carries `reply_to_uid`,
+  the uid of the message it quotes, when that message is among the rows the
+  same call read, in the same chat; nothing is fetched to find it, so
+  `get_message` never has it. No result carries WhatsApp's message id
+  (`wa_id`, `send_to_self` included), a sender's or a chat's phone JID or
+  LID beside its key, a chat's aliases or row uid, a number's phone, or a
+  contact's row uid. A `chat_key` or `sender_key` that is a phone JID still
+  shows the phone. Inputs are unchanged: `sender_keys` takes a phone JID,
+  a LID or a key alike, as the archive matches any of the three.
 
 `list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
 defaulting to 50. For `list_messages`, pass
@@ -501,9 +517,13 @@ reports `truncated`. Responses larger than 1 MiB are rejected with
 `resolve_contact` requires `device_id` and a `query` of 2–256 characters. It
 returns up to 20 candidates by default, with a maximum `limit` of 50. Each call
 examines up to 500 archived contacts and the optional personal snapshot. Names
-identify their source; results include explicit phone/JID aliases and
-`ambiguous` when several candidates match. Ask the user which candidate they
-mean before choosing an identity.
+identify their source; results include the explicit JID aliases
+(`identifiers`, which `sender_keys` and `chat_key` take) and `ambiguous` when
+several candidates match. Ask the user which candidate they mean before
+choosing an identity. A candidate's E.164 `phones` come back only when the
+query is a phone number (7 to 15 digits, with `+`, spaces, dots, dashes and
+parentheses only) or the call passes `include_phones: true` because the user
+asked for the number; `identifiers` can still hold a phone JID.
 
 On the attested reader (`hosted-content`) each call reads exactly **four pages**
 of 500 archived contacts, following `has_more` whatever matched, so the archive
@@ -511,7 +531,12 @@ cannot tell from the paging which contact was looked for; `next` continues after
 the fourth page. Every other mode reads one page per call.
 
 Follow the complete returned `next` object as the next call's arguments to scan
-more archived contacts. If `omitted_candidates` is positive, narrow the query;
+more archived contacts. Its `after_key` is sealed (AES-256-GCM under a key
+derived from the connection's archive credential, bound to the number), since
+the archive pages by contact key and the last key on a page is a third
+party's JID; it opens only on the connection and number that returned it, and
+a changed one is refused as `invalid_cursor`. A plain contact key, as 0.5.0
+returned, is still accepted. If `omitted_candidates` is positive, narrow the query;
 there is no separate cursor for omitted matches from the current page or personal
 snapshot. Check `coverage`, including unavailable encrypted names and remaining
 archive pages, before concluding that a contact is absent. A personal-only phone
@@ -547,8 +572,10 @@ have more rows to search. Follow the complete `next` object unchanged while
 `has_more` is true. This is different from `list_messages`, where only the cursor
 is passed as `before`.
 
-Each result includes a source reference (with an authenticated REST URL on a
-local install) and an `archive_status`: `latest_archived`, `superseded`,
+On a local install each hit includes a `source` reference with an
+authenticated REST URL (`server`, `url`); a hosted hit is its own citation
+(`uid`, `chat_key`, `device_id`) and keeps the row's `source` string, as
+`list_messages` gives it. Each hit has an `archive_status`: `latest_archived`, `superseded`,
 `deleted`, `control_event` or `unavailable`, or `not_checked` for a text query
 on the attested reader (below). A search can match an old revision or a subsequently deleted
 message. Check this state and use `list_revisions` before presenting a historical

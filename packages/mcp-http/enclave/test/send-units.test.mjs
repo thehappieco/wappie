@@ -13,7 +13,7 @@ import { createDedupe, dedupeKey } from '../send/dedupe.mjs'
 import { draftPlaintext, sealDraft } from '../send/drafts.mjs'
 import { createFingerprints, pieces } from '../send/fingerprints.mjs'
 import * as policy from '../send/policy.mjs'
-import { clientRef, refusedByGo, slidingWindow } from '../send/sends.mjs'
+import { clientRef, createSends, createWindows, refusedByGo, slidingWindow } from '../send/sends.mjs'
 import { fromGo } from '../send/service.mjs'
 import { LINK, normalizeNewlines, textRefusal } from '../send/textrules.mjs'
 
@@ -185,6 +185,24 @@ test('dedupe: an identical call answers the first one\'s result as a duplicate f
   assert.equal(again, 0)
   dedupe.wipe('c')
   assert.equal(dedupe.size(), 0)
+})
+
+test('a note Go sent answers its uid, time and console link: Go\'s wa_id proves the send and goes no further (§19.32)', async () => {
+  const uidSent = '0199b3c4-dddd-7eee-8fff-000011112222'
+  const answer = { status: 200, data: { id: 'x', message_uid: uidSent, wa_id: '3EB0C0FFEE0123456789', timestamp: '2026-10-01T09:32:15.123456Z', duplicate: false } }
+  const counters = { sends: 0 }
+  let clock = Date.parse('2026-10-01T09:00:00.000Z')
+  const sendSelf = createSends({ relay: { sending: async () => answer }, consoleURL: 'https://app.wappie.thehappie.co/console', dedupe: createDedupe({ now: () => clock }), windows: createWindows({ now: () => clock }),
+    gate: async () => {}, recordRefusal: async () => {}, event: () => {}, fromGo: () => new Error('refused'), refusal: code => Object.assign(new Error(code), { code }), codeOf: error => error.code, counters })
+  const record = { connection_id: 'c', api_key: 'k', tenant_id: '018f3a2b-2222-7000-8000-00000000bbbb' }
+  const sent = await sendSelf(record, { device_id: device, text: 'nota' })
+  assert.deepEqual(Object.keys(sent), ['message_uid', 'timestamp', 'open_url'])
+  assert.equal(sent.message_uid, uidSent)
+  assert.equal(counters.sends, 1)
+  // Without a wa_id, Go's answer is not a send it vouches for: uncertain, never sent again.
+  delete answer.data.wa_id
+  clock += policy.SEND_MIN_INTERVAL_MS
+  await assert.rejects(sendSelf(record, { device_id: device, text: 'outra nota' }), { code: 'send_uncertain' })
 })
 
 test('the enclave\'s windows: the Nth in the span passes, the next gets the moment it would, and a release gives the place back', () => {

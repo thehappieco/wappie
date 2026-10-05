@@ -240,10 +240,12 @@ test('an own-chat send and the ledger answer their shapes, links checked', async
     const client = await connect(configFor(f.server, { send: 'draft', send_self: true }), await providerFor(f, send))
     const result = await call(client, 'send_to_self', { device_id: device, text: 'lembrar: pagar a conta' })
     assert.equal(result.structuredContent, undefined)
-    assert.equal(result.content[0].text, JSON.stringify({ status: 'sent', sent: true, ...sentData() }))
+    // No wa_id, even from a provider that hands one on (§19.32): WhatsApp's own id, which no tool takes.
+    const { wa_id: _waID, ...shown } = sentData()
+    assert.equal(result.content[0].text, JSON.stringify({ status: 'sent', sent: true, ...shown }))
     sent = sentData({ message_uid: null, duplicate: true })
     assert.equal((await call(client, 'send_to_self', { device_id: device, text: 'x' })).content[0].text,
-      '{"status":"sent","sent":true,"message_uid":null,"wa_id":"3EB0C0FFEE0123456789","timestamp":"2026-10-01T09:32:15.123456Z","duplicate":true}')
+      '{"status":"sent","sent":true,"message_uid":null,"timestamp":"2026-10-01T09:32:15.123456Z","duplicate":true}')
     sent = sentData({ open_url: 'https://evil.example/?x=1' })
     assert.equal(Object.hasOwn(JSON.parse((await call(client, 'send_to_self', { device_id: device, text: 'x' })).content[0].text), 'open_url'), false)
     const open = `${consoleURL}?workspace=${workspace}&open_device=${device}&open_message=0199b3c4-dddd-7eee-8fff-000011112222`

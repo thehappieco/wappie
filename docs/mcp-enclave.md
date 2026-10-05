@@ -9386,13 +9386,14 @@ clients that passed).
     again with `packages/mcp/icons/icon-512.png` uploaded is the only way
     (a new plugin id and a new consent). A published plugin carries `logo`
     and `composerIcon` in its package.
-19. **The personal identifiers in results** (§19.30): which phone numbers,
-    WhatsApp ids and LIDs each tool returns, and which a tool chain needs,
-    is listed for the owner (the report of 2026-10-05). 0.6.0 removes only
-    `workspace_id`; whether `sender_pn`, `sender_lid`, `chat_pn`, `chat_lid`,
-    `keys`, `wa_id` and a number's `phone` stay on every result, or only
-    where a chain needs them, is the owner's decision, and what stays goes
-    into the Wappie privacy policy (point 16).
+19. **The personal identifiers in results** (§19.30). Decided by the owner
+    on 2026-10-05, from the inventory of that day, and done in 0.6.0
+    (§19.32): a result carries what a tool chain needs, once. What stays
+    goes into the Wappie privacy policy (point 16): `chat_key` and
+    `sender_key`, which show a phone where they are a phone JID, a
+    contact's `identifiers`, a contact's `phones` for a phone query or when
+    the user asked for the number, and the names and texts the connection
+    opens.
 20. **Who gets the way back** (§19.31): the `state` in the button and in the
     decline's redirect goes to any browser on the starter's network, and the
     parent writes the PROXY v2 source address the network check reads.
@@ -9400,6 +9401,18 @@ clients that passed).
     the console URL's fragment, which no server is sent) would close that,
     and would give a VPN user the button too; it changes the console's URL
     contract, so it is the owner's decision, after 0.6.0.
+21. **Messages deleted for everyone stay readable** (owner's decision,
+    2026-10-05: "mantem destravado, quero ler ainda", keep it unlocked, I
+    still want to read it). The text of a message its sender deleted for
+    everyone is not locked: `list_revisions` returns its archived versions
+    with `deleted: true`, and `get_message` and a search hit of the original
+    open its text as before (a hit says `archive_status` `deleted` where it
+    is checked). 0.6.0 changes nothing here.
+22. **One-time codes are not locked in 0.6.0** (owner's decision,
+    2026-10-05). A message that carries a one-time code (a sign-in or
+    payment verification code) reads like any other message: the reader
+    neither detects nor locks it. Locking them would be a later release's,
+    if the owner asks for it.
 
 ### 19.29 What the connector says about itself (M5)
 
@@ -9650,6 +9663,11 @@ the nine recommendations that came with the list:
    is what may read the numbers;
 9. English texts use the typographic apostrophe.
 
+The way-back button's label (§19.30, `pages.mjs` `BACK_TO`) was approved
+the same day as drafted (D10, 2026-10-05): pt "Voltar para {host}", en
+"Back to {host}", es "Volver a {host}", fr "Retour à {host}", de "Zurück zu
+{host}".
+
 ### 19.30 Before the build: directory review fixes (2026-10-05)
 
 The directory research of 2026-10-05 (`listing/requirements.md` §4, items
@@ -9686,8 +9704,8 @@ model-facing text named it. The console links (`open_url`, `review_url`,
 `drafts_url`, an AI pause's `renew_url`) keep their `workspace=` parameter:
 the console opens the message in that workspace (§16.7's link contract), and
 the model hands the links on as they are. The phone numbers and WhatsApp
-identifiers each tool returns are unchanged; their inventory waits for the
-owner (§19.28 point 19).
+identifiers each tool returns are §19.32's (the owner's decision of the same
+day, §19.28 point 19).
 
 **The way back to the assistant.** Until now a refusal after the redirect
 was trusted rendered a Wappie page, and the assistant waited on
@@ -9756,10 +9774,10 @@ the resource's origin; a version-1 descriptor (a reader before 0.6.0, the
 hosted reader) keeps the old Cancel, since the console cannot tell whether
 that reader serves the route.
 
-**New text (D10).** Only the button's label waits for the owner's approval
-(`pages.mjs` `BACK_TO`): pt "Voltar para {host}", en "Back to {host}", es
-"Volver a {host}", fr "Retour à {host}", de "Zurück zu {host}". Every
-sentence of §19.29 is unchanged.
+**New text (D10).** The button's label (`pages.mjs` `BACK_TO`) is the only
+new text, approved by the owner on 2026-10-05 as drafted: pt "Voltar para
+{host}", en "Back to {host}", es "Volver a {host}", fr "Retour à {host}", de
+"Zurück zu {host}". Every sentence of §19.29 is unchanged.
 
 **Tests.** `packages/mcp/test/identity.test.mjs` (every read tool of every
 hosted shape: one text block, no `structuredContent`, no `outputSchema`, the
@@ -9846,6 +9864,86 @@ workspace (M7). The site's troubleshooting row (listing
 `docs-and-legal.md` C5) is rewritten once both screens are known, as a
 follow-up for the site.
 
+**The label (D10).** This review left the button's words alone; the owner
+approved them on 2026-10-05 ("Voltar para {host}", "Back to {host}",
+"Volver a {host}", "Retour à {host}", "Zurück zu {host}", §19.30).
+
+### 19.32 The identifiers a result carries (2026-10-05)
+
+**Owner decision** (2026-10-05, §19.28 point 19, on the inventory of the
+same day): a result carries the identifiers a tool chain needs, once, and
+nothing else of the kind. It is all in the measured image
+(`packages/mcp/reader.mjs`, `contacts.mjs` and `server.mjs`, and the
+enclave's `send/sends.mjs`).
+
+| Result | No longer carries | Carries |
+|---|---|---|
+| a message (`list_messages`, `get_message`, `list_revisions`) and a search hit | `wa_id`, `sender_pn`, `sender_lid`, `reply_to` | `uid`, `device_id`, `chat_key`, `sender_key`, `target_uid`, and `reply_to_uid` where it is known |
+| a search hit's `source` | `device_id`, `message_uid` and `chat_key`, copies of the hit's own; on a hosted reader the object itself (the row's `source` string stays, as `list_messages` has it) | on a local install, `server` and `url` |
+| an `activity_summary` group | `sender_pn`, `sender_lid` | `chat_key`, `sender_key`, `sample_uid` |
+| a `list_chats` chat | `uid`, `chat_pn`, `chat_lid`, `keys` | `chat_key` |
+| a `list_numbers` number | `phone`, and the phone JID as the `name` of last resort | `id`; `name` is the console label, else the WhatsApp push name, else "Number 1", "Number 2"… by its place in the list |
+| a `resolve_contact` candidate | `contact_uid`; `phones`, unless the query is a phone number or `include_phones` is true | `identifiers` |
+| `resolve_contact`'s `next.after_key` | the last contact's key, a third party's JID | a sealed cursor |
+| `send_to_self` | `wa_id` (the enclave keeps it out of its answer too) | `message_uid`, `timestamp`, `open_url` |
+
+**`sender_key`** is the sender as the archive keys it: its LID when known,
+else its phone JID (Go's `Address.Primary`); a row stored without one takes
+its LID, else its phone JID. Where a key is a phone JID the phone stays
+visible, which the owner accepted. A row archived before WhatsApp's LIDs
+names its sender by phone only, and `sender_keys` matches exactly, so a
+search for every message of a person passes `resolve_contact`'s
+`identifiers` (LID and phone JID), not one message's `sender_key`.
+
+**`reply_to_uid`.** The archive has no lookup by WhatsApp id, and a lookup
+per reply would cost a read and, on a text query, tell the archive which
+rows matched. So the quoted message is named only when it is among the rows
+the same call read: a `list_messages` page or a `list_revisions` thread
+(one chat, aliases included), or a row the search examined in the reply's
+chat (older, so it is read after the hit; hits are resolved when the scan
+ends, and the field keeps its place). A WhatsApp id two rows share names
+nothing, and a row outside the history window is never read, so never
+named. `get_message` never carries it.
+
+**Phones.** A phone query has 7 to 15 digits (E.164's length) and nothing
+but digits, one leading `+`, spaces, dots, dashes and parentheses; fewer
+digits are part of a number at most. `include_phones` is new: "true only
+when the user asked for a contact's phone number: candidates then include
+phones. A query that is a phone number includes them anyway; omit it
+otherwise." `next` repeats it. `identifiers` keep the phone JID, the only
+key a pre-LID row matches.
+
+**The cursor.** `c1.` and the base64url of a 12-byte IV, the AES-256-GCM
+ciphertext of the contact key and its tag, under HKDF-SHA256 of the
+connection's archive credential (its API key, or a local session's token;
+no salt; info `wappie/contact-cursor/v1`), with the AAD
+`["wappie/contact-cursor",1,<device_id>]`. It opens only on the connection
+and number that sealed it, survives a restart of the enclave (the
+connection's API key does not change), and shows only the key's length. A
+changed or foreign one is refused before any read (`invalid_cursor`: "Pass
+next.after_key exactly as returned, or call resolve_contact again without
+after_key."); a value without the prefix is a key, as 0.5.0 returned it.
+The REST calls are unchanged: the archive still gets the key, and the
+attested reader still reads four pages whatever matched.
+
+**Inputs and words.** Every input accepts what it did; `sender_keys` takes a
+phone JID, a LID or a key alike, as the archive matches any of the three.
+Of the approved texts only `sender_keys`' description named a removed
+field; it reads "Only these senders, 1 to 3: sender_key values from earlier
+results, or identifiers from resolve_contact." New text for the owner
+(D10): `include_phones`' description, the `invalid_cursor` guidance and the
+label "Number N".
+
+**Left as they are** (owner, 2026-10-05): the text of messages deleted for
+everyone, and one-time codes (§19.28 points 21 and 22).
+
+**Tests.** `packages/mcp/test/identifiers.test.mjs` (every read tool in the
+content and metadata modes: no removed field, the replies, chats, numbers,
+phones, the cursor, unchanged inputs, and no model-facing text naming a
+removed field), `contacts.test.mjs`, `search.test.mjs`, `content.test.mjs`
+and `send.test.mjs`; the enclave's `send-units.test.mjs` and
+`send-enclave.test.mjs`.
+
 ### Amendments to §§1 to 18
 
 | Where | Amendment | When |
@@ -9876,6 +9974,7 @@ follow-up for the site.
 | §5.4 | the public listener adds `/icon-192.png`, `/icon-512.png`, the page at `/` and `/robots.txt`, and `serverInfo.icons` names the two PNGs (§19.29) | 0.6.0 |
 | §5.4 | the public listener adds `POST /mcp/authorize/decline`, the console's Cancel, and a refusal after the redirect is trusted carries a button back to the assistant when the browser is tied to the request's starter (§19.30, §19.31) | 0.6.0 |
 | §15.6, §16.7, §17.8 | read results are one text block, without `structuredContent` or `workspace_id`; `send_to_self`'s `destructiveHint` is true (§19.30) | 0.6.0 |
+| §15.6, §16.7, §17.8 | results carry the identifiers a tool takes, once: no `wa_id`, `sender_pn`, `sender_lid`, `reply_to`, `chat_pn`, `chat_lid`, `keys`, chat `uid`, `contact_uid`, number `phone` or copies in a hit's `source`; `reply_to_uid` where the call read the quoted message; `resolve_contact`'s `phones` only for a phone query or `include_phones`, and a sealed `after_key`; `send_to_self` answers without `wa_id` (§19.32) | 0.6.0 |
 | §15.5, §15.6, §15.8 | a content connection without its key reads metadata with its own read-only key, text locked and the renewal link on every result; only what needs the key answers `reconsent_required`, whose guidance no longer says the reader restarted (§19.29) | 0.6.0 |
 | §15.6, §16.7, §17.8 | `serverInfo`, the instructions, the tool descriptions, the parameters' descriptions, `type`'s enum, the hints of `send_to_self` and of an AI connection's `open_attachment`, and `list_numbers`' `connection` block (§19.29) | 0.6.0 |
 | §9, §11 | 0.6.0 is the first image with the shared kit (0.5.0's client predates it): `packages/client` installs the kit's release asset `thehappieco-kit-0.3.0.tgz` (sha256 `acbcce7a87e3d4726cf93fc02398e576829c92a82e49bd4e33b69addbac5fa78`), which `tarballs/` publishes. Its Wappie profile and every byte that profile pins are v0.1.0's. v0.3.0 also ships the platform profile and `oidc-rp`, which the reader never imports but the image measures, and its `hpke` imports every X25519 private key through a PKCS#8 copy with bit 0 of the first byte set and asks `generateKey` again after an `OperationError` (WebKit for Linux refuses a key whose first byte is zero and fails 1 generation in 256). A later kit bump before the image is built changes this row | 0.6.0 |
