@@ -45,9 +45,11 @@ For a connection with message text, on `https://mcp.wappie.thehappie.co/mcp`
 | AWS (hypervisor, Nitro Security Module, KMS) | Trusted | Outside this model. |
 
 The key is memory-only: a restart of the enclave (every reader release, a
-reboot or a crash) clears it. The connection then answers
-`reconsent_required` with a console link, and the person who consented renews
-it there with their password. The assistant does not have to reconnect.
+reboot or a crash) clears it. From reader 0.6.0 the connection then keeps
+reading metadata, with text locked and a console link in every answer;
+whatever needs the key answers `reconsent_required` with that link. The
+person who consented renews it there with their password. The assistant does
+not have to reconnect.
 Revoking stops future reads; it cannot erase what the assistant already
 received. Someone who leaves the workspace or is disabled loses their text
 connections with it. Live ingestion is not blind (the server that receives
@@ -113,14 +115,17 @@ Every host takes the address as it is — **nothing to install**:
   that happens, add Wappie as a ChatGPT app instead (below).
 - **Claude Code**: `claude mcp add --transport http --scope user wappie
   https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
-- **ChatGPT** (desktop app or web): Settings → Apps (Apps & Connectors) →
-  Advanced settings → turn on Developer mode. Then in Apps click Create: name
-  "Wappie", MCP server URL the address, Authentication OAuth, tick "I trust
-  this application", Create. In a chat, "+" → Developer mode → turn on
-  Wappie. That entry is all ChatGPT needs; there is no file to build. Added
-  another way, for example as a plain connector or in Codex, ChatGPT may list
-  the tools without being able to use them. For attachments, pick a model
-  with reasoning (Thinking or Pro): Instant does not see images.
+- **ChatGPT** (set up on the web; Plus, Pro, Business, Enterprise or Edu):
+  Settings → Security and login → turn on Developer mode. Then open
+  chatgpt.com/plugins and click "+": name "Wappie", a public endpoint under
+  Connection with the address, Authentication OAuth, Create. The icon is
+  optional and cannot be changed afterwards: upload the Wappie icon then
+  (`packages/mcp/icons/icon-512.png`) to see it in ChatGPT. Wappie then works
+  in Chat and in Work: type "@" and pick Wappie, or turn it on under "+".
+  That entry is all ChatGPT needs; there is no file to build. Added another
+  way, for example as a plain connector or in Codex, ChatGPT may list the
+  tools without being able to use them. For attachments, pick a model with
+  reasoning (Thinking or Pro): Instant does not see images.
 
 The plugin at [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins)
 is optional. It adds a skill that tells Codex or Claude Code what the
@@ -222,9 +227,11 @@ Nothing sealed leaves the browser before the attestation passes. The console
 lists the connection as text, and its refresh token lapses after seven days
 unused (thirty for metadata).
 
-When the enclave restarts the connection shows **reseal** in the console and
-its tools answer `reconsent_required` with a link to
-`/console?mcp_renew=<connection id>`. The person who consented opens it, the
+When the enclave restarts the connection shows **reseal** in the console;
+its tools keep answering with metadata, text locked and a `renewal` link to
+`/console?mcp_renew=<connection id>` in every result, and those that need the
+key (a text query, an attachment, a draft) answer `reconsent_required` with
+the same link (reader 0.5.0: every tool did). The person who consented opens it, the
 console verifies a new attestation, and their password seals the grants to a
 new enclave key and a new service account on the same connection, with the
 same expiry. The assistant keeps its tokens.

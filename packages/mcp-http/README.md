@@ -32,7 +32,7 @@ a content connection whose consent includes them. Nothing reachable from
 |---|---|---|
 | Resource server (`POST /mcp`) | this process | Bearer-protected JSON-RPC over Streamable HTTP; one `McpServer` per request, built by `@whatserver2/mcp` with a provided credential |
 | Authorization server (`/mcp/authorize`, `/mcp/token`, `/mcp/register`, `/mcp/revoke`) | this process | OAuth 2.1 with PKCE S256, RFC 8707 `resource`, RFC 7591 registration and Client ID Metadata Documents, rotating refresh tokens |
-| Discovery (`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server[/mcp]`) | this process | RFC 9728 and RFC 8414 documents, identical on both path forms |
+| Discovery (`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server[/mcp]`) | this process | RFC 9728 and RFC 8414 documents, identical on both path forms; on the attested reader they also name the documentation, privacy policy and terms (`resource_documentation`, `resource_policy_uri`, `resource_tos_uri`; `service_documentation`, `op_policy_uri`, `op_tos_uri`) |
 | Consent | the Wappie console (`WAPPIE_MCP_CONSOLE_URL`) | the workspace owner picks the numbers, the expiry and the timezone, and seals the API key to this reader |
 | Registry and relay (`/v1/mcp/*`) | the Wappie API (`WS_MCP_ENABLED=true`) | stores the connection rows, relays the sealed bundle and the consent descriptor, answers status checks, fetches client metadata documents |
 
@@ -227,11 +227,21 @@ what differs from the hosted reader:
   and the live KMS key policy hash (`attestation.mjs`, `enclave/policy.mjs`).
   `GET /attestation?nonce=` serves the same without a key, for anyone.
 - The public listener also serves the Wappie icon files (`/favicon.ico`,
-  `/favicon.svg`, `/apple-touch-icon.png`, from `@whatserver2/mcp/icons`)
-  with no auth behind the same Host check, and `initialize` names them in
-  `serverInfo.icons` (`docs/mcp-enclave.md` section 5.4). The hosted reader
-  serves none and names only the `data:` icon: its proxy routes `/mcp` and
-  discovery here, nothing else.
+  `/favicon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`,
+  from `@whatserver2/mcp/icons`) with no auth behind the same Host check, and
+  `initialize` names them in `serverInfo.icons` (`docs/mcp-enclave.md`
+  section 5.4). From reader 0.6.0 it also serves a page for a person who
+  opens the connector's address in a browser (`GET /`: what the address is
+  for, the console and the documentation, in pt, en, es, fr or de by
+  `Accept-Language` or `?lang=`, under a CSP that allows only its own icon
+  and its hashed style) and `/robots.txt` (section 19.29; the words are in
+  `pages.mjs`). The hosted reader serves none of these and names only the
+  `data:` icon: its proxy routes `/mcp` and discovery here, nothing else.
+- Every page a browser can reach on the authorization server (a refused
+  client, a bad redirect, too many requests, an expired approval, another
+  network, a full workspace, …) says what happened and what to do next in
+  the five languages, the person's own first, with the code in small print
+  (`pages.mjs`, section 19.29).
 - Logs leave only through the vsock sink, each line checked against the
   parent's schema (`enclave/logsink.mjs`), with a health line every minute
   that includes the clock's skew against KMS's `Date` (`enclave/health.mjs`).
@@ -251,10 +261,13 @@ allows content only for the workspaces the operator lists
 (`WS_MCP_CONTENT_TENANTS`) and only while `WS_MCP_CONTENT_ENABLED` is on.
 
 - **Restart**: every key is gone. Content connections become `reseal` (the
-  connection id and the assistant's tokens survive), tools answer
-  `reconsent_required` with the console's renewal link, and
-  `enclave/renew.mjs` takes a new attested key and a new service account on
-  the same connection.
+  connection id and the assistant's tokens survive) and, from reader 0.6.0,
+  keep reading metadata with their own read-only key: text, names and
+  filenames come back locked, every result carries the console's renewal
+  link, and only what needs the key (a text query, an attachment, a draft or
+  a note) answers `reconsent_required` (section 19.29). `enclave/renew.mjs`
+  takes a new attested key and a new service account on the same
+  connection. An AI authorization reads nothing without its key.
 - **Revocation**: Go tells the enclave at once and resends every 30 s until
   it answers; independently, the enclave asks Go about every content
   connection each minute and drops the key on any answer but `active`. If Go
