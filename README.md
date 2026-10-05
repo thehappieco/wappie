@@ -263,6 +263,12 @@ does not consume the invitation. `WS_INVITE_ENCRYPTION_KEY_HEX` enables recovery
 of new invitation codes; old hash-only codes must be regenerated. See the account
 guide above for endpoints, migration behavior and deployment checks.
 
+An installation may also sign people in through an external identity provider
+(`WS_PLATFORM_ISSUER`; The Happie Co's id. for the hosted cloud). It is off by
+default and changes nothing until set; the provider's key wraps the account key
+rather than replacing it, and an existing account is linked only with its own
+password. See [docs/platform-sign-in.md](docs/platform-sign-in.md).
+
 Accounts created before recovery could be redeemed hold a code the server
 cannot hand back. They see a notice on the console and generate a new one.
 

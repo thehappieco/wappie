@@ -1383,3 +1383,26 @@ until the platform decides.
 assistant used to leave the old connection holding a place under the cap;
 the consent now replaces it (unticked, both stay), and a connection whose
 refresh token has died ends by itself.
+
+## Sign-in through an identity provider wraps the account key (2026-10-05)
+
+The hosted cloud signs in through The Happie Co's id. (docs/platform-sign-in.md);
+a self-hosted installation keeps its own login, and the Go code is inert
+until `WS_PLATFORM_ISSUER` is set.
+
+**The provider's key wraps Wappie's account key; it does not replace it**
+(owner decision D2). Every grant, the AI keychain and the personal contacts
+are sealed to the account key, and `users.public_key` still has no update
+path. The key is stored once more under a key derived from id.'s product key
+`sk_p`, as 61 bytes of AES-256-GCM bound to `users.id`, the `sub`, the
+product key id and the public key. It is symmetric because an HPKE seal to
+`pk_p` could be made by the server itself.
+
+**A pin, never an e-mail match.** The first product key seen for each
+`(sub, product_key_id)` is pinned, insert only; a later key is refused as
+`account_key_changed`, with an alert, and the pin is kept. An existing
+account is linked only with its old password or recovery code, proved to
+this server and opened in the browser (decision D1: the owner's pilot is
+kept); an address is at most a hint shown to its verified owner. New
+accounts take `users.id = sub`; a linked account keeps its id, which grant
+AADs and foreign keys bind.
