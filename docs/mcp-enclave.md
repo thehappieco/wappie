@@ -9632,11 +9632,115 @@ the nine recommendations that came with the list:
    is what may read the numbers;
 9. English texts use the typographic apostrophe.
 
+### 19.30 Fewer steps without a new image (A1 to A7)
+
+The distribution audit's §6 A listed what made a connection cost more steps
+than it needed. **Owner decisions M3, M4 and M6** (2026-10-04): do A1 to A7
+in the server and the console only, so none of them waits for an image or
+costs a renewal round. Nothing in `packages/client`, `packages/mcp` or
+`packages/mcp-http` changes; the reader opens, seals and refuses exactly as
+before, and who can read content does not change. Migration
+`0047_mcp_friction.sql` holds the schema, with its down-step in the header.
+
+**A1: a re-confirmation in place of the password (M3).** The content consent,
+the renewal, a connection token with text, a new AI integration and an AI
+renewal no longer ask for the Wappie password. The person confirms it is them
+(`internal/stepup`, one small interface: `Checker.Fresh(session)`), and the
+server holds every write a grant of text goes into to it: `POST
+/v1/mcp/connections` of kind `content` or `ai`, `POST
+/v1/mcp/connections/{id}/renew`, a token's content bundle, the provisional
+service invitation and `grant.add` to a connection's service account answer
+403 `step_up_required` otherwise. A session is fresh for ten minutes after
+the sign-in that started its family (`sessions.authenticated_at`, which a
+workspace switch copies, since selecting a space proves nothing) or after a
+step-up, on the database's clock. Past it, an account with a passkey steps up
+with a WebAuthn assertion with user verification required, over that
+account's credentials, verified by the server (`passkey_challenges` kind
+`step_up`, bound to the session); otherwise with the password, derived in the
+browser as at sign-in, so only `auth_key` reaches the server. Routes: `GET
+/v1/auth/step-up` (`fresh`, `remaining_seconds`, `window_seconds`, `passkey`),
+`POST /v1/auth/step-up/passkey/options`, `POST /v1/auth/step-up/passkey` and
+`POST /v1/auth/step-up/password`. The archive keys come from the session's
+own account key (`createDeviceGrantLender`), exactly as `withDeviceKeys`
+after the password: one `/auth/me` checked against the session's account,
+workspace and public key, every requested device's grant found and opened or
+the whole set refused (never a device skipped as sign-in skips one), each key
+overwritten once used. A session without an account key of its own falls
+back to the password, which then also seals. When sign-in moves to
+id.thehappie.co (D3), its `prompt=login` replaces what is behind `Checker`.
+
+**A2: a switch per workspace (M4).** `WS_MCP_CONTENT_TENANTS`,
+`WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired:
+a server with one set while its switch is on refuses to start and names the
+replacement. Each workspace's owner turns text, attachments, drafts (with
+notes to the number's own chat) and AI on or off in the console (`GET` and
+owner-only `PUT /v1/mcp/workspace`; `tenants.mcp_text`, `mcp_media`,
+`mcp_send`, `mcp_ai`, NULL for the deployment's default). Each rides on the
+one before it as the operator's do. A switch never set is
+`WS_MCP_WORKSPACE_DEFAULT`: `on` for Wappie Cloud, `off` (the default) for a
+self-hosted server, which so stays off unless configured. The operator keeps
+every kill switch, `WS_MCP_DENY_TENANTS` and `WS_MCP_READER_ENCLAVE_TENANTS`;
+the answer is operator, then platform, then owner. The platform half is one
+hook, `WorkspaceSwitches.Platform`, nil today (no plan or trial check is
+invented here; the platform decides those). The switches are read from
+memory, refreshed every 15 s and at once by the owner's own change; a failed
+refresh keeps the last answers, since a hiccup read as "off" would reseal
+every connection.
+
+**A3: the consent card's defaults** (console only). A workspace with one
+number starts with it chosen; the card remembers the numbers, options and
+duration last authorized per server, account and `client_id` in browser
+storage (never a confirming tick, never a secret, nothing if storage is
+blocked), and "Select all" sits beside the numbers.
+
+**A4: a reconnect replaces (M6).** A version-2 consent may carry `replace:
+true` (the card's "Replace my previous <assistant> connection", ticked by
+default): when it activates, the same person's other live connections of
+the same client in the same workspace (a CIMD client by `client_id`, a
+registered one by host and locality) are revoked as `replaced`, and the
+workspace's cap does not count them while the consent waits. Every hour,
+connections unused past their tier's idle time and a day are revoked as
+`idle`: 30 days for a tested web client without text, 7 with text or for a
+local or unknown client, 3 for an unknown client with text; tokens and AI
+integrations never. Use is the key's last read, the activation and the
+renewal (and, without text, the reader's last status check; a content
+connection's is asked every minute regardless).
+
+**A5: renewing in one go.** After an enclave boot the console shows a banner
+and **Renew all**: one confirmation (A1), then each waiting tested connection
+through its own renewal, one at a time; untested ones and tokens keep their
+own Renew. With SMTP configured each person gets one e-mail per workspace a
+few minutes after a reseal settles, at most one per twelve hours
+(`mcp_connections.reseal_mailed_at`).
+
+**A6: the plugin packages** (`thehappieco/wappie-plugins`) say what 0.6.0
+gives each client: Codex and Claude Code are local, so no drafts or own-chat
+notes and text for 7 days by default; the refusals `limit_reached` and
+`outside_window`; how an expired or revoked connection appears; ChatGPT as a
+plugin created at chatgpt.com/plugins with the icon uploaded before Create.
+
+**A7: notices in each person's language.** The console saves its language on
+the account (`users.locale`, `PUT /v1/auth/locale`, one of en, pt, es, fr,
+de); the new-connection and renewal e-mails go in it, English when it never
+said.
+
+**Tests.** `internal/store/mcp_friction_test.go` (the window, a switch that
+copies it, owner-only switches, replace and the cap, idle by tier, renewal
+notices, recipients' languages, the down-step, all under forced RLS),
+`internal/mcpauth/friction_test.go` (every guarded write without a step-up,
+the switches route and default, a reconnect, the renewal e-mail, the
+language), `internal/authapi/stepup_test.go` (password and passkey step-ups),
+`internal/wsapi/stepup_test.go`, the config and mailer tests; the console's
+`deviceGrants.spec.ts`, `stepUp.spec.ts`, `mcpFriction.spec.ts` and the
+consent card's defaults in `mcpConnect.spec.ts`.
+
 ### Amendments to §§1 to 18
 
 | Where | Amendment | When |
 |---|---|---|
 | Opening | reader 0.6.0 admits any MCP client (§19) | now (in place) |
+| §3 | `WS_MCP_CONTENT_TENANTS`, `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired for each workspace's own switches, `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS` (§19.30) | core 0047 |
+| §§15.9, 15.11, 18.13 | the consent, renewal and AI cards ask for a step-up (a recent sign-in, the passkey or the password) instead of the password, and seal with the session's account key (§19.30) | core 0047 |
 | §1 | one more hop, `127.0.0.8:3128` to vsock 8007: the parent's document egress proxy (`wappie-cimd-egress`), which tunnels `CONNECT <host>:443` to public addresses only, the enclave's first egress to hosts that are not fixed (§19.9) | 0.6.0 |
 | §3 | `WS_MCP_REDIRECT_HOSTS` applies to version-1 descriptors only and is deleted with the last version-1 reader; `WS_MCP_CIMD_MODE`, `WS_MCP_BLOCKED_CLIENTS` and `WS_MCP_DCR_HOSTS` are added (§19.21) | P1 |
 | §5.1 | `POST /internal/token-requests`, `POST /internal/token-requests/{id}/bundle` and `POST /internal/workspaces/{id}/live-list`; the descriptors are version 2 (§19.12) | 0.6.0 |
