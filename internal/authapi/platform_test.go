@@ -619,7 +619,8 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 // so a write that needs one is refused with step_up_required, the status
 // says provider, and its passkey and password step-ups, and a Wappie passkey
 // of its own, are refused by name. With the provider unset (a rollback), the
-// linked account's legacy password steps it up again.
+// linked account's legacy password steps it up again, and it may add a
+// Wappie passkey.
 func TestPlatformAccountStepsUpAtTheProvider(t *testing.T) {
 	h := newPlatformHarness(t, config.LocalLoginOn)
 	provisional := map[string]any{"role": "service", "email": "", "provisional": true}
@@ -699,6 +700,15 @@ func TestPlatformAccountStepsUpAtTheProvider(t *testing.T) {
 	}
 	if code := h.post(t, "/v1/auth/workspaces/invites", provisional, nil, through.Token); code != http.StatusCreated {
 		t.Fatalf("a provisional invitation after it: %d", code)
+	}
+	// It is a local account again: it may add a Wappie passkey, and nothing
+	// tells it its passkeys are at a provider this server no longer has.
+	var options struct {
+		FlowID string `json:"flow_id"`
+	}
+	if code := h.request(t, "POST", "/v1/auth/passkeys/register/options", passkeyApp, through.Token,
+		map[string]string{"auth_key": h.account.AuthKey, "label": "laptop"}, &options); code != http.StatusOK || options.FlowID == "" {
+		t.Fatalf("a Wappie passkey with the provider unset: %d %+v", code, options)
 	}
 }
 

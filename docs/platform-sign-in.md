@@ -113,6 +113,7 @@ The migration header holds the down-step, checksum-gated against
   cannot read) and came through a provider the older binary does not know.
   The person signs in again with the old password.
 - It runs before the down-steps of 0047 (the fewer steps) and earlier.
+  0047's refuses while version 48 is still in the ledger.
 
 ## Configuration
 
@@ -140,6 +141,13 @@ What `WS_LOCAL_LOGIN` leaves open:
 | `/login`, `/signup` (a person), `/signup/verification`, `/recover/open`, `/recover/finish`, `/password`, `/recovery`, `/rewrap`, every `/passkeys` route | yes | `local_login_disabled` | `local_login_disabled` |
 | `/signup` for a service (an invitation and a name) | yes | yes | yes: content consents register their service this way |
 | `/platform/link/prepare`, `/platform/link` | yes | yes | `local_login_disabled` |
+| `/step-up/passkey/options`, `/step-up/passkey`, `/step-up/password` | yes | `local_login_disabled` | `local_login_disabled` |
+
+A platform account gets `409 step_up_at_provider` from the three `/step-up`
+routes instead, in every mode, while the provider is configured (which
+`link_only` and `off` require). The two passkey ones answer `404
+passkeys_disabled` first once `WS_PASSKEY_*` is unset. `GET /step-up` stays
+open: the console reads from it what to ask for.
 
 `/passkeys/config` and `/signup/config` answer "disabled" unless local login
 is `on`. The link ceremony proves a recovery code at `/platform/link/prepare`,
@@ -367,7 +375,7 @@ that proof, never what a guarded write asks.
 |---|---|
 | `auth_source` `local` | The sign-in that started the session's family, then a Wappie passkey (WebAuthn, user verification) or the password, checked by this server. |
 | `auth_source` `platform`, provider configured | A re-authentication at the provider (owner decision D3): step 4. Wappie runs no WebAuthn for these accounts (platform decision 0008) and takes no password from them. |
-| `auth_source` `platform`, provider unset (a rollback) | As a local account: a linked account signs in and steps up with its legacy password. An account created through id. cannot sign in. |
+| `auth_source` `platform`, provider unset (a rollback) | As a local account: a linked account signs in and steps up with its legacy password, and may add a Wappie passkey. An account created through id. cannot sign in. |
 
 **Until step 4.** A session started through the provider holds no proof
 (`authenticated_at` is `-infinity`; its workspace switches inherit that),
@@ -390,7 +398,9 @@ A linked account that signs in with its legacy password while
 `WS_LOCAL_LOGIN=on` (both doors) has that sign-in as its proof for ten
 minutes, as any password sign-in does; its step-ups after that are still the
 provider's. Once `WS_LOCAL_LOGIN` narrows the password routes, the passkey
-and password step-ups close with them (`403 local_login_disabled`).
+and password step-ups close with them: `403 local_login_disabled` for a local
+account, while a platform account still gets `409 step_up_at_provider` first
+(the route table under "Configuration").
 
 **Step 4 plugs in behind the same interface.** Nothing that asks for a proof
 changes; only how a platform session earns one:
@@ -449,7 +459,7 @@ window (step 6). Steps 1 to 3 accept one consequence of that:
 |---|---|---|
 | Switch | Unset `WS_PLATFORM_ISSUER`, set `WS_LOCAL_LOGIN=on`, restart | Password sign-in is back for unlinked and linked accounts. Accounts created through id. cannot sign in until the switch returns. |
 | Release | A release that knows version 48 | As in `deployment.md` |
-| Schema | 0048's down-step | Refused while accounts created through id. exist; signs out the sessions started through the provider |
+| Schema | 0048's down-step, before 0047's and every older one | Refused while accounts created through id. exist; signs out the sessions started through the provider |
 
 ## Not yet
 
