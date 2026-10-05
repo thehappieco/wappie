@@ -46,8 +46,9 @@ func TestAccountKeyChangedEmail(t *testing.T) {
 
 // The alert goes in the account's language, English when it has none or the
 // language has no words here; its advice is the callback page's, word for
-// word (C-AUTHERR-04 and E-ALERT-07, approved 2026-10-05), and the
-// template's own words follow the language.
+// word (C-AUTHERR-04 and E-ALERT-07, approved 2026-10-05), its Portuguese
+// button is the approved "Abrir a Wappie" (E-ALERT-06), and the template's
+// own words follow the language, with the typographic apostrophe.
 func TestAccountKeyChangedEmailLanguages(t *testing.T) {
 	const origin = "https://app.wappie.thehappie.co"
 	advice := map[string]string{
@@ -75,8 +76,14 @@ func TestAccountKeyChangedEmailLanguages(t *testing.T) {
 		if want != "en" && (strings.Contains(page, "If the button does not work") || strings.Contains(page, ">Open Wappie<")) {
 			t.Errorf("%q: English template words in the alert", lang)
 		}
-		if strings.Contains(model.Intro+model.Expiry+model.Footer+model.Subject, "'") {
-			t.Errorf("%q: a straight apostrophe in the alert", lang)
+		if want == "pt" && (model.Action != "Abrir a Wappie" || model.HomeLabel != "Abrir a Wappie") {
+			t.Errorf("%q: button %q, home %q", lang, model.Action, model.HomeLabel)
+		}
+		for _, words := range []string{model.Subject, model.Preheader, model.Eyebrow, model.Title, model.Intro, model.Action, model.Expiry,
+			model.Instructions, model.Footer, model.LinkHelp, model.HomeLabel} {
+			if strings.Contains(words, "'") {
+				t.Errorf("%q: a straight apostrophe in the alert: %q", lang, words)
+			}
 		}
 	}
 	// The other account e-mails keep the template's English words.

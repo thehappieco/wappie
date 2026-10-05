@@ -181,7 +181,7 @@ func TestAccountEmailsUseTheTypographicApostrophe(t *testing.T) {
 	}
 	for name, model := range map[string]accountEmail{"verification": verification, "invitation": invite} {
 		for _, text := range []string{model.Subject, model.Preheader, model.Eyebrow, model.Title, model.Intro, model.Action, model.Expiry,
-			model.Instructions, model.CodeLabel, model.Footer} {
+			model.Instructions, model.CodeLabel, model.Footer, model.LinkHelp, model.HomeLabel} {
 			if strings.Contains(text, "'") {
 				t.Errorf("%s: a text without the typographic apostrophe: %q", name, text)
 			}

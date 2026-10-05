@@ -482,14 +482,21 @@ them. Those that change this branch's texts:
 - **"a Wappie" and "o Wappie" (3).** Portuguese writes "a Wappie" where
   Wappie checks or receives (C-AUTH-12, C-AUTH-19, C-SIGNIN-03, C-AUTHERR-06)
   and keeps "o Wappie" for the app and the connector ("pelo Wappie",
-  "desbloqueia o Wappie", "conta Wappie"); the alert's button opens the app,
-  "Abrir o Wappie".
+  "desbloqueia o Wappie", "conta Wappie"). The alert e-mail keeps its
+  approved words, "Uma entrada na Wappie" and the button "Abrir a Wappie"
+  (E-ALERT-01, 02, 05 and 06), which the recommendation does not name.
 - **"entrar" and "entrada" (4).** Portuguese says "entrada" for a sign-in
   ("Entrada recusada", "Voltar para a entrada", "Este link de entrada já foi
   usado ou expirou", and every other refusal of the callback page); "acesso"
-  stays for access to numbers. Spanish ("inicio de sesión") and German
-  ("Anmeldung") had no such ambiguity; French keeps "connexion", the
-  console's word for signing in.
+  stays for access to numbers, so the sign-in screen says "Outras formas de
+  entrar" and Minha conta "suas formas de entrar". Spanish ("inicio de
+  sesión") and German ("Anmeldung") had no such ambiguity. French has it:
+  "connexion" is above all an assistant's connection in the console. It
+  keeps "connexion" for a sign-in on the callback page, which shows nothing
+  else, and uses the verb where an assistant's connection is near: "Impossible
+  de vous connecter avec The Happie Co. Vérifiez votre accès à Internet et
+  réessayez." (C-SIGNIN-06), and the step-up field's C-STEP-02 and C-STEP-07
+  (the fewer steps).
 - **One security alert (8).** The callback page and the e-mail give the same
   advice: "If you did not reset your The Happie Co account, change its
   password now and contact Wappie support before signing in again."

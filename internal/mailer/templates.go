@@ -86,10 +86,10 @@ var alertLanguages = map[string]alertWords{
 		subject: "Uma entrada na Wappie foi recusada", preheader: "Uma entrada na Wappie foi recusada porque a chave da sua conta mudou.",
 		eyebrow: "Segurança da Wappie", title: "Uma entrada foi recusada",
 		intro:        "Uma entrada na Wappie pela The Happie Co foi recusada porque apresentou uma chave de conta diferente da que a sua conta sempre usou. Nada foi aberto e nenhuma sessão foi iniciada.",
-		action:       "Abrir o Wappie",
+		action:       "Abrir a Wappie",
 		advice:       "Se você não redefiniu sua conta The Happie Co, troque a senha dela agora e fale com o suporte da Wappie antes de entrar de novo.",
 		instructions: "Este alerta é para:", footer: "A Wappie nunca pede sua senha nem seu código de recuperação por e-mail.",
-		linkHelp: "Se o botão não funcionar, copie este endereço no navegador:", homeLabel: "Abrir o Wappie",
+		linkHelp: "Se o botão não funcionar, copie este endereço no navegador:", homeLabel: "Abrir a Wappie",
 	},
 	"es": {
 		subject: "Se rechazó un inicio de sesión en Wappie", preheader: "Se rechazó un inicio de sesión en Wappie porque la clave de tu cuenta cambió.",
