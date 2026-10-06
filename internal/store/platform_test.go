@@ -759,7 +759,7 @@ func TestProviderStepUpAcrossTheSessionFamily(t *testing.T) {
 	if ownStart(later) {
 		t.Fatal("a switch copied the start")
 	}
-	if pending, err = f.users.PendingProviderStepUp(ctx, later.ID, stepup.Window); err != nil || pending.Session != login.ID {
+	if pending, err = f.users.PendingProviderStepUp(ctx, later.ID, stepup.Window); err != nil || pending.Session != login.ID || !pending.NotBefore.Equal(notBefore) {
 		t.Fatalf("the switch's family start %+v %v", pending, err)
 	}
 	if err := f.users.FinishProviderStepUp(ctx, later.ID, pending, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil || !fresh(login) || !fresh(later) {
