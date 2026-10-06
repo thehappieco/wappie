@@ -84,6 +84,13 @@ the browser vault as it does after a password sign-in, through
   account keeps its `users.email`, because its legacy password wrap is bound
   to it; the link row records id.'s address, and an invitation addressed to
   that address is accepted too.
+- So Wappie counts an account's address as verified when it is the link
+  row's (`platform_identities.email`), beside a completed sign-up
+  verification: always for an account created through id., and for a
+  linked account whose own address is id.'s. That is the precondition of an
+  untested assistant's or a token's message text and of the new-assistant
+  and renewal e-mails (`docs/mcp-enclave.md` §19.21); without it an account
+  created through id. could never give a token text.
 
 ## The tables (migration 0048)
 

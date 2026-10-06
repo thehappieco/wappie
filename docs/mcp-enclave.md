@@ -8731,7 +8731,9 @@ sessions, it has no row-level security: it is looked up by the hash of a
   - **Notice precondition** (D7): an unknown-tier or token connection with
     text is refused (403 `email_unverified`) unless SMTP is configured
     (`config.SMTP.Configured()`) and the consenting user has a verified
-    e-mail address.
+    e-mail address. (2026-10-06, step 4 of the platform sign-in: an address
+    the identity provider confirmed, the account's link row's, counts as
+    verified too; `docs/platform-sign-in.md`, "Identities".)
   - The caps: 10 live, of which at most 3 unknown or token (409
     `too_many_connections`, as today, and `too_many_unknown`).
   - Go cannot verify the attestation; these checks catch drift, and the

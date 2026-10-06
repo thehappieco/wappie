@@ -862,6 +862,54 @@ func TestPlatformPinAndLinkReads(t *testing.T) {
 	}
 }
 
+// An address the identity provider confirmed counts as verified (the
+// precondition of an untested assistant's or a token's text, and of the
+// notice and renewal e-mails): the address of an account created through the
+// provider is the provider's, and so is a linked account's when its own
+// address is the one id. knows. A linked account whose address differs keeps
+// its own state, and a password account none.
+func TestPlatformAddressIsVerified(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	verified := func(u store.User) bool {
+		t.Helper()
+		ok, err := f.users.EmailVerified(ctx, u.TenantID, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	created, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "Lia@Example.com", uuid.Nil),
+		PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verified(created) {
+		t.Fatal("an account created through the provider has no verified address")
+	}
+
+	same := f.legacy(t, "rui@example.com", "rui-auth-key")
+	other := f.legacy(t, "ria@example.com", "ria-auth-key")
+	if verified(same) || verified(other) {
+		t.Fatal("a password account made by invitation is verified")
+	}
+	for _, link := range []struct {
+		user  store.User
+		email string
+	}{{same, "RUI@example.com"}, {other, "ria@id.example.com"}} {
+		if _, err := f.users.LinkLegacy(ctx, store.LegacyLink{Ticket: f.ticket(t, store.TicketNew, uuid.New(), link.email, uuid.Nil),
+			Proof: store.LegacyProof{Email: link.user.Email, Secret: strings.Split(link.user.Email, "@")[0] + "-auth-key"}, Wrap: platformWrap(t)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !verified(same) {
+		t.Fatal("a linked account whose address is the provider's is not verified")
+	}
+	if verified(other) {
+		t.Fatal("a linked account whose address is not the provider's became verified")
+	}
+}
+
 // 0048's down-step, exactly as the migration's header documents it, as the
 // table owner: it refuses while an account created through the provider
 // exists; once that account is deleted it brings a linked account back to
