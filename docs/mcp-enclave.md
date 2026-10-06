@@ -10044,8 +10044,8 @@ is the authorize line's `client`, §19.4):
 
 | Client | `client_id` | Fingerprint | Result |
 |---|---|---|---|
-| Claude (web) | `https://claude.ai/oauth/mcp-oauth-client-metadata` (CIMD) | `87035c02ba6c` | connect, calls, refresh, the cross-session test (refused, 2026-10-05) and revocation passed; the restart renewal is recorded by the lead |
-| Claude Code | `https://claude.ai/oauth/claude-code-client-metadata` (CIMD) | `569ea71ec53b` | connect, calls, refresh and revocation passed; the restart renewal is recorded by the lead |
+| Claude (web) | `https://claude.ai/oauth/mcp-oauth-client-metadata` (CIMD) | `87035c02ba6c` | connect, calls, refresh, the cross-session test (refused, 2026-10-05), revocation and the restart renewal (restart 22:01:35Z, renewed 22:07:50Z on 2026-10-05) passed |
+| Claude Code | `https://claude.ai/oauth/claude-code-client-metadata` (CIMD) | `569ea71ec53b` | connect, calls, refresh, revocation and the restart renewal (restart 21:50:20Z, renewed 21:58:34Z on 2026-10-05) passed |
 | ChatGPT, Work mode (desktop app) | `https://chatgpt.com/oauth/codex/client.json`, Codex's document; the redirect was loopback, ports not logged (Go's `chatgpt.com` is the vouching host) | `ffec7c120c96` | connect, calls and refresh, then revoked; did not finish; dropped |
 | ChatGPT, Chat mode; Codex | | | not run; dropped |
 
