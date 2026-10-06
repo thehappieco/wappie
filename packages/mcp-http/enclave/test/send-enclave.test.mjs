@@ -285,7 +285,8 @@ test('send_to_self: once, to the own chat Go resolves, with a random reference; 
   const sent = await self(w, done, { text: 'nota\r\nlinha 2' })
   assert.equal(sent.isError, false, sent.text)
   const data = JSON.parse(sent.text)
-  assert.deepEqual(Object.keys(data), ['status', 'sent', 'message_uid', 'wa_id', 'timestamp', 'open_url'])
+  // No wa_id: WhatsApp's own id of the note, which no tool takes (docs/mcp-enclave.md §19.32).
+  assert.deepEqual(Object.keys(data), ['status', 'sent', 'message_uid', 'timestamp', 'open_url'])
   assert.equal(data.open_url, `https://app.wappie.thehappie.co/console?workspace=${workspace}&open_device=${device}&open_message=${data.message_uid}`)
   const [call] = w.go.sendCalls
   assert.deepEqual(Object.keys(call.body), ['client_ref', 'kind', 'device_id', 'text'])

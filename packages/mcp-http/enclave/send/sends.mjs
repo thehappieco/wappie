@@ -92,7 +92,8 @@ export function createSends(ctx) {
       counters.sends++
       event('self_sent', id)
       const url = data.message_uid ? messageURLs(consoleURL, record.tenant_id).message(device, data.message_uid) : null
-      return { message_uid: data.message_uid, wa_id: data.wa_id, timestamp: data.timestamp, ...(url ? { open_url: url } : {}) }
+      // Go's wa_id proves the send; no tool takes it, so it goes no further (docs/mcp-enclave.md §19.32).
+      return { message_uid: data.message_uid, timestamp: data.timestamp, ...(url ? { open_url: url } : {}) }
     }
     if (!refusedByGo(answer)) {
       // Go's 502, or an answer Go did not write: a proxy's 502 or 504 after

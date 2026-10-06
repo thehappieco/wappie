@@ -7105,7 +7105,8 @@ The steps:
   the parent's subnet checked (§19.9). `WS_MCP_CIMD_MODE` stays `allowlist`.
 - **B**, the baseline on 0.5.0, live: §19.4's script with Claude, ChatGPT,
   Codex and Claude Code. It freezes `TESTED_CLIENTS` before 0.6.0's image is
-  built.
+  built. Its outcome, by the owner's decision of 2026-10-05: Claude and
+  Claude Code (§19.34).
 - **P2**, reader 0.6.0 and the parent's document egress proxy: the rest of
   this section, the console connection token included.
 - **P4**, the live tests on 0.6.0, the final docs and the message to the
@@ -7118,14 +7119,16 @@ The steps:
 **Fixed by the owner (2026-10-01), binding here:**
 
 - **D1.** Dynamic client registration (DCR) only for the pinned Claude and
-  ChatGPT redirect URIs. Tools that only register dynamically connect with
-  the console token.
+  ChatGPT redirect URIs (Claude's only, since ChatGPT left the list, §19.34).
+  Tools that only register dynamically connect with the console token.
 - **D2.** The tested list (`TESTED_CLIENTS`) and the tier limits
   (`CLIENT_LIMITS`) are image constants, measured in PCR0 and written into
   `measurements.json`.
 - **D3.** The initial tested list is Claude, ChatGPT, Codex and Claude Code,
   each only if it passes the full script on 0.5.0 (the web clients also the
-  cross-session test). The list is final only after baseline B.
+  cross-session test). The list is final only after baseline B. Final
+  (owner, 2026-10-05): Claude and Claude Code; ChatGPT and Codex are
+  dropped (§19.34).
 - **D4.** An unknown client reads metadata once the person ticks "I started
   this"; text and attachments only after a second, deliberate tick and with
   a verified e-mail address; never drafts, own-chat notes or sending.
@@ -7258,27 +7261,18 @@ export const READER_CAPABILITIES = Object.freeze(['consent_v2', 'media', 'consen
 // is 0.5.0's rule, kept for the tests and the hosted path. dcr 'pinned'
 // admits only the pinned DCR redirects (§19.8).
 export const CLIENT_POLICY = Object.freeze({ cimd: 'any', dcr: 'pinned' })
-// TODO(baseline B on reader 0.5.0, docs/mcp-enclave.md §19.4): PENDING.
-// These are D3's candidates, not yet the tested list. An entry stays only if
-// its client passed the whole script on 0.5.0; the lead replaces each
-// client_id and redirect with the exact values the baseline recorded and
-// removes any client that failed. A change is a release. build.sh copies this
-// list and CLIENT_LIMITS into measurements.json.
+// The tested list (§19.4, §19.34), by the owner's decision of 2026-10-05:
+// Claude and Claude Code passed baseline B on reader 0.5.0 by their documents;
+// claude_dcr, Claude's registration on the same callbacks, is listed without a
+// baseline run. A change is a release. build.sh copies this list and
+// CLIENT_LIMITS into measurements.json.
 export const TESTED_CLIENTS = deepFreeze([
   { id: 'claude', kind: 'cimd', client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata', name: 'Claude', local: false, profile: 'claude.ai',
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
-  { id: 'chatgpt', kind: 'cimd', client_id: 'https://chatgpt.com/oauth/client.json', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
-    redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'] },
-  { id: 'chatgpt_cb', kind: 'cimd_pattern', client_id: 'https://chatgpt.com/oauth/{cb}/client.json', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
-    redirect_uris: ['https://chatgpt.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
-  { id: 'codex', kind: 'cimd', client_id: 'https://chatgpt.com/oauth/codex/client.json', name: 'Codex', local: true, profile: 'chatgpt.com',
-    loopback: [['127.0.0.1', '/callback'], ['localhost', '/callback']] },
   { id: 'claude_code', kind: 'cimd', client_id: 'https://claude.ai/oauth/claude-code-client-metadata', name: 'Claude Code', local: true, profile: 'claude.ai',
     loopback: [['localhost', '/callback'], ['127.0.0.1', '/callback']] },
   { id: 'claude_dcr', kind: 'dcr', name: 'Claude', local: false, profile: 'claude.ai',
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
-  { id: 'chatgpt_dcr', kind: 'dcr', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
-    redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect', 'https://chatgpt.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
 ])
 export const CLIENT_LIMITS = deepFreeze({
   web_tested: {
@@ -7319,7 +7313,7 @@ export const CIMD_EGRESS = Object.freeze({ address: '127.0.0.8', port: 3128, vso
 | Member | Rule |
 |---|---|
 | `id` | `^[a-z][a-z0-9_]{0,31}$`, unique; it is the request's `tested_id` |
-| `kind` | `cimd` (an exact `client_id`), `cimd_pattern` (a `client_id` with one `{cb}`) or `dcr` (no `client_id`: a registration whose every redirect is pinned here) |
+| `kind` | `cimd` (an exact `client_id`), `cimd_pattern` (a `client_id` with one `{cb}`) or `dcr` (no `client_id`: a registration whose every redirect is pinned here); the list of §19.34 has no `cimd_pattern` entry, and the rule stays for a later one |
 | `name` | the verified display name the card and every other surface show |
 | `local` | `true` for an app on the person's computer, whose redirects are loopback |
 | `profile` | the host profile of §16.7 (`claude.ai`, `chatgpt.com` or `default`): the inline wait and the image note's wording |
@@ -7395,16 +7389,20 @@ The rules for the list:
   and a later release lists it.
 - Codex: `docs/mcp.md` records Codex listing the tools without calling them.
   Phase B budgets time to diagnose it. If it is not solved, Codex is not
-  listed in 0.6.0; it still connects, as an unknown local client.
+  listed in 0.6.0; it still connects, as an unknown local client. (It was
+  not run; Codex is not listed, §19.34.)
 - There is one enclave environment, so a client cannot be tried on 0.6.0
   before 0.6.0 is live. A listed client that fails on 0.6.0 stays listed
   until the next release; if the failure is a security one, the operator
   refuses that entry at once with Go's deny-only `WS_MCP_BLOCKED_CLIENTS`
   (§19.21). Go can always refuse, never admit.
 - `{cb}` is a callback id: the same value, matching `cb`, in the `client_id`
-  and in the redirect. Exact entries are tried before patterns, so
-  `https://chatgpt.com/oauth/codex/client.json` is always Codex. The CIMD and
-  DCR forms of a ChatGPT callback id have the same tier.
+  and in the redirect. Exact entries are tried before patterns, so an exact
+  id under a pattern's path is always its own entry (D3's candidates had
+  ChatGPT's `https://chatgpt.com/oauth/{cb}/client.json` beside Codex's
+  `…/oauth/codex/client.json`). The CIMD and DCR forms of a callback id have
+  the same tier. The list of §19.34 has no pattern; the tests keep the rule
+  with entries of their own.
 - The `claude.com` callback is a variant the survey found only in a search
   snippet. It is pinned on purpose: `claude.com` is Anthropic's domain, so a
   code sent there reaches only Anthropic, and if Claude moves its callback
@@ -7417,11 +7415,11 @@ The rules for the list:
   pinned https redirect is on the vendor's own domain and every pinned
   loopback redirect stays on the person's machine.
 
-Live status on 2026-10-01: only the claude.ai web connector is confirmed
-live, on the hosted reader; Codex's document with a loopback redirect was
-accepted at authorize on the hosted reader, with tool calls unconfirmed;
-ChatGPT and Claude Code are untested; nothing has run on the enclave reader
-yet.
+Live status on 2026-10-01 (baseline B's outcome is §19.34): only the
+claude.ai web connector is confirmed live, on the hosted reader; Codex's
+document with a loopback redirect was accepted at authorize on the hosted
+reader, with tool calls unconfirmed; ChatGPT and Claude Code are untested;
+nothing has run on the enclave reader yet.
 
 Rejected (D2): a list the console holds, because Go serves the console and
 could then mark any client tested without a measurement change, and the
@@ -7587,7 +7585,8 @@ loopback entry, with any port (RFC 8252 §7.3).
    under the unknown tier's card and limits, until a release pins the new
    redirect.
 3. A DCR `client_id`: the record's tier. Every DCR record is pinned, so
-   `tested` (§19.8).
+   `tested`, and served only for a registered redirect a `dcr` entry pins
+   now (§19.8).
 4. Any other CIMD `client_id`: fetched; `trust: 'unknown'`; `client_local`
    true when the requested redirect is loopback; `profile: 'default'`.
 
@@ -7605,9 +7604,9 @@ Tested ids served from the constants need no record.
   host that passes §19.5. DCR never gets loopback (§19.8).
 - A request's `client_local` is `true` when the requested redirect is a
   loopback one: per request, since a document may list both kinds.
-- **Every loopback request gets local limits** (§19.19): Codex and Claude
-  Code, if listed, get `local_tested`; an unknown local client gets
-  `unknown`. A local connection is never offered drafts, own-chat notes or
+- **Every loopback request gets local limits** (§19.19): Claude Code, listed,
+  gets `local_tested`; an unknown local client, Codex included since §19.34,
+  gets `unknown`. A local connection is never offered drafts, own-chat notes or
   direct send, and §17.15 says a loopback connection never gets direct send.
 - **What the domain proves for a local app: nothing on the machine.** The
   Claude Code and Codex `client_id`s are public. Any local process can bind
@@ -7654,12 +7653,23 @@ attacker.
 
 **The rule.** `/mcp/register` accepts a registration only when every
 redirect URI equals a pinned DCR redirect or matches a DCR pattern (the
-`claude_dcr` and `chatgpt_dcr` entries), and refuses everything else with
-`invalid_redirect_uri`. `REGISTER_PER_IP` (5 a minute), `MAX_CLIENTS` (500)
-and `MAX_CLIENTS_PER_HOST` (200) stay. Every DCR record is `tested`, with the
-entry's id as `tested_id`; `client_kind` is `dcr`; `client_host` is the host
-of the requested redirect; a missing or dropped `client_name` gives
-`claimed_name: null` (0.5.0 named it `MCP client`).
+`claude_dcr` entry; D3's candidates also had `chatgpt_dcr`, §19.34), and
+refuses everything else with `invalid_redirect_uri`. `REGISTER_PER_IP` (5 a
+minute), `MAX_CLIENTS` (500) and `MAX_CLIENTS_PER_HOST` (200) stay. Every
+DCR record is `tested`, with the entry's id as `tested_id`; `client_kind`
+is `dcr`; `client_host` is the host of the requested redirect; a missing or
+dropped `client_name` gives `claimed_name: null` (0.5.0 named it
+`MCP client`).
+
+**At authorize** a DCR record is served only for a redirect it registered
+that a `dcr` entry pins now. A redirect the record never registered gets the
+`invalid_redirect_uri` page. A redirect it registered that no entry pins any
+more (a 0.5.0 record's other paths on `claude.ai`, a ChatGPT registration
+from 0.5.0's state since §19.34) gets the one `invalid_client` page of
+§19.6 step 5, after the same one-second floor: "its address is not
+allowed", and no pending request (amended 2026-10-05; it was the
+`invalid_redirect_uri` page, whose sentence says the assistant asked for an
+address it did not register).
 
 **What stays out.** By the console token instead: Cursor, Windsurf, Gemini
 CLI, n8n, OpenCode, mcp-remote, Copilot Studio (header key) and Le Chat
@@ -7853,7 +7863,9 @@ source with `pending.ip` by network prefix: the first three octets for IPv4,
 the first 56 bits for IPv6 (both values are `ipKey`s, and an IPv6 key is
 already its /64); different address families count as a mismatch. On a
 mismatch the pending request is dropped and the browser gets a static page
-with a viewport, the link back to the console, the code `ip_mismatch` in
+with a viewport, the link back to the console (and no button back to the
+assistant, which would hand that browser the starter's `state`: §19.31),
+the code `ip_mismatch` in
 small print, and the sentence "This authorization was opened on a different
 network from the one that started the connection. Go back to the assistant
 and click Connect again. If you use a VPN or iCloud Private Relay, turn it
@@ -8788,8 +8800,8 @@ sessions, it has no row-level security: it is looked up by the hash of a
   - `WS_MCP_CIMD_MODE`: `allowlist` (default) or `any`.
   - `WS_MCP_BLOCKED_CLIENTS`: a comma list of tested ids
     (`^[a-z][a-z0-9_]{0,31}$`), empty by default.
-  - `WS_MCP_DCR_HOSTS`: a comma list of hosts, default
-    `claude.ai,claude.com,chatgpt.com`.
+  - `WS_MCP_DCR_HOSTS`: a comma list of hosts, default `claude.ai,claude.com`
+    (`chatgpt.com` too until §19.34).
 - **The egress proxy** (`cmd/cimd-egress`, §19.9) reads
   `WS_CIMD_EGRESS_OWN_ADDRESSES` (a comma list of IP addresses, required) and
   nothing else of Go's configuration.
@@ -8999,11 +9011,11 @@ knows every live connection without trusting Go.
 | `internal/config/mcp.go`, `create()`, `internal/mcpauth/cimd.go` | the allowlist checks consent and fetch | §19.21; the Go relay serves 0.5.0 only, then is deleted (§19.9) |
 | `router.mjs` (`MCP_PER_MINUTE`) | 60 calls a minute for every connection | by limits tier (§19.19) |
 | `enclave/media/gate.mjs` (`hostOf`), `enclave/media/policy.mjs` (`HOST_WAIT_MS`) | `hostOf(redirect_host)`: 25 s ChatGPT, 40 s Claude, 25 s default | `record.profile` from the tested entry; unknown and token get `default` (25 s); legacy records keep `hostOf(redirect_host)` |
-| `packages/mcp/server.mjs` (the image note's wording) | `host === 'chatgpt.com'` | `profile === 'chatgpt.com'` |
+| `packages/mcp/server.mjs` (the image note's wording) | `host === 'chatgpt.com'` | `profile === 'chatgpt.com'`, which no tested entry carries since §19.34: only records 0.5.0 wrote and the hosted path get it |
 | `DIRECT_SEND_HOSTS` (S3, planned, §17.15) | redirect hosts, though a loopback client is recorded under its vouching host | a `direct_send: true` flag on a tested **web** entry only; never for a local, unknown or token connection (§17.15 is corrected) |
-| `MCPPanel.vue`, `AdminView.vue` | a guide for Claude and ChatGPT only | a generic guide (§19.22) |
+| `MCPPanel.vue`, `AdminView.vue` | a guide for Claude and ChatGPT only | a generic guide (§19.22): Claude's tab and the other assistants', with no ChatGPT tab since §19.34 |
 | The site, wappie.thehappie.co | Claude and ChatGPT text | made generic by the site session after P4 |
-| `docs/mcp.md` (Codex lists tools it cannot call) | a note | diagnosed in phase B and updated |
+| `docs/mcp.md` (Codex lists tools it cannot call) | a note | not run in phase B; Codex is not listed and the note is gone (§19.34) |
 
 ### 19.24 Logs, health and what leaks
 
@@ -9220,9 +9232,12 @@ knows every live connection without trusting Go.
   ideally a second vendor account). Time is budgeted to diagnose Codex's
   "lists tools, cannot call them". Only the clients that pass are listed.
   The loopback steps need the owner at the Mac where Codex and Claude Code
-  run, because the code returns to that machine's `localhost`.
-- **On 0.6.0:** the §19.4 script for each again, the console-link network
-  check, and the ChatGPT journal check (CIMD or DCR).
+  run, because the code returns to that machine's `localhost`. Run and
+  recorded: §19.34.
+- **On 0.6.0:** the §19.4 script for each listed client again (Claude and
+  Claude Code) and the console-link network check. ChatGPT's journal check
+  is answered: its Work mode identified itself by Codex's document, not by
+  DCR (§19.34).
 - **Unknown tier**, with clients that do not run OAuth from a browser page
   (MCP Inspector does, and the enclave sends no CORS headers on `/mcp/token`
   and refuses any `Origin` on `/mcp`, so it would fail for unrelated
@@ -9304,9 +9319,11 @@ clients that passed).
 ### 19.28 Open points
 
 1. Whether ChatGPT, in the owner's setup, registers by DCR or by CIMD (the
-   journal, phase B and P4).
+   journal, phase B and P4). Answered (§19.34): its Work mode used Codex's
+   document; ChatGPT is not listed.
 2. Whether claude.ai and ChatGPT tie the OAuth `state` to their own browser
-   session: a release gate (§19.4 step 9), measured in phase B.
+   session: a release gate (§19.4 step 9), measured in phase B. claude.ai
+   refused it on 2026-10-05; ChatGPT was not run (§19.34).
 3. Resolved by reading `openSealedState` in `state.mjs`: 0.5.0's loader
    accepts records with new members, which is why 0.6.0 bumps the plaintext
    version (§19.17).
@@ -9315,7 +9332,8 @@ clients that passed).
    (`templates/account.html`) and no locale, so `MCPConnected` needs a
    template of its own without the home link, and its languages are the
    console's to decide with the owner.
-5. Codex listing tools it cannot call: diagnosed in phase B.
+5. Codex listing tools it cannot call: diagnosed in phase B. Not run; Codex
+   is not listed (§19.34).
 6. The `claude.com/api/mcp/auth_callback` variant: pinned in Claude's
    entries, and since 2026-10-01 accepted end to end (the descriptor's
    `redirect_host` is `claude.com`, §19.12; reader, Go and console tests and
@@ -9384,6 +9402,36 @@ clients that passed).
     again with `packages/mcp/icons/icon-512.png` uploaded is the only way
     (a new plugin id and a new consent). A published plugin carries `logo`
     and `composerIcon` in its package.
+19. **The personal identifiers in results** (§19.30). Decided by the owner
+    on 2026-10-05, from the inventory of that day, and done in 0.6.0
+    (§19.32): a result carries what a tool chain needs, once. What stays
+    goes into the Wappie privacy policy (point 16): `chat_key` and
+    `sender_key`, which show a phone where they are a phone JID, a
+    contact's `identifiers`, a contact's `phones` for a phone query (the
+    number typed) or when the user asked for the number, and the names and
+    texts the connection opens. Open for the owner: whether `identifiers`
+    keep a candidate's phone JID when its `phones` are withheld. Today they
+    do, since it is the only key a row archived before the sender's LID
+    matches, so `include_phones` withholds the E.164 form only (§19.33).
+20. **Who gets the way back** (§19.31): the `state` in the button and in the
+    decline's redirect goes to any browser on the starter's network, and the
+    parent writes the PROXY v2 source address the network check reads.
+    Binding both to a secret only the starter's browser holds (a value in
+    the console URL's fragment, which no server is sent) would close that,
+    and would give a VPN user the button too; it changes the console's URL
+    contract, so it is the owner's decision, after 0.6.0.
+21. **Messages deleted for everyone stay readable** (owner's decision,
+    2026-10-05: keep it unlocked, the owner still wants to read it). The
+    text of a message its sender deleted for everyone is not locked:
+    `list_revisions` returns its archived versions with `deleted: true`,
+    and `get_message` and a search hit of the original open its text as
+    before (a hit says `archive_status` `deleted` where it is checked).
+    0.6.0 changes nothing here.
+22. **One-time codes are not locked in 0.6.0** (owner's decision,
+    2026-10-05). A message that carries a one-time code (a sign-in or
+    payment verification code) reads like any other message: the reader
+    neither detects nor locks it. Locking them would be a later release's,
+    if the owner asks for it.
 
 ### 19.29 What the connector says about itself (M5)
 
@@ -9459,7 +9507,7 @@ top level and in `annotations.title`:
 | the eight read tools, `list_outgoing` | true | false | true | false |
 | `open_attachment` | **false on a connection of an `ai_v1` reader** (a call may run a job on the user's AI authorization, which spends their budget and stores a sealed transcript in Wappie, §18), true otherwise | false | true (a repeat call reuses the stored transcript) | **true on a connection of an `ai_v1` reader** (a file may go to the user's AI provider), false otherwise |
 | `draft_message` | false | false | true | false |
-| `send_to_self` | false | false | false | **true** (the note leaves through WhatsApp at once, to every device of the number, and nothing recalls it) |
+| `send_to_self` | false | **true** (§19.30: nothing recalls a note once it left, and OpenAI reads an irreversible send as destructive) | false | **true** (the note leaves through WhatsApp at once, to every device of the number, and nothing recalls it) |
 
 **The connection block (B2).** `list_numbers` adds `connection`, so the model
 can explain a limit and warn before a deadline:
@@ -9526,7 +9574,9 @@ cannot make), `ip_mismatch` (unchanged), `invalid_redirect_uri`,
 `opaque_origin` and `invalid_origin` (one sentence), `invalid_proof`,
 `connection_exists`, `activation_failed` and `too_many_unknown`. Like every
 text of this section (D10), the sentences are drafts the owner approves
-before the image is built.
+before the image is built. §19.30 gives a refusal after the redirect is
+trusted a button back to the assistant, when the browser is tied to the
+request's starter (§19.31).
 
 **Discovery (B6).** `enclave/constants.mjs` `SITE_LINKS` names the site's
 language-free documentation page, `https://wappie.thehappie.co/docs/`, which
@@ -9547,10 +9597,11 @@ a release (§19.28 point 16).
 in a browser no longer gets `{"code":"not_found"}`. `GET` or `HEAD /` on the
 public listener answers a page in one language (a valid `?lang=`, else the
 person's first of the five, else English): the Wappie icon (`/icon-192.png`),
-"This is the address of Wappie's connector. Add it in your assistant
-(Claude, ChatGPT or another app that supports MCP): in Claude as a custom
-connector, in ChatGPT as a developer-mode plugin. … The Wappie console shows
-the steps for each assistant.", the
+"This is the address of Wappie's connector. Add it in your assistant: in
+Claude as a custom connector, or in another app that supports MCP. … The
+Wappie console shows the steps for each assistant." (amended in §19.34,
+approved by the owner on 2026-10-05; the text approved first also named ChatGPT
+and its developer-mode plugin), the
 address `https://mcp.wappie.thehappie.co/mcp`, a link to the console
 (`CONSOLE_URL`) and one to the documentation, and links to the other four
 languages. Nothing is loaded from elsewhere: the CSP is `default-src 'none';
@@ -9595,7 +9646,8 @@ The icon offered for download is the console's `/icon-512.png`, the kit's
 `icon-512.png` byte for byte, the file `docs/mcp.md` names. The "Other
 assistants" tab shows only what an untested or local assistant can be
 given: text and attachments where allowed, never drafts or own-chat notes
-(§19.14). It replaces the tab of reader 0.4.2 described in §16.
+(§19.14). It replaces the tab of reader 0.4.2 described in §16. §19.34
+removes the ChatGPT tab and its icon download.
 
 **Tests.** `packages/mcp/test/identity.test.mjs` (identity, the first 512
 characters, the hints, titles and parameter descriptions in every connection
@@ -9632,7 +9684,458 @@ the nine recommendations that came with the list:
    is what may read the numbers;
 9. English texts use the typographic apostrophe.
 
-### 19.30 Fewer steps without a new image (A1 to A7)
+The way-back button's label (§19.30, `pages.mjs` `BACK_TO`) was approved
+the same day as drafted (D10, 2026-10-05): pt "Voltar para {host}", en
+"Back to {host}", es "Volver a {host}", fr "Retour à {host}", de "Zurück zu
+{host}".
+
+### 19.30 Before the build: directory review fixes (2026-10-05)
+
+The directory research of 2026-10-05 (`listing/requirements.md` §4, items
+3, 6, 7 and 11) found four things to change before the 0.6.0 image is
+built. All but the console's Cancel are in the measured image
+(`packages/mcp/server.mjs` and `reader.mjs`, `packages/mcp-http/as.mjs`,
+`pages.mjs` and `router.mjs`).
+
+**`send_to_self` is destructive.** `destructiveHint: true`; `readOnlyHint`
+false, `idempotentHint` false and `openWorldHint` true as before (§19.29's
+table). A note leaves at once and nothing recalls it, and OpenAI reads
+`true` for an irreversible send whether or not it only adds. A host then
+asks before each note. Its description and the instructions are unchanged.
+
+**Results: the JSON once, as text, and no workspace id.** A read tool
+answers `{content: [{type: 'text', text: <JSON>}]}`: no `structuredContent`,
+so no `outputSchema`. Text rather than structured, because:
+- the MCP specification (2025-11-25, Tools, Structured Content) says a tool
+  that returns structured content SHOULD also return it serialized as text,
+  so structured alone is the shape it advises against;
+- claude.ai never shows `structuredContent` to the model (§16's P1), and
+  Claude Code shows it instead of the content blocks (§16.7);
+- ChatGPT shows both to the model, so the same JSON went to it twice;
+- OpenAI asks for an `outputSchema` wherever `structuredContent` is
+  returned, and the SDK would then enforce an exact schema on every result,
+  `renewal` and `connection` included, turning any drift into a failed call;
+- no interface reads `structuredContent`.
+
+The 1 MiB cap now bounds the whole result. No result carries `workspace_id`
+any more (it was at the top of every read result and in each search hit's
+`source`): a connection reads one workspace, the id is an internal account
+id, no tool takes it, and `device_id` is what the model passes on. No
+model-facing text named it. The console links (`open_url`, `review_url`,
+`drafts_url`, an AI pause's `renew_url`) keep their `workspace=` parameter:
+the console opens the message in that workspace (§16.7's link contract), and
+the model hands the links on as they are. The phone numbers and WhatsApp
+identifiers each tool returns are §19.32's (the owner's decision of the same
+day, §19.28 point 19).
+
+**The way back to the assistant.** Until now a refusal after the redirect
+was trusted rendered a Wappie page, and the assistant waited on
+"Authorizing…" until it timed out (the owner saw it on 2026-10-05). From
+0.6.0 each such refusal to a browser tied to the request's starter (§19.31)
+carries one button, "Back to <host>". It is a plain
+link, since the page runs no script and posts no form, to the client's
+redirect with `error`, the request's own `state` and `iss` (RFC 6749
+§4.1.2.1, RFC 9207), and nothing else: no `error_description`. A redirect
+the authorization server would never trust (neither https nor http to a
+loopback address) gets no button. `<host>` is the redirect's host
+(`claude.ai`, `chatgpt.com`, `127.0.0.1` for a local app); the label speaks
+the person's first page language, English when they ask for none of the
+five.
+
+| Code | Route | Status | `error` | Also |
+|---|---|---|---|---|
+| `too_many_requests` (an untested client's twenty open requests, or every slot held by a consent, §19.10) | authorize | 429 | `temporarily_unavailable` | |
+| `invalid_proof` (a wrong proof of a version-2 request from the network it started on; also when the third try burns it) | complete | 400 | `access_denied` | |
+| `connection_exists` | complete | 400 | `server_error` | |
+| `activation_failed` | complete | 502 | `server_error` | |
+| `too_many_unknown` | complete | 409 | `access_denied` | the console link stays, before the button: the sentence sends the person there first |
+
+A button, never an automatic redirect, for every one of them: each approved
+sentence says what to do next (wait a minute, turn the VPN off, revoke one),
+which the assistant's own error would not; and in a flow somebody else may
+have started (an untested client with twenty open requests) a redirect the
+person did not choose would tell its starter that the link was opened, when
+and from where. The link carries only what the client sent and the issuer
+publishes, but the client sent `state` to this server alone: it is the
+client's CSRF binding (RFC 6749 §10.12), which is why only a browser tied to
+the starter gets it (§19.31). `server_error` is for
+the server's own failures (Go's activation, an id Go reused);
+`temporarily_unavailable`, RFC 6749's code for an overloaded server, for the
+open-request caps; `access_denied` for every refusal by Wappie's rules.
+Unchanged: the refusals before the redirect is trusted, the completion's
+origin, budget and form refusals (they never act on the request), a
+completion that names no pending request (nothing to go back to), one
+before the console relayed a bundle, one from another network
+(`ip_mismatch`, which ends the request) and a wrong proof of a version-1
+request (§19.31); they keep the console link and never show the `state`.
+The `fail()` errors of `GET /mcp/authorize`
+(`unsupported_response_type`, `invalid_request`, `invalid_target`,
+`invalid_scope`) were already redirects.
+
+**The console's Cancel.** `POST /mcp/authorize/decline`, on the public
+listener (under `/mcp` on the hosted reader too), takes a form with
+`request` under complete()'s rules: POST, the console's `Origin` (else
+`origin_missing`, `opaque_origin` or `invalid_origin`, and nothing changes),
+ten a minute per address in a bucket of its own, a form without repeated
+fields, and a pending request id of the right shape. An unknown, expired or
+completed request gets a 302 to the console (logged `request_not_found`), and
+so does a version-1 request, which is left as it is (logged
+`not_declinable`: its console keeps the old Cancel, and with no network check
+its state would go to anyone holding the id). Otherwise the request ends,
+and its Go row is revoked when the console had relayed a bundle. Declined
+from another network than it started on (§19.12), it gets a 302 to the
+console (counted in `ip_mismatches`, `ip_mismatch: true` on the line); from
+its own network a 302 to the redirect with `error=access_denied`, `state`
+and `iss`, logged `declined`. Past those checks a Cancel never gets a page:
+every sentence one could show asks the person to start again. The route
+fits the log sink's route pattern. `MCPConsentCard.vue` posts it on Cancel
+only for a version-2 descriptor that has not expired and that the reader
+still holds (§19.31), as a hidden top-level form like the completion, to
+the resource's origin; a version-1 descriptor (a reader before 0.6.0, the
+hosted reader) keeps the old Cancel, since the console cannot tell whether
+that reader serves the route.
+
+**New text (D10).** The button's label (`pages.mjs` `BACK_TO`) is the only
+new text, approved by the owner on 2026-10-05 as drafted: pt "Voltar para
+{host}", en "Back to {host}", es "Volver a {host}", fr "Retour à {host}", de
+"Zurück zu {host}". Every sentence of §19.29 is unchanged.
+
+**Tests.** `packages/mcp/test/identity.test.mjs` (every read tool of every
+hosted shape: one text block, no `structuredContent`, no `outputSchema`, the
+workspace id nowhere; the destructive hint), `search.test.mjs` and
+`content.test.mjs` (a hit's `source` without `workspace_id`) and
+`send.test.mjs`; `packages/mcp-http/test/pages.test.mjs` (the button: its
+languages, escaping, only https or loopback, after the console link),
+`as.test.mjs` (the button after a valid proof and on the caps, the console
+link for a version-1 wrong proof and where no request is known, the
+decline's refusals, its version-1 and unknown requests, a decline during
+the proof check), `any.test.mjs` (the caps, a completion before the bundle
+and from another network, a wrong proof from the starter's network,
+`too_many_unknown` at completion; the decline from either network, after a
+relay, and its own budget) and `link.test.mjs` (`connection_exists`); the
+enclave's `any-enclave.test.mjs` (the button, the console link and the
+decline on the real listener, the line through the sink's schema),
+`enclave.test.mjs` and `content.test.mjs` (text results without the
+workspace id); the console's `mcpConnect.spec.ts` (the decline URL and
+form) and `mcpDecline.spec.ts` (Cancel on the card).
+
+### 19.31 Review of the way back (2026-10-05)
+
+The review of §19.30 before the build changed five things; §19.30 reads as
+amended.
+
+**The state stays with the starter.** Until §19.30 the client's `state`
+left the enclave only in the success redirect, to a browser that had posted
+a valid proof (from the starter's network, for a version-2 request).
+§19.30's first cut put it in the button of every refusal of a known
+request, and three of them answered whoever held the request id (the
+`?mcp_connect` link, and Go, which relays every request): a completion
+before the console relayed a bundle (any network, no try spent), the
+`ip_mismatch` page and the decline. The descriptor, which anyone with the
+id can fetch, carries `client_id`, `redirect_uri` and `code_challenge`, and
+never `state`.
+With the state too, an id holder could authorize with the victim's client,
+redirect, challenge and state from their own network, consent with their
+own workspace, and have the victim's browser load that callback while its
+flow is open: the victim's assistant would connect to the attacker's
+workspace (code injection, RFC 9700 §4.5), and a `send_to_self` would go to
+the attacker's number. §19.4 step 9 relies on the vendors' state check,
+which does not help against a state the attacker knows. So the button, and
+the decline's redirect, go only to a browser tied to the starter: past the
+network check of a version-2 request, or after a valid proof. The authorize
+caps answer the browser that sent the state. A version-1 request (the
+allowlist policy) has no network check, so its wrong proof keeps the
+console page and a decline leaves it as it is. A person whose completion
+crosses networks (a VPN, iCloud Private Relay) gets the 0.5.0 page, whose
+sentence says to connect again, and the assistant waits until its own
+timeout. What is left is §19.28 point 20.
+
+**A Cancel during the proof check.** `complete()` read the request, awaited
+the proof check (an HPKE open) and went on to activate it without looking
+again, so a decline in that wait (a second console tab) ended the request
+and revoked its Go row while the completion activated it. It now checks
+that the request is still the one it read, and otherwise answers
+`invalid_proof` with the console link (logged `request_gone`).
+
+**A Cancel lands in the console.** A decline from another network got the
+`ip_mismatch` page, whose approved sentence asks the person to connect
+again, and one for a request the reader no longer held got the
+`invalid_request` page, which says the same; D10 approved neither for a
+Cancel. Both, and a version-1 request, now get a 302 to the console, which
+Cancel left: the old Cancel, with no new text. The console posts the
+decline only once a descriptor fetch through Go, limited to five seconds,
+says the reader still holds the request, which also judges expiry by the
+reader's clock; on any failure Cancel stays in the console, so a reader
+that went away after the card loaded never leaves the person on the
+browser's error page.
+
+**`too_many_unknown`** shows the console link before the button, in the
+order its sentence gives.
+
+**What the assistant shows.** claude.ai documents one message for an OAuth
+flow that started and did not complete, "Authorization with the MCP server
+failed" with an `ofid_` reference
+(`claude.com/docs/connectors/building/troubleshooting`, read 2026-10-05),
+so a Cancel and every button most likely end there: better than
+"Authorizing…" until a timeout, but a
+failure screen, and neither Wappie's page nor the listing says so yet.
+OpenAI's troubleshooting page does not say what ChatGPT shows for an error
+on `connector_platform_oauth_redirect`; that waits for the reviewer
+workspace (M7). The site's troubleshooting row (listing
+`docs-and-legal.md` C5) is rewritten once both screens are known, as a
+follow-up for the site.
+
+**The label (D10).** This review left the button's words alone; the owner
+approved them on 2026-10-05 ("Voltar para {host}", "Back to {host}",
+"Volver a {host}", "Retour à {host}", "Zurück zu {host}", §19.30).
+
+### 19.32 The identifiers a result carries (2026-10-05)
+
+**Owner decision** (2026-10-05, §19.28 point 19, on the inventory of the
+same day): a result carries the identifiers a tool chain needs, once, and
+nothing else of the kind. It is all in the measured image
+(`packages/mcp/reader.mjs`, `contacts.mjs` and `server.mjs`, and the
+enclave's `send/sends.mjs`).
+
+| Result | No longer carries | Carries |
+|---|---|---|
+| a message (`list_messages`, `get_message`, `list_revisions`) and a search hit | `wa_id`, `sender_pn`, `sender_lid`, `reply_to` | `uid`, `device_id`, `chat_key`, `sender_key`, `target_uid`, and `reply_to_uid` where it is known |
+| a search hit's `source` | `device_id`, `message_uid` and `chat_key`, copies of the hit's own; on a hosted reader the object itself (the row's `source` string stays, as `list_messages` has it) | on a local install, `server` and `url` |
+| an `activity_summary` group | `sender_pn`, `sender_lid` | `chat_key`, `sender_key`, `sample_uid`; a sender's phone-JID rows count in its LID group where the call read the alias |
+| a `list_chats` chat | `uid`, `chat_pn`, `chat_lid`, `keys` | `chat_key` |
+| a `list_numbers` number | `phone`, and the phone JID as the `name` of last resort | `id`; `name` is the console label, else the WhatsApp push name, else "Number 1", "Number 2"… by its place in the list (approved by the owner, D10, 2026-10-05) |
+| a `resolve_contact` candidate | `contact_uid`; `phones`, but those that are the number a phone query typed, or all of them with `include_phones` | `identifiers` |
+| `resolve_contact`'s `next.after_key` | the last contact's key, a third party's JID | a sealed cursor |
+| `send_to_self` | `wa_id` (the enclave keeps it out of its answer too) | `message_uid`, `timestamp`, `open_url` |
+
+**`sender_key`** is the sender as the archive keys it: its LID when known,
+else its phone JID (Go's `Address.Primary`); a row stored without one takes
+its LID, else its phone JID. Where a key is a phone JID the phone stays
+visible, which the owner accepted. A row archived before WhatsApp's LIDs
+names its sender by phone only, and `sender_keys` matches exactly, so a
+search for every message of a person passes `resolve_contact`'s
+`identifiers` (LID and phone JID), not one message's `sender_key`.
+
+**One sender, two keys.** That same row would make one person of a chat
+two `activity_summary` groups, a LID and a phone JID, with nothing in the
+result to join them once `sender_pn` was gone. So a phone JID's group is
+counted in the LID group of the same chat and direction where a row the
+same call read states both (its `sender_lid` and `sender_pn`, the archive's
+own alias), whichever came first: the group keeps the LID as `sender_key`,
+the oldest and newest times of both, and the newer `sample_uid`. Nothing is
+folded across chats or calls (a `next` page is a call of its own), where
+that chat and direction has no LID group (the phone JID is then the only
+key those rows are found by), or for a phone two LIDs state. No field is
+added and no text changed. A search by a folded group's `sender_key` still
+misses its phone-only rows, as above.
+
+**`reply_to_uid`.** The archive has no lookup by WhatsApp id, and a lookup
+per reply would cost a read and, on a text query, tell the archive which
+rows matched. So the quoted message is named only when it is among the rows
+the same call read: a `list_messages` page or a `list_revisions` thread
+(one chat, its phone-JID and LID keys included), or a row the search
+examined under the reply's `chat_key` (older, so it is read after the hit;
+hits are resolved when the scan ends, and the field keeps its place; a scan
+row names no sibling key, so there a direct chat's two keys are two chats).
+A WhatsApp id two rows share names nothing, and a row outside the history
+window is never read, so never named. `get_message` never carries it.
+
+**Phones.** A phone query has 7 to 15 digits (E.164's length) and nothing
+but digits, one leading `+`, spaces, dots, dashes and parentheses; fewer
+digits are part of a number at most. It shows only the phones that are the
+number typed: the same digits, or ending with them (a number typed without
+its country or area code). Matching is looser, each word of the query
+anywhere in a candidate's names, phones and identifiers, so a phone query
+also matches candidates whose number the user never typed (the pieces of
+another number, a mobile beside the landline typed, every contact sharing a
+prefix, a LID's digits); they carry no `phones`. `include_phones` is new,
+and its description was approved by the owner (D10, 2026-10-05): "true only when
+the user asked for a contact's phone number: candidates then include their
+phones. A query that is a phone number shows the phones that match it
+anyway; omit it otherwise." (amended 2026-10-05 with the owner's D10 rule:
+the first draft said a phone query "includes them anyway", which §19.33's
+`shownPhones` made untrue). With it a candidate carries all its phones.
+`next` repeats it. `identifiers` keep the phone JID, the only key a pre-LID
+row matches (§19.28 point 19).
+
+**The cursor.** `c1.` and the base64url of a 12-byte IV, the AES-256-GCM
+ciphertext of the contact key and its tag, under HKDF-SHA256 of the
+connection's archive credential (its API key, or a local session's token;
+no salt; info `wappie/contact-cursor/v1`), with the AAD
+`["wappie/contact-cursor",1,<device_id>]`. It opens only on the connection
+and number that sealed it, survives a restart of the enclave (the
+connection's API key does not change), and shows only the key's length. A
+changed or foreign one is refused before any read (`invalid_cursor`: "Pass
+next.after_key exactly as returned, or call resolve_contact again without
+after_key.", approved by the owner, D10, 2026-10-05); a value without the prefix
+is a key, as 0.5.0 returned it. The REST calls are unchanged: the archive
+still gets the key, and the attested reader still reads four pages whatever
+matched.
+
+**Inputs and words.** Every input accepts what it did; `sender_keys` takes a
+phone JID, a LID or a key alike, as the archive matches any of the three.
+Of the approved texts only `sender_keys`' description named a removed
+field; it reads "Only these senders, 1 to 3: sender_key values from earlier
+results, or identifiers from resolve_contact." New text, all three
+**approved by the owner on 2026-10-05** (D10): `include_phones`' description (as
+amended above), and the `invalid_cursor` guidance and the label "Number N"
+as written.
+
+**Left as they are** (owner, 2026-10-05): the text of messages deleted for
+everyone, and one-time codes (§19.28 points 21 and 22).
+
+**Tests.** `packages/mcp/test/identifiers.test.mjs` (every read tool in the
+content and metadata modes: no removed field, the replies, chats, numbers,
+phones, the cursor, unchanged inputs, and no model-facing text naming a
+removed field), `contacts.test.mjs`, `search.test.mjs`, `content.test.mjs`
+and `send.test.mjs`; the enclave's `send-units.test.mjs` and
+`send-enclave.test.mjs`. §19.33 adds to them.
+
+### 19.33 Review of the identifiers (2026-10-05)
+
+The review of §19.32 changed three things and added tests; §19.32 reads as
+amended. None of it changes a text the model reads.
+
+**A phone query's phones.** `isPhoneQuery` counted 7 to 15 digits anywhere
+in the query, and matching only needs each word somewhere in a candidate,
+so `11 1234 9876` showed `+5511987651234`, `55 11 5555 0000` the mobile
+`+5511955550000`, a prefix such as `5511987` every phone sharing it (from
+four pages of contacts per call on the attested reader), and a LID's
+digits that contact's phone. A phone query now shows only the phones that
+are the number typed (`contacts.mjs`, `shownPhones`). The exposure was
+small while `identifiers` carry the phone JID (§19.28 point 19); it would
+have become a leak the day they stop.
+
+**One sender, two keys** (§19.32): an `activity_summary` group by phone JID
+is counted in its LID group where the call read the alias. The alternative,
+a sentence telling the model that one person can appear under two keys,
+would be new text for D10; it is not needed while the fold covers one call.
+
+**A contact page without `next_key`.** `resolve_contact` stops paging, as it
+already offered no `next`, when the archive says `has_more` without a
+`next_key`: either would start from the first page again. The client
+refuses such a page anyway (`invalid_response`); the test reaches the
+reader's check past it.
+
+**Tests that fail without each guard:** a reply under a chat's LID key
+quoting a message under its phone-JID key, on that chat's page; two
+unnamed numbers named "Number 1" and "Number 2" by their place among the
+listed ones; a reply quoting an edit, or itself, names nothing; a cursor
+with characters that base64url decoding skips (`=`, `.`, one inside) is
+refused; a phone query that is not the candidate's number (the cases
+above); the activity fold, in both modes and with an attachment filter.
+
+**Still open.** A search by one `sender_key` misses a person's rows under
+the other key (§19.32); what it would take is the owner's: the model told
+to pass `identifiers` (text, D10), or the reader widening `sender_keys`
+from aliases it reads. And whether `identifiers` keep the phone JID
+(§19.28 point 19).
+
+### 19.34 The tested list after baseline B (2026-10-05)
+
+**Owner decision** (2026-10-05): ChatGPT's plugin flow kept failing and
+blocked the project, so Wappie keeps only Claude as a tested assistant and
+moves on. ChatGPT (Chat and Work) and Codex did not finish baseline B; they
+leave `TESTED_CLIENTS` and connect as any MCP client Wappie has not tested.
+
+**Baseline B on 0.5.0** (each step and time in
+`commercial/docs/mcp-enclave-operations.md`, "Baseline B"; the fingerprint
+is the authorize line's `client`, §19.4):
+
+| Client | `client_id` | Fingerprint | Result |
+|---|---|---|---|
+| Claude (web) | `https://claude.ai/oauth/mcp-oauth-client-metadata` (CIMD) | `87035c02ba6c` | connect, calls, refresh, the cross-session test (refused, 2026-10-05), revocation and the restart renewal (restart 22:01:35Z, renewed 22:07:50Z on 2026-10-05) passed |
+| Claude Code | `https://claude.ai/oauth/claude-code-client-metadata` (CIMD) | `569ea71ec53b` | connect, calls, refresh, revocation and the restart renewal (restart 21:50:20Z, renewed 21:58:34Z on 2026-10-05) passed |
+| ChatGPT, Work mode (desktop app) | `https://chatgpt.com/oauth/codex/client.json`, Codex's document; the redirect was loopback, ports not logged (Go's `chatgpt.com` is the vouching host) | `ffec7c120c96` | connect, calls and refresh, then revoked; did not finish; dropped |
+| ChatGPT, Chat mode; Codex | | | not run; dropped |
+
+Work mode's redirect is inferred, not logged: 0.5.0 accepts only a
+redirect the fetched document lists and refuses a document that mixes https
+and loopback redirects (`clients.mjs` `validateRedirectURIs`), and Codex's
+document lists only `http://127.0.0.1/callback` and
+`http://localhost/callback` (fetched 2026-10-05, as the tests' fixture has
+it). So the connection was a local app under Codex's identity.
+
+**The list** (`enclave/constants.mjs`, measured; `build.sh` copies it into
+`measurements.json`): `claude` (its document, both Claude callbacks),
+`claude_code` (its document, loopback `localhost` and `127.0.0.1` on
+`/callback`) and `claude_dcr` (Claude's registration, the same two
+callbacks). Baseline B ran Claude's and Claude Code's documents only (no
+`register` event for Claude); `claude_dcr` is listed by the owner's
+decision without a baseline run. The tested names (M-ID-06) are "Claude ·
+Claude Code": the card, the lists and the console's "Other assistants" step
+read them from the release's `tested_clients`.
+
+**ChatGPT and Codex now** are untested clients. Their documents
+(`https://chatgpt.com/oauth/client.json`, `…/oauth/<id>/client.json` and
+`…/oauth/codex/client.json`) are fetched like any other (§19.9) and served
+as `trust: 'unknown'`, `profile: 'default'`, limits tier `unknown`: the
+amber card, text only after the second tick and with a confirmed e-mail
+address, never drafts, notes or sending, a history window of 7, 30 or 90
+days, and the untested reading limits and lifetimes; Codex on a loopback
+port is an untested local app. `/mcp/register` refuses a `chatgpt.com`
+redirect (400 `invalid_redirect_uri`, no record kept), and a record 0.5.0
+registered with one gets the `invalid_client` page at authorize (§19.8).
+Go's `WS_MCP_DCR_HOSTS` defaults to `claude.ai,claude.com` (§19.21). A
+connection 0.5.0 made for ChatGPT or Codex is a record without client
+fields, which 0.6.0 reads as `legacy`, tested under the web limits (§19.17,
+`budgets.mjs` `tierOf`), with what its consent granted, until it is
+revoked: the operations' turn-on steps revoke every live one recorded under
+`chatgpt.com` around the deploy.
+
+**Unchanged:** the hosted metadata connector (`server.mjs`,
+`WAPPIE_MCP_REDIRECT_HOSTS` and Go's `WS_MCP_REDIRECT_HOSTS`, both
+`claude.ai,chatgpt.com`) until P0 decides its fate (§19.23); the `{cb}`
+pattern rules, which the tests keep with entries of their own; the vectors
+(`attest-v2.json` names only Claude's ids).
+
+**The page at `/`** (M-HOME, §19.29) no longer sends anyone to ChatGPT
+steps the console does not show. Its lead, **approved by the owner on 2026-10-05**
+(D10, before the build, since the page is measured):
+- pt: "Este é o endereço do conector do Wappie. Adicione-o no seu
+  assistente: no Claude como conector personalizado, ou em outro app
+  compatível com MCP. O Wappie abre no seu navegador e pergunta quais
+  números o assistente pode ler. O console da Wappie mostra os passos para
+  cada assistente."
+- en: "This is the address of Wappie’s connector. Add it in your assistant:
+  in Claude as a custom connector, or in another app that supports MCP.
+  Wappie then opens in your browser and asks which numbers it may read. The
+  Wappie console shows the steps for each assistant."
+- es: "Esta es la dirección del conector de Wappie. Agrégala en tu
+  asistente: en Claude como conector personalizado, o en otra app compatible
+  con MCP. Wappie se abre en tu navegador y te pregunta qué números puede
+  leer. La consola de Wappie muestra los pasos para cada asistente."
+- fr: "Ceci est l’adresse du connecteur Wappie. Ajoutez-la dans votre
+  assistant : dans Claude comme connecteur personnalisé, ou dans une autre
+  application compatible MCP. Wappie s’ouvre alors dans votre navigateur et
+  vous demande quels numéros il peut lire. La console Wappie montre les
+  étapes pour chaque assistant."
+- de: "Dies ist die Adresse des Wappie-Connectors. Fügen Sie sie in Ihrem
+  Assistenten hinzu: in Claude als benutzerdefinierten Connector oder in
+  einer anderen App mit MCP. Wappie öffnet sich dann in Ihrem Browser und
+  fragt, welche Nummern er lesen darf. Die Wappie-Konsole zeigt die Schritte
+  für jeden Assistenten."
+
+Only the lead changes: the ChatGPT parenthesis and its plugin step go, the
+rest is the approved text. `pages.mjs` and `pages.test.mjs` carry it; if
+the owner words it otherwise, both change together before the build.
+
+**The console** has no ChatGPT tab: Claude, with Claude Code under "For
+developers", and "Other assistants". The heading, the admin card, the
+drafting line and the token card no longer name ChatGPT or promise Codex the
+tested limits; those edited sentences were approved by the owner on
+2026-10-05 (D10). The ChatGPT tab's catalogue keys and icon download are gone.
+
+**Tests:** `test/any.test.mjs` and `enclave/test/any-enclave.test.mjs` (the
+list and its fingerprints, ChatGPT's and Codex's documents in the untested
+tier, Codex's as chatgpt.com serves it, with loopback redirects only and
+ChatGPT's callback refused for it, ChatGPT's registration and records
+refused), `test/pages.test.mjs` (the page's lead names Claude and MCP apps,
+never ChatGPT, Codex or a plugin), the Go DCR-host tests,
+and the console's `readerMeasurements.spec.ts` (its fixtures against these
+constants), `mcpClients.spec.ts`, `mcpGuide.spec.ts` and `mcpSend.spec.ts`.
+
+### 19.35 Fewer steps without a new image (A1 to A7)
 
 The distribution audit's §6 A listed what made a connection cost more steps
 than it needed. **Owner decisions M3, M4 and M6** (2026-10-04): do A1 to A7
@@ -9851,8 +10354,8 @@ alike and keeps the approved meaning: "Was die Verbindung lesen kann:" and
 | Where | Amendment | When |
 |---|---|---|
 | Opening | reader 0.6.0 admits any MCP client (§19) | now (in place) |
-| §3 | `WS_MCP_CONTENT_TENANTS`, `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired for each workspace's own switches, `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS` (§19.30) | core 0047 |
-| §§15.9, 15.11, 18.13 | the consent, renewal and AI cards ask for a step-up (a recent sign-in, the passkey or the password) instead of the password, and seal with the session's account key (§19.30) | core 0047 |
+| §3 | `WS_MCP_CONTENT_TENANTS`, `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired for each workspace's own switches, `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS` (§19.35) | core 0047 |
+| §§15.9, 15.11, 18.13 | the consent, renewal and AI cards ask for a step-up (a recent sign-in, the passkey or the password) instead of the password, and seal with the session's account key (§19.35) | core 0047 |
 | §1 | one more hop, `127.0.0.8:3128` to vsock 8007: the parent's document egress proxy (`wappie-cimd-egress`), which tunnels `CONNECT <host>:443` to public addresses only, the enclave's first egress to hosts that are not fixed (§19.9) | 0.6.0 |
 | §3 | `WS_MCP_REDIRECT_HOSTS` applies to version-1 descriptors only and is deleted with the last version-1 reader; `WS_MCP_CIMD_MODE`, `WS_MCP_BLOCKED_CLIENTS` and `WS_MCP_DCR_HOSTS` are added (§19.21) | P1 |
 | §5.1 | `POST /internal/token-requests`, `POST /internal/token-requests/{id}/bundle` and `POST /internal/workspaces/{id}/live-list`; the descriptors are version 2 (§19.12) | 0.6.0 |
@@ -9876,6 +10379,9 @@ alike and keeps the approved meaning: "Was die Verbindung lesen kann:" and
 | §18, §18.16 | B2 comes after 0.6.0 (D11) | now (in place) |
 | §18.7 | the AI request and renewal descriptors are version 2 (`ai`, `ai_renewal`) and attested with user_data v2, so `functions`, `features` and `budget` become attested | 0.6.0 |
 | §5.4 | the public listener adds `/icon-192.png`, `/icon-512.png`, the page at `/` and `/robots.txt`, and `serverInfo.icons` names the two PNGs (§19.29) | 0.6.0 |
+| §5.4 | the public listener adds `POST /mcp/authorize/decline`, the console's Cancel, and a refusal after the redirect is trusted carries a button back to the assistant when the browser is tied to the request's starter (§19.30, §19.31) | 0.6.0 |
+| §15.6, §16.7, §17.8 | read results are one text block, without `structuredContent` or `workspace_id`; `send_to_self`'s `destructiveHint` is true (§19.30) | 0.6.0 |
+| §15.6, §16.7, §17.8 | results carry the identifiers a tool takes, once: no `wa_id`, `sender_pn`, `sender_lid`, `reply_to`, `chat_pn`, `chat_lid`, `keys`, chat `uid`, `contact_uid`, number `phone` or copies in a hit's `source`; `reply_to_uid` where the call read the quoted message; `resolve_contact`'s `phones` only those a phone query typed, or all with `include_phones`, and a sealed `after_key`; an `activity_summary` sender's phone-JID rows counted in its LID group where the call read the alias; `send_to_self` answers without `wa_id` (§19.32, §19.33) | 0.6.0 |
 | §15.5, §15.6, §15.8 | a content connection without its key reads metadata with its own read-only key, text locked and the renewal link on every result; only what needs the key answers `reconsent_required`, whose guidance no longer says the reader restarted (§19.29) | 0.6.0 |
 | §15.6, §16.7, §17.8 | `serverInfo`, the instructions, the tool descriptions, the parameters' descriptions, `type`'s enum, the hints of `send_to_self` and of an AI connection's `open_attachment`, and `list_numbers`' `connection` block (§19.29) | 0.6.0 |
 | §9, §11 | 0.6.0 is the first image with the shared kit (0.5.0's client predates it): `packages/client` installs the kit's release asset `thehappieco-kit-0.3.0.tgz` (sha256 `acbcce7a87e3d4726cf93fc02398e576829c92a82e49bd4e33b69addbac5fa78`), which `tarballs/` publishes. Its Wappie profile and every byte that profile pins are v0.1.0's. v0.3.0 also ships the platform profile and `oidc-rp`, which the reader never imports but the image measures, and its `hpke` imports every X25519 private key through a PKCS#8 copy with bit 0 of the first byte set and asks `generateKey` again after an `OperationError` (WebKit for Linux refuses a key whose first byte is zero and fails 1 generation in 256). A later kit bump before the image is built changes this row | 0.6.0 |

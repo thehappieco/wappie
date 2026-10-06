@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { vector, workspace } from '@whatserver2/mcp/test/fixture'
 import { attestationUserData, attestationUserDataV2, decodeAttestationDocument, descriptorSHA256 } from '../../attestation.mjs'
-import { pkce, proof, sealBundle } from '../../test/harness.mjs'
+import { backButton, pkce, proof, sealBundle } from '../../test/harness.mjs'
 import { CLIENT_LIMITS, TESTED_CLIENTS } from '../constants.mjs'
 import { lineAllowed } from '../logsink.mjs'
 import {
@@ -19,6 +19,10 @@ import {
 
 const CLAUDE = 'https://claude.ai/oauth/mcp-oauth-client-metadata'
 const CLAUDE_REDIRECT = 'https://claude.ai/api/mcp/auth_callback'
+const CODE = 'https://claude.ai/oauth/claude-code-client-metadata'
+// Not tested (§19.34): ChatGPT's and Codex's documents, served by the fake egress like any client's.
+const CHATGPT = 'https://chatgpt.com/oauth/client.json'
+const CHATGPT_REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect'
 const CODEX = 'https://chatgpt.com/oauth/codex/client.json'
 const AGENT = 'https://agent.example.com/oauth/client.json'
 const AGENT_REDIRECT = 'https://agent.example.com/oauth/callback'
@@ -26,7 +30,9 @@ const AGENT_NAME = 'Example Agent'
 
 /** The documents the fake egress serves, by URL, and every fetch it was asked for. */
 function documents() {
-  const docs = new Map([[AGENT, { client_id: AGENT, client_name: AGENT_NAME, redirect_uris: [AGENT_REDIRECT, 'http://127.0.0.1/callback'] }]])
+  const docs = new Map([[AGENT, { client_id: AGENT, client_name: AGENT_NAME, redirect_uris: [AGENT_REDIRECT, 'http://127.0.0.1/callback'] }],
+    [CHATGPT, { client_id: CHATGPT, client_name: 'ChatGPT', redirect_uris: [CHATGPT_REDIRECT] }],
+    [CODEX, { client_id: CODEX, client_name: 'Codex', redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback'] }]])
   const calls = []
   return {
     docs, calls,
@@ -82,7 +88,7 @@ async function complete(w, started, done, { source = started.source } = {}) {
 }
 
 /** A metadata consent as link bundle v2 (§19.15), relayed with what the console was shown. */
-async function consentMetadata(w, started, { bundle = {}, relay = {}, expiresAt = new Date(Date.now() + 30 * DAY).toISOString() } = {}) {
+async function consentMetadata(w, started, { bundle = {}, relay = {}, expiresAt = new Date(Date.now() + 30 * DAY).toISOString(), until } = {}) {
   const d = started.prepared
   const linkSecret = randomBytes(32).toString('base64url')
   const history = d.trust === 'unknown' ? d.limits.history_days.default : null
@@ -98,7 +104,7 @@ async function consentMetadata(w, started, { bundle = {}, relay = {}, expiresAt 
     trust: d.trust, client_local: d.client_local, history_days: sealedBundle.history_days ?? null, ...relay } })
   if (done.relayed.status !== 204) return done
   done.signature = proof(linkSecret, { requestID: started.id, clientID: d.client_id, codeChallenge: d.code_challenge, sealedBytes })
-  return complete(w, started, done)
+  return until === 'bundle' ? done : complete(w, started, done)
 }
 
 /**
@@ -155,9 +161,9 @@ test('a request of any client (§19.6, §19.12): tested ids served from the imag
   const { attestation, ...bare } = d
   assert.deepEqual(bare, tested.descriptor, 'the prepared descriptor is the one Go reads, plus its attestation')
   assertAttestedWhole(d)
-  const local = await authorize(w, { clientId: CODEX, redirectUri: 'http://127.0.0.1:1455/callback' })
+  const local = await authorize(w, { clientId: CODE, redirectUri: 'http://127.0.0.1:1455/callback' })
   assert.deepEqual([local.prepared.trust, local.prepared.tested_id, local.prepared.client_local, local.prepared.limits_tier, local.prepared.redirect_uri],
-    ['tested', 'codex', true, 'local_tested', 'http://127.0.0.1:1455/callback'])
+    ['tested', 'claude_code', true, 'local_tested', 'http://127.0.0.1:1455/callback'])
   assert.deepEqual(w.cimdFetcher.calls, [], 'no tested id was fetched')
   const unknown = await authorize(w, { clientId: AGENT, redirectUri: AGENT_REDIRECT })
   const u = unknown.prepared
@@ -237,18 +243,57 @@ test('consent version 4 by tier (§19.15): a tested web client drafts; an unknow
     [AGENT, AGENT_REDIRECT, 'Go relays it as tested', { relay: { trust: 'tested' } }, 'invalid_bundle'],
     [AGENT, AGENT_REDIRECT, 'past the 30-day text ceiling', { expiresAt: new Date(Date.now() + 31 * DAY).toISOString() }, 'bad_request'],
     [AGENT, AGENT_REDIRECT, 'a bundle past the ceiling under Go\'s', { fields: { expires_at: new Date(Date.now() + 31 * DAY).toISOString() } }, 'invalid_bundle'],
-    [CODEX, 'http://127.0.0.1:1455/callback', 'a local app with drafts', { fields: { send: 'draft' } }, 'invalid_bundle'],
-    [CODEX, 'http://127.0.0.1:1455/callback', 'a local app past 30 days', { expiresAt: new Date(Date.now() + 31 * DAY).toISOString() }, 'bad_request'],
+    [CODE, 'http://localhost:1455/callback', 'a local app with drafts', { fields: { send: 'draft' } }, 'invalid_bundle'],
+    [CODE, 'http://localhost:1455/callback', 'a local app past 30 days', { expiresAt: new Date(Date.now() + 31 * DAY).toISOString() }, 'bad_request'],
   ]
   for (const [clientId, redirectUri, label, options, code] of refusals) {
     const done = await consentContent(w, await authorize(w, { clientId, redirectUri }), options)
     assert.equal(done.relayed.status, 400, `${label}: ${done.relayed.body}`)
     assert.equal(JSON.parse(done.relayed.body).code, code, label)
   }
-  // A local app (Codex) inside its ceiling: text, no sending, the tested local tier.
-  const codex = await consentContent(w, await authorize(w, { clientId: CODEX, redirectUri: 'http://127.0.0.1:1455/callback' }))
-  assert.equal(codex.completed?.status, 302, codex.relayed.body)
-  assert.deepEqual([e.state.connections.get(codex.connectionId).limits_tier, e.state.connections.get(codex.connectionId).profile], ['local_tested', 'chatgpt.com'])
+  // A local app (Claude Code) inside its ceiling: text, no sending, the tested local tier.
+  const code = await consentContent(w, await authorize(w, { clientId: CODE, redirectUri: 'http://localhost:1455/callback' }))
+  assert.equal(code.completed?.status, 302, code.relayed.body)
+  assert.deepEqual([e.state.connections.get(code.connectionId).limits_tier, e.state.connections.get(code.connectionId).profile], ['local_tested', 'claude.ai'])
+})
+
+test('ChatGPT and Codex in the enclave (§19.34): untested, so no drafts, the second tick, a history window that holds, the untested lifetimes and the default wait', async t => {
+  const { w, e } = await anyWorld(t)
+  const ask = () => authorize(w, { clientId: CHATGPT, redirectUri: CHATGPT_REDIRECT })
+  const started = await ask()
+  const d = started.prepared
+  assert.deepEqual([d.trust, d.tested_id, d.drift, d.client_name, d.claimed_name, d.client_host, d.client_local, d.limits_tier], ['unknown', null, false, 'chatgpt.com', 'ChatGPT', 'chatgpt.com', false, 'unknown'])
+  assert.deepEqual(d.limits, CLIENT_LIMITS.unknown)
+  assertAttestedWhole(d)
+  for (const [label, options] of [
+    ['drafts', { fields: { send: 'draft' } }], ['own-chat notes', { fields: { send: 'draft', send_self: true } }],
+    ['without the second tick', { fields: { unknown_ack: false } }], ['sealed as tested', { fields: { trust: 'tested', unknown_ack: false, history_days: null }, relay: { trust: 'unknown' } }],
+    ['the whole history', { fields: { history_days: null }, relay: { history_days: null } }],
+  ]) {
+    const refused = await consentContent(w, await ask(), options)
+    assert.deepEqual([refused.relayed.status, JSON.parse(refused.relayed.body).code], [400, 'invalid_bundle'], label)
+  }
+  // Text with the second tick and the shortest window: the archive's message is weeks old, so the connection cannot read it.
+  const done = await consentContent(w, started, { fields: { history_days: 7 } })
+  assert.equal(done.completed?.status, 302, done.relayed.body)
+  const record = e.state.connections.get(done.connectionId)
+  assert.deepEqual([record.trust, record.tested_id ?? null, record.limits_tier, record.unknown_ack, record.history_days, record.send ?? null, record.profile],
+    ['unknown', null, 'unknown', true, 7, null, 'default'])
+  const refresh = [...e.state.tokens.values()].find(token => token.kind === 'refresh' && token.connection_id === done.connectionId)
+  assert.equal(refresh.expires_at - refresh.issued_at, CLIENT_LIMITS.unknown.idle_days.content * DAY)
+  const listed = await callTool(w, done.tokens.access_token, 'list_messages', { device_id: vector.device, chat_key: '5511999990000@s.whatsapp.net' })
+  assert.deepEqual([listed.isError, listed.data.messages.length], [false, 0])
+  // Codex on a loopback port: an untested local app, never drafting, metadata within its window.
+  const codex = await authorize(w, { clientId: CODEX, redirectUri: 'http://127.0.0.1:1455/callback' })
+  assert.deepEqual([codex.prepared.trust, codex.prepared.tested_id, codex.prepared.client_local, codex.prepared.limits_tier, codex.prepared.claimed_name],
+    ['unknown', null, true, 'unknown', 'Codex'])
+  const refusedCodex = await consentContent(w, codex, { fields: { send: 'draft' } })
+  assert.deepEqual([refusedCodex.relayed.status, JSON.parse(refusedCodex.relayed.body).code], [400, 'invalid_bundle'])
+  const metadata = await consentMetadata(w, await authorize(w, { clientId: CODEX, redirectUri: 'http://localhost:61000/callback' }))
+  assert.equal(metadata.completed.status, 302, metadata.completed.body)
+  const app = e.state.connections.get(metadata.connectionId)
+  assert.deepEqual([app.trust, app.client_local, app.limits_tier, app.history_days, app.profile], ['unknown', true, 'unknown', 30, 'default'])
+  assert.deepEqual(w.cimdFetcher.calls, [CHATGPT, CODEX], 'both documents fetched by the enclave, once each')
 })
 
 test('at most three live connections of untested clients and tokens per workspace (§19.10): the fourth is 409 too_many_unknown, at relay and at completion', async t => {
@@ -289,11 +334,64 @@ test('the network check (§19.12) in the enclave: the PROXY v2 source of the com
   const refused = await w.public('/mcp/authorize/complete', { ...form({ request: other.id, proof: signature }), headers: { 'content-type': 'application/x-www-form-urlencoded', origin: CONSOLE_ORIGIN }, source: '198.51.101.10' })
   assert.equal(refused.status, 400)
   assert.match(refused.body, /ip_mismatch/)
-  assert.equal(w.go.connections.get(connectionId).status, 'revoked')
-  // The request line is written once the response has gone, so it may follow the answer by a moment.
+  // Go's row is revoked best effort, after the answer (internal.mjs), and the request line is written once the response has gone.
+  await w.until(() => w.go.connections.get(connectionId).status === 'revoked', 'Go revoking the connection')
   const refusedLine = () => w.lines.map(entry => JSON.parse(entry)).find(entry => entry.route === 'POST /mcp/authorize/complete' && entry.code === 'ip_mismatch')
-  for (let n = 0; n < 100 && !refusedLine(); n++) await new Promise(resolve => setTimeout(resolve, 10))
-  assert.equal(refusedLine()?.ip_mismatch, true)
+  await w.until(refusedLine, 'the ip_mismatch line')
+  assert.equal(refusedLine().ip_mismatch, true)
+})
+
+test('the way back in the enclave (§19.30): a wrong proof from the request\'s network gets the button, another network the console link; the console\'s Cancel ends the assistant\'s wait only from the request\'s network', async t => {
+  const { w } = await anyWorld(t)
+  const decline = (started, source) => w.public('/mcp/authorize/decline', { ...form({ request: started.id }),
+    headers: { 'content-type': 'application/x-www-form-urlencoded', origin: CONSOLE_ORIGIN }, source })
+  const waitFor = async find => { await w.until(find, 'the decline\'s line'); return find() }
+  const lines = () => w.lines.map(entry => JSON.parse(entry))
+  // A completion from another network: the console page, no button, and the request's state nowhere on it.
+  const other = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10', query: { state: 'st-complete' } })
+  // consentMetadata posts the completion from `source`: here another network than the request's.
+  const done = await consentMetadata(w, { ...other, source: '198.51.101.10' })
+  assert.equal(done.relayed.status, 204, done.relayed.body)
+  assert.equal(done.completed.status, 400)
+  assert.equal(done.completed.headers.location, undefined)
+  assert.match(done.completed.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
+  assert.equal(backButton(done.completed.body), null)
+  assert.ok(done.completed.body.includes(CONSOLE_ORIGIN))
+  assert.equal(done.completed.body.includes('st-complete'), false)
+  // A wrong proof from the request's own network: one button back to the assistant, with access_denied, its state and iss;
+  // the request lives on, and the right proof then completes it.
+  const near = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10', query: { state: 'st-wrong' } })
+  const relayed = await consentMetadata(w, near, { until: 'bundle' })
+  assert.equal(relayed.relayed.status, 204, relayed.relayed.body)
+  const wrong = await complete(w, near, { signature: 'A'.repeat(43) }, { source: '198.51.100.30' })
+  assert.equal(wrong.completed.status, 400)
+  assert.equal(wrong.completed.headers.location, undefined)
+  assert.match(wrong.completed.body, /<small>Wappie MCP: invalid_proof<\/small>/)
+  const button = backButton(wrong.completed.body)
+  assert.deepEqual([button.base, button.params, button.label], [CLAUDE_REDIRECT, { error: 'access_denied', state: 'st-wrong', iss: ORIGIN }, 'Back to claude.ai'])
+  assert.equal((await complete(w, near, relayed, { source: '198.51.100.30' })).completed.status, 302)
+  // Cancel from the request's own network: the browser goes straight back, and the request is gone.
+  const cancelled = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10', query: { state: 'st-cancel' } })
+  const declined = await decline(cancelled, '198.51.100.20')
+  assert.equal(declined.status, 302)
+  const location = new URL(declined.headers.location)
+  assert.deepEqual([`${location.origin}${location.pathname}`, Object.fromEntries(location.searchParams)], [CLAUDE_REDIRECT, { error: 'access_denied', state: 'st-cancel', iss: ORIGIN }])
+  assert.equal((await w.internal(`/internal/requests/${cancelled.id}`)).status, 404)
+  const line = await waitFor(() => lines().find(entry => entry.route === 'POST /mcp/authorize/decline' && entry.code === 'declined'))
+  assert.deepEqual([line.status, line.ip_mismatch], [302, false])
+  // Cancel from another network: the request ends, and the browser goes back to the console with nothing of the request.
+  const far = await authorize(w, { clientId: AGENT, redirectUri: AGENT_REDIRECT, source: '198.51.100.10', query: { state: 'st-far' } })
+  const refused = await decline(far, '198.51.102.10')
+  assert.deepEqual([refused.status, refused.headers.location, refused.body], [302, `${CONSOLE_ORIGIN}/console`, ''])
+  assert.equal((await w.internal(`/internal/requests/${far.id}`)).status, 404)
+  const farLine = await waitFor(() => lines().find(entry => entry.route === 'POST /mcp/authorize/decline' && entry.code === 'ip_mismatch'))
+  assert.deepEqual([farLine.status, farLine.ip_mismatch], [302, true])
+  assert.equal(w.lines.filter(entry => entry.includes('/mcp/authorize/decline')).every(entry => lineAllowed(entry)), true, 'the parent\'s sink admits the lines')
+  // From anywhere but the console, nothing happens.
+  const kept = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10' })
+  const forged = await w.public('/mcp/authorize/decline', { ...form({ request: kept.id }), headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example' }, source: '198.51.100.10' })
+  assert.equal(forged.status, 400)
+  assert.equal((await w.internal(`/internal/requests/${kept.id}`)).status, 200)
 })
 
 test('the version-4 renewal (§19.16): an unknown text connection renews with its own client, tier and window under fresh checks; a version-3 bundle and a changed window are refused', async t => {
@@ -366,12 +464,15 @@ test('reading limits in the enclave (§19.19): the tier\'s first-hour budget ans
   assert.equal(capped.isError, true, capped.text)
   assert.match(capped.text, /^Could not read the archive \(limit_reached\)\. This connection reached its reading limit for now; it resets at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\.$/)
   await tool()
+  await w.until(() => w.go.budgetHits.length > 0, 'Go hearing the budget hit')
   assert.deepEqual(w.go.budgetHits, [{ id: done.connectionId, code: 'first_hour_messages' }], 'once per window')
   assert.deepEqual(events(w, 'budget_hit').map(entry => entry.code), ['first_hour_messages'])
   // Previews are not counted.
   assert.equal((await callTool(w, done.tokens.access_token, 'list_chats', { device_id: vector.device })).isError, false)
   // The calls a minute: 20 for this tier, whatever the tools answer.
   for (let n = 0; n < 25; n++) assert.notEqual((await rpc(w, done.tokens.access_token)).status, 429, 'a tested client keeps 60')
+  // The bucket refills one call every three seconds: held still, the 21st call is the one past the minute's 20.
+  w.freeze()
   const unknown = await consentMetadata(w, await authorize(w, { clientId: AGENT, redirectUri: AGENT_REDIRECT }))
   const statuses = []
   for (let n = 0; n < 21; n++) statuses.push((await rpc(w, unknown.tokens.access_token)).status)
@@ -385,6 +486,8 @@ test('reading limits under concurrency (§19.19): a JSON-RPC batch takes one cal
   const done = await consentMetadata(w, await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT }))
   assert.equal(done.completed.status, 302)
   const call = id => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'list_messages', arguments: { device_id: vector.device, chat_key: '5511999990000@s.whatsapp.net' } } })
+  // The calls a minute refill one a second at 60: held still from the batch on, what follows counts calls alone.
+  w.freeze()
   // Eight calls in one POST, all run at once: two start under the limit (one message each), six are refused.
   const batch = await rpc(w, done.tokens.access_token, Array.from({ length: 8 }, (_, n) => call(n + 1)))
   assert.equal(batch.status, 200, batch.body)
@@ -395,6 +498,7 @@ test('reading limits under concurrency (§19.19): a JSON-RPC batch takes one cal
   const texts = answers.map(answer => answer.result.content[0].text)
   assert.equal(texts.filter(text => !text.startsWith('Could not read')).length, 2, texts.join('\n'))
   assert.equal(texts.filter(text => text.startsWith('Could not read the archive (limit_reached)')).length, 6)
+  await w.until(() => w.go.budgetHits.length > 0, 'Go hearing the budget hit')
   assert.deepEqual(w.go.budgetHits, [{ id: done.connectionId, code: 'first_hour_messages' }])
   // Calls sent at once in separate requests are held the same way.
   const again = await consentMetadata(w, await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT }))
@@ -413,7 +517,7 @@ test('reading limits under concurrency (§19.19): a JSON-RPC batch takes one cal
   assert.equal((await rpc(w, unknown.tokens.access_token)).status, 429)
   // Each request's line is written once its response has gone: the last one may follow by a moment.
   const codes = () => w.lines.map(line => JSON.parse(line)).filter(entry => entry.route === 'POST /mcp').map(entry => entry.code).filter(Boolean)
-  for (let n = 0; n < 100 && !codes().includes('rate_limited'); n++) await new Promise(resolve => setTimeout(resolve, 10))
+  await w.until(() => codes().includes('rate_limited'), 'the rate_limited line')
   assert.ok(codes().includes('batch_too_large') && codes().includes('rate_limited'), JSON.stringify(codes()))
 })
 
@@ -475,7 +579,7 @@ test('the descriptor vectors\' shapes are the reader\'s: each kind of attest-v2.
   for (const shape of keys('live_list')) assert.deepEqual(shape, Object.keys(list).sort())
   const ai = JSON.parse((await w.internal('/internal/ai/requests', { method: 'POST', body: { nonce: randomBytes(32).toString('base64url') } })).body)
   for (const shape of keys('ai')) assert.deepEqual(shape, Object.keys(ai).sort())
-  assert.deepEqual(TESTED_CLIENTS.map(entry => entry.id), ['claude', 'chatgpt', 'chatgpt_cb', 'codex', 'claude_code', 'claude_dcr', 'chatgpt_dcr'])
+  assert.deepEqual(TESTED_CLIENTS.map(entry => entry.id), ['claude', 'claude_code', 'claude_dcr'])
 })
 
 test('public wildcard names that resolve inside (127.0.0.1.nip.io, 169.254.169.254.sslip.io) pass the host check and die at the parent\'s proxy: one uniform refusal, the domain remembered', async t => {
@@ -534,10 +638,10 @@ test('the version-4 renewal of a tested web client with drafts (§19.16): the se
   assert.equal(accepted.status, 204, accepted.body)
 })
 
-test('the version-4 renewal of a tested local app (§19.16): a Codex loopback text connection renews as the app it is; a bundle adding drafts or changing the client is refused', async t => {
+test('the version-4 renewal of a tested local app (§19.16): a Claude Code loopback text connection renews as the app it is; a bundle adding drafts or changing the client is refused', async t => {
   const { w, e } = await anyWorld(t)
-  const started = await authorize(w, { clientId: CODEX, redirectUri: 'http://127.0.0.1:49152/callback' })
-  assert.deepEqual([started.prepared.trust, started.prepared.client_local, started.prepared.limits_tier, started.prepared.tested_id], ['tested', true, 'local_tested', 'codex'])
+  const started = await authorize(w, { clientId: CODE, redirectUri: 'http://127.0.0.1:49152/callback' })
+  assert.deepEqual([started.prepared.trust, started.prepared.client_local, started.prepared.limits_tier, started.prepared.tested_id], ['tested', true, 'local_tested', 'claude_code'])
   const done = await consentContent(w, started)
   assert.equal(done.completed?.status, 302, done.relayed.body)
   await e.close()
@@ -552,7 +656,7 @@ test('the version-4 renewal of a tested local app (§19.16): a Codex loopback te
     const connection = w.go.connections.get(done.connectionId)
     const bundle = { version: 2, kind: 'content', purpose: 'renewal', server_url: ORIGIN, workspace_id: workspace, service_user_id: service, device_ids: [vector.device], token,
       key_mode: 'ephemeral', consent_version: 4, expires_at: connection.expires_at, connection_id: done.connectionId,
-      client_id: CODEX, client_kind: 'cimd', client_local: true, trust: 'tested', started_ack: true, unknown_ack: false, history_days: null, ...fields }
+      client_id: CODE, client_kind: 'cimd', client_local: true, trust: 'tested', started_ack: true, unknown_ack: false, history_days: null, ...fields }
     for (const name of Object.keys(bundle)) if (bundle[name] === undefined) delete bundle[name]
     bundle.device_checks = deviceChecks(bundle, { request: renewal.renewal_id, kid: renewal.kid })
     const { sealed } = await sealContent(renewal.reader_public_key, bundle, renewLabels(renewal.renewal_id, done.connectionId, renewal.kid))
@@ -561,7 +665,7 @@ test('the version-4 renewal of a tested local app (§19.16): a Codex loopback te
     return { renewal, service, relayed }
   }
   for (const [label, fields] of [
-    ['drafts on a local app', { send: 'draft' }], ['a web client', { client_local: false }], ['another app', { client_id: 'https://claude.ai/oauth/claude-code-client-metadata' }],
+    ['drafts on a local app', { send: 'draft' }], ['a web client', { client_local: false }], ['another app', { client_id: CODEX }],
     ['a window it never had', { history_days: 30 }],
   ]) {
     const refused = await renew(fields)
@@ -571,7 +675,7 @@ test('the version-4 renewal of a tested local app (§19.16): a Codex loopback te
   const renewed = await renew()
   const r = renewed.renewal
   assert.deepEqual([r.kind, r.consent_version, r.client_kind, r.client_id, r.tested_id, r.client_local, r.client_name, r.trust, r.limits_tier, r.history_days],
-    ['renewal', 4, 'cimd', CODEX, 'codex', true, 'Codex', 'tested', 'local_tested', null])
+    ['renewal', 4, 'cimd', CODE, 'claude_code', true, 'Claude Code', 'tested', 'local_tested', null])
   assert.deepEqual(r.limits, CLIENT_LIMITS.local_tested)
   assertAttestedWhole(r)
   assert.equal(renewed.relayed.status, 204, renewed.relayed.body)
@@ -581,5 +685,5 @@ test('the version-4 renewal of a tested local app (§19.16): a Codex loopback te
   const numbers = await callTool(w, done.tokens.access_token, 'list_numbers')
   assert.equal(numbers.isError, false, numbers.text)
   const record = again.state.connections.get(done.connectionId)
-  assert.deepEqual([record.client_local, record.trust, record.limits_tier, record.tested_id, record.send ?? null], [true, 'tested', 'local_tested', 'codex', null])
+  assert.deepEqual([record.client_local, record.trust, record.limits_tier, record.tested_id, record.send ?? null], [true, 'tested', 'local_tested', 'claude_code', null])
 })

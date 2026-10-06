@@ -178,10 +178,10 @@ content locked; plaintext requires explicit local configuration and authorized
 keys. See the [REST contract](docs/rest-api.md) and [MCP setup](docs/mcp.md).
 
 `packages/mcp-http` runs the same reader over Streamable HTTP for remote
-connectors (claude.ai, ChatGPT, Codex, Claude Code and, from reader 0.6.0,
-any MCP client that identifies itself with a Client ID Metadata Document). It
-is an OAuth 2.1 resource *and*
-authorization server in its own process, so the Go server never mints tokens.
+connectors (Claude and Claude Code, the assistants Wappie tests, and from
+reader 0.6.0 any MCP client that identifies itself with a Client ID Metadata
+Document, untested). It is an OAuth 2.1 resource *and* authorization server
+in its own process, so the Go server never mints tokens.
 It runs in two places, and they differ in what they can read:
 
 - **The hosted metadata connector** (`server.mjs`: Wappie's

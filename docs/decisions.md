@@ -1318,13 +1318,14 @@ has tested are image constants with their exact redirects, measured and
 published, and are never fetched; a tested client that asks for another
 redirect is served as untested. The first list (Claude, ChatGPT, Codex and
 Claude Code) is final only after a live baseline on the current reader, and a
-web client that accepts a sign-in it did not start is not listed.
+web client that accepts a sign-in it did not start is not listed. After the
+baseline the list is Claude and Claude Code (below).
 
 **Dynamic registration only for the pinned redirects.** It proves only that a
 code goes to an address on a host, which an open redirect fakes, and the
 specification has deprecated it. Registration accepts the pinned Claude and
-ChatGPT redirects and nothing else, which also closes the hole where any path
-on those hosts could be registered.
+ChatGPT redirects and nothing else (Claude's only, after the baseline), which
+also closes the hole where any path on those hosts could be registered.
 
 **What an untested client may do is narrower.** Metadata once the person
 ticks "I started this"; text and attachments only after a second, deliberate
@@ -1357,7 +1358,7 @@ content or receives archive private keys.
 ## Fewer steps, without a new reader image (2026-10-04)
 
 Owner decisions M3, M4 and M6; the contract is
-[§19.30](mcp-enclave.md#1930-fewer-steps-without-a-new-image-a1-to-a7).
+[§19.35](mcp-enclave.md#1935-fewer-steps-without-a-new-image-a1-to-a7).
 
 **A step-up instead of the password.** Every text consent and renewal asked
 for the Wappie password and waited for an Argon2id derivation, the largest
@@ -1383,3 +1384,18 @@ until the platform decides.
 assistant used to leave the old connection holding a place under the cap;
 the consent now replaces it (unticked, both stay), and a connection whose
 refresh token has died ends by itself.
+
+## Claude is the only tested assistant (2026-10-05)
+
+ChatGPT's plugin flow kept failing in the live baseline on reader 0.5.0 and
+blocked the project, so the owner kept only Claude as a tested assistant and
+moved on. Claude on the web and Claude Code passed, each by its document;
+ChatGPT, in Chat and in Work, and Codex did not finish. Reader 0.6.0's
+measured list is Claude's document, Claude Code's, and Claude's registration
+on its own two callbacks, which the owner kept without a baseline run.
+ChatGPT and Codex still connect, as any MCP client Wappie has not tested:
+their documents are fetched and judged like any other, under the untested
+limits, and registration no longer accepts ChatGPT's redirects. The
+console's guide shows Claude and "Other assistants"; nothing promises
+ChatGPT. A vendor that passes the whole script on a later reader is listed by
+that reader's release ([§19.34](mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).

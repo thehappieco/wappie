@@ -24,8 +24,8 @@ const (
 )
 
 // defaultDCRHosts are the hosts of the pinned DCR redirects (§19.8): Claude's
-// two callbacks and ChatGPT's.
-const defaultDCRHosts = "claude.ai,claude.com,chatgpt.com"
+// two callbacks, the only DCR entry since baseline B (§19.34).
+const defaultDCRHosts = "claude.ai,claude.com"
 
 // testedIDPattern is a tested client's id in the image's TESTED_CLIENTS.
 var testedIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)

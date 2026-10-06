@@ -1,7 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { auth } from '@modelcontextprotocol/client'
-import { harness, authorize, authorizeURL, clientProvider, consent, exchange, pkce, refresh, register, rpc, session, secretsAbsent, REDIRECT_URI } from './harness.mjs'
+import { randomUUID } from 'node:crypto'
+import { createAuthorizationServer } from '../as.mjs'
+import { harness, authorize, authorizeURL, backButton, clientProvider, consent, decline, exchange, pkce, proof, refresh, register, rpc, session, secretsAbsent, CONSOLE_URL, DAY, REDIRECT_URI } from './harness.mjs'
 
 const chatgpt = ['https://chatgpt.com/connector/oauth/abc123', 'https://chatgpt.com/connector_platform_oauth_redirect']
 
@@ -372,8 +374,7 @@ test('consent completion: only the console origin may post, bad proofs burn afte
   const flipped = tampered.proof.slice(0, 10) + (tampered.proof[10] === 'A' ? 'B' : 'A') + tampered.proof.slice(11)
   const third = await h.form('/mcp/authorize/complete', { request: tampered.id, proof: flipped }, { origin: h.consoleOrigin })
   assert.equal(third.status, 400)
-  await new Promise(resolve => setTimeout(resolve, 50))
-  assert.equal(h.go.connections.get(tampered.connectionId).status, 'revoked', 'three failures burn the request and revoke the connection')
+  await h.until(() => h.go.connections.get(tampered.connectionId).status === 'revoked', 'three failures burning the request and revoking the connection')
   assert.equal((await h.form('/mcp/authorize/complete', { request: tampered.id, proof: tampered.proof }, { origin: h.consoleOrigin })).status, 400, 'the right proof is too late')
   assert.equal((await h.internal(`/internal/requests/${tampered.id}`)).status, 404)
   for (let index = 0; index < 10; index++) await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, 'x-forwarded-for': '198.51.100.4' })
@@ -390,6 +391,151 @@ test('consent completion: only the console origin may post, bad proofs burn afte
   assert.match(notActivated.body, /activation_failed/)
   assert.equal(h.reader.state.connections.has(stale.connectionId), false)
   secretsAbsent(h, { linkSecrets: [evil.linkSecret, tampered.linkSecret, stale.linkSecret], proofs: [evil.proof, tampered.proof, proof] })
+})
+
+test('the way back (§19.30): a refusal after a valid proof, or of an authorize cap, has one button to the assistant with the error, its state and iss; before the proof a version-1 request keeps its state', async t => {
+  const h = await harness(t)
+  const back = (body, error, state) => {
+    const button = backButton(body)
+    assert.ok(button, 'a button back to the assistant')
+    assert.equal(button.base, REDIRECT_URI)
+    // Only the error, the request's own state and the issuer: no description, no code, nothing of the consent.
+    assert.deepEqual(button.params, { error, state, iss: h.publicOrigin })
+    return button
+  }
+  const validProof = done => proof(done.linkSecret, { requestID: done.id, clientID: done.descriptor.client_id, codeChallenge: done.descriptor.code_challenge, sealedBytes: done.sealedBytes })
+  // A wrong proof of a version-1 request (the allowlist policy): with no network check, whoever holds the id may post it, so
+  // the page keeps the console link, on every try and when the third burns the request, and the state stays in the reader.
+  const first = clientProvider()
+  assert.equal(await auth(first, { serverUrl: h.resource }), 'REDIRECT')
+  const wrong = await consent(h, first.store.authorizationUrl, { proof: 'A'.repeat(43) })
+  assert.equal(wrong.completed.status, 400)
+  assert.equal(wrong.completed.location, null, 'a page, never a redirect')
+  const retried = await h.form('/mcp/authorize/complete', { request: wrong.id, proof: 'B'.repeat(43) }, { origin: h.consoleOrigin })
+  const burned = await h.form('/mcp/authorize/complete', { request: wrong.id, proof: 'C'.repeat(43) }, { origin: h.consoleOrigin })
+  for (const refused of [wrong.completed, retried, burned]) {
+    assert.match(refused.body, /<small>Wappie MCP: invalid_proof<\/small>/)
+    assert.equal(backButton(refused.body), null)
+    assert.ok(refused.body.includes(h.consoleOrigin))
+    assert.equal(refused.body.includes(first.store.state), false)
+  }
+  assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).code, 'proof_burned')
+  // A request that is gone has no redirect to go back to: the console, as before.
+  const gone = await h.form('/mcp/authorize/complete', { request: wrong.id, proof: wrong.proof }, { origin: h.consoleOrigin })
+  assert.equal(backButton(gone.body), null)
+  assert.ok(gone.body.includes(h.consoleOrigin))
+  // A failed activation: the proof was valid, so this browser holds the consent; the server failed, not the person.
+  const second = clientProvider()
+  assert.equal(await auth(second, { serverUrl: h.resource }), 'REDIRECT')
+  const stale = await consent(h, second.store.authorizationUrl, { until: 'bundle' })
+  h.go.connections.get(stale.connectionId).status = 'revoked'
+  const signature = validProof(stale)
+  const failed = await h.form('/mcp/authorize/complete', { request: stale.id, proof: signature }, { origin: h.consoleOrigin, 'accept-language': 'pt-BR,pt;q=0.9' })
+  assert.equal(failed.status, 502)
+  assert.equal(failed.location, null)
+  assert.deepEqual([back(failed.body, 'server_error', second.store.state).lang, backButton(failed.body).label], ['pt', 'Voltar para claude.ai'])
+  assert.equal(failed.body.includes(h.consoleOrigin), false, 'the assistant, not the console, is the way back')
+  // The origin refusals never act on the request, so they never point at the assistant.
+  const third = clientProvider()
+  assert.equal(await auth(third, { serverUrl: h.resource }), 'REDIRECT')
+  const evil = await consent(h, third.store.authorizationUrl, { origin: 'https://evil.example' })
+  assert.equal(backButton(evil.completed.body), null)
+  // A request made without a state goes back without one.
+  h.clock.advance(13_000)
+  const clientId = (await register(h, { client_name: 'Stateless' })).json().client_id
+  const stateless = await consent(h, authorizeURL(h, { clientId, challenge: pkce().challenge, state: null }), { until: 'bundle' })
+  h.go.connections.get(stateless.connectionId).status = 'revoked'
+  const statelessProof = validProof(stateless)
+  const statelessFailed = await h.form('/mcp/authorize/complete', { request: stateless.id, proof: statelessProof }, { origin: h.consoleOrigin })
+  assert.deepEqual(backButton(statelessFailed.body).params, { error: 'server_error', iss: h.publicOrigin })
+  // Every slot held by a consent in progress: the client hears the server is busy, from the page's button.
+  const fakes = Array.from({ length: 1000 }, (_, n) => [`fake-${n}`, { id: `fake-${n}`, bundle: {}, ip: 'elsewhere', created_at: h.clock.now(), expires_at: h.clock.now() + 600_000 }])
+  for (const [id, pending] of fakes) h.reader.state.pending.set(id, pending)
+  const full = clientProvider()
+  assert.equal(await auth(full, { serverUrl: h.resource }), 'REDIRECT')
+  const busy = await h.request(new URL(full.store.authorizationUrl).pathname + new URL(full.store.authorizationUrl).search)
+  assert.equal(busy.status, 429)
+  assert.match(busy.body, /<small>Wappie MCP: too_many_requests<\/small>/)
+  back(busy.body, 'temporarily_unavailable', full.store.state)
+  for (const [id] of fakes) h.reader.state.pending.delete(id)
+  secretsAbsent(h, { linkSecrets: [wrong.linkSecret, stale.linkSecret, evil.linkSecret, stateless.linkSecret], proofs: [wrong.proof, signature, evil.proof, statelessProof] })
+})
+
+test('the console\'s Cancel (§19.30) on the hosted reader: its refusals change nothing, and a version-1 request, or one that is gone, goes back to the console untouched', async t => {
+  const h = await harness(t)
+  const provider = clientProvider()
+  assert.equal(await auth(provider, { serverUrl: h.resource }), 'REDIRECT')
+  const started = await consent(h, provider.store.authorizationUrl, { until: 'authorize' })
+  const alive = async () => (await h.internal(`/internal/requests/${started.id}`)).status === 200
+  const line = () => JSON.parse(h.logs.findLast(entry => entry.includes('/mcp/authorize/decline')))
+  // As strict as the completion: the console's Origin only, a form, POST, and nothing changes otherwise.
+  for (const [headers, code] of [[{ origin: undefined }, 'origin_missing'], [{ origin: 'null' }, 'opaque_origin'], [{ origin: 'https://evil.example' }, 'invalid_origin']]) {
+    const refused = await h.request('/mcp/authorize/decline', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...(headers.origin ? { origin: headers.origin } : {}) },
+      body: new URLSearchParams({ request: started.id }).toString() })
+    assert.equal(refused.status, 400, code)
+    assert.match(refused.body, new RegExp(`<small>Wappie MCP: ${code}</small>`))
+    assert.equal(backButton(refused.body), null, code)
+    assert.equal(await alive(), true, `${code}: the request is untouched`)
+  }
+  assert.equal((await h.request('/mcp/authorize/decline', { method: 'POST', headers: { origin: h.consoleOrigin, 'content-type': 'application/json' }, body: JSON.stringify({ request: started.id }) })).status, 400)
+  assert.equal((await h.request('/mcp/authorize/decline', { method: 'POST', headers: { origin: h.consoleOrigin, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `request=${started.id}&request=${started.id}` })).status, 400, 'a repeated field')
+  assert.equal((await h.request('/mcp/authorize/decline', { headers: { origin: h.consoleOrigin } })).status, 405)
+  assert.equal(await alive(), true)
+  // Never made, or gone: back to the console, whose Cancel already dropped it.
+  const unknown = await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA')
+  assert.deepEqual([unknown.status, unknown.location, unknown.body], [302, CONSOLE_URL, ''])
+  assert.deepEqual([line().route, line().status, line().code], ['POST /mcp/authorize/decline', 302, 'request_not_found'])
+  // A version-1 request is not this route's: its console keeps the old Cancel, and with no network check its state would go
+  // to anyone holding the id. Back to the console, and the request goes on as if nothing was posted, its consent included.
+  const relayed = await consent(h, provider.store.authorizationUrl, { until: 'bundle' })
+  const kept = await decline(h, relayed.id)
+  assert.deepEqual([kept.status, kept.location, kept.body], [302, CONSOLE_URL, ''])
+  assert.deepEqual([line().status, line().code], [302, 'not_declinable'])
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(h.go.connections.get(relayed.connectionId).status, 'pending')
+  const signature = proof(relayed.linkSecret, { requestID: relayed.id, clientID: relayed.descriptor.client_id, codeChallenge: relayed.descriptor.code_challenge, sealedBytes: relayed.sealedBytes })
+  const completed = await h.form('/mcp/authorize/complete', { request: relayed.id, proof: signature }, { origin: h.consoleOrigin })
+  assert.equal(completed.status, 302)
+  assert.equal(new URL(completed.location).searchParams.get('state'), provider.store.state)
+  // Ten declines a minute per address, in a bucket of their own.
+  for (let index = 0; index < 10; index++) await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', { 'x-forwarded-for': '198.51.100.7' })
+  assert.equal((await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', { 'x-forwarded-for': '198.51.100.7' })).status, 429)
+  assert.notEqual((await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, 'x-forwarded-for': '198.51.100.7' })).status, 429)
+  secretsAbsent(h, { linkSecrets: [relayed.linkSecret], proofs: [signature] })
+})
+
+test('a completion whose request ended while its proof was being checked is never activated (§19.30): a Cancel in another tab wins', async () => {
+  const consoleURL = 'https://console.example.test/console', resource = 'https://mcp.example.test/mcp'
+  const id = 'R'.repeat(22), connection = randomUUID(), calls = []
+  let reached, release
+  const checking = new Promise(resolve => { reached = resolve }), held = new Promise(resolve => { release = resolve })
+  const state = { pending: new Map(), connections: new Map(), codes: new Map(), save: async () => {} }
+  // The proof check is held open until the decline has run; it then finds the proof good.
+  const content = { async verifyProof() { reached(); await held; return { workspace_id: 'w', device_ids: [], token: 't' } }, install() { calls.push(['install']) } }
+  const as = createAuthorizationServer({ state, clients: { consented() {} }, cimd: {}, tokens: { issueCode: () => 'code' }, limiter: { take: () => ({ ok: true }) },
+    relay: { activate: async target => { calls.push(['activate', target]) }, revoke: async target => { calls.push(['revoke', target]) } },
+    log: { event() {} }, now: Date.now, publicOrigin: 'https://mcp.example.test', consoleURL, resource, pendingTTLMs: 600_000, content, policy: { mode: 'any', unknownLiveMax: 3 } })
+  state.pending.set(id, { id, descriptor_version: 2, client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata', redirect_uri: REDIRECT_URI, state: 'st-race',
+    code_challenge: 'c'.repeat(43), resource, ip: '203.0.113.10', created_at: Date.now(), expires_at: Date.now() + 600_000, proof_attempts: 0, trust: 'tested',
+    connection_id: connection, tenant_id: 'tenant', bundle: { kind: 'content', expires_at: new Date(Date.now() + DAY).toISOString() } })
+  const post = (path, fields) => new Request(`https://mcp.example.test${path}`, { method: 'POST', headers: { origin: new URL(consoleURL).origin, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(fields).toString() })
+  const meta = {}
+  const completing = as.complete(post('/mcp/authorize/complete', { request: id, proof: 'p' }), '203.0.113.10', meta)
+  await checking
+  const declined = await as.decline(post('/mcp/authorize/decline', { request: id }), '203.0.113.11', {})
+  assert.equal(declined.status, 302)
+  assert.deepEqual(Object.fromEntries(new URL(declined.headers.get('location')).searchParams), { error: 'access_denied', state: 'st-race', iss: 'https://mcp.example.test' })
+  release()
+  const completed = await completing
+  assert.equal(completed.status, 400)
+  assert.equal(meta.code, 'request_gone')
+  const body = await completed.text()
+  assert.match(body, /<small>Wappie MCP: invalid_proof<\/small>/)
+  assert.equal(body.includes('st-race'), false)
+  assert.deepEqual(calls, [['revoke', connection]], 'revoked by the decline, and never activated')
+  assert.deepEqual([state.connections.size, state.activating?.size ?? 0, state.codes.size], [0, 0, 0])
 })
 
 test('the SDK client recovers from invalid_grant by re-authorizing, and a second consent yields a second connection', async t => {

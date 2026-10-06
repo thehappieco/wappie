@@ -14,12 +14,12 @@ import {
   claimedName, classifyRedirect, dcrEntryFor, highlyRestrictive, makeRoomRegistered, makeRoomUnknown, MAX_CLIENTS_PER_HOST, pins, redirectAllowed, testedFor,
   UNKNOWN_CLIENTS_MAX, UNKNOWN_CLIENTS_PER_DOMAIN,
 } from '../clients.mjs'
-import { PENDING_PER_CLIENT, resourceOf, scopeAcceptable } from '../as.mjs'
+import { PENDING_MAX, PENDING_PER_CLIENT, resourceOf, scopeAcceptable } from '../as.mjs'
 import { sameNetwork } from '../limits.mjs'
 import { createPSL, loadPSL, PSL_FILE } from '../psl.mjs'
 import { attestationUserDataV2, descriptorSHA256, userDataPreimageV2 } from '../attestation.mjs'
 import { CONTENT_REFRESH_IDLE_MS, idleFor, REFRESH_IDLE_MS } from '../tokens.mjs'
-import { authorizeURL, DAY, exchange, harness, pkce, proof, register, rpc, sealBundle, vector } from './harness.mjs'
+import { authorizeURL, backButton, CONSOLE_URL, DAY, decline, exchange, harness, pkce, proof, register, rpc, sealBundle, vector } from './harness.mjs'
 
 /** The snapshot's SHA-256, pinned here and in Go's netguard tests: the copies cannot drift (§19.5). */
 export const PSL_SHA256 = 'c525730712d4db475211ced98ddac44b06e4b288e50d95b69c68adb1e4e83e80'
@@ -57,6 +57,9 @@ let addresses = 0
 const fresh = () => from(`198.51.${100 + (++addresses >> 8)}.${addresses & 255}`)
 const CLAUDE = 'https://claude.ai/oauth/mcp-oauth-client-metadata'
 const CODE = 'https://claude.ai/oauth/claude-code-client-metadata'
+// ChatGPT's and Codex's documents: not tested (§19.34), so served as any other client.
+const CHATGPT = 'https://chatgpt.com/oauth/client.json'
+const CHATGPT_REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect'
 const CODEX = 'https://chatgpt.com/oauth/codex/client.json'
 const AGENT = 'https://agent.example.com/oauth/client.json'
 const AGENT_REDIRECT = 'https://agent.example.com/oauth/callback'
@@ -73,8 +76,11 @@ async function start(h, { clientId, redirectUri, address = fresh(), ...rest }) {
   return result
 }
 
-/** The console and Go after an authorize: link bundle v2 sealed and relayed, then the proof posted. */
-async function consentV2(h, started, { bundle = {}, relay = {}, address = started.address, expiresAt } = {}) {
+/**
+ * The console and Go after an authorize: link bundle v2 sealed and relayed, then (after `beforeComplete`, when given) the proof
+ * posted, or `badProof` in its place; `until: 'bundle'` stops after the relay, with the proof the console would post.
+ */
+async function consentV2(h, started, { bundle = {}, relay = {}, address = started.address, expiresAt, beforeComplete, badProof, until } = {}) {
   const { descriptor } = started
   const linkSecret = randomBytes(32).toString('base64url')
   const history = descriptor.trust === 'unknown' ? descriptor.limits.history_days.default : null
@@ -91,8 +97,10 @@ async function consentV2(h, started, { bundle = {}, relay = {}, address = starte
   }) })
   const result = { relayed, connectionId, linkSecret }
   if (relayed.status !== 204) return result
-  const signature = proof(linkSecret, { requestID: started.id, clientID: descriptor.client_id, codeChallenge: descriptor.code_challenge, sealedBytes })
-  result.completed = await h.request('/mcp/authorize/complete', { method: 'POST', body: new URLSearchParams({ request: started.id, proof: signature }).toString(),
+  result.proof = proof(linkSecret, { requestID: started.id, clientID: descriptor.client_id, codeChallenge: descriptor.code_challenge, sealedBytes })
+  if (until === 'bundle') return result
+  await beforeComplete?.()
+  result.completed = await h.request('/mcp/authorize/complete', { method: 'POST', body: new URLSearchParams({ request: started.id, proof: badProof ?? result.proof }).toString(),
     headers: { 'content-type': 'application/x-www-form-urlencoded', origin: h.consoleOrigin, ...address.headers } })
   return result
 }
@@ -202,27 +210,65 @@ test('matching (§19.6): https exactly, loopback by hostname and path with any p
   assert.equal(redirectAllowed(record, 'http://127.0.0.1:4444/callback/x'), false)
   assert.equal(classifyRedirect('http://[::1]:9/cb', 'x.com'), 'loopback')
   // The tested entries pin their redirects exactly, or by hostname and path for loopback.
-  const codex = TESTED_CLIENTS.find(entry => entry.id === 'codex')
-  assert.equal(pins(codex, 'http://127.0.0.1:1455/callback'), true)
-  assert.equal(pins(codex, 'http://localhost:1455/callback'), true)
-  assert.equal(pins(codex, 'http://[::1]:1455/callback'), false)
-  assert.equal(pins(codex, 'http://127.0.0.1:1455/auth/callback'), false)
+  const code = TESTED_CLIENTS.find(entry => entry.id === 'claude_code')
+  assert.equal(pins(code, 'http://127.0.0.1:1455/callback'), true)
+  assert.equal(pins(code, 'http://localhost:1455/callback'), true)
+  assert.equal(pins(code, 'http://[::1]:1455/callback'), false)
+  assert.equal(pins(code, 'http://127.0.0.1:1455/auth/callback'), false)
+  const claude = TESTED_CLIENTS.find(entry => entry.id === 'claude')
+  assert.equal(pins(claude, 'https://claude.com/api/mcp/auth_callback'), true)
+  assert.equal(pins(claude, 'https://claude.ai/api/mcp/auth_callback/'), false)
 })
 
+/**
+ * The rules a tested list may use (§19.3) beyond what the measured one does:
+ * an exact entry and a `cimd_pattern` entry under one path, and a DCR entry
+ * with a `{cb}`, on a host of the tests' own.
+ */
+const PATTERNED = [...TESTED_CLIENTS,
+  { id: 'agent_exact', kind: 'cimd', client_id: 'https://agent.example.com/oauth/app/client.json', name: 'Agent App', local: true, profile: 'default',
+    loopback: [['127.0.0.1', '/callback']] },
+  { id: 'agent_cb', kind: 'cimd_pattern', client_id: 'https://agent.example.com/oauth/{cb}/client.json', name: 'Agent', local: false, profile: 'default',
+    redirect_uris: ['https://agent.example.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
+  { id: 'agent_dcr', kind: 'dcr', name: 'Agent', local: false, profile: 'default',
+    redirect_uris: ['https://agent.example.com/connector_redirect', 'https://agent.example.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
+]
+
 test('tested entries (§19.4): exact before patterns, the same {cb} in the id and the redirect, DCR pinned only', () => {
-  assert.equal(testedFor(TESTED_CLIENTS, CODEX, 'http://127.0.0.1:1/callback').entry.id, 'codex', 'an exact entry wins over the callback-id pattern')
-  const cb = testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/abc_1/client.json', 'https://chatgpt.com/connector/oauth/abc_1')
-  assert.deepEqual([cb.entry.id, cb.cb, cb.pinned], ['chatgpt_cb', 'abc_1', true])
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/abc_1/client.json', 'https://chatgpt.com/connector/oauth/xyz').pinned, false)
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/a.b/client.json', 'https://chatgpt.com/connector/oauth/a.b'), null, 'the callback id\'s pattern')
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth//client.json', 'https://chatgpt.com/connector/oauth/'), null)
-  assert.equal(testedFor(TESTED_CLIENTS, 'https://chatgpt.com/oauth/x/client.jsonx', 'https://chatgpt.com/connector/oauth/x'), null)
-  assert.equal(testedFor(TESTED_CLIENTS, AGENT, AGENT_REDIRECT), null)
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://chatgpt.com/connector/oauth/abc_1']).id, 'chatgpt_dcr')
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']).id, 'claude_dcr')
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://claude.ai/api/mcp/auth_callback', 'https://chatgpt.com/connector_platform_oauth_redirect']), null, 'one entry pins them all')
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['https://claude.ai/other']), null)
-  assert.equal(dcrEntryFor(TESTED_CLIENTS, ['http://127.0.0.1/callback']), null, 'DCR never gets loopback')
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/app/client.json', 'http://127.0.0.1:1/callback').entry.id, 'agent_exact', 'an exact entry wins over the callback-id pattern')
+  const cb = testedFor(PATTERNED, 'https://agent.example.com/oauth/abc_1/client.json', 'https://agent.example.com/connector/oauth/abc_1')
+  assert.deepEqual([cb.entry.id, cb.cb, cb.pinned], ['agent_cb', 'abc_1', true])
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/abc_1/client.json', 'https://agent.example.com/connector/oauth/xyz').pinned, false)
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/a.b/client.json', 'https://agent.example.com/connector/oauth/a.b'), null, 'the callback id\'s pattern')
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth//client.json', 'https://agent.example.com/connector/oauth/'), null)
+  assert.equal(testedFor(PATTERNED, 'https://agent.example.com/oauth/x/client.jsonx', 'https://agent.example.com/connector/oauth/x'), null)
+  assert.equal(testedFor(PATTERNED, AGENT, AGENT_REDIRECT), null)
+  assert.equal(dcrEntryFor(PATTERNED, ['https://agent.example.com/connector/oauth/abc_1']).id, 'agent_dcr')
+  assert.equal(dcrEntryFor(PATTERNED, ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']).id, 'claude_dcr')
+  assert.equal(dcrEntryFor(PATTERNED, ['https://claude.ai/api/mcp/auth_callback', 'https://agent.example.com/connector_redirect']), null, 'one entry pins them all')
+  assert.equal(dcrEntryFor(PATTERNED, ['https://claude.ai/other']), null)
+  assert.equal(dcrEntryFor(PATTERNED, ['http://127.0.0.1/callback']), null, 'DCR never gets loopback')
+})
+
+test('the measured list (§19.34): Claude by its document and its registration, and Claude Code; ChatGPT and Codex are not tested', () => {
+  assert.deepEqual(TESTED_CLIENTS.map(entry => [entry.id, entry.kind, entry.name, entry.local, entry.profile]),
+    [['claude', 'cimd', 'Claude', false, 'claude.ai'], ['claude_code', 'cimd', 'Claude Code', true, 'claude.ai'], ['claude_dcr', 'dcr', 'Claude', false, 'claude.ai']])
+  assert.deepEqual([...new Set(TESTED_CLIENTS.map(entry => entry.name))], ['Claude', 'Claude Code'], 'the names the card, the list and the guide show as tested')
+  // The fingerprints baseline B recorded are these client_ids' (log.mjs: the first 12 hex of SHA-256).
+  const fp = value => createHash('sha256').update(value).digest('hex').slice(0, 12)
+  assert.deepEqual(TESTED_CLIENTS.filter(entry => entry.client_id).map(entry => fp(entry.client_id)), ['87035c02ba6c', '569ea71ec53b'])
+  for (const entry of TESTED_CLIENTS) {
+    assert.equal(entry.direct_send, undefined, entry.id)
+    for (const uri of entry.redirect_uris ?? []) assert.ok(['claude.ai', 'claude.com'].includes(new URL(uri).hostname), uri)
+  }
+  // Every form ChatGPT and Codex identify themselves with is a document of their own now, never a tested entry.
+  for (const [clientID, redirect] of [[CHATGPT, CHATGPT_REDIRECT], ['https://chatgpt.com/oauth/abc_1/client.json', 'https://chatgpt.com/connector/oauth/abc_1'],
+    [CODEX, 'http://127.0.0.1:1455/callback'], [CODEX, 'http://localhost:1455/callback']]) {
+    assert.equal(testedFor(TESTED_CLIENTS, clientID, redirect), null, `${clientID} ${redirect}`)
+  }
+  for (const uris of [[CHATGPT_REDIRECT], ['https://chatgpt.com/connector/oauth/abc_1'], [CHATGPT_REDIRECT, 'https://chatgpt.com/connector/oauth/abc_1']]) {
+    assert.equal(dcrEntryFor(TESTED_CLIENTS, uris), null, uris.join(' '))
+  }
 })
 
 test('the loosened request checks (§19.11) and the network comparison (§19.12)', () => {
@@ -256,11 +302,8 @@ test('a tested client asked with a pinned redirect is tested and never fetched; 
   const cases = [
     [CLAUDE, 'https://claude.ai/api/mcp/auth_callback', 'claude', 'Claude', false, 'claude.ai'],
     [CLAUDE, 'https://claude.com/api/mcp/auth_callback', 'claude', 'Claude', false, 'claude.ai'],
-    ['https://chatgpt.com/oauth/client.json', 'https://chatgpt.com/connector_platform_oauth_redirect', 'chatgpt', 'ChatGPT', false, 'chatgpt.com'],
-    ['https://chatgpt.com/oauth/Ab9_-x/client.json', 'https://chatgpt.com/connector/oauth/Ab9_-x', 'chatgpt_cb', 'ChatGPT', false, 'chatgpt.com'],
-    [CODEX, 'http://127.0.0.1:1455/callback', 'codex', 'Codex', true, 'chatgpt.com'],
-    [CODEX, 'http://localhost:9/callback', 'codex', 'Codex', true, 'chatgpt.com'],
     [CODE, 'http://localhost:54545/callback', 'claude_code', 'Claude Code', true, 'claude.ai'],
+    [CODE, 'http://127.0.0.1:9/callback', 'claude_code', 'Claude Code', true, 'claude.ai'],
   ]
   for (const [clientId, redirectUri, testedId, name, local, host] of cases) {
     const started = await start(h, { clientId, redirectUri })
@@ -296,23 +339,47 @@ test('a tested id with another redirect is fetched: unknown with drift when the 
   assert.equal(refused.response.status, 400)
   assert.match(refused.response.body, /invalid_redirect_uri/)
   assert.equal(h.fetcher.calls.length, 1, 'served from the cache')
-  // A callback-id pattern with a mismatched {cb}: the document decides, and this one does not list it.
-  const pattern = 'https://chatgpt.com/oauth/abc/client.json'
-  h.fetcher.docs.set(pattern, { body: { client_id: pattern, redirect_uris: ['https://chatgpt.com/connector/oauth/abc'] } })
-  const mismatched = await start(h, { clientId: pattern, redirectUri: 'https://chatgpt.com/connector/oauth/xyz' })
-  assert.equal(mismatched.response.status, 400)
   assert.equal(h.logs.map(line => JSON.parse(line)).filter(entry => entry.route === 'GET /mcp/authorize' && entry.drift === true).length, 1)
 })
 
-test('DCR (§19.8): pinned redirects only, tested with the entry\'s id; the ChatGPT callback forms share a tier', async t => {
-  const h = await anyHarness(t)
+test('a callback-id pattern (§19.4): the same {cb} in the id and the redirect is tested and never fetched; a mismatched one, the document decides', async t => {
+  const h = await anyHarness(t, { tested: PATTERNED })
+  const pinned = await start(h, { clientId: 'https://agent.example.com/oauth/Ab9_-x/client.json', redirectUri: 'https://agent.example.com/connector/oauth/Ab9_-x' })
+  assert.equal(pinned.response.status, 302, pinned.response.body)
+  assert.deepEqual([pinned.descriptor.trust, pinned.descriptor.tested_id, pinned.descriptor.client_name, pinned.descriptor.limits_tier], ['tested', 'agent_cb', 'Agent', 'web_tested'])
+  assert.deepEqual(h.fetcher.calls, [])
+  const pattern = 'https://agent.example.com/oauth/abc/client.json'
+  h.fetcher.docs.set(pattern, { body: { client_id: pattern, redirect_uris: ['https://agent.example.com/connector/oauth/abc'] } })
+  const mismatched = await start(h, { clientId: pattern, redirectUri: 'https://agent.example.com/connector/oauth/xyz' })
+  assert.equal(mismatched.response.status, 400)
+  assert.match(mismatched.response.body, /invalid_redirect_uri/)
+  assert.deepEqual(h.fetcher.calls, [pattern])
+  // The DCR and CIMD forms of one callback id share a tier.
+  h.clock.advance(13_000)
+  const registered = await register(h, { client_name: 'Agent', redirect_uris: ['https://agent.example.com/connector/oauth/cb_1'] })
+  assert.equal(registered.status, 201, registered.body)
+  const viaDCR = await start(h, { clientId: registered.json().client_id, redirectUri: 'https://agent.example.com/connector/oauth/cb_1' })
+  const viaCIMD = await start(h, { clientId: 'https://agent.example.com/oauth/cb_1/client.json', redirectUri: 'https://agent.example.com/connector/oauth/cb_1' })
+  assert.deepEqual([viaDCR.descriptor.trust, viaDCR.descriptor.tested_id, viaDCR.descriptor.limits_tier, viaDCR.descriptor.claimed_name], ['tested', 'agent_dcr', 'web_tested', 'Agent'])
+  assert.deepEqual([viaCIMD.descriptor.trust, viaCIMD.descriptor.tested_id, viaCIMD.descriptor.limits_tier], ['tested', 'agent_cb', 'web_tested'])
+  // A registered client asking for a redirect it did not register is refused.
+  const other = await start(h, { clientId: registered.json().client_id, redirectUri: 'https://agent.example.com/connector/oauth/cb_2' })
+  assert.equal(other.response.status, 400)
+  assert.match(other.response.body, /invalid_redirect_uri/)
+})
+
+test('DCR (§19.8): pinned redirects only, tested with the entry\'s id; ChatGPT\'s registration refused, a record of it given the invalid_client page', async t => {
+  const h = await anyHarness(t, { refusalFloorMs: undefined })
   for (const uris of [['https://claude.ai/other'], ['https://claude.ai/api/mcp/auth_callback', 'https://claude.ai/x'], ['http://127.0.0.1/callback'],
-    ['https://claude.ai/api/mcp/auth_callback', 'https://chatgpt.com/connector_platform_oauth_redirect'], ['https://agent.example.com/cb']]) {
+    ['https://claude.ai/api/mcp/auth_callback', 'https://chatgpt.com/connector_platform_oauth_redirect'], ['https://agent.example.com/cb'],
+    // ChatGPT's two callback forms: no `dcr` entry pins them since baseline B (§19.34).
+    [CHATGPT_REDIRECT], ['https://chatgpt.com/connector/oauth/cb_1'], [CHATGPT_REDIRECT, 'https://chatgpt.com/connector/oauth/cb_1']]) {
     h.clock.advance(13_000)
-    const refused = await register(h, { redirect_uris: uris })
+    const refused = await register(h, { client_name: 'ChatGPT', redirect_uris: uris })
     assert.equal(refused.status, 400, JSON.stringify(uris))
-    assert.equal(refused.json().error, 'invalid_redirect_uri')
+    assert.deepEqual(refused.json(), { error: 'invalid_redirect_uri', error_description: 'redirect_uris must be redirects this server pins for dynamic registration' }, JSON.stringify(uris))
   }
+  assert.equal([...h.reader.state.clients.values()].length, 0, 'a refused registration leaves no record')
   h.clock.advance(13_000)
   const claude = await register(h, { client_name: 'Сlaude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] })
   assert.equal(claude.status, 201, claude.body)
@@ -321,22 +388,42 @@ test('DCR (§19.8): pinned redirects only, tested with the entry\'s id; the Chat
   const d = started.descriptor
   assert.deepEqual([d.client_kind, d.trust, d.tested_id, d.client_name, d.claimed_name, d.name_dropped, d.client_host, d.registrable, d.limits_tier],
     ['dcr', 'tested', 'claude_dcr', 'Claude', null, true, 'claude.com', 'claude.com', 'web_tested'])
-  h.clock.advance(13_000)
-  const chatgpt = await register(h, { client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector/oauth/cb_1'] })
-  assert.equal(chatgpt.status, 201)
-  const viaDCR = await start(h, { clientId: chatgpt.json().client_id, redirectUri: 'https://chatgpt.com/connector/oauth/cb_1' })
-  const viaCIMD = await start(h, { clientId: 'https://chatgpt.com/oauth/cb_1/client.json', redirectUri: 'https://chatgpt.com/connector/oauth/cb_1' })
-  assert.deepEqual([viaDCR.descriptor.trust, viaDCR.descriptor.limits_tier, viaDCR.descriptor.claimed_name], ['tested', 'web_tested', 'ChatGPT'])
-  assert.deepEqual([viaCIMD.descriptor.trust, viaCIMD.descriptor.limits_tier], ['tested', 'web_tested'])
-  // A registered client asking for a redirect it did not register is refused.
-  const other = await start(h, { clientId: chatgpt.json().client_id, redirectUri: 'https://chatgpt.com/connector/oauth/cb_2' })
+  // A registered client asking for a redirect it did not register: the redirect page.
+  const other = await start(h, { clientId: claude.json().client_id, redirectUri: 'https://claude.ai/other' })
   assert.equal(other.response.status, 400)
-  assert.deepEqual(h.fetcher.calls, [])
-  // A 0.5.0 record that registered any path on an allowed host is served only for a pinned redirect.
+  assert.match(other.response.body, /<small>Wappie MCP: invalid_redirect_uri<\/small>/)
+  // The one page every client this reader does not accept gets (§19.6 step 5), for comparison.
+  const unknownBody = (await start(h, { clientId: 'not-a-client', redirectUri: CHATGPT_REDIRECT })).response.body
+  assert.match(unknownBody, /<small>Wappie MCP: invalid_client<\/small>/)
+  // Records made before the list lost an entry: a 0.5.0 record on any path of an allowed host, and ChatGPT's, as 0.5.0
+  // and a 0.6.0 image with its candidates wrote them. A redirect they registered that nothing pins now gets that page,
+  // no sooner than the refusal floor, and no request; a pinned one is served.
+  const at = h.clock.now()
   h.reader.state.clients.set('legacy-dcr-record-00000', { client_id: 'legacy-dcr-record-00000', source: 'dcr', client_name: 'Claude', redirect_host: 'claude.ai',
-    redirect_uris: ['https://claude.ai/open-redirect', 'https://claude.ai/api/mcp/auth_callback'], grant_types: ['authorization_code'], created_at: h.clock.now(), last_used_at: h.clock.now() })
-  assert.equal((await start(h, { clientId: 'legacy-dcr-record-00000', redirectUri: 'https://claude.ai/open-redirect' })).response.status, 400)
+    redirect_uris: ['https://claude.ai/open-redirect', 'https://claude.ai/api/mcp/auth_callback'], grant_types: ['authorization_code'], created_at: at, last_used_at: at })
+  h.reader.state.clients.set('legacy-chatgpt-dcr-0000', { client_id: 'legacy-chatgpt-dcr-0000', source: 'dcr', client_name: 'ChatGPT', redirect_host: 'chatgpt.com',
+    redirect_uris: [CHATGPT_REDIRECT], grant_types: ['authorization_code', 'refresh_token'], created_at: at, last_used_at: at, authorized_at: at })
+  h.reader.state.clients.set('candidate-chatgpt-dcr-0', { client_id: 'candidate-chatgpt-dcr-0', source: 'dcr', client_name: 'ChatGPT', claimed_name: 'ChatGPT', name_dropped: false,
+    redirect_host: 'chatgpt.com', tested_id: 'chatgpt_dcr', redirect_uris: ['https://chatgpt.com/connector/oauth/cb_1'], grant_types: ['authorization_code'], created_at: at, last_used_at: at })
+  const pending = h.reader.state.pending.size
+  for (const [clientId, redirectUri] of [['legacy-dcr-record-00000', 'https://claude.ai/open-redirect'], ['legacy-chatgpt-dcr-0000', CHATGPT_REDIRECT],
+    ['candidate-chatgpt-dcr-0', 'https://chatgpt.com/connector/oauth/cb_1']]) {
+    const begun = performance.now()
+    const refused = await start(h, { clientId, redirectUri })
+    assert.ok(performance.now() - begun >= 990, `${clientId} answered after ${performance.now() - begun} ms`)
+    assert.equal(refused.response.status, 400, clientId)
+    assert.equal(refused.response.body, unknownBody, clientId)
+  }
+  assert.equal(h.reader.state.pending.size, pending, 'no request was opened')
+  // Asked for a redirect it never registered, a ChatGPT record still gets the redirect page.
+  assert.match((await start(h, { clientId: 'legacy-chatgpt-dcr-0000', redirectUri: 'https://chatgpt.com/connector/oauth/cb_9' })).response.body, /invalid_redirect_uri/)
   assert.equal((await start(h, { clientId: 'legacy-dcr-record-00000', redirectUri: 'https://claude.ai/api/mcp/auth_callback' })).descriptor.trust, 'tested')
+  // Registering ChatGPT's callback again neither revives nor reuses its record.
+  h.clock.advance(13_000)
+  assert.equal((await register(h, { client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector/oauth/cb_1'] })).status, 400)
+  const codes = h.logs.map(line => JSON.parse(line)).filter(entry => entry.route === 'GET /mcp/authorize').map(entry => entry.code)
+  assert.equal(codes.filter(code => code === 'invalid_client').length, 4)
+  assert.deepEqual(h.fetcher.calls, [], 'nothing was fetched')
 })
 
 test('an unknown client: fetched, cached by Cache-Control, the display name its host, and its loopback requests local', async t => {
@@ -369,6 +456,56 @@ test('an unknown client: fetched, cached by Cache-Control, the display name its 
   h.fetcher.docs.set(pages, { body: { client_id: pages, redirect_uris: ['https://team.github.io/callback.html'] } })
   const shared = await start(h, { clientId: pages, redirectUri: 'https://team.github.io/callback.html' })
   assert.deepEqual([shared.descriptor.registrable, shared.descriptor.shared_suffix], ['team.github.io', 'github.io'])
+})
+
+test('ChatGPT and Codex (§19.34): their documents are fetched and land in the untested tier, with its limits, history window and second tick, like any MCP client', async t => {
+  const h = await anyHarness(t)
+  const callback = 'https://chatgpt.com/oauth/Ab9_-x/client.json'
+  h.fetcher.docs.set(CHATGPT, { body: { client_id: CHATGPT, client_name: 'ChatGPT', redirect_uris: [CHATGPT_REDIRECT] } })
+  h.fetcher.docs.set(callback, { body: { client_id: callback, client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector/oauth/Ab9_-x'] } })
+  // Codex's document as chatgpt.com serves it (fetched 2026-10-05): loopback redirects only. ChatGPT's Work mode used this
+  // document in baseline B, so it returned to a loopback port too; Go's chatgpt.com is the host that vouches for the app.
+  h.fetcher.docs.set(CODEX, { body: { client_id: CODEX, client_name: 'Codex', redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback'] } })
+  const cases = [
+    [CHATGPT, CHATGPT_REDIRECT, 'ChatGPT', false],
+    [callback, 'https://chatgpt.com/connector/oauth/Ab9_-x', 'ChatGPT', false],
+    [CODEX, 'http://127.0.0.1:1455/callback', 'Codex', true],
+    [CODEX, 'http://localhost:61000/callback', 'Codex', true],
+  ]
+  const descriptors = []
+  for (const [clientId, redirectUri, claimed, local] of cases) {
+    const started = await start(h, { clientId, redirectUri })
+    assert.equal(started.response.status, 302, `${clientId} ${redirectUri}: ${started.response.body}`)
+    const d = started.descriptor
+    assert.deepEqual([d.client_kind, d.trust, d.tested_id, d.drift, d.client_name, d.claimed_name, d.client_host, d.registrable, d.shared_suffix, d.client_local, d.redirect_local, d.limits_tier],
+      ['cimd', 'unknown', null, false, 'chatgpt.com', claimed, 'chatgpt.com', 'chatgpt.com', null, local, local, 'unknown'], `${clientId} ${redirectUri}`)
+    assert.deepEqual(d.limits, CLIENT_LIMITS.unknown)
+    descriptors.push(started)
+  }
+  // Codex's document has no https callback, so ChatGPT's is refused for it, from the cached document, before any card.
+  const elsewhere = await start(h, { clientId: CODEX, redirectUri: CHATGPT_REDIRECT })
+  assert.deepEqual([elsewhere.response.status, elsewhere.id], [400, undefined])
+  assert.match(elsewhere.response.body, /<small>Wappie MCP: invalid_redirect_uri<\/small>/)
+  // The untested limits: a history window to choose, daily and first-hour reading limits, 20 calls a minute.
+  assert.deepEqual(CLIENT_LIMITS.unknown.history_days, { choices: [7, 30, 90], default: 30 })
+  assert.deepEqual([CLIENT_LIMITS.unknown.daily, CLIENT_LIMITS.unknown.first_hour, CLIENT_LIMITS.unknown.calls_per_minute],
+    [{ messages: 2000, attachments: 50 }, { messages: 300, attachments: 10 }, 20])
+  assert.deepEqual(h.fetcher.calls, [CHATGPT, callback, CODEX], 'each document fetched once, then cached')
+  assert.equal(h.reader.counters.tested_drift ?? 0, 0, 'no tested id asked: nothing drifted')
+  // A consent that treats ChatGPT as tested, or without a window, is refused; with the window it chose it is served as untested.
+  for (const options of [{ bundle: { trust: 'tested', history_days: null }, relay: { trust: 'tested', history_days: null } }, { bundle: { history_days: null }, relay: { history_days: null } }]) {
+    const refused = await consentV2(h, await start(h, { clientId: CHATGPT, redirectUri: CHATGPT_REDIRECT }), options)
+    assert.deepEqual([refused.relayed.status, refused.relayed.json().code], [400, 'invalid_bundle'], JSON.stringify(options))
+  }
+  const done = await consentV2(h, descriptors[0], { bundle: { history_days: 7 }, relay: { history_days: 7 } })
+  assert.equal(done.completed.status, 302, done.completed.body)
+  const record = h.reader.state.connections.get(done.connectionId)
+  assert.deepEqual([record.trust, record.tested_id ?? null, record.limits_tier, record.history_days, record.profile, record.client_host, record.claimed_name],
+    ['unknown', null, 'unknown', 7, 'default', 'chatgpt.com', 'ChatGPT'])
+  const local = await consentV2(h, descriptors[2])
+  assert.equal(local.completed.status, 302, local.completed.body)
+  const app = h.reader.state.connections.get(local.connectionId)
+  assert.deepEqual([app.trust, app.client_local, app.limits_tier, app.history_days, app.profile], ['unknown', true, 'unknown', 30, 'default'])
 })
 
 test('refusals (§19.6 step 5): one static invalid_client page for every reason, never sooner than a second, remembered for a minute', async t => {
@@ -483,12 +620,20 @@ test('request checks (§19.11): resource absent or normalized, a wider scope, an
 test('the network check (§19.12): the same /24 completes; another /24, /56 or family is ip_mismatch and drops the request', async t => {
   const h = await anyHarness(t)
   const redirectUri = 'https://claude.ai/api/mcp/auth_callback'
+  // A request's line is written once its response has gone: the completion's line after `mark` (the lines before it), once there.
+  const completionLine = async mark => {
+    const find = () => h.logs.slice(mark).map(line => JSON.parse(line)).find(entry => entry.route === 'POST /mcp/authorize/complete')
+    await h.until(find, 'the completion\'s line')
+    return find()
+  }
   const same = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10') })
+  let mark = h.logs.length
   const ok = await consentV2(h, same, { address: from('203.0.113.200') })
   assert.equal(ok.completed.status, 302, ok.completed.body)
-  assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).ip_mismatch, false)
+  assert.equal((await completionLine(mark)).ip_mismatch, false)
   for (const [first, second] of [['203.0.113.10', '203.0.114.10'], ['2001:db8:1:ab::1', '2001:db8:1:1ab::1'], ['203.0.113.10', '2001:db8::1']]) {
     const started = await start(h, { clientId: CLAUDE, redirectUri, address: from(first) })
+    mark = h.logs.length
     const refused = await consentV2(h, started, { address: from(second) })
     assert.equal(refused.completed.status, 400)
     assert.match(refused.completed.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
@@ -496,9 +641,10 @@ test('the network check (§19.12): the same /24 completes; another /24, /56 or f
     assert.match(refused.completed.body, /rede diferente.*Retransmissão Privada do iCloud/)
     for (const tag of ['es', 'fr', 'de']) assert.match(refused.completed.body, new RegExp(`<p lang="${tag}">`))
     assert.match(refused.completed.body, /name="viewport"/)
+    // Dropped before the answer, so nothing completes it; Go's row is revoked best effort, after it (internal.mjs).
     assert.equal(h.reader.state.pending.has(started.id), false, 'the request is dropped')
-    assert.equal(h.go.connections.get(refused.connectionId).status, 'revoked')
-    assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).ip_mismatch, true)
+    await h.until(() => h.go.connections.get(refused.connectionId).status === 'revoked', 'Go revoking the connection')
+    assert.equal((await completionLine(mark)).ip_mismatch, true)
   }
   const v6 = await start(h, { clientId: CLAUDE, redirectUri, address: from('2001:db8:1:ab::1') })
   assert.equal((await consentV2(h, v6, { address: from('2001:db8:1:cd::99') })).completed.status, 302, 'the same /56')
@@ -508,6 +654,141 @@ test('the network check (§19.12): the same /24 completes; another /24, /56 or f
   const refused = await consentV2(h, spanish, { address: { headers: { ...from('203.0.114.10').headers, 'accept-language': 'es-MX,es;q=0.9,en;q=0.8' } } })
   assert.match(refused.completed.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
   assert.deepEqual([...refused.completed.body.matchAll(/<p lang="([a-z]{2})">/g)].map(match => match[1]), ['es', 'en', 'pt', 'fr', 'de'])
+})
+
+test('the way back (§19.30) under the any policy: a button to the assistant only for a browser tied to the starter, and the state nowhere else', async t => {
+  const h = await anyHarness(t)
+  const redirectUri = 'https://claude.ai/api/mcp/auth_callback'
+  h.fetcher.docs.set(AGENT, { body: { client_id: AGENT, redirect_uris: [AGENT_REDIRECT] } })
+  const back = (body, base, error, state) => {
+    const button = backButton(body)
+    assert.ok(button, 'a button back to the assistant')
+    assert.equal(button.base, base)
+    assert.deepEqual(button.params, { error, state, iss: h.publicOrigin })
+    return button
+  }
+  /** A refusal for a browser not tied to the starter: the console link, no button, and the request's state nowhere on it. */
+  const consolePage = (body, code, state) => {
+    assert.match(body, new RegExp(`<small>Wappie MCP: ${code}</small>`))
+    assert.equal(backButton(body), null, `${code}: no way back to the assistant`)
+    assert.ok(body.includes(h.consoleOrigin), `${code}: the console link`)
+    assert.equal(body.includes(state), false, `${code}: the state stays in the reader`)
+  }
+  // Every slot held by a consent in progress (the enclave's policy): the client hears the server is busy, from the page's button.
+  const fakes = Array.from({ length: PENDING_MAX }, (_, n) => [`fake-${n}`, { id: `fake-${n}`, bundle: {}, ip: 'elsewhere', created_at: h.clock.now(), expires_at: h.clock.now() + 600_000 }])
+  for (const [id, pending] of fakes) h.reader.state.pending.set(id, pending)
+  const full = await start(h, { clientId: CLAUDE, redirectUri, state: 'st-full' })
+  assert.equal(full.response.status, 429)
+  assert.match(full.response.body, /<small>Wappie MCP: too_many_requests<\/small>/)
+  back(full.response.body, redirectUri, 'temporarily_unavailable', 'st-full')
+  for (const [id] of fakes) h.reader.state.pending.delete(id)
+  // Before the console relayed a bundle, a completion from anywhere (another network, a console Origin any program can
+  // send, a garbage proof) learns nothing: the console page, and the request untouched, no try spent.
+  const early = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-early' })
+  for (const address of ['192.0.2.77', '198.18.0.77', '203.0.113.11']) {
+    const probed = await h.form('/mcp/authorize/complete', { request: early.id, proof: 'x' }, { origin: h.consoleOrigin, ...from(address).headers })
+    assert.equal(probed.status, 400, address)
+    consolePage(probed.body, 'invalid_proof', 'st-early')
+  }
+  assert.equal(h.reader.state.pending.get(early.id).proof_attempts, 0)
+  assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).code, 'invalid_proof')
+  // ip_mismatch: not the starter's network, so not the starter's state either: the console page, and the request ends.
+  const elsewhere = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-network' })
+  const mismatched = await consentV2(h, elsewhere, { address: from('203.0.114.10') })
+  assert.equal(mismatched.completed.status, 400)
+  assert.equal(mismatched.completed.location, null)
+  consolePage(mismatched.completed.body, 'ip_mismatch', 'st-network')
+  assert.equal(h.reader.state.pending.has(elsewhere.id), false)
+  for (const value of [mismatched.connectionId, mismatched.linkSecret, elsewhere.id]) assert.equal(mismatched.completed.body.includes(value), false, 'nothing of the consent on the page')
+  // A wrong proof from the starter's network: the button, in the person's first page language, on every try and when the
+  // third burns the request.
+  const near = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-near' })
+  const wrong = await consentV2(h, near, { address: from('203.0.113.20'), badProof: 'A'.repeat(43) })
+  assert.equal(wrong.completed.status, 400)
+  assert.equal(wrong.completed.location, null, 'a page, never a redirect')
+  assert.match(wrong.completed.body, /<small>Wappie MCP: invalid_proof<\/small>/)
+  const english = back(wrong.completed.body, redirectUri, 'access_denied', 'st-near')
+  assert.deepEqual([english.lang, english.label], ['en', 'Back to claude.ai'])
+  assert.equal(wrong.completed.body.includes(h.consoleOrigin), false, 'the assistant, not the console, is the way back')
+  const retry = (proofValue, language) => h.form('/mcp/authorize/complete', { request: near.id, proof: proofValue }, { origin: h.consoleOrigin, 'accept-language': language, ...from('203.0.113.20').headers })
+  const portuguese = backButton((await retry('B'.repeat(43), 'pt-BR,pt;q=0.9')).body)
+  assert.deepEqual([portuguese.lang, portuguese.label], ['pt', 'Voltar para claude.ai'])
+  const burned = await retry('C'.repeat(43), 'de')
+  assert.equal(backButton(burned.body).label, 'Zurück zu claude.ai')
+  back(burned.body, redirectUri, 'access_denied', 'st-near')
+  assert.equal(h.reader.state.pending.has(near.id), false)
+  // The open-request cap of an untested client: the server is busy, and its host is where the button goes.
+  for (let n = 0; n < PENDING_PER_CLIENT; n++) assert.equal((await start(h, { clientId: AGENT, redirectUri: AGENT_REDIRECT })).response.status, 302)
+  const capped = await start(h, { clientId: AGENT, redirectUri: AGENT_REDIRECT, state: 'st-busy', address: { headers: { ...fresh().headers, 'accept-language': 'fr-CA,fr;q=0.9' } } })
+  assert.equal(capped.response.status, 429)
+  assert.match(capped.response.body, /<small>Wappie MCP: too_many_requests<\/small>/)
+  assert.deepEqual([back(capped.response.body, AGENT_REDIRECT, 'temporarily_unavailable', 'st-busy').label, backButton(capped.response.body).lang], ['Retour à agent.example.com', 'fr'])
+  for (const id of [...h.reader.state.pending.keys()]) if (h.reader.state.pending.get(id).client_id === AGENT) h.reader.state.pending.delete(id)
+  // The untested cap reached between the relay and the completion: the console first (to revoke one), then the assistant.
+  const crowded = await start(h, { clientId: AGENT, redirectUri: AGENT_REDIRECT, state: 'st-crowded' })
+  const others = Array.from({ length: UNKNOWN_LIVE_MAX }, () => randomUUID())
+  const refused = await consentV2(h, crowded, { beforeComplete: () => {
+    for (const id of others) h.reader.state.connections.set(id, { connection_id: id, tenant_id: h.workspace, trust: 'unknown', client_id: AGENT, expires_at: new Date(h.clock.now() + DAY).toISOString(), created_at: h.clock.now() })
+  } })
+  assert.equal(refused.completed.status, 409)
+  assert.match(refused.completed.body, /<small>Wappie MCP: too_many_unknown<\/small>/)
+  back(refused.completed.body, AGENT_REDIRECT, 'access_denied', 'st-crowded')
+  const consoleAt = refused.completed.body.indexOf(`href="${CONSOLE_URL}"`)
+  assert.ok(consoleAt > 0 && consoleAt < refused.completed.body.indexOf('class="back"'), 'the console link comes first: the sentence sends the person there first')
+  for (const id of others) h.reader.state.connections.delete(id)
+})
+
+test('the console\'s Cancel (§19.30) under the any policy: from the starter\'s network straight back to the assistant; otherwise back to the console, and the state never leaves', async t => {
+  const h = await anyHarness(t)
+  const redirectUri = 'https://claude.ai/api/mcp/auth_callback'
+  const line = () => JSON.parse(h.logs.findLast(entry => entry.includes('/mcp/authorize/decline')))
+  // From the network the request started on: straight back to the assistant, nothing else in the redirect, and the request is gone.
+  const near = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-near' })
+  const declined = await decline(h, near.id, from('203.0.113.99').headers)
+  assert.equal(declined.status, 302)
+  const location = new URL(declined.location)
+  assert.equal(`${location.origin}${location.pathname}`, redirectUri)
+  assert.deepEqual(Object.fromEntries(location.searchParams), { error: 'access_denied', state: 'st-near', iss: h.publicOrigin })
+  assert.equal(h.reader.state.pending.has(near.id), false)
+  assert.deepEqual([line().route, line().status, line().code, line().ip_mismatch], ['POST /mcp/authorize/decline', 302, 'declined', false])
+  // Gone, or never made: back to the console, whose Cancel already dropped it.
+  for (const id of [near.id, 'AAAAAAAAAAAAAAAAAAAAAA']) {
+    const gone = await decline(h, id, from('203.0.113.99').headers)
+    assert.deepEqual([gone.status, gone.location, gone.body, line().code], [302, CONSOLE_URL, '', 'request_not_found'])
+  }
+  // From another network: the request ends, and the browser goes back to the console with nothing of the request.
+  const before = h.reader.counters.ip_mismatches ?? 0
+  const far = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-far' })
+  const farDecline = await decline(h, far.id, from('203.0.114.10').headers)
+  assert.deepEqual([farDecline.status, farDecline.location, farDecline.body], [302, CONSOLE_URL, ''])
+  assert.equal(h.reader.state.pending.has(far.id), false)
+  assert.equal(h.reader.counters.ip_mismatches, before + 1)
+  assert.deepEqual([line().status, line().code, line().ip_mismatch], [302, 'ip_mismatch', true])
+  // A consent the console already relayed: its connection in Go is revoked with it, and a late completion is never activated.
+  const relayedStart = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10'), state: 'st-relayed' })
+  const relayed = await consentV2(h, relayedStart, { until: 'bundle' })
+  assert.equal(relayed.relayed.status, 204)
+  assert.equal((await decline(h, relayedStart.id, from('203.0.113.10').headers)).status, 302)
+  await h.until(() => h.go.connections.get(relayed.connectionId).status === 'revoked', 'Go revoking the declined connection')
+  const activations = h.go.activations
+  const late = await h.form('/mcp/authorize/complete', { request: relayedStart.id, proof: relayed.proof }, { origin: h.consoleOrigin, ...from('203.0.113.10').headers })
+  assert.equal(late.status, 400, 'a declined request never completes')
+  assert.equal(backButton(late.body), null)
+  assert.equal(h.go.activations, activations)
+  // The completion's ten a minute per address and the decline's ten are separate buckets.
+  const address = from('192.0.2.50').headers
+  for (let n = 0; n < 10; n++) await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, ...address })
+  assert.equal((await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, ...address })).status, 429)
+  for (let n = 0; n < 10; n++) assert.equal((await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', address)).status, 302, 'a full completion bucket leaves declines alone')
+  assert.equal((await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', address)).status, 429)
+  const other = from('192.0.2.51').headers
+  for (let n = 0; n < 10; n++) await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', other)
+  assert.equal((await decline(h, 'AAAAAAAAAAAAAAAAAAAAAA', other)).status, 429)
+  assert.equal((await h.form('/mcp/authorize/complete', { request: 'AAAAAAAAAAAAAAAAAAAAAA', proof: 'x' }, { origin: h.consoleOrigin, ...other })).status, 400, 'and a full decline bucket leaves completions alone')
+  // The state left only in the redirect to the starter's network: no other answer of either route carries one.
+  for (const response of h.responses.filter(entry => ['/mcp/authorize/decline', '/mcp/authorize/complete'].includes(entry.path))) {
+    for (const state of ['st-near', 'st-far', 'st-relayed']) assert.equal(response.body.includes(state), false, `${response.path} ${response.status}`)
+  }
 })
 
 test('link bundle v2 (§19.15): a metadata consent of a tested and an unknown client, every refusal, and the record it writes', async t => {

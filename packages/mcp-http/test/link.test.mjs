@@ -5,7 +5,7 @@ import { readFile, rename, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { auth } from '@modelcontextprotocol/client'
 import { hpke } from '@whatserver2/client'
-import { harness, apiKey, authorize, authorizeURL, clientProvider, consent, pkce, proof, raw, register, rpc, sealBundle, secretsAbsent, session, vector, workspace, CONSOLE_ORIGIN, DAY } from './harness.mjs'
+import { harness, apiKey, authorize, authorizeURL, backButton, clientProvider, consent, pkce, proof, raw, register, rpc, sealBundle, secretsAbsent, session, vector, workspace, CONSOLE_ORIGIN, DAY, REDIRECT_URI } from './harness.mjs'
 import { acceptBundle, LinkError, openBundle, proofFor } from '../link.mjs'
 import { newRecipient } from '../state.mjs'
 
@@ -239,6 +239,9 @@ test('connection ids: a relay naming one already in use is 400 with nothing atta
   const completed = await h.form('/mcp/authorize/complete', { request: late.id, proof: signature }, { origin: CONSOLE_ORIGIN })
   assert.equal(completed.status, 400)
   assert.match(completed.body, /connection_exists/)
+  // The way back (§19.30): this flow's client got no code, so its wait ends with server_error.
+  const button = backButton(completed.body)
+  assert.deepEqual([button.base, button.params.error, button.params.iss], [REDIRECT_URI, 'server_error', h.publicOrigin])
   assert.equal(state.connections.get(late.connectionId), sentinel)
   assert.equal(state.pending.has(late.id), false)
   assert.equal(h.go.activations, activations, 'nothing was activated')

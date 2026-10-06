@@ -58,6 +58,11 @@ test('content consent: the v2 bundle opens only with the attested key, the grant
   assert.equal(page.isError, false, page.text)
   assert.equal(page.data.messages[0].body.state, 'ok')
   assert.equal(page.data.messages[0].body.value, plain)
+  // Each result's JSON once, as text, and no workspace id in it (§19.30).
+  for (const read of [numbers, chats, page]) {
+    assert.equal(read.structured, undefined)
+    assert.equal(read.text.includes(workspace), false)
+  }
   const query = `sentinel${randomBytes(6).toString('hex')}`
   const search = await callTool(w, done.tokens.access_token, 'search_messages', { device_id: vector.device, query, period: 'all' })
   assert.equal(search.status, 200)
