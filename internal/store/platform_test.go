@@ -204,7 +204,7 @@ func TestPlatformLinkRowsNeverChange(t *testing.T) {
 	ctx := context.Background()
 	sub := uuid.New()
 	secret := f.ticket(t, store.TicketNew, sub, "ivo@example.com", uuid.Nil)
-	user, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: secret, PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
+	user, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: secret, PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestPlatformTicketsAreSingleUseAndBoundToTheirKind(t *testing.T) {
 	ctx := context.Background()
 	sub := uuid.New()
 	link := f.ticket(t, store.TicketLink, sub, "jo@example.com", uuid.Nil)
-	if _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: link, PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)}); !errors.Is(err, store.ErrTicketInvalid) {
+	if _, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: link, PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)}); !errors.Is(err, store.ErrTicketInvalid) {
 		t.Fatalf("an account from a link ticket: %v", err)
 	}
 	if _, err := f.users.PlatformTicketFor(ctx, link, store.TicketLink); err != nil {
@@ -383,16 +383,19 @@ func TestPlatformTicketsAreSingleUseAndBoundToTheirKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: forged, PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)}); !errors.Is(err, store.ErrTicketInvalid) {
+	if _, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: forged, PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)}); !errors.Is(err, store.ErrTicketInvalid) {
 		t.Fatalf("a ticket that disagrees with its pin: %v", err)
 	}
 }
 
-// A session started through the provider holds no step-up proof until step
-// 4 takes the provider's re-authentication (internal/stepup): it is never
-// fresh, nor is a workspace switch made from it, while a password sign-in of
-// the same linked account is; a step-up recorded on it counts as on any.
-func TestPlatformSessionHoldsNoStepUpProof(t *testing.T) {
+// A sign-in through the provider proves its person from the provider's
+// auth_time (Decision 2 of step 4), never later than now and never from the
+// session's creation: a recent one is a proof for the rest of its ten
+// minutes, an old one is none, and one userinfo named no auth_time for
+// holds none (-infinity). Every such session, and a workspace switch made
+// from it, is via_provider; a link's proof is now; a password sign-in of the
+// same linked account is neither via_provider nor short of a proof.
+func TestPlatformSessionProofIsTheProvidersAuthTime(t *testing.T) {
 	f := newPlatformFixture(t)
 	ctx := context.Background()
 	f.legacy(t, "lia@example.com", "lia-auth-key")
@@ -401,45 +404,319 @@ func TestPlatformSessionHoldsNoStepUpProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("link: %v", err)
 	}
-	native, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "max@example.com", uuid.Nil),
+	native, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "max@example.com", uuid.Nil),
 		PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
 	if err != nil {
 		t.Fatalf("new account: %v", err)
 	}
 	checker := stepup.Recent(f.users)
+	remaining := func(name string, s store.Session) time.Duration {
+		t.Helper()
+		left, err := f.users.StepUpRemaining(ctx, s.ID, stepup.Window)
+		if err != nil {
+			t.Fatalf("%s: remaining: %v", name, err)
+		}
+		return left
+	}
 	for name, user := range map[string]store.User{"the linked account": linked, "the new account": native} {
-		_, s, err := f.users.StartPlatformSession(ctx, user, "test")
-		if err != nil {
-			t.Fatalf("%s: session: %v", name, err)
-		}
-		if fresh, err := checker.Fresh(ctx, s.ID); err != nil || fresh {
-			t.Fatalf("%s: a sign-in through the provider is a proof: %v %v", name, fresh, err)
-		}
-		if left, err := f.users.StepUpRemaining(ctx, s.ID, stepup.Window); err != nil || left != 0 {
-			t.Fatalf("%s: remaining %v %v", name, left, err)
-		}
-		_, switched, err := f.users.StartWorkspaceSession(ctx, user, "test", s)
-		if err != nil {
-			t.Fatalf("%s: a workspace switch: %v", name, err)
-		}
-		if fresh, err := checker.Fresh(ctx, switched.ID); err != nil || fresh {
-			t.Fatalf("%s: a switch made a proof: %v %v", name, fresh, err)
-		}
-		if err := f.users.MarkStepUp(ctx, s.ID); err != nil {
-			t.Fatalf("%s: mark: %v", name, err)
-		}
-		if fresh, err := checker.Fresh(ctx, s.ID); err != nil || !fresh {
-			t.Fatalf("%s: after a recorded step-up: %v %v", name, fresh, err)
+		for _, tc := range []struct {
+			what     string
+			authTime time.Time
+			min, max time.Duration
+		}{
+			{"a recent auth_time", time.Now().Add(-time.Minute), 8 * time.Minute, 9*time.Minute + 30*time.Second},
+			{"an auth_time eleven minutes old", time.Now().Add(-11 * time.Minute), 0, 0},
+			{"no auth_time", time.Time{}, 0, 0},
+			// A provider's clock ahead of this one earns nothing past now.
+			{"an auth_time an hour ahead", time.Now().Add(time.Hour), 9 * time.Minute, stepup.Window},
+		} {
+			_, s, err := f.users.StartPlatformSession(ctx, user, "test", tc.authTime)
+			if err != nil {
+				t.Fatalf("%s, %s: session: %v", name, tc.what, err)
+			}
+			if !s.ViaProvider {
+				t.Fatalf("%s, %s: not via_provider", name, tc.what)
+			}
+			if left := remaining(name+", "+tc.what, s); left < tc.min || left > tc.max {
+				t.Fatalf("%s, %s: remaining %v, want %v to %v", name, tc.what, left, tc.min, tc.max)
+			}
+			// A workspace switch copies the proof and the mark, and proves
+			// nothing of its own.
+			_, switched, err := f.users.StartWorkspaceSession(ctx, user, "test", s)
+			if err != nil {
+				t.Fatalf("%s, %s: a workspace switch: %v", name, tc.what, err)
+			}
+			if !switched.ViaProvider {
+				t.Fatalf("%s, %s: the switch is not via_provider", name, tc.what)
+			}
+			if left := remaining(name+", "+tc.what+", switched", switched); left < tc.min || left > tc.max {
+				t.Fatalf("%s, %s: the switch's remaining %v", name, tc.what, left)
+			}
 		}
 	}
-	// Both doors: the linked account's legacy password proves the person at
-	// sign-in, as any password does.
-	_, s, err := f.users.StartSession(ctx, linked, "test")
+	// The mark reads back with the token.
+	token, _, err := f.users.StartPlatformSession(ctx, native, "test", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh, err := checker.Fresh(ctx, s.ID); err != nil || !fresh {
-		t.Fatalf("a password sign-in of the linked account: %v %v", fresh, err)
+	if s, err := f.users.Session(ctx, token); err != nil || !s.ViaProvider {
+		t.Fatalf("the session read back: %+v %v", s, err)
+	}
+	// A link proves the old password now.
+	_, s, err := f.users.StartLinkedSession(ctx, linked, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := checker.Fresh(ctx, s.ID); err != nil || !fresh || !s.ViaProvider {
+		t.Fatalf("a link's session: %v %v %+v", fresh, err, s)
+	}
+	// Both doors: the linked account's legacy password proves the person at
+	// sign-in, as any password does, and the session is not via_provider.
+	token, s, err = f.users.StartSession(ctx, linked, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := checker.Fresh(ctx, s.ID); err != nil || !fresh || s.ViaProvider {
+		t.Fatalf("a password sign-in of the linked account: %v %v %+v", fresh, err, s)
+	}
+	if read, err := f.users.Session(ctx, token); err != nil || read.ViaProvider {
+		t.Fatalf("the password session read back: %+v %v", read, err)
+	}
+	_, switched, err := f.users.StartWorkspaceSession(ctx, linked, "test", s)
+	if err != nil || switched.ViaProvider {
+		t.Fatalf("a switch from the password session: %+v %v", switched, err)
+	}
+}
+
+// A new account's first session starts with the auth_time of the userinfo
+// its ticket was issued on, which the ticket keeps; none when it had none.
+func TestPlatformTicketKeepsTheAuthTime(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	at := time.Now().Add(-2 * time.Minute).Truncate(time.Second)
+	for name, want := range map[string]time.Time{"with an auth_time": at, "without one": {}} {
+		sub := uuid.New()
+		key := platformBytes(t, 32)
+		if _, _, err := f.pins.InsertPin(ctx, sub.String(), "wappie:1", key); err != nil {
+			t.Fatal(err)
+		}
+		secret, err := f.users.CreatePlatformTicket(ctx, store.PlatformTicket{Kind: store.TicketNew, Sub: sub, ProductKeyID: "wappie:1",
+			ProductKey: key, Email: sub.String() + "@example.com", AuthTime: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ticket, err := f.users.PlatformTicketFor(ctx, secret, store.TicketNew)
+		if err != nil || !ticket.AuthTime.Equal(want) {
+			t.Fatalf("%s: the ticket's auth_time %v %v", name, ticket.AuthTime, err)
+		}
+		user, authTime, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: secret, PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
+		if err != nil || user.ID != sub || !authTime.Equal(want) {
+			t.Fatalf("%s: the new account's auth_time %v %v", name, authTime, err)
+		}
+	}
+}
+
+// One start, one proof (Decision 3 of step 4): the finish records the proof
+// only against the start it read, while that start is younger than ten
+// minutes and the provider's auth_time is not more than the clocks'
+// tolerance before it; it clears the start in the same statement, so a
+// second finish, or the finish of a start a newer one replaced, records
+// nothing. A refusal leaves the start as it was.
+func TestProviderStepUpOneStartOneProof(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	user, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "noa@example.com", uuid.Nil),
+		PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := stepup.Recent(f.users)
+	session := func() store.Session {
+		t.Helper()
+		_, s, err := f.users.StartPlatformSession(ctx, user, "test", time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	fresh := func(s store.Session) bool {
+		t.Helper()
+		ok, err := checker.Fresh(ctx, s.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	finish := func(s store.Session, notBefore, authTime time.Time) error {
+		return f.users.FinishProviderStepUp(ctx, s.ID, notBefore, authTime, stepup.Window, stepup.ProviderClockTolerance)
+	}
+
+	s := session()
+	if _, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("nothing started: %v", err)
+	}
+	if err := finish(s, time.Now(), time.Now()); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("a finish with no start: %v", err)
+	}
+	notBefore, err := f.users.StartProviderStepUp(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); err != nil || !pending.Equal(notBefore) {
+		t.Fatalf("pending %v %v, want %v", pending, err, notBefore)
+	}
+	// An auth_time past the tolerance before the start: the provider did
+	// not ask again. Nothing is recorded and the start stays.
+	for _, stale := range []time.Time{{}, notBefore.Add(-stepup.ProviderClockTolerance - time.Second), notBefore.Add(-time.Hour)} {
+		if err := finish(s, notBefore, stale); !errors.Is(err, store.ErrStepUpStale) || fresh(s) {
+			t.Fatalf("auth_time %v: %v", stale, err)
+		}
+	}
+	if pending, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); err != nil || !pending.Equal(notBefore) {
+		t.Fatalf("a refusal moved the start: %v %v", pending, err)
+	}
+	// Within the tolerance: the proof, now, and the start is spent.
+	if err := finish(s, notBefore, notBefore.Add(-30*time.Second)); err != nil || !fresh(s) {
+		t.Fatalf("an auth_time within the tolerance: %v", err)
+	}
+	if left, err := f.users.StepUpRemaining(ctx, s.ID, stepup.Window); err != nil || left < 9*time.Minute {
+		t.Fatalf("the proof is not now: %v %v", left, err)
+	}
+	if err := finish(s, notBefore, time.Now()); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("a second finish of one start: %v", err)
+	}
+	if _, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("the start after its proof: %v", err)
+	}
+
+	// Two starts: the first is void, the second makes the proof.
+	s = session()
+	first, err := f.users.StartProviderStepUp(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.users.StartProviderStepUp(ctx, s.ID)
+	if err != nil || !second.After(first) {
+		t.Fatalf("second start %v %v", second, err)
+	}
+	if err := finish(s, first, time.Now()); !errors.Is(err, store.ErrStepUpNotStarted) || fresh(s) {
+		t.Fatalf("the finish of a replaced start: %v", err)
+	}
+	if err := finish(s, second, time.Now()); err != nil || !fresh(s) {
+		t.Fatalf("the finish of the newer start: %v", err)
+	}
+
+	// A start older than ten minutes is no start, and a workspace switch
+	// does not copy one.
+	s = session()
+	old, err := f.users.StartProviderStepUp(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, switched, err := f.users.StartWorkspaceSession(ctx, user, "test", s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.users.PendingProviderStepUp(ctx, switched.ID, stepup.Window); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("a switch copied the start: %v", err)
+	}
+	if err := finish(switched, old, time.Now()); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("a switch finished its source's start: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE sessions SET step_up_not_before = step_up_not_before - interval '10 minutes 1 second' WHERE id = $1`, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	var aged time.Time
+	if err := f.pool.QueryRow(ctx, `SELECT step_up_not_before FROM sessions WHERE id = $1`, s.ID).Scan(&aged); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("a start eleven minutes old: %v", err)
+	}
+	if err := finish(s, aged, aged.Add(time.Second)); !errors.Is(err, store.ErrStepUpNotStarted) || fresh(s) {
+		t.Fatalf("the finish of a start past the window: %v", err)
+	}
+
+	// A session that is not live starts and finishes nothing.
+	s = session()
+	notBefore, err = f.users.StartProviderStepUp(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE sessions SET revoked_at = now() WHERE id = $1`, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(s, notBefore, time.Now()); !errors.Is(err, store.ErrNoSession) {
+		t.Fatalf("a revoked session's finish: %v", err)
+	}
+	if _, err := f.users.StartProviderStepUp(ctx, s.ID); !errors.Is(err, store.ErrNoSession) {
+		t.Fatalf("a revoked session's start: %v", err)
+	}
+	if _, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); !errors.Is(err, store.ErrNoSession) {
+		t.Fatalf("a revoked session's pending start: %v", err)
+	}
+
+	// Two finishes of one start at once, as two windows would send them:
+	// one proof.
+	s = session()
+	notBefore, err = f.users.StartProviderStepUp(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const racers = 6
+	errs := make(chan error, racers)
+	for range racers {
+		go func() { errs <- finish(s, notBefore, time.Now()) }()
+	}
+	won := 0
+	for range racers {
+		switch err := <-errs; {
+		case err == nil:
+			won++
+		case !errors.Is(err, store.ErrStepUpNotStarted):
+			t.Fatalf("a racing finish: %v", err)
+		}
+	}
+	if won != 1 || !fresh(s) {
+		t.Fatalf("%d finishes of one start recorded a proof", won)
+	}
+}
+
+// The step-up reads the pin and the link and writes neither: a pin that does
+// not exist stays absent.
+func TestPlatformPinAndLinkReads(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	sub := uuid.New()
+	if _, err := f.pins.Pinned(ctx, sub, "wappie:1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("no pin: %v", err)
+	}
+	var pins int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM platform_key_pins WHERE sub = $1`, sub).Scan(&pins); err != nil || pins != 0 {
+		t.Fatalf("reading a pin made %d %v", pins, err)
+	}
+	key := platformBytes(t, 32)
+	if _, _, err := f.pins.InsertPin(ctx, sub.String(), "wappie:1", key); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.pins.Pinned(ctx, sub, "wappie:1"); err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("the pin: %v %v", got, err)
+	}
+	if _, err := f.pins.Pinned(ctx, sub, "wappie:2"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("another epoch: %v", err)
+	}
+
+	legacy := f.legacy(t, "ria@example.com", "ria-auth-key")
+	if _, err := f.users.PlatformLinkOf(ctx, legacy.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unlinked account: %v", err)
+	}
+	linkSub := uuid.New()
+	if _, err := f.users.LinkLegacy(ctx, store.LegacyLink{Ticket: f.ticket(t, store.TicketNew, linkSub, "ria@id.example.com", uuid.Nil),
+		Proof: store.LegacyProof{Email: "ria@example.com", Secret: "ria-auth-key"}, Wrap: platformWrap(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if link, err := f.users.PlatformLinkOf(ctx, legacy.ID); err != nil || link.Sub != linkSub || link.Email != "ria@id.example.com" || link.LinkedFrom != "legacy" {
+		t.Fatalf("the link: %+v %v", link, err)
 	}
 }
 
@@ -460,9 +737,35 @@ func TestMigration0048DownStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("link: %v", err)
 	}
-	// A session through the provider (no proof: -infinity, which the older
-	// binary cannot read) and one with the old password.
-	_, throughProvider, err := f.users.StartPlatformSession(ctx, linked, "test")
+	// A session through the provider with no proof (-infinity, which the
+	// older binary cannot read), one whose sign-in's auth_time is its proof,
+	// one confirmed at the provider since, a workspace switch from that
+	// one, the link's own session, and one with the old password. Every one
+	// but the last came through the provider.
+	_, throughProvider, err := f.users.StartPlatformSession(ctx, linked, "test", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, signedIn, err := f.users.StartPlatformSession(ctx, linked, "test", time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, confirmed, err := f.users.StartPlatformSession(ctx, linked, "test", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notBefore, err := f.users.StartProviderStepUp(ctx, confirmed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.users.FinishProviderStepUp(ctx, confirmed.ID, notBefore, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil {
+		t.Fatal(err)
+	}
+	_, switched, err := f.users.StartWorkspaceSession(ctx, linked, "test", confirmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, linkSession, err := f.users.StartLinkedSession(ctx, linked, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,17 +773,8 @@ func TestMigration0048DownStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// One through the provider that has since been confirmed there: its
-	// proof is a plain time, but it came through the provider all the same.
-	_, confirmed, err := f.users.StartPlatformSession(ctx, linked, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.pool.Exec(ctx, `UPDATE sessions SET via_provider = true, authenticated_at = now() WHERE id = $1`, confirmed.ID); err != nil {
-		t.Fatal(err)
-	}
 	native := uuid.New()
-	if _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, native, "max@example.com", uuid.Nil),
+	if _, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, native, "max@example.com", uuid.Nil),
 		PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)}); err != nil {
 		t.Fatalf("new account: %v", err)
 	}
@@ -501,10 +795,11 @@ func TestMigration0048DownStep(t *testing.T) {
 	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 47 {
 		t.Fatalf("ledger at %d %v", version, err)
 	}
-	// The sessions through the provider are signed out, the confirmed one
+	// The sessions through the provider are signed out, the confirmed ones
 	// too; the password's stays, and every live session's proof reads as a
 	// plain time, as the older binary's workspace switch reads it.
-	for id, live := range map[uuid.UUID]bool{throughProvider.ID: false, confirmed.ID: false, withPassword.ID: true} {
+	for id, live := range map[uuid.UUID]bool{throughProvider.ID: false, signedIn.ID: false, confirmed.ID: false, switched.ID: false,
+		linkSession.ID: false, withPassword.ID: true} {
 		var revoked bool
 		if err := f.pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM sessions WHERE id = $1`, id).Scan(&revoked); err != nil || revoked == live {
 			t.Fatalf("session %s revoked = %v %v", id, revoked, err)

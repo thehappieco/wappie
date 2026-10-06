@@ -655,6 +655,10 @@ type Session struct {
 	ExpiresAt time.Time
 	PasskeyID uuid.UUID
 	FamilyID  uuid.UUID
+	// ViaProvider is a session started through the identity provider, or
+	// switched from one (sessions.via_provider, 0048): it proved no password
+	// here, so it is never handed the legacy password wrap.
+	ViaProvider bool
 }
 
 // SessionTTL is how long a sign-in lasts without further proof.
@@ -662,40 +666,84 @@ const SessionTTL = 14 * 24 * time.Hour
 
 // StartSession issues a token. The token is returned once and stored hashed.
 func (u *Users) StartSession(ctx context.Context, user User, userAgent string) (string, Session, error) {
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil, nil, true)
+	return u.startSession(ctx, user, userAgent, sessionStart{expiresAt: time.Now().Add(SessionTTL), proof: proofNow})
 }
 
 func (u *Users) StartPasskeySession(ctx context.Context, user User, userAgent string, passkeyID uuid.UUID) (string, Session, error) {
 	if passkeyID == uuid.Nil {
 		return "", Session{}, ErrNoSession
 	}
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), passkeyID, nil, true)
+	return u.startSession(ctx, user, userAgent, sessionStart{expiresAt: time.Now().Add(SessionTTL), passkeyID: passkeyID, proof: proofNow})
 }
 
 // StartPlatformSession starts the session of an account signed in through
-// the identity provider. That sign-in proves nothing to this server, so the
-// session holds no step-up proof (authenticated_at is -infinity, which its
-// workspace switches inherit) until the provider's re-authentication is
-// taken here, in step 4 of the sign-in plan (internal/stepup).
-func (u *Users) StartPlatformSession(ctx context.Context, user User, userAgent string) (string, Session, error) {
-	return u.startSession(ctx, user, userAgent, time.Now().Add(SessionTTL), uuid.Nil, nil, false)
+// the identity provider (via_provider). Its proof of the person is the
+// provider's own: authTime, the auth_time of that sign-in's userinfo (step 4,
+// Decision 2), never later than now on the database's clock, and never the
+// session's creation, since the provider may have answered from a session of
+// its own. The zero time is a userinfo that named none: the session then
+// holds no proof (authenticated_at is -infinity, which its workspace
+// switches inherit) until a step-up at the provider records one
+// (FinishProviderStepUp, internal/stepup).
+func (u *Users) StartPlatformSession(ctx context.Context, user User, userAgent string, authTime time.Time) (string, Session, error) {
+	proof := proofNone
+	if !authTime.IsZero() {
+		proof = proofAt
+	}
+	return u.startSession(ctx, user, userAgent, sessionStart{expiresAt: time.Now().Add(SessionTTL), proof: proof, provedAt: authTime, viaProvider: true})
+}
+
+// StartLinkedSession starts the session of an account just linked to the
+// identity provider (/platform/link). It came through the provider
+// (via_provider), and its proof is now: the link checked the old password's
+// auth key, or the recovery code's proof, in the same request, as a password
+// sign-in does.
+func (u *Users) StartLinkedSession(ctx context.Context, user User, userAgent string) (string, Session, error) {
+	return u.startSession(ctx, user, userAgent, sessionStart{expiresAt: time.Now().Add(SessionTTL), proof: proofNow, viaProvider: true})
 }
 
 // StartWorkspaceSession does not extend the authentication lifetime of the
 // source session. Selecting a space is not another proof of the password.
+// The new session copies the source's proof and whether it came through the
+// identity provider, never a step-up the source has started there.
 func (u *Users) StartWorkspaceSession(ctx context.Context, user User, userAgent string, source Session) (string, Session, error) {
 	if source.ID == uuid.Nil || source.UserID != user.ID {
 		return "", Session{}, ErrNoSession
 	}
 	// The source is re-read while locked. A previously authenticated request
 	// cannot mint a new token after another tab has finished signing out.
-	return u.startSession(ctx, user, userAgent, time.Time{}, uuid.Nil, &source, false)
+	return u.startSession(ctx, user, userAgent, sessionStart{source: &source})
 }
 
-// startSession issues a token. proved is whether a new sign-in proved its
-// person to this server (a password or a passkey); a workspace switch
-// (source) copies its source's proof instead.
-func (u *Users) startSession(ctx context.Context, user User, userAgent string, expiresAt time.Time, passkeyID uuid.UUID, source *Session, proved bool) (string, Session, error) {
+// sessionProof is what a new sign-in proved of its person to this server.
+type sessionProof int
+
+const (
+	// proofNow: a password, a passkey or a link, checked here now.
+	proofNow sessionProof = iota
+	// proofAt: the identity provider's auth_time (sessionStart.provedAt).
+	proofAt
+	// proofNone: nothing (-infinity).
+	proofNone
+)
+
+// sessionStart is how a session begins: a new sign-in (expiresAt, its
+// passkey, its proof, whether it came through the identity provider), or a
+// workspace switch from source, which copies the source's expiry, passkey,
+// family, proof and via_provider.
+type sessionStart struct {
+	expiresAt   time.Time
+	passkeyID   uuid.UUID
+	source      *Session
+	proof       sessionProof
+	provedAt    time.Time
+	viaProvider bool
+}
+
+// startSession issues a token for a new sign-in or a workspace switch
+// (sessionStart).
+func (u *Users) startSession(ctx context.Context, user User, userAgent string, start sessionStart) (string, Session, error) {
+	source := start.source
 	current, err := u.Get(ctx, user.TenantID, user.ID)
 	if errors.Is(err, ErrNotFound) {
 		return "", Session{}, ErrNoSession
@@ -721,7 +769,7 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 	}
 	sum := sha256.Sum256(raw)
 
-	s := Session{UserID: user.ID, TenantID: user.TenantID, ExpiresAt: expiresAt, PasskeyID: passkeyID}
+	s := Session{UserID: user.ID, TenantID: user.TenantID, ExpiresAt: start.expiresAt, PasskeyID: start.passkeyID, ViaProvider: start.viaProvider}
 	err = u.inIdentity(ctx, user.ID, func(tx pgx.Tx) error {
 		// Membership mutations hold this workspace exclusively. Take its shared
 		// lock before user/session locks, then recheck the membership: the earlier
@@ -747,13 +795,18 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 		if err := lockPasskeyRegistration(ctx, tx, user.ID); err != nil {
 			return err
 		}
-		// A new sign-in proves the person now (NULL is now() below), unless it
-		// came through the identity provider, which leaves no proof here
+		// A new sign-in proves the person now (NULL is now() below), or at
+		// the identity provider's auth_time, capped at now, or not at all
 		// (-infinity); a workspace switch inherits the proof of its source,
 		// since selecting a space proves nothing (internal/stepup).
 		var authenticatedAt pgtype.Timestamptz
-		if source == nil && !proved {
-			authenticatedAt = pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+		if source == nil {
+			switch start.proof {
+			case proofAt:
+				authenticatedAt = pgtype.Timestamptz{Time: start.provedAt, Valid: true}
+			case proofNone:
+				authenticatedAt = pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+			}
 		}
 		if source == nil {
 			var err error
@@ -762,9 +815,9 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 				return err
 			}
 		} else {
-			if err := tx.QueryRow(ctx, `SELECT family_id, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, authenticated_at
+			if err := tx.QueryRow(ctx, `SELECT family_id, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, authenticated_at, via_provider
 				FROM sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, source.ID, user.ID).
-				Scan(&s.FamilyID, &s.PasskeyID, &s.ExpiresAt, &authenticatedAt); err != nil {
+				Scan(&s.FamilyID, &s.PasskeyID, &s.ExpiresAt, &authenticatedAt, &s.ViaProvider); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					return ErrNoSession
 				}
@@ -793,9 +846,11 @@ func (u *Users) startSession(ctx context.Context, user User, userAgent string, e
 		}
 		// Return the timestamp actually stored: PostgreSQL preserves microseconds,
 		// while the sign-in clock may supply finer precision.
-		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id,family_id,authenticated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::timestamptz, now())) RETURNING id, expires_at`,
-			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(s.PasskeyID), s.FamilyID, authenticatedAt).Scan(&s.ID, &s.ExpiresAt)
+		// least() skips a NULL, so a new sign-in's proof is now() and none is
+		// ever later than now.
+		return tx.QueryRow(ctx, `INSERT INTO sessions (user_id,tenant_id,token_hash,user_agent,expires_at,passkey_id,family_id,authenticated_at,via_provider)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,least(now(), $8::timestamptz),$9) RETURNING id, expires_at`,
+			user.ID, nullableWorkspace(user.TenantID), sum[:], truncate(userAgent, 200), s.ExpiresAt, nullableWorkspace(s.PasskeyID), s.FamilyID, authenticatedAt, s.ViaProvider).Scan(&s.ID, &s.ExpiresAt)
 	})
 	if err != nil {
 		return "", Session{}, fmt.Errorf("store: start session: %w", err)
@@ -816,8 +871,8 @@ func (u *Users) Session(ctx context.Context, token string) (Session, error) {
 		UPDATE sessions SET last_seen_at = now()
 		 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
 		 AND (sessions.tenant_id IS NULL OR EXISTS (SELECT 1 FROM tenants t WHERE t.id=sessions.tenant_id AND t.status='active'))
-		 RETURNING id, user_id, coalesce(tenant_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), family_id`, sum[:]).
-		Scan(&s.ID, &s.UserID, &s.TenantID, &s.ExpiresAt, &s.PasskeyID, &s.FamilyID)
+		 RETURNING id, user_id, coalesce(tenant_id,'00000000-0000-0000-0000-000000000000'::uuid), expires_at, coalesce(passkey_id,'00000000-0000-0000-0000-000000000000'::uuid), family_id, via_provider`, sum[:]).
+		Scan(&s.ID, &s.UserID, &s.TenantID, &s.ExpiresAt, &s.PasskeyID, &s.FamilyID, &s.ViaProvider)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNoSession
 	}
@@ -851,9 +906,9 @@ func (u *Users) ActiveSession(ctx context.Context, token string) (Session, User,
 
 // StepUpRemaining is how long a live session's last proof of its person
 // still counts within window, on the database's clock: the sign-in that
-// started its family (none for one through the identity provider), or a
-// later step-up (MarkStepUp). Zero when it no longer does; ErrNoSession for
-// a session that is not live.
+// started its family (for one through the identity provider, its auth_time
+// there), or a later step-up (MarkStepUp, FinishProviderStepUp). Zero when
+// it no longer does; ErrNoSession for a session that is not live.
 func (u *Users) StepUpRemaining(ctx context.Context, session uuid.UUID, window time.Duration) (time.Duration, error) {
 	var seconds float64
 	err := u.pool.QueryRow(ctx, `SELECT greatest(0, extract(epoch FROM authenticated_at + make_interval(secs => $2) - now()))::float8

@@ -53,8 +53,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Window is how long a proof lasts.
+// Window is how long a proof lasts, and how long a step-up started at the
+// identity provider waits for its finish.
 const Window = 10 * time.Minute
+
+// ProviderClockTolerance is how far before a step-up's start the identity
+// provider's auth_time may fall and still count (Decision 3 of step 4): the
+// two clocks may differ by that much. Nothing is allowed for the other
+// direction, since the proof is always recorded at now on this server's
+// database clock, never at the provider's time.
+const ProviderClockTolerance = time.Minute
 
 // Code is the error code a write refused for want of a fresh proof answers
 // with; the console asks for the proof and tries again.

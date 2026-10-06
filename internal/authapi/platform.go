@@ -328,7 +328,7 @@ func (h *Handler) platformSession(w http.ResponseWriter, r *http.Request) {
 	wrap, err := h.Users.PlatformWrap(r.Context(), user.ID, ui.ProductKeyID)
 	if errors.Is(err, store.ErrNotFound) {
 		ticket, expires, err := h.platformTicket(r.Context(), store.PlatformTicket{Kind: store.TicketRewrap, Sub: sub,
-			ProductKeyID: ui.ProductKeyID, ProductKey: ui.ProductKey, Email: ui.Email, UserID: user.ID})
+			ProductKeyID: ui.ProductKeyID, ProductKey: ui.ProductKey, Email: ui.Email, UserID: user.ID, AuthTime: authTimeOf(ui)})
 		if err != nil {
 			h.log().Error("could not issue a rewrap ticket", "error", err)
 			fail(w, http.StatusInternalServerError, "internal", "could not sign in")
@@ -349,7 +349,16 @@ func (h *Handler) platformSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "internal", "could not sign in")
 		return
 	}
-	h.platformIssue(w, r, signed, platformReply{Pin: &pin, PlatformWrap: b64(wrap)})
+	h.platformIssue(w, r, signed, platformReply{Pin: &pin, PlatformWrap: b64(wrap)}, platformProof{authTime: authTimeOf(ui)})
+}
+
+// authTimeOf is the provider's auth_time in userinfo as a time, zero when it
+// named none.
+func authTimeOf(ui *oidcrp.Userinfo) time.Time {
+	if ui.AuthTime <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(ui.AuthTime, 0)
 }
 
 // platformUnlinked answers a sub nobody here has: new, or link_required when
@@ -377,7 +386,7 @@ func (h *Handler) platformUnlinked(w http.ResponseWriter, r *http.Request, ui *o
 		kind, answer = store.TicketLink, platformKindLinkRequired
 	}
 	ticket, expires, err := h.platformTicket(r.Context(), store.PlatformTicket{Kind: kind, Sub: sub,
-		ProductKeyID: ui.ProductKeyID, ProductKey: ui.ProductKey, Email: ui.Email, Name: ui.Name})
+		ProductKeyID: ui.ProductKeyID, ProductKey: ui.ProductKey, Email: ui.Email, Name: ui.Name, AuthTime: authTimeOf(ui)})
 	if err != nil {
 		h.log().Error("could not issue a sign-in ticket", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not sign in")
@@ -438,21 +447,37 @@ func (h *Handler) accountKeyChanged(ctx context.Context, ui *oidcrp.Userinfo) {
 	}()
 }
 
+// platformProof is what a sign-in through the provider proves of its person
+// to this server (internal/stepup): the provider's auth_time, from that
+// sign-in's userinfo or from the ticket a new account was created with, and
+// never the session's creation (Decision 2 of step 4); or now, for a link,
+// which proved the old password in the same request.
+type platformProof struct {
+	authTime time.Time
+	now      bool
+}
+
 // platformIssue starts a Wappie session for an account signed in through
-// the provider and answers kind session with it.
+// the provider (via_provider) and answers kind session with it.
 //
 // The answer never carries wrapped_usk. A linked account keeps its legacy
 // password wrap through the rollback window, and this answer goes to whoever
 // holds an access token for the sub, with no proof of the old password; the
 // page opens the account key from platform_wrap and has no use for it.
-// /v1/auth/me still returns it to the session (docs/platform-sign-in.md,
+// /v1/auth/me withholds it from the session too (docs/platform-sign-in.md,
 // "The rollback window").
 //
-// The session holds no step-up proof: a sign-in through the provider proves
-// nothing to this server until step 4 takes the provider's re-authentication
-// (internal/stepup), so every write that needs one is refused until then.
-func (h *Handler) platformIssue(w http.ResponseWriter, r *http.Request, user store.User, reply platformReply) {
-	token, session, err := h.Users.StartPlatformSession(r.Context(), user, r.UserAgent())
+// The session's step-up proof is proof: the provider's auth_time, capped at
+// now, lasts stepup.Window like any sign-in's, and a sign-in whose userinfo
+// named none holds no proof until a step-up at the provider.
+func (h *Handler) platformIssue(w http.ResponseWriter, r *http.Request, user store.User, reply platformReply, proof platformProof) {
+	start := func() (string, store.Session, error) {
+		if proof.now {
+			return h.Users.StartLinkedSession(r.Context(), user, r.UserAgent())
+		}
+		return h.Users.StartPlatformSession(r.Context(), user, r.UserAgent(), proof.authTime)
+	}
+	token, session, err := start()
 	if err != nil {
 		h.log().Error("could not start a session", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not start a session")
@@ -508,12 +533,12 @@ func (h *Handler) platformAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok2 {
 		return
 	}
-	user, err := h.Users.SignupPlatform(r.Context(), store.NewPlatformUser{Ticket: req.Ticket, PublicKey: pub, Wrap: wrap, Name: req.DisplayName})
+	user, authTime, err := h.Users.SignupPlatform(r.Context(), store.NewPlatformUser{Ticket: req.Ticket, PublicKey: pub, Wrap: wrap, Name: req.DisplayName})
 	if err != nil {
 		h.ticketError(w, err)
 		return
 	}
-	h.platformIssue(w, r, user, platformReply{})
+	h.platformIssue(w, r, user, platformReply{}, platformProof{authTime: authTime})
 }
 
 // ---------------------------------------------------------------------------
@@ -576,7 +601,8 @@ func (h *Handler) platformLinkPrepare(w http.ResponseWriter, r *http.Request) {
 
 // platformLink links the legacy account (store.LinkLegacy) and signs the
 // browser into it: every other session and Wappie passkey of the account
-// has just been revoked.
+// has just been revoked. The new session's proof is now, since the link
+// proved the old password (or the recovery code) as a password sign-in does.
 func (h *Handler) platformLink(w http.ResponseWriter, r *http.Request) {
 	if !h.platformRequest(w, r) {
 		return
@@ -609,7 +635,7 @@ func (h *Handler) platformLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.accessChanged()
-	h.platformIssue(w, r, user, platformReply{})
+	h.platformIssue(w, r, user, platformReply{}, platformProof{now: true})
 }
 
 func (h *Handler) failTicket(ctx context.Context, ticket string) {

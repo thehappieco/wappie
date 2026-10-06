@@ -620,12 +620,12 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 }
 
 // An account that signs in through the provider steps up there (decision
-// D3, step 4), which this server does not take yet: its sign-in is no proof,
-// so a write that needs one is refused with step_up_required, the status
-// says provider, and its passkey and password step-ups, and a Wappie passkey
-// of its own, are refused by name. With the provider unset (a rollback), the
-// linked account's legacy password steps it up again, and it may add a
-// Wappie passkey.
+// D3, step 4). Its sign-in is a proof for the ten minutes after the
+// provider's auth_time (Decision 2); past them a write that needs one is
+// refused with step_up_required, the status says provider, and its passkey
+// and password step-ups, and a Wappie passkey of its own, are refused by
+// name. With the provider unset (a rollback), the linked account's legacy
+// password steps it up again, and it may add a Wappie passkey.
 func TestPlatformAccountStepsUpAtTheProvider(t *testing.T) {
 	h := newPlatformHarness(t, config.LocalLoginOn)
 	provisional := map[string]any{"role": "service", "email": "", "provisional": true}
@@ -643,6 +643,10 @@ func TestPlatformAccountStepsUpAtTheProvider(t *testing.T) {
 		t.Helper()
 		token := signed.Token
 		var state stepUpState
+		if code := h.get(t, "/v1/auth/step-up", &state, token); code != http.StatusOK || !state.Fresh || !state.Provider || state.Passkey || state.RemainingSeconds < 500 {
+			t.Fatalf("%s: status right after the sign-in %d %+v", name, code, state)
+		}
+		h.age(t, token)
 		if code := h.get(t, "/v1/auth/step-up", &state, token); code != http.StatusOK || state.Fresh || !state.Provider || state.Passkey || state.RemainingSeconds != 0 {
 			t.Fatalf("%s: status %d %+v", name, code, state)
 		}

@@ -28,7 +28,7 @@ func TestSessionReplyUsesPersistedExpiryPrecision(t *testing.T) {
 	// Force a fraction that Postgres cannot preserve, independently of the
 	// operating system's time.Now resolution (macOS previously hid the CI bug).
 	requested := time.Now().Add(SessionTTL).Truncate(time.Second).Add(123456789 * time.Nanosecond)
-	token, issued, err := users.startSession(ctx, user, "precision browser", requested, uuid.Nil, nil, true)
+	token, issued, err := users.startSession(ctx, user, "precision browser", sessionStart{expiresAt: requested, proof: proofNow})
 	if err != nil {
 		t.Fatal(err)
 	}

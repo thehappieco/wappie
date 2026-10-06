@@ -255,6 +255,9 @@ type PlatformTicket struct {
 	Name         string
 	// UserID is the linked account of a rewrap ticket.
 	UserID uuid.UUID
+	// AuthTime is the provider's auth_time in the userinfo the ticket was
+	// issued on; zero when it named none.
+	AuthTime time.Time
 }
 
 func ticketDigest(secret string) ([]byte, error) {
@@ -293,14 +296,18 @@ func (u *Users) CreatePlatformTicket(ctx context.Context, t PlatformTicket) (str
 	if !validProfileName(name, false) {
 		name = ""
 	}
+	var authTime *time.Time
+	if !t.AuthTime.IsZero() {
+		authTime = &t.AuthTime
+	}
 	err := pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM platform_login_tickets WHERE expires_at < now() - interval '1 hour'`); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO platform_login_tickets
-			(ticket_hash, kind, sub, product_key_id, product_key, email, name, user_id, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + $9::int * interval '1 second')`,
-			sum[:], t.Kind, t.Sub, t.ProductKeyID, t.ProductKey, normaliseEmail(t.Email), name, user, int(PlatformTicketTTL.Seconds()))
+			(ticket_hash, kind, sub, product_key_id, product_key, email, name, user_id, auth_time, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10::int * interval '1 second')`,
+			sum[:], t.Kind, t.Sub, t.ProductKeyID, t.ProductKey, normaliseEmail(t.Email), name, user, authTime, int(PlatformTicketTTL.Seconds()))
 		return err
 	})
 	if err != nil {
@@ -341,18 +348,19 @@ type queryRower interface {
 func readTicket(ctx context.Context, q queryRower, sum []byte, spend bool, kinds []string) (PlatformTicket, error) {
 	var t PlatformTicket
 	var user *uuid.UUID
+	var authTime *time.Time
 	var pinned []byte
-	query := `SELECT t.kind, t.sub, t.product_key_id, t.product_key, t.email, t.name, t.user_id, p.product_key
+	query := `SELECT t.kind, t.sub, t.product_key_id, t.product_key, t.email, t.name, t.user_id, t.auth_time, p.product_key
 		FROM platform_login_tickets t JOIN platform_key_pins p ON p.sub = t.sub AND p.product_key_id = t.product_key_id
 		WHERE t.ticket_hash = $1 AND t.used_at IS NULL AND t.expires_at > now() AND t.kind = ANY ($2)`
 	if spend {
 		query = `WITH spent AS (UPDATE platform_login_tickets SET used_at = now()
 			WHERE ticket_hash = $1 AND used_at IS NULL AND expires_at > now() AND kind = ANY ($2)
-			RETURNING kind, sub, product_key_id, product_key, email, name, user_id)
-			SELECT t.kind, t.sub, t.product_key_id, t.product_key, t.email, t.name, t.user_id, p.product_key
+			RETURNING kind, sub, product_key_id, product_key, email, name, user_id, auth_time)
+			SELECT t.kind, t.sub, t.product_key_id, t.product_key, t.email, t.name, t.user_id, t.auth_time, p.product_key
 			FROM spent t JOIN platform_key_pins p ON p.sub = t.sub AND p.product_key_id = t.product_key_id`
 	}
-	err := q.QueryRow(ctx, query, sum, kinds).Scan(&t.Kind, &t.Sub, &t.ProductKeyID, &t.ProductKey, &t.Email, &t.Name, &user, &pinned)
+	err := q.QueryRow(ctx, query, sum, kinds).Scan(&t.Kind, &t.Sub, &t.ProductKeyID, &t.ProductKey, &t.Email, &t.Name, &user, &authTime, &pinned)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PlatformTicket{}, ErrTicketInvalid
 	}
@@ -364,6 +372,9 @@ func readTicket(ctx context.Context, q queryRower, sum []byte, spend bool, kinds
 	}
 	if user != nil {
 		t.UserID = *user
+	}
+	if authTime != nil {
+		t.AuthTime = *authTime
 	}
 	return t, nil
 }
@@ -386,27 +397,31 @@ type NewPlatformUser struct {
 // users.id = sub and auth_source = 'platform', in one transaction with its
 // link, its wrap and its event. The insertion trigger creates the personal
 // workspace, as for every person (interim, until the platform's workspaces).
-func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, error) {
+// It also returns the ticket's auth_time, the proof its first session starts
+// with (StartPlatformSession).
+func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, time.Time, error) {
 	if len(in.PublicKey) != 32 {
-		return User{}, errors.New("store: a public key is 32 bytes")
+		return User{}, time.Time{}, errors.New("store: a public key is 32 bytes")
 	}
 	if !ValidPlatformWrap(in.Wrap) {
-		return User{}, ErrPlatformWrap
+		return User{}, time.Time{}, ErrPlatformWrap
 	}
 	sum, err := ticketDigest(in.Ticket)
 	if err != nil {
-		return User{}, err
+		return User{}, time.Time{}, err
 	}
 	name := strings.TrimSpace(in.Name)
 	if !validProfileName(name, false) {
-		return User{}, ErrInvalidMembership
+		return User{}, time.Time{}, ErrInvalidMembership
 	}
 	var out User
+	var authTime time.Time
 	err = pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
 		t, err := readTicket(ctx, tx, sum, true, []string{TicketNew})
 		if err != nil {
 			return err
 		}
+		authTime = t.AuthTime
 		if name == "" {
 			name = t.Name
 		}
@@ -447,9 +462,9 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, e
 		return securityEvent(ctx, tx, "platform_linked", &t.Sub, t.Sub, map[string]string{"from": "new", "product_key_id": t.ProductKeyID})
 	})
 	if err != nil {
-		return User{}, err
+		return User{}, time.Time{}, err
 	}
-	return out, nil
+	return out, authTime, nil
 }
 
 // ---------------------------------------------------------------------------
