@@ -30,7 +30,7 @@ import { CONSOLE_URL } from '../constants.mjs'
 import { aiRenewURL, messageURL } from '../provider.mjs'
 import { createCaches } from './cache.mjs'
 import { fetchCiphertext } from './fetch.mjs'
-import { checkRow, hostOf, knownKinds, parseRequest, refusal, rowFacts, waitFor, whyNot } from './gate.mjs'
+import { checkRow, knownKinds, parseRequest, profileOf, refusal, rowFacts, waitFor, whyNot } from './gate.mjs'
 import { checkJail, outcomeOf, runWorker } from './jail.mjs'
 import { createBudgets, createScheduler, retryAfter } from './jobs.mjs'
 import { charPart, factsOf, finish, lastPage, pagesPart, pdfPart, pdfWindow, pending, renderOffice, transcript } from './result.mjs'
@@ -635,9 +635,10 @@ export function createMediaService({ log, now = Date.now, checkActive, archive, 
     ready,
     /** `provider.media` for a record whose sealed consent carries `media: true`. */
     forConnection(record) {
-      const host = hostOf(record.redirect_host)
+      const host = profileOf(record)
       return {
-        host,
+        // The host profile (§16.7, §19.23): the inline wait and the image note's wording.
+        host, profile: host,
         why: row => whyNot(row, connections.get(record.connection_id)?.mediaOff ?? [], ai ? AI_CAP_BYTES.audio : undefined),
         // On a release that declares ai_v1 (§18.12): transcripts, and get_message's `derived`.
         ...(ai ? { ai: true, derivedOf: row => ai(record).derivedOf(row) } : {}),

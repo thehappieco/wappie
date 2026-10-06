@@ -1,9 +1,14 @@
 // The Wappie icon, for hosts that show one beside the connector
-// (docs/mcp-enclave.md §5.4). The files in icons/ are the console's own
-// (wappie-cloud web/public: favicon-light.svg, favicon-32.png and
-// apple-touch-icon.png), byte for byte; favicon.ico is built from the two
-// PNGs here, so nothing in it is new. In the enclave image they are measured
-// into PCR0 like every other file.
+// (docs/mcp-enclave.md §5.4). favicon.svg, favicon-32.png and
+// apple-touch-icon.png are the console's own (wappie-cloud web/public:
+// favicon-light.svg, favicon-32.png and apple-touch-icon.png), byte for byte;
+// icon-192.png and icon-512.png are the same full-bleed tile from the site's
+// Wappie kit (thehappieco public/icons/wappie), byte for byte (§19.29), for
+// hosts that want a square raster of at least 48 pixels (192 is a multiple of
+// 48; 512 is the size directory listings ask for).
+// favicon.ico is built from the 32- and 180-pixel PNGs here, so nothing in it
+// is new. In the enclave image they are measured into PCR0 like every other
+// file.
 //
 // serverInfo.icons (MCP 2025-11-25, Implementation.icons) carries the PNG as a
 // data: URI on every reader, since a host may render only what the initialize
@@ -14,6 +19,7 @@ import { readFileSync } from 'node:fs'
 
 const read = name => readFileSync(new URL(`./icons/${name}`, import.meta.url))
 const svg = read('favicon.svg'), png32 = read('favicon-32.png'), png180 = read('apple-touch-icon.png')
+const png192 = read('icon-192.png'), png512 = read('icon-512.png')
 
 /** A PNG's width and height, from its IHDR chunk. */
 function pngSize(png) {
@@ -45,24 +51,29 @@ function ico(pngs) {
 const size = png => { const { width, height } = pngSize(png); return `${width}x${height}` }
 // Built once: every MCP request builds its own server.
 const data = `data:image/png;base64,${png180.toString('base64')}`, sizes180 = size(png180)
+const rasters = [['/icon-512.png', png512], ['/icon-192.png', png192]].map(([path, png]) => ({ path, png, sizes: size(png) }))
 
 /** The icon routes of the enclave's public listener: path → {type, bytes}. */
 export const ICON_FILES = Object.freeze({
   '/favicon.ico': Object.freeze({ type: 'image/x-icon', bytes: ico([png32, png180]) }),
   '/favicon.svg': Object.freeze({ type: 'image/svg+xml', bytes: svg }),
   '/apple-touch-icon.png': Object.freeze({ type: 'image/png', bytes: png180 }),
+  '/icon-192.png': Object.freeze({ type: 'image/png', bytes: png192 }),
+  '/icon-512.png': Object.freeze({ type: 'image/png', bytes: png512 }),
 })
 
 /**
  * serverInfo.icons: the 180-pixel PNG as a data: URI, then, with `origin`
- * (the https origin that serves ICON_FILES), the SVG and the PNG by URL. A
- * client refuses any other scheme, so an origin that is not https adds none.
+ * (the https origin that serves ICON_FILES), the SVG and every PNG by URL,
+ * each with its real size. A client refuses any other scheme, so an origin
+ * that is not https adds none.
  */
 export function serverIcons(origin) {
   const icons = [{ src: data, mimeType: 'image/png', sizes: [sizes180] }]
   if (/^https:\/\/[^/?#]+$/.test(origin ?? '')) icons.push(
     { src: `${origin}/favicon.svg`, mimeType: 'image/svg+xml', sizes: ['any'] },
     { src: `${origin}/apple-touch-icon.png`, mimeType: 'image/png', sizes: [sizes180] },
+    ...rasters.map(({ path, sizes }) => ({ src: `${origin}${path}`, mimeType: 'image/png', sizes: [sizes] })),
   )
   return icons
 }

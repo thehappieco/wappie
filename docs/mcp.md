@@ -45,29 +45,48 @@ For a connection with message text, on `https://mcp.wappie.thehappie.co/mcp`
 | AWS (hypervisor, Nitro Security Module, KMS) | Trusted | Outside this model. |
 
 The key is memory-only: a restart of the enclave (every reader release, a
-reboot or a crash) clears it. The connection then answers
-`reconsent_required` with a console link, and the person who consented renews
-it there with their password. The assistant does not have to reconnect.
+reboot or a crash) clears it. From reader 0.6.0 the connection then keeps
+reading metadata, with text locked and a console link in every answer;
+whatever needs the key answers `reconsent_required` with that link. The
+person who consented renews it there with their password. The assistant does
+not have to reconnect.
 Revoking stops future reads; it cannot erase what the assistant already
 received. Someone who leaves the workspace or is disabled loses their text
 connections with it. Live ingestion is not blind (the server that receives
 messages from WhatsApp sees them before sealing), and the archive REST API
 still never opens archived content.
 
+From reader 0.6.0 ([contract §19](mcp-enclave.md#19-any-mcp-client-060)) the
+attested reader admits any assistant that identifies itself with a client
+document on its own https domain, and a connection token made in the
+console. These rows add to the table above, for every connection on that
+reader, with or without text:
+
+| Who | Reads? | How, or why not |
+| --- | --- | --- |
+| An assistant you approved that Wappie has not tested | Yes, what you allowed | Metadata once you tick "I started this"; text and attachments only after a second, deliberate tick, with your password and a confirmed e-mail address. Never drafts, notes or sending. At most the last 7, 30 or 90 days (30 by default), 2,000 messages and 50 attachments a day (300 and 10 in the first hour), 20 calls a minute, text for 30 days at most, and its access lapses after 3 days unused (7 for metadata). |
+| Someone who tricked you into approving their assistant | Yes, what was approved, within those limits, until you revoke it or it expires | The consent card leads with the verified domain and its main domain, shows the full identity and return addresses, warns about look-alike names and shared hosting, and refuses public suffixes, hosts shared by path and Wappie's own domain. Every new connection raises a banner in the console and an e-mail with a link that can only revoke it. |
+| Someone who started a connection in their own assistant account and got you to approve it | Only if that assistant accepts a sign-in it did not start | Each release tests this for every web assistant it lists, and an assistant that fails is not listed. You tick "I started this" on every consent, and the reader refuses an approval completed from a different network than the one that started the connection. The banner, the e-mail and revocation. |
+| A program on your computer posing as an app such as Claude Code (an installer script is enough) | Yes, what you approved for that app | Nothing can confirm which program on your computer receives the access, and the card says so. You tick "I started this"; such apps get shorter lifetimes (text 30 days at most, refresh lapsing after 7 days unused) and never drafts, notes or sending. |
+| Whoever holds a connection token | Yes, within its numbers, scope, networks, history window, limits and validity | The token is shown once and Wappie keeps only its hash, inside the reader's sealed state. A text token lasts 1 day by default and 30 at most. Revocation takes effect within a minute. |
+| Wappie's staff forging an assistant's identity document | No | The verified reader fetches the document itself over a connection it checks; the assistants Wappie tested are pinned in its published image and never fetched. Staff can only block a document. |
+| Wappie's staff hiding a connection from the list | Detected | The console compares the list with the one the verified reader signs, and shows a red warning when a connection is missing. |
+
 ## Connect an assistant
 
 The console's **MCP** panel shows workspace owners and administrators one
-connector address and how to add it in Claude or ChatGPT. The assistant then
-sends the browser back to the console to choose the numbers and approve the
-connection; nothing runs on the person's computer. See the
+connector address and how to add it in Claude and Claude Code (from reader
+0.6.0, in any MCP client: [below](#any-mcp-client-reader-060)). The
+assistant then sends the browser back to the console to choose the numbers
+and approve the connection; nothing runs on the person's computer. See the
 [remote connector](../packages/mcp-http/README.md) and the steps below.
 
 The console no longer creates local setup bundles. A bundle created earlier
 still imports with `packages/mcp/setup.mjs`, and the console lists the tokens
 of those setups under **Old local MCP tokens** so they can be revoked.
 The [package quickstart](../packages/mcp/README.md#start-with-a-console-setup)
-covers importing such a bundle, [ChatGPT through Secure MCP Tunnel](../packages/mcp/README.md#connect-to-chatgpt)
-and [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop);
+covers importing such a bundle, [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop)
+and [other hosts that run a stdio server](../packages/mcp/README.md#other-mcp-hosts);
 a new local connection uses its [manual configuration](../packages/mcp/README.md#manual-configuration).
 
 ### Installing the hosted connector in one step
@@ -80,7 +99,8 @@ where Wappie has enabled those too and the approver switched them on as well.
 The console's MCP panel shows the second address to workspaces the attested
 reader allows and the first to every other. The steps below use the first
 address; the second works the same way in every host.
-Every host takes the address as it is — **nothing to install**:
+Wappie has tested two hosts, Claude and Claude Code. Every host takes the
+address as it is — **nothing to install**:
 
 - **Claude** (claude.ai, Desktop, mobile): the console's MCP panel and the
   Wappie page have a **Connect to Claude** button, Claude's prefilled "add
@@ -89,30 +109,25 @@ Every host takes the address as it is — **nothing to install**:
   the organisation, in Organization settings → Connectors → Add → Custom → Web
   (the panel also links the same prefilled dialog on that admin path), and
   members then click Connect on it.
-- **Codex** (ChatGPT desktop app or CLI): Settings → MCP servers → Add server →
-  Streamable HTTP → the address, or `codex mcp add wappie --url
-  https://api.wappie.thehappie.co/mcp`. Codex opens the consent page itself.
-  Codex has been seen to list the tools without being able to call them; if
-  that happens, add Wappie as a ChatGPT app instead (below).
 - **Claude Code**: `claude mcp add --transport http --scope user wappie
   https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
-- **ChatGPT** (desktop app or web): Settings → Apps (Apps & Connectors) →
-  Advanced settings → turn on Developer mode. Then in Apps click Create: name
-  "Wappie", MCP server URL the address, Authentication OAuth, tick "I trust
-  this application", Create. In a chat, "+" → Developer mode → turn on
-  Wappie. That entry is all ChatGPT needs; there is no file to build. Added
-  another way, for example as a plain connector or in Codex, ChatGPT may list
-  the tools without being able to use them. For attachments, pick a model
-  with reasoning (Thinking or Pro): Instant does not see images.
+- **Other MCP clients**, ChatGPT and Codex included, are not tested by
+  Wappie: ChatGPT's developer-mode plugins and Codex did not finish the live
+  baseline, and on 2026-10-05 the owner kept only Claude
+  ([contract §19.34](mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
+  On the attested reader, a client that identifies itself with its own
+  document connects as an [untested client](#any-mcp-client-reader-060).
 
 The plugin at [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins)
-is optional. It adds a skill that tells Codex or Claude Code what the
-connection can see, and not to read WhatsApp through the screen to get around a
-locked result.
+is optional. It adds a skill that tells Claude Code (or Codex, untested) what
+the connection can see, and not to read WhatsApp through the screen to get
+around a locked result.
 
-Native apps such as Codex and Claude Code identify themselves with a Client ID
-Metadata Document on an allowed host and take the code on a loopback port
-(RFC 8252); open registration never gets loopback redirects.
+Native apps such as Claude Code identify themselves with a Client ID
+Metadata Document and take the code on a loopback port (RFC 8252); open
+registration never gets loopback redirects. Up to reader 0.5.0 the document
+must sit on an allowed host (`claude.ai` or `chatgpt.com`); from reader 0.6.0
+any https host that passes the reader's checks qualifies, as below.
 
 The server advertises the connector's address in `/v1/discovery` as
 `endpoints.mcp_server`, because the console runs on another origin than the
@@ -131,6 +146,47 @@ archive decryption key ever reaches it; on the attested reader a text
 connection's key exists only inside the enclave. A [manual setup](../packages/mcp/README.md#manual-configuration)
 also works with public API/CLI credentials, without the commercial console.
 
+### Any MCP client (reader 0.6.0)
+
+From reader 0.6.0 ([contract §19](mcp-enclave.md#19-any-mcp-client-060)) the
+attested reader's address works in any MCP client that identifies itself
+with a Client ID Metadata Document on its own https domain (VS Code, Zed,
+goose, ChatGPT, Codex, an in-house agent), as well as in Claude and Claude
+Code. The consent card always leads with the client's verified domain.
+
+- **Tested by Wappie.** The tested clients are pinned, with their exact
+  return addresses, in the reader's published image: Claude on the web
+  and Claude Code, which passed the live baseline on reader 0.5.0 by their
+  documents. Claude's registration form, on the same two callbacks, is
+  listed by the owner's decision without a baseline run
+  ([contract §19.34](mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
+  Claude shows "Tested by Wappie". Claude Code shows "App on this computer":
+  an app on your computer cannot be identified there, so it gets shorter
+  lifetimes and no drafts or notes. ChatGPT and Codex did not finish the
+  baseline and are not listed: they connect as any other client, below.
+- **Not tested by Wappie.** Any other client connects with an amber card:
+  its domain and main domain, the full addresses it identifies itself with
+  and returns to, the name it gives in quotes, and warnings for look-alike
+  names and shared hosting. Text and attachments stay locked until a second,
+  deliberate tick and a confirmed e-mail address, sending is never offered,
+  and the reading limits in [who can read what](#who-can-read-what) apply.
+- **Connection token**, for tools that cannot sign in with OAuth but can
+  send a fixed header (Cursor, Windsurf, Gemini CLI, n8n, OpenCode,
+  mcp-remote, scripts): in the console's MCP tab, an owner or administrator
+  creates a token, chooses its numbers, what it may read, its validity (text
+  1 day by default), its history window and, optionally, the networks it may
+  be used from, and copies it once into the computer's keychain. The tool
+  sends it only as `Authorization: Bearer`, never in a URL. A token is
+  always "not tested".
+- **Not supported:** clients that run inside a web page (the reader refuses
+  any `Origin` on `/mcp`), and clients that can only register dynamically
+  and cannot send a header (the Gemini app; Perplexity, unconfirmed).
+- Every consent asks you to tick "I started this", and every new connection
+  raises a banner in the console and an e-mail whose only link revokes that
+  connection. Wappie's e-mails about assistants never ask for your password.
+- A workspace holds at most ten live connections, of which at most three
+  are untested assistants or tokens.
+
 ### Approving a remote connection
 
 The assistant redirects the browser to the console with a one-time request id.
@@ -141,9 +197,10 @@ console issues a read-only API key restricted to those numbers, seals it to
 the reader's public key in the browser, and hands the reader a proof that the
 same browser approved that same request. The archive server relays the sealed
 bundle as an opaque blob and records the connection; it never sees the key
-inside. A workspace can hold five live connections; each is listed in the
-console's MCP panel and can be revoked there, which revokes its API key in the
-same transaction. Revocation stops future reads; it cannot retract metadata
+inside. A workspace can hold five live connections (ten from the server
+release that prepares reader 0.6.0, of which at most three untested
+assistants or tokens); each is listed in the console's MCP panel and can be
+revoked there, which revokes its API key in the same transaction. Revocation stops future reads; it cannot retract metadata
 already returned. An approval that is not completed within twenty minutes
 expires with its provisional key.
 
@@ -164,9 +221,11 @@ Nothing sealed leaves the browser before the attestation passes. The console
 lists the connection as text, and its refresh token lapses after seven days
 unused (thirty for metadata).
 
-When the enclave restarts the connection shows **reseal** in the console and
-its tools answer `reconsent_required` with a link to
-`/console?mcp_renew=<connection id>`. The person who consented opens it, the
+When the enclave restarts the connection shows **reseal** in the console;
+its tools keep answering with metadata, text locked and a `renewal` link to
+`/console?mcp_renew=<connection id>` in every result, and those that need the
+key (a text query, an attachment, a draft) answer `reconsent_required` with
+the same link (reader 0.5.0: every tool did). The person who consented opens it, the
 console verifies a new attestation, and their password seals the grants to a
 new enclave key and a new service account on the same connection, with the
 same expiry. The assistant keeps its tokens.
@@ -276,7 +335,10 @@ removing a workspace from the list) is the kill switch: the enclave's status
 checks answer `reseal` for that workspace's live content connections, so
 every key is dropped within a minute while the consents and the assistants'
 token families survive, and renewal is refused until content is allowed
-again. Discovery adds the capability `mcp.remote.content.v1` when
+again. From reader 0.6.0 those connections keep reading metadata meanwhile,
+as after a restart: the switch stops text, names, attachments and drafts,
+not the metadata their consent always covered (revoke a connection to stop
+it). Discovery adds the capability `mcp.remote.content.v1` when
 `enclave` is configured and the switch is on; the console asks
 `GET /v1/mcp/content` whether its own workspace may use it (`enabled`) and
 whether the `enclave` reader allows that workspace at all (`attested`), which
@@ -370,7 +432,7 @@ sees a key or a word of the content.
 `AIAllowed(workspace)` is attachments allowed for the workspace, the switch
 on and the workspace listed. An AI authorization is an `ai` row of the
 connections ledger with its own service account, created by an owner or an
-admin in the console; it is left out of the cap of five live connections and
+admin in the console; it is left out of the cap of ten live connections and
 out of `GET /v1/mcp/connections`, and is listed by `GET /v1/ai/authorizations`.
 While `AIAllowed` is false its status reads `reseal` (computed, never
 written) and the enclave wipes its API keys within a minute; every status
@@ -388,6 +450,62 @@ when any is off, `ai_off_providers=` and `ai_off_features=`. Stored results
 go with their message and count toward the storage quota; the daily usage
 counters are deleted 400 days after their day, and deleted keychain items 30
 days after their deletion.
+
+Any MCP client ([contract](mcp-enclave.md#19-any-mcp-client-060)): reader
+0.6.0 admits any client that identifies itself with a client metadata
+document on an https host of its own, in two tiers (tested and not tested by
+Wappie), and a console connection token for tools without OAuth. It
+describes each request in a version-2 descriptor and attests all of it; the
+server keys its checks on the descriptor's version, never on what a reader
+declares. A version-1 descriptor (a reader before 0.6.0) is checked against
+`WS_MCP_REDIRECT_HOSTS`, as before. A version-2 one is held to the host
+predicate and the Public Suffix List snapshot the reader uses
+(`internal/netguard`), to what each kind of client carries, and to these
+switches, every one of which can only refuse:
+
+| Variable | Rule |
+|---|---|
+| `WS_MCP_CIMD_MODE` | `allowlist` (default) or `any`. In `allowlist` mode every consent, renewal and token request for a client Wappie has not tested, and every console token, is refused with `403 client_not_allowed`. Set `any` once a 0.6.0 reader serves; back to `allowlist` turns them off without a release (live ones are revoked from the console) |
+| `WS_MCP_BLOCKED_CLIENTS` | tested clients' ids from the image's `TESTED_CLIENTS` (`^[a-z][a-z0-9_]{0,31}$`), comma separated, refused the same way whatever the mode; empty by default |
+| `WS_MCP_DCR_HOSTS` | the hosts a dynamically registered client may be identified by, each one a client's host by the predicate; default `claude.ai,claude.com` |
+| `WS_MCP_NOTICE_ORIGIN` | this server's public https origin (`https://api.wappie.thehappie.co`), where the new-assistant e-mail's revoke-only link points. Optional; without it, or without `WS_SMTP_ADDR` and `WS_MAIL_FROM`, no notice e-mail goes |
+
+The console's consent to a version-2 descriptor carries `trust`,
+`client_host`, `client_local` and `claimed_name`, which must equal the
+descriptor's, and `history_days` (7, 30 or 90 for an untested client, `null`
+for a tested one); text is `consent_version: 4`, drafting is a tested web
+client's only, and the ceilings follow the tier: ninety days for metadata
+and thirty for text, with an hour's margin, for every tier but a tested web
+client's. Text for an untested client or a token is refused with `403
+email_unverified` unless the notice e-mail can go and the consenting person
+confirmed their address at sign-up. A workspace has at most ten live
+assistant connections, of which at most three untested ones and tokens
+(`409 too_many_unknown`). Every activation, and every reading limit the
+reader reports (`POST /v1/mcp/enclave/connections/{id}/budget-hit`), raises
+the new-assistant notice: the console's banner shows the connection again,
+and an e-mail goes once per connection and event, at most twenty a day per
+workspace, to the person who consented and the owners with a confirmed
+address. It names the client's verified domain and tier, never the name the
+client gave itself, and its only link is a revoke-only link
+(`GET`/`POST /v1/mcp/revoke-link/{token}`) that needs no session, ends that
+one connection once, and is replaced by the next notice. The list adds the
+client, who consented, the viewer's seen mark (`POST
+/v1/mcp/connections/{id}/seen`), the first use and the limits reached. The
+console token's routes are `POST /v1/mcp/token-requests` and `POST
+/v1/mcp/token-requests/{id}/bundle`, and the attested list of live
+connections is relayed by `POST /v1/mcp/workspaces/{id}/live-list`, ten a
+minute per workspace. The startup line prints `cimd_mode`,
+`blocked_clients`, `dcr_hosts` and `notice_origin`.
+
+A 0.6.0 reader fetches documents itself, over TLS it verifies, through the
+document egress proxy on the enclave's parent instance, `cmd/cimd-egress`: a
+process of its own, listening on vsock 8007 for the enclave (CID 16) only,
+reading `WS_CIMD_EGRESS_OWN_ADDRESSES` (the deployment's own addresses, never
+dialed; required) and nothing else. It tunnels `CONNECT <host>:443` to hosts
+that pass the same predicate, resolved once to public addresses only, with
+budgets overall and per registrable domain, and 16 KiB and 6 seconds per
+tunnel. The server's own metadata relay (`/v1/mcp/enclave/cimd`) serves
+readers before 0.6.0 only and goes with them.
 
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's

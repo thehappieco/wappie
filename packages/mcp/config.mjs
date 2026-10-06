@@ -28,6 +28,10 @@ const schema = z.strictObject({
   // and own-chat sends, on the attested reader only, as the sealed consent says.
   send: z.enum(['draft', 'direct']).nullable().default(null),
   send_self: z.boolean().default(false),
+  // The history a hosted connection may reach (docs/mcp-enclave.md §19.19):
+  // the last N days, as the person chose for a client Wappie has not tested
+  // or a console token; null is the whole history.
+  history_days: z.number().int().min(1).max(366).nullable().default(null),
 })
 const credentialFiles = ['session_file', 'token_file', 'password_file', 'service_key_file', 'contacts_file']
 export class LocalConfigError extends Error {
@@ -65,6 +69,7 @@ export function validateConfig(value, base = process.cwd()) {
   }
   if ((config.media || config.send !== null || config.send_self) && config.credential_source !== 'enclave') throw new LocalConfigError('enclave_credentials_invalid')
   if (config.send_self && config.send === null) throw new LocalConfigError('invalid_config')
+  if (config.history_days !== null && config.credential_source === 'files') throw new LocalConfigError('invalid_config')
   if (config.credential_source === 'files') {
     if (Boolean(config.session_file) === Boolean(config.token_file)) throw new LocalConfigError('choose_one_credential')
     if ((config.session_file && (config.service_key_file || config.service_user_id)) ||

@@ -1,4 +1,4 @@
-import { createDecipheriv, hkdfSync } from 'node:crypto'
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto'
 import { ArchiveClient, ArchiveError, auth, bytes, hpke, seal } from '@whatserver2/client'
 import { openContactPack, MAX_CONTACT_PACK_BYTES } from '@whatserver2/client/crypto/contactPack'
 import { contactCandidates, matchesText, excerpt } from './contacts.mjs'
@@ -8,19 +8,156 @@ import { loadCredential, LocalConfigError, readerMode, readPrivateFile } from '.
 
 /** Contact pages of 500 a hosted-content resolve_contact reads per call, whatever matched. */
 export const CONTACT_PAGES = 4
+/** The limits tiers a hosted connection can have (docs/mcp-enclave.md §19.6), as list_numbers' connection block names them. */
+export const TIERS = Object.freeze(['web_tested', 'local_tested', 'unknown', 'token'])
+/**
+ * Why a value stays locked on a content connection whose key the attested
+ * reader does not hold (§19.29): no cause, since a restart, an update and a
+ * workspace's message text switched off all read alike here, and the result's
+ * `renewal` says how text comes back.
+ */
+export const RESEALED_REASON = 'Locked: the Wappie reader holds no key for this connection right now; the result\'s renewal says how text comes back.'
+/** An RFC 3339 deadline, as Go and the attested reader write it, in UTC; anything else is null. */
+const expiryShape = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
+const deadlineOf = value => (typeof value === 'string' && expiryShape.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null)
 /** History reads in flight at once when search hits are labelled (local and hosted-metadata). */
 export const HISTORY_CONCURRENCY = 4
 const omitted = () => ({ state: 'absent' })
-const textFields = ['uid', 'device_id', 'wa_id', 'chat_key', 'sender_key', 'sender_lid', 'sender_pn', 'ts', 'kind', 'type', 'source', 'target_uid', 'target_rel', 'reply_to', 'order_ts']
-function metadata(message) {
+/**
+ * A message's identifiers in a result (docs/mcp-enclave.md §19.32): the ones a
+ * tool takes (`uid`, `chat_key`, `sender_key`, `target_uid`, `reply_to_uid`)
+ * and `device_id`. Not WhatsApp's own id (`wa_id`), which no tool takes, and
+ * not the sender's phone JID and LID as well as its key, which the archive's
+ * sender filter matches alike.
+ */
+const textFields = ['uid', 'device_id', 'chat_key', 'sender_key', 'ts', 'kind', 'type', 'source', 'target_uid', 'target_rel', 'reply_to_uid', 'order_ts']
+/** The sender as the archive keys it: its LID when known, else its phone JID (Go's Address.Primary). */
+const senderOf = row => [row?.sender_key, row?.sender_lid, row?.sender_pn].find(value => typeof value === 'string' && value) ?? undefined
+/**
+ * `replyOf(row)` is the uid of the message a reply quotes, or undefined
+ * (replyIndex's `of`); a row without one names none.
+ */
+function metadata(message, replyOf) {
   const result = {}
-  for (const key of textFields) if (typeof message[key] === 'string') result[key] = message[key]
+  const values = { ...message, sender_key: senderOf(message), reply_to_uid: replyOf?.(message) }
+  for (const key of textFields) if (typeof values[key] === 'string') result[key] = values[key]
   for (const key of ['seq', 'is_from_me', 'is_group', 'view_once', 'ephemeral']) if (typeof message[key] === 'number' || typeof message[key] === 'boolean') result[key] = message[key]
   if (message.media) result.attachment = {
     media_type: message.media.media_type, mimetype: message.media.mimetype,
     file_length: message.media.file_length, download_status: message.media.download_status,
   }
   return result
+}
+/**
+ * The quoted message of each reply, by uid (§19.32). WhatsApp names it by its
+ * `wa_id`, which no tool takes and the archive has no lookup for, so a reply
+ * carries `reply_to_uid` only where the original it quotes is among the rows
+ * this call read, in the same chat: nothing is fetched for it, and nothing
+ * outside a connection's history window is named. A `wa_id` two rows share
+ * is no answer. `chatOf(row)` says which chat a row is of; one chat's rows
+ * (list_messages, list_revisions) pass a constant, since they hold the chat's
+ * aliases too.
+ */
+function replyIndex(chatOf = row => row.chat_key) {
+  const originals = new Map()
+  const keyOf = (row, waID) => JSON.stringify([chatOf(row), waID])
+  return {
+    add(row) {
+      if (row?.kind !== 'message' || typeof row.wa_id !== 'string' || !row.wa_id || typeof row.uid !== 'string') return
+      const key = keyOf(row, row.wa_id)
+      originals.set(key, originals.has(key) && originals.get(key) !== row.uid ? null : row.uid)
+    },
+    of(row) {
+      if (!quotes(row)) return undefined
+      const uid = originals.get(keyOf(row, row.reply_to))
+      return typeof uid === 'string' && uid !== row.uid ? uid : undefined
+    },
+  }
+}
+const quotes = row => typeof row?.reply_to === 'string' && row.reply_to !== ''
+/** A search hit's reply_to_uid until the scan ends: a place holder, filled or removed then. */
+const replyPending = row => (quotes(row) ? '' : undefined)
+/**
+ * activity_summary's groups (§19.32), by chat, sender and direction. A row
+ * archived before its sender's LID was known names the sender by phone JID
+ * only, so one person could count as two senders of one chat, a LID and a
+ * phone JID, with nothing in the result to join them. Where a row the same
+ * call read states both (its `sender_lid` and `sender_pn`, the archive's own
+ * alias), the phone JID's group is counted in the LID's group of the same
+ * chat and direction, whichever rows came first. Nothing is folded across
+ * chats or calls (a next page is a call of its own), nor where that chat and
+ * direction has no LID group (the phone JID is then the only sender_key
+ * those rows are found by), nor for a phone two LIDs state (as a wa_id two
+ * rows share names no reply).
+ */
+function activityGroups() {
+  const groups = new Map(), aliases = new Map(), ranks = new Map()
+  const keyOf = (chat, sender, direction) => JSON.stringify([chat, sender ?? '', direction])
+  let rank = 0
+  return {
+    /** Every row the call read, counted or not: the aliases it states. */
+    learn(row) {
+      const lid = row.sender_lid, pn = row.sender_pn
+      if (typeof lid === 'string' && lid && typeof pn === 'string' && pn && lid !== pn) aliases.set(pn, aliases.has(pn) && aliases.get(pn) !== lid ? null : lid)
+    },
+    /** A row counted, in its chat, sender and direction. */
+    add(row) {
+      const sender = senderOf(row), direction = row.is_from_me ? 'outgoing' : 'incoming', key = keyOf(row.chat_key, sender, direction)
+      // Rows come newest first: a group's first row is its newest, its last its oldest.
+      const item = groups.get(key) || { chat_key: row.chat_key, sender_key: sender, is_group: row.is_group === true, direction,
+        archived_messages: 0, first_order_ts: row.order_ts, last_order_ts: row.order_ts, sample_uid: row.uid }
+      if (!groups.has(key)) { groups.set(key, item); ranks.set(item, { newest: rank }) }
+      item.archived_messages++; item.first_order_ts = row.order_ts
+      ranks.get(item).oldest = rank++
+    },
+    list() {
+      for (const [key, item] of groups) {
+        const lid = aliases.get(item.sender_key)
+        const into = lid ? groups.get(keyOf(item.chat_key, lid, item.direction)) : undefined
+        if (!into) continue
+        const from = ranks.get(item), to = ranks.get(into)
+        into.archived_messages += item.archived_messages
+        if (from.newest < to.newest) { into.last_order_ts = item.last_order_ts; into.sample_uid = item.sample_uid; to.newest = from.newest }
+        if (from.oldest > to.oldest) { into.first_order_ts = item.first_order_ts; to.oldest = from.oldest }
+        groups.delete(key)
+      }
+      return [...groups.values()]
+    },
+  }
+}
+/**
+ * resolve_contact's `next.after_key` (§19.32): the archive pages contacts by
+ * key, so the cursor is the last contact's key, a third party's JID that has
+ * nothing to do with the query. It reaches the model sealed: AES-256-GCM under
+ * a key HKDF derives from this connection's archive credential, bound to the
+ * number, so it opens only on this connection and says nothing to whoever
+ * reads it. A value without the prefix is taken as a key, as before 0.6.0.
+ */
+const CURSOR_PREFIX = 'c1.'
+const CURSOR_IV = 12, CURSOR_TAG = 16
+function contactCursors(secret) {
+  const key = Buffer.from(hkdfSync('sha256', Buffer.from(secret, 'utf8'), Buffer.alloc(0), Buffer.from('wappie/contact-cursor/v1'), 32))
+  const aad = device => Buffer.from(JSON.stringify(['wappie/contact-cursor', 1, device]))
+  return {
+    seal(device, contactKey) {
+      const iv = randomBytes(CURSOR_IV)
+      const cipher = createCipheriv('aes-256-gcm', key, iv)
+      cipher.setAAD(aad(device))
+      const sealed = Buffer.concat([cipher.update(contactKey, 'utf8'), cipher.final()])
+      return CURSOR_PREFIX + Buffer.concat([iv, sealed, cipher.getAuthTag()]).toString('base64url')
+    },
+    open(device, value) {
+      if (typeof value !== 'string' || !value.startsWith(CURSOR_PREFIX)) return value
+      const raw = Buffer.from(value.slice(CURSOR_PREFIX.length), 'base64url')
+      if (raw.length <= CURSOR_IV + CURSOR_TAG || raw.toString('base64url') !== value.slice(CURSOR_PREFIX.length)) throw new LocalConfigError('invalid_cursor')
+      try {
+        const decipher = createDecipheriv('aes-256-gcm', key, raw.subarray(0, CURSOR_IV))
+        decipher.setAAD(aad(device))
+        decipher.setAuthTag(raw.subarray(raw.length - CURSOR_TAG))
+        return Buffer.concat([decipher.update(raw.subarray(CURSOR_IV, raw.length - CURSOR_TAG)), decipher.final()]).toString('utf8')
+      } catch { throw new LocalConfigError('invalid_cursor') }
+    },
+  }
 }
 /** A link a provider offers, if it is a plain https URL; nothing else reaches the model. */
 export function safeLink(value) {
@@ -205,7 +342,13 @@ async function bounded(items, limit, work) {
  *   sending methods hand it the call, `draft` with an `archive` whose
  *   `chat()` looks the named chat up, and every message body, caption and
  *   file name the reader returns is shown to `observe` first, the source of
- *   the cross-chat fingerprints (§17.11).
+ *   the cross-chat fingerprints (§17.11). From reader 0.6.0 (§19.29) the
+ *   optional `keyHeld()` says whether the reader holds this connection's
+ *   key: when it answers false the connection reads metadata only, with
+ *   every value that needs the key locked, until its user renews it.
+ * - Either hosted mode: the optional `connection()` returns `{tier,
+ *   expires_at}`, the connection's limits tier (§19.6) and deadline, which
+ *   list_numbers' connection block names.
  * A local (files) config ignores the provider.
  */
 export async function createReader(config, provider) {
@@ -214,27 +357,52 @@ export async function createReader(config, provider) {
   // internal address the assistant can neither reach nor has any use for.
   const hosted = mode !== 'local'
   const content = mode === 'hosted-content'
+  const credential = await loadCredential(config, provider)
+  if (content && (typeof provider.serviceKey !== 'function' || typeof provider.expectedEpoch !== 'function')) throw new LocalConfigError('credential_provider_required')
+  /**
+   * A content connection whose key the attested reader does not hold (after
+   * a restart, an update or a reseal, docs/mcp-enclave.md §19.29): its
+   * metadata reads go on with the connection's own read-only key, every
+   * value that needs the key stays locked, and whatever cannot run without
+   * it (a text query, an attachment, a draft) answers reconsent_required.
+   */
+  const resealed = content && typeof provider.keyHeld === 'function' && provider.keyHeld() !== true
   // Whether this reader opens anything. A provided credential never does, even
   // on a hand-built config that sets allow_plaintext: the guarantee is the mode's.
-  const opens = mode !== 'hosted-metadata' && config.allow_plaintext === true
+  const opens = !resealed && mode !== 'hosted-metadata' && config.allow_plaintext === true
   /**
    * Why a value is locked, in the words that are true of this connection. A
    * provided credential can never open content, so the reason must not read
    * like a setting somebody forgot to turn on; a local install with plaintext
-   * off really did leave one off; the attested reader tried and its key failed.
+   * off really did leave one off; the attested reader tried and its key
+   * failed, or holds no key until the user renews the connection.
    */
   const lockedReason = mode === 'hosted-metadata'
     ? 'Sealed content. This connection reads metadata only, and the key that opens it never leaves the devices of the user.'
-    : content ? contentLockedReason : 'Encrypted content. Local reading has not been enabled for this MCP server.'
+    : resealed ? RESEALED_REASON : content ? contentLockedReason : 'Encrypted content. Local reading has not been enabled for this MCP server.'
   const openedReason = content ? contentLockedReason : keyLockedReason
   const openedValue = value => openedText(value, config.max_text_chars, openedReason)
   const locked = () => ({ state: 'locked', reason: lockedReason })
-  const credential = await loadCredential(config, provider)
-  if (content && (typeof provider.serviceKey !== 'function' || typeof provider.expectedEpoch !== 'function')) throw new LocalConfigError('credential_provider_required')
-  // Attachments open only on the attested reader, for a consent that includes them.
-  const media = content && config.media === true && typeof provider.media?.open === 'function' ? provider.media : null
+  // Attachments open only on the attested reader, for a consent that includes them, while it holds the key.
+  const media = content && !resealed && config.media === true && typeof provider.media?.open === 'function' ? provider.media : null
   // Sending too, for a consent that includes it (§17.8).
-  const send = content && (config.send === 'draft' || config.send === 'direct') && typeof provider.send?.draft === 'function' ? provider.send : null
+  const send = content && !resealed && (config.send === 'draft' || config.send === 'direct') && typeof provider.send?.draft === 'function' ? provider.send : null
+  /** Refuses what needs the key while the reader holds none (§19.29). */
+  function needsKey() { if (resealed) throw new LocalConfigError('reconsent_required') }
+  /**
+   * list_numbers' connection block (§19.29): what this connection can open
+   * now, its tier and deadline as the attested reader recorded them, its
+   * history window, and whether it waits for a renewal.
+   */
+  function connectionBlock() {
+    let about = null
+    try { about = hosted && typeof provider?.connection === 'function' ? provider.connection() : null } catch { about = null }
+    return { text: opens, attachments: media !== null, drafts: send !== null,
+      own_chat: send !== null && config.send_self === true && typeof send.sendSelf === 'function',
+      tier: TIERS.includes(about?.tier) ? about.tier : null,
+      expires_at: deadlineOf(about?.expires_at),
+      history_days: Number.isInteger(config.history_days) ? config.history_days : null, renewal_needed: resealed }
+  }
   /**
    * Every opened text of one chat that goes back to the assistant is shown to
    * the fingerprint store before it leaves (§17.11), best effort: a failure
@@ -245,6 +413,15 @@ export async function createReader(config, provider) {
     try { send.observe(device, chatKey, value.value) } catch { /* best effort */ }
   }
   const api = new ArchiveClient({ serverURL: config.server, workspaceID: config.workspace, token: credential.token })
+  const cursors = contactCursors(credential.token)
+  /**
+   * The history floor (docs/mcp-enclave.md §19.19): a connection with
+   * `history_days` reads nothing older than that many days before this call.
+   * A message's time is its timestamp, or its archive arrival time when it
+   * has none, as search uses; a row with neither is outside.
+   */
+  const since = Number.isInteger(config.history_days) ? Date.now() - config.history_days * 86_400_000 : null
+  const inWindow = row => since === null || Date.parse(row?.ts ?? row?.order_ts) >= since
   const allowed = device => !config.device_ids || config.device_ids.includes(device)
   function permit(device) { if (!allowed(device)) throw new ArchiveError('not_authorized', 403) }
   /** The refusal for a grant this connection's key no longer fits, after telling the provider (best effort). */
@@ -343,15 +520,18 @@ export async function createReader(config, provider) {
     if (url) attachment.open_url = url
     return attachment
   }
+  /** `rows` as results; they are all of one chat, whose replies are resolved among them (replyIndex). */
   async function messages(rows, device, opener, { link = false } = {}) {
     if (rows.some(row => row.device_id !== device)) throw new ArchiveError('device_mismatch')
     await opener?.prefetch(rows.map(row => row.content_key_id))
+    const replies = replyIndex(() => '')
+    for (const row of rows) replies.add(row)
     return Promise.all(rows.map(async row => {
       const body = row.body_sealed && opener ? await opener.body(row) : null
       const filename = row.media?.filename_sealed && opener ? await opener.fileName(row) : null
       observe(device, row.chat_key, body)
       observe(device, row.chat_key, filename)
-      return { ...metadata(row),
+      return { ...metadata(row, replies.of),
         body: row.body_sealed ? opener ? openedValue(body) : locked() : omitted(),
         ...(row.media ? { attachment: attachmentOf(row, row.media.filename_sealed ? opener ? openedValue(filename) : locked() : omitted(), link) } : {}),
         structured_content: row.payload_sealed ? { state: 'unsupported', reason: 'This MCP version does not open structured content.' } : omitted(),
@@ -395,7 +575,7 @@ export async function createReader(config, provider) {
     permit(device_id)
     // Same refusal, two different truths: a local install can be opted in, a
     // provided credential never can, and the code is what the model quotes.
-    if (query && !opens) throw new LocalConfigError(mode === 'hosted-metadata' ? 'content_sealed_metadata_only' : 'plaintext_required_for_text_search')
+    if (query && !opens) throw new LocalConfigError(resealed ? 'reconsent_required' : mode === 'hosted-metadata' ? 'content_sealed_metadata_only' : 'plaintext_required_for_text_search')
     /**
      * Where the archive must not learn which messages matched. Stopping at
      * `limit`, or asking for the history of each hit, would tell the server
@@ -407,13 +587,24 @@ export async function createReader(config, provider) {
     if (before && (!input.from || !input.until || input.period)) throw new LocalConfigError('continuation_requires_fixed_range')
     let range
     try { range = resolveRange(input, config.timezone) } catch { throw new LocalConfigError('invalid_time_range') }
+    // The history floor: the range's lower bound never reaches before it.
+    let empty = false
+    if (since !== null) {
+      if (!(Date.parse(range.until) > since)) empty = true
+      else if (!(Date.parse(range.from) >= since)) {
+        range = { ...range, from: new Date(since).toISOString(), ...(range.definition ? { definition: `${range.definition} This connection reads only the last ${config.history_days} days.` } : {}) }
+      }
+    }
     return withOpener(device_id, async opener => {
       const counters = { examined: 0, matched: 0, locked: 0, tampered: 0, structured_content_unsearched: 0, missing_sent_time: 0 }
-      const hits = [], groups = new Map(), seen = new Set()
+      const hits = [], groups = activityGroups(), seen = new Set()
+      // Every row examined, across chats, for the replies among the hits; the
+      // hits' rows, to resolve them once the scan has seen the older rows.
+      const replies = replyIndex(), hitRows = []
       let cursor = before, hasMore = false, stopped = false, omittedHits = 0, deadlineReached = false
       const deadline = Date.now() + 45_000
       const budget = config.max_scan_messages
-      while (counters.examined < budget && !stopped) {
+      while (!empty && counters.examined < budget && !stopped) {
         const reply = await archiveRead('archive_scan', () => api.scanMessages(device_id, {
           from: range.from, until: range.until, limit: Math.min(100, budget - counters.examined), before: cursor,
           chatKey: input.chat_key, senderKeys: input.sender_keys, direction: input.direction, type: input.type,
@@ -429,6 +620,7 @@ export async function createReader(config, provider) {
           if (seen.has(key) || (cursor && cursor.ts === row.order_ts && cursor.seq === row.seq)) throw new ArchiveError('invalid_response')
           seen.add(key)
           counters.examined++
+          if (activity) groups.learn(row); else replies.add(row)
           if (!row.ts) counters.missing_sent_time++
           if (row.payload_sealed) counters.structured_content_unsearched++
           cursor = { ts: row.order_ts, seq: row.seq }
@@ -438,12 +630,7 @@ export async function createReader(config, provider) {
             continue
           }
           if (activity) {
-            const groupKey = JSON.stringify([row.chat_key, row.sender_key || row.sender_pn || row.sender_lid || '', row.is_from_me])
-            const item = groups.get(groupKey) || { chat_key: row.chat_key, sender_key: row.sender_key, sender_pn: row.sender_pn, sender_lid: row.sender_lid,
-              is_group: row.is_group === true, direction: row.is_from_me ? 'outgoing' : 'incoming', archived_messages: 0,
-              first_order_ts: row.order_ts, last_order_ts: row.order_ts, sample_uid: row.uid }
-            item.archived_messages++; item.first_order_ts = row.order_ts
-            groups.set(groupKey, item)
+            groups.add(row)
             counters.matched++
           } else {
             const body = row.body_sealed ? opener ? await opener.body(row) : locked() : omitted()
@@ -456,7 +643,8 @@ export async function createReader(config, provider) {
               else {
                 observe(device_id, row.chat_key, body)
                 observe(device_id, row.chat_key, filename)
-                hits.push({ ...metadata(row), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : opener ? openedValue(body) : body,
+                // reply_to_uid keeps its place and is filled after the scan.
+                hits.push({ ...metadata(row, replyPending), body: body.state === 'ok' ? excerpt(body.value, query, config.max_text_chars) : opener ? openedValue(body) : body,
                   ...(row.media ? { attachment: attachmentOf(row, opener ? openedValue(filename) : filename) } : {}),
                   structured_content: row.payload_sealed ? { state: 'unsupported' } : omitted(),
                   // Filled after the scan (see below); the key keeps its place.
@@ -464,10 +652,12 @@ export async function createReader(config, provider) {
                   // A local install's server is the address its user reads the
                   // archive at, so the citation links to it. A hosted reader's is
                   // the API on the host's loopback: an internal address the
-                  // assistant can neither reach nor has any use for.
-                  source: { ...(hosted ? {} : { server: config.server, url: `${config.server}/v1/messages/${row.uid}` }),
-                    workspace_id: config.workspace, device_id, message_uid: row.uid, chat_key: row.chat_key },
+                  // assistant can neither reach nor has any use for, so a hosted
+                  // hit cites nothing beyond its own uid, chat_key and device_id
+                  // (§19.32: no copy of them either).
+                  ...(hosted ? {} : { source: { server: config.server, url: `${config.server}/v1/messages/${row.uid}` } }),
                 })
+                hitRows.push(row)
               }
             }
           }
@@ -483,14 +673,19 @@ export async function createReader(config, provider) {
         if (!reply.next_ts || reply.next_seq === undefined) throw new ArchiveError('invalid_response')
         cursor = { ts: reply.next_ts, seq: reply.next_seq }
       }
+      hits.forEach((hit, index) => {
+        if (!Object.hasOwn(hit, 'reply_to_uid')) return
+        const quoted = replies.of(hitRows[index])
+        if (quoted) hit.reply_to_uid = quoted; else delete hit.reply_to_uid
+      })
       // Revision status of each hit, after the scan and a few at a time. Only
       // where the hits are no secret from the archive: a local reader, the
       // metadata reader, and a query-less search, which selects by metadata
       // the server already holds.
       if (!fixedWindow) await bounded(hits, HISTORY_CONCURRENCY, async hit => { hit.archive_status = await historyStatus(hit, device_id) })
       const next = hasMore && cursor ? { ...input, period: undefined, from: range.from, until: range.until, before: cursor } : undefined
-      return { workspace_id: config.workspace, device_id, range,
-        ...(activity ? { activity: [...groups.values()], counting: 'Archived original message events in this page only, grouped by chat, sender and direction. Counts are not totals for the full archive.' } : { messages: hits }),
+      return { device_id, range,
+        ...(activity ? { activity: groups.list(), counting: 'Archived original message events in this page only, grouped by chat, sender and direction. Counts are not totals for the full archive.' } : { messages: hits }),
         ...(fixedWindow ? { omitted_hits: omittedHits } : {}),
         coverage: { ...counters, scan_limit: budget, interval_exhausted: !hasMore, live_read: true,
           ...(query ? { text_search_complete: !hasMore && !counters.locked && !counters.tampered && !counters.structured_content_unsearched } : {}),
@@ -550,11 +745,17 @@ export async function createReader(config, provider) {
         name: name?.state === 'ok' ? name.value : null }
     })
   }
+  // No result names the workspace (§19.30): a connection reads one only, and
+  // its id is an internal account id the model never needs; device_id is
+  // what every tool takes.
   return {
+    /** Whether this content connection waits for a renewal (§19.29): every result then says so. */
+    resealed,
     searchMessages(input) { return scan(input) },
     activitySummary(input) { return scan(input, true) },
-    async resolveContact({ device_id, query, limit = 20, after_key }) {
+    async resolveContact({ device_id, query, limit = 20, after_key, include_phones = false }) {
       permit(device_id)
+      const start = cursors.open(device_id, after_key)
       // Without plaintext no archived name is ever readable and no personal
       // snapshot exists (config.mjs refuses contacts_file without it), so a
       // query that names somebody can never match, however many pages are
@@ -563,8 +764,10 @@ export async function createReader(config, provider) {
       // nothing. A phone number has no letters and an explicit identifier keeps
       // its '@'; a name needs neither, and that is the whole test.
       if (!opens && /\p{L}/u.test(query) && !query.includes('@')) {
-        return { workspace_id: config.workspace, device_id, candidates: [], omitted_candidates: 0, ambiguous: false, names_searchable: false,
-          instruction: mode === 'hosted-metadata'
+        return { device_id, candidates: [], omitted_candidates: 0, ambiguous: false, names_searchable: false,
+          instruction: resealed
+            ? 'Contact names stay locked until the user renews this connection, so no name can match and paging would find nothing. Give the user the renewal link, or ask for the phone number and resolve that instead.'
+            : mode === 'hosted-metadata'
             ? 'Contact names are sealed on this connection, so no name can match and paging would find nothing. Tell the user so, ask for the phone number, and resolve that instead.'
             : 'Contact names stay locked while local plaintext access is off, so no name can match. Resolve a phone number instead, or ask the user to enable plaintext in the local configuration.',
           coverage: { archived_contacts_examined: 0, unavailable_names: 0, archive_has_more: false, personal_snapshot: null, complete: false,
@@ -576,12 +779,14 @@ export async function createReader(config, provider) {
         // Elsewhere one page per call, as the names are local or not readable.
         const pages = content ? CONTACT_PAGES : 1
         const contacts = []
-        let reply, afterKey = after_key
+        let reply, afterKey = start
         for (let page = 0; page < pages; page++) {
           reply = await archiveRead('archive_contacts', () => api.listContacts(device_id, { limit: 500, afterKey }))
           await opener?.prefetch(reply.contacts.map(contact => contact.content_key_id))
           contacts.push(...reply.contacts)
-          if (!reply.has_more) break
+          // Without a next_key (which the client refuses anyway) a further page
+          // would start from the first again, as would a next without one.
+          if (!reply.has_more || typeof reply.next_key !== 'string' || !reply.next_key) break
           afterKey = reply.next_key
         }
         const pack = await personalContacts(serviceKey)
@@ -597,13 +802,15 @@ export async function createReader(config, provider) {
           } else if (contact.full_name_sealed || contact.push_name_sealed || contact.business_name_sealed) unavailable++
           archived.push({ ...contact, names })
         }
-        const result = contactCandidates(archived, pack?.contacts || [], query, limit)
-        return { workspace_id: config.workspace, device_id, ...result,
+        // A candidate's phones when the user asked for the number, or for a phone query the ones typed (§19.32).
+        const result = contactCandidates(archived, pack?.contacts || [], query, limit, { includePhones: include_phones === true })
+        return { device_id, ...result,
           coverage: { archived_contacts_examined: contacts.length, unavailable_names: unavailable,
             archive_has_more: reply.has_more, personal_snapshot: pack ? { created_at: pack.created_at, contacts: pack.contacts.length } : null,
             complete: !reply.has_more && !result.omitted_candidates && !unavailable,
             note: 'Personal contacts are a snapshot, not a synchronized address book. Narrow the query when candidates are omitted. An empty incomplete result does not prove a contact is absent.' },
-          ...(reply.has_more ? { next: { device_id, query, limit, after_key: reply.next_key } } : {}),
+          ...(reply.has_more && typeof reply.next_key === 'string' && reply.next_key
+            ? { next: { device_id, query, limit, ...(include_phones === true ? { include_phones: true } : {}), after_key: cursors.seal(device_id, reply.next_key) } } : {}),
         }
       }, true)
     },
@@ -611,26 +818,32 @@ export async function createReader(config, provider) {
       const reply = await api.listDevices()
       // plaintext_enabled alone reads like a switch left off; plaintext_available
       // says whether the connection has a switch at all.
-      return { workspace_id: config.workspace, plaintext_enabled: opens, plaintext_available: mode !== 'hosted-metadata',
-        timezone: config.timezone, now: new Date().toISOString(),
-        numbers: reply.devices.filter(device => allowed(device.id)).map(device => ({
-          id: device.id, name: device.label || device.push_name || device.pn || 'Unnamed number',
-          phone: device.pn, status: device.status, paused: device.paused === true,
+      return { plaintext_enabled: opens, plaintext_available: mode !== 'hosted-metadata',
+        timezone: config.timezone, now: new Date().toISOString(), connection: connectionBlock(),
+        // No number's own phone (§19.32): no tool takes it, and a number
+        // without a console label or push name is named by its place.
+        numbers: reply.devices.filter(device => allowed(device.id)).map((device, index) => ({
+          id: device.id, name: device.label || device.push_name || `Number ${index + 1}`,
+          status: device.status, paused: device.paused === true,
         })),
       }
     },
     async listChats({ device_id, limit }) {
       permit(device_id)
       const reply = await api.listChats(device_id, { limit })
+      // Under a history floor, a chat with no message at or after it is left out.
+      const chats = since === null ? reply.chats : reply.chats.filter(chat => Date.parse(chat.last_ts) >= since)
       return withOpener(device_id, async opener => {
-        await opener?.prefetch(reply.chats.flatMap(chat => [chat.name_key_id, chat.last_body_key_id]))
-        return { workspace_id: config.workspace, device_id, truncated: reply.truncated,
-          chats: await Promise.all(reply.chats.map(async chat => {
+        await opener?.prefetch(chats.flatMap(chat => [chat.name_key_id, chat.last_body_key_id]))
+        return { device_id, truncated: reply.truncated,
+          chats: await Promise.all(chats.map(async chat => {
             const preview = chat.last_body_sealed && opener ? await opener.chatPreview(chat) : null
             // A preview is the chat's last message body: a source, unlike its name.
             observe(device_id, chat.chat_key, preview)
+            // chat_key is the chat as every tool takes it; its phone JID, LID
+            // and aliases, and the row's uid, no tool takes (§19.32).
             return {
-              uid: chat.uid, chat_key: chat.chat_key, chat_pn: chat.chat_pn, chat_lid: chat.chat_lid, keys: chat.keys, is_group: chat.is_group === true, last_ts: chat.last_ts,
+              chat_key: chat.chat_key, is_group: chat.is_group === true, last_ts: chat.last_ts,
               name: chat.name_sealed ? opener ? openedValue(await opener.chatName(chat)) : locked() : omitted(),
               preview: chat.last_body_sealed ? opener ? openedValue(preview) : locked() : omitted(),
             }
@@ -641,16 +854,19 @@ export async function createReader(config, provider) {
     async listMessages({ device_id, chat_key, limit, before }) {
       permit(device_id)
       const reply = await api.listMessages(device_id, { chatKey: chat_key, limit, before })
-      return withOpener(device_id, async opener => ({ workspace_id: config.workspace, device_id, chat_key: reply.chat_key,
-        messages: await messages(reply.messages, device_id, opener), has_more: reply.has_more,
-        ...(reply.has_more && reply.next_ts && reply.next_seq !== undefined ? { next: { ts: reply.next_ts, seq: reply.next_seq } } : {}),
+      // Under a history floor the page stops at it: what is older does not exist for this connection.
+      const rows = reply.messages.filter(inWindow), more = reply.has_more && rows.length === reply.messages.length
+      return withOpener(device_id, async opener => ({ device_id, chat_key: reply.chat_key,
+        messages: await messages(rows, device_id, opener), has_more: more,
+        ...(more && reply.next_ts && reply.next_seq !== undefined ? { next: { ts: reply.next_ts, seq: reply.next_seq } } : {}),
       }))
     },
     async getMessage({ device_id, uid }) {
       permit(device_id)
       const reply = await api.getMessage(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
-      const result = await withOpener(device_id, async opener => ({ workspace_id: config.workspace, message: (await messages([reply], device_id, opener, { link: true }))[0] }))
+      if (!inWindow(reply)) throw new ArchiveError('outside_window')
+      const result = await withOpener(device_id, async opener => ({ message: (await messages([reply], device_id, opener, { link: true }))[0] }))
       // On readers with AI (§18.12): the functions whose result is stored for
       // this attachment, from one derived read; lists and searches leave it out.
       if (result.message.attachment && typeof media?.derivedOf === 'function') {
@@ -672,11 +888,20 @@ export async function createReader(config, provider) {
      */
     async openAttachment({ device_id, uid, cursor, pages, images = true }) {
       permit(device_id)
+      needsKey()
       if (!media) throw new ArchiveError('media_not_allowed')
       let chat = null
+      // Under a history floor the message is read first, whatever the enclave
+      // keeps: an older one is refused before anything opens.
+      let first = null
+      if (since !== null) {
+        first = await attachmentRow(device_id, uid)
+        if (!inWindow(first)) throw new ArchiveError('outside_window')
+      }
       const archive = {
         async row() {
-          const row = await attachmentRow(device_id, uid)
+          const row = first ?? await attachmentRow(device_id, uid)
+          first = null
           chat = row.chat_key
           return row
         },
@@ -730,6 +955,7 @@ export async function createReader(config, provider) {
     async aiJob({ device_id, uid }, work) {
       permit(device_id)
       if (!content) throw new LocalConfigError('credential_provider_required')
+      needsKey()
       return withOpener(device_id, (opener, _serviceKey, keys) => work({ row: () => attachmentRow(device_id, uid), open: (row, what) => openedMedia(opener, row, what), keys }))
     },
     /**
@@ -740,6 +966,7 @@ export async function createReader(config, provider) {
      */
     async aiKeys(devices, work) {
       if (!content) throw new LocalConfigError('credential_provider_required')
+      needsKey()
       for (const device of devices) permit(device)
       const grants = await api.grants()
       if (grants.user_id !== config.service_user_id) throw new ArchiveError('account_mismatch')
@@ -765,18 +992,21 @@ export async function createReader(config, provider) {
      */
     async draftMessage(input) {
       permit(input.device_id)
+      needsKey()
       if (!send) throw new ArchiveError('send_not_allowed')
       return send.draft(input, { chat: () => chatByKey(input.device_id, input.chat_key) })
     },
     /** send_to_self (§17.8): the enclave runs every step; Go resolves the own chat. */
     async sendToSelf(input) {
       permit(input.device_id)
+      needsKey()
       if (!send || config.send_self !== true || typeof send.sendSelf !== 'function') throw new ArchiveError('send_not_allowed')
       return send.sendSelf(input)
     },
     /** list_outgoing (§17.8): a page of the connection's ledger, from Go through the enclave. */
     async listOutgoing(input) {
       if (input.device_id !== undefined) permit(input.device_id)
+      needsKey()
       if (!send) throw new ArchiveError('send_not_allowed')
       return send.outgoing(input)
     },
@@ -785,11 +1015,13 @@ export async function createReader(config, provider) {
       const reply = await api.history(uid)
       if (reply.device_id !== device_id) throw new ArchiveError('not_authorized', 403)
       return withOpener(device_id, async opener => {
-        const versions = reply.versions.slice(0, limit)
+        // Under a history floor, the versions older than it are left out.
+        const visible = reply.versions.filter(version => inWindow(version.message))
+        const versions = visible.slice(0, limit)
         const opened = await messages(versions.map(version => version.message), device_id, opener)
-        return { workspace_id: config.workspace, device_id, chat_key: reply.chat_key,
+        return { device_id, chat_key: reply.chat_key,
           revisions: versions.map((version, index) => ({ revision: version.revision, from: version.from, until: version.until, message: opened[index] })),
-          truncated: reply.versions.length > limit, deleted: Boolean(reply.deletion),
+          truncated: visible.length > limit, deleted: Boolean(reply.deletion),
         }
       })
     },

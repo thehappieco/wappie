@@ -9,9 +9,18 @@
 // - nonce: the browser's, so a document cannot be replayed into another page;
 // - user_data: SHA-256 over the request, the resource, the SPKI of the TLS key
 //   the assistant talks to, the hash of the KMS key policy and the version.
+//
+// From reader 0.6.0 (docs/mcp-enclave.md §19.13) a document made for a
+// descriptor (a consent request, a renewal, an AI request, a token request,
+// the live list) binds the whole descriptor too: user_data v2 adds the
+// SHA-256 of its JCS serialization, so Go, which relays it, cannot change one
+// field the console shows or compares. The public /attestation route has no
+// descriptor and keeps v1.
 import { createHash } from 'node:crypto'
+import { canonicalJSON } from '@whatserver2/client/crypto/jcs'
 
 export const ATTEST_LABEL = 'wappie-mcp-attest/v1'
+export const ATTEST_LABEL_V2 = 'wappie-mcp-attest/v2'
 export const ATTESTATION_FORMAT = 'aws-nitro-v1'
 export const MAX_DOCUMENT_BYTES = 16 * 1024
 export const NONCE_MIN_BYTES = 16
@@ -33,6 +42,31 @@ export function userDataPreimage({ request_id, resource, tls_spki_sha256, policy
 
 /** user_data: 32 bytes, SHA-256 of the preimage. */
 export const attestationUserData = fields => createHash('sha256').update(userDataPreimage(fields)).digest()
+
+/**
+ * descriptor_sha256 (§19.13): the lowercase hex SHA-256 of the JCS (RFC 8785)
+ * serialization of a descriptor without its `attestation` member. A value JCS
+ * has no word for (undefined, a function) is a bug here, never dropped.
+ */
+export function descriptorSHA256(descriptor) {
+  if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) throw new AttestationError('attest_bad_input', 500)
+  const { attestation: _attestation, ...rest } = descriptor
+  let text
+  try { text = canonicalJSON(rest) } catch { throw new AttestationError('attest_bad_input', 500) }
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+/** The v2 preimage: v1's six fields under the v2 label, then descriptor_sha256 (64 hex, or '' with no descriptor). */
+export function userDataPreimageV2(fields, descriptorSha256) {
+  if (typeof descriptorSha256 !== 'string' || !(descriptorSha256 === '' || hex64.test(descriptorSha256))) throw new AttestationError('attest_bad_input', 500)
+  const { request_id, resource, tls_spki_sha256, policy_sha256, reader_version } = fields
+  const all = [ATTEST_LABEL_V2, request_id, resource, tls_spki_sha256, policy_sha256, reader_version, descriptorSha256]
+  if (all.some(field => typeof field !== 'string' || field.includes('\0'))) throw new AttestationError('attest_bad_input', 500)
+  return Buffer.from(all.join('\0'), 'utf8')
+}
+
+/** user_data v2: 32 bytes, SHA-256 of the v2 preimage. */
+export const attestationUserDataV2 = (fields, descriptorSha256) => createHash('sha256').update(userDataPreimageV2(fields, descriptorSha256)).digest()
 
 /**
  * A browser nonce from its base64url form: canonical, 16 to 64 bytes decoded,
@@ -116,14 +150,21 @@ export function decodeAttestationDocument(document) {
 export function createAttestor({ attest, readerId, readerVersion, resource, spki, policy }) {
   if (!versionShape.test(readerVersion)) throw new AttestationError('reader_version_invalid', 500)
   return {
-    /** `publicKey` is the request's raw 32-byte key, or null for the public /attestation route. */
-    async attestation({ requestId, publicKey, nonce }) {
+    /**
+     * `publicKey` is the request's raw 32-byte key, or null for the public
+     * /attestation route and the live list. `descriptor`, when given, is the
+     * descriptor this document is made for, without its `attestation`
+     * member or with it (it is left out of the hash either way): user_data
+     * is then v2 over it (§19.13).
+     */
+    async attestation({ requestId, publicKey, nonce, descriptor }) {
       const tls = spki(), policyHash = policy()
       if (!tls || !hex64.test(tls)) throw new AttestationError('tls_not_ready')
       if (!policyHash || !hex64.test(policyHash)) throw new AttestationError('policy_unknown')
       const fields = { request_id: requestId, resource, tls_spki_sha256: tls, policy_sha256: policyHash, reader_version: readerVersion }
+      const userData = descriptor === undefined ? attestationUserData(fields) : attestationUserDataV2(fields, descriptorSHA256(descriptor))
       let document
-      try { document = await attest({ publicKey: publicKey ?? null, nonce, userData: attestationUserData(fields) }) } catch { throw new AttestationError('attest_failed') }
+      try { document = await attest({ publicKey: publicKey ?? null, nonce, userData }) } catch { throw new AttestationError('attest_failed') }
       if (!Buffer.isBuffer(document) || document.length === 0 || document.length > MAX_DOCUMENT_BYTES) throw new AttestationError('attest_failed')
       const pcr0 = decodeAttestationDocument(document).pcrs[0]
       if (!/^[0-9a-f]{96}$/.test(pcr0 ?? '')) throw new AttestationError('attest_failed')

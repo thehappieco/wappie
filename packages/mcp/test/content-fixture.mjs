@@ -22,13 +22,18 @@ export const contactKey = n => `${String(n).padStart(6, '0')}@lid`
  * `rows` messages at seq 1..rows (even seqs carry `hitText`, odd ones
  * `missText`), `contacts` contacts served 500 per page in key order (the
  * first is named 'Archived Roberto'), and `scanPage`, the most rows one scan
- * page returns. `state.historyDelayMs` slows the history route, and
+ * page returns; one chat's page (`list_messages`) is its rows newest first.
+ * `state.historyDelayMs` slows the history route, and
  * `state.maxHistoryInFlight` records the most history requests open at once.
  * `addMedia(fields)` adds a message with an attachment, served only by
  * `GET /v1/messages/{uid}`, its media key, preview, filename and caption
  * sealed like the archive seals them. `addChat(fields)` adds a chat, and
- * `state.number` fields (`pn`, `lid`) join the number's device row. `token`
- * replaces the bearer it accepts.
+ * `state.number` fields (`pn`, `lid`) join the number's device row;
+ * `state.moreNumbers` are further device rows, after it. `state.siblings`
+ * lists sets of chat keys that are one chat (a chat's phone JID and LID): a
+ * chat's page then holds the rows of every key of its set, as the archive's
+ * sibling keys do. `state.contactsWithoutNextKey` makes a contacts page with
+ * more after it leave out `next_key`. `token` replaces the bearer it accepts.
  */
 export async function contentFixture({ rows: rowCount = 120, contacts: contactCount = 2200, scanPage = 40, token: bearer = token } = {}) {
   const account = await hpke.generateKeyPair()
@@ -93,14 +98,14 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
    * archive does; `chat_key=` narrows the list to one, as §17.3's filter does.
    */
   const chats = []
-  async function addChat({ chat_key, name, preview, is_group = false, chat_pn, chat_lid, keys, uid: id = uid(70_000 + chats.length) } = {}) {
-    const chat = { uid: id, chat_key, last_seq: 1, is_group, ...(chat_pn ? { chat_pn } : {}), ...(chat_lid ? { chat_lid } : {}), ...(keys ? { keys } : {}) }
+  async function addChat({ chat_key, name, preview, is_group = false, chat_pn, chat_lid, keys, last_ts, uid: id = uid(70_000 + chats.length) } = {}) {
+    const chat = { uid: id, chat_key, last_seq: 1, is_group, ...(chat_pn ? { chat_pn } : {}), ...(chat_lid ? { chat_lid } : {}), ...(keys ? { keys } : {}), ...(last_ts ? { last_ts } : {}) }
     if (name !== undefined) { chat.name_key_id = keyID; chat.name_sealed = await encrypt(id, seal.Kind.ContactName, name) }
     if (preview !== undefined) { chat.last_uid = uid(80_000 + chats.length); chat.last_body_key_id = keyID; chat.last_body_sealed = await encrypt(chat.last_uid, seal.Kind.Body, preview) }
     chats.push(chat)
     return chat
   }
-  const state = { requests: [], grantEpoch: 1, historyDelayMs: 0, historyInFlight: 0, maxHistoryInFlight: 0, number: {} }
+  const state = { requests: [], grantEpoch: 1, historyDelayMs: 0, historyInFlight: 0, maxHistoryInFlight: 0, number: {}, moreNumbers: [], siblings: [], contactsWithoutNextKey: false }
   const http = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost'), path = url.pathname
     state.requests.push({ method: request.method, target: request.url, path })
@@ -117,7 +122,7 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
       const row = messages.get(path.slice('/v1/messages/'.length)) ?? rows.find(item => path.endsWith(item.uid))
       return row ? reply(row) : send({ code: 'not_found' }, 404)
     }
-    if (path === '/v1/devices') return reply({ devices: [{ id: device, label: 'Número autorizado', status: 'online', ...state.number }] })
+    if (path === '/v1/devices') return reply({ devices: [{ id: device, label: 'Número autorizado', status: 'online', ...state.number }, ...state.moreNumbers] })
     if (path === '/v1/grants') return reply({ user_id: service, grants: [{ device_id: device, epoch: state.grantEpoch, archive_tenant_id: vector.tenant, sealed_dsk: grants[state.grantEpoch] }] })
     if (path.endsWith('/chats')) {
       const key = url.searchParams.get('chat_key')
@@ -131,7 +136,15 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
       const rest = after ? contacts.filter(item => item.contact_key > after) : contacts
       const page = rest.slice(0, limit)
       const more = rest.length > limit
-      return reply({ device_id: device, contacts: page, has_more: more, ...(more ? { next_key: page.at(-1).contact_key } : {}) })
+      return reply({ device_id: device, contacts: page, has_more: more, ...(more && !state.contactsWithoutNextKey ? { next_key: page.at(-1).contact_key } : {}) })
+    }
+    // One chat's page, newest first, as `GET /v1/devices/{id}/messages` serves it (§17.3), its sibling keys' rows included.
+    if (path === `/v1/devices/${device}/messages`) {
+      const key = url.searchParams.get('chat_key'), limit = Number(url.searchParams.get('limit'))
+      const keys = state.siblings.find(set => set.includes(key)) ?? [key]
+      const selected = rows.filter(row => keys.includes(row.chat_key)).sort((a, b) => b.seq - a.seq)
+      const page = selected.slice(0, limit), more = selected.length > limit
+      return reply({ device_id: device, chat_key: key, messages: page, has_more: more, ...(more ? { next_ts: page.at(-1).order_ts, next_seq: page.at(-1).seq } : {}) })
     }
     if (path.endsWith('/messages/scan')) {
       const from = url.searchParams.get('from'), until = url.searchParams.get('until')

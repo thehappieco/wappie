@@ -4,8 +4,10 @@
 //
 // A content connection (the attested reader only, through the injected
 // `content`) has a third answer, `reseal`: consented, but no key in this
-// process. The bearer still authenticates (so tokens keep refreshing) and
-// every tool answers `reconsent_required`; only `serve` is ever cached.
+// process. The bearer still authenticates (so tokens keep refreshing), the
+// metadata tools read on with text locked and the renewal link on every
+// result, and whatever needs the key answers `reconsent_required`
+// (docs/mcp-enclave.md §19.29); only `serve` is ever cached.
 import { OAuthError, OAuthErrorCode } from '@whatserver2/mcp/sdk'
 import { RelayError } from './internal.mjs'
 import { boundTo } from './tokens.mjs'
@@ -106,11 +108,16 @@ export function createStatusCheck({ state, relay, now = Date.now, ttlMs = STATUS
   return checkActive
 }
 
-/** OAuthTokenVerifier for requireBearerAuth: hash lookup plus the connection check. */
+/**
+ * OAuthTokenVerifier for requireBearerAuth: hash lookup plus the connection
+ * check. A bearer is an access token or, from reader 0.6.0, a console
+ * connection token (`key`, docs/mcp-enclave.md §19.18); both must be of their
+ * connection's own family and client.
+ */
 export function createVerifier({ tokens, state, resource, checkActive }) {
   return {
     async verifyAccessToken(token) {
-      const record = tokens.access(token)
+      const record = tokens.access(token) ?? tokens.key?.(token) ?? null
       const connection = record && state.connections.get(record.connection_id)
       // The token must be of the connection's own family and client, not merely name its id.
       if (!connection || !boundTo(record, connection)) throw new OAuthError(OAuthErrorCode.InvalidToken, 'Unknown or expired token')

@@ -1,5 +1,5 @@
 cbfdc36c14fdf86ea59598498fe77bc7a81b54c547eab7e2acca5c8e7c1cf453  internal/crypto/wamedia/testdata/vectors.json
-3c106be13e159f27ba5a102e4c836cbc05c948fef4e6a5364c9bdd4c60002c00  packages/mcp-http/enclave/test/device-check-vectors.json
+1c5bb03408a1e7c788811257cf9cb294d384541a982a9310f68a5181344761c2  packages/mcp-http/enclave/test/device-check-vectors.json
 a48e36ff1c5fa76443e8f6c519cb8f9d17f01503da7a6a774e1751a74263050d  packages/mcp-http/enclave/test/ai-config-vectors.json
 792167cec43dec44f6f0b0c3150b5b9b58660e604076481095c4663ac9bda321  packages/mcp-http/enclave/test/send-text-vectors.json
 f4f5c850f4bd096ef34c2c6d3270a1a7d11aef8ee5844d8d52a381c0e5fe3647  packages/client/testdata/attestation/README.md

@@ -697,12 +697,12 @@ func TestConsentRefusals(t *testing.T) {
 	if listed, err := h.conns.List(ctx, h.tenant); err != nil || len(listed) != 0 {
 		t.Fatalf("refused consents left rows: %+v %v", listed, err)
 	}
-	t.Run("sixth live connection", func(t *testing.T) {
-		for i := 0; i < 5; i++ {
+	t.Run("eleventh live connection", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
 			h.approve(t, owner)
 		}
 		requestID, _ := h.reader.pending(t, "Claude", "claude.ai")
-		_, prefix := h.provisionalKey(t, "sixth")
+		_, prefix := h.provisionalKey(t, "eleventh")
 		b := consent(requestID, prefix)
 		b["sealed"] = sealed(t)
 		expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", b, bearer(owner)), http.StatusConflict, "too_many_connections")

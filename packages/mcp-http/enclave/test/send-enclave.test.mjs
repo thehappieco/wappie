@@ -209,7 +209,7 @@ test('refusals before Go: a number outside the connection, a paused or switched-
   // A reseal: every tool, these included, asks for the renewal.
   row.status = 'reseal'
   await e.reader.checkActive(done.connectionId, { force: true })
-  assert.match((await draft(w, done)).text, /^Could not draft the message \(reconsent_required\)\. The Wappie reader restarted/)
+  assert.match((await draft(w, done)).text, /^Could not draft the message \(reconsent_required\)\. The Wappie reader holds no key for this connection right now/)
   assert.equal(routes(w).length, 3)
   // What the send service decided is logged by code; a number outside the connection and a
   // reseal are the reader's refusals, before the service, as for every tool.
@@ -285,7 +285,8 @@ test('send_to_self: once, to the own chat Go resolves, with a random reference; 
   const sent = await self(w, done, { text: 'nota\r\nlinha 2' })
   assert.equal(sent.isError, false, sent.text)
   const data = JSON.parse(sent.text)
-  assert.deepEqual(Object.keys(data), ['status', 'sent', 'message_uid', 'wa_id', 'timestamp', 'open_url'])
+  // No wa_id: WhatsApp's own id of the note, which no tool takes (docs/mcp-enclave.md §19.32).
+  assert.deepEqual(Object.keys(data), ['status', 'sent', 'message_uid', 'timestamp', 'open_url'])
   assert.equal(data.open_url, `https://app.wappie.thehappie.co/console?workspace=${workspace}&open_device=${device}&open_message=${data.message_uid}`)
   const [call] = w.go.sendCalls
   assert.deepEqual(Object.keys(call.body), ['client_ref', 'kind', 'device_id', 'text'])

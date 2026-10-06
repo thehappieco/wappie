@@ -1,24 +1,36 @@
 // Per-route validation, deliberately not global: the Host check guards every
 // public route, an Origin header is refused on the JSON-RPC endpoint (no
-// browser ever calls it), the consent completion demands the console's Origin
-// as its CSRF proof, and the server-to-server OAuth endpoints never look at
-// Origin at all. The internal routes have their own guard.
+// browser ever calls it), the consent completion and the console's decline
+// demand the console's Origin as their CSRF proof, and the server-to-server
+// OAuth endpoints never look at Origin at all. The internal routes have their
+// own guard.
 //
 // In the enclave the router serves two listeners (`info.listener`): the public
 // one never reaches /internal, the internal one reaches nothing else, and each
 // demands its exact Host. The PROXY v2 source is the client address there, so
 // X-Forwarded-For is never consulted. The public one also serves the Wappie
-// icon files, with no auth, for hosts that show an icon beside the connector.
-import { createMcpHandler, hostHeaderValidationResponse, requireBearerAuth } from '@whatserver2/mcp/sdk'
+// icon files, with no auth, for hosts that show an icon beside the connector,
+// and, from reader 0.6.0 (docs/mcp-enclave.md §19.29), a page for a person who
+// opens the connector's address in a browser, at `/`, and robots.txt.
+import { bearerAuthChallengeResponse, createMcpHandler, hostHeaderValidationResponse, OAuthError, OAuthErrorCode, requireBearerAuth } from '@whatserver2/mcp/sdk'
 import { createServer } from '@whatserver2/mcp'
+import { inNetwork, parseAddress, parseCIDR } from '@whatserver2/mcp/bundle'
 import { ICON_FILES } from '@whatserver2/mcp/icons'
 import { AttestationError, decodeNonce } from './attestation.mjs'
 import { clientIP, ipKey } from './limits.mjs'
-import { configFor, providerFor } from './provider.mjs'
+import { homePage, robotsResponse } from './pages.mjs'
+import { configFor, providerFor, tierOf } from './provider.mjs'
 
 export const BODY_LIMITS = { mcp: 1024 * 1024, link: 96 * 1024, as: 16 * 1024 }
 export const MCP_PER_MINUTE = 60
 export const ATTESTATION_PER_MINUTE = 10
+
+/** Whether `address` lies in one of a console token's allowed networks (§19.18); an empty list allows every network. */
+export function networkAllowed(networks, address) {
+  if (!Array.isArray(networks) || networks.length === 0) return true
+  const parsed = parseAddress(address)
+  return networks.some(network => inNetwork(parsed, parseCIDR(network)))
+}
 
 /** The body cap for a request, decided before any byte is read. */
 export function bodyLimitFor(path) {
@@ -56,19 +68,33 @@ function iconResponse(request, { type, bytes }) {
  * response of one whose consent includes attachments (docs/mcp-enclave.md
  * §16.10). Without `content` such a record is never served: the metadata
  * configuration and provider are the only ones this file builds.
+ *
+ * From reader 0.6.0 (docs/mcp-enclave.md §19.19) `clientLimits` (the image's
+ * CLIENT_LIMITS) sets each connection's calls a minute by its tier, and
+ * `readingLimits` (enclave/budgets.mjs) hands each connection whose tier has
+ * them its reading limits; a console token with allowed networks is refused
+ * from anywhere else (§19.18). `readerVersion` is the version every MCP
+ * server names in serverInfo, and `site` (`{console, documentation}`) the
+ * links of the page at `/` on the public listener (§19.29).
  */
-export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content }) {
+export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content,
+  clientLimits, readingLimits, readerVersion, site = {} }) {
   const gate = requireBearerAuth({ verifier, requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
-  const icons = listenerHosts ? { iconOrigin: new URL(metadata.resource).origin } : {}
+  // What every MCP server built here names (§19.29): the icon URLs this listener serves, the reader's version, and whether
+  // this reader can open content, so that a metadata connection is told it may reconnect for text.
+  const serverOptions = { ...(listenerHosts ? { iconOrigin: new URL(metadata.resource).origin } : {}), ...(readerVersion ? { version: readerVersion } : {}),
+    contentReader: Boolean(content) }
+  const home = { resource: metadata.resource, console: site.console, documentation: site.documentation }
   const handler = createMcpHandler(ctx => {
     const connection = state.connections.get(ctx.authInfo?.extra?.connection_id)
     if (!connection) throw new Error('unknown connection')
+    const limits = readingLimits?.forConnection(connection) ?? undefined
     if (connection.kind === 'content') {
       if (!content) throw new Error('content connection without a content reader')
-      const { config, provider } = content.serverFor(connection)
-      return createServer(config, provider, icons)
+      const { config, provider } = content.serverFor(connection, { limits })
+      return createServer(config, provider, serverOptions)
     }
-    return createServer(configFor(connection, archive), providerFor(connection), icons)
+    return createServer(configFor(connection, archive), providerFor(connection, { limits }), serverOptions)
   }, { responseMode: 'json', keepAliveMs: 0, onerror: () => log.event('mcp_error') })
   return {
     close: () => handler.close(),
@@ -88,7 +114,11 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
       const served = metadata.respond(request)
       if (served) { meta.route = `${request.method} /.well-known`; return served }
       if (listenerHosts && Object.hasOwn(ICON_FILES, path)) { meta.route = `${request.method} ${path}`; return iconResponse(request, ICON_FILES[path]) }
-      const ip = ipKey(clientIP(info.remoteAddress, trustForwarded ? request.headers.get('x-forwarded-for') : null))
+      // The page a person sees on opening the connector's address, and robots.txt (§19.29).
+      if (listenerHosts && path === '/') { meta.route = `${request.method} /`; return homePage(request, home) }
+      if (listenerHosts && path === '/robots.txt') { meta.route = `${request.method} /robots.txt`; return robotsResponse(request) }
+      const source = clientIP(info.remoteAddress, trustForwarded ? request.headers.get('x-forwarded-for') : null)
+      const ip = ipKey(source)
       if (path === '/attestation' && attestation) {
         meta.route = `${request.method} /attestation`
         if (request.method !== 'GET') return refuse(405, 'method_not_allowed')
@@ -111,17 +141,33 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
           if (auth instanceof Response) { meta.code = auth.status === 401 ? 'unauthorized' : auth.status === 403 ? 'insufficient_scope' : 'auth_failed'; return auth }
           meta.connection = auth.extra.connection_id
           meta.client = auth.clientId
+          const connection = state.connections.get(auth.extra.connection_id)
+          // A console token used from outside its allowed networks: refused as an unknown token, and Go hears of it.
+          if (connection && !networkAllowed(connection.allowed_networks, source)) {
+            meta.code = 'network_refused'
+            readingLimits?.network(connection)
+            return bearerAuthChallengeResponse(new OAuthError(OAuthErrorCode.InvalidToken, 'This token is not allowed from this network'),
+              { requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
+          }
+          const body = await request.clone().json().catch(() => null)
           // The parent sees response sizes: a media connection's are padded to
           // buckets, all but a subscriptions/listen stream, which never ends.
-          const pads = content?.padResponse && state.connections.get(auth.extra.connection_id)?.media === true &&
-            !(await request.clone().json().then(body => body?.method === 'subscriptions/listen', () => false))
+          const pads = content?.padResponse && connection?.media === true && body?.method !== 'subscriptions/listen'
           const padded = response => (pads ? content.padResponse(response) : response)
-          const taken = limiter.take('mcp', auth.extra.connection_id, MCP_PER_MINUTE)
+          // The calls a minute of the connection's tier (§19.19), 60 for a tested client as before. A
+          // JSON-RPC batch (MCP before 2025-06-18) runs its elements at once, so each takes one call: a
+          // batch is never a way past the rate, and one larger than a minute's calls is refused whole.
+          const perMinute = clientLimits?.[tierOf(connection)]?.calls_per_minute ?? MCP_PER_MINUTE
+          const calls = Array.isArray(body) ? Math.max(1, body.length) : 1
+          if (calls > perMinute) { meta.code = 'batch_too_large'; return padded(rpcError(400, 'Too many calls in one batch.')) }
+          const taken = limiter.take('mcp', auth.extra.connection_id, perMinute, calls)
           if (!taken.ok) { meta.code = 'rate_limited'; return padded(rpcError(429, 'Too many requests.', { 'Retry-After': String(taken.retryAfter) })) }
           return padded(await handler.fetch(request, { authInfo: auth }))
         }
         case '/mcp/authorize': meta.route = `${request.method} /mcp/authorize`; return as.authorize(request, ip, meta)
         case '/mcp/authorize/complete': meta.route = `${request.method} /mcp/authorize/complete`; return as.complete(request, ip, meta)
+        // The console's Cancel (§19.30): ends the request and the assistant's wait.
+        case '/mcp/authorize/decline': meta.route = `${request.method} /mcp/authorize/decline`; return as.decline(request, ip, meta)
         case '/mcp/token': meta.route = `${request.method} /mcp/token`; return as.token(request, ip, meta)
         case '/mcp/register': meta.route = `${request.method} /mcp/register`; return as.register(request, ip, meta)
         case '/mcp/revoke': meta.route = `${request.method} /mcp/revoke`; return as.revoke(request, meta)

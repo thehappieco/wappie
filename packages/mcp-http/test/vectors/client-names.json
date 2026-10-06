@@ -1,0 +1,234 @@
+{
+  "schema": "wappie-client-names/v1",
+  "note": "The name rule of docs/mcp-enclave.md \u00a719.6 step 3, run by the reader (clients.mjs claimedName: NFC, 1 to 100 code points, white space, categories, and UTS #39 Highly Restrictive over Script_Extensions) and by Go (internal/mcpauth validClientName: the same rule without the scripts, which are the attested reader's to judge). `reader` is whether the reader keeps the name as given; `go` whether Go accepts it. A name the reader keeps, Go always accepts. Names are in NFC except where the case says not.",
+  "names": [
+    {
+      "name": "Claude",
+      "reader": true,
+      "go": true,
+      "why": "one script"
+    },
+    {
+      "name": "Claude Code",
+      "reader": true,
+      "go": true,
+      "why": "one script, a space"
+    },
+    {
+      "name": "VS Code",
+      "reader": true,
+      "go": true,
+      "why": "one script"
+    },
+    {
+      "name": "Zed",
+      "reader": true,
+      "go": true,
+      "why": "one script"
+    },
+    {
+      "name": "goose",
+      "reader": true,
+      "go": true,
+      "why": "one script"
+    },
+    {
+      "name": "Agente A\u00e7\u00e3o",
+      "reader": true,
+      "go": true,
+      "why": "Latin with diacritics"
+    },
+    {
+      "name": "Caf\u00e9",
+      "reader": true,
+      "go": true,
+      "why": "NFC"
+    },
+    {
+      "name": "\u65e5\u672c\u8a9e\u306e\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8 Agent",
+      "reader": true,
+      "go": true,
+      "why": "Latin with Han and Kana"
+    },
+    {
+      "name": "\ud55c\uad6d\uc5b4 Agent \u6f22\u5b57",
+      "reader": true,
+      "go": true,
+      "why": "Latin with Han and Hangul"
+    },
+    {
+      "name": "\u6ce8\u97f3 \u3105\u3106\u3107 Latin",
+      "reader": true,
+      "go": true,
+      "why": "Latin with Han and Bopomofo"
+    },
+    {
+      "name": "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",
+      "reader": true,
+      "go": true,
+      "why": "Greek alone"
+    },
+    {
+      "name": "\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442",
+      "reader": true,
+      "go": true,
+      "why": "Cyrillic alone"
+    },
+    {
+      "name": "Agent \ud83d\ude00",
+      "reader": true,
+      "go": true,
+      "why": "an emoji is Common"
+    },
+    {
+      "name": "A\u00a0B",
+      "reader": true,
+      "go": true,
+      "why": "a no-break space is one white space"
+    },
+    {
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reader": true,
+      "go": true,
+      "why": "100 code points"
+    },
+    {
+      "name": "\u0785\u0786 \u0661\u0662",
+      "reader": true,
+      "go": true,
+      "why": "Thaana with Arabic-Indic digits: the digits' Script_Extensions include Thaana (their Script is Arabic)"
+    },
+    {
+      "name": "\ud804\udd03\ud804\udd04 \u09e7",
+      "reader": true,
+      "go": true,
+      "why": "Chakma with a Bengali digit: the digit's Script_Extensions include Chakma (its Script is Bengali)"
+    },
+    {
+      "name": "\u0995\u0996 \u0964",
+      "reader": true,
+      "go": true,
+      "why": "Bengali with the Devanagari danda, whose Script_Extensions include Bengali"
+    },
+    {
+      "name": "\u3072\u3089\u304c\u306a\u30fc",
+      "reader": true,
+      "go": true,
+      "why": "Hiragana with the prolonged sound mark, Script Common, Script_Extensions Hiragana and Katakana"
+    },
+    {
+      "name": "\u0421laude",
+      "reader": false,
+      "go": true,
+      "why": "Cyrillic \u0421 in Latin: dropped by the reader; the scripts are the reader's to judge"
+    },
+    {
+      "name": "Cl\u03b1ude",
+      "reader": false,
+      "go": true,
+      "why": "Greek in Latin: dropped by the reader"
+    },
+    {
+      "name": "Latin \u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",
+      "reader": false,
+      "go": true,
+      "why": "Latin with Greek"
+    },
+    {
+      "name": "\ud55c\uad6d \u30ab\u30bf\u30ab\u30ca",
+      "reader": false,
+      "go": true,
+      "why": "Hangul with Kana"
+    },
+    {
+      "name": "",
+      "reader": false,
+      "go": false,
+      "why": "empty"
+    },
+    {
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reader": false,
+      "go": false,
+      "why": "101 code points"
+    },
+    {
+      "name": " Claude",
+      "reader": false,
+      "go": false,
+      "why": "a leading space"
+    },
+    {
+      "name": "Claude ",
+      "reader": false,
+      "go": false,
+      "why": "a trailing space"
+    },
+    {
+      "name": "Claude  Code",
+      "reader": false,
+      "go": false,
+      "why": "a double space"
+    },
+    {
+      "name": "Claude\t Code",
+      "reader": false,
+      "go": false,
+      "why": "a tab and a space"
+    },
+    {
+      "name": "Cl\u202eaude",
+      "reader": false,
+      "go": false,
+      "why": "a bidi override"
+    },
+    {
+      "name": "Claude\u2066x",
+      "reader": false,
+      "go": false,
+      "why": "a bidi isolate"
+    },
+    {
+      "name": "Cl\u200baude",
+      "reader": false,
+      "go": false,
+      "why": "a zero-width space"
+    },
+    {
+      "name": "Agent \ud83d\udc69\u200d\ud83d\udcbb",
+      "reader": false,
+      "go": false,
+      "why": "an emoji with a zero-width joiner"
+    },
+    {
+      "name": "A\ufeff",
+      "reader": false,
+      "go": false,
+      "why": "a byte order mark"
+    },
+    {
+      "name": "A\udb40\udc41",
+      "reader": false,
+      "go": false,
+      "why": "a tag character"
+    },
+    {
+      "name": "Claude\u0007",
+      "reader": false,
+      "go": false,
+      "why": "a control"
+    },
+    {
+      "name": "Claude\u2028Code",
+      "reader": false,
+      "go": false,
+      "why": "a line separator"
+    },
+    {
+      "name": "Claude\ue000",
+      "reader": false,
+      "go": false,
+      "why": "a private use code point"
+    }
+  ]
+}

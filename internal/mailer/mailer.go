@@ -43,7 +43,7 @@ func accountLink(base string, values url.Values) (string, error) {
 	return u.String(), nil
 }
 
-func (s Sender) send(ctx context.Context, email string, model accountEmail) error {
+func (s Sender) send(ctx context.Context, email string, model rendered) error {
 	data, from, to, err := message(s.Config.From, email, model)
 	if err != nil {
 		return err

@@ -9,9 +9,13 @@
 // renewal commit), and a read already in flight must keep the bytes it was
 // given rather than see them turn to zeros under it, while nothing handed out
 // can ever write into the stored copy. Without a held key (after a restart, a
-// `reseal`, or any wipe) the token itself is refused with
-// `reconsent_required`, so no archive call is made at all.
+// `reseal`, or any wipe) a content connection still reads metadata with its
+// own read-only API key, and every read that needs the key is refused with
+// `reconsent_required` (docs/mcp-enclave.md §19.29): `keyHeld()` tells the
+// reader which. An AI authorization (§18) reads nothing at all without its
+// key: its token is refused, as every connection's was before 0.6.0.
 import { LocalConfigError, validateConfig } from '@whatserver2/mcp/config'
+import { tierOf } from '../provider.mjs'
 
 /** The scan budget per text-search call: the REST sequence depends on it, never on what matched. */
 export const CONTENT_MAX_SCAN = 500
@@ -30,6 +34,8 @@ export function contentConfigFor(record, archive) {
     server: archive, workspace: record.workspace_id, device_ids: record.device_ids, timezone: record.timezone,
     allow_plaintext: true, credential_source: 'enclave', service_user_id: record.service_user_id, max_scan_messages: CONTENT_MAX_SCAN,
     media: record.media === true, send, send_self: send !== null && record.send_self === true,
+    // The history window the person chose (§19.19), for a client Wappie has not tested or a token.
+    history_days: record.history_days ?? null,
   })
 }
 
@@ -92,9 +98,10 @@ export function messageURLs(consoleURL, tenantID) {
  * `media` (media/service.mjs forConnection, docs/mcp-enclave.md §16.5) is
  * given only to a record whose sealed consent includes attachments, and
  * `send` (send/service.mjs forConnection, §17.8) only to one whose sealed
- * consent includes sending.
+ * consent includes sending. `limits` (budgets.mjs forConnection, §19.19) only
+ * to one whose tier has reading limits.
  */
-export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media, send } = {}) {
+export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant, media, send, limits } = {}) {
   const id = record.connection_id
   const held = () => {
     const stored = connkeys.get(id)
@@ -102,7 +109,9 @@ export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant,
     return stored
   }
   return {
-    token: async () => { held(); return { token: record.api_key, kind: 'api_key' } },
+    token: async () => { if (record.kind === 'ai') held(); return { token: record.api_key, kind: 'api_key' } },
+    keyHeld: () => connkeys.has(id),
+    connection: () => ({ tier: tierOf(record), expires_at: record.expires_at }),
     serviceKey: async () => { const stored = held(); return { key: stored.key, publicRaw: new Uint8Array(stored.publicRaw) } },
     expectedEpoch: device => (record.epochs && Object.hasOwn(record.epochs, device) ? record.epochs[device] : undefined),
     renewalURL: () => renewalURL(consoleURL, id),
@@ -112,5 +121,6 @@ export function contentProviderFor(record, connkeys, consoleURL, { onStaleGrant,
     onStaleGrant: () => { onStaleGrant?.() },
     ...(media ? { media } : {}),
     ...(send ? { send } : {}),
+    ...(limits ? { limits } : {}),
   }
 }

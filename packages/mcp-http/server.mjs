@@ -88,7 +88,9 @@ async function readRelaySecret(path) {
  * The enclave (enclave/main.mjs) injects the rest; nothing here imports it:
  * - `config` replaces readEnv (the image's constants, plus `readerId`,
  *   `readerVersion`, `listenerHosts` ({public, internal} exact Host values),
- *   and the `spki()`, `policy()` and `health()` getters);
+ *   `links` ({documentation, privacy, terms}, the pages the discovery
+ *   documents and the page at `/` name, docs/mcp-enclave.md §19.29), and the
+ *   `spki()`, `policy()` and `health()` getters);
  * - `secrets` (the relay secret holder, enclave/secrets.mjs) replaces the
  *   relay secret file, and its `rotate` adds POST /internal/relay-secret;
  * - `state` (openSealedState), `relay` (createSignedRelay) and
@@ -102,6 +104,15 @@ async function readRelaySecret(path) {
  *   accepts their bundles, proofs and renewals, decides their status, holds
  *   their keys and builds their readers. Without it (the pilot) a bundle
  *   labelled `content` is a bad request and no such connection can exist.
+ *
+ * `config.clientPolicy` (the enclave's, docs/mcp-enclave.md §19.3) is
+ * `{mode: 'any', tested, limits, unknownLiveMax, shared, own, psl, fetcher}`:
+ * any client that identifies itself by a document, classified per request,
+ * with the tiers' limits. Without it the policy is 0.5.0's `allowlist` over
+ * `config.hosts`, which the hosted reader keeps. The enclave also injects
+ * `readingLimits` (enclave/budgets.mjs, §19.19), the reading limits of the
+ * tiers that have them, and `liveList` (enclave/livelist.mjs, §19.22), which
+ * adds the attested live list.
  */
 export async function startReader(options = {}) {
   const config = options.config ?? readEnv(options.env ?? process.env)
@@ -146,7 +157,10 @@ export async function startReader(options = {}) {
   const publicOrigin = injected ? config.publicOrigin : config.publicOrigin ?? `http://${address.family === 'IPv6' ? `[${address.address}]` : address.address}:${address.port}`
 
   const limiter = createLimiter(now)
-  const metadata = createMetadata({ publicOrigin, cimd: config.cimd })
+  const policy = config.clientPolicy ?? { mode: 'allowlist', hosts: config.hosts }
+  // What the health line counts of clients and connections (§19.24): drift, refusals, fetches.
+  const counters = {}
+  const metadata = createMetadata({ publicOrigin, cimd: config.cimd, links: config.links })
   const onWiped = async (id, reason) => {
     if (reason) log.event('family_reuse', { conn: fingerprint(id) })
     await relay.revoke(id, reason)
@@ -156,21 +170,27 @@ export async function startReader(options = {}) {
   const checkActive = createStatusCheck({ state, relay, now, content, onWiped: id => onWiped(id) })
   // Attachment calls ask it for the media fields of the status (enclave only).
   content?.useStatusCheck?.(checkActive)
-  const tokens = createTokens(state, { now, checkActive, onFamilyRevoked: onWiped })
+  const tokens = createTokens(state, { now, checkActive, onFamilyRevoked: onWiped, limits: policy.limits })
   const verifier = createVerifier({ tokens, state, resource: metadata.resource, checkActive })
-  const clients = createClients(state, { now, hosts: config.hosts })
-  const cimd = createCIMD(state, { relay, now, enabled: config.cimd, hosts: config.hosts })
+  const clients = createClients(state, { now, hosts: config.hosts, policy })
+  const cimd = createCIMD(state, { relay, now, enabled: config.cimd, hosts: config.hosts, policy, limiter, log, counters })
   const as = createAuthorizationServer({ state, clients, cimd, tokens, limiter, relay, log, now, publicOrigin, consoleURL: config.consoleURL, resource: metadata.resource, pendingTTLMs: config.pendingTTLMs,
-    newRecipient: options.keys === 'per-request' ? newRecipient : undefined, content })
+    newRecipient: options.keys === 'per-request' ? newRecipient : undefined, content, policy, counters })
   const attestor = options.attest ? createAttestor({ attest: options.attest, readerId: config.readerId, readerVersion: config.readerVersion, resource: metadata.resource, spki: config.spki, policy: config.policy }) : null
+  // A version-2 descriptor (reader 0.6.0, §19.12) is attested whole: user_data v2 over it (§19.13).
   const prepare = attestor && (async (pending, nonce) => {
     if (!pending.recipient) throw new AttestationError('attest_failed')
-    return { ...descriptor(pending, state), attestation: await attestor.attestation({ requestId: pending.id, publicKey: pending.recipient.publicKey, nonce }) }
+    const described = descriptor(pending, state)
+    const whole = described.descriptor_version === 2 ? { descriptor: described } : {}
+    return { ...described, attestation: await attestor.attestation({ requestId: pending.id, publicKey: pending.recipient.publicKey, nonce, ...whole }) }
   })
-  const internal = internalRoutes({ state, secret, now, pendingFor: as.pendingFor, auth: options.internalAuth, health: config.health, prepare, rotateSecret: options.secrets?.rotate, content })
+  const internal = internalRoutes({ state, secret, now, pendingFor: as.pendingFor, auth: options.internalAuth, health: config.health, prepare, rotateSecret: options.secrets?.rotate, content,
+    unknownLiveMax: policy.unknownLiveMax, liveList: options.liveList })
   const router = createRouter({ state, metadata, as, internal, verifier, limiter, log, archive: config.archive, publicHost: new URL(publicOrigin).hostname,
     listenerHosts: injected ? config.listenerHosts : undefined, trustForwarded: !injected,
-    attestation: attestor && (({ nonce }) => attestor.attestation({ requestId: '', publicKey: null, nonce })), content })
+    attestation: attestor && (({ nonce }) => attestor.attestation({ requestId: '', publicKey: null, nonce })), content,
+    clientLimits: policy.limits, readingLimits: options.readingLimits, readerVersion: config.readerVersion,
+    site: { console: config.consoleURL, documentation: config.links?.documentation } })
 
   const handlerFor = listener => async (req, res) => {
     const started = now(), meta = {}
@@ -184,7 +204,7 @@ export async function startReader(options = {}) {
       response = Response.json({ code: 'internal_error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
     }
     try { await sendWebResponse(res, response) } catch { /* the peer went away */ }
-    log.request({ route: meta.route ?? 'unmatched', status: response.status, ms: now() - started, connection: meta.connection, client: meta.client, code: meta.code })
+    log.request({ route: meta.route ?? 'unmatched', status: response.status, ms: now() - started, connection: meta.connection, client: meta.client, code: meta.code, flags: meta.flags })
   }
   const servers = injected ? [[injected.public, 'public'], ...(injected.internal ? [[injected.internal, 'internal']] : [])] : [[server, undefined]]
   for (const [target, listener] of servers) {
@@ -211,6 +231,7 @@ export async function startReader(options = {}) {
         log.event('unclaimed_connection_revoked')
       }
     }
+    options.readingLimits?.sweep(new Set(state.connections.keys()))
     if (changed) await state.save()
   }
   const timer = setInterval(() => { sweep().catch(() => {}) }, 30_000)
@@ -240,7 +261,9 @@ export async function startReader(options = {}) {
   contentTimer?.unref()
   log.event('listening', { ...(address ? { port: address.port } : {}), cimd: config.cimd })
   return {
-    port: address?.port, publicOrigin, resource: metadata.resource, state, config, sweep, log, checkActive,
+    port: address?.port, publicOrigin, resource: metadata.resource, state, config, sweep, log, checkActive, counters, policy,
+    /** The client counters (§19.24) since the last call, which then start again. */
+    takeCounters() { const taken = { ...counters }; for (const name of Object.keys(counters)) delete counters[name]; return taken },
     ...(content ? { contentSweep } : {}),
     async close() {
       clearInterval(timer)

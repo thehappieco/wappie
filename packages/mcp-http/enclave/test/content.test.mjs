@@ -9,7 +9,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { chatName, plain, vector, workspace } from '@whatserver2/mcp/test/fixture'
-import { decodeAttestationDocument } from '../../attestation.mjs'
+import { attestationUserDataV2, decodeAttestationDocument, descriptorSHA256 } from '../../attestation.mjs'
+import { CLIENT_LIMITS } from '../constants.mjs'
 import { CONTENT_SWEEP_MS } from '../../server.mjs'
 import { CONTENT_REFRESH_IDLE_MS } from '../../tokens.mjs'
 import { PROOF_TIMEOUT_MS, proveGrants } from '../content.mjs'
@@ -17,7 +18,7 @@ import { lineAllowed } from '../logsink.mjs'
 import { newRecipient } from '../../state.mjs'
 import {
   callTool, connect, connectContent, consentLabels, contentGrants, DAY, form, newApiKey, ORIGIN, prepareRequest, renewLabels, RESOURCE, rpc, sealContent, world,
-} from './world.mjs'
+  resealed as resealedAnswers } from './world.mjs'
 
 const events = w => w.lines.map(line => JSON.parse(line)).filter(entry => entry.event)
 const eventCount = (w, name) => events(w).filter(entry => entry.event === name).length
@@ -57,6 +58,11 @@ test('content consent: the v2 bundle opens only with the attested key, the grant
   assert.equal(page.isError, false, page.text)
   assert.equal(page.data.messages[0].body.state, 'ok')
   assert.equal(page.data.messages[0].body.value, plain)
+  // Each result's JSON once, as text, and no workspace id in it (§19.30).
+  for (const read of [numbers, chats, page]) {
+    assert.equal(read.structured, undefined)
+    assert.equal(read.text.includes(workspace), false)
+  }
   const query = `sentinel${randomBytes(6).toString('hex')}`
   const search = await callTool(w, done.tokens.access_token, 'search_messages', { device_id: vector.device, query, period: 'all' })
   assert.equal(search.status, 200)
@@ -166,13 +172,10 @@ test('wipes: Go revoke, Go answering revoked or expired or another service, and 
     assert.equal(e.state.connections.has(done.connectionId), false)
   }
   assert.equal(eventCount(w, 'service_mismatch'), 1)
-  // Reseal: no key, the record and its token family stay, every tool asks for a renewal.
+  // Reseal: no key, the record and its token family stay, metadata reads on and text waits for a renewal (§19.29).
   assert.equal(content.holds(resealed.connectionId), false)
   assert.equal(e.state.connections.has(resealed.connectionId), true)
-  const answer = await callTool(w, resealed.tokens.access_token, 'list_numbers')
-  assert.equal(answer.isError, true)
-  assert.match(answer.text, /reconsent_required/)
-  assert.ok(answer.text.includes(`https://app.wappie.thehappie.co/console?mcp_renew=${resealed.connectionId}`), answer.text)
+  await resealedAnswers(w, resealed.tokens.access_token, resealed.connectionId)
   assert.equal((await refresh(w, resealed)).status, 200, 'the family survives reseal')
   // The untouched one still serves.
   assert.equal(content.holds(kept.connectionId), true)
@@ -205,7 +208,7 @@ test('Go away: the sweep wipes nothing, the verifier answers 503 once the cache 
   assert.equal((await callTool(w, done.tokens.access_token, 'list_numbers')).isError, false)
 })
 
-test('restart: every content connection is resealed in Go, tools answer reconsent_required, the family survives; a row Go lost is wiped', async t => {
+test('restart: every content connection is resealed in Go, metadata reads on, text answers reconsent_required, the family survives; a row Go lost is wiped', async t => {
   const w = await world(t)
   const e = await w.start()
   const done = await connectContent(w)
@@ -219,10 +222,9 @@ test('restart: every content connection is resealed in Go, tools answer reconsen
   assert.ok(w.go.reseals.includes(done.connectionId))
   assert.equal(again.state.connections.has(done.connectionId), true)
   assert.equal(again.state.connections.has(lost.connectionId), false, '404 on reseal wipes the record')
-  const answer = await callTool(w, done.tokens.access_token, 'search_messages', { device_id: vector.device, query: 'anything', period: 'all' })
-  assert.equal(answer.isError, true)
-  assert.match(answer.text, /reconsent_required/)
-  assert.ok(answer.text.includes(`mcp_renew=${done.connectionId}`))
+  const { numbers } = await resealedAnswers(w, done.tokens.access_token, done.connectionId)
+  // The metadata read with the connection's own read-only key; nothing that needs its lost key was asked for.
+  assert.equal(numbers.data.numbers.length, 1)
   const refreshed = await refresh(w, done)
   assert.equal(refreshed.status, 200, refreshed.body)
   assert.ok(eventCount(w, 'reseal_requested') >= 2)
@@ -242,8 +244,7 @@ test('restart while Go cannot reseal: records are kept, reseal is retried in the
   assert.equal(w.go.connections.get(done.connectionId).status, 'reseal', 'the background retry reached Go')
   // Go active with no key here (a reseal Go had not recorded): the check asks for one and answers reseal.
   w.go.connections.get(done.connectionId).status = 'active'
-  const answer = await callTool(w, done.tokens.access_token, 'list_numbers')
-  assert.match(answer.text, /reconsent_required/)
+  await resealedAnswers(w, done.tokens.access_token, done.connectionId)
   assert.equal(w.go.connections.get(done.connectionId).status, 'reseal')
 })
 
@@ -281,12 +282,18 @@ test('renewal after a restart: attested per-renewal key, staged bundle, Go swaps
   const done = await connectContent(w)
   await e.close()
   const again = await w.start()
-  assert.match((await callTool(w, done.tokens.access_token, 'list_numbers')).text, /reconsent_required/)
+  await resealedAnswers(w, done.tokens.access_token, done.connectionId)
 
   const renewed = await renew(w, done)
   assert.equal(renewed.prepared.status, 200, renewed.prepared.body)
   const { renewal } = renewed
-  assert.deepEqual(Object.keys(renewal), ['renewal_id', 'connection_id', 'kid', 'reader_public_key', 'resource', 'device_ids', 'expires_at', 'connection_expires_at', 'consent_version', 'media', 'attestation'])
+  // A version-2 descriptor (§19.16): a record 0.5.0's rules wrote renews as `legacy`, tested, under the tested web limits.
+  assert.deepEqual(Object.keys(renewal), ['descriptor_version', 'renewal_id', 'connection_id', 'kid', 'reader_public_key', 'resource', 'device_ids', 'expires_at',
+    'connection_expires_at', 'consent_version', 'media', 'kind', 'client_kind', 'client_id', 'tested_id', 'client_host', 'registrable', 'shared_suffix', 'client_local',
+    'client_name', 'claimed_name', 'trust', 'limits_tier', 'limits', 'unknown_ack', 'history_days', 'attestation'])
+  assert.deepEqual([renewal.descriptor_version, renewal.kind, renewal.client_kind, renewal.trust, renewal.limits_tier, renewal.unknown_ack, renewal.history_days, renewal.client_host],
+    [2, 'renewal', 'legacy', 'tested', 'web_tested', false, null, null])
+  assert.deepEqual(renewal.limits, CLIENT_LIMITS.web_tested)
   assert.equal(renewal.consent_version, 1)
   assert.equal(renewal.media, false)
   assert.match(renewal.renewal_id, /^[A-Za-z0-9_-]{22}$/)
@@ -298,15 +305,18 @@ test('renewal after a restart: attested per-renewal key, staged bundle, Go swaps
   const document = decodeAttestationDocument(Buffer.from(renewal.attestation.document, 'base64url'))
   assert.deepEqual(document.publicKey, Buffer.from(renewal.reader_public_key, 'base64url'))
   assert.deepEqual(document.nonce, renewed.nonce)
+  assert.deepEqual(document.userData, attestationUserDataV2(renewal.attestation, descriptorSHA256(renewal)), 'attested whole')
   assert.notEqual(renewal.reader_public_key, done.prepared.reader_public_key)
   assert.equal(renewed.relayed.status, 204, renewed.relayed.body)
   assert.equal(eventCount(w, 'renewal_staged'), 1)
 
   // Before Go swaps, the old service is still the one Go names: nothing commits.
-  assert.match((await callTool(w, done.tokens.access_token, 'list_numbers')).text, /reconsent_required/)
+  await resealedAnswers(w, done.tokens.access_token, done.connectionId)
   goSwap(w, done, renewed)
   const numbers = await callTool(w, done.tokens.access_token, 'list_numbers')
   assert.equal(numbers.isError, false, numbers.text)
+  assert.equal(numbers.data.renewal, undefined, 'renewed: nothing asks for a renewal any more')
+  assert.equal(numbers.data.connection.renewal_needed, false)
   const record = again.state.connections.get(done.connectionId)
   assert.equal(record.service_user_id, renewed.service)
   assert.equal(record.api_key, renewed.token)

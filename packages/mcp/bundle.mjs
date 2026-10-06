@@ -67,12 +67,121 @@ export async function validateBundle(value) {
 }
 
 /**
+ * The link bundle v2 (docs/mcp-enclave.md §19.15): a metadata consent to a
+ * reader 0.6.0, the setup bundle's sibling with the client it was given to,
+ * the tier the card showed, the "I started this" tick and the history window
+ * the person chose (null: the whole history, for a tested client only). It
+ * has no number keys, so the enclave applies the tier from its own pending
+ * request and the bundle can only narrow the history. validateBundle takes
+ * `version: 1` only, so no 0.5.0 path opens one of these.
+ */
+export const linkBundleV2Schema = z.strictObject({
+  version: z.literal(2), kind: z.literal('metadata'),
+  server_url: z.string().min(1).max(4096), workspace_id: id,
+  device_ids: z.array(id).min(1).max(1000),
+  token: z.string().length(52), allow_plaintext: z.literal(false),
+  timezone: z.string().min(1).max(100).optional(),
+  link_secret: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  client_id: z.string().min(1).max(512), trust: z.enum(['tested', 'unknown']), started_ack: z.literal(true),
+  history_days: z.number().int().min(1).max(366).nullable(),
+})
+/** Validates a parsed link bundle v2 and returns it frozen; any failure is `invalid_bundle`. */
+export function validateLinkBundleV2(value) {
+  const parsed = linkBundleV2Schema.safeParse(value)
+  if (!parsed.success) fail('invalid_bundle')
+  const bundle = parsed.data
+  // As for version 1, the archive origin may be loopback http (a local test); the enclave checks it is the resource's.
+  if (!sameOrigin(bundle.server_url) || new Set(bundle.device_ids).size !== bundle.device_ids.length ||
+    !/^[a-f0-9]{8}\./.test(bundle.token) || !canonicalKey(bundle.token.slice(9)) || !canonicalKey(bundle.link_secret) ||
+    Buffer.byteLength(bundle.client_id, 'utf8') > 512 || (bundle.timezone !== undefined && !validTimezone(bundle.timezone))) fail('invalid_bundle')
+  Object.freeze(bundle.device_ids)
+  return Object.freeze(bundle)
+}
+
+/**
+ * A network as a console connection token's `allowed_networks` writes it
+ * (docs/mcp-enclave.md §19.15): `198.51.100.0/24` or `2001:db8::/48`, in its
+ * canonical form only, the address part with no bit past the prefix set:
+ * IPv4 as four decimal octets without leading zeros, IPv6 as RFC 5952 §4
+ * writes it (lower case, no leading zeros, the longest run of two or more
+ * zero groups as `::`, the first of equal runs). `{family, bytes, prefix}`,
+ * or null for anything else.
+ */
+export function parseCIDR(text) {
+  if (typeof text !== 'string' || text.length > 49) return null
+  const slash = text.indexOf('/')
+  if (slash < 0) return null
+  const address = parseAddress(text.slice(0, slash)), bits = text.slice(slash + 1)
+  if (!address || !/^(?:0|[1-9][0-9]{0,2})$/.test(bits)) return null
+  const prefix = Number(bits)
+  if (prefix > address.bytes.length * 8) return null
+  for (let bit = prefix; bit < address.bytes.length * 8; bit++) if (address.bytes[bit >> 3] & (0x80 >> (bit & 7))) return null
+  const network = { family: address.family, bytes: address.bytes, prefix }
+  return formatAddress(address) === text.slice(0, slash) ? network : null
+}
+/** An IP address as `{family: 4 | 6, bytes}` (an IPv4-mapped IPv6 address as IPv4), or null. */
+export function parseAddress(text) {
+  if (typeof text !== 'string') return null
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text)
+  if (v4) {
+    const bytes = v4.slice(1).map(Number)
+    return bytes.every(value => value <= 255) ? { family: 4, bytes: Uint8Array.from(bytes) } : null
+  }
+  if (!/^[0-9A-Fa-f:.]{2,45}$/.test(text) || (text.match(/::/g) ?? []).length > 1) return null
+  let head = text, tail4 = null
+  const dotted = /^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(text)
+  if (dotted) { tail4 = parseAddress(dotted[2]); if (!tail4) return null; head = dotted[1] + '0:0' }
+  const [left, right] = head.includes('::') ? head.split('::') : [head, null]
+  const groups = part => (part === '' ? [] : part.split(':'))
+  const leftGroups = groups(left), rightGroups = right === null ? [] : groups(right)
+  const missing = 8 - leftGroups.length - rightGroups.length
+  if (right === null ? missing !== 0 : missing < 1) return null
+  const all = [...leftGroups, ...Array(right === null ? 0 : missing).fill('0'), ...rightGroups]
+  if (all.some(group => !/^[0-9A-Fa-f]{1,4}$/.test(group))) return null
+  const bytes = new Uint8Array(16)
+  all.forEach((group, index) => { const value = parseInt(group, 16); bytes[index * 2] = value >> 8; bytes[index * 2 + 1] = value & 0xff })
+  if (tail4) bytes.set(tail4.bytes, 12)
+  if (bytes.subarray(0, 10).every(value => value === 0) && bytes[10] === 0xff && bytes[11] === 0xff) return { family: 4, bytes: bytes.slice(12) }
+  return { family: 6, bytes }
+}
+/** The canonical text of an address parseAddress returned (IPv6 by RFC 5952 §4, without the mixed IPv4 form). */
+export function formatAddress({ family, bytes }) {
+  if (family === 4) return [...bytes].join('.')
+  const groups = Array.from({ length: 8 }, (_, index) => (bytes[index * 2] << 8) | bytes[index * 2 + 1])
+  let best = -1, length = 0
+  for (let start = 0; start < 8; start++) {
+    let end = start
+    while (end < 8 && groups[end] === 0) end++
+    if (end - start > length && end - start >= 2) { best = start; length = end - start }
+  }
+  const text = groups.map(group => group.toString(16))
+  return best < 0 ? text.join(':') : `${text.slice(0, best).join(':')}::${text.slice(best + length).join(':')}`
+}
+/** Whether `address` (parseAddress's) lies in `network` (parseCIDR's); never across families. */
+export function inNetwork(address, network) {
+  if (!address || !network || address.family !== network.family) return false
+  for (let bit = 0; bit < network.prefix; bit++) {
+    const mask = 0x80 >> (bit & 7)
+    if ((address.bytes[bit >> 3] & mask) !== (network.bytes[bit >> 3] & mask)) return false
+  }
+  return true
+}
+/** `allowed_networks`: 0 to 10 canonical networks, unique, sorted as strings. */
+const allowedNetworks = z.array(z.string().max(49)).max(10)
+  .refine(list => list.every(item => parseCIDR(item) !== null) && new Set(list).size === list.length && list.every((item, index) => index === 0 || list[index - 1] < item))
+
+/**
  * The consent text versions a content bundle may be sealed under (the card the
  * user saw): 1, 2 from reader 0.4.0 on, which alone could carry `media`
- * (docs/mcp-enclave.md §16.2), and 3 from reader 0.5.0 on, the card with
- * sending, which may carry `media` too (§17.2).
+ * (docs/mcp-enclave.md §16.2), 3 from reader 0.5.0 on, the card with
+ * sending, which may carry `media` too (§17.2), and 4 from reader 0.6.0 on
+ * (§19.15), the card of any client, which names the client it was given to,
+ * the tier the card showed, the ticks and the history window, and always
+ * carries the device checks.
  */
-export const CONTENT_CONSENT_VERSIONS = Object.freeze([1, 2, 3])
+export const CONTENT_CONSENT_VERSIONS = Object.freeze([1, 2, 3, 4])
+/** The client_id a console connection token's consent names (§19.18). */
+export const CONSOLE_TOKEN_CLIENT_ID = 'wappie-console-token'
 /**
  * The sending modes this reader installs (§17.2 rule 2): drafts, with the
  * own-chat toggle riding on them (`send_draft_v1`). Direct send (`'direct'`,
@@ -94,8 +203,9 @@ const MAX_CONTENT_AHEAD_MS = (90 * 24 + 1) * 60 * 60 * 1000
  * number, come with it and only with it; `send_self` and `send_groups` only
  * with `send`.
  */
+const V4_MEMBERS = ['client_id', 'client_kind', 'client_local', 'trust', 'started_ack', 'unknown_ack', 'history_days']
 export const contentBundleSchema = z.strictObject({
-  version: z.literal(2), kind: z.literal('content'), purpose: z.enum(['consent', 'renewal']),
+  version: z.literal(2), kind: z.literal('content'), purpose: z.enum(['consent', 'renewal', 'token']),
   server_url: z.string().min(1).max(4096), workspace_id: id, service_user_id: id,
   device_ids: z.array(id).min(1).max(100),
   token: z.string().length(52),
@@ -109,9 +219,34 @@ export const contentBundleSchema = z.strictObject({
   timezone: z.string().min(1).max(100).optional(),
   link_secret: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
   connection_id: id.optional(),
+  // Version 4 (§19.15): the client, the tier, the ticks and the history window.
+  client_id: z.string().min(1).max(512).optional(),
+  client_kind: z.enum(['cimd', 'dcr', 'token']).optional(),
+  client_local: z.boolean().optional(),
+  trust: z.enum(['tested', 'unknown']).optional(),
+  started_ack: z.literal(true).optional(),
+  unknown_ack: z.boolean().optional(),
+  history_days: z.number().int().min(1).max(366).nullable().optional(),
+  // A console token's (§19.18): the bearer's hash and the networks it may be used from.
+  bearer_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  allowed_networks: allowedNetworks.optional(),
 }).refine(bundle => bundle.media !== true || bundle.consent_version >= 2)
-  .refine(bundle => (bundle.consent_version === 3) === (bundle.send !== undefined) && (bundle.send !== undefined) === (bundle.device_checks !== undefined))
+  // Version 3 is the card with sending: `send` and the device checks come with it and only with it.
+  .refine(bundle => bundle.consent_version === 4 || ((bundle.consent_version === 3) === (bundle.send !== undefined) && (bundle.send !== undefined) === (bundle.device_checks !== undefined)))
   .refine(bundle => bundle.send !== undefined || (bundle.send_self === undefined && bundle.send_groups === undefined))
+  // Version 4 ⇔ the client members; it always carries the device checks, and sends only for a tested web client.
+  .refine(bundle => V4_MEMBERS.every(name => (bundle[name] !== undefined) === (bundle.consent_version === 4)))
+  .refine(bundle => bundle.consent_version !== 4 || (bundle.device_checks !== undefined &&
+    (bundle.send === undefined || (bundle.trust === 'tested' && bundle.client_local === false && bundle.client_kind !== 'token'))))
+  // An unknown client (a token included) reads text only after the second tick, within a history window; a tested one reads all of it.
+  .refine(bundle => bundle.consent_version !== 4 || (bundle.trust === 'unknown' ? bundle.unknown_ack === true && bundle.history_days !== null : bundle.history_days === null))
+  // A token's consent (§19.18): version 4, unknown, the token's own client, its hash and networks, and nothing else carries those.
+  .refine(bundle => (bundle.purpose === 'token') === (bundle.bearer_sha256 !== undefined) && (bundle.purpose === 'token') === (bundle.allowed_networks !== undefined))
+  .refine(bundle => bundle.purpose !== 'token' || (bundle.consent_version === 4 && bundle.client_kind === 'token' && bundle.trust === 'unknown' && bundle.client_local === false))
+  .refine(bundle => (bundle.client_kind === 'token') === (bundle.client_id === CONSOLE_TOKEN_CLIENT_ID))
+function sameOrigin(value) {
+  try { return archiveOrigin(value) === value } catch { return false }
+}
 function httpsOrigin(value) {
   try { return value.startsWith('https://') && archiveOrigin(value) === value } catch { return false }
 }
@@ -131,9 +266,46 @@ export function validateContentBundle(value, now = Date.now()) {
     (bundle.timezone !== undefined && !validTimezone(bundle.timezone)) ||
     (bundle.purpose === 'consent' && (!canonicalKey(bundle.link_secret) || bundle.connection_id !== undefined)) ||
     (bundle.purpose === 'renewal' && (bundle.link_secret !== undefined || bundle.connection_id === undefined)) ||
+    // A token has no completion proof and names no connection: the sealed bundle is the consent (§19.18).
+    (bundle.purpose === 'token' && (bundle.link_secret !== undefined || bundle.connection_id !== undefined)) ||
+    (bundle.client_id !== undefined && Buffer.byteLength(bundle.client_id, 'utf8') > 512) ||
     (bundle.device_checks !== undefined && !exactChecks(bundle.device_checks, bundle.device_ids))) fail('invalid_bundle')
   Object.freeze(bundle.device_ids)
   if (bundle.device_checks) Object.freeze(bundle.device_checks)
+  if (bundle.allowed_networks) Object.freeze(bundle.allowed_networks)
+  return Object.freeze(bundle)
+}
+
+/**
+ * A console connection token's metadata bundle (docs/mcp-enclave.md §19.18
+ * step 4): no number keys and no link secret (there is no completion proof),
+ * the token's expiry, history window, allowed networks and the bearer's hash.
+ * Sealed to an attested token request's key, as its content sibling (a
+ * content bundle with `purpose: 'token'`) is.
+ */
+export const tokenBundleSchema = z.strictObject({
+  version: z.literal(1), kind: z.literal('metadata'), purpose: z.literal('token'),
+  server_url: z.string().min(1).max(4096), workspace_id: id,
+  device_ids: z.array(id).min(1).max(100),
+  token: z.string().length(52),
+  timezone: z.string().min(1).max(100).optional(),
+  expires_at: z.iso.datetime().max(40),
+  history_days: z.number().int().min(1).max(366),
+  allowed_networks: allowedNetworks,
+  bearer_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+})
+/** Validates a parsed token bundle and returns it frozen; any failure is `invalid_bundle`. `now` is for tests. */
+export function validateTokenBundle(value, now = Date.now()) {
+  const parsed = tokenBundleSchema.safeParse(value)
+  if (!parsed.success) fail('invalid_bundle')
+  const bundle = parsed.data
+  const expires = Date.parse(bundle.expires_at)
+  if (!httpsOrigin(bundle.server_url) || new Set(bundle.device_ids).size !== bundle.device_ids.length ||
+    !/^[a-f0-9]{8}\./.test(bundle.token) || !canonicalKey(bundle.token.slice(9)) ||
+    !Number.isFinite(expires) || expires <= now || expires > now + MAX_CONTENT_AHEAD_MS ||
+    (bundle.timezone !== undefined && !validTimezone(bundle.timezone))) fail('invalid_bundle')
+  Object.freeze(bundle.device_ids)
+  Object.freeze(bundle.allowed_networks)
   return Object.freeze(bundle)
 }
 
@@ -161,14 +333,23 @@ export const DEVICE_CHECK_LABEL = 'wappie-mcp-device/v1'
  * grant's. UUIDs are the bundle's (lower case), `expires_at` its string as
  * sealed; the lists are sorted and the direct-send fields (S3) are there,
  * empty, so the shape never changes.
+ *
+ * A version-4 bundle's scope (§19.15) says `consent_version: 4` and adds the
+ * client, the tier, the ticks, the history window and a token's hash and
+ * networks, each null when absent (a renewal never carries the last two:
+ * the record pins them), so only a holder of each number's DSK makes them.
+ * `send` is null when absent there, as it never is on version 3.
  */
 export function deviceScope(bundle, { deviceID, epoch, request, kid }) {
+  const v4 = bundle.consent_version === 4
   return {
     workspace_id: bundle.workspace_id, device_id: deviceID, epoch, service_user_id: bundle.service_user_id, request, kid,
-    device_ids: [...bundle.device_ids].sort(), expires_at: bundle.expires_at, consent_version: 3, media: bundle.media === true,
-    send: bundle.send, send_self: bundle.send_self === true, send_groups: bundle.send_groups === true,
+    device_ids: [...bundle.device_ids].sort(), expires_at: bundle.expires_at, consent_version: v4 ? 4 : 3, media: bundle.media === true,
+    send: v4 ? bundle.send ?? null : bundle.send, send_self: bundle.send_self === true, send_groups: bundle.send_groups === true,
     send_chats: (bundle.send_chats ?? []).filter(chat => chat.device_id === deviceID).map(chat => chat.chat_key).sort(),
     send_signature: bundle.send_signature ?? null,
+    ...(v4 ? Object.fromEntries(['client_id', 'client_kind', 'client_local', 'trust', 'started_ack', 'unknown_ack', 'history_days', 'bearer_sha256', 'allowed_networks']
+      .map(name => [name, bundle[name] === undefined ? null : name === 'allowed_networks' ? [...bundle[name]] : bundle[name]])) : {}),
   }
 }
 

@@ -95,6 +95,19 @@ export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.
       return { status: response.status, data: parsed }
     },
 
+    /**
+     * A connection reached a reading limit, or a token was used from outside
+     * its allowed networks (docs/mcp-enclave.md §19.19): `{code}` alone, which
+     * raises Go's banner and e-mail. True on 204; anything else is Go's.
+     */
+    async budgetHit(id, code) {
+      const response = await relay.call('POST', `/connections/${encodeURIComponent(id)}/budget-hit`, null, {
+        body: Buffer.from(JSON.stringify({ code })), headers: { 'content-type': 'application/json' },
+      })
+      await relay.body(response)
+      return response.status === 204
+    },
+
     /** `{generation, blob}` for a stored collection, or null when Go never had it. */
     async stateGet(name) {
       const response = await relay.call('GET', statePath(name), null, { timeout: STATE_TIMEOUT_MS, headers: { accept: 'application/octet-stream' } })

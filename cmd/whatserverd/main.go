@@ -731,6 +731,24 @@ func (a *app) routes() http.Handler {
 			AIOffProviders: a.cfg.MCP.AIOffProviders,
 			AIOffFeatures:  a.cfg.MCP.AIOffFeatures,
 			AI:             store.NewAI(a.pools.API),
+			// Any MCP client (docs/mcp-enclave.md §19.21): the switches
+			// that refuse untested clients or a tested one, the hosts a
+			// registered client may be identified by, the attested live
+			// list's budget and the revoke-only link's.
+			UnknownAllowed:   a.cfg.MCP.UnknownAllowed(),
+			BlockedClients:   a.cfg.MCP.BlockedClients,
+			DCRHosts:         a.cfg.MCP.DCRHosts,
+			LiveListLimits:   ratelimit.New(mcpauth.LiveListPerMinute, mcpauth.LiveListPerMinute),
+			RevokeLinkLimits: &ratelimit.Auth{PerIP: ratelimit.New(30, 10), Proxies: a.cfg.TrustedProxies},
+		}
+		// The new-assistant e-mail goes only with a mail server and this
+		// server's public origin for its revoke-only link; without them no
+		// untested client or token is given text.
+		if origin := a.cfg.MCP.NoticeLinkOrigin(a.cfg.Env.IsProd()); origin != "" && a.cfg.Signup.SMTP.Configured() {
+			sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
+			a.mcp.MailNotice, a.mcp.NoticeOrigin = sender.MCPConnected, origin
+		} else if a.cfg.MCP.UnknownAllowed() {
+			a.log.Warn("untested assistants and tokens may connect, but no new-assistant e-mail can go (WS_SMTP_ADDR, WS_MAIL_FROM and WS_MCP_NOTICE_ORIGIN): text for them is refused")
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)

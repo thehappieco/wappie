@@ -25,7 +25,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@thehappieco/kit": "https://github.com/thehappieco/kit/releases/download/v0.1.0/thehappieco-kit-0.1.0.tgz"
+    "@thehappieco/kit": "https://github.com/thehappieco/kit/releases/download/v0.3.0/thehappieco-kit-0.3.0.tgz"
   },
   "devDependencies": {
     "@types/node": "^26.3.0",

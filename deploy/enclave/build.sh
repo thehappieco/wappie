@@ -2,7 +2,8 @@
 # Builds one reader release on an arm64 host with Docker and nitro-cli (the
 # parent): the image, its EIF, the two rendered key policies and their hashes,
 # and measurements.json (docs/mcp-enclave.md §9), which also carries the
-# release's capabilities and its dependency manifest (§16.2 rule 8, §16.6).
+# release's capabilities and its dependency manifest (§16.2 rule 8, §16.6),
+# and, from reader 0.6.0, its tested clients and the tiers' limits (§19.3).
 # Publishing is separate:
 # pass --push to push the image (the digest then goes into measurements.json);
 # the GitHub release reader-v<version> is created by hand from the output
@@ -121,7 +122,7 @@ constants=$(docker run --rm --network none --entrypoint node -w /app/packages/mc
     const c = await import("./constants.mjs")
     console.log(JSON.stringify({ version: c.READER_VERSION, reader_id: c.READER_ID, origin: c.PUBLIC_ORIGIN,
       region: c.REGION, reader_key_arn: c.KMS_READER_KEY_ARN, boot_key_arn: c.KMS_BOOT_KEY_ARN,
-      capabilities: c.READER_CAPABILITIES ?? null }))')
+      capabilities: c.READER_CAPABILITIES ?? null, tested_clients: c.TESTED_CLIENTS ?? null, client_limits: c.CLIENT_LIMITS ?? null }))')
 field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$constants" "$1"; }
 version=$(field version)
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "READER_VERSION is not x.y.z: $version"
@@ -262,11 +263,34 @@ def capabilities(value):
     return value
 
 
+LIMIT_TIERS = {"web_tested", "local_tested", "unknown", "token"}
+
+
+def client_tables(c, caps):
+    """TESTED_CLIENTS and CLIENT_LIMITS as the image measures them (§19.3):
+    written unchanged into a release that declares any_client_v1, so the
+    console accepts a tested client only where the attested release lists it
+    and compares every limit a card shows; refused on any other release."""
+    tested, limits = c.get("tested_clients"), c.get("client_limits")
+    if "any_client_v1" not in caps:
+        if tested is not None or limits is not None:
+            sys.exit("build.sh: TESTED_CLIENTS or CLIENT_LIMITS in a release without any_client_v1")
+        return {}
+    ids = [entry.get("id") for entry in tested] if isinstance(tested, list) and all(isinstance(e, dict) for e in tested) else None
+    if not ids or len(set(ids)) != len(ids) or not all(isinstance(i, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", i) for i in ids):
+        sys.exit(f"build.sh: TESTED_CLIENTS is not a list of entries with distinct ids: {tested!r}")
+    if not isinstance(limits, dict) or set(limits) != LIMIT_TIERS:
+        sys.exit(f"build.sh: CLIENT_LIMITS does not hold exactly the tiers {sorted(LIMIT_TIERS)}")
+    return {"tested_clients": tested, "client_limits": limits}
+
+
+caps = capabilities(c.get("capabilities"))
 measurements = {
     "schema": "wappie-reader-measurements/v1",
     "reader_id": c["reader_id"],
     "version": version,
-    "capabilities": capabilities(c.get("capabilities")),
+    "capabilities": caps,
+    **client_tables(c, caps),
     "resource": c["origin"] + "/mcp",
     "source": {"repository": "thehappieco/wappie", "commit": commit},
     # null until --push: an unpushed build is not publishable.

@@ -13,12 +13,19 @@ export function createLog(sink = line => process.stdout.write(line + '\n'), now 
     try { sink(JSON.stringify(entry)) } catch { /* a failing sink must never take a request down */ }
   }
   return {
-    request({ route, status, ms, connection, client, code }) {
+    /**
+     * `flags` are booleans only (the authorize line's `unknown`, `local`,
+     * `cimd`, `drift` and `resource_default`, the complete line's
+     * `ip_mismatch`, docs/mcp-enclave.md §19.24): what kind of client, never
+     * which.
+     */
+    request({ route, status, ms, connection, client, code, flags }) {
       const entry = { ts: new Date(now()).toISOString(), route, status }
       if (typeof ms === 'number') entry.ms = Math.round(ms)
       if (connection) entry.conn = fingerprint(connection)
       if (client) entry.client = fingerprint(client)
       if (code) entry.code = code
+      for (const [key, value] of Object.entries(flags ?? {})) if (typeof value === 'boolean' && /^[a-z][a-z0-9_]{0,31}$/.test(key) && !(key in entry)) entry[key] = value
       write(entry)
     },
     /**

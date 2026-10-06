@@ -13,12 +13,16 @@
 // image whose PCR0, PCR1 and PCR2 match one released build. The document then
 // has to carry this page's nonce and a user_data that commits to the request,
 // the resource, the TLS key and the KMS key policy the enclave runs under.
+// From reader 0.6.0 (docs/mcp-enclave.md section 19.13) a document made for a
+// descriptor commits to that whole descriptor too (user_data v2), so the
+// server that relays it cannot change a field the console shows.
 //
 // Every refusal is an AttestationError with one of a fixed set of codes; the
 // console translates the codes, so the set is part of the contract
 // (docs/mcp-enclave.md section 11).
 
 import { type Bytes, encodeUTF8, equal, fromBase64, toHex } from './bytes.js'
+import { canonicalJSON } from './jcs.js'
 
 export type AttestationCode =
   | 'attestation_format'
@@ -36,6 +40,7 @@ export type AttestationCode =
   | 'attestation_public_key'
   | 'attestation_version'
   | 'attestation_request'
+  | 'attestation_descriptor'
 
 export class AttestationError extends Error {
   readonly code: AttestationCode
@@ -76,6 +81,12 @@ export interface VerifyOptions {
   maxSkewMs?: number
   /** Replaces the pinned AWS root. Only tests have a reason to. */
   rootDer?: Uint8Array
+  /**
+   * The descriptor this document was made for (reader 0.6.0, section 19.13),
+   * with or without its `attestation` member: user_data must then be v2 over
+   * it. Without it, v1.
+   */
+  descriptor?: Record<string, unknown>
 }
 
 export interface AttestationResult {
@@ -112,6 +123,7 @@ const MIN_NONCE = 16
 const MAX_NONCE = 64
 const X25519_PUBLIC_KEY = 32
 const USER_DATA_LABEL = 'wappie-mcp-attest/v1'
+const USER_DATA_LABEL_V2 = 'wappie-mcp-attest/v2'
 
 const PCR_HEX = /^[0-9a-f]{96}$/
 const SHA256_HEX = /^[0-9a-f]{64}$/
@@ -732,6 +744,7 @@ interface Checked {
   now: number
   maxSkewMs: number
   rootDer: Bytes
+  descriptor: Record<string, unknown> | undefined
 }
 
 // Programmatic callers skip any parsing a CLI would do. A NaN clock makes every
@@ -752,7 +765,9 @@ function checkOptions(options: VerifyOptions): Checked {
   const maxSkewMs = options.maxSkewMs ?? DEFAULT_MAX_SKEW_MS
   if (!Number.isSafeInteger(now) || now <= 0 || !Number.isSafeInteger(maxSkewMs) || maxSkewMs < 0) fail('attestation_clock')
   const rootDer = options.rootDer === undefined ? fromBase64(AWS_NITRO_ROOT_G1) : ownBytes(options.rootDer, 'attestation_root')
-  return { nonce, allow, policies: [...policies], requestId, resource, requirePublicKey: options.requirePublicKey, now, maxSkewMs, rootDer }
+  const descriptor = options.descriptor
+  if (descriptor !== undefined && (descriptor === null || typeof descriptor !== 'object' || Array.isArray(descriptor))) fail('attestation_descriptor')
+  return { nonce, allow, policies: [...policies], requestId, resource, requirePublicKey: options.requirePublicKey, now, maxSkewMs, rootDer, descriptor }
 }
 
 const FIELD_NAMES = ['request_id', 'resource', 'tls_spki_sha256', 'policy_sha256', 'reader_version'] as const
@@ -777,10 +792,40 @@ function pickFields(fields: unknown): AttestationFields {
  * SHA-256 of the six fields joined by 0x00 (docs/mcp-enclave.md 6.2).
  */
 export async function attestationUserData(fields: AttestationFields): Promise<Uint8Array> {
+  const f = checkedFields(fields)
+  const preimage = [USER_DATA_LABEL, f.request_id, f.resource, f.tls_spki_sha256, f.policy_sha256, f.reader_version].join('\0')
+  return sha256(encodeUTF8(preimage))
+}
+
+function checkedFields(fields: AttestationFields): AttestationFields {
   const f = pickFields(fields)
   if (!VERSION.test(f.reader_version)) fail('attestation_version')
   if (!SHA256_HEX.test(f.tls_spki_sha256) || !SHA256_HEX.test(f.policy_sha256)) fail('attestation_user_data')
-  const preimage = [USER_DATA_LABEL, f.request_id, f.resource, f.tls_spki_sha256, f.policy_sha256, f.reader_version].join('\0')
+  return f
+}
+
+/**
+ * descriptorSHA256 is a descriptor's `descriptor_sha256` (section 19.13): the
+ * lowercase hex SHA-256 of the JCS (RFC 8785) serialization of the descriptor
+ * without its `attestation` member. Anything JCS refuses, a lone surrogate or
+ * a value JSON has no word for, is attestation_descriptor.
+ */
+export async function descriptorSHA256(descriptor: Record<string, unknown>): Promise<string> {
+  if (descriptor === null || typeof descriptor !== 'object' || Array.isArray(descriptor)) fail('attestation_descriptor')
+  const { attestation: _attestation, ...rest } = descriptor
+  const text = guarded('attestation_descriptor', () => canonicalJSON(rest))
+  return toHex(await sha256(encodeUTF8(text)))
+}
+
+/**
+ * attestationUserDataV2 is user_data v2 (section 19.13): SHA-256 of the v1
+ * fields under the label wappie-mcp-attest/v2, then `descriptorSha256` (64
+ * lowercase hex characters, or '' where there is no descriptor), joined by 0x00.
+ */
+export async function attestationUserDataV2(fields: AttestationFields, descriptorSha256: string): Promise<Uint8Array> {
+  const f = checkedFields(fields)
+  if (typeof descriptorSha256 !== 'string' || (descriptorSha256 !== '' && !SHA256_HEX.test(descriptorSha256))) fail('attestation_descriptor')
+  const preimage = [USER_DATA_LABEL_V2, f.request_id, f.resource, f.tls_spki_sha256, f.policy_sha256, f.reader_version, descriptorSha256].join('\0')
   return sha256(encodeUTF8(preimage))
 }
 
@@ -846,7 +891,8 @@ export async function verifyAttestation(
   if (!o.policies.includes(f.policy_sha256)) fail('attestation_policy')
   // The nonce is what makes the document this page's and not a replay.
   if (!doc.nonce || !equal(doc.nonce, o.nonce)) fail('attestation_nonce')
-  const userData = await attestationUserData(f)
+  // With a descriptor, user_data v2 over it: every field it carries is the image's word.
+  const userData = o.descriptor === undefined ? await attestationUserData(f) : await attestationUserDataV2(f, await descriptorSHA256(o.descriptor))
   if (!doc.userData || !equal(doc.userData, userData as Bytes)) fail('attestation_user_data')
   // A request document carries the request's own X25519 key; the public route
   // carries none, so a key there could only be one the caller should not use.

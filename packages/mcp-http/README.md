@@ -1,10 +1,11 @@
 # Wappie MCP HTTP: the hosted connector and the attested reader
 
 `@whatserver2/mcp-http` serves the same read-only tools as
-[`packages/mcp`](../mcp/README.md) over **Streamable HTTP**, so claude.ai and
-ChatGPT can connect to a Wappie installation as a remote MCP server. It is the
-open source half of the hosted connector: one Node process on loopback behind
-the reverse proxy, next to the Wappie API. Requires Node.js 22 or later.
+[`packages/mcp`](../mcp/README.md) over **Streamable HTTP**, so a remote
+assistant such as claude.ai can connect to a Wappie installation as an MCP
+server. It is the open source half of the hosted connector: one Node process
+on loopback behind the reverse proxy, next to the Wappie API. Requires
+Node.js 22 or later.
 
 `server.mjs`, the process this section and the next ones describe (Wappie's
 `https://api.wappie.thehappie.co/mcp` and every self-hosted container), never
@@ -32,7 +33,7 @@ a content connection whose consent includes them. Nothing reachable from
 |---|---|---|
 | Resource server (`POST /mcp`) | this process | Bearer-protected JSON-RPC over Streamable HTTP; one `McpServer` per request, built by `@whatserver2/mcp` with a provided credential |
 | Authorization server (`/mcp/authorize`, `/mcp/token`, `/mcp/register`, `/mcp/revoke`) | this process | OAuth 2.1 with PKCE S256, RFC 8707 `resource`, RFC 7591 registration and Client ID Metadata Documents, rotating refresh tokens |
-| Discovery (`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server[/mcp]`) | this process | RFC 9728 and RFC 8414 documents, identical on both path forms |
+| Discovery (`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server[/mcp]`) | this process | RFC 9728 and RFC 8414 documents, identical on both path forms; on the attested reader they also name the documentation (`resource_documentation`, `service_documentation`), and a privacy policy and terms (`resource_policy_uri`, `resource_tos_uri`; `op_policy_uri`, `op_tos_uri`) when the reader is given them, which 0.6.0 is not (`docs/mcp-enclave.md` §19.28 point 16) |
 | Consent | the Wappie console (`WAPPIE_MCP_CONSOLE_URL`) | the workspace owner picks the numbers, the expiry and the timezone, and seals the API key to this reader |
 | Registry and relay (`/v1/mcp/*`) | the Wappie API (`WS_MCP_ENABLED=true`) | stores the connection rows, relays the sealed bundle and the consent descriptor, answers status checks, fetches client metadata documents |
 
@@ -71,7 +72,25 @@ dependency), and the `node:http` bridge is the small `node-adapter.mjs`.
    that is the CSRF check. Three wrong proofs burn the request and revoke the
    connection in Go. A good proof activates the connection, stores the API key
    in the encrypted state and redirects back to the client with a single-use
-   sixty-second code, the `state` and `iss`.
+   sixty-second code, the `state` and `iss`. A refusal after a good proof (a
+   failed activation, an id already in use, the cap of untested connections)
+   or a wrong proof from the network a version-2 request started on is a page
+   with one button back to the assistant, whose link carries `error`
+   (`access_denied`, or `server_error` where the server failed), the `state`
+   and `iss`, so the assistant stops waiting; so is a refusal by the
+   open-request caps of `GET /mcp/authorize`, with `temporarily_unavailable`.
+   Every other refusal keeps the console link and never shows the `state`:
+   a completion before the console relayed a bundle, one from another network
+   (`ip_mismatch`, which also ends the request) and a wrong proof of a
+   version-1 request, since whoever holds a request id can post them.
+   The console's Cancel posts `request` to `POST /mcp/authorize/decline`
+   under the same `Origin` rule. From the network a version-2 request started
+   on, the request ends (its connection in Go is revoked if the console had
+   relayed one) and the browser is redirected to the client with
+   `error=access_denied`, the `state` and `iss`. From another network the
+   request ends too, but the browser is redirected to the console; so it is
+   for a request that is gone, and for a version-1 request, which is left as
+   it is.
 5. `POST /mcp/token` exchanges the code (all of `client_id`, `code_verifier`,
    `redirect_uri` and `resource` must match) for a fifteen-minute access token
    and a refresh token that idles out after thirty days and never outlives the
@@ -95,7 +114,7 @@ wiped locally. Refresh always asks Go.
 | `WAPPIE_MCP_STATE_DIR` | `/var/lib/wappie-mcp` | `0700` directory holding `keys/recipient.key`, `keys/recipient.previous`, `keys/state.key` and `state.json.enc` |
 | `WAPPIE_MCP_RELAY_SECRET_FILE` | required | `0600` file with the secret shared with the API (`WS_MCP_RELAY_SECRET`), at least 32 characters |
 | `WAPPIE_MCP_ARCHIVE_URL` | `http://127.0.0.1:18090` | the API base for both the archive REST calls and `/v1/mcp/internal/*` |
-| `WAPPIE_MCP_REDIRECT_HOSTS` | `claude.ai,chatgpt.com` | hosts a `redirect_uri` or CIMD `client_id` may use; must equal the API's `WS_MCP_REDIRECT_HOSTS` |
+| `WAPPIE_MCP_REDIRECT_HOSTS` | `claude.ai,chatgpt.com` | hosts a `redirect_uri` or CIMD `client_id` may use; must equal the API's `WS_MCP_REDIRECT_HOSTS`, which the API applies to this reader's (version-1) descriptors only |
 | `WAPPIE_MCP_CIMD` | `on` | advertise and resolve Client ID Metadata Documents (fetched by the API relay, cached for a day) |
 | `WAPPIE_MCP_PENDING_TTL_SECONDS` | `1200` | how long a consent may stay pending |
 
@@ -142,7 +161,8 @@ In process: `/mcp` sixty requests a minute per connection; `/mcp/token` three
 hundred a minute per address before the grant is known (a `client_id` is
 public, so it never keys a bucket on its own), then twenty a minute per token
 family and per connection; `/mcp/authorize/complete` three proof attempts per
-request and ten posts a minute per address; `/mcp/authorize` twenty a minute
+request and ten posts a minute per address, and `/mcp/authorize/decline` ten
+a minute per address; `/mcp/authorize` twenty a minute
 and ten pending requests per address, taken before anything is looked at, and
 three uncached CIMD documents a minute per address (a document that failed to
 resolve is not asked for again for a minute); registration five a minute per
@@ -227,11 +247,21 @@ what differs from the hosted reader:
   and the live KMS key policy hash (`attestation.mjs`, `enclave/policy.mjs`).
   `GET /attestation?nonce=` serves the same without a key, for anyone.
 - The public listener also serves the Wappie icon files (`/favicon.ico`,
-  `/favicon.svg`, `/apple-touch-icon.png`, from `@whatserver2/mcp/icons`)
-  with no auth behind the same Host check, and `initialize` names them in
-  `serverInfo.icons` (`docs/mcp-enclave.md` section 5.4). The hosted reader
-  serves none and names only the `data:` icon: its proxy routes `/mcp` and
-  discovery here, nothing else.
+  `/favicon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`,
+  from `@whatserver2/mcp/icons`) with no auth behind the same Host check, and
+  `initialize` names them in `serverInfo.icons` (`docs/mcp-enclave.md`
+  section 5.4). From reader 0.6.0 it also serves a page for a person who
+  opens the connector's address in a browser (`GET /`: what the address is
+  for, the console and the documentation, in pt, en, es, fr or de by
+  `Accept-Language` or `?lang=`, under a CSP that allows only its own icon
+  and its hashed style) and `/robots.txt` (section 19.29; the words are in
+  `pages.mjs`). The hosted reader serves none of these and names only the
+  `data:` icon: its proxy routes `/mcp` and discovery here, nothing else.
+- Every page a browser can reach on the authorization server (a refused
+  client, a bad redirect, too many requests, an expired approval, another
+  network, a full workspace, …) says what happened and what to do next in
+  the five languages, the person's own first, with the code in small print
+  (`pages.mjs`, section 19.29).
 - Logs leave only through the vsock sink, each line checked against the
   parent's schema (`enclave/logsink.mjs`), with a health line every minute
   that includes the clock's skew against KMS's `Date` (`enclave/health.mjs`).
@@ -251,10 +281,13 @@ allows content only for the workspaces the operator lists
 (`WS_MCP_CONTENT_TENANTS`) and only while `WS_MCP_CONTENT_ENABLED` is on.
 
 - **Restart**: every key is gone. Content connections become `reseal` (the
-  connection id and the assistant's tokens survive), tools answer
-  `reconsent_required` with the console's renewal link, and
-  `enclave/renew.mjs` takes a new attested key and a new service account on
-  the same connection.
+  connection id and the assistant's tokens survive) and, from reader 0.6.0,
+  keep reading metadata with their own read-only key: text, names and
+  filenames come back locked, every result carries the console's renewal
+  link, and only what needs the key (a text query, an attachment, a draft or
+  a note) answers `reconsent_required` (section 19.29). `enclave/renew.mjs`
+  takes a new attested key and a new service account on the same
+  connection. An AI authorization reads nothing without its key.
 - **Revocation**: Go tells the enclave at once and resends every 30 s until
   it answers; independently, the enclave asks Go about every content
   connection each minute and drops the key on any answer but `active`. If Go
@@ -340,6 +373,43 @@ providers' keys in memory only (`aikeys` beside `connkeys`, wiped with it).
   `/internal/ai/jobs`. The log adds `ai_*` events with a fingerprint and a
   code, the health line `ai_records`, `ai_keys`, `ai_jobs`, `ai_failed`,
   `ai_queue` and `ai_in_flight`, and the health object `ai_reach`.
+
+**Any MCP client** (reader 0.6.0, `docs/mcp-enclave.md` section 19). The
+enclave admits a Client ID Metadata Document on any https host that passes
+the host check of section 19.5 (no IP literal, special-use name, public
+suffix, host shared by path, or host under `thehappie.co`), with web
+redirects on exactly the document's host and loopback redirects on any port;
+dynamic registration takes only the pinned Claude redirects.
+
+- **Constants** (`enclave/constants.mjs`): `CLIENT_POLICY`, the tested list
+  `TESTED_CLIENTS` (Claude and Claude Code, which passed the live baseline on
+  0.5.0 by their documents, and Claude's registration form on the same two
+  callbacks, listed by the owner's decision without a baseline run; ChatGPT
+  and Codex connect untested, `docs/mcp-enclave.md` section 19.34), the tier
+  limits `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS`
+  and `CIMD_EGRESS`, all measured and copied into `measurements.json`. The
+  shared modules take a policy object; the hosted path keeps
+  `{ mode: 'allowlist', hosts }`.
+- **Fetching**: a tested client asked with a pinned redirect is never
+  fetched. Any other document is fetched by the enclave itself, over TLS it
+  verifies against Node's bundled roots, through `CONNECT` to the parent's
+  egress proxy (`cmd/cimd-egress`, vsock 8007), which reaches public
+  addresses on port 443 only; one `GET`, no redirects, 8 KiB at most.
+- **Tiers and limits**: each request is `tested` or `unknown`, and its
+  limits tier (`web_tested`, `local_tested`, `unknown` or `token`) sets the
+  refresh idle time, the ceiling, the calls a minute, the history window and
+  the daily and first-hour budgets, applied by the enclave whatever a
+  bundle says.
+- **Attestation**: every descriptor is version 2 and bound whole by user_data
+  v2, so the console verifies every field the card shows. Consent version 4
+  seals the "I started this" and "untested text" ticks, the client binding
+  and the history window under the device checks; the sealed state is
+  version 2, which 0.5.0 refuses.
+- **Console token** (`wmcp_k_`, with a CRC-32 check digit): made in the
+  browser, only its hash sealed to the enclave, verified like an access
+  token, revocable through `/mcp/revoke`.
+- **Attested live list**: the enclave signs the workspace's live connection
+  ids for the console to compare with Go's list.
 
 What the assistant receives, and what is never opened (view-once media,
 audio and voice notes on readers without AI transcripts, `gone` attachments, keyless

@@ -20,8 +20,16 @@ export function refusal(code, { retry_after_s, facts } = {}) {
 /** `media_off` as Go sent it, cut to the kinds this reader knows. */
 export const knownKinds = value => (Array.isArray(value) ? [...new Set(value.filter(word => MEDIA_KINDS.includes(word)))].sort() : [])
 
-/** The host profile of a record: its redirect host when it is one with a profile, else 'default'. */
+/** The host profile of a redirect host: itself when it is one with a profile, else 'default'. */
 export const hostOf = redirectHost => (redirectHost === 'chatgpt.com' || redirectHost === 'claude.ai' ? redirectHost : 'default')
+/**
+ * The host profile of a record (docs/mcp-enclave.md §19.23): from reader
+ * 0.6.0 its own `profile`, the tested entry's (`default` for a client nobody
+ * tested and for a console token), never its redirect host, which a loopback
+ * client shares with its vendor's web client; a record 0.5.0 wrote keeps
+ * `hostOf(redirect_host)`.
+ */
+export const profileOf = record => (typeof record?.profile === 'string' ? hostOf(record.profile) : hostOf(record?.redirect_host))
 export const waitFor = host => HOST_WAIT_MS[host] ?? HOST_WAIT_MS.default
 
 /** The row's visible metadata an error line repeats, and the console link of its message when there is one (§16.7). */

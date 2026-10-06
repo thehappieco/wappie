@@ -13,7 +13,11 @@ import (
 	"time"
 )
 
-// CIMD fetches OAuth client metadata documents on the reader's behalf.
+// CIMD fetches OAuth client metadata documents on the reader's behalf, for
+// a reader before 0.6.0 only. A 0.6.0 reader admits any host and fetches its
+// documents itself over TLS it verifies (docs/mcp-enclave.md §19.9): this
+// relay would let a server that lied present a document for any domain. It
+// is deleted once 0.5.0 leaves the console's allowlist (§19.27, P2 step 6).
 //
 // An assistant may identify itself by URL instead of registering: the URL
 // serves a JSON document naming its redirect addresses. The reader runs

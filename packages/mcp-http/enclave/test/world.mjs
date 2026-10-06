@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { bytes, hpke, seal } from '@whatserver2/client'
 import { aiConfigScope, aiConfigTag, deviceCheck, deviceScope, keysSHA256 } from '@whatserver2/mcp/bundle'
 import { fixture, vector, workspace } from '@whatserver2/mcp/test/fixture'
-import { pkce, proof, sealBundle } from '../../test/harness.mjs'
+import { pkce, proof, sealBundle, waiter } from '../../test/harness.mjs'
 import { attest } from '../attest.mjs'
 import * as constants from '../constants.mjs'
 import { startEnclave } from '../main.mjs'
@@ -25,19 +25,38 @@ export const CONSOLE_ORIGIN = 'https://app.wappie.thehappie.co'
 export const REDIRECT_URI = 'https://claude.ai/api/mcp/auth_callback'
 export const POLICY = '{"Version":"2012-10-17","Statement":[{"Sid":"EnclaveUse","Effect":"Allow"}]}'
 export const relayContext = { purpose: 'wappie-mcp-relay', reader_id: 'enclave' }
+/** 0.5.0's client rule, which the tests written before reader 0.6.0 run under (main.mjs's `overrides.clientPolicy`). */
+export const LEGACY_POLICY = Object.freeze({ mode: 'allowlist', hosts: ['claude.ai', 'chatgpt.com'] })
 
 /**
  * Everything the enclave talks to, plus a way to (re)start it the way
  * entrypoint.sh would. `archive(apiKey)` replaces the synthetic archive (it
  * returns a fixture with `server` and `close`); `w.jail`, when set before a
  * start, replaces media-jail (media tests).
+ *
+ * The client policy is 0.5.0's allowlist unless `w.clientPolicy` says
+ * otherwise before a start: the tests written before reader 0.6.0 run the
+ * rules they were written for, and the 0.6.0 tests (any-enclave.test.mjs)
+ * set `{}` for the image's `any` policy, with `w.cimdFetcher` answering for
+ * the parent's egress proxy. `constants` replaces image constants (a test's
+ * smaller CLIENT_LIMITS, say), as a rebuilt image would.
+ *
+ * The enclave and Go read one clock: the wall clock plus `w.skew`, which a
+ * test moves forward, held still from `w.freeze()` on. `w.until(condition,
+ * what)` resolves once `condition()` holds, looked at again whenever Go has
+ * answered a call or the enclave has written a line: for what the enclave
+ * does after its answer, never awaited by it (a best-effort revoke, a budget
+ * hit, a request's line written once its response has gone).
  */
-export async function world(t, { bootJson, archive } = {}) {
+export async function world(t, { bootJson, archive, constants: replaced = {} } = {}) {
   const apiKey = `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
   const f = await (archive ?? (token => fixture({ token })))(apiKey)
   const relaySecret = randomBytes(32).toString('base64url')
   const goSecrets = [relaySecret]
-  const go = await createEnclaveGo({ upstream: f.server, secrets: () => goSecrets, upstreamToken: apiKey, workspace, now: () => Date.now() + (w?.skew ?? 0) }).listen()
+  const clock = () => (w.frozenAt ?? Date.now()) + w.skew
+  const waits = waiter()
+  const go = await createEnclaveGo({ upstream: f.server, secrets: () => goSecrets, upstreamToken: apiKey, workspace, now: clock }).listen()
+  go.onAnswer = waits.wake
   const ca = testCA()
   // The challenge listener opens during boot, before startEnclave returns, so its port is chosen here.
   const challengePort = await freePort()
@@ -49,20 +68,32 @@ export async function world(t, { bootJson, archive } = {}) {
   const bootCiphertext = kms.encrypt(BOOT_KEY, Buffer.from(relaySecret), relayContext)
   const runDir = join(await mkdtemp(join(tmpdir(), 'wappie-enclave-')), 'run')
   const lines = [], exits = []
-  const sink = { write: line => { lines.push(line); if (process.env.ENCLAVE_TEST_DEBUG) process.stderr.write(line + '\n') }, dropped: () => 0, drain: async () => {} }
+  const sink = { write: line => { lines.push(line); if (process.env.ENCLAVE_TEST_DEBUG) process.stderr.write(line + '\n'); waits.wake() }, dropped: () => 0, drain: async () => {} }
   const boot = Buffer.from(bootJson ?? JSON.stringify({ relay_secret_ciphertext: bootCiphertext.toString('base64') }))
-  const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY }
+  const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY, ...replaced }
   const w = {
-    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, jail: null, aiTransport: null, mediaDelay: null,
+    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, frozenAt: null, jail: null, aiTransport: null, mediaDelay: null,
+    clientPolicy: LEGACY_POLICY, cimdFetcher: null,
+    until: waits.until,
+    /**
+     * Holds the clock still from here to the world's end, `w.skew` still
+     * moving it. What refills with time, such as the calls a minute (§19.19),
+     * then counts calls alone, however slow the machine running them: a
+     * stretch the wall clock lets last longer than a second gets a call back
+     * at 60 a minute. Stay well inside the HMAC's 60 seconds (hmac.mjs): Go's
+     * requests to the enclave are signed by the wall clock.
+     */
+    freeze() { w.frozenAt = Date.now() },
     async start() {
       w.enclave = await startEnclave({
-        constants: c, sink, kms, attest: nsm, now: () => Date.now() + w.skew, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
+        constants: c, sink, kms, attest: nsm, now: clock, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
         ...(w.jail ? { jail: w.jail } : {}),
         // Never a real provider: the AI egress goes to w.aiTransport (ai-stubs.mjs), or fails.
         aiTransport: (url, init) => (w.aiTransport ? w.aiTransport(url, init) : Promise.reject(new TypeError('fetch failed'))),
         ...(w.mediaDelay ? { mediaDelay: w.mediaDelay } : {}),
         readLocal: async port => { if (port === 7001) return boot; throw new Error('unexpected port') },
-        overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort } },
+        overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort },
+          clientPolicy: w.clientPolicy, cimdFetcher: w.cimdFetcher ?? { fetch: async () => ({ ok: false, code: 'proxy_refused', network: true }) } },
       })
       return w.enclave
     },
@@ -220,12 +251,40 @@ export async function connectContent(w, overrides = {}) {
   return done
 }
 
-/** A tool call over JSON-RPC: the structured result, or the error text. */
+/**
+ * A tool call over JSON-RPC: a read tool's JSON, from its one text block
+ * (read results carry no structuredContent, docs/mcp-enclave.md §19.30), or
+ * the error text. `data` is undefined for a refusal and for a text that is not
+ * one JSON value (a draft's line, an attachment's body).
+ */
 export async function callTool(w, token, name, args = {}) {
   const response = await rpc(w, token, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name, arguments: args } })
   if (response.status !== 200) return { status: response.status, body: response.body }
   const value = result(response.body)
-  return { status: 200, isError: value.isError === true, data: value.structuredContent, text: value.content?.[0]?.text ?? '' }
+  const text = value.content?.[0]?.text ?? ''
+  let data
+  if (value.isError !== true) try { data = JSON.parse(text) } catch { data = undefined }
+  return { status: 200, isError: value.isError === true, data, text, structured: value.structuredContent }
+}
+
+/**
+ * A content connection whose key the reader does not hold (docs/mcp-enclave.md
+ * §19.29): list_numbers still answers, with nothing open and the renewal
+ * link, and a text search waits for the renewal, its link in the refusal.
+ * Returns both answers.
+ */
+export async function resealed(w, token, connectionId, { device = vector.device } = {}) {
+  const link = `${constants.CONSOLE_URL}?mcp_renew=${connectionId}`
+  const numbers = await callTool(w, token, 'list_numbers')
+  assert.equal(numbers.isError, false, numbers.text ?? numbers.body)
+  assert.equal(numbers.data.connection.renewal_needed, true, numbers.text)
+  assert.equal(numbers.data.connection.text, false, numbers.text)
+  assert.equal(numbers.data.renewal.renew_url, link, numbers.text)
+  const search = await callTool(w, token, 'search_messages', { device_id: device, query: 'anything', period: 'all' })
+  assert.equal(search.isError, true, search.text)
+  assert.match(search.text, /^Could not read the archive \(reconsent_required\)\./)
+  assert.ok(search.text.includes(link), search.text)
+  return { numbers, search }
 }
 
 // ---- Media connections (A1) --------------------------------------------------------

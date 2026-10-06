@@ -289,14 +289,15 @@ func TestSendConsent(t *testing.T) {
 		}, "for a content connection only"},
 		"own chat without send":  {func(b map[string]any) { delete(b, "send") }, "need send"},
 		"groups without send":    {func(b map[string]any) { delete(b, "send"); delete(b, "send_self"); b["send_groups"] = true }, "need send"},
-		"version 4":              {func(b map[string]any) { b["consent_version"] = 4 }, "consent_version must be 1, 2 or 3"},
+		"version 4 to 0.5.0":     {func(b map[string]any) { b["consent_version"] = 4 }, "consent_version 4 are for a reader that describes its client"},
+		"version 5":              {func(b map[string]any) { b["consent_version"] = 5 }, "consent_version must be 1, 2, 3 or 4"},
 		"version 3 without send": {func(b map[string]any) { delete(b, "send"); delete(b, "send_self") }, "consent version 3 carries sending"},
 		"send on version 2":      {func(b map[string]any) { b["consent_version"] = 2 }, "consent version 3 carries sending"},
 		"media on version 1": {func(b map[string]any) {
 			b["consent_version"], b["media"] = 1, true
 			delete(b, "send")
 			delete(b, "send_self")
-		}, "media requires consent_version 2 or 3"},
+		}, "media requires consent_version 2 or later"},
 		"direct before S3":         {func(b map[string]any) { b["send"] = "direct" }, "not available yet"},
 		"send_chats":               {func(b map[string]any) { b["send_chats"] = []any{} }, "not available yet"},
 		"not a mode":               {func(b map[string]any) { b["send"] = "now" }, "send must be draft"},

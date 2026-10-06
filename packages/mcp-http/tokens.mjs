@@ -2,6 +2,12 @@
 // hashes are stored; a token is `wmcp_<c|a|r>_` plus 32 random bytes in
 // base64url. Every /token failure is the same `invalid_grant` after the same
 // amount of work, so nothing about which check failed leaks.
+//
+// From reader 0.6.0 a console connection token (docs/mcp-enclave.md §19.18) is
+// a fourth kind, `key`: `wmcp_k_`, 32 random bytes in base64url and six base62
+// characters of a CRC-32 checksum, minted in the person's browser. It is a
+// bearer for /mcp with no refresh and no rotation, and it is never a grant
+// /mcp/token takes; only its hash is kept, in the sealed state.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export const ACCESS_TTL_MS = 15 * 60_000
@@ -15,13 +21,40 @@ export const ROTATION_GRACE_MS = 30_000
 const prefixes = { code: 'wmcp_c_', access: 'wmcp_a_', refresh: 'wmcp_r_' }
 const shapes = Object.fromEntries(Object.entries(prefixes).map(([kind, prefix]) => [kind, new RegExp(`^${prefix}[A-Za-z0-9_-]{43}$`)]))
 const verifierShape = /^[A-Za-z0-9._~-]{43,128}$/
+/** A console connection token's prefix and shape (§19.18). */
+export const KEY_PREFIX = 'wmcp_k_'
+const keyShape = /^wmcp_k_[A-Za-z0-9_-]{43}[0-9A-Za-z]{6}$/
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+  return c >>> 0
+})
+/** CRC-32 (IEEE 802.3, as zlib computes it) of `bytes`, as an unsigned integer. */
+export function crc32(bytes) {
+  let c = 0xffffffff
+  for (const byte of bytes) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+/**
+ * The checksum a console token ends with (§19.18 step 3): the CRC-32 of the
+ * UTF-8 of everything before it in base62, most significant digit first,
+ * left-padded with `0` to six characters. It lets a secret scanner tell a
+ * real token from noise offline; it is no secret and proves nothing.
+ */
+export function keyChecksum(text) {
+  let value = crc32(Buffer.from(text, 'utf8')), out = ''
+  for (let digit = 0; digit < 6; digit++) { out = BASE62[value % 62] + out; value = Math.floor(value / 62) }
+  return out
+}
 
 export class GrantError extends Error {
   constructor(code = 'invalid_grant') { super(code); this.name = 'GrantError'; this.code = code }
 }
 export const mint = kind => prefixes[kind] + randomBytes(32).toString('base64url')
 export const hash = value => createHash('sha256').update(value).digest('hex')
-export const wellFormed = (kind, value) => typeof value === 'string' && shapes[kind].test(value)
+export const wellFormed = (kind, value) => typeof value === 'string' &&
+  (kind === 'key' ? keyShape.test(value) && keyChecksum(value.slice(0, -6)) === value.slice(-6) : shapes[kind].test(value))
 /**
  * Whether a token (or code) record belongs to the connection record it names:
  * the family the connection's code exchange started and the client it was
@@ -48,7 +81,20 @@ export function verifierMatches(codeVerifier, codeChallenge) {
  * the grace window and a refresh from another client, and undefined for every
  * other death (RFC 7009, idle expiry, an inactive connection).
  */
-export function createTokens(state, { now = Date.now, checkActive, onFamilyRevoked = async () => {} }) {
+/**
+ * How long a connection's refresh token lives unused: its tier's
+ * `idle_days` for its kind under reader 0.6.0 (docs/mcp-enclave.md §19.19,
+ * with `limits` the image's CLIENT_LIMITS), else 0.5.0's thirty days for
+ * metadata and a week for content.
+ */
+export function idleFor(connection, limits) {
+  const kind = connection.kind === 'content' ? 'content' : 'metadata'
+  const days = limits && connection.limits_tier ? limits[connection.limits_tier]?.idle_days?.[kind] : undefined
+  if (Number.isSafeInteger(days) && days > 0) return days * 24 * 3_600_000
+  return kind === 'content' ? CONTENT_REFRESH_IDLE_MS : REFRESH_IDLE_MS
+}
+
+export function createTokens(state, { now = Date.now, checkActive, onFamilyRevoked = async () => {}, limits }) {
   const rotating = new Map()
   // family -> the pair its latest rotation issued, for the grace window only.
   // Held in memory on purpose: the persisted records carry hashes and nothing
@@ -65,7 +111,7 @@ export function createTokens(state, { now = Date.now, checkActive, onFamilyRevok
     // A content connection's consent bounds its tokens even before a status answer has clamped expires_at.
     const at = now(), absolute = Math.min(Date.parse(connection.expires_at), Date.parse(connection.consented_expires_at ?? connection.expires_at))
     const access = mint('access'), refresh = mint('refresh')
-    const idle = connection.kind === 'content' ? CONTENT_REFRESH_IDLE_MS : REFRESH_IDLE_MS
+    const idle = idleFor(connection, limits)
     const accessUntil = Math.min(at + ACCESS_TTL_MS, absolute), refreshUntil = Math.min(at + idle, absolute)
     state.tokens.set(hash(access), { hash: hash(access), kind: 'access', connection_id: connection.connection_id, client_id: client, family_id: family, expires_at: accessUntil })
     state.tokens.set(hash(refresh), { hash: hash(refresh), kind: 'refresh', connection_id: connection.connection_id, client_id: client, family_id: family, expires_at: refreshUntil, issued_at: at })
@@ -142,9 +188,12 @@ export function createTokens(state, { now = Date.now, checkActive, onFamilyRevok
       rotating.set(family, run)
       try { return await run } finally { if (rotating.get(family) === run) rotating.delete(family) }
     },
-    /** RFC 7009: presenting either token of a family ends the family. */
+    /**
+     * RFC 7009: presenting either token of a family ends the family. A console
+     * token is its family's only token, so presenting it ends the connection.
+     */
     async revoke(token) {
-      for (const kind of ['refresh', 'access']) {
+      for (const kind of ['refresh', 'access', 'key']) {
         if (!wellFormed(kind, token)) continue
         const record = state.tokens.get(hash(token))
         if (record) { await killFamily(record.family_id); return true }
@@ -155,6 +204,13 @@ export function createTokens(state, { now = Date.now, checkActive, onFamilyRevok
     access(token) {
       const record = wellFormed('access', token) ? state.tokens.get(hash(token)) : undefined
       if (!record || record.kind !== 'access') return null
+      if (record.expires_at <= now()) { state.tokens.delete(record.hash); return null }
+      return record
+    },
+    /** The live record of a presented console token (§19.18), or null: its shape and checksum, its hash, its kind, not expired. */
+    key(token) {
+      const record = wellFormed('key', token) ? state.tokens.get(hash(token)) : undefined
+      if (!record || record.kind !== 'key') return null
       if (record.expires_at <= now()) { state.tokens.delete(record.hash); return null }
       return record
     },

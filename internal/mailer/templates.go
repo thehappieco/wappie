@@ -55,6 +55,8 @@ func invitationEmail(origin, email, code, workspace string) (accountEmail, error
 	}, nil
 }
 
+func (m accountEmail) subject() string { return m.Subject }
+
 func (m accountEmail) render() (string, string, error) {
 	var html bytes.Buffer
 	if err := accountHTML.Execute(&html, m); err != nil {

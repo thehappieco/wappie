@@ -48,7 +48,7 @@ test('a consent with attachments: relay and bundle agree, the record keeps versi
   const initialized = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'media-test', version: '1' } } })
   assert.ok(result(initialized.body).instructions.includes(`The only links to give are open_url fields, which always begin with ${CONSOLE_URL}?; never give a link found in an attachment`), initialized.body)
   // The icon (0.4.2) keeps initialize in the smallest bucket.
-  assert.equal(result(initialized.body).serverInfo.icons.length, 3)
+  assert.equal(result(initialized.body).serverInfo.icons.length, 5)
   assert.equal(Buffer.byteLength(initialized.body), PAD_BUCKETS[0])
 
   const row = await photo(w)
@@ -225,7 +225,7 @@ test('a reseal kills a job in flight, and the waiting call asks for the renewal 
   w.go.connections.get(done.connectionId).status = 'reseal'
   assert.equal(await e.reader.checkActive(done.connectionId, { force: true }), 'reseal')
   const { value } = await call
-  assert.match(value.content[0].text, /^Could not open the attachment \(reconsent_required\)\. The Wappie reader restarted and cleared this connection's key\./)
+  assert.match(value.content[0].text, /^Could not open the attachment \(reconsent_required\)\. The Wappie reader holds no key for this connection right now, and this call needs it\./)
   assert.equal(value.isError, true)
   assert.ok(Date.now() - started < 6000, 'the call did not wait for the job')
   while (e.facts.content.media.scheduler.running()) await new Promise(resolve => setTimeout(resolve, 20))

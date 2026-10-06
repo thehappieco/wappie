@@ -83,6 +83,10 @@ node --input-type=module -e "
   for (const name of deps) await import(name)
   await import(\"./constants.mjs\")
   await import(\"./policy.mjs\")
+  // The Public Suffix List snapshot the CIMD host check reads (§19.5), in the image and whole.
+  const { loadPSL } = await import(\"../psl.mjs\")
+  if (loadPSL().registrable(\"team.github.io\")?.shared_suffix !== \"github.io\") throw new Error(\"the Public Suffix List snapshot does not read\")
+  await import(\"./cimd-fetch.mjs\")
   await import(\"@whatserver2/mcp\")
   const { WORKERS } = await import(\"./media/policy.mjs\")
   const { workers } = JSON.parse(readFileSync(\"/tmp/table.json\", \"utf8\"))

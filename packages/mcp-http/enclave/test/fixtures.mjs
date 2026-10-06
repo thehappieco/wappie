@@ -133,7 +133,9 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
 
 /**
  * Go's /v1/mcp/enclave/* (HMAC checked against `secrets()`, the list Go
- * accepts) in front of the synthetic archive at `upstream`.
+ * accepts) in front of the synthetic archive at `upstream`. `go.onAnswer()`,
+ * when set, is called once each answer has gone, after whatever the call
+ * changed here (world.mjs's `until` looks again then).
  *
  * Content connections: a connection row may carry `kind` and
  * `service_user_id` (the status route answers both) and `extra`, fields the
@@ -165,11 +167,12 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
  */
 export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamToken, workspace }) {
   const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set(),
-    revokes: [], reseals: [], tokens: new Set(), grants: new Map(), archiveRequests: [],
+    revokes: [], reseals: [], tokens: new Set(), grants: new Map(), archiveRequests: [], budgetHits: [],
     outbound: [], sendCalls: [], sending: { ineligible: new Set(), ownChat: '5511900000001@s.whatsapp.net', draftsPending: 20, outcome: 'sent', answer: null },
-    ai: { picks: new Map(), derived: [], usage: [], alerts: [], usageAnswers: new Map(), storagePaused: false, calls: [] } }
+    ai: { picks: new Map(), derived: [], usage: [], alerts: [], usageAnswers: new Map(), storagePaused: false, calls: [] }, onAnswer: null }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
   const http = createHTTPServer(async (req, res) => {
+    res.once('finish', () => go.onAnswer?.())
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
     const body = Buffer.concat(chunks)
@@ -225,6 +228,15 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
       if (body.length && (req.headers['content-type'] !== 'application/json' || JSON.stringify(JSON.parse(body.toString('utf8'))) !== '{"reason":"reuse_detected"}')) return json(res, { code: 'bad_request' }, 400)
       go.revokes.push({ id: match[1], body: body.toString('utf8') })
       if (connection) connection.status = 'revoked'
+      res.writeHead(204); res.end(); return
+    }
+    // §19.19: a reading limit or a token's network, by code alone (strict body), on the caller's own rows.
+    if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/budget-hit$/.exec(url.pathname)) && req.method === 'POST') {
+      let parsed = null
+      try { parsed = JSON.parse(body.toString('utf8')) } catch { /* refused below */ }
+      if (!parsed || Object.keys(parsed).length !== 1 || typeof parsed.code !== 'string') return json(res, { code: 'bad_request' }, 400)
+      if (!go.connections.has(match[1])) return json(res, { code: 'not_found' }, 404)
+      go.budgetHits.push({ id: match[1], code: parsed.code })
       res.writeHead(204); res.end(); return
     }
     if ((match = /^\/v1\/mcp\/enclave\/connections\/([^/]+)\/(drafts|send|refusals|outbound)$/.exec(url.pathname))) return sendRoute(req, res, match[1], match[2], url, body)

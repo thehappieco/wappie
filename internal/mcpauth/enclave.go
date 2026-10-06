@@ -43,6 +43,10 @@ func (h *Handler) mountEnclave(mux *http.ServeMux) {
 	}))
 	mux.HandleFunc("POST /v1/mcp/enclave/connections/{id}/revoke", h.signed(maxBody, h.attestedRevoke))
 	mux.HandleFunc("POST /v1/mcp/enclave/connections/{id}/reseal", h.signed(maxBody, h.reseal))
+	mux.HandleFunc("POST /v1/mcp/enclave/connections/{id}/budget-hit", h.signed(maxBody, h.budgetHit))
+	// Readers before 0.6.0 only; a 0.6.0 reader fetches documents itself
+	// (docs/mcp-enclave.md §19.9). Deleted once 0.5.0 leaves the console's
+	// allowlist (§19.27, P2 step 6).
 	mux.HandleFunc("GET /v1/mcp/enclave/cimd", h.signed(maxBody, func(w http.ResponseWriter, r *http.Request, _ *AttestedReader, _ []byte) {
 		h.cimd(w, r)
 	}))

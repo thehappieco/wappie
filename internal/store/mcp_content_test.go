@@ -714,13 +714,13 @@ func TestResealKeepsTheConsent(t *testing.T) {
 		t.Fatalf("a metadata connection was resealed: %v", err)
 	}
 	// A resealed connection still holds a place under the cap.
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 8; i++ {
 		_, prefix := f.provisionalKey(ctx, t, "live")
 		if _, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, prefix = f.provisionalKey(ctx, t, "sixth")
+	_, prefix = f.provisionalKey(ctx, t, "eleventh")
 	if _, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix)); !errors.Is(err, store.ErrTooManyMCPConnections) {
 		t.Fatalf("a resealed connection did not count: %v", err)
 	}
@@ -933,6 +933,9 @@ func TestMigration0042DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
+		t.Fatalf("0046 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
 		t.Fatalf("0045 down-step: %v", err)
 	}
@@ -1035,6 +1038,9 @@ func TestMigration0042DownStepDropsProvisionalInvites(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
+		t.Fatalf("0046 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
 		t.Fatalf("0045 down-step: %v", err)
 	}

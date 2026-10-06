@@ -13,6 +13,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { openDerived } from '@whatserver2/mcp/reader'
 import { contentFixture } from '@whatserver2/mcp/test/content-fixture'
 import { vector, workspace } from '@whatserver2/mcp/test/fixture'
+import { attestationUserDataV2, decodeAttestationDocument, descriptorSHA256 } from '../../attestation.mjs'
 import { AI_REQUESTS_PENDING_MAX } from '../ai/policy.mjs'
 import { CONSOLE_URL } from '../constants.mjs'
 import { lineAllowed } from '../logsink.mjs'
@@ -90,8 +91,11 @@ test('an AI request: an attested descriptor of its own key, kind ai; at most AI_
   const { w } = await aiWorld(t)
   const { status, descriptor, nonce } = await requestAI(w)
   assert.equal(status, 200)
-  assert.deepEqual(Object.keys(descriptor), ['request_id', 'kind', 'reader_public_key', 'kid', 'resource', 'reader_version', 'expires_at', 'attestation'])
-  assert.deepEqual([descriptor.kind, descriptor.resource, descriptor.reader_version], ['ai', 'https://mcp.wappie.thehappie.co/mcp', '0.5.0'])
+  assert.deepEqual(Object.keys(descriptor), ['descriptor_version', 'request_id', 'kind', 'reader_public_key', 'kid', 'resource', 'reader_version', 'expires_at', 'attestation'])
+  assert.deepEqual([descriptor.descriptor_version, descriptor.kind, descriptor.resource, descriptor.reader_version], [2, 'ai', 'https://mcp.wappie.thehappie.co/mcp', '0.6.0'])
+  // Attested whole (§19.13): user_data v2 over the descriptor.
+  const userData = decodeAttestationDocument(Buffer.from(descriptor.attestation.document, 'base64url')).userData
+  assert.deepEqual(userData, attestationUserDataV2(descriptor.attestation, descriptorSHA256(descriptor)))
   assert.match(descriptor.request_id, /^[A-Za-z0-9_-]{22}$/)
   assert.equal(descriptor.attestation.request_id, descriptor.request_id)
   const call = w.nsmCalls.at(-1)
@@ -627,7 +631,10 @@ test('renewal of an AI authorization: a model changed within its provider passes
     return { relayed, service, token }
   }
   const descriptor = await prepare()
-  assert.deepEqual([descriptor.kind, descriptor.consent_version, descriptor.functions, descriptor.budget.monthly_tokens], ['ai', 1, { audio: { provider: 'google', model: 'gemini-synthetic-flash' } }, 5_000_000])
+  assert.deepEqual([descriptor.descriptor_version, descriptor.kind, descriptor.consent_version, descriptor.functions, descriptor.budget.monthly_tokens],
+    [2, 'ai_renewal', 1, { audio: { provider: 'google', model: 'gemini-synthetic-flash' } }, 5_000_000])
+  assert.deepEqual(decodeAttestationDocument(Buffer.from(descriptor.attestation.document, 'base64url')).userData,
+    attestationUserDataV2(descriptor.attestation, descriptorSHA256(descriptor)), 'the AI renewal is attested whole')
   assert.deepEqual(descriptor.features, { [vector.device]: { audio: { mode: 'request', requesters: 'console' } } })
   // Another provider for the function: a new authorization, not a renewal.
   const moved = await renew(descriptor, aiScope({ audio: ['openai', 'gpt-synthetic-transcribe'] }, { requesters: 'console' }))

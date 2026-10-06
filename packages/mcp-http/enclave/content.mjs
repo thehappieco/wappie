@@ -23,6 +23,15 @@
 // /mcp, whose keys and provider keys live beside the connections' in memory
 // only, and whose results media connections read as transcripts.
 //
+// From reader 0.6.0 (§19) a request of any client is classified by tier, and
+// its consent is version 4 (§19.15): the bundle names the client and the tier
+// the card showed, carries the "I started this" tick, for a client Wappie has
+// not tested the second tick and a history window, and always the device
+// checks, which bind all of it to each number's key. Unknown and local
+// clients never draft or send, and each tier has its own ceiling. A console
+// connection token (§19.18) is installed here too (tokens.mjs), with no OAuth
+// client at all.
+//
 // This file is reachable from enclave/main.mjs only. The hosted reader
 // (../server.mjs on the pilot) never imports it: there a bundle labelled
 // `content` is a bad request, `link.openBundle` refuses anything but v1, and
@@ -33,17 +42,18 @@ import { deviceCheck, deviceScope, validateContentBundle } from '@whatserver2/mc
 import { LocalConfigError } from '@whatserver2/mcp/config'
 import { validTimezone } from '@whatserver2/mcp/time'
 import { RelayError } from '../internal.mjs'
-import { bundleBody, connectionTaken, LinkError, proofFor, proofMatches } from '../link.mjs'
+import { bundleBody, connectionTaken, historyAllowed, LinkError, proofFor, proofMatches, relayedClientSchema, unknownLive } from '../link.mjs'
 import { fingerprint } from '../log.mjs'
 import { newRecipient as mintRecipient } from '../state.mjs'
 import { createAIService } from './ai/service.mjs'
 import { createConnKeys } from './connkeys.mjs'
-import { READER_CAPABILITIES } from './constants.mjs'
+import { CLIENT_LIMITS, READER_CAPABILITIES, UNKNOWN_LIVE_MAX } from './constants.mjs'
 import { padResponse } from './media/pad.mjs'
 import { createMediaService } from './media/service.mjs'
 import { contentConfigFor, contentProviderFor } from './provider.mjs'
 import { createRenewals } from './renew.mjs'
 import { createSendService } from './send/service.mjs'
+import { createConsoleTokens } from './tokens.mjs'
 
 export const CONSENT_INFO = Buffer.from('wappie-mcp-connect/v2')
 export const RENEW_INFO = Buffer.from('wappie-mcp-renew/v1')
@@ -53,6 +63,9 @@ export const consentAAD = (requestID, kid, resource) => Buffer.from(JSON.stringi
 export const renewAAD = (renewalID, connectionID, kid, resource) => Buffer.from(JSON.stringify(['wappie/mcp-renew', 1, renewalID, connectionID, kid, resource]))
 /** A content connection lasts at most 90 days; Go's expiry may carry an hour of slack. */
 export const MAX_CONTENT_MS = (90 * 24 + 1) * 3_600_000
+const HOUR_MS = 3_600_000
+/** The furthest a request's content consent may reach: its tier's ceiling from reader 0.6.0 (§19.19), 90 days and an hour before. */
+export const contentCeilingMs = pending => (pending.descriptor_version === 2 ? pending.limits.ceiling_hours.content * HOUR_MS : MAX_CONTENT_MS)
 export const KEY_MODE = 'ephemeral'
 const ENC_LEN = 32, TAG_LEN = 16
 const linkSecretShape = /^[A-Za-z0-9_-]{43}$/
@@ -88,10 +101,23 @@ const sameChats = (a, b) => {
  * absent is false, §16.2 rule 3), and the sending fields of a version-3
  * consent (§17.2 rule 4): `send`, with `send_self`, `send_groups` and (S3)
  * `send_chats`, each only when present. A renewal's relay carries none.
+ *
+ * For a request whose descriptor is version 2 (`v2`, §19.15) Go adds what the
+ * console was shown and chose: `trust`, `client_local` and `history_days`,
+ * each required; Go never sends them to an older reader. `ceilingMs` is the
+ * furthest expiry the request's tier allows.
  */
-export function parseRelay(body, { now }) {
+export function parseRelay(body, { now, v2 = false, ceilingMs = MAX_CONTENT_MS }) {
   if (!body || typeof body !== 'object' || Array.isArray(body) || body.kind !== 'content') throw new LinkError('bad_request')
-  const { kind: _kind, media, send, send_self, send_groups, send_chats, ...rest } = body
+  const { kind: _kind, media, send, send_self, send_groups, send_chats, ...others } = body
+  let rest = others, client = null
+  if (v2) {
+    const { trust, client_local, history_days, ...remaining } = others
+    const parsedClient = relayedClientSchema.safeParse({ trust, client_local, history_days })
+    if (!parsedClient.success) throw new LinkError('bad_request')
+    rest = remaining
+    client = parsedClient.data
+  }
   if (media !== undefined && typeof media !== 'boolean') throw new LinkError('bad_request')
   if ((send !== undefined && send !== 'draft' && send !== 'direct') || [send_self, send_groups].some(flag => flag !== undefined && typeof flag !== 'boolean') ||
     (send === undefined && (send_self !== undefined || send_groups !== undefined || send_chats !== undefined))) throw new LinkError('bad_request')
@@ -103,8 +129,26 @@ export function parseRelay(body, { now }) {
   const sealed = Buffer.from(encoded, 'base64url')
   if (sealed.toString('base64url') !== encoded || sealed.length < ENC_LEN + TAG_LEN) throw new LinkError('bad_request')
   const expiry = Date.parse(expires_at)
-  if (!Number.isFinite(expiry) || expiry <= now() || expiry > now() + MAX_CONTENT_MS) throw new LinkError('bad_request')
-  return { connection_id, tenant_id, kid, sealed, expiry, media: media === true, send: send ?? null, send_self: send_self === true, send_groups: send_groups === true, send_chats: chats }
+  if (!Number.isFinite(expiry) || expiry <= now() || expiry > now() + ceilingMs) throw new LinkError('bad_request')
+  return { connection_id, tenant_id, kid, sealed, expiry, media: media === true, send: send ?? null, send_self: send_self === true, send_groups: send_groups === true, send_chats: chats,
+    ...(client ? { client } : {}) }
+}
+
+/**
+ * Whether a version-4 consent is the one this request's card asked for
+ * (§19.15): the "I started this" tick; the request's own client, kind,
+ * locality and tier; the history window Go relayed, which the tier allows
+ * (none for a tested client); the second tick for a client Wappie has not
+ * tested; sending only for a tested web client; and an expiry within the
+ * tier's ceiling. The tier is the request's, whatever the bundle says.
+ */
+export function consentFits(pending, bundle, relayed, { now, ceilingMs }) {
+  return bundle.consent_version === 4 && bundle.started_ack === true &&
+    bundle.client_id === pending.client_id && bundle.client_kind === pending.client_kind && bundle.client_local === pending.client_local &&
+    bundle.trust === pending.trust && relayed.client?.history_days === bundle.history_days && historyAllowed(pending, bundle.history_days) &&
+    (pending.trust !== 'unknown' || bundle.unknown_ack === true) &&
+    (bundle.send === undefined || (pending.trust === 'tested' && pending.client_local === false)) &&
+    Date.parse(bundle.expires_at) <= now() + ceilingMs
 }
 
 /** Whether what Go relays and what the owner sealed say the same about attachments and sending (§16.2 rule 3, §17.2 rule 5). */
@@ -133,14 +177,17 @@ export async function openContentBundle(recipient, sealed, { info, aad, purpose,
     // The reader's schema is the rule; these are what binds the bundle to this
     // request, checked here again whatever the schema says.
     if (bundle.version !== 2 || bundle.kind !== 'content' || bundle.purpose !== purpose || bundle.key_mode !== KEY_MODE ||
-      ![1, 2, 3].includes(bundle.consent_version) || (bundle.media === true && bundle.consent_version < 2) ||
-      (bundle.consent_version === 3) !== (bundle.send !== undefined) || (bundle.send !== undefined) !== (bundle.device_checks !== undefined) ||
+      ![1, 2, 3, 4].includes(bundle.consent_version) || (bundle.media === true && bundle.consent_version < 2) ||
+      // Version 3 ties the device checks to sending; version 4 carries them always (§19.15).
+      (bundle.consent_version === 4 ? bundle.device_checks === undefined
+        : (bundle.consent_version === 3) !== (bundle.send !== undefined) || (bundle.send !== undefined) !== (bundle.device_checks !== undefined)) ||
       bundle.server_url !== origin || bundle.workspace_id !== tenant || !Array.isArray(bundle.device_ids) || bundle.device_ids.length === 0 ||
       new Set(bundle.device_ids).size !== bundle.device_ids.length || typeof bundle.service_user_id !== 'string' || typeof bundle.token !== 'string' ||
       !Number.isFinite(Date.parse(bundle.expires_at)) || (bundle.timezone !== undefined && !validTimezone(bundle.timezone))) throw new LinkError('invalid_bundle')
     if (purpose === 'consent' && (typeof bundle.link_secret !== 'string' || !linkSecretShape.test(bundle.link_secret) ||
       Buffer.from(bundle.link_secret, 'base64url').toString('base64url') !== bundle.link_secret || bundle.connection_id !== undefined)) throw new LinkError('invalid_bundle')
     if (purpose === 'renewal' && (bundle.link_secret !== undefined || bundle.connection_id !== connectionID)) throw new LinkError('invalid_bundle')
+    if (purpose === 'token' && (bundle.link_secret !== undefined || bundle.connection_id !== undefined || bundle.consent_version !== 4)) throw new LinkError('invalid_bundle')
     return bundle
   } finally { plain.fill(0) }
 }
@@ -207,9 +254,16 @@ export async function proveGrants(privateKey, bundle, { archive, fetch, timeoutM
  * fetch for the providers in tests only; `readerVersion` and `pendingTTLMs`
  * are the image's, for AI requests. `mediaDelay` replaces open_attachment's
  * inline wait timer in tests.
+ *
+ * From reader 0.6.0 (`descriptor_attest_v2`, §19) `limits` are the image's
+ * CLIENT_LIMITS, which every renewal descriptor states for its record's
+ * tier, and `unknownLiveMax` the live connections a workspace may hold of
+ * clients nobody tested and console tokens together. With
+ * `console_token_v1` the console's connection tokens (tokens.mjs) are made
+ * here too.
  */
 export function createContent({ state, relay, log, now = Date.now, archive, consoleURL, resource, attestor, fetch, newRecipient = mintRecipient, jail,
-  capabilities = READER_CAPABILITIES, readerVersion, pendingTTLMs = 1_200_000, aiTransport, mediaDelay }) {
+  capabilities = READER_CAPABILITIES, readerVersion, pendingTTLMs = 1_200_000, aiTransport, mediaDelay, limits = CLIENT_LIMITS, unknownLiveMax = UNKNOWN_LIVE_MAX }) {
   const connkeys = createConnKeys()
   const origin = new URL(resource).origin
   const conn = id => ({ conn: fingerprint(id) })
@@ -217,8 +271,10 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
   // startReader binds the status check once it exists (useStatusCheck).
   let statusCheck = null
   // AI integrations (§18), on a release that declares them.
+  // Descriptors attested whole (§19.13): every renewal says its record's client and tier, and every request is version 2.
+  const attestWhole = capabilities.includes('descriptor_attest_v2')
   const ai = capabilities.includes('ai_v1')
-    ? createAIService({ state, relay, log, now, archive, consoleURL, resource, attestor, readerVersion, pendingTTLMs, newRecipient, connkeys,
+    ? createAIService({ state, relay, log, now, archive, consoleURL, resource, attestor, readerVersion, pendingTTLMs, newRecipient, connkeys, attestWhole,
       ...(fetch ? { fetch } : {}), ...(aiTransport ? { transport: aiTransport } : {}), media: () => media })
     : null
   const media = createMediaService({
@@ -234,7 +290,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
   const proofFailed = (id, error) => log.event(error?.deviceCheck ? 'device_check_failed' : 'grant_proof_failed', conn(id))
 
   const renewals = createRenewals({
-    state, connkeys, log, now, resource, attestor, newRecipient,
+    state, connkeys, log, now, resource, attestor, newRecipient, limits: attestWhole ? limits : null,
     open: (recipient, sealed, options) => openContentBundle(recipient, sealed, { ...options, info: RENEW_INFO, purpose: 'renewal', origin, now }),
     prove: (privateKey, bundle, binding) => proveGrants(privateKey, bundle, { archive, fetch, ...binding }),
     parseRelay: body => parseRelay(body, { now }),
@@ -243,6 +299,15 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     onProofFailed: proofFailed,
     ...(ai ? { ai: ai.renewalHooks } : {}),
   })
+
+  // Console connection tokens (§19.18), on a release that declares them.
+  const tokens = capabilities.includes('console_token_v1')
+    ? createConsoleTokens({
+      state, relay, log, now, resource, origin, attestor, newRecipient, readerVersion, ttlMs: pendingTTLMs, limits: limits.token, unknownLiveMax, connkeys,
+      openContent: (recipient, sealed, options) => openContentBundle(recipient, sealed, options),
+      prove: (privateKey, bundle, binding) => proveGrants(privateKey, bundle, { archive, fetch, ...binding }),
+    })
+    : null
 
   // Connections whose reseal Go has not heard yet, retried with §8's backoff.
   const resealQueue = new Set()
@@ -302,14 +367,25 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
       return { connections, keys: connkeys.size() }
     },
 
-    /** POST /internal/requests/{id}/bundle with `"kind": "content"`: 204 only after the grant proof. */
+    /**
+     * POST /internal/requests/{id}/bundle with `"kind": "content"`: 204 only
+     * after the grant proof. A request of reader 0.6.0 (descriptor version
+     * 2) takes a version-4 consent only, which must fit it (consentFits); an
+     * older request never takes one.
+     */
     async acceptBundle(pending, body) {
-      const relayed = parseRelay(body, { now })
+      const v2 = pending.descriptor_version === 2
+      const ceilingMs = contentCeilingMs(pending)
+      const relayed = parseRelay(body, { now, v2, ceilingMs })
       if (pending.bundle || pending.accepting) throw new LinkError('bundle_exists', 409)
       // Go names the connection: an id that is already a connection here, or
       // another request's, would hand this consent's key to someone else's tokens.
       if (connectionTaken(state, pending, relayed.connection_id)) throw new LinkError('bad_request')
       if (!pending.recipient || relayed.kid !== pending.recipient.kid) throw new LinkError('unknown_kid')
+      // What Go relays about the client must be what this reader classified.
+      if (v2 && (relayed.client.trust !== pending.trust || relayed.client.client_local !== pending.client_local)) throw new LinkError('invalid_bundle')
+      // At most UNKNOWN_LIVE_MAX live connections of clients nobody tested, tokens included (§19.10).
+      if (v2 && pending.trust === 'unknown' && unknownLive(state, relayed.tenant_id, pending) >= unknownLiveMax) throw new LinkError('too_many_unknown', 409)
       pending.accepting = relayed.connection_id
       try {
         const bundle = await openContentBundle(pending.recipient, relayed.sealed, {
@@ -318,6 +394,7 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
         // What Go records and what the owner sealed must say the same about
         // attachments and sending, before anything is proven against the archive.
         if (!relayMatches(relayed, bundle)) throw new LinkError('invalid_bundle')
+        if (v2 ? !consentFits(pending, bundle, relayed, { now, ceilingMs }) : bundle.consent_version === 4) throw new LinkError('invalid_bundle')
         const expiry = Math.min(Date.parse(bundle.expires_at), relayed.expiry)
         let proven
         try { proven = await proveGrants(pending.recipient.privateKey, bundle, { archive, fetch, request: pending.id, kid: relayed.kid }) } catch (error) {
@@ -365,12 +442,14 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
       log.event('connkey_installed', conn(record.connection_id))
     },
 
-    serverFor: record => ({
+    /** The configuration and provider of a content record's reader; `limits` are its reading limits, when its tier has them (§19.19). */
+    serverFor: (record, { limits } = {}) => ({
       config: contentConfigFor(record, archive),
       provider: contentProviderFor(record, connkeys, consoleURL, {
         onStaleGrant: () => log.event('stale_grant', conn(record.connection_id)),
         ...(record.media === true ? { media: media.forConnection(record) } : {}),
         ...(record.send === 'draft' || record.send === 'direct' ? { send: sending.forConnection(record) } : {}),
+        ...(limits ? { limits } : {}),
       }),
     }),
     /** Pads a media connection's /mcp responses (router.mjs, §16.10). */
@@ -383,6 +462,8 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
     media,
     /** The sending service: main.mjs reads its counts. */
     sending,
+    /** Console connection tokens (tokens.mjs), on a release that declares `console_token_v1`; null otherwise. */
+    tokens,
 
     /**
      * The status rules (§15.8) for a content record, given Go's live answer
@@ -440,13 +521,14 @@ export function createContent({ state, relay, log, now = Date.now, archive, cons
 
     renewal: { prepare: renewals.prepare, acceptBundle: renewals.acceptBundle, commit: renewals.commit },
 
-    /** Drops expired renewals and AI requests; the 60 s content sweep calls it. */
-    sweep() { renewals.sweep(); ai?.sweep() },
+    /** Drops expired renewals, AI requests and token requests; the 60 s content sweep calls it. */
+    sweep() { renewals.sweep(); ai?.sweep(); tokens?.sweep() },
 
     close() {
       if (resealTimer) { clearTimeout(resealTimer); resealTimer = null }
       resealQueue.clear()
       renewals.clear()
+      tokens?.clear()
       media.close()
       sending.close()
       ai?.close()

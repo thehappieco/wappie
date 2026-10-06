@@ -78,6 +78,12 @@ bridge TCP-LISTEN:443,bind=127.0.0.4,reuseaddr,fork VSOCK-CONNECT:3:8002   # Let
 bridge TCP-LISTEN:443,bind=127.0.0.5,reuseaddr,fork VSOCK-CONNECT:3:8004   # api.anthropic.com
 bridge TCP-LISTEN:443,bind=127.0.0.6,reuseaddr,fork VSOCK-CONNECT:3:8005   # api.openai.com
 bridge TCP-LISTEN:443,bind=127.0.0.7,reuseaddr,fork VSOCK-CONNECT:3:8006   # generativelanguage.googleapis.com
+# The client documents' egress proxy on the parent (docs/mcp-enclave.md §19.9):
+# Node sends `CONNECT <host>:443` here and verifies the TLS itself, so the
+# proxy, which checks the host and dials public addresses only, can refuse or
+# delay a fetch, never read or forge the document. No /etc/hosts line: the
+# host is named only in CONNECT and in the TLS SNI.
+bridge TCP-LISTEN:3128,bind=127.0.0.8,reuseaddr,fork VSOCK-CONNECT:3:8007   # wappie-cimd-egress
 bridge TCP-LISTEN:7000,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:3:7000  # role credentials
 bridge TCP-LISTEN:7001,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:3:7001  # boot.json
 bridge TCP-LISTEN:7002,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:3:7002  # log sink
