@@ -548,7 +548,15 @@ func TestProviderStepUpOneStartOneProof(t *testing.T) {
 		return ok
 	}
 	finish := func(s store.Session, notBefore, authTime time.Time) error {
-		return f.users.FinishProviderStepUp(ctx, s.ID, notBefore, authTime, stepup.Window, stepup.ProviderClockTolerance)
+		return f.users.FinishProviderStepUp(ctx, s.ID, store.PendingStepUp{Session: s.ID, NotBefore: notBefore}, authTime, stepup.Window, stepup.ProviderClockTolerance)
+	}
+	pendingOf := func(s store.Session) (time.Time, error) {
+		t.Helper()
+		p, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window)
+		if err == nil && p.Session != s.ID {
+			t.Fatalf("the pending start is %v's, want %v's", p.Session, s.ID)
+		}
+		return p.NotBefore, err
 	}
 
 	s := session()
@@ -562,7 +570,7 @@ func TestProviderStepUpOneStartOneProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); err != nil || !pending.Equal(notBefore) {
+	if pending, err := pendingOf(s); err != nil || !pending.Equal(notBefore) {
 		t.Fatalf("pending %v %v, want %v", pending, err, notBefore)
 	}
 	// An auth_time past the tolerance before the start: the provider did
@@ -572,7 +580,7 @@ func TestProviderStepUpOneStartOneProof(t *testing.T) {
 			t.Fatalf("auth_time %v: %v", stale, err)
 		}
 	}
-	if pending, err := f.users.PendingProviderStepUp(ctx, s.ID, stepup.Window); err != nil || !pending.Equal(notBefore) {
+	if pending, err := pendingOf(s); err != nil || !pending.Equal(notBefore) {
 		t.Fatalf("a refusal moved the start: %v %v", pending, err)
 	}
 	// Within the tolerance: the proof, now, and the start is spent.
@@ -606,22 +614,11 @@ func TestProviderStepUpOneStartOneProof(t *testing.T) {
 		t.Fatalf("the finish of the newer start: %v", err)
 	}
 
-	// A start older than ten minutes is no start, and a workspace switch
-	// does not copy one.
+	// A start older than ten minutes is no start (and a workspace switch
+	// copies none: TestProviderStepUpAcrossTheSessionFamily).
 	s = session()
-	old, err := f.users.StartProviderStepUp(ctx, s.ID)
-	if err != nil {
+	if _, err := f.users.StartProviderStepUp(ctx, s.ID); err != nil {
 		t.Fatal(err)
-	}
-	_, switched, err := f.users.StartWorkspaceSession(ctx, user, "test", s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.users.PendingProviderStepUp(ctx, switched.ID, stepup.Window); !errors.Is(err, store.ErrStepUpNotStarted) {
-		t.Fatalf("a switch copied the start: %v", err)
-	}
-	if err := finish(switched, old, time.Now()); !errors.Is(err, store.ErrStepUpNotStarted) {
-		t.Fatalf("a switch finished its source's start: %v", err)
 	}
 	if _, err := f.pool.Exec(ctx, `UPDATE sessions SET step_up_not_before = step_up_not_before - interval '10 minutes 1 second' WHERE id = $1`, s.ID); err != nil {
 		t.Fatal(err)
@@ -679,6 +676,151 @@ func TestProviderStepUpOneStartOneProof(t *testing.T) {
 	}
 	if won != 1 || !fresh(s) {
 		t.Fatalf("%d finishes of one start recorded a proof", won)
+	}
+}
+
+// A finish answers the newest start of the finishing session's family, the
+// browser sign-in it and the starter were derived from: the console's
+// confirmation window holds the sign-in's token while the page that started
+// works in a session a workspace switch derived from it (and a page that
+// confirmed in its own tab reopens a new one from the sign-in). The proof goes
+// to the starter and to the finisher; the switch copies no start of its
+// own; a session of another sign-in of the same account finds nothing; and
+// one start still makes one proof, whichever sessions of the family race.
+func TestProviderStepUpAcrossTheSessionFamily(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	user, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "ivo@example.com", uuid.Nil),
+		PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := stepup.Recent(f.users)
+	fresh := func(s store.Session) bool {
+		t.Helper()
+		ok, err := checker.Fresh(ctx, s.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	ownStart := func(s store.Session) bool {
+		t.Helper()
+		var started bool
+		if err := f.pool.QueryRow(ctx, `SELECT step_up_not_before IS NOT NULL FROM sessions WHERE id = $1`, s.ID).Scan(&started); err != nil {
+			t.Fatal(err)
+		}
+		return started
+	}
+	family := func() (login, switched store.Session) {
+		t.Helper()
+		_, login, err := f.users.StartPlatformSession(ctx, user, "test", time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, switched, err = f.users.StartWorkspaceSession(ctx, user, "test", login)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return login, switched
+	}
+
+	// The page's workspace session starts; the window finishes with the sign-in's token.
+	login, switched := family()
+	notBefore, err := f.users.StartProviderStepUp(ctx, switched.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := f.users.PendingProviderStepUp(ctx, login.ID, stepup.Window)
+	if err != nil || pending.Session != switched.ID || !pending.NotBefore.Equal(notBefore) {
+		t.Fatalf("the family's pending start %+v %v, want %v at %v", pending, err, switched.ID, notBefore)
+	}
+	if err := f.users.FinishProviderStepUp(ctx, login.ID, pending, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil {
+		t.Fatal(err)
+	}
+	if !fresh(switched) || !fresh(login) || ownStart(switched) {
+		t.Fatalf("after the finish: starter fresh %v, finisher fresh %v, start left %v", fresh(switched), fresh(login), ownStart(switched))
+	}
+	if err := f.users.FinishProviderStepUp(ctx, switched.ID, pending, time.Now(), stepup.Window, stepup.ProviderClockTolerance); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("a second finish of one start from the family: %v", err)
+	}
+
+	// The other way: the sign-in's session starts, a switch made since copies
+	// no start but finishes it, and a session it derives later copies the proof.
+	login, _ = family()
+	notBefore, err = f.users.StartProviderStepUp(ctx, login.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, later, err := f.users.StartWorkspaceSession(ctx, user, "test", login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownStart(later) {
+		t.Fatal("a switch copied the start")
+	}
+	if pending, err = f.users.PendingProviderStepUp(ctx, later.ID, stepup.Window); err != nil || pending.Session != login.ID {
+		t.Fatalf("the switch's family start %+v %v", pending, err)
+	}
+	if err := f.users.FinishProviderStepUp(ctx, later.ID, pending, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil || !fresh(login) || !fresh(later) {
+		t.Fatalf("a switch finishing its source's start: %v", err)
+	}
+	_, derived, err := f.users.StartWorkspaceSession(ctx, user, "test", login)
+	if err != nil || !fresh(derived) {
+		t.Fatalf("a session derived after the proof: %v fresh %v", err, err == nil && fresh(derived))
+	}
+
+	// Another sign-in of the same account is another family: nothing to finish.
+	login, switched = family()
+	if _, err := f.users.StartProviderStepUp(ctx, switched.ID); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := family()
+	if _, err := f.users.PendingProviderStepUp(ctx, other.ID, stepup.Window); !errors.Is(err, store.ErrStepUpNotStarted) {
+		t.Fatalf("another sign-in saw the start: %v", err)
+	}
+	pending, err = f.users.PendingProviderStepUp(ctx, login.ID, stepup.Window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.users.FinishProviderStepUp(ctx, other.ID, pending, time.Now(), stepup.Window, stepup.ProviderClockTolerance); !errors.Is(err, store.ErrStepUpNotStarted) || fresh(switched) || fresh(other) {
+		t.Fatalf("another sign-in finished the start: %v", err)
+	}
+
+	// Two starts in one family (two tabs in two workspaces): the newest is the
+	// one a finish answers; the older one is left, and its tab is told to start again.
+	_, second, err := f.users.StartWorkspaceSession(ctx, user, "test", login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest, err := f.users.StartProviderStepUp(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, err = f.users.PendingProviderStepUp(ctx, login.ID, stepup.Window); err != nil || pending.Session != second.ID || !pending.NotBefore.Equal(newest) {
+		t.Fatalf("two starts in a family: %+v %v", pending, err)
+	}
+
+	// Racing finishes from every session of the family: one proof.
+	const racers = 6
+	errs := make(chan error, racers)
+	for i := range racers {
+		from := []store.Session{login, switched, second}[i%3]
+		go func() {
+			errs <- f.users.FinishProviderStepUp(ctx, from.ID, pending, time.Now(), stepup.Window, stepup.ProviderClockTolerance)
+		}()
+	}
+	won := 0
+	for range racers {
+		switch err := <-errs; {
+		case err == nil:
+			won++
+		case !errors.Is(err, store.ErrStepUpNotStarted):
+			t.Fatalf("a racing finish: %v", err)
+		}
+	}
+	if won != 1 || !fresh(second) || ownStart(second) || !ownStart(switched) {
+		t.Fatalf("%d finishes recorded a proof; newest start fresh %v", won, fresh(second))
 	}
 }
 
@@ -758,7 +900,7 @@ func TestMigration0048DownStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.users.FinishProviderStepUp(ctx, confirmed.ID, notBefore, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil {
+	if err := f.users.FinishProviderStepUp(ctx, confirmed.ID, store.PendingStepUp{Session: confirmed.ID, NotBefore: notBefore}, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil {
 		t.Fatal(err)
 	}
 	_, switched, err := f.users.StartWorkspaceSession(ctx, linked, "test", confirmed)

@@ -152,7 +152,10 @@ func (h *Handler) platformStepUpFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Nothing goes to the provider for a session with no start to answer.
-	notBefore, err := h.Users.PendingProviderStepUp(r.Context(), session.ID, stepup.Window)
+	// The start may be another session's of this one's family: the page that
+	// started works in a workspace session derived from the browser's
+	// sign-in, whose token the confirmation window finishes with.
+	pending, err := h.Users.PendingProviderStepUp(r.Context(), session.ID, stepup.Window)
 	if !h.stepUpFinishError(w, err) {
 		return
 	}
@@ -215,7 +218,7 @@ func (h *Handler) platformStepUpFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.Users.FinishProviderStepUp(r.Context(), session.ID, notBefore, authTimeOf(ui), stepup.Window, stepup.ProviderClockTolerance)
+	err = h.Users.FinishProviderStepUp(r.Context(), session.ID, pending, authTimeOf(ui), stepup.Window, stepup.ProviderClockTolerance)
 	if !h.stepUpFinishError(w, err) {
 		return
 	}

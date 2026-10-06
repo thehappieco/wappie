@@ -337,8 +337,14 @@ Before anything leaves this server:
 
 - `409 step_up_here` for a local account;
 - `400 bad_request` for a string that is not an access token;
-- `409 step_up_not_started` when the session has no start younger than ten
-  minutes: never started, already used, or too old.
+- `409 step_up_not_started` when no live session of the session's family
+  has a start younger than ten minutes: never started, already used,
+  replaced, or too old. The family is the browser sign-in the session was
+  derived from and every session derived from it (`sessions.family_id`, the
+  set a sign-out ends): the console's window holds only the sign-in's token,
+  while the page that started works in a session a workspace switch made
+  from it. A session of another sign-in, even of the same account, finds no
+  start, and nothing is sent to id.
 
 Then one `GET {issuer}/oauth2/userinfo` (kit `oidcrp.FetchUserinfo`), never
 repeated, and in this order:
@@ -355,11 +361,13 @@ repeated, and in this order:
 | `409 step_up_not_started` | the start was used or replaced meanwhile |
 
 Otherwise one statement records the proof, `authenticated_at = now()` on the
-database's clock, and clears the start, against the value read before the
-call: the start is still that one, younger than ten minutes, and the
-`auth_time` is not more than a minute before it. So one start makes one
-proof: a second finish, two windows racing, or the finish of a replaced
-start records nothing. The log says `step-up confirmed method=provider`, and
+database's clock, on the session that started and on the one that finished,
+and clears the start, against the value read before the call: the start is
+still that one, the family's newest, younger than ten minutes, and the
+`auth_time` is not more than a minute before it. Every session the sign-in
+derives later copies the proof, as a workspace switch does. So one start
+makes one proof: a second finish from any session of the family, two
+windows racing, or the finish of a replaced start records nothing. The log says `step-up confirmed method=provider`, and
 the answer is `GET /v1/auth/step-up`'s: `200 {fresh, remaining_seconds,
 window_seconds, passkey: false, provider: true}`. No refusal clears the
 start; a new start replaces it.
@@ -494,10 +502,14 @@ only how a platform session earns one (the routes are under "Routes"):
    or a passkey there and comes back to `/auth/callback` in the window.
 4. The callback, in its step-up branch, completes the flow with the kit's
    `callback` (refusing and zeroing a product key if one came) and posts the
-   access token to `POST /v1/auth/platform/step-up/finish` with the
-   session's bearer token. The server takes it to id.'s userinfo, never the
-   ID token, and records the proof (`authenticated_at = now()`) against that
-   start. The window tells the page through a `BroadcastChannel`, since the
+   access token to `POST /v1/auth/platform/step-up/finish` with the bearer
+   token of the browser's sign-in, the only one the window can read (from
+   the browser's vault, without opening the account key). The page that
+   started works in a session a workspace switch derived from that sign-in:
+   the two are one family (`sessions.family_id`), and the finish answers the
+   family's newest start. The server takes the access token to id.'s
+   userinfo, never the ID token, and records the proof (`authenticated_at =
+   now()`) against that start, on both sessions. The window tells the page through a `BroadcastChannel`, since the
    two documents' `Cross-Origin-Opener-Policy: same-origin` cuts the
    opener link, and closes.
 5. The page re-reads `GET /v1/auth/step-up` and goes on as after a passkey.
@@ -517,6 +529,11 @@ The rules (owner Decisions 2 to 4 of step 4, approved 2026-10-06):
 - **One start, one proof.** The finish records the proof and clears the
   start in one statement, against the value it read before calling id.; a
   newer start voids an older one, and two windows or tabs make one proof.
+  The start and the finish may be different sessions of one family (one
+  browser sign-in and what it derived), never of two: a confirmation made
+  in another browser, or after another sign-in, proves nothing here. Two
+  tabs of the family that start one after the other share the newer start,
+  whichever window finishes it.
 - **The account key.** The finish compares userinfo's product key with the
   pin of its epoch and never pins one: another key, or an epoch no sign-in
   pinned, is `account_key_changed`, with the alert, and no proof.
@@ -531,7 +548,8 @@ Also, for such an account:
   passkeys_at_provider`, so no Wappie passkey replaces the ones the link
   revoked;
 - a workspace switch copies the session's proof and `via_provider`, never a
-  pending start.
+  pending start (a finish from either session answers the family's newest
+  start, above).
 
 A linked account that signs in with its legacy password while
 `WS_LOCAL_LOGIN=on` (both doors) has that sign-in as its proof for ten

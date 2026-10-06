@@ -132,7 +132,7 @@ func TestAGrantAfterAStepUpAtTheProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantError(t, grant(token), wsapi.ErrCodeStepUpRequired)
-	if err := c.users.FinishProviderStepUp(ctx, session.ID, notBefore, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil {
+	if err := c.users.FinishProviderStepUp(ctx, session.ID, store.PendingStepUp{Session: session.ID, NotBefore: notBefore}, time.Now(), stepup.Window, stepup.ProviderClockTolerance); err != nil {
 		t.Fatal(err)
 	}
 	if f := grant(token); f.Type != wsapi.TypeReaders {

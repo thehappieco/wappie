@@ -244,7 +244,9 @@ func TestPlatformStepUpAtTheProvider(t *testing.T) {
 // The start a finish answers is the session's latest, while it is younger
 // than ten minutes; a newer start voids an older one, so a re-authentication
 // made for the first start does not pass for a second one made minutes
-// later; a workspace switch copies no start.
+// later; a workspace switch copies no start, but a finish answers the start
+// of any session of its family (the browser's sign-in and what it derived)
+// and proves both, while another sign-in's answers nothing.
 func TestPlatformStepUpStarts(t *testing.T) {
 	h := newPlatformHarness(t, config.LocalLoginOn)
 	p, signed := h.providerAccount(t, "tom@example.com")
@@ -283,8 +285,9 @@ func TestPlatformStepUpStarts(t *testing.T) {
 		t.Fatal("a start past ten minutes went to userinfo or made a proof")
 	}
 
-	// A workspace switch copies no start, and a finish on it records
-	// nothing on its source.
+	// A workspace switch copies no start of its own, but a finish from it
+	// answers its source's: they are one family, the browser's sign-in and
+	// what it derived. Both get the proof.
 	if code, _ := h.start(t, token); code != http.StatusOK {
 		t.Fatal(code)
 	}
@@ -295,11 +298,65 @@ func TestPlatformStepUpStarts(t *testing.T) {
 	if h.pending(t, switched.Token) != nil {
 		t.Fatal("the switch copied the start")
 	}
-	if code, out := h.finish(t, switched.Token, h.id.issue(t, p.userinfo(t, 1))); code != http.StatusConflict || out.Code != "step_up_not_started" {
-		t.Fatalf("a finish on the switch: %d %+v", code, out)
+	if code, out := h.finish(t, switched.Token, h.id.issue(t, p.userinfo(t, 1))); code != http.StatusOK || !out.Fresh {
+		t.Fatalf("a finish from the switch: %d %+v", code, out)
+	}
+	if !h.state(t, token).Fresh || h.pending(t, token) != nil {
+		t.Fatal("the switch's finish left its source without the proof, or the start in place")
+	}
+
+}
+
+// The console's confirmation, as its page and window make it: the page works
+// in a workspace session (a switch from the browser's sign-in) and starts
+// there; the window holds only the sign-in's token and finishes with it. The
+// page's session gets the proof, and so does the sign-in's, which every
+// session the page derives later copies. Another sign-in of the same account
+// is another family: its finish answers nothing.
+func TestPlatformStepUpAcrossTheSessionFamily(t *testing.T) {
+	h := newPlatformHarness(t, config.LocalLoginOn)
+	p, signed := h.providerAccount(t, "ines@example.com")
+	token := signed.Token
+	var switched sessionReply
+	if code := h.post(t, "/v1/auth/workspaces/session", map[string]string{"tenant_id": signed.User.TenantID}, &switched, token); code != http.StatusOK {
+		t.Fatalf("switch: %d", code)
+	}
+	h.age(t, token)
+	h.age(t, switched.Token)
+	if code, _ := h.start(t, switched.Token); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if h.pending(t, token) != nil {
+		t.Fatal("the page's start was recorded on the sign-in")
 	}
 	if code, out := h.finish(t, token, h.id.issue(t, p.userinfo(t, 1))); code != http.StatusOK || !out.Fresh {
-		t.Fatalf("the source's own finish: %d %+v", code, out)
+		t.Fatalf("the sign-in's finish of its switch's start: %d %+v", code, out)
+	}
+	if !h.state(t, switched.Token).Fresh || h.pending(t, switched.Token) != nil {
+		t.Fatal("the page's session did not get the proof, or kept its start")
+	}
+	var later sessionReply
+	if code := h.post(t, "/v1/auth/workspaces/session", map[string]string{"tenant_id": signed.User.TenantID}, &later, token); code != http.StatusOK || !h.state(t, later.Token).Fresh {
+		t.Fatalf("a session derived after the proof: %d", code)
+	}
+	if code, out := h.finish(t, token, h.id.issue(t, p.userinfo(t, 1))); code != http.StatusConflict || out.Code != "step_up_not_started" {
+		t.Fatalf("a second finish of one start: %d %+v", code, out)
+	}
+
+	h.age(t, switched.Token)
+	if code, _ := h.start(t, switched.Token); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	code, other := h.signIn(t, p, 1)
+	if code != http.StatusOK || other.Token == "" {
+		t.Fatalf("another sign-in: %d %+v", code, other)
+	}
+	before := h.id.requests.Load()
+	if code, out := h.finish(t, other.Token, h.id.issue(t, p.userinfo(t, 1))); code != http.StatusConflict || out.Code != "step_up_not_started" {
+		t.Fatalf("another sign-in's finish: %d %+v", code, out)
+	}
+	if h.id.requests.Load() != before || h.state(t, switched.Token).Fresh {
+		t.Fatal("another sign-in's finish went to userinfo or made a proof")
 	}
 }
 
