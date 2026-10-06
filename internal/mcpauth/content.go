@@ -302,7 +302,7 @@ type renewReply struct {
 // connection as it was, and the new account is removed so nothing it was
 // given outlives the attempt.
 func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticate(w, r)
+	session, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
@@ -311,6 +311,11 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !allow(w, r, h.Limits, user.ID.String()) {
+		return
+	}
+	// A renewal hands the archive to the reader again, under the same
+	// step-up as the consent (internal/stepup).
+	if !h.stepUpFresh(w, r, session) {
 		return
 	}
 	var req renewRequest
@@ -482,6 +487,8 @@ func (h *Handler) reseal(w http.ResponseWriter, r *http.Request, caller *Atteste
 		return
 	}
 	h.log().Info("mcp connection resealed", "connection", id, "reader", caller.ID)
+	// The person who consented hears of the round once it settles.
+	h.scheduleRenewalNotices(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 

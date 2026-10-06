@@ -1361,6 +1361,9 @@ func TestMigration0044DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
+		t.Fatalf("0047 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
 		t.Fatalf("0046 down-step: %v", err)
 	}

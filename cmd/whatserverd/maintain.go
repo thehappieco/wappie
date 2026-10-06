@@ -59,6 +59,16 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		} else if connections > 0 {
 			a.log.Info("mcp connections settled", "connections", connections)
 		}
+		// A connection unused past its tier's idle time is dead to its
+		// assistant, whose refresh token died in the reader: it ends, so the
+		// console's list and the workspace's cap stop counting it. The
+		// readers are told by the revocation watch (docs/mcp-enclave.md
+		// §19.35).
+		if idle, err := store.RevokeIdleMCPConnections(ctx, a.pools.API); err != nil {
+			a.log.Warn("idle mcp connections were not all revoked", "error", err, "revoked", len(idle))
+		} else if len(idle) > 0 {
+			a.log.Info("idle mcp connections revoked", "connections", len(idle))
+		}
 		// A content consent abandoned after its service account registered
 		// leaves an account with a thirty-minute deadline and no connection.
 		if services, err := store.ExpireServiceAccounts(ctx, a.pools.API); err != nil {

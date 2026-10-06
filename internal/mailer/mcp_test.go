@@ -177,10 +177,36 @@ func TestMCPNoticeEmail(t *testing.T) {
 	if model.Intro != "claude.ai (tested by Wappie) can now see who wrote to whom and when, but not the text, on 2 numbers in the workspace “Acme”." {
 		t.Errorf("metadata intro = %q", model.Intro)
 	}
-	// A locale without words, or none, is English.
-	for _, lang := range []string{"", "de", "fr-CA", "xx", "pt_PT"} {
-		if got := wordsFor(lang).lang; got != map[bool]string{true: "pt", false: "en"}[lang == "pt_PT"] {
-			t.Errorf("%q speaks %q", lang, got)
+	// The console's five languages have words, a region or a case aside; a
+	// locale without words, or none, is English.
+	for lang, want := range map[string]string{"": "en", "xx": "en", "it": "en", "pt_PT": "pt", "pt-BR": "pt", "es-MX": "es", "fr-CA": "fr", "DE": "de", "en-GB": "en"} {
+		if got := wordsFor(lang).lang; got != want {
+			t.Errorf("%q speaks %q, want %q", lang, got, want)
+		}
+	}
+	// Every language says every event, tier and fact, with no word left from
+	// another and no placeholder left unfilled.
+	for _, words := range mcpLanguages {
+		for name, n := range map[string]MCPNotice{
+			"text":    {Event: "activated", ClientHost: "agent.example.com", Tier: "unknown", Workspace: "Acme", Numbers: 2, Text: true, HistoryDays: 30, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"media":   {Event: "activated", ClientHost: "claude.ai", Tier: "tested", Workspace: "Acme", Numbers: 1, Text: true, Attachments: true, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"meta":    {Event: "activated", ClientHost: "chatgpt.com", Tier: "local", Workspace: "Acme", Numbers: 3, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"limit":   {Event: "daily_attachments", ClientHost: "agent.example.com", Tier: "unknown", Workspace: "Acme", Numbers: 1, Text: true, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"token":   {Event: "activated", Tier: "token", Label: "n8n", Workspace: "Acme", Numbers: 1, HistoryDays: 7, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"network": {Event: "network", Tier: "token", Label: "n8n", Workspace: "Acme", Numbers: 1, ExpiresAt: at, At: at, RevokeLink: revoke},
+			"client":  {Event: "network", ClientHost: "agent.example.com", Tier: "unknown", Workspace: "Acme", Numbers: 1, ExpiresAt: at, At: at, RevokeLink: revoke},
+		} {
+			n.Lang = words.lang
+			model, plain, _ := mcpBodies(t, n)
+			if model.Lang != words.lang || model.Title == "" || model.Intro == "" || len(model.Facts) != 6 {
+				t.Errorf("%s %s = %+v", words.lang, name, model)
+			}
+			if strings.ContainsAny(plain, "{}") || strings.Contains(plain, "%!") || strings.Contains(plain, "%s") || strings.Contains(plain, "%d") {
+				t.Errorf("%s %s left a placeholder:\n%s", words.lang, name, plain)
+			}
+			if !strings.Contains(plain, words.footer) || !strings.Contains(plain, words.action) {
+				t.Errorf("%s %s lacks its own words:\n%s", words.lang, name, plain)
+			}
 		}
 	}
 	for name, n := range map[string]MCPNotice{
@@ -195,6 +221,159 @@ func TestMCPNoticeEmail(t *testing.T) {
 	} {
 		if _, err := mcpNoticeEmail(n); err == nil {
 			t.Errorf("%s: rendered", name)
+		}
+	}
+}
+
+// The renewal notice: in the recipient's language, how many connections wait
+// and which, and where to go, with no link at all, since renewing asks for a
+// passkey or the password.
+func TestMCPRenewalEmail(t *testing.T) {
+	since := time.Date(2026, 10, 5, 9, 30, 0, 0, time.UTC)
+	for lang, want := range map[string][2]string{
+		"":   {"Your assistants need renewing", "2 assistant connections in the workspace “acme.com”"},
+		"pt": {"Seus assistentes precisam ser renovados", "2 conexões de assistentes do espaço de trabalho “acme.com”"},
+		"es": {"Tus asistentes necesitan renovarse", "2 conexiones de asistentes del espacio de trabajo “acme.com”"},
+		"fr": {"Vos assistants doivent être renouvelés", "2 connexions d’assistants de l’espace de travail « acme.com »"},
+		"de": {"Ihre Assistenten müssen erneuert werden", "2 Assistentenverbindungen im Arbeitsbereich „acme.com“"},
+	} {
+		model, err := mcpRenewalEmail(MCPRenewal{Workspace: "acme.com", Assistants: []string{"Claude", "agent.example.com"}, Since: since, Lang: lang})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.Subject != want[0] || !strings.HasPrefix(model.Intro, want[1]) || model.Link != "" || model.Steps == "" {
+			t.Errorf("%q = %+v", lang, model)
+		}
+		data, _, _, err := message("Wappie <accounts@example.com>", "owner@example.com", model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(data)
+		if strings.Contains(body, "href=") || strings.Contains(body, "http://") || strings.Contains(body, "https://") {
+			t.Errorf("%q carries a link", lang)
+		}
+		plain, _, err := model.render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plain, "Claude, agent.example.com") || !strings.Contains(plain, model.Steps) || strings.ContainsAny(plain, "{}") {
+			t.Errorf("%q plain =\n%s", lang, plain)
+		}
+	}
+	one, err := mcpRenewalEmail(MCPRenewal{Workspace: "Acme", Assistants: []string{"Claude"}, Since: since, Lang: "pt-BR"})
+	if err != nil || one.Subject != "Seu assistente precisa ser renovado" || !strings.HasPrefix(one.Intro, "Uma conexão") {
+		t.Fatalf("one = %+v %v", one, err)
+	}
+	// A console token is named by its label as the activation notice names
+	// one (E-RENEW-05, approved 2026-10-05): a label such as "Claude" must
+	// not read as the tested assistant of that name.
+	for lang, want := range map[string]string{
+		"":   "Assistants: Claude, Token “Claude”, agent.example.com",
+		"pt": "Assistentes: Claude, Token “Claude”, agent.example.com",
+		"es": "Asistentes: Claude, Token “Claude”, agent.example.com",
+		"fr": "Assistants : Claude, Jeton « Claude », agent.example.com",
+		"de": "Assistenten: Claude, Token „Claude“, agent.example.com",
+	} {
+		model, err := mcpRenewalEmail(MCPRenewal{Workspace: "Acme", Assistants: []string{"Claude", "Claude", "agent.example.com"}, Tokens: []bool{false, true},
+			OneByOne: 2, Since: since, Lang: lang})
+		if err != nil || model.Facts[0] != want {
+			t.Errorf("%q names = %q %v", lang, model.Facts, err)
+		}
+	}
+	for name, n := range map[string]MCPRenewal{
+		"no workspace":        {Assistants: []string{"Claude"}},
+		"no connection":       {Workspace: "Acme"},
+		"more one by one":     {Workspace: "Acme", Assistants: []string{"Claude"}, OneByOne: 2},
+		"fewer than none one": {Workspace: "Acme", Assistants: []string{"Claude"}, OneByOne: -1},
+		"more tokens":         {Workspace: "Acme", Assistants: []string{"Claude"}, Tokens: []bool{false, true}},
+	} {
+		if _, err := mcpRenewalEmail(n); err == nil {
+			t.Errorf("%s: rendered", name)
+		}
+	}
+}
+
+// The new languages of the notice e-mail say what the revocation page it
+// opens (internal/mcpauth/revokelink.go) and the console say, word for word
+// (approved 2026-10-05): the French button and the line under it say
+// "uniquement", as the page does, the German footer and link help say
+// "Button" as the page and the console do (not "Schaltfläche"), and German
+// says "Netzwerk", as the console does.
+func TestMCPNoticeWordsFollowThePage(t *testing.T) {
+	fr, de := wordsFor("fr"), wordsFor("de")
+	if fr.action != "Révoquer uniquement cette connexion" || !strings.HasPrefix(fr.linkHelp, "Le bouton révoque uniquement cette connexion") {
+		t.Errorf("French button or help = %q, %q", fr.action, fr.linkHelp)
+	}
+	if de.action != "Nur diese Verbindung widerrufen" ||
+		de.footer != "E-Mails von Wappie zu Assistenten fragen nie nach Ihrem Passwort. Ihr einziger Button widerruft eine Verbindung. Um Ihre Assistenten zu sehen, öffnen Sie selbst die Wappie-Konsole." ||
+		!strings.HasPrefix(de.linkHelp, "Der Button widerruft nur diese eine Verbindung") {
+		t.Errorf("German button, footer or help = %q, %q, %q", de.action, de.footer, de.linkHelp)
+	}
+	for _, text := range []string{de.titles["network"], de.network, de.networkClient, de.linkHelp, de.footer} {
+		if strings.Contains(text, "Schaltfläche") || strings.Contains(text, " Netz ") {
+			t.Errorf("German text not as the console says it: %q", text)
+		}
+	}
+	if !strings.Contains(de.titles["network"], "Netzwerk") || !strings.Contains(de.network, "Netzwerk") || !strings.Contains(de.networkClient, "Netzwerk") {
+		t.Errorf("German network texts = %q, %q, %q", de.titles["network"], de.network, de.networkClient)
+	}
+}
+
+// The renewal notice's words: the footer is every notice's own, word for
+// word (D10, 5); no text names a restart as the cause, since a workspace
+// that turned text off and on again waits the same way (D10, 7); English
+// uses the typographic apostrophe (D10, 9); and the steps name the console's
+// buttons for what waits. Renew all renews tested connections only, so an
+// untested client's or a token's is sent to its own Renew.
+func TestMCPRenewalWords(t *testing.T) {
+	since := time.Date(2026, 10, 5, 9, 30, 0, 0, time.UTC)
+	buttons := map[string][2]string{
+		"en": {"Renew all", "Renew beside"}, "pt": {"Renovar todas", "Renovar ao lado"}, "es": {"Renovar todas", "Renovar junto a"},
+		"fr": {"Tout renouveler", "Renouveler à côté"}, "de": {"Alle erneuern", "Erneuern"},
+	}
+	restart := []string{"restart", "reinici", "redémarr", "neu gestartet", "reinicia"}
+	for _, words := range mcpLanguages {
+		r, ok := renewalLanguages[words.lang]
+		if !ok {
+			t.Fatalf("%s has no renewal words", words.lang)
+		}
+		all := []string{r.titleOne, r.titleMany, r.introOne, r.introMany, r.question, r.allOne, r.allMany, r.eachOne, r.eachMany, r.mixed}
+		all = append(all, r.facts[:]...)
+		for _, text := range all {
+			for _, word := range restart {
+				if strings.Contains(strings.ToLower(text), word) {
+					t.Errorf("%s names a restart: %q", words.lang, text)
+				}
+			}
+			if words.lang == "en" && strings.Contains(text, "'") {
+				t.Errorf("an English text without the typographic apostrophe: %q", text)
+			}
+		}
+		for name, tc := range map[string]struct {
+			assistants []string
+			oneByOne   int
+			want       string
+			all, each  bool
+		}{
+			"one tested":     {[]string{"Claude"}, 0, r.allOne, true, false},
+			"tested":         {[]string{"Claude", "ChatGPT"}, 0, r.allMany, true, false},
+			"one untested":   {[]string{"agent.example.com"}, 1, r.eachOne, false, true},
+			"untested":       {[]string{"agent.example.com", "n8n"}, 2, r.eachMany, false, true},
+			"some of either": {[]string{"Claude", "n8n", "agent.example.com"}, 2, r.mixed, true, true},
+		} {
+			model, err := mcpRenewalEmail(MCPRenewal{Workspace: "Acme", Assistants: tc.assistants, OneByOne: tc.oneByOne, Since: since, Lang: words.lang})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if model.Steps != tc.want || model.Footer != words.footer {
+				t.Errorf("%s %s = steps %q, footer %q", words.lang, name, model.Steps, model.Footer)
+			}
+			if strings.Contains(model.Steps, buttons[words.lang][0]) != tc.all {
+				t.Errorf("%s %s: Renew all said %v: %q", words.lang, name, !tc.all, model.Steps)
+			}
+			if tc.each && !strings.Contains(model.Steps, buttons[words.lang][1]) {
+				t.Errorf("%s %s: no Renew of its own: %q", words.lang, name, model.Steps)
+			}
 		}
 	}
 }

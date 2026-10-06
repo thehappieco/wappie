@@ -260,8 +260,10 @@ type MCPNotice struct {
 	HistoryDays int
 	CreatedBy   uuid.UUID
 	// Recipients are the person who consented and the workspace's owners,
-	// active, whose address is verified, each once.
+	// active, whose address is verified, each once; Locales each one's
+	// preferred locale by address, empty for none (0047).
 	Recipients []string
+	Locales    map[string]string
 }
 
 // RaiseNotice records that one of a reader's live connections raised a
@@ -300,7 +302,7 @@ func (m *MCPConnections) RaiseNotice(ctx context.Context, reader, id, event stri
 		if _, err := tx.Exec(ctx, `DELETE FROM mcp_connection_seen WHERE connection_id=$1 AND tenant_id=$2`, id, tenant); err != nil {
 			return err
 		}
-		n.Recipients, err = noticeRecipientsTx(ctx, tx, tenant, n.CreatedBy)
+		n.Recipients, n.Locales, err = noticeRecipientsTx(ctx, tx, tenant, n.CreatedBy)
 		return err
 	})
 	if err != nil {
@@ -368,18 +370,30 @@ var errNoticeEnded = errors.New("store: the connection ended")
 
 // noticeRecipientsTx are the person who consented and the workspace's
 // owners, active members with a verified address, each address once, in
-// order. The caller holds the tenant transaction.
-func noticeRecipientsTx(ctx context.Context, tx pgx.Tx, tenant, consented uuid.UUID) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT DISTINCT u.email
+// order, and each one's preferred locale. The caller holds the tenant
+// transaction.
+func noticeRecipientsTx(ctx context.Context, tx pgx.Tx, tenant, consented uuid.UUID) ([]string, map[string]string, error) {
+	rows, err := tx.Query(ctx, `SELECT DISTINCT u.email, coalesce(u.locale, '')
 		  FROM users u JOIN workspace_memberships m ON m.user_id = u.id AND m.tenant_id = $1
 		 WHERE u.status = 'active' AND m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > now())
 		   AND (u.id = $2 OR m.role = 'owner') AND m.role <> 'service'
 		   AND `+verifiedEmail+`
 		 ORDER BY u.email`, tenant, consented)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowTo[string])
+	defer rows.Close()
+	var emails []string
+	locales := map[string]string{}
+	for rows.Next() {
+		var email, locale string
+		if err := rows.Scan(&email, &locale); err != nil {
+			return nil, nil, err
+		}
+		emails = append(emails, email)
+		locales[email] = locale
+	}
+	return emails, locales, rows.Err()
 }
 
 // verifiedEmail is the condition that an account's address was confirmed:

@@ -115,6 +115,10 @@ type app struct {
 	// mcp is the assistant connector's handler, nil unless it is enabled;
 	// serve starts its reader health checks.
 	mcp *mcpauth.Handler
+	// switches are each workspace's own assistant switches, with the
+	// operator's configuration beneath them: every gate on text,
+	// attachments, drafts and AI asks them (docs/mcp-enclave.md §19.35).
+	switches *mcpauth.WorkspaceSwitches
 }
 
 // setup opens every dependency and runs migrations. The returned close
@@ -178,6 +182,21 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 	if err := a.users.SetLoginDecoyKey(cfg.LoginDecoyKey); err != nil {
 		closeAll()
 		return nil, nil, fmt.Errorf("login configuration: %w", err)
+	}
+
+	// The operator's switches beneath each workspace's own; read before
+	// anything asks them, since a server that cannot read them does not know
+	// what it may allow. Off, the connector allows nothing and nothing is read.
+	a.switches = mcpauth.NewWorkspaceSwitches(store.NewMCPConnections(pools.API), cfg.MCP.WorkspaceDefault, mcpauth.OperatorGates{
+		Content: cfg.MCP.ContentAllowed, Media: cfg.MCP.MediaAllowed, Send: cfg.MCP.SendAllowed,
+		SendSelf: cfg.MCP.SendSelfAllowed, SendDirect: cfg.MCP.SendDirectAllowed, AI: cfg.MCP.AIAllowed,
+	})
+	a.switches.Log = lg
+	if cfg.MCP.Enabled {
+		if err := a.switches.Load(ctx); err != nil {
+			closeAll()
+			return nil, nil, fmt.Errorf("assistant switches: %w", err)
+		}
 	}
 
 	if !withWA {
@@ -394,7 +413,7 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		// Wired whether or not the connector is mounted: a key a
 		// connection held never sends or manages here, and a draft is
 		// confirmed only while the switches allow it.
-		MCP: store.NewMCPConnections(pools.API), MCPSendAllowed: cfg.MCP.SendAllowed,
+		MCP: store.NewMCPConnections(pools.API), MCPSendAllowed: a.switches.Send,
 	})
 
 	a.registry, a.router, a.ws = registry, router, ws
@@ -508,6 +527,12 @@ func serve() error {
 		// Refusals past a connection's daily cap are counted, and logged
 		// once an hour.
 		a.mcp.WatchDroppedRefusals(ctx)
+		// Each workspace's assistant switches are read again every fifteen
+		// seconds, so a change made through another process arrives.
+		go a.switches.Watch(ctx)
+		// Renewal notices a restart of this server left unsent go within
+		// the hour.
+		a.mcp.WatchRenewalNotices(ctx)
 	}
 
 	errc := make(chan error, 1)
@@ -712,22 +737,25 @@ func (a *app) routes() http.Handler {
 			// Message text, only inside the enclave, only while the switch
 			// is on and only for the workspaces listed; attachments, on top
 			// of that, behind their own switch and list.
+			// Each answer is the operator's and the workspace's own
+			// switch together (docs/mcp-enclave.md §19.35).
 			ContentReader:  config.ContentReader,
-			ContentAllowed: a.cfg.MCP.ContentAllowed,
-			MediaAllowed:   a.cfg.MCP.MediaAllowed,
+			ContentAllowed: a.switches.Content,
+			MediaAllowed:   a.switches.Media,
 			MediaOff:       a.cfg.MCP.MediaOffKinds,
+			Workspaces:     a.switches,
 			// Sending, on top of content, behind its own switches, list
 			// and limits; what it sends goes through the socket's own
 			// text send.
-			SendAllowed:       a.cfg.MCP.SendAllowed,
-			SendSelfAllowed:   a.cfg.MCP.SendSelfAllowed,
-			SendDirectAllowed: a.cfg.MCP.SendDirectAllowed,
+			SendAllowed:       a.switches.Send,
+			SendSelfAllowed:   a.switches.SendSelf,
+			SendDirectAllowed: a.switches.SendDirect,
 			SendLimits:        sendLimits(a.cfg.MCP.SendLimits),
 			SendText:          mcpSendText(a.ws),
 			// AI integrations, on top of attachments, behind their own
 			// switch and list; what is off everywhere goes into every
 			// status answer.
-			AIAllowed:      a.cfg.MCP.AIAllowed,
+			AIAllowed:      a.switches.AI,
 			AIOffProviders: a.cfg.MCP.AIOffProviders,
 			AIOffFeatures:  a.cfg.MCP.AIOffFeatures,
 			AI:             store.NewAI(a.pools.API),
@@ -749,6 +777,12 @@ func (a *app) routes() http.Handler {
 			a.mcp.MailNotice, a.mcp.NoticeOrigin = sender.MCPConnected, origin
 		} else if a.cfg.MCP.UnknownAllowed() {
 			a.log.Warn("untested assistants and tokens may connect, but no new-assistant e-mail can go (WS_SMTP_ADDR, WS_MAIL_FROM and WS_MCP_NOTICE_ORIGIN): text for them is refused")
+		}
+		// The renewal notice carries no link, so it needs a mail server and
+		// nothing else (docs/mcp-enclave.md §19.35).
+		if a.cfg.Signup.SMTP.Configured() {
+			sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
+			a.mcp.MailRenewal = sender.MCPRenewalNotice
 		}
 		if a.cfg.MCP.Hosted() {
 			a.mcp.Reader = mcpauth.NewRelay(a.cfg.MCP.ReaderURL, a.cfg.MCP.RelaySecret)
@@ -779,7 +813,7 @@ func (a *app) routes() http.Handler {
 	// when its consent includes attachments and the switch allows them; the
 	// gate is wired whether or not the connector is mounted, so rows left
 	// from a time it was stay refused.
-	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.cfg.MCP.MediaAllowed, a.cfg.MCP.AIAllowed)
+	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.switches.Media, a.switches.AI)
 	mux.Handle("GET /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
 		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,

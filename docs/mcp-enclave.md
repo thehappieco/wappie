@@ -10135,11 +10135,236 @@ never ChatGPT, Codex or a plugin), the Go DCR-host tests,
 and the console's `readerMeasurements.spec.ts` (its fixtures against these
 constants), `mcpClients.spec.ts`, `mcpGuide.spec.ts` and `mcpSend.spec.ts`.
 
+### 19.35 Fewer steps without a new image (A1 to A7)
+
+The distribution audit's §6 A listed what made a connection cost more steps
+than it needed. **Owner decisions M3, M4 and M6** (2026-10-04): do A1 to A7
+in the server and the console only, so none of them waits for an image or
+costs a renewal round. Nothing in `packages/client`, `packages/mcp` or
+`packages/mcp-http` changes; the reader opens, seals and refuses exactly as
+before, and who can read content does not change. Migration
+`0047_mcp_friction.sql` holds the schema, with its down-step in the header.
+That header still calls this section §19.30, its number before the merge
+with 0.6.0: migrations are checksummed, and the sign-in branch carries the
+same file, so it is left byte for byte as it is.
+
+**A1: a re-confirmation in place of the password (M3).** The content consent,
+the renewal, a connection token with text, a new AI integration and an AI
+renewal no longer ask for the Wappie password. The person confirms it is them
+(`internal/stepup`, one small interface: `Checker.Fresh(session)`), and the
+server holds every write a grant of text goes into to it: `POST
+/v1/mcp/connections` of kind `content` or `ai`, `POST
+/v1/mcp/connections/{id}/renew`, a token's content bundle, the provisional
+service invitation and every `grant.add` answer 403 `step_up_required`
+otherwise. Every grant, not only one to a connection's service account
+(review of 2026-10-05): a grant is a copy of a number's key, and given to a
+standing service account, whose registrant holds its private key, or to a
+member, it reads the archive for as long as it stands, so an open browser
+past the window could otherwise hand on a longer-lasting copy than any
+connection. The console's member grant (Members and permissions) already asks
+for the password, which then also serves as the step-up; `wsctl grant` more
+than ten minutes after `wsctl login` is refused until the person signs in
+again. What hands over no key waits for none: an invitation of any role, a
+role change, an API key (one acting as a service account reads only what that
+account was granted) and the pairing of a new number, which needs its phone.
+A session is fresh for ten minutes after
+the sign-in that started its family (`sessions.authenticated_at`, which a
+workspace switch copies, since selecting a space proves nothing) or after a
+step-up, on the database's clock. Past it, an account with a passkey steps up
+with a WebAuthn assertion with user verification required, over that
+account's credentials, verified by the server (`passkey_challenges` kind
+`step_up`, bound to the session); otherwise with the password, derived in the
+browser as at sign-in, so only `auth_key` reaches the server. Routes: `GET
+/v1/auth/step-up` (`fresh`, `remaining_seconds`, `window_seconds`, `passkey`),
+`POST /v1/auth/step-up/passkey/options`, `POST /v1/auth/step-up/passkey` and
+`POST /v1/auth/step-up/password`. The archive keys come from the session's
+own account key (`createDeviceGrantLender`), exactly as `withDeviceKeys`
+after the password: one `/auth/me` checked against the session's account,
+workspace and public key, every requested device's grant found and opened or
+the whole set refused (never a device skipped as sign-in skips one), each key
+overwritten once used. A session without an account key of its own falls
+back to the password, which then also seals. When sign-in moves to
+id.thehappie.co (D3), its `prompt=login` replaces what is behind `Checker`.
+
+**A2: a switch per workspace (M4).** `WS_MCP_CONTENT_TENANTS`,
+`WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired:
+a server with one set while its switch is on refuses to start and names the
+replacement. Each workspace's owner turns text, attachments, drafts (with
+notes to the number's own chat) and AI on or off in the console (`GET` and
+owner-only `PUT /v1/mcp/workspace`; `tenants.mcp_text`, `mcp_media`,
+`mcp_send`, `mcp_ai`, NULL for the deployment's default). Each rides on the
+one before it as the operator's do. A switch never set is
+`WS_MCP_WORKSPACE_DEFAULT`: `on` for Wappie Cloud, `off` (the default) for a
+self-hosted server, which so stays off unless configured. The operator keeps
+every kill switch, `WS_MCP_DENY_TENANTS` and `WS_MCP_READER_ENCLAVE_TENANTS`;
+the answer is operator, then platform, then owner. The platform half is one
+hook, `WorkspaceSwitches.Platform`, nil today (no plan or trial check is
+invented here; the platform decides those). The switches are read from
+memory, refreshed every 15 s and at once by the owner's own change; a failed
+refresh keeps the last answers, since a hiccup read as "off" would reseal
+every connection.
+
+**A3: the consent card's defaults** (console only). A workspace with one
+number starts with it chosen; the card remembers the numbers and the
+durations (the connection's, and an untested client's history window) last
+authorized per server, account and `client_id` in browser storage
+(`wappie.mcpConsentChoices.v2`; never a confirming tick, never a secret,
+nothing if storage is blocked), and "Select all" sits beside the numbers. It
+never remembers what opens content (message text, attachments, drafts,
+groups, the own chat): a CIMD `client_id` such as Claude's is the same for
+every user of that client, so a request someone started from their own
+account (threat D, consent phishing with a legitimate client) would
+otherwise open with text and the victim's numbers ticked. The person ticks
+those each time; the first version of the store, which kept them, is removed
+on the next write.
+
+**A4: a reconnect replaces (M6).** A version-2 consent may carry `replace:
+true` (the card's "Replace my previous <assistant> connection", ticked by
+default): when it activates, the same person's other live connections of
+the same client in the same workspace (a CIMD client by `client_id`, a
+registered one by host and locality) are revoked as `replaced`, and the
+workspace's cap does not count them while the consent waits. Every hour,
+connections unused past their tier's idle time and a day are revoked as
+`idle`: 30 days for a tested web client without text, 7 with text or for a
+local or unknown client, 3 for an unknown client with text; tokens and AI
+integrations never. Use is the key's last read, the activation and the
+renewal (and, without text, the reader's last status check; a content
+connection's is asked every minute regardless), on the database's clock.
+The sweep picks its candidates in one read and ends each only if it is still
+idle under its row's lock, in its workspace's transaction, so a renewal or a
+read between the pick and the end keeps the connection. "Replace" stays
+ticked by default (M6) even on a request from a flow this browser did not
+start: the console cannot tell one from the other, and with the remembered
+options gone (A3) the person still ticks text and confirms it is them.
+
+**A5: renewing in one go.** After an enclave boot, or once a workspace turned
+text off and on again, the console shows a banner and **Renew all**: one
+confirmation (A1), then each waiting tested connection through its own
+renewal, one at a time, the round stopping at the first one refused for a
+lapsed confirmation; untested ones and tokens keep their own Renew, and a
+banner over only those offers **Renew**. With SMTP configured each person
+gets one e-mail per workspace a few minutes after a reseal settles, at most
+one per twelve hours (`mcp_connections.reseal_mailed_at`), with no link. It
+names each connection by a name no client chose for itself, as the
+activation notice does (§19.22): a 0.6.0 row's verified `client_name` (a
+tested client's name from the reader's list, an untested one's host, a
+token's label, written Token “label” as the activation notice writes it, so
+that a label such as "Claude" never reads as that tested assistant), and an
+older row's host. It gives no cause (D10, point 7),
+sends to **Renew all** only what that button renews and an untested client
+or a token to its own **Renew**, and ends with the notice e-mails' footer
+word for word (D10, point 5). Its texts were approved on 2026-10-05 (below).
+
+**A6: the plugin packages** (`thehappieco/wappie-plugins`) say what 0.6.0
+gives each client, with the tested list §19.34 left: Claude Code is the
+tested local app, so no drafts or own-chat notes and text for 7 days by
+default; Codex and ChatGPT connect as untested clients, in the `unknown`
+tier and with its limits (the amber card, never drafts, notes or sending, a
+history window of 7, 30 or 90 days, the untested reading limits, and 3 days
+idle with text, A4); the refusals `limit_reached` and `outside_window`; how
+an expired or revoked connection appears. Nothing promises ChatGPT: the
+earlier step that created a ChatGPT plugin at chatgpt.com/plugins is
+superseded by §19.34 and the owner's decision of 2026-10-05, and the
+packages drop it.
+
+**A7: notices in each person's language.** The console saves its language on
+the account (`users.locale`, `PUT /v1/auth/locale`, one of en, pt, es, fr,
+de); the new-connection and renewal e-mails go in it, English when it never
+said.
+
+**Tests.** `internal/store/mcp_friction_test.go` (the window, a switch that
+copies it, owner-only switches, replace and the cap, idle by tier with its
+day's grace, the re-check under the row's lock, renewal notices with their
+names and what Renew all leaves out, recipients' languages, the down-step and
+0047's backfill of existing sessions, all under forced RLS),
+`internal/mcpauth/friction_test.go` (every guarded write without a step-up, a
+token's content bundle included, the switches route and default, a
+reconnect, the renewal e-mail and the reseal that arms it, the language),
+`internal/authapi/stepup_test.go` (password and passkey step-ups),
+`internal/wsapi/stepup_test.go` (a grant to a connection's service, a standing
+service and a member), the config and mailer tests (the renewal e-mail's
+words: no cause, the footer, the apostrophe, Renew all or each one's own);
+the console's `deviceGrants.spec.ts`, `stepUp.spec.ts`, `grantStepUp.spec.ts`,
+`mcpFriction.spec.ts`, `mcpReplaceCard.spec.ts`, `mcpRenewAll.spec.ts`,
+`accountLocale.spec.ts`, and the consent card's defaults and the replace
+request in `mcpConnect.spec.ts`.
+
+**Left for the next image.** `packages/mcp-http/README.md` still tells
+operators to list workspaces in `WS_MCP_CONTENT_TENANTS` (its message text
+section) and `WS_MCP_MEDIA_TENANTS` (its attachments section). The file is
+copied into the measured image, so it is corrected with the next reader
+release; until then this section is the reference. The core's
+`.env.example` shows `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS` and
+names the retired lists only as retired (the owner approved editing the
+example on 2026-10-05); the console's `deploy/mcp.env.example` never listed
+them.
+
+**The texts, approved (2026-10-05).** The owner approved every text of this
+branch and of the platform sign-in that the list of 2026-10-05 collected
+(codes C- for the console, E- for the Go server, P- for the plugin package),
+with thirteen recommendations. Those that change this branch's texts are
+applied here; the sign-in's are recorded in `docs/platform-sign-in.md`.
+
+1. The measured image keeps "with your password" (M-MSG-02, M-MSG-03 and the
+   `ai_paused` refusal) until the next reader release. Nothing changes now.
+2. No text names a restart as the cause, wherever the key went (D10, point 7):
+   the consent and renewal cards say "If the Wappie reader loses this
+   connection’s key, the assistant will ask you to renew here…" (C-CONF-04);
+   the AI cards say that the reader no longer holds the integration's keys
+   and that the integration pauses (C-AI-01 to C-AI-03; the English names
+   the integration, so that "it" never reads as the reader); the list and the
+   activity panel lose "for example after a restart" (C-LIST-15 and C-ACT-01,
+   approved with 0.6.0); and a lost AI request says only "The reader no
+   longer knows this request. Try again." (`ai_job_lost`). All five
+   languages.
+3. Portuguese writes "a Wappie" where Wappie checks or receives, and "o
+   Wappie" for the app and the connector (the sign-in's texts).
+4. Portuguese says "entrar" for signing in: the step-up field's password note
+   reads "Conferida como ao entrar" (C-STEP-07); "acesso" stays for access to
+   numbers. French, where "connexion" is above all an assistant's connection,
+   says it with the verb on the step-up field: "Vérification de la façon dont
+   vous vous êtes connecté…" (C-STEP-02) and "Vérifié comme lorsque vous vous
+   connectez : …" (C-STEP-07).
+5. The drafts switch says "a sua própria conversa", as the guide does
+   (C-SWITCH-09); the other languages already used the console's word.
+6. The renewal e-mail names a token as Token “label” (E-RENEW-05).
+7. The new languages of the new-assistant e-mail follow the revocation page
+   and the console word for word: the French button is "Révoquer uniquement
+   cette connexion" (E-MAIL-37), and the line under it says "uniquement"
+   too (E-MAIL-38); the German footer and link help say "Button" (E-REV-11,
+   C-LIST-21), and German says "Netzwerk" (E-MAIL-13, 27, 28), as the
+   console's token form now does too ("Erlaubte Netzwerke").
+8. One wording of the account-key alert, on the screen and in the e-mail, in
+   the account's language (the sign-in).
+9. No server English on the screen: Members and permissions' "Liberar
+   leitura" shows the step-up field's own sentence (C-STEP-08) when the grant
+   answers `step_up_required`, whatever the server's message; the sign-in's
+   callback has its own sentence for `rate_limited`.
+10. An account that signs in through The Happie Co is told so (C-STEP-13),
+    and the platform sign-in is not switched on in the pilot before its step
+    4 (the sign-in).
+11. The link ceremony says the account's passkeys stop working (the sign-in).
+12. The typographic apostrophe in every text a person reads: the console, the
+    e-mails and the plugin package (P-PLUG, P-SKILL, P-DOC), older texts
+    included (the consent card's paragraphs, the reader preferences, the
+    sign-up e-mail's code label). Error messages of the API, which programs
+    read, keep ASCII.
+13. The AI card's promise ends "You confirm it is you before it starts."
+    (C-AI-06), as written.
+
+**German grammar fix.** E-MAIL-33 and E-MAIL-36 said "Was er lesen kann:" and
+"Kennen Sie ihn nicht?", the assistant's masculine, which is wrong for a token
+(das Token). Both now name the connection, which fits assistants and tokens
+alike and keeps the approved meaning: "Was die Verbindung lesen kann:" and
+"Kennen Sie diese Verbindung nicht?".
+
 ### Amendments to §§1 to 18
 
 | Where | Amendment | When |
 |---|---|---|
 | Opening | reader 0.6.0 admits any MCP client (§19) | now (in place) |
+| §3 | `WS_MCP_CONTENT_TENANTS`, `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired for each workspace's own switches, `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS` (§19.35) | core 0047 |
+| §§15.9, 15.11, 18.13 | the consent, renewal and AI cards ask for a step-up (a recent sign-in, the passkey or the password) instead of the password, and seal with the session's account key (§19.35) | core 0047 |
 | §1 | one more hop, `127.0.0.8:3128` to vsock 8007: the parent's document egress proxy (`wappie-cimd-egress`), which tunnels `CONNECT <host>:443` to public addresses only, the enclave's first egress to hosts that are not fixed (§19.9) | 0.6.0 |
 | §3 | `WS_MCP_REDIRECT_HOSTS` applies to version-1 descriptors only and is deleted with the last version-1 reader; `WS_MCP_CIMD_MODE`, `WS_MCP_BLOCKED_CLIENTS` and `WS_MCP_DCR_HOSTS` are added (§19.21) | P1 |
 | §5.1 | `POST /internal/token-requests`, `POST /internal/token-requests/{id}/bundle` and `POST /internal/workspaces/{id}/live-list`; the descriptors are version 2 (§19.12) | 0.6.0 |

@@ -35,7 +35,7 @@ func signupEmail(origin, email, token string) (accountEmail, error) {
 		Intro: "We received a request to create a Wappie account using the email address below. Confirm your email address to complete registration.",
 		Link:  link, HomeURL: origin, Action: "Verify email", Expiry: "This verification link expires in 30 minutes.",
 		Instructions: "This confirmation is for:", Recipient: email, Code: token,
-		CodeLabel: "Prefer to use a code? Paste this into Wappie's email verification field:",
+		CodeLabel: "Prefer to use a code? Paste this into Wappie’s email verification field:",
 		Footer:    "If you did not request this account, you can safely ignore this email. Do not share your verification code.",
 	}, nil
 }

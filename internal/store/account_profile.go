@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -14,6 +16,34 @@ type Profile struct {
 	Email  string    `json:"email"`
 	Name   string    `json:"name"`
 	Avatar string    `json:"avatar"`
+	// Locale is the language the console was last set to by this person,
+	// for the e-mails sent to them (0047); empty until it says.
+	Locale string `json:"locale"`
+}
+
+// Locales are the languages an account may prefer: the console's five.
+var Locales = []string{"en", "pt", "es", "fr", "de"}
+
+// ErrInvalidLocale is a locale that is not one of Locales.
+var ErrInvalidLocale = errors.New("store: not a supported locale")
+
+// SetLocale records the language a person's console is set to, for the
+// e-mails this server sends them. Their identity's row holds it, whichever
+// workspace they are signed in to.
+func (u *Users) SetLocale(ctx context.Context, id uuid.UUID, locale string) (Profile, error) {
+	if !slices.Contains(Locales, locale) {
+		return Profile{}, ErrInvalidLocale
+	}
+	home, err := u.identityTenant(ctx, id)
+	if err != nil {
+		return Profile{}, err
+	}
+	out := Profile{ID: id}
+	err = pg.InTenantTx(ctx, u.pool, home.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `UPDATE users SET locale=$2 WHERE id=$1 AND role<>'service' AND status='active'
+			RETURNING email,name,avatar,coalesce(locale,'')`, id, locale).Scan(&out.Email, &out.Name, &out.Avatar, &out.Locale)
+	})
+	return out, err
 }
 
 func (u *Users) Profile(ctx context.Context, id uuid.UUID) (Profile, error) {
@@ -23,7 +53,7 @@ func (u *Users) Profile(ctx context.Context, id uuid.UUID) (Profile, error) {
 	}
 	out := Profile{ID: id}
 	err = pg.InTenantTx(ctx, u.pool, home.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT email,name,avatar FROM users WHERE id=$1 AND role<>'service' AND status='active'`, id).Scan(&out.Email, &out.Name, &out.Avatar)
+		return tx.QueryRow(ctx, `SELECT email,name,avatar,coalesce(locale,'') FROM users WHERE id=$1 AND role<>'service' AND status='active'`, id).Scan(&out.Email, &out.Name, &out.Avatar, &out.Locale)
 	})
 	return out, err
 }
@@ -42,7 +72,7 @@ func (u *Users) UpdateProfile(ctx context.Context, id uuid.UUID, name, avatar st
 	}
 	out := Profile{ID: id}
 	err = pg.InTenantTx(ctx, u.pool, home.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `UPDATE users SET name=$2,avatar=$3,updated_at=now() WHERE id=$1 AND role<>'service' AND status='active' RETURNING email,name,avatar`, id, name, avatar).Scan(&out.Email, &out.Name, &out.Avatar)
+		return tx.QueryRow(ctx, `UPDATE users SET name=$2,avatar=$3,updated_at=now() WHERE id=$1 AND role<>'service' AND status='active' RETURNING email,name,avatar,coalesce(locale,'')`, id, name, avatar).Scan(&out.Email, &out.Name, &out.Avatar, &out.Locale)
 	})
 	return out, err
 }

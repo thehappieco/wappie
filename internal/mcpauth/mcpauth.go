@@ -52,6 +52,7 @@ import (
 	"whatserver2/internal/mailer"
 	"whatserver2/internal/netguard"
 	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 )
 
@@ -157,11 +158,24 @@ type Handler struct {
 	// client or token is given text (§19.21, §19.22).
 	MailNotice   func(ctx context.Context, to string, n mailer.MCPNotice) error
 	NoticeOrigin string
+	// MailRenewal sends a renewal notice to one address (renewals.go); nil
+	// sends none, and the console's banner alone says it.
+	MailRenewal func(ctx context.Context, to string, n mailer.MCPRenewal) error
 	// LiveListLimits bounds the attested live list per workspace, and
 	// RevokeLinkLimits the revoke-only link per address. Nil allows
 	// everything, for tests.
 	LiveListLimits   *ratelimit.Limiter
 	RevokeLinkLimits *ratelimit.Auth
+	// Workspaces are each workspace's own assistant switches, which its
+	// owner sets in the console (docs/mcp-enclave.md §19.35); the gates
+	// above are composed from them and the operator's configuration. Nil
+	// leaves the console's switches route answering 404.
+	Workspaces *WorkspaceSwitches
+	// StepUp is what every write that hands an archive to a reader asks of
+	// the person's session: a content consent, a token with text, an AI
+	// authorization and their renewals (internal/stepup). Nil is the session
+	// store's own record, Users'.
+	StepUp stepup.Checker
 
 	// Set up by Mount.
 	readers  []reader
@@ -170,6 +184,11 @@ type Handler struct {
 	dropped  *refusalDrops
 	// notices are the notice e-mails on their way, for WaitNotices.
 	notices sync.WaitGroup
+	// renewalTimer is the pending send of a renewal round's notices, and
+	// renewalAfter what replaces renewalDelay in a test; zero is renewalDelay.
+	renewalMu    sync.Mutex
+	renewalTimer *time.Timer
+	renewalAfter time.Duration
 }
 
 // Mount registers the routes on a mux. Call it once, after the fields are
@@ -193,6 +212,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/mcp/connections/{id}/renewal", h.renewal)
 	mux.HandleFunc("POST /v1/mcp/connections/{id}/renew", h.renew)
 	mux.HandleFunc("GET /v1/mcp/content", h.content)
+	h.mountWorkspaceSwitches(mux)
 	h.mountSendConsole(mux)
 	mux.HandleFunc("GET /v1/mcp/internal/connections/{id}", h.internal(h.status))
 	mux.HandleFunc("POST /v1/mcp/internal/connections/{id}/activate", h.internal(h.activate))
@@ -260,12 +280,18 @@ type createRequest struct {
 	ClientLocal *bool   `json:"client_local"`
 	ClaimedName *string `json:"claimed_name"`
 	HistoryDays *int    `json:"history_days"`
+	// Replace asks that, once this connection activates, the person's
+	// earlier live connections of the same client in this workspace end
+	// (docs/mcp-enclave.md §19.35): the card's pre-ticked "Replace my
+	// previous connection". A version-2 descriptor's consent only; absent is
+	// false.
+	Replace bool `json:"replace"`
 }
 
 // hasClient reports whether a consent carries any of the version-2 client
 // fields.
 func (r createRequest) hasClient() bool {
-	return r.Trust != nil || r.ClientHost != nil || r.ClientLocal != nil || r.ClaimedName != nil || r.HistoryDays != nil
+	return r.Trust != nil || r.ClientHost != nil || r.ClientLocal != nil || r.ClaimedName != nil || r.HistoryDays != nil || r.Replace
 }
 
 type createReply struct {
@@ -338,6 +364,9 @@ type connectionInfo struct {
 	// for the console's new-assistant banner.
 	CreatedByEmail *string `json:"created_by_email"`
 	Seen           bool    `json:"seen"`
+	// Mine says the viewer consented to it: the connections a reconnect of
+	// theirs may replace (§19.35).
+	Mine bool `json:"mine"`
 	// BudgetHits are the reading limits the reader said this connection
 	// reached, each with when it last did (§19.19).
 	BudgetHits []store.BudgetHit `json:"budget_hits"`
@@ -503,7 +532,7 @@ func (h *Handler) prepare(w http.ResponseWriter, r *http.Request) {
 // bundle relayed; a relay that fails undoes both, so nothing consented
 // survives a hand-off the reader never acknowledged.
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticate(w, r)
+	session, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
@@ -512,6 +541,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	var req createRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	// Text and AI hand the archive to the reader: they wait for the person's
+	// fresh step-up, as the grants and the service invitation before them
+	// did. A metadata consent opens nothing and asks for none.
+	if (req.Kind == store.KindContent || req.Kind == store.KindAI) && !h.stepUpFresh(w, r, session) {
 		return
 	}
 	if req.Kind == store.KindAI {
@@ -830,6 +865,7 @@ func listedConnection(c store.MCPConnection, viewer uuid.UUID, allowed bool, now
 		info.RevokeReason = &c.RevokeReason
 	}
 	info.ClientKind, info.ClientLocal, info.FirstUsedAt, info.Seen = c.ClientKind, c.ClientLocal, c.FirstUsedAt, c.Seen
+	info.Mine = c.CreatedBy == viewer
 	info.ClientID, info.ClientHost, info.Trust = optional(c.ClientID), optional(c.ClientHost), optional(c.Trust)
 	if c.ClientHost != "" {
 		if host, reason := netguard.CheckHost(c.ClientHost); reason == "" {
@@ -992,6 +1028,17 @@ func (h *Handler) connectionActivate(w http.ResponseWriter, r *http.Request, rea
 		return
 	}
 	h.log().Info("mcp connection activated", "connection", id, "reader", readerID)
+	// A reconnect that asked to replace the person's earlier connections of
+	// the same client ends them now, and tells their readers (§19.35). A
+	// failure leaves them live: the idle sweep, or the person, ends them.
+	replaced, err := h.Connections.ReplacePrevious(r.Context(), readerID, id)
+	if err != nil {
+		h.log().Warn("could not replace a reconnected assistant's earlier connections", "connection", id, "error", err)
+	}
+	for _, old := range replaced {
+		h.log().Info("mcp connection revoked", "connection", old.ID, "reason", store.ReasonReplaced, "by", id)
+		h.tellRevoked(context.WithoutCancel(r.Context()), old.Reader, old.ID)
+	}
 	// Every activation is announced (docs/mcp-enclave.md §19.22): an OAuth
 	// connection's handshake and a console token's install alike.
 	h.announce(r.Context(), readerID, id, store.NoticeActivated)
@@ -1127,6 +1174,27 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (store.Se
 		return store.Session{}, store.User{}, false
 	}
 	return session, user, true
+}
+
+// stepUpFresh refuses a write that hands an archive to a reader when the
+// session's person has not proved themselves within the step-up window
+// (internal/stepup), with the code the console asks again on.
+func (h *Handler) stepUpFresh(w http.ResponseWriter, r *http.Request, session store.Session) bool {
+	checker := h.StepUp
+	if checker == nil {
+		checker = stepup.Recent(h.Users)
+	}
+	fresh, err := checker.Fresh(r.Context(), session.ID)
+	if err != nil {
+		h.log().Error("could not read a session's step-up", "error", err)
+		fail(w, http.StatusInternalServerError, "internal", "could not check your confirmation")
+		return false
+	}
+	if !fresh {
+		fail(w, http.StatusForbidden, stepup.Code, stepup.Message)
+		return false
+	}
+	return true
 }
 
 // allow applies a rate limit, answering 429 with a Retry-After when it

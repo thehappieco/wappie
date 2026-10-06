@@ -1355,6 +1355,36 @@ connection reconnects.
 `docs/rest-api.md` still holds: the archive server never opens archived
 content or receives archive private keys.
 
+## Fewer steps, without a new reader image (2026-10-04)
+
+Owner decisions M3, M4 and M6; the contract is
+[§19.35](mcp-enclave.md#1935-fewer-steps-without-a-new-image-a1-to-a7).
+
+**A step-up instead of the password.** Every text consent and renewal asked
+for the Wappie password and waited for an Argon2id derivation, the largest
+step in each. The browser already holds the account key for the session, so
+it seals the grants with that; what the password proved, that the person at
+the screen is the one signed in, is now a sign-in within ten minutes, a
+passkey with user verification, or the password, checked by the server,
+which refuses every write a grant of text goes into without it, and every
+grant of a number's key to anyone: given to a member or a standing service
+account, a grant reads the archive for as long as it stands, so a browser
+left open past the window must not make one either. The archive server still
+never receives an archive key or the password.
+
+**Each workspace decides, beneath the operator.** The operator's lists
+(`WS_MCP_CONTENT_TENANTS` and its kin) did not scale past the test workspace.
+The owner of each workspace now turns text, attachments, drafts and AI on or
+off; Wappie Cloud starts them on, a self-hosted server off. The operator
+keeps the kill switches, a deny list and which workspaces the attested reader
+serves. Plans and trials are the platform's, behind one hook that answers yes
+until the platform decides.
+
+**A reconnect replaces, and an idle row ends.** Reconnecting the same
+assistant used to leave the old connection holding a place under the cap;
+the consent now replaces it (unticked, both stay), and a connection whose
+refresh token has died ends by itself.
+
 ## Claude is the only tested assistant (2026-10-05)
 
 ChatGPT's plugin flow kept failing in the live baseline on reader 0.5.0 and

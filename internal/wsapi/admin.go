@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatserver2/internal/access"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -563,6 +564,12 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such account in this tenant")
 		return
 	}
+	// Every grant hands the number's key on, to a person, a standing service
+	// account or an assistant's reader alike: it waits for the person's fresh
+	// step-up, as a connection does (internal/stepup).
+	if !s.stepUpForGrant(ctx, f.ReqID, who) {
+		return
+	}
 
 	_, epoch, err := s.srv.cfg.Keys2.ArchiveKey(ctx, tenantUUID, deviceUUID)
 	if errors.Is(err, store.ErrNoArchiveKey) {
@@ -785,4 +792,31 @@ func (s *Server) cancelDevicePairing(tenant, device string) {
 			pair.Cancel()
 		}
 	}
+}
+
+// stepUpForGrant answers a grant from a session whose person has not proved
+// themselves within the step-up window. Whoever receives it, a grant is a
+// copy of a number's key: given to an account whose private key someone
+// else holds (a standing service account, or a member who signed up from an
+// invitation), it reads the archive for as long as it stands, so a browser
+// left open must not be enough to make one.
+func (s *session) stepUpForGrant(ctx context.Context, reqID string, who actor) bool {
+	checker := s.srv.cfg.StepUp
+	if checker == nil && s.srv.cfg.Sessions != nil {
+		checker = stepup.Recent(s.srv.cfg.Sessions)
+	}
+	fresh := false
+	if checker != nil && who.person {
+		var err error
+		if fresh, err = checker.Fresh(ctx, who.sessionID); err != nil {
+			s.log.Error("reading a session's step-up failed", "error", err)
+			s.replyError(reqID, ErrCodeInternal, "could not check your confirmation")
+			return false
+		}
+	}
+	if !fresh {
+		s.replyError(reqID, ErrCodeStepUpRequired, stepup.Message)
+		return false
+	}
+	return true
 }
