@@ -382,11 +382,12 @@ redirects on exactly the document's host and loopback redirects on any port;
 dynamic registration takes only the pinned Claude redirects.
 
 - **Constants** (`enclave/constants.mjs`): `CLIENT_POLICY`, the tested list
-  `TESTED_CLIENTS` (Claude, by its document and by registration, and Claude
-  Code: the clients that passed the live baseline on 0.5.0; ChatGPT and Codex
-  connect untested, `docs/mcp-enclave.md` section 19.34), the tier limits
-  `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS` and
-  `CIMD_EGRESS`, all measured and copied into `measurements.json`. The
+  `TESTED_CLIENTS` (Claude and Claude Code, which passed the live baseline on
+  0.5.0 by their documents, and Claude's registration form on the same two
+  callbacks, listed by the owner's decision without a baseline run; ChatGPT
+  and Codex connect untested, `docs/mcp-enclave.md` section 19.34), the tier
+  limits `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS`
+  and `CIMD_EGRESS`, all measured and copied into `measurements.json`. The
   shared modules take a policy object; the hosted path keeps
   `{ mode: 'allowlist', hosts }`.
 - **Fetching**: a tested client asked with a pinned redirect is never

@@ -122,6 +122,16 @@ test('the page at /: one language, what the address is for, the console and the 
     assert.equal(response.headers.get('content-length'), String(Buffer.byteLength(body)))
   }
   for (const tag of PAGE_LANGUAGES) assert.deepEqual(Object.keys(HOME[tag]), ['title', 'lead', 'address', 'console', 'docs', 'name'], tag)
+  // The lead names Claude, the assistant Wappie tests, and MCP apps in general; no ChatGPT step, since the console shows none (§19.34).
+  for (const tag of PAGE_LANGUAGES) {
+    assert.match(HOME[tag].lead, /Claude/, tag)
+    assert.match(HOME[tag].lead, /MCP/, tag)
+    assert.doesNotMatch(HOME[tag].lead, /ChatGPT|Codex|plugin/i, tag)
+  }
+  assert.equal(HOME.en.lead, 'This is the address of Wappie’s connector. Add it in your assistant: in Claude as a custom connector, or in another app that ' +
+    'supports MCP. Wappie then opens in your browser and asks which numbers it may read. The Wappie console shows the steps for each assistant.')
+  assert.equal(HOME.pt.lead, 'Este é o endereço do conector do Wappie. Adicione-o no seu assistente: no Claude como conector personalizado, ou em outro app ' +
+    'compatível com MCP. O Wappie abre no seu navegador e pergunta quais números o assistente pode ler. O console da Wappie mostra os passos para cada assistente.')
   const head = homePage(new Request('https://mcp.wappie.thehappie.co/', { method: 'HEAD' }), site)
   assert.equal(head.status, 200)
   assert.equal(await head.text(), '')

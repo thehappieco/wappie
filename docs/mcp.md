@@ -154,10 +154,11 @@ with a Client ID Metadata Document on its own https domain (VS Code, Zed,
 goose, ChatGPT, Codex, an in-house agent), as well as in Claude and Claude
 Code. The consent card always leads with the client's verified domain.
 
-- **Tested by Wappie.** The clients Wappie has tested are pinned, with their
-  exact return addresses, in the reader's published image: Claude (on the
-  web, by its document or by registration) and Claude Code, the clients that
-  passed the live baseline on reader 0.5.0
+- **Tested by Wappie.** The tested clients are pinned, with their exact
+  return addresses, in the reader's published image: Claude on the web
+  and Claude Code, which passed the live baseline on reader 0.5.0 by their
+  documents. Claude's registration form, on the same two callbacks, is
+  listed by the owner's decision without a baseline run
   ([contract §19.34](mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
   Claude shows "Tested by Wappie". Claude Code shows "App on this computer":
   an app on your computer cannot be identified there, so it gets shorter

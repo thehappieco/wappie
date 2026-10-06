@@ -7261,9 +7261,11 @@ export const READER_CAPABILITIES = Object.freeze(['consent_v2', 'media', 'consen
 // is 0.5.0's rule, kept for the tests and the hosted path. dcr 'pinned'
 // admits only the pinned DCR redirects (§19.8).
 export const CLIENT_POLICY = Object.freeze({ cimd: 'any', dcr: 'pinned' })
-// The tested list (§19.4, §19.34): the clients that passed baseline B on
-// reader 0.5.0, by the owner's decision of 2026-10-05. A change is a release.
-// build.sh copies this list and CLIENT_LIMITS into measurements.json.
+// The tested list (§19.4, §19.34), by the owner's decision of 2026-10-05:
+// Claude and Claude Code passed baseline B on reader 0.5.0 by their documents;
+// claude_dcr, Claude's registration on the same callbacks, is listed without a
+// baseline run. A change is a release. build.sh copies this list and
+// CLIENT_LIMITS into measurements.json.
 export const TESTED_CLIENTS = deepFreeze([
   { id: 'claude', kind: 'cimd', client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata', name: 'Claude', local: false, profile: 'claude.ai',
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
@@ -9595,10 +9597,11 @@ a release (§19.28 point 16).
 in a browser no longer gets `{"code":"not_found"}`. `GET` or `HEAD /` on the
 public listener answers a page in one language (a valid `?lang=`, else the
 person's first of the five, else English): the Wappie icon (`/icon-192.png`),
-"This is the address of Wappie's connector. Add it in your assistant
-(Claude, ChatGPT or another app that supports MCP): in Claude as a custom
-connector, in ChatGPT as a developer-mode plugin. … The Wappie console shows
-the steps for each assistant.", the
+"This is the address of Wappie's connector. Add it in your assistant: in
+Claude as a custom connector, or in another app that supports MCP. … The
+Wappie console shows the steps for each assistant." (amended in §19.34,
+pending the owner's approval; the text approved first also named ChatGPT
+and its developer-mode plugin), the
 address `https://mcp.wappie.thehappie.co/mcp`, a link to the console
 (`CONSOLE_URL`) and one to the documentation, and links to the other four
 languages. Nothing is loaded from elsewhere: the CSP is `default-src 'none';
@@ -10043,16 +10046,25 @@ is the authorize line's `client`, §19.4):
 |---|---|---|---|
 | Claude (web) | `https://claude.ai/oauth/mcp-oauth-client-metadata` (CIMD) | `87035c02ba6c` | connect, calls, refresh, the cross-session test (refused, 2026-10-05) and revocation passed; the restart renewal is recorded by the lead |
 | Claude Code | `https://claude.ai/oauth/claude-code-client-metadata` (CIMD) | `569ea71ec53b` | connect, calls, refresh and revocation passed; the restart renewal is recorded by the lead |
-| ChatGPT, Work mode (desktop app) | `https://chatgpt.com/oauth/codex/client.json`, Codex's document, with a `chatgpt.com` callback | `ffec7c120c96` | connect, calls and refresh, then revoked; did not finish; dropped |
+| ChatGPT, Work mode (desktop app) | `https://chatgpt.com/oauth/codex/client.json`, Codex's document; the redirect was loopback, ports not logged (Go's `chatgpt.com` is the vouching host) | `ffec7c120c96` | connect, calls and refresh, then revoked; did not finish; dropped |
 | ChatGPT, Chat mode; Codex | | | not run; dropped |
+
+Work mode's redirect is inferred, not logged: 0.5.0 accepts only a
+redirect the fetched document lists and refuses a document that mixes https
+and loopback redirects (`clients.mjs` `validateRedirectURIs`), and Codex's
+document lists only `http://127.0.0.1/callback` and
+`http://localhost/callback` (fetched 2026-10-05, as the tests' fixture has
+it). So the connection was a local app under Codex's identity.
 
 **The list** (`enclave/constants.mjs`, measured; `build.sh` copies it into
 `measurements.json`): `claude` (its document, both Claude callbacks),
 `claude_code` (its document, loopback `localhost` and `127.0.0.1` on
 `/callback`) and `claude_dcr` (Claude's registration, the same two
-callbacks). The tested names (M-ID-06) are "Claude · Claude Code": the card,
-the lists and the console's "Other assistants" step read them from the
-release's `tested_clients`.
+callbacks). Baseline B ran Claude's and Claude Code's documents only (no
+`register` event for Claude); `claude_dcr` is listed by the owner's
+decision without a baseline run. The tested names (M-ID-06) are "Claude ·
+Claude Code": the card, the lists and the console's "Other assistants" step
+read them from the release's `tested_clients`.
 
 **ChatGPT and Codex now** are untested clients. Their documents
 (`https://chatgpt.com/oauth/client.json`, `…/oauth/<id>/client.json` and
@@ -10064,15 +10076,49 @@ days, and the untested reading limits and lifetimes; Codex on a loopback
 port is an untested local app. `/mcp/register` refuses a `chatgpt.com`
 redirect (400 `invalid_redirect_uri`, no record kept), and a record 0.5.0
 registered with one gets the `invalid_client` page at authorize (§19.8).
-Go's `WS_MCP_DCR_HOSTS` defaults to `claude.ai,claude.com` (§19.21).
+Go's `WS_MCP_DCR_HOSTS` defaults to `claude.ai,claude.com` (§19.21). A
+connection 0.5.0 made for ChatGPT or Codex is a record without client
+fields, which 0.6.0 reads as `legacy`, tested under the web limits (§19.17,
+`budgets.mjs` `tierOf`), with what its consent granted, until it is
+revoked: the operations' turn-on steps revoke every live one recorded under
+`chatgpt.com` around the deploy.
 
 **Unchanged:** the hosted metadata connector (`server.mjs`,
 `WAPPIE_MCP_REDIRECT_HOSTS` and Go's `WS_MCP_REDIRECT_HOSTS`, both
 `claude.ai,chatgpt.com`) until P0 decides its fate (§19.23); the `{cb}`
 pattern rules, which the tests keep with entries of their own; the vectors
-(`attest-v2.json` names only Claude's ids); and the approved text of the
-page at `/` (§19.29, M-HOME), which still names ChatGPT, for the owner to
-decide before the build.
+(`attest-v2.json` names only Claude's ids).
+
+**The page at `/`** (M-HOME, §19.29) no longer sends anyone to ChatGPT
+steps the console does not show. Its lead, **pending the owner's approval**
+(D10, before the build, since the page is measured):
+- pt: "Este é o endereço do conector do Wappie. Adicione-o no seu
+  assistente: no Claude como conector personalizado, ou em outro app
+  compatível com MCP. O Wappie abre no seu navegador e pergunta quais
+  números o assistente pode ler. O console da Wappie mostra os passos para
+  cada assistente."
+- en: "This is the address of Wappie’s connector. Add it in your assistant:
+  in Claude as a custom connector, or in another app that supports MCP.
+  Wappie then opens in your browser and asks which numbers it may read. The
+  Wappie console shows the steps for each assistant."
+- es: "Esta es la dirección del conector de Wappie. Agrégala en tu
+  asistente: en Claude como conector personalizado, o en otra app compatible
+  con MCP. Wappie se abre en tu navegador y te pregunta qué números puede
+  leer. La consola de Wappie muestra los pasos para cada asistente."
+- fr: "Ceci est l’adresse du connecteur Wappie. Ajoutez-la dans votre
+  assistant : dans Claude comme connecteur personnalisé, ou dans une autre
+  application compatible MCP. Wappie s’ouvre alors dans votre navigateur et
+  vous demande quels numéros il peut lire. La console Wappie montre les
+  étapes pour chaque assistant."
+- de: "Dies ist die Adresse des Wappie-Connectors. Fügen Sie sie in Ihrem
+  Assistenten hinzu: in Claude als benutzerdefinierten Connector oder in
+  einer anderen App mit MCP. Wappie öffnet sich dann in Ihrem Browser und
+  fragt, welche Nummern er lesen darf. Die Wappie-Konsole zeigt die Schritte
+  für jeden Assistenten."
+
+Only the lead changes: the ChatGPT parenthesis and its plugin step go, the
+rest is the approved text. `pages.mjs` and `pages.test.mjs` carry it; if
+the owner words it otherwise, both change together before the build.
 
 **The console** has no ChatGPT tab: Claude, with Claude Code under "For
 developers", and "Other assistants". The heading, the admin card, the
@@ -10082,7 +10128,10 @@ tested limits; those edited sentences are pending the owner's approval
 
 **Tests:** `test/any.test.mjs` and `enclave/test/any-enclave.test.mjs` (the
 list and its fingerprints, ChatGPT's and Codex's documents in the untested
-tier, ChatGPT's registration and records refused), the Go DCR-host tests,
+tier, Codex's as chatgpt.com serves it, with loopback redirects only and
+ChatGPT's callback refused for it, ChatGPT's registration and records
+refused), `test/pages.test.mjs` (the page's lead names Claude and MCP apps,
+never ChatGPT, Codex or a plugin), the Go DCR-host tests,
 and the console's `readerMeasurements.spec.ts` (its fixtures against these
 constants), `mcpClients.spec.ts`, `mcpGuide.spec.ts` and `mcpSend.spec.ts`.
 

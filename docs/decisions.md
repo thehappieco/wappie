@@ -1359,9 +1359,10 @@ content or receives archive private keys.
 
 ChatGPT's plugin flow kept failing in the live baseline on reader 0.5.0 and
 blocked the project, so the owner kept only Claude as a tested assistant and
-moved on. Claude on the web and Claude Code passed; ChatGPT, in Chat and in
-Work, and Codex did not finish. Reader 0.6.0's measured list is Claude's
-document, Claude's registration on its own two callbacks, and Claude Code.
+moved on. Claude on the web and Claude Code passed, each by its document;
+ChatGPT, in Chat and in Work, and Codex did not finish. Reader 0.6.0's
+measured list is Claude's document, Claude Code's, and Claude's registration
+on its own two callbacks, which the owner kept without a baseline run.
 ChatGPT and Codex still connect, as any MCP client Wappie has not tested:
 their documents are fetched and judged like any other, under the untested
 limits, and registration no longer accepts ChatGPT's redirects. The

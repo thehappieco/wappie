@@ -263,7 +263,7 @@ test('the measured list (§19.34): Claude by its document and its registration, 
   }
   // Every form ChatGPT and Codex identify themselves with is a document of their own now, never a tested entry.
   for (const [clientID, redirect] of [[CHATGPT, CHATGPT_REDIRECT], ['https://chatgpt.com/oauth/abc_1/client.json', 'https://chatgpt.com/connector/oauth/abc_1'],
-    [CODEX, 'http://127.0.0.1:1455/callback'], [CODEX, 'http://localhost:1455/callback'], [CODEX, CHATGPT_REDIRECT]]) {
+    [CODEX, 'http://127.0.0.1:1455/callback'], [CODEX, 'http://localhost:1455/callback']]) {
     assert.equal(testedFor(TESTED_CLIENTS, clientID, redirect), null, `${clientID} ${redirect}`)
   }
   for (const uris of [[CHATGPT_REDIRECT], ['https://chatgpt.com/connector/oauth/abc_1'], [CHATGPT_REDIRECT, 'https://chatgpt.com/connector/oauth/abc_1']]) {
@@ -463,14 +463,14 @@ test('ChatGPT and Codex (§19.34): their documents are fetched and land in the u
   const callback = 'https://chatgpt.com/oauth/Ab9_-x/client.json'
   h.fetcher.docs.set(CHATGPT, { body: { client_id: CHATGPT, client_name: 'ChatGPT', redirect_uris: [CHATGPT_REDIRECT] } })
   h.fetcher.docs.set(callback, { body: { client_id: callback, client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector/oauth/Ab9_-x'] } })
-  // Codex's document as the vendor describes it (loopback), plus the chatgpt.com callback ChatGPT's Work mode used it with in baseline B.
-  h.fetcher.docs.set(CODEX, { body: { client_id: CODEX, client_name: 'Codex', redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback', CHATGPT_REDIRECT] } })
+  // Codex's document as chatgpt.com serves it (fetched 2026-10-05): loopback redirects only. ChatGPT's Work mode used this
+  // document in baseline B, so it returned to a loopback port too; Go's chatgpt.com is the host that vouches for the app.
+  h.fetcher.docs.set(CODEX, { body: { client_id: CODEX, client_name: 'Codex', redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback'] } })
   const cases = [
     [CHATGPT, CHATGPT_REDIRECT, 'ChatGPT', false],
     [callback, 'https://chatgpt.com/connector/oauth/Ab9_-x', 'ChatGPT', false],
     [CODEX, 'http://127.0.0.1:1455/callback', 'Codex', true],
     [CODEX, 'http://localhost:61000/callback', 'Codex', true],
-    [CODEX, CHATGPT_REDIRECT, 'Codex', false],
   ]
   const descriptors = []
   for (const [clientId, redirectUri, claimed, local] of cases) {
@@ -482,6 +482,10 @@ test('ChatGPT and Codex (§19.34): their documents are fetched and land in the u
     assert.deepEqual(d.limits, CLIENT_LIMITS.unknown)
     descriptors.push(started)
   }
+  // Codex's document has no https callback, so ChatGPT's is refused for it, from the cached document, before any card.
+  const elsewhere = await start(h, { clientId: CODEX, redirectUri: CHATGPT_REDIRECT })
+  assert.deepEqual([elsewhere.response.status, elsewhere.id], [400, undefined])
+  assert.match(elsewhere.response.body, /<small>Wappie MCP: invalid_redirect_uri<\/small>/)
   // The untested limits: a history window to choose, daily and first-hour reading limits, 20 calls a minute.
   assert.deepEqual(CLIENT_LIMITS.unknown.history_days, { choices: [7, 30, 90], default: 30 })
   assert.deepEqual([CLIENT_LIMITS.unknown.daily, CLIENT_LIMITS.unknown.first_hour, CLIENT_LIMITS.unknown.calls_per_minute],

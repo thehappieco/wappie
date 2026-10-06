@@ -198,18 +198,19 @@ export function refusalPage(status, code, { back = '', assistant = '', acceptLan
  * The human page at `/` of the attested reader's public host (§19.29): what
  * this address is and what to do with it, the console and the documentation,
  * in one language chosen from Accept-Language (or `?lang=`), English when
- * none of the five is asked for.
+ * none of the five is asked for. The lead names Claude, the tested assistant,
+ * and other MCP apps (§19.34; pending the owner's approval, D10).
  */
 export const HOME = Object.freeze({
-  pt: Object.freeze({ title: 'Conector do Wappie', lead: 'Este é o endereço do conector do Wappie. Adicione-o no seu assistente (Claude, ChatGPT ou outro app compatível com MCP): no Claude como conector personalizado, no ChatGPT como plugin no modo de desenvolvedor. O Wappie abre no seu navegador e pergunta quais números o assistente pode ler. O console da Wappie mostra os passos para cada assistente.',
+  pt: Object.freeze({ title: 'Conector do Wappie', lead: 'Este é o endereço do conector do Wappie. Adicione-o no seu assistente: no Claude como conector personalizado, ou em outro app compatível com MCP. O Wappie abre no seu navegador e pergunta quais números o assistente pode ler. O console da Wappie mostra os passos para cada assistente.',
     address: 'Endereço do conector', console: 'Abrir o console da Wappie', docs: 'Ler a documentação', name: 'Português' }),
-  en: Object.freeze({ title: 'Wappie connector', lead: 'This is the address of Wappie’s connector. Add it in your assistant (Claude, ChatGPT or another app that supports MCP): in Claude as a custom connector, in ChatGPT as a developer-mode plugin. Wappie then opens in your browser and asks which numbers it may read. The Wappie console shows the steps for each assistant.',
+  en: Object.freeze({ title: 'Wappie connector', lead: 'This is the address of Wappie’s connector. Add it in your assistant: in Claude as a custom connector, or in another app that supports MCP. Wappie then opens in your browser and asks which numbers it may read. The Wappie console shows the steps for each assistant.',
     address: 'Connector address', console: 'Open the Wappie console', docs: 'Read the documentation', name: 'English' }),
-  es: Object.freeze({ title: 'Conector de Wappie', lead: 'Esta es la dirección del conector de Wappie. Agrégala en tu asistente (Claude, ChatGPT u otra app compatible con MCP): en Claude como conector personalizado, en ChatGPT como plugin en modo de desarrollador. Wappie se abre en tu navegador y te pregunta qué números puede leer. La consola de Wappie muestra los pasos para cada asistente.',
+  es: Object.freeze({ title: 'Conector de Wappie', lead: 'Esta es la dirección del conector de Wappie. Agrégala en tu asistente: en Claude como conector personalizado, o en otra app compatible con MCP. Wappie se abre en tu navegador y te pregunta qué números puede leer. La consola de Wappie muestra los pasos para cada asistente.',
     address: 'Dirección del conector', console: 'Abrir la consola de Wappie', docs: 'Leer la documentación', name: 'Español' }),
-  fr: Object.freeze({ title: 'Connecteur Wappie', lead: 'Ceci est l’adresse du connecteur Wappie. Ajoutez-la dans votre assistant (Claude, ChatGPT ou une autre application compatible MCP) : dans Claude comme connecteur personnalisé, dans ChatGPT comme plugin en mode développeur. Wappie s’ouvre alors dans votre navigateur et vous demande quels numéros il peut lire. La console Wappie montre les étapes pour chaque assistant.',
+  fr: Object.freeze({ title: 'Connecteur Wappie', lead: 'Ceci est l’adresse du connecteur Wappie. Ajoutez-la dans votre assistant : dans Claude comme connecteur personnalisé, ou dans une autre application compatible MCP. Wappie s’ouvre alors dans votre navigateur et vous demande quels numéros il peut lire. La console Wappie montre les étapes pour chaque assistant.',
     address: 'Adresse du connecteur', console: 'Ouvrir la console Wappie', docs: 'Lire la documentation', name: 'Français' }),
-  de: Object.freeze({ title: 'Wappie-Connector', lead: 'Dies ist die Adresse des Wappie-Connectors. Fügen Sie sie in Ihrem Assistenten hinzu (Claude, ChatGPT oder eine andere App mit MCP): in Claude als benutzerdefinierten Connector, in ChatGPT als Plugin im Entwicklermodus. Wappie öffnet sich dann in Ihrem Browser und fragt, welche Nummern er lesen darf. Die Wappie-Konsole zeigt die Schritte für jeden Assistenten.',
+  de: Object.freeze({ title: 'Wappie-Connector', lead: 'Dies ist die Adresse des Wappie-Connectors. Fügen Sie sie in Ihrem Assistenten hinzu: in Claude als benutzerdefinierten Connector oder in einer anderen App mit MCP. Wappie öffnet sich dann in Ihrem Browser und fragt, welche Nummern er lesen darf. Die Wappie-Konsole zeigt die Schritte für jeden Assistenten.',
     address: 'Connector-Adresse', console: 'Wappie-Konsole öffnen', docs: 'Dokumentation lesen', name: 'Deutsch' }),
 })
 const HTML_LANG = Object.freeze({ pt: 'pt-BR', en: 'en', es: 'es', fr: 'fr', de: 'de' })

@@ -55,14 +55,14 @@ export function deepFreeze(value) {
 // kept for the tests and the hosted path. dcr 'pinned' admits only the
 // pinned DCR redirects (§19.8).
 export const CLIENT_POLICY = Object.freeze({ cimd: 'any', dcr: 'pinned' })
-// The tested list (docs/mcp-enclave.md §19.4, §19.34): the clients that passed
-// baseline B on reader 0.5.0, by the owner's decision of 2026-10-05. Claude on
-// the web identified itself by its document (log fingerprint 87035c02ba6c) and
-// Claude Code by its own (569ea71ec53b); claude_dcr is Claude's registration
-// form, on the same two callbacks. ChatGPT and Codex did not finish the
-// baseline and are not listed: their documents connect as any untested client.
-// A change is a release. build.sh copies this list and CLIENT_LIMITS into
-// measurements.json.
+// The tested list (docs/mcp-enclave.md §19.4, §19.34), by the owner's decision
+// of 2026-10-05: Claude on the web and Claude Code passed baseline B on reader
+// 0.5.0, each by its document (log fingerprints 87035c02ba6c and
+// 569ea71ec53b). claude_dcr is Claude's registration form, on the same two
+// callbacks, listed by the owner's decision without a baseline run. ChatGPT
+// and Codex did not finish the baseline and are not listed: their documents
+// connect as any untested client. A change is a release. build.sh copies this
+// list and CLIENT_LIMITS into measurements.json.
 export const TESTED_CLIENTS = deepFreeze([
   { id: 'claude', kind: 'cimd', client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata', name: 'Claude', local: false, profile: 'claude.ai',
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
