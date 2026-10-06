@@ -121,8 +121,8 @@ github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXl
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/thehappieco/kit v0.3.0 h1:SUHYyLKDTLY2a2qjVkdBf70WqrhFFNMp77mIQLmrp+Q=
-github.com/thehappieco/kit v0.3.0/go.mod h1:jlzzbbJrKhp0RmnJEeXE2Kxg8HO3DmYnti1bZcf/A4M=
+github.com/thehappieco/kit v0.5.0 h1:VAn0PKqw9FfnT0TXSoyH9CzN/KgvPgdiaMZjMjhAc8A=
+github.com/thehappieco/kit v0.5.0/go.mod h1:jlzzbbJrKhp0RmnJEeXE2Kxg8HO3DmYnti1bZcf/A4M=
 github.com/tinylib/msgp v1.6.4 h1:mOwYbyYDLPj35mkA2BjjYejgJk9BuHxDdvRnb6v2ZcQ=
 github.com/tinylib/msgp v1.6.4/go.mod h1:RSp0LW9oSxFut3KzESt5Voq4GVWyS+PSulT77roAqEA=
 github.com/vektah/gqlparser/v2 v2.5.27 h1:RHPD3JOplpk5mP5JGX8RKZkt2/Vwj/PZv0HxTdwFp0s=
