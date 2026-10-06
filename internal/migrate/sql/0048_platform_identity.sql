@@ -37,22 +37,39 @@
 --                            new epoch ('rewrap'). Single use, five minutes,
 --                            stored as the SHA-256 of 32 random bytes, bound
 --                            to the sub and the pinned key; at most five
---                            failed link attempts.
+--                            failed link attempts. auth_time is the
+--                            provider's, from the userinfo the ticket was
+--                            issued on (NULL when it named none), so the
+--                            session of a new account starts with the same
+--                            proof as any sign-in through the provider.
 --   security_events          refusals and links worth an operator's eye. No
 --                            token, key or address is ever stored here.
+--   sessions.via_provider    the session was started through the provider
+--                            (/platform/session, /platform/account or
+--                            /platform/link), or switched from one that
+--                            was. Such a session is never handed the legacy
+--                            password wrap (/v1/auth/me), and the down-step
+--                            signs it out. Its proof (0047's
+--                            authenticated_at) is the provider's auth_time
+--                            from that sign-in's userinfo, never later than
+--                            now and -infinity when userinfo named none; a
+--                            link's is now, since the link proves the old
+--                            password in the same request.
 --   sessions.step_up_not_before
---                            when this session last asked the provider to
---                            re-authenticate its person, for the step-up of
---                            step 4 (owner decision D3); unused here. The
---                            proof itself is 0047's authenticated_at, the
---                            one record every step-up writes, so this adds
---                            no second one: a re-authentication counts only
+--                            when this session last started a step-up at
+--                            the provider (owner decision D3, POST
+--                            /v1/auth/platform/step-up/start). The proof
+--                            itself is authenticated_at, the one record
+--                            every step-up writes, so this adds no second
+--                            one: the finish counts a re-authentication only
 --                            if the provider's userinfo reports an
---                            auth_time at or after this, which keeps an
---                            earlier sign-in at the provider from passing
---                            for one (internal/stepup). A session started
---                            through the provider holds no proof until then
---                            (authenticated_at is -infinity).
+--                            auth_time at or after this, less a minute for
+--                            the two clocks, and comes within ten minutes of
+--                            it; it then records the proof and clears this
+--                            in one statement against the value it read, so
+--                            one start makes one proof and a newer start
+--                            voids an older one (internal/stepup). A
+--                            workspace switch does not copy it.
 --
 -- None of the new tables carries row-level security: each is read before a
 -- workspace is known, as sessions and user_logins are, and none holds a
@@ -71,11 +88,13 @@
 -- provider exists (one with no password to fall back to): delete those
 -- accounts explicitly first. A linked account becomes a local one again and
 -- signs in with its old password; its passkeys and sessions, revoked at the
--- link, stay revoked, and the sessions it started through the provider are
--- signed out too: they hold no step-up proof (authenticated_at is -infinity,
--- which the older binary cannot read), and they came through a provider the
--- older binary does not know. The pins go with their table, so a later 0048
--- trusts the provider's key again at each account's next first sign-in.
+-- link, stay revoked, and the sessions started through the provider
+-- (via_provider) are signed out too, even those a step-up at the provider has
+-- since given a proof: they came through a provider the older binary does
+-- not know, and one with no proof holds authenticated_at = -infinity, which
+-- the older binary cannot read (any such session goes as well). The pins go
+-- with their table, so a later 0048 trusts the provider's key again at each
+-- account's next first sign-in.
 --
 --      BEGIN;
 --      SELECT pg_advisory_xact_lock(6289348710053007958);
@@ -87,7 +106,7 @@
 --        END IF;
 --      END $$;
 --      UPDATE users SET auth_source = 'local' WHERE auth_source = 'platform';
---      UPDATE sessions SET revoked_at = now() WHERE authenticated_at = '-infinity' AND revoked_at IS NULL;
+--      UPDATE sessions SET revoked_at = now() WHERE (via_provider OR authenticated_at = '-infinity') AND revoked_at IS NULL;
 --      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 --      ALTER TABLE users FORCE ROW LEVEL SECURITY;
 --      DROP TABLE platform_login_tickets;
@@ -97,7 +116,7 @@
 --      DROP TABLE security_events;
 --      DROP FUNCTION platform_insert_only();
 --      DROP FUNCTION platform_identity_guard();
---      ALTER TABLE sessions DROP COLUMN step_up_not_before;
+--      ALTER TABLE sessions DROP COLUMN step_up_not_before, DROP COLUMN via_provider;
 --      ALTER TABLE users DROP CONSTRAINT users_credentials_by_source;
 --      ALTER TABLE users ADD CONSTRAINT users_service_has_no_password CHECK (
 --          (role = 'service' AND auth_hash IS NULL AND wrapped_usk IS NULL)
@@ -158,6 +177,8 @@ CREATE TABLE platform_login_tickets (
     -- The linked account a 'rewrap' ticket is for; NULL for the others.
     user_id        uuid        REFERENCES users(id) ON DELETE CASCADE,
     attempts       int         NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
+    -- The provider's auth_time in the userinfo this ticket was issued on.
+    auth_time      timestamptz,
     created_at     timestamptz NOT NULL DEFAULT now(),
     expires_at     timestamptz NOT NULL,
     used_at        timestamptz,
@@ -175,7 +196,9 @@ CREATE TABLE security_events (
 );
 CREATE INDEX security_events_by_time ON security_events (created_at);
 
-ALTER TABLE sessions ADD COLUMN step_up_not_before timestamptz;
+ALTER TABLE sessions
+    ADD COLUMN step_up_not_before timestamptz,
+    ADD COLUMN via_provider       boolean NOT NULL DEFAULT false;
 
 -- Insert only. A row of these tables is never changed or removed by the
 -- application; a removal is let through only when it cascades from an

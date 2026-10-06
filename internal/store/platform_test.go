@@ -446,8 +446,10 @@ func TestPlatformSessionHoldsNoStepUpProof(t *testing.T) {
 // 0048's down-step, exactly as the migration's header documents it, as the
 // table owner: it refuses while an account created through the provider
 // exists; once that account is deleted it brings a linked account back to
-// local with its old password, drops the tables and columns, restores
-// 0020's constraint, forgets version 48; and 0048 comes back up.
+// local with its old password, signs out every session started through the
+// provider (via_provider), even one a step-up at the provider has given a
+// proof, drops the tables and columns, restores 0020's constraint, forgets
+// version 48; and 0048 comes back up.
 func TestMigration0048DownStep(t *testing.T) {
 	f := newPlatformFixture(t)
 	ctx := context.Background()
@@ -466,6 +468,15 @@ func TestMigration0048DownStep(t *testing.T) {
 	}
 	_, withPassword, err := f.users.StartSession(ctx, linked, "test")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// One through the provider that has since been confirmed there: its
+	// proof is a plain time, but it came through the provider all the same.
+	_, confirmed, err := f.users.StartPlatformSession(ctx, linked, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE sessions SET via_provider = true, authenticated_at = now() WHERE id = $1`, confirmed.ID); err != nil {
 		t.Fatal(err)
 	}
 	native := uuid.New()
@@ -490,10 +501,10 @@ func TestMigration0048DownStep(t *testing.T) {
 	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 47 {
 		t.Fatalf("ledger at %d %v", version, err)
 	}
-	// The session through the provider is signed out; the password's stays,
-	// and every live session's proof reads as a plain time, as the older
-	// binary's workspace switch reads it.
-	for id, live := range map[uuid.UUID]bool{throughProvider.ID: false, withPassword.ID: true} {
+	// The sessions through the provider are signed out, the confirmed one
+	// too; the password's stays, and every live session's proof reads as a
+	// plain time, as the older binary's workspace switch reads it.
+	for id, live := range map[uuid.UUID]bool{throughProvider.ID: false, confirmed.ID: false, withPassword.ID: true} {
 		var revoked bool
 		if err := f.pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM sessions WHERE id = $1`, id).Scan(&revoked); err != nil || revoked == live {
 			t.Fatalf("session %s revoked = %v %v", id, revoked, err)
@@ -511,7 +522,8 @@ func TestMigration0048DownStep(t *testing.T) {
 		(SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema()
 		   AND table_name IN ('platform_key_pins', 'platform_identities', 'platform_wraps', 'platform_login_tickets', 'security_events'))
 		+ (SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema()
-		   AND ((table_name = 'users' AND column_name = 'auth_source') OR (table_name = 'sessions' AND column_name LIKE 'step_up%')))
+		   AND ((table_name = 'users' AND column_name = 'auth_source')
+		     OR (table_name = 'sessions' AND (column_name LIKE 'step_up%' OR column_name = 'via_provider'))))
 		+ (SELECT count(*) FROM pg_proc WHERE proname IN ('platform_insert_only', 'platform_identity_guard') AND pronamespace = current_schema()::regnamespace)
 		+ (SELECT count(*) FROM pg_constraint WHERE conname = 'users_credentials_by_source' AND connamespace = current_schema()::regnamespace)`).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("%d things left %v", left, err)
