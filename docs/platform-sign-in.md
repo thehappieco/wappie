@@ -10,17 +10,19 @@ The Go side lives in the public core and does nothing until
 `WS_PLATFORM_ISSUER` is set. The page side (the `/auth/callback` page, account
 setup and the link ceremony) is in the private console only.
 
-This document covers steps 1 and 2 of the plan: the Go routes (shipped dark)
-and the console in development, and how its accounts meet the step-up of the
-fewer steps today. Step-ups through id. (step 4), the cutover (step 5) and
-the end of the rollback window (migration 0049, step 6) come later.
+This document covers steps 1, 2 and 4 of the plan: the Go routes (shipped
+dark), the console in development, and the step-up of an account that signs
+in through id. (step 4, owner decision D3). The cutover (step 5) and the end
+of the rollback window (migration 0049, step 6) come later.
 
-**Not in the pilot before step 4.** The owner decided on 2026-10-05 that the
-platform sign-in is not switched on in the pilot (`WS_PLATFORM_ISSUER`)
-before step 4 exists. Until then an account that signs in through id. cannot
-give a content consent, renew one, add an AI integration or grant a number's
-key (see "Step-ups"), and a linked account loses the step-ups of its old
-password with its first sign-in through id.
+**Not in the pilot before step 4 is deployed.** The owner decided on
+2026-10-05 that the platform sign-in is not switched on in the pilot
+(`WS_PLATFORM_ISSUER`) before step 4 exists, and on 2026-10-06 (Decision 8
+of step 4) that it is switched on, both doors open (`WS_LOCAL_LOGIN=on`),
+only once step 4 is deployed with the switch off and an end-to-end test
+against the production id. passes on the owner's account in Chromium,
+Firefox and Safari, and the platform's session has been told (platform
+decision 0030).
 
 ## What the provider gives and what Wappie keeps
 
@@ -100,9 +102,23 @@ Other changes:
   It allows: a service with no password; a local person with all of the
   password columns; a platform person with either all of them (linked, in the
   window) or none.
-- `sessions.step_up_not_before` is added for step 4 and is not used yet (see
-  "Step-ups"). The proof itself is 0047's `sessions.authenticated_at`, so
-  0048 adds no second record of it.
+- `sessions.step_up_not_before` is when the session last started a step-up
+  at id. (see "Step-ups"). The proof itself is 0047's
+  `sessions.authenticated_at`, so 0048 adds no second record of it.
+- `sessions.via_provider` marks a session started through id.
+  (`/platform/session`, `/platform/account`, `/platform/link`) or switched
+  from one. Such a session is never handed the legacy password wrap (see
+  "The rollback window"), and the down-step signs it out. A step-up
+  overwrites `authenticated_at`, so `-infinity` could not serve as that
+  mark.
+- `platform_login_tickets.auth_time` is id.'s `auth_time` in the userinfo
+  the ticket was issued on, so a new account's first session starts with
+  the same proof as any sign-in through id.
+- 0048 was amended in place for step 4 (Decision 9) before it was deployed
+  anywhere: `via_provider`, the ticket's `auth_time` and the down-step's
+  sign-out changed the file, and so `migration48_sha256`. A development
+  database that applied the earlier text stops at boot with a checksum
+  mismatch; recreate it.
 - None of the new tables carries row-level security. Each is read before a
   workspace is known, as `sessions` and `user_logins` are, and none holds a
   secret.
@@ -121,10 +137,11 @@ The migration header holds the down-step, checksum-gated against
   such an account has no password to fall back to. Delete those accounts
   explicitly first.
 - A linked account becomes local again, with its old password.
-- The sessions started through the provider are signed out: they hold no
-  step-up proof (`authenticated_at` is `-infinity`, which the older binary
-  cannot read) and came through a provider the older binary does not know.
-  The person signs in again with the old password.
+- Every session started through the provider (`via_provider`) is signed
+  out, even one a step-up at id. has since given a proof: it came through a
+  provider the older binary does not know, and one with no proof holds
+  `authenticated_at = -infinity`, which the older binary cannot read (any
+  such session goes too). The person signs in again with the old password.
 - It runs before the down-steps of 0047 (the fewer steps) and earlier.
   0047's refuses while version 48 is still in the ledger.
 
@@ -155,6 +172,7 @@ What `WS_LOCAL_LOGIN` leaves open:
 | `/signup` for a service (an invitation and a name) | yes | yes | yes: content consents register their service this way |
 | `/platform/link/prepare`, `/platform/link` | yes | yes | `local_login_disabled` |
 | `/step-up/passkey/options`, `/step-up/passkey`, `/step-up/password` | yes | `local_login_disabled` | `local_login_disabled` |
+| `/platform/step-up/start`, `/platform/step-up/finish` | yes | yes | yes |
 
 A platform account gets `409 step_up_at_provider` from the three `/step-up`
 routes instead, in every mode, while the provider is configured (which
@@ -213,6 +231,14 @@ keeps `sk_p` only once that triple names it (`keepProductKey`). Other binary
 fields are standard base64, as in every auth reply. `user.wrapped_usk` is
 always empty in a platform answer (see "The rollback window").
 
+The session is `via_provider`, and its step-up proof is userinfo's
+`auth_time` (owner Decision 2 of step 4), never later than now on the
+database's clock and never the session's creation: the console asks id.
+for `prompt=login`, so a fresh sign-in asks nothing more for ten minutes,
+while one id. answered from an old session of its own proves only what its
+`auth_time` says. A userinfo with no `auth_time` gives no proof
+(`-infinity`).
+
 Refusals:
 
 - `401 token_refused`: userinfo answered 401. The token works once and is
@@ -245,7 +271,8 @@ For a `new` ticket. One transaction:
 - inserts the link and the wrap;
 - records `platform_linked {from: "new"}`.
 
-It then answers `kind: "session"`. Possible refusals: `401 ticket_invalid`,
+It then answers `kind: "session"`, whose proof is the ticket's `auth_time`,
+as at `/platform/session`. Possible refusals: `401 ticket_invalid`,
 `409 email_taken`, `409 already_linked`, `400 bad_request`.
 
 ### `POST /v1/auth/platform/link/prepare {ticket, email, auth_key | recovery_proof}`
@@ -272,8 +299,10 @@ One transaction, under the account's lock. It:
 4. revokes every session and every Wappie passkey of the account;
 5. records `platform_linked {from: "legacy" | "legacy_recovery"}`.
 
-It then answers `kind: "session"`. Two id. accounts racing for one Wappie
-account: one links and the other gets `409 already_linked`.
+It then answers `kind: "session"`, whose proof is now: the link proved the
+old password (or the recovery code) in the same request, as a password
+sign-in does. Two id. accounts racing for one Wappie account: one links and
+the other gets `409 already_linked`.
 
 ### `POST /v1/auth/platform/rewrap {ticket, platform_wrap}` (with a bearer session)
 
@@ -284,14 +313,70 @@ still holds the account key can make the wrap.
 The console does not offer this step yet. A `rewrap_required` sign-in shows
 an error and keeps nothing.
 
+### `POST /v1/auth/platform/step-up/start {}` (with a bearer session)
+
+Starts a step-up at id. for the session (see "Step-ups"):
+
+- the account must sign in through id. (`auth_source` `platform`):
+  otherwise `409 step_up_here`, since a local account steps up here, with a
+  passkey or the password;
+- it sets `sessions.step_up_not_before` to now, on the database's clock. A
+  newer start replaces an older one, which then proves nothing;
+- it answers `200 {login_hint, window_seconds}`: id.'s address in the
+  account's link (for a linked account it may differ from the Wappie
+  address), which the console passes to `begin` as `loginHint` and names in
+  C-STEP-22, and `600`, how long the start waits for its finish.
+
+An account starts at most five in ten minutes, across its sessions, beside
+the address limit: `429 rate_limited` with `Retry-After`. Also `401
+unauthorized` and `500 internal`.
+
+### `POST /v1/auth/platform/step-up/finish {access_token}` (with a bearer session)
+
+Before anything leaves this server:
+
+- `409 step_up_here` for a local account;
+- `400 bad_request` for a string that is not an access token;
+- `409 step_up_not_started` when the session has no start younger than ten
+  minutes: never started, already used, or too old.
+
+Then one `GET {issuer}/oauth2/userinfo` (kit `oidcrp.FetchUserinfo`), never
+repeated, and in this order:
+
+| Refusal | When |
+|---|---|
+| `401 token_refused` | userinfo answered 401 |
+| `403 wrong_client` | the token is another client's |
+| `502 userinfo` | any other userinfo failure, or no product key |
+| `403 step_up_other_account` | the `sub` is not the one linked to the account: the person confirmed with another id. account |
+| `403 account_disabled` | the account was disabled meanwhile |
+| `409 account_key_changed {product_key_id}` | the product key differs from the pin of its epoch, or no sign-in here pinned that epoch (Decision 4). The pin is read, never made or replaced. The alert is the sign-in's (a `security_events` row with `step: "step_up"`, and `pin: "missing"` for an unpinned epoch; the Error line `event=platform_account_key_changed`; mail to `WS_SECURITY_ALERT_EMAIL` and to the account in its language, with the words E-ALERT-10 to 14). No proof is recorded and the session stays. |
+| `403 step_up_stale` | userinfo's `auth_time` is more than a minute before the start, or absent: id. did not ask for the password or a passkey again (Decision 3) |
+| `409 step_up_not_started` | the start was used or replaced meanwhile |
+
+Otherwise one statement records the proof, `authenticated_at = now()` on the
+database's clock, and clears the start, against the value read before the
+call: the start is still that one, younger than ten minutes, and the
+`auth_time` is not more than a minute before it. So one start makes one
+proof: a second finish, two windows racing, or the finish of a replaced
+start records nothing. The log says `step-up confirmed method=provider`, and
+the answer is `GET /v1/auth/step-up`'s: `200 {fresh, remaining_seconds,
+window_seconds, passkey: false, provider: true}`. No refusal clears the
+start; a new start replaces it.
+
+The `auth_time` is id.'s clock, the proof always this database's. The minute
+allows for the two clocks behind the start and nothing ahead of it: a proof
+is never dated later than now.
+
 ### Discovery and headers
 
 When the provider is configured:
 
 - `/.well-known/wappie` and `/v1/discovery` advertise
   `platform_login: {issuer, client_id, product, local_login}` and the
-  capability `auth.platform.v1`. `auth.password` is dropped only when local
-  login is `off`.
+  capabilities `auth.platform.v1` and `auth.platform.stepup.v1` (the two
+  step-up routes). `auth.password` is dropped only when local login is
+  `off`.
 - The console document gets the issuer in `connect-src`.
 - Every document gets `Referrer-Policy: strict-origin` (O2), so the callback's
   `?code` never rides in a `Referer`, not even to this origin's own assets.
@@ -392,84 +477,101 @@ that proof, never what a guarded write asks.
 | Account | Its proof |
 |---|---|
 | `auth_source` `local` | The sign-in that started the session's family, then a Wappie passkey (WebAuthn, user verification) or the password, checked by this server. |
-| `auth_source` `platform`, provider configured | A re-authentication at the provider (owner decision D3): step 4. Wappie runs no WebAuthn for these accounts (platform decision 0008) and takes no password from them. |
+| `auth_source` `platform`, provider configured | The sign-in through id., from its userinfo's `auth_time`; then a re-authentication at id. with `prompt=login` (owner decision D3, step 4). Wappie runs no WebAuthn for these accounts (platform decision 0008) and takes no password from them. A link proves the old password, so its session's proof is now. |
 | `auth_source` `platform`, provider unset (a rollback) | As a local account: a linked account signs in and steps up with its legacy password, and may add a Wappie passkey. An account created through id. cannot sign in. |
 
-**Until step 4.** A session started through the provider holds no proof
-(`authenticated_at` is `-infinity`; its workspace switches inherit that),
-because nothing in that sign-in proves to this server that the person is at
-the screen now: id. may have answered from a session of its own. So for such
-an account, today:
+**The step-up at id. (step 4).** Nothing that asks for a proof changes;
+only how a platform session earns one (the routes are under "Routes"):
 
-- every guarded write answers `403 step_up_required`, as for any session
-  without a proof;
-- `GET /v1/auth/step-up` answers `provider: true` (and `passkey: false`), so
-  the console says the step is not available yet instead of asking for a
-  password;
+1. The console's step-up field, in `provider` mode, says that the account
+   confirms at The Happie Co, in a new window, and that the password goes
+   only on id.'s host (C-STEP-14 and 15). On submit it opens the window
+   before any `await` (a later `window.open` is blocked).
+2. `POST /v1/auth/platform/step-up/start` sets `sessions.step_up_not_before`
+   to now and answers the `login_hint`.
+3. The window goes to id. with `prompt=login`, `login_hint` and no key
+   delivery (kit `begin` with `wantKey: false`); id. asks for the password
+   or a passkey there and comes back to `/auth/callback` in the window.
+4. The callback, in its step-up branch, completes the flow with the kit's
+   `callback` (refusing and zeroing a product key if one came) and posts the
+   access token to `POST /v1/auth/platform/step-up/finish` with the
+   session's bearer token. The server takes it to id.'s userinfo, never the
+   ID token, and records the proof (`authenticated_at = now()`) against that
+   start. The window tells the page through a `BroadcastChannel`, since the
+   two documents' `Cross-Origin-Opener-Policy: same-origin` cuts the
+   opener link, and closes.
+5. The page re-reads `GET /v1/auth/step-up` and goes on as after a passkey.
+   With the window blocked, the same steps run in the tab itself (Decision
+   1).
+
+The rules (owner Decisions 2 to 4 of step 4, approved 2026-10-06):
+
+- **A sign-in through id. is a proof** from its userinfo's `auth_time`,
+  never from the session's creation, and never later than now; the console's
+  sign-in asks for `prompt=login`. A new account's first session takes the
+  `auth_time` its ticket was issued on.
+- **The clocks.** An `auth_time` up to a minute before the start counts;
+  nothing ahead of the start is needed or credited, since the proof is
+  recorded at now on this database's clock. The finish must come within ten
+  minutes of the start.
+- **One start, one proof.** The finish records the proof and clears the
+  start in one statement, against the value it read before calling id.; a
+  newer start voids an older one, and two windows or tabs make one proof.
+- **The account key.** The finish compares userinfo's product key with the
+  pin of its epoch and never pins one: another key, or an epoch no sign-in
+  pinned, is `account_key_changed`, with the alert, and no proof.
+
+Also, for such an account:
+
+- `GET /v1/auth/step-up` answers `provider: true` (and `passkey: false`);
 - `POST /v1/auth/step-up/passkey/options`, `/step-up/passkey` and
-  `/step-up/password` answer `409 step_up_at_provider`;
+  `/step-up/password` answer `409 step_up_at_provider`, whose message names
+  the start route;
 - `POST /v1/auth/passkeys/register/options` answers `409
   passkeys_at_provider`, so no Wappie passkey replaces the ones the link
-  revoked.
+  revoked;
+- a workspace switch copies the session's proof and `via_provider`, never a
+  pending start.
 
 A linked account that signs in with its legacy password while
 `WS_LOCAL_LOGIN=on` (both doors) has that sign-in as its proof for ten
-minutes, as any password sign-in does; its step-ups after that are still the
-provider's. Once `WS_LOCAL_LOGIN` narrows the password routes, the passkey
-and password step-ups close with them: `403 local_login_disabled` for a local
-account, while a platform account still gets `409 step_up_at_provider` first
-(the route table under "Configuration").
-
-**Step 4 plugs in behind the same interface.** Nothing that asks for a proof
-changes; only how a platform session earns one:
-
-1. `POST /v1/auth/platform/step-up/start` sets `sessions.step_up_not_before`
-   to now for the session.
-2. The console sends the person to id. with `prompt=login` and no key
-   delivery; id. asks for the password or a passkey there.
-3. `POST /v1/auth/platform/step-up/finish {access_token}` takes the token to
-   id.'s userinfo (never the ID token) and requires the linked `sub`, this
-   client and an `auth_time` at or after `step_up_not_before`, allowing for
-   the two clocks. It then records the proof as the passkey and password do
-   (`MarkStepUp`, `authenticated_at = now()`) and clears
-   `step_up_not_before`, so one start makes one proof.
-4. Optionally, `/platform/session` counts a sign-in as a proof from that
-   userinfo's `auth_time`, never from the session's creation.
-5. `GET /v1/auth/step-up` keeps `provider: true`; the console's step-up field
-   runs steps 1 to 3 where it shows "not available yet" today.
-
-Step 4 also has to stop `/v1/auth/me` handing a linked account's legacy
-password wrap to a session started through the provider (see "The rollback
-window").
+minutes, as any password sign-in does; its step-ups after that are id.'s,
+from that session too. Once `WS_LOCAL_LOGIN` narrows the password routes,
+the passkey and password step-ups close with them: `403
+local_login_disabled` for a local account, while a platform account still
+gets `409 step_up_at_provider` first (the route table under
+"Configuration"). The step-up at id. stays open in every mode.
 
 ## The rollback window
 
 A linked account keeps its legacy password columns (`auth_hash`, `kdf_salt`,
 `wrapped_usk`, the recovery pair) until migration 0049 at the end of the
-window (step 6). Steps 1 to 3 accept one consequence of that:
+window (step 6).
 
-- `/v1/auth/me` hands a linked account's `wrapped_usk`, its key under the old
-  password, to any session of the account, including one started at
-  `/platform/session`. Anybody who can obtain an id. access token for the
-  sub, without `sk_p`, can therefore fetch that wrap and attack the old
-  password offline. That includes a compromised id., the case the pin is
-  there for, and someone who intercepts a token before the page uses it.
-  For a linked account in the window, the pin's guarantee is only as strong
-  as the old password.
-- It is accepted because the paths that still open the account key with the
-  password (`withDeviceKeys` for a member's grant and for a session without
-  an account key of its own, and the password, recovery and passkey changes)
-  read the wrap from `/v1/auth/me`, and they live in `packages/client`, which
-  is part of the attested reader's image. Handing the wrap back only against
-  the auth key would change that package. Consents, renewals and AI
-  integrations no longer need it: they seal with the session's account key
-  after a step-up (see "Step-ups").
-- The platform answers themselves (`session`, `account`, `link`) never carry
-  it. An account created through id. has no such wrap.
-- Step 4 (step-ups through id.) must stop handing the wrap to a session
-  started through the provider; 0049 ends it in any case.
-- Until then, link an account only once its old password is a strong one:
-  change a weak one before linking.
+- Steps 1 to 3 accepted one consequence of that, which step 4 closes:
+  `/v1/auth/me` handed a linked account's `wrapped_usk`, its key under the
+  old password, to any session of the account, including one started at
+  `/platform/session`. Anybody who could obtain an id. access token for the
+  sub, without `sk_p`, could fetch that wrap and attack the old password
+  offline: a compromised id., the case the pin is there for, or someone who
+  intercepted a token before the page used it.
+- Since step 4, `/v1/auth/me` answers `wrapped_usk` empty to a session that
+  came through the provider (`via_provider`: `/platform/session`,
+  `/platform/account`, `/platform/link`, and every workspace switch made
+  from one), before and after a step-up, and so does the workspace switch's
+  own answer. The platform answers themselves (`session`, `account`,
+  `link`) never carried it, and an account created through id. has no such
+  wrap.
+- A session of the same linked account that signed in with the old password
+  (both doors) still gets it, since it proved the password: the paths that
+  still open the account key with the password (`withDeviceKeys` for a
+  session without an account key of its own, and the password, recovery
+  and passkey changes) read it from `/v1/auth/me`, and they live in
+  `packages/client`, part of the attested reader's image, which step 4 does
+  not change. Consents, renewals, AI integrations and, in the console,
+  Members' grants seal with the session's account key after a step-up.
+- 0049 ends the window in any case. Until then, link an account only once
+  its old password is a strong one: change a weak one before linking.
 
 ## Rollback
 
@@ -477,7 +579,7 @@ window (step 6). Steps 1 to 3 accept one consequence of that:
 |---|---|---|
 | Switch | Unset `WS_PLATFORM_ISSUER`, set `WS_LOCAL_LOGIN=on`, restart | Password sign-in is back for unlinked and linked accounts. Accounts created through id. cannot sign in until the switch returns. |
 | Release | A release that knows version 48 | As in `deployment.md` |
-| Schema | 0048's down-step, before 0047's and every older one | Refused while accounts created through id. exist; signs out the sessions started through the provider |
+| Schema | 0048's down-step, before 0047's and every older one | Refused while accounts created through id. exist; signs out every session started through the provider (`via_provider`), confirmed at id. or not |
 
 ## The texts (approved 2026-10-05)
 
@@ -526,12 +628,36 @@ them. Those that change this branch's texts:
   apostrophe. The API's own messages (E-SIGNIN), which programs read, keep
   ASCII and the operator.
 
+## The texts of step 4 (approved 2026-10-06)
+
+The owner approved step 4's texts and plan on 2026-10-06 with every
+recommendation (Decisions 1 to 12). In this repository:
+
+- **E-STEP-01** (`step_up_required`, every guarded write) now names the
+  identity provider: "confirm it is you first: with your passkey or your
+  password, or at the identity provider your account signs in with, or sign
+  in again; ...".
+- **E-STEP-15** (`step_up_at_provider`) names the start route instead of
+  saying the step is not offered yet.
+- **E-STEP-16 to 24** are the two routes' messages (`step_up_here`, the
+  start's `internal`, `token_refused`, `wrong_client`, `userinfo`,
+  `step_up_not_started`, `step_up_other_account`, `step_up_stale`,
+  `account_key_changed`). Like E-SIGNIN they say "identity provider", since
+  the core is public and the provider configurable, and keep ASCII
+  (Decision 11). The console never shows them: it shows its own words by
+  code.
+- **E-ALERT-10 to 14** are the step-up's alert e-mail in the five languages
+  (`internal/mailer`): a confirmation, not a sign-in, was refused; its advice
+  is the console's C-STEP-25, without "before signing in again".
+
+The console's texts (C-STEP-14 to 25, C-AUTH-27 to 32, C-AUTH-19 changed)
+are in the cloud build only; C-STEP-13 stays, unchanged, in the open build
+(Decision 6), which has no OpenID Connect code and so no step-up at id.
+
 ## Not yet
 
-- **Step-ups through id. (step 4).** Until then an account that signs in
-  through id. is refused wherever a step-up is needed (see "Step-ups"): it
-  cannot give a content consent, renew one, add an AI integration or grant a
-  number's key. The pilot does not switch the platform sign-in on before it.
+- **Step 4 in the pilot.** Deployed with the switch off first; the sign-in is
+  switched on only after the end-to-end test (Decision 8, above).
 - **The cutover (step 5) and the end of the window (step 6).** Migration 0049
   will null the legacy credentials of linked accounts and delete their
   passkeys, with no down-step.

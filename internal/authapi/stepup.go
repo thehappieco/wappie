@@ -26,8 +26,10 @@ import (
 // An account that signs in through the identity provider steps up there
 // instead (decision D3, step 4 of the sign-in plan): while the provider is
 // configured its passkey and password step-ups answer step_up_at_provider,
-// and the status says provider. Both proofs here are password routes, so
-// they close with WS_LOCAL_LOGIN as the others do (stepUpHere).
+// the status says provider, and POST /v1/auth/platform/step-up/start and
+// /finish take the provider's re-authentication (platform_stepup.go). Both
+// proofs here are password routes, so they close with WS_LOCAL_LOGIN as the
+// others do (stepUpHere); the provider's stays open.
 
 func (h *Handler) mountStepUp(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/auth/step-up", h.stepUpStatus)

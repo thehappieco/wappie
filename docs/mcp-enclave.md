@@ -10191,6 +10191,17 @@ passkey and password step-ups answer `409 step_up_at_provider`, `GET
 provider holds no proof until step 4 takes id.'s re-authentication
 (platform-sign-in.md, "Step-ups").
 
+*Note (2026-10-06, step 4 of the sign-in plan).* Step 4 is built: such a
+session earns its proof at id., behind the same `Checker`. Its sign-in
+counts from userinfo's `auth_time` (never the session's creation), and
+`POST /v1/auth/platform/step-up/start` and `/finish` take id.'s
+re-authentication with `prompt=login` into `sessions.authenticated_at`, on
+the database's clock, one start for one proof; `step_up_at_provider` now
+names the start route, and `step_up_required`'s message names the identity
+provider. Nothing in `packages/*` changed. The owner's Decision 5 of that
+step (2026-10-06) moves the console's member grant from the password to the
+same step-up field and the session's account key, as the cards already do.
+
 **A2: a switch per workspace (M4).** `WS_MCP_CONTENT_TENANTS`,
 `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired:
 a server with one set while its switch is on refuses to start and names the
