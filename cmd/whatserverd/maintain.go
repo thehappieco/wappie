@@ -63,7 +63,7 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 		// assistant, whose refresh token died in the reader: it ends, so the
 		// console's list and the workspace's cap stop counting it. The
 		// readers are told by the revocation watch (docs/mcp-enclave.md
-		// §19.30).
+		// §19.35).
 		if idle, err := store.RevokeIdleMCPConnections(ctx, a.pools.API); err != nil {
 			a.log.Warn("idle mcp connections were not all revoked", "error", err, "revoked", len(idle))
 		} else if len(idle) > 0 {

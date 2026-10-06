@@ -7,9 +7,13 @@
 //
 // A refusal page carries one sentence per language, the person's own first
 // (D10, as the two pages 0.6.0 introduced did), each saying what happened
-// and what to do next, then the way back when there is one, then the code in
-// small print for support. Nothing on any page comes from the request but the
-// order of its languages; the way back comes only from configuration.
+// and what to do next, then the ways back when there are any, then the code
+// in small print for support. Nothing on any page comes from the request but
+// the order of its languages. The way back to the console comes only from
+// configuration; the way back to the assistant (§19.30) only from a redirect
+// the authorization server already trusted, built by as.mjs: a pending
+// request's, or that of the authorize request it validated and is now
+// refusing.
 import { createHash } from 'node:crypto'
 
 /** The page languages (§19.14's five), in the console's order. */
@@ -129,6 +133,14 @@ export const SENTENCES = Object.freeze({
     de: 'Dieser Arbeitsbereich hat bereits so viele Verbindungen ungetesteter Assistenten und Verbindungstokens, wie er behalten darf. Widerrufen Sie eine in der Wappie-Konsole und starten Sie die Verbindung dann erneut in Ihrem Assistenten.',
   }),
 })
+/**
+ * The label of the one button a refusal after the redirect was trusted
+ * carries (docs/mcp-enclave.md §19.30): back to the assistant, which then
+ * stops waiting. `{host}` is the host of the assistant's redirect; the label
+ * speaks the person's first page language, English when they ask for none of
+ * the five.
+ */
+export const BACK_TO = Object.freeze({ pt: 'Voltar para {host}', en: 'Back to {host}', es: 'Volver a {host}', fr: 'Retour à {host}', de: 'Zurück zu {host}' })
 /** The sentence each page code shows; a code without one would be a bug, and the tests list them all. */
 const sentenceOf = { origin_missing: 'origin', opaque_origin: 'origin', invalid_origin: 'origin' }
 export const PAGE_CODES = Object.freeze(['invalid_client', 'ip_mismatch', 'invalid_redirect_uri', 'invalid_request', 'too_many_requests', 'method_not_allowed',
@@ -137,7 +149,8 @@ export const PAGE_CODES = Object.freeze(['invalid_client', 'ip_mismatch', 'inval
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' })[character])
 const sha256 = text => createHash('sha256').update(text, 'utf8').digest('base64')
 /** A page's own style, allowed by its hash and nothing else: no script, no image, no request elsewhere. */
-const pageStyle = 'body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 16px;overflow-wrap:anywhere}small{color:#555}'
+const pageStyle = 'body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 16px;overflow-wrap:anywhere}small{color:#555}' +
+  '.back{display:inline-block;padding:10px 18px;border-radius:8px;background:#137659;color:#fff;font-weight:600;text-decoration:none}'
 const pageCSP = `default-src 'none'; style-src 'sha256-${sha256(pageStyle)}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
 const htmlHead = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Wappie MCP</title>' +
   `<style>${pageStyle}</style>`
@@ -146,17 +159,38 @@ export const pageHeaders = Object.freeze({ ...noStore, 'Content-Type': 'text/htm
   'Content-Security-Policy': pageCSP, 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' })
 
 /**
- * A refusal page: `code` from PAGE_CODES (the `invalid_client` of the 0.5.0
- * policy with `allowlist`), `back` only ever from configuration,
- * `acceptLanguage` the request's header, which orders the sentences and
- * nothing else.
+ * The button back to the assistant (§19.30): a plain link, since the page
+ * runs no script and posts no form, to `assistant`, the redirect that ends the
+ * client's wait with an error, `state` and `iss`; null for anything but an
+ * https URL or an http one to a loopback address, the only redirects the
+ * authorization server ever trusts.
  */
-export function refusalPage(status, code, { back = '', acceptLanguage = null, allowlist = false } = {}) {
+function assistantButton(assistant, acceptLanguage) {
+  let url
+  try { url = new URL(assistant) } catch { return null }
+  const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null
+  const tag = askedLanguages(acceptLanguage)[0] ?? 'en'
+  return `<p><a class="back" lang="${tag}" href="${escapeHTML(url.href)}">${escapeHTML(BACK_TO[tag].replace('{host}', url.hostname))}</a></p>`
+}
+
+/**
+ * A refusal page: `code` from PAGE_CODES (the `invalid_client` of the 0.5.0
+ * policy with `allowlist`), `back` (the console) only ever from
+ * configuration, `assistant` the redirect back to the assistant that ends its
+ * wait (§19.30), only ever built by as.mjs from a redirect it trusted,
+ * `acceptLanguage` the request's header, which orders the sentences and picks
+ * the button's language, nothing else. With both, the console comes first:
+ * as.mjs passes it beside the button only where the sentence sends the
+ * person to the console before the assistant (`too_many_unknown`).
+ */
+export function refusalPage(status, code, { back = '', assistant = '', acceptLanguage = null, allowlist = false } = {}) {
   const key = code === 'invalid_client' && allowlist ? 'invalid_client_allowlist' : sentenceOf[code] ?? code
   const sentences = SENTENCES[key]
   if (!sentences) throw new Error(`no sentence for ${code}`)
+  const button = assistant ? assistantButton(assistant, acceptLanguage) : null
   const body = htmlHead + pageLanguages(acceptLanguage).map(tag => `<p lang="${tag}">${escapeHTML(sentences[tag])}</p>`).join('') +
-    (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : '') + `<p><small>Wappie MCP: ${code}</small></p>`
+    (back ? `<p><a href="${escapeHTML(back)}">${escapeHTML(back)}</a></p>` : '') + (button ?? '') + `<p><small>Wappie MCP: ${code}</small></p>`
   return new Response(body, { status, headers: pageHeaders })
 }
 
@@ -164,18 +198,19 @@ export function refusalPage(status, code, { back = '', acceptLanguage = null, al
  * The human page at `/` of the attested reader's public host (§19.29): what
  * this address is and what to do with it, the console and the documentation,
  * in one language chosen from Accept-Language (or `?lang=`), English when
- * none of the five is asked for.
+ * none of the five is asked for. The lead names Claude, the tested assistant,
+ * and other MCP apps (§19.34; pending the owner's approval, D10).
  */
 export const HOME = Object.freeze({
-  pt: Object.freeze({ title: 'Conector do Wappie', lead: 'Este é o endereço do conector do Wappie. Adicione-o no seu assistente (Claude, ChatGPT ou outro app compatível com MCP): no Claude como conector personalizado, no ChatGPT como plugin no modo de desenvolvedor. O Wappie abre no seu navegador e pergunta quais números o assistente pode ler. O console da Wappie mostra os passos para cada assistente.',
+  pt: Object.freeze({ title: 'Conector do Wappie', lead: 'Este é o endereço do conector do Wappie. Adicione-o no seu assistente: no Claude como conector personalizado, ou em outro app compatível com MCP. O Wappie abre no seu navegador e pergunta quais números o assistente pode ler. O console da Wappie mostra os passos para cada assistente.',
     address: 'Endereço do conector', console: 'Abrir o console da Wappie', docs: 'Ler a documentação', name: 'Português' }),
-  en: Object.freeze({ title: 'Wappie connector', lead: 'This is the address of Wappie’s connector. Add it in your assistant (Claude, ChatGPT or another app that supports MCP): in Claude as a custom connector, in ChatGPT as a developer-mode plugin. Wappie then opens in your browser and asks which numbers it may read. The Wappie console shows the steps for each assistant.',
+  en: Object.freeze({ title: 'Wappie connector', lead: 'This is the address of Wappie’s connector. Add it in your assistant: in Claude as a custom connector, or in another app that supports MCP. Wappie then opens in your browser and asks which numbers it may read. The Wappie console shows the steps for each assistant.',
     address: 'Connector address', console: 'Open the Wappie console', docs: 'Read the documentation', name: 'English' }),
-  es: Object.freeze({ title: 'Conector de Wappie', lead: 'Esta es la dirección del conector de Wappie. Agrégala en tu asistente (Claude, ChatGPT u otra app compatible con MCP): en Claude como conector personalizado, en ChatGPT como plugin en modo de desarrollador. Wappie se abre en tu navegador y te pregunta qué números puede leer. La consola de Wappie muestra los pasos para cada asistente.',
+  es: Object.freeze({ title: 'Conector de Wappie', lead: 'Esta es la dirección del conector de Wappie. Agrégala en tu asistente: en Claude como conector personalizado, o en otra app compatible con MCP. Wappie se abre en tu navegador y te pregunta qué números puede leer. La consola de Wappie muestra los pasos para cada asistente.',
     address: 'Dirección del conector', console: 'Abrir la consola de Wappie', docs: 'Leer la documentación', name: 'Español' }),
-  fr: Object.freeze({ title: 'Connecteur Wappie', lead: 'Ceci est l’adresse du connecteur Wappie. Ajoutez-la dans votre assistant (Claude, ChatGPT ou une autre application compatible MCP) : dans Claude comme connecteur personnalisé, dans ChatGPT comme plugin en mode développeur. Wappie s’ouvre alors dans votre navigateur et vous demande quels numéros il peut lire. La console Wappie montre les étapes pour chaque assistant.',
+  fr: Object.freeze({ title: 'Connecteur Wappie', lead: 'Ceci est l’adresse du connecteur Wappie. Ajoutez-la dans votre assistant : dans Claude comme connecteur personnalisé, ou dans une autre application compatible MCP. Wappie s’ouvre alors dans votre navigateur et vous demande quels numéros il peut lire. La console Wappie montre les étapes pour chaque assistant.',
     address: 'Adresse du connecteur', console: 'Ouvrir la console Wappie', docs: 'Lire la documentation', name: 'Français' }),
-  de: Object.freeze({ title: 'Wappie-Connector', lead: 'Dies ist die Adresse des Wappie-Connectors. Fügen Sie sie in Ihrem Assistenten hinzu (Claude, ChatGPT oder eine andere App mit MCP): in Claude als benutzerdefinierten Connector, in ChatGPT als Plugin im Entwicklermodus. Wappie öffnet sich dann in Ihrem Browser und fragt, welche Nummern er lesen darf. Die Wappie-Konsole zeigt die Schritte für jeden Assistenten.',
+  de: Object.freeze({ title: 'Wappie-Connector', lead: 'Dies ist die Adresse des Wappie-Connectors. Fügen Sie sie in Ihrem Assistenten hinzu: in Claude als benutzerdefinierten Connector oder in einer anderen App mit MCP. Wappie öffnet sich dann in Ihrem Browser und fragt, welche Nummern er lesen darf. Die Wappie-Konsole zeigt die Schritte für jeden Assistenten.',
     address: 'Connector-Adresse', console: 'Wappie-Konsole öffnen', docs: 'Dokumentation lesen', name: 'Deutsch' }),
 })
 const HTML_LANG = Object.freeze({ pt: 'pt-BR', en: 'en', es: 'es', fr: 'fr', de: 'de' })

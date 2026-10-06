@@ -95,42 +95,6 @@ After a successful import, **delete the original download and remove it from the
 trash**. The importer leaves it in place. Keep the generated files private; host
 configuration below needs only the path to `config.json`, never its credentials.
 
-## Connect to ChatGPT
-
-This package speaks **stdio**. Connect it through OpenAI's Secure MCP Tunnel;
-the Wappie server's REST address is not an MCP endpoint. For a connector that
-needs no tunnel and no always-on computer, use one of the installation's
-hosted endpoints instead; see [remote HTTP MCP](../mcp-http/README.md) and
-[MCP setup](../../docs/mcp.md#ways-to-connect) for what each can read.
-
-1. Follow the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
-   to install `tunnel-client`, create a tunnel in the correct organization and
-   associate it with your ChatGPT workspace. Configure its runtime
-   `CONTROL_PLANE_API_KEY` as directed there. This is an OpenAI key, separate from
-   the Wappie token; do not put it in the Wappie setup.
-2. Replace the tunnel ID and every absolute path below, then initialize and
-   check the tunnel. Use paths without spaces for this command example:
-
-```sh
-tunnel-client init \
-  --sample sample_mcp_stdio_local \
-  --profile wappie \
-  --tunnel-id tunnel_REPLACE_ME \
-  --mcp-command "/ABSOLUTE/PATH/node /ABSOLUTE/PATH/wappie/packages/mcp/cli.mjs --config /ABSOLUTE/PATH/.wappie-mcp/config.json"
-tunnel-client doctor --profile wappie --explain
-tunnel-client run --profile wappie
-```
-
-3. Keep the tunnel running and the computer awake. If your account and workspace
-   allow it, enable developer mode in ChatGPT settings. In **Plugins**, add a
-   developer connection, choose **Tunnel**, select your tunnel and review its
-   tools. Enable the connection in a conversation, following the
-   [official ChatGPT connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
-
-If the tunnel is missing, check its workspace association and your **Tunnels
-Read + Use** permissions. Local installation does not establish ChatGPT access
-by itself; discovery and tool calls must still be verified in your workspace.
-
 ## Connect to Claude Desktop
 
 This section covers the desktop app. For claude.ai, add the hosted connector
@@ -167,6 +131,28 @@ where the consent includes them, attachments; see
 [MCP setup](../../docs/mcp.md#ways-to-connect).
 See also
 [Claude's local MCP support guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
+
+## Other MCP hosts
+
+Any other host that starts a local stdio MCP server can run the same
+command from its own MCP settings:
+
+```sh
+/ABSOLUTE/PATH/node /ABSOLUTE/PATH/wappie/packages/mcp/cli.mjs --config /ABSOLUTE/PATH/.wappie-mcp/config.json
+```
+
+Wappie has not tested them, ChatGPT and Codex included: the assistants
+Wappie tests are Claude and Claude Code
+([docs/mcp-enclave.md §19.34](../../docs/mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
+ChatGPT reaches a stdio server only through OpenAI's
+[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels),
+which needs this computer awake and an OpenAI key of its own: keep that key
+out of the Wappie setup. For a connector that needs no tunnel and no
+always-on computer, use one of the installation's hosted endpoints instead;
+see [remote HTTP MCP](../mcp-http/README.md) and
+[MCP setup](../../docs/mcp.md#ways-to-connect) for what each can read. A
+host's own setup does not establish access by itself; check discovery and the
+tool calls in your account, as below.
 
 ## First check
 
@@ -441,9 +427,9 @@ registrable domain (`thehappie.co`), never from anything this server sends
 (seen in the claude.ai bundle of 2026-10-02 and Claude Desktop's
 "connector-favicons" egress entry; right-click the tile, Copy image address,
 to check; anthropics/claude-ai-mcp#152 is the open request to read
-`serverInfo.icons`); ChatGPT shows the icon uploaded when the developer-mode
-plugin is created (`icons/icon-512.png` is the one to give it, as the console
-offers); the Codex desktop app reads `serverInfo`
+`serverInfo.icons`); ChatGPT, untested, shows the icon uploaded when the
+developer-mode plugin is created (`icons/icon-512.png` is the one to give it);
+the Codex desktop app, untested, reads `serverInfo`
 ([docs/mcp-enclave.md §19.29](../../docs/mcp-enclave.md#1929-what-the-connector-says-about-itself-m5)).
 
 ### What a connection says about itself
@@ -476,11 +462,32 @@ From reader 0.6.0 ([docs/mcp-enclave.md §19.29](../../docs/mcp-enclave.md#1929-
   integrations (a file can go to the user's AI provider). `readOnlyHint` is
   `false` on `draft_message`, `send_to_self` and that same `open_attachment`
   (a transcript is a job on the user's AI authorization, which spends their
-  budget and is stored in Wappie).
+  budget and is stored in Wappie). `destructiveHint` is `true` only on
+  `send_to_self`: a note cannot be recalled once it left, so a host asks
+  before each one (§19.30).
 - **`list_numbers`' `connection` block**: `text`, `attachments`, `drafts` and
   `own_chat` (what opens now), `tier` (`web_tested`, `local_tested`,
   `unknown` or `token`; `null` on the local reader), `expires_at`,
   `history_days` (`null` for the whole history) and `renewal_needed`.
+- **Results** (§19.30): a read tool answers its JSON once, as one text block,
+  with no `structuredContent` and so no `outputSchema`; no result names the
+  workspace (`device_id` is what every tool takes).
+- **Identifiers** ([§19.32](../../docs/mcp-enclave.md#1932-the-identifiers-a-result-carries-2026-10-05)):
+  a result carries the identifiers a tool takes, once. A message, a hit and
+  an activity group name their sender by `sender_key` only (the sender's LID
+  when the archive knows it, else its phone JID) and their chat by
+  `chat_key`; a chat is its `chat_key`, `is_group`, `last_ts`, name and
+  preview; a number is its `id`, `name`, `status` and `paused`, and its
+  `name` is the console label, else the WhatsApp push name, else
+  "Number 1", "Number 2"…, never its phone. A reply carries `reply_to_uid`,
+  the uid of the message it quotes, when that message is among the rows the
+  same call read, in the same chat; nothing is fetched to find it, so
+  `get_message` never has it. No result carries WhatsApp's message id
+  (`wa_id`, `send_to_self` included), a sender's or a chat's phone JID or
+  LID beside its key, a chat's aliases or row uid, a number's phone, or a
+  contact's row uid. A `chat_key` or `sender_key` that is a phone JID still
+  shows the phone. Inputs are unchanged: `sender_keys` takes a phone JID,
+  a LID or a key alike, as the archive matches any of the three.
 
 `list_chats`, `list_messages` and `list_revisions` accept up to 100 items,
 defaulting to 50. For `list_messages`, pass
@@ -496,9 +503,18 @@ reports `truncated`. Responses larger than 1 MiB are rejected with
 `resolve_contact` requires `device_id` and a `query` of 2–256 characters. It
 returns up to 20 candidates by default, with a maximum `limit` of 50. Each call
 examines up to 500 archived contacts and the optional personal snapshot. Names
-identify their source; results include explicit phone/JID aliases and
-`ambiguous` when several candidates match. Ask the user which candidate they
-mean before choosing an identity.
+identify their source; results include the explicit JID aliases
+(`identifiers`, which `sender_keys` and `chat_key` take) and `ambiguous` when
+several candidates match. Ask the user which candidate they mean before
+choosing an identity. A candidate's E.164 `phones` come back only when the
+call passes `include_phones: true` because the user asked for the number
+(all of them), or when the query is a phone number (7 to 15 digits, with
+`+`, spaces, dots, dashes and parentheses only): then only the phones that
+are the number typed, the same digits or ending with them, as a number typed
+without its country or area code. A phone query can also match candidates
+whose number it is not (the same pieces in another order, a shared prefix, a
+LID's digits); those carry no `phones`. `identifiers` can still hold a phone
+JID.
 
 On the attested reader (`hosted-content`) each call reads exactly **four pages**
 of 500 archived contacts, following `has_more` whatever matched, so the archive
@@ -506,7 +522,12 @@ cannot tell from the paging which contact was looked for; `next` continues after
 the fourth page. Every other mode reads one page per call.
 
 Follow the complete returned `next` object as the next call's arguments to scan
-more archived contacts. If `omitted_candidates` is positive, narrow the query;
+more archived contacts. Its `after_key` is sealed (AES-256-GCM under a key
+derived from the connection's archive credential, bound to the number), since
+the archive pages by contact key and the last key on a page is a third
+party's JID; it opens only on the connection and number that returned it, and
+a changed one is refused as `invalid_cursor`. A plain contact key, as 0.5.0
+returned, is still accepted. If `omitted_candidates` is positive, narrow the query;
 there is no separate cursor for omitted matches from the current page or personal
 snapshot. Check `coverage`, including unavailable encrypted names and remaining
 archive pages, before concluding that a contact is absent. A personal-only phone
@@ -542,8 +563,10 @@ have more rows to search. Follow the complete `next` object unchanged while
 `has_more` is true. This is different from `list_messages`, where only the cursor
 is passed as `before`.
 
-Each result includes a source reference (with an authenticated REST URL on a
-local install) and an `archive_status`: `latest_archived`, `superseded`,
+On a local install each hit includes a `source` reference with an
+authenticated REST URL (`server`, `url`); a hosted hit is its own citation
+(`uid`, `chat_key`, `device_id`) and keeps the row's `source` string, as
+`list_messages` gives it. Each hit has an `archive_status`: `latest_archived`, `superseded`,
 `deleted`, `control_event` or `unavailable`, or `not_checked` for a text query
 on the attested reader (below). A search can match an old revision or a subsequently deleted
 message. Check this state and use `list_revisions` before presenting a historical
@@ -603,7 +626,12 @@ can change the archive between calls; pagination is a live read, not a snapshot.
 filters. It does not accept a text query, a `kind` override or a result `limit`.
 It scans up to `max_scan_messages` original `message` rows per call and groups
 them by chat, sender and direction. Group conversations and direct chats remain
-separate. It does not need message plaintext to count metadata.
+separate. It does not need message plaintext to count metadata. A sender
+archived by phone JID before its LID was known, and by LID since, counts once,
+under the LID, in each chat and direction where a row the same call read states
+both (the archive's alias); a later page is a call of its own, and a search by
+that `sender_key` still misses the phone-only rows (pass `resolve_contact`'s
+`identifiers` for every message of a person).
 
 These are **archived original message events**, including originals later edited
 or deleted while still retained in the archive. Edits, deletion controls and
@@ -658,7 +686,7 @@ returns text only. An attachment that takes long to open answers
 Attachments asked for at the same time on one connection are opened one
 after another, in the order asked, with up to four waiting behind the one
 being opened: each call waits for its turn within the host's inline wait
-(40 seconds on claude.ai, 25 on ChatGPT) and answers `pending` if its turn
+(40 seconds on claude.ai, 25 elsewhere) and answers `pending` if its turn
 has not come by then. An identical call within ten minutes is answered from
 the enclave's memory without a second fetch. The reader opens photos and stickers up to 16 MB and
 documents up to 32 MB, and reads about 4 MB of text from one file, the first
@@ -855,9 +883,10 @@ cross-chat scans, continuation, contact ambiguity and historical event counts.
 Media tests check which connections get `open_attachment` and every sentence it
 shows the model, word for word, against a scripted enclave side; the enclave's
 own media and worker suites are described in `packages/mcp-http`. These
-local tests do not establish a live ChatGPT or Claude connection; complete the
-host-specific first check above in your own account. `packages/mcp-http` has
-its own protocol, OAuth and content-boundary regression suite; see its README.
+local tests do not establish a live connection with Claude or any other host;
+complete the host-specific first check above in your own account.
+`packages/mcp-http` has its own protocol, OAuth and content-boundary
+regression suite; see its README.
 
 References: [MCP SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/),
 [official stdio documentation](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio.html).

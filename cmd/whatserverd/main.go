@@ -120,7 +120,7 @@ type app struct {
 	mcp *mcpauth.Handler
 	// switches are each workspace's own assistant switches, with the
 	// operator's configuration beneath them: every gate on text,
-	// attachments, drafts and AI asks them (docs/mcp-enclave.md §19.30).
+	// attachments, drafts and AI asks them (docs/mcp-enclave.md §19.35).
 	switches *mcpauth.WorkspaceSwitches
 }
 
@@ -754,7 +754,7 @@ func (a *app) routes() http.Handler {
 			// is on and only for the workspaces listed; attachments, on top
 			// of that, behind their own switch and list.
 			// Each answer is the operator's and the workspace's own
-			// switch together (docs/mcp-enclave.md §19.30).
+			// switch together (docs/mcp-enclave.md §19.35).
 			ContentReader:  config.ContentReader,
 			ContentAllowed: a.switches.Content,
 			MediaAllowed:   a.switches.Media,
@@ -795,7 +795,7 @@ func (a *app) routes() http.Handler {
 			a.log.Warn("untested assistants and tokens may connect, but no new-assistant e-mail can go (WS_SMTP_ADDR, WS_MAIL_FROM and WS_MCP_NOTICE_ORIGIN): text for them is refused")
 		}
 		// The renewal notice carries no link, so it needs a mail server and
-		// nothing else (docs/mcp-enclave.md §19.30).
+		// nothing else (docs/mcp-enclave.md §19.35).
 		if a.cfg.Signup.SMTP.Configured() {
 			sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
 			a.mcp.MailRenewal = sender.MCPRenewalNotice

@@ -66,8 +66,8 @@ reader, with or without text:
 | --- | --- | --- |
 | An assistant you approved that Wappie has not tested | Yes, what you allowed | Metadata once you tick "I started this"; text and attachments only after a second, deliberate tick, with your password and a confirmed e-mail address. Never drafts, notes or sending. At most the last 7, 30 or 90 days (30 by default), 2,000 messages and 50 attachments a day (300 and 10 in the first hour), 20 calls a minute, text for 30 days at most, and its access lapses after 3 days unused (7 for metadata). |
 | Someone who tricked you into approving their assistant | Yes, what was approved, within those limits, until you revoke it or it expires | The consent card leads with the verified domain and its main domain, shows the full identity and return addresses, warns about look-alike names and shared hosting, and refuses public suffixes, hosts shared by path and Wappie's own domain. Every new connection raises a banner in the console and an e-mail with a link that can only revoke it. |
-| Someone who started a connection in their own Claude or ChatGPT and got you to approve it | Only if that assistant accepts a sign-in it did not start | Each release tests this for every web assistant it lists, and an assistant that fails is not listed. You tick "I started this" on every consent, and the reader refuses an approval completed from a different network than the one that started the connection. The banner, the e-mail and revocation. |
-| A program on your computer posing as an app such as Claude Code or Codex (an installer script is enough) | Yes, what you approved for that app | Nothing can confirm which program on your computer receives the access, and the card says so. You tick "I started this"; such apps get shorter lifetimes (text 30 days at most, refresh lapsing after 7 days unused) and never drafts, notes or sending. |
+| Someone who started a connection in their own assistant account and got you to approve it | Only if that assistant accepts a sign-in it did not start | Each release tests this for every web assistant it lists, and an assistant that fails is not listed. You tick "I started this" on every consent, and the reader refuses an approval completed from a different network than the one that started the connection. The banner, the e-mail and revocation. |
+| A program on your computer posing as an app such as Claude Code (an installer script is enough) | Yes, what you approved for that app | Nothing can confirm which program on your computer receives the access, and the card says so. You tick "I started this"; such apps get shorter lifetimes (text 30 days at most, refresh lapsing after 7 days unused) and never drafts, notes or sending. |
 | Whoever holds a connection token | Yes, within its numbers, scope, networks, history window, limits and validity | The token is shown once and Wappie keeps only its hash, inside the reader's sealed state. A text token lasts 1 day by default and 30 at most. Revocation takes effect within a minute. |
 | Wappie's staff forging an assistant's identity document | No | The verified reader fetches the document itself over a connection it checks; the assistants Wappie tested are pinned in its published image and never fetched. Staff can only block a document. |
 | Wappie's staff hiding a connection from the list | Detected | The console compares the list with the one the verified reader signs, and shows a red warning when a connection is missing. |
@@ -75,18 +75,18 @@ reader, with or without text:
 ## Connect an assistant
 
 The console's **MCP** panel shows workspace owners and administrators one
-connector address and how to add it in Claude or ChatGPT (from reader 0.6.0,
-in any MCP client: [below](#any-mcp-client-reader-060)). The assistant then
-sends the browser back to the console to choose the numbers and approve the
-connection; nothing runs on the person's computer. See the
+connector address and how to add it in Claude and Claude Code (from reader
+0.6.0, in any MCP client: [below](#any-mcp-client-reader-060)). The
+assistant then sends the browser back to the console to choose the numbers
+and approve the connection; nothing runs on the person's computer. See the
 [remote connector](../packages/mcp-http/README.md) and the steps below.
 
 The console no longer creates local setup bundles. A bundle created earlier
 still imports with `packages/mcp/setup.mjs`, and the console lists the tokens
 of those setups under **Old local MCP tokens** so they can be revoked.
 The [package quickstart](../packages/mcp/README.md#start-with-a-console-setup)
-covers importing such a bundle, [ChatGPT through Secure MCP Tunnel](../packages/mcp/README.md#connect-to-chatgpt)
-and [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop);
+covers importing such a bundle, [Claude Desktop through local stdio](../packages/mcp/README.md#connect-to-claude-desktop)
+and [other hosts that run a stdio server](../packages/mcp/README.md#other-mcp-hosts);
 a new local connection uses its [manual configuration](../packages/mcp/README.md#manual-configuration).
 
 ### Installing the hosted connector in one step
@@ -99,7 +99,8 @@ where Wappie has enabled those too and the approver switched them on as well.
 The console's MCP panel shows the second address to workspaces the attested
 reader allows and the first to every other. The steps below use the first
 address; the second works the same way in every host.
-Every host takes the address as it is — **nothing to install**:
+Wappie has tested two hosts, Claude and Claude Code. Every host takes the
+address as it is — **nothing to install**:
 
 - **Claude** (claude.ai, Desktop, mobile): the console's MCP panel and the
   Wappie page have a **Connect to Claude** button, Claude's prefilled "add
@@ -108,31 +109,21 @@ Every host takes the address as it is — **nothing to install**:
   the organisation, in Organization settings → Connectors → Add → Custom → Web
   (the panel also links the same prefilled dialog on that admin path), and
   members then click Connect on it.
-- **Codex** (ChatGPT desktop app or CLI): Settings → MCP servers → Add server →
-  Streamable HTTP → the address, or `codex mcp add wappie --url
-  https://api.wappie.thehappie.co/mcp`. Codex opens the consent page itself.
-  Codex has been seen to list the tools without being able to call them; if
-  that happens, add Wappie as a ChatGPT app instead (below).
 - **Claude Code**: `claude mcp add --transport http --scope user wappie
   https://api.wappie.thehappie.co/mcp`, then `/mcp` to sign in.
-- **ChatGPT** (set up on the web; Plus, Pro, Business, Enterprise or Edu):
-  Settings → Security and login → turn on Developer mode. Then open
-  chatgpt.com/plugins and click "+": name "Wappie", a public endpoint under
-  Connection with the address, Authentication OAuth, Create. The icon is
-  optional and cannot be changed afterwards: upload the Wappie icon then
-  (`packages/mcp/icons/icon-512.png`) to see it in ChatGPT. Wappie then works
-  in Chat and in Work: type "@" and pick Wappie, or turn it on under "+".
-  That entry is all ChatGPT needs; there is no file to build. Added another
-  way, for example as a plain connector or in Codex, ChatGPT may list the
-  tools without being able to use them. For attachments, pick a model with
-  reasoning (Thinking or Pro): Instant does not see images.
+- **Other MCP clients**, ChatGPT and Codex included, are not tested by
+  Wappie: ChatGPT's developer-mode plugins and Codex did not finish the live
+  baseline, and on 2026-10-05 the owner kept only Claude
+  ([contract §19.34](mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
+  On the attested reader, a client that identifies itself with its own
+  document connects as an [untested client](#any-mcp-client-reader-060).
 
 The plugin at [thehappieco/wappie-plugins](https://github.com/thehappieco/wappie-plugins)
-is optional. It adds a skill that tells Codex or Claude Code what the
-connection can see, and not to read WhatsApp through the screen to get around a
-locked result.
+is optional. It adds a skill that tells Claude Code (or Codex, untested) what
+the connection can see, and not to read WhatsApp through the screen to get
+around a locked result.
 
-Native apps such as Codex and Claude Code identify themselves with a Client ID
+Native apps such as Claude Code identify themselves with a Client ID
 Metadata Document and take the code on a loopback port (RFC 8252); open
 registration never gets loopback redirects. Up to reader 0.5.0 the document
 must sit on an allowed host (`claude.ai` or `chatgpt.com`); from reader 0.6.0
@@ -160,16 +151,19 @@ also works with public API/CLI credentials, without the commercial console.
 From reader 0.6.0 ([contract §19](mcp-enclave.md#19-any-mcp-client-060)) the
 attested reader's address works in any MCP client that identifies itself
 with a Client ID Metadata Document on its own https domain (VS Code, Zed,
-goose, an in-house agent), as well as in Claude, ChatGPT, Codex and Claude
+goose, ChatGPT, Codex, an in-house agent), as well as in Claude and Claude
 Code. The consent card always leads with the client's verified domain.
 
-- **Tested by Wappie.** The clients Wappie has tested are pinned, with their
-  exact return addresses, in the reader's published image. The first list
-  (Claude, ChatGPT, Codex and Claude Code) is final only after a live
-  baseline on reader 0.5.0, and only the clients that pass it are listed.
-  Claude and ChatGPT show "Tested by Wappie". Codex and Claude Code show
-  "App on this computer": an app on your computer cannot be identified
-  there, so they get shorter lifetimes and no drafts or notes.
+- **Tested by Wappie.** The tested clients are pinned, with their exact
+  return addresses, in the reader's published image: Claude on the web
+  and Claude Code, which passed the live baseline on reader 0.5.0 by their
+  documents. Claude's registration form, on the same two callbacks, is
+  listed by the owner's decision without a baseline run
+  ([contract §19.34](mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
+  Claude shows "Tested by Wappie". Claude Code shows "App on this computer":
+  an app on your computer cannot be identified there, so it gets shorter
+  lifetimes and no drafts or notes. ChatGPT and Codex did not finish the
+  baseline and are not listed: they connect as any other client, below.
 - **Not tested by Wappie.** Any other client connects with an amber card:
   its domain and main domain, the full addresses it identifies itself with
   and returns to, the name it gives in quotes, and warnings for look-alike
@@ -331,7 +325,7 @@ Message text is a separate switch. Who may use it is decided in two halves:
 the operator's, in these variables, and each workspace's own, which its
 owner sets in the console's MCP tab ("What assistants may do in this
 workspace", `GET` and `PUT /v1/mcp/workspace`) for text, attachments, drafts
-and AI ([contract](mcp-enclave.md#1930-fewer-steps-without-a-new-image-a1-to-a7)):
+and AI ([contract](mcp-enclave.md#1935-fewer-steps-without-a-new-image-a1-to-a7)):
 
 | Variable | Rule |
 |---|---|
@@ -485,7 +479,7 @@ switches, every one of which can only refuse:
 |---|---|
 | `WS_MCP_CIMD_MODE` | `allowlist` (default) or `any`. In `allowlist` mode every consent, renewal and token request for a client Wappie has not tested, and every console token, is refused with `403 client_not_allowed`. Set `any` once a 0.6.0 reader serves; back to `allowlist` turns them off without a release (live ones are revoked from the console) |
 | `WS_MCP_BLOCKED_CLIENTS` | tested clients' ids from the image's `TESTED_CLIENTS` (`^[a-z][a-z0-9_]{0,31}$`), comma separated, refused the same way whatever the mode; empty by default |
-| `WS_MCP_DCR_HOSTS` | the hosts a dynamically registered client may be identified by, each one a client's host by the predicate; default `claude.ai,claude.com,chatgpt.com` |
+| `WS_MCP_DCR_HOSTS` | the hosts a dynamically registered client may be identified by, each one a client's host by the predicate; default `claude.ai,claude.com` |
 | `WS_MCP_NOTICE_ORIGIN` | this server's public https origin (`https://api.wappie.thehappie.co`), where the new-assistant e-mail's revoke-only link points. Optional; without it, or without `WS_SMTP_ADDR` and `WS_MAIL_FROM`, no notice e-mail goes |
 
 The console's consent to a version-2 descriptor carries `trust`,

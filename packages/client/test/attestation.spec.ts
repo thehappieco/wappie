@@ -295,7 +295,7 @@ describe('documents made for a descriptor (user_data v2)', () => {
   it('refuse any field the console shows or compares, changed by whoever relayed it', async () => {
     const changes: Record<string, unknown>[] = [
       { client_host: 'claude.ai.example.com' }, { registrable: 'example.com' }, { client_name: 'Claude Code' }, { claimed_name: 'Claude' },
-      { trust: 'unknown' }, { tested_id: 'chatgpt' }, { client_local: true }, { redirect_uri: 'https://claude.ai/other' },
+      { trust: 'unknown' }, { tested_id: 'claude_code' }, { client_local: true }, { redirect_uri: 'https://claude.ai/other' },
       { limits: { ...(connect.descriptor.limits as object), calls_per_minute: 600 } }, { shared_suffix: 'github.io' }, { extra: true },
     ]
     for (const change of changes) expect(await codeV2(connect, { ...connect.descriptor, ...change }), JSON.stringify(change)).toBe('attestation_user_data')

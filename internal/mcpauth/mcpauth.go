@@ -167,7 +167,7 @@ type Handler struct {
 	LiveListLimits   *ratelimit.Limiter
 	RevokeLinkLimits *ratelimit.Auth
 	// Workspaces are each workspace's own assistant switches, which its
-	// owner sets in the console (docs/mcp-enclave.md §19.30); the gates
+	// owner sets in the console (docs/mcp-enclave.md §19.35); the gates
 	// above are composed from them and the operator's configuration. Nil
 	// leaves the console's switches route answering 404.
 	Workspaces *WorkspaceSwitches
@@ -282,7 +282,7 @@ type createRequest struct {
 	HistoryDays *int    `json:"history_days"`
 	// Replace asks that, once this connection activates, the person's
 	// earlier live connections of the same client in this workspace end
-	// (docs/mcp-enclave.md §19.30): the card's pre-ticked "Replace my
+	// (docs/mcp-enclave.md §19.35): the card's pre-ticked "Replace my
 	// previous connection". A version-2 descriptor's consent only; absent is
 	// false.
 	Replace bool `json:"replace"`
@@ -365,7 +365,7 @@ type connectionInfo struct {
 	CreatedByEmail *string `json:"created_by_email"`
 	Seen           bool    `json:"seen"`
 	// Mine says the viewer consented to it: the connections a reconnect of
-	// theirs may replace (§19.30).
+	// theirs may replace (§19.35).
 	Mine bool `json:"mine"`
 	// BudgetHits are the reading limits the reader said this connection
 	// reached, each with when it last did (§19.19).
@@ -1029,7 +1029,7 @@ func (h *Handler) connectionActivate(w http.ResponseWriter, r *http.Request, rea
 	}
 	h.log().Info("mcp connection activated", "connection", id, "reader", readerID)
 	// A reconnect that asked to replace the person's earlier connections of
-	// the same client ends them now, and tells their readers (§19.30). A
+	// the same client ends them now, and tells their readers (§19.35). A
 	// failure leaves them live: the idle sweep, or the person, ends them.
 	replaced, err := h.Connections.ReplacePrevious(r.Context(), readerID, id)
 	if err != nil {

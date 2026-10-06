@@ -77,9 +77,13 @@ test('boot, consent through an attested prepare, tools, restart with tokens inta
   assert.match(result(initialized.body).instructions, /turn on the option to also read message text/)
   assert.doesNotMatch(result(initialized.body).instructions, /none would unlock|configured Wappie installation/)
   const numbers = await rpc(w, done.tokens.access_token, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_numbers', arguments: {} } })
-  assert.equal(result(numbers.body).structuredContent.plaintext_enabled, false)
+  // One text block, no structuredContent, no workspace id (§19.30).
+  assert.equal(result(numbers.body).structuredContent, undefined)
+  const answered = JSON.parse(result(numbers.body).content[0].text)
+  assert.equal(answered.plaintext_enabled, false)
+  assert.equal(Object.hasOwn(answered, 'workspace_id'), false)
   // The connection block: a metadata connection of a tested web client, its deadline the record's (§19.29).
-  const block = result(numbers.body).structuredContent.connection
+  const block = answered.connection
   assert.deepEqual({ ...block, expires_at: typeof block.expires_at }, { text: false, attachments: false, drafts: false, own_chat: false, tier: 'web_tested', expires_at: 'string', history_days: null, renewal_needed: false })
   assert.equal(block.expires_at, new Date(e.state.connections.get(done.connectionId).expires_at).toISOString())
   assert.equal(w.go.activations, 1)

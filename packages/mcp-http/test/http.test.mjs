@@ -230,8 +230,7 @@ test('an active connection dies with its expiry and a consent left unfinished is
   assert.equal(abandoned.relayed.status, 204)
   h.clock.advance(21 * 60_000)
   await h.reader.sweep()
-  await new Promise(resolve => setTimeout(resolve, 50))
-  assert.equal(h.go.connections.get(abandoned.connectionId).status, 'revoked')
+  await h.until(() => h.go.connections.get(abandoned.connectionId).status === 'revoked', 'Go revoking the expired request\'s connection')
   assert.equal((await h.internal(`/internal/requests/${abandoned.id}`)).status, 404)
 })
 

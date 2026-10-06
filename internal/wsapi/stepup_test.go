@@ -14,7 +14,7 @@ import (
 // Every grant hands a number's key on: to a connection's service account, a
 // standing service account whose private key its registrant holds, or a
 // member, each waits for the person's fresh step-up (docs/mcp-enclave.md
-// §19.30), so a browser left open past the window cannot give an archive
+// §19.35), so a browser left open past the window cannot give an archive
 // away. A step-up lets each through again.
 func TestEveryGrantNeedsAStepUp(t *testing.T) {
 	c := newConsole(t)

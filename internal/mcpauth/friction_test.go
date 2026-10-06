@@ -18,7 +18,7 @@ import (
 )
 
 // Fewer steps between an assistant and the archive (docs/mcp-enclave.md
-// §19.30): the step-up the server holds every content write to, each
+// §19.35): the step-up the server holds every content write to, each
 // workspace's own switches, reconnects that replace, the renewal notice and
 // the notices in each person's language.
 

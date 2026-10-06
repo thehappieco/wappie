@@ -107,8 +107,8 @@ test('titles, hints, descriptions and schemas, word for word (§17.8)', async ()
     const expected = {
       draft_message: ['Draft a WhatsApp message', { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         'Prepare a WhatsApp message for the user to review and send in the Wappie console; nothing is sent. Use it only when the user asked, in this conversation, for this message to this chat. Give them review_url as returned, and never say the message was sent.'],
-      // A note leaves at once through WhatsApp to every device of the number, and nothing recalls it (§19.29).
-      send_to_self: ['Send a note to my own WhatsApp chat', { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      // A note leaves at once through WhatsApp to every device of the number, and nothing recalls it (§19.29): destructive (§19.30).
+      send_to_self: ['Send a note to my own WhatsApp chat', { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         'Send a text at once to this number\'s own chat (the user\'s notes to themselves), and nowhere else. No links. Use it only when the user asked for it in this conversation; never repeat a call whose result was lost: check list_outgoing.'],
       list_outgoing: ['List drafts and sent messages', { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         'List this connection\'s drafts and sent messages, newest first, with their status and a link that opens each sent message in the Wappie console. Texts are not included: use get_message with message_uid.'],
@@ -240,10 +240,12 @@ test('an own-chat send and the ledger answer their shapes, links checked', async
     const client = await connect(configFor(f.server, { send: 'draft', send_self: true }), await providerFor(f, send))
     const result = await call(client, 'send_to_self', { device_id: device, text: 'lembrar: pagar a conta' })
     assert.equal(result.structuredContent, undefined)
-    assert.equal(result.content[0].text, JSON.stringify({ status: 'sent', sent: true, ...sentData() }))
+    // No wa_id, even from a provider that hands one on (§19.32): WhatsApp's own id, which no tool takes.
+    const { wa_id: _waID, ...shown } = sentData()
+    assert.equal(result.content[0].text, JSON.stringify({ status: 'sent', sent: true, ...shown }))
     sent = sentData({ message_uid: null, duplicate: true })
     assert.equal((await call(client, 'send_to_self', { device_id: device, text: 'x' })).content[0].text,
-      '{"status":"sent","sent":true,"message_uid":null,"wa_id":"3EB0C0FFEE0123456789","timestamp":"2026-10-01T09:32:15.123456Z","duplicate":true}')
+      '{"status":"sent","sent":true,"message_uid":null,"timestamp":"2026-10-01T09:32:15.123456Z","duplicate":true}')
     sent = sentData({ open_url: 'https://evil.example/?x=1' })
     assert.equal(Object.hasOwn(JSON.parse((await call(client, 'send_to_self', { device_id: device, text: 'x' })).content[0].text), 'open_url'), false)
     const open = `${consoleURL}?workspace=${workspace}&open_device=${device}&open_message=0199b3c4-dddd-7eee-8fff-000011112222`

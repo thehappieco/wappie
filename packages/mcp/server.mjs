@@ -46,7 +46,7 @@ const range = {
 const filters = {
   chat_key: identity.optional().describe('Only this chat: a chat_key from list_chats, or from a message or hit.'),
   sender_keys: z.array(identity).min(1).max(3).optional()
-    .describe('Only these senders, 1 to 3: sender_key, sender_pn or sender_lid values from earlier results, or identifiers from resolve_contact.'),
+    .describe('Only these senders, 1 to 3: sender_key values from earlier results, or identifiers from resolve_contact.'),
   direction: z.enum(['incoming', 'outgoing']).optional().describe('incoming (received) or outgoing (sent from this number).'),
   type: z.enum(MESSAGE_TYPES).optional().describe('Only this message type; ptt is a voice note and ptv a round video note.'),
   has_attachment: z.boolean().optional().describe('true for messages with an attachment, false for messages without one.'),
@@ -375,11 +375,13 @@ const chatKey = z.string().min(1).max(128).regex(/^[^\s,]+$/)
  * workspace and an identical call within ten minutes returns the same one;
  * the ledger is read. An own-chat note leaves at once through WhatsApp's
  * network, to every device linked to the number, and no tool can recall it:
- * openWorldHint is true there (§19.29). None is destructive: each only adds.
+ * openWorldHint is true there (§19.29), and so is destructiveHint
+ * (§19.30): OpenAI reads true for an irreversible send, whether or not it
+ * only adds, and a host then asks before every note.
  */
 const sendAnnotations = {
   draft_message: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  send_to_self: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  send_to_self: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   list_outgoing: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }
 /** The sending tools' descriptions (§17.8, shortened in §19.29: the rules are the instructions'). */
@@ -441,7 +443,8 @@ function draftAnswer(data, consoleURL) {
   return { content: [{ type: 'text', text: `${JSON.stringify(answer)}\n${draftLine}` }] }
 }
 function sentAnswer(data, consoleURL) {
-  const answer = { status: 'sent', sent: true, message_uid: data.message_uid ?? null, wa_id: data.wa_id, timestamp: data.timestamp }
+  // No wa_id (§19.32): WhatsApp's own id of the note, which no tool takes; message_uid is the archive's.
+  const answer = { status: 'sent', sent: true, message_uid: data.message_uid ?? null, timestamp: data.timestamp }
   const link = answer.message_uid ? consoleLink(data.open_url, consoleURL) : null
   if (link) answer.open_url = link
   if (data.duplicate === true) answer.duplicate = true
@@ -524,6 +527,8 @@ export function createServer(config, provider, { iconOrigin, version, contentRea
     if (['archive_scan_not_found', 'archive_contacts_not_found'].includes(code)) {
       return 'Confirm that the number still exists and that this Wappie server supports contact and cross-chat archive reads; older servers need an update.'
     }
+    // resolve_contact's after_key is sealed for this connection and number (§19.32).
+    if (code === 'invalid_cursor') return 'Pass next.after_key exactly as returned, or call resolve_contact again without after_key.'
     if (code === 'content_sealed_metadata_only') {
       return offersText
         ? `Message text is not readable on this connection: it was authorized for metadata only. Select with the filters and a time range instead. ${textLater(tier, 'wants text searched')}`
@@ -554,6 +559,10 @@ export function createServer(config, provider, { iconOrigin, version, contentRea
    * §19.19), a tool that returns messages reserves the most it can return
    * before it runs and is counted once it has: a call that starts under the
    * limit is served whole, and a failed one frees its reservation uncounted.
+   * The result is its JSON as one text block, once (§19.30): no
+   * structuredContent and so no outputSchema. claude.ai never shows
+   * structuredContent to the model, Claude Code shows it instead of the
+   * text, and ChatGPT shows both, so the same JSON went to ChatGPT twice.
    */
   function tool(name, description, schema, method) {
     server.registerTool(name, { title: titles[name], description, inputSchema: schema, annotations: { ...annotations, title: titles[name] } }, async input => {
@@ -568,7 +577,7 @@ export function createServer(config, provider, { iconOrigin, version, contentRea
         const text = JSON.stringify(data)
         if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new ArchiveError('result_too_large')
         ticket?.settle(counted.count(data))
-        return { content: [{ type: 'text', text }], structuredContent: data }
+        return { content: [{ type: 'text', text }] }
       } catch (error) {
         const code = codeOf(error)
         const guidance = code === 'limit_reached' ? limitSentence(error) : code === 'outside_window' ? WINDOW_SENTENCE : await guidanceFor(code)
@@ -680,7 +689,9 @@ export function createServer(config, provider, { iconOrigin, version, contentRea
     ? 'Find a contact of one number by phone number, among its archived contacts. Contact names are locked on this connection, so a name never matches: say a name cannot be searched here, not that it was not found, and ask for the number. Never choose among ambiguous candidates yourself.'
     : 'Find a contact of one number by name or phone number, among its archived contacts and an explicitly included local personal snapshot. No provider contact service is called. Follow next for more contacts. Never choose among ambiguous candidates yourself.', z.strictObject({
     ...device, query: z.string().trim().min(2).max(256).describe('A name, or a phone number in digits with or without +, 2 to 256 characters.'),
-    limit: limitOf('Candidates', 50, 20), after_key: identity.optional().describe('next.after_key from the previous result, unchanged, to read more contacts.'),
+    limit: limitOf('Candidates', 50, 20),
+    include_phones: z.boolean().optional().describe('true only when the user asked for a contact\'s phone number: candidates then include their phones. A query that is a phone number shows the phones that match it anyway; omit it otherwise.'),
+    after_key: identity.optional().describe('next.after_key from the previous result, unchanged, to read more contacts.'),
   }), 'resolveContact')
   tool('search_messages', (content
     ? 'Search the messages of one number across its chats, by words in message text or attachment filenames (all words, accent-insensitive, not semantic) and by filters and a time range. '

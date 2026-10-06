@@ -13,7 +13,7 @@ import (
 )
 
 // AssistantSwitches are what a workspace's owner lets assistants do in it
-// (0047, docs/mcp-enclave.md §19.30): read message text, open attachments,
+// (0047, docs/mcp-enclave.md §19.35): read message text, open attachments,
 // prepare drafts (and notes to the number's own chat), and run AI
 // integrations. Nil is the deployment's default for that switch. They only
 // narrow what the operator allows: the kill switches, the deny list and the

@@ -18,7 +18,7 @@ import (
 )
 
 // Fewer steps between an assistant and the archive (docs/mcp-enclave.md
-// §19.30): the step-up on the session, the language on the account, each
+// §19.35): the step-up on the session, the language on the account, each
 // workspace's assistant switches, reconnects that replace, the idle sweep and
 // the renewal round. They run as the ordinary role, as every MCP store test
 // does, so a cascade that forgot its workspace's transaction fails here.

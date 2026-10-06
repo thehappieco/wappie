@@ -13,7 +13,7 @@ import (
 	"whatserver2/internal/store"
 )
 
-// Each workspace's own assistant switches (docs/mcp-enclave.md §19.30): what
+// Each workspace's own assistant switches (docs/mcp-enclave.md §19.35): what
 // its owner lets assistants do in it, beneath what the operator allows. They
 // replace the operator's workspace lists (WS_MCP_CONTENT_TENANTS and its
 // kin): the operator keeps the kill switches, the deny list and the enclave's

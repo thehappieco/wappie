@@ -1,8 +1,9 @@
 // Per-route validation, deliberately not global: the Host check guards every
 // public route, an Origin header is refused on the JSON-RPC endpoint (no
-// browser ever calls it), the consent completion demands the console's Origin
-// as its CSRF proof, and the server-to-server OAuth endpoints never look at
-// Origin at all. The internal routes have their own guard.
+// browser ever calls it), the consent completion and the console's decline
+// demand the console's Origin as their CSRF proof, and the server-to-server
+// OAuth endpoints never look at Origin at all. The internal routes have their
+// own guard.
 //
 // In the enclave the router serves two listeners (`info.listener`): the public
 // one never reaches /internal, the internal one reaches nothing else, and each
@@ -165,6 +166,8 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
         }
         case '/mcp/authorize': meta.route = `${request.method} /mcp/authorize`; return as.authorize(request, ip, meta)
         case '/mcp/authorize/complete': meta.route = `${request.method} /mcp/authorize/complete`; return as.complete(request, ip, meta)
+        // The console's Cancel (§19.30): ends the request and the assistant's wait.
+        case '/mcp/authorize/decline': meta.route = `${request.method} /mcp/authorize/decline`; return as.decline(request, ip, meta)
         case '/mcp/token': meta.route = `${request.method} /mcp/token`; return as.token(request, ip, meta)
         case '/mcp/register': meta.route = `${request.method} /mcp/register`; return as.register(request, ip, meta)
         case '/mcp/revoke': meta.route = `${request.method} /mcp/revoke`; return as.revoke(request, meta)

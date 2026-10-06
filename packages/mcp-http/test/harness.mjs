@@ -24,15 +24,50 @@ export const DAY = 24 * 3_600_000
 export const apiKey = () => `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
 export const fakeClock = () => { const clock = { offset: 0, now: () => Date.now() + clock.offset, advance(ms) { clock.offset += ms } }; return clock }
 
+/** How long `until` waits before it fails: only a hang ever reaches it. */
+export const UNTIL_MS = 10_000
+
+/**
+ * What a test waits on that the code under test does without awaiting it
+ * before it answers: Go hearing a best-effort call (a revoke, a budget hit),
+ * or a request's log line, written once its response has gone. `wake()` is
+ * called whenever one of those may have happened; `until(condition, what)`
+ * resolves once `condition()` holds, looked at again on every wake. The
+ * deadline only turns a hang into a failure naming `what`: the test waits for
+ * the event, never for time to pass.
+ */
+export function waiter(ms = UNTIL_MS) {
+  const checks = new Set()
+  return {
+    wake() { for (const check of [...checks]) check() },
+    until(condition, what) {
+      return new Promise((resolve, reject) => {
+        const finish = () => { checks.delete(check); clearTimeout(timer) }
+        const check = () => {
+          let held
+          try { held = condition() } catch (error) { finish(); reject(error); return }
+          if (held) { finish(); resolve() }
+        }
+        const timer = setTimeout(() => { finish(); reject(new Error(`timed out after ${ms} ms waiting for ${what}`)) }, ms)
+        checks.add(check)
+        check()
+      })
+    },
+  }
+}
+
 /**
  * Go's /v1/mcp/internal/* in front of the synthetic archive REST server.
  * `go.holdActivate(id)`, when set, is awaited before an activation is looked
  * at, so a test can hold one open and act while the reader waits on it.
+ * `go.onAnswer()`, when set, is called once each answer has gone, after
+ * whatever the call changed here.
  */
 export function createFakeGo({ upstream, secret, now }) {
-  const go = { connections: new Map(), cimd: new Map(), calls: [], delay: 0, activations: 0, holdActivate: null }
+  const go = { connections: new Map(), cimd: new Map(), calls: [], delay: 0, activations: 0, holdActivate: null, onAnswer: null }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
   const http = createHTTPServer(async (req, res) => {
+    res.once('finish', () => go.onAnswer?.())
     const url = new URL(req.url, 'http://go')
     if (!url.pathname.startsWith('/v1/mcp/internal/')) {
       // Everything else is the archive REST API the reader queries with the API key.
@@ -91,18 +126,28 @@ export async function harness(t, options = {}) {
   await writeFile(secretFile, secret + '\n', { mode: 0o600 })
   const stateDir = join(directory, 'state')
   const logs = [], responses = []
+  const waits = waiter()
+  go.onAnswer = waits.wake
+  const logSink = line => { logs.push(line); waits.wake() }
   const env = {
     WAPPIE_MCP_LISTEN: '127.0.0.1:0', WAPPIE_MCP_CONSOLE_URL: CONSOLE_URL, WAPPIE_MCP_STATE_DIR: stateDir,
     WAPPIE_MCP_RELAY_SECRET_FILE: secretFile, WAPPIE_MCP_ARCHIVE_URL: go.url, WAPPIE_MCP_REDIRECT_HOSTS: 'claude.ai,chatgpt.com',
     WAPPIE_MCP_CIMD: 'on', WAPPIE_MCP_PENDING_TTL_SECONDS: '1200', ...options.env,
   }
   const start = () => (options.clientPolicy
-    ? startReader({ config: { ...readEnv(env), clientPolicy: options.clientPolicy }, now: clock.now, logSink: line => logs.push(line) })
-    : startReader({ env, now: clock.now, logSink: line => logs.push(line) }))
+    ? startReader({ config: { ...readEnv(env), clientPolicy: options.clientPolicy }, now: clock.now, logSink })
+    : startReader({ env, now: clock.now, logSink }))
   let reader = await start()
   const h = {
     f, go, clock, secret, directory, stateDir, env, logs, responses, apiKey: key, workspace, consoleOrigin: CONSOLE_ORIGIN,
     get reader() { return reader }, get publicOrigin() { return reader.publicOrigin }, get resource() { return reader.resource },
+    /**
+     * Resolves once `condition()` holds, looked at again whenever Go has
+     * answered a call or the reader has written a line (`waiter` above): for
+     * what the reader does after its answer, such as the best-effort revoke
+     * of a request it dropped, or a request's line.
+     */
+    until: waits.until,
     /** A request against the reader, never following redirects; the body is recorded for the secrets sweep. */
     async request(path, init = {}) {
       const response = await fetch(reader.publicOrigin + path, { redirect: 'manual', ...init })
@@ -218,6 +263,22 @@ export function secretsAbsent(h, { linkSecrets = [], proofs = [], tokens = [], e
     assert.equal('path' in entry || 'query' in entry || 'headers' in entry || 'body' in entry, false)
   }
 }
+/**
+ * A refusal page's one way back to the assistant (docs/mcp-enclave.md
+ * §19.30): `{lang, href, label, params}`, the link's attributes unescaped and
+ * its query's parameters by name, or null when the page has none.
+ */
+export function backButton(body) {
+  const buttons = [...body.matchAll(/<a class="back" lang="([a-z]{2})" href="([^"]*)">([^<]*)<\/a>/g)]
+  if (buttons.length === 0) return null
+  assert.equal(buttons.length, 1, 'one button at most')
+  const unescape = value => value.replace(/&(amp|lt|gt|quot|#39);/g, (_, name) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': '\'' })[name])
+  const [, lang, href, label] = buttons[0]
+  const url = new URL(unescape(href))
+  return { lang, href: unescape(href), label: unescape(label), params: Object.fromEntries(url.searchParams), base: `${url.origin}${url.pathname}` }
+}
+/** The console's Cancel: the decline form post, from the console's Origin unless `headers` say otherwise. */
+export const decline = (h, request, headers = {}) => h.form('/mcp/authorize/decline', { request }, { origin: CONSOLE_ORIGIN, ...headers })
 export const call = (client, name, args = {}) => client.callTool({ name, arguments: args })
 export const parsed = result => result.structuredContent || JSON.parse(result.content[0].text)
 

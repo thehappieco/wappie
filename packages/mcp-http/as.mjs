@@ -61,7 +61,10 @@ const oauthError = (status, error, description, extra = {}) => Response.json({ e
  * a sentence in the five languages saying what to do next, the person's
  * first, and `back` only ever comes from configuration. A refusal with no way
  * back strands the owner on this page with a consent already half made, so
- * the routes a browser reaches after the console pass the console here.
+ * the routes a browser reaches after the console pass the console here; and
+ * once a request is known, its assistant waits for an answer, so a refusal
+ * to a browser tied to its starter carries the way back to it instead
+ * (§19.30, `pageBack` below).
  */
 export { PAGE_LANGUAGES, pageLanguages } from './pages.mjs'
 const redirect = location => new Response(null, { status: 302, headers: { ...noStore, Location: location } })
@@ -94,6 +97,40 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
   /** A refusal page in the request's languages (its Accept-Language); `back` (the console) on the routes a browser reaches after it. */
   const page = (status, code, language, back = '') => refusalPage(status, code, { back, acceptLanguage: language, allowlist: !any })
   /**
+   * Where a client's wait ends with `error` (RFC 6749 §4.1.2.1, RFC 9207):
+   * its trusted redirect with the error, the request's own `state` when it
+   * sent one, and `iss`, nothing else. No error_description: a flow somebody
+   * else started learns from it only that it ended.
+   */
+  function errorLocation(redirectURI, error, state) {
+    const location = new URL(redirectURI)
+    location.searchParams.set('error', error)
+    if (typeof state === 'string') location.searchParams.set('state', state)
+    location.searchParams.set('iss', publicOrigin)
+    return location.href
+  }
+  /**
+   * A refusal once the redirect is trusted (§19.30): the approved sentence,
+   * then one button back to the assistant that ends its wait with `error`.
+   * Never an automatic redirect: each sentence says what to do next, which an
+   * assistant's own error would not, and in a flow somebody else started (a
+   * console link sent to another network, an untested client's campaign) a
+   * redirect the person did not choose would tell its starter that, when
+   * and from where the link was opened. `request` is a pending request, or
+   * `{redirect_uri, state}` of one being made; `back` (the console) only where
+   * the sentence sends the person there first.
+   *
+   * The button carries the request's `state`, the client's CSRF binding (RFC
+   * 6749 §10.12), which never leaves otherwise but in the success redirect:
+   * an id holder who learned it, with the descriptor's code_challenge, could
+   * complete a flow of their own that the starter's browser would accept. So
+   * a completion gets the button only from a browser tied to the starter: one
+   * that passed the network check of a version-2 request (§19.12), or posted
+   * a valid proof. The authorize caps answer the browser that sent the state.
+   */
+  const pageBack = (status, code, language, request, error, back = '') =>
+    refusalPage(status, code, { back, assistant: errorLocation(request.redirect_uri, error, request.state), acceptLanguage: language, allowlist: !any })
+  /**
    * The `any` policy's `invalid_client`: one static page and status for every
    * reason, never sooner than REFUSAL_FLOOR_MS after the request began, so a
    * prober learns nothing from it. `started` is when the request began and
@@ -117,9 +154,13 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     const dcr = clients.get(clientID)
     if (dcr) {
       meta.client = dcr.client_id
-      // Every DCR redirect is pinned, whenever the record was made: a 0.5.0 record's other paths are never served.
-      const entry = typeof redirectURI === 'string' && dcr.redirect_uris.includes(redirectURI) ? dcrEntryFor(policy.tested, [redirectURI]) : null
-      if (!entry) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri', started.language) } }
+      if (typeof redirectURI !== 'string' || !dcr.redirect_uris.includes(redirectURI)) { meta.code = 'invalid_redirect_uri'; return { response: page(400, 'invalid_redirect_uri', started.language) } }
+      // Every DCR redirect is pinned, whenever the record was made: a redirect
+      // the record registered that no `dcr` entry pins now (a 0.5.0 record's
+      // other paths, a client the list no longer has, such as ChatGPT's) is not
+      // served, and gets the page every client this reader does not accept gets.
+      const entry = dcrEntryFor(policy.tested, [redirectURI])
+      if (!entry) return { response: await refuseClient(meta, started) }
       const domain = policy.psl.registrable(host(redirectURI))
       return { request: { client_kind: 'dcr', client_host: host(redirectURI), registrable: domain?.registrable ?? host(redirectURI), shared_suffix: domain?.shared_suffix ?? null,
         client_local: false, trust: 'tested', tested_id: entry.id, drift: false, client_name: entry.name, claimed_name: dcr.claimed_name ?? null,
@@ -186,11 +227,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     // From here on the redirect target is trusted, so errors travel back to the client.
     const fail = code => {
       meta.code = code
-      const location = new URL(redirectURI)
-      location.searchParams.set('error', code)
-      if (params.has('state')) location.searchParams.set('state', params.get('state'))
-      location.searchParams.set('iss', publicOrigin)
-      return redirect(location.href)
+      return redirect(errorLocation(redirectURI, code, params.get('state') ?? undefined))
     }
     if (params.get('response_type') !== 'code') return fail('unsupported_response_type')
     const challenge = params.get('code_challenge') ?? ''
@@ -199,12 +236,14 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
     if (!scopeAcceptable(params.get('scope'))) return fail('invalid_scope')
     const stateParam = params.get('state')
     if (stateParam !== null && (stateParam.length === 0 || stateParam.length > MAX_STATE_CHARS)) return fail('invalid_request')
+    // Too many open requests (§19.10): the page says to wait, and its button tells the client the server is busy (§19.30).
+    const busy = () => { meta.code = 'too_many_pending'; return pageBack(429, 'too_many_requests', started.language, { redirect_uri: redirectURI, state: stateParam ?? undefined }, 'temporarily_unavailable') }
     if (client.trust === 'unknown') {
       let open = 0
       for (const pending of state.pending.values()) if (!pending.bundle && pending.client_id === clientID) open++
-      if (open >= PENDING_PER_CLIENT) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests', started.language) }
+      if (open >= PENDING_PER_CLIENT) return busy()
     }
-    if (!makeRoom()) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests', started.language) }
+    if (!makeRoom()) return busy()
     const id = randomBytes(16).toString('base64url')
     const recipient = newRecipient ? await newRecipient() : undefined
     state.pending.set(id, {
@@ -269,11 +308,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       // From here on the redirect target is trusted, so errors travel back to the client.
       const fail = code => {
         meta.code = code
-        const location = new URL(redirectURI)
-        location.searchParams.set('error', code)
-        if (params.has('state')) location.searchParams.set('state', params.get('state'))
-        location.searchParams.set('iss', publicOrigin)
-        return redirect(location.href)
+        return redirect(errorLocation(redirectURI, code, params.get('state') ?? undefined))
       }
       if (params.get('response_type') !== 'code') return fail('unsupported_response_type')
       const challenge = params.get('code_challenge') ?? ''
@@ -283,7 +318,7 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (scope !== null && (scope.trim() === '' || scope.split(' ').filter(Boolean).some(item => item !== SCOPE))) return fail('invalid_scope')
       const stateParam = params.get('state')
       if (stateParam !== null && (stateParam.length === 0 || stateParam.length > MAX_STATE_CHARS)) return fail('invalid_request')
-      if (!makeRoom()) { meta.code = 'too_many_pending'; return page(429, 'too_many_requests', started.language) }
+      if (!makeRoom()) { meta.code = 'too_many_pending'; return pageBack(429, 'too_many_requests', started.language, { redirect_uri: redirectURI, state: stateParam ?? undefined }, 'temporarily_unavailable') }
       const id = randomBytes(16).toString('base64url')
       const recipient = newRecipient ? await newRecipient() : undefined
       state.pending.set(id, {
@@ -319,12 +354,18 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request', language, consoleURL) }
       const id = params.get('request') ?? '', proof = params.get('proof') ?? ''
       const pending = pendingFor(id)
+      // A request with no bundle yet has nothing consented to refuse, and the
+      // console never posts a completion before its relay succeeded: the
+      // console link, as for a request that is gone. Its way back would hand
+      // the request's state to anyone holding the id, from anywhere (§19.30).
       if (!pending || !pending.bundle) { dummyProof(); meta.code = 'invalid_proof'; return page(400, 'invalid_proof', language, consoleURL) }
       meta.client = pending.client_id
       meta.connection = pending.connection_id
       // §19.12: the consent completes from the network the request started on,
       // or a console link sent to someone else would complete an attacker's flow.
-      if (pending.descriptor_version === 2) {
+      // That browser is not the starter's, so neither is the state: the console link.
+      const tied = pending.descriptor_version === 2
+      if (tied) {
         const mismatch = !sameNetwork(pending.ip, ip)
         meta.flags = { ip_mismatch: mismatch }
         if (mismatch) { count('ip_mismatches'); expirePending(id, pending); meta.code = 'ip_mismatch'; return page(400, 'ip_mismatch', language, consoleURL) }
@@ -332,16 +373,25 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       const withContent = pending.bundle.kind === 'content'
       let bundle = null
       try { bundle = withContent ? (content ? await content.verifyProof(pending, proof) : null) : await verifyProof(state, pending, proof) } catch (error) { if (!(error instanceof LinkError)) throw error }
+      // The request may have ended during that wait (a Cancel in another tab,
+      // the sweeper, another completion): then nothing is activated after all.
+      if (pendingFor(id) !== pending) { meta.code = 'request_gone'; return page(400, 'invalid_proof', language, consoleURL) }
       if (!bundle) {
         pending.proof_attempts++
-        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return page(400, 'invalid_proof', language, consoleURL) }
+        // The way back only past the network check: a version-1 request (the
+        // allowlist policy) has none, so its page keeps the console link.
+        const refused = () => (tied ? pageBack(400, 'invalid_proof', language, pending, 'access_denied') : page(400, 'invalid_proof', language, consoleURL))
+        if (pending.proof_attempts >= MAX_PROOF_ATTEMPTS) { expirePending(id, pending); meta.code = 'proof_burned'; return refused() }
         meta.code = 'invalid_proof'
-        return page(400, 'invalid_proof', language, consoleURL)
+        return refused()
       }
+      // From here on the proof was valid, so this browser holds the consent:
+      // every refusal gives the way back to the assistant (§19.30),
+      // server_error where the server failed, access_denied where Wappie refused it.
       // Go names the connection. The relay routes refuse an id already in use,
       // and this holds whatever interleaved since: a connection that exists
       // here is never replaced, because its tokens belong to another consent.
-      const inUse = () => { meta.code = 'connection_exists'; return page(400, 'connection_exists', language, consoleURL) }
+      const inUse = () => { meta.code = 'connection_exists'; return pageBack(400, 'connection_exists', language, pending, 'server_error') }
       if (state.connections.has(pending.connection_id)) { expirePending(id, pending); return inUse() }
       // Between leaving state.pending and landing in state.connections the id
       // sits in neither; state.activating keeps it reserved across the await,
@@ -354,14 +404,15 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
           if (!(error instanceof RelayError)) throw error
           void relay.revoke(pending.connection_id)
           meta.code = 'activation_failed'
-          return page(502, 'activation_failed', language, consoleURL)
+          return pageBack(502, 'activation_failed', language, pending, 'server_error')
         }
         if (state.connections.has(pending.connection_id)) { void relay.revoke(pending.connection_id); return inUse() }
         // §19.10: another unknown connection may have been installed since this one's bundle was accepted.
         if (pending.trust === 'unknown' && unknownLive(state, pending.tenant_id, pending) >= policy.unknownLiveMax) {
           void relay.revoke(pending.connection_id)
           meta.code = 'too_many_unknown'
-          return page(409, 'too_many_unknown', language, consoleURL)
+          // Its sentence sends the person to the console first, to revoke one.
+          return pageBack(409, 'too_many_unknown', language, pending, 'access_denied', consoleURL)
         }
         const record = {
           connection_id: pending.connection_id, tenant_id: pending.tenant_id, workspace_id: bundle.workspace_id, device_ids: bundle.device_ids,
@@ -382,6 +433,48 @@ export function createAuthorizationServer({ state, clients, cimd, tokens, limite
       if (pending.state !== undefined) location.searchParams.set('state', pending.state)
       location.searchParams.set('iss', publicOrigin)
       return redirect(location.href)
+    },
+
+    /**
+     * The console's Cancel (§19.30): the person declined, so the request ends
+     * and the browser goes straight back to the assistant with access_denied,
+     * its `state` and `iss`, which ends the assistant's wait. As strict as
+     * complete(): a form posted by the console's Origin and nobody else's,
+     * ten a minute per address in a bucket of its own, a pending request id
+     * of the right shape, and the network the request started on (§19.12),
+     * so the state goes back only to a browser there. Otherwise the browser
+     * goes back to the console, as Cancel did before 0.6.0, and the
+     * assistant waits as it did: from another network the request ends too;
+     * a request already gone has nothing to end; a version-1 request (the
+     * allowlist policy, whose console keeps the old Cancel) has no network
+     * check, so it is left as it is. None of them gets a page: every
+     * sentence a page could show asks the person to start again, which
+     * somebody who cancelled does not want.
+     */
+    async decline(request, ip, meta) {
+      const language = request.headers.get('accept-language')
+      if (request.method !== 'POST') return page(405, 'method_not_allowed', language)
+      const sent = request.headers.get('origin')
+      if (sent !== consoleOrigin) {
+        meta.code = sent === null ? 'origin_missing' : sent === 'null' ? 'opaque_origin' : 'invalid_origin'
+        return page(400, meta.code, language, consoleURL)
+      }
+      const taken = limiter.take('decline', ip, 10)
+      if (!taken.ok) { meta.code = 'rate_limited'; return page(429, 'too_many_requests', language, consoleURL) }
+      const params = await form(request)
+      if (!params) { meta.code = 'invalid_request'; return page(400, 'invalid_request', language, consoleURL) }
+      const pending = pendingFor(params.get('request') ?? '')
+      // Expired, completed or never made: nothing is waiting on it here any more.
+      if (!pending) { meta.code = 'request_not_found'; return redirect(consoleURL) }
+      meta.client = pending.client_id
+      meta.connection = pending.connection_id
+      if (pending.descriptor_version !== 2) { meta.code = 'not_declinable'; return redirect(consoleURL) }
+      expirePending(pending.id, pending)
+      const mismatch = !sameNetwork(pending.ip, ip)
+      meta.flags = { ip_mismatch: mismatch }
+      if (mismatch) { count('ip_mismatches'); meta.code = 'ip_mismatch'; return redirect(consoleURL) }
+      meta.code = 'declined'
+      return redirect(errorLocation(pending.redirect_uri, 'access_denied', pending.state))
     },
 
     async token(request, ip, meta) {

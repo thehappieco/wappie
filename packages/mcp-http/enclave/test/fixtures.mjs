@@ -133,7 +133,9 @@ export function goHeaders(secret, { method, target, body = Buffer.alloc(0), read
 
 /**
  * Go's /v1/mcp/enclave/* (HMAC checked against `secrets()`, the list Go
- * accepts) in front of the synthetic archive at `upstream`.
+ * accepts) in front of the synthetic archive at `upstream`. `go.onAnswer()`,
+ * when set, is called once each answer has gone, after whatever the call
+ * changed here (world.mjs's `until` looks again then).
  *
  * Content connections: a connection row may carry `kind` and
  * `service_user_id` (the status route answers both) and `extra`, fields the
@@ -167,9 +169,10 @@ export function createEnclaveGo({ upstream, secrets, now = Date.now, upstreamTok
   const go = { connections: new Map(), cimd: new Map(), state: new Map(), calls: [], refused: 0, activations: 0, down: false, nonces: new Set(),
     revokes: [], reseals: [], tokens: new Set(), grants: new Map(), archiveRequests: [], budgetHits: [],
     outbound: [], sendCalls: [], sending: { ineligible: new Set(), ownChat: '5511900000001@s.whatsapp.net', draftsPending: 20, outcome: 'sent', answer: null },
-    ai: { picks: new Map(), derived: [], usage: [], alerts: [], usageAnswers: new Map(), storagePaused: false, calls: [] } }
+    ai: { picks: new Map(), derived: [], usage: [], alerts: [], usageAnswers: new Map(), storagePaused: false, calls: [] }, onAnswer: null }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
   const http = createHTTPServer(async (req, res) => {
+    res.once('finish', () => go.onAnswer?.())
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
     const body = Buffer.concat(chunks)

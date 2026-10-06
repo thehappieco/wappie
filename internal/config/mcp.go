@@ -80,7 +80,7 @@ type MCP struct {
 	ContentEnabled bool
 	// WorkspaceDefault is WS_MCP_WORKSPACE_DEFAULT, "on" or "off" (the
 	// default): what each workspace's own assistant switches are until its
-	// owner sets them in the console (docs/mcp-enclave.md §19.30). On for
+	// owner sets them in the console (docs/mcp-enclave.md §19.35). On for
 	// Wappie Cloud, where every workspace may let assistants read text,
 	// attachments, drafts and AI; off for a self-hosted server, which keeps
 	// them off unless configured. Below the kill switches, the deny list and
@@ -325,7 +325,7 @@ func sendLimits() (MCPSendLimits, []error) {
 }
 
 // retiredLists are the operator's workspace lists that each workspace's own
-// switches replaced (docs/mcp-enclave.md §19.30).
+// switches replaced (docs/mcp-enclave.md §19.35).
 var retiredLists = []string{"WS_MCP_CONTENT_TENANTS", "WS_MCP_MEDIA_TENANTS", "WS_MCP_SEND_TENANTS", "WS_AI_TENANTS"}
 
 // retiredList is the refusal of a retired list that is still set.

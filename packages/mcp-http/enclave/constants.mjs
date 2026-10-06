@@ -55,27 +55,21 @@ export function deepFreeze(value) {
 // kept for the tests and the hosted path. dcr 'pinned' admits only the
 // pinned DCR redirects (§19.8).
 export const CLIENT_POLICY = Object.freeze({ cimd: 'any', dcr: 'pinned' })
-// TODO(baseline B on reader 0.5.0, docs/mcp-enclave.md §19.4): PENDING.
-// These are D3's candidates, not yet the tested list. An entry stays only if
-// its client passed the whole script on 0.5.0; the lead replaces each
-// client_id and redirect with the exact values the baseline recorded and
-// removes any client that failed. A change is a release. build.sh copies this
+// The tested list (docs/mcp-enclave.md §19.4, §19.34), by the owner's decision
+// of 2026-10-05: Claude on the web and Claude Code passed baseline B on reader
+// 0.5.0, each by its document (log fingerprints 87035c02ba6c and
+// 569ea71ec53b). claude_dcr is Claude's registration form, on the same two
+// callbacks, listed by the owner's decision without a baseline run. ChatGPT
+// and Codex did not finish the baseline and are not listed: their documents
+// connect as any untested client. A change is a release. build.sh copies this
 // list and CLIENT_LIMITS into measurements.json.
 export const TESTED_CLIENTS = deepFreeze([
   { id: 'claude', kind: 'cimd', client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata', name: 'Claude', local: false, profile: 'claude.ai',
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
-  { id: 'chatgpt', kind: 'cimd', client_id: 'https://chatgpt.com/oauth/client.json', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
-    redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'] },
-  { id: 'chatgpt_cb', kind: 'cimd_pattern', client_id: 'https://chatgpt.com/oauth/{cb}/client.json', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
-    redirect_uris: ['https://chatgpt.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
-  { id: 'codex', kind: 'cimd', client_id: 'https://chatgpt.com/oauth/codex/client.json', name: 'Codex', local: true, profile: 'chatgpt.com',
-    loopback: [['127.0.0.1', '/callback'], ['localhost', '/callback']] },
   { id: 'claude_code', kind: 'cimd', client_id: 'https://claude.ai/oauth/claude-code-client-metadata', name: 'Claude Code', local: true, profile: 'claude.ai',
     loopback: [['localhost', '/callback'], ['127.0.0.1', '/callback']] },
   { id: 'claude_dcr', kind: 'dcr', name: 'Claude', local: false, profile: 'claude.ai',
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] },
-  { id: 'chatgpt_dcr', kind: 'dcr', name: 'ChatGPT', local: false, profile: 'chatgpt.com',
-    redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect', 'https://chatgpt.com/connector/oauth/{cb}'], cb: '^[A-Za-z0-9_-]{1,64}$' },
 ])
 // The limits of each tier (§19.19): how long a refresh token lives unused and
 // the furthest expiry a consent may ask, per kind; the card's duration

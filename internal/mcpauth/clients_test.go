@@ -81,7 +81,7 @@ func newClientsHarness(t *testing.T) *clientsHarness {
 	t.Helper()
 	h := &clientsHarness{attestedHarness: newAttestedHarness(t), mail: &mailbox{}}
 	h.handler.UnknownAllowed = true
-	h.handler.DCRHosts = []string{"claude.ai", "claude.com", "chatgpt.com"}
+	h.handler.DCRHosts = []string{"claude.ai", "claude.com"}
 	h.handler.MailNotice = h.mail.send
 	h.handler.NoticeOrigin = noticeOrigin
 	h.ownerToken = h.session(t, h.owner)
@@ -357,6 +357,12 @@ func TestVersion2ConsentRefusals(t *testing.T) {
 			"registrable": "example.org", "client_name": "Evil", "claimed_name": nil, "trust": "tested", "redirect_uri": "https://example.org/cb",
 			"redirect_host": "example.org", "limits_tier": "web_tested"}, func(b map[string]any) {
 			b["client_host"], b["client_name"], b["claimed_name"], b["trust"], b["history_days"] = "example.org", "Evil", nil, "tested", nil
+		}, 502, "reader_unavailable"},
+		// ChatGPT's registration, no longer pinned (docs/mcp-enclave.md §19.34): its host left the default DCR hosts.
+		"a ChatGPT registration": {map[string]any{"client_kind": "dcr", "client_id": "dcr-2", "tested_id": "chatgpt_dcr", "client_host": "chatgpt.com",
+			"registrable": "chatgpt.com", "client_name": "ChatGPT", "claimed_name": "ChatGPT", "trust": "tested",
+			"redirect_uri": "https://chatgpt.com/connector_platform_oauth_redirect", "redirect_host": "chatgpt.com", "limits_tier": "web_tested"}, func(b map[string]any) {
+			b["client_host"], b["client_name"], b["claimed_name"], b["trust"], b["history_days"] = "chatgpt.com", "ChatGPT", "ChatGPT", "tested", nil
 		}, 502, "reader_unavailable"},
 		"a loopback over https": {map[string]any{"client_local": true, "redirect_local": true, "redirect_uri": "https://localhost/cb"},
 			func(b map[string]any) { b["client_local"] = true }, 502, "reader_unavailable"},

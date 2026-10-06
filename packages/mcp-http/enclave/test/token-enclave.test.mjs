@@ -229,7 +229,7 @@ test('a text token\'s version-4 renewal (§19.16): the same bearer reads again o
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_numbers', arguments: {} } }), ...source })
   const waiting = result((await call()).body)
   assert.equal(waiting.isError, undefined, 'metadata reads on while the token waits for its renewal (§19.29)')
-  assert.equal(waiting.structuredContent.renewal.renew_url, `https://app.wappie.thehappie.co/console?mcp_renew=${text.connectionId}`)
+  assert.equal(JSON.parse(waiting.content[0].text).renewal.renew_url, `https://app.wappie.thehappie.co/console?mcp_renew=${text.connectionId}`)
   const renew = async (fields = {}) => {
     const prepared = await w.internal(`/internal/connections/${text.connectionId}/renewal`, { method: 'POST', body: { nonce: randomBytes(32).toString('base64url') } })
     assert.equal(prepared.status, 200, prepared.body)

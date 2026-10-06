@@ -1,10 +1,11 @@
 # Wappie MCP HTTP: the hosted connector and the attested reader
 
 `@whatserver2/mcp-http` serves the same read-only tools as
-[`packages/mcp`](../mcp/README.md) over **Streamable HTTP**, so claude.ai and
-ChatGPT can connect to a Wappie installation as a remote MCP server. It is the
-open source half of the hosted connector: one Node process on loopback behind
-the reverse proxy, next to the Wappie API. Requires Node.js 22 or later.
+[`packages/mcp`](../mcp/README.md) over **Streamable HTTP**, so a remote
+assistant such as claude.ai can connect to a Wappie installation as an MCP
+server. It is the open source half of the hosted connector: one Node process
+on loopback behind the reverse proxy, next to the Wappie API. Requires
+Node.js 22 or later.
 
 `server.mjs`, the process this section and the next ones describe (Wappie's
 `https://api.wappie.thehappie.co/mcp` and every self-hosted container), never
@@ -71,7 +72,25 @@ dependency), and the `node:http` bridge is the small `node-adapter.mjs`.
    that is the CSRF check. Three wrong proofs burn the request and revoke the
    connection in Go. A good proof activates the connection, stores the API key
    in the encrypted state and redirects back to the client with a single-use
-   sixty-second code, the `state` and `iss`.
+   sixty-second code, the `state` and `iss`. A refusal after a good proof (a
+   failed activation, an id already in use, the cap of untested connections)
+   or a wrong proof from the network a version-2 request started on is a page
+   with one button back to the assistant, whose link carries `error`
+   (`access_denied`, or `server_error` where the server failed), the `state`
+   and `iss`, so the assistant stops waiting; so is a refusal by the
+   open-request caps of `GET /mcp/authorize`, with `temporarily_unavailable`.
+   Every other refusal keeps the console link and never shows the `state`:
+   a completion before the console relayed a bundle, one from another network
+   (`ip_mismatch`, which also ends the request) and a wrong proof of a
+   version-1 request, since whoever holds a request id can post them.
+   The console's Cancel posts `request` to `POST /mcp/authorize/decline`
+   under the same `Origin` rule. From the network a version-2 request started
+   on, the request ends (its connection in Go is revoked if the console had
+   relayed one) and the browser is redirected to the client with
+   `error=access_denied`, the `state` and `iss`. From another network the
+   request ends too, but the browser is redirected to the console; so it is
+   for a request that is gone, and for a version-1 request, which is left as
+   it is.
 5. `POST /mcp/token` exchanges the code (all of `client_id`, `code_verifier`,
    `redirect_uri` and `resource` must match) for a fifteen-minute access token
    and a refresh token that idles out after thirty days and never outlives the
@@ -142,7 +161,8 @@ In process: `/mcp` sixty requests a minute per connection; `/mcp/token` three
 hundred a minute per address before the grant is known (a `client_id` is
 public, so it never keys a bucket on its own), then twenty a minute per token
 family and per connection; `/mcp/authorize/complete` three proof attempts per
-request and ten posts a minute per address; `/mcp/authorize` twenty a minute
+request and ten posts a minute per address, and `/mcp/authorize/decline` ten
+a minute per address; `/mcp/authorize` twenty a minute
 and ten pending requests per address, taken before anything is looked at, and
 three uncached CIMD documents a minute per address (a document that failed to
 resolve is not asked for again for a minute); registration five a minute per
@@ -359,12 +379,15 @@ enclave admits a Client ID Metadata Document on any https host that passes
 the host check of section 19.5 (no IP literal, special-use name, public
 suffix, host shared by path, or host under `thehappie.co`), with web
 redirects on exactly the document's host and loopback redirects on any port;
-dynamic registration takes only the pinned Claude and ChatGPT redirects.
+dynamic registration takes only the pinned Claude redirects.
 
 - **Constants** (`enclave/constants.mjs`): `CLIENT_POLICY`, the tested list
-  `TESTED_CLIENTS` (pending the live baseline on 0.5.0), the tier limits
-  `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS` and
-  `CIMD_EGRESS`, all measured and copied into `measurements.json`. The
+  `TESTED_CLIENTS` (Claude and Claude Code, which passed the live baseline on
+  0.5.0 by their documents, and Claude's registration form on the same two
+  callbacks, listed by the owner's decision without a baseline run; ChatGPT
+  and Codex connect untested, `docs/mcp-enclave.md` section 19.34), the tier
+  limits `CLIENT_LIMITS`, `UNKNOWN_LIVE_MAX`, `SHARED_HOSTS`, `OWN_DOMAINS`
+  and `CIMD_EGRESS`, all measured and copied into `measurements.json`. The
   shared modules take a policy object; the hosted path keeps
   `{ mode: 'allowlist', hosts }`.
 - **Fetching**: a tested client asked with a pinned redirect is never
