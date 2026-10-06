@@ -18,12 +18,13 @@ const OID = { data: '1.2.840.113549.1.7.1', enveloped: '1.2.840.113549.1.7.3', o
 const alg = (id, params) => new asn1js.Sequence({ value: [new asn1js.ObjectIdentifier({ value: id }), ...(params ? [params] : [])] })
 const ctx = (tag, inner) => new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: tag }, value: [inner] })
 
-/** EnvelopedData the way KMS shapes it (subjectKeyIdentifier rid, OAEP-SHA256 params). */
-function envelope(publicKey, plaintext, { hash = OID.sha256, content = OID.aes256cbc, recipients = 1 } = {}) {
+/** EnvelopedData the way KMS shapes it (subjectKeyIdentifier rid, OAEP-SHA256 params). `flipKeyBit` tampers with the wrapped CEK. */
+function envelope(publicKey, plaintext, { hash = OID.sha256, content = OID.aes256cbc, recipients = 1, flipKeyBit } = {}) {
   const cek = randomBytes(32), iv = randomBytes(16)
   const cipher = createCipheriv('aes-256-cbc', cek, iv)
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()])
   const wrapped = publicEncrypt({ key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, cek)
+  if (flipKeyBit !== undefined) wrapped[flipKeyBit >> 3] ^= 1 << (flipKeyBit & 7)
   const oaepParams = new asn1js.Sequence({ value: [ctx(0, alg(hash)), ctx(1, alg(OID.mgf1, alg(hash)))] })
   const recipient = new asn1js.Sequence({ value: [
     new asn1js.Integer({ value: 2 }),
@@ -46,8 +47,21 @@ test('cms: opens a KMS-shaped envelope; tampering, wrong key, wrong algorithms a
   assert.deepEqual(openRecipientCms(envelope(publicKey, secret), keys.privateKey), secret)
   const other = recipientKeys()
   assert.throws(() => openRecipientCms(envelope(other.privateKey, secret), keys.privateKey), { message: 'cms_decrypt' })
-  const flipped = envelope(publicKey, secret); flipped[flipped.length - 5] ^= 1
-  assert.throws(() => openRecipientCms(flipped, keys.privateKey), { message: 'cms_decrypt' })
+  // RSA-OAEP checks a 32-byte label hash, so any changed bit of the wrapped CEK
+  // is refused. AES-CBC has no MAC: a flip in the last block leaves valid
+  // padding about 1 time in 256 (a garbled block ending in 0x01), so the
+  // content is tampered in the block before it (the envelope ends with the
+  // ciphertext). The 32-byte secret ends in a whole padding block (16 bytes of
+  // 0x10), and each of its bits follows one bit of that block, so every flip
+  // there breaks the padding.
+  for (const bit of [0, 7, 1000, 2047]) {
+    assert.throws(() => openRecipientCms(envelope(publicKey, secret, { flipKeyBit: bit }), keys.privateKey), { message: 'cms_decrypt' }, `key bit ${bit}`)
+  }
+  const sealed = envelope(publicKey, secret)
+  for (let bit = 0; bit < 128; bit++) {
+    const flipped = Buffer.from(sealed); flipped[flipped.length - 32 + (bit >> 3)] ^= 1 << (bit & 7)
+    assert.throws(() => openRecipientCms(flipped, keys.privateKey), { message: 'cms_decrypt' }, `content bit ${bit}`)
+  }
   assert.throws(() => openRecipientCms(envelope(publicKey, secret, { hash: '1.3.14.3.2.26' }), keys.privateKey), { message: 'cms_oaep_hash' })
   assert.throws(() => openRecipientCms(envelope(publicKey, secret, { content: '2.16.840.1.101.3.4.1.2' }), keys.privateKey), { message: 'cms_not_aes256cbc' })
   assert.throws(() => openRecipientCms(envelope(publicKey, secret, { recipients: 2 }), keys.privateKey), { message: 'cms_recipients' })
