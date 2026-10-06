@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { bytes, hpke, seal } from '@whatserver2/client'
 import { aiConfigScope, aiConfigTag, deviceCheck, deviceScope, keysSHA256 } from '@whatserver2/mcp/bundle'
 import { fixture, vector, workspace } from '@whatserver2/mcp/test/fixture'
-import { pkce, proof, sealBundle } from '../../test/harness.mjs'
+import { pkce, proof, sealBundle, waiter } from '../../test/harness.mjs'
 import { attest } from '../attest.mjs'
 import * as constants from '../constants.mjs'
 import { startEnclave } from '../main.mjs'
@@ -40,13 +40,23 @@ export const LEGACY_POLICY = Object.freeze({ mode: 'allowlist', hosts: ['claude.
  * set `{}` for the image's `any` policy, with `w.cimdFetcher` answering for
  * the parent's egress proxy. `constants` replaces image constants (a test's
  * smaller CLIENT_LIMITS, say), as a rebuilt image would.
+ *
+ * The enclave and Go read one clock: the wall clock plus `w.skew`, which a
+ * test moves forward, held still from `w.freeze()` on. `w.until(condition,
+ * what)` resolves once `condition()` holds, looked at again whenever Go has
+ * answered a call or the enclave has written a line: for what the enclave
+ * does after its answer, never awaited by it (a best-effort revoke, a budget
+ * hit, a request's line written once its response has gone).
  */
 export async function world(t, { bootJson, archive, constants: replaced = {} } = {}) {
   const apiKey = `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
   const f = await (archive ?? (token => fixture({ token })))(apiKey)
   const relaySecret = randomBytes(32).toString('base64url')
   const goSecrets = [relaySecret]
-  const go = await createEnclaveGo({ upstream: f.server, secrets: () => goSecrets, upstreamToken: apiKey, workspace, now: () => Date.now() + (w?.skew ?? 0) }).listen()
+  const clock = () => (w.frozenAt ?? Date.now()) + w.skew
+  const waits = waiter()
+  const go = await createEnclaveGo({ upstream: f.server, secrets: () => goSecrets, upstreamToken: apiKey, workspace, now: clock }).listen()
+  go.onAnswer = waits.wake
   const ca = testCA()
   // The challenge listener opens during boot, before startEnclave returns, so its port is chosen here.
   const challengePort = await freePort()
@@ -58,15 +68,25 @@ export async function world(t, { bootJson, archive, constants: replaced = {} } =
   const bootCiphertext = kms.encrypt(BOOT_KEY, Buffer.from(relaySecret), relayContext)
   const runDir = join(await mkdtemp(join(tmpdir(), 'wappie-enclave-')), 'run')
   const lines = [], exits = []
-  const sink = { write: line => { lines.push(line); if (process.env.ENCLAVE_TEST_DEBUG) process.stderr.write(line + '\n') }, dropped: () => 0, drain: async () => {} }
+  const sink = { write: line => { lines.push(line); if (process.env.ENCLAVE_TEST_DEBUG) process.stderr.write(line + '\n'); waits.wake() }, dropped: () => 0, drain: async () => {} }
   const boot = Buffer.from(bootJson ?? JSON.stringify({ relay_secret_ciphertext: bootCiphertext.toString('base64') }))
   const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY, ...replaced }
   const w = {
-    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, jail: null, aiTransport: null, mediaDelay: null,
+    f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, frozenAt: null, jail: null, aiTransport: null, mediaDelay: null,
     clientPolicy: LEGACY_POLICY, cimdFetcher: null,
+    until: waits.until,
+    /**
+     * Holds the clock still from here to the world's end, `w.skew` still
+     * moving it. What refills with time, such as the calls a minute (§19.19),
+     * then counts calls alone, however slow the machine running them: a
+     * stretch the wall clock lets last longer than a second gets a call back
+     * at 60 a minute. Stay well inside the HMAC's 60 seconds (hmac.mjs): Go's
+     * requests to the enclave are signed by the wall clock.
+     */
+    freeze() { w.frozenAt = Date.now() },
     async start() {
       w.enclave = await startEnclave({
-        constants: c, sink, kms, attest: nsm, now: () => Date.now() + w.skew, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
+        constants: c, sink, kms, attest: nsm, now: clock, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
         ...(w.jail ? { jail: w.jail } : {}),
         // Never a real provider: the AI egress goes to w.aiTransport (ai-stubs.mjs), or fails.
         aiTransport: (url, init) => (w.aiTransport ? w.aiTransport(url, init) : Promise.reject(new TypeError('fetch failed'))),

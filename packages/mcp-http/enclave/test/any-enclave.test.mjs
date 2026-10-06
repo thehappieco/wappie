@@ -334,18 +334,18 @@ test('the network check (§19.12) in the enclave: the PROXY v2 source of the com
   const refused = await w.public('/mcp/authorize/complete', { ...form({ request: other.id, proof: signature }), headers: { 'content-type': 'application/x-www-form-urlencoded', origin: CONSOLE_ORIGIN }, source: '198.51.101.10' })
   assert.equal(refused.status, 400)
   assert.match(refused.body, /ip_mismatch/)
-  assert.equal(w.go.connections.get(connectionId).status, 'revoked')
-  // The request line is written once the response has gone, so it may follow the answer by a moment.
+  // Go's row is revoked best effort, after the answer (internal.mjs), and the request line is written once the response has gone.
+  await w.until(() => w.go.connections.get(connectionId).status === 'revoked', 'Go revoking the connection')
   const refusedLine = () => w.lines.map(entry => JSON.parse(entry)).find(entry => entry.route === 'POST /mcp/authorize/complete' && entry.code === 'ip_mismatch')
-  for (let n = 0; n < 100 && !refusedLine(); n++) await new Promise(resolve => setTimeout(resolve, 10))
-  assert.equal(refusedLine()?.ip_mismatch, true)
+  await w.until(refusedLine, 'the ip_mismatch line')
+  assert.equal(refusedLine().ip_mismatch, true)
 })
 
 test('the way back in the enclave (§19.30): a wrong proof from the request\'s network gets the button, another network the console link; the console\'s Cancel ends the assistant\'s wait only from the request\'s network', async t => {
   const { w } = await anyWorld(t)
   const decline = (started, source) => w.public('/mcp/authorize/decline', { ...form({ request: started.id }),
     headers: { 'content-type': 'application/x-www-form-urlencoded', origin: CONSOLE_ORIGIN }, source })
-  const waitFor = async find => { for (let n = 0; n < 100 && !find(); n++) await new Promise(resolve => setTimeout(resolve, 10)); return find() }
+  const waitFor = async find => { await w.until(find, 'the decline\'s line'); return find() }
   const lines = () => w.lines.map(entry => JSON.parse(entry))
   // A completion from another network: the console page, no button, and the request's state nowhere on it.
   const other = await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT, source: '198.51.100.10', query: { state: 'st-complete' } })
@@ -464,12 +464,15 @@ test('reading limits in the enclave (§19.19): the tier\'s first-hour budget ans
   assert.equal(capped.isError, true, capped.text)
   assert.match(capped.text, /^Could not read the archive \(limit_reached\)\. This connection reached its reading limit for now; it resets at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\.$/)
   await tool()
+  await w.until(() => w.go.budgetHits.length > 0, 'Go hearing the budget hit')
   assert.deepEqual(w.go.budgetHits, [{ id: done.connectionId, code: 'first_hour_messages' }], 'once per window')
   assert.deepEqual(events(w, 'budget_hit').map(entry => entry.code), ['first_hour_messages'])
   // Previews are not counted.
   assert.equal((await callTool(w, done.tokens.access_token, 'list_chats', { device_id: vector.device })).isError, false)
   // The calls a minute: 20 for this tier, whatever the tools answer.
   for (let n = 0; n < 25; n++) assert.notEqual((await rpc(w, done.tokens.access_token)).status, 429, 'a tested client keeps 60')
+  // The bucket refills one call every three seconds: held still, the 21st call is the one past the minute's 20.
+  w.freeze()
   const unknown = await consentMetadata(w, await authorize(w, { clientId: AGENT, redirectUri: AGENT_REDIRECT }))
   const statuses = []
   for (let n = 0; n < 21; n++) statuses.push((await rpc(w, unknown.tokens.access_token)).status)
@@ -483,6 +486,8 @@ test('reading limits under concurrency (§19.19): a JSON-RPC batch takes one cal
   const done = await consentMetadata(w, await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT }))
   assert.equal(done.completed.status, 302)
   const call = id => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'list_messages', arguments: { device_id: vector.device, chat_key: '5511999990000@s.whatsapp.net' } } })
+  // The calls a minute refill one a second at 60: held still from the batch on, what follows counts calls alone.
+  w.freeze()
   // Eight calls in one POST, all run at once: two start under the limit (one message each), six are refused.
   const batch = await rpc(w, done.tokens.access_token, Array.from({ length: 8 }, (_, n) => call(n + 1)))
   assert.equal(batch.status, 200, batch.body)
@@ -493,6 +498,7 @@ test('reading limits under concurrency (§19.19): a JSON-RPC batch takes one cal
   const texts = answers.map(answer => answer.result.content[0].text)
   assert.equal(texts.filter(text => !text.startsWith('Could not read')).length, 2, texts.join('\n'))
   assert.equal(texts.filter(text => text.startsWith('Could not read the archive (limit_reached)')).length, 6)
+  await w.until(() => w.go.budgetHits.length > 0, 'Go hearing the budget hit')
   assert.deepEqual(w.go.budgetHits, [{ id: done.connectionId, code: 'first_hour_messages' }])
   // Calls sent at once in separate requests are held the same way.
   const again = await consentMetadata(w, await authorize(w, { clientId: CLAUDE, redirectUri: CLAUDE_REDIRECT }))
@@ -511,7 +517,7 @@ test('reading limits under concurrency (§19.19): a JSON-RPC batch takes one cal
   assert.equal((await rpc(w, unknown.tokens.access_token)).status, 429)
   // Each request's line is written once its response has gone: the last one may follow by a moment.
   const codes = () => w.lines.map(line => JSON.parse(line)).filter(entry => entry.route === 'POST /mcp').map(entry => entry.code).filter(Boolean)
-  for (let n = 0; n < 100 && !codes().includes('rate_limited'); n++) await new Promise(resolve => setTimeout(resolve, 10))
+  await w.until(() => codes().includes('rate_limited'), 'the rate_limited line')
   assert.ok(codes().includes('batch_too_large') && codes().includes('rate_limited'), JSON.stringify(codes()))
 })
 

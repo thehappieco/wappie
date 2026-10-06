@@ -620,12 +620,20 @@ test('request checks (§19.11): resource absent or normalized, a wider scope, an
 test('the network check (§19.12): the same /24 completes; another /24, /56 or family is ip_mismatch and drops the request', async t => {
   const h = await anyHarness(t)
   const redirectUri = 'https://claude.ai/api/mcp/auth_callback'
+  // A request's line is written once its response has gone: the completion's line after `mark` (the lines before it), once there.
+  const completionLine = async mark => {
+    const find = () => h.logs.slice(mark).map(line => JSON.parse(line)).find(entry => entry.route === 'POST /mcp/authorize/complete')
+    await h.until(find, 'the completion\'s line')
+    return find()
+  }
   const same = await start(h, { clientId: CLAUDE, redirectUri, address: from('203.0.113.10') })
+  let mark = h.logs.length
   const ok = await consentV2(h, same, { address: from('203.0.113.200') })
   assert.equal(ok.completed.status, 302, ok.completed.body)
-  assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).ip_mismatch, false)
+  assert.equal((await completionLine(mark)).ip_mismatch, false)
   for (const [first, second] of [['203.0.113.10', '203.0.114.10'], ['2001:db8:1:ab::1', '2001:db8:1:1ab::1'], ['203.0.113.10', '2001:db8::1']]) {
     const started = await start(h, { clientId: CLAUDE, redirectUri, address: from(first) })
+    mark = h.logs.length
     const refused = await consentV2(h, started, { address: from(second) })
     assert.equal(refused.completed.status, 400)
     assert.match(refused.completed.body, /<small>Wappie MCP: ip_mismatch<\/small>/)
@@ -633,9 +641,10 @@ test('the network check (§19.12): the same /24 completes; another /24, /56 or f
     assert.match(refused.completed.body, /rede diferente.*Retransmissão Privada do iCloud/)
     for (const tag of ['es', 'fr', 'de']) assert.match(refused.completed.body, new RegExp(`<p lang="${tag}">`))
     assert.match(refused.completed.body, /name="viewport"/)
+    // Dropped before the answer, so nothing completes it; Go's row is revoked best effort, after it (internal.mjs).
     assert.equal(h.reader.state.pending.has(started.id), false, 'the request is dropped')
-    assert.equal(h.go.connections.get(refused.connectionId).status, 'revoked')
-    assert.equal(JSON.parse(h.logs.findLast(line => line.includes('/mcp/authorize/complete'))).ip_mismatch, true)
+    await h.until(() => h.go.connections.get(refused.connectionId).status === 'revoked', 'Go revoking the connection')
+    assert.equal((await completionLine(mark)).ip_mismatch, true)
   }
   const v6 = await start(h, { clientId: CLAUDE, redirectUri, address: from('2001:db8:1:ab::1') })
   assert.equal((await consentV2(h, v6, { address: from('2001:db8:1:cd::99') })).completed.status, 302, 'the same /56')
@@ -760,8 +769,7 @@ test('the console\'s Cancel (§19.30) under the any policy: from the starter\'s 
   const relayed = await consentV2(h, relayedStart, { until: 'bundle' })
   assert.equal(relayed.relayed.status, 204)
   assert.equal((await decline(h, relayedStart.id, from('203.0.113.10').headers)).status, 302)
-  await new Promise(resolve => setTimeout(resolve, 50))
-  assert.equal(h.go.connections.get(relayed.connectionId).status, 'revoked')
+  await h.until(() => h.go.connections.get(relayed.connectionId).status === 'revoked', 'Go revoking the declined connection')
   const activations = h.go.activations
   const late = await h.form('/mcp/authorize/complete', { request: relayedStart.id, proof: relayed.proof }, { origin: h.consoleOrigin, ...from('203.0.113.10').headers })
   assert.equal(late.status, 400, 'a declined request never completes')
