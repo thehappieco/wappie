@@ -10256,10 +10256,16 @@ or a token to its own **Renew**, and ends with the notice e-mails' footer
 word for word (D10, point 5). Its texts were approved on 2026-10-05 (below).
 
 **A6: the plugin packages** (`thehappieco/wappie-plugins`) say what 0.6.0
-gives each client: Codex and Claude Code are local, so no drafts or own-chat
-notes and text for 7 days by default; the refusals `limit_reached` and
-`outside_window`; how an expired or revoked connection appears; ChatGPT as a
-plugin created at chatgpt.com/plugins with the icon uploaded before Create.
+gives each client, with the tested list §19.34 left: Claude Code is the
+tested local app, so no drafts or own-chat notes and text for 7 days by
+default; Codex and ChatGPT connect as untested clients, in the `unknown`
+tier and with its limits (the amber card, never drafts, notes or sending, a
+history window of 7, 30 or 90 days, the untested reading limits, and 3 days
+idle with text, A4); the refusals `limit_reached` and `outside_window`; how
+an expired or revoked connection appears. Nothing promises ChatGPT: the
+earlier step that created a ChatGPT plugin at chatgpt.com/plugins is
+superseded by §19.34 and the owner's decision of 2026-10-05, and the
+packages drop it.
 
 **A7: notices in each person's language.** The console saves its language on
 the account (`users.locale`, `PUT /v1/auth/locale`, one of en, pt, es, fr,
