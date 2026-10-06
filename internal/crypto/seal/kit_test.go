@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"testing/cryptotest"
 
@@ -486,10 +488,14 @@ func TestFixturesMatchTheKit(t *testing.T) {
 }
 
 // TestKitVersionsAgree: one kit tag covers both languages, but Wappie pins it
-// twice, in go.mod and in the release asset packages/client installs. A bump
-// of one side alone would test the TypeScript client against vectors of
-// another kit than the one it runs, and the vectors being append-only, an
-// older kit would still pass them.
+// twice, in go.mod and in the release asset packages/client installs.
+// packages/client is measured in the reader image, so its pin moves only in a
+// reader release; go.mod may move ahead of it between reader releases (kit
+// v0.5.0's platform wrap check and relying party rule, for the server alone),
+// never behind: a client on a newer kit than the vectors Go reads would be
+// tested against vectors of another kit than the one it runs, and the vectors
+// being append-only, an older kit would still pass them. The client's own
+// manifest, its lockfile and every package that links it always agree.
 func TestKitVersionsAgree(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	read := func(path string, v any) {
@@ -510,15 +516,22 @@ func TestKitVersionsAgree(t *testing.T) {
 	if m == nil {
 		t.Fatal("go.mod does not require github.com/thehappieco/kit")
 	}
-	version := string(m[1])
-	url := "https://github.com/thehappieco/kit/releases/download/v" + version + "/thehappieco-kit-" + version + ".tgz"
+	goVersion := string(m[1])
 
 	var manifest struct {
 		Dependencies map[string]string `json:"dependencies"`
 	}
 	read("packages/client/package.json", &manifest)
-	if got := manifest.Dependencies["@thehappieco/kit"]; got != url {
-		t.Errorf("packages/client/package.json installs %q; go.mod requires v%s, whose asset is %s", got, version, url)
+	url := manifest.Dependencies["@thehappieco/kit"]
+	asset := regexp.MustCompile(`^https://github\.com/thehappieco/kit/releases/download/v(\d+\.\d+\.\d+)/thehappieco-kit-(\d+\.\d+\.\d+)\.tgz$`).FindStringSubmatch(url)
+	if asset == nil || asset[1] != asset[2] {
+		t.Fatalf("packages/client/package.json installs %q, not a kit release asset", url)
+	}
+	version := asset[1]
+	if kitVersionLess(goVersion, version) {
+		t.Errorf("packages/client installs kit v%s, newer than go.mod's v%s", version, goVersion)
+	} else if version != goVersion {
+		t.Logf("go.mod requires kit v%s; packages/client stays on v%s until a reader release moves it", goVersion, version)
 	}
 	type lockfile struct {
 		Packages map[string]struct {
@@ -530,7 +543,7 @@ func TestKitVersionsAgree(t *testing.T) {
 	var lock lockfile
 	read("packages/client/package-lock.json", &lock)
 	if kit := lock.Packages["node_modules/@thehappieco/kit"]; kit.Version != version || kit.Resolved != url {
-		t.Errorf("packages/client/package-lock.json resolves the kit %s from %q; go.mod requires v%s (%s)", kit.Version, kit.Resolved, version, url)
+		t.Errorf("packages/client/package-lock.json resolves the kit %s from %q; its package.json installs v%s (%s)", kit.Version, kit.Resolved, version, url)
 	}
 	if got := lock.Packages[""].Dependencies["@thehappieco/kit"]; got != url {
 		t.Errorf("packages/client/package-lock.json declares %q, want %s", got, url)
@@ -545,6 +558,33 @@ func TestKitVersionsAgree(t *testing.T) {
 			t.Errorf("%s/package-lock.json has the client declaring %q, want %s (npm install there after a bump)", consumer, got, url)
 		}
 	}
+}
+
+// kitVersionLess reports whether kit version a (major.minor.patch, no
+// leading v) is older than b. A version that does not parse is older than
+// any, so the check above fails rather than passes on it.
+func kitVersionLess(a, b string) bool {
+	parse := func(v string) ([3]int, bool) {
+		var out [3]int
+		parts := strings.Split(v, ".")
+		if len(parts) != 3 {
+			return out, false
+		}
+		for i, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 0 {
+				return out, false
+			}
+			out[i] = n
+		}
+		return out, true
+	}
+	pa, okA := parse(a)
+	pb, okB := parse(b)
+	if !okA || !okB {
+		return !okA
+	}
+	return slices.Compare(pa[:], pb[:]) < 0
 }
 
 func kitB64(t *testing.T, s string) []byte {
