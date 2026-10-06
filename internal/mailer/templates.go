@@ -120,6 +120,46 @@ var alertLanguages = map[string]alertWords{
 	},
 }
 
+// stepUpAlertWords are the words of the step-up's alert that differ from the
+// sign-in's (E-ALERT-10 to 14, approved 2026-10-06): a confirmation, not a
+// sign-in, was refused, and the person is already signed in, so the advice
+// is C-STEP-25's, without "before signing in again". The rest of the alert
+// (E-ALERT-03, 06, 08, 09 and the template's own words) is the sign-in's.
+//
+//nolint:misspell // the Spanish and French words are not English misspellings
+var stepUpAlertWords = map[string]alertWords{
+	"en": {
+		subject: "A confirmation in Wappie was refused", preheader: "A confirmation in Wappie was refused because your account key changed.",
+		title:  "A confirmation was refused",
+		intro:  "A confirmation in Wappie through The Happie Co was refused because it presented a different account key from the one your account has always used. Nothing was shared and no confirmation was recorded.",
+		advice: "If you did not reset your The Happie Co account, change its password now and contact Wappie support.",
+	},
+	"pt": {
+		subject: "Uma confirmação na Wappie foi recusada", preheader: "Uma confirmação na Wappie foi recusada porque a chave da sua conta mudou.",
+		title:  "Uma confirmação foi recusada",
+		intro:  "Uma confirmação na Wappie pela The Happie Co foi recusada porque apresentou uma chave de conta diferente da que a sua conta sempre usou. Nada foi compartilhado e nenhuma confirmação foi registrada.",
+		advice: "Se você não redefiniu sua conta The Happie Co, troque a senha dela agora e fale com o suporte da Wappie.",
+	},
+	"es": {
+		subject: "Se rechazó una confirmación en Wappie", preheader: "Se rechazó una confirmación en Wappie porque la clave de tu cuenta cambió.",
+		title:  "Se rechazó una confirmación",
+		intro:  "Se rechazó una confirmación en Wappie con The Happie Co porque presentó una clave de cuenta distinta de la que tu cuenta ha usado siempre. No se compartió nada y no se registró ninguna confirmación.",
+		advice: "Si no restableciste tu cuenta de The Happie Co, cambia su contraseña ahora y contacta con el soporte de Wappie.",
+	},
+	"fr": {
+		subject: "Une confirmation dans Wappie a été refusée", preheader: "Une confirmation dans Wappie a été refusée parce que la clé de votre compte a changé.",
+		title:  "Une confirmation a été refusée",
+		intro:  "Une confirmation dans Wappie avec The Happie Co a été refusée parce qu’elle présentait une clé de compte différente de celle que votre compte a toujours utilisée. Rien n’a été partagé et aucune confirmation n’a été enregistrée.",
+		advice: "Si vous n’avez pas réinitialisé votre compte The Happie Co, changez son mot de passe maintenant et contactez le support de Wappie.",
+	},
+	"de": {
+		subject: "Eine Bestätigung in Wappie wurde abgelehnt", preheader: "Eine Bestätigung in Wappie wurde abgelehnt, weil sich der Schlüssel Ihres Kontos geändert hat.",
+		title:  "Eine Bestätigung wurde abgelehnt",
+		intro:  "Eine Bestätigung in Wappie mit The Happie Co wurde abgelehnt, weil sie einen anderen Kontoschlüssel vorgelegt hat als den, den Ihr Konto immer verwendet hat. Es wurde nichts geteilt und keine Bestätigung gespeichert.",
+		advice: "Wenn Sie Ihr The-Happie-Co-Konto nicht zurückgesetzt haben, ändern Sie jetzt sein Passwort und wenden Sie sich an den Wappie-Support.",
+	},
+}
+
 // accountKeyChangedEmail is the alert of a sign-in refused because the
 // identity provider presented another account key than the one this
 // account signs in with (docs/platform-sign-in.md), in the recipient's
@@ -127,6 +167,20 @@ var alertLanguages = map[string]alertWords{
 // one or for the operator's copy. It names no key, no account id and no
 // other address than the recipient's.
 func accountKeyChangedEmail(origin, email, lang string) (accountEmail, error) {
+	return keyChangedEmail(origin, email, lang, nil)
+}
+
+// stepUpKeyChangedEmail is the same alert for a step-up at the identity
+// provider refused for its account key (E-ALERT-10 to 14): the sign-in's
+// template and words, with the step-up's subject, preheader, title, intro
+// and advice.
+func stepUpKeyChangedEmail(origin, email, lang string) (accountEmail, error) {
+	return keyChangedEmail(origin, email, lang, stepUpAlertWords)
+}
+
+// keyChangedEmail builds an account key alert in the recipient's language,
+// from the sign-in's words with those of override in their place.
+func keyChangedEmail(origin, email, lang string, override map[string]alertWords) (accountEmail, error) {
 	u, err := config.AccountBrowserOrigin(origin, false)
 	if err != nil {
 		return accountEmail{}, errors.New("mailer: invalid browser origin")
@@ -136,6 +190,9 @@ func accountKeyChangedEmail(origin, email, lang string) (accountEmail, error) {
 	w, ok := alertLanguages[tag]
 	if !ok {
 		tag, w = "en", alertLanguages["en"]
+	}
+	if o, ok := override[tag]; ok {
+		w.subject, w.preheader, w.title, w.intro, w.advice = o.subject, o.preheader, o.title, o.intro, o.advice
 	}
 	return accountEmail{
 		Lang: tag, Subject: w.subject, Preheader: w.preheader, Eyebrow: w.eyebrow, Title: w.title, Intro: w.intro,
