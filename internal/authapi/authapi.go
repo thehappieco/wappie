@@ -699,10 +699,15 @@ func (h *Handler) allow(w http.ResponseWriter, r *http.Request, subject string) 
 	if ok {
 		return true
 	}
+	rateLimited(w, wait)
+	return false
+}
+
+// rateLimited answers a request a limit refused, with a Retry-After.
+func rateLimited(w http.ResponseWriter, wait time.Duration) {
 	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())))
 	fail(w, http.StatusTooManyRequests, "rate_limited",
 		"too many attempts; try again in "+wait.String())
-	return false
 }
 
 // BearerToken pulls a token out of the Authorization header.

@@ -54,6 +54,24 @@ func New(perMinute, burst int) *Limiter {
 	}
 }
 
+// NewWindow builds a limiter that admits n attempts at once and n per window
+// thereafter, per key: for a step a person takes a few times an hour, where
+// a rate per minute would be far too generous.
+func NewWindow(n int, window time.Duration) *Limiter {
+	if n < 1 {
+		n = 1
+	}
+	if window <= 0 {
+		window = time.Minute
+	}
+	return &Limiter{
+		rate:    float64(n) / window.Seconds(),
+		burst:   float64(n),
+		buckets: map[string]*bucket{},
+		now:     time.Now,
+	}
+}
+
 // Allow spends one token for key. When it cannot, it says how long until it
 // could, which is what a Retry-After header wants.
 func (l *Limiter) Allow(key string) (ok bool, retryAfter time.Duration) {

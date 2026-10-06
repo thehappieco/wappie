@@ -27,23 +27,26 @@
 //     provider (id.thehappie.co in the cloud), and proves itself there:
 //     Wappie runs no WebAuthn for it (platform decision 0008) and takes no
 //     password from it, so its passkey and password step-ups answer
-//     ProviderCode while the provider is configured. Step 4 of the sign-in
-//     plan adds its proof behind this same interface: a start route records
+//     ProviderCode while the provider is configured. Its step-up is step 4
+//     of the sign-in plan: POST /v1/auth/platform/step-up/start records
 //     sessions.step_up_not_before (migration 0048) for the session; the
-//     console sends the person to the provider with prompt=login; a finish
-//     route takes the access token to the provider's userinfo (never the ID
-//     token), requires the linked sub, this client and an auth_time at or
-//     after step_up_not_before, and records the proof as the passkey and
-//     password do, in sessions.authenticated_at (0047). A sign-in through
-//     the provider may count as a proof only from that userinfo's auth_time.
+//     console sends the person to the provider with prompt=login; POST
+//     /v1/auth/platform/step-up/finish takes the access token to the
+//     provider's userinfo (never the ID token), requires the linked sub,
+//     this client, the pinned account key and an auth_time no more than
+//     ProviderClockTolerance before the start, within Window of it, and
+//     records the proof as the passkey and password do, in
+//     sessions.authenticated_at (0047), clearing the start: one start, one
+//     proof (store.Users.FinishProviderStepUp).
+//   - A sign-in through the provider is a proof from that userinfo's
+//     auth_time, never from the session's creation
+//     (store.Users.StartPlatformSession): the console asks for
+//     prompt=login, so a fresh sign-in asks nothing more for ten minutes. A
+//     link to the provider proves the old password, and so the person, now.
 //
-// Until step 4, a session started through the provider holds no proof
-// (authenticated_at is -infinity, store.Users.StartPlatformSession): every
-// guarded write answers Code for it, and the step-up routes answer
-// ProviderCode, so such an account is refused clearly wherever a proof is
-// needed. With the provider unconfigured (the switch off for a rollback), a
-// linked account signs in with its legacy password again and steps up as a
-// local one.
+// With the provider unconfigured (the switch off for a rollback), a linked
+// account signs in with its legacy password again and steps up as a local
+// one.
 package stepup
 
 import (
@@ -68,18 +71,20 @@ const ProviderClockTolerance = time.Minute
 // with; the console asks for the proof and tries again.
 const Code = "step_up_required"
 
-// Message is the text beside Code.
-const Message = "confirm it is you first: use your passkey or your password, or sign in again; " +
-	"giving an assistant message text, or anyone a number's key, needs it within the last ten minutes"
+// Message is the text beside Code (E-STEP-01, approved 2026-10-06).
+const Message = "confirm it is you first: with your passkey or your password, or at the identity provider your account " +
+	"signs in with, or sign in again; giving an assistant message text, or anyone a number's key, needs it within the " +
+	"last ten minutes"
 
 // ProviderCode is what a passkey or password step-up answers for an account
 // that signs in through the identity provider: its proof is the provider's
-// re-authentication (D3), which this server does not take yet (step 4).
+// re-authentication (D3), started at POST /v1/auth/platform/step-up/start.
 const ProviderCode = "step_up_at_provider"
 
-// ProviderMessage is the text beside ProviderCode.
-const ProviderMessage = "this account confirms it is you at the identity provider it signs in with, which this server " +
-	"does not offer yet; until it does, giving an assistant message text or anyone a number's key is not available to it"
+// ProviderMessage is the text beside ProviderCode (E-STEP-15, approved
+// 2026-10-06).
+const ProviderMessage = "this account confirms it is you at the identity provider it signs in with, not with a passkey " +
+	"or password here: use POST /v1/auth/platform/step-up/start"
 
 // Checker answers whether a session's person proved themselves within Window.
 type Checker interface {

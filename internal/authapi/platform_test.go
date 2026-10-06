@@ -160,6 +160,9 @@ type platformHarness struct {
 	id      *fakeID
 	handler *authapi.Handler
 	alerts  chan string
+	// stepUpAlerts are the step-up's account key alerts, as alerts are
+	// the sign-in's: "address lang".
+	stepUpAlerts chan string
 }
 
 // newPlatformHarness serves the auth routes with the provider configured as
@@ -177,8 +180,9 @@ func newPlatformHarness(t *testing.T, local config.LocalLogin) *platformHarness 
 	if err != nil {
 		t.Fatal(err)
 	}
-	alerts := make(chan string, 8)
+	alerts, stepUpAlerts := make(chan string, 8), make(chan string, 8)
 	login.Alert = func(_ context.Context, to, lang string) error { alerts <- to + " " + lang; return nil }
+	login.StepUpAlert = func(_ context.Context, to, lang string) error { stepUpAlerts <- to + " " + lang; return nil }
 	provider, err := authapi.NewPasskeyProvider(config.Passkeys{RPID: passkeyRP, Origins: []string{passkeyApp, passkeyConsole}})
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +193,7 @@ func newPlatformHarness(t *testing.T, local config.LocalLogin) *platformHarness 
 	p.srv.Close()
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
-	return &platformHarness{passkeyHarness: p, id: id, handler: handler, alerts: alerts}
+	return &platformHarness{passkeyHarness: p, id: id, handler: handler, alerts: alerts, stepUpAlerts: stepUpAlerts}
 }
 
 // pagePost posts as the console's own page does: its exact Origin,

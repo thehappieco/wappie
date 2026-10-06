@@ -43,6 +43,8 @@ import (
 	"github.com/thehappieco/kit/oidcrp"
 
 	"whatserver2/internal/config"
+	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 )
 
@@ -50,21 +52,34 @@ import (
 // off: every platform route answers platform_login_disabled.
 type PlatformLogin struct {
 	Client *oidcrp.Client
-	Pins   oidcrp.PinStore
+	Pins   PlatformPins
 	// AppOrigin is the one page origin that may post here.
 	AppOrigin string
-	// Alert sends the "your account key changed" mail to one address, in
-	// lang (the account's locale; "" is English); nil sends nothing.
+	// Alert sends the "your account key changed" mail of a refused sign-in
+	// to one address, in lang (the account's locale; "" is English);
+	// StepUpAlert is the same for a refused step-up. Nil sends nothing.
 	// AlertEmail is the operator's address, beside the account's own.
-	Alert      func(ctx context.Context, to, lang string) error
-	AlertEmail string
+	Alert       func(ctx context.Context, to, lang string) error
+	StepUpAlert func(ctx context.Context, to, lang string) error
+	AlertEmail  string
+	// StepUpStarts bounds the step-ups an account starts at the provider
+	// (platform_stepup.go); nil allows every one.
+	StepUpStarts *ratelimit.Limiter
+}
+
+// PlatformPins is the pin store: the kit's insert-only PinStore, which a
+// sign-in pins through, and a read that pins nothing, which a step-up
+// compares the provider's key with (store.PlatformPins).
+type PlatformPins interface {
+	oidcrp.PinStore
+	Pinned(ctx context.Context, sub uuid.UUID, productKeyID string) ([]byte, error)
 }
 
 // NewPlatformLogin builds the provider's relying party from configuration;
 // nil, nil when the provider is not configured. In development the userinfo
 // request may dial a fixed address (WS_PLATFORM_ID_ADDR), because Go does
 // not resolve *.localhost; its Host header still names the issuer.
-func NewPlatformLogin(cfg config.Platform, pins oidcrp.PinStore) (*PlatformLogin, error) {
+func NewPlatformLogin(cfg config.Platform, pins PlatformPins) (*PlatformLogin, error) {
 	if !cfg.Enabled() {
 		return nil, nil
 	}
@@ -80,7 +95,8 @@ func NewPlatformLogin(cfg config.Platform, pins oidcrp.PinStore) (*PlatformLogin
 	if err := client.Check(); err != nil {
 		return nil, err
 	}
-	return &PlatformLogin{Client: client, Pins: pins, AppOrigin: cfg.AppOrigin, AlertEmail: cfg.AlertEmail}, nil
+	return &PlatformLogin{Client: client, Pins: pins, AppOrigin: cfg.AppOrigin, AlertEmail: cfg.AlertEmail,
+		StepUpStarts: ratelimit.NewWindow(stepUpStartsPerWindow, stepup.Window)}, nil
 }
 
 func (h *Handler) mountPlatform(mux *http.ServeMux) {
@@ -89,6 +105,8 @@ func (h *Handler) mountPlatform(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/platform/link/prepare", h.platformLinkPrepare)
 	mux.HandleFunc("POST /v1/auth/platform/link", h.platformLink)
 	mux.HandleFunc("POST /v1/auth/platform/rewrap", h.platformRewrap)
+	mux.HandleFunc("POST /v1/auth/platform/step-up/start", h.platformStepUpStart)
+	mux.HandleFunc("POST /v1/auth/platform/step-up/finish", h.platformStepUpFinish)
 }
 
 // ---------------------------------------------------------------------------
@@ -414,28 +432,37 @@ func (h *Handler) accountKeyChanged(ctx context.Context, ui *oidcrp.Userinfo) {
 		return
 	}
 	var userID *uuid.UUID
+	if ident, err := h.Users.PlatformIdentity(ctx, sub); err == nil {
+		userID = &ident.UserID
+	}
+	h.raiseKeyChanged(ctx, sub, userID, map[string]string{"product_key_id": ui.ProductKeyID}, h.Platform.Alert)
+}
+
+// raiseKeyChanged records the event of a refusal for a changed account key
+// (detail never holds a key, a token or an address) and mails alert to the
+// operator, in English, and to the account, if known, in its language.
+func (h *Handler) raiseKeyChanged(ctx context.Context, sub uuid.UUID, userID *uuid.UUID, detail map[string]string,
+	alert func(ctx context.Context, to, lang string) error) {
 	type recipient struct{ to, lang string }
 	recipients := []recipient{}
 	if h.Platform.AlertEmail != "" {
 		recipients = append(recipients, recipient{to: h.Platform.AlertEmail})
 	}
-	if ident, err := h.Users.PlatformIdentity(ctx, sub); err == nil {
-		userID = &ident.UserID
-		if user, err := h.Users.PlatformAccount(ctx, ident.UserID); err == nil && user.Email != "" {
+	if userID != nil {
+		if user, err := h.Users.PlatformAccount(ctx, *userID); err == nil && user.Email != "" {
 			lang := ""
-			if profile, err := h.Users.Profile(ctx, ident.UserID); err == nil {
+			if profile, err := h.Users.Profile(ctx, *userID); err == nil {
 				lang = profile.Locale
 			}
 			recipients = append(recipients, recipient{to: user.Email, lang: lang})
 		}
 	}
-	if err := h.Users.RecordSecurityEvent(ctx, "platform_account_key_changed", userID, sub, map[string]string{"product_key_id": ui.ProductKeyID}); err != nil {
+	if err := h.Users.RecordSecurityEvent(ctx, "platform_account_key_changed", userID, sub, detail); err != nil {
 		h.log().Error("could not record a security event", "event", "platform_account_key_changed", "error", err)
 	}
-	if h.Platform.Alert == nil || len(recipients) == 0 {
+	if alert == nil || len(recipients) == 0 {
 		return
 	}
-	alert := h.Platform.Alert
 	go func() {
 		mailCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()

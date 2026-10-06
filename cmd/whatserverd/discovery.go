@@ -57,7 +57,9 @@ func discoveryFor(mcp mcpEndpoints) http.HandlerFunc { return discoveryWith(mcp,
 // provider is configured, platform_login: the issuer, the client and what
 // remains of password sign-in, so the console begins a sign-in without
 // hard-coding any of it. auth.password is advertised while password sign-in
-// is open at all, and auth.platform.v1 while the provider is.
+// is open at all, and auth.platform.v1 while the provider is, with
+// auth.platform.stepup.v1: the step-up at the provider
+// (/v1/auth/platform/step-up/start and /finish).
 func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery) http.HandlerFunc {
 	remoteMCP := mcp.Server != "" || mcp.Attested != ""
 	capabilities := []string{"archive.sealed.v1", "archive.rest.v1", "archive.contacts.v1", "archive.scan.v1", "apikeys.device-scope.v1", "workspaces.v1"}
@@ -65,7 +67,7 @@ func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery) http.H
 		capabilities = append(capabilities, "auth.password")
 	}
 	if platform != nil {
-		capabilities = append(capabilities, "auth.platform.v1")
+		capabilities = append(capabilities, "auth.platform.v1", "auth.platform.stepup.v1")
 	}
 	capabilities = append(capabilities, "external-client.v1")
 	endpoints := map[string]string{"websocket": "/v1/ws", "archive_rest": "/v1", "openapi": "/v1/openapi.json", "auth": "/v1/auth", "media": "/v1/media", "upload": "/v1/upload", "calls_media": "/v1/calls/media"}

@@ -193,6 +193,7 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 	if a.platform != nil && cfg.Signup.SMTP.Configured() {
 		sender := mailer.Sender{Config: cfg.Signup.SMTP, AppURL: cfg.Signup.AppURL}
 		a.platform.Alert = sender.AccountKeyChanged
+		a.platform.StepUpAlert = sender.StepUpKeyChanged
 	}
 
 	// The operator's switches beneath each workspace's own; read before

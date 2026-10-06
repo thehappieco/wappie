@@ -245,7 +245,8 @@ func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
 		return d
 	}
 	off := read(t, nil)
-	if off.PlatformLogin != nil || slices.Contains(off.Capabilities, "auth.platform.v1") || !slices.Contains(off.Capabilities, "auth.password") {
+	if off.PlatformLogin != nil || slices.Contains(off.Capabilities, "auth.platform.v1") || slices.Contains(off.Capabilities, "auth.platform.stepup.v1") ||
+		!slices.Contains(off.Capabilities, "auth.password") {
 		t.Fatalf("unconfigured: %+v", off)
 	}
 	for _, local := range []string{"on", "link_only", "off"} {
@@ -253,6 +254,10 @@ func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
 		if d.PlatformLogin == nil || d.PlatformLogin.Issuer != "https://id.thehappie.co" || d.PlatformLogin.ClientID != "wappie-app" ||
 			d.PlatformLogin.Product != "wappie" || d.PlatformLogin.LocalLogin != local || !slices.Contains(d.Capabilities, "auth.platform.v1") {
 			t.Fatalf("%s: %+v", local, d)
+		}
+		// The step-up at the provider comes with the sign-in through it.
+		if !slices.Contains(d.Capabilities, "auth.platform.stepup.v1") {
+			t.Fatalf("%s: no step-up at the provider: %v", local, d.Capabilities)
 		}
 		if slices.Contains(d.Capabilities, "auth.password") != (local != "off") {
 			t.Fatalf("%s: auth.password %v", local, d.Capabilities)
