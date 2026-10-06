@@ -4,7 +4,7 @@
 // access, an AI integration and its renewal, the provisional service
 // invitation those write, and every grant of a number's key, to a member or
 // a standing service account as much as to a connection's reader
-// (docs/mcp-enclave.md §19.30).
+// (docs/mcp-enclave.md §19.35).
 //
 // The browser already holds the account key that seals the grants, so the
 // proof is not about keys. It is about the person in front of the screen: a

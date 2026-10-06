@@ -94,7 +94,7 @@ func (h *Handler) mailNotice(ctx context.Context, n store.MCPNotice) {
 	sent := 0
 	for _, to := range n.Recipients {
 		// Each recipient reads it in the language their console was last
-		// set to, English when it never said (§19.30).
+		// set to, English when it never said (§19.35).
 		notice.Lang = n.Locales[to]
 		if err := h.MailNotice(ctx, to, notice); err != nil {
 			// The address is the recipient's; the error is the mail

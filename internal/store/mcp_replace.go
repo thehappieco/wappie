@@ -13,7 +13,7 @@ import (
 	"whatserver2/internal/pg"
 )
 
-// Reconnect hygiene (docs/mcp-enclave.md §19.30): a reconnect that replaces
+// Reconnect hygiene (docs/mcp-enclave.md §19.35): a reconnect that replaces
 // the connection it repeats, and the end of connections nobody uses.
 
 // sameClient is a connection c of the same client as the consent named by
@@ -231,7 +231,7 @@ func (m *MCPConnections) endIfIdle(ctx context.Context, tenant uuid.UUID, id str
 // ---------------------------------------------------------------------------
 
 // RenewalNotice is one person's renewal notice (docs/mcp-enclave.md
-// §19.30): their content connections in one workspace whose key the reader
+// §19.35): their content connections in one workspace whose key the reader
 // lost and that no notice has covered since.
 type RenewalNotice struct {
 	TenantID, UserID         uuid.UUID

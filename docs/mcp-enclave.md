@@ -10144,6 +10144,9 @@ costs a renewal round. Nothing in `packages/client`, `packages/mcp` or
 `packages/mcp-http` changes; the reader opens, seals and refuses exactly as
 before, and who can read content does not change. Migration
 `0047_mcp_friction.sql` holds the schema, with its down-step in the header.
+That header still calls this section §19.30, its number before the merge
+with 0.6.0: migrations are checksummed, and the sign-in branch carries the
+same file, so it is left byte for byte as it is.
 
 **A1: a re-confirmation in place of the password (M3).** The content consent,
 the renewal, a connection token with text, a new AI integration and an AI

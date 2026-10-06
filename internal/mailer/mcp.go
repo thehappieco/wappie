@@ -35,7 +35,7 @@ import (
 // five languages of the console all have words. A console token is named by
 // its label, the words a workspace admin chose for it, never by anything a
 // client said. The texts are drafts for the owner (docs/mcp-enclave.md
-// §19.22, §19.30).
+// §19.22, §19.35).
 
 //go:embed templates/mcp.html
 var mcpTemplate string
@@ -467,7 +467,7 @@ func (m mcpEmail) render() (string, string, error) {
 // The renewal notice
 // ---------------------------------------------------------------------------
 
-// MCPRenewal is the renewal notice (docs/mcp-enclave.md §19.30): the Wappie
+// MCPRenewal is the renewal notice (docs/mcp-enclave.md §19.35): the Wappie
 // reader no longer holds the keys of content connections a person consented
 // to in one workspace (it restarted, or the workspace turned text off and on
 // again), and they wait for that person to renew them. It goes to that

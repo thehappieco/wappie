@@ -11,7 +11,7 @@ import (
 	"whatserver2/internal/store"
 )
 
-// The step-up (docs/mcp-enclave.md §19.30): a sign-in is a proof for ten
+// The step-up (docs/mcp-enclave.md §19.35): a sign-in is a proof for ten
 // minutes; past them the password's auth key or a passkey assertion with user
 // verification, each checked here, renews it; and a content consent's service
 // invitation waits for it.

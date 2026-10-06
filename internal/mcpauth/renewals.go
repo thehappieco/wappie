@@ -7,7 +7,7 @@ import (
 	"whatserver2/internal/mailer"
 )
 
-// The renewal round (docs/mcp-enclave.md §19.30). When the attested reader
+// The renewal round (docs/mcp-enclave.md §19.35). When the attested reader
 // holds no key for content connections (it restarted, or their workspace
 // turned text off and on again), it reseals them one after the other; each
 // person who consented to one gets a single e-mail saying how many wait, in

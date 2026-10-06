@@ -199,7 +199,7 @@ const (
 	ReasonAccessLost      = "access_lost"
 	// ReasonReplaced is a connection a reconnect of the same person and
 	// client took the place of, and ReasonIdle one unused past its tier's
-	// idle time (0047, docs/mcp-enclave.md §19.30).
+	// idle time (0047, docs/mcp-enclave.md §19.35).
 	ReasonReplaced = "replaced"
 	ReasonIdle     = "idle"
 )

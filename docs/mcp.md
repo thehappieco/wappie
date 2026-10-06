@@ -325,7 +325,7 @@ Message text is a separate switch. Who may use it is decided in two halves:
 the operator's, in these variables, and each workspace's own, which its
 owner sets in the console's MCP tab ("What assistants may do in this
 workspace", `GET` and `PUT /v1/mcp/workspace`) for text, attachments, drafts
-and AI ([contract](mcp-enclave.md#1930-fewer-steps-without-a-new-image-a1-to-a7)):
+and AI ([contract](mcp-enclave.md#1935-fewer-steps-without-a-new-image-a1-to-a7)):
 
 | Variable | Rule |
 |---|---|
