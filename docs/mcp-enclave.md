@@ -9600,7 +9600,7 @@ person's first of the five, else English): the Wappie icon (`/icon-192.png`),
 "This is the address of Wappie's connector. Add it in your assistant: in
 Claude as a custom connector, or in another app that supports MCP. … The
 Wappie console shows the steps for each assistant." (amended in §19.34,
-pending the owner's approval; the text approved first also named ChatGPT
+approved by the owner on 2026-10-05; the text approved first also named ChatGPT
 and its developer-mode plugin), the
 address `https://mcp.wappie.thehappie.co/mcp`, a link to the console
 (`CONSOLE_URL`) and one to the documentation, and links to the other four
@@ -9903,7 +9903,7 @@ enclave's `send/sends.mjs`).
 | a search hit's `source` | `device_id`, `message_uid` and `chat_key`, copies of the hit's own; on a hosted reader the object itself (the row's `source` string stays, as `list_messages` has it) | on a local install, `server` and `url` |
 | an `activity_summary` group | `sender_pn`, `sender_lid` | `chat_key`, `sender_key`, `sample_uid`; a sender's phone-JID rows count in its LID group where the call read the alias |
 | a `list_chats` chat | `uid`, `chat_pn`, `chat_lid`, `keys` | `chat_key` |
-| a `list_numbers` number | `phone`, and the phone JID as the `name` of last resort | `id`; `name` is the console label, else the WhatsApp push name, else "Number 1", "Number 2"… by its place in the list (pending the owner's approval, D10) |
+| a `list_numbers` number | `phone`, and the phone JID as the `name` of last resort | `id`; `name` is the console label, else the WhatsApp push name, else "Number 1", "Number 2"… by its place in the list (approved by the owner, D10, 2026-10-05) |
 | a `resolve_contact` candidate | `contact_uid`; `phones`, but those that are the number a phone query typed, or all of them with `include_phones` | `identifiers` |
 | `resolve_contact`'s `next.after_key` | the last contact's key, a third party's JID | a sealed cursor |
 | `send_to_self` | `wa_id` (the enclave keeps it out of its answer too) | `message_uid`, `timestamp`, `open_url` |
@@ -9949,7 +9949,7 @@ anywhere in a candidate's names, phones and identifiers, so a phone query
 also matches candidates whose number the user never typed (the pieces of
 another number, a mobile beside the landline typed, every contact sharing a
 prefix, a LID's digits); they carry no `phones`. `include_phones` is new,
-and its description is pending the owner's approval (D10): "true only when
+and its description was approved by the owner (D10, 2026-10-05): "true only when
 the user asked for a contact's phone number: candidates then include their
 phones. A query that is a phone number shows the phones that match it
 anyway; omit it otherwise." (amended 2026-10-05 with the owner's D10 rule:
@@ -9967,7 +9967,7 @@ and number that sealed it, survives a restart of the enclave (the
 connection's API key does not change), and shows only the key's length. A
 changed or foreign one is refused before any read (`invalid_cursor`: "Pass
 next.after_key exactly as returned, or call resolve_contact again without
-after_key.", pending the owner's approval, D10); a value without the prefix
+after_key.", approved by the owner, D10, 2026-10-05); a value without the prefix
 is a key, as 0.5.0 returned it. The REST calls are unchanged: the archive
 still gets the key, and the attested reader still reads four pages whatever
 matched.
@@ -9977,7 +9977,7 @@ phone JID, a LID or a key alike, as the archive matches any of the three.
 Of the approved texts only `sender_keys`' description named a removed
 field; it reads "Only these senders, 1 to 3: sender_key values from earlier
 results, or identifiers from resolve_contact." New text, all three
-**pending the owner's approval** (D10): `include_phones`' description (as
+**approved by the owner on 2026-10-05** (D10): `include_phones`' description (as
 amended above), and the `invalid_cursor` guidance and the label "Number N"
 as written.
 
@@ -10090,7 +10090,7 @@ pattern rules, which the tests keep with entries of their own; the vectors
 (`attest-v2.json` names only Claude's ids).
 
 **The page at `/`** (M-HOME, §19.29) no longer sends anyone to ChatGPT
-steps the console does not show. Its lead, **pending the owner's approval**
+steps the console does not show. Its lead, **approved by the owner on 2026-10-05**
 (D10, before the build, since the page is measured):
 - pt: "Este é o endereço do conector do Wappie. Adicione-o no seu
   assistente: no Claude como conector personalizado, ou em outro app
@@ -10123,8 +10123,8 @@ the owner words it otherwise, both change together before the build.
 **The console** has no ChatGPT tab: Claude, with Claude Code under "For
 developers", and "Other assistants". The heading, the admin card, the
 drafting line and the token card no longer name ChatGPT or promise Codex the
-tested limits; those edited sentences are pending the owner's approval
-(D10). The ChatGPT tab's catalogue keys and icon download are gone.
+tested limits; those edited sentences were approved by the owner on
+2026-10-05 (D10). The ChatGPT tab's catalogue keys and icon download are gone.
 
 **Tests:** `test/any.test.mjs` and `enclave/test/any-enclave.test.mjs` (the
 list and its fingerprints, ChatGPT's and Codex's documents in the untested
