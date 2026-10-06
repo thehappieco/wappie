@@ -375,7 +375,7 @@ It uses `@thehappieco/kit/oidc-rp` v0.3.0 (`begin`, `finishSignIn`,
 ## Step-ups
 
 One step-up serves every account: the fewer steps' `internal/stepup`
-(`docs/mcp-enclave.md` §19.30). A content consent, its renewal, an AI
+(`docs/mcp-enclave.md` §19.35). A content consent, its renewal, an AI
 integration and its renewal, the provisional service invitation they write
 and every grant of a number's key need a proof of the person within the last
 ten minutes, recorded in `sessions.authenticated_at` on the database's clock
@@ -476,7 +476,7 @@ window (step 6). Steps 1 to 3 accept one consequence of that:
 
 The owner approved every text of this branch and of the fewer steps that the
 list of 2026-10-05 collected (codes C- for the console, E- for the Go server),
-with thirteen recommendations; `docs/mcp-enclave.md` §19.30 lists all of
+with thirteen recommendations; `docs/mcp-enclave.md` §19.35 lists all of
 them. Those that change this branch's texts:
 
 - **"a Wappie" and "o Wappie" (3).** Portuguese writes "a Wappie" where
