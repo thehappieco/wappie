@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/thehappieco/kit/oidcrp"
 	"github.com/thehappieco/kit/profiles/platform"
+	"github.com/thehappieco/kit/profiles/wappie"
 
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/config"
@@ -258,11 +259,11 @@ func (h *platformHarness) signIn(t *testing.T, p person, epoch int) (int, platfo
 
 func randomWrap(t *testing.T) string {
 	t.Helper()
-	raw := make([]byte, 61)
+	raw := make([]byte, wappie.PlatformWrapLen)
 	if _, err := rand.Read(raw); err != nil {
 		t.Fatal(err)
 	}
-	raw[0] = 1
+	raw[0] = wappie.PlatformWrapHeader
 	return base64.StdEncoding.EncodeToString(raw)
 }
 
@@ -807,11 +808,17 @@ func TestPlatformLinkRefusals(t *testing.T) {
 	if code, out := prepare(ticket(), "passkey@example.com", h.account.AuthKey); code != http.StatusUnauthorized || out.Code != "bad_credentials" {
 		t.Fatalf("a disabled account: %d %+v", code, out)
 	}
-	// A wrap of the wrong shape is refused before anything is spent.
-	var out platformAnswer
-	bad := base64.StdEncoding.EncodeToString(make([]byte, 61))
-	if code := h.pagePost(t, "/v1/auth/platform/link", map[string]string{"ticket": ticket(), "email": "passkey@example.com", "auth_key": h.account.AuthKey, "platform_wrap": bad}, &out, "", nil); code != http.StatusBadRequest {
-		t.Fatalf("a wrap with version 0: %d %+v", code, out)
+	// A wrap of the wrong shape is refused before anything is spent: 61
+	// bytes with header 0x00, or 0x01, the header of Wappie's passkey
+	// envelope.
+	for _, header := range []byte{0x00, 0x01} {
+		var out platformAnswer
+		raw := make([]byte, wappie.PlatformWrapLen)
+		raw[0] = header
+		bad := base64.StdEncoding.EncodeToString(raw)
+		if code := h.pagePost(t, "/v1/auth/platform/link", map[string]string{"ticket": ticket(), "email": "passkey@example.com", "auth_key": h.account.AuthKey, "platform_wrap": bad}, &out, "", nil); code != http.StatusBadRequest || out.Code != "bad_request" {
+			t.Fatalf("a wrap with header 0x%02x: %d %+v", header, code, out)
+		}
 	}
 }
 

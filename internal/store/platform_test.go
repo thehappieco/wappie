@@ -12,8 +12,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thehappieco/kit/oidcrp"
+	"github.com/thehappieco/kit/profiles/wappie"
 
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
@@ -52,11 +54,41 @@ func platformBytes(t *testing.T, n int) []byte {
 	return b
 }
 
+// platformWrap has a platform wrap's shape (kit SPEC section 6.8), which is
+// all the server can check: 61 bytes starting with the header 0x03.
 func platformWrap(t *testing.T) []byte {
 	t.Helper()
-	w := platformBytes(t, store.PlatformWrapLen)
-	w[0] = store.PlatformWrapVersion
+	w := platformBytes(t, wappie.PlatformWrapLen)
+	w[0] = wappie.PlatformWrapHeader
 	return w
+}
+
+// The store checks a wrap's length and header byte only. Wappie's passkey
+// envelope (0x01) and its password and recovery wraps (0x02) are 61 bytes
+// over the same account key too, and are refused at their header.
+func TestValidPlatformWrap(t *testing.T) {
+	if !store.ValidPlatformWrap(platformWrap(t)) {
+		t.Fatal("a 61-byte wrap with header 0x03 was refused")
+	}
+	for _, header := range []byte{0x00, 0x01, 0x02, 0x04, 0xff} {
+		w := platformWrap(t)
+		w[0] = header
+		if store.ValidPlatformWrap(w) {
+			t.Errorf("header 0x%02x was accepted", header)
+		}
+	}
+	for _, n := range []int{0, 1, 60, 62} {
+		w := platformBytes(t, n)
+		if n > 0 {
+			w[0] = wappie.PlatformWrapHeader
+		}
+		if store.ValidPlatformWrap(w) {
+			t.Errorf("a wrap of %d bytes was accepted", n)
+		}
+	}
+	if store.ValidPlatformWrap(nil) {
+		t.Error("no wrap was accepted")
+	}
 }
 
 // legacy signs a password account up through an invitation.
@@ -200,8 +232,21 @@ func TestPlatformLinkRowsNeverChange(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE platform_identities SET email = 'ivo@new.example.com', email_changed_at = now() WHERE sub = $1`, sub); err != nil {
 		t.Fatalf("the address may change: %v", err)
 	}
-	if _, err := f.pool.Exec(ctx, `INSERT INTO platform_wraps (user_id, product_key_id, wrap) VALUES ($1, 'wappie:2', $2)`, sub, platformBytes(t, 61)); err == nil {
-		t.Error("a wrap without version byte 1 was stored")
+	// 0048's CHECK is the store's shape: 61 bytes starting with 0x03.
+	for _, header := range []byte{0x00, 0x01, 0x02, 0x04} {
+		w := platformWrap(t)
+		w[0] = header
+		var pgErr *pgconn.PgError
+		if _, err := f.pool.Exec(ctx, `INSERT INTO platform_wraps (user_id, product_key_id, wrap) VALUES ($1, 'wappie:2', $2)`, sub, w); !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+			t.Errorf("a wrap with header 0x%02x: %v", header, err)
+		}
+	}
+	var pgErr *pgconn.PgError
+	if _, err := f.pool.Exec(ctx, `INSERT INTO platform_wraps (user_id, product_key_id, wrap) VALUES ($1, 'wappie:2', $2)`, sub, platformWrap(t)[:60]); !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Errorf("a wrap of 60 bytes: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO platform_wraps (user_id, product_key_id, wrap) VALUES ($1, 'wappie:2', $2)`, sub, platformWrap(t)); err != nil {
+		t.Errorf("a wrap with header 0x03 for another epoch: %v", err)
 	}
 	// The account's deletion takes its link and wraps with it.
 	if err := deleteUser(ctx, f.pool, sub); err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/thehappieco/kit/profiles/wappie"
 
 	"whatserver2/internal/pg"
 )
@@ -33,8 +34,8 @@ import (
 // The account key never reaches this server. What arrives is the 61-byte
 // platform wrap (the account key under a key derived from the provider's
 // product key, sealed in the browser), checked here for its length and
-// version byte only, and the public key the account has had since it was
-// created.
+// header byte only (the kit's wappie.CheckPlatformWrapShape), and the public
+// key the account has had since it was created.
 
 const (
 	// PlatformAuthSource marks an account that signs in through the provider.
@@ -48,11 +49,6 @@ const (
 	// platformTicketAttempts bounds the wrong legacy passwords one ticket may
 	// try before it is spent, beside the address and account rate limits.
 	platformTicketAttempts = 5
-
-	// PlatformWrapLen is the platform wrap: version 0x01, a 12-byte nonce,
-	// the 32-byte account key and the 16-byte tag.
-	PlatformWrapLen     = 61
-	PlatformWrapVersion = 0x01
 
 	ticketLen = 32
 )
@@ -75,14 +71,19 @@ var (
 	ErrTicketInvalid = errors.New("store: the sign-in ticket is not valid")
 	// ErrAlreadyLinked is an account or a sub that already has its link.
 	ErrAlreadyLinked = errors.New("store: that account or identity is already linked")
-	// ErrPlatformWrap is a wrap that is not 61 bytes with version byte 1.
+	// ErrPlatformWrap is a wrap that is not 61 bytes starting with the
+	// header 0x03.
 	ErrPlatformWrap = errors.New("store: the platform wrap is malformed")
 )
 
-// ValidPlatformWrap reports whether wrap has the platform wrap's shape. It
-// cannot say more: only sk_p opens it.
+// ValidPlatformWrap reports whether wrap has the platform wrap's shape (kit
+// SPEC section 6.8): wappie.PlatformWrapLen (61) bytes starting with
+// wappie.PlatformWrapHeader (0x03), which tells it from Wappie's passkey
+// envelope (0x01) and its password and recovery wraps (0x02), all 61 bytes
+// over the same account key. It cannot say more: only sk_p opens it.
+// Migration 0048's CHECK on platform_wraps.wrap is the same rule.
 func ValidPlatformWrap(wrap []byte) bool {
-	return len(wrap) == PlatformWrapLen && wrap[0] == PlatformWrapVersion
+	return wappie.CheckPlatformWrapShape(wrap) == nil
 }
 
 // ---------------------------------------------------------------------------

@@ -28,8 +28,9 @@
 --                            or 'legacy' for an existing account linked by
 --                            the browser ceremony (users.id is kept).
 --   platform_wraps           the account key under a key derived from sk_p,
---                            61 bytes, version byte 1, one per account and
---                            product key epoch, insert only.
+--                            61 bytes starting with the header 0x03 (kit
+--                            SPEC 6.8; 0x01 is the passkey envelope's), one
+--                            per account and product key epoch, insert only.
 --   platform_login_tickets   what a sign-in that has no session yet may do
 --                            next: create the account ('new'), link a legacy
 --                            one ('new' or 'link'), or store the wrap for a
@@ -141,7 +142,7 @@ CREATE TABLE platform_identities (
 CREATE TABLE platform_wraps (
     user_id        uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     product_key_id text        NOT NULL CHECK (product_key_id ~ '^[a-z][a-z0-9-]{0,31}:[1-9][0-9]{0,9}$'),
-    wrap           bytea       NOT NULL CHECK (octet_length(wrap) = 61 AND get_byte(wrap, 0) = 1),
+    wrap           bytea       NOT NULL CHECK (octet_length(wrap) = 61 AND get_byte(wrap, 0) = 3),
     created_at     timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, product_key_id)
 );

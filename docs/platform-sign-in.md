@@ -39,7 +39,7 @@ the account key once more, wrapped under a key derived from `sk_p`:
 K_pw = HKDF-SHA256(IKM = sk_p, salt = UTF-8("wappie/platform-wrap/v1"),
                    info = JCS(["wappie/platform-wrap", 1, user_id, sub, product_key_id]), L = 32)
 aad  = JCS(["wappie/platform-wrap", 1, user_id, sub, product_key_id, base64url(users.public_key)])
-wrap = 0x01 || nonce (12) || AES-256-GCM(K_pw, nonce, account key (32), aad)       61 bytes
+wrap = 0x03 || nonce (12) || AES-256-GCM(K_pw, nonce, account key (32), aad)       61 bytes
 ```
 
 - The wrap is symmetric on purpose. Anyone holding `pk_p`, the server
@@ -48,12 +48,18 @@ wrap = 0x01 || nonce (12) || AES-256-GCM(K_pw, nonce, account key (32), aad)    
 - The page self-tests every wrap it makes: it opens the wrap again and
   compares. On every open it also checks that the key's public half is
   `users.public_key`.
-- The server checks only the length and the version byte.
-- The reference implementations are in the private console:
-  `commercial/platformwrap` (Go) and `commercial/web/platform/platformWrap.ts`
-  (TypeScript). Both check the same golden vectors
-  (`commercial/platformwrap/testdata/vectors.json`). Both move unchanged into
-  the kit's Wappie profile (v0.4.0), as platform decision 0023 records.
+- The header is `0x03` (kit SPEC section 6.8). Wappie's other 61-byte
+  envelopes of the account key start with `0x01` (the passkey envelope) and
+  `0x02` (the password and recovery wraps), so a blob in the wrong column
+  fails at its header. The header is in neither the HKDF input nor the AAD.
+- The server checks only the length and the header byte
+  (`internal/store` calls the kit's `wappie.CheckPlatformWrapShape`;
+  0048's CHECK on `platform_wraps.wrap` is the same rule).
+- The implementation is the kit's Wappie profile since v0.5.0
+  (`github.com/thehappieco/kit/profiles/wappie` in Go,
+  `@thehappieco/kit/profiles/wappie` in TypeScript), taken from the private
+  console's, as platform decision 0023 records, with its vectors under the
+  kit's `vectors/wappie/`. The console seals and opens through it.
 - This layer is deliberately not in `packages/client`, whose bytes are part
   of the attested reader's image.
 
@@ -306,8 +312,9 @@ All of it is behind the cloud build's aliases: `@signin` and `@platform`, in
 `commercial/web/vite.config.ts`. A console built without `WAPPIE_CLOUD_BUILD=1`
 contains no OpenID Connect code and none of its texts.
 
-It uses `@thehappieco/kit/oidc-rp` v0.3.0 (`begin`, `finishSignIn`,
-`keepProductKey`, `logoutURL`), in `commercial/web/platform/`:
+It uses the kit v0.5.0's `@thehappieco/kit/oidc-rp` (`begin`, `finishSignIn`,
+`keepProductKey`, `logoutURL`) and `@thehappieco/kit/profiles/wappie`
+(`sealPlatformWrap`, `openPlatformWrap`), in `commercial/web/platform/`:
 
 1. **Sign-in screen.** "Sign in with The Happie Co", and "I already have a
    Wappie account" unless local login is `off`. Sign-up, recovery and Wappie
