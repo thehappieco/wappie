@@ -643,6 +643,14 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 // ciphertext under this account's public key. The server hands them over freely
 // because it cannot open one, and an account with no grant for a device reads
 // nothing of it however the server behaves.
+//
+// A session started through the identity provider (via_provider) is never
+// handed wrapped_usk. A linked account keeps its legacy password wrap
+// through the rollback window, and such a session proved no password here:
+// whoever holds an access token for the sub could otherwise fetch the wrap
+// and attack the old password offline (docs/platform-sign-in.md, "The
+// rollback window"). A session of the same account that signed in with the
+// old password still gets it, since it proved the password.
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	session, user, ok := h.authenticate(w, r)
 	if !ok {
@@ -662,7 +670,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := meReply{User: toAccount(user), Grants: make([]grant, 0, len(grants)), ExpiresAt: session.ExpiresAt, SessionID: session.ID.String()}
+	out := meReply{User: sessionAccount(session, user), Grants: make([]grant, 0, len(grants)), ExpiresAt: session.ExpiresAt, SessionID: session.ID.String()}
 	for _, g := range grants {
 		out.Grants = append(out.Grants, grant{
 			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
@@ -727,6 +735,16 @@ func toAccount(u store.User) account {
 		HasRecovery: len(u.RecoveryWrap) > 0 && u.RecoveryUsable,
 		AuthSource:  authSource(u),
 	}
+}
+
+// sessionAccount is the account as a session sees it: without the legacy
+// password wrap when the session came through the identity provider (me).
+func sessionAccount(session store.Session, u store.User) account {
+	out := toAccount(u)
+	if session.ViaProvider {
+		out.WrappedUSK = ""
+	}
+	return out
 }
 
 func authSource(u store.User) string {

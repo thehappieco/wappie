@@ -595,9 +595,9 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 		t.Fatalf("signing in after the link: %d %+v", code, again)
 	}
 	// The sign-in's answer goes to whoever holds an access token for the
-	// sub: it never carries the legacy password wrap. /me still hands it to
-	// the session, for the password step-ups of steps 1 to 3
-	// (docs/platform-sign-in.md, "The rollback window").
+	// sub: it never carries the legacy password wrap, and neither does /me
+	// to a session that came through the provider (docs/platform-sign-in.md,
+	// "The rollback window").
 	if again.User.WrappedUSK != "" {
 		t.Fatal("the sign-in's answer carries the legacy password wrap")
 	}
@@ -606,7 +606,7 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 			WrappedUSK string `json:"wrapped_usk"`
 		} `json:"user"`
 	}
-	if code := h.get(t, "/v1/auth/me", &me, again.Token); code != http.StatusOK || me.User.WrappedUSK != h.account.WrappedUSK {
+	if code := h.get(t, "/v1/auth/me", &me, again.Token); code != http.StatusOK || me.User.WrappedUSK != "" {
 		t.Fatalf("me of a linked account in the window: %d %+v", code, me)
 	}
 	// Another id. account cannot take the same Wappie account.
