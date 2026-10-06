@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/thehappieco/kit/passkey"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -40,6 +41,13 @@ func (p Passkeys) Validate(prod bool) error {
 				return errors.New("WS_PASSKEY_RP_ID must use ASCII domain labels (punycode for IDNs)")
 			}
 		}
+	}
+	// A browser's host parser reads a host whose last label is a number
+	// ("0x7f000001", "1.2.3.0x4") as an IPv4 address, or refuses it
+	// ("id.0xff"), so no passkey can ever be made for it (kit SPEC 11.16, the
+	// WHATWG URL Standard's "ends in a number checker").
+	if passkey.EndsInANumber(p.RPID) {
+		return errors.New("WS_PASSKEY_RP_ID ends in a number, which a browser reads as an IPv4 address or refuses")
 	}
 	if suffix, _ := publicsuffix.PublicSuffix(p.RPID); suffix == p.RPID && p.RPID != "localhost" {
 		return errors.New("WS_PASSKEY_RP_ID cannot be a public suffix")
