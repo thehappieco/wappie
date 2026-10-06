@@ -498,13 +498,14 @@ type platformProof struct {
 // now, lasts stepup.Window like any sign-in's, and a sign-in whose userinfo
 // named none holds no proof until a step-up at the provider.
 func (h *Handler) platformIssue(w http.ResponseWriter, r *http.Request, user store.User, reply platformReply, proof platformProof) {
-	start := func() (string, store.Session, error) {
-		if proof.now {
-			return h.Users.StartLinkedSession(r.Context(), user, r.UserAgent())
-		}
-		return h.Users.StartPlatformSession(r.Context(), user, r.UserAgent(), proof.authTime)
+	var token string
+	var session store.Session
+	var err error
+	if proof.now {
+		token, session, err = h.Users.StartLinkedSession(r.Context(), user, r.UserAgent())
+	} else {
+		token, session, err = h.Users.StartPlatformSession(r.Context(), user, r.UserAgent(), proof.authTime)
 	}
-	token, session, err := start()
 	if err != nil {
 		h.log().Error("could not start a session", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not start a session")

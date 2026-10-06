@@ -690,8 +690,12 @@ func TestPlatformSignInProofIsTheAuthTime(t *testing.T) {
 	}
 	viaProvider := func(token string) bool {
 		t.Helper()
+		s, err := h.users.Session(ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var via bool
-		if err := h.pool.QueryRow(ctx, `SELECT via_provider FROM sessions WHERE id = $1`, h.sessionID(t, token)).Scan(&via); err != nil {
+		if err := h.pool.QueryRow(ctx, `SELECT via_provider FROM sessions WHERE id = $1`, s.ID).Scan(&via); err != nil {
 			t.Fatal(err)
 		}
 		return via
