@@ -61,10 +61,17 @@ type Handler struct {
 	Connections *store.MCPConnections
 	APIKeys     *store.APIKeys
 	Users       *store.Users
-	// Limits bounds the consent itself, per account: the sign-in budget,
-	// because a consent is a privileged act. Nil allows everything, for
-	// tests.
+	// Limits bounds the workspace's assistant switches, per account: the
+	// sign-in budget, because changing them is a privileged act. Nil allows
+	// everything, for tests.
 	Limits *ratelimit.Auth
+	// SetupLimits bounds the consent itself, a renewal and a token's
+	// bundle (ratelimit.DefaultSetups): the setups' own budget, per address
+	// and per account, apart from the sign-in one, which every workspace
+	// switch spends. The provisional service invitation each asked for first
+	// spent a bucket of its own there (ratelimit.InvitationSubject). Nil
+	// falls back to Limits.
+	SetupLimits *ratelimit.Auth
 	// DescriptorLimits bounds the public descriptor fetch, per request id.
 	// Its own budget, and a roomier one: the console reads the descriptor
 	// on every render of the consent card — first load, after sign-in,
@@ -536,7 +543,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !allow(w, r, h.Limits, user.ID.String()) {
+	if !allow(w, r, h.setupLimits(), user.ID.String()) {
 		return
 	}
 	var req createRequest
@@ -1195,6 +1202,14 @@ func (h *Handler) stepUpFresh(w http.ResponseWriter, r *http.Request, session st
 		return false
 	}
 	return true
+}
+
+// setupLimits is what a consent, a renewal and a token's bundle spend.
+func (h *Handler) setupLimits() *ratelimit.Auth {
+	if h.SetupLimits != nil {
+		return h.SetupLimits
+	}
+	return h.Limits
 }
 
 // allow applies a rate limit, answering 429 with a Retry-After when it

@@ -10255,6 +10255,32 @@ sends to **Renew all** only what that button renews and an untested client
 or a token to its own **Renew**, and ends with the notice e-mails' footer
 word for word (D10, point 5). Its texts were approved on 2026-10-05 (below).
 
+**A5's budget.** Each setup's provisional service invitation
+(`POST /v1/auth/workspaces/invites` with `provisional`) and the step that
+completes it (`POST /v1/mcp/connections`, `.../{id}/renew`,
+`/v1/mcp/token-requests/{id}/bundle`) spend `ratelimit.DefaultSetups`, one
+token each from two buckets per account (the invitation's under
+`ratelimit.InvitationSubject`, the completion's under the account ID), each
+15 refilling at 5 a minute, and 60 per address at 60 a minute. Workspace
+switches, ordinary invitations, step-ups, sign-ins and every other route
+keep `DefaultAuth` (5 per account, 20 per address), which the setups no
+longer spend: sharing it, a Renew all made right after a console reload
+renewed only some connections. 15 setups cover Renew all of the
+workspace's 10 live connections and a few AI integrations; the steady rate
+stays 5 setups a minute, so an hour admits 315 against `DefaultAuth`'s 305.
+Two buckets rather than one shared: a setup admitted at its invitation
+finds its completion's token when setups run one at a time, so a Renew all
+that waited out a refusal goes through instead of spending the token it
+waited for on the invitation and being refused at the completion, with a
+service account to undo. A refusal is 429 `rate_limited` with
+`Retry-After`, and the console's Renew all waits it out (at most 30 s,
+twice per connection) before it reports that connection failed; a stopped
+setup's clean-up waits out its own refusal the same way, since the step
+that stopped it may have emptied the budget the clean-up spends
+(`internal/ratelimit`, `internal/authapi/setup_limits_test.go`,
+`internal/mcpauth/setup_limits_test.go`; the console's
+`mcpRenewAll.spec.ts`, `mcpSetup.spec.ts`).
+
 **A6: the plugin packages** (`thehappieco/wappie-plugins`) say what 0.6.0
 gives each client, with the tested list §19.34 left: Claude Code is the
 tested local app, so no drafts or own-chat notes and text for 7 days by
