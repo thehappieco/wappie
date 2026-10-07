@@ -398,9 +398,16 @@ func noticeRecipientsTx(ctx context.Context, tx pgx.Tx, tenant, consented uuid.U
 
 // verifiedEmail is the condition that an account's address was confirmed:
 // public sign-up consumed a verification sent to it (signup.go), whose
-// completed row housekeeping keeps while the address has a login. An
-// account made by invitation has none until it confirms another way.
-const verifiedEmail = `EXISTS(SELECT 1 FROM email_signup_verifications v WHERE v.email = lower(u.email) AND v.completed_at IS NOT NULL)`
+// completed row housekeeping keeps while the address has a login; or the
+// address is the one the identity provider confirmed at the account's last
+// sign-in there (platform_identities.email: a platform sign-in takes only an
+// address userinfo says is verified, docs/platform-sign-in.md
+// "Identities"). So an account created through the provider, whose address
+// follows the provider's, has a verified one, and so does a linked account
+// whose own address is the provider's. An account made by invitation has
+// none until it confirms another way.
+const verifiedEmail = `(EXISTS(SELECT 1 FROM email_signup_verifications v WHERE v.email = lower(u.email) AND v.completed_at IS NOT NULL)
+	OR EXISTS(SELECT 1 FROM platform_identities p WHERE p.user_id = u.id AND lower(p.email) = lower(u.email)))`
 
 // EmailVerified reports whether an account's address is verified, the
 // precondition for letting an untested client or a token read text

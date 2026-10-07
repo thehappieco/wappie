@@ -34,6 +34,28 @@ func (s Sender) WorkspaceInvite(ctx context.Context, email, code, workspace stri
 	return s.send(ctx, email, model)
 }
 
+// AccountKeyChanged alerts one address (the operator's, or the account's
+// own) that a sign-in was refused as account_key_changed, in lang (a
+// locale such as "pt" or "pt-BR"; English when it has no words here).
+func (s Sender) AccountKeyChanged(ctx context.Context, email, lang string) error {
+	model, err := accountKeyChangedEmail(s.AppURL, email, lang)
+	if err != nil {
+		return err
+	}
+	return s.send(ctx, email, model)
+}
+
+// StepUpKeyChanged alerts one address (the operator's, or the account's
+// own) that a step-up at the identity provider was refused as
+// account_key_changed, in lang, as AccountKeyChanged does for a sign-in.
+func (s Sender) StepUpKeyChanged(ctx context.Context, email, lang string) error {
+	model, err := stepUpKeyChangedEmail(s.AppURL, email, lang)
+	if err != nil {
+		return err
+	}
+	return s.send(ctx, email, model)
+}
+
 func accountLink(base string, values url.Values) (string, error) {
 	u, err := config.AccountBrowserOrigin(base, false)
 	if err != nil {

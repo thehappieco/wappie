@@ -204,7 +204,11 @@ func TestMigration0041DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Plan order: 0045 comes down first, then 0044, 0043, 0042 and 0041.
+	// Plan order: 0048 (platform sign-in) comes down first, then 0047 (fewer
+	// steps), 0046, 0045, 0044, 0043, 0042 and 0041.
+	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
+		t.Fatalf("0048 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
 		t.Fatalf("0047 down-step: %v", err)
 	}

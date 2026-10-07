@@ -263,6 +263,12 @@ does not consume the invitation. `WS_INVITE_ENCRYPTION_KEY_HEX` enables recovery
 of new invitation codes; old hash-only codes must be regenerated. See the account
 guide above for endpoints, migration behavior and deployment checks.
 
+An installation may also sign people in through an external identity provider
+(`WS_PLATFORM_ISSUER`; The Happie Co's id. for the hosted cloud). It is off by
+default and changes nothing until set; the provider's key wraps the account key
+rather than replacing it, and an existing account is linked only with its own
+password. See [docs/platform-sign-in.md](docs/platform-sign-in.md).
+
 Accounts created before recovery could be redeemed hold a code the server
 cannot hand back. They see a notice on the console and generate a new one.
 
@@ -326,14 +332,19 @@ vectors, which reader 0.6.0 extended with `version_4` and which are held
 at that hash; their `vectors`, the cases the kit took JCS texts from, are
 unchanged.
 
-A kit bump moves both pins at once, which `TestKitVersionsAgree` checks:
+A kit bump in a reader release moves both pins at once:
 `go get github.com/thehappieco/kit@vX.Y.Z && go mod tidy`; in
 `packages/client`, delete the lock's `node_modules/@thehappieco/kit` entry and
 `npm install --save-exact` the new release asset (its integrity comes from the
 asset, never from a local build); `npm install` in `packages/cli`,
 `packages/mcp`, `packages/mcp-http` and `tools/reader-verify`; then
 `node packages/client/test/kit/copy.mjs`. A bump that changes the kit's
-JavaScript changes the reader's PCR0, so it ships in a reader release.
+JavaScript changes the reader's PCR0, so the client's pin moves only in a
+reader release. Between reader releases `go.mod` alone may move ahead, for
+the server (kit v0.5.0's platform wrap check and relying party rule, with
+the client still on v0.3.0); it never trails the client. `TestKitVersionsAgree`
+checks that, and that the client's manifest, its lockfile and every package
+linking it name the same asset.
 
 Regenerate a fixture deliberately, never as a way to make a test pass (and,
 for the seal and frame fixtures, in the kit as well):

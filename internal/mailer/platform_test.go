@@ -1,0 +1,189 @@
+package mailer
+
+import (
+	"bytes"
+	"net/mail"
+	"strings"
+	"testing"
+)
+
+// The account key alert names the recipient and nothing else of the
+// account, links only to the public console, and is refused for a local
+// origin like every other template.
+func TestAccountKeyChangedEmail(t *testing.T) {
+	const origin = "https://app.wappie.thehappie.co"
+	const recipient = "person.tag@example.com"
+	model, err := accountKeyChangedEmail(origin, recipient, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Link != origin || model.HomeURL != origin || model.Code != "" || model.Workspace != "" {
+		t.Fatalf("unexpected model: %+v", model)
+	}
+	text, page, err := model.render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{text, page} {
+		if !strings.Contains(body, recipient) || !strings.Contains(body, "account key") || strings.Contains(body, "localhost") {
+			t.Fatalf("alert body: %s", body)
+		}
+	}
+	data, _, _, err := message("Wappie <accounts@example.com>", recipient, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := mail.ReadMessage(bytes.NewReader(data))
+	if err != nil || msg.Header.Get("Subject") == "" || msg.Header.Get("Auto-Submitted") != "auto-generated" {
+		t.Fatalf("alert message: %v %v", err, msg)
+	}
+	for _, local := range []string{"http://localhost:5173", "https://dev.localhost", "https://127.0.0.1"} {
+		if _, err := accountKeyChangedEmail(local, recipient, "pt"); err == nil {
+			t.Fatalf("an alert linked to %s", local)
+		}
+	}
+}
+
+// The alert goes in the account's language, English when it has none or the
+// language has no words here; its advice is the callback page's, word for
+// word (C-AUTHERR-04 and E-ALERT-07, approved 2026-10-05), its Portuguese
+// button is the approved "Abrir a Wappie" (E-ALERT-06), and the template's
+// own words follow the language, with the typographic apostrophe.
+func TestAccountKeyChangedEmailLanguages(t *testing.T) {
+	const origin = "https://app.wappie.thehappie.co"
+	advice := map[string]string{
+		"en": "If you did not reset your The Happie Co account, change its password now and contact Wappie support before signing in again.",
+		"pt": "Se você não redefiniu sua conta The Happie Co, troque a senha dela agora e fale com o suporte da Wappie antes de entrar de novo.",
+		"es": "Si no restableciste tu cuenta de The Happie Co, cambia su contraseña ahora y contacta con el soporte de Wappie antes de volver a iniciar sesión.",
+		"fr": "Si vous n’avez pas réinitialisé votre compte The Happie Co, changez son mot de passe maintenant et contactez le support de Wappie avant de vous reconnecter.",
+		"de": "Wenn Sie Ihr The-Happie-Co-Konto nicht zurückgesetzt haben, ändern Sie jetzt sein Passwort und wenden Sie sich an den Wappie-Support, bevor Sie sich erneut anmelden.",
+	}
+	for lang, want := range map[string]string{"": "en", "en": "en", "pt": "pt", "pt-BR": "pt", "es": "es", "fr": "fr", "de": "de", "it": "en"} {
+		model, err := accountKeyChangedEmail(origin, "ana@example.com", lang)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.Lang != want || model.Expiry != advice[want] {
+			t.Errorf("%q: lang %q, advice %q", lang, model.Lang, model.Expiry)
+		}
+		text, page, err := model.render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(page, `<html lang="`+want+`">`) || !strings.Contains(page, model.LinkHelp) || !strings.Contains(text, model.HomeLabel+": "+origin) {
+			t.Errorf("%q: the template's own words are not in its language:\n%s", lang, text)
+		}
+		if want != "en" && (strings.Contains(page, "If the button does not work") || strings.Contains(page, ">Open Wappie<")) {
+			t.Errorf("%q: English template words in the alert", lang)
+		}
+		if want == "pt" && (model.Action != "Abrir a Wappie" || model.HomeLabel != "Abrir a Wappie") {
+			t.Errorf("%q: button %q, home %q", lang, model.Action, model.HomeLabel)
+		}
+		for _, words := range []string{model.Subject, model.Preheader, model.Eyebrow, model.Title, model.Intro, model.Action, model.Expiry,
+			model.Instructions, model.Footer, model.LinkHelp, model.HomeLabel} {
+			if strings.Contains(words, "'") {
+				t.Errorf("%q: a straight apostrophe in the alert: %q", lang, words)
+			}
+		}
+	}
+	// The other account e-mails keep the template's English words.
+	signup, err := signupEmail(origin, "ana@example.com", "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, page, err := signup.render()
+	if err != nil || !strings.Contains(page, `<html lang="en">`) || !strings.Contains(page, "If the button does not work") || !strings.Contains(page, ">Open Wappie<") {
+		t.Fatalf("the sign-up e-mail: %v", err)
+	}
+}
+
+// The step-up's alert (E-ALERT-10 to 14, approved 2026-10-06) says a
+// confirmation, not a sign-in, was refused, in the five languages, with the
+// advice of C-STEP-25 (the person is signed in already); the rest is the
+// sign-in alert's (E-ALERT-03, 06, 08 and 09) and the template's own words.
+func TestStepUpKeyChangedEmail(t *testing.T) {
+	const origin = "https://app.wappie.thehappie.co"
+	approved := map[string][5]string{
+		"en": {
+			"A confirmation in Wappie was refused",
+			"A confirmation in Wappie was refused because your account key changed.",
+			"A confirmation was refused",
+			"A confirmation in Wappie through The Happie Co was refused because it presented a different account key from the one your account has always used. Nothing was shared and no confirmation was recorded.",
+			"If you did not reset your The Happie Co account, change its password now and contact Wappie support.",
+		},
+		"pt": {
+			"Uma confirmação na Wappie foi recusada",
+			"Uma confirmação na Wappie foi recusada porque a chave da sua conta mudou.",
+			"Uma confirmação foi recusada",
+			"Uma confirmação na Wappie pela The Happie Co foi recusada porque apresentou uma chave de conta diferente da que a sua conta sempre usou. Nada foi compartilhado e nenhuma confirmação foi registrada.",
+			"Se você não redefiniu sua conta The Happie Co, troque a senha dela agora e fale com o suporte da Wappie.",
+		},
+		"es": {
+			"Se rechazó una confirmación en Wappie",
+			"Se rechazó una confirmación en Wappie porque la clave de tu cuenta cambió.",
+			"Se rechazó una confirmación",
+			"Se rechazó una confirmación en Wappie con The Happie Co porque presentó una clave de cuenta distinta de la que tu cuenta ha usado siempre. No se compartió nada y no se registró ninguna confirmación.",
+			"Si no restableciste tu cuenta de The Happie Co, cambia su contraseña ahora y contacta con el soporte de Wappie.",
+		},
+		"fr": {
+			"Une confirmation dans Wappie a été refusée",
+			"Une confirmation dans Wappie a été refusée parce que la clé de votre compte a changé.",
+			"Une confirmation a été refusée",
+			"Une confirmation dans Wappie avec The Happie Co a été refusée parce qu’elle présentait une clé de compte différente de celle que votre compte a toujours utilisée. Rien n’a été partagé et aucune confirmation n’a été enregistrée.",
+			"Si vous n’avez pas réinitialisé votre compte The Happie Co, changez son mot de passe maintenant et contactez le support de Wappie.",
+		},
+		"de": {
+			"Eine Bestätigung in Wappie wurde abgelehnt",
+			"Eine Bestätigung in Wappie wurde abgelehnt, weil sich der Schlüssel Ihres Kontos geändert hat.",
+			"Eine Bestätigung wurde abgelehnt",
+			"Eine Bestätigung in Wappie mit The Happie Co wurde abgelehnt, weil sie einen anderen Kontoschlüssel vorgelegt hat als den, den Ihr Konto immer verwendet hat. Es wurde nichts geteilt und keine Bestätigung gespeichert.",
+			"Wenn Sie Ihr The-Happie-Co-Konto nicht zurückgesetzt haben, ändern Sie jetzt sein Passwort und wenden Sie sich an den Wappie-Support.",
+		},
+	}
+	for lang, want := range map[string]string{"": "en", "en": "en", "pt": "pt", "pt-BR": "pt", "es": "es", "fr": "fr", "de": "de", "it": "en"} {
+		model, err := stepUpKeyChangedEmail(origin, "ana@example.com", lang)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signIn, err := accountKeyChangedEmail(origin, "ana@example.com", lang)
+		if err != nil {
+			t.Fatal(err)
+		}
+		words := approved[want]
+		if model.Lang != want || model.Subject != words[0] || model.Preheader != words[1] || model.Title != words[2] || model.Intro != words[3] || model.Expiry != words[4] {
+			t.Errorf("%q: %+v", lang, model)
+		}
+		if model.Eyebrow != signIn.Eyebrow || model.Action != signIn.Action || model.Instructions != signIn.Instructions || model.Footer != signIn.Footer ||
+			model.LinkHelp != signIn.LinkHelp || model.HomeLabel != signIn.HomeLabel || model.Link != origin || model.HomeURL != origin || model.Recipient != "ana@example.com" {
+			t.Errorf("%q: the shared words differ from the sign-in alert's: %+v", lang, model)
+		}
+		if model.Subject == signIn.Subject || model.Expiry == signIn.Expiry {
+			t.Errorf("%q: the step-up alert says the sign-in's words", lang)
+		}
+		text, page, err := model.render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(page, `<html lang="`+want+`">`) || !strings.Contains(text, words[3]) || !strings.Contains(page, "ana@example.com") || strings.Contains(page, "localhost") {
+			t.Errorf("%q: the rendered alert:\n%s", lang, text)
+		}
+		for _, w := range []string{model.Subject, model.Preheader, model.Title, model.Intro, model.Expiry} {
+			if strings.Contains(w, "'") {
+				t.Errorf("%q: a straight apostrophe: %q", lang, w)
+			}
+		}
+		data, _, _, err := message("Wappie <accounts@example.com>", "ana@example.com", model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg, err := mail.ReadMessage(bytes.NewReader(data))
+		if err != nil || msg.Header.Get("Subject") == "" || msg.Header.Get("Auto-Submitted") != "auto-generated" {
+			t.Fatalf("%q: the message: %v", lang, err)
+		}
+	}
+	for _, local := range []string{"http://localhost:5173", "https://dev.localhost", "https://127.0.0.1"} {
+		if _, err := stepUpKeyChangedEmail(local, "ana@example.com", "pt"); err == nil {
+			t.Fatalf("an alert linked to %s", local)
+		}
+	}
+}

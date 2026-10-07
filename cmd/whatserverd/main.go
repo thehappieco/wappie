@@ -109,6 +109,9 @@ type app struct {
 	calls    *calling.Service
 	web      *webui.Handler
 	passkeys *authapi.PasskeyProvider
+	// platform is sign-in through the identity provider, nil unless
+	// WS_PLATFORM_ISSUER is set.
+	platform *authapi.PlatformLogin
 	// limits bounds sign-in attempts, shared by the HTTP auth endpoints and
 	// the websocket hello so a script cannot alternate between the two.
 	limits *ratelimit.Auth
@@ -187,6 +190,15 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 	if err := a.users.SetLoginDecoyKey(cfg.LoginDecoyKey); err != nil {
 		closeAll()
 		return nil, nil, fmt.Errorf("login configuration: %w", err)
+	}
+	if a.platform, err = authapi.NewPlatformLogin(cfg.Platform, store.NewPlatformPins(pools.API)); err != nil {
+		closeAll()
+		return nil, nil, fmt.Errorf("platform sign-in configuration: %w", err)
+	}
+	if a.platform != nil && cfg.Signup.SMTP.Configured() {
+		sender := mailer.Sender{Config: cfg.Signup.SMTP, AppURL: cfg.Signup.AppURL}
+		a.platform.Alert = sender.AccountKeyChanged
+		a.platform.StepUpAlert = sender.StepUpKeyChanged
 	}
 
 	// The operator's switches beneath each workspace's own; read before
@@ -451,6 +463,9 @@ func serve() error {
 		// The console reads an AI key's model list from the provider, from
 		// the person's browser: only while discovery advertises AI.
 		web.AIModelLists = advertisedMCP(a.cfg.MCP).AI
+		// The console connects to the identity provider for its sign-in,
+		// and its documents keep the callback's code out of any Referer.
+		web.PlatformIssuer = a.cfg.Platform.Issuer
 		a.web = web
 		a.log.Info("serving the web client", "dir", web.Dir())
 	case errors.Is(err, webui.ErrNotBuilt):
@@ -691,8 +706,9 @@ func (a *app) probes(mux *http.ServeMux) {
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mcpServers := advertisedMCP(a.cfg.MCP)
-	mux.HandleFunc("GET /v1/discovery", discoveryFor(mcpServers))
-	mux.HandleFunc("GET /.well-known/wappie", discoveryFor(mcpServers))
+	platform := a.platform.Discovery(a.cfg.Platform.LocalLogin)
+	mux.HandleFunc("GET /v1/discovery", discoveryWith(mcpServers, platform))
+	mux.HandleFunc("GET /.well-known/wappie", discoveryWith(mcpServers, platform))
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
@@ -705,6 +721,7 @@ func (a *app) routes() http.Handler {
 		Users:         a.users, Keys: a.keys,
 		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
 		PublicSignup: a.cfg.Signup.Enabled,
+		Platform:     a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
 	}
 	if a.cfg.Signup.SMTP.Configured() {
 		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}

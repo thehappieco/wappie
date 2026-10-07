@@ -68,9 +68,16 @@ type Handler struct {
 	// lists: set only while discovery advertises AI integrations, so with
 	// the AI switch off the document connects where it always did.
 	AIModelLists bool
-	dir          string
-	files        http.Handler
-	log          *slog.Logger
+	// PlatformIssuer is the identity provider's origin while sign-in through
+	// it is on (WS_PLATFORM_ISSUER): the console document may then connect
+	// to it (the token request of the sign-in), and every document is served
+	// with Referrer-Policy strict-origin, so that the callback's ?code and
+	// ?state never ride in a Referer, not even to this origin's own assets
+	// (spec 7.10 step 8). Empty leaves both as they always were.
+	PlatformIssuer string
+	dir            string
+	files          http.Handler
+	log            *slog.Logger
 }
 
 // ErrNotBuilt says the directory holds no client.
@@ -204,6 +211,14 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 		if h.AIModelLists {
 			policy = strings.Replace(policy, "connect-src 'self';", "connect-src 'self' "+aiProviderOrigins+";", 1)
 		}
+		if issuer := platformIssuer(h.PlatformIssuer); issuer != "" {
+			// /auth/callback is served here like every page, with ?code,
+			// ?state and ?iss in its address until the page drops them.
+			// strict-origin also keeps the Origin of the consent post (it is
+			// not no-referrer), and only the bare origin ever leaves.
+			header.Set("Referrer-Policy", "strict-origin")
+			policy = strings.Replace(policy, "connect-src 'self'", "connect-src 'self' "+issuer, 1)
+		}
 		if h.ExternalServers && external != "" {
 			if p, err := browserorigin.Parse(external, false); err == nil && len(p.Origins) == 1 {
 				origin := p.Origins[0]
@@ -224,6 +239,24 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 	default:
 		header.Set("Cache-Control", "public, max-age=3600")
 	}
+}
+
+// platformIssuer returns the issuer when it is a bare https origin (or http
+// on a development host), "" otherwise, so nothing else can be spliced into
+// the policy.
+func platformIssuer(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" ||
+		u.Scheme+"://"+u.Host != raw || strings.ContainsAny(raw, " ;,'\"\t\r\n") {
+		return ""
+	}
+	if u.Scheme == "https" || u.Scheme == "http" && (u.Hostname() == "localhost" || strings.HasSuffix(u.Hostname(), ".localhost") || u.Hostname() == "127.0.0.1") {
+		return raw
+	}
+	return ""
 }
 
 // hasAsset reports whether a real file sits at that path.

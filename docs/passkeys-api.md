@@ -26,6 +26,10 @@ development may use `localhost` with an HTTP origin; production requires HTTPS.
 All ceremony and deletion requests must carry an allowed `Origin` header.
 The RP ID is a durable credential and envelope binding: changing it makes
 credentials registered under the previous RP unavailable for login.
+The RP ID is a lowercase ASCII domain name that is not a public suffix and
+does not end in a number: a last label such as `123`, `0x7f000001` or `0xff`
+is refused at startup (the kit's `passkey.EndsInANumber`), because a browser
+reads such a host as an IPv4 address or refuses it.
 
 ## HTTP contract
 

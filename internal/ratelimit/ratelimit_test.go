@@ -38,6 +38,32 @@ func TestABurstThenASteadyRate(t *testing.T) {
 	}
 }
 
+func TestAWindowOfAttempts(t *testing.T) {
+	l := NewWindow(5, 10*time.Minute) // five at once, then one every two minutes
+	now := time.Unix(1_700_000_000, 0)
+	l.now = func() time.Time { return now }
+	for i := range 5 {
+		if ok, _ := l.Allow("a"); !ok {
+			t.Fatalf("attempt %d of the window was refused", i+1)
+		}
+	}
+	ok, wait := l.Allow("a")
+	if ok || wait < 2*time.Minute || wait > 2*time.Minute+2*time.Second {
+		t.Fatalf("the sixth: %v, retry-after %v", ok, wait)
+	}
+	now = now.Add(time.Minute)
+	if ok, _ := l.Allow("a"); ok {
+		t.Fatal("a minute later there is no token back yet")
+	}
+	now = now.Add(time.Minute + time.Second)
+	if ok, _ := l.Allow("a"); !ok {
+		t.Fatal("two minutes later there should be one token back")
+	}
+	if ok, _ := l.Allow("a"); ok {
+		t.Fatal("and only one")
+	}
+}
+
 func TestQuietKeysAreForgotten(t *testing.T) {
 	l := New(60, 2)
 	now := time.Unix(1_700_000_000, 0)

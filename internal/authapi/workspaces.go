@@ -120,7 +120,9 @@ func (h *Handler) workspaceSession(w http.ResponseWriter, r *http.Request) {
 				fail(w, http.StatusInternalServerError, "internal", "could not open workspace")
 				return
 			}
-			send(w, http.StatusOK, sessionReply{Token: token, ExpiresAt: session.ExpiresAt, User: toAccount(member)})
+			// The new session came through the provider if its source did,
+			// and is answered as /me answers it.
+			send(w, http.StatusOK, sessionReply{Token: token, ExpiresAt: session.ExpiresAt, User: sessionAccount(session, member)})
 			return
 		}
 	}

@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+
+	"whatserver2/internal/authapi"
+	"whatserver2/internal/config"
 )
 
 // BuildVersion may be supplied with -ldflags; protocol compatibility is stable
@@ -48,9 +51,25 @@ type mcpEndpoints struct {
 // the address an assistant must be given: endpoints.mcp_server for the hosted
 // reader, endpoints.mcp_server_attested for the enclave. "mcp" stays the path
 // of the consent API on this server.
-func discoveryFor(mcp mcpEndpoints) http.HandlerFunc {
+func discoveryFor(mcp mcpEndpoints) http.HandlerFunc { return discoveryWith(mcp, nil) }
+
+// discoveryWith is discoveryFor and, when sign-in through an identity
+// provider is configured, platform_login: the issuer, the client and what
+// remains of password sign-in, so the console begins a sign-in without
+// hard-coding any of it. auth.password is advertised while password sign-in
+// is open at all, and auth.platform.v1 while the provider is, with
+// auth.platform.stepup.v1: the step-up at the provider
+// (/v1/auth/platform/step-up/start and /finish).
+func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery) http.HandlerFunc {
 	remoteMCP := mcp.Server != "" || mcp.Attested != ""
-	capabilities := []string{"archive.sealed.v1", "archive.rest.v1", "archive.contacts.v1", "archive.scan.v1", "apikeys.device-scope.v1", "workspaces.v1", "auth.password", "external-client.v1"}
+	capabilities := []string{"archive.sealed.v1", "archive.rest.v1", "archive.contacts.v1", "archive.scan.v1", "apikeys.device-scope.v1", "workspaces.v1"}
+	if platform == nil || platform.LocalLogin != string(config.LocalLoginOff) {
+		capabilities = append(capabilities, "auth.password")
+	}
+	if platform != nil {
+		capabilities = append(capabilities, "auth.platform.v1", "auth.platform.stepup.v1")
+	}
+	capabilities = append(capabilities, "external-client.v1")
 	endpoints := map[string]string{"websocket": "/v1/ws", "archive_rest": "/v1", "openapi": "/v1/openapi.json", "auth": "/v1/auth", "media": "/v1/media", "upload": "/v1/upload", "calls_media": "/v1/calls/media"}
 	if remoteMCP {
 		capabilities = append(capabilities, "mcp.remote.v1")
@@ -78,12 +97,13 @@ func discoveryFor(mcp mcpEndpoints) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		if err := json.NewEncoder(w).Encode(struct {
-			Product      string            `json:"product"`
-			Version      string            `json:"version"`
-			APIVersion   int               `json:"api_version"`
-			Capabilities []string          `json:"capabilities"`
-			Endpoints    map[string]string `json:"endpoints"`
-		}{"wappie", BuildVersion, 1, capabilities, endpoints}); err != nil {
+			Product       string                     `json:"product"`
+			Version       string                     `json:"version"`
+			APIVersion    int                        `json:"api_version"`
+			Capabilities  []string                   `json:"capabilities"`
+			Endpoints     map[string]string          `json:"endpoints"`
+			PlatformLogin *authapi.PlatformDiscovery `json:"platform_login,omitempty"`
+		}{"wappie", BuildVersion, 1, capabilities, endpoints, platform}); err != nil {
 			// A failed response write means the requester disconnected.
 			return
 		}

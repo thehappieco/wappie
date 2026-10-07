@@ -1399,3 +1399,55 @@ limits, and registration no longer accepts ChatGPT's redirects. The
 console's guide shows Claude and "Other assistants"; nothing promises
 ChatGPT. A vendor that passes the whole script on a later reader is listed by
 that reader's release ([§19.34](mcp-enclave.md#1934-the-tested-list-after-baseline-b-2026-10-05)).
+
+## Sign-in through an identity provider wraps the account key (2026-10-05)
+
+The hosted cloud signs in through The Happie Co's id. (docs/platform-sign-in.md);
+a self-hosted installation keeps its own login, and the Go code is inert
+until `WS_PLATFORM_ISSUER` is set.
+
+**The provider's key wraps Wappie's account key; it does not replace it**
+(owner decision D2). Every grant, the AI keychain and the personal contacts
+are sealed to the account key, and `users.public_key` still has no update
+path. The key is stored once more under a key derived from id.'s product key
+`sk_p`, as 61 bytes of AES-256-GCM bound to `users.id`, the `sub`, the
+product key id and the public key. It is symmetric because an HPKE seal to
+`pk_p` could be made by the server itself.
+
+**A pin, never an e-mail match.** The first product key seen for each
+`(sub, product_key_id)` is pinned, insert only; a later key is refused as
+`account_key_changed`, with an alert, and the pin is kept. An existing
+account is linked only with its old password or recovery code, proved to
+this server and opened in the browser (decision D1: the owner's pilot is
+kept); an address is at most a hint shown to its verified owner. New
+accounts take `users.id = sub`; a linked account keeps its id, which grant
+AADs and foreign keys bind.
+
+**One step-up, the fewer steps'.** Sign-in moved onto the fewer steps (its
+migration became 0048) and drops its own `sessions.step_up_at`: the proof is
+`sessions.authenticated_at` for every account, and every guarded write asks
+`internal/stepup`'s `Checker`. What D3 changes is how an account that signs
+in through id. earns the proof: id.'s re-authentication with `prompt=login`,
+checked from userinfo's `auth_time` against `sessions.step_up_not_before`
+(kept in 0048 for that), replacing the passkey and the password, since
+Wappie runs no WebAuthn for those accounts (platform decision 0008). Until
+step 4 builds it, such a session holds no proof and is refused by name
+wherever one is needed, rather than counting a sign-in that id. may have
+answered without asking the person anything.
+
+**D3 done: the step-up at id. (2026-10-06).** Step 4 builds it, with the
+owner's twelve decisions of that day (docs/platform-sign-in.md, "Step-ups"):
+`POST /v1/auth/platform/step-up/start` records `step_up_not_before`; the
+console opens id. in a new window (the same tab when the browser blocks it)
+with `prompt=login`; `POST /v1/auth/platform/step-up/finish` takes the
+access token to userinfo once and records the proof only for this client,
+the linked `sub`, the pinned key of its epoch (another key is
+`account_key_changed`, with the alert, and a step-up never pins) and an
+`auth_time` at most a minute before the start, within ten minutes of it.
+The proof is `authenticated_at = now()` on the database's clock, written
+with the start's clearing in one statement, so one start makes one proof.
+A sign-in through id. counts as a proof from its `auth_time` (the console
+asks for `prompt=login`), and a link from now. 0048, not yet deployed, was
+amended in place for it: `sessions.via_provider`, which also closes the
+rollback window's open door (`/v1/auth/me` no longer hands the legacy
+password wrap to a session through id.), and the ticket's `auth_time`.

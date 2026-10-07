@@ -66,18 +66,20 @@ func (h *Handler) mountPasskeys(mux *http.ServeMux) {
 			RPID    string   `json:"rp_id"`
 			Origins []string `json:"origins"`
 		}{Origins: []string{}}
-		if h.Passkeys != nil {
+		// Once WS_LOCAL_LOGIN narrows password sign-in, Wappie's own passkeys
+		// go with it: they unlock the same legacy wrap.
+		if h.Passkeys != nil && h.localAllowed(false) {
 			out.Enabled, out.RPID = true, h.Passkeys.rpID
 			out.Origins = append(out.Origins, h.Passkeys.web.Config.RPOrigins...)
 		}
 		send(w, http.StatusOK, out)
 	})
-	mux.HandleFunc("GET /v1/auth/passkeys", h.listPasskeys)
-	mux.HandleFunc("DELETE /v1/auth/passkeys/{id}", h.deletePasskey)
-	mux.HandleFunc("POST /v1/auth/passkeys/register/options", h.registerPasskeyOptions)
-	mux.HandleFunc("POST /v1/auth/passkeys/register/finish", h.registerPasskeyFinish)
-	mux.HandleFunc("POST /v1/auth/passkeys/login/options", h.loginPasskeyOptions)
-	mux.HandleFunc("POST /v1/auth/passkeys/login/finish", h.loginPasskeyFinish)
+	mux.HandleFunc("GET /v1/auth/passkeys", h.local(false, h.listPasskeys))
+	mux.HandleFunc("DELETE /v1/auth/passkeys/{id}", h.local(false, h.deletePasskey))
+	mux.HandleFunc("POST /v1/auth/passkeys/register/options", h.local(false, h.registerPasskeyOptions))
+	mux.HandleFunc("POST /v1/auth/passkeys/register/finish", h.local(false, h.registerPasskeyFinish))
+	mux.HandleFunc("POST /v1/auth/passkeys/login/options", h.local(false, h.loginPasskeyOptions))
+	mux.HandleFunc("POST /v1/auth/passkeys/login/finish", h.local(false, h.loginPasskeyFinish))
 }
 
 func (h *Handler) passkeyOrigin(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -168,6 +170,17 @@ func (h *Handler) registerPasskeyOptions(w http.ResponseWriter, r *http.Request)
 	}
 	session, user, ok := h.authenticate(w, r)
 	if !ok {
+		return
+	}
+	// An account that signs in through the identity provider keeps its
+	// passkeys there while the provider is configured: Wappie runs no
+	// WebAuthn for it (platform decision 0008), and the link revoked the ones
+	// it had. With the provider unset (a rollback), a linked account signs in
+	// with its legacy password and is a local one again, as its step-ups are
+	// (stepsUpAtProvider). A flow can only start here, so the finish needs no
+	// check of its own.
+	if h.stepsUpAtProvider(user) {
+		fail(w, http.StatusConflict, "passkeys_at_provider", "this account signs in through its identity provider and keeps its passkeys there")
 		return
 	}
 	var req struct {

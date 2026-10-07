@@ -47,9 +47,15 @@ func originURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// loopback reports whether a cleartext development origin may be at host:
+// localhost, a name under .localhost (RFC 6761 reserves it for loopback, and
+// browsers resolve it there; the identity provider's development cookies
+// need a shared *.thehappie.localhost site), or a loopback address. Only ever
+// consulted with AllowLocalHTTP, which production never sets.
 func loopback(host string) bool {
+	host = strings.ToLower(host)
 	ip := net.ParseIP(host)
-	return host == "localhost" || (ip != nil && ip.IsLoopback())
+	return host == "localhost" || (strings.HasSuffix(host, ".localhost") && len(host) > len(".localhost")) || (ip != nil && ip.IsLoopback())
 }
 
 func (p Policy) Allows(r *http.Request) bool {

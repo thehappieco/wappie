@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPasskeyConfiguration(t *testing.T) {
 	for _, tc := range []struct {
@@ -30,6 +33,28 @@ func TestPasskeyConfiguration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.cfg.Validate(tc.prod); (err == nil) != tc.valid {
 				t.Fatalf("valid=%v, error=%v", tc.valid, err)
+			}
+		})
+	}
+}
+
+// A relying party id that ends in a number is refused by the kit's
+// passkey.EndsInANumber, whatever else would let it through: a browser reads
+// it as an IPv4 address or refuses it. A number in another label, or a last
+// label that only looks like one, is a domain.
+func TestPasskeyRPIDEndsInANumber(t *testing.T) {
+	for _, rpID := range []string{"0x7f000001", "1.2.3.0x4", "id.0xff", "app.0x", "app.wappie.123"} {
+		t.Run(rpID, func(t *testing.T) {
+			err := Passkeys{rpID, []string{"https://" + rpID}}.Validate(true)
+			if err == nil || !strings.Contains(err.Error(), "ends in a number") {
+				t.Fatalf("%q: %v", rpID, err)
+			}
+		})
+	}
+	for _, rpID := range []string{"app.wappie.thehappie.co", "0x7f.example.com", "id.0x1g", "id.00x1"} {
+		t.Run(rpID, func(t *testing.T) {
+			if err := (Passkeys{rpID, []string{"https://" + rpID}}).Validate(true); err != nil {
+				t.Fatalf("%q: %v", rpID, err)
 			}
 		})
 	}

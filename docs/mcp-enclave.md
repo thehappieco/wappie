@@ -8731,7 +8731,9 @@ sessions, it has no row-level security: it is looked up by the hash of a
   - **Notice precondition** (D7): an unknown-tier or token connection with
     text is refused (403 `email_unverified`) unless SMTP is configured
     (`config.SMTP.Configured()`) and the consenting user has a verified
-    e-mail address.
+    e-mail address. (2026-10-06, step 4 of the platform sign-in: an address
+    the identity provider confirmed, the account's link row's, counts as
+    verified too; `docs/platform-sign-in.md`, "Identities".)
   - The caps: 10 live, of which at most 3 unknown or token (409
     `too_many_connections`, as today, and `too_many_unknown`).
   - Go cannot verify the attestation; these checks catch drift, and the
@@ -10184,7 +10186,23 @@ workspace and public key, every requested device's grant found and opened or
 the whole set refused (never a device skipped as sign-in skips one), each key
 overwritten once used. A session without an account key of its own falls
 back to the password, which then also seals. When sign-in moves to
-id.thehappie.co (D3), its `prompt=login` replaces what is behind `Checker`.
+id.thehappie.co (D3), its `prompt=login` replaces what is behind `Checker`
+for the accounts that sign in there (`users.auth_source` `platform`): their
+passkey and password step-ups answer `409 step_up_at_provider`, `GET
+/v1/auth/step-up` says `provider`, and a session started through the
+provider holds no proof until step 4 takes id.'s re-authentication
+(platform-sign-in.md, "Step-ups").
+
+*Note (2026-10-06, step 4 of the sign-in plan).* Step 4 is built: such a
+session earns its proof at id., behind the same `Checker`. Its sign-in
+counts from userinfo's `auth_time` (never the session's creation), and
+`POST /v1/auth/platform/step-up/start` and `/finish` take id.'s
+re-authentication with `prompt=login` into `sessions.authenticated_at`, on
+the database's clock, one start for one proof; `step_up_at_provider` now
+names the start route, and `step_up_required`'s message names the identity
+provider. Nothing in `packages/*` changed. The owner's Decision 5 of that
+step (2026-10-06) moves the console's member grant from the password to the
+same step-up field and the session's account key, as the cards already do.
 
 **A2: a switch per workspace (M4).** `WS_MCP_CONTENT_TENANTS`,
 `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and `WS_AI_TENANTS` are retired:
@@ -10241,8 +10259,10 @@ options gone (A3) the person still ticks text and confirms it is them.
 text off and on again, the console shows a banner and **Renew all**: one
 confirmation (A1), then each waiting tested connection through its own
 renewal, one at a time, the round stopping at the first one refused for a
-lapsed confirmation; untested ones and tokens keep their own Renew, and a
-banner over only those offers **Renew**. With SMTP configured each person
+lapsed confirmation: the card then asks for the confirmation again, and its
+**Renew all** goes on with the connections not renewed yet. Untested ones
+and tokens keep their own Renew, and a banner over only those offers
+**Renew**. With SMTP configured each person
 gets one e-mail per workspace a few minutes after a reseal settles, at most
 one per twelve hours (`mcp_connections.reseal_mailed_at`), with no link. It
 names each connection by a name no client chose for itself, as the

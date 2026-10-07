@@ -67,6 +67,10 @@ func TestMigration0045DownStep(t *testing.T) {
 		t.Fatalf("the result was not counted: %d, before %d %v", with.ArchiveBytes, before.ArchiveBytes, err)
 	}
 
+	// 0048 (platform sign-in) comes down first, then 0047 (fewer steps).
+	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
+		t.Fatalf("0048 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
 		t.Fatalf("0047 down-step: %v", err)
 	}

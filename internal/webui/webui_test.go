@@ -466,3 +466,49 @@ func TestWellKnownPathsAreNotPages(t *testing.T) {
 		}
 	}
 }
+
+// Sign-in through the identity provider changes the document's headers only
+// while it is on: the issuer may be connected to (the sign-in's token
+// request), and /auth/callback, served as any page, carries strict-origin,
+// so its ?code never rides in a Referer, even to this origin's own assets.
+func TestPlatformSignInHeadersOnlyWhileItIsOn(t *testing.T) {
+	const issuer = "https://id.thehappie.co"
+	for _, tc := range []struct {
+		issuer, connect, referrer string
+	}{
+		{"", "'self'", "strict-origin-when-cross-origin"},
+		{issuer, "'self' " + issuer, "strict-origin"},
+		{"http://id.thehappie.localhost:8290", "'self' http://id.thehappie.localhost:8290", "strict-origin"},
+		// Anything but a bare origin is never spliced into the policy.
+		{"https://id.thehappie.co; script-src *", "'self'", "strict-origin-when-cross-origin"},
+		{"http://id.example.com", "'self'", "strict-origin-when-cross-origin"},
+	} {
+		h, err := webui.New(build(t), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.PlatformIssuer = tc.issuer
+		for _, target := range []string{"/auth/callback?code=thid_c_secret&state=s&iss=" + url.QueryEscape(issuer), "/", "/console"} {
+			resp := get(t, h, target)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("%q %s: %d", tc.issuer, target, resp.StatusCode)
+			}
+			csp := resp.Header.Get("Content-Security-Policy")
+			if got := directive(csp, "connect-src"); got != tc.connect {
+				t.Errorf("%q %s: connect-src %q, want %q", tc.issuer, target, got, tc.connect)
+			}
+			if directive(csp, "script-src") != "'self'" {
+				t.Errorf("%q %s: script-src changed: %s", tc.issuer, target, csp)
+			}
+			if got := resp.Header.Get("Referrer-Policy"); got != tc.referrer {
+				t.Errorf("%q %s: Referrer-Policy %q, want %q", tc.issuer, target, got, tc.referrer)
+			}
+		}
+		asset := get(t, h, "/assets/index-abc123.js")
+		asset.Body.Close()
+		if asset.Header.Get("Referrer-Policy") != "no-referrer" || strings.Contains(asset.Header.Get("Content-Security-Policy"), "id.thehappie") {
+			t.Errorf("%q: an asset's headers changed", tc.issuer)
+		}
+	}
+}

@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"whatserver2/internal/config"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -61,17 +62,24 @@ type Handler struct {
 	// StepUp is what a content consent's service invitation asks before it
 	// is issued (internal/stepup); nil is the session store's own record.
 	StepUp stepup.Checker
+	// Platform is sign-in through an external identity provider; nil is off
+	// (platform.go).
+	Platform *PlatformLogin
+	// LocalLogin narrows the password routes once the provider is on: ""
+	// and "on" keep them all.
+	LocalLogin config.LocalLogin
 }
 
 // Mount registers the routes on a mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	h.mountPasskeys(mux)
 	h.mountStepUp(mux)
+	h.mountPlatform(mux)
 	mux.HandleFunc("GET /v1/auth/workspaces/storage", h.storageUsage)
 	mux.HandleFunc("GET /v1/auth/workspaces/storage/{action}", h.storageUsage)
 	mux.HandleFunc("POST /v1/auth/workspaces/storage/{action}", h.storageUsage)
 	mux.HandleFunc("GET /v1/auth/signup/config", h.signupConfig)
-	mux.HandleFunc("POST /v1/auth/signup/verification", h.signupVerification)
+	mux.HandleFunc("POST /v1/auth/signup/verification", h.local(false, h.signupVerification))
 	mux.HandleFunc("GET /v1/auth/profile", h.profile)
 	mux.HandleFunc("PUT /v1/auth/profile", h.profile)
 	mux.HandleFunc("POST /v1/auth/workspaces", h.createWorkspace)
@@ -79,9 +87,14 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/auth/workspaces/invites/{inviteID}", h.invitationAction)
 	mux.HandleFunc("POST /v1/auth/workspaces/invites/{inviteID}/reveal", h.invitationAction)
 	mux.HandleFunc("POST /v1/auth/workspaces/invites/{inviteID}/regenerate", h.invitationAction)
-	mux.HandleFunc("POST /v1/auth/challenge", h.challenge)
+	// The password routes answer local_login_disabled once WS_LOCAL_LOGIN
+	// narrows them; only the challenge stays with link_only, for the link
+	// ceremony's salt (the ceremony proves a recovery code at
+	// /platform/link/prepare, behind its ticket, never at /recover/open). A
+	// service's registration (signup with a name) stays in every mode.
+	mux.HandleFunc("POST /v1/auth/challenge", h.local(true, h.challenge))
 	mux.HandleFunc("POST /v1/auth/signup", h.signup)
-	mux.HandleFunc("POST /v1/auth/login", h.login)
+	mux.HandleFunc("POST /v1/auth/login", h.local(false, h.login))
 	mux.HandleFunc("POST /v1/auth/logout", h.logout)
 	mux.HandleFunc("GET /v1/auth/me", h.me)
 	mux.HandleFunc("GET /v1/auth/workspaces", h.workspaces)
@@ -97,13 +110,13 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/workspaces/session", h.workspaceSession)
 	// The way back from a forgotten password, in two steps that share one
 	// proof: open returns the wrap, finish replaces everything.
-	mux.HandleFunc("POST /v1/auth/recover/open", h.recoverOpen)
-	mux.HandleFunc("POST /v1/auth/recover/finish", h.recoverFinish)
+	mux.HandleFunc("POST /v1/auth/recover/open", h.local(false, h.recoverOpen))
+	mux.HandleFunc("POST /v1/auth/recover/finish", h.local(false, h.recoverFinish))
 	// For somebody signed in: a new password, or a new recovery code.
-	mux.HandleFunc("POST /v1/auth/password", h.password)
-	mux.HandleFunc("POST /v1/auth/recovery", h.recovery)
+	mux.HandleFunc("POST /v1/auth/password", h.local(false, h.password))
+	mux.HandleFunc("POST /v1/auth/recovery", h.local(false, h.recovery))
 	// The same key under the same password in a newer wrap format.
-	mux.HandleFunc("POST /v1/auth/rewrap", h.rewrap)
+	mux.HandleFunc("POST /v1/auth/rewrap", h.local(false, h.rewrap))
 }
 
 func (h *Handler) log() *slog.Logger {
@@ -238,6 +251,9 @@ type account struct {
 	WrappedUSK  string `json:"wrapped_usk"`
 	PublicKey   string `json:"public_key"`
 	HasRecovery bool   `json:"has_recovery"`
+	// AuthSource is "local" or "platform": an account that signs in through
+	// the identity provider, which has no password to change here.
+	AuthSource string `json:"auth_source"`
 }
 
 // grant is one device this account may open.
@@ -304,6 +320,10 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		// A service: no password material. Its invitation role is checked
 		// before registration and consumed only after the account is inserted.
 		h.signupService(w, r, req, pub)
+		return
+	}
+	if !h.localAllowed(false) {
+		localLoginRefused(w)
 		return
 	}
 	salt, ok1 := unb64(w, req.KDFSalt, "kdf_salt")
@@ -630,6 +650,14 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 // ciphertext under this account's public key. The server hands them over freely
 // because it cannot open one, and an account with no grant for a device reads
 // nothing of it however the server behaves.
+//
+// A session started through the identity provider (via_provider) is never
+// handed wrapped_usk. A linked account keeps its legacy password wrap
+// through the rollback window, and such a session proved no password here:
+// whoever holds an access token for the sub could otherwise fetch the wrap
+// and attack the old password offline (docs/platform-sign-in.md, "The
+// rollback window"). A session of the same account that signed in with the
+// old password still gets it, since it proved the password.
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	session, user, ok := h.authenticate(w, r)
 	if !ok {
@@ -649,7 +677,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := meReply{User: toAccount(user), Grants: make([]grant, 0, len(grants)), ExpiresAt: session.ExpiresAt, SessionID: session.ID.String()}
+	out := meReply{User: sessionAccount(session, user), Grants: make([]grant, 0, len(grants)), ExpiresAt: session.ExpiresAt, SessionID: session.ID.String()}
 	for _, g := range grants {
 		out.Grants = append(out.Grants, grant{
 			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
@@ -701,10 +729,15 @@ func limit(w http.ResponseWriter, r *http.Request, limits *ratelimit.Auth, subje
 	if ok {
 		return true
 	}
+	rateLimited(w, wait)
+	return false
+}
+
+// rateLimited answers a request a limit refused, with a Retry-After.
+func rateLimited(w http.ResponseWriter, wait time.Duration) {
 	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())))
 	fail(w, http.StatusTooManyRequests, "rate_limited",
 		"too many attempts; try again in "+wait.String())
-	return false
 }
 
 // BearerToken pulls a token out of the Authorization header.
@@ -722,7 +755,25 @@ func toAccount(u store.User) account {
 		ID: u.ID.String(), TenantID: u.TenantID.String(), Email: store.ServiceName(u), Name: u.Name, Avatar: u.Avatar, Role: u.Role,
 		WrappedUSK: b64(u.WrappedUSK), PublicKey: b64(u.PublicKey),
 		HasRecovery: len(u.RecoveryWrap) > 0 && u.RecoveryUsable,
+		AuthSource:  authSource(u),
 	}
+}
+
+// sessionAccount is the account as a session sees it: without the legacy
+// password wrap when the session came through the identity provider (me).
+func sessionAccount(session store.Session, u store.User) account {
+	out := toAccount(u)
+	if session.ViaProvider {
+		out.WrappedUSK = ""
+	}
+	return out
+}
+
+func authSource(u store.User) string {
+	if u.AuthSource == "" {
+		return store.LocalAuthSource
+	}
+	return u.AuthSource
 }
 
 // ---------------------------------------------------------------------------
