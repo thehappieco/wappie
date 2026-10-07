@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"net/http"
 	"net/netip"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -78,5 +79,107 @@ func TestClientIPTrustsOnlyNamedProxies(t *testing.T) {
 		if got := ClientIP(c.r, c.trusted); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// clock sets one fake clock on every limiter of a, so a test controls the
+// time each bucket refills by.
+func clock(a *Auth, now *time.Time) {
+	for _, l := range []*Limiter{a.PerIP, a.PerSubject} {
+		l.now = func() time.Time { return *now }
+	}
+}
+
+// A Renew all right after a console reload: the reload's workspace switches
+// and the step-up spend the sign-in budget, and each renewal's provisional
+// service invitation and its completion spend the setups' own, per account
+// and per address; the service's sign-up between them stays on the sign-in
+// budget's address limit. Ten renewals and a few AI integrations at the same
+// instant all go through, the setups' budget refuses past its thirty, and the
+// sign-in budget is what it was.
+func TestRenewAllOfTenAfterWorkspaceSwitches(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	auth, setups := DefaultAuth(nil), DefaultSetups(nil)
+	clock(auth, &now)
+	clock(setups, &now)
+	r := &http.Request{RemoteAddr: "203.0.113.7:4242"}
+	const email, account = "owner@example.test", "018f3a2b-2222-7000-8000-00000000aaaa"
+
+	// Four switches and a step-up: the account's sign-in budget is gone.
+	for i := range 5 {
+		if ok, _ := auth.Allow(r, email); !ok {
+			t.Fatalf("switch or step-up %d was refused", i+1)
+		}
+	}
+	if ok, wait := auth.Allow(r, email); ok || wait <= 0 {
+		t.Fatalf("a sixth sign-in-budget request = %v, %v; want refused with a wait", ok, wait)
+	}
+
+	// Ten renewals, then four AI integrations: an invitation, the service's
+	// sign-up (address only) and the completion each.
+	for i := range 14 {
+		if ok, _ := setups.Allow(r, account); !ok {
+			t.Fatalf("setup %d: the invitation was refused", i+1)
+		}
+		if ok, _ := auth.Allow(r, ""); !ok {
+			t.Fatalf("setup %d: the service's sign-up was refused", i+1)
+		}
+		if ok, _ := setups.Allow(r, account); !ok {
+			t.Fatalf("setup %d: the completion was refused", i+1)
+		}
+	}
+	// Two left of thirty, then a refusal that says when to come back.
+	for range 2 {
+		if ok, _ := setups.Allow(r, account); !ok {
+			t.Fatal("the budget refused before its thirty")
+		}
+	}
+	ok, wait := setups.Allow(r, account)
+	if ok {
+		t.Fatal("a thirty-first setup request in the same instant was allowed")
+	}
+	if wait < 12*time.Second || wait > 14*time.Second {
+		t.Fatalf("retry-after = %v, want the twelve seconds a token takes at five a minute", wait)
+	}
+	// Another account has its own thirty.
+	if ok, _ := setups.Allow(r, "018f3a2b-2222-7000-8000-00000000bbbb"); !ok {
+		t.Fatal("another account was refused because of the first")
+	}
+
+	// The sign-in budget is unchanged: still spent for the account, five a
+	// minute, and twenty per address of which the switches, the refusal and
+	// the sign-ups took twenty.
+	if ok, _ := auth.Allow(r, ""); ok {
+		t.Fatal("the address limit of the sign-in budget grew")
+	}
+	now = now.Add(12 * time.Second)
+	if ok, _ := auth.Allow(&http.Request{RemoteAddr: "198.51.100.2:1"}, email); !ok {
+		t.Fatal("twelve seconds on, the sign-in budget has no token back")
+	}
+	if ok, _ := auth.Allow(&http.Request{RemoteAddr: "198.51.100.3:1"}, email); ok {
+		t.Fatal("and should have only one")
+	}
+	if ok, _ := setups.Allow(r, account); !ok {
+		t.Fatal("twelve seconds on, the setups' budget has no token back")
+	}
+}
+
+// The setups' address limit is their own and roomier than the sign-in one,
+// but it still bounds an address that spreads setups across accounts.
+func TestSetupsAreBoundedPerAddress(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	setups := DefaultSetups(nil)
+	clock(setups, &now)
+	r := &http.Request{RemoteAddr: "203.0.113.7:4242"}
+	for i := range 60 {
+		if ok, _ := setups.Allow(r, "account-"+strconv.Itoa(i)); !ok {
+			t.Fatalf("setup %d from one address was refused", i+1)
+		}
+	}
+	if ok, wait := setups.Allow(r, "account-61"); ok || wait <= 0 {
+		t.Fatalf("the sixty-first from one address = %v, %v; want refused with a wait", ok, wait)
+	}
+	if ok, _ := setups.Allow(&http.Request{RemoteAddr: "198.51.100.2:1"}, "account-61"); !ok {
+		t.Fatal("another address was refused because of the first")
 	}
 }

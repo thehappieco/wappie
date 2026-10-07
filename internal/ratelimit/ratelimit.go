@@ -162,6 +162,30 @@ func DefaultAuth(proxies []netip.Prefix) *Auth {
 	}
 }
 
+// DefaultSetups is the production budget of the assistant setups run from
+// the console. A consent, a renewal, an AI integration and a token each ask
+// for a provisional service invitation and then complete, and both requests
+// spend a token here instead of DefaultAuth's, which every workspace switch,
+// step-up and sign-in spends too. Sharing that, a Renew all made right after
+// a console reload renewed only some connections (five a minute per
+// account), and ten renewals at three requests each could empty an
+// address's twenty, refusing even the clean-up of the renewal it stopped.
+//
+// Thirty per account is Renew all of a workspace's ten live connections (two
+// each) and a few AI integrations in one go. The steady rate stays five a
+// minute, so an hour admits about as many as the sign-in budget did (330
+// tokens against 305). Per address, twice the account's, for two people
+// renewing behind one NAT, at the sign-in budget's rate: these requests are
+// signed in, and those with text after a step-up, so none is a guess. The
+// service's own sign-up between them stays on DefaultAuth.
+func DefaultSetups(proxies []netip.Prefix) *Auth {
+	return &Auth{
+		PerIP:      New(60, 60),
+		PerSubject: New(5, 30),
+		Proxies:    proxies,
+	}
+}
+
 // Allow spends a token for the request's address and, when subject is not
 // empty, for the subject too. Both must have one.
 func (a *Auth) Allow(r *http.Request, subject string) (ok bool, retryAfter time.Duration) {

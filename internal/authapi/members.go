@@ -106,7 +106,16 @@ func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 		// consent unless a connection takes it.
 		Provisional bool `json:"provisional"`
 	}
-	if !decode(w, r, &req) || !h.allow(w, r, user.Email) {
+	if !decode(w, r, &req) {
+		return
+	}
+	// A provisional invitation is a step of an assistant setup, and spends
+	// the setups' budget rather than the one workspace switches spend.
+	if req.Provisional {
+		if !h.allowSetup(w, r, user) {
+			return
+		}
+	} else if !h.allow(w, r, user.Email) {
 		return
 	}
 	if req.Provisional && (req.Role != store.RoleService || req.Email != "") {

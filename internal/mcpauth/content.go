@@ -310,7 +310,7 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !allow(w, r, h.Limits, user.ID.String()) {
+	if !allow(w, r, h.setupLimits(), user.ID.String()) {
 		return
 	}
 	// A renewal hands the archive to the reader again, under the same

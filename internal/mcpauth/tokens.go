@@ -248,7 +248,7 @@ func (h *Handler) tokenBundle(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !allow(w, r, h.Limits, user.ID.String()) {
+	if !allow(w, r, h.setupLimits(), user.ID.String()) {
 		return
 	}
 	id := r.PathValue("id")
