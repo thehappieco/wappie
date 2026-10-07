@@ -13,11 +13,12 @@ import (
 )
 
 // The connector's steps of an assistant setup (the consent, a renewal, a
-// token's bundle) spend the setups' budget, per account and shared with the
-// provisional service invitation each asked for first, and not the sign-in
-// budget, which a console reload's workspace switches and step-up spend. A
-// Renew all of ten and a few AI integrations go through after it is gone;
-// past the setups' thirty, 429 with a Retry-After.
+// token's bundle) spend the setups' budget, per account, and not the sign-in
+// budget, which a console reload's workspace switches and step-up spend. The
+// provisional service invitation each asked for first spent the account's
+// other bucket there, so it never takes a completion's token. A Renew all of
+// ten and a few AI integrations go through after the sign-in budget is gone;
+// past the setups' fifteen, 429 with a Retry-After.
 func TestSetupsSpendTheirOwnBudget(t *testing.T) {
 	h := newHarness(t)
 	limits, setups := ratelimit.DefaultAuth(nil), ratelimit.DefaultSetups(nil)
@@ -60,7 +61,7 @@ func TestSetupsSpendTheirOwnBudget(t *testing.T) {
 	invitation := func() {
 		t.Helper()
 		// What the provisional invitation spent at /v1/auth (internal/authapi).
-		if ok, _ := setups.Allow(local, account); !ok {
+		if ok, _ := setups.Allow(local, ratelimit.InvitationSubject(account)); !ok {
 			t.Fatal("a provisional invitation was refused")
 		}
 	}
@@ -75,7 +76,8 @@ func TestSetupsSpendTheirOwnBudget(t *testing.T) {
 	invitation()
 	step("token")
 
-	// Thirty spent: the next step is refused, and says when to retry.
+	// Fifteen spent, and fifteen invitations beside them: the next step is
+	// refused, and says when to retry.
 	req, err := http.NewRequest(http.MethodPost, h.srv.URL+steps["renewal"], nil)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +89,7 @@ func TestSetupsSpendTheirOwnBudget(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
-		t.Fatalf("a thirty-first setup step: status %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
+		t.Fatalf("a sixteenth setup step: status %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
 	// The sign-in budget is still spent: the steps neither used nor refilled it.
 	if ok, _ := limits.Allow(local, account); ok {

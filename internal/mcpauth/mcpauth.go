@@ -66,10 +66,11 @@ type Handler struct {
 	// everything, for tests.
 	Limits *ratelimit.Auth
 	// SetupLimits bounds the consent itself, a renewal and a token's
-	// bundle (ratelimit.DefaultSetups): the setups' own budget, per account
-	// and per address, shared with the provisional service invitation each
-	// asked for first, and apart from the sign-in one, which every
-	// workspace switch spends. Nil falls back to Limits.
+	// bundle (ratelimit.DefaultSetups): the setups' own budget, per address
+	// and per account, apart from the sign-in one, which every workspace
+	// switch spends. The provisional service invitation each asked for first
+	// spent a bucket of its own there (ratelimit.InvitationSubject). Nil
+	// falls back to Limits.
 	SetupLimits *ratelimit.Auth
 	// DescriptorLimits bounds the public descriptor fetch, per request id.
 	// Its own budget, and a roomier one: the console reads the descriptor

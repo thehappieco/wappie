@@ -165,26 +165,39 @@ func DefaultAuth(proxies []netip.Prefix) *Auth {
 // DefaultSetups is the production budget of the assistant setups run from
 // the console. A consent, a renewal, an AI integration and a token each ask
 // for a provisional service invitation and then complete, and both requests
-// spend a token here instead of DefaultAuth's, which every workspace switch,
+// spend this budget instead of DefaultAuth's, which every workspace switch,
 // step-up and sign-in spends too. Sharing that, a Renew all made right after
 // a console reload renewed only some connections (five a minute per
 // account), and ten renewals at three requests each could empty an
 // address's twenty, refusing even the clean-up of the renewal it stopped.
 //
-// Thirty per account is Renew all of a workspace's ten live connections (two
-// each) and a few AI integrations in one go. The steady rate stays five a
-// minute, so an hour admits about as many as the sign-in budget did (330
-// tokens against 305). Per address, twice the account's, for two people
-// renewing behind one NAT, at the sign-in budget's rate: these requests are
-// signed in, and those with text after a step-up, so none is a guess. The
-// service's own sign-up between them stays on DefaultAuth.
+// Per account the invitation spends a bucket of its own (InvitationSubject)
+// and the completion the account ID's, as DefaultAuth's email and account
+// keys kept them apart before: a setup takes one token of each. So a setup
+// admitted at its invitation finds its completion's token too, when the
+// setups run one at a time as Renew all runs them, and one refused and
+// tried again after its Retry-After goes through; on one shared bucket a
+// retry would spend the token it waited for on the invitation and be refused
+// at the completion. Fifteen each is Renew all of a workspace's ten live
+// connections and a few AI integrations in one go. Five a minute each is the
+// sign-in budget's rate, so the steady rate stays five setups a minute and
+// an hour admits 315 setups against its 305. Per address, sixty: two people's
+// fifteen setups at two requests each behind one NAT, at the sign-in
+// budget's rate; these requests are signed in, and those with text after a
+// step-up, so none is a guess. The service's own sign-up between them stays
+// on DefaultAuth.
 func DefaultSetups(proxies []netip.Prefix) *Auth {
 	return &Auth{
 		PerIP:      New(60, 60),
-		PerSubject: New(5, 30),
+		PerSubject: New(5, 15),
 		Proxies:    proxies,
 	}
 }
+
+// InvitationSubject is the subject an assistant setup's provisional service
+// invitation spends DefaultSetups under, for the account with this ID: apart
+// from the account ID itself, which the step that completes it spends.
+func InvitationSubject(accountID string) string { return "invitation:" + accountID }
 
 // Allow spends a token for the request's address and, when subject is not
 // empty, for the subject too. Both must have one.

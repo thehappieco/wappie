@@ -50,10 +50,11 @@ type Handler struct {
 	// Nil allows everything, for tests.
 	Limits *ratelimit.Auth
 	// SetupLimits is what an assistant setup's provisional service
-	// invitation spends instead (ratelimit.DefaultSetups): its own budget,
-	// per account and per address, shared with the consent, renewal or
-	// token it leads to, so the workspace switches of a console reload
-	// cannot refuse a Renew all. Nil falls back to Limits.
+	// invitation spends instead (ratelimit.DefaultSetups): the setups' own
+	// budget, per address and, per account, a bucket apart from the one the
+	// consent, renewal or token it leads to spends, so the workspace switches
+	// of a console reload cannot refuse a Renew all. Nil falls back to
+	// Limits.
 	SetupLimits *ratelimit.Auth
 	Log         *slog.Logger
 	Passkeys    *PasskeyProvider
@@ -685,13 +686,14 @@ func (h *Handler) allow(w http.ResponseWriter, r *http.Request, subject string) 
 }
 
 // allowSetup is allow for an assistant setup's provisional invitation: on
-// SetupLimits, keyed by the account's ID as the connector's routes key the
-// step that completes it, so both share one budget.
+// SetupLimits, under the account's invitation subject, so the step that
+// completes it at the connector (keyed by the account's ID) has a bucket of
+// its own and a setup takes one token of each.
 func (h *Handler) allowSetup(w http.ResponseWriter, r *http.Request, user store.User) bool {
 	if h.SetupLimits == nil {
 		return h.allow(w, r, user.Email)
 	}
-	return limit(w, r, h.SetupLimits, user.ID.String())
+	return limit(w, r, h.SetupLimits, ratelimit.InvitationSubject(user.ID.String()))
 }
 
 func limit(w http.ResponseWriter, r *http.Request, limits *ratelimit.Auth, subject string) bool {

@@ -15,7 +15,8 @@ import (
 // A Renew all right after a console reload: the reload's workspace switches
 // spend the account's sign-in budget, and each renewal's provisional service
 // invitation spends the setups' own (ratelimit.DefaultSetups), which the
-// switches never touch. The production budgets, over HTTP.
+// switches never touch, while an ordinary invitation, which may send an
+// e-mail, stays on the sign-in budget. The production budgets, over HTTP.
 func TestProvisionalInvitationsHaveTheirOwnBudget(t *testing.T) {
 	h := newHarness(t)
 	body, _ := newAccount(t, h.invite(t, "owner"), "renews@example.com", "auth")
@@ -50,20 +51,24 @@ func TestProvisionalInvitationsHaveTheirOwnBudget(t *testing.T) {
 	}
 	refused("a sixth switch", "/v1/auth/workspaces/session", switchTo)
 
-	// Thirty provisional invitations go through: the setups' whole budget,
-	// which in production also pays each setup's completion at the
-	// connector (internal/mcpauth), so Renew all of ten spends twenty.
+	// Ordinary invitations still spend the sign-in budget, which the
+	// switches emptied, while the setups' is still whole: refused, an
+	// e-mail invitation as much as a service's, and neither spends a setup.
+	refused("an e-mail invitation", "/v1/auth/workspaces/invites", map[string]any{"role": "member", "email": "colleague@example.com"})
+	refused("an ordinary service invitation", "/v1/auth/workspaces/invites", map[string]any{"role": "service", "email": ""})
+
+	// Fifteen provisional invitations go through: the setups' whole
+	// invitation bucket, Renew all of ten and a few AI integrations. In
+	// production each setup's completion at the connector (internal/mcpauth)
+	// spends a bucket of its own.
 	provisional := map[string]any{"role": "service", "email": "", "provisional": true}
-	for i := range 30 {
+	for i := range 15 {
 		if code := limited.post(t, "/v1/auth/workspaces/invites", provisional, nil, signed.Token); code != http.StatusCreated {
 			t.Fatalf("provisional invitation %d returned %d", i+1, code)
 		}
 	}
-	// The thirty-first is past the setups' budget.
-	refused("a thirty-first provisional invitation", "/v1/auth/workspaces/invites", provisional)
-	// An ordinary invitation still spends the sign-in budget, which the
-	// switches emptied: nothing else moved to the setups' one.
-	refused("an ordinary invitation", "/v1/auth/workspaces/invites", map[string]any{"role": "service", "email": ""})
+	// The sixteenth is past the setups' budget.
+	refused("a sixteenth provisional invitation", "/v1/auth/workspaces/invites", provisional)
 }
 
 // postFor posts as post does and answers the status and the Retry-After.
