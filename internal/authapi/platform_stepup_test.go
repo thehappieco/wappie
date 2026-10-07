@@ -728,8 +728,9 @@ func TestPlatformStepUpRequestRules(t *testing.T) {
 }
 
 // An account starts at most five step-ups in ten minutes, across its
-// sessions; the finish spends the address and account limits before
-// anything goes to the provider.
+// sessions; the start spends the address limit too, and the finish the
+// address and account limits before anything goes to the provider, all on
+// the sign-in limits (Limits), never the setups' (SetupLimits).
 func TestPlatformStepUpRateLimits(t *testing.T) {
 	h := newPlatformHarness(t, config.LocalLoginOn)
 	p, signed := h.providerAccount(t, "ada@example.com")
@@ -765,6 +766,17 @@ func TestPlatformStepUpRateLimits(t *testing.T) {
 	}
 	if h.id.requests.Load() != before {
 		t.Fatal("a rate-limited finish went to userinfo")
+	}
+
+	// The start's address limit: a second start from this address is
+	// refused although the account's window has room.
+	_, cy := h.providerAccount(t, "cy@example.com")
+	h.handler.Limits = &ratelimit.Auth{PerIP: ratelimit.New(1, 1), PerSubject: ratelimit.New(60, 100)}
+	if code, out := h.start(t, cy.Token); code != http.StatusOK {
+		t.Fatalf("a start within the address limit: %d %+v", code, out)
+	}
+	if code, out := h.start(t, cy.Token); code != http.StatusTooManyRequests || out.Code != "rate_limited" {
+		t.Fatalf("a start past the address limit: %d %+v", code, out)
 	}
 }
 

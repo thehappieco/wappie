@@ -10259,8 +10259,10 @@ options gone (A3) the person still ticks text and confirms it is them.
 text off and on again, the console shows a banner and **Renew all**: one
 confirmation (A1), then each waiting tested connection through its own
 renewal, one at a time, the round stopping at the first one refused for a
-lapsed confirmation; untested ones and tokens keep their own Renew, and a
-banner over only those offers **Renew**. With SMTP configured each person
+lapsed confirmation: the card then asks for the confirmation again, and its
+**Renew all** goes on with the connections not renewed yet. Untested ones
+and tokens keep their own Renew, and a banner over only those offers
+**Renew**. With SMTP configured each person
 gets one e-mail per workspace a few minutes after a reseal settles, at most
 one per twelve hours (`mcp_connections.reseal_mailed_at`), with no link. It
 names each connection by a name no client chose for itself, as the
