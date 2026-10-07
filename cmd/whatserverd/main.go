@@ -115,6 +115,10 @@ type app struct {
 	// limits bounds sign-in attempts, shared by the HTTP auth endpoints and
 	// the websocket hello so a script cannot alternate between the two.
 	limits *ratelimit.Auth
+	// setups bounds the assistant setups run from the console (a
+	// provisional service invitation and the consent, renewal or token it
+	// leads to), apart from limits, which workspace switches also spend.
+	setups *ratelimit.Auth
 	// mcp is the assistant connector's handler, nil unless it is enabled;
 	// serve starts its reader health checks.
 	mcp *mcpauth.Handler
@@ -177,6 +181,7 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		users:   store.NewUsers(pools.API),
 		storage: store.NewStorage(pools.API),
 		limits:  ratelimit.DefaultAuth(cfg.TrustedProxies),
+		setups:  ratelimit.DefaultSetups(cfg.TrustedProxies),
 	}
 	if err := a.users.SetInviteEncryptionKey(cfg.Signup.InviteEncryptionKey); err != nil {
 		closeAll()
@@ -714,7 +719,7 @@ func (a *app) routes() http.Handler {
 		Storage:       a.storage,
 		AccessChanged: a.ws.RevalidateAccess,
 		Users:         a.users, Keys: a.keys,
-		Devices: a.devices, Limits: a.limits, Log: a.log, Passkeys: a.passkeys,
+		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
 		PublicSignup: a.cfg.Signup.Enabled,
 		Platform:     a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
 	}
@@ -739,7 +744,7 @@ func (a *app) routes() http.Handler {
 	if a.cfg.MCP.Enabled {
 		a.mcp = &mcpauth.Handler{
 			Connections: store.NewMCPConnections(a.pools.API), APIKeys: a.apiKeys, Users: a.users,
-			Limits: a.limits,
+			Limits: a.limits, SetupLimits: a.setups,
 			// The descriptor is read on every render of the consent card,
 			// so it gets a budget of its own, per request id rather than
 			// per account: the sign-in limit would refuse the sixth reload
