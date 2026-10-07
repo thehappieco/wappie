@@ -327,8 +327,12 @@ Starts a step-up at id. for the session (see "Step-ups"):
 - the account must sign in through id. (`auth_source` `platform`):
   otherwise `409 step_up_here`, since a local account steps up here, with a
   passkey or the password;
-- it sets `sessions.step_up_not_before` to now, on the database's clock. A
-  newer start replaces an older one, which then proves nothing;
+- it sets `sessions.step_up_not_before` to now, on the database's clock,
+  and clears it on every other session of the family (the browser sign-in
+  and what it derived, below): a newer start replaces every older one, of
+  this session or another tab's, which then proves nothing. The starts and
+  finishes of one family take a lock and run one after the other, so two
+  tabs that start at once leave one start;
 - it answers `200 {login_hint, window_seconds}`: id.'s address in the
   account's link (for a linked account it may differ from the Wappie
   address), which the console passes to `begin` as `loginHint` and names in
@@ -371,7 +375,10 @@ Otherwise one statement records the proof, `authenticated_at = now()` on the
 database's clock, on the session that started and on the one that finished,
 and clears the start, against the value read before the call: the start is
 still that one, the family's newest, younger than ten minutes, and the
-`auth_time` is not more than a minute before it. Every session the sign-in
+`auth_time` is not more than a minute before it. Under the family's lock, as
+the starts, so a start made meanwhile from another tab voids the one read and
+this finish records nothing; any older start of the family is cleared with
+it (a start leaves none). Every session the sign-in
 derives later copies the proof, as a workspace switch does. So one start
 makes one proof: a second finish from any session of the family, two
 windows racing, or the finish of a replaced start records nothing. The log says `step-up confirmed method=provider`, and
@@ -539,8 +546,9 @@ The rules (owner Decisions 2 to 4 of step 4, approved 2026-10-06):
   The start and the finish may be different sessions of one family (one
   browser sign-in and what it derived), never of two: a confirmation made
   in another browser, or after another sign-in, proves nothing here. Two
-  tabs of the family that start one after the other share the newer start,
-  whichever window finishes it.
+  tabs of the family that start one after the other leave the newer start
+  only, whichever window finishes it: the proof goes to the newer tab's
+  session, and the older tab is told to try again (C-STEP-23).
 - **The account key.** The finish compares userinfo's product key with the
   pin of its epoch and never pins one: another key, or an epoch no sign-in
   pinned, is `account_key_changed`, with the alert, and no proof.

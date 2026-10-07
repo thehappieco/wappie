@@ -787,8 +787,8 @@ func TestProviderStepUpAcrossTheSessionFamily(t *testing.T) {
 		t.Fatalf("another sign-in finished the start: %v", err)
 	}
 
-	// Two starts in one family (two tabs in two workspaces): the newest is the
-	// one a finish answers; the older one is left, and its tab is told to start again.
+	// Two starts in one family (two tabs in two workspaces): the newer voids
+	// the older, so the family has one start, the one a finish answers.
 	_, second, err := f.users.StartWorkspaceSession(ctx, user, "test", login)
 	if err != nil {
 		t.Fatal(err)
@@ -796,6 +796,9 @@ func TestProviderStepUpAcrossTheSessionFamily(t *testing.T) {
 	newest, err := f.users.StartProviderStepUp(ctx, second.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ownStart(switched) || !ownStart(second) {
+		t.Fatalf("after a newer start in the family: older start left %v, newer recorded %v", ownStart(switched), ownStart(second))
 	}
 	if pending, err = f.users.PendingProviderStepUp(ctx, login.ID, stepup.Window); err != nil || pending.Session != second.ID || !pending.NotBefore.Equal(newest) {
 		t.Fatalf("two starts in a family: %+v %v", pending, err)
@@ -819,8 +822,149 @@ func TestProviderStepUpAcrossTheSessionFamily(t *testing.T) {
 			t.Fatalf("a racing finish: %v", err)
 		}
 	}
-	if won != 1 || !fresh(second) || ownStart(second) || !ownStart(switched) {
+	if won != 1 || !fresh(second) || ownStart(second) || ownStart(switched) {
 		t.Fatalf("%d finishes recorded a proof; newest start fresh %v", won, fresh(second))
+	}
+}
+
+// A newer start voids an older one across the family, so two tabs make one
+// proof (Decision 3 of step 4, docs/platform-sign-in.md "One start, one
+// proof"): tab A starts in its workspace session, tab B in another session of
+// the same browser sign-in; B's window finishes, and A's start, voided by
+// B's, can no longer be finished from any session of the family, by a window
+// that comes back late or by a later re-authentication. Two starts at once
+// leave one. A finish also clears any older start of the family it finds.
+func TestProviderStepUpNewerStartVoidsTheFamilys(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	user, _, err := f.users.SignupPlatform(ctx, store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "lia@example.com", uuid.Nil),
+		PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := stepup.Recent(f.users)
+	fresh := func(s store.Session) bool {
+		t.Helper()
+		ok, err := checker.Fresh(ctx, s.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	starts := func(sessions ...store.Session) int {
+		t.Helper()
+		ids := make([]uuid.UUID, len(sessions))
+		for i, s := range sessions {
+			ids[i] = s.ID
+		}
+		var n int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE id = ANY($1) AND step_up_not_before IS NOT NULL`, ids).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	finish := func(from store.Session, pending store.PendingStepUp) error {
+		return f.users.FinishProviderStepUp(ctx, from.ID, pending, time.Now(), stepup.Window, stepup.ProviderClockTolerance)
+	}
+	family := func() (login, a, b store.Session) {
+		t.Helper()
+		_, login, err := f.users.StartPlatformSession(ctx, user, "test", time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, a, err = f.users.StartWorkspaceSession(ctx, user, "test", login); err != nil {
+			t.Fatal(err)
+		}
+		if _, b, err = f.users.StartWorkspaceSession(ctx, user, "test", login); err != nil {
+			t.Fatal(err)
+		}
+		return login, a, b
+	}
+
+	// A starts, then B; B's window finishes with the sign-in's token.
+	login, a, b := family()
+	older, err := f.users.StartProviderStepUp(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := f.users.StartProviderStepUp(ctx, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starts(a) != 0 || starts(b) != 1 {
+		t.Fatalf("B's start left A's: A %d, B %d", starts(a), starts(b))
+	}
+	abandoned := store.PendingStepUp{Session: a.ID, NotBefore: older}
+	// A's start, voided, is finished by nothing, before B's finish or after.
+	for _, from := range []store.Session{login, a, b} {
+		if err := finish(from, abandoned); !errors.Is(err, store.ErrStepUpNotStarted) || fresh(a) {
+			t.Fatalf("a finish of the voided start from %v: %v", from.ID, err)
+		}
+	}
+	pending, err := f.users.PendingProviderStepUp(ctx, login.ID, stepup.Window)
+	if err != nil || pending.Session != b.ID || !pending.NotBefore.Equal(newer) {
+		t.Fatalf("the family's start %+v %v, want B's at %v", pending, err, newer)
+	}
+	if err := finish(login, pending); err != nil || !fresh(b) || !fresh(login) {
+		t.Fatalf("B's finish: %v", err)
+	}
+	if fresh(a) {
+		t.Fatal("B's finish proved A's session")
+	}
+	// Nothing is left to finish: a later window, or a later re-authentication, records no second proof.
+	for _, from := range []store.Session{login, a, b} {
+		if err := finish(from, abandoned); !errors.Is(err, store.ErrStepUpNotStarted) || fresh(a) {
+			t.Fatalf("a late finish of A's start from %v: %v", from.ID, err)
+		}
+		if _, err := f.users.PendingProviderStepUp(ctx, from.ID, stepup.Window); !errors.Is(err, store.ErrStepUpNotStarted) {
+			t.Fatalf("a start left after the proof, seen from %v: %v", from.ID, err)
+		}
+	}
+	if starts(login, a, b) != 0 {
+		t.Fatalf("%d starts left after the proof", starts(login, a, b))
+	}
+
+	// Two starts at once from two sessions of a family: one is left, and it is
+	// the one a finish answers.
+	login, a, b = family()
+	const racers = 6
+	errs := make(chan error, racers)
+	for i := range racers {
+		from := []store.Session{a, b, login}[i%3]
+		go func() {
+			_, err := f.users.StartProviderStepUp(ctx, from.ID)
+			errs <- err
+		}()
+	}
+	for range racers {
+		if err := <-errs; err != nil {
+			t.Fatalf("a racing start: %v", err)
+		}
+	}
+	if n := starts(login, a, b); n != 1 {
+		t.Fatalf("%d starts left by starts at once, want 1", n)
+	}
+	if pending, err = f.users.PendingProviderStepUp(ctx, a.ID, stepup.Window); err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(b, pending); err != nil || starts(login, a, b) != 0 {
+		t.Fatalf("the finish of the start left: %v, %d starts after it", err, starts(login, a, b))
+	}
+
+	// A finish clears an older start of the family as it records the proof
+	// (a start leaves none; one written past the store stands for it here).
+	login, a, b = family()
+	if newer, err = f.users.StartProviderStepUp(ctx, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE sessions SET step_up_not_before = $2::timestamptz - interval '1 minute' WHERE id = $1`, a.ID, newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(login, store.PendingStepUp{Session: b.ID, NotBefore: newer}); err != nil {
+		t.Fatal(err)
+	}
+	if starts(login, a, b) != 0 || fresh(a) {
+		t.Fatalf("the finish left %d starts, or proved the older starter (%v)", starts(login, a, b), fresh(a))
 	}
 }
 

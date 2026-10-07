@@ -360,6 +360,45 @@ func TestPlatformStepUpAcrossTheSessionFamily(t *testing.T) {
 	}
 }
 
+// Two tabs of the family, each in its own workspace session, start one after
+// the other: the later start voids the earlier one, so the family makes one
+// proof, the later tab's, whichever window finishes.
+func TestPlatformStepUpTwoTabs(t *testing.T) {
+	h := newPlatformHarness(t, config.LocalLoginOn)
+	p, signed := h.providerAccount(t, "eva@example.com")
+	token := signed.Token
+
+	h.age(t, token)
+	var tabA, tabB sessionReply
+	for _, tab := range []*sessionReply{&tabA, &tabB} {
+		if code := h.post(t, "/v1/auth/workspaces/session", map[string]string{"tenant_id": signed.User.TenantID}, tab, token); code != http.StatusOK {
+			t.Fatalf("switch: %d", code)
+		}
+	}
+	if code, _ := h.start(t, tabA.Token); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if code, _ := h.start(t, tabB.Token); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if h.pending(t, tabA.Token) != nil || h.pending(t, tabB.Token) == nil {
+		t.Fatal("the later tab's start left the earlier one's")
+	}
+	if code, out := h.finish(t, token, h.id.issue(t, p.userinfo(t, 1))); code != http.StatusOK || !out.Fresh {
+		t.Fatalf("the finish of the later tab's start: %d %+v", code, out)
+	}
+	if !h.state(t, tabB.Token).Fresh || h.state(t, tabA.Token).Fresh {
+		t.Fatal("the proof went to the wrong tab's session")
+	}
+	before := h.id.requests.Load()
+	if code, out := h.finish(t, tabA.Token, h.id.issue(t, p.userinfo(t, 1))); code != http.StatusConflict || out.Code != "step_up_not_started" {
+		t.Fatalf("a second finish in the family: %d %+v", code, out)
+	}
+	if h.id.requests.Load() != before || h.state(t, tabA.Token).Fresh {
+		t.Fatal("a second finish in the family went to userinfo or made a proof")
+	}
+}
+
 // Decision 3: the provider's auth_time may fall up to a minute before the
 // start, for the two clocks, and no earlier; userinfo that names none is no
 // re-authentication. A refused finish leaves the start for the next one.
