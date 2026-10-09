@@ -1,5 +1,5 @@
 # Build from the PUBLIC repository root: docker build -f deploy/Dockerfile .
-FROM golang:1.26.7-bookworm AS build
+FROM golang:1.26.9-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

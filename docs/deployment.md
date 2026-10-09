@@ -2,7 +2,7 @@
 
 ## Public server
 
-Go 1.26.7 and PostgreSQL 18 build and run the server, API administration and Go
+Go 1.26.9 and PostgreSQL 18 build and run the server, API administration and Go
 CLIs. Node is required only for the optional public TypeScript SDK/account CLI.
 The public repository contains no app, console or billing sources. Standalone
 installations require no Wappie subscription. `WS_WEB_DIR` defaults to empty.
