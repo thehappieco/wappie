@@ -97,9 +97,10 @@ jobs:
       - name: Seeded replays of the kit's Go vectors
         env: {GOTOOLCHAIN: local}
         run: |
-          test "$(go env GOVERSION)" = go1.26.7
+          v=$(go env GOVERSION); [ "$v" = go1.26.7 ] || { echo "kit-replays needs go1.26.7, got $v"; exit 1; }
           go test -count=1 -json -run '^(TestKitSealVectors|TestKitSignatureVectors)$' \
-            ./internal/crypto/seal ./internal/mcpauth > kit-replays.json
+            ./internal/crypto/seal ./internal/mcpauth > kit-replays.json \
+            || { jq -r 'select(.Action == "output") | .Output' kit-replays.json; exit 1; }
           jq -r 'select(.Action == "pass" and .Test != null and (.Test | contains("/") | not)) | .Test' kit-replays.json \
             | sort | diff <(printf 'TestKitSealVectors\nTestKitSignatureVectors\n') -
           skipped=$(jq -r 'select(.Action == "skip" and .Test != null) | .Package + " " + .Test' kit-replays.json)
