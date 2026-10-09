@@ -1,6 +1,6 @@
 module whatserver2
 
-go 1.26.9
+go 1.26.7
 
 require (
 	github.com/coder/websocket v1.8.15

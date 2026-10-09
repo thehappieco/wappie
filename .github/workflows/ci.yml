@@ -84,6 +84,28 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  # The kit's Go vectors (seal-go.json, reqhmac-go.json) replay their seeded
+  # key pairs, seals and nonces byte for byte only on the toolchain that
+  # recorded them: go1.26.7, the go directive's minimum. On GO_VERSION those
+  # subtests skip, so they run here, and a skipped one fails the job.
+  kit-replays:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "1.26.7", cache: true}
+      - name: Seeded replays of the kit's Go vectors
+        env: {GOTOOLCHAIN: local}
+        run: |
+          test "$(go env GOVERSION)" = go1.26.7
+          go test -count=1 -json -run '^(TestKitSealVectors|TestKitSignatureVectors)$' \
+            ./internal/crypto/seal ./internal/mcpauth > kit-replays.json
+          jq -r 'select(.Action == "pass" and .Test != null and (.Test | contains("/") | not)) | .Test' kit-replays.json \
+            | sort | diff <(printf 'TestKitSealVectors\nTestKitSignatureVectors\n') -
+          skipped=$(jq -r 'select(.Action == "skip" and .Test != null) | .Package + " " + .Test' kit-replays.json)
+          if [ -n "$skipped" ]; then printf 'Skipped on go1.26.7:\n%s\n' "$skipped"; exit 1; fi
+          echo "$(jq -c 'select(.Action == "pass" and .Test != null)' kit-replays.json | wc -l) passed, none skipped"
+
   client:
     runs-on: ubuntu-latest
     steps:

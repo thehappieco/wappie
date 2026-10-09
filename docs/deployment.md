@@ -3,7 +3,9 @@
 ## Public server
 
 Go 1.26.9 and PostgreSQL 18 build and run the server, API administration and Go
-CLIs. Node is required only for the optional public TypeScript SDK/account CLI.
+CLIs. go.mod's `go 1.26.7` is only the oldest toolchain that compiles them;
+build with 1.26.9 or a later patched release, since 1.26.7 has net/http
+advisories that 1.26.9 fixes. Node is required only for the optional public TypeScript SDK/account CLI.
 The public repository contains no app, console or billing sources. Standalone
 installations require no Wappie subscription. `WS_WEB_DIR` defaults to empty.
 
