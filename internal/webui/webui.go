@@ -75,9 +75,15 @@ type Handler struct {
 	// ?state never ride in a Referer, not even to this origin's own assets
 	// (spec 7.10 step 8). Empty leaves both as they always were.
 	PlatformIssuer string
-	dir            string
-	files          http.Handler
-	log            *slog.Logger
+	// PlatformConsole is The Happie Co's console origin while it is
+	// configured (WS_PLATFORM_CONSOLE_ORIGIN, with the issuer): the console
+	// document may then read the shared shell's data there (GET /v1/shell,
+	// contract v1 2.2). frame-ancestors stays 'none'. Empty leaves
+	// connect-src as it was.
+	PlatformConsole string
+	dir             string
+	files           http.Handler
+	log             *slog.Logger
 }
 
 // ErrNotBuilt says the directory holds no client.
@@ -218,6 +224,9 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 			// not no-referrer), and only the bare origin ever leaves.
 			header.Set("Referrer-Policy", "strict-origin")
 			policy = strings.Replace(policy, "connect-src 'self'", "connect-src 'self' "+issuer, 1)
+			if console := platformIssuer(h.PlatformConsole); console != "" && console != issuer {
+				policy = strings.Replace(policy, "connect-src 'self' "+issuer, "connect-src 'self' "+issuer+" "+console, 1)
+			}
 		}
 		if h.ExternalServers && external != "" {
 			if p, err := browserorigin.Parse(external, false); err == nil && len(p.Origins) == 1 {

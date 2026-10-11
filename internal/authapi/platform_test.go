@@ -370,12 +370,14 @@ func TestPlatformNewAccountThenSession(t *testing.T) {
 	}
 	var me struct {
 		User struct {
-			ID         string `json:"id"`
-			AuthSource string `json:"auth_source"`
-			WrappedUSK string `json:"wrapped_usk"`
+			ID          string `json:"id"`
+			AuthSource  string `json:"auth_source"`
+			WrappedUSK  string `json:"wrapped_usk"`
+			PlatformSub string `json:"platform_sub"`
 		} `json:"user"`
 	}
-	if code := h.get(t, "/v1/auth/me", &me, created.Token); code != http.StatusOK || me.User.ID != p.sub || me.User.AuthSource != "platform" || me.User.WrappedUSK != "" {
+	if code := h.get(t, "/v1/auth/me", &me, created.Token); code != http.StatusOK || me.User.ID != p.sub || me.User.AuthSource != "platform" || me.User.WrappedUSK != "" ||
+		me.User.PlatformSub != p.sub {
 		t.Fatalf("me: %d %+v", code, me)
 	}
 	// The interim personal workspace (D6), as for every person.
@@ -536,6 +538,13 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 	h := newPlatformHarness(t, config.LocalLoginOn)
 	ctx := context.Background()
 	legacyID := h.signed.User.ID
+	// Not linked yet: /me names no subject at the provider.
+	var before struct {
+		User map[string]any `json:"user"`
+	}
+	if code := h.get(t, "/v1/auth/me", &before, h.signed.Token); code != http.StatusOK || before.User["platform_sub"] != nil {
+		t.Fatalf("me before the link: %d %+v", code, before.User)
+	}
 	if _, pk := h.register(t); pk.ID == uuid.Nil {
 		t.Fatal("no passkey")
 	}
@@ -603,10 +612,13 @@ func TestPlatformLinkRequiredThenLink(t *testing.T) {
 	}
 	var me struct {
 		User struct {
-			WrappedUSK string `json:"wrapped_usk"`
+			ID          string `json:"id"`
+			WrappedUSK  string `json:"wrapped_usk"`
+			PlatformSub string `json:"platform_sub"`
 		} `json:"user"`
 	}
-	if code := h.get(t, "/v1/auth/me", &me, again.Token); code != http.StatusOK || me.User.WrappedUSK != "" {
+	// The account keeps its own id; /me names the provider's subject beside it.
+	if code := h.get(t, "/v1/auth/me", &me, again.Token); code != http.StatusOK || me.User.WrappedUSK != "" || me.User.ID != legacyID || me.User.PlatformSub != p.sub {
 		t.Fatalf("me of a linked account in the window: %d %+v", code, me)
 	}
 	// Another id. account cannot take the same Wappie account.

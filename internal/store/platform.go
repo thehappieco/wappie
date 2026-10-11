@@ -146,6 +146,20 @@ func (u *Users) PlatformIdentity(ctx context.Context, sub uuid.UUID) (PlatformId
 	return out, nil
 }
 
+// PlatformSubOf returns the sub linked to an account, or ErrNotFound: an
+// account that never signed in through the provider.
+func (u *Users) PlatformSubOf(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	var sub uuid.UUID
+	err := u.pool.QueryRow(ctx, `SELECT sub FROM platform_identities WHERE user_id = $1`, userID).Scan(&sub)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("store: platform sub: %w", err)
+	}
+	return sub, nil
+}
+
 // PlatformWrap returns the account key's wrap for one product key epoch, or
 // ErrNotFound.
 func (u *Users) PlatformWrap(ctx context.Context, userID uuid.UUID, productKeyID string) ([]byte, error) {

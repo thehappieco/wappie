@@ -50,6 +50,12 @@ type Platform struct {
 	// *.localhost is not a name Go resolves, so the request goes there while
 	// its Host header still names the issuer.
 	IDAddr string
+	// ConsoleOrigin is The Happie Co's console (https://console.thehappie.co),
+	// whose shared shell Wappie's settings screens draw (the platform's shell
+	// contract v1): the console document may then read the shell's data
+	// there, and discovery names it for the page. Empty leaves the screens
+	// with their own menu only.
+	ConsoleOrigin string
 	// LocalLogin is on unless set.
 	LocalLogin LocalLogin
 	// AlertEmail, when set and mail is configured, also receives the alert
@@ -62,12 +68,13 @@ func (p Platform) Enabled() bool { return p.Issuer != "" }
 
 func loadPlatform(appURL string) Platform {
 	p := Platform{
-		Issuer:     strings.TrimSpace(os.Getenv("WS_PLATFORM_ISSUER")),
-		ClientID:   strings.TrimSpace(os.Getenv("WS_PLATFORM_CLIENT_ID")),
-		AppOrigin:  strings.TrimSpace(os.Getenv("WS_PLATFORM_APP_ORIGIN")),
-		IDAddr:     strings.TrimSpace(os.Getenv("WS_PLATFORM_ID_ADDR")),
-		LocalLogin: LocalLogin(strings.TrimSpace(str("WS_LOCAL_LOGIN", string(LocalLoginOn)))),
-		AlertEmail: strings.TrimSpace(os.Getenv("WS_SECURITY_ALERT_EMAIL")),
+		Issuer:        strings.TrimSpace(os.Getenv("WS_PLATFORM_ISSUER")),
+		ClientID:      strings.TrimSpace(os.Getenv("WS_PLATFORM_CLIENT_ID")),
+		AppOrigin:     strings.TrimSpace(os.Getenv("WS_PLATFORM_APP_ORIGIN")),
+		IDAddr:        strings.TrimSpace(os.Getenv("WS_PLATFORM_ID_ADDR")),
+		ConsoleOrigin: strings.TrimSpace(os.Getenv("WS_PLATFORM_CONSOLE_ORIGIN")),
+		LocalLogin:    LocalLogin(strings.TrimSpace(str("WS_LOCAL_LOGIN", string(LocalLoginOn)))),
+		AlertEmail:    strings.TrimSpace(os.Getenv("WS_SECURITY_ALERT_EMAIL")),
 	}
 	if p.AppOrigin == "" && p.Issuer != "" && appURL != "" {
 		if u, err := url.Parse(appURL); err == nil && u.Scheme != "" && u.Host != "" {
@@ -92,8 +99,8 @@ func (p Platform) Validate(prod bool, mailConfigured bool) error {
 		if p.LocalLogin == LocalLoginLinkOnly || p.LocalLogin == LocalLoginOff {
 			errs = append(errs, errors.New("WS_LOCAL_LOGIN=link_only or off needs WS_PLATFORM_ISSUER: nobody could sign in otherwise"))
 		}
-		if p.ClientID != "" || p.IDAddr != "" || p.AppOrigin != "" {
-			errs = append(errs, errors.New("WS_PLATFORM_CLIENT_ID, WS_PLATFORM_APP_ORIGIN and WS_PLATFORM_ID_ADDR need WS_PLATFORM_ISSUER"))
+		if p.ClientID != "" || p.IDAddr != "" || p.AppOrigin != "" || p.ConsoleOrigin != "" {
+			errs = append(errs, errors.New("WS_PLATFORM_CLIENT_ID, WS_PLATFORM_APP_ORIGIN, WS_PLATFORM_CONSOLE_ORIGIN and WS_PLATFORM_ID_ADDR need WS_PLATFORM_ISSUER"))
 		}
 		if p.AlertEmail != "" {
 			errs = append(errs, errors.New("WS_SECURITY_ALERT_EMAIL needs WS_PLATFORM_ISSUER"))
@@ -109,6 +116,13 @@ func (p Platform) Validate(prod bool, mailConfigured bool) error {
 	}
 	if err := checkPageOrigin(p.AppOrigin, prod); err != nil {
 		errs = append(errs, err)
+	}
+	if p.ConsoleOrigin != "" {
+		if !exactOrigin(p.ConsoleOrigin, prod) {
+			errs = append(errs, errors.New("WS_PLATFORM_CONSOLE_ORIGIN must be the console's exact origin, https in prod"))
+		} else if p.ConsoleOrigin == p.Issuer || p.ConsoleOrigin == p.AppOrigin {
+			errs = append(errs, errors.New("WS_PLATFORM_CONSOLE_ORIGIN must be The Happie Co's console, not the provider or this page"))
+		}
 	}
 	if p.IDAddr != "" {
 		if prod {
@@ -131,24 +145,25 @@ func (p Platform) Validate(prod bool, mailConfigured bool) error {
 // host and port only; https, or in development http on a loopback or
 // *.localhost host.
 func checkPageOrigin(raw string, prod bool) error {
-	invalid := errors.New("WS_PLATFORM_APP_ORIGIN (or the origin of WS_APP_URL) must be the console's exact origin, https in prod")
+	if !exactOrigin(raw, prod) {
+		return errors.New("WS_PLATFORM_APP_ORIGIN (or the origin of WS_APP_URL) must be the console's exact origin, https in prod")
+	}
+	return nil
+}
+
+// exactOrigin reports whether raw is an origin exactly as browsers send it:
+// scheme, lowercase host and port only; https, or in development http on a
+// loopback or *.localhost host.
+func exactOrigin(raw string, prod bool) bool {
 	if raw == "" {
-		return invalid
+		return false
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" ||
 		u.Opaque != "" || u.ForceQuery || u.Scheme+"://"+u.Host != raw || strings.ToLower(raw) != raw {
-		return invalid
+		return false
 	}
-	switch u.Scheme {
-	case "https":
-		return nil
-	case "http":
-		if !prod && devHost(u.Hostname()) {
-			return nil
-		}
-	}
-	return invalid
+	return u.Scheme == "https" || u.Scheme == "http" && !prod && devHost(u.Hostname())
 }
 
 // devHost is a host plain http is acceptable on in development: localhost, a
@@ -167,5 +182,10 @@ func (p Platform) String() string {
 	if !p.Enabled() {
 		return "platform_login=off local_login=" + string(p.LocalLogin)
 	}
-	return "platform_login=on platform_issuer=" + p.Issuer + " local_login=" + string(p.LocalLogin)
+	line := "platform_login=on platform_issuer=" + p.Issuer + " local_login=" + string(p.LocalLogin)
+	if p.ConsoleOrigin != "" {
+		// Only when set, so the line of an installation without it is the one before.
+		line += " platform_console=" + p.ConsoleOrigin
+	}
+	return line
 }

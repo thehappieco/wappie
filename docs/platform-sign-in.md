@@ -160,15 +160,19 @@ The migration header holds the down-step, checksum-gated against
 | `WS_PLATFORM_CLIENT_ID` | This installation's client at the provider (`wappie-app`) | required with the issuer |
 | `WS_PLATFORM_APP_ORIGIN` | The one page origin allowed to post a sign-in | the origin of `WS_APP_URL` |
 | `WS_PLATFORM_ID_ADDR` | Development only: the `host:port` the userinfo request dials, because Go does not resolve `*.localhost`. The request's Host still names the issuer. | empty |
+| `WS_PLATFORM_CONSOLE_ORIGIN` | The Happie Co's console (`https://console.thehappie.co`, or `http://console.thehappie.localhost:8290` in development), whose shared shell the settings screens draw ([below](#the-shared-shell)) | empty: the screens draw their own menu only |
 | `WS_LOCAL_LOGIN` | `on`, `link_only` or `off` | `on` |
 | `WS_SECURITY_ALERT_EMAIL` | The operator's address for the account-key alert (needs mail) | empty |
 
 Validation:
 
-- In prod, the issuer and the page origin must be https, and
-  `WS_PLATFORM_ID_ADDR` is refused.
+- In prod, the issuer, the page origin and the console origin must be https,
+  and `WS_PLATFORM_ID_ADDR` is refused.
+- The console origin needs the issuer, is an exact origin, and is neither
+  the issuer nor the page origin.
 - `link_only` and `off` are refused without an issuer.
-- The startup line says `platform_login=on|off` and `local_login=…`.
+- The startup line says `platform_login=on|off` and `local_login=…`, then
+  `platform_console=…` only when the console origin is set.
 
 What `WS_LOCAL_LOGIN` leaves open:
 
@@ -395,11 +399,16 @@ is never dated later than now.
 When the provider is configured:
 
 - `/.well-known/wappie` and `/v1/discovery` advertise
-  `platform_login: {issuer, client_id, product, local_login}` and the
-  capabilities `auth.platform.v1` and `auth.platform.stepup.v1` (the two
+  `platform_login: {issuer, client_id, product, local_login}`, with
+  `console_origin` when it is set, and the capabilities `auth.platform.v1` and `auth.platform.stepup.v1` (the two
   step-up routes). `auth.password` is dropped only when local login is
   `off`.
-- The console document gets the issuer in `connect-src`.
+- The console document gets the issuer in `connect-src`, and the console
+  origin after it when that is set. `frame-ancestors` stays `'none'`.
+- `GET /v1/auth/me` names `user.platform_sub`, the account's subject at
+  id., once the account is linked (or was created there). For an account
+  created through id. it equals `user.id`; a linked account keeps its own
+  id. It is display only ([below](#the-shared-shell)).
 - Every document gets `Referrer-Policy: strict-origin` (O2), so the callback's
   `?code` never rides in a `Referer`, not even to this origin's own assets.
   This still sends the `Origin` that the MCP consent post needs, unlike
@@ -412,6 +421,29 @@ API through the Vite proxy. Production never allows cleartext.
 
 Go logs no request URL. In the cloud, nginx's `location = /auth/callback` has
 `access_log off` (`commercial/deploy/nginx-https.conf`).
+
+### The shared shell
+
+Platform decision 0033 and its shell contract v1
+(`docs/design/2026-10-07/shell-contract.md` in `thehappieco/platform`): The
+Happie Co's console and every app draw the same side menu and header. The
+private console draws it around Wappie's settings screens, at
+`/console/{screen}?workspace={uuid}[&return={console path}]`
+(`commercial/docs/platform-shell.md`). The server's part is small:
+
+- `WS_PLATFORM_CONSOLE_ORIGIN` puts the console's origin in the console
+  document's `connect-src`. The page reads `GET {console}/v1/shell` there,
+  once per document, credentialed and with no header of its own. It answers
+  this origin with CORS only, and only with the person's console session.
+- Discovery names that origin (`platform_login.console_origin`), so the page
+  never builds it from anything else.
+- `/v1/auth/me` names `platform_sub`. The shell compares it with the
+  console's person, and shows Wappie's own menu with a notice when they
+  differ.
+
+The shell's data is display only. The workspace in the address is
+authorized against this server's own session (`POST
+/v1/auth/workspaces/session`), as every workspace is.
 
 ## The page (private console)
 
