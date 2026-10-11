@@ -38,6 +38,31 @@ func TestPlatformLoginInDevelopment(t *testing.T) {
 	}
 }
 
+func TestPlatformConsoleOrigin(t *testing.T) {
+	minimalEnv(t)
+	t.Setenv("WS_ENV", "prod")
+	t.Setenv("WS_POSTGRES_DSN", "postgres://user:hunter2@db/whatserver2")
+	t.Setenv("WS_APP_URL", "https://app.wappie.thehappie.co")
+	t.Setenv("WS_PLATFORM_ISSUER", "https://id.thehappie.co")
+	t.Setenv("WS_PLATFORM_CLIENT_ID", "wappie-app")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unset, the startup line is the one of an installation before it.
+	if cfg.Platform.ConsoleOrigin != "" || strings.Contains(cfg.String(), "platform_console") {
+		t.Fatalf("unset: %+v / %s", cfg.Platform, cfg.String())
+	}
+	t.Setenv("WS_PLATFORM_CONSOLE_ORIGIN", "https://console.thehappie.co")
+	if cfg, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Platform.ConsoleOrigin != "https://console.thehappie.co" ||
+		!strings.Contains(cfg.String(), "local_login=on platform_console=https://console.thehappie.co") {
+		t.Fatalf("set: %+v / %s", cfg.Platform, cfg.String())
+	}
+}
+
 func TestPlatformAppOriginDefaultsToTheAppURL(t *testing.T) {
 	minimalEnv(t)
 	t.Setenv("WS_ENV", "prod")
@@ -76,6 +101,15 @@ func TestPlatformLoginRefusals(t *testing.T) {
 			"WS_PLATFORM_APP_ORIGIN": "https://app.wappie.thehappie.co/console"}, "WS_PLATFORM_APP_ORIGIN"},
 		"dial address in prod": {true, map[string]string{"WS_PLATFORM_ISSUER": "https://id.thehappie.co", "WS_PLATFORM_CLIENT_ID": "wappie-app",
 			"WS_PLATFORM_APP_ORIGIN": "https://app.wappie.thehappie.co", "WS_PLATFORM_ID_ADDR": "127.0.0.1:8290"}, "development only"},
+		"console without issuer": {false, map[string]string{"WS_PLATFORM_CONSOLE_ORIGIN": "https://console.thehappie.co"}, "need WS_PLATFORM_ISSUER"},
+		"console with a path": {false, map[string]string{"WS_PLATFORM_ISSUER": "https://id.thehappie.co", "WS_PLATFORM_CLIENT_ID": "wappie-app",
+			"WS_PLATFORM_APP_ORIGIN": "https://app.wappie.thehappie.co", "WS_PLATFORM_CONSOLE_ORIGIN": "https://console.thehappie.co/"}, "WS_PLATFORM_CONSOLE_ORIGIN"},
+		"cleartext console in prod": {true, map[string]string{"WS_PLATFORM_ISSUER": "https://id.thehappie.co", "WS_PLATFORM_CLIENT_ID": "wappie-app",
+			"WS_PLATFORM_APP_ORIGIN": "https://app.wappie.thehappie.co", "WS_PLATFORM_CONSOLE_ORIGIN": "http://console.thehappie.localhost:8290"}, "WS_PLATFORM_CONSOLE_ORIGIN"},
+		"console is the provider": {false, map[string]string{"WS_PLATFORM_ISSUER": "https://id.thehappie.co", "WS_PLATFORM_CLIENT_ID": "wappie-app",
+			"WS_PLATFORM_APP_ORIGIN": "https://app.wappie.thehappie.co", "WS_PLATFORM_CONSOLE_ORIGIN": "https://id.thehappie.co"}, "not the provider or this page"},
+		"console is this page": {false, map[string]string{"WS_PLATFORM_ISSUER": "https://id.thehappie.co", "WS_PLATFORM_CLIENT_ID": "wappie-app",
+			"WS_PLATFORM_APP_ORIGIN": "https://app.wappie.thehappie.co", "WS_PLATFORM_CONSOLE_ORIGIN": "https://app.wappie.thehappie.co"}, "not the provider or this page"},
 		"alert without mail": {false, map[string]string{"WS_PLATFORM_ISSUER": "https://id.thehappie.co", "WS_PLATFORM_CLIENT_ID": "wappie-app",
 			"WS_PLATFORM_APP_ORIGIN": "https://app.wappie.thehappie.co", "WS_SECURITY_ALERT_EMAIL": "ops@example.com"}, "configured mail sender"},
 	} {

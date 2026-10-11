@@ -254,6 +254,11 @@ type account struct {
 	// AuthSource is "local" or "platform": an account that signs in through
 	// the identity provider, which has no password to change here.
 	AuthSource string `json:"auth_source"`
+	// PlatformSub is the account's subject at the identity provider, once
+	// linked, in /me only: the console page compares it with the person The
+	// Happie Co's console is signed in as (the shared shell, contract v1
+	// 3.3). The account's own identifier at the provider, nothing secret.
+	PlatformSub string `json:"platform_sub,omitempty"`
 }
 
 // grant is one device this account may open.
@@ -678,6 +683,16 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := meReply{User: sessionAccount(session, user), Grants: make([]grant, 0, len(grants)), ExpiresAt: session.ExpiresAt, SessionID: session.ID.String()}
+	if h.Platform != nil {
+		// Display only: without it the shell does not compare the two
+		// accounts, so a failed read costs the sign-in nothing.
+		switch sub, err := h.Users.PlatformSubOf(r.Context(), user.ID); {
+		case err == nil:
+			out.User.PlatformSub = sub.String()
+		case !errors.Is(err, store.ErrNotFound):
+			h.log().Error("could not read the account's platform subject", "error", err)
+		}
+	}
 	for _, g := range grants {
 		out.Grants = append(out.Grants, grant{
 			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],

@@ -466,6 +466,8 @@ func serve() error {
 		// The console connects to the identity provider for its sign-in,
 		// and its documents keep the callback's code out of any Referer.
 		web.PlatformIssuer = a.cfg.Platform.Issuer
+		// And reads the shared shell's data from The Happie Co's console.
+		web.PlatformConsole = a.cfg.Platform.ConsoleOrigin
 		a.web = web
 		a.log.Info("serving the web client", "dir", web.Dir())
 	case errors.Is(err, webui.ErrNotBuilt):

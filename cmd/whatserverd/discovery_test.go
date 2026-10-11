@@ -262,5 +262,14 @@ func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
 		if slices.Contains(d.Capabilities, "auth.password") != (local != "off") {
 			t.Fatalf("%s: auth.password %v", local, d.Capabilities)
 		}
+		if d.PlatformLogin.ConsoleOrigin != "" {
+			t.Fatalf("%s: a console origin nobody configured: %+v", local, d.PlatformLogin)
+		}
+	}
+	// The console's origin, where the shared shell's data is read, only when set.
+	d := read(t, &authapi.PlatformDiscovery{Issuer: "https://id.thehappie.co", ClientID: "wappie-app", Product: "wappie", LocalLogin: "link_only",
+		ConsoleOrigin: "https://console.thehappie.co"})
+	if d.PlatformLogin == nil || d.PlatformLogin.ConsoleOrigin != "https://console.thehappie.co" {
+		t.Fatalf("console origin: %+v", d.PlatformLogin)
 	}
 }

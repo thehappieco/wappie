@@ -55,6 +55,9 @@ type PlatformLogin struct {
 	Pins   PlatformPins
 	// AppOrigin is the one page origin that may post here.
 	AppOrigin string
+	// ConsoleOrigin is The Happie Co's console, whose shared shell the
+	// settings screens draw; "" when not configured.
+	ConsoleOrigin string
 	// Alert sends the "your account key changed" mail of a refused sign-in
 	// to one address, in lang (the account's locale; "" is English);
 	// StepUpAlert is the same for a refused step-up. Nil sends nothing.
@@ -95,7 +98,7 @@ func NewPlatformLogin(cfg config.Platform, pins PlatformPins) (*PlatformLogin, e
 	if err := client.Check(); err != nil {
 		return nil, err
 	}
-	return &PlatformLogin{Client: client, Pins: pins, AppOrigin: cfg.AppOrigin, AlertEmail: cfg.AlertEmail,
+	return &PlatformLogin{Client: client, Pins: pins, AppOrigin: cfg.AppOrigin, ConsoleOrigin: cfg.ConsoleOrigin, AlertEmail: cfg.AlertEmail,
 		StepUpStarts: ratelimit.NewWindow(stepUpStartsPerWindow, stepup.Window)}, nil
 }
 
@@ -711,6 +714,9 @@ type PlatformDiscovery struct {
 	ClientID   string `json:"client_id"`
 	Product    string `json:"product"`
 	LocalLogin string `json:"local_login"`
+	// ConsoleOrigin is where the shared shell's data is read
+	// (WS_PLATFORM_CONSOLE_ORIGIN); absent when not configured.
+	ConsoleOrigin string `json:"console_origin,omitempty"`
 }
 
 // Discovery describes the configured provider, nil when there is none.
@@ -721,5 +727,6 @@ func (p *PlatformLogin) Discovery(local config.LocalLogin) *PlatformDiscovery {
 	if local == "" {
 		local = config.LocalLoginOn
 	}
-	return &PlatformDiscovery{Issuer: p.Client.Issuer, ClientID: p.Client.ClientID, Product: p.Client.Product, LocalLogin: string(local)}
+	return &PlatformDiscovery{Issuer: p.Client.Issuer, ClientID: p.Client.ClientID, Product: p.Client.Product, LocalLogin: string(local),
+		ConsoleOrigin: p.ConsoleOrigin}
 }

@@ -51,6 +51,8 @@ interface Account {
   wrapped_usk: string
   public_key: string
   has_recovery: boolean
+  /** The account's subject at the identity provider, once linked; in /me only. */
+  platform_sub?: string
 }
 
 export interface SessionReply {
@@ -94,6 +96,12 @@ export interface SignedIn {
   tenantID: string
   userID: string
   hasRecovery: boolean
+  /**
+   * The account's subject at the identity provider (The Happie Co's id.), once
+   * linked: what a page compares with the person another of its pages is
+   * signed in as. Display only, never authority; absent otherwise.
+   */
+  platformSub?: string
   /** Devices with a grant. An empty list means an account that can read nothing. */
   readable: Readable[]
   /** A non-extractable key handle; raw account key bytes are wiped after sign-in. */
@@ -709,9 +717,13 @@ async function finishWithKey(serverURL: string, reply: SessionReply, account: Pr
     tenantID: me.user.tenant_id,
     userID: me.user.id,
     hasRecovery: me.user.has_recovery,
+    ...(typeof me.user.platform_sub === 'string' && CANONICAL_UUID.test(me.user.platform_sub) ? { platformSub: me.user.platform_sub } : {}),
     readable, accountKey: account,
   }
 }
+
+/** A UUID as the server writes one: lowercase 8-4-4-4-12. */
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export { call as authRequest, finish as finishSession }
 

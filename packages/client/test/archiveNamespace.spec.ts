@@ -58,3 +58,18 @@ it('grants access after transfer using the original archive namespace', async ()
     await grantRow(originalTenant, device, recipientID, 1), sealed)
   expect(toBase64(opened)).toBe(vector.private_key)
 })
+
+it('carries the account\'s subject at the provider from /me, and only a canonical one', async () => {
+  const userKeys = await generateKeyPair()
+  const userKey = await importArchiveKey(userKeys.privateKey)
+  const sub = '0199a0c2-7d3e-7b51-9f0a-2c4e6b8d1f20'
+  for (const [given, want] of [[sub, sub], [undefined, undefined], ['0199A0C2-7D3E-7B51-9F0A-2C4E6B8D1F20', undefined], ['not-a-uuid', undefined]] as const) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      user: { id: userID, tenant_id: personal, email: 'owner@example.test', role: 'owner', public_key: toBase64(userKeys.publicKey), has_recovery: true,
+        ...(given === undefined ? {} : { platform_sub: given }) },
+      grants: [],
+    }), { status: 200 })))
+    const signed = await refreshAccountAccess('https://example.test', 'session', userKey, userID, personal)
+    expect(signed.platformSub).toBe(want)
+  }
+})

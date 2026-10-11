@@ -471,6 +471,66 @@ func TestWellKnownPathsAreNotPages(t *testing.T) {
 // while it is on: the issuer may be connected to (the sign-in's token
 // request), and /auth/callback, served as any page, carries strict-origin,
 // so its ?code never rides in a Referer, even to this origin's own assets.
+// The shared shell's data is read from The Happie Co's console: its origin
+// joins connect-src only beside the issuer, and frame-ancestors stays 'none'
+// (shell contract v1 2.2).
+func TestPlatformConsoleJoinsConnectSrcOnly(t *testing.T) {
+	const issuer, console = "https://id.thehappie.co", "https://console.thehappie.co"
+	for _, tc := range []struct {
+		issuer, console, connect string
+	}{
+		{issuer, console, "'self' " + issuer + " " + console},
+		{"http://id.thehappie.localhost:8290", "http://console.thehappie.localhost:8290", "'self' http://id.thehappie.localhost:8290 http://console.thehappie.localhost:8290"},
+		// Without the issuer, or anything but a bare origin, it is never spliced in.
+		{"", console, "'self'"},
+		{issuer, "", "'self' " + issuer},
+		{issuer, issuer, "'self' " + issuer},
+		{issuer, "https://console.thehappie.co; script-src *", "'self' " + issuer},
+		{issuer, "https://console.thehappie.co/", "'self' " + issuer},
+		{issuer, "http://console.example.com", "'self' " + issuer},
+	} {
+		h, err := webui.New(build(t), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.PlatformIssuer, h.PlatformConsole = tc.issuer, tc.console
+		for _, target := range []string{"/", "/console", "/console/numbers?workspace=01a08e0e-c546-7db3-9c44-e6352636d330"} {
+			resp := get(t, h, target)
+			resp.Body.Close()
+			csp := resp.Header.Get("Content-Security-Policy")
+			if got := directive(csp, "connect-src"); got != tc.connect {
+				t.Errorf("%q %q %s: connect-src %q, want %q", tc.issuer, tc.console, target, got, tc.connect)
+			}
+			if got := directive(csp, "frame-ancestors"); got != "'none'" {
+				t.Errorf("%q %q %s: frame-ancestors %q", tc.issuer, tc.console, target, got)
+			}
+			if directive(csp, "script-src") != "'self'" {
+				t.Errorf("%q %q %s: script-src changed: %s", tc.issuer, tc.console, target, csp)
+			}
+		}
+	}
+}
+
+// The pilot's document has the AI providers too: the console's origin comes
+// right after the issuer, and the providers after it, each once.
+func TestPlatformConsoleBesideTheAIProviders(t *testing.T) {
+	h, err := webui.New(build(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.AIModelLists, h.PlatformIssuer, h.PlatformConsole = true, "https://id.thehappie.co", "https://console.thehappie.co"
+	resp := get(t, h, "/console/mcp?workspace=01a08e0e-c546-7db3-9c44-e6352636d330")
+	resp.Body.Close()
+	csp := resp.Header.Get("Content-Security-Policy")
+	want := "'self' https://id.thehappie.co https://console.thehappie.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com"
+	if got := directive(csp, "connect-src"); got != want {
+		t.Fatalf("connect-src %q, want %q", got, want)
+	}
+	if got := directive(csp, "frame-ancestors"); got != "'none'" {
+		t.Fatalf("frame-ancestors %q", got)
+	}
+}
+
 func TestPlatformSignInHeadersOnlyWhileItIsOn(t *testing.T) {
 	const issuer = "https://id.thehappie.co"
 	for _, tc := range []struct {
