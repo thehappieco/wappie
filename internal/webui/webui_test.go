@@ -511,6 +511,26 @@ func TestPlatformConsoleJoinsConnectSrcOnly(t *testing.T) {
 	}
 }
 
+// The pilot's document has the AI providers too: the console's origin comes
+// right after the issuer, and the providers after it, each once.
+func TestPlatformConsoleBesideTheAIProviders(t *testing.T) {
+	h, err := webui.New(build(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.AIModelLists, h.PlatformIssuer, h.PlatformConsole = true, "https://id.thehappie.co", "https://console.thehappie.co"
+	resp := get(t, h, "/console/mcp?workspace=01a08e0e-c546-7db3-9c44-e6352636d330")
+	resp.Body.Close()
+	csp := resp.Header.Get("Content-Security-Policy")
+	want := "'self' https://id.thehappie.co https://console.thehappie.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com"
+	if got := directive(csp, "connect-src"); got != want {
+		t.Fatalf("connect-src %q, want %q", got, want)
+	}
+	if got := directive(csp, "frame-ancestors"); got != "'none'" {
+		t.Fatalf("frame-ancestors %q", got)
+	}
+}
+
 func TestPlatformSignInHeadersOnlyWhileItIsOn(t *testing.T) {
 	const issuer = "https://id.thehappie.co"
 	for _, tc := range []struct {
