@@ -245,6 +245,13 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 		// The build puts a content hash in these names, so what sits behind
 		// one never changes.
 		header.Set("Cache-Control", "public, max-age=31536000, immutable")
+	case clean == "/boot.js" || clean == "/boot.css":
+		// The cloud console's first-frame files, named without a hash: they
+		// set the theme and the shell's background before the application's
+		// script runs, so they change with the document they serve, and are
+		// revalidated like it. An hour of a cached copy would draw a new
+		// release's first frame with the old one's.
+		header.Set("Cache-Control", "no-cache")
 	default:
 		header.Set("Cache-Control", "public, max-age=3600")
 	}

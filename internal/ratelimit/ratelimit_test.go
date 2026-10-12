@@ -116,14 +116,14 @@ func clock(a *Auth, now *time.Time) {
 	}
 }
 
-// A Renew all right after a console reload: the reload's workspace switches
-// and the step-up spend the sign-in budget, and each renewal's provisional
-// service invitation and its completion spend the setups' own, one token of
-// each of the account's two buckets and two of the address's; the service's
-// sign-up between them stays on the sign-in budget's address limit. Ten
-// renewals and a few AI integrations at the same instant all go through, the
-// setups' budget refuses past its fifteen, and the sign-in budget is what it
-// was.
+// A Renew all right after step-ups and a sign-in spent the sign-in budget,
+// as a console reload's workspace switches did before they had a budget of
+// their own: each renewal's provisional service invitation and its
+// completion spend the setups' own, one token of each of the account's two
+// buckets and two of the address's; the service's sign-up between them stays
+// on the sign-in budget's address limit. Ten renewals and a few AI
+// integrations at the same instant all go through, the setups' budget
+// refuses past its fifteen, and the sign-in budget is what it was.
 func TestRenewAllOfTenAfterWorkspaceSwitches(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	auth, setups := DefaultAuth(nil), DefaultSetups(nil)
@@ -133,10 +133,10 @@ func TestRenewAllOfTenAfterWorkspaceSwitches(t *testing.T) {
 	const email, account = "owner@example.test", "018f3a2b-2222-7000-8000-00000000aaaa"
 	invitation := InvitationSubject(account)
 
-	// Four switches and a step-up: the account's sign-in budget is gone.
+	// Four step-ups and a sign-in: the account's sign-in budget is gone.
 	for i := range 5 {
 		if ok, _ := auth.Allow(r, email); !ok {
-			t.Fatalf("switch or step-up %d was refused", i+1)
+			t.Fatalf("step-up or sign-in %d was refused", i+1)
 		}
 	}
 	if ok, wait := auth.Allow(r, email); ok || wait <= 0 {
@@ -178,8 +178,8 @@ func TestRenewAllOfTenAfterWorkspaceSwitches(t *testing.T) {
 	}
 
 	// The sign-in budget is unchanged: still spent for the account, five a
-	// minute, and twenty per address of which the switches, the refusal and
-	// the sign-ups took twenty.
+	// minute, and twenty per address of which the step-ups, the sign-in, the
+	// refusal and the sign-ups took twenty.
 	if ok, _ := auth.Allow(r, ""); ok {
 		t.Fatal("the address limit of the sign-in budget grew")
 	}
@@ -258,6 +258,55 @@ func TestSetupsAreBoundedPerAddress(t *testing.T) {
 		t.Fatalf("the sixty-first from one address = %v, %v; want refused with a wait", ok, wait)
 	}
 	if ok, _ := setups.Allow(&http.Request{RemoteAddr: "198.51.100.2:1"}, "account-61"); !ok {
+		t.Fatal("another address was refused because of the first")
+	}
+}
+
+// A person hopping between the console and Wappie and through the
+// workspace selector opens a workspace session at each hop. Thirty at the
+// same instant go through, then one a second for as long as the clicking
+// lasts; another account has its own thirty; and an address that spreads
+// switches across accounts is held to sixty at once.
+func TestWorkspaceSwitchesHaveTheirOwnBudget(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	sessions := DefaultWorkspaceSessions(nil)
+	clock(sessions, &now)
+	r := &http.Request{RemoteAddr: "203.0.113.7:4242"}
+	const account = "018f3a2b-2222-7000-8000-00000000aaaa"
+
+	for i := range 30 {
+		if ok, _ := sessions.Allow(r, account); !ok {
+			t.Fatalf("switch %d at the same instant was refused", i+1)
+		}
+	}
+	if ok, wait := sessions.Allow(r, account); ok || wait < time.Second || wait > 2*time.Second {
+		t.Fatalf("a thirty-first at the same instant = %v, %v; want refused for a second or two", ok, wait)
+	}
+	// A minute of one switch a second, after the thirty: none is refused.
+	for i := range 60 {
+		now = now.Add(time.Second)
+		if ok, _ := sessions.Allow(r, account); !ok {
+			t.Fatalf("switch %d of the minute after them was refused", i+1)
+		}
+	}
+	// Another account has its own thirty.
+	for i := range 30 {
+		if ok, _ := sessions.Allow(r, "018f3a2b-2222-7000-8000-00000000bbbb"); !ok {
+			t.Fatalf("another account's switch %d was refused because of the first", i+1)
+		}
+	}
+
+	// One address, a switch for each of many accounts: sixty at once.
+	crowd := &http.Request{RemoteAddr: "198.51.100.9:1"}
+	for i := range 60 {
+		if ok, _ := sessions.Allow(crowd, "account-"+strconv.Itoa(i)); !ok {
+			t.Fatalf("switch %d from one address was refused", i+1)
+		}
+	}
+	if ok, wait := sessions.Allow(crowd, "account-61"); ok || wait <= 0 {
+		t.Fatalf("the sixty-first from one address = %v, %v; want refused with a wait", ok, wait)
+	}
+	if ok, _ := sessions.Allow(&http.Request{RemoteAddr: "198.51.100.10:1"}, "account-61"); !ok {
 		t.Fatal("another address was refused because of the first")
 	}
 }

@@ -106,6 +106,39 @@ func TestServesAssets(t *testing.T) {
 	}
 }
 
+// The cloud console's first-frame files have no hash in their names and
+// shape the first paint of every release, so they are revalidated like the
+// document; any other file at the root keeps its hour.
+func TestTheFirstFrameFilesAreRevalidated(t *testing.T) {
+	dir := build(t)
+	write(t, filepath.Join(dir, "boot.js"), "document.documentElement.setAttribute('data-theme', 'light')")
+	write(t, filepath.Join(dir, "boot.css"), "html{}")
+	write(t, filepath.Join(dir, "favicon-32.png"), "png")
+	h, err := webui.New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{"/boot.js", "/boot.css", "/boot.js?v=1"} {
+		resp := get(t, h, target)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s returned %d", target, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("%s is cached as %q, so a release could draw its first frame with the old copy", target, got)
+		}
+		if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options is %q", target, got)
+		}
+	}
+	resp := get(t, h, "/favicon-32.png")
+	resp.Body.Close()
+	if got := resp.Header.Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Errorf("another root file is cached as %q", got)
+	}
+}
+
 func TestAMissingScriptIsNotAnsweredWithThePage(t *testing.T) {
 	h, err := webui.New(build(t), nil)
 	if err != nil {

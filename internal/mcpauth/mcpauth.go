@@ -67,8 +67,8 @@ type Handler struct {
 	Limits *ratelimit.Auth
 	// SetupLimits bounds the consent itself, a renewal and a token's
 	// bundle (ratelimit.DefaultSetups): the setups' own budget, per address
-	// and per account, apart from the sign-in one, which every workspace
-	// switch spends. The provisional service invitation each asked for first
+	// and per account, apart from the sign-in one, which every step-up and
+	// sign-in spends. The provisional service invitation each asked for first
 	// spent a bucket of its own there (ratelimit.InvitationSubject). Nil
 	// falls back to Limits.
 	SetupLimits *ratelimit.Auth

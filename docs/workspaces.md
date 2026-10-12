@@ -42,7 +42,7 @@ Workspace listing includes suspended spaces but excludes disabled memberships. S
 
 Invite validation, membership insertion and consumption share one transaction. Rejected acceptance does not spend an otherwise valid invitation or promote an existing member. Accepting does not switch the current session or create device grants.
 
-Selecting a workspace creates a new token with the source session's expiry; switching cannot extend the authentication lifetime. It does not mutate the previous token or move existing WebSockets between spaces. Clients must close their old connection, discard the old space's loaded data/keys, load `/v1/auth/me` with the new token and reconnect using that token. Other tabs may keep their own sessions in different spaces. End unused tokens through the existing logout endpoint.
+Selecting a workspace creates a new token with the source session's expiry; switching cannot extend the authentication lifetime. It does not mutate the previous token or move existing WebSockets between spaces. Clients must close their old connection, discard the old space's loaded data/keys, load `/v1/auth/me` with the new token and reconnect using that token. Other tabs may keep their own sessions in different spaces. End unused tokens through the existing logout endpoint. Selecting spends a budget of its own (`ratelimit.DefaultWorkspaceSessions`), not the sign-in one: 30 at once and 60 a minute per account, 60 at once and 120 a minute per address, then `429 rate_limited` with `Retry-After`.
 
 Password changes from any active workspace update the same identity and atomically revoke stored sessions across spaces.
 

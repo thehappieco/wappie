@@ -110,7 +110,7 @@ func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A provisional invitation is a step of an assistant setup, and spends
-	// the setups' budget rather than the one workspace switches spend.
+	// the setups' budget rather than the sign-in one.
 	if req.Provisional {
 		if !h.allowSetup(w, r, user) {
 			return

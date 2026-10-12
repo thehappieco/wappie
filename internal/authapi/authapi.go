@@ -57,8 +57,14 @@ type Handler struct {
 	// of a console reload cannot refuse a Renew all. Nil falls back to
 	// Limits.
 	SetupLimits *ratelimit.Auth
-	Log         *slog.Logger
-	Passkeys    *PasskeyProvider
+	// WorkspaceSessionLimits is what a workspace switch spends instead
+	// (ratelimit.DefaultWorkspaceSessions), per address and per account
+	// ID: the switch carries a live session and guesses nothing, and on
+	// the sign-in budget the sixth hop in a minute between the console and
+	// a workspace was refused. Nil falls back to Limits.
+	WorkspaceSessionLimits *ratelimit.Auth
+	Log                    *slog.Logger
+	Passkeys               *PasskeyProvider
 	// StepUp is what a content consent's service invitation asks before it
 	// is issued (internal/stepup); nil is the session store's own record.
 	StepUp stepup.Checker
@@ -737,6 +743,17 @@ func (h *Handler) allowSetup(w http.ResponseWriter, r *http.Request, user store.
 		return h.allow(w, r, user.Email)
 	}
 	return limit(w, r, h.SetupLimits, ratelimit.InvitationSubject(user.ID.String()))
+}
+
+// allowWorkspaceSession is allow for a workspace switch: on
+// WorkspaceSessionLimits, under the account's ID, which is the same in every
+// workspace, so the switches of one person share one bucket wherever they
+// start from.
+func (h *Handler) allowWorkspaceSession(w http.ResponseWriter, r *http.Request, user store.User) bool {
+	if h.WorkspaceSessionLimits == nil {
+		return h.allow(w, r, user.Email)
+	}
+	return limit(w, r, h.WorkspaceSessionLimits, user.ID.String())
 }
 
 func limit(w http.ResponseWriter, r *http.Request, limits *ratelimit.Auth, subject string) bool {

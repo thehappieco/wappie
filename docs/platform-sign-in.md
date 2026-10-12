@@ -440,6 +440,10 @@ private console draws it around Wappie's settings screens, at
 - `/v1/auth/me` names `platform_sub`. The shell compares it with the
   console's person, and shows Wappie's own menu with a notice when they
   differ.
+- `/boot.js` and `/boot.css`, the console's first-frame files (no hash in
+  their names), are served `Cache-Control: no-cache` like the document, so a
+  release is never drawn with an old copy; other root files keep an hour and
+  `/assets/` a year (`internal/webui`).
 
 The shell's data is display only. The workspace in the address is
 authorized against this server's own session (`POST

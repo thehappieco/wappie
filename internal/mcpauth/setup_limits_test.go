@@ -14,11 +14,11 @@ import (
 
 // The connector's steps of an assistant setup (the consent, a renewal, a
 // token's bundle) spend the setups' budget, per account, and not the sign-in
-// budget, which a console reload's workspace switches and step-up spend. The
-// provisional service invitation each asked for first spent the account's
-// other bucket there, so it never takes a completion's token. A Renew all of
-// ten and a few AI integrations go through after the sign-in budget is gone;
-// past the setups' fifteen, 429 with a Retry-After.
+// budget, which step-ups and sign-ins spend. The provisional service
+// invitation each asked for first spent the account's other bucket there, so
+// it never takes a completion's token. A Renew all of ten and a few AI
+// integrations go through after the sign-in budget is gone; past the setups'
+// fifteen, 429 with a Retry-After.
 func TestSetupsSpendTheirOwnBudget(t *testing.T) {
 	h := newHarness(t)
 	limits, setups := ratelimit.DefaultAuth(nil), ratelimit.DefaultSetups(nil)

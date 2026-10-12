@@ -114,7 +114,9 @@ export interface SignedIn {
 
 export type SignInStep = 'checking' | 'unlocking' | 'authenticating' | 'passkey' | 'opening'
 
-async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal, maxResponseBytes?: number): Promise<T> {
+// Exported as authRequest, with these positional arguments; keepalive comes
+// last so that callers passing a signal keep their meaning.
+async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal, maxResponseBytes?: number, keepalive = false): Promise<T> {
   const response = await fetch(endpoint(serverURL, path), {
     method: body === undefined ? 'GET' : 'POST',
     headers: {
@@ -124,6 +126,8 @@ async function call<T>(serverURL: string, path: string, body: unknown, token?: s
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store', redirect: 'error',
     ...(signal ? { signal } : {}),
+    // A request that must outlive its page (a logout on pagehide).
+    ...(keepalive ? { keepalive: true } : {}),
   })
   if (response.status === 204) return undefined as T
   let text: string
@@ -491,10 +495,23 @@ export async function setRecovery(input: {
   }
 }
 
+/** How signOut sends the logout. A boolean in its place is allRelated alone, as callers have always passed it. */
+export interface SignOutOptions {
+  /** Revoke every session of the same sign-in (all_related), not only this token's. */
+  allRelated?: boolean
+  /**
+   * Send it with fetch keepalive, so it outlives the page sending it: a
+   * revoke on pagehide. The request is dispatched before signOut returns, so
+   * a handler that does not await it still sends it.
+   */
+  keepalive?: boolean
+}
+
 /** signOut revokes the session server-side. Best effort: the tab is closing. */
-export async function signOut(serverURL: string, token: string, allRelated = false): Promise<void> {
+export async function signOut(serverURL: string, token: string, options: boolean | SignOutOptions = false): Promise<void> {
+  const { allRelated = false, keepalive = false } = typeof options === 'boolean' ? { allRelated: options } : options
   try {
-    await call<void>(serverURL, '/v1/auth/logout', allRelated ? { all_related: true } : {}, token)
+    await call<void>(serverURL, '/v1/auth/logout', allRelated ? { all_related: true } : {}, token, undefined, undefined, keepalive)
   } catch {
     // A session that cannot be revoked still expires, and there is nothing
     // useful to show somebody who is already leaving.
