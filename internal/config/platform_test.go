@@ -63,6 +63,28 @@ func TestPlatformConsoleOrigin(t *testing.T) {
 	}
 }
 
+// Step 6 in the cloud: the provider is the only way in, and the startup line
+// says so.
+func TestPlatformLocalLoginOffInProd(t *testing.T) {
+	minimalEnv(t)
+	t.Setenv("WS_ENV", "prod")
+	t.Setenv("WS_POSTGRES_DSN", "postgres://user:hunter2@db/whatserver2")
+	t.Setenv("WS_APP_URL", "https://app.wappie.thehappie.co")
+	t.Setenv("WS_PLATFORM_ISSUER", "https://id.thehappie.co")
+	t.Setenv("WS_PLATFORM_CLIENT_ID", "wappie-app")
+	t.Setenv("WS_LOCAL_LOGIN", "off")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Platform.Enabled() || cfg.Platform.LocalLogin != LocalLoginOff {
+		t.Fatalf("%+v", cfg.Platform)
+	}
+	if !strings.Contains(cfg.String(), "platform_login=on platform_issuer=https://id.thehappie.co local_login=off") {
+		t.Fatalf("startup line: %s", cfg.String())
+	}
+}
+
 func TestPlatformAppOriginDefaultsToTheAppURL(t *testing.T) {
 	minimalEnv(t)
 	t.Setenv("WS_ENV", "prod")

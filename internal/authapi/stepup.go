@@ -55,9 +55,10 @@ type stepUpReply struct {
 // stepsUpAtProvider reports whether an account's step-up is the identity
 // provider's re-authentication rather than a passkey or the password here:
 // an account that signs in through the provider, while the provider is
-// configured. With the provider unset (a rollback), a linked account signs
-// in with its legacy password again and steps up with it; one created
-// through the provider has no password and cannot sign in at all.
+// configured. With the provider unset (a rollback), a linked account still
+// in its rollback window signs in with its legacy password again and steps
+// up with it; one created through the provider, or linked before migration
+// 0049 ended the window, has no password and cannot sign in at all.
 func (h *Handler) stepsUpAtProvider(user store.User) bool {
 	return h.Platform != nil && authSource(user) == store.PlatformAuthSource
 }

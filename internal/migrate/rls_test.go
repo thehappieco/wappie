@@ -33,13 +33,16 @@ func TestMigrationsDoNotWriteThroughRowLevelSecurity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Tables that carry a tenant policy at some point in the history. Written
-	// out because a migration file cannot be asked what the schema looked like
-	// when it ran.
+	// Tables that carry a tenant policy at some point in the history, and
+	// user_passkeys, whose policy is the account's (app.user_id), which a
+	// migration has no more of than it has a workspace. Written out because
+	// a migration file cannot be asked what the schema looked like when it
+	// ran.
 	protected := []string{
 		"messages", "chats", "contacts", "media", "receipts", "events",
 		"content_keys", "devices", "users", "device_archive_keys",
 		"device_key_grants", "tenant_archive_keys", "tenant_key_grants",
+		"user_passkeys",
 	}
 
 	// Already applied everywhere, so it cannot be edited, and it turns out not

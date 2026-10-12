@@ -663,8 +663,9 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 // nothing of it however the server behaves.
 //
 // A session started through the identity provider (via_provider) is never
-// handed wrapped_usk. A linked account keeps its legacy password wrap
-// through the rollback window, and such a session proved no password here:
+// handed wrapped_usk. A linked account kept its legacy password wrap through
+// the rollback window (and one linked after migration 0049 still keeps it),
+// and such a session proved no password here:
 // whoever holds an access token for the sub could otherwise fetch the wrap
 // and attack the old password offline (docs/platform-sign-in.md, "The
 // rollback window"). A session of the same account that signed in with the

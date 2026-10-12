@@ -10,10 +10,11 @@ The Go side lives in the public core and does nothing until
 `WS_PLATFORM_ISSUER` is set. The page side (the `/auth/callback` page, account
 setup and the link ceremony) is in the private console only.
 
-This document covers steps 1, 2 and 4 of the plan: the Go routes (shipped
-dark), the console in development, and the step-up of an account that signs
-in through id. (step 4, owner decision D3). The cutover (step 5) and the end
-of the rollback window (migration 0049, step 6) come later.
+This document covers steps 1, 2, 4 and 6 of the plan: the Go routes (shipped
+dark), the console in development, the step-up of an account that signs in
+through id. (step 4, owner decision D3), and the end of the rollback window
+(step 6: migration 0049 and `WS_LOCAL_LOGIN=off`, [below](#the-rollback-window)).
+The cutover (step 5) is configuration only: `WS_LOCAL_LOGIN=link_only`.
 
 **Not in the pilot before step 4 is deployed.** The owner decided on
 2026-10-05 that the platform sign-in is not switched on in the pilot
@@ -75,15 +76,15 @@ the browser vault as it does after a password sign-in, through
 | | `users.id` | Credentials in Wappie |
 |---|---|---|
 | A new account created through id. | `sub` (id.'s UUIDv7) | None: no password, no recovery code, no Wappie passkeys |
-| A linked legacy account | Unchanged: grants, foreign keys and AADs bind it | The legacy password and recovery wraps stay until the end of the rollback window (D4, 14 days after the cutover) |
+| A linked legacy account | Unchanged: grants, foreign keys and AADs bind it | The legacy password and recovery wraps stayed until the end of the rollback window (step 6, migration 0049); none since |
 
 - Everything is keyed by `sub`. An e-mail address never links, creates or
   merges anything.
 - userinfo's address is the provider's current verified one at that sign-in.
   An account created through id. follows it (`users.email`). A linked legacy
-  account keeps its `users.email`, because its legacy password wrap is bound
-  to it; the link row records id.'s address, and an invitation addressed to
-  that address is accepted too.
+  account keeps its `users.email`, because its legacy password wrap was bound
+  to it (after 0049 too); the link row records id.'s address, and an
+  invitation addressed to that address is accepted too.
 - So Wappie counts an account's address as verified when it is the link
   row's (`platform_identities.email`), beside a completed sign-up
   verification: always for an account created through id., and for a
@@ -108,7 +109,7 @@ Other changes:
 - `users_credentials_by_source` replaces 0020's `users_service_has_no_password`.
   It allows: a service with no password; a local person with all of the
   password columns; a platform person with either all of them (linked, in the
-  window) or none.
+  window) or none (created through id., or linked before 0049).
 - `sessions.step_up_not_before` is when the session last started a step-up
   at id. (see "Step-ups"). The proof itself is 0047's
   `sessions.authenticated_at`, so 0048 adds no second record of it.
@@ -142,15 +143,19 @@ The migration header holds the down-step, checksum-gated against
 
 - It refuses while any account created through the provider exists, because
   such an account has no password to fall back to. Delete those accounts
-  explicitly first.
-- A linked account becomes local again, with its old password.
+  explicitly first. Since 0049 every account linked before it has no password
+  either, so the refusal covers those too (its message names only the
+  accounts created through the provider), and 0049's down-step comes first
+  ([below](#the-end-of-the-window-migration-0049)).
+- A linked account that still has its old password (one linked after 0049)
+  becomes local again, with it.
 - Every session started through the provider (`via_provider`) is signed
   out, even one a step-up at id. has since given a proof: it came through a
   provider the older binary does not know, and one with no proof holds
   `authenticated_at = -infinity`, which the older binary cannot read (any
   such session goes too). The person signs in again with the old password.
-- It runs before the down-steps of 0047 (the fewer steps) and earlier.
-  0047's refuses while version 48 is still in the ledger.
+- It runs after 0049's and before the down-steps of 0047 (the fewer steps)
+  and earlier. 0047's refuses while version 48 is still in the ledger.
 
 ## Configuration
 
@@ -170,7 +175,8 @@ Validation:
   and `WS_PLATFORM_ID_ADDR` is refused.
 - The console origin needs the issuer, is an exact origin, and is neither
   the issuer nor the page origin.
-- `link_only` and `off` are refused without an issuer.
+- `link_only` and `off` are refused without an issuer. `off` needs no
+  migration: it closes the password routes whatever the database holds.
 - The startup line says `platform_login=on|off` and `local_login=…`, then
   `platform_console=…` only when the console origin is set.
 
@@ -194,6 +200,13 @@ open: the console reads from it what to ask for.
 `/passkeys/config` and `/signup/config` answer "disabled" unless local login
 is `on`. The link ceremony proves a recovery code at `/platform/link/prepare`,
 behind its ticket, so `link_only` does not keep `/recover/open`.
+
+Step 6 is both `WS_LOCAL_LOGIN=off` and migration 0049
+([below](#the-end-of-the-window-migration-0049)), and neither needs the other:
+`off` refuses every password route above, and 0049 removes what they would
+check, the legacy credentials of the linked accounts, so that a linked
+account's old password, recovery code and passkeys open nothing even with
+the provider unset or local login back `on`.
 
 With `off`, the verified owner of an unlinked password account's address has
 no step left: the link routes are closed, and a new account cannot take an
@@ -540,7 +553,7 @@ that proof, never what a guarded write asks.
 |---|---|
 | `auth_source` `local` | The sign-in that started the session's family, then a Wappie passkey (WebAuthn, user verification) or the password, checked by this server. |
 | `auth_source` `platform`, provider configured | The sign-in through id., from its userinfo's `auth_time`; then a re-authentication at id. with `prompt=login` (owner decision D3, step 4). Wappie runs no WebAuthn for these accounts (platform decision 0008) and takes no password from them. A link proves the old password, so its session's proof is now. |
-| `auth_source` `platform`, provider unset (a rollback) | As a local account: a linked account signs in and steps up with its legacy password, and may add a Wappie passkey. An account created through id. cannot sign in. |
+| `auth_source` `platform`, provider unset (a rollback) | As a local account: a linked account still in its window signs in and steps up with its legacy password, and may add a Wappie passkey. An account created through id., or linked before 0049, has no password and cannot sign in. |
 
 **The step-up at id. (step 4).** Nothing that asks for a proof changes;
 only how a platform session earns one (the routes are under "Routes"):
@@ -607,9 +620,9 @@ Also, for such an account:
   start, above).
 
 A linked account that signs in with its legacy password while
-`WS_LOCAL_LOGIN=on` (both doors) has that sign-in as its proof for ten
-minutes, as any password sign-in does; its step-ups after that are id.'s,
-from that session too. Once `WS_LOCAL_LOGIN` narrows the password routes,
+`WS_LOCAL_LOGIN=on` (both doors, in its window) has that sign-in as its
+proof for ten minutes, as any password sign-in does; its step-ups after that
+are id.'s, from that session too. Once `WS_LOCAL_LOGIN` narrows the password routes,
 the passkey and password step-ups close with them: `403
 local_login_disabled` for a local account, while a platform account still
 gets `409 step_up_at_provider` first (the route table under
@@ -617,9 +630,13 @@ gets `409 step_up_at_provider` first (the route table under
 
 ## The rollback window
 
-A linked account keeps its legacy password columns (`auth_hash`, `kdf_salt`,
-`wrapped_usk`, the recovery pair) until migration 0049 at the end of the
-window (step 6).
+A linked account kept what it signed in with before the link, its legacy
+credentials, so that with the provider switched off it could sign in with
+its old password again: the password columns (`auth_hash`, `kdf_salt`,
+`kdf_params`, `wrapped_usk`), the recovery pair (`recovery_wrap`,
+`recovery_hash`) and its Wappie passkeys, which the link revoked. Migration
+0049 ended the window (step 6, [below](#the-end-of-the-window-migration-0049)).
+While it was open:
 
 - Steps 1 to 3 accepted one consequence of that, which step 4 closes:
   `/v1/auth/me` handed a linked account's `wrapped_usk`, its key under the
@@ -643,16 +660,57 @@ window (step 6).
   `packages/client`, part of the attested reader's image, which step 4 does
   not change. Consents, renewals, AI integrations and, in the console,
   Members' grants seal with the session's account key after a step-up.
-- 0049 ends the window in any case. Until then, link an account only once
-  its old password is a strong one: change a weak one before linking.
+- Until 0049, link an account only once its old password is a strong one:
+  change a weak one before linking. That still holds for an account linked
+  after 0049 (see "Not yet").
+
+### The end of the window (migration 0049)
+
+D4 put it 14 days after the cutover (step 5, `WS_LOCAL_LOGIN=link_only`); the
+owner brought it forward on 2026-10-12, with no real customers and no old
+password worth keeping. Step 6 is two things, each of which works without
+the other:
+
+- **`WS_LOCAL_LOGIN=off`** closes every password route (the table under
+  "Configuration") and drops `auth.password` from discovery.
+- **Migration 0049** (`0049_platform_window_end.sql`), for every account with
+  a `platform_identities` row, linked or created through id.:
+  - nulls `users.auth_hash`, `kdf_salt`, `kdf_params`, `wrapped_usk`,
+    `recovery_wrap` and `recovery_hash`;
+  - deletes its `user_passkeys` (each with an envelope of the account key)
+    and its `passkey_challenges`;
+  - ends every live session that did not come through the provider (one a
+    password, a recovery code or a passkey started, and the workspace
+    switches made from one), and clears `sessions.passkey_id` on all of its
+    sessions, since a session may not name a deleted passkey.
+
+  `users.public_key`, `auth_source`, the link and the platform wraps are
+  untouched: the account goes on signing in through id. with the same
+  account key, and steps up there. An account created through id. has none
+  of the above, so no row of it changes; a service account and an unlinked
+  password account have no link and are not touched. Run again, it changes
+  nothing. Every session through the provider stays, and `/v1/auth/me` has
+  no legacy wrap left to withhold.
+
+0049 is data only: no table, column, constraint, index, policy or trigger
+changes (it lifts the row-level security of `users` and `user_passkeys` for
+its statements and puts it back in the same transaction). Its down-step is
+the ledger row, `DELETE FROM schema_migrations WHERE version = 49`, after
+which a release that knows 48 starts again. What it nulled and deleted does
+not come back: no down-step restores a password, a recovery code, a passkey
+or an ended session.
+
+An account linked after 0049, which needs local login `on` or `link_only`
+for the link (the operator's procedure under "Configuration"), keeps its
+legacy credentials as 0048 left them; nothing removes them yet.
 
 ## Rollback
 
 | Level | What | Effect |
 |---|---|---|
-| Switch | Unset `WS_PLATFORM_ISSUER`, set `WS_LOCAL_LOGIN=on`, restart | Password sign-in is back for unlinked and linked accounts. Accounts created through id. cannot sign in until the switch returns. |
-| Release | A release that knows version 48 | As in `deployment.md` |
-| Schema | 0048's down-step, before 0047's and every older one | Refused while accounts created through id. exist; signs out every session started through the provider (`via_provider`), confirmed at id. or not |
+| Switch | Unset `WS_PLATFORM_ISSUER`, set `WS_LOCAL_LOGIN=on`, restart | Password sign-in is back for unlinked accounts and for those linked after 0049. Accounts created through id., and those linked before 0049, cannot sign in until the switch returns. |
+| Release | A release that knows version 48 but not 49 | 0049's down-step first: the ledger row only (the migration's header). The linked accounts stay without their legacy credentials. Then as in `deployment.md` |
+| Schema | 0048's down-step, after 0049's and before 0047's and every older one | Refused while any account signs in through id. with no password: created there, or linked before 0049. Signs out every session started through the provider (`via_provider`), confirmed at id. or not |
 
 ## The texts (approved 2026-10-05)
 
@@ -729,10 +787,13 @@ are in the cloud build only; C-STEP-13 stays, unchanged, in the open build
 
 ## Not yet
 
-- **Step 4 in the pilot.** Deployed with the switch off first; the sign-in is
-  switched on only after the end-to-end test (Decision 8, above).
-- **The cutover (step 5) and the end of the window (step 6).** Migration 0049
-  will null the legacy credentials of linked accounts and delete their
-  passkeys, with no down-step.
+- **Step 6 in the pilot.** 0049 runs when the release that carries it is
+  deployed, and `WS_LOCAL_LOGIN=off` is the operator's switch (the private
+  repository's `docs/production.md` records both).
+- **Accounts linked after 0049** keep their legacy credentials ("The end of
+  the window").
+- **A linked account's address.** It keeps its own `users.email` after 0049,
+  although no wrap is bound to it any more; following id.'s, as an account
+  created there does, would be a change of its own.
 - **The rewrap of a new epoch in the console.**
 - **Wappie's export.** It will carry the platform wrap (decision 0015, 0023).

@@ -45,8 +45,10 @@
 //     link to the provider proves the old password, and so the person, now.
 //
 // With the provider unconfigured (the switch off for a rollback), a linked
-// account signs in with its legacy password again and steps up as a local
-// one.
+// account still in its rollback window signs in with its legacy password
+// again and steps up as a local one. Migration 0049 ended the window of the
+// accounts linked by then: like one created through the provider, such an
+// account has no password, and cannot sign in with the provider unset.
 package stepup
 
 import (

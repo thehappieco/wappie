@@ -114,8 +114,8 @@ func (u *Users) AcceptWorkspaceInvite(ctx context.Context, user User, secret str
 		inv, digest, e := lockSignupInvite(ctx, tx, secret, user.Email, false)
 		if errors.Is(e, ErrInviteEmailMismatch) {
 			// An account linked to an identity provider keeps its old
-			// address during the rollback window (platform.go); an
-			// invitation may name the provider's verified one instead.
+			// address (platform.go); an invitation may name the
+			// provider's verified one instead.
 			var linked string
 			if tx.QueryRow(ctx, `SELECT email FROM platform_identities WHERE user_id = $1`, user.ID).Scan(&linked) == nil && linked != normaliseEmail(user.Email) {
 				inv, digest, e = lockSignupInvite(ctx, tx, secret, linked, false)
