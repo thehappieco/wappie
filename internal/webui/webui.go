@@ -291,7 +291,7 @@ func (h *Handler) serveFirstFrameFile(w http.ResponseWriter, r *http.Request, cl
 		http.NotFound(w, r)
 		return
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // a file opened for reading: its bytes are already read when it closes
 	info, err := f.Stat()
 	if err != nil || info.IsDir() {
 		http.NotFound(w, r)
