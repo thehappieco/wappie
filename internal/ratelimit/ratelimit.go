@@ -231,11 +231,19 @@ func InvitationSubject(accountID string) string { return "invitation:" + account
 // Per account (its ID, the same in every workspace), thirty at once and
 // sixty a minute. A switch is a page load or an in-page swap of a second or
 // two, so a person clicking as fast as the page answers stays under one a
-// second, and thirty at once covers a browser restoring every open tab
-// together with a quick run through the selector; a loop is held to one row
-// a second. Per address, sixty at once and 120 a minute: two such people
-// behind one NAT. Sign-ins, step-ups and every other route stay on
-// DefaultAuth, which the switches no longer spend.
+// second; a loop is held to one row a second. Per address, sixty at once and
+// 120 a minute: two such people behind one NAT. Sign-ins, step-ups and every
+// other route stay on DefaultAuth, which the switch itself no longer spends.
+//
+// This is not the tightest bound on entering a workspace. Each switch is
+// followed by a socket opened with the new token, and every websocket hello
+// spends DefaultAuth's address limit (wsapi, twenty at once and sixty a
+// minute, shared with the sign-ins from that address). So one address enters
+// at most about twenty workspaces at once, then one every second: a browser
+// restoring more tabs than that in a workspace other than the sign-in's, or
+// an office behind one NAT doing so together, has its later connections
+// refused (rate_limited) until the bucket refills, though their switches
+// went through.
 func DefaultWorkspaceSessions(proxies []netip.Prefix) *Auth {
 	return &Auth{
 		PerIP:      New(120, 60),

@@ -667,8 +667,18 @@ async function finish(
   return signed
 }
 
-/** Validates authorization again before opening any persisted key or grant. */
-export async function restoreSignIn(login: BrowserLogin, workspace?: string): Promise<SignedIn> {
+/**
+ * Validates authorization again before opening any persisted key or grant.
+ *
+ * For a workspace other than the sign-in's, the server makes a token of that
+ * workspace's (POST /v1/auth/workspaces/session), which is the caller's once
+ * this resolves. minted hears of it as soon as the server answers, before
+ * the rest of the restore, so that a page that goes meanwhile can still sign
+ * it out; when the restore does not use it after all (its /me fails, or the
+ * session it makes is not this sign-in's), it is signed out here, since
+ * nobody else holds it.
+ */
+export async function restoreSignIn(login: BrowserLogin, workspace?: string, minted?: (token: string) => void): Promise<SignedIn> {
   if (login.expiresAt <= Date.now()) throw new AuthError('unauthorized', t('Sua sessão expirou. Entre novamente.'))
   const controller = new AbortController()
   const deadline = setTimeout(() => controller.abort(), 15_000)
@@ -681,16 +691,25 @@ export async function restoreSignIn(login: BrowserLogin, workspace?: string): Pr
     let grants = me
     let notice = ''
     if (workspace && workspace !== me.user.tenant_id) {
+      let selected: SessionReply | undefined
       try {
-        const selected = await call<SessionReply>(login.serverURL, '/v1/auth/workspaces/session', { tenant_id: workspace }, login.token, controller.signal)
+        selected = await call<SessionReply>(login.serverURL, '/v1/auth/workspaces/session', { tenant_id: workspace }, login.token, controller.signal)
+        minted?.(selected.token)
         grants = await call<MeReply>(login.serverURL, '/v1/auth/me', undefined, selected.token, controller.signal)
         reply = selected
       } catch (error) {
+        // Best effort, and not awaited: the restore goes on, or fails, at once.
+        if (selected) void signOut(login.serverURL, selected.token)
         if (!(error instanceof AuthError) || !['bad_request', 'not_authorized', 'not_found'].includes(error.code)) throw error
         notice = t('Este espaço não está disponível. Abrimos seu espaço atual para você escolher outro.')
       }
     }
-    const signed = await finishWithKey(login.serverURL, reply, login.accountKey, grants)
+    let signed: SignedIn
+    try { signed = await finishWithKey(login.serverURL, reply, login.accountKey, grants) }
+    catch (error) {
+      if (reply.token !== login.token) void signOut(login.serverURL, reply.token)
+      throw error
+    }
     signed.browserLogin = login
     signed.notice = notice
     return signed
