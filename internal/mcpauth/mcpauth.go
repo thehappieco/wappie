@@ -94,13 +94,13 @@ type Handler struct {
 	TrustedProxies []netip.Prefix
 	// States keeps the attested readers' sealed state.
 	States *store.MCPReaderStates
-	// RedirectHosts are the hosts an assistant may redirect to and whose
-	// metadata documents may be fetched, for a reader before 0.6.0: a
-	// version-1 descriptor's consent is checked against them. Same list as
-	// that reader's.
+	// RedirectHosts are the hosts an assistant may redirect to, for a
+	// reader before 0.6.0: a version-1 descriptor's consent is checked
+	// against them, and the hosted reader's metadata documents may be
+	// fetched from them (CIMD). Same list as that reader's.
 	RedirectHosts []string
-	// CIMDTransport carries metadata fetches; nil is the default. Tests
-	// hand in one that answers locally.
+	// CIMDTransport carries the hosted reader's metadata fetches; nil is
+	// the default. Tests hand in one that answers locally.
 	CIMDTransport http.RoundTripper
 	Log           *slog.Logger
 	// OpenAIAppsChallenge is served at /.well-known/openai-apps-challenge for
@@ -1077,8 +1077,8 @@ func (h *Handler) connectionRevoke(w http.ResponseWriter, r *http.Request, reade
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// cimd fetches a client metadata document for the reader. The address is
-// checked before anything is opened; see CIMD.
+// cimd fetches a client metadata document for the hosted reader. The
+// address is checked before anything is opened; see CIMD.
 func (h *Handler) cimd(w http.ResponseWriter, r *http.Request) {
 	urls := r.URL.Query()["url"]
 	if len(urls) != 1 {

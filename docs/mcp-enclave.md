@@ -107,7 +107,7 @@ wappie-mcp-hmac/v1
 <direction>        "to-reader" (Go → reader) or "to-go" (reader → Go)
 <reader id>
 <METHOD>           upper case
-<request-target>   raw path plus query exactly as on the request line, e.g. /v1/mcp/enclave/cimd?url=https%3A%2F%2F…
+<request-target>   raw path plus query exactly as on the request line, e.g. /v1/mcp/enclave/state/infra?if_generation=3
 <timestamp>        the header value
 <nonce>            the header value
 <body sha256>      lowercase hex of SHA-256 over the exact body bytes (empty body: e3b0c442…b855)
@@ -146,7 +146,7 @@ The enclave drops *previous* the first time it accepts a request signed with
 
 Test vectors (secret `wappie-test-relay-secret-0123456789abcdefghij`, timestamp `1790300000`):
 - `to-reader`, `enclave`, `POST /internal/requests/AAAAAAAAAAAAAAAAAAAAAA/prepare`, nonce `BBBBBBBBBBBBBBBBBBBBBB`, body `{"nonce":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}`. The body hash is `5abfe6385851c7e99e840bf25362e735b4adc8b617704a5cab1c8cf3aeae5a8f` and the signature is `v1=4966d2e42ab13456589657b9df8429cd70b95f1ec2f9273e6e27b76aabe53456`.
-- `to-go`, `enclave`, `GET /v1/mcp/enclave/cimd?url=https%3A%2F%2Fclaude.ai%2Foauth%2Fmcp-oauth-client-metadata`, nonce `CCCCCCCCCCCCCCCCCCCCCC`, empty body. The signature is `v1=9d67d123516b7dc431b14a28223a654d8f57299cc83022ae17cbc4554baef616`.
+- `to-go`, `enclave`, `GET /v1/mcp/enclave/cimd?url=https%3A%2F%2Fclaude.ai%2Foauth%2Fmcp-oauth-client-metadata`, nonce `CCCCCCCCCCCCCCCCCCCCCC`, empty body. The signature is `v1=9d67d123516b7dc431b14a28223a654d8f57299cc83022ae17cbc4554baef616`. (The route was deleted on 2026-10-12, §19.9; the vector keeps its target, which is only a string here.)
 
 ## 5. Endpoints
 
@@ -191,7 +191,6 @@ on rows whose `reader` equals the caller's id; any other row is 404.
 | `GET /v1/mcp/enclave/connections/{id}` | none | 200 `{"status","expires_at"}`, as `/v1/mcp/internal/...` | 404 |
 | `POST /v1/mcp/enclave/connections/{id}/activate` | none | 204 | 404, 409 `connection_state` |
 | `POST /v1/mcp/enclave/connections/{id}/revoke` | none | 204 (idempotent; unknown id also 204) | none |
-| `GET /v1/mcp/enclave/cimd?url=<escaped>` | none | 200 document bytes (`application/json`) | 400, 502 `cimd_unavailable` |
 | `GET /v1/mcp/enclave/state/{name}` | none | 200 `application/octet-stream`, body = envelope (§8), header `X-Wappie-Generation: <n>` | 404 (never written) |
 | `PUT /v1/mcp/enclave/state/{name}?if_generation=<n>` | `application/octet-stream` envelope, at most 12 MiB (12,582,912 bytes) | 200 `{"generation": n+1}` | 409 `{"code":"generation_mismatch","generation":<current or 0>}`, 413, 400 (bad name or `if_generation`) |
 | `POST /v1/mcp/enclave/connections/{id}/drafts` | since S0, with the connection's key as a bearer: §17.7 | 201 | §17.7 |
@@ -206,6 +205,11 @@ covers it. `if_generation=0` means "create; no row may exist". Go runs a single
 CONFLICT DO NOTHING` for 0) and reports 409 when no row changed. The state
 handler streams the body under its own 12 MiB cap and never goes through
 `decode()` (64 KiB). The enclave relay's timeout is 10 s, or 30 s for state.
+
+`GET /v1/mcp/enclave/cimd?url=<escaped>`, through which Go fetched client
+metadata documents for readers before 0.6.0, was deleted on 2026-10-12
+(§19.9, §19.27 P2 step 6): no route serves it, signed or not, and no
+document comes back.
 
 ### 5.3 Console → Go (`https://api.wappie.thehappie.co`)
 
@@ -7795,8 +7799,14 @@ the budgets. The alternative, hardening the Go relay instead, was rejected
 read "only if you approve an assistant Wappie has not tested; the card can
 then show any domain that has an open redirect".
 
-The Go relay keeps serving 0.5.0 (allowlist mode) until 0.5.0 leaves the
-console allowlist; it is deleted then (§19.27).
+The Go relay served 0.5.0 (allowlist mode) until 0.5.0 left the console
+allowlist, and its enclave route, `GET /v1/mcp/enclave/cimd`, was deleted on
+2026-10-12 (§19.27). Two pieces stay, and no enclave uses either of them:
+the fetcher in `internal/mcpauth/cimd.go`, which the hosted reader
+on the API host still asks over loopback (`GET /v1/mcp/internal/cimd`, under
+its `WAPPIE_MCP_CIMD`; `docs/deployment.md`), and `relay.cimd` in the
+measured 0.6.0 code, which only an `allowlist` client policy calls, the
+hosted reader's and the tests' (the enclave's `main.mjs` always runs `any`).
 
 ### 19.10 Caches, budgets and caps
 
@@ -9010,7 +9020,7 @@ knows every live connection without trusting Go.
 | `clients.mjs` (`redirectHost`, `loopbackRedirect`, `validateRedirectURIs`, `makeRoom`) | the redirect host in the allowlist; one host; loopback only when vouched and without a port; a per-host cap | DCR: pinned redirects only. CIMD: same-host https and loopback with any port, mixed allowed, other entries ignored. The caps of §19.10 |
 | `cimd.mjs` (`cimdURL`, `createCIMD`) | the document host in the allowlist; the body Go relays is believed; `redirect_host` = the vouching host | §19.5; tested ids from the constants; others fetched by the enclave over its own TLS (§19.9); `client_host`, `client_local` |
 | `server.mjs` (hosted path) | `WAPPIE_MCP_REDIRECT_HOSTS` | unchanged, in allowlist mode; P0 decides its fate |
-| `internal/config/mcp.go`, `create()`, `internal/mcpauth/cimd.go` | the allowlist checks consent and fetch | §19.21; the Go relay serves 0.5.0 only, then is deleted (§19.9) |
+| `internal/config/mcp.go`, `create()`, `internal/mcpauth/cimd.go` | the allowlist checks consent and fetch | §19.21; the Go relay's enclave route served 0.5.0 only and was deleted (§19.9); `cimd.go` stays for the hosted reader |
 | `router.mjs` (`MCP_PER_MINUTE`) | 60 calls a minute for every connection | by limits tier (§19.19) |
 | `enclave/media/gate.mjs` (`hostOf`), `enclave/media/policy.mjs` (`HOST_WAIT_MS`) | `hostOf(redirect_host)`: 25 s ChatGPT, 40 s Claude, 25 s default | `record.profile` from the tested entry; unknown and token get `default` (25 s); legacy records keep `hostOf(redirect_host)` |
 | `packages/mcp/server.mjs` (the image note's wording) | `host === 'chatgpt.com'` | `profile === 'chatgpt.com'`, which no tested entry carries since §19.34: only records 0.5.0 wrote and the hosted path get it |
@@ -9298,6 +9308,10 @@ marker.
 6. The steady policy after about seven days; 0.5.0 drops from the console
    allowlist, and the Go CIMD relay (`relay.cimd`,
    `internal/mcpauth/cimd.go`, `GET /v1/mcp/enclave/cimd`) is deleted.
+   Done on 2026-10-12 for the route: `GET /v1/mcp/enclave/cimd` is gone.
+   `internal/mcpauth/cimd.go` stays for the hosted reader's
+   `GET /v1/mcp/internal/cimd`, and `relay.cimd` in the measured image,
+   which the enclave never calls (§19.9).
 
 **P4**: the live tests, the final docs, and the message to the site session
 once the tested clients pass on 0.6.0 (the list of names holds only the
@@ -9305,6 +9319,11 @@ clients that passed).
 
 **Rollback from 0.6.0 to 0.5.0:**
 
+0. Since 2026-10-12 the server has no `GET /v1/mcp/enclave/cimd`, which
+   0.5.0 fetches every client document through, Claude's included. Go
+   back first to a server release that has it (core `64a7019` or earlier,
+   after 0049's down-step, the ledger row, when 0049 ran), with the
+   {0.5.0, 0.6.0} console.
 1. Set `WS_MCP_CIMD_MODE=allowlist`.
 2. Revoke, through Go, every live connection created under 0.6.0.
 3. Delete the sealed `as-*` collections in Go's store (`mcp_reader_state`):
@@ -10416,7 +10435,7 @@ alike and keeps the approved meaning: "Was die Verbindung lesen kann:" and
 | §1 | one more hop, `127.0.0.8:3128` to vsock 8007: the parent's document egress proxy (`wappie-cimd-egress`), which tunnels `CONNECT <host>:443` to public addresses only, the enclave's first egress to hosts that are not fixed (§19.9) | 0.6.0 |
 | §3 | `WS_MCP_REDIRECT_HOSTS` applies to version-1 descriptors only and is deleted with the last version-1 reader; `WS_MCP_CIMD_MODE`, `WS_MCP_BLOCKED_CLIENTS` and `WS_MCP_DCR_HOSTS` are added (§19.21) | P1 |
 | §5.1 | `POST /internal/token-requests`, `POST /internal/token-requests/{id}/bundle` and `POST /internal/workspaces/{id}/live-list`; the descriptors are version 2 (§19.12) | 0.6.0 |
-| §5.2 | `POST /v1/mcp/enclave/connections/{id}/budget-hit`; `GET /v1/mcp/enclave/cimd` serves 0.5.0 only and is deleted after it (§19.9) | 0.6.0 |
+| §5.2 | `POST /v1/mcp/enclave/connections/{id}/budget-hit`; `GET /v1/mcp/enclave/cimd` served 0.5.0 only and was deleted after it (2026-10-12, §19.9) | 0.6.0 |
 | §5.3 | the token, live-list, `seen` and revoke-link routes; `create()`'s version-2 checks and new body fields (§19.21) | P1 and 0.6.0 |
 | §5.4 | the CIMD and loopback rules of §19.5 to §19.8; `resource` and `scope` loosened (§19.11); the network check at completion (§19.12) | 0.6.0 |
 | §6.2, §6.3 | user_data v2 over the whole descriptor, for every kind (§19.13); the prepared descriptor is version 2 (§19.12) | 0.6.0 |

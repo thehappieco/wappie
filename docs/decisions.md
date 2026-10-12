@@ -1451,3 +1451,22 @@ asks for `prompt=login`), and a link from now. 0048, not yet deployed, was
 amended in place for it: `sessions.via_provider`, which also closes the
 rollback window's open door (`/v1/auth/me` no longer hands the legacy
 password wrap to a session through id.), and the ticket's `auth_time`.
+
+**Step 6: the rollback window ends (2026-10-12).** D4 kept a linked
+account's old password, recovery code and Wappie passkeys for 14 days after
+the cutover, so that switching the provider off would let it sign in as
+before. With no real customers and no old password worth keeping, the owner
+ended it at once. Migration 0049 nulls, for every account linked to id., the
+old password's verifier, salt and parameters, the password and recovery
+wraps and the recovery code's verifier, deletes its passkeys and their
+flows, and ends every live session one of those started; `WS_LOCAL_LOGIN=off`
+closes the password routes. 0049 changes data only, so its down-step is the
+ledger row and an older release still starts; what it removed does not come
+back, and going below 0048 now means deleting the accounts that sign in
+through id. first, the ones linked before 0049 as well as those created
+there (docs/platform-sign-in.md, "The end of the window"). The cost: a linked
+account's key is then held only by its platform wrap, under id.'s product
+key, and the console cannot rewrap a new epoch yet. A key reset at id., or
+another key for the pinned epoch, would lose the account key and everything
+sealed to it, so until the rewrap ships the backup from before 0049 and the
+old password are kept.

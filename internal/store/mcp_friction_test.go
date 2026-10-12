@@ -627,6 +627,9 @@ func TestMigration0047DownStep(t *testing.T) {
 		AND table_name='sessions' AND column_name='authenticated_at'`).Scan(&left); err != nil || left != 1 {
 		t.Fatalf("a refused down-step dropped sessions.authenticated_at: %d %v", left, err)
 	}
+	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
+		t.Fatalf("0049 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
 		t.Fatalf("0048 down-step: %v", err)
 	}

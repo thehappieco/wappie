@@ -609,10 +609,7 @@ func newAttestedHarness(t *testing.T) *attestedHarness {
 				Tenants: []uuid.UUID{uuid.New()},
 			},
 		},
-		States: store.NewMCPReaderStates(h.pool),
-		// No network in tests: every metadata fetch fails, which is how
-		// the guard tests tell a request that got through.
-		CIMDTransport: noNetwork{},
+		States:        store.NewMCPReaderStates(h.pool),
 		Log:           slog.New(slog.DiscardHandler),
 		ContentReader: "enclave",
 		ContentAllowed: func(tenant uuid.UUID) bool {
@@ -631,12 +628,6 @@ func newAttestedHarness(t *testing.T) *attestedHarness {
 	h.srv = httptest.NewServer(h.mux)
 	t.Cleanup(h.srv.Close)
 	return h
-}
-
-type noNetwork struct{}
-
-func (noNetwork) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, errors.New("no network in tests")
 }
 
 // serveSigned sends a signed request straight to the mux from the enclave's
@@ -731,7 +722,8 @@ func prepareNonce(t *testing.T, n int) map[string]any {
 // ---------------------------------------------------------------------------
 
 // The contract's vectors, so the Node reader and this server agree on the
-// canonical string byte for byte.
+// canonical string byte for byte. The to-go vector's target is the document
+// relay of readers before 0.6.0, deleted since; here it is only a string.
 func TestSignatureVectors(t *testing.T) {
 	const secret = "wappie-test-relay-secret-0123456789abcdefghij"
 	body := []byte(`{"nonce":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}`)
@@ -1066,12 +1058,12 @@ func TestAttestedResourcePerReader(t *testing.T) {
 // The guard in front of every enclave route, check by check.
 func TestSignedRoutesGuard(t *testing.T) {
 	h := newAttestedHarness(t)
-	const path = "/v1/mcp/enclave/cimd?url=https%3A%2F%2Fclaude.ai%2Fx"
+	const path = "/v1/mcp/enclave/state/nothing?probe=1"
 	// A known connection id that is not the enclave's answers 404 once
-	// through the guard, so a 404 below would be ambiguous; the cimd route
-	// answers 502 for an address that fails to fetch, which only a request
-	// that passed the guard can reach.
-	passed := func(r reply) bool { return r.status == http.StatusBadGateway }
+	// through the guard, so a 404 below would be ambiguous; the state route
+	// answers 400 for a name that is not a state's, which only a request
+	// that passed the guard can reach. The query is there to be signed.
+	passed := func(r reply) bool { return r.status == http.StatusBadRequest }
 
 	ok := asEnclave(t)
 	r, _ := h.signedCall(t, http.MethodGet, path, ok)
@@ -1098,7 +1090,7 @@ func TestSignedRoutesGuard(t *testing.T) {
 		"short nonce":      {func() signed { s := asEnclave(t); s.nonce = s.nonce[:21]; return s }, http.StatusUnauthorized, "unauthorized"},
 		"nonce not b64url": {func() signed { s := asEnclave(t); s.nonce = strings.Repeat("+", 22); return s }, http.StatusUnauthorized, "unauthorized"},
 		"tampered body":    {func() signed { s := asEnclave(t); s.tamper = []byte("x"); return s }, http.StatusUnauthorized, "unauthorized"},
-		"next secret":      {func() signed { s := asEnclave(t); s.secret = enclaveSecretNext; return s }, http.StatusBadGateway, "cimd_unavailable"},
+		"next secret":      {func() signed { s := asEnclave(t); s.secret = enclaveSecretNext; return s }, http.StatusBadRequest, "bad_request"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _ := h.signedCall(t, http.MethodGet, path, tc.s())
@@ -1182,6 +1174,38 @@ func TestSignedRoutesGuard(t *testing.T) {
 
 	// The hosted bearer opens nothing here.
 	expect(t, h.call(t, http.MethodGet, path, nil, internal()), http.StatusNotFound, "not_found")
+}
+
+// The document relay of readers before 0.6.0 is gone: a request signed as
+// the enclave signs finds no route. A 0.6.0 reader fetches documents itself
+// (docs/mcp-enclave.md §19.9); the hosted reader keeps its loopback route,
+// which the enclave's signature does not open.
+func TestEnclaveDocumentRelayIsGone(t *testing.T) {
+	h := newAttestedHarness(t)
+	const query = "?url=https%3A%2F%2Fclaude.ai%2Foauth%2Fmcp-oauth-client-metadata"
+	// Built by hand: no handler answers, so the mux's 404 sets no
+	// Cache-Control, which signedCall would require.
+	s := asEnclave(t)
+	ts := strconv.FormatInt(s.at.Unix(), 10)
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/v1/mcp/enclave/cimd"+query, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(mcpauth.HeaderReader, "enclave")
+	req.Header.Set(mcpauth.HeaderTimestamp, ts)
+	req.Header.Set(mcpauth.HeaderNonce, s.nonce)
+	req.Header.Set(mcpauth.HeaderSignature, mcpauth.Signature(enclaveSecret, mcpauth.DirectionToGo, "enclave", "GET", "/v1/mcp/enclave/cimd"+query, ts, s.nonce, nil))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the enclave's document relay: %d", resp.StatusCode)
+	}
+	if r, _ := h.signedCall(t, http.MethodGet, "/v1/mcp/internal/cimd"+query, asEnclave(t)); r.status != http.StatusUnauthorized {
+		t.Fatalf("the hosted reader's relay, signed as the enclave: %d %s", r.status, r.body)
+	}
 }
 
 // The state routes: a compare-and-swap per collection, generations from 1,

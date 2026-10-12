@@ -1054,6 +1054,44 @@ func TestPlatformAddressIsVerified(t *testing.T) {
 	}
 }
 
+// A linked account that 0049 covered has no password to fall back to, as
+// one created through the provider has none: after 0049's down-step (its
+// ledger row), 0048's refuses while such an account exists, and the ledger
+// stays at 48, where a binary that knows 48 starts.
+func TestMigration0048DownStepAfter0049(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	f.legacy(t, "lia@example.com", "lia-auth-key")
+	if _, err := f.users.LinkLegacy(ctx, store.LegacyLink{Ticket: f.ticket(t, store.TicketNew, uuid.New(), "lia@id.example.com", uuid.Nil),
+		Proof: store.LegacyProof{Email: "lia@example.com", Secret: "lia-auth-key"}, Wrap: platformWrap(t)}); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	ms, err := migrate.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ms {
+		if m.Version == 49 {
+			if err := pg.InTx(ctx, f.pool, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, m.SQL); return err }); err != nil {
+				t.Fatalf("0049: %v", err)
+			}
+		}
+	}
+	if _, err := f.users.Authenticate(ctx, "lia@example.com", "lia-auth-key"); !errors.Is(err, store.ErrBadCredentials) {
+		t.Fatalf("the old password after 0049: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
+		t.Fatalf("0049 down-step: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err == nil || !strings.Contains(err.Error(), "created through the identity provider") {
+		t.Fatalf("0048's down-step with a linked account 0049 covered: %v", err)
+	}
+	var version int
+	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 48 {
+		t.Fatalf("the ledger at %d %v", version, err)
+	}
+}
+
 // 0048's down-step, exactly as the migration's header documents it, as the
 // table owner: it refuses while an account created through the provider
 // exists; once that account is deleted it brings a linked account back to
@@ -1113,6 +1151,11 @@ func TestMigration0048DownStep(t *testing.T) {
 		t.Fatalf("new account: %v", err)
 	}
 
+	// 0049's down-step comes first: its ledger row. This account was linked
+	// after 0049 ran (on the empty database), so it kept its old password.
+	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
+		t.Fatalf("0049 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err == nil || !strings.Contains(err.Error(), "created through the identity provider") {
 		t.Fatalf("the down-step ran with an account that has no password: %v", err)
 	}

@@ -222,8 +222,9 @@ func (u *Users) UnlinkedLegacyAccount(ctx context.Context, email string) (bool, 
 // sign-in. The link always takes it. An account created through the provider
 // also takes it as users.email, unless another account holds that address
 // (ErrEmailTaken: the old one stays). A linked legacy account keeps its
-// users.email, which its legacy password wrap is bound to, until the end of
-// the rollback window.
+// users.email, which its legacy password wrap is bound to; migration 0049
+// deleted the wraps of the accounts linked by then, and their address stays
+// too.
 func (u *Users) SyncPlatformEmail(ctx context.Context, ident PlatformIdentity, email string) error {
 	email = normaliseEmail(email)
 	if email == "" {

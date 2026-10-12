@@ -961,7 +961,8 @@ func TestPlatformRewrapForANewEpoch(t *testing.T) {
 // WS_LOCAL_LOGIN on every password route: link_only keeps only what the
 // link ceremony needs (the challenge; the ceremony proves a recovery code
 // at link/prepare, never at /recover/open), off keeps none, and a service's
-// registration stays.
+// registration stays. An account that signs in through the provider signs
+// in and steps up there in every mode.
 func TestLocalLoginModes(t *testing.T) {
 	routes := []struct {
 		method, path string
@@ -1014,12 +1015,51 @@ func TestLocalLoginModes(t *testing.T) {
 			if code := h.get(t, "/v1/auth/passkeys/config", &cfg, ""); code != http.StatusOK || cfg.Enabled != (mode == config.LocalLoginOn) {
 				t.Errorf("passkeys config: %d %+v", code, cfg)
 			}
-			// The link needs local login on or link_only.
+			// Public sign-up, configured, is offered only while local login is on.
+			h.handler.PublicSignup = true
+			h.handler.SendSignupVerification = func(context.Context, string, string) error { return nil }
+			if code := h.get(t, "/v1/auth/signup/config", &cfg, ""); code != http.StatusOK || cfg.Enabled != (mode == config.LocalLoginOn) {
+				t.Errorf("signup config: %d %+v", code, cfg)
+			}
+			// The link needs local login on or link_only, both of its steps.
 			_, a := h.signIn(t, newPerson(t, uuid.NewString()+"@example.com"), 1)
 			var out platformAnswer
 			code := h.pagePost(t, "/v1/auth/platform/link/prepare", map[string]string{"ticket": a.Ticket, "email": "passkey@example.com", "auth_key": h.account.AuthKey}, &out, "", nil)
 			if (code == http.StatusForbidden && out.Code == "local_login_disabled") != (mode == config.LocalLoginOff) {
 				t.Errorf("link/prepare: %d %+v", code, out)
+			}
+			out = platformAnswer{}
+			code = h.pagePost(t, "/v1/auth/platform/link", map[string]string{"ticket": a.Ticket, "email": "passkey@example.com", "auth_key": "wrong",
+				"platform_wrap": randomWrap(t)}, &out, "", nil)
+			if refused := code == http.StatusForbidden && out.Code == "local_login_disabled"; refused != (mode == config.LocalLoginOff) || !refused && out.Code != "bad_credentials" {
+				t.Errorf("link: %d %+v", code, out)
+			}
+			// An account that signs in through the provider does so in every
+			// mode, is told to step up there by the three step-ups here, and
+			// steps up there.
+			p := newPerson(t, uuid.NewString()+"@example.com")
+			_, b := h.signIn(t, p, 1)
+			code, created, _, _ := h.createAccount(t, b.Ticket)
+			if code != http.StatusOK {
+				t.Fatalf("account: %d %+v", code, created)
+			}
+			if code, s := h.signIn(t, p, 1); code != http.StatusOK || s.Kind != "session" {
+				t.Errorf("a platform account's sign-in: %d %+v", code, s)
+			}
+			for _, path := range []string{"/v1/auth/step-up/password", "/v1/auth/step-up/passkey/options", "/v1/auth/step-up/passkey"} {
+				out = platformAnswer{}
+				if code := h.request(t, "POST", path, passkeyApp, created.Token, map[string]any{"auth_key": "x", "flow_id": uuid.NewString()}, &out); code != http.StatusConflict || out.Code != stepup.ProviderCode {
+					t.Errorf("%s for a platform account: %d %+v", path, code, out)
+				}
+			}
+			h.age(t, created.Token)
+			var started stepUpAnswer
+			if code := h.pagePost(t, "/v1/auth/platform/step-up/start", map[string]any{}, &started, created.Token, nil); code != http.StatusOK {
+				t.Errorf("step-up start: %d %+v", code, started)
+			}
+			var done stepUpAnswer
+			if code := h.pagePost(t, "/v1/auth/platform/step-up/finish", map[string]string{"access_token": h.id.issue(t, p.userinfo(t, 1))}, &done, created.Token, nil); code != http.StatusOK || !done.Fresh {
+				t.Errorf("step-up finish: %d %+v", code, done)
 			}
 			// The verified owner of an unlinked password account's address:
 			// offered the link while it is open, and told why there is no

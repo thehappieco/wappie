@@ -175,10 +175,11 @@ func (h *Handler) registerPasskeyOptions(w http.ResponseWriter, r *http.Request)
 	// An account that signs in through the identity provider keeps its
 	// passkeys there while the provider is configured: Wappie runs no
 	// WebAuthn for it (platform decision 0008), and the link revoked the ones
-	// it had. With the provider unset (a rollback), a linked account signs in
-	// with its legacy password and is a local one again, as its step-ups are
-	// (stepsUpAtProvider). A flow can only start here, so the finish needs no
-	// check of its own.
+	// it had. With the provider unset (a rollback), a linked account still in
+	// its rollback window signs in with its legacy password and is a local
+	// one again, as its step-ups are (stepsUpAtProvider); 0049 deleted every
+	// passkey of the accounts it covered. A flow can only start here, so the
+	// finish needs no check of its own.
 	if h.stepsUpAtProvider(user) {
 		fail(w, http.StatusConflict, "passkeys_at_provider", "this account signs in through its identity provider and keeps its passkeys there")
 		return

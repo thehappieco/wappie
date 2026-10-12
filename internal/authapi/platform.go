@@ -490,12 +490,12 @@ type platformProof struct {
 // platformIssue starts a Wappie session for an account signed in through
 // the provider (via_provider) and answers kind session with it.
 //
-// The answer never carries wrapped_usk. A linked account keeps its legacy
-// password wrap through the rollback window, and this answer goes to whoever
-// holds an access token for the sub, with no proof of the old password; the
-// page opens the account key from platform_wrap and has no use for it.
-// /v1/auth/me withholds it from the session too (docs/platform-sign-in.md,
-// "The rollback window").
+// The answer never carries wrapped_usk. A linked account kept its legacy
+// password wrap through the rollback window (and one linked after migration
+// 0049 still keeps it), and this answer goes to whoever holds an access token
+// for the sub, with no proof of the old password; the page opens the account
+// key from platform_wrap and has no use for it. /v1/auth/me withholds it from
+// the session too (docs/platform-sign-in.md, "The rollback window").
 //
 // The session's step-up proof is proof: the provider's auth_time, capped at
 // now, lasts stepup.Window like any sign-in's, and a sign-in whose userinfo

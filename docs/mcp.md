@@ -516,8 +516,10 @@ reading `WS_CIMD_EGRESS_OWN_ADDRESSES` (the deployment's own addresses, never
 dialed; required) and nothing else. It tunnels `CONNECT <host>:443` to hosts
 that pass the same predicate, resolved once to public addresses only, with
 budgets overall and per registrable domain, and 16 KiB and 6 seconds per
-tunnel. The server's own metadata relay (`/v1/mcp/enclave/cimd`) serves
-readers before 0.6.0 only and goes with them.
+tunnel. The server's own metadata relay for attested readers
+(`/v1/mcp/enclave/cimd`), which served readers before 0.6.0, went with them;
+the hosted reader still has its documents fetched by this server over
+loopback (`/v1/mcp/internal/cimd`).
 
 A content connection reads as a service account created for it alone, with a
 thirty-minute membership until the consent is recorded and the connection's
