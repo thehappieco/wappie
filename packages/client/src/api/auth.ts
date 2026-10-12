@@ -114,7 +114,9 @@ export interface SignedIn {
 
 export type SignInStep = 'checking' | 'unlocking' | 'authenticating' | 'passkey' | 'opening'
 
-async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal, maxResponseBytes?: number): Promise<T> {
+// Exported as authRequest, with these positional arguments; keepalive comes
+// last so that callers passing a signal keep their meaning.
+async function call<T>(serverURL: string, path: string, body: unknown, token?: string, signal?: AbortSignal, maxResponseBytes?: number, keepalive = false): Promise<T> {
   const response = await fetch(endpoint(serverURL, path), {
     method: body === undefined ? 'GET' : 'POST',
     headers: {
@@ -124,6 +126,8 @@ async function call<T>(serverURL: string, path: string, body: unknown, token?: s
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store', redirect: 'error',
     ...(signal ? { signal } : {}),
+    // A request that must outlive its page (a logout on pagehide).
+    ...(keepalive ? { keepalive: true } : {}),
   })
   if (response.status === 204) return undefined as T
   let text: string
@@ -491,10 +495,23 @@ export async function setRecovery(input: {
   }
 }
 
+/** How signOut sends the logout. A boolean in its place is allRelated alone, as callers have always passed it. */
+export interface SignOutOptions {
+  /** Revoke every session of the same sign-in (all_related), not only this token's. */
+  allRelated?: boolean
+  /**
+   * Send it with fetch keepalive, so it outlives the page sending it: a
+   * revoke on pagehide. The request is dispatched before signOut returns, so
+   * a handler that does not await it still sends it.
+   */
+  keepalive?: boolean
+}
+
 /** signOut revokes the session server-side. Best effort: the tab is closing. */
-export async function signOut(serverURL: string, token: string, allRelated = false): Promise<void> {
+export async function signOut(serverURL: string, token: string, options: boolean | SignOutOptions = false): Promise<void> {
+  const { allRelated = false, keepalive = false } = typeof options === 'boolean' ? { allRelated: options } : options
   try {
-    await call<void>(serverURL, '/v1/auth/logout', allRelated ? { all_related: true } : {}, token)
+    await call<void>(serverURL, '/v1/auth/logout', allRelated ? { all_related: true } : {}, token, undefined, undefined, keepalive)
   } catch {
     // A session that cannot be revoked still expires, and there is nothing
     // useful to show somebody who is already leaving.
@@ -650,8 +667,18 @@ async function finish(
   return signed
 }
 
-/** Validates authorization again before opening any persisted key or grant. */
-export async function restoreSignIn(login: BrowserLogin, workspace?: string): Promise<SignedIn> {
+/**
+ * Validates authorization again before opening any persisted key or grant.
+ *
+ * For a workspace other than the sign-in's, the server makes a token of that
+ * workspace's (POST /v1/auth/workspaces/session), which is the caller's once
+ * this resolves. minted hears of it as soon as the server answers, before
+ * the rest of the restore, so that a page that goes meanwhile can still sign
+ * it out; when the restore does not use it after all (its /me fails, or the
+ * session it makes is not this sign-in's), it is signed out here, since
+ * nobody else holds it.
+ */
+export async function restoreSignIn(login: BrowserLogin, workspace?: string, minted?: (token: string) => void): Promise<SignedIn> {
   if (login.expiresAt <= Date.now()) throw new AuthError('unauthorized', t('Sua sessão expirou. Entre novamente.'))
   const controller = new AbortController()
   const deadline = setTimeout(() => controller.abort(), 15_000)
@@ -664,16 +691,25 @@ export async function restoreSignIn(login: BrowserLogin, workspace?: string): Pr
     let grants = me
     let notice = ''
     if (workspace && workspace !== me.user.tenant_id) {
+      let selected: SessionReply | undefined
       try {
-        const selected = await call<SessionReply>(login.serverURL, '/v1/auth/workspaces/session', { tenant_id: workspace }, login.token, controller.signal)
+        selected = await call<SessionReply>(login.serverURL, '/v1/auth/workspaces/session', { tenant_id: workspace }, login.token, controller.signal)
+        minted?.(selected.token)
         grants = await call<MeReply>(login.serverURL, '/v1/auth/me', undefined, selected.token, controller.signal)
         reply = selected
       } catch (error) {
+        // Best effort, and not awaited: the restore goes on, or fails, at once.
+        if (selected) void signOut(login.serverURL, selected.token)
         if (!(error instanceof AuthError) || !['bad_request', 'not_authorized', 'not_found'].includes(error.code)) throw error
         notice = t('Este espaço não está disponível. Abrimos seu espaço atual para você escolher outro.')
       }
     }
-    const signed = await finishWithKey(login.serverURL, reply, login.accountKey, grants)
+    let signed: SignedIn
+    try { signed = await finishWithKey(login.serverURL, reply, login.accountKey, grants) }
+    catch (error) {
+      if (reply.token !== login.token) void signOut(login.serverURL, reply.token)
+      throw error
+    }
     signed.browserLogin = login
     signed.notice = notice
     return signed

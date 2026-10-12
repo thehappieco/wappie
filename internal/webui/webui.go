@@ -13,13 +13,18 @@
 package webui
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"whatserver2/internal/browserorigin"
@@ -148,6 +153,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if clean != "/" && hasAsset(h.dir, clean) {
 		h.headers(w, clean, r.Host, r.URL.Query().Get("server_origin"))
+		if firstFrameFile(clean) {
+			h.serveFirstFrameFile(w, r, clean)
+			return
+		}
 		h.files.ServeHTTP(w, r)
 		return
 	}
@@ -245,9 +254,59 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 		// The build puts a content hash in these names, so what sits behind
 		// one never changes.
 		header.Set("Cache-Control", "public, max-age=31536000, immutable")
+	case firstFrameFile(clean):
+		// The cloud console's first-frame files, named without a hash: they
+		// set the theme and the shell's background before the application's
+		// script runs, so they change with the document they serve. Asked
+		// for without the version the document names, they are revalidated
+		// like it: an hour of a cached copy would draw a new release's first
+		// frame with the old one's. serveFirstFrameFile caches the named
+		// version for good.
+		header.Set("Cache-Control", "no-cache")
 	default:
 		header.Set("Cache-Control", "public, max-age=3600")
 	}
+}
+
+// firstFrameFile says clean is one of the cloud console's first-frame files.
+func firstFrameFile(clean string) bool { return clean == "/boot.js" || clean == "/boot.css" }
+
+// firstFrameVersionLength is the length of a first-frame file's version: the
+// first 16 hex digits of its SHA-256, as the cloud build writes it into the
+// document (commercial web/vite.config.ts, BOOT_TAGS).
+const firstFrameVersionLength = 16
+
+// serveFirstFrameFile serves /boot.js or /boot.css. The document names each
+// with ?v=, its version: asked for by the version of the bytes here, the
+// file is cached for good, as /assets/ are, so that the first paint of a
+// page load waits on no request for it (both block the first frame, and a
+// revalidation is one more round trip before anything draws). Asked for
+// without it, or with another (a document of another release, read just
+// before or after a deploy, or after a rollback), it keeps the headers'
+// no-cache: bytes cached under one release's version are never another's.
+// The bytes compared are the bytes sent.
+func (h *Handler) serveFirstFrameFile(w http.ResponseWriter, r *http.Request, clean string) {
+	f, err := os.Open(filepath.Join(h.dir, filepath.FromSlash(clean)))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close() //nolint:errcheck // a file opened for reading: its bytes are already read when it closes
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	sum := sha256.Sum256(body)
+	if r.URL.Query().Get("v") == hex.EncodeToString(sum[:firstFrameVersionLength/2]) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	http.ServeContent(w, r, clean, info.ModTime(), bytes.NewReader(body))
 }
 
 // platformIssuer returns the issuer when it is a bare https origin (or http

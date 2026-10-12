@@ -440,6 +440,14 @@ private console draws it around Wappie's settings screens, at
 - `/v1/auth/me` names `platform_sub`. The shell compares it with the
   console's person, and shows Wappie's own menu with a notice when they
   differ.
+- `/boot.js` and `/boot.css`, the console's first-frame files (no hash in
+  their names): the cloud document names each with `?v=`, the first 16 hex
+  digits of the file's SHA-256, and the file asked for by the version of its
+  bytes is cached for a year (`immutable`), so a page load's first paint
+  waits on no request for them. Without a version, or with another
+  release's, they are served `no-cache` like the document, so a release is
+  never drawn with an old copy. Other root files keep an hour and `/assets/`
+  a year (`internal/webui`).
 
 The shell's data is display only. The workspace in the address is
 authorized against this server's own session (`POST

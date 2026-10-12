@@ -1,6 +1,8 @@
 package webui_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -103,6 +105,90 @@ func TestServesAssets(t *testing.T) {
 	}
 	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options is %q", got)
+	}
+}
+
+// The cloud console's first-frame files have no hash in their names and
+// shape the first paint of every release. The document names each with the
+// version of its bytes (?v=, the first 16 hex digits of their SHA-256), which
+// is then cached for good, so that no page load waits on a revalidation
+// before it draws; asked for without it, or with any other (a document of
+// another release), the file is revalidated like the document. Any other
+// file at the root keeps its hour.
+func TestTheFirstFrameFilesAreCachedByTheirVersion(t *testing.T) {
+	dir := build(t)
+	script, style := "document.documentElement.setAttribute('data-theme', 'light')", "html{}"
+	write(t, filepath.Join(dir, "boot.js"), script)
+	write(t, filepath.Join(dir, "boot.css"), style)
+	write(t, filepath.Join(dir, "favicon-32.png"), "png")
+	h, err := webui.New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := func(body string) string { sum := sha256.Sum256([]byte(body)); return hex.EncodeToString(sum[:8]) }
+
+	for target, want := range map[string]string{
+		"/boot.js?v=" + version(script): "public, max-age=31536000, immutable",
+		"/boot.css?v=" + version(style): "public, max-age=31536000, immutable",
+		"/boot.js":                      "no-cache",
+		"/boot.css":                     "no-cache",
+		"/boot.js?v=1":                  "no-cache",
+		// Another release's version (the other file's), and the right one cut short or with more after it.
+		"/boot.js?v=" + version(style):                   "no-cache",
+		"/boot.js?v=" + version(script)[:15]:             "no-cache",
+		"/boot.js?v=" + version(script) + "0":            "no-cache",
+		"/boot.js?v=" + strings.ToUpper(version(script)): "no-cache",
+	} {
+		resp := get(t, h, target)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s returned %d", target, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Cache-Control"); got != want {
+			t.Errorf("%s is cached as %q, want %q", target, got, want)
+		}
+		if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options is %q", target, got)
+		}
+		wantType, wantBody := "text/javascript; charset=utf-8", script
+		if strings.HasPrefix(target, "/boot.css") {
+			wantType, wantBody = "text/css; charset=utf-8", style
+		}
+		if got := resp.Header.Get("Content-Type"); got != wantType {
+			t.Errorf("%s: Content-Type is %q", target, got)
+		}
+		if string(body) != wantBody {
+			t.Errorf("%s served %q", target, body)
+		}
+	}
+	// A HEAD, and a revalidation of the unversioned name, as the browser makes them.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, "/boot.css?v="+version(style), nil))
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 || rec.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Errorf("HEAD of the versioned file: %d, %d bytes, %q", rec.Code, rec.Body.Len(), rec.Header().Get("Cache-Control"))
+	}
+	resp := get(t, h, "/boot.js")
+	resp.Body.Close()
+	again := httptest.NewRequest(http.MethodGet, "/boot.js", nil)
+	again.Header.Set("If-Modified-Since", resp.Header.Get("Last-Modified"))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, again)
+	if rec.Code != http.StatusNotModified {
+		t.Errorf("revalidating the unversioned file returned %d", rec.Code)
+	}
+
+	// The file changes under its name (the next release): the old version is no longer it.
+	write(t, filepath.Join(dir, "boot.js"), script+";")
+	resp = get(t, h, "/boot.js?v="+version(script))
+	resp.Body.Close()
+	if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("the old version of a changed file is cached as %q, so a release could draw its first frame with the other's bytes", got)
+	}
+	resp = get(t, h, "/favicon-32.png")
+	resp.Body.Close()
+	if got := resp.Header.Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Errorf("another root file is cached as %q", got)
 	}
 }
 

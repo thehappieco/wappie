@@ -87,7 +87,7 @@ func (h *Handler) workspaceSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TenantID string `json:"tenant_id"`
 	}
-	if !decode(w, r, &req) || !h.allow(w, r, user.Email) {
+	if !decode(w, r, &req) || !h.allowWorkspaceSession(w, r, user) {
 		return
 	}
 	tenant, err := uuid.Parse(req.TenantID)

@@ -13,10 +13,11 @@ import (
 )
 
 // A Renew all right after a console reload: the reload's workspace switches
-// spend the account's sign-in budget, and each renewal's provisional service
-// invitation spends the setups' own (ratelimit.DefaultSetups), which the
-// switches never touch, while an ordinary invitation, which may send an
-// e-mail, stays on the sign-in budget. The production budgets, over HTTP.
+// spend a budget of their own (ratelimit.DefaultWorkspaceSessions), each
+// renewal's provisional service invitation spends the setups' own
+// (ratelimit.DefaultSetups), and an ordinary invitation, which may send an
+// e-mail, stays on the sign-in budget, which neither of the others touches.
+// The production budgets, over HTTP.
 func TestProvisionalInvitationsHaveTheirOwnBudget(t *testing.T) {
 	h := newHarness(t)
 	body, _ := newAccount(t, h.invite(t, "owner"), "renews@example.com", "auth")
@@ -30,6 +31,7 @@ func TestProvisionalInvitationsHaveTheirOwnBudget(t *testing.T) {
 	(&authapi.Handler{
 		Users: h.users, Keys: h.keys, Devices: store.NewDevices(h.pool),
 		Limits: ratelimit.DefaultAuth(nil), SetupLimits: ratelimit.DefaultSetups(nil),
+		WorkspaceSessionLimits: ratelimit.DefaultWorkspaceSessions(nil),
 	}).Mount(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -42,18 +44,24 @@ func TestProvisionalInvitationsHaveTheirOwnBudget(t *testing.T) {
 		}
 	}
 
-	// Five switches spend the sign-in budget; the sixth is refused, as before.
+	// Six switches, one past the sign-in budget's five, spend their own.
 	switchTo := map[string]string{"tenant_id": h.tenant.String()}
-	for i := range 5 {
+	for i := range 6 {
 		if code := limited.post(t, "/v1/auth/workspaces/session", switchTo, nil, signed.Token); code != http.StatusOK {
 			t.Fatalf("switch %d returned %d", i+1, code)
 		}
 	}
-	refused("a sixth switch", "/v1/auth/workspaces/session", switchTo)
 
 	// Ordinary invitations still spend the sign-in budget, which the
-	// switches emptied, while the setups' is still whole: refused, an
-	// e-mail invitation as much as a service's, and neither spends a setup.
+	// switches left whole: five go through and empty it. Then they are
+	// refused while the setups' is still whole, an e-mail invitation as much
+	// as a service's, and neither spends a setup.
+	ordinary := map[string]any{"role": "service", "email": ""}
+	for i := range 5 {
+		if code := limited.post(t, "/v1/auth/workspaces/invites", ordinary, nil, signed.Token); code != http.StatusCreated {
+			t.Fatalf("ordinary invitation %d returned %d", i+1, code)
+		}
+	}
 	refused("an e-mail invitation", "/v1/auth/workspaces/invites", map[string]any{"role": "member", "email": "colleague@example.com"})
 	refused("an ordinary service invitation", "/v1/auth/workspaces/invites", map[string]any{"role": "service", "email": ""})
 

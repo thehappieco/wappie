@@ -10281,13 +10281,15 @@ completes it (`POST /v1/mcp/connections`, `.../{id}/renew`,
 `/v1/mcp/token-requests/{id}/bundle`) spend `ratelimit.DefaultSetups`, one
 token each from two buckets per account (the invitation's under
 `ratelimit.InvitationSubject`, the completion's under the account ID), each
-15 refilling at 5 a minute, and 60 per address at 60 a minute. Workspace
-switches, ordinary invitations, step-ups, sign-ins and every other route
-keep `DefaultAuth` (5 per account, 20 per address), which the setups no
-longer spend: sharing it, a Renew all made right after a console reload
-renewed only some connections. 15 setups cover Renew all of the
-workspace's 10 live connections and a few AI integrations; the steady rate
-stays 5 setups a minute, so an hour admits 315 against `DefaultAuth`'s 305.
+15 refilling at 5 a minute, and 60 per address at 60 a minute. Ordinary
+invitations, step-ups, sign-ins and every other route keep `DefaultAuth` (5
+per account, 20 per address), which the setups no longer spend: sharing it,
+a Renew all made right after a console reload renewed only some
+connections. Workspace switches have since had a budget of their own too
+(`DefaultWorkspaceSessions`, [workspaces.md](workspaces.md)). 15 setups
+cover Renew all of the workspace's 10 live connections and a few AI
+integrations; the steady rate stays 5 setups a minute, so an hour admits
+315 against `DefaultAuth`'s 305.
 Two buckets rather than one shared: a setup admitted at its invitation
 finds its completion's token when setups run one at a time, so a Renew all
 that waited out a refusal goes through instead of spending the token it

@@ -183,11 +183,12 @@ func DefaultAuth(proxies []netip.Prefix) *Auth {
 // DefaultSetups is the production budget of the assistant setups run from
 // the console. A consent, a renewal, an AI integration and a token each ask
 // for a provisional service invitation and then complete, and both requests
-// spend this budget instead of DefaultAuth's, which every workspace switch,
-// step-up and sign-in spends too. Sharing that, a Renew all made right after
-// a console reload renewed only some connections (five a minute per
-// account), and ten renewals at three requests each could empty an
-// address's twenty, refusing even the clean-up of the renewal it stopped.
+// spend this budget instead of DefaultAuth's, which every step-up and
+// sign-in spends too (and every workspace switch did, before
+// DefaultWorkspaceSessions). Sharing that, a Renew all made right after a
+// console reload renewed only some connections (five a minute per account),
+// and ten renewals at three requests each could empty an address's twenty,
+// refusing even the clean-up of the renewal it stopped.
 //
 // Per account the invitation spends a bucket of its own (InvitationSubject)
 // and the completion the account ID's, as DefaultAuth's email and account
@@ -216,6 +217,40 @@ func DefaultSetups(proxies []netip.Prefix) *Auth {
 // invitation spends DefaultSetups under, for the account with this ID: apart
 // from the account ID itself, which the step that completes it spends.
 func InvitationSubject(accountID string) string { return "invitation:" + accountID }
+
+// DefaultWorkspaceSessions is the production budget of a workspace switch
+// (POST /v1/auth/workspaces/session), which opens a session in another of
+// the account's workspaces. On DefaultAuth's five a minute per account it
+// was spent by every entry from the console into a workspace other than the
+// one the sign-in opened and by every pick in the workspace selector, so the
+// sixth quick hop in a minute was refused and the page could not restore its
+// session. A switch already carries a live session and costs a few indexed
+// reads and one session row, with no Argon2id and nothing to guess, so this
+// limit bounds a runaway client rather than a script.
+//
+// Per account (its ID, the same in every workspace), thirty at once and
+// sixty a minute. A switch is a page load or an in-page swap of a second or
+// two, so a person clicking as fast as the page answers stays under one a
+// second; a loop is held to one row a second. Per address, sixty at once and
+// 120 a minute: two such people behind one NAT. Sign-ins, step-ups and every
+// other route stay on DefaultAuth, which the switch itself no longer spends.
+//
+// This is not the tightest bound on entering a workspace. Each switch is
+// followed by a socket opened with the new token, and every websocket hello
+// spends DefaultAuth's address limit (wsapi, twenty at once and sixty a
+// minute, shared with the sign-ins from that address). So one address enters
+// at most about twenty workspaces at once, then one every second: a browser
+// restoring more tabs than that in a workspace other than the sign-in's, or
+// an office behind one NAT doing so together, has its later connections
+// refused (rate_limited) until the bucket refills, though their switches
+// went through.
+func DefaultWorkspaceSessions(proxies []netip.Prefix) *Auth {
+	return &Auth{
+		PerIP:      New(120, 60),
+		PerSubject: New(60, 30),
+		Proxies:    proxies,
+	}
+}
 
 // Allow spends a token for the request's address and, when subject is not
 // empty, for the subject too. Both must have one.

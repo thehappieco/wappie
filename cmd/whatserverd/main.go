@@ -117,8 +117,11 @@ type app struct {
 	limits *ratelimit.Auth
 	// setups bounds the assistant setups run from the console (a
 	// provisional service invitation and the consent, renewal or token it
-	// leads to), apart from limits, which workspace switches also spend.
+	// leads to), apart from limits.
 	setups *ratelimit.Auth
+	// workspaceSessions bounds workspace switches, per account, apart from
+	// limits: each entry from the console into another workspace is one.
+	workspaceSessions *ratelimit.Auth
 	// mcp is the assistant connector's handler, nil unless it is enabled;
 	// serve starts its reader health checks.
 	mcp *mcpauth.Handler
@@ -176,12 +179,13 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 
 	a := &app{
 		cfg: cfg, log: lg, pools: pools, passkeys: passkeys,
-		devices: store.NewDevices(pools.API),
-		apiKeys: store.NewAPIKeys(pools.API),
-		users:   store.NewUsers(pools.API),
-		storage: store.NewStorage(pools.API),
-		limits:  ratelimit.DefaultAuth(cfg.TrustedProxies),
-		setups:  ratelimit.DefaultSetups(cfg.TrustedProxies),
+		devices:           store.NewDevices(pools.API),
+		apiKeys:           store.NewAPIKeys(pools.API),
+		users:             store.NewUsers(pools.API),
+		storage:           store.NewStorage(pools.API),
+		limits:            ratelimit.DefaultAuth(cfg.TrustedProxies),
+		setups:            ratelimit.DefaultSetups(cfg.TrustedProxies),
+		workspaceSessions: ratelimit.DefaultWorkspaceSessions(cfg.TrustedProxies),
 	}
 	if err := a.users.SetInviteEncryptionKey(cfg.Signup.InviteEncryptionKey); err != nil {
 		closeAll()
@@ -722,8 +726,9 @@ func (a *app) routes() http.Handler {
 		AccessChanged: a.ws.RevalidateAccess,
 		Users:         a.users, Keys: a.keys,
 		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
-		PublicSignup: a.cfg.Signup.Enabled,
-		Platform:     a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
+		WorkspaceSessionLimits: a.workspaceSessions,
+		PublicSignup:           a.cfg.Signup.Enabled,
+		Platform:               a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
 	}
 	if a.cfg.Signup.SMTP.Configured() {
 		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
