@@ -147,8 +147,8 @@ The migration header holds the down-step, checksum-gated against
   either, so the refusal covers those too (its message names only the
   accounts created through the provider), and 0049's down-step comes first
   ([below](#the-end-of-the-window-migration-0049)).
-- A linked account that still has its old password (one linked after 0049)
-  becomes local again, with it.
+- A linked account that still has its old password (one linked since 0049
+  last ran) becomes local again, with it.
 - Every session started through the provider (`via_provider`) is signed
   out, even one a step-up at id. has since given a proof: it came through a
   provider the older binary does not know, and one with no proof holds
@@ -689,8 +689,28 @@ the other:
   account key, and steps up there. An account created through id. has none
   of the above, so no row of it changes; a service account and an unlinked
   password account have no link and are not touched. Run again, it changes
-  nothing. Every session through the provider stays, and `/v1/auth/me` has
+  nothing for an account it already covered (but see below for one linked
+  since). Every session through the provider stays, and `/v1/auth/me` has
   no legacy wrap left to withhold.
+
+**What it costs: the account key hangs on id. alone.** Before 0049 a linked
+account's key was held three ways: the platform wrap under `sk_p`, the
+password wrap and the recovery wrap. After it, `platform_wraps` is the only
+one, and the console cannot rewrap a new epoch yet ("Not yet"). If id. moves
+the account's product key to a new epoch (`/platform/session` answers
+`rewrap_required`, which the console shows as an error and keeps nothing) or
+presents another key for the pinned epoch (`account_key_changed`), no wrap is
+left that opens the account key, and with it go every device grant, the AI
+keychain and the personal contacts: the account can no longer open its
+archives or approve a consent, a renewal or an AI integration. Before 0049,
+the switch under "Rollback" (provider unset, local login `on`) let a linked
+account sign in with its old password and recover the key; after 0049 the
+switch signs it in no way at all. So, until the console's rewrap ships, the
+operator who runs 0049 keeps a database backup from before it, and the
+account's owner keeps the old password: putting the six columns back from
+that backup, with the switch, lets the account sign in with the old password
+again. The private repository's `docs/production.md` records which backup
+that is on the pilot.
 
 0049 is data only: no table, column, constraint, index, policy or trigger
 changes (it lifts the row-level security of `users` and `user_passkeys` for
@@ -700,17 +720,21 @@ which a release that knows 48 starts again. What it nulled and deleted does
 not come back: no down-step restores a password, a recovery code, a passkey
 or an ended session.
 
-An account linked after 0049, which needs local login `on` or `link_only`
-for the link (the operator's procedure under "Configuration"), keeps its
-legacy credentials as 0048 left them; nothing removes them yet.
+0049 covers every account linked when it runs. An account linked after it,
+which needs local login `on` or `link_only` for the link (the operator's
+procedure under "Configuration"), keeps its legacy credentials as 0048 left
+them until 0049 runs again: after its down-step, when a release that carries
+it comes back, 0049 is applied anew and nulls and deletes the same things for
+every account linked by then, the ones linked since its first run included.
+Only an account it already covered is left unchanged by that second run.
 
 ## Rollback
 
 | Level | What | Effect |
 |---|---|---|
-| Switch | Unset `WS_PLATFORM_ISSUER`, set `WS_LOCAL_LOGIN=on`, restart | Password sign-in is back for unlinked accounts and for those linked after 0049. Accounts created through id., and those linked before 0049, cannot sign in until the switch returns. |
-| Release | A release that knows version 48 but not 49 | 0049's down-step first: the ledger row only (the migration's header). The linked accounts stay without their legacy credentials. Then as in `deployment.md` |
-| Schema | 0048's down-step, after 0049's and before 0047's and every older one | Refused while any account signs in through id. with no password: created there, or linked before 0049. Signs out every session started through the provider (`via_provider`), confirmed at id. or not |
+| Switch | Unset `WS_PLATFORM_ISSUER`, set `WS_LOCAL_LOGIN=on`, restart | Password sign-in is back for unlinked accounts and for those linked since 0049 last ran. Accounts created through id., and those 0049 covered, cannot sign in until the switch returns ("What it costs", above). |
+| Release | A release that knows version 48 but not 49 | 0049's down-step first: the ledger row only (the migration's header), after checking the file against `migration49_sha256` in the release's `RELEASE.json`. The linked accounts stay without their legacy credentials. Then as in `deployment.md` |
+| Schema | 0048's down-step, after 0049's and before 0047's and every older one | Refused while any account signs in through id. with no password: created there, or one 0049 covered. Signs out every session started through the provider (`via_provider`), confirmed at id. or not |
 
 ## The texts (approved 2026-10-05)
 
@@ -790,10 +814,12 @@ are in the cloud build only; C-STEP-13 stays, unchanged, in the open build
 - **Step 6 in the pilot.** 0049 runs when the release that carries it is
   deployed, and `WS_LOCAL_LOGIN=off` is the operator's switch (the private
   repository's `docs/production.md` records both).
-- **Accounts linked after 0049** keep their legacy credentials ("The end of
-  the window").
+- **Accounts linked after 0049** keep their legacy credentials until 0049
+  runs again ("The end of the window").
 - **A linked account's address.** It keeps its own `users.email` after 0049,
   although no wrap is bound to it any more; following id.'s, as an account
   created there does, would be a change of its own.
-- **The rewrap of a new epoch in the console.**
+- **The rewrap of a new epoch in the console.** Since 0049 a linked
+  account's key hangs on id. alone ("What it costs", under "The end of the
+  window").
 - **Wappie's export.** It will carry the platform wrap (decision 0015, 0023).

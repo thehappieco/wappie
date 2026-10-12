@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -315,4 +316,108 @@ func TestMigration0049EndsTheRollbackWindow(t *testing.T) {
 	if code := h.post(t, "/v1/auth/login", map[string]string{"email": "lia@example.com", "auth_key": body.AuthKey}, &refusal, ""); code != http.StatusForbidden || refusal.Code != "local_login_disabled" {
 		t.Fatalf("the old password with local login off: %d %+v", code, refusal)
 	}
+}
+
+// 0049 covers every account linked when it runs. One linked after it keeps
+// its legacy credentials, and with the provider switched off its old
+// password, until 0049 is applied again, as it is after its down-step when a
+// release that carries it comes back: then they go too, and the account the
+// first run covered is left as it was.
+func TestMigration0049AgainCoversAnAccountLinkedSince(t *testing.T) {
+	h := newPlatformHarness(t, config.LocalLoginOn)
+	provider := h.handler.Platform
+	link := func(email, authKey string) string {
+		t.Helper()
+		_, answer := h.signIn(t, newPerson(t, email), 1)
+		var out platformAnswer
+		if code := h.pagePost(t, "/v1/auth/platform/link", map[string]string{"ticket": answer.Ticket, "email": email,
+			"auth_key": authKey, "platform_wrap": randomWrap(t)}, &out, "", nil); code != http.StatusOK || out.Kind != "session" {
+			t.Fatalf("link of %s: %d %+v", email, code, out)
+		}
+		return out.User.ID
+	}
+	passwordSignIn := func(email, authKey string) int {
+		t.Helper()
+		h.handler.Platform = nil
+		defer func() { h.handler.Platform = provider }()
+		return h.post(t, "/v1/auth/login", map[string]string{"email": email, "auth_key": authKey}, nil, "")
+	}
+
+	first := link("passkey@example.com", h.account.AuthKey)
+	replay0049(t, h.pool)
+	if held, _, _ := h.legacyCredentials(t, first); held != 0 {
+		t.Fatalf("the account linked before 0049 holds %d legacy credentials", held)
+	}
+	covered := h.accountState(t, first)
+
+	body, _ := newAccount(t, h.invite(t, "member"), "noa@example.com", "noa-auth-key")
+	body.RecoveryWrap = base64.StdEncoding.EncodeToString([]byte("noa-recovery-wrap"))
+	body.RecoveryProof = "noa-recovery-proof"
+	if code := h.post(t, "/v1/auth/signup", body, nil, ""); code != http.StatusOK {
+		t.Fatalf("signup: %d", code)
+	}
+	later := link("noa@example.com", body.AuthKey)
+	if held, source, _ := h.legacyCredentials(t, later); held != 6 || source != "platform" {
+		t.Fatalf("the account linked after 0049: %d legacy credentials, %s", held, source)
+	}
+	if code := passwordSignIn("noa@example.com", body.AuthKey); code != http.StatusOK {
+		t.Fatalf("its old password with the provider off, before 0049 runs again: %d", code)
+	}
+	// What a backup from before 0049 holds of it.
+	var backup string
+	h.inAccount(t, later, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT jsonb_build_object('auth_hash', auth_hash, 'kdf_salt', encode(kdf_salt, 'base64'),
+			'kdf_params', kdf_params, 'wrapped_usk', encode(wrapped_usk, 'base64'), 'recovery_wrap', encode(recovery_wrap, 'base64'),
+			'recovery_hash', recovery_hash)::text FROM users WHERE id = $1`, later).Scan(&backup)
+	})
+
+	replay0049(t, h.pool)
+
+	if held, source, _ := h.legacyCredentials(t, later); held != 0 || source != "platform" {
+		t.Fatalf("0049 again left the account linked since %d legacy credentials (%s)", held, source)
+	}
+	if n := h.count(t, `SELECT count(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NULL AND NOT via_provider`, later); n != 0 {
+		t.Fatalf("%d live password sessions after 0049 again", n)
+	}
+	if code := passwordSignIn("noa@example.com", body.AuthKey); code != http.StatusUnauthorized {
+		t.Fatalf("its old password with the provider off, after 0049 again: %d", code)
+	}
+	if got := h.accountState(t, first); got != covered {
+		t.Fatalf("0049 again changed the account it had covered:\n%s\nwas\n%s", got, covered)
+	}
+
+	// Until the console can rewrap a new epoch, the backup is the account
+	// key's other copy (0049's header): its six columns put back, with the
+	// provider switched off and local login on, the old password signs in
+	// and hands back the password wrap.
+	ctx := context.Background()
+	if err := pg.InTx(ctx, h.pool, func(tx pgx.Tx) error {
+		for _, stmt := range []string{
+			`ALTER TABLE users DISABLE ROW LEVEL SECURITY`,
+			`UPDATE users SET auth_hash = b->>'auth_hash', kdf_salt = decode(b->>'kdf_salt', 'base64'), kdf_params = b->'kdf_params',
+			        wrapped_usk = decode(b->>'wrapped_usk', 'base64'), recovery_wrap = decode(b->>'recovery_wrap', 'base64'),
+			        recovery_hash = b->>'recovery_hash'
+			   FROM (SELECT $2::jsonb AS b) backup WHERE id = $1`,
+			`ALTER TABLE users ENABLE ROW LEVEL SECURITY`,
+			`ALTER TABLE users FORCE ROW LEVEL SECURITY`,
+		} {
+			var args []any
+			if strings.HasPrefix(stmt, "UPDATE") {
+				args = []any{later, backup}
+			}
+			if _, err := tx.Exec(ctx, stmt, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("putting the backup's columns back: %v", err)
+	}
+	h.handler.Platform = nil
+	var restored sessionReply
+	if code := h.post(t, "/v1/auth/login", map[string]string{"email": "noa@example.com", "auth_key": body.AuthKey}, &restored, ""); code != http.StatusOK ||
+		restored.User.WrappedUSK != body.WrappedUSK {
+		t.Fatalf("the old password once the backup's columns are back: %d %+v", code, restored.User)
+	}
+	h.handler.Platform = provider
 }

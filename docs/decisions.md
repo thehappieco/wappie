@@ -1464,4 +1464,9 @@ closes the password routes. 0049 changes data only, so its down-step is the
 ledger row and an older release still starts; what it removed does not come
 back, and going below 0048 now means deleting the accounts that sign in
 through id. first, the ones linked before 0049 as well as those created
-there (docs/platform-sign-in.md, "The end of the window").
+there (docs/platform-sign-in.md, "The end of the window"). The cost: a linked
+account's key is then held only by its platform wrap, under id.'s product
+key, and the console cannot rewrap a new epoch yet. A key reset at id., or
+another key for the pinned epoch, would lose the account key and everything
+sealed to it, so until the rewrap ships the backup from before 0049 and the
+old password are kept.

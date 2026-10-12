@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -158,6 +159,58 @@ func TestMigration0049IsDataOnly(t *testing.T) {
 	var n int
 	if err := at49.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 49`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("the ledger has %d rows for 49: %v", n, err)
+	}
+}
+
+// 0049 leaves a linked account's key under the provider's product key alone,
+// and covers every account linked whenever it runs, a second run included.
+// Its header and the contract say both, and neither promises an account
+// linked after it its legacy credentials for good.
+func TestMigration0049SaysWhatItCosts(t *testing.T) {
+	ms, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header string
+	for _, m := range ms {
+		if m.Version == 49 {
+			header = m.SQL
+		}
+	}
+	doc, err := os.ReadFile("../../docs/platform-sign-in.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := func(s string) string { return strings.Join(strings.Fields(strings.ReplaceAll(s, "\n-- ", "\n")), " ") }
+	for _, c := range []struct {
+		name, text  string
+		want, never []string
+	}{
+		{"0049's header", flat(header), []string{
+			"So the account key hangs on the provider alone.",
+			"After it, platform_wraps is the only one, and the console cannot rewrap a new epoch yet",
+			"Until the console's rewrap ships, keep a database backup from before this migration and the old password",
+			"It covers every account linked when it runs",
+			"until this migration runs again (after its down-step, when a release that carries it comes back), and then loses them too.",
+		}, []string{"a replay on a database where this already ran changes nothing"}},
+		{"docs/platform-sign-in.md", flat(string(doc)), []string{
+			"**What it costs: the account key hangs on id. alone.**",
+			"After it, `platform_wraps` is the only one, and the console cannot rewrap a new epoch yet",
+			"the operator who runs 0049 keeps a database backup from before it, and the account's owner keeps the old password",
+			"0049 is applied anew and nulls and deletes the same things for every account linked by then, the ones linked since its first run included.",
+			"after checking the file against `migration49_sha256` in the release's `RELEASE.json`",
+		}, []string{"nothing removes them yet", "Run again, it changes nothing."}},
+	} {
+		for _, want := range c.want {
+			if !strings.Contains(c.text, want) {
+				t.Errorf("%s does not say %q", c.name, want)
+			}
+		}
+		for _, never := range c.never {
+			if strings.Contains(c.text, never) {
+				t.Errorf("%s still says %q", c.name, never)
+			}
+		}
 	}
 }
 

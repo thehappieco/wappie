@@ -35,14 +35,29 @@
 -- is unchanged, and platform_wraps holds the key under the provider's, which
 -- is how every linked account opens it from now on.
 --
+-- So the account key hangs on the provider alone. Before this migration a
+-- linked account's key was held three ways: the platform wrap under the
+-- provider's product key, the password wrap and the recovery wrap. After it,
+-- platform_wraps is the only one, and the console cannot rewrap a new epoch
+-- yet (docs/platform-sign-in.md, "Not yet"). If the provider moves the
+-- account's product key to a new epoch (rewrap_required) or presents another
+-- key for the pinned one (account_key_changed), nothing opens the account key
+-- any more, nor what is sealed to it: every device grant, the AI keychain and
+-- the personal contacts. Until the console's rewrap ships, keep a database
+-- backup from before this migration and the old password: putting the six
+-- columns below back from that backup, with the provider switched off and
+-- local login on, lets the account sign in with its old password again.
+--
 -- Data only: no table, column, constraint, index, policy or trigger changes.
 -- users and user_passkeys force row-level security and a migration has no
 -- workspace, so their policies are lifted for the statements below and put
 -- back in this same transaction, as 0021 does; sessions, passkey_challenges
 -- and platform_identities carry none. Each statement selects only what is
--- still there, so a replay on a database where this already ran changes
--- nothing. An account linked after it, which needs WS_LOCAL_LOGIN on or
--- link_only, keeps its legacy credentials as 0048 left them.
+-- still there, so a replay changes nothing for an account it already
+-- covered. It covers every account linked when it runs: one linked after it,
+-- which needs WS_LOCAL_LOGIN on or link_only, keeps its legacy credentials as
+-- 0048 left them until this migration runs again (after its down-step, when
+-- a release that carries it comes back), and then loses them too.
 --
 -- Down-step (data-only migration: the schema is 48's, so the ledger row is
 -- all there is, and once it is gone `migrate.Run` in a binary that knows 48
