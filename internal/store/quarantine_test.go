@@ -381,7 +381,7 @@ func (a *excludedArchive) storedBy(t *testing.T, device uuid.UUID) store.Storage
 func addsUp(t *testing.T, usage store.StorageUsage, excluded uuid.UUID) {
 	t.Helper()
 	b := usage.Breakdown
-	sum := b.Shared.UsedBytes + b.Unassigned.UsedBytes + b.Excluded.UsedBytes
+	sum := b.Shared.UsedBytes + b.Unassigned.UsedBytes + b.Excluded.UsedBytes + b.Other.UsedBytes
 	for _, d := range b.Devices {
 		if d.DeviceID == excluded.String() {
 			t.Fatal("the breakdown names the excluded number")
@@ -562,20 +562,19 @@ func TestStorageBreakdownFoldsExcludedForNonOwners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner.Breakdown.Excluded != excludedBytes {
-		t.Fatalf("the owner's excluded bucket holds %+v, the number stored %+v", owner.Breakdown.Excluded, excludedBytes)
+	if owner.Breakdown.Excluded != excludedBytes || owner.Breakdown.Other != (store.StorageBytes{}) {
+		t.Fatalf("the owner's excluded bucket holds %+v (other %+v), the number stored %+v", owner.Breakdown.Excluded, owner.Breakdown.Other, excludedBytes)
 	}
 	addsUp(t, owner, a.excluded)
-	plus := func(x, y store.StorageBytes) store.StorageBytes {
-		return store.StorageBytes{ArchiveBytes: x.ArchiveBytes + y.ArchiveBytes, ObjectBytes: x.ObjectBytes + y.ObjectBytes, UsedBytes: x.UsedBytes + y.UsedBytes}
-	}
 	for name, viewer := range map[string]uuid.UUID{"an admin": admin, "a disabled owner": disabled, "nobody": uuid.Nil} {
 		got, err := storage.UsageDetailed(ctx, a.tenant, viewer)
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The bytes move to the unlabelled other line, never into the
+		// uploads in progress.
 		b := got.Breakdown
-		if b.Excluded != (store.StorageBytes{}) || b.Unassigned != plus(owner.Breakdown.Unassigned, excludedBytes) ||
+		if b.Excluded != (store.StorageBytes{}) || b.Other != excludedBytes || b.Unassigned != owner.Breakdown.Unassigned ||
 			b.Shared != owner.Breakdown.Shared || got.UsedBytes != owner.UsedBytes {
 			t.Fatalf("%s's breakdown %+v, the owner's %+v", name, b, owner.Breakdown)
 		}

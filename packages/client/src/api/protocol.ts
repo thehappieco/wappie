@@ -394,6 +394,9 @@ export interface DeletedNumber extends RecoveryStatus {
   recoverable: boolean
   purging: boolean
   bytes: number
+  /** The deletion's word on WhatsApp, as an already:true device.deleted carries it, from what the server stored. */
+  unlinked: boolean
+  note_code: DeletionNoteCode
 }
 
 export interface DeletedNumbers {

@@ -41,6 +41,7 @@ func TestStorageScreenShowsExcludedBytesToOwnersOnly(t *testing.T) {
 			Devices    []json.RawMessage  `json:"devices"`
 			Unassigned store.StorageBytes `json:"unassigned"`
 			Excluded   store.StorageBytes `json:"excluded"`
+			Other      store.StorageBytes `json:"other"`
 		} `json:"breakdown"`
 	}
 	screen := func(token string) reply {
@@ -68,11 +69,10 @@ func TestStorageScreenShowsExcludedBytesToOwnersOnly(t *testing.T) {
 	if len(owner.Breakdown.Devices) != 0 || owner.Breakdown.Excluded.ObjectBytes != 10 || owner.Breakdown.Excluded.UsedBytes == 0 {
 		t.Fatalf("the owner's breakdown: %+v", owner.Breakdown)
 	}
-	want := owner.Breakdown.Unassigned
-	want.ArchiveBytes += owner.Breakdown.Excluded.ArchiveBytes
-	want.ObjectBytes += owner.Breakdown.Excluded.ObjectBytes
-	want.UsedBytes += owner.Breakdown.Excluded.UsedBytes
-	if admin.Breakdown.Excluded != (store.StorageBytes{}) || admin.Breakdown.Unassigned != want || admin.UsedBytes != owner.UsedBytes {
+	// An admin gets the same bytes as an unlabelled other line, never in
+	// the uploads-in-progress line, and the owner none there.
+	if owner.Breakdown.Other != (store.StorageBytes{}) || admin.Breakdown.Excluded != (store.StorageBytes{}) ||
+		admin.Breakdown.Other != owner.Breakdown.Excluded || admin.Breakdown.Unassigned != owner.Breakdown.Unassigned || admin.UsedBytes != owner.UsedBytes {
 		t.Fatalf("the admin's breakdown %+v, the owner's %+v", admin.Breakdown, owner.Breakdown)
 	}
 }

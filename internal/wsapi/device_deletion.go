@@ -417,7 +417,8 @@ func (s *session) handleDevicesDeleted(ctx context.Context, f Frame) {
 		out.Numbers = append(out.Numbers, DeletedNumber{
 			DeviceID: n.DeviceID.String(), Label: n.Label, PushName: n.PushName, PN: n.PN,
 			DeletedAt: n.DeletedAt, DeletedByName: n.DeletedByName, RecoverableUntil: n.RecoverableUntil,
-			Recoverable: n.Recoverable, Purging: n.Purging, Bytes: n.Bytes, RecoveryStatus: recoveryStatus(n.RecoveryState),
+			Recoverable: n.Recoverable, Purging: n.Purging, Bytes: n.Bytes, Unlinked: n.Unlinked, NoteCode: n.NoteCode,
+			RecoveryStatus: recoveryStatus(n.RecoveryState),
 		})
 	}
 	s.reply(TypeDeletedNumbers, f.ReqID, out)

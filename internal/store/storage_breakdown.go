@@ -29,22 +29,28 @@ type DeviceStorageUsage struct {
 // archive reference can identify a number. Neither bucket is charged again.
 // Excluded holds what the deleted numbers still store until their purge
 // (0050): still charged, so the totals add up, and never under a number's
-// name. Only owners see it apart; for everyone else it is folded into
-// Unassigned before the breakdown leaves the store.
+// name. Only owners see it apart; for everyone else it is moved to Other
+// before the breakdown leaves the store.
+//
+// Other is that same total for a viewer who is not an owner: the console
+// draws it as an unlabelled "Outros dados guardados" line. It is kept apart
+// from Unassigned, whose line says uploads are in progress or deletions
+// await confirmation, which a deleted number's bytes are not.
 type StorageBreakdown struct {
 	Devices    []DeviceStorageUsage `json:"devices"`
 	Shared     StorageBytes         `json:"shared"`
 	Unassigned StorageBytes         `json:"unassigned"`
 	Excluded   StorageBytes         `json:"excluded"`
+	Other      StorageBytes         `json:"other"`
 }
 
-// foldExcluded moves the deleted numbers' bytes into Unassigned, for a viewer
-// who may not learn that a number is waiting for its purge: only owners
-// delete and recover numbers.
+// foldExcluded moves the deleted numbers' bytes into Other, for a viewer who
+// may not learn that a number is waiting for its purge: only owners delete
+// and recover numbers.
 func (b *StorageBreakdown) foldExcluded() {
-	b.Unassigned.ArchiveBytes += b.Excluded.ArchiveBytes
-	b.Unassigned.ObjectBytes += b.Excluded.ObjectBytes
-	b.Unassigned.UsedBytes += b.Excluded.UsedBytes
+	b.Other.ArchiveBytes += b.Excluded.ArchiveBytes
+	b.Other.ObjectBytes += b.Excluded.ObjectBytes
+	b.Other.UsedBytes += b.Excluded.UsedBytes
 	b.Excluded = StorageBytes{}
 }
 
@@ -64,8 +70,8 @@ func (s *Storage) UsageDetailed(ctx context.Context, tenant, viewer uuid.UUID) (
 
 // StorageUsageDetailedTx shows the excluded numbers' bytes apart only when
 // viewer is an active owner of the workspace now, read in tx; anyone else
-// gets them folded into Unassigned. The store decides, so no route that
-// shows the breakdown, core's or the cloud's, can forget to.
+// gets them folded into Other. The store decides, so no route that shows
+// the breakdown, core's or the cloud's, can forget to.
 func StorageUsageDetailedTx(ctx context.Context, tx pgx.Tx, tenant, viewer uuid.UUID) (StorageUsage, error) {
 	out, err := StorageUsageTx(ctx, tx, tenant)
 	if err != nil {

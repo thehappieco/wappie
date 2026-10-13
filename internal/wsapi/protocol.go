@@ -441,6 +441,11 @@ type DeletedNumber struct {
 	Recoverable bool  `json:"recoverable"`
 	Purging     bool  `json:"purging"`
 	Bytes       int64 `json:"bytes"`
+	// Unlinked and NoteCode are the deletion's word on WhatsApp, as an
+	// already:true reply to device.delete carries them, from what the server
+	// stored.
+	Unlinked bool   `json:"unlinked"`
+	NoteCode string `json:"note_code"`
 	RecoveryStatus
 }
 

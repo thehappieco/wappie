@@ -296,6 +296,23 @@ func (c *deletionConsole) excludedRow(ctx context.Context, t *testing.T, device 
 	return false, ""
 }
 
+// listed is the number's row in devices.deleted, as the owner's console
+// reads it.
+func (c *deletionConsole) listed(t *testing.T, device uuid.UUID) wsapi.DeletedNumber {
+	t.Helper()
+	f := ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDevicesDeleted, nil)
+	if f.Type != wsapi.TypeDeletedNumbers {
+		t.Fatalf("devices.deleted: %s %s", f.Type, f.Payload)
+	}
+	for _, n := range payload[wsapi.DeletedNumbers](t, f).Numbers {
+		if n.DeviceID == device.String() {
+			return n
+		}
+	}
+	t.Fatalf("%s is not among the deleted numbers", device)
+	return wsapi.DeletedNumber{}
+}
+
 // connect opens an authenticated socket.
 func connect(t *testing.T, c *console, hello wsapi.Hello) *websocket.Conn {
 	t.Helper()
@@ -864,6 +881,10 @@ func TestDeleteLIDOnlyNumber(t *testing.T) {
 	if _, status, reason, leftover := c.row(t, uuid.MustParse(dev.ID)); status != "logged_out" || reason != "no session at deletion" || leftover {
 		t.Fatalf("the LID-only number: %q (%q), fingerprint %v", status, reason, leftover)
 	}
+	// The deleted list says the same, for a console whose reply was lost.
+	if n := c.listed(t, uuid.MustParse(dev.ID)); !n.Unlinked || n.NoteCode != store.NoteAlreadyDisconnected {
+		t.Fatalf("the deleted list's word on WhatsApp: %+v", n)
+	}
 }
 
 // What a deletion logs never names the phone: not the session's JID, not a
@@ -897,6 +918,16 @@ func TestDeleteLogsNoPhone(t *testing.T) {
 	c.unlinker.onUnlink = func(context.Context, string) error { return errors.New("websocket not connected") }
 	if f := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(failing)); f.Type != wsapi.TypeDeviceGone {
 		t.Fatalf("delete: %s %s", f.Type, f.Payload)
+	}
+	// The deleted list words the logout WhatsApp never confirmed as a retry's
+	// already:true reply does, so a console that lost both still tells the
+	// owner to remove the session on the phone.
+	retried := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(failing))
+	if gone := payload[wsapi.DeviceDeleted](t, retried); !gone.Already || gone.Unlinked || gone.NoteCode != store.NoteUnlinkUnconfirmed {
+		t.Fatalf("the retry's reply = %+v", gone)
+	}
+	if n := c.listed(t, failing); n.Unlinked || n.NoteCode != store.NoteUnlinkUnconfirmed {
+		t.Fatalf("the deleted list's word on WhatsApp: %+v", n)
 	}
 	out := logged.String()
 	if !strings.Contains(out, "not acknowledged") || !strings.Contains(out, "number excluded") {
@@ -1105,7 +1136,7 @@ func TestDeletedListAndRecoverFrames(t *testing.T) {
 	}
 	n := list.Numbers[0]
 	if n.DeviceID != device.String() || n.Label != "Suporte" || n.PN == "" || !n.Recoverable || n.Purging ||
-		n.Status != "logged_out" || !n.LoggedOut || n.CanResume || n.KeyHolders != 2 || n.DeletedByName == "" {
+		n.Status != "logged_out" || !n.LoggedOut || n.CanResume || n.KeyHolders != 2 || n.DeletedByName == "" || !n.Unlinked || n.NoteCode != "" {
 		t.Fatalf("the deleted number = %+v", n)
 	}
 	f = ask(t, c.console, owner, wsapi.TypeDeviceRecoverCheck, wsapi.DeviceRef{DeviceID: device.String()})

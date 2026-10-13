@@ -30,7 +30,7 @@ func (s *session) allowStorageOperation(ctx context.Context, f Frame) bool {
 		return true
 	}
 	if errors.Is(err, store.ErrStoragePaused) {
-		s.replyError(f.ReqID, "storage_paused", "Archive capture is paused. Free storage or increase capacity, then explicitly resume capture.")
+		s.replyError(f.ReqID, "storage_paused", "Archive sync is paused. Free storage or increase capacity, then explicitly resume sync.")
 	} else {
 		s.replyError(f.ReqID, ErrCodeInternal, "Could not verify storage capacity")
 	}

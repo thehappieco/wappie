@@ -915,6 +915,11 @@ type DeletedNumber struct {
 	// database's clock; Purging is a purge under way.
 	Recoverable, Purging bool
 	Bytes                int64
+	// Unlinked and NoteCode are what the deletion's reply said about
+	// WhatsApp, from the stored state, as GetExcluded has them: a console
+	// whose reply was lost words its banner from the list.
+	Unlinked bool
+	NoteCode string
 	RecoveryState
 }
 
@@ -952,7 +957,7 @@ func (d *Devices) ListDeleted(ctx context.Context, tenant, actor uuid.UUID) ([]D
 			rows, err := tx.Query(ctx, `SELECT d.id, d.label, d.push_name, coalesce(d.pn, ''), d.deleted_at,
 				coalesce(nullif(u.name, ''), u.email, h.email, ''), d.purge_after,
 				d.purge_started_at IS NULL AND d.purge_after > clock_timestamp(), d.purge_started_at IS NOT NULL,
-				d.status, d.status_reason, d.wa_leftover->>'jid', (d.wa_leftover->>'registration_id')::bigint
+				d.status, d.status_reason, d.wa_leftover IS NOT NULL, d.wa_leftover->>'jid', (d.wa_leftover->>'registration_id')::bigint
 				FROM devices d
 				LEFT JOIN users u ON u.id = d.deleted_by
 				LEFT JOIN workspace_member_history h ON h.tenant_id = d.tenant_id AND h.user_id = d.deleted_by
@@ -962,13 +967,15 @@ func (d *Devices) ListDeleted(ctx context.Context, tenant, actor uuid.UUID) ([]D
 			}
 			type row struct {
 				DeletedNumber
-				jid *string
-				reg *int64
+				leftover bool
+				jid      *string
+				reg      *int64
 			}
 			listed, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 				var n row
 				err := r.Scan(&n.DeviceID, &n.Label, &n.PushName, &n.PN, &n.DeletedAt, &n.DeletedByName, &n.RecoverableUntil,
-					&n.Recoverable, &n.Purging, &n.Status, &n.StatusReason, &n.jid, &n.reg)
+					&n.Recoverable, &n.Purging, &n.Status, &n.StatusReason, &n.leftover, &n.jid, &n.reg)
+				n.Unlinked, n.NoteCode = !n.leftover, noteCode(n.leftover, n.StatusReason)
 				return n, err
 			})
 			if err != nil || len(listed) == 0 {
