@@ -21,13 +21,11 @@
 #   <scope> <path> :: <fragment>   only hits whose line contains the fragment
 
 # Unrelated meanings of the phrases: the archive server's own API, and the
-# stored attachment bytes of the storage boundary, the storage breakdown and
-# workspace deletion.
+# stored attachment bytes of the storage boundary and the storage breakdown.
 unrelated internal/restapi/openapi.json :: The server does not search plaintext, decrypt names/content, download attachments
 unrelated README.md :: hashes. File names and embedded thumbnails are sealed. Attachment bytes have
 unrelated docs/decisions.md :: hashes. File names and embedded thumbnails are sealed; attachment bytes have
 unrelated internal/store/storage_breakdown_test.go :: stored unique attachment bytes must be 10
-unrelated internal/wsapi/admin.go :: Remove the attachment bytes from object storage
 
 # The operator's switch: with it off, a media connection is told it may not
 # open attachments.
