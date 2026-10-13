@@ -534,7 +534,10 @@ func (m *MCPConnections) RevokeAI(ctx context.Context, tenant, actor uuid.UUID, 
 			return err
 		}
 		if deleteResults {
-			tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND authorization_id=$2`, tenant, id)
+			// A deleted number's results stay for its recovery, as in
+			// DeleteAIDerivedOf.
+			tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND authorization_id=$2
+				AND device_id IN (SELECT id FROM devices)`, tenant, id)
 			if err != nil {
 				return err
 			}

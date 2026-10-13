@@ -407,6 +407,41 @@ func TestRecordUnlinkAndRecoverStatus(t *testing.T) {
 	if _, err := w.devices.RecordUnlink(ctx, w.tenant, left, q2.DeletedAt.Add(time.Second), true); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("another deletion: %v", err)
 	}
+	// A second record of one deletion (the janitor's, racing the handler's)
+	// changes nothing, whatever it says: a confirmed logout stays confirmed.
+	for _, acknowledged := range []bool{true, false} {
+		rec, err = w.devices.RecordUnlink(ctx, w.tenant, acked, q.DeletedAt, acknowledged)
+		if err != nil || !rec.Unlinked || rec.NoteCode != "" {
+			t.Fatalf("a second record (%v): %+v %v", acknowledged, rec, err)
+		}
+	}
+	if n := w.count(t, `SELECT count(*) FROM devices WHERE id=$1 AND status_reason='unlinked when deleted' AND status='logged_out'`, acked); n != 1 {
+		t.Fatal("a second record rewrote a confirmed logout")
+	}
+	// Acknowledged, yet the fingerprinted session is still in the store: not
+	// a logout.
+	stays := w.number(t, "stays")
+	staysJID := session(stays, 4)
+	q6 := w.quarantine(t, stays)
+	rec, err = w.devices.RecordUnlink(ctx, w.tenant, stays, q6.DeletedAt, true)
+	if err != nil || rec.Unlinked || rec.NoteCode != store.NoteUnlinkUnconfirmed {
+		t.Fatalf("acknowledged with the session left: %+v %v", rec, err)
+	}
+	if n := w.count(t, `SELECT count(*) FROM devices WHERE id=$1 AND (wa_leftover->>'attempts')::int=1 AND status='offline' AND status_reason='deleted'`, stays); n != 1 || tokens(staysJID) != 1 {
+		t.Fatalf("a false acknowledgement was taken for a logout (%d rows, %d tokens)", n, tokens(staysJID))
+	}
+	// The logout went through, and an owner recovered the number before its
+	// record landed: the recovery, holding the device lock, records it, so
+	// the number never comes back offering a resume WhatsApp already ended.
+	lost := w.number(t, "lost")
+	lostJID := session(lost, 5)
+	w.quarantine(t, lost)
+	if _, err := w.pool.Exec(ctx, `DELETE FROM whatsmeow_device WHERE jid=$1`, lostJID); err != nil {
+		t.Fatal(err)
+	}
+	if r := w.recover(t, lost); r.Status != wa.StatusLoggedOut || r.StatusReason != "unlinked when deleted" || r.CanResume || tokens(lostJID) != 0 {
+		t.Fatalf("recovered before the record: %+v, %d tokens", r.RecoveryState, tokens(lostJID))
+	}
 
 	for device, want := range map[uuid.UUID]struct {
 		status    wa.Status
@@ -416,6 +451,7 @@ func TestRecordUnlinkAndRecoverStatus(t *testing.T) {
 	}{
 		acked: {wa.StatusLoggedOut, "unlinked when deleted", false, true},
 		left:  {wa.StatusOffline, "deleted", true, false},
+		stays: {wa.StatusOffline, "deleted", true, false},
 		none:  {wa.StatusLoggedOut, "no session at deletion", false, true},
 	} {
 		r := w.recover(t, device)
@@ -455,17 +491,89 @@ func TestRecordUnlinkAndRecoverStatus(t *testing.T) {
 		t.Fatal("a banned number is no longer banned")
 	}
 
-	// A number with only a LID has no session a deletion can find.
+	// A number with only a LID has no session a deletion can find, even
+	// with a session stored under its LID: a deletion looks a session up by
+	// the phone number alone, and never logs out by LID.
 	lidOnly, err := w.devices.Create(ctx, w.tenant.String(), "lid", wa.ModePassive)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.devices.SetIdentity(ctx, w.tenant.String(), lidOnly.ID, wa.Identity{LID: types.NewJID("300000000000001", types.HiddenUserServer)}); err != nil {
+	lid := types.NewJID("300000000000001", types.HiddenUserServer)
+	if err := w.devices.SetIdentity(ctx, w.tenant.String(), lidOnly.ID, wa.Identity{LID: lid}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx, `INSERT INTO whatsmeow_device(jid,registration_id) VALUES ($1,6)`, lid.String()); err != nil {
 		t.Fatal(err)
 	}
 	q5 := w.quarantine(t, uuid.MustParse(lidOnly.ID))
 	if q5.Session != nil {
 		t.Fatalf("a LID-only number has a session to log out: %+v", q5.Session)
+	}
+	rec, err = w.devices.RecordUnlink(ctx, w.tenant, uuid.MustParse(lidOnly.ID), q5.DeletedAt, false)
+	if err != nil || !rec.Unlinked || rec.NoteCode != store.NoteAlreadyDisconnected {
+		t.Fatalf("a LID-only number's record: %+v %v", rec, err)
+	}
+	if n := w.count(t, `SELECT count(*) FROM devices WHERE id=$1 AND status='logged_out' AND status_reason='no session at deletion' AND wa_leftover IS NULL`, lidOnly.ID); n != 1 {
+		t.Fatal("a LID-only number was not left logged out with no session")
+	}
+}
+
+// The recovery's preflight lists everyone who gets something back: the
+// readers, the standing service accounts that read it, and, apart, whoever
+// only sends through it or, as a member, manages it. An owner's or an
+// admin's stored Manage adds nothing to their role and is not listed.
+func TestRecoverCheckListsOthers(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	device := w.number(t, "Suporte")
+	reader := w.person(t, "reader", "member")
+	w.reads(t, reader, device)
+	sender := w.person(t, "sender", "member")
+	manager := w.person(t, "manager", "member")
+	admin := w.person(t, "admin", "admin")
+	service, err := w.users.CreateService(ctx, w.tenant, "erp", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []store.DevicePermission{
+		{DeviceID: device, UserID: sender, Send: true},
+		{DeviceID: device, UserID: manager, Manage: true},
+		{DeviceID: device, UserID: admin, Manage: true},
+		{DeviceID: device, UserID: service.ID, Send: true},
+		{DeviceID: device, UserID: reader, Read: true, Send: true},
+	} {
+		if err := w.users.SetDevicePermission(ctx, w.tenant, w.owner, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// SetDevicePermission with Read keeps the reader's grant.
+	w.quarantine(t, device, reader)
+	check, err := w.devices.RecoverCheck(ctx, w.tenant, w.owner, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(check.Readers) != 1 || check.Readers[0].UserID != reader {
+		t.Fatalf("readers = %+v", check.Readers)
+	}
+	type entry struct {
+		kind string
+		why  string
+	}
+	got := map[uuid.UUID]entry{}
+	for _, o := range check.Others {
+		got[o.ID] = entry{o.Kind, strings.Join(o.Why, ",")}
+		if o.Kind == "service" && (o.Name == "" || o.Email != "") || o.Kind == "person" && o.Email == "" {
+			t.Fatalf("an entry %+v", o)
+		}
+	}
+	want := map[uuid.UUID]entry{sender: {"person", "send"}, manager: {"person", "manage"}, service.ID: {"service", "send"}}
+	if len(got) != len(want) {
+		t.Fatalf("others = %+v", check.Others)
+	}
+	for id, e := range want {
+		if got[id] != e {
+			t.Fatalf("others = %+v, want %v for %s", check.Others, e, id)
+		}
 	}
 }
 

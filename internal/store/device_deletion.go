@@ -183,6 +183,25 @@ func requireOwnerTx(ctx context.Context, tx pgx.Tx, tenant, actor uuid.UUID) err
 	return err
 }
 
+// ownerNowTx checks that actor is an active owner of the active workspace now,
+// as requireOwnerTx does, but locks nothing: the read-only owner frames
+// (DeleteCheck, ListDeleted, RecoverCheck, GetExcluded) scan the
+// workspace's storage, and every archive write of the workspace waits on its
+// row, so holding it would stall live ingest for every number meanwhile.
+func ownerNowTx(ctx context.Context, tx pgx.Tx, tenant, actor uuid.UUID) error {
+	var owner bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenants t
+		JOIN workspace_memberships m ON m.tenant_id = t.id JOIN users u ON u.id = m.user_id
+		WHERE t.id = $1 AND t.status = 'active' AND m.user_id = $2 AND m.role = 'owner' AND m.status = 'active' AND u.status = 'active')`,
+		tenant, actor).Scan(&owner); err != nil {
+		return err
+	}
+	if !owner {
+		return ErrOwnerOnly
+	}
+	return nil
+}
+
 // reader is a person who reads a number (D10): with their platform sub, for
 // the event row.
 type reader struct {
@@ -307,7 +326,8 @@ func keyHoldersTx(ctx context.Context, tx pgx.Tx, device uuid.UUID) (int, error)
 
 // deviceBytesQuery is how many bytes each number holds: its archive rows and
 // the objects only it references. The visible numbers only; inside the
-// quarantine scope, excluded ones too. The caller holds the workspace row.
+// quarantine scope, excluded ones too. One statement, so one snapshot: the
+// caller need not hold the workspace row, and the read-only frames do not.
 const deviceBytesQuery = `
  WITH records AS (
   SELECT CASE
@@ -360,7 +380,7 @@ func deviceBytesTx(ctx context.Context, tx pgx.Tx) (map[string]int64, error) {
 func (d *Devices) DeleteCheck(ctx context.Context, tenant, actor, device uuid.UUID) (DeletionCheck, error) {
 	var out DeletionCheck
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := requireOwnerTx(ctx, tx, tenant, actor); err != nil {
+		if err := ownerNowTx(ctx, tx, tenant, actor); err != nil {
 			return err
 		}
 		var pn string
@@ -451,7 +471,8 @@ func assistantKind(kind string) string {
 // access_lost; the number taken off every key restricted to it, revoking
 // none; its downloads in flight returned to the queue; the row excluded, with
 // purge_after 30 days on, paused, its status kept when it was already logged
-// out or banned, and the fingerprint of any WhatsApp session it still has;
+// out or banned, and the fingerprint of any WhatsApp session it still has
+// (with none, logged out at once: there is nothing to log out);
 // the readers' and the other owners' notices; everyone else's access bumped,
 // so their consoles let go of it, but not the owner's, whose socket carries
 // the reply; the deleted event; and a notification every process hears at
@@ -576,28 +597,36 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 			// exactly 30 days; a dead status is kept, so a recovered number
 			// is never offered a resume it cannot do; and the session's
 			// fingerprint is in the commit, so it is known even if this
-			// process dies before the logout.
+			// process dies before the logout. With no session there is
+			// nothing to log out, and that outcome is written here, once:
+			// RecordUnlink only reads it back, so a second record of the
+			// same deletion (the janitor's, racing the handler's) cannot
+			// rewrite a confirmed logout as "already disconnected".
 			sessions, err := sessionTableTx(ctx, tx)
 			if err != nil {
 				return err
 			}
-			leftover := `NULL::jsonb`
-			if sessions {
-				leftover = `(SELECT jsonb_build_object('jid', w.jid, 'registration_id', w.registration_id)
-					FROM whatsmeow_device w WHERE w.jid = devices.pn)`
-			}
-			var lbl, pushName, pn string
 			var jid *string
 			var reg *int64
+			if sessions {
+				err := tx.QueryRow(ctx, `SELECT w.jid, w.registration_id FROM whatsmeow_device w
+					JOIN devices d ON d.pn = w.jid WHERE d.id = $1`, device).Scan(&jid, &reg)
+				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+					return err
+				}
+			}
+			var lbl, pushName, pn string
 			if err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
 				UPDATE devices SET deleted_at = now.t, deleted_by = $2, purge_after = now.t + interval '30 days', paused = true,
-				  status = CASE WHEN status IN ('logged_out', 'banned') THEN status ELSE 'offline' END,
-				  status_reason = CASE WHEN status IN ('logged_out', 'banned') THEN status_reason ELSE '`+reasonDeleted+`' END,
-				  wa_leftover = `+leftover+`
+				  status = CASE WHEN $3::text IS NULL AND status <> 'banned' THEN 'logged_out'
+				                WHEN status IN ('logged_out', 'banned') THEN status ELSE 'offline' END,
+				  status_reason = CASE WHEN $3::text IS NULL THEN '`+reasonNoSession+`'
+				                       WHEN status IN ('logged_out', 'banned') THEN status_reason ELSE '`+reasonDeleted+`' END,
+				  wa_leftover = CASE WHEN $3::text IS NULL THEN NULL
+				                     ELSE jsonb_build_object('jid', $3::text, 'registration_id', $4::bigint) END
 				FROM now WHERE devices.id = $1
-				RETURNING deleted_at, purge_after, label, push_name, coalesce(pn, ''),
-				  wa_leftover->>'jid', (wa_leftover->>'registration_id')::bigint`, device, actor).
-				Scan(&out.DeletedAt, &out.PurgeAfter, &lbl, &pushName, &pn, &jid, &reg); err != nil {
+				RETURNING deleted_at, purge_after, label, push_name, coalesce(pn, '')`, device, actor, jid, reg).
+				Scan(&out.DeletedAt, &out.PurgeAfter, &lbl, &pushName, &pn); err != nil {
 				return err
 			}
 			if jid != nil && reg != nil {
@@ -684,7 +713,7 @@ type Excluded struct {
 func (d *Devices) GetExcluded(ctx context.Context, tenant, actor, device uuid.UUID) (Excluded, error) {
 	var out Excluded
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := requireOwnerTx(ctx, tx, tenant, actor); err != nil {
+		if err := ownerNowTx(ctx, tx, tenant, actor); err != nil {
 			if errors.Is(err, ErrOwnerOnly) {
 				return ErrNotFound
 			}
@@ -717,32 +746,40 @@ type UnlinkRecord struct {
 // owner has recovered (ErrNotFound then). A banned number stays banned on
 // every branch.
 //
-//   - No session at the deletion: logged out, "no session at deletion".
+//   - No fingerprint left: Quarantine found no session ("no session at
+//     deletion", written in its commit), or an earlier record confirmed the
+//     logout. Nothing is written; the reply is the stored outcome, so a
+//     second record of one deletion never rewrites the first.
 //   - The logout acknowledged and the fingerprinted session gone: logged
 //     out, the fingerprint cleared, and the session's privacy tokens, which
 //     whatsmeow keeps with no foreign key, deleted.
 //   - Otherwise the fingerprint stays, with one more attempt, for the
 //     janitor's retry and, at the end, the purge.
+//
+// An acknowledged logout is recorded while the device lock is still held
+// (wa.Registry.Unlink's record), so a recovery cannot land between the
+// logout and its record.
 func (d *Devices) RecordUnlink(ctx context.Context, tenant, device uuid.UUID, deletedAt time.Time, acknowledged bool) (UnlinkRecord, error) {
 	var out UnlinkRecord
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
 		return withQuarantine(ctx, tx, func() error {
 			var jid *string
 			var reg *int64
-			err := tx.QueryRow(ctx, `SELECT wa_leftover->>'jid', (wa_leftover->>'registration_id')::bigint
-				FROM devices WHERE id = $1 AND deleted_at = $2 FOR UPDATE`, device, deletedAt).Scan(&jid, &reg)
+			var reason string
+			err := tx.QueryRow(ctx, `SELECT wa_leftover->>'jid', (wa_leftover->>'registration_id')::bigint, status_reason
+				FROM devices WHERE id = $1 AND deleted_at = $2 FOR UPDATE`, device, deletedAt).Scan(&jid, &reg, &reason)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
 			if err != nil {
 				return err
 			}
-			const loggedOut = `status = CASE WHEN status = 'banned' THEN status ELSE 'logged_out' END`
 			if jid == nil {
-				out = UnlinkRecord{Unlinked: true, NoteCode: NoteAlreadyDisconnected}
-				_, err := tx.Exec(ctx, `UPDATE devices SET `+loggedOut+`, status_reason = $3 WHERE id = $1 AND deleted_at = $2`,
-					device, deletedAt, reasonNoSession)
-				return err
+				// Nothing left to log out: Quarantine found no session, or a
+				// record of this deletion already confirmed the logout. The
+				// outcome is the stored one, and it is never written twice.
+				out = UnlinkRecord{Unlinked: true, NoteCode: noteCode(false, reason)}
+				return nil
 			}
 			if acknowledged {
 				left, err := sessionExistsTx(ctx, tx, *jid, reg)
@@ -751,19 +788,11 @@ func (d *Devices) RecordUnlink(ctx context.Context, tenant, device uuid.UUID, de
 				}
 				if !left {
 					out = UnlinkRecord{Unlinked: true}
-					if _, err := tx.Exec(ctx, `UPDATE devices SET `+loggedOut+`, status_reason = $3, wa_leftover = NULL
+					if _, err := tx.Exec(ctx, `UPDATE devices SET `+loggedOutStatus+`, status_reason = $3, wa_leftover = NULL
 						WHERE id = $1 AND deleted_at = $2`, device, deletedAt, reasonUnlinkedWhenGone); err != nil {
 						return err
 					}
-					// The session is gone, so its tokens are nobody's: unless a
-					// phone linked again under the same JID holds a session now.
-					var tokens bool
-					if err := tx.QueryRow(ctx, `SELECT to_regclass('whatsmeow_privacy_tokens') IS NOT NULL`).Scan(&tokens); err != nil || !tokens {
-						return err
-					}
-					_, err = tx.Exec(ctx, `DELETE FROM whatsmeow_privacy_tokens WHERE our_jid = $1
-						AND NOT EXISTS (SELECT 1 FROM whatsmeow_device WHERE jid = $1)`, *jid)
-					return err
+					return deletePrivacyTokensTx(ctx, tx, *jid)
 				}
 			}
 			out = UnlinkRecord{NoteCode: NoteUnlinkUnconfirmed}
@@ -774,6 +803,23 @@ func (d *Devices) RecordUnlink(ctx context.Context, tenant, device uuid.UUID, de
 		})
 	})
 	return out, err
+}
+
+// loggedOutStatus is the status a confirmed logout leaves: logged out, unless
+// WhatsApp banned the number, which every branch keeps.
+const loggedOutStatus = `status = CASE WHEN status = 'banned' THEN status ELSE 'logged_out' END`
+
+// deletePrivacyTokensTx deletes the privacy tokens of a session that has just
+// gone, which whatsmeow keeps with no foreign key, so they are nobody's:
+// unless a phone linked again under the same JID holds a session now.
+func deletePrivacyTokensTx(ctx context.Context, tx pgx.Tx, jid string) error {
+	var tokens bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('whatsmeow_privacy_tokens') IS NOT NULL`).Scan(&tokens); err != nil || !tokens {
+		return err
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM whatsmeow_privacy_tokens WHERE our_jid = $1
+		AND NOT EXISTS (SELECT 1 FROM whatsmeow_device WHERE jid = $1)`, jid)
+	return err
 }
 
 // StillExcluded reports whether the number is still excluded by the deletion
@@ -899,7 +945,7 @@ func recoveryStateTx(ctx context.Context, tx pgx.Tx, device uuid.UUID, status wa
 func (d *Devices) ListDeleted(ctx context.Context, tenant, actor uuid.UUID) ([]DeletedNumber, error) {
 	out := []DeletedNumber{}
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := requireOwnerTx(ctx, tx, tenant, actor); err != nil {
+		if err := ownerNowTx(ctx, tx, tenant, actor); err != nil {
 			return err
 		}
 		return withQuarantine(ctx, tx, func() error {
@@ -925,7 +971,9 @@ func (d *Devices) ListDeleted(ctx context.Context, tenant, actor uuid.UUID) ([]D
 					&n.Recoverable, &n.Purging, &n.Status, &n.StatusReason, &n.jid, &n.reg)
 				return n, err
 			})
-			if err != nil {
+			if err != nil || len(listed) == 0 {
+				// The console asks on every owner's devices view, and the
+				// list is usually empty: no storage scan then.
 				return err
 			}
 			bytes, err := deviceBytesTx(ctx, tx)
@@ -955,19 +1003,87 @@ func (d *Devices) ListDeleted(ctx context.Context, tenant, actor uuid.UUID) ([]D
 type RecoveryCheck struct {
 	Readers         []Person
 	ServiceAccounts []ServiceAccountRef
-	AllNumberKeys   []AllNumberKey
-	Recoverable     bool
+	// Others regain the number without reading it: Send, or a member's
+	// Manage.
+	Others        []OtherAccess
+	AllNumberKeys []AllNumberKey
+	Recoverable   bool
 	RecoveryState
+}
+
+// OtherAccess is someone a recovery gives the number back to who does not
+// read it: a person, or a standing service account (and with it every key
+// acting as it), whose permission sends through it, or a member's that
+// manages it. Why holds "send", "manage" or both. An owner's or an admin's
+// stored Manage adds nothing to their role and is not listed, as for a
+// transfer (the plan's D16).
+type OtherAccess struct {
+	ID    uuid.UUID `json:"id"`
+	Kind  string    `json:"kind"`
+	Name  string    `json:"name"`
+	Email string    `json:"email,omitempty"`
+	Why   []string  `json:"why"`
+}
+
+// otherAccessTx is everyone, the actor left out, who holds Send or a
+// member's Manage on the number and is in neither list given: the readers
+// and the standing service accounts that read it. A connection's service
+// account holds copies of a person's access and is never listed.
+func otherAccessTx(ctx context.Context, tx pgx.Tx, tenant, device, actor uuid.UUID, readers []Person, services []ServiceAccountRef) ([]OtherAccess, error) {
+	rows, err := tx.Query(ctx, `SELECT u.id, m.role = 'service', u.name, u.email, p.can_send, p.can_manage AND m.role NOT IN ('owner', 'admin')
+		FROM device_permissions p
+		JOIN devices d ON d.id = p.device_id AND d.tenant_id = p.tenant_id
+		JOIN workspace_memberships m ON m.tenant_id = p.tenant_id AND m.user_id = p.user_id
+		JOIN users u ON u.id = m.user_id
+		WHERE p.tenant_id = $1 AND p.device_id = $2 AND p.user_id <> $3 AND m.status = 'active' AND u.status = 'active'
+		  AND (p.can_send OR (p.can_manage AND m.role NOT IN ('owner', 'admin')))
+		  AND (m.role <> 'service' AND u.role <> 'service' AND (m.expires_at IS NULL OR m.expires_at > now())
+		       OR m.role = 'service' AND m.expires_at IS NULL
+		          AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = m.user_id))
+		ORDER BY m.role = 'service', lower(u.email), u.id`, tenant, device, actor)
+	if err != nil {
+		return nil, err
+	}
+	all, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OtherAccess, error) {
+		var o OtherAccess
+		var service, send, manage bool
+		var email string
+		err := row.Scan(&o.ID, &service, &o.Name, &email, &send, &manage)
+		o.Kind, o.Email = "person", email
+		if service {
+			o.Kind, o.Name, o.Email = "service", ServiceName(User{Email: email, Role: RoleService}), ""
+		}
+		if send {
+			o.Why = append(o.Why, "send")
+		}
+		if manage {
+			o.Why = append(o.Why, "manage")
+		}
+		return o, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := []OtherAccess{}
+	for _, o := range all {
+		if slices.ContainsFunc(readers, func(p Person) bool { return p.UserID == o.ID }) ||
+			slices.ContainsFunc(services, func(s ServiceAccountRef) bool { return s.ID == o.ID }) {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out, nil
 }
 
 // RecoverCheck is a recovery's preflight, for an owner, on an excluded
 // number: the people whose grants and permissions come back (D10, the owner
-// left out), the standing service accounts that read it again, and the keys
-// for every number that reach it again. It changes nothing.
+// left out), the standing service accounts that read it again, everyone
+// else who sends through it or manages it again, and the keys for every
+// number that reach it again. It changes nothing.
 func (d *Devices) RecoverCheck(ctx context.Context, tenant, actor, device uuid.UUID) (RecoveryCheck, error) {
 	var out RecoveryCheck
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := requireOwnerTx(ctx, tx, tenant, actor); err != nil {
+		if err := ownerNowTx(ctx, tx, tenant, actor); err != nil {
 			return err
 		}
 		return withQuarantine(ctx, tx, func() error {
@@ -995,6 +1111,9 @@ func (d *Devices) RecoverCheck(ctx context.Context, tenant, actor, device uuid.U
 				}
 			}
 			if out.ServiceAccounts, err = serviceReadersTx(ctx, tx, tenant, device); err != nil {
+				return err
+			}
+			if out.Others, err = otherAccessTx(ctx, tx, tenant, device, actor, out.Readers, out.ServiceAccounts); err != nil {
 				return err
 			}
 			if out.AllNumberKeys, err = allNumberKeysTx(ctx, tx, tenant); err != nil {
@@ -1038,6 +1157,8 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			return err
 		}
 		var deletedAt time.Time
+		var leftJID *string
+		var leftReg *int64
 		if err := withQuarantine(ctx, tx, func() error {
 			var live bool
 			var status wa.Status
@@ -1045,8 +1166,9 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			var stamp *time.Time
 			var closed bool
 			err := tx.QueryRow(ctx, `SELECT deleted_at IS NULL, deleted_at, status, status_reason, coalesce(pn, ''),
-				coalesce(purge_started_at IS NOT NULL OR purge_after <= clock_timestamp(), false)
-				FROM devices WHERE id = $1 FOR UPDATE`, device).Scan(&live, &stamp, &status, &reason, &pn, &closed)
+				coalesce(purge_started_at IS NOT NULL OR purge_after <= clock_timestamp(), false),
+				wa_leftover->>'jid', (wa_leftover->>'registration_id')::bigint
+				FROM devices WHERE id = $1 FOR UPDATE`, device).Scan(&live, &stamp, &status, &reason, &pn, &closed, &leftJID, &leftReg)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -1091,16 +1213,36 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 		}
 
 		return withQuarantine(ctx, tx, func() error {
+			// A fingerprinted session that is gone was logged out, and only
+			// its record is missing (a logout that ended between its answer
+			// and RecordUnlink): the device lock is ours, so no logout is
+			// still running, and the number comes back as RecordUnlink's
+			// acknowledged branch leaves it, never offered a resume.
+			gone := false
+			if leftJID != nil {
+				present, err := sessionExistsTx(ctx, tx, *leftJID, leftReg)
+				if err != nil {
+					return err
+				}
+				gone = !present
+			}
 			var status wa.Status
 			var reason, pn string
-			err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL
-				WHERE id = $1 AND deleted_at = $2 RETURNING status, status_reason, coalesce(pn, '')`, device, deletedAt).Scan(&status, &reason, &pn)
+			err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
+				status = CASE WHEN $3 AND status <> 'banned' THEN 'logged_out' ELSE status END,
+				status_reason = CASE WHEN $3 THEN '`+reasonUnlinkedWhenGone+`' ELSE status_reason END
+				WHERE id = $1 AND deleted_at = $2 RETURNING status, status_reason, coalesce(pn, '')`, device, deletedAt, gone).Scan(&status, &reason, &pn)
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return ErrIdentityInUse
 			}
 			if err != nil {
 				return err
+			}
+			if gone {
+				if err := deletePrivacyTokensTx(ctx, tx, *leftJID); err != nil {
+					return err
+				}
 			}
 			present, err := sessionExistsTx(ctx, tx, pn, nil)
 			if err != nil {

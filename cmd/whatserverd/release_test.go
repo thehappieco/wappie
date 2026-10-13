@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	waStore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -75,33 +77,63 @@ func TestReleaseHeldSkipsFailedList(t *testing.T) {
 }
 
 // fakeSessionUnlinker is the janitor's view of the registry: it runs the
-// re-check, then counts a logout and removes the session, as whatsmeow does.
+// re-check, then counts a logout and removes the session, as whatsmeow does,
+// and records it, as the registry does before it lets go of the lock.
 type fakeSessionUnlinker struct {
 	mu      sync.Mutex
 	pool    *pgxpool.Pool
 	logouts int
+	// failed counts the logouts err made fail, by device.
+	failed map[string]int
+	// locked counts the records made under LockIdle, by device.
+	locked map[string]int
 	// hold, when set, is waited on between the listing and the logout.
 	hold chan struct{}
 	held chan struct{}
 	err  error
 }
 
-func (f *fakeSessionUnlinker) Unlink(ctx context.Context, _, _ string, jid types.JID, recheck func(context.Context) error) error {
+func (f *fakeSessionUnlinker) UnlinkLeftover(ctx context.Context, _, device string, jid types.JID,
+	recheck func(context.Context) error, record func(context.Context, error)) error {
 	if f.hold != nil {
 		close(f.held)
 		<-f.hold
 	}
-	if f.err != nil {
+	if errors.Is(f.err, wa.ErrAlreadyRunning) {
 		return f.err
 	}
 	if err := recheck(ctx); err != nil {
 		return err
 	}
+	if f.err != nil {
+		f.mu.Lock()
+		if f.failed == nil {
+			f.failed = map[string]int{}
+		}
+		f.failed[device]++
+		f.mu.Unlock()
+		record(ctx, f.err)
+		return f.err
+	}
 	f.mu.Lock()
 	f.logouts++
 	f.mu.Unlock()
 	_, err := f.pool.Exec(ctx, `DELETE FROM whatsmeow_device WHERE jid=$1`, jid.String())
+	record(ctx, err)
 	return err
+}
+
+func (f *fakeSessionUnlinker) LockIdle(ctx context.Context, device string, fn func(context.Context) error) error {
+	if errors.Is(f.err, wa.ErrAlreadyRunning) {
+		return f.err
+	}
+	f.mu.Lock()
+	if f.locked == nil {
+		f.locked = map[string]int{}
+	}
+	f.locked[device]++
+	f.mu.Unlock()
+	return fn(ctx)
 }
 
 type janitorWorld struct {
@@ -234,6 +266,12 @@ func TestJanitorRetriesLeftoverSessions(t *testing.T) {
 	if deleted, leftover, status := w.state(t, failing); !deleted || leftover || status == "logged_out" {
 		t.Fatalf("after the attempts: excluded %v, still listed %v, status %s", deleted, leftover, status)
 	}
+	if got := unlinker.failed[failing.String()]; got != store.MaxUnlinkAttempts || store.MaxUnlinkAttempts != 3 {
+		t.Fatalf("%d logouts tried, want three", got)
+	}
+	if n := w.attempts(t, failing); n != 3 {
+		t.Fatalf("%d attempts recorded, want three", n)
+	}
 	warned := 0
 	for _, line := range w.logged.lines {
 		if slices.Contains([]string{"a deleted number's WhatsApp session could not be logged out; its purge removes it"}, firstWords(line)) {
@@ -243,7 +281,7 @@ func TestJanitorRetriesLeftoverSessions(t *testing.T) {
 	if warned != 1 {
 		t.Fatalf("warned %d times: %q", warned, w.logged.lines)
 	}
-	// Held elsewhere: no attempt is spent.
+	// Held elsewhere: no attempt is spent, and it is still listed.
 	other, _ := w.deleted(t, 4)
 	unlinker.err = wa.ErrAlreadyRunning
 	w.app.retryLeftoverSessions(ctx)
@@ -251,10 +289,69 @@ func TestJanitorRetriesLeftoverSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, l := range left {
-		if l.DeviceID == other && l.Attempts != 0 {
-			t.Fatalf("a number held elsewhere spent an attempt: %d", l.Attempts)
+	if i := slices.IndexFunc(left, func(l store.Leftover) bool { return l.DeviceID == other }); i < 0 || left[i].Attempts != 0 {
+		t.Fatalf("a number held elsewhere: %+v", left)
+	}
+	// What the janitor logs never names the phone.
+	for _, line := range w.logged.lines {
+		if strings.Contains(line, "@s.whatsapp.net") || strings.Contains(line, "@lid") {
+			t.Fatalf("the janitor logged a JID: %q", line)
 		}
+	}
+}
+
+// A deletion's own logout and record land while the janitor has the number
+// listed: the janitor's record of the logout, made under the device lock,
+// confirms it once, and a later record never rewrites it.
+func TestJanitorAfterADeletionRecorded(t *testing.T) {
+	ctx := context.Background()
+	unlinker := &fakeSessionUnlinker{}
+	w := newJanitorWorld(t, unlinker)
+	unlinker.pool = w.pool
+	device, jid := w.deleted(t, 1)
+	left, err := w.devices.LeftoverSessions(ctx, w.tenant)
+	if err != nil || len(left) != 1 {
+		t.Fatalf("listed %+v %v", left, err)
+	}
+	// The deletion's logout removed the session and recorded it.
+	if _, err := w.pool.Exec(ctx, `DELETE FROM whatsmeow_device WHERE jid=$1`, jid); err != nil {
+		t.Fatal(err)
+	}
+	l := left[0]
+	l.Present = false
+	if rec, err := w.devices.RecordUnlink(ctx, w.tenant, device, l.DeletedAt, true); err != nil || !rec.Unlinked {
+		t.Fatalf("the deletion's record: %+v %v", rec, err)
+	}
+	w.app.retryLeftoverSession(ctx, w.tenant, l)
+	if unlinker.locked[device.String()] != 1 || unlinker.logouts != 0 {
+		t.Fatalf("the janitor's record: %d under the lock, %d logouts", unlinker.locked[device.String()], unlinker.logouts)
+	}
+	var reason string
+	w.scopedRow(t, `SELECT status_reason FROM devices WHERE id=$1`, device, &reason)
+	if reason != "unlinked when deleted" {
+		t.Fatalf("a second record rewrote the deletion's as %q", reason)
+	}
+}
+
+// attempts is a leftover's recorded attempts, read with the scope on.
+func (w *janitorWorld) attempts(t *testing.T, device uuid.UUID) int {
+	t.Helper()
+	var n int
+	w.scopedRow(t, `SELECT coalesce((wa_leftover->>'attempts')::int, 0) FROM devices WHERE id=$1`, device, &n)
+	return n
+}
+
+// scopedRow reads one value of an excluded number's row.
+func (w *janitorWorld) scopedRow(t *testing.T, query string, device uuid.UUID, into any) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pg.InTenantTx(ctx, w.pool, w.tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.device_quarantine', 'on', true)`); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, query, device).Scan(into)
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

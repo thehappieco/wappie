@@ -468,11 +468,14 @@ type RecoverRequest struct {
 
 // DeviceRecoverChecked is a recovery's preflight, for an owner: the people
 // whose grants and permissions come back, the standing service accounts that
-// read it again and the keys for every number that reach it again.
+// read it again, everyone else who sends through it or manages it again
+// (others, each with why), and the keys for every number that reach it
+// again.
 type DeviceRecoverChecked struct {
 	DeviceID        string                    `json:"device_id"`
 	Readers         []store.Person            `json:"readers"`
 	ServiceAccounts []store.ServiceAccountRef `json:"service_accounts"`
+	Others          []store.OtherAccess       `json:"others"`
 	AllNumberKeys   []store.AllNumberKey      `json:"all_number_keys"`
 	Recoverable     bool                      `json:"recoverable"`
 	RecoveryStatus

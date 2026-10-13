@@ -222,6 +222,9 @@ func scanReceipt(rows pgx.Rows) (ReceiptRow, error) {
 // that this happened, so a caller merging this stream with another knows the
 // highest sequence it may trust is the last one returned rather than whatever
 // ceiling it had in mind.
+//
+// A deleted number's acknowledgements (0050) are left out, as its messages
+// are from Messages.Since.
 func (r *Receipts) Since(ctx context.Context, tenant uuid.UUID, sinceSeq int64, limit int) (
 	batches []ReceiptBatch, truncated bool, err error) {
 	var out []ReceiptBatch
@@ -230,7 +233,7 @@ func (r *Receipts) Since(ctx context.Context, tenant uuid.UUID, sinceSeq int64, 
 		rows, err := tx.Query(ctx, `
 			SELECT `+receiptColumns+`
 			  FROM receipts
-			 WHERE tenant_id = $1 AND seq > $2
+			 WHERE tenant_id = $1 AND seq > $2 AND device_id IN (SELECT id FROM devices)
 			 ORDER BY seq, wa_id
 			 LIMIT $3`, tenant, sinceSeq, limit)
 		if err != nil {

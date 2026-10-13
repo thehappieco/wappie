@@ -285,6 +285,24 @@ func (b *Bus) DropDevice(tenant, device uuid.UUID) {
 	}
 }
 
+// Allows reports whether the subscription delivers device now: its filter
+// as DropDevice last left it, and nothing once it has ended or closed. A
+// replay asks it for every row, so a number deleted mid-replay stops there.
+func (s *Subscription) Allows(device uuid.UUID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.ended {
+		return false
+	}
+	return s.filter.allows(ingest.Event{DeviceID: device})
+}
+
+// Drop takes a device out of this subscription alone, as DropDevice does
+// for all of them: a subscriber that finds a number gone after it
+// registered drops it itself, since a deletion that committed before the
+// registration dropped it from no filter.
+func (s *Subscription) Drop(device uuid.UUID) { s.drop(device) }
+
 func (s *Subscription) drop(device uuid.UUID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

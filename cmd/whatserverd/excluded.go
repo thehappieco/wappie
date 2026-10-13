@@ -21,13 +21,16 @@ import (
 // a deletion is logging it out here. The tick stays the backstop while the
 // listening connection is down.
 
-// listenExcluded reconnects and listens until ctx ends.
+// listenExcluded reconnects and listens until ctx ends. The wait between
+// attempts doubles while connecting keeps failing, up to a minute, and
+// starts again at a second once a listen was established, so failures days
+// apart never leave a whole minute of deletions unheard.
 func (a *app) listenExcluded(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		err := listenDeviceExcluded(ctx, a.pools.API, func(tenant, device uuid.UUID) {
 			a.onDeviceExcluded(ctx, tenant, device)
-		})
+		}, func() { backoff = time.Second })
 		if ctx.Err() != nil {
 			return
 		}

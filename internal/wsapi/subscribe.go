@@ -74,17 +74,47 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 		}
 	}
 
+	s.hook("granted")
 	s.subMu.Lock()
 	if s.sub != nil {
 		s.subMu.Unlock()
 		s.replyError(f.ReqID, ErrCodeConflict, "this connection is already subscribed")
 		return
 	}
-	// The bus gets its own copy: the replay below keeps reading this one,
-	// and a deletion replaces the bus's (Bus.DropDevice).
+	// The bus gets its own copy, which a deletion replaces
+	// (Bus.DropDevice); the replay below asks the subscription, never this
+	// map, so a number deleted mid-replay stops there too.
 	sub := s.srv.cfg.Bus.Subscribe(tenant, bus.Filter{Devices: maps.Clone(filter.Devices)})
 	s.sub = sub
 	s.subMu.Unlock()
+
+	// A deletion that committed between the access check above and the
+	// registration dropped its number from no filter: whatever is no longer
+	// visible now is dropped here, and one that commits from now on finds
+	// this subscription registered.
+	visible, err := s.srv.cfg.Devices.List(ctx, tenant.String())
+	if err != nil {
+		s.log.Error("could not check device access again", "error", err)
+		s.subMu.Lock()
+		if s.sub == sub {
+			s.sub = nil
+		}
+		s.subMu.Unlock()
+		sub.Close()
+		s.replyError(f.ReqID, ErrCodeInternal, "could not check device access")
+		return
+	}
+	still := make(map[uuid.UUID]struct{}, len(visible))
+	for _, d := range visible {
+		if id, err := uuid.Parse(d.ID); err == nil {
+			still[id] = struct{}{}
+		}
+	}
+	for id := range filter.Devices {
+		if _, ok := still[id]; !ok {
+			sub.Drop(id)
+		}
+	}
 
 	// The watermark is read before any row is sent. Sequences are allocated
 	// under a row lock held to commit, so everything at or below it is already
@@ -108,7 +138,7 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 	s.reply(TypeReplayBegin, f.ReqID, ReplayBegin{ThroughSeq: watermark})
 
 	sent, last := 0, req.SinceSeq
-	for last < watermark {
+	for last < watermark && !isClosed(sub.Ended()) {
 		rows, err := s.srv.cfg.Messages.Since(ctx, tenant, last, replayPage)
 		if err != nil {
 			s.log.Error("replay read failed", "since", last, "error", err)
@@ -122,6 +152,7 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 		if len(rows) == 0 && len(acks) == 0 {
 			break
 		}
+		s.hook("page")
 
 		// Messages and acknowledgements share one sequence, so replay is a
 		// merge of two streams the client must receive in order. The horizon is
@@ -136,21 +167,19 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 			horizon = min(horizon, acks[len(acks)-1].Seq)
 		}
 
+		// Each row is checked against the subscription as it is now: a page
+		// read before a deletion's commit is not sent after it.
 		mergeReplay(rows, acks, horizon,
 			func(r store.Row) {
-				if len(filter.Devices) > 0 {
-					if _, ok := filter.Devices[r.DeviceID]; !ok {
-						return
-					}
+				if !sub.Allows(r.DeviceID) {
+					return
 				}
 				s.reply(TypeMessage, f.ReqID, sealedMessage(r))
 				sent++
 			},
 			func(b store.ReceiptBatch) {
-				if len(filter.Devices) > 0 {
-					if _, ok := filter.Devices[b.DeviceID]; !ok {
-						return
-					}
+				if !sub.Allows(b.DeviceID) {
+					return
 				}
 				s.reply(TypeReceipt, f.ReqID, receiptEvent(b))
 				sent++
@@ -168,6 +197,23 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 	s.reply(TypeReplayEnd, f.ReqID, ReplayEnd{LastSeq: last, Count: sent})
 
 	go s.pump(ctx, sub, f.ReqID)
+}
+
+// isClosed reports whether a done channel is closed.
+func isClosed(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+// hook runs the test seam at a subscribe's stage, when one is set.
+func (s *session) hook(stage string) {
+	if s.srv.cfg.subscribeHook != nil {
+		s.srv.cfg.subscribeHook(stage)
+	}
 }
 
 // mergeReplay emits two sequence-ordered streams as one, stopping at horizon.

@@ -34,10 +34,13 @@ import (
 // holds, or on one of its own (wa.Registry.Unlink). BeginUnlink marks the
 // number from before the deletion commits until the logout is done, so
 // neither the supervisor nor the deletion's own notification stops its
-// client in between.
+// client in between. Unlink calls record with the device lock still held,
+// once WhatsApp was asked or the session turned out to be gone, so the
+// logout is recorded before a recovery can take the lock.
 type Unlinker interface {
 	BeginUnlink(deviceID string) (end func())
-	Unlink(ctx context.Context, tenantID, deviceID string, jid types.JID, recheck func(context.Context) error) error
+	Unlink(ctx context.Context, tenantID, deviceID string, jid types.JID,
+		recheck func(context.Context) error, record func(context.Context, error)) error
 }
 
 // unlinker is the configured Unlinker, the registry by default, or nil.
@@ -136,7 +139,8 @@ func nonNil[T any](v []T) []T {
 //  4. Devices.Quarantine, the one transaction (store/device_deletion.go).
 //  5. After the commit, on a context of its own (a socket closing must not
 //     cancel the logout): the number dropped from this process's
-//     subscriptions, the logout, the stop, and RecordUnlink.
+//     subscriptions, the logout and its RecordUnlink under the device lock,
+//     then the stop, which releases it.
 //  6. The reply, then device.removed to the sessions that could see it.
 func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 	who := s.actor()
@@ -236,7 +240,20 @@ func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 		s.srv.cfg.Bus.DropDevice(tenant, device)
 	}
 	s.srv.cancelDevicePairing(tenant.String(), dev.ID)
-	acknowledgedLogout := false
+
+	// The record runs inside Unlink, with the device lock still held, so a
+	// recovery never lands between a logout and its record; RecordUnlink
+	// checks that an acknowledged session is really gone.
+	var record store.UnlinkRecord
+	var recordErr error
+	recorded := false
+	write := func(logoutErr error) {
+		recordCtx, cancel := context.WithTimeout(bg, 10*time.Second)
+		defer cancel()
+		acknowledged := logoutErr == nil || errors.Is(logoutErr, wa.ErrNoSession)
+		record, recordErr = s.srv.cfg.Devices.RecordUnlink(recordCtx, tenant, device, q.DeletedAt, acknowledged)
+		recorded = true
+	}
 	if q.Session != nil && unlinker != nil {
 		jid, err := types.ParseJID(q.Session.JID)
 		if err == nil {
@@ -248,16 +265,25 @@ func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 					err = errNoLongerExcluded
 				}
 				return err
-			})
+			}, func(_ context.Context, logoutErr error) { write(logoutErr) })
 			cancel()
 		}
-		// A session gone from the store has nothing left to log out;
-		// RecordUnlink checks that it is gone.
-		acknowledgedLogout = err == nil || errors.Is(err, wa.ErrNoSession)
-		if err != nil {
+		switch {
+		case errors.Is(err, errNoLongerExcluded):
+			// Recovered before the logout: WhatsApp was not asked, and the
+			// row is the owner's again, so nothing is recorded on it.
+			record, recorded = store.UnlinkRecord{NoteCode: store.NoteUnlinkUnconfirmed}, true
+		case err != nil && !errors.Is(err, wa.ErrNoSession):
+			// A session already gone from the store is nothing to warn of.
 			s.log.Warn("WhatsApp logout of a deleted number was not acknowledged", "device", dev.ID, "error", err)
 		}
 	}
+	if !recorded {
+		// Nothing was asked: no session (the stored outcome is read back),
+		// no unlinker, or the logout could not start (one more attempt).
+		write(errLogoutNotAsked)
+	}
+	// After the record: on the running client, this releases the lock.
 	if s.srv.cfg.Registry != nil {
 		s.srv.cfg.Registry.Stop(bg, dev.ID)
 	}
@@ -266,13 +292,10 @@ func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 	}
 	endMark()
 
-	recordCtx, cancel := context.WithTimeout(bg, 10*time.Second)
-	record, err := s.srv.cfg.Devices.RecordUnlink(recordCtx, tenant, device, q.DeletedAt, acknowledgedLogout)
-	cancel()
-	if err != nil {
+	if recordErr != nil {
 		// The fingerprint is in the commit: the janitor retries the logout,
 		// and the purge removes the session by it.
-		s.log.Error("recording a deleted number's logout failed", "device", dev.ID, "error", err)
+		s.log.Error("recording a deleted number's logout failed", "device", dev.ID, "error", recordErr)
 		record = store.UnlinkRecord{NoteCode: store.NoteUnlinkUnconfirmed}
 		if q.Session == nil {
 			record = store.UnlinkRecord{Unlinked: true, NoteCode: store.NoteAlreadyDisconnected}
@@ -299,6 +322,9 @@ func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 // errNoLongerExcluded aborts a logout whose number was recovered, or deleted
 // again, since: WhatsApp is never asked.
 var errNoLongerExcluded = errors.New("the number is no longer excluded by this deletion")
+
+// errLogoutNotAsked records a deletion whose logout never reached WhatsApp.
+var errLogoutNotAsked = errors.New("the logout was not asked")
 
 // alreadyDeleted is device.deleted from a number's stored state.
 func alreadyDeleted(device string, deletedAt, purgeAfter time.Time, unlinked bool, note string) DeviceDeleted {
@@ -419,7 +445,7 @@ func (s *session) handleDeviceRecoverCheck(ctx context.Context, f Frame) {
 		return
 	}
 	s.reply(TypeDeviceRecoverChecked, f.ReqID, DeviceRecoverChecked{
-		DeviceID: device.String(), Readers: check.Readers, ServiceAccounts: nonNil(check.ServiceAccounts),
+		DeviceID: device.String(), Readers: check.Readers, ServiceAccounts: nonNil(check.ServiceAccounts), Others: nonNil(check.Others),
 		AllNumberKeys: nonNil(check.AllNumberKeys), Recoverable: check.Recoverable, RecoveryStatus: recoveryStatus(check.RecoveryState),
 	})
 }

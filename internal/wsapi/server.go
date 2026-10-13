@@ -101,6 +101,11 @@ type Config struct {
 	// StepUp is what every grant asks of the person's session
 	// (internal/stepup); nil is Sessions' own record.
 	StepUp stepup.Checker
+
+	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
+	// once access is known and before the bus registers the subscription,
+	// "page" after each replay page is read and before it is sent.
+	subscribeHook func(stage string)
 }
 
 // Server serves the websocket endpoint.

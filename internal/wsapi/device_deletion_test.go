@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,18 +17,24 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	waStore "go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
+	waLog "go.mau.fi/whatsmeow/util/log"
 
 	"whatserver2/internal/bus"
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
 	"whatserver2/internal/migrate"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/restapi"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
+	"whatserver2/internal/wa/fakewa"
 	"whatserver2/internal/wsapi"
 )
 
@@ -37,14 +44,21 @@ import (
 
 // fakeUnlinker stands in for the WhatsApp logout. It runs the deletion's
 // re-check, as the registry does under the device lock, records every
-// logout it was asked for, and on success removes the session from the
-// session store, as whatsmeow's Logout does.
+// logout it was asked for, on success removes the session from the session
+// store, as whatsmeow's Logout does, and then runs the record, as the
+// registry does before it lets go of the lock.
 type fakeUnlinker struct {
-	mu       sync.Mutex
-	pool     *pgxpool.Pool
-	logouts  []string
-	marked   map[string]int
-	onUnlink func(ctx context.Context, device string) error
+	mu      sync.Mutex
+	pool    *pgxpool.Pool
+	logouts []string
+	marked  map[string]int
+	// beforeRecheck runs first, as whatever happens between the commit and
+	// the logout.
+	beforeRecheck func(ctx context.Context, device string)
+	onUnlink      func(ctx context.Context, device string) error
+	// fail is what the registry answered instead of asking WhatsApp, after
+	// recording it, as it does for a session gone from the store.
+	fail error
 }
 
 func (f *fakeUnlinker) BeginUnlink(device string) func() {
@@ -64,22 +78,33 @@ func (f *fakeUnlinker) BeginUnlink(device string) func() {
 	}
 }
 
-func (f *fakeUnlinker) Unlink(ctx context.Context, _, device string, jid types.JID, recheck func(context.Context) error) error {
-	if recheck != nil {
-		if err := recheck(ctx); err != nil {
-			return err
-		}
+func (f *fakeUnlinker) Unlink(ctx context.Context, _, device string, jid types.JID,
+	recheck func(context.Context) error, record func(context.Context, error)) error {
+	f.mu.Lock()
+	before, fail := f.beforeRecheck, f.fail
+	f.mu.Unlock()
+	if before != nil {
+		before(ctx, device)
+	}
+	if fail != nil {
+		record(ctx, fail)
+		return fail
+	}
+	if err := recheck(ctx); err != nil {
+		return err
 	}
 	f.mu.Lock()
 	f.logouts = append(f.logouts, device)
 	hook := f.onUnlink
 	f.mu.Unlock()
+	var err error
 	if hook != nil {
-		if err := hook(ctx, device); err != nil {
-			return err
-		}
+		err = hook(ctx, device)
 	}
-	_, err := f.pool.Exec(context.WithoutCancel(ctx), `DELETE FROM whatsmeow_device WHERE jid=$1`, jid.String())
+	if err == nil {
+		_, err = f.pool.Exec(context.WithoutCancel(ctx), `DELETE FROM whatsmeow_device WHERE jid=$1`, jid.String())
+	}
+	record(ctx, err)
 	return err
 }
 
@@ -93,13 +118,28 @@ type deletionConsole struct {
 	*console
 	bus      *bus.Bus
 	unlinker *fakeUnlinker
+	registry *wa.Registry
 	owner    uuid.UUID
 	token    string
 	rest     *httptest.Server
 	pns      int
 }
 
+// deletionOptions changes what newDeletionConsoleWith builds: its logger, a
+// registry (device.start reaches its status checks only with one), and the
+// subscribe's test hook.
+type deletionOptions struct {
+	log      *slog.Logger
+	registry bool
+	hook     func(stage string)
+}
+
 func newDeletionConsole(t *testing.T) *deletionConsole {
+	t.Helper()
+	return newDeletionConsoleWith(t, deletionOptions{})
+}
+
+func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole {
 	t.Helper()
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -119,10 +159,28 @@ func newDeletionConsole(t *testing.T) *deletionConsole {
 	users, devices, messages := store.NewUsers(pool), store.NewDevices(pool), store.NewMessages(pool)
 	b := bus.New()
 	unlinker := &fakeUnlinker{pool: pool}
-	srv := httptest.NewServer(wsapi.NewServer(wsapi.Config{
+	if opt.log == nil {
+		opt.log = slog.New(slog.DiscardHandler)
+	}
+	cfg := wsapi.Config{
 		Keys: keys, Sessions: users, Accounts: users, Devices: devices, Messages: messages,
-		Keys2: store.NewKeys(pool), Receipts: store.NewReceipts(pool), Bus: b, Unlinker: unlinker, Log: slog.New(slog.DiscardHandler),
-	}))
+		Keys2: store.NewKeys(pool), Receipts: store.NewReceipts(pool), Bus: b, Unlinker: unlinker, Log: opt.log,
+	}
+	var registry *wa.Registry
+	if opt.registry {
+		var err error
+		registry, err = wa.NewRegistry(wa.RegistryConfig{Container: &sqlstore.Container{}, Store: devices, Log: slog.New(slog.DiscardHandler),
+			NewClient: func(*waStore.Device, waLog.Logger) wa.Client { return fakewa.New() }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Registry = registry
+		t.Cleanup(func() { registry.StopAll(context.Background()) })
+	}
+	if opt.hook != nil {
+		wsapi.SetSubscribeHook(&cfg, opt.hook)
+	}
+	srv := httptest.NewServer(wsapi.NewServer(cfg))
 	t.Cleanup(srv.Close)
 	mux := http.NewServeMux()
 	(&restapi.Handler{APIKeys: keys, Users: users, Keys: store.NewKeys(pool), Devices: devices, Messages: messages,
@@ -131,7 +189,7 @@ func newDeletionConsole(t *testing.T) *deletionConsole {
 	t.Cleanup(rest.Close)
 	c := &deletionConsole{
 		console: &console{srv: srv, pool: pool, tenant: uuid.MustParse(tenantID), apiKey: apiKey, devices: devices, users: users, keys: keys},
-		bus:     b, unlinker: unlinker, rest: rest,
+		bus:     b, unlinker: unlinker, rest: rest, registry: registry,
 	}
 	c.token = c.account(t, "owner@acme.test", "owner")
 	c.owner = c.sessionUser(t, c.token)
@@ -196,6 +254,30 @@ func (c *deletionConsole) reads(t *testing.T, user, device uuid.UUID) {
 	if err := c.users.SetDevicePermission(ctx, c.tenant, c.owner, store.DevicePermission{DeviceID: device, UserID: user, Read: true, Send: true}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// scoped runs fn in the workspace with excluded numbers visible, as the
+// store's quarantine scope does.
+func (c *deletionConsole) scoped(ctx context.Context, t *testing.T, fn func(tx pgx.Tx) error) {
+	t.Helper()
+	if err := pg.InTenantTx(ctx, c.pool, c.tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.device_quarantine', 'on', true)`); err != nil {
+			return err
+		}
+		return fn(tx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// row reads a number's status, reason and fingerprint with the scope on.
+func (c *deletionConsole) row(t *testing.T, device uuid.UUID) (deleted bool, status, reason string, leftover bool) {
+	t.Helper()
+	c.scoped(context.Background(), t, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT deleted_at IS NOT NULL, status, status_reason, wa_leftover IS NOT NULL
+			FROM devices WHERE id=$1`, device).Scan(&deleted, &status, &reason, &leftover)
+	})
+	return deleted, status, reason, leftover
 }
 
 // excludedRow reads the deleted numbers as an owner does, on a connection
@@ -381,12 +463,210 @@ func TestDeleteReplyReachesReaderOwner(t *testing.T) {
 	}
 }
 
+// drain reads every frame of conn into a channel until the connection ends,
+// so a test can read several sockets while their replays run.
+func drain(conn *websocket.Conn) <-chan wsapi.Frame {
+	out := make(chan wsapi.Frame, 4096)
+	go func() {
+		defer close(out)
+		for {
+			_, data, err := conn.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var f wsapi.Frame
+			if json.Unmarshal(data, &f) == nil {
+				out <- f
+			}
+		}
+	}()
+	return out
+}
+
+// next is the next frame of one of the given types, failing on an error
+// frame, an ended subscription, or a wait of ten seconds.
+func next(t *testing.T, frames <-chan wsapi.Frame, types ...string) wsapi.Frame {
+	t.Helper()
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				t.Fatal("the connection ended")
+			}
+			if f.Type == wsapi.TypeError || f.Type == wsapi.TypeSubscriptionEnded {
+				t.Fatalf("%s %s", f.Type, f.Payload)
+			}
+			if slices.Contains(types, f.Type) {
+				return f
+			}
+		case <-timeout:
+			t.Fatalf("no %v frame", types)
+		}
+	}
+}
+
+// presenceOf publishes a presence for each device, in order.
+func (c *deletionConsole) presenceOf(chat string, devices ...uuid.UUID) {
+	for _, d := range devices {
+		c.bus.Publish(c.tenant, ingest.Event{Class: ingest.ClassPresence, TenantID: c.tenant, DeviceID: d, Ephemeral: true,
+			Presence: &ingest.Presence{ChatKey: chat, State: "composing"}})
+	}
+}
+
+// A number is deleted while two replays hold a page read before the
+// commit: a key for every number (whose sockets a deletion never closes)
+// and the deleting owner's subscription to both numbers. Neither sends a
+// row of the deleted number from then on, neither ends, and both go on
+// with the other number, live traffic included, under -race.
+func TestDeleteDuringReplay(t *testing.T) {
+	paged := make(chan struct{}, 16)
+	resume := make(chan struct{})
+	c := newDeletionConsoleWith(t, deletionOptions{hook: func(stage string) {
+		if stage != "page" {
+			return
+		}
+		select {
+		case paged <- struct{}{}:
+		default:
+		}
+		<-resume
+	}})
+	ctx := context.Background()
+	device, other := c.linkedDevice(t, "Suporte"), c.linkedDevice(t, "Vendas")
+	c.reads(t, c.owner, device)
+	c.reads(t, c.owner, other)
+	// More than a replay page, so the second page is read after the commit,
+	// and mostly the deleted number's: a replay that sent them would also
+	// overrun the socket's queue.
+	const rows, every = 520, 13
+	messages := store.NewMessages(c.pool)
+	for i := range rows {
+		d := device
+		if i%every == 0 {
+			d = other
+		}
+		if _, err := messages.Insert(ctx, store.InsertMessage{UID: uuid.New(), TenantID: c.tenant, DeviceID: d, WAID: fmt.Sprintf("m-%d", i),
+			ChatKey: "chat", Kind: domain.KindMessage, Type: domain.TypeText, Source: domain.SourceLive, TS: time.Now(), BodySealed: []byte{1}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	each := (rows + every - 1) / every
+	keyConn := connect(t, c.console, wsapi.Hello{APIKey: c.apiKey})
+	defer keyConn.CloseNow()
+	ownerConn := connect(t, c.console, wsapi.Hello{Session: c.token})
+	defer ownerConn.CloseNow()
+	request(t, keyConn, "key", wsapi.TypeSubscribe, wsapi.Subscribe{})
+	request(t, ownerConn, "owner", wsapi.TypeSubscribe, wsapi.Subscribe{Devices: []string{device.String(), other.String()}})
+	streams := map[string]<-chan wsapi.Frame{"key": drain(keyConn), "owner": drain(ownerConn)}
+	for range streams {
+		select {
+		case <-paged:
+		case <-time.After(10 * time.Second):
+			t.Fatal("a replay never read its first page")
+		}
+	}
+
+	stop := make(chan struct{})
+	var published sync.WaitGroup
+	published.Add(1)
+	go func() {
+		defer published.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			c.presenceOf("chat", device, other)
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if f := ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDeviceDelete, deleteFrame(device)); f.Type != wsapi.TypeDeviceGone {
+		t.Fatalf("delete: %s %s", f.Type, f.Payload)
+	}
+	close(resume)
+
+	for name, frames := range streams {
+		replayed := 0
+		for {
+			f := next(t, frames, wsapi.TypeMessage, wsapi.TypeReplayEnd)
+			if f.Type == wsapi.TypeReplayEnd {
+				break
+			}
+			if m := payload[wsapi.SealedMessage](t, f); m.DeviceID == device.String() {
+				t.Fatalf("%s: the replay sent a deleted number's message after the commit (seq %d)", name, m.Seq)
+			}
+			replayed++
+		}
+		if replayed != each {
+			t.Fatalf("%s: replayed %d of the other number's %d messages", name, replayed, each)
+		}
+	}
+	close(stop)
+	published.Wait()
+	c.presenceOf("last", device, other)
+	for name, frames := range streams {
+		for {
+			p := payload[wsapi.PresenceEvent](t, next(t, frames, wsapi.TypePresence))
+			if p.DeviceID == device.String() {
+				t.Fatalf("%s: presence relayed for the deleted number", name)
+			}
+			if p.ChatKey == "last" {
+				break
+			}
+		}
+	}
+}
+
+// A deletion commits after a subscribe checked access and before the bus
+// registered it: the subscription still never carries the deleted number.
+func TestDeleteBetweenAccessCheckAndSubscribe(t *testing.T) {
+	granted := make(chan struct{}, 1)
+	resume := make(chan struct{})
+	c := newDeletionConsoleWith(t, deletionOptions{hook: func(stage string) {
+		if stage != "granted" {
+			return
+		}
+		select {
+		case granted <- struct{}{}:
+		default:
+		}
+		<-resume
+	}})
+	device, other := c.linkedDevice(t, "Suporte"), c.linkedDevice(t, "Vendas")
+	c.reads(t, c.owner, device)
+	c.reads(t, c.owner, other)
+	conn := connect(t, c.console, wsapi.Hello{Session: c.token})
+	defer conn.CloseNow()
+	request(t, conn, "sub", wsapi.TypeSubscribe, wsapi.Subscribe{Devices: []string{device.String(), other.String()}, LiveOnly: true})
+	frames := drain(conn)
+	select {
+	case <-granted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the subscribe never checked access")
+	}
+	if f := ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDeviceDelete, deleteFrame(device)); f.Type != wsapi.TypeDeviceGone {
+		t.Fatalf("delete: %s %s", f.Type, f.Payload)
+	}
+	close(resume)
+	next(t, frames, wsapi.TypeReplayEnd)
+	c.presenceOf("last", device, other)
+	if p := payload[wsapi.PresenceEvent](t, next(t, frames, wsapi.TypePresence)); p.DeviceID != other.String() {
+		t.Fatalf("presence relayed for %s", p.DeviceID)
+	}
+}
+
 func TestExcludedFramesRefused(t *testing.T) {
 	c := newDeletionConsole(t)
 	ctx := context.Background()
-	device := c.linkedDevice(t, "Suporte")
+	device, live := c.linkedDevice(t, "Suporte"), c.linkedDevice(t, "Vendas")
 	member, _ := c.person(t, "member", "member")
 	c.reads(t, c.owner, device)
+	// grant.revoke really revokes, so its control runs on another number
+	// with the same two key holders.
+	c.reads(t, c.owner, live)
+	c.reads(t, member, live)
 	uid := uuid.New()
 	if _, err := store.NewMessages(c.pool).Insert(ctx, store.InsertMessage{UID: uid, TenantID: c.tenant, DeviceID: device, WAID: "one",
 		ChatKey: "chat", Kind: domain.KindMessage, Type: domain.TypeText, Source: domain.SourceLive, TS: time.Now(), BodySealed: []byte{1}}); err != nil {
@@ -435,15 +715,31 @@ func TestExcludedFramesRefused(t *testing.T) {
 			t.Fatalf("control %s: %d", path, got)
 		}
 	}
+	if f := ask(t, c.console, owner, wsapi.TypeGrantRevoke, wsapi.GrantRevoke{DeviceID: live.String(), UserID: member.String()}); f.Type != wsapi.TypeReaders {
+		t.Fatalf("control grant.revoke: %s %s", f.Type, f.Payload)
+	}
 
-	// The control's grant.add made the member a reader.
+	// The control's grant.add made the member a reader: two key holders.
 	if f := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(device, member)); f.Type != wsapi.TypeDeviceGone {
 		t.Fatalf("delete: %s %s", f.Type, f.Payload)
 	}
+	frames = append(frames, struct {
+		kind    string
+		payload any
+	}{wsapi.TypeGrantRevoke, wsapi.GrantRevoke{DeviceID: device.String(), UserID: member.String()}})
 	for _, frame := range frames {
 		if f := ask(t, c.console, owner, frame.kind, frame.payload); !notFound(f) {
 			t.Fatalf("%s on the excluded number: %s %s", frame.kind, f.Type, f.Payload)
 		}
+	}
+	// The store would have revoked it: the handler's lookup is all that
+	// keeps a deleted number's key holders.
+	var grants int
+	c.scoped(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM device_key_grants WHERE device_id=$1`, device).Scan(&grants)
+	})
+	if grants != 2 {
+		t.Fatalf("the deleted number has %d grants, want both key holders'", grants)
 	}
 	for _, path := range paths {
 		if got := restStatus(path); got != http.StatusNotFound {
@@ -506,6 +802,131 @@ func TestDeleteOrder(t *testing.T) {
 	}
 }
 
+// An owner recovers the number between the deletion's commit and its
+// logout: the handler's own re-check stops the logout, and nothing is
+// recorded on the recovered row.
+func TestDeleteLogoutNeverAfterRecovery(t *testing.T) {
+	c := newDeletionConsole(t)
+	device := c.linkedDevice(t, "Suporte")
+	c.unlinker.beforeRecheck = func(ctx context.Context, id string) {
+		if _, err := c.devices.Recover(ctx, c.tenant, c.owner, uuid.MustParse(id)); err != nil {
+			t.Errorf("recover: %v", err)
+		}
+	}
+	f := ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDeviceDelete, deleteFrame(device))
+	if f.Type != wsapi.TypeDeviceGone {
+		t.Fatalf("delete: %s %s", f.Type, f.Payload)
+	}
+	if gone := payload[wsapi.DeviceDeleted](t, f); gone.Unlinked || gone.NoteCode != store.NoteUnlinkUnconfirmed {
+		t.Fatalf("device.deleted = %+v", gone)
+	}
+	if c.unlinker.count() != 0 {
+		t.Fatalf("%d logouts of a recovered number", c.unlinker.count())
+	}
+	if deleted, status, reason, _ := c.row(t, device); deleted || status != "offline" || reason != "deleted" {
+		t.Fatalf("the recovered number: excluded %v, status %q (%q)", deleted, status, reason)
+	}
+	var sessions int
+	if err := c.pool.QueryRow(context.Background(), `SELECT count(*) FROM whatsmeow_device`).Scan(&sessions); err != nil || sessions != 1 {
+		t.Fatalf("the recovered number's session: %d, %v", sessions, err)
+	}
+}
+
+// A number with only a LID has no session a deletion can find: it is never
+// logged out, and the reply says WhatsApp had already let it go.
+func TestDeleteLIDOnlyNumber(t *testing.T) {
+	c := newDeletionConsole(t)
+	ctx := context.Background()
+	dev, err := c.devices.Create(ctx, c.tenant.String(), "lid", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lid := types.NewJID("300000000000001", types.HiddenUserServer)
+	if err := c.devices.SetIdentity(ctx, c.tenant.String(), dev.ID, wa.Identity{LID: lid}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.devices.SetStatus(ctx, c.tenant.String(), dev.ID, wa.StatusOnline, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.pool.Exec(ctx, `INSERT INTO whatsmeow_device(jid, registration_id) VALUES ($1, 7)`, lid.String()); err != nil {
+		t.Fatal(err)
+	}
+	f := ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDeviceDelete, deleteFrame(uuid.MustParse(dev.ID)))
+	if f.Type != wsapi.TypeDeviceGone {
+		t.Fatalf("delete: %s %s", f.Type, f.Payload)
+	}
+	if gone := payload[wsapi.DeviceDeleted](t, f); !gone.Unlinked || gone.NoteCode != store.NoteAlreadyDisconnected {
+		t.Fatalf("device.deleted = %+v", gone)
+	}
+	if c.unlinker.count() != 0 {
+		t.Fatalf("a LID-only number was logged out %d times", c.unlinker.count())
+	}
+	if _, status, reason, leftover := c.row(t, uuid.MustParse(dev.ID)); status != "logged_out" || reason != "no session at deletion" || leftover {
+		t.Fatalf("the LID-only number: %q (%q), fingerprint %v", status, reason, leftover)
+	}
+}
+
+// What a deletion logs never names the phone: not the session's JID, not a
+// LID, whether WhatsApp answered or not. A session already gone is no
+// warning.
+func TestDeleteLogsNoPhone(t *testing.T) {
+	logged := &lockedBuffer{}
+	c := newDeletionConsoleWith(t, deletionOptions{log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	ctx := context.Background()
+	owner := wsapi.Hello{Session: c.token}
+	gone, failing := c.linkedDevice(t, "Suporte"), c.linkedDevice(t, "Vendas")
+	// The registry found the session gone from the store.
+	c.unlinker.beforeRecheck = func(ctx context.Context, _ string) {
+		if _, err := c.pool.Exec(ctx, `DELETE FROM whatsmeow_device`); err != nil {
+			t.Error(err)
+		}
+	}
+	c.unlinker.fail = fmt.Errorf("%w (device %s)", wa.ErrNoSession, gone.String()[:8])
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(gone)); f.Type != wsapi.TypeDeviceGone || !payload[wsapi.DeviceDeleted](t, f).Unlinked {
+		t.Fatalf("delete: %s %s", f.Type, f.Payload)
+	}
+	if strings.Contains(logged.String(), "not acknowledged") {
+		t.Fatalf("a session already gone was logged as a failure: %s", logged)
+	}
+	// WhatsApp did not answer.
+	if _, err := c.pool.Exec(ctx, `INSERT INTO whatsmeow_device(jid, registration_id) VALUES ($1, 7)`,
+		types.JID{User: "5511900025678", Server: types.DefaultUserServer}.String()); err != nil {
+		t.Fatal(err)
+	}
+	c.unlinker.beforeRecheck, c.unlinker.fail = nil, nil
+	c.unlinker.onUnlink = func(context.Context, string) error { return errors.New("websocket not connected") }
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(failing)); f.Type != wsapi.TypeDeviceGone {
+		t.Fatalf("delete: %s %s", f.Type, f.Payload)
+	}
+	out := logged.String()
+	if !strings.Contains(out, "not acknowledged") || !strings.Contains(out, "number excluded") {
+		t.Fatalf("the deletions were not logged: %s", out)
+	}
+	for _, phone := range []string{"@s.whatsapp.net", "@lid", "5511900015678", "5511900025678"} {
+		if strings.Contains(out, phone) {
+			t.Fatalf("a deletion logged %q: %s", phone, out)
+		}
+	}
+}
+
+// lockedBuffer is a log sink handlers on several goroutines write to.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestDeleteNeedsStepUp(t *testing.T) {
 	c := newDeletionConsole(t)
 	ctx := context.Background()
@@ -552,7 +973,9 @@ func TestDeleteAuthorizesBeforeExcludedLookup(t *testing.T) {
 	c.reads(t, reader, device)
 	c.reads(t, former, device)
 	ctx := context.Background()
-	if err := c.users.RemoveMember(ctx, c.tenant, c.owner, former); err != nil {
+	// A former reader is still a member, and had their access taken away
+	// before the deletion: Read off, which drops their key too.
+	if err := c.users.SetDevicePermission(ctx, c.tenant, c.owner, store.DevicePermission{DeviceID: device, UserID: former}); err != nil {
 		t.Fatal(err)
 	}
 	if f := ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDeviceDelete, deleteFrame(device, reader)); f.Type != wsapi.TypeDeviceGone {
@@ -566,14 +989,14 @@ func TestDeleteAuthorizesBeforeExcludedLookup(t *testing.T) {
 			t.Fatalf("%s learned of the deletion: %s", name, f.Payload)
 		}
 	}
-	// The former reader, removed before the deletion, cannot even ask.
-	if _, _, err := c.users.ActiveSession(ctx, formerToken); err == nil {
-		if f := ask(t, c.console, wsapi.Hello{Session: formerToken}, wsapi.TypeDeviceDelete, deleteFrame(device)); f.Type != wsapi.TypeError {
-			t.Fatalf("a former reader: %s", f.Payload)
-		}
+	// The former reader, who kept the id, learns nothing either.
+	f := ask(t, c.console, wsapi.Hello{Session: formerToken}, wsapi.TypeDeviceDelete, deleteFrame(device))
+	if e := wantError(t, f, wsapi.ErrCodeNotFound); strings.Contains(string(f.Payload), "deleted_at") ||
+		strings.Contains(string(f.Payload), "recoverable_until") || strings.Contains(e.Message, "recover") {
+		t.Fatalf("a former reader learned of the deletion: %s", f.Payload)
 	}
 	// An owner retrying gets the stored state.
-	f := ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDeviceDelete, deleteFrame(device))
+	f = ask(t, c.console, wsapi.Hello{Session: c.token}, wsapi.TypeDeviceDelete, deleteFrame(device))
 	if f.Type != wsapi.TypeDeviceGone {
 		t.Fatalf("an owner's retry: %s", f.Payload)
 	}
@@ -656,7 +1079,8 @@ func TestPendingStillHardDeleted(t *testing.T) {
 }
 
 func TestDeletedListAndRecoverFrames(t *testing.T) {
-	c := newDeletionConsole(t)
+	c := newDeletionConsoleWith(t, deletionOptions{registry: true})
+	ctx := context.Background()
 	device := c.linkedDevice(t, "Suporte")
 	reader, readerToken := c.person(t, "reader", "member")
 	c.reads(t, c.owner, device)
@@ -702,12 +1126,110 @@ func TestDeletedListAndRecoverFrames(t *testing.T) {
 		t.Fatalf("a retried recovery: %s", f.Payload)
 	}
 	// The reader reads it again, with no new grant, and a logged-out number
-	// cannot be started.
+	// cannot be started; nor can a banned one.
 	if f := ask(t, c.console, wsapi.Hello{Session: readerToken}, wsapi.TypeChatPage, wsapi.ChatPageRequest{DeviceID: device.String(), ChatKey: "chat"}); f.Type == wsapi.TypeError {
 		t.Fatalf("the reader after the recovery: %s", f.Payload)
 	}
-	if f := ask(t, c.console, owner, wsapi.TypeDeviceStart, wsapi.DeviceRef{DeviceID: device.String()}); f.Type != wsapi.TypeError {
-		t.Fatalf("starting a logged-out number: %s", f.Type)
+	banned := c.linkedDevice(t, "Banido")
+	if err := c.devices.SetStatus(ctx, c.tenant.String(), banned.String(), wa.StatusBanned, "temporary"); err != nil {
+		t.Fatal(err)
+	}
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(banned)); f.Type != wsapi.TypeDeviceGone {
+		t.Fatalf("delete: %s", f.Payload)
+	}
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceRecover, wsapi.RecoverRequest{DeviceID: banned.String(), Confirm: banned.String()}); f.Type != wsapi.TypeDeviceRecovered ||
+		payload[wsapi.DeviceRecovered](t, f).Status != "banned" {
+		t.Fatalf("recover the banned number: %s", f.Payload)
+	}
+	for _, dead := range []uuid.UUID{device, banned} {
+		e := wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceStart, wsapi.DeviceRef{DeviceID: dead.String()}), wsapi.ErrCodeConflict)
+		if e.Message != "the WhatsApp session is no longer available" {
+			t.Fatalf("starting %s: %q", dead, e.Message)
+		}
+		if d, err := c.devices.Get(ctx, c.tenant.String(), dead.String()); err != nil || !d.Paused {
+			t.Fatalf("a refused start unpaused %s: %+v %v", dead, d, err)
+		}
+		if _, running := c.registry.Get(dead.String()); running {
+			t.Fatalf("a refused start started %s", dead)
+		}
+	}
+}
+
+// device.recover's own refusals, over the socket, each with its code, and
+// none changes the row.
+func TestRecoverRefusalCodes(t *testing.T) {
+	c := newDeletionConsole(t)
+	ctx := context.Background()
+	owner := wsapi.Hello{Session: c.token}
+	deleted := func(label string) uuid.UUID {
+		t.Helper()
+		device := c.linkedDevice(t, label)
+		if f := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(device)); f.Type != wsapi.TypeDeviceGone {
+			t.Fatalf("delete: %s", f.Payload)
+		}
+		return device
+	}
+	exec := func(query string, args ...any) {
+		t.Helper()
+		c.scoped(ctx, t, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, query, args...)
+			return err
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		code  string
+		setup func(device uuid.UUID) (undo func())
+	}{
+		{"past its window", wsapi.ErrCodeRecoveryClosed, func(device uuid.UUID) func() {
+			exec(`UPDATE devices SET purge_after = clock_timestamp() - interval '1 minute' WHERE id=$1`, device)
+			return func() {}
+		}},
+		{"a purge started", wsapi.ErrCodeRecoveryClosed, func(device uuid.UUID) func() {
+			exec(`UPDATE devices SET purge_started_at = clock_timestamp() WHERE id=$1`, device)
+			return func() {}
+		}},
+		{"a logout in flight", wsapi.ErrCodeDeviceBusy, func(device uuid.UUID) func() {
+			release, ok, err := pg.NewLocker(c.pool).TryLock(ctx, "device:"+device.String())
+			if err != nil || !ok {
+				t.Fatalf("lock: %v %v", ok, err)
+			}
+			return release
+		}},
+		{"a full plan", wsapi.ErrCodeCapacityReached, func(uuid.UUID) func() {
+			c.linkedDevice(t, "live")
+			exec(`INSERT INTO workspace_capacity(tenant_id, max_devices) VALUES ($1, (SELECT count(*) FROM devices WHERE deleted_at IS NULL))`, c.tenant)
+			return func() { exec(`DELETE FROM workspace_capacity WHERE tenant_id=$1`, c.tenant) }
+		}},
+		{"its phone linked again", wsapi.ErrCodeIdentityInUse, func(device uuid.UUID) func() {
+			var pn string
+			c.scoped(ctx, t, func(tx pgx.Tx) error {
+				return tx.QueryRow(ctx, `SELECT pn FROM devices WHERE id=$1`, device).Scan(&pn)
+			})
+			again, err := c.devices.Create(ctx, c.tenant.String(), "again", wa.ModePassive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jid, err := types.ParseJID(pn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.devices.SetIdentity(ctx, c.tenant.String(), again.ID, wa.Identity{PN: jid}); err != nil {
+				t.Fatal(err)
+			}
+			return func() {}
+		}},
+	} {
+		device := deleted(tc.name)
+		undo := tc.setup(device)
+		f := ask(t, c.console, owner, wsapi.TypeDeviceRecover, wsapi.RecoverRequest{DeviceID: device.String(), Confirm: device.String()})
+		undo()
+		if e := wantError(t, f, tc.code); e.Message == "" {
+			t.Fatalf("%s: no message", tc.name)
+		}
+		if deleted, _, _, _ := c.row(t, device); !deleted {
+			t.Fatalf("%s: a refused recovery changed the row", tc.name)
+		}
 	}
 }
 

@@ -598,9 +598,15 @@ func TestAIUsageFoldsExcludedForNonOwners(t *testing.T) {
 		Origin: "connector", RequesterID: f.owner, Items: 1, ChargedTokens: 100}); err != nil {
 		t.Fatal(err)
 	}
+	// The usage's day is the database's: near a month's end, Go's clock
+	// and a drifting Docker clock can name different months.
+	var month time.Time
+	if err := f.pool.QueryRow(ctx, `SELECT now()`).Scan(&month); err != nil {
+		t.Fatal(err)
+	}
 	device := func(viewer uuid.UUID) uuid.UUID {
 		t.Helper()
-		rows, err := f.ai.AIUsageMonth(ctx, f.tenant, viewer, true, time.Now())
+		rows, err := f.ai.AIUsageMonth(ctx, f.tenant, viewer, true, month)
 		if err != nil || len(rows) != 1 || rows[0].ChargedTokens != 100 {
 			t.Fatalf("usage = %+v %v", rows, err)
 		}
@@ -617,5 +623,50 @@ func TestAIUsageFoldsExcludedForNonOwners(t *testing.T) {
 	}
 	if got := device(admin); got != uuid.Nil {
 		t.Fatalf("an admin sees the excluded number's id %s", got)
+	}
+}
+
+// The replay's reads leave a deleted number out (0050): a replay that runs
+// across the deletion reads no page of it afterwards, whoever asks.
+func TestReplayReadsLeaveExcludedOut(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	device, other := w.number(t, "x"), w.number(t, "l")
+	messages, receipts := store.NewMessages(w.pool), store.NewReceipts(w.pool)
+	for _, d := range []uuid.UUID{device, other} {
+		if _, err := messages.Insert(ctx, store.InsertMessage{UID: uuid.New(), TenantID: w.tenant, DeviceID: d, WAID: "m-" + d.String(),
+			ChatKey: "chat", Kind: domain.KindMessage, Type: domain.TypeText, Source: domain.SourceLive, TS: time.Now(), BodySealed: []byte{1}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := receipts.Insert(ctx, store.InsertReceipt{TenantID: w.tenant, DeviceID: d, ChatKey: "chat", ReaderKey: "5511911111111@s.whatsapp.net",
+			WAIDs: []string{"m-" + d.String()}, Kind: domain.ReceiptRead, TS: time.Now().Truncate(time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() (rows, acks map[uuid.UUID]int) {
+		t.Helper()
+		rows, acks = map[uuid.UUID]int{}, map[uuid.UUID]int{}
+		page, err := messages.Since(ctx, w.tenant, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range page {
+			rows[r.DeviceID]++
+		}
+		batches, _, err := receipts.Since(ctx, w.tenant, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range batches {
+			acks[b.DeviceID]++
+		}
+		return rows, acks
+	}
+	if rows, acks := read(); rows[device] != 1 || acks[device] != 1 {
+		t.Fatalf("control: %v %v", rows, acks)
+	}
+	w.quarantine(t, device)
+	if rows, acks := read(); rows[device] != 0 || acks[device] != 0 || rows[other] != 1 || acks[other] != 1 {
+		t.Fatalf("after the deletion: messages %v, receipts %v", rows, acks)
 	}
 }

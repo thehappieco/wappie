@@ -312,6 +312,19 @@ export interface AllNumberKey {
   created_by_name: string
 }
 
+/**
+ * Someone a recovery gives the number back to who does not read it: a person
+ * or a standing service account that sends through it, or a member who
+ * manages it.
+ */
+export interface OtherAccessRef {
+  id: string
+  kind: 'person' | 'service'
+  name: string
+  email?: string
+  why: Array<'send' | 'manage'>
+}
+
 export interface EndedAssistant {
   id: string
   client_name: string
@@ -396,6 +409,8 @@ export interface DeviceRecoverChecked extends RecoveryStatus {
   device_id: string
   readers: PersonRef[]
   service_accounts: ServiceAccountRef[]
+  /** Who sends through it, or manages it, again without reading it. */
+  others: OtherAccessRef[]
   all_number_keys: AllNumberKey[]
   recoverable: boolean
 }

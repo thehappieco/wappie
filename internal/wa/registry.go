@@ -371,7 +371,7 @@ func (r *Registry) Unlinking(deviceID string) bool {
 	return r.unlinking[deviceID] > 0
 }
 
-// loginWait bounds how long a logout waits for a fresh connection to log in
+// loginWait bounds how long a logout waits for its client to be logged in
 // before it asks anyway.
 const loginWait = 5 * time.Second
 
@@ -379,60 +379,88 @@ const loginWait = 5 * time.Second
 // undone: the phone drops this server from its linked devices.
 //
 // When this process holds the number, the logout runs on its running client,
-// which already holds the device lock. Otherwise Unlink loads the session,
-// takes the device lock (ErrAlreadyRunning while another process or a
-// recovery holds it), and connects a client of its own with no sink and no
-// handlers, which captures nothing, so it does not ask CheckStart: a
-// workspace whose storage is paused can still be logged out.
+// which already holds the device lock, once that client is logged in again
+// (a client between reconnects would fail the logout at once). Otherwise
+// Unlink loads the session, takes the device lock (ErrAlreadyRunning while
+// another process or a recovery holds it), and connects a client of its own
+// with no sink and no handlers, which captures nothing, so it does not ask
+// CheckStart: a workspace whose storage is paused can still be logged out.
 //
 // recheck runs with the lock held, right before WhatsApp is asked, and an
 // error from it aborts with no call: it is the deletion's re-read of the row,
-// so no logout ever runs on a number an owner recovered meanwhile. The caller
-// stops the running client afterwards.
-func (r *Registry) Unlink(ctx context.Context, tenantID, deviceID string, jid types.JID, recheck func(context.Context) error) error {
+// so no logout ever runs on a number an owner recovered meanwhile. record
+// runs with the lock still held, once WhatsApp was asked or the session
+// turned out to be gone (ErrNoSession), with what came of it: the caller
+// writes what the logout achieved before a recovery can take the lock. It is
+// not called when nothing was asked. The caller stops the running client
+// afterwards, which releases its lock.
+//
+// Errors name the device, never the session's JID, which is the phone
+// number.
+func (r *Registry) Unlink(ctx context.Context, tenantID, deviceID string, jid types.JID,
+	recheck func(context.Context) error, record func(context.Context, error)) error {
+	return r.unlink(ctx, deviceID, jid, recheck, record, false)
+}
+
+// UnlinkLeftover is the janitor's retry of a deletion's logout. Unlike
+// Unlink it never touches a number this process holds or a deletion is
+// logging out here: it answers ErrAlreadyRunning, and the next pass tries
+// again, so it never logs out a client another deletion owns.
+func (r *Registry) UnlinkLeftover(ctx context.Context, tenantID, deviceID string, jid types.JID,
+	recheck func(context.Context) error, record func(context.Context, error)) error {
+	return r.unlink(ctx, deviceID, jid, recheck, record, true)
+}
+
+// LockIdle runs f with the device lock held, for a number this process
+// neither holds nor is logging out: ErrAlreadyRunning otherwise, or while
+// another process or a recovery holds the lock. The janitor records a
+// logout whose record was lost under it, so a recovery cannot slip between
+// its look and its write.
+func (r *Registry) LockIdle(ctx context.Context, deviceID string, f func(context.Context) error) error {
+	r.mu.Lock()
+	if _, held := r.devices[deviceID]; held || r.unlinking[deviceID] > 0 {
+		r.mu.Unlock()
+		return ErrAlreadyRunning
+	}
+	done, err := r.reserveLocked(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return f(ctx)
+}
+
+func (r *Registry) unlink(ctx context.Context, deviceID string, jid types.JID,
+	recheck func(context.Context) error, record func(context.Context, error), leftover bool) error {
 	if jid.IsEmpty() {
 		return fmt.Errorf("%w: no session to log out", ErrNoSession)
 	}
 	r.mu.Lock()
-	if e, held := r.devices[deviceID]; held {
+	e, held := r.devices[deviceID]
+	switch {
+	case held && (leftover || e.device == nil), leftover && r.unlinking[deviceID] > 0:
 		r.mu.Unlock()
-		if e.device == nil {
-			return ErrAlreadyRunning
-		}
-		if recheck != nil {
-			if err := recheck(ctx); err != nil {
-				return err
-			}
-		}
-		return e.device.Client().Logout(ctx)
+		return ErrAlreadyRunning
+	case held:
+		r.mu.Unlock()
+		return logoutOn(ctx, e.device.Client(), recheck, record)
 	}
-	reserved := &entry{}
-	r.devices[deviceID] = reserved
-	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		if r.devices[deviceID] == reserved {
-			delete(r.devices, deviceID)
-		}
-		r.mu.Unlock()
-	}()
+	done, err := r.reserveLocked(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	defer done()
 
-	if r.cfg.Locker != nil {
-		release, ok, err := r.cfg.Locker.TryLock(ctx, "device:"+deviceID)
-		if err != nil {
-			return fmt.Errorf("wa: lock device: %w", err)
-		}
-		if !ok {
-			return ErrAlreadyRunning
-		}
-		defer release()
-	}
 	ds, err := r.loadSession(ctx, jid)
 	if err != nil {
-		return fmt.Errorf("wa: load session for %s: %w", jid, err)
+		return fmt.Errorf("wa: load the session of device %s: %w", shortID(deviceID), err)
 	}
 	if ds == nil {
-		return fmt.Errorf("%w (tried %s)", ErrNoSession, jid)
+		err := fmt.Errorf("%w (device %s)", ErrNoSession, shortID(deviceID))
+		if record != nil {
+			record(ctx, err)
+		}
+		return err
 	}
 	if recheck != nil {
 		if err := recheck(ctx); err != nil {
@@ -441,9 +469,53 @@ func (r *Registry) Unlink(ctx context.Context, tenantID, deviceID string, jid ty
 	}
 	client := r.newClient(ds, "unlink/"+shortID(deviceID))
 	if err := client.Connect(); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
-		return fmt.Errorf("wa: connect to log out: %w", err)
+		err = fmt.Errorf("wa: connect to log out: %w", err)
+		if record != nil {
+			record(ctx, err)
+		}
+		return err
 	}
 	defer client.Disconnect()
+	return logoutOn(ctx, client, nil, record)
+}
+
+// reserveLocked, called with r.mu held, which it releases, reserves a device
+// this process does not hold and takes its device lock: ErrAlreadyRunning
+// while another process or a recovery holds it. done releases the lock, then
+// the reservation.
+func (r *Registry) reserveLocked(ctx context.Context, deviceID string) (done func(), err error) {
+	reserved := &entry{}
+	r.devices[deviceID] = reserved
+	r.mu.Unlock()
+	unreserve := func() {
+		r.mu.Lock()
+		if r.devices[deviceID] == reserved {
+			delete(r.devices, deviceID)
+		}
+		r.mu.Unlock()
+	}
+	if r.cfg.Locker == nil {
+		return unreserve, nil
+	}
+	release, ok, err := r.cfg.Locker.TryLock(ctx, "device:"+deviceID)
+	if err != nil {
+		unreserve()
+		return nil, fmt.Errorf("wa: lock device: %w", err)
+	}
+	if !ok {
+		unreserve()
+		return nil, ErrAlreadyRunning
+	}
+	return func() {
+		release()
+		unreserve()
+	}, nil
+}
+
+// logoutOn waits up to loginWait for client to be logged in, re-checks, asks
+// WhatsApp for the logout, and records what came of it, all under the lock
+// the caller holds.
+func logoutOn(ctx context.Context, client Client, recheck func(context.Context) error, record func(context.Context, error)) error {
 	waitCtx, cancel := context.WithTimeout(ctx, loginWait)
 	for !client.IsLoggedIn() && waitCtx.Err() == nil {
 		select {
@@ -452,7 +524,16 @@ func (r *Registry) Unlink(ctx context.Context, tenantID, deviceID string, jid ty
 		}
 	}
 	cancel()
-	return client.Logout(ctx)
+	if recheck != nil {
+		if err := recheck(ctx); err != nil {
+			return err
+		}
+	}
+	err := client.Logout(ctx)
+	if record != nil {
+		record(ctx, err)
+	}
+	return err
 }
 
 func shortID(id string) string {

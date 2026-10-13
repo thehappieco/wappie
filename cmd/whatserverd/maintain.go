@@ -170,9 +170,13 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 }
 
 // sessionUnlinker is what the janitor needs of the registry to log out a
-// deleted number's leftover session.
+// deleted number's leftover session: a logout that never touches a number
+// this process holds or a deletion is logging out here, and the device lock
+// for a record with no logout.
 type sessionUnlinker interface {
-	Unlink(ctx context.Context, tenantID, deviceID string, jid types.JID, recheck func(context.Context) error) error
+	UnlinkLeftover(ctx context.Context, tenantID, deviceID string, jid types.JID,
+		recheck func(context.Context) error, record func(context.Context, error)) error
+	LockIdle(ctx context.Context, deviceID string, f func(context.Context) error) error
 }
 
 // errSessionChanged aborts a retry whose number was recovered, deleted again,
@@ -184,8 +188,9 @@ var errSessionChanged = errors.New("the deleted number or its session changed si
 // its status: a session WhatsApp still lists is the phone's concern either
 // way. A fingerprinted session that is gone was logged out and only its
 // record was lost, which is recorded without asking WhatsApp. A number held
-// elsewhere, or by a recovery, waits for the next pass and costs no attempt.
-// After the last attempt the purge removes the session by its fingerprint.
+// here or elsewhere, by a deletion or by a recovery, waits for the next pass
+// and costs no attempt. After the last attempt the purge removes the session
+// by its fingerprint.
 func (a *app) retryLeftoverSessions(ctx context.Context) {
 	if a.devices == nil || a.unlinker == nil {
 		return
@@ -208,29 +213,46 @@ func (a *app) retryLeftoverSessions(ctx context.Context) {
 }
 
 func (a *app) retryLeftoverSession(ctx context.Context, tenant uuid.UUID, l store.Leftover) {
-	err := wa.ErrNoSession
+	var record store.UnlinkRecord
+	var recordErr error
+	recorded := false
+	// Every record that follows a logout, or that confirms one, runs under
+	// the device lock, so a recovery cannot land between them.
+	write := func(ctx context.Context, logoutErr error) {
+		confirmed := logoutErr == nil || errors.Is(logoutErr, wa.ErrNoSession)
+		record, recordErr = a.devices.RecordUnlink(context.WithoutCancel(ctx), tenant, l.DeviceID, l.DeletedAt, confirmed)
+		recorded = true
+	}
+	var err error
 	if l.Present {
 		jid, parseErr := types.ParseJID(l.JID)
 		if parseErr != nil {
-			a.log.Warn("a leftover session has no usable JID", "device", l.DeviceID, "error", parseErr)
+			a.log.Warn("a leftover session has no usable JID", "device", l.DeviceID)
 			return
 		}
 		reg := l.RegistrationID
 		unlinkCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		err = a.unlinker.Unlink(unlinkCtx, tenant.String(), l.DeviceID.String(), jid, func(ctx context.Context) error {
+		err = a.unlinker.UnlinkLeftover(unlinkCtx, tenant.String(), l.DeviceID.String(), jid, func(ctx context.Context) error {
 			still, err := a.devices.StillExcluded(ctx, tenant, l.DeviceID, l.DeletedAt, &reg)
 			if err == nil && !still {
 				err = errSessionChanged
 			}
 			return err
-		})
+		}, write)
 		cancel()
+	} else {
+		err = a.unlinker.LockIdle(ctx, l.DeviceID.String(), func(ctx context.Context) error {
+			write(ctx, wa.ErrNoSession)
+			return nil
+		})
 	}
 	if errors.Is(err, wa.ErrAlreadyRunning) || errors.Is(err, errSessionChanged) {
 		return
 	}
-	confirmed := err == nil || errors.Is(err, wa.ErrNoSession)
-	record, recordErr := a.devices.RecordUnlink(ctx, tenant, l.DeviceID, l.DeletedAt, confirmed)
+	if !recorded {
+		// The logout never reached WhatsApp: one more attempt.
+		write(ctx, err)
+	}
 	switch {
 	case recordErr != nil && !errors.Is(recordErr, store.ErrNotFound):
 		a.log.Warn("could not record a leftover session's logout", "device", l.DeviceID, "error", recordErr)
