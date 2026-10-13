@@ -19,7 +19,7 @@ func (a *app) maintain(ctx context.Context) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		a.maintainOnce(ctx, grace)
+		a.maintainOnce(ctx, grace, a.blob)
 		select {
 		case <-ctx.Done():
 			return
@@ -33,7 +33,14 @@ func (a *app) maintain(ctx context.Context) {
 // past it the request is gone and the consent can only be given again.
 const mcpPendingTTL = 20 * time.Minute
 
-func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
+// objectStore is what the janitor needs of the bucket, so a test can pass a
+// fake: core's CI runs Postgres only. *blob.Store is one, nil included.
+type objectStore interface {
+	Configured() bool
+	Delete(ctx context.Context, key string) error
+}
+
+func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects objectStore) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
@@ -103,7 +110,7 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 
 	// Retry confirmed orphan objects even when no new retention purge occurs.
 	// Failed physical deletes retain their storage charge and remain retryable.
-	if a.storage != nil && a.blob.Configured() {
+	if a.storage != nil && objects.Configured() {
 		ids, err := a.listTenantIDs(ctx)
 		if err != nil {
 			a.log.Warn("could not list storage cleanup workspaces", "error", err)
@@ -115,7 +122,7 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 				continue
 			}
 			for _, key := range keys {
-				if err := a.storage.DeleteObject(ctx, id, key, a.blob.Delete); err != nil {
+				if err := a.storage.DeleteObject(ctx, id, key, objects.Delete); err != nil {
 					a.log.Warn("orphan object cleanup failed", "tenant", id, "error", err)
 				}
 			}
@@ -135,9 +142,9 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration) {
 			continue
 		}
 		removed, failed := 0, 0
-		if a.blob.Configured() {
+		if objects.Configured() {
 			for _, key := range counts.ObjectKeys {
-				if err := a.storage.DeleteObject(ctx, t.ID, key, a.blob.Delete); err != nil {
+				if err := a.storage.DeleteObject(ctx, t.ID, key, objects.Delete); err != nil {
 					failed++
 					continue
 				}

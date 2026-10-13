@@ -50,6 +50,7 @@ func newHarness(t *testing.T) *harness {
 		Users:   store.NewUsers(pool),
 		Keys:    store.NewKeys(pool),
 		Devices: store.NewDevices(pool),
+		Storage: store.NewStorage(pool),
 	}
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)

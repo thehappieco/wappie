@@ -357,6 +357,42 @@ func (a *excludedArchive) seed(t *testing.T, device uuid.UUID, lid, pn string, p
 	})
 }
 
+// storedBy is what a live number stores, as its owner's breakdown shows it.
+func (a *excludedArchive) storedBy(t *testing.T, device uuid.UUID) store.StorageBytes {
+	t.Helper()
+	usage, err := store.NewStorage(a.pool).UsageDetailed(context.Background(), a.tenant, a.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range usage.Breakdown.Devices {
+		if d.DeviceID == device.String() {
+			if d.ArchiveBytes == 0 || d.ObjectBytes != 10 {
+				t.Fatalf("%s stores %+v", device, d.StorageBytes)
+			}
+			return d.StorageBytes
+		}
+	}
+	t.Fatalf("%s is not in the breakdown", device)
+	return store.StorageBytes{}
+}
+
+// addsUp checks that a breakdown never names the excluded number and that
+// its buckets add up to the workspace's total.
+func addsUp(t *testing.T, usage store.StorageUsage, excluded uuid.UUID) {
+	t.Helper()
+	b := usage.Breakdown
+	sum := b.Shared.UsedBytes + b.Unassigned.UsedBytes + b.Excluded.UsedBytes
+	for _, d := range b.Devices {
+		if d.DeviceID == excluded.String() {
+			t.Fatal("the breakdown names the excluded number")
+		}
+		sum += d.UsedBytes
+	}
+	if sum != usage.UsedBytes {
+		t.Fatalf("the breakdown does not add up: %d of %d", sum, usage.UsedBytes)
+	}
+}
+
 func (a *excludedArchive) count(t *testing.T, sql string, args ...any) int {
 	t.Helper()
 	ctx := context.Background()
@@ -373,20 +409,23 @@ func TestBootAndJanitorWithExcludedNumber(t *testing.T) {
 	ctx := context.Background()
 	devices := store.NewDevices(a.pool)
 	storage := store.NewStorage(a.pool)
-	beforeExclusion, err := storage.UsageDetailed(ctx, a.tenant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var excludedBytes store.StorageBytes
-	for _, d := range beforeExclusion.Breakdown.Devices {
-		if d.DeviceID == a.excluded.String() {
-			excludedBytes = d.StorageBytes
+	excludedBytes := a.storedBy(t, a.excluded)
+	// A uid lookup finds each number's message while both are live, and then
+	// only the live one's: the messages table has no device policy, so the
+	// join to devices is all that hides it.
+	uids := map[uuid.UUID]uuid.UUID{a.excluded: a.pending[a.excluded][0], a.live: a.pending[a.live][0]}
+	for device, uid := range uids {
+		if got, err := a.messages.Get(ctx, a.tenant, uid); err != nil || got.DeviceID != device {
+			t.Fatalf("a live number's message: %+v %v", got, err)
 		}
 	}
-	if excludedBytes.ArchiveBytes == 0 || excludedBytes.ObjectBytes != 10 {
-		t.Fatalf("the number to exclude stores %+v", excludedBytes)
-	}
 	excludeNumber(t, a.pool, a.tenant, a.excluded)
+	if _, err := a.messages.Get(ctx, a.tenant, uids[a.excluded]); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("an excluded number's message by uid: %v", err)
+	}
+	if _, err := a.messages.Get(ctx, a.tenant, uids[a.live]); err != nil {
+		t.Fatalf("the live number's message by uid: %v", err)
+	}
 
 	// Boot: the resume list, the LID linking pass and the chat identities.
 	listed, err := devices.List(ctx, a.tenant.String())
@@ -447,29 +486,14 @@ func TestBootAndJanitorWithExcludedNumber(t *testing.T) {
 	if after.ArchiveBytes != before.ArchiveBytes || after.ObjectBytes != before.ObjectBytes {
 		t.Fatalf("reconcile changed the totals: %+v, was %+v", after, before)
 	}
-	detailed, err := storage.UsageDetailed(ctx, a.tenant)
+	detailed, err := storage.UsageDetailed(ctx, a.tenant, a.owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := detailed.Breakdown
-	if b.Excluded != excludedBytes {
-		t.Fatalf("the excluded bucket holds %+v, the number stored %+v", b.Excluded, excludedBytes)
+	if detailed.Breakdown.Excluded != excludedBytes {
+		t.Fatalf("the excluded bucket holds %+v, the number stored %+v", detailed.Breakdown.Excluded, excludedBytes)
 	}
-	sum := b.Shared.UsedBytes + b.Unassigned.UsedBytes + b.Excluded.UsedBytes
-	for _, d := range b.Devices {
-		if d.DeviceID == a.excluded.String() {
-			t.Fatal("the breakdown names the excluded number")
-		}
-		sum += d.UsedBytes
-	}
-	if sum != detailed.UsedBytes {
-		t.Fatalf("the breakdown does not add up: %d of %d", sum, detailed.UsedBytes)
-	}
-	unassigned := b.Unassigned
-	b.FoldExcluded()
-	if b.Excluded != (store.StorageBytes{}) || b.Unassigned.UsedBytes != unassigned.UsedBytes+excludedBytes.UsedBytes {
-		t.Fatalf("folded for an admin: %+v", b)
-	}
+	addsUp(t, detailed, a.excluded)
 	stats, err := devices.Stats(ctx, a.tenant.String())
 	if err != nil || len(stats) != 1 || stats[0].DeviceID != a.live.String() {
 		t.Fatalf("stats with an excluded number: %+v %v", stats, err)
@@ -504,6 +528,111 @@ func TestBootAndJanitorWithExcludedNumber(t *testing.T) {
 		TS: time.Now(), BodySealed: []byte{1}}); err != nil {
 		t.Fatalf("the live number after all of it: %v", err)
 	}
+}
+
+// Only an owner sees what the deleted numbers still store: an admin, an
+// owner disabled since, and anyone else get the same totals with those bytes
+// folded into Unassigned. The live role decides, read in the breakdown's own
+// transaction, so every route that shows it, core's and the cloud's, folds
+// alike.
+func TestStorageBreakdownFoldsExcludedForNonOwners(t *testing.T) {
+	a := newExcludedArchive(t)
+	ctx := context.Background()
+	users := store.NewUsers(a.pool)
+	member := func(email, role string) uuid.UUID {
+		t.Helper()
+		u, err := users.Create(ctx, store.NewUser{TenantID: a.tenant, Email: email, Role: role,
+			AuthKey: "test", KDFSalt: make([]byte, 16), KDFParams: store.DefaultKDFParams(), PublicKey: make([]byte, 32), WrappedUSK: []byte("wrapped")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	admin := member("admin@example.test", "admin")
+	disabled := member("disabled@example.test", "owner")
+	inTenantTx(ctx, t, a.pool, a.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE workspace_memberships SET status='disabled' WHERE tenant_id=$1 AND user_id=$2`, a.tenant, disabled)
+		return err
+	})
+	excludedBytes := a.storedBy(t, a.excluded)
+	excludeNumber(t, a.pool, a.tenant, a.excluded)
+
+	storage := store.NewStorage(a.pool)
+	owner, err := storage.UsageDetailed(ctx, a.tenant, a.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner.Breakdown.Excluded != excludedBytes {
+		t.Fatalf("the owner's excluded bucket holds %+v, the number stored %+v", owner.Breakdown.Excluded, excludedBytes)
+	}
+	addsUp(t, owner, a.excluded)
+	plus := func(x, y store.StorageBytes) store.StorageBytes {
+		return store.StorageBytes{ArchiveBytes: x.ArchiveBytes + y.ArchiveBytes, ObjectBytes: x.ObjectBytes + y.ObjectBytes, UsedBytes: x.UsedBytes + y.UsedBytes}
+	}
+	for name, viewer := range map[string]uuid.UUID{"an admin": admin, "a disabled owner": disabled, "nobody": uuid.Nil} {
+		got, err := storage.UsageDetailed(ctx, a.tenant, viewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := got.Breakdown
+		if b.Excluded != (store.StorageBytes{}) || b.Unassigned != plus(owner.Breakdown.Unassigned, excludedBytes) ||
+			b.Shared != owner.Breakdown.Shared || got.UsedBytes != owner.UsedBytes {
+			t.Fatalf("%s's breakdown %+v, the owner's %+v", name, b, owner.Breakdown)
+		}
+		addsUp(t, got, a.excluded)
+	}
+}
+
+// The enclave reads an AI authorization's numbers and its stored results
+// through no devices policy of their own. An excluded number is none of the
+// row's numbers and has no results, even while a connection whose key names
+// it is still active.
+func TestEnclaveSeesNoExcludedNumber(t *testing.T) {
+	f := newAIFixture(t)
+	ctx := context.Background()
+	dev, err := store.NewDevices(f.pool).Create(ctx, f.tenant.String(), "second", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded := uuid.MustParse(dev.ID)
+	f.archiveKey(ctx, t, excluded, 1)
+	f.ownerReads(ctx, t, f.owner, excluded)
+	conn, _ := f.consentAI(ctx, t, f.owner, f.aiKeys(ctx, t, f.owner), nil, withDevices(f.device, excluded))
+	results := map[uuid.UUID]store.AIDerived{}
+	for _, device := range []uuid.UUID{f.device, excluded} {
+		results[device] = f.derived(t, f.message(ctx, t, device, domain.TypePTT, false), device, "audio")
+		if err := f.ai.PutAIDerived(ctx, f.tenant, conn.ID, results[device], false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tags := []store.AIDedupeTag{{DeviceID: f.device, Tag: results[f.device].DedupeTag}, {DeviceID: excluded, Tag: results[excluded].DedupeTag}}
+	seen := func(when string, want ...uuid.UUID) {
+		t.Helper()
+		row, err := f.conns.ReaderRow(ctx, "enclave", conn.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byTag, err := f.ai.AIDerivedByTags(ctx, f.tenant, "audio", tags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(row.Devices) != len(want) || len(byTag) != len(want) {
+			t.Fatalf("%s: the row's numbers %v and the results by tag %+v, want %v", when, row.Devices, byTag, want)
+		}
+		for _, device := range []uuid.UUID{f.device, excluded} {
+			items, err := f.ai.AIDerivedFor(ctx, f.tenant, device, []uuid.UUID{results[device].MessageUID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if live := slices.Contains(want, device); row.Devices[device] != live || (len(items) == 1) != live {
+				t.Fatalf("%s: %s is the row's %v, with %d results", when, device, row.Devices[device], len(items))
+			}
+		}
+	}
+	// The positive control: both numbers while both are live.
+	seen("before the deletion", f.device, excluded)
+	excludeNumber(t, f.pool, f.tenant, excluded)
+	seen("after it", f.device)
 }
 
 // The scope is transaction-local: whatever a scope function does, success
@@ -600,7 +729,7 @@ func TestScopeNeverOutlivesTx(t *testing.T) {
 			if _, err := pool.Exec(ctx, `DROP TRIGGER refuse_reconcile ON group_changes; DROP FUNCTION refuse_reconcile()`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := storage.UsageDetailed(ctx, tenant); err != nil {
+			if _, err := storage.UsageDetailed(ctx, tenant, uuid.Nil); err != nil {
 				t.Fatal(err)
 			}
 			closed("after the storage breakdown")

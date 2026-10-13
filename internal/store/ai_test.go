@@ -1089,7 +1089,7 @@ func TestAIDerivedStorage(t *testing.T) {
 	}
 	conn, _ := f.consentAI(ctx, t, f.owner, f.aiKeys(ctx, t, f.owner), nil)
 	voice := f.message(ctx, t, f.device, domain.TypePTT, false)
-	before, err := storage.UsageDetailed(ctx, f.tenant)
+	before, err := storage.UsageDetailed(ctx, f.tenant, f.owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1097,7 +1097,7 @@ func TestAIDerivedStorage(t *testing.T) {
 		Sealed: sealedAt(t, 1, 10_000), DedupeTag: randomBytes(t, 32)}, false); err != nil {
 		t.Fatal(err)
 	}
-	after, err := storage.UsageDetailed(ctx, f.tenant)
+	after, err := storage.UsageDetailed(ctx, f.tenant, f.owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1161,7 +1161,7 @@ func TestAIDerivedMovesWithItsNumber(t *testing.T) {
 	}
 	storage := store.NewStorage(f.pool)
 	for _, tenant := range []uuid.UUID{f.tenant, target} {
-		before, err := storage.UsageDetailed(ctx, tenant)
+		before, err := storage.UsageDetailed(ctx, tenant, owner)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -48,15 +48,13 @@ func (h *Handler) storageUsage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out, err := h.Storage.UsageDetailed(r.Context(), user.TenantID)
+	// Only owners delete and recover numbers, so only they see what the
+	// deleted ones still store; the store folds it for an admin, whose
+	// totals add up all the same.
+	out, err := h.Storage.UsageDetailed(r.Context(), user.TenantID, user.ID)
 	if err != nil {
 		fail(w, 500, "internal", "could not read storage usage")
 		return
-	}
-	// Only owners delete and recover numbers, so only they see what the
-	// deleted ones still store; an admin's totals add up all the same.
-	if user.Role != "owner" && out.Breakdown != nil {
-		out.Breakdown.FoldExcluded()
 	}
 	send(w, http.StatusOK, out)
 }

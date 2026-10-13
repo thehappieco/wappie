@@ -29,8 +29,8 @@ type DeviceStorageUsage struct {
 // archive reference can identify a number. Neither bucket is charged again.
 // Excluded holds what the deleted numbers still store until their purge
 // (0050): still charged, so the totals add up, and never under a number's
-// name. Only owners see it apart; FoldExcluded folds it into Unassigned for
-// everyone else.
+// name. Only owners see it apart; for everyone else it is folded into
+// Unassigned before the breakdown leaves the store.
 type StorageBreakdown struct {
 	Devices    []DeviceStorageUsage `json:"devices"`
 	Shared     StorageBytes         `json:"shared"`
@@ -38,10 +38,10 @@ type StorageBreakdown struct {
 	Excluded   StorageBytes         `json:"excluded"`
 }
 
-// FoldExcluded moves the deleted numbers' bytes into Unassigned, for a viewer
+// foldExcluded moves the deleted numbers' bytes into Unassigned, for a viewer
 // who may not learn that a number is waiting for its purge: only owners
 // delete and recover numbers.
-func (b *StorageBreakdown) FoldExcluded() {
+func (b *StorageBreakdown) foldExcluded() {
 	b.Unassigned.ArchiveBytes += b.Excluded.ArchiveBytes
 	b.Unassigned.ObjectBytes += b.Excluded.ObjectBytes
 	b.Unassigned.UsedBytes += b.Excluded.UsedBytes
@@ -51,23 +51,38 @@ func (b *StorageBreakdown) FoldExcluded() {
 // UsageDetailed is for administration, not the capture path: attribution grows
 // with the archive. The workspace lock keeps the total and all rows in one
 // snapshot while ingestion, retention and uploads are writing concurrently.
-func (s *Storage) UsageDetailed(ctx context.Context, tenant uuid.UUID) (StorageUsage, error) {
+// viewer is the person asking (see StorageUsageDetailedTx).
+func (s *Storage) UsageDetailed(ctx context.Context, tenant, viewer uuid.UUID) (StorageUsage, error) {
 	var out StorageUsage
 	err := pg.InTenantTx(ctx, s.pool, tenant.String(), func(tx pgx.Tx) error {
 		var err error
-		out, err = StorageUsageDetailedTx(ctx, tx, tenant)
+		out, err = StorageUsageDetailedTx(ctx, tx, tenant, viewer)
 		return err
 	})
 	return out, err
 }
 
-func StorageUsageDetailedTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (StorageUsage, error) {
+// StorageUsageDetailedTx shows the excluded numbers' bytes apart only when
+// viewer is an active owner of the workspace now, read in tx; anyone else
+// gets them folded into Unassigned. The store decides, so no route that
+// shows the breakdown, core's or the cloud's, can forget to.
+func StorageUsageDetailedTx(ctx context.Context, tx pgx.Tx, tenant, viewer uuid.UUID) (StorageUsage, error) {
 	out, err := StorageUsageTx(ctx, tx, tenant)
 	if err != nil {
 		return out, err
 	}
-	out.Breakdown, err = storageBreakdownTx(ctx, tx)
-	return out, err
+	if out.Breakdown, err = storageBreakdownTx(ctx, tx); err != nil {
+		return out, err
+	}
+	var owner bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN users u ON u.id = m.user_id
+		WHERE m.tenant_id = $1 AND m.user_id = $2 AND m.role = 'owner' AND m.status = 'active' AND u.status = 'active')`, tenant, viewer).Scan(&owner); err != nil {
+		return out, err
+	}
+	if !owner {
+		out.Breakdown.foldExcluded()
+	}
+	return out, nil
 }
 
 // Caller holds the workspace row lock before reading any archive table.

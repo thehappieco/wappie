@@ -48,7 +48,7 @@ func TestTransferredStorageKeepsSharedCiphertextAndMatchingDeviceTotals(t *testi
 	}
 	storage := store.NewStorage(a.pool)
 	for _, tenant := range []uuid.UUID{a.tenant, target} {
-		before, err := storage.UsageDetailed(ctx, tenant)
+		before, err := storage.UsageDetailed(ctx, tenant, owner)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -126,7 +126,7 @@ func TestTransferPreviewChargesOnlyNewDestinationObjectBytes(t *testing.T) {
 	if _, err := devices.TransferPersonal(ctx, a.tenant, owner, b.device, target); err != nil {
 		t.Fatal(err)
 	}
-	after, err := storage.UsageDetailed(ctx, target)
+	after, err := storage.UsageDetailed(ctx, target, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
