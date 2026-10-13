@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/crypto/seal"
@@ -273,8 +274,22 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 			ON CONFLICT (user_id, device_id, epoch) DO UPDATE
 			   SET sealed_dsk = EXCLUDED.sealed_dsk`,
 			g.TenantID, g.DeviceID, g.UserID, int32(g.Epoch), g.SealedDSK, grantedBy)
-		return err
+		return numberGone(err)
 	})
+}
+
+// ErrNumberGone is a write for a number that left the workspace while it
+// waited for the workspace's lock: moved to Personal (0036's ownership
+// trigger raises WS002), or deleted.
+var ErrNumberGone = errors.New("store: this number is no longer in this workspace")
+
+// numberGone turns the ownership trigger's WS002 into ErrNumberGone.
+func numberGone(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "WS002" {
+		return ErrNumberGone
+	}
+	return err
 }
 
 // GrantsFor returns every device key one user may open.

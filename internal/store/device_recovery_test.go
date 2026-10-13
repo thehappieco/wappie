@@ -632,7 +632,7 @@ func TestDeletionNotices(t *testing.T) {
 		}
 		n := notices[0]
 		if n.Kind != store.NoticeNumberDeleted || n.Until == nil || !n.Until.Equal(q.PurgeAfter) || n.RaisedByKind != "person" ||
-			n.RaisedByName == nil || n.Hint == nil || *n.Hint != "…5678" || n.Label != nil {
+			n.RaisedByName == nil || n.Hint == nil || *n.Hint != "…5678" || n.Label == nil || *n.Label != "Suporte" {
 			t.Fatalf("%s's notice %+v", u, n)
 		}
 	}

@@ -106,6 +106,9 @@ type Config struct {
 	// once access is known and before the bus registers the subscription,
 	// "page" after each replay page is read and before it is sent.
 	subscribeHook func(stage string)
+	// transferHook, for tests, stands in for Devices.TransferPersonal: a
+	// move that fails, or one that commits and loses its answer.
+	transferHook func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
 }
 
 // Server serves the websocket endpoint.

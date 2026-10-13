@@ -362,9 +362,32 @@ func (s *session) handleDeviceStop(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such device")
 		return
 	}
-	if err := s.srv.cfg.Devices.SetPaused(ctx, tenant, ref.DeviceID, true); err != nil {
+	// A person's or a key's stop tells the number's readers (decision 0039),
+	// in the same transaction as the pause. No platform call runs inside it
+	// (the plan's D13): a later release asks for a fresh membership document
+	// before it, never inside.
+	who := s.actor()
+	by := store.PauseActor{User: who.userID}
+	if !who.person {
+		by = store.PauseActor{Key: who.keyID}
+	}
+	paused, err := s.srv.cfg.Devices.Pause(ctx, uuid.MustParse(tenant), resolved, by)
+	if errors.Is(err, store.ErrNotFound) {
+		s.replyError(f.ReqID, ErrCodeNotFound, "no such device")
+		return
+	}
+	if err != nil {
+		s.log.Error("pausing a device failed", "device", ref.DeviceID, "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not pause the device")
 		return
+	}
+	if paused.Changed {
+		actorID := who.userID.String()
+		if !who.person {
+			actorID = who.keyID.String()
+		}
+		s.log.Info("sync paused", "device", ref.DeviceID, "actor_kind", paused.ActorKind, "actor", actorID,
+			"readers_told", len(paused.Notices), "event", paused.Recorded)
 	}
 	s.srv.cancelDevicePairing(tenant, ref.DeviceID)
 	if s.srv.cfg.Registry != nil {
@@ -380,6 +403,7 @@ func (s *session) handleDeviceStop(ctx context.Context, f Frame) {
 	s.reply(TypeDeviceStatus, f.ReqID, DeviceStatus{
 		DeviceID: ref.DeviceID, Status: string(wa.StatusOffline), Reason: "paused by request",
 	})
+	s.srv.pushNotices(tenant, paused.Notices)
 }
 
 // recordReceipt funnels receipt decisions into the metrics counter. In passive

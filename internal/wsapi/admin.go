@@ -437,6 +437,12 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 		TenantID: tenantUUID, DeviceID: deviceUUID, UserID: user,
 		Epoch: epoch, SealedDSK: req.SealedDSK,
 	}, &author); err != nil {
+		if errors.Is(err, store.ErrNumberGone) {
+			// It moved to Personal while the grant waited for the
+			// workspace's lock (decision 0040's transfer).
+			s.replyError(f.ReqID, ErrCodeNotFound, "this number is no longer in this workspace")
+			return
+		}
 		s.log.Error("recording a grant failed", "device", dev.ID, "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not record the grant")
 		return

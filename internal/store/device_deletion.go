@@ -632,7 +632,7 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 			if jid != nil && reg != nil {
 				out.Session = &WASession{JID: *jid, RegistrationID: *reg}
 			}
-			itemName, hint := itemLabel(lbl, pushName, pn)
+			itemName, hint := itemLabel(device, lbl, pushName, pn)
 
 			// (h) Its readers, and the workspace's other owners, are told in
 			// Wappie's own pages. A pause notice gives way to the deletion's.
@@ -1032,11 +1032,11 @@ type OtherAccess struct {
 	Why   []string  `json:"why"`
 }
 
-// otherAccessTx is everyone, the actor left out, who holds Send or a
+// recoveryOthersTx is everyone, the actor left out, who holds Send or a
 // member's Manage on the number and is in neither list given: the readers
 // and the standing service accounts that read it. A connection's service
 // account holds copies of a person's access and is never listed.
-func otherAccessTx(ctx context.Context, tx pgx.Tx, tenant, device, actor uuid.UUID, readers []Person, services []ServiceAccountRef) ([]OtherAccess, error) {
+func recoveryOthersTx(ctx context.Context, tx pgx.Tx, tenant, device, actor uuid.UUID, readers []Person, services []ServiceAccountRef) ([]OtherAccess, error) {
 	rows, err := tx.Query(ctx, `SELECT u.id, m.role = 'service', u.name, u.email, p.can_send, p.can_manage AND m.role NOT IN ('owner', 'admin')
 		FROM device_permissions p
 		JOIN devices d ON d.id = p.device_id AND d.tenant_id = p.tenant_id
@@ -1120,7 +1120,7 @@ func (d *Devices) RecoverCheck(ctx context.Context, tenant, actor, device uuid.U
 			if out.ServiceAccounts, err = serviceReadersTx(ctx, tx, tenant, device); err != nil {
 				return err
 			}
-			if out.Others, err = otherAccessTx(ctx, tx, tenant, device, actor, out.Readers, out.ServiceAccounts); err != nil {
+			if out.Others, err = recoveryOthersTx(ctx, tx, tenant, device, actor, out.Readers, out.ServiceAccounts); err != nil {
 				return err
 			}
 			if out.AllNumberKeys, err = allNumberKeysTx(ctx, tx, tenant); err != nil {
@@ -1234,11 +1234,12 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 				gone = !present
 			}
 			var status wa.Status
-			var reason, pn string
+			var reason, pn, name, pushName string
 			err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
 				status = CASE WHEN $3 AND status <> 'banned' THEN 'logged_out' ELSE status END,
 				status_reason = CASE WHEN $3 THEN '`+reasonUnlinkedWhenGone+`' ELSE status_reason END
-				WHERE id = $1 AND deleted_at = $2 RETURNING status, status_reason, coalesce(pn, '')`, device, deletedAt, gone).Scan(&status, &reason, &pn)
+				WHERE id = $1 AND deleted_at = $2 RETURNING status, status_reason, coalesce(pn, ''), label, push_name`,
+				device, deletedAt, gone).Scan(&status, &reason, &pn, &name, &pushName)
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return ErrIdentityInUse
@@ -1285,9 +1286,11 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
 				return err
 			}
+			itemName, hint := itemLabel(device, name, pushName, pn)
 			return recordEvent(ctx, tx, tenant, itemEvent{
 				Type: eventRecovered, ItemID: device, DedupeKey: dedupeKey(eventRecovered, device, deletedAt),
-				OccurredAt: at, ActorKind: "person", ActorSub: sub, ActorUserID: &actor, ReaderSubs: subs, DeletedAt: &deletedAt,
+				OccurredAt: at, ActorKind: "person", ActorSub: sub, ActorUserID: &actor, ReaderSubs: subs,
+				Label: itemName, Hint: hint, DeletedAt: &deletedAt,
 			})
 		})
 	})

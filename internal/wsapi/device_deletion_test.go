@@ -132,6 +132,8 @@ type deletionOptions struct {
 	log      *slog.Logger
 	registry bool
 	hook     func(stage string)
+	// transfer stands in for the store's move to Personal.
+	transfer func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
 }
 
 func newDeletionConsole(t *testing.T) *deletionConsole {
@@ -179,6 +181,9 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	}
 	if opt.hook != nil {
 		wsapi.SetSubscribeHook(&cfg, opt.hook)
+	}
+	if opt.transfer != nil {
+		wsapi.SetTransferHook(&cfg, opt.transfer)
 	}
 	srv := httptest.NewServer(wsapi.NewServer(cfg))
 	t.Cleanup(srv.Close)

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
 	"whatserver2/internal/pg"
 )
 
@@ -15,12 +18,30 @@ type PersonalTransferPreview struct {
 	TargetWorkspaceName string `json:"target_workspace_name"`
 	Eligible            bool   `json:"eligible"`
 	Reason              string `json:"reason"`
-	ArchiveBytes        int64  `json:"archive_bytes"`
-	ObjectBytes         int64  `json:"object_bytes"`
+	// ReasonCode is others_have_access when someone else still has access
+	// to the number (decision 0040), with Others saying who and why.
+	ReasonCode   string           `json:"reason_code,omitempty"`
+	Others       []TransferAccess `json:"others,omitempty"`
+	ArchiveBytes int64            `json:"archive_bytes"`
+	ObjectBytes  int64            `json:"object_bytes"`
+	// For an owner: the actor's own keys restricted to the number, which
+	// stop reaching it; the keys for every number, which do too; and the
+	// actor's own assistants and AI authorizations connected to it, which
+	// the move ends. A transfer's reply says which it ended and narrowed.
+	Keys            []NarrowedKey    `json:"keys,omitempty"`
+	AllNumberKeys   []AllNumberKey   `json:"all_number_keys,omitempty"`
+	AssistantsEnded []EndedAssistant `json:"assistants_ended,omitempty"`
+	KeysNarrowed    []NarrowedKey    `json:"keys_narrowed,omitempty"`
 }
 
 // TransferDenied contains a user-readable explanation, never database details.
-type TransferDenied struct{ Reason string }
+// Code is set for a refusal a console words itself (others_have_access, with
+// Others).
+type TransferDenied struct {
+	Reason string
+	Code   string
+	Others []TransferAccess
+}
 
 func (e *TransferDenied) Error() string { return e.Reason }
 
@@ -62,6 +83,27 @@ func transferPreviewTx(ctx context.Context, tx pgx.Tx, source, actor, device uui
 		out.Reason = "Você precisa ter acesso às chaves de todo o histórico deste número."
 		return out, nil
 	}
+	// Nobody else may have access to it (decision 0040), checked here, under
+	// the source's row lock, and again by the transfer under the locks it
+	// holds to its commit: every write that gives access takes that lock
+	// first, and one that waits for it finds the number gone.
+	if out.Others, err = otherAccessTx(ctx, tx, source, device, actor); err != nil {
+		return out, err
+	}
+	if out.Keys, err = ownRestrictedKeysTx(ctx, tx, source, device, actor); err != nil {
+		return out, err
+	}
+	if out.AllNumberKeys, err = allNumberKeysTx(ctx, tx, source); err != nil {
+		return out, err
+	}
+	if out.AssistantsEnded, err = ownConnectionsTx(ctx, tx, source, device, actor); err != nil {
+		return out, err
+	}
+	if len(out.Others) > 0 {
+		out.Reason, out.ReasonCode = othersHaveAccess, ReasonOthersHaveAccess
+		return out, nil
+	}
+	out.Others = nil
 	var target uuid.UUID
 	if err = tx.QueryRow(ctx, `SELECT id,name,status FROM tenants WHERE kind='personal' AND personal_owner_id=$1`, actor).Scan(&target, &out.TargetWorkspaceName, &status); err != nil {
 		return out, err
@@ -149,6 +191,13 @@ func (d *Devices) PreviewPersonalTransfer(ctx context.Context, source, actor, de
 // clients. Original envelopes and object keys remain untouched. Objects acquire
 // a destination ownership claim before the source claim may be removed.
 // The device stays paused so resuming capture is an explicit destination action.
+//
+// It moves only a number nobody else has access to (decision 0040): the
+// preview's refusal is decided again here, under the locks held to the
+// commit, and returns a TransferDenied with others_have_access and the list.
+// The actor's own assistants and AI authorizations connected to the number
+// end (access_lost), the actor's own keys restricted to it lose it, and the
+// Team records moved_out, with the readers it had: at most the actor.
 func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, target uuid.UUID) (PersonalTransferPreview, error) {
 	var out PersonalTransferPreview
 	err := pg.InTenantTx(ctx, d.pool, source.String(), func(tx pgx.Tx) error {
@@ -158,7 +207,7 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			return err
 		}
 		if own != target {
-			return &TransferDenied{"O destino precisa ser o seu Personal."}
+			return &TransferDenied{Reason: "O destino precisa ser o seu Personal."}
 		}
 		if _, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id IN ($1,$2) ORDER BY id FOR UPDATE`, source, target); err != nil {
 			return err
@@ -169,22 +218,52 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			return err
 		}
 		if !out.Eligible {
-			return &TransferDenied{out.Reason}
+			return &TransferDenied{Reason: out.Reason, Code: out.ReasonCode, Others: out.Others}
 		}
 		var paused bool
 		if err = tx.QueryRow(ctx, `SELECT paused FROM devices WHERE id=$1 FOR UPDATE`, device).Scan(&paused); err != nil {
 			return err
 		}
 		if !paused {
-			return &TransferDenied{"Pause o número antes de movê-lo."}
+			return &TransferDenied{Reason: "Pause o número antes de movê-lo."}
 		}
 		acquired, err := pg.TryLockTx(ctx, tx, "device:"+device.String())
 		if err != nil {
 			return err
 		}
 		if !acquired {
-			return &TransferDenied{"A conexão ainda está encerrando. Aguarde e tente novamente."}
+			return &TransferDenied{Reason: "A conexão ainda está encerrando. Aguarde e tente novamente."}
 		}
+		// What the moved_out event keeps, read while the number is still the
+		// Team's: its readers (after the refusal, at most the actor) and its
+		// label. Once the row moves, the Team's readers find nobody.
+		readers, err := readersTx(ctx, tx, source, device)
+		if err != nil {
+			return err
+		}
+		var readerSubs []uuid.UUID
+		for _, r := range readers {
+			if r.sub != nil {
+				readerSubs = append(readerSubs, *r.sub)
+			}
+		}
+		var name, pushName, pn string
+		if err = tx.QueryRow(ctx, `SELECT label, push_name, coalesce(pn, '') FROM devices WHERE id=$1`, device).Scan(&name, &pushName, &pn); err != nil {
+			return err
+		}
+		// The actor's own assistants and AI authorizations connected to the
+		// number end, as a deletion ends them: a renewal must name exactly
+		// the old key's numbers, so a narrowed one could never renew.
+		ended, err := ownConnectionsTx(ctx, tx, source, device, actor)
+		if err != nil {
+			return err
+		}
+		for _, a := range ended {
+			if _, err := endMCPConnectionTx(ctx, tx, source, a.ID.String(), statusRevoked, ReasonAccessLost); err != nil {
+				return err
+			}
+		}
+		out.AssistantsEnded = ended
 		// All database work is atomic; a closed browser or failed check rolls it back.
 		if _, err = tx.Exec(ctx, `SELECT set_config('app.device_move_id',$1,true),set_config('app.device_move_source',$2,true),set_config('app.device_move_target',$3,true),set_config('app.storage_reconcile','true',true),set_config('statement_timeout','120s',true)`, device.String(), source.String(), target.String()); err != nil {
 			return err
@@ -213,6 +292,10 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			return err
 		}
 		// Remove Team member and machine permissions. No grants are manufactured.
+		// The actor's own keys restricted to the number lose it, revoking none.
+		if out.KeysNarrowed, err = ownRestrictedKeysTx(ctx, tx, source, device, actor); err != nil {
+			return err
+		}
 		if _, err = tx.Exec(ctx, `DELETE FROM api_key_devices WHERE device_id=$1`, device); err != nil {
 			return err
 		}
@@ -225,8 +308,9 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 		if _, err = tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id=$1 AND user_id<>$2`, device, actor); err != nil {
 			return err
 		}
-		// The Team's notices about the number stay behind with nothing to
-		// point at: device_notices has no foreign key (0050).
+		// The Team's notices about the number would stay behind with nothing
+		// to point at: device_notices has no foreign key (0050). Nobody else
+		// reads it, so only the actor's own can be there.
 		if _, err = tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id=$1`, device); err != nil {
 			return err
 		}
@@ -290,13 +374,29 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			return err
 		}
 		if !fits {
-			return &TransferDenied{"Seu Personal não tem espaço suficiente para este histórico."}
+			return &TransferDenied{Reason: "Seu Personal não tem espaço suficiente para este histórico."}
 		}
 		if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id',$1,true)`, source.String()); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO device_transfers(device_id,source_workspace_id,target_workspace_id,actor_id) VALUES($1,$2,$3,$4)`, device, source, target, actor)
-		return err
+		var completed time.Time
+		if err = tx.QueryRow(ctx, `INSERT INTO device_transfers(device_id,source_workspace_id,target_workspace_id,actor_id) VALUES($1,$2,$3,$4)
+   RETURNING completed_at`, device, source, target, actor).Scan(&completed); err != nil {
+			return err
+		}
+		// moved_out, in the Team: the team's other owners are told of it
+		// (contract 4.2), and the ledger keeps it, so a restore never puts the
+		// number back in the Team.
+		sub, err := actorSubTx(ctx, tx, actor)
+		if err != nil {
+			return err
+		}
+		itemName, hint := itemLabel(device, name, pushName, pn)
+		return recordEvent(ctx, tx, source, itemEvent{
+			Type: eventMovedOut, ItemID: device, DedupeKey: dedupeKey(eventMovedOut, device, completed), OccurredAt: completed,
+			ActorKind: actorPerson, ActorSub: sub, ActorUserID: &actor, ReaderSubs: readerSubs, Label: itemName, Hint: hint,
+			ToTenantID: &target,
+		})
 	})
 	return out, err
 }

@@ -37,6 +37,9 @@ export const TypeDevicesDeleted = 'devices.deleted'
 export const TypeDeviceRecoverCheck = 'device.recover.check'
 export const TypeDeviceRecover = 'device.recover'
 export const TypeDeviceNoticeSeen = 'device.notice.seen'
+/** Moving a Team's number to its owner's Personal; the preview's reply has the same type. */
+export const TypeDeviceTransferPreview = 'device.transfer.preview'
+export const TypeDeviceTransfer = 'device.transfer'
 export const TypeDeviceStop = 'device.stop'
 export const TypeDeviceStart = 'device.start'
 export const TypeDeviceRename = 'device.rename'
@@ -99,6 +102,7 @@ export const TypeDeletedNumbers = 'devices.deleted.list'
 export const TypeDeviceRecoverChecked = 'device.recover.checked'
 export const TypeDeviceRecovered = 'device.recovered'
 export const TypeDeviceNotices = 'device.notices'
+export const TypeDeviceTransferred = 'device.transferred'
 /** Pushes: a number gone from the workspace, a new notice, and a subscription that ended. */
 export const TypeDeviceRemoved = 'device.removed'
 export const TypeDeviceNotice = 'device.notice'
@@ -200,6 +204,8 @@ export interface DeviceNotices {
 
 export interface DeviceRemoved {
   device_id: string
+  /** 'moved' for a number moved to its owner's Personal; absent for a deletion. */
+  reason?: 'moved'
 }
 
 /** Sent with the subscribe's request id; the client may subscribe again. */
@@ -421,6 +427,63 @@ export interface DeviceRecoverChecked extends RecoveryStatus {
 export interface DeviceRecovered extends RecoveryStatus {
   device: DeviceInfo
   already?: boolean
+}
+
+/**
+ * Someone, or something, that still has access to a number a move to
+ * Personal would take from them (decision 0040): a person, a standing service
+ * account, another person's assistant or AI authorization, or another
+ * person's API key restricted to the number. Their access is the creator's
+ * for the last three.
+ */
+export interface TransferAccess {
+  kind: 'person' | 'service' | 'assistant' | 'ai' | 'key'
+  /** key is a grant at the current epoch; old_key one only at an older, unretired epoch. */
+  why: Array<'read' | 'send' | 'manage' | 'key' | 'old_key'>
+  /** People and service accounts: a disabled membership can only be removed. */
+  status?: 'active' | 'disabled'
+  /** The person, the service account, or the creator; absent when the creator is gone. */
+  user_id?: string
+  name: string
+  email?: string
+  connection_id?: string
+  client_name?: string
+  /** A key's prefix. */
+  key_id?: string
+  key_name?: string
+  created_by_name?: string
+}
+
+export type TransferReasonCode = 'others_have_access'
+
+/** device.transfer.preview's reply, and device.transferred's. */
+export interface DeviceTransferPreview {
+  device_id: string
+  target_workspace_id: string
+  target_workspace_name: string
+  eligible: boolean
+  reason: string
+  reason_code?: TransferReasonCode
+  /** With others_have_access: who still has access, and why. */
+  others?: TransferAccess[]
+  archive_bytes: number
+  object_bytes: number
+  /** The actor's own keys restricted to the number, which stop reaching it. */
+  keys?: NarrowedKey[]
+  /** The keys for every number, which stop reaching it too. */
+  all_number_keys?: AllNumberKey[]
+  /** The actor's own assistants and AI authorizations connected to it: the move ends them. */
+  assistants_ended?: EndedAssistant[]
+  /** device.transferred only: the keys that lost the number, none revoked. */
+  keys_narrowed?: NarrowedKey[]
+}
+
+export type DeviceTransferred = DeviceTransferPreview
+
+export interface DeviceTransferRequest {
+  device_id: string
+  confirm: string
+  target_workspace_id: string
 }
 
 export interface APIKeyInfo {
@@ -1122,6 +1185,8 @@ export interface WireError {
   message: string
   /** With device_has_readers: who reads the number now. */
   readers?: PersonRef[]
+  /** With others_have_access: who still has access to the number. */
+  others?: TransferAccess[]
 }
 
 /** Stable error codes, so a client can branch without parsing prose. */
@@ -1140,6 +1205,7 @@ export const ErrIdentityInUse = 'identity_in_use'
 export const ErrRecoveryClosed = 'recovery_closed'
 export const ErrDeviceBusy = 'device_busy'
 export const ErrLastReaderOfDeleted = 'last_reader_of_deleted'
+export const ErrOthersHaveAccess = 'others_have_access'
 
 /**
  * The message kinds the archive stores.

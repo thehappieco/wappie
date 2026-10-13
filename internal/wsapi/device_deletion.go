@@ -547,3 +547,31 @@ func wireNotices(notices []store.DeviceNotice) []DeviceNotice {
 }
 
 var _ Unlinker = (*wa.Registry)(nil)
+
+// pushNotices sends each notice a pause raised to its person's sessions in
+// this process, in the workspace it belongs to. A person not connected here
+// gets it with their next devices.list.
+func (s *Server) pushNotices(tenant string, raised []store.RaisedNotice) {
+	if len(raised) == 0 {
+		return
+	}
+	s.mu.RLock()
+	var sessions []*session
+	for sess := range s.sessions {
+		if sess.tenantID() == tenant {
+			sessions = append(sessions, sess)
+		}
+	}
+	s.mu.RUnlock()
+	for _, sess := range sessions {
+		who := sess.actor()
+		if !who.person {
+			continue
+		}
+		for _, r := range raised {
+			if r.UserID == who.userID {
+				sess.reply(TypeDeviceNotice, "", wireNotices([]store.DeviceNotice{r.Notice})[0])
+			}
+		}
+	}
+}

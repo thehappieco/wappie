@@ -525,10 +525,15 @@ type DeviceNotices struct {
 }
 
 // DeviceRemoved tells a session that a number it could see is gone from
-// this workspace.
+// this workspace: deleted, or with Reason moved, moved to its owner's
+// Personal.
 type DeviceRemoved struct {
 	DeviceID string `json:"device_id"`
+	Reason   string `json:"reason,omitempty"`
 }
+
+// DeviceRemovedMoved is a number that moved to its owner's Personal.
+const DeviceRemovedMoved = "moved"
 
 // SubscriptionEnded tells a client its subscription ended, with the
 // subscribe's request id: device_removed when its last number was deleted.
@@ -1801,13 +1806,19 @@ const (
 	// ErrCodeLastReaderOfDeleted refuses to remove or disable the last key
 	// holder of a deleted number that is not purged yet.
 	ErrCodeLastReaderOfDeleted = "last_reader_of_deleted"
+	// ErrCodeOthersHaveAccess refuses moving a Team's number to Personal
+	// while anyone else has access to it (decision 0040); the error carries
+	// who, and why.
+	ErrCodeOthersHaveAccess = "others_have_access"
 )
 
-// Error is the failure payload. Readers comes with device_has_readers.
+// Error is the failure payload. Readers comes with device_has_readers, and
+// Others with others_have_access.
 type Error struct {
-	Code    string         `json:"code"`
-	Message string         `json:"message"`
-	Readers []store.Person `json:"readers,omitempty"`
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Readers []store.Person         `json:"readers,omitempty"`
+	Others  []store.TransferAccess `json:"others,omitempty"`
 }
 
 // encode builds a frame with a JSON payload.
