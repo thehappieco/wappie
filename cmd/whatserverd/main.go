@@ -872,12 +872,10 @@ func (a *app) routes() http.Handler {
 		Log:      a.log,
 	})
 
-	// Last, and only as a catch-all. Go's mux prefers the more specific
-	// patterns above, so the client cannot shadow an endpoint.
-	if a.web != nil {
-		mux.Handle("/", a.web)
-	}
-	return a.cfg.BrowserOrigins.Wrap(mux)
+	// The web client, and the JSON 404 of the API's prefixes, take only what
+	// no route above claims (unrouted), so the client cannot shadow an
+	// endpoint nor a removed one answer with the console document.
+	return a.cfg.BrowserOrigins.Wrap(unrouted(mux, a.web))
 }
 
 // listTenants prints the tenants in this database.

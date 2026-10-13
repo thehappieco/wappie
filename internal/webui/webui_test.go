@@ -533,22 +533,86 @@ func TestAIModelListsAreAllowedOnlyWhileAIIsOn(t *testing.T) {
 	}
 }
 
-// OpenID and domain-verification probes must not get the console document:
-// a 200 with HTML tells a client the metadata exists.
-func TestWellKnownPathsAreNotPages(t *testing.T) {
+// Nothing under the API's prefixes is a page. An unknown or removed API
+// route, or an OpenID or domain-verification probe, that reached the
+// fallback with the console document would tell its client that it exists,
+// with HTML where it expected JSON: on every host, for every method, it
+// answers the API's JSON 404 instead, never redirected.
+func TestAPIPathsAreNotPages(t *testing.T) {
 	h, err := webui.New(build(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{"/.well-known/openid-configuration", "/.well-known/openai-apps-challenge", "/.well-known/anything/else"} {
-		resp := get(t, h, target)
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s: status %d, want 404", target, resp.StatusCode)
+	for _, host := range []string{"api.wappie.thehappie.co", "app.wappie.thehappie.co", "console.wappie.thehappie.co", "localhost"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodDelete} {
+			for _, route := range []string{
+				"/v1", "/v1/", "/v1/nope", "/v1/mcp/nope", "/v1/mcp/enclave/cimd", "/v1/mcp/enclave/nope?x=1",
+				"/v1/index.html", "/.well-known", "/.well-known/openid-configuration",
+				"/.well-known/openai-apps-challenge", "/.well-known/anything/else",
+			} {
+				t.Run(host+" "+method+" "+route, func(t *testing.T) {
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, httptest.NewRequest(method, "https://"+host+route, nil))
+					if rec.Code != http.StatusNotFound {
+						t.Fatalf("status %d, want 404", rec.Code)
+					}
+					for name, want := range map[string]string{
+						"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store",
+						"X-Content-Type-Options": "nosniff", "Location": "",
+					} {
+						if got := rec.Header().Get(name); got != want {
+							t.Errorf("%s = %q, want %q", name, got, want)
+						}
+					}
+					if got, want := rec.Body.String(), `{"code":"not_found","message":"no such route"}`+"\n"; got != want {
+						t.Errorf("body = %q, want %q", got, want)
+					}
+				})
+			}
 		}
-		if strings.Contains(string(body), "<html") || strings.Contains(string(body), "<!doctype") {
-			t.Errorf("%s: answered with the console document", target)
+	}
+	for _, route := range []string{"/v1x", "/v10/nope", "/well-known/x", "/console/v1/nope"} {
+		resp := get(t, h, "https://app.wappie.thehappie.co"+route)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+			t.Errorf("%s is not under an API prefix but answered %d %q", route, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+	}
+}
+
+// The console's own addresses are the document: the archive at /, the
+// console at /console and its settings screens at /console/{screen}
+// (commercial web/src/ui/settingsScreens.ts), the end of a sign-in at
+// /auth/callback, each with whatever query it carries.
+func TestTheConsoleRoutesGetThePage(t *testing.T) {
+	h, err := webui.New(build(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"app.wappie.thehappie.co", "api.wappie.thehappie.co", "localhost"} {
+		for _, route := range []string{
+			"/", "/?device=22222222-2222-4222-8222-222222222222", "/console", "/console/",
+			"/console?mcp_connect=r_1", "/console/numbers", "/console/integrations", "/console/mcp",
+			"/console/installations", "/auth/callback?code=c&state=s", "/conversa/qualquer",
+		} {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				t.Run(host+" "+method+" "+route, func(t *testing.T) {
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, httptest.NewRequest(method, "https://"+host+route, nil))
+					if rec.Code != http.StatusOK {
+						t.Fatalf("status %d, want 200", rec.Code)
+					}
+					if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+						t.Errorf("Content-Type = %q", got)
+					}
+					if rec.Header().Get("Content-Security-Policy") == "" || rec.Header().Get("Cache-Control") != "no-cache" {
+						t.Errorf("served without the document's headers: %v", rec.Header())
+					}
+					if method == http.MethodGet && !strings.Contains(rec.Body.String(), "<title>whatserver2</title>") {
+						t.Errorf("served another body: %q", rec.Body.String())
+					}
+				})
+			}
 		}
 	}
 }

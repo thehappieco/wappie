@@ -120,21 +120,21 @@ func New(dir string, log *slog.Logger) (*Handler, error) {
 func (h *Handler) Dir() string { return h.dir }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	clean := path.Clean("/" + r.URL.Path)
+	// Nothing under the API's prefixes is a page, whatever the method.
+	// Answering one with the console document tells a client probing for an
+	// endpoint, or for OpenID or verification metadata, that it exists, with
+	// HTML where it expected JSON or a token.
+	if apiPath(clean) {
+		NoSuchRoute(w)
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	clean := path.Clean("/" + r.URL.Path)
-	// Nothing under /.well-known is a page. Answering one with the console
-	// document tells a client probing for OpenID or verification metadata
-	// that it exists, with HTML where it expected JSON or a token.
-	if strings.HasPrefix(clean, "/.well-known/") {
-		h.headers(w, clean, r.Host, "")
-		http.NotFound(w, r)
-		return
-	}
 	if clean == sessionBridgePath {
 		// This exception must never turn an SPA fallback or another host's
 		// application page into a frameable document.
@@ -170,15 +170,45 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// API routes belong to the API mux, even if an unknown path reaches this
-	// fallback. Never redirect requests for API endpoints or static assets.
-	if clean != "/v1" && !strings.HasPrefix(clean, "/v1/") &&
-		clean != "/assets" && !strings.HasPrefix(clean, "/assets/") && h.redirectConsoleDocument(w, r) {
+	// Never redirect requests for static assets.
+	if clean != "/assets" && !strings.HasPrefix(clean, "/assets/") && h.redirectConsoleDocument(w, r) {
 		return
 	}
 
 	h.headers(w, "/", r.Host, r.URL.Query().Get("server_origin"))
 	http.ServeFile(w, r, path.Join(h.dir, "index.html"))
+}
+
+// apiPrefixes are where the API's routes live: /v1/ for its endpoints and
+// /.well-known/ for the metadata a client probes for. No page lives under
+// either, nor at either without its slash.
+var apiPrefixes = []string{"/v1/", "/.well-known/"}
+
+// apiPath says nothing at the clean path is a page: it is under one of the
+// API's prefixes, or one of them without its slash.
+func apiPath(clean string) bool {
+	for _, prefix := range apiPrefixes {
+		if clean == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(clean, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// noSuchRoute is the answer of every route this server does not have, the
+// one the API's own handlers give for a route that is not there for the
+// caller (mcpauth, aiapi): what a client of a removed route reads.
+const noSuchRoute = `{"code":"not_found","message":"no such route"}` + "\n"
+
+// NoSuchRoute answers a path no route serves: a 404 in JSON, never cached.
+func NoSuchRoute(w http.ResponseWriter) {
+	header := w.Header()
+	header.Set("Content-Type", "application/json; charset=utf-8")
+	header.Set("Cache-Control", "no-store")
+	header.Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusNotFound)
+	//nolint:errcheck // the client hung up; there is nothing left to say to it
+	_, _ = io.WriteString(w, noSuchRoute)
 }
 
 // The console remains a public entry point, but its document shares the app's

@@ -179,9 +179,13 @@ Authenticated handlers return `{code, message}` with these statuses:
 | 404 | `not_found` | The item does not exist in this credential's workspace. Cross-workspace items are indistinguishable from missing items. |
 | 500 | `internal` | Archive or authorization infrastructure could not complete the read. No partial data response is emitted. |
 
-Unknown routes and unsupported methods use the HTTP router's 404/405 responses.
-Consumers should handle these before parsing a REST JSON envelope, especially
-when connecting to an older installation without `archive.rest.v1`.
+A route the server does not have, anywhere under `/v1/` or `/.well-known/`,
+answers `404` with `{"code":"not_found","message":"no such route"}`, never the
+web client's page. A route asked with a method it does not take answers the
+HTTP router's `405`, with an `Allow` header and a plain-text body. Consumers
+should check the status and `Content-Type` before parsing a REST JSON
+envelope: the `405` is not one, and an older installation may answer an
+unknown route with the web client's HTML page and `200`.
 
 ## Maintaining the contract
 
