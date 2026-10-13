@@ -2,14 +2,18 @@ package store_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"whatserver2/internal/domain"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
@@ -148,5 +152,37 @@ func TestOrphanPassUsesIndexes(t *testing.T) {
 		return tx.QueryRow(ctx, `SELECT count(*) FROM storage_objects WHERE object_key = ANY($1)`, []string{stored, reserved, orphans[0]}).Scan(&left)
 	}); err != nil || left != 2 {
 		t.Fatalf("objects left: %d %v", left, err)
+	}
+}
+
+// Only a real SHA-256 has a content path. The sender controls the hash, and
+// hex doubles it in the stored key, so a long one would not fit
+// media_content_key's entry and the whole message would fail to archive;
+// no download is stored under any other hash (media.Fetcher refuses it).
+func TestContentKeyOnlyForSHA256(t *testing.T) {
+	a := newArchive(t)
+	ctx := context.Background()
+	sum := sha256.Sum256([]byte("photo"))
+	for name, c := range map[string]struct {
+		hash []byte
+		want string
+	}{
+		"a SHA-256":         {sum[:], a.tenant.String() + "/" + hex.EncodeToString(sum[:1]) + "/" + hex.EncodeToString(sum[:])},
+		"a 1,500-byte hash": {randomBytes(t, 1500), ""}, // incompressible, as a hash is
+		"a 2-byte hash":     {[]byte{0x12, 0x34}, ""},
+	} {
+		uid := uuid.New()
+		if _, err := a.messages.Insert(ctx, store.InsertMessage{UID: uid, TenantID: a.tenant, DeviceID: a.device, WAID: name,
+			Kind: domain.KindMessage, Type: domain.TypeImage, Source: domain.SourceLive, TS: time.Now(), ChatKey: "chat",
+			BodySealed: []byte{1}, Media: &store.InsertMedia{MediaType: "image", FileEncSHA256: c.hash}}); err != nil {
+			t.Fatalf("%s: the message was not archived: %v", name, err)
+		}
+		var got string
+		inTenantTx(ctx, t, a.pool, a.tenant, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT coalesce(content_key,'') FROM media WHERE message_uid=$1`, uid).Scan(&got)
+		})
+		if got != c.want {
+			t.Errorf("%s: content key %q, want %q", name, got, c.want)
+		}
 	}
 }

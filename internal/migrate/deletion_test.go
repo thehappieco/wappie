@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -45,7 +46,9 @@ func sqlState(err error) string {
 // disabling did not) and would reach a number recovered later. 0050 revokes
 // them on a database from before it; a key with no creator, or whose
 // creator is still an active member, is left alone, and so is a disabled
-// person's key in a workspace where they are still active.
+// person's key in a workspace where they are still active. One that had
+// expired is revoked as of its expiry, so only the keys that still worked
+// carry the migration's own time, and the production record counts them.
 func TestMigration0050RevokesKeysOfFormerMembers(t *testing.T) {
 	ctx := context.Background()
 	pool := pgtest.Empty(t)
@@ -104,6 +107,11 @@ func TestMigration0050RevokesKeysOfFormerMembers(t *testing.T) {
 		"a disabled member's, in their space": {key(personal, "person01", &disabled, false), false},
 	}
 	already := key(team, "revoke01", &gone, true)
+	var expired uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO api_keys(tenant_id,prefix,key_hash,name,created_by,expires_at)
+		VALUES ($1,'expire01','hash','expire01',$2,now() - interval '2 days') RETURNING id`, team, gone).Scan(&expired); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := Run(ctx, pool, lg); err != nil {
 		t.Fatal(err)
@@ -120,6 +128,17 @@ func TestMigration0050RevokesKeysOfFormerMembers(t *testing.T) {
 	var kept bool
 	if err := pool.QueryRow(ctx, `SELECT revoked_at < now() - interval '1 hour' FROM api_keys WHERE id=$1`, already).Scan(&kept); err != nil || !kept {
 		t.Fatalf("a key revoked earlier was revoked again: %v %v", kept, err)
+	}
+	var atExpiry bool
+	if err := pool.QueryRow(ctx, `SELECT revoked_at = expires_at FROM api_keys WHERE id=$1`, expired).Scan(&atExpiry); err != nil || !atExpiry {
+		t.Fatalf("an expired former member's key: revoked at its expiry %v %v", atExpiry, err)
+	}
+	// The count the header gives for the production record: the two keys
+	// that still worked.
+	var closed int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM api_keys
+		WHERE revoked_at = (SELECT applied_at FROM schema_migrations WHERE version = 50)`).Scan(&closed); err != nil || closed != 2 {
+		t.Fatalf("the keys 0050 closed while they worked: %d %v", closed, err)
 	}
 	// workspace_memberships forces its policy again after the migration.
 	var forced bool
@@ -186,20 +205,21 @@ func TestMigration0050Checks(t *testing.T) {
 		}
 	}
 
-	event := `INSERT INTO item_events(event_id,tenant_id,type,item_id,actor_user_id,dedupe_key,occurred_at,actor_kind,deleted_at,purge_after,to_tenant_id,ledgered_at,replayed_at)
-		VALUES (uuidv7(),$1,$4,$2,$3,$5,clock_timestamp(),$6,$7,$8,$9,$10,$11)`
+	event := `INSERT INTO item_events(event_id,tenant_id,type,item_id,actor_user_id,dedupe_key,occurred_at,actor_kind,deleted_at,purge_after,to_tenant_id,ledgered_at,replayed_at,label,hint)
+		VALUES (uuidv7(),$1,$4,$2,$3,$5,clock_timestamp(),$6,$7,$8,$9,$10,$11,$12,$13)`
 	type e struct {
 		typ, dedupe, actor               string
 		deleted, purge, to, ledger, back any
+		label, hint                      any
 	}
 	addEvent := func(v e) error {
 		if v.to == "tenant" {
 			v.to = tenant
 		}
-		return exec(event, v.typ, v.dedupe, v.actor, v.deleted, v.purge, v.to, v.ledger, v.back)
+		return exec(event, v.typ, v.dedupe, v.actor, v.deleted, v.purge, v.to, v.ledger, v.back, v.label, v.hint)
 	}
 	for _, ok := range []e{
-		{typ: "deleted", dedupe: "deleted:1", actor: "person", deleted: "now", purge: "now"},
+		{typ: "deleted", dedupe: "deleted:1", actor: "person", deleted: "now", purge: "now", label: "Vendas", hint: "…5678"},
 		{typ: "sync_paused", dedupe: "sync_paused:1", actor: "key", ledger: "now"},
 		{typ: "recovered", dedupe: "recovered:1", actor: "person", deleted: "now"},
 		{typ: "purged", dedupe: "purged:1", actor: "app", deleted: "now", purge: "now", ledger: "now", back: "now"},
@@ -223,6 +243,11 @@ func TestMigration0050Checks(t *testing.T) {
 		"a recovery of no deletion":        {e{typ: "recovered", dedupe: "x8", actor: "person"}, "23514"},
 		"a replay never ledgered":          {e{typ: "deleted", dedupe: "x9", actor: "person", deleted: "now", purge: "now", back: "now"}, "23514"},
 		"the same event twice in a tenant": {e{typ: "deleted", dedupe: "deleted:1", actor: "person", deleted: "now", purge: "now"}, "23505"},
+		// The phone number never appears in the log: a label, and a hint of
+		// "…" and four digits only.
+		"an empty label":               {e{typ: "deleted", dedupe: "x10", actor: "person", deleted: "now", purge: "now", label: ""}, "23514"},
+		"a hint with the number in it": {e{typ: "deleted", dedupe: "x11", actor: "person", deleted: "now", purge: "now", hint: "5511912345678"}, "23514"},
+		"a hint with no ellipsis":      {e{typ: "deleted", dedupe: "x12", actor: "person", deleted: "now", purge: "now", hint: "5678"}, "23514"},
 	} {
 		if err := addEvent(c.v); sqlState(err) != c.code {
 			t.Errorf("%s: %v, want %s", name, err, c.code)
@@ -308,20 +333,31 @@ func TestMigration0050DownStep(t *testing.T) {
 		ALTER TABLE devices ENABLE ROW LEVEL SECURITY; ALTER TABLE devices FORCE ROW LEVEL SECURITY`); err != nil {
 		t.Fatal(err)
 	}
+	ledger := func() (rows int, has50, forced bool) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM schema_migrations), EXISTS(SELECT 1 FROM schema_migrations WHERE version = 50),
+			(SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname='devices' AND relnamespace=current_schema()::regnamespace)`).Scan(&rows, &has50, &forced); err != nil {
+			t.Fatal(err)
+		}
+		return rows, has50, forced
+	}
 	refused := func(want string) {
 		t.Helper()
+		before, _, _ := ledger()
 		if _, err := pool.Exec(ctx, downStepSQL(t, 50)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("the down-step with %s: %v", want, err)
 		}
-		var version int
-		var forced bool
-		if err := pool.QueryRow(ctx, `SELECT (SELECT max(version) FROM schema_migrations),
-			(SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname='devices' AND relnamespace=current_schema()::regnamespace)`).Scan(&version, &forced); err != nil {
-			t.Fatal(err)
+		if rows, has50, forced := ledger(); rows != before || !has50 || !forced {
+			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 50 %v, devices forced %v", rows, before, has50, forced)
 		}
-		if version != 50 || !forced {
-			t.Fatalf("a refused down-step changed something: version %d, devices forced %v", version, forced)
-		}
+	}
+	// A later migration comes down first, before any other guard is asked.
+	if _, err := pool.Exec(ctx, `INSERT INTO schema_migrations(version,name,checksum,duration_ms) VALUES (51,'later','x',0)`); err != nil {
+		t.Fatal(err)
+	}
+	refused("a migration after 0050 is applied")
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 51`); err != nil {
+		t.Fatal(err)
 	}
 	refused("excluded numbers exist")
 	if _, err := pool.Exec(ctx, `ALTER TABLE devices DISABLE ROW LEVEL SECURITY;
@@ -361,5 +397,84 @@ func TestMigration0050DownStep(t *testing.T) {
 	}
 	if err := Run(ctx, pool, lg); err != nil {
 		t.Fatalf("0050 again: %v", err)
+	}
+}
+
+// wappie-billing keeps running while 0050 is applied, and may while its
+// down-step runs. Its transactions lock the workspace row and the membership
+// (FOR UPDATE OF t,m) and then count devices. 0050 and its down-step lock
+// those tables before anything else, so a billing request that holds them
+// when the migration starts counts its devices and finishes, and the
+// migration goes on after it. Had either taken devices first, the two would
+// deadlock, and Postgres could abort the migration.
+func TestMigration0050WaitsForBilling(t *testing.T) {
+	ctx := context.Background()
+	lg := quietLogger(t)
+	ms, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var through49 []Migration
+	for _, m := range ms {
+		if m.Version <= 49 {
+			through49 = append(through49, m)
+		}
+	}
+	pool := pgtest.Empty(t)
+	if err := run(ctx, pool, lg, through49); err != nil {
+		t.Fatal(err)
+	}
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants(name) VALUES ('team') RETURNING id`).Scan(&tenant); err != nil {
+		t.Fatal(err)
+	}
+	owner := person(t, pool, tenant, "owner@example.test", "owner")
+	during := func(name string, migration func() error) {
+		t.Helper()
+		billing, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer billing.Rollback(ctx)
+		if _, err := billing.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant.String()); err != nil {
+			t.Fatal(err)
+		}
+		// The first statement of commercial's owner-only transactions.
+		if _, err := billing.Exec(ctx, `SELECT m.role FROM tenants t JOIN workspace_memberships m ON m.tenant_id=t.id
+			WHERE t.id=$1 AND m.user_id=$2 AND t.status='active' FOR UPDATE OF t,m`, tenant, owner); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- migration() }()
+		for blocked := false; !blocked; {
+			if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))`,
+				billing.Conn().PgConn().PID()).Scan(&blocked); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("%s never waited for the billing request: %v", name, err)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		_, countErr := billing.Exec(ctx, `SELECT count(*) FROM devices WHERE tenant_id=$1`, tenant)
+		if countErr == nil {
+			countErr = billing.Commit(ctx)
+		} else {
+			// The request failed; the migration still has to finish.
+			_ = billing.Rollback(ctx)
+		}
+		if err := <-done; countErr != nil || err != nil {
+			t.Fatalf("%s beside a billing request: the request %v, the migration %v", name, countErr, err)
+		}
+	}
+	during("0050", func() error { return Run(ctx, pool, lg) })
+	during("0050's down-step", func() error {
+		_, err := pool.Exec(ctx, downStepSQL(t, 50))
+		return err
+	})
+	var version int
+	if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 49 {
+		t.Fatalf("after both: version %d %v", version, err)
 	}
 }

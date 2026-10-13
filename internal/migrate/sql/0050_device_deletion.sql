@@ -52,7 +52,12 @@
 --                       change by a transfer recomputes it. storage_record_v1
 --                       (0034) leaves it out of a media row's canonical
 --                       bytes, as it leaves out object_key, so rule 1's
---                       measure is unchanged.
+--                       measure is unchanged. Only a real SHA-256 (32 bytes)
+--                       has one: a download whose hash is anything else is
+--                       refused, so no object sits at any other content
+--                       path, and the sender controls the hash, which hex
+--                       doubles, so a long one would not fit an index entry
+--                       and its message could not be archived.
 --   device_notices      what Wappie tells a person in its own pages: a
 --                       reader that a number's sync was turned off
 --                       (sync_paused), and readers and the other owners
@@ -78,8 +83,15 @@
 -- a key whose creator was disabled, or is no longer a member, still worked:
 -- removing a member revoked the keys they created, disabling one did not.
 -- Every such key is revoked here (a key with no creator is left alone), so
--- none of them can reach a recovered number. The revocation is not undone by
--- the down-step: those keys stay revoked, which is the repair.
+-- none of them can reach a recovered number. One that has expired is revoked
+-- as of its expiry, as ExpireAPIKeys records it, so the key list keeps the
+-- date it stopped working and no extension can revive it. The revocation is
+-- not undone by the down-step: those keys stay revoked, which is the repair.
+-- The keys it closed while they still worked are exactly those revoked at
+-- the ledger row's applied_at, which this same transaction writes with the
+-- same now():
+--   SELECT count(*) FROM api_keys
+--    WHERE revoked_at = (SELECT applied_at FROM schema_migrations WHERE version = 50);
 --
 -- No capacity function changes: workspace_device_usage and
 -- check_device_capacity read devices under its policies, so an excluded
@@ -88,9 +100,16 @@
 --
 -- Down-step (additive migration; `migrate.Run` refuses a binary that does not
 -- know version 50, so rolling back below it needs this first). Run only with
--- `wappie-api` stopped, after checking this file against `migration50_sha256`
--- in the release's RELEASE.json, as the table owner, and after `whatserverd
--- deletions export-ledger` as the wappie user. Its guards run first, inside
+-- `wappie-api` stopped, and with `wappie-billing` stopped or already on the
+-- release being restored: this release's wappie-billing runs core's storage
+-- breakdown, which reads media.content_key and devices.deleted_at, so its
+-- storage screen would fail from this down-step until it is restarted. Run
+-- it after checking this file against `migration50_sha256` in the release's
+-- RELEASE.json, as the table owner, and after `whatserverd deletions
+-- export-ledger` as the wappie user. It locks the workspace, user and
+-- membership tables before it changes anything, in the order wappie-billing's
+-- transactions take them, so a billing request still running waits for it
+-- instead of deadlocking with it. Its guards run first, inside
 -- its one transaction, so a refusal changes nothing: it refuses while any
 -- number is excluded (an older binary would show and sync every one of them
 -- as live, and SQL cannot remove their objects: recover each, or purge it),
@@ -107,6 +126,7 @@
 --          RAISE EXCEPTION 'a migration after 0050 is applied; run its down-step first';
 --        END IF;
 --      END $$;
+--      LOCK TABLE tenants, users, workspace_memberships IN ACCESS EXCLUSIVE MODE;
 --      ALTER TABLE devices DISABLE ROW LEVEL SECURITY;
 --      ALTER TABLE item_events DISABLE ROW LEVEL SECURITY;
 --      DO $$
@@ -156,6 +176,14 @@
 -- It runs first: 0050 down, then 0049 down (the end of the rollback window),
 -- 0048 down, and so on.
 
+-- wappie-billing keeps running through this migration. Its transactions lock
+-- the workspace row and the membership (FOR UPDATE OF t,m) before they read
+-- devices, and the repair at the end takes workspace_memberships in ACCESS
+-- EXCLUSIVE mode. Taking both first, in that order, makes a billing request
+-- wait at its first statement instead of deadlocking with the ALTERs on
+-- devices.
+LOCK TABLE tenants, workspace_memberships IN ACCESS EXCLUSIVE MODE;
+
 ALTER TABLE devices
     ADD COLUMN deleted_at       timestamptz,
     ADD COLUMN deleted_by       uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -198,7 +226,8 @@ LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN
  RETURN jsonb_strip_nulls(r);
 END $$;
 ALTER TABLE media ADD COLUMN content_key text GENERATED ALWAYS AS
-    (tenant_id::text || '/' || left(encode(file_enc_sha256, 'hex'), 2) || '/' || encode(file_enc_sha256, 'hex')) STORED;
+    (CASE WHEN octet_length(file_enc_sha256) = 32 THEN
+     tenant_id::text || '/' || left(encode(file_enc_sha256, 'hex'), 2) || '/' || encode(file_enc_sha256, 'hex') END) STORED;
 CREATE INDEX media_object_key  ON media (object_key)  WHERE object_key  IS NOT NULL;
 CREATE INDEX media_content_key ON media (content_key) WHERE content_key IS NOT NULL;
 
@@ -294,7 +323,7 @@ CREATE POLICY tenant_isolation ON item_events
 -- and a migration has no workspace, so it is lifted for this statement and
 -- put back in this same transaction, as 0049 does for users.
 ALTER TABLE workspace_memberships DISABLE ROW LEVEL SECURITY;
-UPDATE api_keys k SET revoked_at = now()
+UPDATE api_keys k SET revoked_at = least(coalesce(k.expires_at, now()), now())
  WHERE k.revoked_at IS NULL AND k.created_by IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM workspace_memberships m
                     WHERE m.tenant_id = k.tenant_id AND m.user_id = k.created_by AND m.status = 'active');
