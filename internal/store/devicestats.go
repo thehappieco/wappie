@@ -37,6 +37,10 @@ type DeviceStat struct {
 // size of the archive: putting it on that path would make a reconnect slower
 // the longer the server had been useful. This runs when somebody opens the
 // admin console and asks.
+//
+// Live numbers only, as List: the archive tables carry no device policy of
+// their own, so each count names the visible devices, and an excluded
+// number's id and counts never come back from here.
 func (d *Devices) Stats(ctx context.Context, tenantID string) ([]DeviceStat, error) {
 	byDevice := map[string]*DeviceStat{}
 	at := func(id string) *DeviceStat {
@@ -57,7 +61,7 @@ func (d *Devices) Stats(ctx context.Context, tenantID string) ([]DeviceStat, err
 		// anything last happen" without touching the messages table.
 		rows, err := tx.Query(ctx, `
 			SELECT device_id::text, count(*), max(last_ts)
-			  FROM chats GROUP BY device_id`)
+			  FROM chats WHERE device_id IN (SELECT id FROM devices) GROUP BY device_id`)
 		if err != nil {
 			return fmt.Errorf("store: count chats: %w", err)
 		}
@@ -81,7 +85,8 @@ func (d *Devices) Stats(ctx context.Context, tenantID string) ([]DeviceStat, err
 		}
 
 		rows, err = tx.Query(ctx, `
-			SELECT device_id::text, count(*) FROM messages GROUP BY device_id`)
+			SELECT device_id::text, count(*) FROM messages
+			 WHERE device_id IN (SELECT id FROM devices) GROUP BY device_id`)
 		if err != nil {
 			return fmt.Errorf("store: count messages: %w", err)
 		}
@@ -105,6 +110,7 @@ func (d *Devices) Stats(ctx context.Context, tenantID string) ([]DeviceStat, err
 		rows, err = tx.Query(ctx, `
 			SELECT m.device_id::text, count(*)
 			  FROM media d JOIN messages m ON m.uid = d.message_uid
+			 WHERE m.device_id IN (SELECT id FROM devices)
 			 GROUP BY m.device_id`)
 		if err != nil {
 			return fmt.Errorf("store: count media: %w", err)

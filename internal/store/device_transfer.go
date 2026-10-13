@@ -225,6 +225,11 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 		if _, err = tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id=$1 AND user_id<>$2`, device, actor); err != nil {
 			return err
 		}
+		// The Team's notices about the number stay behind with nothing to
+		// point at: device_notices has no foreign key (0050).
+		if _, err = tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id=$1`, device); err != nil {
+			return err
+		}
 		// Move media before messages: message accounting updates its media rows too.
 		if _, err = tx.Exec(ctx, `UPDATE media SET tenant_id=$2,download_status=CASE WHEN download_status='downloading' THEN 'pending' ELSE download_status END,claimed_at=NULL WHERE message_uid IN (SELECT uid FROM messages WHERE device_id=$1)`, device, target); err != nil {
 			return err

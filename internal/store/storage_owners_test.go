@@ -206,6 +206,13 @@ func TestStorageOwnershipMigrationBackfillsAllWorkspaceReservations(t *testing.T
 	if owners != 2 {
 		t.Fatalf("only %d legacy reservations were indexed", owners)
 	}
+	// DeleteObject is this binary's, so it runs on this binary's schema: its
+	// reference check reads media.content_key (0050).
+	for _, m := range migrations {
+		if m.Version > 37 {
+			apply(m)
+		}
+	}
 	var deleted atomic.Int32
 	if err := storage.DeleteObject(ctx, tenants[0], "preexisting-key", func(context.Context, string) error { deleted.Add(1); return nil }); err != nil {
 		t.Fatal(err)

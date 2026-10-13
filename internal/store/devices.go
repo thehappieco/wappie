@@ -184,7 +184,7 @@ func (d *Devices) Resolve(ctx context.Context, tenantID, idOrPrefix string) (Dev
 
 	var matches []Device
 	err := pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, selectDevices+` WHERE id::text LIKE $1 || '%' LIMIT 5`, idOrPrefix)
+		rows, err := tx.Query(ctx, selectDevices+` AND id::text LIKE $1 || '%' LIMIT 5`, idOrPrefix)
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func (d *Devices) Resolve(ctx context.Context, tenantID, idOrPrefix string) (Dev
 func (d *Devices) Get(ctx context.Context, tenantID, deviceID string) (Device, error) {
 	var dev Device
 	err := pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, selectDevices+` WHERE id = $1`, deviceID)
+		row := tx.QueryRow(ctx, selectDevices+` AND id = $1`, deviceID)
 		return scanDevice(row, &dev)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -270,11 +270,15 @@ func (d *Devices) Delete(ctx context.Context, tenantID, deviceID string) error {
 	})
 }
 
+// selectDevices reads live numbers only. Row-level security already hides an
+// excluded one (0050); the filter says so here too, so a caller that runs
+// inside the quarantine scope still never mistakes one for a live number.
 const selectDevices = `
 	SELECT id::text, tenant_id::text, coalesce(lid,''), coalesce(pn,''),
 	       push_name, label, status, status_reason, receipt_mode,
 	       created_at, last_connected_at, current_epoch, paused, archive_tenant_id::text
-	  FROM devices`
+	  FROM devices
+	 WHERE deleted_at IS NULL`
 
 // scanner is satisfied by both pgx.Row and pgx.Rows.
 type scanner interface{ Scan(dest ...any) error }

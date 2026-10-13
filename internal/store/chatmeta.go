@@ -124,8 +124,10 @@ func (m *Messages) UpsertChatMeta(ctx context.Context, meta ChatMeta) error {
 func (m *Messages) BackfillChatUIDs(ctx context.Context, tenant uuid.UUID) (int, error) {
 	var n int
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		// Live numbers only: an excluded number's chats cannot be written
+		// (0050), and one of them would fail the boot.
 		rows, err := tx.Query(ctx,
-			`SELECT device_id, chat_key FROM chats WHERE uid IS NULL`)
+			`SELECT device_id, chat_key FROM chats WHERE uid IS NULL AND device_id IN (SELECT id FROM devices)`)
 		if err != nil {
 			return err
 		}

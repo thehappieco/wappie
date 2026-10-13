@@ -287,7 +287,7 @@ func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, 
 		rows, err := tx.Query(ctx, `
 			SELECT g.device_id, g.epoch, g.sealed_dsk, d.archive_tenant_id
 			  FROM device_key_grants g
-			  JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch
+			  JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch AND d.deleted_at IS NULL
 			 WHERE g.user_id = $1
 			 ORDER BY d.created_at`, user)
 		if err != nil {
@@ -322,7 +322,7 @@ func (k *Keys) HasGrant(ctx context.Context, tenant, device, user uuid.UUID) (bo
 		return tx.QueryRow(ctx, `
 			SELECT EXISTS (
 				SELECT 1 FROM device_key_grants g
-				  JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch
+				  JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch AND d.deleted_at IS NULL
 				 WHERE g.device_id = $1 AND g.user_id = $2)`, device, user).Scan(&has)
 	})
 	if err != nil {

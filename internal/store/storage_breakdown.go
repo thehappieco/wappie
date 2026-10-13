@@ -27,10 +27,25 @@ type DeviceStorageUsage struct {
 // Reserved uploads
 // and objects awaiting confirmed deletion belong to Unassigned until a live
 // archive reference can identify a number. Neither bucket is charged again.
+// Excluded holds what the deleted numbers still store until their purge
+// (0050): still charged, so the totals add up, and never under a number's
+// name. Only owners see it apart; FoldExcluded folds it into Unassigned for
+// everyone else.
 type StorageBreakdown struct {
 	Devices    []DeviceStorageUsage `json:"devices"`
 	Shared     StorageBytes         `json:"shared"`
 	Unassigned StorageBytes         `json:"unassigned"`
+	Excluded   StorageBytes         `json:"excluded"`
+}
+
+// FoldExcluded moves the deleted numbers' bytes into Unassigned, for a viewer
+// who may not learn that a number is waiting for its purge: only owners
+// delete and recover numbers.
+func (b *StorageBreakdown) FoldExcluded() {
+	b.Unassigned.ArchiveBytes += b.Excluded.ArchiveBytes
+	b.Unassigned.ObjectBytes += b.Excluded.ObjectBytes
+	b.Unassigned.UsedBytes += b.Excluded.UsedBytes
+	b.Excluded = StorageBytes{}
 }
 
 // UsageDetailed is for administration, not the capture path: attribution grows
@@ -76,6 +91,10 @@ func storageBreakdownTx(ctx context.Context, tx pgx.Tx) (*StorageBreakdown, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	excluded, err := excludedDevicesTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err = tx.Query(ctx, `
  WITH records AS (
   SELECT CASE
@@ -92,8 +111,7 @@ func storageBreakdownTx(ctx context.Context, tx pgx.Tx) (*StorageBreakdown, erro
  ), object_references AS (
   SELECT d.object_key,m.device_id FROM media d JOIN messages m ON m.uid=d.message_uid WHERE d.object_key IS NOT NULL
   UNION
-  SELECT d.tenant_id::text||'/'||left(encode(d.file_enc_sha256,'hex'),2)||'/'||encode(d.file_enc_sha256,'hex'),m.device_id
-  FROM media d JOIN messages m ON m.uid=d.message_uid WHERE d.file_enc_sha256 IS NOT NULL
+  SELECT d.content_key,m.device_id FROM media d JOIN messages m ON m.uid=d.message_uid WHERE d.content_key IS NOT NULL
  ), objects AS (
   SELECT o.object_key,o.bytes,count(r.device_id) device_count,min(r.device_id::text) device_id
   FROM storage_objects o LEFT JOIN object_references r ON r.object_key=o.object_key
@@ -119,6 +137,8 @@ func storageBreakdownTx(ctx context.Context, tx pgx.Tx) (*StorageBreakdown, erro
 			target = &out.Shared
 		} else if index, ok := byDevice[id]; kind == "device" && ok {
 			target = &out.Devices[index].StorageBytes
+		} else if kind == "device" && excluded[id] {
+			target = &out.Excluded
 		}
 		target.ArchiveBytes += archiveBytes
 		target.ObjectBytes += objectBytes

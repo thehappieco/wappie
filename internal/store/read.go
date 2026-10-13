@@ -341,12 +341,17 @@ func (m *Messages) Page(ctx context.Context, tenant, device uuid.UUID,
 }
 
 // Get returns one message by uid.
+//
+// Joined to its device, so an excluded number's message (0050) is not found
+// at all: answering "not authorized" instead would tell a former reader who
+// kept the uid that the number still exists, and when it is purged.
 func (m *Messages) Get(ctx context.Context, tenant, uid uuid.UUID) (Row, error) {
 	var out Row
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT `+rowColumns+`
-			  FROM messages m LEFT JOIN media md ON md.message_uid = m.uid
+			  FROM messages m JOIN devices d ON d.id = m.device_id
+			  LEFT JOIN media md ON md.message_uid = m.uid
 			 WHERE m.uid = $1`, uid)
 		if err != nil {
 			return err

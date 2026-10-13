@@ -90,14 +90,22 @@ func Connect(t *testing.T) *pgxpool.Pool {
 // Empty returns a pool scoped to a private, empty schema.
 func Empty(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	return newIsolated(t)
+	return newIsolated(t, nil)
 }
 
 // Fresh returns a pool scoped to a private schema with apply already run.
 // Pass migrate.Run as apply.
 func Fresh(t *testing.T, apply Migrator) *pgxpool.Pool {
 	t.Helper()
-	pool := newIsolated(t)
+	return FreshWith(t, apply, nil)
+}
+
+// FreshWith is Fresh with the pool's configuration adjusted by configure
+// before it opens: a test that needs one connection, so that every call is
+// certain to reuse it, sets MaxConns to 1.
+func FreshWith(t *testing.T, apply Migrator, configure func(*pgxpool.Config)) *pgxpool.Pool {
+	t.Helper()
+	pool := newIsolated(t, configure)
 	quiet := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	if err := apply(context.Background(), pool, quiet); err != nil {
 		t.Fatalf("pgtest: migrate: %v", err)
@@ -109,7 +117,7 @@ func Fresh(t *testing.T, apply Migrator) *pgxpool.Pool {
 // quoting, since they are interpolated into DDL that cannot take parameters.
 var safeSchemaName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-func newIsolated(t *testing.T) *pgxpool.Pool {
+func newIsolated(t *testing.T, configure func(*pgxpool.Config)) *pgxpool.Pool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -131,6 +139,9 @@ func newIsolated(t *testing.T) *pgxpool.Pool {
 	// call site needing to know.
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
 	cfg.MaxConns = 8
+	if configure != nil {
+		configure(cfg)
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err == nil {

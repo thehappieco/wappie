@@ -57,6 +57,12 @@ type ObjectRef struct {
 // attachment to two of them, and without one long transaction blocking the
 // rest. The claim is the state change: a row in 'downloading' is not offered
 // again until it finishes or the sweeper decides its worker died.
+//
+// Only a live number's attachments are offered. An excluded number's
+// (0050) cannot be written: claiming one would raise WS002 and stall every
+// download of the workspace, and its deletion turns its in-flight downloads
+// back to pending, so there usually are some. The filter is in the inner
+// select, before the LIMIT, so they never fill it either.
 func (m *Media) Claim(ctx context.Context, tenant uuid.UUID, limit int) ([]Pending, error) {
 	if err := NewStorage(m.pool).Check(ctx, tenant); err != nil {
 		return nil, err
@@ -70,6 +76,8 @@ func (m *Media) Claim(ctx context.Context, tenant uuid.UUID, limit int) ([]Pendi
 			      WHERE tenant_id = $1
 			        AND download_status IN ('pending', 'failed')
 			        AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+			        AND EXISTS (SELECT 1 FROM messages msg JOIN devices d ON d.id = msg.device_id
+			                     WHERE msg.uid = media.message_uid)
 			      ORDER BY next_attempt_at NULLS FIRST, created_at
 			      LIMIT $2
 			      FOR UPDATE SKIP LOCKED)
@@ -198,13 +206,18 @@ func (m *Media) AdoptExisting(ctx context.Context, tenant uuid.UUID, encSHA []by
 // It measures from claimed_at, not created_at. A backfilled attachment can be
 // weeks old and claimed a second ago, and sweeping on arrival time would hand
 // every in-flight download straight back to the queue.
+//
+// An excluded number's rows are left alone, as Claim leaves them: updating
+// one would raise WS002 and stop the sweep for the whole workspace.
 func (m *Media) Sweep(ctx context.Context, tenant uuid.UUID, olderThan time.Duration) (int, error) {
 	var n int
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE media SET download_status = 'pending'
 			 WHERE tenant_id = $1 AND download_status = 'downloading'
-			   AND claimed_at < now() - $2::interval`,
+			   AND claimed_at < now() - $2::interval
+			   AND EXISTS (SELECT 1 FROM messages msg JOIN devices d ON d.id = msg.device_id
+			                WHERE msg.uid = media.message_uid)`,
 			tenant, olderThan.String())
 		if err != nil {
 			return err
