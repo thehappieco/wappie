@@ -1082,6 +1082,11 @@ func TestOpenAIAppsChallenge(t *testing.T) {
 			t.Fatalf("token %q: status %d, want %d", tc.token, rec.Code, tc.status)
 		}
 		if tc.token == "" {
+			// As any route this server does not have.
+			if got := rec.Body.String(); got != `{"code":"not_found","message":"no such route"}`+"\n" ||
+				rec.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+				t.Errorf("no token: %q %q", rec.Header().Get("Content-Type"), got)
+			}
 			continue
 		}
 		if got := rec.Body.String(); got != tc.token {

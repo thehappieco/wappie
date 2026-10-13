@@ -1322,10 +1322,10 @@ func fail(w http.ResponseWriter, status int, code, message string) {
 
 // openAIChallenge answers OpenAI's domain verification with the token and
 // nothing else, as the portal requires; until one is configured the path
-// does not exist.
+// does not exist, and answers as any other that does not.
 func (h *Handler) openAIChallenge(w http.ResponseWriter, _ *http.Request) {
 	if h.OpenAIAppsChallenge == "" {
-		http.NotFound(w, nil)
+		fail(w, http.StatusNotFound, "not_found", "no such route")
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
