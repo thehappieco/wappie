@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.mau.fi/whatsmeow/types"
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
@@ -231,4 +232,51 @@ func TestRemovingProvisionalServiceNeverNeedsAnotherReader(t *testing.T) {
 	if err := h.keys.RevokeGrant(ctx, h.tenant, device, owner.ID); !errors.Is(err, store.ErrLastDeviceReader) {
 		t.Fatalf("the owner's envelope: %v", err)
 	}
+}
+
+// The last key holder of a deleted number is protected until its purge, and
+// only an owner is told which number and until when (decision 0038).
+func TestLastKeyHolderOfADeletedNumber(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	owner, token := memberAccount(t, h, "owner@deleted.test", "owner")
+	_, adminToken := memberAccount(t, h, "admin@deleted.test", "admin")
+	reader, _ := memberAccount(t, h, "reader@deleted.test", "member")
+	device := protectedNumber(t, h, reader)
+	devices := store.NewDevices(h.pool)
+	if err := devices.SetIdentity(ctx, h.tenant.String(), device.String(), wa.Identity{PN: types.NewJID("5511912345678", types.DefaultUserServer)}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := devices.Quarantine(ctx, h.tenant, owner.ID, device, []uuid.UUID{reader.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disable := func(token string) (int, refusal) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"role": "member", "status": "disabled"})
+		req, err := http.NewRequest(http.MethodPut, h.srv.URL+"/v1/auth/workspaces/members/"+reader.ID.String(), bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		var out refusal
+		return h.do(t, req, &out), out
+	}
+	code, got := disable(token)
+	if code != 409 || got.Code != "last_reader_of_deleted" || len(got.Numbers) != 1 || got.Numbers[0].DeviceID != device ||
+		got.Numbers[0].Label != "protected" || !got.Numbers[0].PurgeAfter.Equal(q.PurgeAfter) {
+		t.Fatalf("an owner's refusal: %d %+v", code, got)
+	}
+	if code, got := disable(adminToken); code != 409 || got.Code != "last_reader_of_deleted" || len(got.Numbers) != 0 {
+		t.Fatalf("an admin's refusal: %d %+v", code, got)
+	}
+	if status, code := removeMember(t, h, token, reader.ID.String()); status != 409 || code != "last_reader_of_deleted" {
+		t.Fatalf("removal: %d %s", status, code)
+	}
+}
+
+type refusal struct {
+	Code    string                   `json:"code"`
+	Numbers []store.DeletedNumberRef `json:"numbers"`
 }

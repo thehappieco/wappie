@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/google/uuid"
@@ -79,7 +80,9 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeConflict, "this connection is already subscribed")
 		return
 	}
-	sub := s.srv.cfg.Bus.Subscribe(tenant, filter)
+	// The bus gets its own copy: the replay below keeps reading this one,
+	// and a deletion replaces the bus's (Bus.DropDevice).
+	sub := s.srv.cfg.Bus.Subscribe(tenant, bus.Filter{Devices: maps.Clone(filter.Devices)})
 	s.sub = sub
 	s.subMu.Unlock()
 
@@ -215,6 +218,18 @@ func (s *session) pump(ctx context.Context, sub *bus.Subscription, reqID string)
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-sub.Ended():
+			// Its last number was deleted. An empty filter delivers nothing,
+			// so the subscription ends here, and the client may subscribe
+			// again.
+			s.subMu.Lock()
+			if s.sub == sub {
+				s.sub = nil
+			}
+			s.subMu.Unlock()
+			sub.Close()
+			s.reply(TypeSubscriptionEnded, reqID, SubscriptionEnded{Reason: "device_removed"})
 			return
 		case ev, ok := <-sub.Events():
 			if !ok {

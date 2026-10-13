@@ -7,6 +7,8 @@ package wsapi
 import (
 	"encoding/json"
 	"time"
+
+	"whatserver2/internal/store"
 )
 
 // Version is the protocol version. A client announcing a different major
@@ -65,14 +67,21 @@ const (
 	TypeDevicesStats  = "devices.stats"
 	TypeDeviceInfo    = "device.info"
 	TypeDeviceDelete  = "device.delete"
-	TypeKeysList      = "apikeys.list"
-	TypeKeyCreate     = "apikeys.create"
-	TypeKeyRevoke     = "apikeys.revoke"
-	TypeGrantAdd      = "grant.add"
-	TypeGrantRevoke   = "grant.revoke"
-	TypeGrantsList    = "grants.list"
-	TypeGrants        = "grants"
-	TypePing          = "ping"
+	// The deletion's preflight, the deleted numbers, a recovery and its
+	// preflight (owners only), and a person acknowledging notices.
+	TypeDeviceDeleteCheck  = "device.delete.check"
+	TypeDevicesDeleted     = "devices.deleted"
+	TypeDeviceRecoverCheck = "device.recover.check"
+	TypeDeviceRecover      = "device.recover"
+	TypeDeviceNoticeSeen   = "device.notice.seen"
+	TypeKeysList           = "apikeys.list"
+	TypeKeyCreate          = "apikeys.create"
+	TypeKeyRevoke          = "apikeys.revoke"
+	TypeGrantAdd           = "grant.add"
+	TypeGrantRevoke        = "grant.revoke"
+	TypeGrantsList         = "grants.list"
+	TypeGrants             = "grants"
+	TypePing               = "ping"
 )
 
 // Server-to-client frame types.
@@ -111,12 +120,23 @@ const (
 	TypeDeviceStats  = "devices.stats.result"
 	TypeDeviceDetail = "device.detail"
 	TypeDeviceGone   = "device.deleted"
-	TypeAPIKeys      = "apikeys"
-	TypeAPIKeyNew    = "apikeys.created"
-	TypeAPIKeyGone   = "apikeys.revoked"
-	TypeReaders      = "device.readers"
-	TypeError        = "error"
-	TypePong         = "pong"
+	// Replies to the deletion and recovery frames.
+	TypeDeviceDeleteChecked  = "device.delete.checked"
+	TypeDeletedNumbers       = "devices.deleted.list"
+	TypeDeviceRecoverChecked = "device.recover.checked"
+	TypeDeviceRecovered      = "device.recovered"
+	TypeDeviceNotices        = "device.notices"
+	// Pushes: a number gone from the workspace, a new notice, and a
+	// subscription that ended.
+	TypeDeviceRemoved     = "device.removed"
+	TypeDeviceNotice      = "device.notice"
+	TypeSubscriptionEnded = "subscription.ended"
+	TypeAPIKeys           = "apikeys"
+	TypeAPIKeyNew         = "apikeys.created"
+	TypeAPIKeyGone        = "apikeys.revoked"
+	TypeReaders           = "device.readers"
+	TypeError             = "error"
+	TypePong              = "pong"
 )
 
 // Hello authenticates the connection. It must be the first frame.
@@ -276,9 +296,11 @@ type DeviceInfo struct {
 	// nobody can verify — pleasant right up to the moment the two disagree.
 }
 
-// Devices is the response to devices.list.
+// Devices is the response to devices.list. A person's unseen notices ride
+// along, so every connect, reconnect and workspace change brings them.
 type Devices struct {
-	Devices []DeviceInfo `json:"devices"`
+	Devices []DeviceInfo   `json:"devices"`
+	Notices []DeviceNotice `json:"notices,omitempty"`
 }
 
 // DeviceStat is how much one device has archived.
@@ -330,33 +352,181 @@ type DeviceDetail struct {
 	Epoch int `json:"epoch"`
 }
 
-// DeleteRequest asks for a device and everything it archived to be removed.
+// DeleteRequest asks for a number to be deleted (decision 0038): an owner's
+// act, kept 30 days in which an owner can recover it, then purged. A
+// registration that never linked is removed at once instead, by an owner or
+// an admin.
 //
-// Confirm must repeat the device id. Not ceremony: this is the one call in the
-// protocol that destroys an archive, the reply cannot be undone by anything on
-// this server, and a mis-click in a device list is otherwise indistinguishable
-// from an intention.
+// Confirm must repeat the device id. Not ceremony: the WhatsApp logout that
+// comes with a deletion cannot be undone, and a mis-click in a device list is
+// otherwise indistinguishable from an intention.
 type DeleteRequest struct {
 	DeviceID string `json:"device_id"`
 	Confirm  string `json:"confirm"`
-	// Unlink asks WhatsApp to drop the linked device as well, which is what
-	// makes it disappear from the phone. Best effort: it needs the device to be
-	// connected, and a device that is already logged out cannot be unlinked.
+	// Unlink asks WhatsApp to drop the linked device, which is what makes it
+	// disappear from the phone. Omitted means true, and false is refused for
+	// a linked number: every deletion asks for the logout.
 	Unlink bool `json:"unlink"`
+	// AcknowledgedReaders are the people the owner saw in
+	// device.delete.checked and confirmed: the deletion is refused with
+	// device_has_readers when anyone who reads the number now is missing.
+	AcknowledgedReaders []string `json:"acknowledged_readers,omitempty"`
 }
 
-// DeviceDeleted reports what a delete removed.
+// DeviceDeleted reports a deletion.
 type DeviceDeleted struct {
 	DeviceID string `json:"device_id"`
-	Chats    int64  `json:"chats"`
-	Messages int64  `json:"messages"`
-	Media    int64  `json:"media"`
-	// Unlinked is true when WhatsApp accepted the logout, so the device is gone
-	// from the phone's list too. False means the row is gone here and the
-	// entry on the phone has to be removed by hand.
+	// Pending is a registration that never linked, removed at once.
+	Pending bool `json:"pending,omitempty"`
+	// Already is a number that was already deleted: a retry after a lost
+	// reply is safe, and the rest describes the stored state.
+	Already bool `json:"already,omitempty"`
+	// DeletedAt and RecoverableUntil are the database's clock; an owner can
+	// recover the number until RecoverableUntil.
+	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
+	RecoverableUntil *time.Time `json:"recoverable_until,omitempty"`
+	// Unlinked is true when no WhatsApp session is left: the logout was
+	// confirmed, or there was none. False means the entry on the phone has
+	// to be removed by hand.
 	Unlinked bool `json:"unlinked"`
-	// Note carries what went wrong with the parts that are best effort.
-	Note string `json:"note,omitempty"`
+	// NoteCode is unlink_unconfirmed, already_disconnected or empty; the
+	// console words it. Note says the same in English, for API clients.
+	NoteCode string `json:"note_code"`
+	Note     string `json:"note,omitempty"`
+	// AssistantsEnded are the assistant connections and AI authorizations
+	// the deletion ended (access_lost); KeysNarrowed the Integrations keys
+	// that lost the number, none of them revoked.
+	AssistantsEnded []store.EndedAssistant `json:"assistants_ended,omitempty"`
+	KeysNarrowed    []store.NarrowedKey    `json:"keys_narrowed,omitempty"`
+	// What the number held when it was deleted; absent when it could not
+	// be counted.
+	Chats    *int64 `json:"chats,omitempty"`
+	Messages *int64 `json:"messages,omitempty"`
+	Media    *int64 `json:"media,omitempty"`
+}
+
+// DeviceDeleteChecked is a deletion's preflight, for an owner: who reads
+// the number now, which standing service accounts, assistant connections
+// and Integrations keys lose it (OnlyNumber: the key reaches nothing
+// afterwards), and which keys for every number stop reaching it. None is
+// revoked. The console shows exactly this list.
+type DeviceDeleteChecked struct {
+	DeviceID        string                    `json:"device_id"`
+	Readers         []store.Person            `json:"readers"`
+	ServiceAccounts []store.ServiceAccountRef `json:"service_accounts"`
+	Assistants      []store.AssistantRef      `json:"assistants"`
+	Keys            []store.RestrictedKeyRef  `json:"keys"`
+	AllNumberKeys   []store.AllNumberKey      `json:"all_number_keys"`
+	Bytes           int64                     `json:"bytes"`
+	// CanUnlink is a WhatsApp session this server can log out.
+	CanUnlink bool `json:"can_unlink"`
+	// CheckedAt is the database's clock, and RecoverableUntilPreview that
+	// clock plus 30 days; the deletion's own dates are a moment later.
+	CheckedAt               time.Time `json:"checked_at"`
+	RecoverableUntilPreview time.Time `json:"recoverable_until_preview"`
+}
+
+// DeletedNumber is one deleted number in devices.deleted.list, for owners.
+// Label, PushName and PN are the raw inputs the console names it from.
+type DeletedNumber struct {
+	DeviceID         string    `json:"device_id"`
+	Label            string    `json:"label"`
+	PushName         string    `json:"push_name,omitempty"`
+	PN               string    `json:"pn,omitempty"`
+	DeletedAt        time.Time `json:"deleted_at"`
+	DeletedByName    string    `json:"deleted_by_name,omitempty"`
+	RecoverableUntil time.Time `json:"recoverable_until"`
+	// Recoverable is inside the 30 days with no purge started; Purging is a
+	// purge under way. The database's clock decides both.
+	Recoverable bool  `json:"recoverable"`
+	Purging     bool  `json:"purging"`
+	Bytes       int64 `json:"bytes"`
+	RecoveryStatus
+}
+
+// RecoveryStatus is how a number comes back. LoggedOut: WhatsApp confirmed
+// the logout, so it comes back read-only; CanResume: its sync can start
+// again; KeyHolders: who can still open its current archive.
+type RecoveryStatus struct {
+	Status       string `json:"status"`
+	StatusReason string `json:"status_reason"`
+	LoggedOut    bool   `json:"logged_out"`
+	CanResume    bool   `json:"can_resume"`
+	KeyHolders   int    `json:"key_holders"`
+}
+
+// DeletedNumbers is the reply to devices.deleted.
+type DeletedNumbers struct {
+	Numbers []DeletedNumber `json:"numbers"`
+}
+
+// RecoverRequest asks for a deleted number back. Confirm repeats the id.
+type RecoverRequest struct {
+	DeviceID string `json:"device_id"`
+	Confirm  string `json:"confirm"`
+}
+
+// DeviceRecoverChecked is a recovery's preflight, for an owner: the people
+// whose grants and permissions come back, the standing service accounts that
+// read it again and the keys for every number that reach it again.
+type DeviceRecoverChecked struct {
+	DeviceID        string                    `json:"device_id"`
+	Readers         []store.Person            `json:"readers"`
+	ServiceAccounts []store.ServiceAccountRef `json:"service_accounts"`
+	AllNumberKeys   []store.AllNumberKey      `json:"all_number_keys"`
+	Recoverable     bool                      `json:"recoverable"`
+	RecoveryStatus
+}
+
+// DeviceRecovered is the recovered number, paused. Already: it was live.
+type DeviceRecovered struct {
+	Device  DeviceInfo `json:"device"`
+	Already bool       `json:"already,omitempty"`
+	RecoveryStatus
+}
+
+// DeviceNotice is something a person is told about a number in Wappie's own
+// pages: number_deleted (its readers and the workspace's other owners) or
+// sync_paused (its readers). Label and Hint are the notice's own snapshot,
+// null after the purge.
+type DeviceNotice struct {
+	ID            int64      `json:"id"`
+	DeviceID      string     `json:"device_id"`
+	Kind          string     `json:"kind"`
+	Label         *string    `json:"label"`
+	Hint          *string    `json:"hint"`
+	RaisedAt      time.Time  `json:"raised_at"`
+	LastRaisedAt  *time.Time `json:"last_raised_at,omitempty"`
+	Pauses        int        `json:"pauses"`
+	SeveralActors bool       `json:"several_actors"`
+	RaisedByName  *string    `json:"raised_by_name,omitempty"`
+	RaisedByKind  string     `json:"raised_by_kind"`
+	Until         *time.Time `json:"until,omitempty"`
+	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
+	PurgedAt      *time.Time `json:"purged_at,omitempty"`
+}
+
+// DeviceNoticeSeen acknowledges notices, the person's own only.
+type DeviceNoticeSeen struct {
+	NoticeIDs []int64 `json:"notice_ids"`
+}
+
+// DeviceNotices is what is left unseen, the reply to device.notice.seen.
+type DeviceNotices struct {
+	Notices []DeviceNotice `json:"notices"`
+}
+
+// DeviceRemoved tells a session that a number it could see is gone from
+// this workspace.
+type DeviceRemoved struct {
+	DeviceID string `json:"device_id"`
+}
+
+// SubscriptionEnded tells a client its subscription ended, with the
+// subscribe's request id: device_removed when its last number was deleted.
+// It may subscribe again.
+type SubscriptionEnded struct {
+	Reason string `json:"reason"`
 }
 
 // APIKeyInfo is one key as an operator sees it: everything except the key.
@@ -1604,12 +1774,32 @@ const (
 	// proved themselves within the step-up window (internal/stepup): the
 	// console asks and tries again.
 	ErrCodeStepUpRequired = "step_up_required"
+	// ErrCodeOwnerOnly is an act only an owner of the workspace may do:
+	// deleting or recovering a number.
+	ErrCodeOwnerOnly = "owner_only"
+	// ErrCodeDeviceHasReaders is a deletion whose readers were not all
+	// acknowledged; the error carries them as they are now.
+	ErrCodeDeviceHasReaders = "device_has_readers"
+	// ErrCodeCapacityReached is a recovery with no free slot in the plan.
+	ErrCodeCapacityReached = "capacity_reached"
+	// ErrCodeIdentityInUse is a recovery of a phone linked again since.
+	ErrCodeIdentityInUse = "identity_in_use"
+	// ErrCodeRecoveryClosed is a deleted number past its 30 days, or being
+	// purged.
+	ErrCodeRecoveryClosed = "recovery_closed"
+	// ErrCodeDeviceBusy is a recovery while the deletion's logout of the
+	// number is still running: try again in a few seconds.
+	ErrCodeDeviceBusy = "device_busy"
+	// ErrCodeLastReaderOfDeleted refuses to remove or disable the last key
+	// holder of a deleted number that is not purged yet.
+	ErrCodeLastReaderOfDeleted = "last_reader_of_deleted"
 )
 
-// Error is the failure payload.
+// Error is the failure payload. Readers comes with device_has_readers.
 type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Readers []store.Person `json:"readers,omitempty"`
 }
 
 // encode builds a frame with a JSON payload.
@@ -1631,8 +1821,8 @@ type DeviceRename struct {
 	Label    string `json:"label"`
 }
 
-// UnmarshalJSON defaults deletion to unlinking from WhatsApp. Older API clients
-// can explicitly pass false, but omission has the ordinary removal semantics.
+// UnmarshalJSON defaults deletion to unlinking from WhatsApp. An explicit
+// false is read as sent, and the handler refuses it for a linked number.
 func (r *DeleteRequest) UnmarshalJSON(data []byte) error {
 	type plain DeleteRequest
 	value := plain{Unlink: true}

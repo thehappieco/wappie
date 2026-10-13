@@ -53,7 +53,7 @@ func drain(sub *bus.Subscription, timeout time.Duration) []int64 {
 // the client saw every sequence exactly once, in order.
 func TestReplayRace(t *testing.T) {
 	b := bus.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	defer sub.Close()
 
 	const total = 400
@@ -114,7 +114,7 @@ func TestReplayRace(t *testing.T) {
 // events interleaved with history it has not finished reading.
 func TestNothingIsDeliveredDuringReplay(t *testing.T) {
 	b := bus.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	defer sub.Close()
 
 	for seq := int64(1); seq <= 10; seq++ {
@@ -137,7 +137,7 @@ func TestNothingIsDeliveredDuringReplay(t *testing.T) {
 // slow phone on a train into a lost session.
 func TestSlowClientLagsRatherThanBlocking(t *testing.T) {
 	b := bus.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	defer sub.Close()
 	sub.EndReplay(0)
 
@@ -183,11 +183,11 @@ func TestTenantsAreIsolated(t *testing.T) {
 	b := bus.New()
 	other := uuid.MustParse("99999999-9999-7999-8999-999999999999")
 
-	mine := b.Subscribe(tenant, bus.Filter{})
+	mine := b.Subscribe(tenant, bus.Filter{All: true})
 	defer mine.Close()
 	mine.EndReplay(0)
 
-	theirs := b.Subscribe(other, bus.Filter{})
+	theirs := b.Subscribe(other, bus.Filter{All: true})
 	defer theirs.Close()
 	theirs.EndReplay(0)
 
@@ -224,7 +224,7 @@ func TestDeviceFilter(t *testing.T) {
 // client can disconnect at any moment, including mid-publish.
 func TestCloseIsSafeUnderTraffic(t *testing.T) {
 	b := bus.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	sub.EndReplay(0)
 
 	var wg sync.WaitGroup
@@ -253,7 +253,7 @@ func TestConcurrentSubscribersAndPublishers(t *testing.T) {
 	var wg sync.WaitGroup
 	subs := make([]*bus.Subscription, subscribers)
 	for i := range subs {
-		subs[i] = b.Subscribe(tenant, bus.Filter{})
+		subs[i] = b.Subscribe(tenant, bus.Filter{All: true})
 		subs[i].EndReplay(0)
 		wg.Add(1)
 		go func() {

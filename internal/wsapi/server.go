@@ -71,6 +71,9 @@ type Config struct {
 	// uses, so a message we sent is stored exactly like one we received.
 	Router   *ingest.Router
 	Registry *wa.Registry
+	// Unlinker logs a deleted number out of WhatsApp. Nil is Registry; a
+	// test passes a fake.
+	Unlinker Unlinker
 	// Calls bridges individual WhatsApp calls to the authenticated browser.
 	// Nil disables calling while keeping the rest of the protocol available.
 	Calls   *calling.Service
@@ -167,6 +170,7 @@ var features = []string{
 	"chat.timer", "chat.presence", "presence.subscribe", "device.mode", "reader.mode", "device.stop", "device.start", "device.rename",
 	"group.join", "group.info", "reproject.list", "reproject.apply", "media.retry", "media.expired", "history.backfill",
 	"devices.stats", "device.info", "device.delete", "device.transfer.preview", "device.transfer",
+	"device.delete.check", "devices.deleted", "device.recover.check", "device.recover", "device.notice.seen",
 	"apikeys.list", "apikeys.create", "apikeys.revoke",
 	"grant.add", "grant.revoke", "grants.list",
 	"calls.list", "call.start", "call.answer", "call.reject", "call.hangup", "call.media", "call.invite",
@@ -733,6 +737,16 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleDeviceInfo(ctx, f)
 	case TypeDeviceDelete:
 		go s.handleDeviceDelete(ctx, f)
+	case TypeDeviceDeleteCheck:
+		go s.handleDeviceDeleteCheck(ctx, f)
+	case TypeDevicesDeleted:
+		go s.handleDevicesDeleted(ctx, f)
+	case TypeDeviceRecoverCheck:
+		go s.handleDeviceRecoverCheck(ctx, f)
+	case TypeDeviceRecover:
+		go s.handleDeviceRecover(ctx, f)
+	case TypeDeviceNoticeSeen:
+		go s.handleDeviceNoticeSeen(ctx, f)
 	case TypeKeysList:
 		go s.handleAPIKeysList(ctx, f)
 	case TypeKeyCreate:

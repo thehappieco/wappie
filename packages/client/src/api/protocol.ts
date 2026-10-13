@@ -32,6 +32,11 @@ export const TypeUsersList = 'users.list'
 export const TypeDevicesStats = 'devices.stats'
 export const TypeDeviceInfo = 'device.info'
 export const TypeDeviceDelete = 'device.delete'
+export const TypeDeviceDeleteCheck = 'device.delete.check'
+export const TypeDevicesDeleted = 'devices.deleted'
+export const TypeDeviceRecoverCheck = 'device.recover.check'
+export const TypeDeviceRecover = 'device.recover'
+export const TypeDeviceNoticeSeen = 'device.notice.seen'
 export const TypeDeviceStop = 'device.stop'
 export const TypeDeviceStart = 'device.start'
 export const TypeDeviceRename = 'device.rename'
@@ -89,6 +94,15 @@ export const TypeUsers = 'users'
 export const TypeDeviceStats = 'devices.stats.result'
 export const TypeDeviceDetail = 'device.detail'
 export const TypeDeviceGone = 'device.deleted'
+export const TypeDeviceDeleteChecked = 'device.delete.checked'
+export const TypeDeletedNumbers = 'devices.deleted.list'
+export const TypeDeviceRecoverChecked = 'device.recover.checked'
+export const TypeDeviceRecovered = 'device.recovered'
+export const TypeDeviceNotices = 'device.notices'
+/** Pushes: a number gone from the workspace, a new notice, and a subscription that ended. */
+export const TypeDeviceRemoved = 'device.removed'
+export const TypeDeviceNotice = 'device.notice'
+export const TypeSubscriptionEnded = 'subscription.ended'
 export const TypeAPIKeys = 'apikeys'
 export const TypeAPIKeyNew = 'apikeys.created'
 export const TypeAPIKeyGone = 'apikeys.revoked'
@@ -146,6 +160,51 @@ export interface DeviceInfo {
 
 export interface Devices {
   devices: DeviceInfo[]
+  /** The person's unseen notices; absent when there are none, and for an API key. */
+  notices?: DeviceNotice[]
+}
+
+/**
+ * Something a person is told about a number in Wappie's own pages:
+ * number_deleted (its readers and the workspace's other owners) or sync_paused
+ * (its readers). label and hint are the notice's own snapshot, never the
+ * number itself, and null after the purge.
+ */
+export interface DeviceNotice {
+  id: number
+  device_id: string
+  kind: 'sync_paused' | 'number_deleted'
+  label: string | null
+  /** "…" and the last four digits of the phone number. */
+  hint: string | null
+  raised_at: string
+  last_raised_at?: string
+  pauses: number
+  several_actors: boolean
+  /** The person who acted, or a key's creator. */
+  raised_by_name?: string
+  raised_by_kind: 'person' | 'key'
+  /** For number_deleted: until when an owner can recover it. */
+  until?: string
+  resumed_at?: string
+  purged_at?: string
+}
+
+export interface DeviceNoticeSeen {
+  notice_ids: number[]
+}
+
+export interface DeviceNotices {
+  notices: DeviceNotice[]
+}
+
+export interface DeviceRemoved {
+  device_id: string
+}
+
+/** Sent with the subscribe's request id; the client may subscribe again. */
+export interface SubscriptionEnded {
+  reason: 'device_removed' | string
 }
 
 export interface DeviceStatus {
@@ -212,16 +271,138 @@ export interface DeviceDetail {
 export interface DeleteRequest {
   device_id: string
   confirm: string
+  /** Omitted means true; false is refused for a linked number. */
   unlink?: boolean
+  /** The readers from device.delete.checked the owner confirmed. */
+  acknowledged_readers?: string[]
 }
+
+/** A person named to an owner in a deletion's or a recovery's preflight. */
+export interface PersonRef {
+  user_id: string
+  name: string
+  email: string
+}
+
+export interface ServiceAccountRef {
+  id: string
+  name: string
+}
+
+/** A live assistant connection, or an AI authorization (kind 'ai'), whose key names the number. */
+export interface AssistantRef {
+  id: string
+  client_name: string
+  created_by_name: string
+  kind: 'assistant' | 'ai'
+}
+
+/** An Integrations key restricted to chosen numbers, by its prefix. */
+export interface RestrictedKeyRef {
+  id: string
+  name: string
+  /** The key reaches nothing once this number is taken off it. */
+  only_number: boolean
+}
+
+/** A key for every number of the workspace, by its prefix. */
+export interface AllNumberKey {
+  id: string
+  name: string
+  created_by_name: string
+}
+
+export interface EndedAssistant {
+  id: string
+  client_name: string
+  kind: 'assistant' | 'ai'
+}
+
+export interface NarrowedKey {
+  id: string
+  name: string
+}
+
+/** A deletion's preflight, for an owner. None of the keys is revoked. */
+export interface DeviceDeleteChecked {
+  device_id: string
+  readers: PersonRef[]
+  service_accounts: ServiceAccountRef[]
+  assistants: AssistantRef[]
+  keys: RestrictedKeyRef[]
+  all_number_keys: AllNumberKey[]
+  bytes: number
+  can_unlink: boolean
+  checked_at: string
+  recoverable_until_preview: string
+}
+
+export type DeletionNoteCode = 'unlink_unconfirmed' | 'already_disconnected' | ''
 
 export interface DeviceDeleted {
   device_id: string
-  chats: number
-  messages: number
-  media: number
+  /** A registration that never linked, removed at once. */
+  pending?: boolean
+  /** It was already deleted: a retry after a lost reply. */
+  already?: boolean
+  deleted_at?: string
+  recoverable_until?: string
+  /** No WhatsApp session is left. */
   unlinked: boolean
+  note_code: DeletionNoteCode
+  /** English, for API clients; the console words note_code. */
   note?: string
+  assistants_ended?: EndedAssistant[]
+  keys_narrowed?: NarrowedKey[]
+  /** Absent when the number could not be counted. */
+  chats?: number
+  messages?: number
+  media?: number
+}
+
+/** How a number comes back from a recovery. */
+export interface RecoveryStatus {
+  status: string
+  status_reason: string
+  /** WhatsApp confirmed the logout: it comes back read-only. */
+  logged_out: boolean
+  can_resume: boolean
+  key_holders: number
+}
+
+export interface DeletedNumber extends RecoveryStatus {
+  device_id: string
+  label: string
+  push_name?: string
+  pn?: string
+  deleted_at: string
+  deleted_by_name?: string
+  recoverable_until: string
+  recoverable: boolean
+  purging: boolean
+  bytes: number
+}
+
+export interface DeletedNumbers {
+  numbers: DeletedNumber[]
+}
+
+export interface RecoverRequest {
+  device_id: string
+  confirm: string
+}
+
+export interface DeviceRecoverChecked extends RecoveryStatus {
+  device_id: string
+  readers: PersonRef[]
+  service_accounts: ServiceAccountRef[]
+  all_number_keys: AllNumberKey[]
+  recoverable: boolean
+}
+
+export interface DeviceRecovered extends RecoveryStatus {
+  device: DeviceInfo
+  already?: boolean
 }
 
 export interface APIKeyInfo {
@@ -921,6 +1102,8 @@ export interface BackfillSent {
 export interface WireError {
   code: string
   message: string
+  /** With device_has_readers: who reads the number now. */
+  readers?: PersonRef[]
 }
 
 /** Stable error codes, so a client can branch without parsing prose. */
@@ -931,6 +1114,14 @@ export const ErrNotFound = 'not_found'
 export const ErrConflict = 'conflict'
 export const ErrInternal = 'internal'
 export const ErrRateLimited = 'rate_limited'
+export const ErrStepUpRequired = 'step_up_required'
+export const ErrOwnerOnly = 'owner_only'
+export const ErrDeviceHasReaders = 'device_has_readers'
+export const ErrCapacityReached = 'capacity_reached'
+export const ErrIdentityInUse = 'identity_in_use'
+export const ErrRecoveryClosed = 'recovery_closed'
+export const ErrDeviceBusy = 'device_busy'
+export const ErrLastReaderOfDeleted = 'last_reader_of_deleted'
 
 /**
  * The message kinds the archive stores.

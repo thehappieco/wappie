@@ -8,6 +8,8 @@ import (
 	"whatserver2/internal/wsapi"
 )
 
+// Omitting unlink still means true; an explicit false is read as sent, and
+// the handler refuses it for a linked number (TestDeleteRefusesKeepLinked).
 func TestDeleteDefaultsToWhatsAppDisconnect(t *testing.T) {
 	for _, tc := range []struct {
 		body string

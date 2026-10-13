@@ -122,7 +122,8 @@ func frameAction(kind string) store.DeviceAction {
 		return store.ActionSend
 	case TypeChatStart, TypePollCreate, TypeLocationSend, TypeEventCreate, TypeSend, TypeSendMedia, TypeEdit, TypeRevoke, TypeReact, TypePollVote, TypeMarkRead, TypeChatTyping, TypeChatTimer:
 		return store.ActionSend
-	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceStart, TypeDeviceRename, TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke:
+	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceStart, TypeDeviceRename, TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke,
+		TypeDeviceDeleteCheck, TypeDevicesDeleted, TypeDeviceRecoverCheck, TypeDeviceRecover:
 		return store.ActionManage
 	case TypeDeviceInfo:
 		return store.ActionView

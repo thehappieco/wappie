@@ -2,9 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"go.mau.fi/whatsmeow/types"
+
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 )
 
 // maintain applies retention windows and forgets dead sessions, once an hour.
@@ -43,6 +49,10 @@ type objectStore interface {
 func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects objectStore) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
+
+	// A deletion whose WhatsApp logout was not confirmed is tried again,
+	// by the session's fingerprint.
+	a.retryLeftoverSessions(ctx)
 
 	if sessions, invites, err := store.Housekeeping(ctx, a.pools.API, grace); err != nil {
 		a.log.Warn("housekeeping failed", "error", err)
@@ -157,4 +167,87 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 				"group_events", counts.Changes, "objects_removed", removed, "objects_failed", failed)
 		}
 	}
+}
+
+// sessionUnlinker is what the janitor needs of the registry to log out a
+// deleted number's leftover session.
+type sessionUnlinker interface {
+	Unlink(ctx context.Context, tenantID, deviceID string, jid types.JID, recheck func(context.Context) error) error
+}
+
+// errSessionChanged aborts a retry whose number was recovered, deleted again,
+// or whose session is no longer the fingerprinted one.
+var errSessionChanged = errors.New("the deleted number or its session changed since it was listed")
+
+// retryLeftoverSessions retries, once per pass, the logouts that deletions
+// could not confirm (decision 0038's plan, 4.5), in every workspace whatever
+// its status: a session WhatsApp still lists is the phone's concern either
+// way. A fingerprinted session that is gone was logged out and only its
+// record was lost, which is recorded without asking WhatsApp. A number held
+// elsewhere, or by a recovery, waits for the next pass and costs no attempt.
+// After the last attempt the purge removes the session by its fingerprint.
+func (a *app) retryLeftoverSessions(ctx context.Context) {
+	if a.devices == nil || a.unlinker == nil {
+		return
+	}
+	tenants, err := a.listAllTenantIDs(ctx)
+	if err != nil {
+		a.log.Warn("could not list workspaces for leftover sessions", "error", err)
+		return
+	}
+	for _, tenant := range tenants {
+		leftovers, err := a.devices.LeftoverSessions(ctx, tenant)
+		if err != nil {
+			a.log.Warn("could not list leftover sessions", "tenant", tenant, "error", err)
+			continue
+		}
+		for _, l := range leftovers {
+			a.retryLeftoverSession(ctx, tenant, l)
+		}
+	}
+}
+
+func (a *app) retryLeftoverSession(ctx context.Context, tenant uuid.UUID, l store.Leftover) {
+	err := wa.ErrNoSession
+	if l.Present {
+		jid, parseErr := types.ParseJID(l.JID)
+		if parseErr != nil {
+			a.log.Warn("a leftover session has no usable JID", "device", l.DeviceID, "error", parseErr)
+			return
+		}
+		reg := l.RegistrationID
+		unlinkCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		err = a.unlinker.Unlink(unlinkCtx, tenant.String(), l.DeviceID.String(), jid, func(ctx context.Context) error {
+			still, err := a.devices.StillExcluded(ctx, tenant, l.DeviceID, l.DeletedAt, &reg)
+			if err == nil && !still {
+				err = errSessionChanged
+			}
+			return err
+		})
+		cancel()
+	}
+	if errors.Is(err, wa.ErrAlreadyRunning) || errors.Is(err, errSessionChanged) {
+		return
+	}
+	confirmed := err == nil || errors.Is(err, wa.ErrNoSession)
+	record, recordErr := a.devices.RecordUnlink(ctx, tenant, l.DeviceID, l.DeletedAt, confirmed)
+	switch {
+	case recordErr != nil && !errors.Is(recordErr, store.ErrNotFound):
+		a.log.Warn("could not record a leftover session's logout", "device", l.DeviceID, "error", recordErr)
+	case recordErr == nil && record.Unlinked:
+		a.log.Info("a deleted number's leftover session was logged out", "device", l.DeviceID)
+	case recordErr == nil && l.Attempts+1 >= store.MaxUnlinkAttempts:
+		a.log.Warn("a deleted number's WhatsApp session could not be logged out; its purge removes it",
+			"device", l.DeviceID, "attempts", l.Attempts+1, "error", err)
+	}
+}
+
+// listAllTenantIDs is every workspace, whatever its status: the deletions'
+// leftovers are retried, and purged, in suspended ones too.
+func (a *app) listAllTenantIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := a.pools.API.Query(ctx, `SELECT id FROM tenants ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }

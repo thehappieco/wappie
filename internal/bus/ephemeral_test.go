@@ -24,7 +24,7 @@ import (
 func TestADroppedTypingNotificationDoesNotRewindTheClient(t *testing.T) {
 	b := bus.New()
 	tenant := uuid.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	defer sub.Close()
 	sub.EndReplay(0)
 
@@ -48,7 +48,7 @@ func TestADroppedTypingNotificationDoesNotRewindTheClient(t *testing.T) {
 func TestADroppedMessageStillMarksTheSubscription(t *testing.T) {
 	b := bus.New()
 	tenant := uuid.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	defer sub.Close()
 	sub.EndReplay(0)
 

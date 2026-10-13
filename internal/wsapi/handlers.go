@@ -292,7 +292,19 @@ func (s *session) handleDevicesList(ctx context.Context, f Frame) {
 		}
 		out = append(out, s.toDeviceInfo(ctx, d))
 	}
-	s.reply(TypeDevices, f.ReqID, Devices{Devices: out})
+	reply := Devices{Devices: out}
+	if who := s.actor(); who.person {
+		notices, err := s.srv.cfg.Devices.Notices(ctx, uuid.MustParse(tenant), who.userID)
+		if err != nil {
+			// The list still answers; the notices come with the next one.
+			s.log.Warn("reading notices failed", "error", err)
+		}
+		reply.Notices = wireNotices(notices)
+		if len(reply.Notices) == 0 {
+			reply.Notices = nil
+		}
+	}
+	s.reply(TypeDevices, f.ReqID, reply)
 }
 
 // handleUsersList reports the accounts a device key can be granted to.

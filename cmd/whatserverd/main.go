@@ -104,6 +104,9 @@ type app struct {
 	retrier  *media.Retrier
 	bus      *bus.Bus
 	registry *wa.Registry
+	// unlinker is the registry, for the janitor's retry of a deletion's
+	// logout; a test passes a fake.
+	unlinker sessionUnlinker
 	router   *ingest.Router
 	ws       *wsapi.Server
 	calls    *calling.Service
@@ -437,7 +440,7 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		MCP: store.NewMCPConnections(pools.API), MCPSendAllowed: a.switches.Send,
 	})
 
-	a.registry, a.router, a.ws = registry, router, ws
+	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws
 	return a, closeAll, nil
 }
 
@@ -493,6 +496,9 @@ func serve() error {
 	// lock, and without this it never asks again — leaving a device that
 	// reports online while nothing holds its connection.
 	go a.superviseDevices(ctx)
+	// A deletion in any process tells this one at its commit, so it lets go
+	// of the number before the next tick.
+	go a.listenExcluded(ctx)
 
 	// The attachment queue lives in the database, so this starts whether or
 	// not anything is waiting and picks up whatever a previous process left.

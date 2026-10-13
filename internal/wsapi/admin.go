@@ -135,163 +135,6 @@ func (s *session) handleDeviceInfo(ctx context.Context, f Frame) {
 	s.reply(TypeDeviceDetail, f.ReqID, detail)
 }
 
-// handleDeviceDelete removes a device and everything it archived.
-//
-// The only call in this protocol that destroys an archive. Four things happen,
-// in an order chosen so a failure partway through leaves something an operator
-// can still act on:
-//
-//  1. Unlink from WhatsApp, if asked and if the device is connected. First,
-//     because it is the only step that needs a live session — doing it last
-//     would mean the row is already gone when it fails.
-//
-//  2. Stop supervising it, so nothing tries to archive into a device that is
-//     about to stop existing.
-//
-//  3. Delete the row. Chats, messages, media rows, content keys, the archive
-//     key and every grant cascade from it.
-//
-//  4. Report what went, including what did not.
-//
-//  5. Remove the attachment bytes from object storage, best effort, after
-//     the rows are gone. Only the objects nothing else in the tenant still
-//     names: a forwarded attachment is one object under several rows. A
-//     failure here is logged and the reply says so; the bytes are ciphertext
-//     whose keys step 3 destroyed, so an untidy bucket is a cost, not a leak.
-func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
-	who, ok := s.requireAdmin(f.ReqID)
-	if !ok {
-		return
-	}
-	var req DeleteRequest
-	if err := json.Unmarshal(f.Payload, &req); err != nil {
-		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())
-		return
-	}
-	tenant := s.tenantID()
-	dev, err := s.srv.cfg.Devices.Get(ctx, tenant, req.DeviceID)
-	if err != nil {
-		s.replyError(f.ReqID, ErrCodeNotFound, "no such device")
-		return
-	}
-	if req.Confirm != dev.ID {
-		s.replyError(f.ReqID, ErrCodeBadRequest,
-			"deleting a device needs its id repeated in confirm; nothing was removed")
-		return
-	}
-
-	// Counted before, because after the delete there is nothing left to count
-	// and "removed a device" without a number is not a report.
-	var before DeviceStat
-	if stats, err := s.srv.cfg.Devices.Stats(ctx, tenant); err == nil {
-		for _, st := range stats {
-			if st.DeviceID == dev.ID {
-				before = toStat(st)
-				break
-			}
-		}
-	}
-
-	out := DeviceDeleted{
-		DeviceID: dev.ID, Chats: before.Chats,
-		Messages: before.Messages, Media: before.Media,
-	}
-	var notes []string
-
-	// Persist the pause before stopping or reconnecting for logout, so the
-	// background supervisor cannot claim a device being removed.
-	if err := s.srv.cfg.Devices.SetPaused(ctx, tenant, dev.ID, true); err != nil {
-		s.replyError(f.ReqID, ErrCodeInternal, "could not prepare the device for removal")
-		return
-	}
-	s.srv.cancelDevicePairing(tenant, dev.ID)
-	if req.Unlink && s.srv.cfg.Registry != nil && dev.Identity.Known() {
-		unlinkCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		running, held := s.srv.cfg.Registry.Get(dev.ID)
-		if !held {
-			// A paused number still has a WhatsApp session. Reconnect briefly to
-			// remove that session on the phone instead of silently leaving it linked.
-			running, err = s.srv.cfg.Registry.StartExisting(unlinkCtx, tenant, dev.ID,
-				wa.ReceiptPolicy{Mode: wa.ModePassive}, dev.Identity.PN, dev.Identity.LID)
-		}
-		if running != nil && err == nil {
-			if logoutErr := running.Client().Logout(unlinkCtx); logoutErr == nil {
-				out.Unlinked = true
-			} else {
-				s.log.Warn("WhatsApp logout was not acknowledged", "device", dev.ID, "error", logoutErr)
-			}
-		}
-		cancel()
-		if !out.Unlinked {
-			notes = append(notes, "WhatsApp could not confirm disconnection; remove this session under Linked devices on the phone")
-		}
-	}
-
-	if s.srv.cfg.Registry != nil {
-		s.srv.cfg.Registry.Stop(ctx, dev.ID)
-	}
-
-	// Collected before the rows go, because afterwards there is nothing to
-	// ask.
-	var objects []string
-	tenantUUID, deviceUUID, _ := s.ids(f.ReqID, tenant, dev.ID)
-	if s.srv.cfg.Pool != nil && s.srv.cfg.Blob.Configured() {
-		if keys, err := store.ObjectKeysForDevice(ctx, s.srv.cfg.Pool, tenantUUID, deviceUUID); err == nil {
-			objects = keys
-		} else {
-			s.log.Warn("could not list a device's attachments before deleting it", "error", err)
-		}
-	}
-
-	if err := s.srv.cfg.Devices.Delete(ctx, tenant, dev.ID); err != nil {
-		s.log.Error("deleting device failed", "device", dev.ID, "error", err)
-		s.replyError(f.ReqID, ErrCodeInternal, "could not delete the device: "+err.Error())
-		return
-	}
-
-	// Loud on purpose. This is the one operation here with no way back, and the
-	// log line is the only trace left once the rows are gone.
-	s.log.Warn("device deleted",
-		"device", dev.ID, "label", dev.Label, "by", who.email,
-		"messages", out.Messages, "chats", out.Chats, "media", out.Media)
-
-	if len(objects) > 0 {
-		removed, failed := s.removeObjects(ctx, tenantUUID, objects)
-		if failed > 0 {
-			notes = append(notes, fmt.Sprintf(
-				"%d attachment object(s) could not be removed from storage and remain as ciphertext",
-				failed))
-		}
-		s.log.Info("attachment objects removed", "device", dev.ID, "removed", removed, "failed", failed)
-	}
-
-	out.Note = strings.Join(notes, "; ")
-	s.reply(TypeDeviceGone, f.ReqID, out)
-	s.srv.BroadcastDeviceStatus(tenant, dev.ID, string(wa.StatusOffline), "deleted")
-}
-
-// removeObjects deletes the objects no media row still references.
-func (s *session) removeObjects(ctx context.Context, tenant uuid.UUID, keys []string) (removed, failed int) {
-	orphans, err := store.Unreferenced(ctx, s.srv.cfg.Pool, tenant, keys)
-	if err != nil {
-		s.log.Warn("could not tell which attachment objects are unreferenced", "error", err)
-		return 0, len(keys)
-	}
-	for _, key := range orphans {
-		storage := s.srv.cfg.Storage
-		if storage == nil {
-			storage = store.NewStorage(s.srv.cfg.Pool)
-		}
-		if err := storage.DeleteObject(context.WithoutCancel(ctx), tenant, key, s.srv.cfg.Blob.Delete); err != nil {
-			s.log.Warn("could not remove an attachment object", "key", key, "error", err)
-			failed++
-			continue
-		}
-		removed++
-	}
-	return removed, failed
-}
-
 // handleAPIKeysList reports the tenant's machine credentials.
 func (s *session) handleAPIKeysList(ctx context.Context, f Frame) {
 	if _, ok := s.requireAdmin(f.ReqID); !ok {
@@ -567,7 +410,7 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 	// Every grant hands the number's key on, to a person, a standing service
 	// account or an assistant's reader alike: it waits for the person's fresh
 	// step-up, as a connection does (internal/stepup).
-	if !s.stepUpForGrant(ctx, f.ReqID, who) {
+	if !s.stepUpRecent(ctx, f.ReqID, who) {
 		return
 	}
 
@@ -794,13 +637,13 @@ func (s *Server) cancelDevicePairing(tenant, device string) {
 	}
 }
 
-// stepUpForGrant answers a grant from a session whose person has not proved
-// themselves within the step-up window. Whoever receives it, a grant is a
-// copy of a number's key: given to an account whose private key someone
-// else holds (a standing service account, or a member who signed up from an
-// invitation), it reads the archive for as long as it stands, so a browser
-// left open must not be enough to make one.
-func (s *session) stepUpForGrant(ctx context.Context, reqID string, who actor) bool {
+// stepUpRecent refuses a person whose session has not proved itself within
+// the step-up window (internal/stepup), with step_up_required: the console
+// asks and tries again. A grant asks it, because whoever receives one, it is
+// a copy of a number's key, and a browser left open must not be enough to
+// make one; a deletion, because its WhatsApp logout cannot be undone; and a
+// recovery, because it switches every key copy of the number back on.
+func (s *session) stepUpRecent(ctx context.Context, reqID string, who actor) bool {
 	checker := s.srv.cfg.StepUp
 	if checker == nil && s.srv.cfg.Sessions != nil {
 		checker = stepup.Recent(s.srv.cfg.Sessions)

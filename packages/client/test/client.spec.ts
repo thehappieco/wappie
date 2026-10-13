@@ -142,6 +142,24 @@ describe('requests and pushes on one socket', () => {
     conn.close()
   })
 
+  it('keeps an error frame\'s other fields, the readers of device_has_readers among them', async () => {
+    const readers = [{ user_id: 'u', name: 'Ana', email: 'ana@acme.test' }]
+    const server = await serve((frame, send) => {
+      const p = frame.t === P.TypeDeviceDelete
+        ? { code: P.ErrDeviceHasReaders, message: 'people still read this number', readers }
+        : { code: P.ErrNotFound, message: 'no such device' }
+      send({ t: P.TypeError, r: frame.r, p })
+    })
+    const conn = await Connection.connect({ serverURL: server.url, credential: { kind: 'api_key', token: 'k' } })
+
+    const refused = await conn.request(P.TypeDeviceDelete, { device_id: 'x', confirm: 'x' }, P.TypeDeviceGone).catch((e: unknown) => e)
+    expect(refused).toBeInstanceOf(ProtocolError)
+    expect((refused as ProtocolError).details).toEqual({ readers })
+    const plain = await conn.request(P.TypeChatsList, { device_id: 'x' }, P.TypeChats).catch((e: unknown) => e)
+    expect((plain as ProtocolError).details).toEqual({})
+    conn.close()
+  })
+
   it('does not lose a push that arrives while a request is waiting', async () => {
     // The bug this prevents: a reader that consumes frames on behalf of one
     // request swallows the live traffic that arrives in the meantime, and the

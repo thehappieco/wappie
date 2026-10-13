@@ -15,9 +15,11 @@ import (
 	"whatserver2/internal/wsapi"
 )
 
+// Devices is the devices listing. Its own shape rather than wsapi.Devices:
+// the socket's carries a person's notices, which an API key never has.
 type Devices struct {
-	TenantID string `json:"tenant_id"`
-	wsapi.Devices
+	TenantID string             `json:"tenant_id"`
+	Devices  []wsapi.DeviceInfo `json:"devices"`
 }
 type Chats struct {
 	TenantID string `json:"tenant_id"`
@@ -93,7 +95,7 @@ func (h *Handler) devices(q *request) {
 		info.Running = h.Running != nil && row.Status == wa.StatusOnline && !row.Paused && h.Running(row.ID)
 		out = append(out, info)
 	}
-	q.finish(Devices{q.actor.Tenant.String(), wsapi.Devices{Devices: out}})
+	q.finish(Devices{q.actor.Tenant.String(), out})
 }
 
 func (h *Handler) chats(q *request) {

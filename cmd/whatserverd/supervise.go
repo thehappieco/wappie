@@ -6,6 +6,8 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/google/uuid"
+
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -60,13 +62,18 @@ func (a *app) claimUnheldDevices(ctx context.Context, attempts map[string]int) {
 		return
 	}
 
+	// Taken before the lists, so a start or a reservation made after them is
+	// never in it, and never released by this pass.
+	snapshot := a.registry.Held()
 	held := map[string]bool{}
-	for _, id := range a.registry.Running() {
-		held[id] = true
+	for _, h := range snapshot {
+		held[h.ID] = true
 	}
 
+	listed := map[string]tenantList{}
 	for _, tenant := range tenants {
 		devices, err := a.devices.List(ctx, tenant.String())
+		listed[tenant.String()] = tenantList{devices: devices, err: err}
 		if err != nil {
 			a.log.Error("supervise: listing devices failed", "tenant", tenant, "error", err)
 			continue
@@ -82,6 +89,67 @@ func (a *app) claimUnheldDevices(ctx context.Context, attempts map[string]int) {
 		for _, d := range needsClaim(devices, held) {
 			a.claim(ctx, tenant.String(), d, attempts)
 		}
+	}
+	for _, h := range toRelease(snapshot, listed) {
+		a.release(ctx, h.ID, "no longer live and unpaused here")
+	}
+}
+
+// tenantList is one workspace's devices.List this tick, or its failure.
+type tenantList struct {
+	devices []store.Device
+	err     error
+}
+
+// toRelease picks the devices this process holds and should not: held,
+// while its workspace's list, which succeeded this tick, does not show it
+// live and unpaused (it was paused, deleted and so hidden, or moved out).
+//
+// Separated from the I/O for the same reason as needsClaim, and with the
+// same two opposite mistakes. A client left running keeps the device lock,
+// so a deletion's logout elsewhere waits on it, and it keeps relaying
+// presence and typing for a number nobody may read. Releasing on a list that
+// failed would stop every running number of the workspace over one
+// transient error, so a failed list releases nothing; and neither does a
+// reservation with no device yet, or a client a deletion is logging out
+// here, which the deletion stops itself.
+func toRelease(held []wa.HeldDevice, listed map[string]tenantList) []wa.HeldDevice {
+	var out []wa.HeldDevice
+	for _, h := range held {
+		if h.Reserved || h.Unlinking {
+			continue
+		}
+		list, ok := listed[h.TenantID]
+		if !ok || list.err != nil {
+			continue
+		}
+		live := false
+		for _, d := range list.devices {
+			if d.ID == h.ID && !d.Paused {
+				live = true
+				break
+			}
+		}
+		if !live {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// release stops a number this process holds and forgets its pipeline, unless
+// a deletion is logging it out here.
+func (a *app) release(ctx context.Context, deviceID, why string) {
+	if a.registry == nil || a.registry.Unlinking(deviceID) {
+		return
+	}
+	if _, held := a.registry.Get(deviceID); !held {
+		return
+	}
+	a.log.Info("supervise: releasing a number", "device", deviceID, "reason", why)
+	a.registry.Stop(context.WithoutCancel(ctx), deviceID)
+	if id, err := uuid.Parse(deviceID); err == nil && a.router != nil {
+		a.router.Forget(id)
 	}
 }
 

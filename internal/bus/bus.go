@@ -54,14 +54,22 @@ func New() *Bus { return &Bus{subs: map[uuid.UUID]map[*Subscription]struct{}{}} 
 var _ ingest.Publisher = (*Bus)(nil)
 
 // Filter narrows what a subscription receives.
+//
+// An empty set delivers nothing. It used to mean every device of the
+// tenant, and delivery checks no access per event, so a subscription whose
+// only number was deleted would have started receiving every other number's
+// traffic, including numbers whose key its owner does not hold. Every
+// device is All, which nothing sets today.
 type Filter struct {
-	// Devices limits delivery to these device ids. Empty means all of the
-	// tenant's devices.
+	// Devices limits delivery to these device ids. Never changed in place:
+	// DropDevice swaps in a copy.
 	Devices map[uuid.UUID]struct{}
+	// All delivers every device of the tenant, and Devices is ignored.
+	All bool
 }
 
 func (f Filter) allows(ev ingest.Event) bool {
-	if len(f.Devices) == 0 {
+	if f.All {
 		return true
 	}
 	_, ok := f.Devices[ev.DeviceID]
@@ -82,6 +90,11 @@ type Subscription struct {
 	replaying bool
 	buffer    []ingest.Event
 	closed    bool
+	// ended is set when DropDevice took the last device of the filter:
+	// nothing more is delivered, and done is closed, so the reader can tell
+	// its client. The events channel stays open until Close.
+	ended bool
+	done  chan struct{}
 
 	// lagged records that the queue overflowed, and the sequence at which it
 	// happened, so the client can be told where to resume from.
@@ -101,6 +114,7 @@ func (b *Bus) Subscribe(tenant uuid.UUID, filter Filter) *Subscription {
 		tenant: tenant,
 		filter: filter,
 		events: make(chan ingest.Event, queueDepth),
+		done:   make(chan struct{}),
 		// Set before registration, not after: an event arriving between the
 		// two must be buffered, and this is the flag that decides.
 		replaying: true,
@@ -117,6 +131,11 @@ func (b *Bus) Subscribe(tenant uuid.UUID, filter Filter) *Subscription {
 // Events yields delivered events. Closed when the subscription is.
 func (s *Subscription) Events() <-chan ingest.Event { return s.events }
 
+// Ended is closed when DropDevice removed the subscription's last device.
+// The subscription delivers nothing from then on; its reader tells its
+// client and calls Close.
+func (s *Subscription) Ended() <-chan struct{} { return s.done }
+
 // EndReplay releases buffered events and switches to live delivery.
 //
 // throughSeq is the highest sequence the caller already delivered from history;
@@ -124,7 +143,9 @@ func (s *Subscription) Events() <-chan ingest.Event { return s.events }
 func (s *Subscription) EndReplay(throughSeq int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.replaying {
+	if !s.replaying || s.closed || s.ended {
+		s.replaying = false
+		s.buffer = nil
 		return
 	}
 	// The flag is cleared inside the same critical section that drains the
@@ -202,12 +223,10 @@ func (b *Bus) Publish(tenant uuid.UUID, ev ingest.Event) {
 }
 
 func (s *Subscription) offer(ev ingest.Event) {
-	if !s.filter.allows(ev) {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	// The filter is read under the lock: DropDevice replaces it.
+	if s.closed || s.ended || !s.filter.allows(ev) {
 		return
 	}
 	if s.replaying {
@@ -220,6 +239,9 @@ func (s *Subscription) offer(ev ingest.Event) {
 // deliverLocked sends one event, marking the subscription lagged rather than
 // blocking or disconnecting when the queue is full.
 func (s *Subscription) deliverLocked(ev ingest.Event) {
+	if s.closed || s.ended {
+		return
+	}
 	select {
 	case s.events <- ev:
 	default:
@@ -243,6 +265,48 @@ func (s *Subscription) deliverLocked(ev ingest.Event) {
 		}
 		s.dropped++
 	}
+}
+
+// DropDevice takes a device out of every subscription of the tenant, when
+// the number is deleted: right after the commit in the process that deleted
+// it, and on the deletion's notification everywhere else. A subscription it
+// was the last device of is ended (see Ended) rather than left with an
+// empty filter. Each filter is replaced by a copy under its subscription's
+// lock, so a publisher or a replay reading the old one is never raced.
+func (b *Bus) DropDevice(tenant, device uuid.UUID) {
+	b.mu.RLock()
+	subs := make([]*Subscription, 0, len(b.subs[tenant]))
+	for sub := range b.subs[tenant] {
+		subs = append(subs, sub)
+	}
+	b.mu.RUnlock()
+	for _, sub := range subs {
+		sub.drop(device)
+	}
+}
+
+func (s *Subscription) drop(device uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.ended || s.filter.All {
+		return
+	}
+	if _, ok := s.filter.Devices[device]; !ok {
+		return
+	}
+	next := make(map[uuid.UUID]struct{}, len(s.filter.Devices)-1)
+	for id := range s.filter.Devices {
+		if id != device {
+			next[id] = struct{}{}
+		}
+	}
+	if len(next) == 0 {
+		s.ended = true
+		s.buffer = nil
+		close(s.done)
+		return
+	}
+	s.filter = Filter{Devices: next}
 }
 
 // Subscribers reports how many subscriptions a tenant has. For metrics.

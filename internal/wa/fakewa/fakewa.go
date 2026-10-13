@@ -72,6 +72,8 @@ type Client struct {
 	activeReceipts uint8
 	uploads        int
 	disconnects    int
+	connects       int
+	logouts        int
 
 	// Joins are the group invitations this client was asked to accept.
 	// Recorded because joining is outward facing and a test has to be able to
@@ -114,6 +116,7 @@ type Client struct {
 	JoinErr      error
 	PollVoteErr  error
 	ConnectErr   error
+	LogoutErr    error
 	SendErr      error
 	PairCode     string
 	PairErr      error
@@ -208,6 +211,22 @@ func (c *Client) Disconnects() int {
 	return c.disconnects
 }
 
+// Connects returns how many times Connect was called, failed calls included.
+func (c *Client) Connects() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connects
+}
+
+// Logouts returns how many times Logout was called. A logout is the one
+// WhatsApp call that cannot be undone, so a test of a refused deletion has
+// to be able to say it never happened.
+func (c *Client) Logouts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.logouts
+}
+
 // ---------------------------------------------------------------------------
 // Driving the fake from a test.
 // ---------------------------------------------------------------------------
@@ -261,6 +280,7 @@ func (c *Client) SetLoggedIn(v bool) {
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.connects++
 	if c.ConnectErr != nil {
 		return c.ConnectErr
 	}
@@ -290,6 +310,10 @@ func (c *Client) IsLoggedIn() bool {
 func (c *Client) Logout(context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.logouts++
+	if c.LogoutErr != nil {
+		return c.LogoutErr
+	}
 	c.connected, c.loggedIn = false, false
 	return nil
 }

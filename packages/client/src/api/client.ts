@@ -26,10 +26,18 @@ export class ProtocolError extends Error {
   constructor(
     readonly code: string,
     readonly rawMessage: string,
+    /** The error frame's other fields: device_has_readers' readers, for one. */
+    readonly details: Readonly<Record<string, unknown>> = {},
   ) {
     super(protocolErrorMessage(rawMessage))
     this.name = 'ProtocolError'
   }
+}
+
+/** A ProtocolError from an error frame, keeping every field but the two it names. */
+function wireError(err: P.WireError): ProtocolError {
+  const { code, message, ...details } = err
+  return new ProtocolError(code, message, details)
 }
 
 interface Waiter {
@@ -98,7 +106,7 @@ export class Connection {
           const err = frame.p as P.WireError
           socket.onclose = null
           socket.close()
-          reject(new ProtocolError(err.code, err.message))
+          reject(wireError(err))
           return
         }
         if (frame.t !== P.TypeWelcome) {
@@ -157,7 +165,7 @@ export class Connection {
         resolve: (f) =>
           settle(() => {
             const err = f.p as P.WireError
-            reject(new ProtocolError(err.code, err.message))
+            reject(wireError(err))
           }),
         reject: (e) => settle(() => reject(e)),
       })
