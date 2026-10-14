@@ -2,21 +2,30 @@ package label
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	kc "github.com/thehappieco/kit/contract"
+	kitvectors "github.com/thehappieco/kit/vectors"
 )
+
+// atSigns are "@" and the characters that read as one, as the contract's
+// rule counts them: an address hides behind them too.
+const atSigns = "@＠﹫"
 
 // The hint the database takes (0050's CHECK on item_events.hint and
 // device_notices.hint).
 var hintShape = regexp.MustCompile(`^…[0-9]{4}$`)
 
-// TestContractLabel runs Wappie's own table (the plan's test 41) and the
-// platform contract's label vectors, which every label Wappie keeps must
-// pass: an app's labels are the contract's CleanLabel, and the platform
-// cleans them again on intake.
+// TestContractLabel runs Wappie's own table (the plan's test 41), whose
+// labels the contract's vectors (TestContractLabelVectors) do not cover:
+// placeholders, ids, the number itself and the push name. Every label
+// Wappie keeps must pass the contract's rule, which the platform applies
+// again on intake.
 func TestContractLabel(t *testing.T) {
 	var table struct {
 		Cases []struct {
@@ -55,13 +64,18 @@ func TestContractLabel(t *testing.T) {
 	}
 }
 
-// TestContractVectors runs the contract's own vectors (v1 labels.json, at
-// platform 463f320): every clean case through Contract, as a label of a
-// number whose phone it does not hold, and the number-shaped hints.
-func TestContractVectors(t *testing.T) {
+// TestContractLabelVectors is TB3 of release B's plan, in place of the
+// copy test 41 read: the contract's own label vectors, as the kit go.mod
+// requires embeds them (vectors.FS, platform/contract-v1/labels.json, byte
+// for byte the platform's). Every clean case goes through Clean and, as the
+// label of a number whose phone it does not hold, through Contract; every
+// hint is checked against the kit's ValidHint, and the number-shaped ones
+// against what HintFromPN makes and what the database's CHECK takes.
+func TestContractLabelVectors(t *testing.T) {
 	var vectors struct {
-		Kind  string `json:"kind"`
-		Clean []struct {
+		Format string `json:"format"`
+		Kind   string `json:"kind"`
+		Clean  []struct {
 			Raw   string `json:"raw"`
 			Clean string `json:"clean"`
 		} `json:"clean"`
@@ -70,9 +84,17 @@ func TestContractVectors(t *testing.T) {
 			Valid bool   `json:"valid"`
 		} `json:"hints"`
 	}
-	readJSON(t, "testdata/contract-v1-labels.json", &vectors)
-	if vectors.Kind != "labels" || len(vectors.Clean) == 0 {
-		t.Fatalf("not the labels vectors: %q, %d cases", vectors.Kind, len(vectors.Clean))
+	raw, err := fs.ReadFile(kitvectors.FS, "platform/contract-v1/labels.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	// labels.json is frozen at 34 labels and 14 hints: fewer means another
+	// file, or a kit that lost cases.
+	if vectors.Format != "thehappie-contract/vectors" || vectors.Kind != "labels" || len(vectors.Clean) < 34 || len(vectors.Hints) < 14 {
+		t.Fatalf("not the labels vectors: %q %q, %d labels, %d hints", vectors.Format, vectors.Kind, len(vectors.Clean), len(vectors.Hints))
 	}
 	for _, v := range vectors.Clean {
 		if got := Clean(v.Raw); got != v.Clean {
@@ -80,6 +102,9 @@ func TestContractVectors(t *testing.T) {
 		}
 		if got := Clean(v.Clean); got != v.Clean {
 			t.Errorf("cleaning a clean label changed it: %q became %q", v.Clean, got)
+		}
+		if v.Clean != "" && !kc.ValidLabel(v.Clean) {
+			t.Errorf("%q: the kit refuses the label it cleaned", v.Clean)
 		}
 		var want *string
 		if v.Clean != "" {
@@ -91,13 +116,22 @@ func TestContractVectors(t *testing.T) {
 		}
 		checkKept(t, v.Raw, got)
 	}
-	// Wappie's hints are only ever a number's: "…" and four ASCII digits.
 	for _, h := range vectors.Hints {
+		if kc.ValidHint(h.Hint) != h.Valid {
+			t.Errorf("kit ValidHint(%q) should be %v", h.Hint, h.Valid)
+		}
+		// Wappie's hints are only ever a number's: "…" and four ASCII digits.
 		if strings.Contains(h.Hint, "@") {
 			continue
 		}
 		if hintShape.MatchString(h.Hint) != h.Valid {
 			t.Errorf("hint %q: the database's shape says %v, the contract %v", h.Hint, !h.Valid, h.Valid)
+		}
+		if digits, ok := strings.CutPrefix(h.Hint, kc.Ellipsis); ok && h.Valid {
+			got := HintFromPN("55119012" + digits + ":7@s.whatsapp.net")
+			if got == nil || *got != h.Hint {
+				t.Errorf("HintFromPN for the hint %q gave %s", h.Hint, show(got))
+			}
 		}
 	}
 }
@@ -118,8 +152,8 @@ func TestHintNeverFromLID(t *testing.T) {
 		if (got == nil) != (tc.want == "") || got != nil && *got != tc.want {
 			t.Errorf("HintFromPN(%q) = %v, want %q", tc.pn, show(got), tc.want)
 		}
-		if got != nil && !hintShape.MatchString(*got) {
-			t.Errorf("HintFromPN(%q) = %q, which the database refuses", tc.pn, *got)
+		if got != nil && (!hintShape.MatchString(*got) || !kc.ValidHint(*got)) {
+			t.Errorf("HintFromPN(%q) = %q, which the database or the contract refuses", tc.pn, *got)
 		}
 	}
 	// A LID-only number has no phone number to give a hint: the stored pn

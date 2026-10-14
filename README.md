@@ -342,8 +342,9 @@ asset, never from a local build); `npm install` in `packages/cli`,
 `node packages/client/test/kit/copy.mjs`. A bump that changes the kit's
 JavaScript changes the reader's PCR0, so the client's pin moves only in a
 reader release. Between reader releases `go.mod` alone may move ahead, for
-the server (kit v0.5.0's platform wrap check and relying party rule, with
-the client still on v0.3.0); it never trails the client. `TestKitVersionsAgree`
+the server (kit v0.5.0's platform wrap check and relying party rule, then
+v0.8.0's contract client and THCSEAL envelopes, with the client still on
+v0.3.0); it never trails the client. `TestKitVersionsAgree`
 checks that, and that the client's manifest, its lockfile and every package
 linking it name the same asset.
 

@@ -9,21 +9,18 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
+	kc "github.com/thehappieco/kit/contract"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
 
 // MaxLabel is the longest label, in code points: the contract's limit, and
 // the CHECK on item_events.label and device_notices.label (0050).
-const MaxLabel = 80
-
-// ellipsis starts a masked run of digits and a hint: U+2026, never dots.
-const ellipsis = "…"
+const MaxLabel = kc.MaxLabel
 
 // digitRun is how many digits make a run that could be a phone number.
-const digitRun = 7
+const digitRun = kc.DigitRun
 
 // placeholders are the names Wappie gives a number nobody named: the
 // server's own default (wsapi's pair handler), the console's "Número do
@@ -58,18 +55,18 @@ var (
 
 // Contract is the label a notice and an event row keep of a number (the
 // plan's contractLabel, D15): the platform contract's rule for a name a
-// person gave an item (docs/contract/v1, 8.1, contract.CleanLabel), applied
-// to the number's label, else its WhatsApp push name. Nil when neither
-// leaves anything.
+// person gave an item (docs/contract/v1, 8.1, the kit's contract.CleanLabel),
+// applied to the number's label, else its WhatsApp push name. Nil when
+// neither leaves anything.
 //
 // First, as the contract asks of the app, a candidate is set aside when it
 // is a placeholder, an opaque or legacy id, or the number itself: its digits
-// hold the last seven of the phone number's. Then, after NFC, anything with
-// an "@" (or a character that reads as one) goes, since it may be an
-// address; control and format characters go; whitespace collapses; every
-// run of seven or more digits, with the separators people type between
-// them, becomes "…" and its last four digits; and it is cut at 80 code
-// points, never leaving half a flag.
+// hold the last seven of the phone number's. Then, after NFC, the kit's
+// rule: anything with an "@" (or a character that reads as one) goes, since
+// it may be an address; control and format characters go; whitespace
+// collapses; every run of seven or more digits, with the separators people
+// type between them, becomes "…" and its last four digits; and it is cut at
+// 80 code points, never leaving half a flag.
 //
 // The console never computes this: notices render the server's snapshot.
 func Contract(label, pushName, pn, deviceID string) *string {
@@ -103,35 +100,25 @@ func setAside(candidate, last7, deviceID string) bool {
 
 // Clean is the contract's CleanLabel over NFC text: what of a name may
 // leave Wappie, or "" when nothing does. Cleaning a clean label changes
-// nothing.
+// nothing. The rule is the kit's (contract.CleanLabel), the one the
+// platform applies again on intake, so Wappie keeps no copy of it; the NFC
+// is the app's to apply first (README 8.1), and so is Contract's own step.
 func Clean(raw string) string {
-	s := clean(norm.NFC.String(raw))
+	s := kc.CleanLabel(norm.NFC.String(raw))
 	if !norm.NFC.IsNormalString(s) {
 		// Taking hidden characters out can bring marks together that NFC
 		// composes: compose them, and clean what that left.
-		s = clean(norm.NFC.String(s))
+		s = kc.CleanLabel(norm.NFC.String(s))
 	}
 	return s
-}
-
-// atSigns are "@" and the characters that read as one: an address hides
-// behind them too.
-const atSigns = "@＠﹫"
-
-func clean(raw string) string {
-	if !utf8.ValidString(raw) || strings.ContainsAny(raw, atSigns) {
-		return ""
-	}
-	// Whitespace after the hidden characters, so a run of digits a no-break
-	// space split is seen whole.
-	s := strings.Join(strings.FieldsFunc(stripHidden(raw), unicode.IsSpace), " ")
-	return cut(maskDigitRuns(s), MaxLabel)
 }
 
 // hidden reports the characters a label never carries: C0 and C1 controls,
 // and every format character (bidirectional controls, zero-width
 // characters, the soft hyphen, the word joiner), with the combining grapheme
-// joiner, which could hide, split or reorder what a reader sees.
+// joiner, which could hide, split or reorder what a reader sees. The
+// contract's rule drops the same; Contract uses it only to compare a
+// candidate with a placeholder or an id before the rule runs.
 func hidden(r rune) bool {
 	return r < 0x20 || r >= 0x7f && r <= 0x9f || r == 0x034f || unicode.Is(unicode.Cf, r)
 }
@@ -143,75 +130,6 @@ func stripHidden(s string) string {
 		}
 		return r
 	}, s)
-}
-
-// separator reports the characters that may sit between the digits of a
-// number someone typed: "+55 (11) 91234-5678", "11.91234.5678",
-// "11/91234/5678", "55_11_91234_5678", "119·1234·5678", any dash, and the
-// minus sign, which reads as one.
-func separator(r rune) bool {
-	switch r {
-	case ' ', '.', ',', '/', '_', '(', ')', '+', '-', '·', '•', '*', '#', '−':
-		return true
-	}
-	return unicode.Is(unicode.Pd, r)
-}
-
-// maskDigitRuns replaces every run of seven or more digits, of any script,
-// with separators between them, by "…" and the run's last four digits. The
-// separators inside a run go with it, and so does a "+" or "(" just before
-// it; the rest around it stays.
-func maskDigitRuns(s string) string {
-	rs := []rune(s)
-	var out []rune
-	for i := 0; i < len(rs); {
-		if !unicode.IsDigit(rs[i]) {
-			out = append(out, rs[i])
-			i++
-			continue
-		}
-		last, digits := i, []rune{}
-		for j := i; j < len(rs); j++ {
-			if unicode.IsDigit(rs[j]) {
-				digits = append(digits, rs[j])
-				last = j
-				continue
-			}
-			if !separator(rs[j]) {
-				break
-			}
-		}
-		end := last + 1
-		if len(digits) >= digitRun {
-			for len(out) > 0 && (out[len(out)-1] == '+' || out[len(out)-1] == '(') {
-				out = out[:len(out)-1]
-			}
-			out = append(out, []rune(ellipsis)...)
-			out = append(out, digits[len(digits)-4:]...)
-		} else {
-			out = append(out, rs[i:end]...)
-		}
-		i = end
-	}
-	return string(out)
-}
-
-// cut keeps max code points, never leaving a lone regional indicator (half
-// a flag).
-func cut(s string, max int) string {
-	rs := []rune(s)
-	if len(rs) <= max {
-		return s
-	}
-	rs = rs[:max]
-	n := 0
-	for i := len(rs) - 1; i >= 0 && rs[i] >= 0x1f1e6 && rs[i] <= 0x1f1ff; i-- {
-		n++
-	}
-	if n%2 == 1 {
-		rs = rs[:len(rs)-1]
-	}
-	return strings.TrimSpace(string(rs))
 }
 
 // asciiDigits is the decimal digits of s, of any script, as ASCII.
@@ -262,6 +180,6 @@ func HintFromPN(pn string) *string {
 	if len(digits) < 4 {
 		return nil
 	}
-	hint := ellipsis + string(digits[len(digits)-4:])
+	hint := kc.Ellipsis + string(digits[len(digits)-4:])
 	return &hint
 }
