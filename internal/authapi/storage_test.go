@@ -15,8 +15,8 @@ import (
 )
 
 // The storage screen shows an owner what a deleted number still stores, and
-// an admin, who may not learn that a number is waiting for its purge, the
-// same totals with those bytes in the unlabelled line.
+// an admin, who may not learn which number is deleted nor when, the same
+// totals with those bytes in the unlabelled line.
 func TestStorageScreenShowsExcludedBytesToOwnersOnly(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

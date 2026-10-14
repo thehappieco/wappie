@@ -9,7 +9,7 @@ In the console, open the number's details and choose **Move to Personal**. The p
 - The destination is your own active Personal workspace, with an available number binding and storage capacity.
 - History, attachments, WhatsApp identity and keys are preserved. The Team's API keys for every number, and your own keys limited to chosen numbers, stop reaching it; another member's key limited to it blocks the move until it is revoked.
 - Your own assistants and AI authorizations connected to the number end, with `access_lost`.
-- The number is paused when the transfer completes. Select **Open Personal workspace**, check the history, then choose **Resume synchronization** in the number's details.
+- The number is paused when the transfer completes. Select **Open Personal workspace**, check the history, then choose **Resume sync** in the number's details.
 - The Team's subscription is not transferred: the operation uses capacity already available in Personal. There is no automatic purchase.
 - For an external installation, the app attempts to replace the commercial binding with the same number in the remote Personal workspace. If the license update fails, the operational transfer remains complete; use **Retry license update** or replace the binding under **Installations and licenses**.
 

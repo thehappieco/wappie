@@ -47,11 +47,15 @@ nobody and logs nothing.
 
 | Type | Written by | Actor | Readers | Dedupe key | In the ledger |
 | --- | --- | --- | --- | --- | --- |
-| `deleted` | `device.delete`, by an owner | `person` | Who read the number just before | `deleted:<device>:<deleted_at>` | yes |
+| `deleted` | `device.delete`, by an owner; or a restore's replay | `person` | Who read the number just before | `deleted:<device>:<deleted_at>` | yes |
 | `sync_paused` | `device.stop` by a person or an API key, when it turns a live number's sync off and someone other than the actor reads it | `person`, or `key` | The readers, the actor included | `sync_paused:<device>:<instant>` | no |
-| `recovered` | `device.recover`, by an owner | `person` | Who reads the number after the recovery | `recovered:<device>:<deleted_at it reverses>` | yes |
+| `recovered` | `device.recover`, by an owner; or a restore's replay | `person` | Who reads the number after the recovery | `recovered:<device>:<deleted_at it reverses>` | yes |
 | `purged` | The purge, at its end; or a restore's replay | `app` | None | `purged:<device>:<deleted_at>` | yes |
 | `moved_out` | `device.transfer` to Personal, in the Team it leaves | `person` | The Team's readers before the move: at most the actor, since a move needs nobody else to have access | `moved_out:<device>:<completed_at>` | yes |
+
+A row the replay writes has no readers. Its actor is the ledger's
+`deleted_by` on a `deleted` row, when that person still exists, and nobody on
+a `recovered` row.
 
 Pauses Wappie makes on its own (before a move, after a failed resume, at a
 deletion, at a storage stop) write no row. A pause that tells nobody writes

@@ -1244,6 +1244,77 @@ func TestListOutboundPages(t *testing.T) {
 	}
 }
 
+// A deleted number's ledger rows (its chats, its message uids) are read by
+// nobody until a recovery brings them back, as every read of its archive
+// is (decision 0038): the deletion ends the connection that drafted on it,
+// and its consenter and an admin then page that connection's ledger without
+// them, while the rows stay stored for the recovery or the purge.
+func TestLedgerLeavesADeletedNumberOut(t *testing.T) {
+	f := newSendFixture(t)
+	ctx := context.Background()
+	admin, _ := transferOwner(t, f.archive, "admin")
+	conn, key, _ := f.sendingConsent(ctx, t, f.owner, withSelf)
+	draft, err := f.draft(ctx, conn, key, friendChat, roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.selfSend(ctx, conn, key, newRef(), roomy); err != nil {
+		t.Fatal(err)
+	}
+	page := func(viewer uuid.UUID) []store.Outbound {
+		t.Helper()
+		rows, _, err := f.conns.ConsoleOutbound(ctx, f.tenant, viewer, conn.ID, store.OutboundQuery{Limit: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	stored := func() int {
+		t.Helper()
+		var n int
+		f.inTenant(ctx, t, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM mcp_outbound WHERE connection_id = $1`, conn.ID).Scan(&n)
+		})
+		return n
+	}
+	if rows := page(admin); len(rows) != 2 {
+		t.Fatalf("before the deletion an admin pages %d rows", len(rows))
+	}
+	devices := store.NewDevices(f.pool)
+	if _, err := devices.Quarantine(ctx, f.tenant, f.owner, f.device, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.row(ctx, t, conn.ID); got.Status != "revoked" {
+		t.Fatalf("the connection is %s after the deletion", got.Status)
+	}
+	for name, viewer := range map[string]uuid.UUID{"the consenter": f.owner, "an admin": admin} {
+		if rows := page(viewer); len(rows) != 0 {
+			t.Fatalf("%s pages a deleted number's rows: %+v", name, rows)
+		}
+	}
+	if rows, _, err := f.conns.ListOutbound(ctx, f.tenant, conn.ID, store.OutboundQuery{Limit: 20, Device: &f.device}); err != nil || len(rows) != 0 {
+		t.Fatalf("narrowed to the deleted number: %d %v", len(rows), err)
+	}
+	if _, err := f.conns.Draft(ctx, f.tenant, f.owner, draft); !errors.Is(err, store.ErrOutboundNotFound) {
+		t.Fatalf("the consenter read a deleted number's draft: %v", err)
+	}
+	if pending, err := f.conns.PendingDrafts(ctx, f.tenant, f.owner, conn.ID); err != nil || len(pending) != 0 {
+		t.Fatalf("pending drafts of a deleted number: %d %v", len(pending), err)
+	}
+	if n := stored(); n != 2 {
+		t.Fatalf("%d rows stored while the number is deleted, want 2", n)
+	}
+	if _, err := devices.Recover(ctx, f.tenant, f.owner, f.device); err != nil {
+		t.Fatal(err)
+	}
+	if rows := page(admin); len(rows) != 2 {
+		t.Fatalf("after the recovery an admin pages %d rows", len(rows))
+	}
+	if o, err := f.conns.Draft(ctx, f.tenant, f.owner, draft); err != nil || o.Status != store.OutboundRevoked {
+		t.Fatalf("after the recovery the draft reads as %+v %v", o, err)
+	}
+}
+
 // The console's pause: the consenter, an owner or an admin pause; only the
 // consenter takes it off; and a connection that cannot send has no pause.
 func TestSendPause(t *testing.T) {

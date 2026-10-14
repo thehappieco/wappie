@@ -471,20 +471,72 @@ func TestRetentionStopsAtTheEndOfThePass(t *testing.T) {
 }
 
 // The ledger keeps a number's lines past the life of every snapshot that
-// may still be restored: decision 0027's 90 days, the daily prune's
-// interval and random delay (commercial deploy/prune-backups.sh and
+// may still be restored: under decision 0027's 90 days, since the daily
+// prune deletes a snapshot at 89 days less an hour and runs at most a day
+// and half an hour apart (commercial deploy/prune-backups.sh and
 // wappie-prune-backups.timer, whose test_backups.py holds them to what is
-// stated here), and slack for a host or an off-host copy that was down.
+// stated here), and slack for a host or an off-host copy whose expiry ran
+// late.
 func TestLedgerOutlivesTheBackups(t *testing.T) {
 	const (
 		backupsKeep = 90 * 24 * time.Hour
+		pruneAt     = 89*24*time.Hour - time.Hour
 		pruneEvery  = 24 * time.Hour
 		pruneDelay  = 30 * time.Minute
-		slack       = 24 * time.Hour
+		slack       = 3 * 24 * time.Hour
 	)
-	if ledgerKeep < backupsKeep+pruneEvery+pruneDelay+slack {
-		t.Fatalf("the ledger keeps a number %s after its newest line: a snapshot can be restored for %s",
-			ledgerKeep, backupsKeep+pruneEvery+pruneDelay)
+	if pruneAt+pruneEvery+pruneDelay >= backupsKeep {
+		t.Fatalf("a snapshot can be %s old before the prune deletes it", pruneAt+pruneEvery+pruneDelay)
+	}
+	if ledgerKeep < backupsKeep+slack {
+		t.Fatalf("the ledger keeps a number %s after its newest line: a snapshot can be restored for %s, and %s more on a late host",
+			ledgerKeep, backupsKeep, slack)
+	}
+}
+
+// The container layout (deploy/compose.yaml, deploy/Dockerfile) gives the
+// ledger's default directory a named volume that the image's user owns. A
+// read-only root with only /tmp writable would fail every export: the
+// ledgered event rows would never age out, 0050's down-step would refuse,
+// and a restore would have nothing to replay.
+func TestContainerKeepsTheLedger(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	dir := filepath.Dir(config.DefaultDeletionLedger)
+	compose := read("../../deploy/compose.yaml")
+	// The api service's block: its lines up to the next service or top-level key.
+	var api []string
+scan:
+	for _, line := range strings.Split(compose, "\n") {
+		next := line != "" && line[0] != ' ' || strings.HasPrefix(line, "  ") && len(line) > 2 && line[2] != ' ' && line[2] != '#'
+		switch {
+		case line == "  api:":
+			api = []string{line}
+		case api != nil && next:
+			break scan
+		case api != nil:
+			api = append(api, line)
+		}
+	}
+	block := strings.Join(api, "\n") + "\n"
+	if !strings.Contains(block, "read_only: true") || !strings.Contains(block, "- deletion-ledger:"+dir+"\n") {
+		t.Fatalf("the api service mounts no volume on %s:\n%s", dir, block)
+	}
+	top := compose[strings.LastIndex(compose, "\nvolumes:\n"):]
+	if !strings.Contains(top, "\n  deletion-ledger:\n") {
+		t.Fatalf("deploy/compose.yaml declares no deletion-ledger volume:\n%s", top)
+	}
+	dockerfile := read("../../deploy/Dockerfile")
+	made := strings.Index(dockerfile, "RUN install -d -o 10001 -g 10001 -m 0700 "+dir+"\n")
+	user := strings.LastIndex(dockerfile, "USER 10001:10001")
+	if made < 0 || user < made || !strings.Contains(dockerfile, "VOLUME "+dir+"\n") {
+		t.Fatalf("deploy/Dockerfile does not make %s for uid 10001 before its USER line", dir)
 	}
 }
 
@@ -1011,7 +1063,7 @@ func TestUnknownCommandNeverServes(t *testing.T) {
 	served := 0
 	serve := func() error { served++; return nil }
 	for _, args := range [][]string{{"deletion", "replay", "-ledger", "x"}, {"device", "purge-deleted"}, {"-h"}, {"--help"},
-		{"help"}, {"serve", "now"}, {""}} {
+		{"help"}, {"serve", "now"}, {""}, {"deletions", "replai"}, {"deletions"}, {"devices"}, {"devices", "purge"}} {
 		var usage usageError
 		if err := runCommand(args, serve); !errors.As(err, &usage) {
 			t.Fatalf("%q: %v", args, err)
@@ -1065,8 +1117,17 @@ func TestReplayCommandReadsTheLedger(t *testing.T) {
 	if err := os.WriteFile(damaged, append([]byte(`{"v":1,"event_id":"`+"\n"), raw...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := replay(damaged); err == nil || !strings.Contains(err.Error(), "damaged") {
+	// Every refusal ends with what the restore runbook greps for.
+	stop := func(err error) bool { return err != nil && strings.HasSuffix(err.Error(), "; do not start wappie-api") }
+	if out, err := replay(damaged); !stop(err) || !strings.Contains(err.Error(), "damaged") {
 		t.Fatalf("a damaged ledger: %v\n%s", err, out)
+	}
+	if out, err := replay(filepath.Join(dir, "missing.jsonl")); !stop(err) {
+		t.Fatalf("a missing ledger: %v\n%s", err, out)
+	}
+	var out bytes.Buffer
+	if err := deletionsCommand([]string{"replay", "-ledger", damaged}, &out); !stop(err) {
+		t.Fatalf("no -snapshot-time: %v", err)
 	}
 	if d, err := w.devices.Get(ctx, team.String(), device.String()); err != nil || d.Paused {
 		t.Fatalf("a refused replay changed the number: %+v %v", d, err)
@@ -1076,14 +1137,20 @@ func TestReplayCommandReadsTheLedger(t *testing.T) {
 	if err := os.WriteFile(torn, append(slices.Clone(raw), []byte(`{"v":1,"event_id":"`)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := replay(torn)
+	report, err := replay(torn)
 	if err != nil {
-		t.Fatalf("a torn ledger: %v\n%s", err, out)
+		t.Fatalf("a torn ledger: %v\n%s", err, report)
 	}
-	if !strings.Contains(out, "cut short") || !strings.Contains(out, "1 line(s) repeated an event") {
-		t.Fatalf("the replay's notes:\n%s", out)
+	if !strings.Contains(report, "cut short") || !strings.Contains(report, "1 line(s) repeated an event") {
+		t.Fatalf("the replay's notes:\n%s", report)
 	}
 	if _, err := w.devices.Get(ctx, team.String(), device.String()); !errors.Is(err, store.ErrNotFound) || !w.exists(t, team, device) {
 		t.Fatalf("the torn ledger's deletion was not replayed: %v", err)
+	}
+	// A snapshot taken after the ledger's newest line.
+	out.Reset()
+	if err := deletionsCommand([]string{"replay", "-ledger", torn, "-snapshot-time", time.Now().UTC().Format("20060102T150405Z")}, &out); !stop(err) ||
+		!strings.Contains(err.Error(), "nothing newer") {
+		t.Fatalf("a ledger that adds nothing: %v\n%s", err, out.String())
 	}
 }

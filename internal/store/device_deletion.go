@@ -864,8 +864,9 @@ type Leftover struct {
 	Present bool
 }
 
-// MaxUnlinkAttempts is how many logouts the janitor tries for one session;
-// after them the purge removes it by its fingerprint.
+// MaxUnlinkAttempts is how many logouts one session gets, the deletion's
+// own included, so the janitor tries at most MaxUnlinkAttempts-1 more; after
+// them the purge removes it by its fingerprint.
 const MaxUnlinkAttempts = 3
 
 // LeftoverSessions is the excluded numbers of a workspace whose session may

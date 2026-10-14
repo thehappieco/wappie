@@ -60,7 +60,7 @@ func checkDeletionLedger(cfg config.Config, file *ledger.File, log *slog.Logger)
 // devicesCommand is "whatserverd devices list-deleted|purge-deleted".
 func devicesCommand(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("devices: list-deleted or purge-deleted")
+		return usageError{arg: "devices"}
 	}
 	switch args[0] {
 	case "list-deleted":
@@ -98,13 +98,13 @@ func devicesCommand(args []string, out io.Writer) error {
 		}
 		return purgeDeleted(ctx, a, objects, *tenant, *device, *now, out)
 	}
-	return fmt.Errorf("devices: unknown command %q: list-deleted or purge-deleted", args[0])
+	return usageError{arg: "devices " + strings.Join(args, " ")}
 }
 
 // deletionsCommand is "whatserverd deletions export-ledger|replay".
 func deletionsCommand(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("deletions: export-ledger or replay")
+		return usageError{arg: "deletions"}
 	}
 	switch args[0] {
 	case "export-ledger":
@@ -121,35 +121,45 @@ func deletionsCommand(args []string, out io.Writer) error {
 		defer closeAll()
 		return exportAllLedger(ctx, a, out)
 	case "replay":
-		fs := flag.NewFlagSet("deletions replay", flag.ContinueOnError)
-		path := fs.String("ledger", "", "the deletion ledger to replay (required): the host's own, else the newest off-host copy")
-		snapshot := fs.String("snapshot-time", "", "the restored snapshot's stamp, YYYYMMDDTHHMMSSZ or RFC 3339 (required)")
-		dryRun := fs.Bool("dry-run", false, "run every step and roll it back: say what would change, and what would refuse, and change nothing")
-		addsNothing := fs.Bool("ledger-adds-nothing", false, "go on with a ledger that holds nothing newer than the snapshot")
-		var leave ids
-		fs.Var(&leave, "leave-excluded", "a number found in another workspace than its ledger says: exclude it where it is (repeatable)")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
+		// Every way it can fail says so: an operator restoring a backup
+		// starts wappie-api only after a replay that exited 0.
+		if err := replayCommand(args[1:], out); err != nil {
+			return fmt.Errorf("%w; do not start wappie-api", err)
 		}
-		if *path == "" || *snapshot == "" {
-			fs.Usage()
-			return errors.New("deletions replay: -ledger and -snapshot-time are required")
-		}
-		at, err := parseStamp(*snapshot)
-		if err != nil {
-			return fmt.Errorf("deletions replay: -snapshot-time: %w", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
-		defer cancel()
-		a, closeAll, err := setupCurrent(ctx)
-		if err != nil {
-			return err
-		}
-		defer closeAll()
-		return replayLedger(ctx, a, *path, store.ReplayOptions{DryRun: *dryRun, SnapshotTime: at,
-			LedgerAddsNothing: *addsNothing, LeaveExcluded: leave}, out)
+		return nil
 	}
-	return fmt.Errorf("deletions: unknown command %q: export-ledger or replay", args[0])
+	return usageError{arg: "deletions " + strings.Join(args, " ")}
+}
+
+// replayCommand is "whatserverd deletions replay".
+func replayCommand(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("deletions replay", flag.ContinueOnError)
+	path := fs.String("ledger", "", "the deletion ledger to replay (required): the host's own, else the newest off-host copy")
+	snapshot := fs.String("snapshot-time", "", "the restored snapshot's stamp, YYYYMMDDTHHMMSSZ or RFC 3339 (required)")
+	dryRun := fs.Bool("dry-run", false, "run every step and roll it back: say what would change, and what would refuse, and change nothing")
+	addsNothing := fs.Bool("ledger-adds-nothing", false, "go on with a ledger that holds nothing newer than the snapshot")
+	var leave ids
+	fs.Var(&leave, "leave-excluded", "a number found in another workspace than its ledger says: exclude it where it is (repeatable)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" || *snapshot == "" {
+		fs.Usage()
+		return errors.New("deletions replay: -ledger and -snapshot-time are required")
+	}
+	at, err := parseStamp(*snapshot)
+	if err != nil {
+		return fmt.Errorf("deletions replay: -snapshot-time: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	a, closeAll, err := setupCurrent(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeAll()
+	return replayLedger(ctx, a, *path, store.ReplayOptions{DryRun: *dryRun, SnapshotTime: at,
+		LedgerAddsNothing: *addsNothing, LeaveExcluded: leave}, out)
 }
 
 // printer writes a command's report and keeps its first error, which the
@@ -379,7 +389,7 @@ func replayLedger(ctx context.Context, a *app, path string, opts store.ReplayOpt
 		return errors.New("deletions replay: the ledger holds nothing newer than the restored snapshot; " +
 			"use the host's own ledger or the newest off-host copy, or pass -ledger-adds-nothing if this is that copy")
 	case err != nil:
-		return fmt.Errorf("deletions replay: %w; do not start wappie-api", err)
+		return fmt.Errorf("deletions replay: %w", err)
 	}
 	return p.err
 }

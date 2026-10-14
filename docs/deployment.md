@@ -260,7 +260,10 @@ it are described in [item events](item-events.md).
 **The file.** `WS_DELETION_LEDGER`, by default
 `/var/lib/wappie/deletion-ledger.jsonl`. Put it on a persistent path that is
 in the host's backups and off-host copies, writable by the server's user
-alone; a container needs a volume for it. One JSON line per event:
+alone, and delete its copies before they are 90 days old, as the backups'.
+In `deploy/compose.yaml` it is the named volume `deletion-ledger`, mounted
+on `/var/lib/wappie`, which `deploy/Dockerfile` creates 0700 for uid 10001:
+back that volume up with the database. One JSON line per event:
 `{v, event_id, type, workspace_id, device_id, deleted_at, purge_after,
 deleted_by, to_workspace_id, occurred_at}`, every key present and null when
 it does not apply, times in UTC. It holds no label, no phone number and no
@@ -280,10 +283,10 @@ Export and compaction hold an exclusive lock on `<ledger>.lock` beside it.
   not writable" with the path and the error, and starts anyway: nothing is
   lost while the file cannot be written, and only a restore reads it.
 - **Compaction.** Once a day each process drops the lines of every number
-  whose newest line is older than 93 days: backups live 90 days at most
-  (decision 0027), plus a day for the daily prune and two of slack. It
-  writes the kept lines beside the ledger, syncs them and renames them over
-  it.
+  whose newest line is older than 93 days: backups are deleted before they
+  are 90 days old (decision 0027), and three days of slack cover a host or
+  an off-host copy whose expiry ran late. It writes the kept lines beside
+  the ledger, syncs them and renames them over it.
 - **The hosted unit** gets its directory from systemd: `StateDirectory=wappie`
   and `StateDirectoryMode=0700` in `wappie-api.service` (or the pilot's
   drop-in), which keeps `/var/lib/wappie` writable under
@@ -321,9 +324,10 @@ None of the four migrates. Each refuses a database whose schema is not
 exactly this binary's, so a dry run over a restored snapshot changes
 nothing and the export can run before a down-step. Run them as the server's
 user, with its configuration, so they can write the ledger. `whatserverd`
-serves only with no arguments or with `serve`: any other command line it
-does not know prints the command list and exits 2, so a mistyped command
-never starts a server whose first janitor pass would purge.
+serves only with no arguments or with `serve`: any other command, or a
+`devices` or `deletions` subcommand, that it does not know prints the
+command list and exits 2, so a mistyped command never starts a server whose
+first janitor pass would purge.
 
 - `devices list-deleted` lists each deleted number of every workspace (or
   one) by id: when it was deleted, when it is purged, its state
@@ -414,7 +418,9 @@ stopped:
    - It sends no notice. Each change writes its event row with the ledger
      line's own `event_id`, marked ledgered and replayed, so it can run
      again.
-   - On a refusal it says `do not start wappie-api`, and exits non-zero.
+   - Whatever stops it (a refusal, a missing or damaged ledger, one that
+     adds nothing, a flag it cannot read), its error ends with `do not start
+     wappie-api`, and it exits non-zero.
 5. **Start the server.**
 
 A snapshot taken while a number was deleted keeps its `purge_after`, so the
@@ -433,7 +439,15 @@ administrators delete a number at once, with no recovery. In this order:
    number in the console, or, with the owner's agreement,
    `whatserverd devices purge-deleted -device ID -now` purges it. The purge
    does not wait for object storage; objects it could not delete stay for a
-   later orphan pass.
+   later orphan pass, and each purge prints how many `failed` and how many
+   it `left for the orphan pass`. If either is not zero, let an hourly pass
+   of this release run with object storage healthy, so its orphan pass
+   deletes them, and record the counts and the `storage_objects` keys that
+   no `media` row names (read as the tables' owner) that are still there.
+   The down-step drops the indexes that let the orphan pass finish on a
+   large workspace, so under the older binary such objects can stay in the
+   bucket, still charged, until a release with 0050 runs again or someone
+   deletes them by hand.
 2. Stop the server, and every other process that runs this release's store
    code against the database (the hosted billing service is one), unless it
    already runs the release being restored.
@@ -448,9 +462,22 @@ administrators delete a number at once, with no recovery. In this order:
    release again and stop the rollback: never leave it stopped on schema 50.
    It comes before 0049's down-step, which has no such guard.
 5. Switch back to the older binary and start it.
-6. Take a fresh backup. Restoring a snapshot older than a purge made under
-   0050 needs this release's binary: migrate to 50, replay, then run the
-   down-step again.
+6. Take a fresh backup. A snapshot older than a purge made under 0050
+   still holds that number, so restoring it needs this release's binary,
+   and its own way back down, in this order:
+   1. migrate the restored database to 50 and run the replay, dry run
+      first, as [Restoring a backup](#restoring-a-backup) says. The replay
+      leaves each number the ledger says was purged excluded and due, and
+      each deletion no recovery reversed excluded: the down-step would
+      refuse;
+   2. `whatserverd devices purge-deleted`, without `-now`: it purges the due
+      numbers, which are the ones already purged before;
+   3. `whatserverd devices list-deleted`, then step 1 above for each number
+      still deleted: an owner recovers it, with the server running on this
+      release, or, with the owner's agreement, `devices purge-deleted
+      -device ID -now` purges it;
+   4. steps 2 to 5 above: stop the server and the billing service, export
+      the ledger, run the down-step, and switch back.
 
 The down-step drops the notices and the event rows; the ledger file stays
 as the record. The API keys 0050 revoked (those whose creator was disabled

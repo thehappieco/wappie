@@ -35,7 +35,10 @@ type DeviceStorageUsage struct {
 // Other is that same total for a viewer who is not an owner: the console
 // draws it as an unlabelled "Outros dados guardados" line. It is kept apart
 // from Unassigned, whose line says uploads are in progress or deletions
-// await confirmation, which a deleted number's bytes are not.
+// await confirmation, which a deleted number's bytes are not. That viewer
+// learns no number, name or date from it, but only the deleted numbers
+// fill it, so a non-zero Other says some deleted number awaits its purge:
+// the unlabelled total decision 0038's plan accepted.
 type StorageBreakdown struct {
 	Devices    []DeviceStorageUsage `json:"devices"`
 	Shared     StorageBytes         `json:"shared"`
@@ -45,8 +48,8 @@ type StorageBreakdown struct {
 }
 
 // foldExcluded moves the deleted numbers' bytes into Other, for a viewer who
-// may not learn that a number is waiting for its purge: only owners delete
-// and recover numbers.
+// may not learn which numbers are deleted, nor when: only owners delete and
+// recover numbers.
 func (b *StorageBreakdown) foldExcluded() {
 	b.Other.ArchiveBytes += b.Excluded.ArchiveBytes
 	b.Other.ObjectBytes += b.Excluded.ObjectBytes

@@ -64,14 +64,14 @@ const (
 	overdueAfter = 2 * time.Hour
 	// ledgerKeep is how long the ledger keeps a number after its newest
 	// line, so every snapshot that can still be restored finds the lines
-	// written after it. Backups live 90 days (decision 0027), but the
-	// prune that deletes them runs once a day, up to half an hour late,
-	// and catches up a day the host was down only at its next start
-	// (commercial deploy/prune-backups.sh, wappie-prune-backups.timer), so
-	// a snapshot can outlive its 90 days by a day and more; an off-host
-	// copy whose expiry also runs daily, the same. 90 days, a day for the
-	// prune's interval and delay, and two days of slack for a host or a
-	// copy that was down. TestLedgerOutlivesTheBackups holds the bound.
+	// written after it. Backups live under 90 days (decision 0027): the
+	// daily prune deletes a snapshot at 89 days less an hour, so the next
+	// run, at most a day and half an hour later, is still inside its 90
+	// days (commercial deploy/prune-backups.sh, wappie-prune-backups.timer),
+	// and an off-host copy must expire as early. A host that was down
+	// catches up only at its next start, and a copy's expiry can run late
+	// the same way: 90 days and three of slack.
+	// TestLedgerOutlivesTheBackups holds the bound.
 	ledgerKeep = 93 * 24 * time.Hour
 	// compactEvery is how often a process compacts the ledger.
 	compactEvery = 24 * time.Hour
