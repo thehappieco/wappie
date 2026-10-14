@@ -1470,3 +1470,28 @@ key, and the console cannot rewrap a new epoch yet. A key reset at id., or
 another key for the pinned epoch, would lose the account key and everything
 sealed to it, so until the rewrap ships the backup from before 0049 and the
 old password are kept.
+
+## Notices lock the workspace, then the connection (2026-10-14)
+
+A reader's second `budget_hit` for one connection and code answered 500
+when it arrived while the first one's e-mail was being claimed (CI of
+thehappieco/wappie#45, `TestBudgetHit`). `RaiseNotice` locked the connection
+and then upserted the notice. `ClaimNoticeMail` locked the notice and then
+reached the connection only through the foreign key of the revoke link it
+inserts. Postgres aborted one of the two after `deadlock_timeout`. A reader
+that lost got a 500. A claim that lost sent no e-mail, ever, because only
+the first raise of an event claims one. Three more cycles had the same
+cause. A notice's first row, a revoke link and a seen mark reference
+`tenants`, and their foreign keys take that row's share lock after the
+connection's. Every end locks `tenants` and then the connection, so a
+revocation could deadlock with a first raise, a claim (which also left a
+link for an ended connection) or a member's seen mark.
+
+`RaiseNotice`, `ClaimNoticeMail` and `MarkSeen` now take their locks in the
+order every end and every draft or send uses ([§17.19](mcp-enclave.md#1719-recorded-during-s0)): `tenants`
+`FOR KEY SHARE` (`shareWorkspaceTx`), then the connection, then the notice
+or mark. A claim checks the connection is still live under the connection's
+`FOR UPDATE`, after the workspace's advisory lock and before its notice.
+`TestRaiseAndClaimNoticeDoNotDeadlock` and
+`TestNoticesAndEndingDoNotDeadlock` force each cycle and also race the real
+paths. Every cycle failed before the change.
