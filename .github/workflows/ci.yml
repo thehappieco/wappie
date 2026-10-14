@@ -46,7 +46,9 @@ jobs:
           # Turns "no database, skipping" into a failure. Without this the
           # isolation and migration tests could silently stop running.
           WS_TEST_POSTGRES_REQUIRED: "1"
-        run: go test -race -coverprofile=coverage.out ./...
+        # internal/store alone runs about 5 to 7 minutes under -race with
+        # coverage on a CI runner, near go test's default 10-minute limit.
+        run: go test -race -timeout=30m -coverprofile=coverage.out ./...
 
       - name: Coverage floor for the domain packages
         run: |
