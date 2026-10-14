@@ -39,6 +39,7 @@ import (
 	"whatserver2/internal/mailer"
 	"whatserver2/internal/mcpauth"
 	"whatserver2/internal/media"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
@@ -57,6 +58,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n\n%s", err, commandList)
 		os.Exit(2)
 	}
+	var exit exitError
+	if errors.As(err, &exit) {
+		if exit.err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", exit.err)
+		}
+		os.Exit(exit.code)
+	}
 	if err != nil {
 		// The logger may not exist yet if configuration itself failed.
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
@@ -68,12 +76,31 @@ func main() {
 const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions ...
+       whatserverd contract check [--other|--only-current|--only-other]
+       whatserverd contract-secret seal | promote | unpromote | drop | capabilities ...
 `
 
 // usageError is a command line whatserverd does not know.
 type usageError struct{ arg string }
 
 func (e usageError) Error() string { return fmt.Sprintf("whatserverd: unknown command %q", e.arg) }
+
+// exitError ends a command with an exit status of its own, which a script
+// acts on (contract check's 3, 4 and 5; contract-secret seal's 4), and
+// prints err, when there is one, on stderr.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e exitError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("exit status %d", e.code)
+	}
+	return e.err.Error()
+}
+
+func (e exitError) Unwrap() error { return e.err }
 
 // runCommand runs the command args name. It serves only with no arguments,
 // or with serve alone: anything else it does not know is a usage error, and
@@ -113,6 +140,10 @@ func runCommand(args []string, serve func() error) error {
 		return devicesCommand(rest, os.Stdout)
 	case "deletions":
 		return deletionsCommand(rest, os.Stdout)
+	case "contract":
+		return contractCommand(rest, os.Stdout)
+	case "contract-secret":
+		return contractSecret(rest, defaultSecretCommand())
 	}
 	return usageError{arg: strings.Join(args, " ")}
 }
@@ -180,6 +211,11 @@ type app struct {
 	purgeTurn atomic.Uint64
 	// compacted is when this process last compacted the ledger.
 	compacted time.Time
+	// contract is the client of the platform's product contract, and
+	// secrets loads its secret; both nil unless a transport is configured
+	// (WS_CONTRACT_SOCKET).
+	contract *membership.Client
+	secrets  *membership.Secrets
 }
 
 // setup opens every dependency and runs migrations. The returned close
@@ -516,6 +552,13 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 }
 
 func serve() error {
+	// SIGHUP reloads the contract's secret and never stops the process. It
+	// is taken before anything else: Go's default for it is to exit, which
+	// systemd counts as clean and would not restart, so a SIGHUP that came
+	// before this line would end capture.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
 	// SIGINT and SIGTERM cancel the root context, unwinding everything below.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -530,6 +573,7 @@ func serve() error {
 	// while the file cannot be written, and a refusal would crash-loop the
 	// unit and stop every workspace's sync over a file only a restore reads.
 	checkDeletionLedger(a.cfg, a.ledger, a.log)
+	a.startContract(ctx, hup)
 	a.log.Info("starting", "config", a.cfg.String())
 	if !a.cfg.Storage.Configured {
 		a.log.Warn("object storage is not configured; media features will be unavailable " +

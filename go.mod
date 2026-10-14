@@ -3,6 +3,8 @@ module whatserver2
 go 1.26.7
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.47.1
+	github.com/aws/aws-sdk-go-v2/service/kms v1.61.1
 	github.com/coder/websocket v1.8.15
 	github.com/fxamacker/cbor/v2 v2.9.3
 	github.com/go-webauthn/webauthn v0.18.0
@@ -19,12 +21,18 @@ require (
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 	golang.org/x/text v0.42.0
 	google.golang.org/protobuf v1.36.12
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.20.6 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.1 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.4 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.4 // indirect
+	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/beeper/argo-go v1.1.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -69,7 +77,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
