@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"whatserver2/internal/config"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
+	"whatserver2/internal/ledger"
 	"whatserver2/internal/mailer"
 	"whatserver2/internal/mcpauth"
 	"whatserver2/internal/media"
@@ -71,6 +73,10 @@ func main() {
 		err = reproject(os.Args[2:])
 	case len(os.Args) > 1 && os.Args[1] == "mcp-relay-secret":
 		err = mcpRelaySecret(os.Args[2:], os.Stdin, os.Stdout)
+	case len(os.Args) > 1 && os.Args[1] == "devices":
+		err = devicesCommand(os.Args[2:], os.Stdout)
+	case len(os.Args) > 1 && os.Args[1] == "deletions":
+		err = deletionsCommand(os.Args[2:], os.Stdout)
 	default:
 		err = serve()
 	}
@@ -132,11 +138,35 @@ type app struct {
 	// operator's configuration beneath them: every gate on text,
 	// attachments, drafts and AI asks them (docs/mcp-enclave.md §19.35).
 	switches *mcpauth.WorkspaceSwitches
+	// ledger is the deletion ledger (WS_DELETION_LEDGER), nil when none is
+	// configured: every deletion, recovery, purge and move is appended to
+	// it after its commit, and a restore replays it.
+	ledger *ledger.File
+	// janitor bounds what one maintenance pass spends; zero values are the
+	// defaults, and tests set milliseconds.
+	janitor janitorLimits
+	// purgeTurn rotates where each pass starts its purges, so a large or
+	// failing number early in the list cannot use every pass's budget.
+	purgeTurn atomic.Uint64
+	// compacted is when this process last compacted the ledger.
+	compacted time.Time
 }
 
 // setup opens every dependency and runs migrations. The returned close
 // function tears them down in reverse.
 func setup(ctx context.Context, withWA bool) (*app, func(), error) {
+	return setupWith(ctx, withWA, true)
+}
+
+// setupCurrent opens what a command needs without migrating, and refuses a
+// database whose schema is not exactly this binary's: the commands that must
+// change no schema (a dry run over a restored snapshot, the ledger's export
+// before a down-step, an operator's list) use it.
+func setupCurrent(ctx context.Context) (*app, func(), error) {
+	return setupWith(ctx, false, false)
+}
+
+func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), error) {
 	// Convenience for local development. Real environment variables always
 	// take precedence, and a missing file is not an error.
 	if err := config.LoadDotEnv(".env"); err != nil {
@@ -175,7 +205,12 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 			"error", err)
 	}
 
-	if err := migrate.Run(ctx, pools.API, lg); err != nil {
+	if migrations {
+		if err := migrate.Run(ctx, pools.API, lg); err != nil {
+			closeAll()
+			return nil, nil, err
+		}
+	} else if err := migrate.RequireCurrent(ctx, pools.API); err != nil {
 		closeAll()
 		return nil, nil, err
 	}
@@ -189,6 +224,9 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		limits:            ratelimit.DefaultAuth(cfg.TrustedProxies),
 		setups:            ratelimit.DefaultSetups(cfg.TrustedProxies),
 		workspaceSessions: ratelimit.DefaultWorkspaceSessions(cfg.TrustedProxies),
+	}
+	if cfg.Deletion.Ledger != "" {
+		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}
 	if err := a.users.SetInviteEncryptionKey(cfg.Signup.InviteEncryptionKey); err != nil {
 		closeAll()
@@ -438,6 +476,9 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		// connection held never sends or manages here, and a draft is
 		// confirmed only while the switches allow it.
 		MCP: store.NewMCPConnections(pools.API), MCPSendAllowed: a.switches.Send,
+		// A deletion, a recovery and a move are in the ledger as soon as
+		// their reply goes.
+		ExportLedger: a.exportLedger,
 	})
 
 	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws
@@ -454,6 +495,11 @@ func serve() error {
 		return err
 	}
 	defer closeAll()
+	// Before the "starting" line, which the deploy watches for, and never a
+	// reason not to start: the export is at least once, so nothing is lost
+	// while the file cannot be written, and a refusal would crash-loop the
+	// unit and stop every workspace's sync over a file only a restore reads.
+	checkDeletionLedger(a.cfg, a.ledger, a.log)
 	a.log.Info("starting", "config", a.cfg.String())
 	if !a.cfg.Storage.Configured {
 		a.log.Warn("object storage is not configured; media features will be unavailable " +

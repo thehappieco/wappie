@@ -3,6 +3,8 @@ package migrate
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"whatserver2/internal/ledger"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
+	"whatserver2/internal/store"
 )
 
 // person adds a password account to a workspace with a role, as a
@@ -333,7 +337,7 @@ func TestMigration0050DownStep(t *testing.T) {
 		ALTER TABLE devices ENABLE ROW LEVEL SECURITY; ALTER TABLE devices FORCE ROW LEVEL SECURITY`); err != nil {
 		t.Fatal(err)
 	}
-	ledger := func() (rows int, has50, forced bool) {
+	recorded := func() (rows int, has50, forced bool) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM schema_migrations), EXISTS(SELECT 1 FROM schema_migrations WHERE version = 50),
 			(SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname='devices' AND relnamespace=current_schema()::regnamespace)`).Scan(&rows, &has50, &forced); err != nil {
@@ -343,11 +347,11 @@ func TestMigration0050DownStep(t *testing.T) {
 	}
 	refused := func(want string) {
 		t.Helper()
-		before, _, _ := ledger()
+		before, _, _ := recorded()
 		if _, err := pool.Exec(ctx, downStepSQL(t, 50)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("the down-step with %s: %v", want, err)
 		}
-		if rows, has50, forced := ledger(); rows != before || !has50 || !forced {
+		if rows, has50, forced := recorded(); rows != before || !has50 || !forced {
 			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 50 %v, devices forced %v", rows, before, has50, forced)
 		}
 	}
@@ -373,11 +377,14 @@ func TestMigration0050DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	refused("not in the ledger yet")
-	if err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE item_events SET ledgered_at=now()`)
-		return err
-	}); err != nil {
-		t.Fatal(err)
+	// What the rollback runs before the down-step: whatserverd deletions
+	// export-ledger, which appends the row to the ledger and marks it.
+	path := filepath.Join(t.TempDir(), "deletion-ledger.jsonl")
+	if n, err := store.ExportLedger(ctx, pool, tenant, &ledger.File{Path: path}); err != nil || n != 1 {
+		t.Fatalf("the export: %d %v", n, err)
+	}
+	if raw, err := os.ReadFile(path); err != nil || !strings.Contains(string(raw), device.String()) {
+		t.Fatalf("the ledger after the export: %q %v", raw, err)
 	}
 
 	if _, err := pool.Exec(ctx, downStepSQL(t, 50)); err != nil {

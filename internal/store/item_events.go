@@ -20,24 +20,32 @@ import (
 // through recordEvent, and every writer holds the workspace's row lock until
 // its commit, so seq order within a workspace is commit order.
 
-// Event types recorded in this release; purged comes with the purge.
+// Event types recorded in this release.
 const (
 	eventDeleted    = "deleted"
 	eventRecovered  = "recovered"
 	eventSyncPaused = "sync_paused"
 	eventMovedOut   = "moved_out"
+	eventPurged     = "purged"
 )
 
-// Actor kinds of an event row.
+// Actor kinds of an event row: the app is the purge, with nobody behind it.
 const (
 	actorPerson = "person"
 	actorKey    = "key"
+	actorApp    = "app"
 )
 
 // itemEvent is one row of item_events. Times come from the database's clock.
 type itemEvent struct {
-	Type   string
-	ItemID uuid.UUID
+	// EventID is a restore's replay's: the ledger line's own event id. Nil
+	// is a new UUIDv7.
+	EventID uuid.UUID
+	// Replayed is a row a replay writes from the ledger: already in it,
+	// and never to be sent.
+	Replayed bool
+	Type     string
+	ItemID   uuid.UUID
 	// DedupeKey makes a retried write a no-op: type, item and the instant
 	// that identifies the event, in microseconds.
 	DedupeKey  string
@@ -57,23 +65,29 @@ type itemEvent struct {
 
 // recordEvent writes ev in the workspace of tx, the one INSERT into
 // item_events. A row with the same dedupe key is already the event, and
-// nothing is written again. A sync_paused row is never ledgered, so it is
-// written as if it were: the ledger keeps what a restore must replay.
+// nothing is written again; a replayed row whose event id is already there
+// is that same event. A sync_paused row is never ledgered, so it is written
+// as if it were: the ledger keeps what a restore must replay. A replayed
+// row came from the ledger, so it is in it already.
 func recordEvent(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, ev itemEvent) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return fmt.Errorf("store: event id: %w", err)
+	id := ev.EventID
+	if id == uuid.Nil {
+		var err error
+		if id, err = uuid.NewV7(); err != nil {
+			return fmt.Errorf("store: event id: %w", err)
+		}
 	}
 	subs := ev.ReaderSubs
 	if subs == nil {
 		subs = []uuid.UUID{}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at,
-		actor_kind, actor_sub, actor_user_id, reader_subs, label, hint, deleted_at, purge_after, to_tenant_id, ledgered_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, CASE WHEN $3 = 'sync_paused' THEN clock_timestamp() END)
-		ON CONFLICT (tenant_id, dedupe_key) DO NOTHING`,
+		actor_kind, actor_sub, actor_user_id, reader_subs, label, hint, deleted_at, purge_after, to_tenant_id, ledgered_at, replayed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+		  CASE WHEN $3 = 'sync_paused' OR $16 THEN clock_timestamp() END, CASE WHEN $16 THEN clock_timestamp() END)
+		ON CONFLICT DO NOTHING`,
 		id, tenant, ev.Type, ev.ItemID, ev.DedupeKey, ev.OccurredAt, ev.ActorKind, ev.ActorSub, ev.ActorUserID,
-		subs, ev.Label, ev.Hint, ev.DeletedAt, ev.PurgeAfter, ev.ToTenantID); err != nil {
+		subs, ev.Label, ev.Hint, ev.DeletedAt, ev.PurgeAfter, ev.ToTenantID, ev.Replayed); err != nil {
 		return fmt.Errorf("store: record %s: %w", ev.Type, err)
 	}
 	return nil

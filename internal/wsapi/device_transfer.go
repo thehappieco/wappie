@@ -114,6 +114,7 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		if gone, moved := s.settleFailedTransfer(ctx, source, target, device, pause); gone {
 			if moved {
 				// The move committed and only its answer was lost.
+				s.srv.exportLedger(context.WithoutCancel(ctx), source)
 				s.srv.RevalidateAccess()
 				s.tellMoved(viewers, device)
 			}
@@ -125,6 +126,9 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	}
 	s.log.Info("device moved to Personal", "device", device, "source", source, "destination", target, "by", who.userID,
 		"assistants_ended", len(out.AssistantsEnded), "keys_narrowed", len(out.KeysNarrowed))
+	// The move's moved_out line, so a restore from before it never puts
+	// the number back in its team.
+	s.srv.exportLedger(context.WithoutCancel(ctx), source)
 	s.reply(TypeDeviceTransferred, f.ReqID, out)
 	s.srv.RevalidateAccess()
 	s.tellMoved(viewers, device)

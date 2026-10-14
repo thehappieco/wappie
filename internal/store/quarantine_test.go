@@ -21,6 +21,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/domain"
+	"whatserver2/internal/ledger"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
@@ -522,6 +523,34 @@ func TestBootAndJanitorWithExcludedNumber(t *testing.T) {
 		t.Fatalf("erasure with an excluded number: %+v %v", erased, err)
 	}
 
+	// The orphan pass deletes what nothing names, and only that; the
+	// deleted numbers' housekeeping and the ledger's export run too.
+	if err := storage.ReserveObject(ctx, a.tenant, "orphan", 5); err != nil {
+		t.Fatal(err)
+	}
+	orphans, err := storage.UnreferencedObjects(ctx, a.tenant, 1000)
+	if err != nil || !slices.Contains(orphans, "orphan") {
+		t.Fatalf("orphans with an excluded number: %q %v", orphans, err)
+	}
+	var removed []string
+	for _, key := range orphans {
+		if err := storage.DeleteObject(ctx, a.tenant, key, func(_ context.Context, key string) error {
+			removed = append(removed, key)
+			return nil
+		}); err != nil {
+			t.Fatalf("the orphan pass with an excluded number: %v", err)
+		}
+	}
+	if !slices.Contains(removed, "orphan") || slices.Contains(removed, a.excluded.String()+"/object") || slices.Contains(removed, a.live.String()+"/object") {
+		t.Fatalf("the orphan pass deleted a referenced object: %q", removed)
+	}
+	if _, err := store.DeletionHousekeeping(ctx, a.pool, a.tenant); err != nil {
+		t.Fatalf("housekeeping with an excluded number: %v", err)
+	}
+	if _, err := store.ExportLedger(ctx, a.pool, a.tenant, &ledger.File{Path: filepath.Join(t.TempDir(), "ledger.jsonl")}); err != nil {
+		t.Fatalf("the ledger's export with an excluded number: %v", err)
+	}
+
 	// The live number keeps archiving.
 	if _, err := a.messages.Insert(ctx, store.InsertMessage{UID: uuid.New(), TenantID: a.tenant, DeviceID: a.live, WAID: "after",
 		ChatKey: a.chatKeys[a.live], Kind: domain.KindMessage, Type: domain.TypeText, Source: domain.SourceLive,
@@ -746,14 +775,16 @@ func TestScopeNeverOutlivesTx(t *testing.T) {
 // WithQuarantineForTest. Test files are not scanned.
 func TestQuarantineScopeHasOneDoor(t *testing.T) {
 	// The callers of withQuarantine, by function name (with its receiver's
-	// type for a method). Those not written yet come with the deletion,
-	// recovery, purge and replay.
+	// type for a method).
 	allowed := map[string]bool{
 		"Devices.Quarantine": true, "Devices.Recover": true, "Devices.RecoverCheck": true,
 		"Devices.GetExcluded": true, "Devices.ListDeleted": true, "Devices.RecordUnlink": true,
 		"Devices.StillExcluded": true, "Devices.LeftoverSessions": true, "Devices.DueDeletions": true,
 		"PurgeDevice": true, "strandCheckTx": true, "anyExcludedTx": true, "excludedDevicesTx": true,
 		"Storage.Reconcile": true, "ReplayLedger": true,
+		// The operator's list of deleted numbers (whatserverd devices
+		// list-deleted), which has no owner to check.
+		"Devices.ListAllDeleted": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

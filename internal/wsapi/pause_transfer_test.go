@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -212,7 +214,8 @@ func transferFrame(device, target uuid.UUID) wsapi.DeviceTransferRequest {
 // with the list before pausing anything; an admin's preview carries no
 // list; a member's frame is refused.
 func TestTransferRefusedOverTheSocket(t *testing.T) {
-	c := newDeletionConsole(t)
+	path := filepath.Join(t.TempDir(), "deletion-ledger.jsonl")
+	c := newDeletionConsoleWith(t, deletionOptions{ledger: path})
 	device := c.linkedDevice(t, "Vendas")
 	c.reads(t, c.owner, device)
 	personal := c.personalOf(t, c.owner)
@@ -259,6 +262,10 @@ func TestTransferRefusedOverTheSocket(t *testing.T) {
 	}
 	if r := payload[wsapi.DeviceRemoved](t, next(t, adminFrames, wsapi.TypeDeviceRemoved)); r.DeviceID != device.String() || r.Reason != wsapi.DeviceRemovedMoved {
 		t.Fatalf("the admin's push: %+v", r)
+	}
+	// The move is in the ledger as soon as its reply arrives.
+	if got := ledgerTypes(t, path); !slices.Equal(got, []string{"moved_out"}) {
+		t.Fatalf("the ledger after the move: %v", got)
 	}
 }
 

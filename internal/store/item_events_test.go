@@ -137,8 +137,8 @@ func (w *delWorld) keyBy(t *testing.T, creator *uuid.UUID, device uuid.UUID) uui
 	return w.keyID(ctx, t, key)
 }
 
-// TestPauseNotices is the plan's test 14, without its housekeeping cases
-// (they come with the purge's housekeeping).
+// TestPauseNotices is the plan's test 14; its housekeeping cases are
+// TestNoticeHousekeeping's.
 func TestPauseNotices(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()
@@ -493,8 +493,8 @@ func TestOwnPausesRecordNothing(t *testing.T) {
 	}
 }
 
-// TestItemEvents is the plan's test 16, without its ledger and housekeeping
-// cases (they come with the ledger export).
+// TestItemEvents is the plan's test 16; its ledger and housekeeping cases
+// are TestLedgerTakesTheFourTypes' and TestLedgerExportAtLeastOnce's.
 func TestItemEvents(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()

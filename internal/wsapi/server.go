@@ -101,6 +101,11 @@ type Config struct {
 	// StepUp is what every grant asks of the person's session
 	// (internal/stepup); nil is Sessions' own record.
 	StepUp stepup.Checker
+	// ExportLedger appends the workspace's new deletion, recovery and move
+	// events to the deletion ledger, best effort: a failure is the
+	// exporter's to report, and the janitor exports again within the hour.
+	// Called after each such commit, before its reply. Nil exports nothing.
+	ExportLedger func(ctx context.Context, tenant uuid.UUID)
 
 	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
 	// once access is known and before the bus registers the subscription,
@@ -120,6 +125,13 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[*session]struct{}
+}
+
+// exportLedger runs the configured export, if any.
+func (s *Server) exportLedger(ctx context.Context, tenant uuid.UUID) {
+	if s.cfg.ExportLedger != nil {
+		s.cfg.ExportLedger(ctx, tenant)
+	}
 }
 
 // NewServer builds the handler.

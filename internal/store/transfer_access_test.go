@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/crypto/seal"
+	"whatserver2/internal/ledger"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -514,6 +516,22 @@ func TestTransferRecordsMovedOut(t *testing.T) {
 	}
 	if n := len(eventsOf(t, w.pool, w.tenant, w.device, "sync_paused")); n != 1 {
 		t.Fatalf("the move wrote a pause: %d sync_paused rows", n)
+	}
+
+	// The move is in the ledger, with where the number went, so a restore
+	// from before it never puts the number back in the Team.
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	if n, err := store.ExportLedger(ctx, w.pool, w.tenant, &ledger.File{Path: path}); err != nil || n != 1 {
+		t.Fatalf("the export: %d %v", n, err)
+	}
+	lines := readLedger(t, path)
+	if len(lines) != 1 || lines[0].Type != ledger.TypeMovedOut || lines[0].DeviceID != w.device || lines[0].WorkspaceID != w.tenant ||
+		lines[0].ToWorkspaceID == nil || *lines[0].ToWorkspaceID != w.personal || !lines[0].OccurredAt.Equal(completed) ||
+		lines[0].DeletedAt != nil || lines[0].DeletedBy != nil {
+		t.Fatalf("the ledger: %+v", lines)
+	}
+	if moved := eventsOf(t, w.pool, w.tenant, w.device, "moved_out"); len(moved) != 1 || !moved[0].Ledgered {
+		t.Fatalf("the moved_out row after the export: %+v", moved)
 	}
 }
 

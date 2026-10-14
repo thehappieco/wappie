@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -28,6 +30,7 @@ import (
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
+	"whatserver2/internal/ledger"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
@@ -134,6 +137,8 @@ type deletionOptions struct {
 	hook     func(stage string)
 	// transfer stands in for the store's move to Personal.
 	transfer func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
+	// ledger is a deletion ledger the handlers export to.
+	ledger string
 }
 
 func newDeletionConsole(t *testing.T) *deletionConsole {
@@ -195,6 +200,14 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	}
 	if opt.transfer != nil {
 		wsapi.SetTransferHook(&cfg, opt.transfer)
+	}
+	if opt.ledger != "" {
+		file := &ledger.File{Path: opt.ledger}
+		cfg.ExportLedger = func(ctx context.Context, tenant uuid.UUID) {
+			if _, err := store.ExportLedger(ctx, pool, tenant, file); err != nil {
+				t.Errorf("the ledger's export: %v", err)
+			}
+		}
 	}
 	srv := httptest.NewServer(wsapi.NewServer(cfg))
 	t.Cleanup(srv.Close)
@@ -1125,8 +1138,28 @@ func TestPendingStillHardDeleted(t *testing.T) {
 	}
 }
 
+// ledgerTypes is the types of the lines a ledger holds, in order.
+func ledgerTypes(t *testing.T, path string) []string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	r, err := ledger.Read(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, l := range r.Lines {
+		out = append(out, l.Type)
+	}
+	return out
+}
+
 func TestDeletedListAndRecoverFrames(t *testing.T) {
-	c := newDeletionConsoleWith(t, deletionOptions{registry: true})
+	path := filepath.Join(t.TempDir(), "deletion-ledger.jsonl")
+	c := newDeletionConsoleWith(t, deletionOptions{registry: true, ledger: path})
 	ctx := context.Background()
 	device := c.linkedDevice(t, "Suporte")
 	reader, readerToken := c.person(t, "reader", "member")
@@ -1135,6 +1168,10 @@ func TestDeletedListAndRecoverFrames(t *testing.T) {
 	owner := wsapi.Hello{Session: c.token}
 	if f := ask(t, c.console, owner, wsapi.TypeDeviceDelete, deleteFrame(device, reader)); f.Type != wsapi.TypeDeviceGone {
 		t.Fatalf("delete: %s", f.Payload)
+	}
+	// The deletion is in the ledger as soon as its reply arrives.
+	if got := ledgerTypes(t, path); !slices.Equal(got, []string{"deleted"}) {
+		t.Fatalf("the ledger after the deletion: %v", got)
 	}
 	_, adminToken := c.person(t, "admin", "admin")
 	for _, frame := range []string{wsapi.TypeDevicesDeleted, wsapi.TypeDeviceRecoverCheck, wsapi.TypeDeviceRecover} {
@@ -1167,6 +1204,9 @@ func TestDeletedListAndRecoverFrames(t *testing.T) {
 	recovered := payload[wsapi.DeviceRecovered](t, f)
 	if recovered.Already || recovered.Device.ID != device.String() || !recovered.Device.Paused || recovered.Status != "logged_out" || recovered.StatusReason == "" {
 		t.Fatalf("device.recovered = %+v", recovered)
+	}
+	if got := ledgerTypes(t, path); !slices.Equal(got, []string{"deleted", "recovered"}) {
+		t.Fatalf("the ledger after the recovery: %v", got)
 	}
 	f = ask(t, c.console, owner, wsapi.TypeDeviceRecover, wsapi.RecoverRequest{DeviceID: device.String(), Confirm: device.String()})
 	if f.Type != wsapi.TypeDeviceRecovered || !payload[wsapi.DeviceRecovered](t, f).Already {

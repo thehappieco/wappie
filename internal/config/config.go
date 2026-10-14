@@ -57,7 +57,26 @@ type Config struct {
 	// MCP is the hosted assistant connector, off unless a reader runs here.
 	MCP MCP
 	Log Log
+	// Deletion is how deleted numbers are kept and purged (decision 0038).
+	Deletion Deletion
 }
+
+// Deletion holds the deletion ledger's path and the purge's valve.
+type Deletion struct {
+	// Ledger is the append-only file, outside the database, of every
+	// deletion, recovery, purge and move of a number, which a restore
+	// replays (WS_DELETION_LEDGER). It must outlive the process and be in
+	// the host's backups: on a self-hosted install, a persistent path.
+	Ledger string
+	// PurgeHold stops the 30-day purge of deleted numbers for an incident
+	// (WS_DELETED_NUMBER_PURGE=hold); every pass then says how many are
+	// due. It is never a way to keep a number past its 30 days.
+	PurgeHold bool
+}
+
+// DefaultDeletionLedger is the ledger's path unless WS_DELETION_LEDGER says
+// otherwise: the API unit's state directory.
+const DefaultDeletionLedger = "/var/lib/wappie/deletion-ledger.jsonl"
 
 // Web is the browser client, served as files from disk.
 //
@@ -185,6 +204,14 @@ func Load() (Config, error) {
 			Format: strings.ToLower(str("WS_LOG_FORMAT", defaultLogFormat(env))),
 			Wire:   boolean("WS_LOG_WIRE", false, &errs),
 		},
+		Deletion: Deletion{Ledger: strings.TrimSpace(str("WS_DELETION_LEDGER", DefaultDeletionLedger))},
+	}
+	switch purge := strings.ToLower(strings.TrimSpace(str("WS_DELETED_NUMBER_PURGE", "on"))); purge {
+	case "on":
+	case "hold":
+		cfg.Deletion.PurgeHold = true
+	default:
+		bad("WS_DELETED_NUMBER_PURGE: want on or hold, got %q", purge)
 	}
 	if cfg.WADeviceName != "whappie" && cfg.WADeviceName != "whappie cloud" {
 		bad("WS_WA_DEVICE_NAME: want whappie or whappie cloud, got %q", cfg.WADeviceName)

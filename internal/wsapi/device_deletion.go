@@ -239,6 +239,9 @@ func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 	if s.srv.cfg.Bus != nil {
 		s.srv.cfg.Bus.DropDevice(tenant, device)
 	}
+	// In the ledger before the slow logout: a restore from a snapshot
+	// taken before this deletion excludes the number again.
+	s.srv.exportLedger(bg, tenant)
 	s.srv.cancelDevicePairing(tenant.String(), dev.ID)
 
 	// The record runs inside Unlink, with the device lock still held, so a
@@ -503,6 +506,9 @@ func (s *session) handleDeviceRecover(ctx context.Context, f Frame) {
 	}
 	if !recovered.Already {
 		s.log.Warn("number recovered", "device", device, "by", who.userID, "status", recovered.Status)
+		// In the ledger before the reply: a restore keeps the number live,
+		// and the first janitor pass never purges it.
+		s.srv.exportLedger(context.WithoutCancel(ctx), tenant)
 	}
 	s.reply(TypeDeviceRecovered, f.ReqID, DeviceRecovered{Device: s.toDeviceInfo(ctx, dev), Already: recovered.Already,
 		RecoveryStatus: recoveryStatus(recovered.RecoveryState)})
