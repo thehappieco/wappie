@@ -30,12 +30,14 @@ import (
 // protocol at all.
 var notAdvertised = []string{"hello", "ping"}
 
-// And two entries name no frame. They are the two values of PairRequest.Method,
+// And three entries name no frame. Two are the values of PairRequest.Method,
 // and a client does have to know which this build supports — asking for code
-// pairing on a server that only does QR fails after a round trip. The list is
-// capabilities, not a frame index, and these are the only two places the
-// difference shows.
-var notFrames = []string{"pair.qr", "pair.code"}
+// pairing on a server that only does QR fails after a round trip. The third
+// says device.transfer refuses a number others have access to (decision
+// 0040), which an older build's device.transfer does not: the console words
+// the move by it. The list is capabilities, not a frame index, and these are
+// the only places the difference shows.
+var notFrames = []string{"pair.qr", "pair.code", "device.transfer.access"}
 
 func TestEveryDispatchedFrameIsAnnounced(t *testing.T) {
 	dispatched := dispatchedFrames(t)

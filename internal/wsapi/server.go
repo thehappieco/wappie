@@ -161,11 +161,15 @@ const (
 // anything missing, because a comment asking people to remember has now been
 // tried twice and lost twice.
 //
-// Two entries name no frame at all. "pair.qr" and "pair.code" are the two
+// Three entries name no frame at all. "pair.qr" and "pair.code" are the two
 // values of PairRequest.Method, and a client genuinely has to know which this
 // build supports — code pairing is much better over a terminal, and asking for
 // it on a server that only does QR fails after a round trip. They are
 // capabilities, which is what this list is for; the frame is "pair".
+// "device.transfer.access" is decision 0040's rule for device.transfer: a
+// number moves only while nobody else has access to it. An older build moves
+// it anyway and drops everyone else's access, so a console must not tell an
+// owner that nobody else has access unless this build says it checked.
 var features = []string{
 	"pair", "pair.cancel", "pair.qr", "pair.code",
 	"devices.list", "users.list",
@@ -177,7 +181,7 @@ var features = []string{
 	"chat.start", "group.create", "group.participants.update", "group.leave",
 	"chat.timer", "chat.presence", "presence.subscribe", "device.mode", "reader.mode", "device.stop", "device.start", "device.rename",
 	"group.join", "group.info", "reproject.list", "reproject.apply", "media.retry", "media.expired", "history.backfill",
-	"devices.stats", "device.info", "device.delete", "device.transfer.preview", "device.transfer",
+	"devices.stats", "device.info", "device.delete", "device.transfer.preview", "device.transfer", "device.transfer.access",
 	"device.delete.check", "devices.deleted", "device.recover.check", "device.recover", "device.notice.seen",
 	"apikeys.list", "apikeys.create", "apikeys.revoke",
 	"grant.add", "grant.revoke", "grants.list",

@@ -1222,6 +1222,14 @@ export const ErrLastReaderOfDeleted = 'last_reader_of_deleted'
 export const ErrOthersHaveAccess = 'others_have_access'
 
 /**
+ * The welcome's capability for decision 0040's rule: device.transfer moves a
+ * number only while nobody else has access to it, and its preview lists who
+ * still has (others_have_access). An older core moves the number anyway and
+ * drops everyone else's access to it.
+ */
+export const FeatureTransferAccess = 'device.transfer.access'
+
+/**
  * The message kinds the archive stores.
  *
  * Only 'message' is a line in a conversation. The other three are control rows
