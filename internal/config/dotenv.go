@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -32,7 +33,52 @@ func LoadDotEnv(path string) (err error) {
 		}
 	}()
 
-	scanner := bufio.NewScanner(f)
+	pairs, err := parseDotEnv(f)
+	if err != nil {
+		return fmt.Errorf("config: %s %w", path, err)
+	}
+	for _, p := range pairs {
+		if _, present := os.LookupEnv(p.key); present {
+			continue
+		}
+		if err := os.Setenv(p.key, p.value); err != nil {
+			return fmt.Errorf("config: %s line %d: %w", path, p.line, err)
+		}
+	}
+	return nil
+}
+
+// ParseDotEnv reads KEY=VALUE pairs, in LoadDotEnv's syntax, without
+// touching the process environment: a key that appears twice keeps its
+// first value, as LoadDotEnv would. It exists for the root commands that
+// need two settings of a file holding many secrets (contract-secret seal
+// reads runtime.env for its KMS key alone): they take what they name from
+// the map, and nothing else of the file enters their environment.
+//
+// An error names the line, never its text, which may hold a secret.
+func ParseDotEnv(r io.Reader) (map[string]string, error) {
+	pairs, err := parseDotEnv(r)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	out := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		if _, seen := out[p.key]; !seen {
+			out[p.key] = p.value
+		}
+	}
+	return out, nil
+}
+
+// dotEnvPair is one assignment of a .env file, with its line for errors.
+type dotEnvPair struct {
+	key, value string
+	line       int
+}
+
+func parseDotEnv(r io.Reader) ([]dotEnvPair, error) {
+	var pairs []dotEnvPair
+	scanner := bufio.NewScanner(r)
 	for line := 1; scanner.Scan(); line++ {
 		text := strings.TrimSpace(scanner.Text())
 		if text == "" || strings.HasPrefix(text, "#") {
@@ -44,23 +90,20 @@ func LoadDotEnv(path string) (err error) {
 
 		key, value, ok := strings.Cut(text, "=")
 		if !ok {
-			return fmt.Errorf("config: %s line %d: expected KEY=VALUE, got %q", path, line, text)
+			// The line is not echoed: a runtime.env holds secrets, and a
+			// value pasted without its key is still one.
+			return nil, fmt.Errorf("line %d: expected KEY=VALUE", line)
 		}
 		key = strings.TrimSpace(key)
 		if key == "" {
-			return fmt.Errorf("config: %s line %d: empty key", path, line)
+			return nil, fmt.Errorf("line %d: empty key", line)
 		}
-		if _, present := os.LookupEnv(key); present {
-			continue
-		}
-		if err := os.Setenv(key, unquote(strings.TrimSpace(value))); err != nil {
-			return fmt.Errorf("config: %s line %d: %w", path, line, err)
-		}
+		pairs = append(pairs, dotEnvPair{key: key, value: unquote(strings.TrimSpace(value)), line: line})
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("config: read %s: %w", path, err)
+		return nil, fmt.Errorf("read: %w", err)
 	}
-	return nil
+	return pairs, nil
 }
 
 // unquote strips one matching pair of surrounding quotes.
