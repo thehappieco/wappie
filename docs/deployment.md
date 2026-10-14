@@ -323,7 +323,22 @@ whatserverd deletions replay -ledger FILE -snapshot-time STAMP [-dry-run] [-ledg
 None of the four migrates. Each refuses a database whose schema is not
 exactly this binary's, so a dry run over a restored snapshot changes
 nothing and the export can run before a down-step. Run them as the server's
-user, with its configuration, so they can write the ledger. `whatserverd`
+user, with its configuration, so they can write the ledger, and from the
+server's own working directory (the cloud's unit has
+`WorkingDirectory=/opt/wappie/release`). Every `whatserverd` command reads a
+`.env` from its working directory: a missing one is ignored, but one the
+user cannot read stops the command before it does anything, with
+`config: open .env: permission denied`. A deployment that keeps a
+root-only `.env` beside its releases, as the cloud's compose file does in
+`/opt/wappie`, must therefore never run a command from there, for example:
+
+```
+sudo systemd-run --uid=wappie --gid=wappie --pipe --wait \
+  -p EnvironmentFile=/opt/wappie/runtime.env -p WorkingDirectory=/opt/wappie/release \
+  /opt/wappie/release/bin/whatserverd devices list-deleted
+```
+
+`whatserverd`
 serves only with no arguments or with `serve`: any other command, or a
 `devices` or `deletions` subcommand, that it does not know prints the
 command list and exits 2, so a mistyped command never starts a server whose
