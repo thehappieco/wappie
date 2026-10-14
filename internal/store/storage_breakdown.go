@@ -27,32 +27,71 @@ type DeviceStorageUsage struct {
 // Reserved uploads
 // and objects awaiting confirmed deletion belong to Unassigned until a live
 // archive reference can identify a number. Neither bucket is charged again.
+// Excluded holds what the deleted numbers still store until their purge
+// (0050): still charged, so the totals add up, and never under a number's
+// name. Only owners see it apart; for everyone else it is moved to Other
+// before the breakdown leaves the store.
+//
+// Other is that same total for a viewer who is not an owner: the console
+// draws it as an unlabelled "Outros dados guardados" line. It is kept apart
+// from Unassigned, whose line says uploads are in progress or deletions
+// await confirmation, which a deleted number's bytes are not. That viewer
+// learns no number, name or date from it, but only the deleted numbers
+// fill it, so a non-zero Other says some deleted number awaits its purge:
+// the unlabelled total decision 0038's plan accepted.
 type StorageBreakdown struct {
 	Devices    []DeviceStorageUsage `json:"devices"`
 	Shared     StorageBytes         `json:"shared"`
 	Unassigned StorageBytes         `json:"unassigned"`
+	Excluded   StorageBytes         `json:"excluded"`
+	Other      StorageBytes         `json:"other"`
+}
+
+// foldExcluded moves the deleted numbers' bytes into Other, for a viewer who
+// may not learn which numbers are deleted, nor when: only owners delete and
+// recover numbers.
+func (b *StorageBreakdown) foldExcluded() {
+	b.Other.ArchiveBytes += b.Excluded.ArchiveBytes
+	b.Other.ObjectBytes += b.Excluded.ObjectBytes
+	b.Other.UsedBytes += b.Excluded.UsedBytes
+	b.Excluded = StorageBytes{}
 }
 
 // UsageDetailed is for administration, not the capture path: attribution grows
 // with the archive. The workspace lock keeps the total and all rows in one
 // snapshot while ingestion, retention and uploads are writing concurrently.
-func (s *Storage) UsageDetailed(ctx context.Context, tenant uuid.UUID) (StorageUsage, error) {
+// viewer is the person asking (see StorageUsageDetailedTx).
+func (s *Storage) UsageDetailed(ctx context.Context, tenant, viewer uuid.UUID) (StorageUsage, error) {
 	var out StorageUsage
 	err := pg.InTenantTx(ctx, s.pool, tenant.String(), func(tx pgx.Tx) error {
 		var err error
-		out, err = StorageUsageDetailedTx(ctx, tx, tenant)
+		out, err = StorageUsageDetailedTx(ctx, tx, tenant, viewer)
 		return err
 	})
 	return out, err
 }
 
-func StorageUsageDetailedTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (StorageUsage, error) {
+// StorageUsageDetailedTx shows the excluded numbers' bytes apart only when
+// viewer is an active owner of the workspace now, read in tx; anyone else
+// gets them folded into Other. The store decides, so no route that shows
+// the breakdown, core's or the cloud's, can forget to.
+func StorageUsageDetailedTx(ctx context.Context, tx pgx.Tx, tenant, viewer uuid.UUID) (StorageUsage, error) {
 	out, err := StorageUsageTx(ctx, tx, tenant)
 	if err != nil {
 		return out, err
 	}
-	out.Breakdown, err = storageBreakdownTx(ctx, tx)
-	return out, err
+	if out.Breakdown, err = storageBreakdownTx(ctx, tx); err != nil {
+		return out, err
+	}
+	var owner bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN users u ON u.id = m.user_id
+		WHERE m.tenant_id = $1 AND m.user_id = $2 AND m.role = 'owner' AND m.status = 'active' AND u.status = 'active')`, tenant, viewer).Scan(&owner); err != nil {
+		return out, err
+	}
+	if !owner {
+		out.Breakdown.foldExcluded()
+	}
+	return out, nil
 }
 
 // Caller holds the workspace row lock before reading any archive table.
@@ -76,6 +115,10 @@ func storageBreakdownTx(ctx context.Context, tx pgx.Tx) (*StorageBreakdown, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	excluded, err := excludedDevicesTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err = tx.Query(ctx, `
  WITH records AS (
   SELECT CASE
@@ -92,8 +135,7 @@ func storageBreakdownTx(ctx context.Context, tx pgx.Tx) (*StorageBreakdown, erro
  ), object_references AS (
   SELECT d.object_key,m.device_id FROM media d JOIN messages m ON m.uid=d.message_uid WHERE d.object_key IS NOT NULL
   UNION
-  SELECT d.tenant_id::text||'/'||left(encode(d.file_enc_sha256,'hex'),2)||'/'||encode(d.file_enc_sha256,'hex'),m.device_id
-  FROM media d JOIN messages m ON m.uid=d.message_uid WHERE d.file_enc_sha256 IS NOT NULL
+  SELECT d.content_key,m.device_id FROM media d JOIN messages m ON m.uid=d.message_uid WHERE d.content_key IS NOT NULL
  ), objects AS (
   SELECT o.object_key,o.bytes,count(r.device_id) device_count,min(r.device_id::text) device_id
   FROM storage_objects o LEFT JOIN object_references r ON r.object_key=o.object_key
@@ -119,6 +161,8 @@ func storageBreakdownTx(ctx context.Context, tx pgx.Tx) (*StorageBreakdown, erro
 			target = &out.Shared
 		} else if index, ok := byDevice[id]; kind == "device" && ok {
 			target = &out.Devices[index].StorageBytes
+		} else if kind == "device" && excluded[id] {
+			target = &out.Excluded
 		}
 		target.ArchiveBytes += archiveBytes
 		target.ObjectBytes += objectBytes

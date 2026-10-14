@@ -9,7 +9,16 @@ import (
 )
 
 func (h *Handler) memberError(w http.ResponseWriter, err error) {
+	var deleted *store.ErrLastReaderOfDeleted
 	switch {
+	case errors.As(err, &deleted):
+		// The numbers only for an owner: the store leaves the list empty for
+		// anyone else, who learns neither a label nor a date.
+		send(w, http.StatusConflict, struct {
+			wireError
+			Numbers []store.DeletedNumberRef `json:"numbers,omitempty"`
+		}{wireError{Code: "last_reader_of_deleted", Message: "this person holds the last key of a deleted number that is not purged yet; " +
+			"wait for its purge, or recover it and share its key with someone else first"}, deleted.Numbers})
 	case errors.Is(err, store.ErrPersonalWorkspace):
 		fail(w, http.StatusConflict, "personal_workspace", "create a team workspace to invite people")
 	case errors.Is(err, store.ErrInviteInvalid):

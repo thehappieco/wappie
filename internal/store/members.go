@@ -145,7 +145,7 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 			}
 		}
 		if status == "disabled" {
-			if err := requireRemainingReader(ctx, tx, tenant, target, nil); err != nil {
+			if err := strandCheckTx(ctx, tx, tenant, target, actorRole); err != nil {
 				return err
 			}
 			// A disabled consenter's connections end with their access, and
@@ -170,7 +170,11 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 			if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND user_id=$2`, tenant, target); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE tenant_id=$1 AND acts_as=$2 AND revoked_at IS NULL`, tenant, target); err != nil {
+			// The keys the person created go too, as a removal revokes
+			// them: a key verifies by itself, and one with no acts_as would
+			// otherwise go on reading every number, a recovered one included.
+			if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE tenant_id=$1
+				AND (acts_as=$2 OR created_by=$2) AND revoked_at IS NULL`, tenant, target); err != nil {
 				return err
 			}
 		}
@@ -218,7 +222,7 @@ func (u *Users) RemoveMember(ctx context.Context, tenant, actor, target uuid.UUI
 				return err
 			}
 		}
-		if err := requireRemainingReader(ctx, tx, tenant, target, nil); err != nil {
+		if err := strandCheckTx(ctx, tx, tenant, target, actorRole); err != nil {
 			return err
 		}
 		// A consent does not outlive the person who gave it in this

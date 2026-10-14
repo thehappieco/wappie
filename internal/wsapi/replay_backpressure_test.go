@@ -22,6 +22,7 @@ import (
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 	"whatserver2/internal/wsapi"
 )
 
@@ -141,18 +142,7 @@ func TestRevocationMidReplayStopsDelivery(t *testing.T) {
 
 	// Stop reading until the server is blocked on the socket, so the count
 	// of frames written is still when the revocation commits.
-	before := written()
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		time.Sleep(200 * time.Millisecond)
-		now := written()
-		if now == before {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the server never stopped writing to a client that stopped reading")
-		}
-		before = now
-	}
+	before := stalled(t, written)
 	if before >= messages {
 		t.Fatalf("all %d frames were written before the pause; the replay must still be under way", before)
 	}
@@ -201,6 +191,104 @@ func TestRevocationMidReplayStopsDelivery(t *testing.T) {
 	t.Logf("%d frames written before the revocation, %d after; %d received", before, after, received)
 	if after > 64 {
 		t.Fatalf("%d frames were written after the revocation committed, want at most one batch of 64", after)
+	}
+}
+
+// stalled waits until a client that stopped reading has the server blocked
+// on the socket, and returns the count of frames written then, which holds
+// still from there until the client reads again.
+func stalled(t *testing.T, written func() int) int {
+	t.Helper()
+	before := written()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		time.Sleep(200 * time.Millisecond)
+		now := written()
+		if now == before {
+			return now
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server never stopped writing to a client that stopped reading")
+		}
+		before = now
+	}
+}
+
+// TestADeletionStopsFramesAlreadyQueued drops a number from the bus while
+// its replay waits on a client that stopped reading: a batch the writer
+// holds, the stream's hand-off full behind it, and a row the replay is
+// waiting to queue, all checked against the subscription before the drop.
+// None of them is written after it, and the subscription goes on with the
+// other number.
+func TestADeletionStopsFramesAlreadyQueued(t *testing.T) {
+	s := newStream(t)
+	ctx := context.Background()
+	const messages = 2000
+	s.bulk(t, "BIG", messages, bytes.Repeat([]byte("x"), 8<<10))
+	kept, err := store.NewDevices(s.pool).Create(ctx, s.tenant.String(), "kept", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metrics := obs.NewMetrics()
+	srv := httptest.NewServer(wsapi.NewServer(wsapi.Config{
+		Keys: store.NewAPIKeys(s.pool), Devices: store.NewDevices(s.pool),
+		Messages: s.messages, Receipts: s.receipts, Bus: s.bus,
+		Metrics: metrics, Log: slog.New(slog.DiscardHandler),
+	}))
+	t.Cleanup(srv.Close)
+	written := func() int {
+		return int(testutil.ToFloat64(metrics.WSFramesSent.WithLabelValues(wsapi.TypeMessage)))
+	}
+
+	conn := dial(t, srv)
+	send(t, conn, wsapi.TypeHello, wsapi.Hello{APIKey: s.key, Version: wsapi.Version})
+	if f := read(t, conn); f.Type != wsapi.TypeWelcome {
+		t.Fatalf("handshake answered %q", f.Type)
+	}
+	send(t, conn, wsapi.TypeSubscribe, wsapi.Subscribe{SinceSeq: 0})
+	for received := 0; received < 100; {
+		if f := read(t, conn); f.Type == wsapi.TypeMessage {
+			received++
+		}
+	}
+	before := stalled(t, written)
+	if before >= messages {
+		t.Fatalf("all %d frames were written before the pause; the replay must still be under way", before)
+	}
+
+	// What a deletion does right after its commit.
+	s.bus.DropDevice(s.tenant, s.device)
+
+	// The socket's buffers hold frames written before the drop; then the
+	// replay ends, the rest of its rows skipped.
+	for f := read(t, conn); f.Type != wsapi.TypeReplayEnd; f = read(t, conn) {
+		if f.Type == wsapi.TypeSubscriptionEnded || f.Type == wsapi.TypeError {
+			t.Fatalf("the replay answered %s %s", f.Type, f.Payload)
+		}
+	}
+	// At most the one frame the writer was blocked on when the drop came.
+	after := written() - before
+	t.Logf("%d frames written before the drop, %d after", before, after)
+	if after > 1 {
+		t.Fatalf("%d of the dropped number's frames were written after the drop, want at most the one in flight", after)
+	}
+
+	// Still subscribed to the other number, and live from the watermark.
+	res, err := s.messages.Insert(ctx, store.InsertMessage{
+		UID: uuid.New(), TenantID: s.tenant, DeviceID: uuid.MustParse(kept.ID),
+		WAID: "KEPT", ChatKey: streamChat, Kind: domain.KindMessage, Type: domain.TypeText,
+		Source: domain.SourceLive, TS: time.Now(), BodySealed: []byte("sealed KEPT"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.bus.Publish(s.tenant, ingest.Event{
+		Class: ingest.ClassMessage, Seq: res.Seq,
+		TenantID: s.tenant, DeviceID: uuid.MustParse(kept.ID), ChatKey: streamChat,
+		Kind: domain.KindMessage, Type: domain.TypeText, UID: res.UID,
+	})
+	if got := readEvents(t, conn, 1); got[0].waID != "KEPT" {
+		t.Fatalf("live delivered %+v, want the kept number's message", got)
 	}
 }
 

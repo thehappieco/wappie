@@ -16,6 +16,11 @@ services:
     # is published here because compose forbids ports on a service that joins
     # another one. Nothing listens on it until the mcp-http profile is up.
     ports: ["127.0.0.1:8090:8090", "127.0.0.1:18093:18093"]
+    # The deletion ledger (WS_DELETION_LEDGER, by default
+    # /var/lib/wappie/deletion-ledger.jsonl), which a restore replays over an
+    # older snapshot: back this volume up with the database (docs/deployment.md).
+    volumes:
+      - deletion-ledger:/var/lib/wappie
     restart: unless-stopped
     read_only: true
     tmpfs: [/tmp]
@@ -60,4 +65,5 @@ services:
     read_only: true
     tmpfs: [/tmp]
 volumes:
+  deletion-ledger:
   mcp-state:

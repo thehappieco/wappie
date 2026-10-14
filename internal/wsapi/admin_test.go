@@ -10,11 +10,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/migrate"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -384,32 +387,38 @@ func TestAnAPIKeyCannotDeleteADevice(t *testing.T) {
 	}
 }
 
-func TestDeletingADeviceTakesItsArchiveAndSaysHowMuch(t *testing.T) {
+// A deletion keeps the archive for its 30 days, and says how much it held.
+func TestDeletingADeviceKeepsItsArchiveAndSaysHowMuch(t *testing.T) {
 	c := newConsole(t)
+	ctx := context.Background()
 	token := c.account(t, "owner@acme.test", "owner")
-	dev, err := c.devices.Create(context.Background(), c.tenant.String(), "phone", wa.ModePassive)
-	if err != nil {
+	dev := c.deviceWithKey(t, "phone")
+	if err := c.devices.SetIdentity(ctx, c.tenant.String(), dev, wa.Identity{PN: types.NewJID("5511912345678", types.DefaultUserServer)}); err != nil {
 		t.Fatal(err)
 	}
-	c.archive(t, uuid.MustParse(dev.ID), 3)
+	c.archive(t, uuid.MustParse(dev), 3)
 
 	f := ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeDeviceDelete,
-		wsapi.DeleteRequest{DeviceID: dev.ID, Confirm: dev.ID})
+		wsapi.DeleteRequest{DeviceID: dev, Confirm: dev, Unlink: true})
 	if f.Type != wsapi.TypeDeviceGone {
 		t.Fatalf("frame = %q: %s", f.Type, f.Payload)
 	}
 	gone := payload[wsapi.DeviceDeleted](t, f)
-	if gone.Messages != 3 {
-		t.Errorf("reported %d messages, want 3", gone.Messages)
+	if gone.Messages == nil || *gone.Messages != 3 || gone.RecoverableUntil == nil {
+		t.Errorf("reported %+v, want 3 messages and the recovery date", gone)
+	}
+	if _, err := c.devices.Get(ctx, c.tenant.String(), dev); err == nil {
+		t.Error("the deleted number is still listed")
 	}
 
 	var left int
-	if err := c.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM messages`).Scan(&left); err != nil {
+	if err := pg.InTenantTx(ctx, c.pool, c.tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM messages`).Scan(&left)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if left != 0 {
-		t.Errorf("%d messages survived the device they belonged to", left)
+	if left != 3 {
+		t.Errorf("%d messages are kept, want all 3 until the purge", left)
 	}
 }
 

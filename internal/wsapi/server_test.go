@@ -47,6 +47,7 @@ func dial(t *testing.T, srv *httptest.Server) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	//nolint:bodyclose // coder/websocket: "You never need to close resp.Body yourself."
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws", nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)

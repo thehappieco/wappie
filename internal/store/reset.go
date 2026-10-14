@@ -31,10 +31,22 @@ type ResetCounts struct {
 // content hash and inert without keys that this removes; deleting it is a long
 // remote operation that can half-finish, and a half-finished delete is worse
 // than an untidy bucket.
+//
+// It refuses while a deleted number waits for its purge (0050). Its row is
+// hidden from the statements on devices below, so the reset would empty its
+// archive and leave the row behind, and its owner was promised 30 days to
+// recover it.
 func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 	keepDevices bool) (ResetCounts, error) {
 	var out ResetCounts
 	err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		excluded, err := anyExcludedTx(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("store: reset: look for deleted numbers: %w", err)
+		}
+		if excluded {
+			return ErrExcludedNumbers
+		}
 		// Order matters only for readability: every one of these cascades from
 		// devices, and the counts would be zero if devices went first.
 		for _, step := range []struct {

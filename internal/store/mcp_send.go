@@ -742,7 +742,11 @@ type OutboundQuery struct {
 }
 
 // ListOutbound is a page of a connection's ledger, newest first, and whether
-// more rows follow it. The caller has decided who may read it.
+// more rows follow it. The caller has decided who may read it. A deleted
+// number's rows, and a number's that moved to another workspace, are left
+// out, as every read of its archive leaves them (decision 0038): the
+// devices policies hide its row, the rows come back with a recovery and
+// cascade away with the purge.
 func (m *MCPConnections) ListOutbound(ctx context.Context, tenant uuid.UUID, connection string, q OutboundQuery) ([]Outbound, bool, error) {
 	if q.Limit < 1 || q.Limit > MaxOutboundPage || q.Status != "" && !slices.Contains(OutboundStatuses, q.Status) {
 		return nil, false, fmt.Errorf("store: not a ledger query: %+v", q)
@@ -756,7 +760,7 @@ func (m *MCPConnections) ListOutbound(ctx context.Context, tenant uuid.UUID, con
 		}
 		rows, err := tx.Query(ctx, `SELECT `+outboundColumns+` FROM mcp_outbound o
 			JOIN mcp_connections c ON c.id = o.connection_id
-			WHERE o.connection_id = $1
+			WHERE o.connection_id = $1 AND o.device_id IN (SELECT id FROM devices)
 			  AND ($2 = '' OR (CASE WHEN o.status = 'pending' AND o.expires_at <= now() THEN 'expired' ELSE o.status END) = $2)
 			  AND ($3::uuid IS NULL OR o.device_id = $3)
 			  AND ($4::timestamptz IS NULL OR (o.created_at, o.id) < ($4, $5::uuid))
@@ -790,14 +794,16 @@ func (m *MCPConnections) ListOutbound(ctx context.Context, tenant uuid.UUID, con
 // ---------------------------------------------------------------------------
 
 // Draft is one draft for the person who consented to its connection; for
-// anyone else it is ErrOutboundNotFound, whatever they may otherwise see.
+// anyone else, or a deleted or moved number's draft (see ListOutbound), it
+// is ErrOutboundNotFound, whatever they may otherwise see.
 func (m *MCPConnections) Draft(ctx context.Context, tenant, user, id uuid.UUID) (Outbound, error) {
 	var o Outbound
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		var err error
 		o, err = scanOutbound(tx.QueryRow(ctx, `SELECT `+outboundColumns+` FROM mcp_outbound o
 			JOIN mcp_connections c ON c.id = o.connection_id
-			WHERE o.id = $1 AND o.kind = 'draft' AND c.tenant_id = $2 AND c.created_by = $3`, id, tenant, user))
+			WHERE o.id = $1 AND o.kind = 'draft' AND c.tenant_id = $2 AND c.created_by = $3
+			  AND o.device_id IN (SELECT id FROM devices)`, id, tenant, user))
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -830,8 +836,9 @@ func connectionReaderTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID, 
 }
 
 // PendingDrafts are a connection's drafts still waiting, oldest first, at
-// most MaxPendingDraftsListed, for the person who consented; anyone else in
-// the workspace is ErrMembershipForbidden.
+// most MaxPendingDraftsListed, for the person who consented, a deleted or
+// moved number's left out (see ListOutbound); anyone else in the workspace
+// is ErrMembershipForbidden.
 func (m *MCPConnections) PendingDrafts(ctx context.Context, tenant, user uuid.UUID, connection string) ([]Outbound, error) {
 	out := []Outbound{}
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -845,6 +852,7 @@ func (m *MCPConnections) PendingDrafts(ctx context.Context, tenant, user uuid.UU
 		rows, err := tx.Query(ctx, `SELECT `+outboundColumns+` FROM mcp_outbound o
 			JOIN mcp_connections c ON c.id = o.connection_id
 			WHERE o.connection_id = $1 AND o.kind = 'draft' AND o.status = 'pending' AND o.expires_at > now()
+			  AND o.device_id IN (SELECT id FROM devices)
 			ORDER BY o.created_at, o.id LIMIT $2`, connection, MaxPendingDraftsListed)
 		if err != nil {
 			return err

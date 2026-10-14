@@ -1,6 +1,7 @@
 // Command whatserverd is the whatserver2 API server.
 //
-// Run with no arguments to serve. The bootstrap subcommand creates a tenant and
+// Run with no arguments, or with serve, to serve; any other command line it
+// does not know is refused. The bootstrap subcommand creates a tenant and
 // prints an API key, which is how a fresh installation gets its first
 // credential.
 package main
@@ -16,7 +17,9 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -32,6 +35,7 @@ import (
 	"whatserver2/internal/config"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
+	"whatserver2/internal/ledger"
 	"whatserver2/internal/mailer"
 	"whatserver2/internal/mcpauth"
 	"whatserver2/internal/media"
@@ -47,38 +51,70 @@ import (
 )
 
 func main() {
-	var err error
-	switch {
-	case len(os.Args) > 1 && os.Args[1] == "bootstrap":
-		err = bootstrap(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "tenants":
-		err = listTenants()
-	case len(os.Args) > 1 && os.Args[1] == "key":
-		err = issueKey(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "device-key":
-		err = deviceKey(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "invite":
-		err = issueInvite(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "reset-archive":
-		err = resetArchive(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "storage":
-		err = storageAdmin(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "retention":
-		err = setRetention(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "erase":
-		err = eraseContact(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "reproject":
-		err = reproject(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "mcp-relay-secret":
-		err = mcpRelaySecret(os.Args[2:], os.Stdin, os.Stdout)
-	default:
-		err = serve()
+	err := runCommand(os.Args[1:], serve)
+	var usage usageError
+	if errors.As(err, &usage) {
+		fmt.Fprintf(os.Stderr, "%v\n\n%s", err, commandList)
+		os.Exit(2)
 	}
 	if err != nil {
 		// The logger may not exist yet if configuration itself failed.
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// commandList is what an unknown command line prints.
+const commandList = `usage: whatserverd [serve]
+       whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
+                   retention | erase | reproject | mcp-relay-secret | devices | deletions ...
+`
+
+// usageError is a command line whatserverd does not know.
+type usageError struct{ arg string }
+
+func (e usageError) Error() string { return fmt.Sprintf("whatserverd: unknown command %q", e.arg) }
+
+// runCommand runs the command args name. It serves only with no arguments,
+// or with serve alone: anything else it does not know is a usage error, and
+// opens nothing. Serving migrates the database, resumes every number and
+// starts the janitor, whose first pass purges what is due, so a mistyped
+// command (deletion for deletions, a stray -h) must never fall through to
+// it, least of all while a restore has wappie-api stopped.
+func runCommand(args []string, serve func() error) error {
+	if len(args) == 0 || len(args) == 1 && args[0] == "serve" {
+		return serve()
+	}
+	rest := args[1:]
+	switch args[0] {
+	case "bootstrap":
+		return bootstrap(rest)
+	case "tenants":
+		return listTenants()
+	case "key":
+		return issueKey(rest)
+	case "device-key":
+		return deviceKey(rest)
+	case "invite":
+		return issueInvite(rest)
+	case "reset-archive":
+		return resetArchive(rest)
+	case "storage":
+		return storageAdmin(rest)
+	case "retention":
+		return setRetention(rest)
+	case "erase":
+		return eraseContact(rest)
+	case "reproject":
+		return reproject(rest)
+	case "mcp-relay-secret":
+		return mcpRelaySecret(rest, os.Stdin, os.Stdout)
+	case "devices":
+		return devicesCommand(rest, os.Stdout)
+	case "deletions":
+		return deletionsCommand(rest, os.Stdout)
+	}
+	return usageError{arg: strings.Join(args, " ")}
 }
 
 // app holds everything the server needs, wired once.
@@ -104,6 +140,9 @@ type app struct {
 	retrier  *media.Retrier
 	bus      *bus.Bus
 	registry *wa.Registry
+	// unlinker is the registry, for the janitor's retry of a deletion's
+	// logout; a test passes a fake.
+	unlinker sessionUnlinker
 	router   *ingest.Router
 	ws       *wsapi.Server
 	calls    *calling.Service
@@ -129,11 +168,35 @@ type app struct {
 	// operator's configuration beneath them: every gate on text,
 	// attachments, drafts and AI asks them (docs/mcp-enclave.md §19.35).
 	switches *mcpauth.WorkspaceSwitches
+	// ledger is the deletion ledger (WS_DELETION_LEDGER), nil when none is
+	// configured: every deletion, recovery, purge and move is appended to
+	// it after its commit, and a restore replays it.
+	ledger *ledger.File
+	// janitor bounds what one maintenance pass spends; zero values are the
+	// defaults, and tests set milliseconds.
+	janitor janitorLimits
+	// purgeTurn rotates where each pass starts its purges, so a large or
+	// failing number early in the list cannot use every pass's budget.
+	purgeTurn atomic.Uint64
+	// compacted is when this process last compacted the ledger.
+	compacted time.Time
 }
 
 // setup opens every dependency and runs migrations. The returned close
 // function tears them down in reverse.
 func setup(ctx context.Context, withWA bool) (*app, func(), error) {
+	return setupWith(ctx, withWA, true)
+}
+
+// setupCurrent opens what a command needs without migrating, and refuses a
+// database whose schema is not exactly this binary's: the commands that must
+// change no schema (a dry run over a restored snapshot, the ledger's export
+// before a down-step, an operator's list) use it.
+func setupCurrent(ctx context.Context) (*app, func(), error) {
+	return setupWith(ctx, false, false)
+}
+
+func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), error) {
 	// Convenience for local development. Real environment variables always
 	// take precedence, and a missing file is not an error.
 	if err := config.LoadDotEnv(".env"); err != nil {
@@ -172,7 +235,12 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 			"error", err)
 	}
 
-	if err := migrate.Run(ctx, pools.API, lg); err != nil {
+	if migrations {
+		if err := migrate.Run(ctx, pools.API, lg); err != nil {
+			closeAll()
+			return nil, nil, err
+		}
+	} else if err := migrate.RequireCurrent(ctx, pools.API); err != nil {
 		closeAll()
 		return nil, nil, err
 	}
@@ -186,6 +254,9 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		limits:            ratelimit.DefaultAuth(cfg.TrustedProxies),
 		setups:            ratelimit.DefaultSetups(cfg.TrustedProxies),
 		workspaceSessions: ratelimit.DefaultWorkspaceSessions(cfg.TrustedProxies),
+	}
+	if cfg.Deletion.Ledger != "" {
+		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}
 	if err := a.users.SetInviteEncryptionKey(cfg.Signup.InviteEncryptionKey); err != nil {
 		closeAll()
@@ -435,9 +506,12 @@ func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 		// connection held never sends or manages here, and a draft is
 		// confirmed only while the switches allow it.
 		MCP: store.NewMCPConnections(pools.API), MCPSendAllowed: a.switches.Send,
+		// A deletion, a recovery and a move are in the ledger as soon as
+		// their reply goes.
+		ExportLedger: a.exportLedger,
 	})
 
-	a.registry, a.router, a.ws = registry, router, ws
+	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws
 	return a, closeAll, nil
 }
 
@@ -451,6 +525,11 @@ func serve() error {
 		return err
 	}
 	defer closeAll()
+	// Before the "starting" line, which the deploy watches for, and never a
+	// reason not to start: the export is at least once, so nothing is lost
+	// while the file cannot be written, and a refusal would crash-loop the
+	// unit and stop every workspace's sync over a file only a restore reads.
+	checkDeletionLedger(a.cfg, a.ledger, a.log)
 	a.log.Info("starting", "config", a.cfg.String())
 	if !a.cfg.Storage.Configured {
 		a.log.Warn("object storage is not configured; media features will be unavailable " +
@@ -493,6 +572,9 @@ func serve() error {
 	// lock, and without this it never asks again — leaving a device that
 	// reports online while nothing holds its connection.
 	go a.superviseDevices(ctx)
+	// A deletion in any process tells this one at its commit, so it lets go
+	// of the number before the next tick.
+	go a.listenExcluded(ctx)
 
 	// The attachment queue lives in the database, so this starts whether or
 	// not anything is waiting and picks up whatever a previous process left.

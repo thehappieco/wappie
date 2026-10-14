@@ -61,6 +61,10 @@ func LinkPhoneNumbers(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID)
 		// they meet. The result is rebuilt as a plain phone JID: keeping the
 		// suffix would produce 5511971446866:5@s.whatsapp.net, which matches no
 		// contact and no chat.
+		//
+		// Live numbers only. An excluded number's rows cannot be written
+		// (0050): one of them would raise WS002 and abort the whole tenant's
+		// pass, at every boot, for as long as the number waits for its purge.
 		steps := []struct {
 			name  string
 			sql   string
@@ -72,7 +76,8 @@ func LinkPhoneNumbers(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID)
 				  FROM whatsmeow_lid_map l
 				 WHERE m.sender_pn IS NULL
 				   AND m.sender_lid IS NOT NULL
-				   AND l.lid = split_part(split_part(m.sender_lid, '@', 1), ':', 1)`,
+				   AND l.lid = split_part(split_part(m.sender_lid, '@', 1), ':', 1)
+				   AND m.device_id IN (SELECT id FROM devices)`,
 				&out.Messages},
 
 			{"chats", `
@@ -81,7 +86,8 @@ func LinkPhoneNumbers(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID)
 				  FROM whatsmeow_lid_map l
 				 WHERE c.chat_pn IS NULL
 				   AND c.chat_lid IS NOT NULL
-				   AND l.lid = split_part(split_part(c.chat_lid, '@', 1), ':', 1)`,
+				   AND l.lid = split_part(split_part(c.chat_lid, '@', 1), ':', 1)
+				   AND c.device_id IN (SELECT id FROM devices)`,
 				&out.Chats},
 
 			// And the other half of the same problem: a contact learned by phone
@@ -95,7 +101,8 @@ func LinkPhoneNumbers(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID)
 				  FROM whatsmeow_lid_map l
 				 WHERE c.contact_lid IS NULL
 				   AND c.contact_pn IS NOT NULL
-				   AND l.pn = split_part(split_part(c.contact_pn, '@', 1), ':', 1)`,
+				   AND l.pn = split_part(split_part(c.contact_pn, '@', 1), ':', 1)
+				   AND c.device_id IN (SELECT id FROM devices)`,
 				&out.Contacts},
 		}
 

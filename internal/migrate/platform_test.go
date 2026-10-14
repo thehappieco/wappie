@@ -91,11 +91,15 @@ func TestMigration0049IsDataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var through48 []Migration
+	// Through 49 only: 0050 changes the schema, and comes down before 0049.
+	var through48, through49 []Migration
 	var m Migration
 	for _, candidate := range ms {
 		if candidate.Version <= 48 {
 			through48 = append(through48, candidate)
+		}
+		if candidate.Version <= 49 {
+			through49 = append(through49, candidate)
 		}
 		if candidate.Version == 49 {
 			m = candidate
@@ -125,7 +129,7 @@ func TestMigration0049IsDataOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	at49 := pgtest.Empty(t)
-	if err := Run(ctx, at49, lg); err != nil {
+	if err := run(ctx, at49, lg, through49); err != nil {
 		t.Fatal(err)
 	}
 	want := schemaShape(t, at48)
@@ -152,7 +156,7 @@ func TestMigration0049IsDataOnly(t *testing.T) {
 		t.Fatalf("a binary that knows 48 after the down-step: %v", err)
 	}
 	sameShape("after the down-step")
-	if err := Run(ctx, at49, lg); err != nil {
+	if err := run(ctx, at49, lg, through49); err != nil {
 		t.Fatalf("0049 again: %v", err)
 	}
 	sameShape("after 0049 again")

@@ -59,6 +59,20 @@ func TestPersonalTransferKeepsOldAndNewArchiveReadable(t *testing.T) {
 	if err := devices.SetPaused(ctx, a.tenant.String(), a.device.String(), true); err != nil {
 		t.Fatal(err)
 	}
+	// Another member still holds a key: the move is refused (decision
+	// 0040) until their access is removed, the owner turning on their own
+	// Read first, since a holder without Read is no backup.
+	var denied *store.TransferDenied
+	if _, err := devices.TransferPersonal(ctx, a.tenant, owner, a.device, personal); !errors.As(err, &denied) || denied.Code != store.ReasonOthersHaveAccess {
+		t.Fatalf("a move while another member holds a key: %v", err)
+	}
+	users := store.NewUsers(a.pool)
+	if err := users.SetDevicePermission(ctx, a.tenant, owner, store.DevicePermission{DeviceID: a.device, UserID: owner, Read: true, Send: true, Manage: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.SetDevicePermission(ctx, a.tenant, owner, store.DevicePermission{DeviceID: a.device, UserID: other}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := devices.TransferPersonal(ctx, a.tenant, owner, a.device, personal); err != nil {
 		t.Fatal(err)
 	}

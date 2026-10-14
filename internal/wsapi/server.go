@@ -71,6 +71,9 @@ type Config struct {
 	// uses, so a message we sent is stored exactly like one we received.
 	Router   *ingest.Router
 	Registry *wa.Registry
+	// Unlinker logs a deleted number out of WhatsApp. Nil is Registry; a
+	// test passes a fake.
+	Unlinker Unlinker
 	// Calls bridges individual WhatsApp calls to the authenticated browser.
 	// Nil disables calling while keeping the rest of the protocol available.
 	Calls   *calling.Service
@@ -98,6 +101,19 @@ type Config struct {
 	// StepUp is what every grant asks of the person's session
 	// (internal/stepup); nil is Sessions' own record.
 	StepUp stepup.Checker
+	// ExportLedger appends the workspace's new deletion, recovery and move
+	// events to the deletion ledger, best effort: a failure is the
+	// exporter's to report, and the janitor exports again within the hour.
+	// Called after each such commit, before its reply. Nil exports nothing.
+	ExportLedger func(ctx context.Context, tenant uuid.UUID)
+
+	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
+	// once access is known and before the bus registers the subscription,
+	// "page" after each replay page is read and before it is sent.
+	subscribeHook func(stage string)
+	// transferHook, for tests, stands in for Devices.TransferPersonal: a
+	// move that fails, or one that commits and loses its answer.
+	transferHook func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
 }
 
 // Server serves the websocket endpoint.
@@ -109,6 +125,13 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[*session]struct{}
+}
+
+// exportLedger runs the configured export, if any.
+func (s *Server) exportLedger(ctx context.Context, tenant uuid.UUID) {
+	if s.cfg.ExportLedger != nil {
+		s.cfg.ExportLedger(ctx, tenant)
+	}
 }
 
 // NewServer builds the handler.
@@ -164,11 +187,15 @@ const (
 // anything missing, because a comment asking people to remember has now been
 // tried twice and lost twice.
 //
-// Two entries name no frame at all. "pair.qr" and "pair.code" are the two
+// Three entries name no frame at all. "pair.qr" and "pair.code" are the two
 // values of PairRequest.Method, and a client genuinely has to know which this
 // build supports — code pairing is much better over a terminal, and asking for
 // it on a server that only does QR fails after a round trip. They are
 // capabilities, which is what this list is for; the frame is "pair".
+// "device.transfer.access" is decision 0040's rule for device.transfer: a
+// number moves only while nobody else has access to it. An older build moves
+// it anyway and drops everyone else's access, so a console must not tell an
+// owner that nobody else has access unless this build says it checked.
 var features = []string{
 	"pair", "pair.cancel", "pair.qr", "pair.code",
 	"devices.list", "users.list",
@@ -180,7 +207,8 @@ var features = []string{
 	"chat.start", "group.create", "group.participants.update", "group.leave",
 	"chat.timer", "chat.presence", "presence.subscribe", "device.mode", "reader.mode", "device.stop", "device.start", "device.rename",
 	"group.join", "group.info", "reproject.list", "reproject.apply", "media.retry", "media.expired", "history.backfill",
-	"devices.stats", "device.info", "device.delete", "device.transfer.preview", "device.transfer",
+	"devices.stats", "device.info", "device.delete", "device.transfer.preview", "device.transfer", "device.transfer.access",
+	"device.delete.check", "devices.deleted", "device.recover.check", "device.recover", "device.notice.seen",
 	"apikeys.list", "apikeys.create", "apikeys.revoke",
 	"grant.add", "grant.revoke", "grants.list",
 	"calls.list", "call.start", "call.answer", "call.reject", "call.hangup", "call.media", "call.invite",
@@ -752,6 +780,16 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleDeviceInfo(ctx, f)
 	case TypeDeviceDelete:
 		go s.handleDeviceDelete(ctx, f)
+	case TypeDeviceDeleteCheck:
+		go s.handleDeviceDeleteCheck(ctx, f)
+	case TypeDevicesDeleted:
+		go s.handleDevicesDeleted(ctx, f)
+	case TypeDeviceRecoverCheck:
+		go s.handleDeviceRecoverCheck(ctx, f)
+	case TypeDeviceRecover:
+		go s.handleDeviceRecover(ctx, f)
+	case TypeDeviceNoticeSeen:
+		go s.handleDeviceNoticeSeen(ctx, f)
 	case TypeKeysList:
 		go s.handleAPIKeysList(ctx, f)
 	case TypeKeyCreate:
@@ -799,6 +837,13 @@ func (s *session) writeLoop(ctx context.Context) {
 		// Read once per batch too, and only when a status frame needs it.
 		var viewable map[uuid.UUID]struct{}
 		for _, f := range batch {
+			// Checked per frame, as it is written, not per batch: a number
+			// the bus dropped after its frames were queued, or taken into
+			// this batch, stops here, so nothing of it is written once its
+			// deletion has committed (bus.DropDevice runs right after).
+			if f.device != uuid.Nil && !s.carries(f.device) {
+				continue
+			}
 			if f.Type == TypeDeviceStatus {
 				var status DeviceStatus
 				if err := json.Unmarshal(f.Payload, &status); err != nil {
@@ -829,6 +874,17 @@ func (s *session) writeLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// carries reports whether the connection's subscription delivers a device
+// now, as the bus's filter has it (bus.Subscription.Allows): no database
+// read, so it costs a frame two uncontended locks. No subscription, as
+// after one ended, carries nothing.
+func (s *session) carries(device uuid.UUID) bool {
+	s.subMu.Lock()
+	sub := s.sub
+	s.subMu.Unlock()
+	return sub != nil && sub.Allows(device)
 }
 
 // gather fills a batch with frames already queued, without waiting.
@@ -922,11 +978,20 @@ func (s *session) send(f Frame) {
 //
 // It reports false once the connection is going away, and the caller stops.
 func (s *session) push(ctx context.Context, frameType, reqID string, payload any) bool {
+	return s.pushOf(ctx, uuid.Nil, frameType, reqID, payload)
+}
+
+// pushOf is push for a frame that carries one number's traffic: a message,
+// a receipt, a presence or a change to a chat, replayed or live. The writer
+// drops it if the subscription has stopped carrying that number by the
+// time it goes out.
+func (s *session) pushOf(ctx context.Context, device uuid.UUID, frameType, reqID string, payload any) bool {
 	f, err := encode(frameType, reqID, payload)
 	if err != nil {
 		s.log.Error("encoding a frame failed", "type", frameType, "error", err)
 		return true
 	}
+	f.device = device
 	if ctx.Err() != nil {
 		return false
 	}

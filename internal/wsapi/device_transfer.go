@@ -44,6 +44,16 @@ func (s *session) handleDeviceTransferPreview(ctx context.Context, f Frame) {
 	s.reply(TypeDeviceTransferPreview, f.ReqID, out)
 }
 
+// handleDeviceTransfer moves a Team's number to its owner's Personal, only
+// when nobody else has access to it (decision 0040): the preview's refusal
+// answers others_have_access with who still has it, before anything is
+// paused, and the store decides it again under its locks. Any error after
+// the handler paused the number (that refusal from inside the move, a
+// timeout, a deadlock) rolls the move back, so the handler undoes its own
+// pause, unless someone paused the number meanwhile, and the supervisor
+// resumes it. No platform call runs inside the move's transaction (the
+// plan's D13): a later release asks for a fresh membership document before
+// it, never inside.
 func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	who, ok := s.requireAdmin(f.ReqID)
 	if !ok {
@@ -71,10 +81,15 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		return
 	}
 	if !out.Eligible || out.TargetWorkspaceID != target.String() {
-		s.replyError(f.ReqID, ErrCodeConflict, out.Reason)
+		s.transferError(f.ReqID, &store.TransferDenied{Reason: out.Reason, Code: out.ReasonCode, Others: out.Others})
 		return
 	}
-	if err = s.srv.cfg.Devices.SetPaused(ctx, source.String(), device.String(), true); err != nil {
+	// The sessions that see the number now, the Team's owners and admins
+	// who manage it by role, are told it is gone once it moved; nobody else
+	// can be reading it.
+	viewers := s.srv.viewersOf(ctx, source, device)
+	pause, err := s.srv.cfg.Devices.PauseForMove(ctx, source, device)
+	if err != nil {
 		s.transferError(f.ReqID, err)
 		return
 	}
@@ -89,21 +104,90 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	}
 	moveCtx, cancel := context.WithTimeout(ctx, 115*time.Second)
 	defer cancel()
-	out, err = s.srv.cfg.Devices.TransferPersonal(moveCtx, source, who.userID, device, target)
-	if err != nil {
-		s.transferError(f.ReqID, err)
-		return
-	}
+	out, err = s.srv.transfer(moveCtx, source, who.userID, device, target)
+	// On every path, the move's or not: a pipeline an outbound send rebuilt
+	// meanwhile carries the source's scope.
 	if s.srv.cfg.Router != nil {
 		s.srv.cfg.Router.Forget(device)
 	}
-	s.log.Info("device moved to Personal", "device", device, "source", source, "destination", target, "by", who.userID)
+	if err != nil {
+		if gone, moved := s.settleFailedTransfer(ctx, source, target, device, pause); gone {
+			if moved {
+				// The move committed and only its answer was lost.
+				s.srv.exportLedger(context.WithoutCancel(ctx), source)
+				s.srv.RevalidateAccess()
+				s.tellMoved(viewers, device)
+			}
+			s.transferError(f.ReqID, store.ErrNotFound)
+			return
+		}
+		s.transferError(f.ReqID, err)
+		return
+	}
+	s.log.Info("device moved to Personal", "device", device, "source", source, "destination", target, "by", who.userID,
+		"assistants_ended", len(out.AssistantsEnded), "keys_narrowed", len(out.KeysNarrowed))
+	// The move's moved_out line, so a restore from before it never puts
+	// the number back in its team.
+	s.srv.exportLedger(context.WithoutCancel(ctx), source)
 	s.reply(TypeDeviceTransferred, f.ReqID, out)
 	s.srv.RevalidateAccess()
+	s.tellMoved(viewers, device)
 }
+
+// tellMoved tells the other sessions that saw the number that it moved.
+func (s *session) tellMoved(viewers []*session, device uuid.UUID) {
+	for _, viewer := range viewers {
+		if viewer != s {
+			viewer.reply(TypeDeviceRemoved, "", DeviceRemoved{DeviceID: device.String(), Reason: DeviceRemovedMoved})
+		}
+	}
+}
+
+// transfer is the move itself: the store's, or a test's stand-in.
+func (s *Server) transfer(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error) {
+	if s.cfg.transferHook != nil {
+		return s.cfg.transferHook(ctx, source, actor, device, target)
+	}
+	return s.cfg.Devices.TransferPersonal(ctx, source, actor, device, target)
+}
+
+// settleFailedTransfer takes back the pause this handler made before a move
+// that did not happen, on a context of its own: a closing socket must not
+// leave the number's sync silently off. The store leaves the number paused
+// when someone paused it since (a stop that came during the move found it
+// paused and changed nothing else). It reports whether the number is no
+// longer in the workspace, and whether that is because the move had in fact
+// committed and only its answer was lost: the number is then in the
+// destination, where it stays paused, as a move leaves it.
+func (s *session) settleFailedTransfer(ctx context.Context, source, target, device uuid.UUID, pause store.MovePause) (gone, moved bool) {
+	undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	undone, err := s.srv.cfg.Devices.UndoMovePause(undoCtx, source, device, pause)
+	if err == nil && !pause.Changed {
+		// Paused before the move: nothing to undo, but the move may still
+		// have committed.
+		_, err = s.srv.cfg.Devices.Get(undoCtx, source.String(), device.String())
+	}
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		if _, err := s.srv.cfg.Devices.Get(undoCtx, target.String(), device.String()); err == nil {
+			s.log.Warn("a transfer failed after its commit; the number stays paused in Personal", "device", device)
+			return true, true
+		}
+		return true, false
+	case err != nil:
+		s.log.Error("could not undo a failed transfer's pause", "device", device, "error", err)
+	case pause.Changed && !undone:
+		s.log.Info("a failed transfer left its pause alone: the number was paused or resumed meanwhile", "device", device)
+	}
+	return false, false
+}
+
 func (s *session) transferError(reqID string, err error) {
 	var denied *store.TransferDenied
 	switch {
+	case errors.As(err, &denied) && denied.Code == store.ReasonOthersHaveAccess:
+		s.reply(TypeError, reqID, Error{Code: ErrCodeOthersHaveAccess, Message: denied.Reason, Others: denied.Others})
 	case errors.As(err, &denied):
 		s.replyError(reqID, ErrCodeConflict, denied.Reason)
 	case errors.Is(err, store.ErrNotFound):

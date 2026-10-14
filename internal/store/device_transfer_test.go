@@ -49,8 +49,37 @@ func TestMovePersonalPreservesArchiveAndRevokesSourceAccess(t *testing.T) {
 	if err = d.SetPaused(ctx, a.tenant.String(), a.device.String(), true); err != nil {
 		t.Fatal(err)
 	}
+	// The Team's notices about the number would stay behind with nothing to
+	// point at (device_notices has no foreign key); another number's stay.
+	another := uuid.New()
+	notices := func(device uuid.UUID) (n int) {
+		t.Helper()
+		if err := pg.InTenantTx(ctx, a.pool, a.tenant.String(), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM device_notices WHERE device_id=$1`, device).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if err = pg.InTenantTx(ctx, a.pool, a.tenant.String(), func(tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `INSERT INTO device_notices(tenant_id,device_id,user_id,kind,raised_by_kind)
+			VALUES ($1,$2,$4,'sync_paused','person'),($1,$2,$4,'number_deleted','person'),($1,$3,$4,'sync_paused','person')`,
+			a.tenant, a.device, another, owner)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if notices(a.device) != 2 || notices(another) != 1 {
+		t.Fatalf("seeded %d and %d notices", notices(a.device), notices(another))
+	}
 	if _, err = d.TransferPersonal(ctx, a.tenant, owner, a.device, target); err != nil {
 		t.Fatal(err)
+	}
+	if n := notices(a.device); n != 0 {
+		t.Fatalf("the Team kept %d notices about the moved number", n)
+	}
+	if n := notices(another); n != 1 {
+		t.Fatalf("the transfer took another number's notice: %d left", n)
 	}
 	moved, err := d.Get(ctx, target.String(), a.device.String())
 	if err != nil {

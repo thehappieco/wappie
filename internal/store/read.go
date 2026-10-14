@@ -219,12 +219,17 @@ func scanRow(rows pgx.Rows) (Row, error) {
 // path's rows come from, so a client cannot tell a replayed message from a live
 // one — which is what stops the two paths drifting into different renderings,
 // as they did in v1.
+//
+// Joined to its device, as Get is, so a page read after a number is deleted
+// (0050) leaves its messages out: a replay running across the deletion stops
+// sending them, even to a key for every number, which is never cut off.
 func (m *Messages) Since(ctx context.Context, tenant uuid.UUID, sinceSeq int64, limit int) ([]Row, error) {
 	var out []Row
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT `+rowColumns+`
-			  FROM messages m LEFT JOIN media md ON md.message_uid = m.uid
+			  FROM messages m JOIN devices d ON d.id = m.device_id
+			  LEFT JOIN media md ON md.message_uid = m.uid
 			 WHERE m.tenant_id = $1 AND m.seq > $2
 			 ORDER BY m.seq
 			 LIMIT $3`, tenant, sinceSeq, limit)
@@ -341,12 +346,17 @@ func (m *Messages) Page(ctx context.Context, tenant, device uuid.UUID,
 }
 
 // Get returns one message by uid.
+//
+// Joined to its device, so an excluded number's message (0050) is not found
+// at all: answering "not authorized" instead would tell a former reader who
+// kept the uid that the number still exists, and when it is purged.
 func (m *Messages) Get(ctx context.Context, tenant, uid uuid.UUID) (Row, error) {
 	var out Row
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT `+rowColumns+`
-			  FROM messages m LEFT JOIN media md ON md.message_uid = m.uid
+			  FROM messages m JOIN devices d ON d.id = m.device_id
+			  LEFT JOIN media md ON md.message_uid = m.uid
 			 WHERE m.uid = $1`, uid)
 		if err != nil {
 			return err

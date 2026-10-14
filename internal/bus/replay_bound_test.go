@@ -20,7 +20,7 @@ import (
 // can deliver, the subscription lags, now rather than at the handover.
 func TestAReplayHoldsBackABoundedNumberOfEvents(t *testing.T) {
 	b := bus.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	defer sub.Close()
 
 	const depth, extra = 512, 40
@@ -48,7 +48,7 @@ func TestAReplayHoldsBackABoundedNumberOfEvents(t *testing.T) {
 func TestTypingDuringAReplayDoesNotCrowdOutAMessage(t *testing.T) {
 	b := bus.New()
 	tenant := uuid.New()
-	sub := b.Subscribe(tenant, bus.Filter{})
+	sub := b.Subscribe(tenant, bus.Filter{All: true})
 	defer sub.Close()
 
 	for range 600 {

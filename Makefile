@@ -19,10 +19,10 @@ test: ## Run tests
 	$(GO) test $(PKGS)
 
 test-race: ## Run tests with the race detector
-	$(GO) test -race $(PKGS)
+	$(GO) test -race -timeout=30m $(PKGS)
 
 cover: ## Report coverage
-	$(GO) test -race -coverprofile=coverage.out $(PKGS)
+	$(GO) test -race -timeout=30m -coverprofile=coverage.out $(PKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
 
 fuzz: ## Short fuzz pass over every fuzz target

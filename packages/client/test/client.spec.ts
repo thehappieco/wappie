@@ -142,6 +142,75 @@ describe('requests and pushes on one socket', () => {
     conn.close()
   })
 
+  it('keeps an error frame\'s other fields, the readers of device_has_readers among them', async () => {
+    const readers = [{ user_id: 'u', name: 'Ana', email: 'ana@acme.test' }]
+    const server = await serve((frame, send) => {
+      const p = frame.t === P.TypeDeviceDelete
+        ? { code: P.ErrDeviceHasReaders, message: 'people still read this number', readers }
+        : { code: P.ErrNotFound, message: 'no such device' }
+      send({ t: P.TypeError, r: frame.r, p })
+    })
+    const conn = await Connection.connect({ serverURL: server.url, credential: { kind: 'api_key', token: 'k' } })
+
+    const refused = await conn.request(P.TypeDeviceDelete, { device_id: 'x', confirm: 'x' }, P.TypeDeviceGone).catch((e: unknown) => e)
+    expect(refused).toBeInstanceOf(ProtocolError)
+    expect((refused as ProtocolError).details).toEqual({ readers })
+    const plain = await conn.request(P.TypeChatsList, { device_id: 'x' }, P.TypeChats).catch((e: unknown) => e)
+    expect((plain as ProtocolError).details).toEqual({})
+    conn.close()
+  })
+
+  it('keeps the list of others_have_access and device_has_readers, on a request and on connect', async () => {
+    // The plan's test 67: the console's transfer panel and delete dialog
+    // read these lists from the error itself.
+    const others: P.TransferAccess[] = [
+      { kind: 'person', why: ['send'], status: 'active', user_id: 'u1', name: 'Ana', email: 'ana@acme.test' },
+      { kind: 'key', why: ['read'], user_id: 'u2', name: 'Bia', key_id: 'wsk_1', key_name: 'ERP', created_by_name: 'Bia' },
+    ]
+    const readers: P.PersonRef[] = [{ user_id: 'u3', name: 'Caio', email: 'caio@acme.test' }]
+    const server = await serve((frame, send) => {
+      const p: P.WireError = frame.t === P.TypeDeviceTransfer
+        ? { code: P.ErrOthersHaveAccess, message: 'others have access', others }
+        : frame.t === P.TypeDeviceDelete
+          ? { code: P.ErrDeviceHasReaders, message: 'people still read this number', readers }
+          : { code: P.ErrNotFound, message: 'no such device' }
+      send({ t: P.TypeError, r: frame.r, p })
+    })
+    const conn = await Connection.connect({ serverURL: server.url, credential: { kind: 'api_key', token: 'k' } })
+    const moved = await conn.request(P.TypeDeviceTransfer, { device_id: 'x', confirm: 'x', target_workspace_id: 'p' }, P.TypeDeviceTransferred)
+      .catch((e: unknown) => e)
+    expect(moved).toBeInstanceOf(ProtocolError)
+    expect((moved as ProtocolError).code).toBe(P.ErrOthersHaveAccess)
+    expect((moved as ProtocolError).details).toEqual({ others })
+    const deleted = await conn.request(P.TypeDeviceDelete, { device_id: 'x', confirm: 'x' }, P.TypeDeviceGone).catch((e: unknown) => e)
+    expect((deleted as ProtocolError).details).toEqual({ readers })
+    const plain = await conn.request(P.TypeChatsList, { device_id: 'x' }, P.TypeChats).catch((e: unknown) => e)
+    expect((plain as ProtocolError).details).toEqual({})
+    conn.close()
+
+    for (const p of [
+      { code: P.ErrOthersHaveAccess, message: 'others have access', others },
+      { code: P.ErrDeviceHasReaders, message: 'people still read this number', readers },
+      { code: P.ErrUnauthorized, message: 'no' },
+    ] satisfies P.WireError[]) {
+      const wss = new WebSocketServer({ port: 0 })
+      wss.on('connection', (socket) => socket.on('message', (data) => {
+        const frame = JSON.parse(String(data)) as P.Frame
+        socket.send(JSON.stringify({ t: P.TypeError, r: frame.r, p }))
+      }))
+      await new Promise<void>((resolve) => wss.on('listening', resolve))
+      const { port } = wss.address() as AddressInfo
+      const refused = await Connection.connect({ serverURL: `http://127.0.0.1:${port}`, credential: { kind: 'api_key', token: 'k' } })
+        .catch((e: unknown) => e)
+      await new Promise<void>((resolve) => { wss.clients.forEach((c) => c.terminate()); wss.close(() => resolve()) })
+      expect(refused).toBeInstanceOf(ProtocolError)
+      const { code, message, ...details } = p
+      expect((refused as ProtocolError).code).toBe(code)
+      expect((refused as ProtocolError).rawMessage).toBe(message)
+      expect((refused as ProtocolError).details).toEqual(details)
+    }
+  })
+
   it('does not lose a push that arrives while a request is waiting', async () => {
     // The bug this prevents: a reader that consumes frames on behalf of one
     // request swallows the live traffic that arrives in the meantime, and the

@@ -116,12 +116,12 @@ func scanAIDerived(rows pgx.Rows) ([]AIDerived, error) {
 }
 
 // AIDerivedFor lists the results stored for some of a number's messages, in
-// the functions' order.
+// the functions' order. An excluded number (0050) has none.
 func (a *AI) AIDerivedFor(ctx context.Context, tenant, device uuid.UUID, uids []uuid.UUID) ([]AIDerived, error) {
 	var out []AIDerived
 	err := pg.InTenantTx(ctx, a.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT `+aiDerivedColumns+` FROM ai_derived
-			WHERE tenant_id=$1 AND device_id=$2 AND message_uid = ANY ($3)
+			WHERE tenant_id=$1 AND device_id=$2 AND message_uid = ANY ($3) AND device_id IN (SELECT id FROM devices)
 			ORDER BY message_uid, array_position(ARRAY['audio','video','image','document'], feature)`, tenant, device, uids)
 		if err != nil {
 			return err
@@ -144,7 +144,8 @@ type AIDedupeTag struct {
 // AIDerivedByTags finds the results of a function whose dedupe tag is one of
 // the tags given for its number: the enclave's reuse lookup, which computes
 // one tag per number it covers and asks for those pairs only. One result
-// per number is enough to reuse, so it answers the newest of each.
+// per number is enough to reuse, so it answers the newest of each. An
+// excluded number (0050) has none.
 func (a *AI) AIDerivedByTags(ctx context.Context, tenant uuid.UUID, feature string, tags []AIDedupeTag) ([]AIDerived, error) {
 	devices := make([]uuid.UUID, 0, len(tags))
 	values := make([][]byte, 0, len(tags))
@@ -157,7 +158,7 @@ func (a *AI) AIDerivedByTags(ctx context.Context, tenant uuid.UUID, feature stri
 		rows, err := tx.Query(ctx, `SELECT DISTINCT ON (d.device_id) d.message_uid, d.feature, d.device_id, d.epoch, d.result_sealed,
 			       d.dedupe_tag, d.authorization_id, d.created_at
 			FROM ai_derived d JOIN unnest($3::uuid[], $4::bytea[]) AS p(device_id, tag) ON d.device_id = p.device_id AND d.dedupe_tag = p.tag
-			WHERE d.tenant_id=$1 AND d.feature=$2
+			WHERE d.tenant_id=$1 AND d.feature=$2 AND d.device_id IN (SELECT id FROM devices)
 			ORDER BY d.device_id, d.created_at DESC, d.message_uid`, tenant, feature, devices, values)
 		if err != nil {
 			return err
@@ -173,7 +174,10 @@ func (a *AI) AIDerivedByTags(ctx context.Context, tenant uuid.UUID, feature stri
 
 // DeleteAIDerived deletes one stored result: for its authorization's
 // creator, an owner or an admin. A result whose authorization is gone, or
-// that moved with its number, is the managers' alone.
+// that moved with its number, is the managers' alone. A deleted number's
+// result (0050) is not found: answering otherwise would tell whoever kept
+// its uid that the number still exists, and when it is purged, and would
+// destroy what a recovery gives back.
 func (a *AI) DeleteAIDerived(ctx context.Context, tenant, actor, uid uuid.UUID, feature string) error {
 	return pg.InTenantTx(ctx, a.pool, tenant.String(), func(tx pgx.Tx) error {
 		role, err := activeRoleTx(ctx, tx, tenant, actor)
@@ -181,7 +185,8 @@ func (a *AI) DeleteAIDerived(ctx context.Context, tenant, actor, uid uuid.UUID, 
 			return err
 		}
 		var createdBy *uuid.UUID
-		err = tx.QueryRow(ctx, `SELECT c.created_by FROM ai_derived d LEFT JOIN mcp_connections c ON c.id = d.authorization_id
+		err = tx.QueryRow(ctx, `SELECT c.created_by FROM ai_derived d JOIN devices dv ON dv.id = d.device_id
+			LEFT JOIN mcp_connections c ON c.id = d.authorization_id
 			WHERE d.tenant_id=$1 AND d.message_uid=$2 AND d.feature=$3 FOR UPDATE OF d`, tenant, uid, feature).Scan(&createdBy)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrAINotFound
@@ -200,7 +205,9 @@ func (a *AI) DeleteAIDerived(ctx context.Context, tenant, actor, uid uuid.UUID, 
 // DeleteAIDerivedOf deletes every stored result of an authorization (its
 // creator, an owner or an admin may) or of a number (an owner or an admin
 // may). Exactly one of the two is named. An authorization this workspace
-// does not have is ErrAINotFound.
+// does not have is ErrAINotFound. A deleted number's results (0050) are
+// left alone either way, for its recovery: a deleted number deletes nothing,
+// as an unknown one does, so its count tells nobody it is still there.
 func (a *AI) DeleteAIDerivedOf(ctx context.Context, tenant, actor uuid.UUID, authorization, device *uuid.UUID) (int64, error) {
 	if (authorization == nil) == (device == nil) {
 		return 0, errors.New("store: name an authorization or a number")
@@ -215,7 +222,8 @@ func (a *AI) DeleteAIDerivedOf(ctx context.Context, tenant, actor uuid.UUID, aut
 			if !managerRole(role) {
 				return ErrMembershipForbidden
 			}
-			tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND device_id=$2`, tenant, *device)
+			tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND device_id=$2
+				AND device_id IN (SELECT id FROM devices)`, tenant, *device)
 			deleted = tag.RowsAffected()
 			return err
 		}
@@ -230,7 +238,8 @@ func (a *AI) DeleteAIDerivedOf(ctx context.Context, tenant, actor uuid.UUID, aut
 		if createdBy != actor && !managerRole(role) {
 			return ErrMembershipForbidden
 		}
-		tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND authorization_id=$2`, tenant, *authorization)
+		tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND authorization_id=$2
+			AND device_id IN (SELECT id FROM devices)`, tenant, *authorization)
 		deleted = tag.RowsAffected()
 		return err
 	})

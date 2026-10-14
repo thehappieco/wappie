@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/google/uuid"
@@ -73,15 +74,47 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 		}
 	}
 
+	s.hook("granted")
 	s.subMu.Lock()
 	if s.sub != nil {
 		s.subMu.Unlock()
 		s.replyError(f.ReqID, ErrCodeConflict, "this connection is already subscribed")
 		return
 	}
-	sub := s.srv.cfg.Bus.Subscribe(tenant, filter)
+	// The bus gets its own copy, which a deletion replaces
+	// (Bus.DropDevice); the replay below asks the subscription, never this
+	// map, so a number deleted mid-replay stops there too.
+	sub := s.srv.cfg.Bus.Subscribe(tenant, bus.Filter{Devices: maps.Clone(filter.Devices)})
 	s.sub = sub
 	s.subMu.Unlock()
+
+	// A deletion that committed between the access check above and the
+	// registration dropped its number from no filter: whatever is no longer
+	// visible now is dropped here, and one that commits from now on finds
+	// this subscription registered.
+	visible, err := s.srv.cfg.Devices.List(ctx, tenant.String())
+	if err != nil {
+		s.log.Error("could not check device access again", "error", err)
+		s.subMu.Lock()
+		if s.sub == sub {
+			s.sub = nil
+		}
+		s.subMu.Unlock()
+		sub.Close()
+		s.replyError(f.ReqID, ErrCodeInternal, "could not check device access")
+		return
+	}
+	still := make(map[uuid.UUID]struct{}, len(visible))
+	for _, d := range visible {
+		if id, err := uuid.Parse(d.ID); err == nil {
+			still[id] = struct{}{}
+		}
+	}
+	for id := range filter.Devices {
+		if _, ok := still[id]; !ok {
+			sub.Drop(id)
+		}
+	}
 
 	// The watermark is read before any row is sent. Sequences are allocated
 	// under a row lock held to commit, so everything at or below it is already
@@ -111,7 +144,7 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 	}
 
 	sent, last, gone := 0, req.SinceSeq, false
-	for last < watermark && !gone {
+	for last < watermark && !gone && !isClosed(sub.Ended()) {
 		rows, err := s.srv.cfg.Messages.Since(ctx, tenant, last, replayPage)
 		if err != nil {
 			s.log.Error("replay read failed", "since", last, "error", err)
@@ -125,6 +158,7 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 		if len(rows) == 0 && len(acks) == 0 {
 			break
 		}
+		s.hook("page")
 
 		// Messages and acknowledgements share one sequence, so replay is a
 		// merge of two streams the client must receive in order. The horizon is
@@ -139,29 +173,21 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 			horizon = min(horizon, acks[len(acks)-1].Seq)
 		}
 
+		// Each row is checked against the subscription as it is now: a page
+		// read before a deletion's commit is not sent after it.
 		mergeReplay(rows, acks, horizon,
 			func(r store.Row) {
-				if gone {
+				if gone || !sub.Allows(r.DeviceID) {
 					return
 				}
-				if len(filter.Devices) > 0 {
-					if _, ok := filter.Devices[r.DeviceID]; !ok {
-						return
-					}
-				}
-				gone = !s.push(ctx, TypeMessage, f.ReqID, sealedMessage(r))
+				gone = !s.pushOf(ctx, r.DeviceID, TypeMessage, f.ReqID, sealedMessage(r))
 				sent++
 			},
 			func(b store.ReceiptBatch) {
-				if gone {
+				if gone || !sub.Allows(b.DeviceID) {
 					return
 				}
-				if len(filter.Devices) > 0 {
-					if _, ok := filter.Devices[b.DeviceID]; !ok {
-						return
-					}
-				}
-				gone = !s.push(ctx, TypeReceipt, f.ReqID, receiptEvent(b))
+				gone = !s.pushOf(ctx, b.DeviceID, TypeReceipt, f.ReqID, receiptEvent(b))
 				sent++
 			})
 
@@ -181,6 +207,23 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 	sub.EndReplay(last)
 	if s.push(ctx, TypeReplayEnd, f.ReqID, ReplayEnd{LastSeq: last, Count: sent}) {
 		go s.pump(ctx, sub, f.ReqID)
+	}
+}
+
+// isClosed reports whether a done channel is closed.
+func isClosed(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+// hook runs the test seam at a subscribe's stage, when one is set.
+func (s *session) hook(stage string) {
+	if s.srv.cfg.subscribeHook != nil {
+		s.srv.cfg.subscribeHook(stage)
 	}
 }
 
@@ -240,11 +283,39 @@ func (s *session) pump(ctx context.Context, sub *bus.Subscription, reqID string)
 		select {
 		case <-ctx.Done():
 			return
+		case <-sub.Ended():
+			// Its last number was deleted. An empty filter delivers nothing,
+			// so the subscription ends here, and the client may subscribe
+			// again.
+			s.subMu.Lock()
+			if s.sub == sub {
+				s.sub = nil
+			}
+			s.subMu.Unlock()
+			sub.Close()
+			// On the stream, not as a reply: the writer takes replies
+			// first, and the end would overtake the deleted number's
+			// frames still queued ahead of it. A connection already going
+			// away needs no end, so a push that fails is simply the last.
+			s.push(ctx, TypeSubscriptionEnded, reqID, SubscriptionEnded{Reason: "device_removed"})
+			return
 		case ev, ok := <-sub.Events():
 			if !ok {
 				return
 			}
-			if !s.pushLag(ctx, sub, reqID) || !s.deliver(ctx, tenant, reqID, ev) {
+			if !s.pushLag(ctx, sub, reqID) {
+				return
+			}
+			// Queued under the filter of its moment, which a deletion may
+			// have narrowed since: the queue cannot take an event back, so
+			// the filter as it is now decides. It decides on the event's
+			// device alone, as offer did, so one it passed with none of its
+			// own (Filter.All) passes again. The lag is told first all the
+			// same, since it can cover other numbers' events.
+			if !sub.Allows(ev.DeviceID) {
+				continue
+			}
+			if !s.deliver(ctx, tenant, reqID, ev) {
 				return
 			}
 		}
@@ -290,7 +361,7 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 		if ev.Presence == nil {
 			return true
 		}
-		return s.push(ctx, TypePresence, reqID, PresenceEvent{
+		return s.pushOf(ctx, ev.DeviceID, TypePresence, reqID, PresenceEvent{
 			DeviceID:  ev.DeviceID.String(),
 			ChatKey:   ev.Presence.ChatKey,
 			SenderKey: ev.Presence.SenderKey,
@@ -310,7 +381,7 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 		if ev.Chat == nil {
 			return true
 		}
-		return s.push(ctx, TypeChatUpdate, reqID, ChatUpdateEvent{
+		return s.pushOf(ctx, ev.DeviceID, TypeChatUpdate, reqID, ChatUpdateEvent{
 			DeviceID:  ev.DeviceID.String(),
 			ChatKey:   ev.Chat.ChatKey,
 			Unread:    ev.Chat.Unread,
@@ -327,7 +398,7 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 			s.log.Error("could not load a published receipt", "seq", ev.Seq, "error", err)
 			return true
 		}
-		return s.push(ctx, TypeReceipt, reqID, receiptEvent(batch))
+		return s.pushOf(ctx, batch.DeviceID, TypeReceipt, reqID, receiptEvent(batch))
 	}
 
 	row, err := s.srv.cfg.Messages.Get(ctx, tenant, ev.UID)
@@ -335,7 +406,7 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 		s.log.Error("could not load a published message", "uid", ev.UID, "error", err)
 		return true
 	}
-	return s.push(ctx, TypeMessage, reqID, sealedMessage(row))
+	return s.pushOf(ctx, row.DeviceID, TypeMessage, reqID, sealedMessage(row))
 }
 
 func sealedMessage(r store.Row) SealedMessage {

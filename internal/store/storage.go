@@ -113,6 +113,10 @@ func (s *Storage) Resume(ctx context.Context, tenant uuid.UUID) error {
 
 // Reconcile rebuilds canonical record entries from the authoritative tables.
 // Object reservations are retained: a crashed uploader may have stored bytes.
+// An excluded number's rows are rebuilt too, with the quarantine scope on:
+// their bytes stay stored and charged until the purge, and without the scope
+// the ownership trigger would refuse every one of them (WS002) and fail the
+// whole workspace's reconcile.
 func (s *Storage) Reconcile(ctx context.Context, tenant uuid.UUID) (StorageUsage, error) {
 	err := pg.InTenantTx(ctx, s.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR UPDATE`, tenant); err != nil {
@@ -126,10 +130,15 @@ func (s *Storage) Reconcile(ctx context.Context, tenant uuid.UUID) (StorageUsage
 		if _, err := tx.Exec(ctx, `DELETE FROM storage_inventory WHERE tenant_id=$1`, tenant); err != nil {
 			return err
 		}
-		for _, table := range []string{"messages", "chats", "media", "receipts", "contacts", "group_participants", "group_changes", "ai_derived"} {
-			if _, err := tx.Exec(ctx, `UPDATE `+table+` SET tenant_id=tenant_id WHERE tenant_id=$1`, tenant); err != nil {
-				return err
+		if err := withQuarantine(ctx, tx, func() error {
+			for _, table := range []string{"messages", "chats", "media", "receipts", "contacts", "group_participants", "group_changes", "ai_derived"} {
+				if _, err := tx.Exec(ctx, `UPDATE `+table+` SET tenant_id=tenant_id WHERE tenant_id=$1`, tenant); err != nil {
+					return err
+				}
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		// A repaired or first baseline cannot be compared to samples taken
 		// from different/incomplete counters. Healthy reconciliations retain
@@ -203,6 +212,18 @@ func SetStorageLimitTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, limit *
 	return err
 }
 
+// deleteObjectCheck is DeleteObject's view of one key: whether this workspace
+// owns it, whether any of its attachments still names it, and whether
+// another workspace owns the same ciphertext. The reference check is two
+// lookups on stored columns, each served by its own index (0050), never one
+// OR over a computed path: that scans all of media while the workspace's row
+// is held, and an expression index cannot serve it under forced row-level
+// security.
+const deleteObjectCheck = `SELECT
+   EXISTS(SELECT 1 FROM storage_objects WHERE tenant_id=$1 AND object_key=$2),
+   EXISTS(SELECT 1 FROM media WHERE object_key=$2) OR EXISTS(SELECT 1 FROM media WHERE content_key=$2),
+   EXISTS(SELECT 1 FROM storage_object_owners WHERE object_key=$2 AND tenant_id<>$1)`
+
 // DeleteObject serializes physical deletion with new references and uploads.
 // It retains the charge on any ambiguous deletion failure. Retention, erasure,
 // and administration should use this instead of a separate Delete/Forget pair.
@@ -217,10 +238,7 @@ func (s *Storage) DeleteObject(ctx context.Context, tenant uuid.UUID, key string
 			return err
 		}
 		var owned, referenced, otherOwner bool
-		if err := tx.QueryRow(ctx, `SELECT
-   EXISTS(SELECT 1 FROM storage_objects WHERE tenant_id=$1 AND object_key=$2),
-   EXISTS(SELECT 1 FROM media WHERE object_key=$2 OR tenant_id::text||'/'||left(encode(file_enc_sha256,'hex'),2)||'/'||encode(file_enc_sha256,'hex')=$2),
-   EXISTS(SELECT 1 FROM storage_object_owners WHERE object_key=$2 AND tenant_id<>$1)`, tenant, key).Scan(&owned, &referenced, &otherOwner); err != nil {
+		if err := tx.QueryRow(ctx, deleteObjectCheck, tenant, key).Scan(&owned, &referenced, &otherOwner); err != nil {
 			return err
 		}
 		if !owned || referenced {
@@ -267,6 +285,16 @@ func (s *Storage) History(ctx context.Context, tenant uuid.UUID) ([]StorageEvent
 	return out, err
 }
 
+// unreferencedObjects lists a workspace's objects that no attachment names,
+// by object key or by content key, each checked with its own index (0050).
+// OFFSET 0 keeps each check a lookup per object: as a plain NOT EXISTS the
+// planner turns it into an anti-join that hashes all of media, every
+// workspace's rows, at each workspace's hourly pass.
+const unreferencedObjects = `SELECT object_key FROM storage_objects o WHERE tenant_id=$1
+    AND NOT EXISTS(SELECT 1 FROM media m WHERE m.object_key=o.object_key OFFSET 0)
+    AND NOT EXISTS(SELECT 1 FROM media m WHERE m.content_key=o.object_key OFFSET 0)
+    ORDER BY object_key LIMIT $2`
+
 // UnreferencedObjects includes failed or interrupted deletion candidates, so a
 // later maintenance pass can retry even after their archive rows are gone.
 func (s *Storage) UnreferencedObjects(ctx context.Context, tenant uuid.UUID, limit int) ([]string, error) {
@@ -275,10 +303,7 @@ func (s *Storage) UnreferencedObjects(ctx context.Context, tenant uuid.UUID, lim
 	}
 	out := []string{}
 	err := pg.InTenantTx(ctx, s.pool, tenant.String(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT object_key FROM storage_objects o WHERE tenant_id=$1 AND NOT EXISTS(
-    SELECT 1 FROM media m WHERE m.object_key=o.object_key OR
-    m.tenant_id::text||'/'||left(encode(m.file_enc_sha256,'hex'),2)||'/'||encode(m.file_enc_sha256,'hex')=o.object_key)
-    ORDER BY object_key LIMIT $2`, tenant, limit)
+		rows, err := tx.Query(ctx, unreferencedObjects, tenant, limit)
 		if err != nil {
 			return err
 		}

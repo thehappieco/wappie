@@ -49,7 +49,18 @@ Build output includes types; the browser KDF worker is the kit's
 bundler that pre-bundles dependencies must leave `@thehappieco/kit` out of that
 step and serve this package's dependencies. Applications may call
 `setMessageResolver` from `messages` to translate diagnostics. Error codes and
-server diagnostic details remain available without any UI framework.
+server diagnostic details remain available without any UI framework. A
+`ProtocolError` keeps the error frame's other fields in `details`: `readers`
+with `device_has_readers`, and `others` with `others_have_access`.
+
+Deleting and recovering a number are owners' frames (`TypeDeviceDeleteCheck`,
+`TypeDeviceDelete`, `TypeDevicesDeleted`, `TypeDeviceRecoverCheck`,
+`TypeDeviceRecover`); a person acknowledges notices with
+`TypeDeviceNoticeSeen`, and the server pushes `TypeDeviceRemoved`,
+`TypeDeviceNotice` and `TypeSubscriptionEnded`. Before naming who else has
+access to a number a move would take, check that the welcome lists
+`FeatureTransferAccess`. See the [device lifecycle](../../docs/devices.md) and
+[moving a number to Personal](../../docs/device-personal-transfer.md).
 
 An explicit `serverURL` always chooses that installation. An empty URL uses the
 current page's origin. Credential persistence and which credentials to use are

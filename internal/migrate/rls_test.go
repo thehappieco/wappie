@@ -1,10 +1,17 @@
 package migrate
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"whatserver2/internal/pg"
+	"whatserver2/internal/pgtest"
 )
 
 // A migration runs with no app.tenant_id set, so any DELETE or UPDATE it makes
@@ -135,4 +142,80 @@ func stripComments(sql string) string {
 		out.WriteByte('\n')
 	}
 	return out.String()
+}
+
+// The two tables 0050 adds hold who was told what about which number, and
+// what happened to it: both force their policy, so a query outside a
+// workspace sees none of their rows and a workspace sees only its own.
+func TestDeletionTablesForceRowLevelSecurity(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.Fresh(t, Run)
+	for _, table := range []string{"device_notices", "item_events", "devices"} {
+		var enabled, forced bool
+		if err := pool.QueryRow(ctx, `SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+			WHERE relname=$1 AND relnamespace=current_schema()::regnamespace`, table).Scan(&enabled, &forced); err != nil {
+			t.Fatal(err)
+		}
+		if !enabled || !forced {
+			t.Errorf("%s: row-level security %v, forced %v", table, enabled, forced)
+		}
+	}
+	tenants := make([]uuid.UUID, 2)
+	for i, name := range []string{"one", "two"} {
+		if err := pool.QueryRow(ctx, `INSERT INTO tenants(name) VALUES ($1) RETURNING id`, name).Scan(&tenants[i]); err != nil {
+			t.Fatal(err)
+		}
+		reader := person(t, pool, tenants[i], name+"@example.test", "member")
+		if err := pg.InTenantTx(ctx, pool, tenants[i].String(), func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `INSERT INTO device_notices(tenant_id,device_id,user_id,kind,raised_by_kind)
+				VALUES ($1,$2,$3,'number_deleted','person')`, tenants[i], uuid.New(), reader); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO item_events(event_id,tenant_id,type,item_id,dedupe_key,occurred_at,actor_kind,deleted_at,purge_after)
+				VALUES (uuidv7(),$1,'deleted',$2,$3,clock_timestamp(),'person',clock_timestamp(),clock_timestamp()+interval '30 days')`,
+				tenants[i], uuid.New(), "deleted:"+name)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(table string, tenant *uuid.UUID) int {
+		t.Helper()
+		var n int
+		query := func(q interface {
+			QueryRow(context.Context, string, ...any) pgx.Row
+		}) error {
+			// table is one of two literals in this test, never input.
+			return q.QueryRow(ctx, `SELECT count(*) FROM `+table).Scan(&n)
+		}
+		var err error
+		if tenant == nil {
+			err = query(pool)
+		} else {
+			err = pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error { return query(tx) })
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, table := range []string{"device_notices", "item_events"} {
+		if n := count(table, nil); n != 0 {
+			t.Errorf("%s: %d rows visible with no workspace set", table, n)
+		}
+		for i := range tenants {
+			if n := count(table, &tenants[i]); n != 1 {
+				t.Errorf("%s: workspace %d sees %d rows, want its own one", table, i, n)
+			}
+		}
+	}
+	// WITH CHECK: a workspace cannot write a row in another's name.
+	err := pg.InTenantTx(ctx, pool, tenants[0].String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO item_events(event_id,tenant_id,type,item_id,dedupe_key,occurred_at,actor_kind,ledgered_at)
+			VALUES (uuidv7(),$1,'sync_paused',$2,'sync_paused:x',clock_timestamp(),'person',clock_timestamp())`, tenants[1], uuid.New())
+		return err
+	})
+	if sqlState(err) != "42501" {
+		t.Fatalf("an event written in another workspace's name: %v", err)
+	}
 }

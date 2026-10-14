@@ -2,6 +2,8 @@ package store_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -77,7 +79,7 @@ func TestStorageBreakdownMatchesWorkspaceAndSeparatesSharedAndPendingObjects(t *
 	}
 	check := func(wantShared, wantPending int64) store.StorageUsage {
 		t.Helper()
-		usage, err := storage.UsageDetailed(ctx, a.tenant)
+		usage, err := storage.UsageDetailed(ctx, a.tenant, uuid.Nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,17 +149,18 @@ func TestStorageBreakdownAccountsReservedObjectWithPendingArchiveReference(t *te
 	a := newArchive(t)
 	ctx := context.Background()
 	uid := uuid.New()
-	hash := []byte{0x12, 0x34}
-	_, err := a.messages.Insert(ctx, store.InsertMessage{UID: uid, TenantID: a.tenant, DeviceID: a.device, WAID: "pending", Kind: domain.KindMessage, Type: domain.TypeImage, Source: domain.SourceLive, TS: time.Now(), ChatKey: "pending", BodySealed: []byte{1}, Media: &store.InsertMedia{MediaType: "image", FileEncSHA256: hash, FileLength: 999}})
+	// A real SHA-256: only one has a content path (0050).
+	hash := sha256.Sum256([]byte("pending"))
+	_, err := a.messages.Insert(ctx, store.InsertMessage{UID: uid, TenantID: a.tenant, DeviceID: a.device, WAID: "pending", Kind: domain.KindMessage, Type: domain.TypeImage, Source: domain.SourceLive, TS: time.Now(), ChatKey: "pending", BodySealed: []byte{1}, Media: &store.InsertMedia{MediaType: "image", FileEncSHA256: hash[:], FileLength: 999}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	storage := store.NewStorage(a.pool)
-	key := a.tenant.String() + "/12/1234"
+	key := a.tenant.String() + "/" + hex.EncodeToString(hash[:1]) + "/" + hex.EncodeToString(hash[:])
 	if err := storage.ReserveObject(ctx, a.tenant, key, 42); err != nil {
 		t.Fatal(err)
 	}
-	usage, err := storage.UsageDetailed(ctx, a.tenant)
+	usage, err := storage.UsageDetailed(ctx, a.tenant, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +185,7 @@ func TestStorageBreakdownStaysConsistentDuringConcurrentArchiveWrites(t *testing
 		done <- nil
 	}()
 	for i := 0; i < 20; i++ {
-		usage, err := storage.UsageDetailed(ctx, a.tenant)
+		usage, err := storage.UsageDetailed(ctx, a.tenant, uuid.Nil)
 		if err != nil {
 			t.Fatal(err)
 		}

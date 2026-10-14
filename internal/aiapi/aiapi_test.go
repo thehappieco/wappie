@@ -21,13 +21,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/aiapi"
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/mcpauth"
 	"whatserver2/internal/migrate"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/store"
@@ -831,6 +834,45 @@ func TestAIDerivedRoutes(t *testing.T) {
 	expect(t, r, http.StatusOK, "")
 	if strings.TrimSpace(string(r.body)) != `{"deleted":1}` {
 		t.Fatalf("deleted = %s", r.body)
+	}
+}
+
+// A deleted number's results (0050) answer as if they did not exist, and
+// nothing deletes them: whoever kept a uid learns nothing from it, and a
+// recovery gives them back.
+func TestAIDerivedRoutesOnDeletedNumber(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	ownerToken := h.session(t, h.owner)
+	adminToken := h.session(t, h.person(t, "admin"))
+	devices := store.NewDevices(h.pool)
+	if err := devices.SetIdentity(ctx, h.tenant.String(), h.device.String(), wa.Identity{PN: types.NewJID("5511900000021", types.DefaultUserServer)}); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := h.authorization(t, h.owner, "self")
+	voice := h.message(t, domain.TypePTT, false)
+	doc := h.message(t, domain.TypeDocument, false)
+	h.result(t, id, voice, "audio")
+	h.result(t, id, doc, "document")
+	if _, err := devices.Quarantine(ctx, h.tenant, h.owner.ID, h.device, nil); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, h.call(t, http.MethodDelete, "/v1/ai/derived/"+voice.String()+"/audio", ownerToken, nil), http.StatusNotFound, "not_found")
+	for token, body := range map[string]map[string]any{adminToken: {"device_id": h.device.String()}, ownerToken: {"authorization_id": id}} {
+		r := h.call(t, http.MethodPost, "/v1/ai/derived/delete", token, body)
+		expect(t, r, http.StatusOK, "")
+		if strings.TrimSpace(string(r.body)) != `{"deleted":0}` {
+			t.Fatalf("deleting %v on a deleted number: %s", body, r.body)
+		}
+	}
+	if _, err := devices.Recover(ctx, h.tenant, h.owner.ID, h.device); err != nil {
+		t.Fatal(err)
+	}
+	var kept int
+	if err := pg.InTenantTx(ctx, h.pool, h.tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM ai_derived WHERE device_id=$1`, h.device).Scan(&kept)
+	}); err != nil || kept != 2 {
+		t.Fatalf("%d results came back with the number: %v", kept, err)
 	}
 }
 

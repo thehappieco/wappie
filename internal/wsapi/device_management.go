@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"whatserver2/internal/wa"
 )
 
@@ -87,6 +89,14 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 		s.srv.cfg.Registry.Stop(context.WithoutCancel(ctx), dev.ID)
 		s.replyError(f.ReqID, ErrCodeConflict, "this connection was paused or removed while resuming")
 		return
+	}
+	// The readers' pause notices stay until each one sees them, now in the
+	// past tense: a resume deletes none. A stop that came after the check
+	// above keeps them open: the store marks nothing on a paused number.
+	resumedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.srv.cfg.Devices.MarkResumed(resumedCtx, uuid.MustParse(tenant), resolved); err != nil {
+		s.log.Warn("could not mark the pause notices resumed", "device", dev.ID, "error", err)
 	}
 	s.reply(TypeDeviceStatus, f.ReqID, DeviceStatus{DeviceID: dev.ID, Status: string(current.Status)})
 }

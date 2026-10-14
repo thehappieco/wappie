@@ -149,9 +149,19 @@ func (m *MCPConnections) ReaderRow(ctx context.Context, reader, id string) (Read
 		}
 		r.Config = &c
 	}
+	// Joined to devices, so an excluded number (0050) is none of the row's:
+	// the enclave can then neither read nor store its AI results. The
+	// renewal's exact-device rule reads the key's own list (keyDevicesTx).
 	err = pg.InTenantTx(ctx, m.pool, r.TenantID.String(), func(tx pgx.Tx) error {
-		var err error
-		r.Devices, err = keyDevicesTx(ctx, tx, r.APIKeyID)
+		rows, err := tx.Query(ctx, `SELECT x.device_id FROM api_key_devices x JOIN devices d ON d.id = x.device_id WHERE x.api_key_id=$1`, r.APIKeyID)
+		if err != nil {
+			return err
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		r.Devices = make(map[uuid.UUID]bool, len(ids))
+		for _, id := range ids {
+			r.Devices[id] = true
+		}
 		return err
 	})
 	if err != nil {
@@ -524,7 +534,10 @@ func (m *MCPConnections) RevokeAI(ctx context.Context, tenant, actor uuid.UUID, 
 			return err
 		}
 		if deleteResults {
-			tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND authorization_id=$2`, tenant, id)
+			// A deleted number's results stay for its recovery, as in
+			// DeleteAIDerivedOf.
+			tag, err := tx.Exec(ctx, `DELETE FROM ai_derived WHERE tenant_id=$1 AND authorization_id=$2
+				AND device_id IN (SELECT id FROM devices)`, tenant, id)
 			if err != nil {
 				return err
 			}

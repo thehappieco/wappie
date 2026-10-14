@@ -1036,6 +1036,8 @@ a `DELETE` of grants removes zero rows under FORCE RLS, silently):
 | `RemoveMember` / `UpdateMember(disabled)` of the service account | `service_removed` / `service_disabled` |
 | the same for `created_by`: every live connection they created, any kind | `member_removed` / `member_disabled` |
 | `Status` finding access gone (below) | `access_lost` |
+| a number's deletion (`device.delete`, [devices.md](devices.md#deletion-and-recovery)), or a restore's replay excluding it again: every live connection whose key names the number, any kind | `access_lost` |
+| a move to Personal ([device-personal-transfer.md](device-personal-transfer.md)): the mover's own live connections to the number, any kind | `access_lost` |
 
 `ExpireServiceAccounts(ctx, pool)`, run beside `ExpireMCPConnections`, applies
 `removeServiceAccountTx` per tenant to every membership past `expires_at` that

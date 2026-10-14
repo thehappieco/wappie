@@ -132,11 +132,24 @@ type AIUsageRow struct {
 // AIUsageMonth lists a month's (UTC) counters: all of the workspace's when
 // all is set (an owner or an admin asking), otherwise those of the viewer's
 // own authorizations.
+//
+// A number this workspace no longer shows (deleted and awaiting its purge,
+// or moved out) keeps its lines, so the totals stay right, but only an owner
+// of the workspace now sees its id; anyone else gets it as the zero id, an
+// unlabelled line, and learns nothing about a deleted number (decision 0038).
 func (a *AI) AIUsageMonth(ctx context.Context, tenant, viewer uuid.UUID, all bool, month time.Time) ([]AIUsageRow, error) {
 	start, end := monthBounds(month)
 	out := []AIUsageRow{}
 	err := pg.InTenantTx(ctx, a.pool, tenant.String(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT u.authorization_id, u.device_id, u.feature, u.provider, u.model, u.keychain_id, u.origin, u.requester_id,
+		var owner bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN users u ON u.id = m.user_id
+			WHERE m.tenant_id = $1 AND m.user_id = $2 AND m.role = 'owner' AND m.status = 'active' AND u.status = 'active')`, tenant, viewer).Scan(&owner); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT u.authorization_id,
+			       CASE WHEN $6 OR EXISTS (SELECT 1 FROM devices d WHERE d.id = u.device_id) THEN u.device_id
+			            ELSE '00000000-0000-0000-0000-000000000000'::uuid END,
+			       u.feature, u.provider, u.model, u.keychain_id, u.origin, u.requester_id,
 			       sum(u.items)::bigint, sum(u.reused)::bigint, sum(u.failures)::bigint, sum(u.input_tokens)::bigint,
 			       sum(u.output_tokens)::bigint, sum(u.seconds)::bigint, sum(u.charged_tokens)::bigint,
 			       coalesce(sum(u.items) FILTER (WHERE u.day = (now() AT TIME ZONE 'UTC')::date), 0)::bigint,
@@ -144,7 +157,7 @@ func (a *AI) AIUsageMonth(ctx context.Context, tenant, viewer uuid.UUID, all boo
 			FROM ai_usage_daily u JOIN mcp_connections c ON c.id = u.authorization_id
 			WHERE u.tenant_id=$1 AND u.day >= $2 AND u.day < $3 AND ($4 OR c.created_by=$5)
 			GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
-			ORDER BY 1, 2, 3, 4, 5, 6, 7, 8`, tenant, start, end, all, viewer)
+			ORDER BY 1, 2, 3, 4, 5, 6, 7, 8`, tenant, start, end, all, viewer, owner)
 		if err != nil {
 			return err
 		}
