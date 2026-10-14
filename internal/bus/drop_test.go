@@ -80,6 +80,48 @@ func TestDropDeviceDuringReplay(t *testing.T) {
 	}
 }
 
+// A number deleted while its events wait is not released afterwards. The
+// replay's buffer forgets them, even when other numbers keep the
+// subscription going; the queue cannot take back what it holds, so its
+// reader asks Allows, which no longer passes them.
+func TestDropDeviceForgetsWhatWaits(t *testing.T) {
+	b := bus.New()
+	deleted, kept := uuid.New(), uuid.New()
+	both := map[uuid.UUID]struct{}{deleted: {}, kept: {}}
+
+	replaying := b.Subscribe(tenant, bus.Filter{Devices: both})
+	defer replaying.Close()
+	b.Publish(tenant, deviceEvent(1, deleted))
+	b.Publish(tenant, deviceEvent(2, kept))
+	b.Publish(tenant, deviceEvent(3, deleted))
+	b.DropDevice(tenant, deleted)
+	replaying.EndReplay(0)
+	if got := drain(replaying, 100*time.Millisecond); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("the handover released %v, want only the kept number's event", got)
+	}
+
+	live := b.Subscribe(tenant, bus.Filter{Devices: both})
+	defer live.Close()
+	live.EndReplay(0)
+	b.Publish(tenant, deviceEvent(4, deleted))
+	b.Publish(tenant, deviceEvent(5, kept))
+	b.DropDevice(tenant, deleted)
+	var passed []int64
+	for range 2 {
+		select {
+		case ev := <-live.Events():
+			if live.Allows(ev.DeviceID) {
+				passed = append(passed, ev.Seq)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("an event queued before the drop is missing from the queue")
+		}
+	}
+	if len(passed) != 1 || passed[0] != 5 {
+		t.Fatalf("Allows passed %v of the queue, want only the kept number's event", passed)
+	}
+}
+
 // Under -race: publishers, a replay and DropDevice at once. The filter is
 // swapped, never written in place, so nothing races and nothing panics.
 func TestDropDeviceUnderTraffic(t *testing.T) {

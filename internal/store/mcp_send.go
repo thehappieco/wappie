@@ -201,7 +201,7 @@ type lockedSending struct {
 // transaction to read; one that comes second waits, and revokes what this
 // one wrote.
 func lockSendingTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id string) (lockedSending, error) {
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR KEY SHARE`, tenant); err != nil {
+	if err := shareWorkspaceTx(ctx, tx, tenant); err != nil {
 		return lockedSending{}, err
 	}
 	var l lockedSending
@@ -212,6 +212,19 @@ func lockSendingTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id string) 
 		return lockedSending{}, ErrMCPConnectionNotFound
 	}
 	return l, err
+}
+
+// shareWorkspaceTx locks the workspace's tenants row FOR KEY SHARE, first,
+// in a path that then locks one of its connections' rows and inserts a row
+// that references tenants: a draft, a send or a refusal (lockSendingTx), a
+// notice (RaiseNotice), its e-mail's revoke link (ClaimNoticeMail) and the
+// banner's seen mark (MarkSeen). Every
+// path that ends a connection locks the same row FOR UPDATE and then the
+// connection's, and the foreign key would take this share lock anyway; taken
+// only there, after the connection's, it closes a cycle with such an end.
+func shareWorkspaceTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) error {
+	_, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR KEY SHARE`, tenant)
+	return err
 }
 
 // liveForSending is the connection's own state for a draft or a send, in

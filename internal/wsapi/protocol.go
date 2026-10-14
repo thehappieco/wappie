@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
+
 	"whatserver2/internal/store"
 )
 
@@ -24,6 +26,12 @@ type Frame struct {
 	ReqID string `json:"r,omitempty"`
 	// Payload is the type-specific body.
 	Payload json.RawMessage `json:"p,omitempty"`
+
+	// device is the number whose traffic a subscription frame carries, and
+	// zero on every other frame. Never on the wire: the writer checks it
+	// against the subscription as it is when the frame goes out, so a frame
+	// queued before a deletion is not written after it (writeLoop).
+	device uuid.UUID
 }
 
 // Client-to-server frame types.

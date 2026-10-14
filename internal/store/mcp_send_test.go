@@ -1059,7 +1059,7 @@ func TestSendingAndEndingDoNotDeadlock(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() { done <- tc.start(conn, key) }()
-			waitForALockWait(ctx, t, f)
+			waitForALockWait(ctx, t, f.mcpFixture)
 			if _, err := ending.Exec(ctx, `SELECT status FROM mcp_connections WHERE id=$1 FOR UPDATE`, conn.ID); err != nil {
 				t.Fatalf("the end: %v", err)
 			}
@@ -1119,7 +1119,7 @@ func TestSendingAndEndingDoNotDeadlock(t *testing.T) {
 
 // waitForALockWait returns once another session of the test's database
 // waits on a lock, and fails the test after five seconds.
-func waitForALockWait(ctx context.Context, t *testing.T, f *sendFixture) {
+func waitForALockWait(ctx context.Context, t *testing.T, f *mcpFixture) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1133,7 +1133,7 @@ func waitForALockWait(ctx context.Context, t *testing.T, f *sendFixture) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("nothing waited on the end's lock")
+	t.Fatal("nothing waited on a lock")
 }
 
 // Refusals are recorded up to a hundred a connection a day; past that they

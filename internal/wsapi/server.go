@@ -157,6 +157,20 @@ const (
 	// outboundBuffer is how many frames may queue for a slow reader before the
 	// server stops waiting for it.
 	outboundBuffer = 256
+
+	// streamBuffer is how many subscription frames may wait for the writer.
+	// The subscription waits for room instead of overflowing it (see push), so
+	// this sizes a hand-off, not a tolerance: a replay of any length goes out
+	// at the pace the client reads it.
+	streamBuffer = 64
+
+	// writeBatch is the most frames one access check lets out. The check
+	// starts after every frame of the batch was queued, so a frame queued
+	// after access ends is never written; what it trades is up to this many
+	// frames queued before that, against a database round trip per frame,
+	// which is what used to fill the queue during a replay and close a
+	// healthy client as a slow consumer.
+	writeBatch = 64
 )
 
 // features is what this build answers, announced in the welcome frame.
@@ -224,6 +238,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		srv:        s,
 		conn:       conn,
 		out:        make(chan Frame, outboundBuffer),
+		stream:     make(chan Frame, streamBuffer),
 		log:        s.log,
 		peer:       ratelimit.ClientIP(r, proxies),
 		accessWake: make(chan struct{}, 1),
@@ -358,7 +373,11 @@ type session struct {
 	srv        *Server
 	conn       *websocket.Conn
 	out        chan Frame
-	log        *slog.Logger
+	// stream carries the subscription's frames, replay and live, in order.
+	// Kept apart from out so a long replay waiting on it cannot fill the
+	// queue a command's reply needs.
+	stream chan Frame
+	log    *slog.Logger
 
 	// peer is the address the connection came from, for the hello limit.
 	peer string
@@ -788,30 +807,61 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 	}
 }
 
+// writeLoop writes queued frames, checking access once per batch.
+//
+// It checked once per frame, and the check is a database round trip or two.
+// A replay queues a page of frames at memory speed, so the queue filled
+// behind the checks and a healthy client was closed as a slow consumer after
+// about 256 frames. One check now covers the frames already waiting when the
+// batch is taken, at most writeBatch of them. It still starts after each of
+// them was queued, which keeps what "checked before writing queued frames"
+// protects (docs/workspaces.md): a frame queued after access ends is never
+// written. A connection that is still writing then closes at its next batch;
+// accessLoop closes an idle one.
 func (s *session) writeLoop(ctx context.Context) {
+	batch := make([]Frame, 0, writeBatch)
 	for {
+		batch = batch[:0]
 		select {
 		case <-ctx.Done():
 			return
 		case f := <-s.out:
-			if !s.validAccess(ctx) {
-				return
+			batch = append(batch, f)
+		case f := <-s.stream:
+			batch = append(batch, f)
+		}
+		batch = s.gather(batch)
+		if !s.validAccess(ctx) {
+			return
+		}
+		// Read once per batch too, and only when a status frame needs it.
+		var viewable map[uuid.UUID]struct{}
+		for _, f := range batch {
+			// Checked per frame, as it is written, not per batch: a number
+			// the bus dropped after its frames were queued, or taken into
+			// this batch, stops here, so nothing of it is written once its
+			// deletion has committed (bus.DropDevice runs right after).
+			if f.device != uuid.Nil && !s.carries(f.device) {
+				continue
 			}
 			if f.Type == TypeDeviceStatus {
 				var status DeviceStatus
 				if err := json.Unmarshal(f.Payload, &status); err != nil {
 					continue
 				}
-				allowed, err := s.actionDevices(ctx, store.ActionView)
-				if err != nil {
-					s.closeWith(websocket.StatusPolicyViolation, "could not verify device access")
-					return
+				if viewable == nil {
+					allowed, err := s.actionDevices(ctx, store.ActionView)
+					if err != nil {
+						s.closeWith(websocket.StatusPolicyViolation, "could not verify device access")
+						return
+					}
+					viewable = allowed
 				}
 				id, err := uuid.Parse(status.DeviceID)
 				if err != nil {
 					continue
 				}
-				if _, ok := allowed[id]; !ok {
+				if _, ok := viewable[id]; !ok {
 					continue
 				}
 			}
@@ -824,6 +874,39 @@ func (s *session) writeLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// carries reports whether the connection's subscription delivers a device
+// now, as the bus's filter has it (bus.Subscription.Allows): no database
+// read, so it costs a frame two uncontended locks. No subscription, as
+// after one ended, carries nothing.
+func (s *session) carries(device uuid.UUID) bool {
+	s.subMu.Lock()
+	sub := s.sub
+	s.subMu.Unlock()
+	return sub != nil && sub.Allows(device)
+}
+
+// gather fills a batch with frames already queued, without waiting.
+//
+// Replies first: the subscription refills its queue as fast as it drains, and
+// taking from it first would hold a command's answer behind a whole replay.
+func (s *session) gather(batch []Frame) []Frame {
+	for len(batch) < cap(batch) {
+		select {
+		case f := <-s.out:
+			batch = append(batch, f)
+			continue
+		default:
+		}
+		select {
+		case f := <-s.stream:
+			batch = append(batch, f)
+		default:
+			return batch
+		}
+	}
+	return batch
 }
 
 func (s *session) pingLoop(ctx context.Context) {
@@ -880,6 +963,43 @@ func (s *session) send(f Frame) {
 		}
 		s.log.Warn("client is not draining its queue; closing")
 		s.closeWith(websocket.StatusPolicyViolation, "slow consumer")
+	}
+}
+
+// push queues a frame of the subscription, waiting for room rather than
+// closing the connection the way send does.
+//
+// The subscription is the one sender that can outrun any client: a replay
+// reads five hundred rows per query, and a live burst lands as fast as ingest
+// stores it. Waiting here paces both by the client. A client that stops
+// reading is still bounded: the writer's 15-second write deadline closes it,
+// the bus marks a live stream lagged once its own queue fills, and the replay
+// holds back at most a queue of live events (bus.queueDepth).
+//
+// It reports false once the connection is going away, and the caller stops.
+func (s *session) push(ctx context.Context, frameType, reqID string, payload any) bool {
+	return s.pushOf(ctx, uuid.Nil, frameType, reqID, payload)
+}
+
+// pushOf is push for a frame that carries one number's traffic: a message,
+// a receipt, a presence or a change to a chat, replayed or live. The writer
+// drops it if the subscription has stopped carrying that number by the
+// time it goes out.
+func (s *session) pushOf(ctx context.Context, device uuid.UUID, frameType, reqID string, payload any) bool {
+	f, err := encode(frameType, reqID, payload)
+	if err != nil {
+		s.log.Error("encoding a frame failed", "type", frameType, "error", err)
+		return true
+	}
+	f.device = device
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case s.stream <- f:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

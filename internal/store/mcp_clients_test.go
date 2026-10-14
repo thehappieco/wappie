@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -451,6 +453,270 @@ func TestClaimNoticeMail(t *testing.T) {
 	other := uuid.MustParse(newTenant(t, f.pool, "Other"))
 	if ok, err := f.conns.ClaimNoticeMail(ctx, other, c.ID, store.NoticeActivated, sha("other")); err != nil || ok {
 		t.Fatalf("another workspace claimed this one's notice: %v %v", ok, err)
+	}
+}
+
+// A notice's raise and its e-mail's claim take their locks in one order: the
+// workspace's row, then the connection's, then the notice's. A claim used to
+// lock the notice first and the connection only through its revoke link's
+// foreign key, and deadlocked with a second raise of the event: the reader's
+// budget_hit answered 500, or the e-mail was lost. Now the later one waits,
+// neither fails, and the e-mail is claimed once.
+func TestRaiseAndClaimNoticeDoNotDeadlock(t *testing.T) {
+	f := newMCPFixture(t)
+	ctx := context.Background()
+	live := func(name string) store.MCPConnection {
+		t.Helper()
+		_, prefix := f.provisionalKey(ctx, t, name)
+		conn, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return conn
+	}
+	raise := func(conn store.MCPConnection, event string) error {
+		_, err := f.conns.RaiseNotice(ctx, store.HostedReader, conn.ID, event)
+		return err
+	}
+
+	// A raise, as RaiseNotice takes its locks: it holds the connection when
+	// the claim starts, and counts the notice again once the claim waits.
+	conn := live("held")
+	if err := raise(conn, store.NoticeActivated); err != nil {
+		t.Fatal(err)
+	}
+	raising, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raising.Rollback(ctx) }()
+	if _, err := raising.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, f.tenant.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raising.Exec(ctx, `SELECT 1 FROM mcp_connections WHERE id=$1 FOR UPDATE`, conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	type claim struct {
+		ok  bool
+		err error
+	}
+	done := make(chan claim, 1)
+	go func() {
+		ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, store.NoticeActivated, sha("held"))
+		done <- claim{ok, err}
+	}()
+	waitForALockWait(ctx, t, f)
+	if _, err := raising.Exec(ctx, `INSERT INTO mcp_connection_notices (connection_id, tenant_id, event) VALUES ($1, $2, $3)
+		ON CONFLICT (connection_id, event) DO UPDATE SET last_at = now(), count = mcp_connection_notices.count + 1`,
+		conn.ID, f.tenant, store.NoticeActivated); err != nil {
+		t.Fatalf("the raise: %v", err)
+	}
+	if err := raising.Commit(ctx); err != nil {
+		t.Fatalf("the raise: %v", err)
+	}
+	if c := <-done; c.err != nil || !c.ok {
+		t.Fatalf("the claim after the raise: %v %v", c.ok, c.err)
+	}
+
+	// And the real paths, raced, as a reader's budget_hits come in: each
+	// event's first raise, then more raises of it while claims of its
+	// e-mail run. Every raise counts, and exactly one claim is granted.
+	const raises, claims = 4, 4
+	events := append([]string{store.NoticeActivated}, store.BudgetHitCodes...)
+	for round := range 2 {
+		conn := live(fmt.Sprintf("raced %d", round))
+		for _, event := range events {
+			if err := raise(conn, event); err != nil {
+				t.Fatal(err)
+			}
+			errs := make(chan error, raises+claims)
+			granted := make(chan string, claims)
+			var wg sync.WaitGroup
+			for i := range claims {
+				wg.Go(func() {
+					link := sha(fmt.Sprintf("%s %s %d", conn.ID, event, i))
+					ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, event, link)
+					if err != nil {
+						errs <- fmt.Errorf("claim: %w", err)
+					} else if ok {
+						granted <- link
+					}
+				})
+			}
+			for range raises {
+				wg.Go(func() {
+					if err := raise(conn, event); err != nil {
+						errs <- fmt.Errorf("raise: %w", err)
+					}
+				})
+			}
+			wg.Wait()
+			close(errs)
+			close(granted)
+			for err := range errs {
+				t.Errorf("round %d, %s: %v", round, event, err)
+			}
+			var links []string
+			for link := range granted {
+				links = append(links, link)
+			}
+			if len(links) != 1 {
+				t.Fatalf("round %d, %s: %d claims granted, want 1", round, event, len(links))
+			}
+			if _, err := f.conns.RevokeLinkTarget(ctx, links[0]); err != nil {
+				t.Fatalf("round %d, %s: the granted link: %v", round, event, err)
+			}
+			var count, stored int
+			var mailed bool
+			if err := pg.InTenantTx(ctx, f.pool, f.tenant.String(), func(tx pgx.Tx) error {
+				if err := tx.QueryRow(ctx, `SELECT count, mailed_at IS NOT NULL FROM mcp_connection_notices WHERE connection_id=$1 AND event=$2`,
+					conn.ID, event).Scan(&count, &mailed); err != nil {
+					return err
+				}
+				return tx.QueryRow(ctx, `SELECT count(*) FROM mcp_revoke_links WHERE connection_id=$1 AND event=$2`, conn.ID, event).Scan(&stored)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1+raises || !mailed || stored != 1 {
+				t.Fatalf("round %d, %s: count %d, mailed %v, %d links", round, event, count, mailed, stored)
+			}
+		}
+	}
+}
+
+// A raise, a claim and a seen mark take the workspace's row before the
+// connection's, as every end does. A raise's first notice, a claim's revoke
+// link and a seen mark reference tenants, and their foreign keys' share
+// lock, taken only after the connection's, closed a cycle with an end that
+// held the workspace and waited for the connection. Now an end that holds
+// the workspace while one of them waits goes on and commits, a raise or a
+// claim then reads the connection as ended, and no link outlives it.
+func TestNoticesAndEndingDoNotDeadlock(t *testing.T) {
+	f := newMCPFixture(t)
+	ctx := context.Background()
+	live := func(name string) store.MCPConnection {
+		t.Helper()
+		_, prefix := f.provisionalKey(ctx, t, name)
+		conn, err := f.conns.Create(ctx, f.tenant, f.owner, consent(prefix))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.conns.RaiseNotice(ctx, store.HostedReader, conn.ID, store.NoticeActivated); err != nil {
+			t.Fatal(err)
+		}
+		return conn
+	}
+	links := func(conn store.MCPConnection) int {
+		t.Helper()
+		var n int
+		if err := pg.InTenantTx(ctx, f.pool, f.tenant.String(), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM mcp_revoke_links WHERE connection_id=$1`, conn.ID).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, tc := range []struct {
+		name  string
+		start func(store.MCPConnection) error
+	}{
+		// The event's first notice, which inserts its row.
+		{"raise", func(conn store.MCPConnection) error {
+			_, err := f.conns.RaiseNotice(ctx, store.HostedReader, conn.ID, "network")
+			if err == nil {
+				return errors.New("an ended connection raised a notice")
+			}
+			if !errors.Is(err, store.ErrMCPConnectionNotFound) {
+				return fmt.Errorf("the raise after the end: %w", err)
+			}
+			return nil
+		}},
+		{"claim", func(conn store.MCPConnection) error {
+			ok, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, store.NoticeActivated, sha(conn.ID))
+			if err != nil {
+				return fmt.Errorf("the claim after the end: %w", err)
+			}
+			if ok {
+				return errors.New("an ended connection's e-mail was claimed")
+			}
+			return nil
+		}},
+		// The banner's seen mark, whose foreign keys share the connection's
+		// row and the workspace's.
+		{"seen", func(conn store.MCPConnection) error {
+			if err := f.conns.MarkSeen(ctx, f.tenant, f.owner, conn.ID); err != nil {
+				return fmt.Errorf("the seen mark after the end: %w", err)
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := live(tc.name)
+			// An end, as every ending path takes its locks: the workspace's
+			// row, then, once the raise or the claim waits, the connection's.
+			ending, err := f.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = ending.Rollback(ctx) }()
+			if _, err := ending.Exec(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, f.tenant); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.start(conn) }()
+			waitForALockWait(ctx, t, f)
+			if _, err := ending.Exec(ctx, `SELECT status FROM mcp_connections WHERE id=$1 FOR UPDATE`, conn.ID); err != nil {
+				t.Fatalf("the end: %v", err)
+			}
+			if _, err := ending.Exec(ctx, `UPDATE mcp_connections SET status='revoked', revoked_at=now(), revoke_reason='console' WHERE id=$1`, conn.ID); err != nil {
+				t.Fatalf("the end: %v", err)
+			}
+			if err := ending.Commit(ctx); err != nil {
+				t.Fatalf("the end: %v", err)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if n := links(conn); n != 0 {
+				t.Fatalf("%d revoke links outlived the end", n)
+			}
+		})
+	}
+
+	// And the real paths, raced: the console's revocation against the
+	// first raises of every limit and the claim of the activation's e-mail.
+	for round := range 6 {
+		conn := live(fmt.Sprintf("raced %d", round))
+		errs := make(chan error, len(store.BudgetHitCodes)+2)
+		var wg sync.WaitGroup
+		for _, code := range store.BudgetHitCodes {
+			wg.Go(func() {
+				if _, err := f.conns.RaiseNotice(ctx, store.HostedReader, conn.ID, code); err != nil && !errors.Is(err, store.ErrMCPConnectionNotFound) {
+					errs <- fmt.Errorf("raise %s: %w", code, err)
+				}
+			})
+		}
+		wg.Go(func() {
+			if _, err := f.conns.ClaimNoticeMail(ctx, f.tenant, conn.ID, store.NoticeActivated, sha(conn.ID)); err != nil {
+				errs <- fmt.Errorf("claim: %w", err)
+			}
+		})
+		wg.Go(func() {
+			if _, err := f.conns.Revoke(ctx, f.tenant, f.owner, conn.ID); err != nil {
+				errs <- fmt.Errorf("end: %w", err)
+			}
+		})
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("round %d: %v", round, err)
+		}
+		if status, err := f.conns.StatusOf(ctx, f.tenant, conn.ID); err != nil || status != "revoked" {
+			t.Fatalf("round %d: the connection is %s %v", round, status, err)
+		}
+		if n := links(conn); n != 0 {
+			t.Fatalf("round %d: %d revoke links outlived the end", round, n)
+		}
 	}
 }
 

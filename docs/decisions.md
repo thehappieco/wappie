@@ -1470,3 +1470,66 @@ key, and the console cannot rewrap a new epoch yet. A key reset at id., or
 another key for the pinned epoch, would lose the account key and everything
 sealed to it, so until the rewrap ships the backup from before 0049 and the
 old password are kept.
+
+## A replay of any length reaches the client that reads it (2026-10-14)
+
+A subscription replaying more than about 256 frames in one burst closed a
+healthy client as a "slow consumer", with code 1008, which the SDK reports as
+access having changed. Found while building decision 0038, whose deletion
+test kept its data under that size. The cause was the writer: it checked
+access before every frame, a database round trip or two, while the replay
+queued a page of five hundred frames at memory speed into a queue of 256
+that closes the connection when full.
+
+**The subscription waits for the client; nothing else does.** Its frames,
+replay and live, now go through a queue of their own (`session.push`), and a
+full one makes the subscription wait rather than close the connection. Kept
+apart from the replies' queue, so a long replay cannot fill the room a
+command's answer needs, and replies are taken first. A client that stops
+reading is still bounded where it was: the 15-second write deadline closes
+it, and a live stream lags once the bus's queue fills, which is what the bus
+was designed to do and what the console already handles.
+
+**One access check per batch, never after it.** The writer takes the frames
+already queued, at most 64, and checks once. The check starts after each of
+them was queued, so "checked before writing queued frames" (docs/workspaces.md)
+still holds: a frame queued after a revocation commits is never written. What
+it trades is up to one batch queued before the commit, against a round trip
+per frame; the periodic check and the local wake are unchanged.
+`TestRevocationMidReplayStopsDelivery` revokes a key from outside the process
+mid-replay and allows at most 64 frames written after the commit; a writer
+that stopped checking fails both it and
+`TestExternalKeyRevocationStopsLiveDelivery`.
+
+**The replay's hold on live events is bounded.** The bus buffered live events
+without limit during a replay, harmless while a replay took as long as its
+reads, since a client that fell behind was closed. It now holds at most
+`queueDepth`, all the handover could deliver into an empty queue anyway, and
+lags past that; typing seen during a replay is not held at all, since the
+handover discarded it. The lag is reported as soon as live delivery starts,
+counted in `ws_lag_total` (registered, never incremented until now).
+
+## Notices lock the workspace, then the connection (2026-10-14)
+
+A reader's second `budget_hit` for one connection and code answered 500
+when it arrived while the first one's e-mail was being claimed (CI of
+thehappieco/wappie#45, `TestBudgetHit`). `RaiseNotice` locked the connection
+and then upserted the notice. `ClaimNoticeMail` locked the notice and then
+reached the connection only through the foreign key of the revoke link it
+inserts. Postgres aborted one of the two after `deadlock_timeout`. A reader
+that lost got a 500. A claim that lost sent no e-mail, ever, because only
+the first raise of an event claims one. Three more cycles had the same
+cause. A notice's first row, a revoke link and a seen mark reference
+`tenants`, and their foreign keys take that row's share lock after the
+connection's. Every end locks `tenants` and then the connection, so a
+revocation could deadlock with a first raise, a claim (which also left a
+link for an ended connection) or a member's seen mark.
+
+`RaiseNotice`, `ClaimNoticeMail` and `MarkSeen` now take their locks in the
+order every end and every draft or send uses ([§17.19](mcp-enclave.md#1719-recorded-during-s0)): `tenants`
+`FOR KEY SHARE` (`shareWorkspaceTx`), then the connection, then the notice
+or mark. A claim checks the connection is still live under the connection's
+`FOR UPDATE`, after the workspace's advisory lock and before its notice.
+`TestRaiseAndClaimNoticeDoNotDeadlock` and
+`TestNoticesAndEndingDoNotDeadlock` force each cycle and also race the real
+paths. Every cycle failed before the change.

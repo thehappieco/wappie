@@ -130,15 +130,21 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 
 	if req.LiveOnly {
 		sub.EndReplay(watermark)
-		s.reply(TypeReplayEnd, f.ReqID, ReplayEnd{LastSeq: watermark})
-		go s.pump(ctx, sub, f.ReqID)
+		if s.push(ctx, TypeReplayEnd, f.ReqID, ReplayEnd{LastSeq: watermark}) {
+			go s.pump(ctx, sub, f.ReqID)
+		}
 		return
 	}
 
-	s.reply(TypeReplayBegin, f.ReqID, ReplayBegin{ThroughSeq: watermark})
+	// Every frame from here on is pushed: it waits for the client to make
+	// room instead of overflowing the queue, so a replay of any length
+	// completes for a client that reads it, however slowly the writer goes.
+	if !s.push(ctx, TypeReplayBegin, f.ReqID, ReplayBegin{ThroughSeq: watermark}) {
+		return
+	}
 
-	sent, last := 0, req.SinceSeq
-	for last < watermark && !isClosed(sub.Ended()) {
+	sent, last, gone := 0, req.SinceSeq, false
+	for last < watermark && !gone && !isClosed(sub.Ended()) {
 		rows, err := s.srv.cfg.Messages.Since(ctx, tenant, last, replayPage)
 		if err != nil {
 			s.log.Error("replay read failed", "since", last, "error", err)
@@ -171,17 +177,17 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 		// read before a deletion's commit is not sent after it.
 		mergeReplay(rows, acks, horizon,
 			func(r store.Row) {
-				if !sub.Allows(r.DeviceID) {
+				if gone || !sub.Allows(r.DeviceID) {
 					return
 				}
-				s.reply(TypeMessage, f.ReqID, sealedMessage(r))
+				gone = !s.pushOf(ctx, r.DeviceID, TypeMessage, f.ReqID, sealedMessage(r))
 				sent++
 			},
 			func(b store.ReceiptBatch) {
-				if !sub.Allows(b.DeviceID) {
+				if gone || !sub.Allows(b.DeviceID) {
 					return
 				}
-				s.reply(TypeReceipt, f.ReqID, receiptEvent(b))
+				gone = !s.pushOf(ctx, b.DeviceID, TypeReceipt, f.ReqID, receiptEvent(b))
 				sent++
 			})
 
@@ -190,13 +196,18 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 		}
 		last = horizon
 	}
+	// The connection went away mid-replay; its teardown closes the
+	// subscription.
+	if gone {
+		return
+	}
 
 	// Hand over under the bus's lock: buffered events at or below the
 	// watermark are dropped as already sent, the rest are released in order.
 	sub.EndReplay(last)
-	s.reply(TypeReplayEnd, f.ReqID, ReplayEnd{LastSeq: last, Count: sent})
-
-	go s.pump(ctx, sub, f.ReqID)
+	if s.push(ctx, TypeReplayEnd, f.ReqID, ReplayEnd{LastSeq: last, Count: sent}) {
+		go s.pump(ctx, sub, f.ReqID)
+	}
 }
 
 // isClosed reports whether a done channel is closed.
@@ -261,6 +272,13 @@ func (s *session) pump(ctx context.Context, sub *bus.Subscription, reqID string)
 	if err != nil {
 		return
 	}
+	// A replay the client read slowly can have filled the bus's buffer
+	// before any event reached this loop, and every event it kept can have
+	// been at or below the watermark: the gap is told now, not at whatever
+	// event comes next.
+	if !s.pushLag(ctx, sub, reqID) {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -275,22 +293,51 @@ func (s *session) pump(ctx context.Context, sub *bus.Subscription, reqID string)
 			}
 			s.subMu.Unlock()
 			sub.Close()
-			s.reply(TypeSubscriptionEnded, reqID, SubscriptionEnded{Reason: "device_removed"})
+			// On the stream, not as a reply: the writer takes replies
+			// first, and the end would overtake the deleted number's
+			// frames still queued ahead of it. A connection already going
+			// away needs no end, so a push that fails is simply the last.
+			s.push(ctx, TypeSubscriptionEnded, reqID, SubscriptionEnded{Reason: "device_removed"})
 			return
 		case ev, ok := <-sub.Events():
 			if !ok {
 				return
 			}
-			// A lagged subscription means the client's view is no longer
-			// continuous. Telling it where to resume is better than closing
-			// the connection, which is what v1 did to a slow reader.
-			if lagged, from, dropped := sub.Lagged(); lagged {
-				sub.ClearLag()
-				s.reply(TypeLag, reqID, Lag{FromSeq: from, Dropped: dropped})
+			if !s.pushLag(ctx, sub, reqID) {
+				return
 			}
-			s.deliver(ctx, tenant, reqID, ev)
+			// Queued under the filter of its moment, which a deletion may
+			// have narrowed since: the queue cannot take an event back, so
+			// the filter as it is now decides. It decides on the event's
+			// device alone, as offer did, so one it passed with none of its
+			// own (Filter.All) passes again. The lag is told first all the
+			// same, since it can cover other numbers' events.
+			if !sub.Allows(ev.DeviceID) {
+				continue
+			}
+			if !s.deliver(ctx, tenant, reqID, ev) {
+				return
+			}
 		}
 	}
+}
+
+// pushLag tells the client where to resume, when its stream has lagged.
+//
+// A lagged subscription means the client's view is no longer continuous.
+// Telling it where to resume is better than closing the connection, which is
+// what v1 did to a slow reader. It reports false once the connection is going
+// away.
+func (s *session) pushLag(ctx context.Context, sub *bus.Subscription, reqID string) bool {
+	lagged, from, dropped := sub.Lagged()
+	if !lagged {
+		return true
+	}
+	sub.ClearLag()
+	if s.srv.cfg.Metrics != nil {
+		s.srv.cfg.Metrics.WSLagEvents.Inc()
+	}
+	return s.push(ctx, TypeLag, reqID, Lag{FromSeq: from, Dropped: dropped})
 }
 
 // deliver loads the stored row and sends it.
@@ -300,7 +347,10 @@ func (s *session) pump(ctx context.Context, sub *bus.Subscription, reqID string)
 // and a replayed one are byte-identical, because they come from the same query.
 // v1 rendered separately on each path and the two drifted until an edited
 // message looked different depending on how it arrived.
-func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, ev ingest.Event) {
+//
+// It reports false once the connection is going away; an event that cannot
+// be read back is logged and skipped.
+func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, ev ingest.Event) bool {
 	// Presence has no row to read back, and that is what makes it different
 	// from everything else here. Every other class is delivered by fetching
 	// what was stored, so the live frame and the replayed frame are byte for
@@ -309,9 +359,9 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 	// not.
 	if ev.Class == ingest.ClassPresence {
 		if ev.Presence == nil {
-			return
+			return true
 		}
-		s.reply(TypePresence, reqID, PresenceEvent{
+		return s.pushOf(ctx, ev.DeviceID, TypePresence, reqID, PresenceEvent{
 			DeviceID:  ev.DeviceID.String(),
 			ChatKey:   ev.Presence.ChatKey,
 			SenderKey: ev.Presence.SenderKey,
@@ -321,7 +371,6 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 			Media:     ev.Presence.Media,
 			LastSeen:  ev.Presence.LastSeen,
 		})
-		return
 	}
 
 	// A change to the conversation rather than to anything in it. Like
@@ -330,36 +379,34 @@ func (s *session) deliver(ctx context.Context, tenant uuid.UUID, reqID string, e
 	// about which field moved.
 	if ev.Class == ingest.ClassChat {
 		if ev.Chat == nil {
-			return
+			return true
 		}
-		s.reply(TypeChatUpdate, reqID, ChatUpdateEvent{
+		return s.pushOf(ctx, ev.DeviceID, TypeChatUpdate, reqID, ChatUpdateEvent{
 			DeviceID:  ev.DeviceID.String(),
 			ChatKey:   ev.Chat.ChatKey,
 			Unread:    ev.Chat.Unread,
 			Ephemeral: ev.Chat.Ephemeral,
 		})
-		return
 	}
 
 	if ev.Class == ingest.ClassReceipt {
 		if s.srv.cfg.Receipts == nil {
-			return
+			return true
 		}
 		batch, err := s.srv.cfg.Receipts.Batch(ctx, tenant, ev.Seq)
 		if err != nil {
 			s.log.Error("could not load a published receipt", "seq", ev.Seq, "error", err)
-			return
+			return true
 		}
-		s.reply(TypeReceipt, reqID, receiptEvent(batch))
-		return
+		return s.pushOf(ctx, batch.DeviceID, TypeReceipt, reqID, receiptEvent(batch))
 	}
 
 	row, err := s.srv.cfg.Messages.Get(ctx, tenant, ev.UID)
 	if err != nil {
 		s.log.Error("could not load a published message", "uid", ev.UID, "error", err)
-		return
+		return true
 	}
-	s.reply(TypeMessage, reqID, sealedMessage(row))
+	return s.pushOf(ctx, row.DeviceID, TypeMessage, reqID, sealedMessage(row))
 }
 
 func sealedMessage(r store.Row) SealedMessage {
