@@ -199,6 +199,11 @@ func checkClient(in *CreateMCPConnection) error {
 // workspace's assistant connections is ErrMCPConnectionNotFound.
 func (m *MCPConnections) MarkSeen(ctx context.Context, tenant, viewer uuid.UUID, id string) error {
 	return pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		// The mark's foreign keys share the connection's row, then the
+		// workspace's; the workspace's comes first, as in every end.
+		if err := shareWorkspaceTx(ctx, tx, tenant); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `INSERT INTO mcp_connection_seen (connection_id, tenant_id, user_id)
 			SELECT c.id, c.tenant_id, $3 FROM mcp_connections c WHERE c.id = $1 AND c.tenant_id = $2 AND c.kind <> 'ai'
 			ON CONFLICT (connection_id, user_id) DO NOTHING`, id, tenant, viewer)
@@ -281,6 +286,11 @@ func (m *MCPConnections) RaiseNotice(ctx context.Context, reader, id, event stri
 	}
 	n := MCPNotice{ConnectionID: id, TenantID: tenant, Event: event}
 	err = pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
+		// The workspace's row, then the connection's, then its notice's: the
+		// order of ClaimNoticeMail and of every end.
+		if err := shareWorkspaceTx(ctx, tx, tenant); err != nil {
+			return err
+		}
 		err := tx.QueryRow(ctx, `SELECT c.kind, c.media, c.client_kind, coalesce(c.trust, ''), coalesce(c.client_host, c.redirect_host),
 			       c.client_name, c.client_local, c.device_count, c.expires_at, coalesce(c.history_days, 0), c.created_by, t.name
 			  FROM mcp_connections c JOIN tenants t ON t.id = c.tenant_id
@@ -329,6 +339,19 @@ func (m *MCPConnections) ClaimNoticeMail(ctx context.Context, tenant uuid.UUID, 
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "mcp-notices/"+tenant.String()); err != nil {
 			return err
 		}
+		// Then the workspace's row and the connection's, before its notice's,
+		// as RaiseNotice takes them. A claim that locked the notice first,
+		// and the connection only through its revoke link's foreign key,
+		// deadlocked with a second raise of the event; one that ended is no
+		// e-mail.
+		if err := shareWorkspaceTx(ctx, tx, tenant); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `SELECT 1 FROM mcp_connections
+			WHERE id=$1 AND tenant_id=$2 AND kind <> 'ai' AND status IN ('pending','active','reseal') FOR UPDATE`, id, tenant)
+		if err != nil || tag.RowsAffected() != 1 {
+			return err
+		}
 		var sent int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM mcp_connection_notices
 			WHERE tenant_id=$1 AND mailed_at > now() - interval '1 day'`, tenant).Scan(&sent); err != nil {
@@ -337,36 +360,23 @@ func (m *MCPConnections) ClaimNoticeMail(ctx context.Context, tenant uuid.UUID, 
 		if sent >= maxNoticeMailsPerDay {
 			return nil
 		}
-		tag, err := tx.Exec(ctx, `UPDATE mcp_connection_notices SET mailed_at = now()
+		tag, err = tx.Exec(ctx, `UPDATE mcp_connection_notices SET mailed_at = now()
 			WHERE connection_id=$1 AND tenant_id=$2 AND event=$3 AND mailed_at IS NULL`, id, tenant, event)
 		if err != nil || tag.RowsAffected() != 1 {
 			return err
 		}
-		tag, err = tx.Exec(ctx, `INSERT INTO mcp_revoke_links (sha256, connection_id, tenant_id, event)
-			SELECT $3, id, tenant_id, $4 FROM mcp_connections
-			 WHERE id=$1 AND tenant_id=$2 AND kind <> 'ai' AND status IN ('pending','active','reseal')`, id, tenant, revokeLinkSHA256, event)
-		if err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO mcp_revoke_links (sha256, connection_id, tenant_id, event) VALUES ($3, $1, $2, $4)`,
+			id, tenant, revokeLinkSHA256, event); err != nil {
 			return err
-		}
-		if tag.RowsAffected() != 1 {
-			// It ended meanwhile: no e-mail, and the claim goes with the
-			// transaction.
-			return errNoticeEnded
 		}
 		claimed = true
 		return nil
 	})
-	if errors.Is(err, errNoticeEnded) {
-		return false, nil
-	}
 	if err != nil {
 		return false, fmt.Errorf("store: claim mcp notice mail: %w", err)
 	}
 	return claimed, nil
 }
-
-// errNoticeEnded rolls a claim back for a connection that ended.
-var errNoticeEnded = errors.New("store: the connection ended")
 
 // noticeRecipientsTx are the person who consented and the workspace's
 // owners, active members with a verified address, each address once, in
