@@ -239,8 +239,219 @@ policy and is not charged Wappie storage. See [storage](storage.md).
 
 Retain a matching previous private artifact and database/object backups before
 rollout. Database migrations are forward-only, except for the documented
-[remote MCP down-step](#remote-mcp-connector); verify old binary compatibility
+down-steps, such as the [remote MCP one](#remote-mcp-connector) and
+[0050's](#rolling-back-below-0050); verify old binary compatibility
 before reverting an executable. Do not restore an older archive over newer
 messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
 re-pairing is necessary for frontend extraction.
+
+## Deleted numbers and the deletion ledger
+
+Migration 0050 keeps a deleted number 30 days, recoverable by an owner, and
+then purges it ([device lifecycle](devices.md#deletion-and-recovery)). The
+hourly janitor of every server process does the purge, in every workspace
+whatever its status. Every deletion, recovery, purge and move to Personal
+is also appended to the **deletion ledger**, a file outside the database
+that a restore replays over an older snapshot, so that no number deleted,
+purged or moved since the snapshot comes back as it was. The events behind
+it are described in [item events](item-events.md).
+
+**The file.** `WS_DELETION_LEDGER`, by default
+`/var/lib/wappie/deletion-ledger.jsonl`. Put it on a persistent path that is
+in the host's backups and off-host copies, writable by the server's user
+alone; a container needs a volume for it. One JSON line per event:
+`{v, event_id, type, workspace_id, device_id, deleted_at, purge_after,
+deleted_by, to_workspace_id, occurred_at}`, every key present and null when
+it does not apply, times in UTC. It holds no label, no phone number and no
+content; `deleted_by` is the local id of the owner who deleted. The server
+creates it with mode 0600 and appends with `O_APPEND`, syncing the file (and
+its directory when it creates it) before it marks the events exported, so
+the export is at least once: a line may appear twice, never zero times.
+Export and compaction hold an exclusive lock on `<ledger>.lock` beside it.
+
+- **When it is written.** After each delete, recovery and move, before the
+  reply; after each purge; at every hourly pass; and by
+  `whatserverd deletions export-ledger`. A failed write logs ERROR
+  "deletion ledger export failed" and leaves the events for the next export.
+- **At start.** In prod, serve checks the file right after its setup and
+  before its "starting" line. It logs INFO "deletion ledger writable" with
+  the path, creating the file when it is missing, or ERROR "deletion ledger
+  not writable" with the path and the error, and starts anyway: nothing is
+  lost while the file cannot be written, and only a restore reads it.
+- **Compaction.** Once a day each process drops the lines of every number
+  whose newest line is older than 93 days: backups live 90 days at most
+  (decision 0027), plus a day for the daily prune and two of slack. It
+  writes the kept lines beside the ledger, syncs them and renames them over
+  it.
+- **The hosted unit** gets its directory from systemd: `StateDirectory=wappie`
+  and `StateDirectoryMode=0700` in `wappie-api.service` (or the pilot's
+  drop-in), which keeps `/var/lib/wappie` writable under
+  `ProtectSystem=strict`.
+
+**The purge**, at each hourly pass, within a 15-minute budget of its own:
+at most 5 numbers per workspace, starting each pass one workspace further
+on, in short transactions of at most 2000 rows per table. A number a client
+or a logout still holds waits for the next pass. Rows, keys, grants and any
+WhatsApp session left by an unconfirmed logout (removed by its fingerprint,
+never logged out) go on schedule; an attachment object whose delete fails
+stays in storage, still charged, for the orphan pass. Each object delete is
+bounded at 10 seconds, and after 3 failures in a row the rest of the pass
+leaves them to the orphan pass (WARN "object deletes keep failing"). A
+finished purge logs INFO "number purged" with its counts. The janitor warns
+of a number more than 2 hours past its date ("a deleted number is overdue
+for its purge") and of a pass that ran out of its budget.
+
+**The valve.** `WS_DELETED_NUMBER_PURGE=hold` (default `on`) stops every
+purge for an incident, and each pass logs WARN "deleted-number purges are
+held" with the number due. It is never a way to keep a number past its 30
+days: a suspended or closed workspace's numbers are purged on their date
+too.
+
+### Operator commands
+
+```
+whatserverd devices list-deleted [-tenant ID]
+whatserverd devices purge-deleted [-tenant ID] [-device ID [-now]]
+whatserverd deletions export-ledger
+whatserverd deletions replay -ledger FILE -snapshot-time STAMP [-dry-run] [-ledger-adds-nothing] [-leave-excluded ID]...
+```
+
+None of the four migrates. Each refuses a database whose schema is not
+exactly this binary's, so a dry run over a restored snapshot changes
+nothing and the export can run before a down-step. Run them as the server's
+user, with its configuration, so they can write the ledger. `whatserverd`
+serves only with no arguments or with `serve`: any other command line it
+does not know prints the command list and exits 2, so a mistyped command
+never starts a server whose first janitor pass would purge.
+
+- `devices list-deleted` lists each deleted number of every workspace (or
+  one) by id: when it was deleted, when it is purged, its state
+  (`recoverable`, `due`, `overdue by …`, `purging`), its status, and whether
+  a WhatsApp session is left. Never a name or a phone number. It ends with
+  whether this user can write the ledger.
+- `devices purge-deleted` purges the due numbers of every workspace (or
+  one), as the janitor does. With `-device` it purges that number if it is
+  due; `-now` purges it before its date, only with its owner's agreement.
+  Its record then says it was purged early.
+- `deletions export-ledger` appends every workspace's unexported events.
+- `deletions replay` is the restore's step below.
+
+### Rehearsing a purge
+
+Nothing advances a deleted number's date, so a rehearsal or a deploy's
+smoke test makes its own test number due and runs the due path, exactly as
+the janitor runs it. Only on a test number, with its owner's agreement: the
+number is purged at once. As the server's database role, in one
+transaction, with the two settings the store's own scope sets (a role that
+bypasses row-level security does not need them):
+
+```sh
+psql "$WS_POSTGRES_DSN" -v ON_ERROR_STOP=1 -v tenant=WORKSPACE_ID -v device=NUMBER_ID <<'SQL'
+BEGIN;
+SELECT set_config('app.tenant_id', :'tenant', true), set_config('app.device_quarantine', 'on', true);
+UPDATE devices SET purge_after = clock_timestamp() - interval '1 minute'
+ WHERE id = :'device' AND deleted_at IS NOT NULL AND purge_started_at IS NULL;
+COMMIT;
+SQL
+whatserverd devices purge-deleted -tenant WORKSPACE_ID
+```
+
+The update says `UPDATE 1`; `UPDATE 0` is a number that is not deleted, not
+in that workspace, or already being purged. The command prints
+`purged NUMBER_ID in WORKSPACE_ID: …` and logs INFO "number purged"; the
+workspace's `item_events` gain a `purged` row and the ledger a `purged`
+line, whose `purge_after` is the backdated one (a replay accepts that). If
+the running server's hourly pass purged the number first, its "number
+purged" line is in that server's log instead.
+
+### Restoring a backup
+
+A snapshot is older than the ledger. Restore it like this, with the server
+stopped:
+
+1. **The database and the objects**, as usual.
+2. **The ledger.** Never overwrite a ledger that survived on the host: use
+   it. Otherwise use the newest off-host copy. Use the copy inside the
+   snapshot being restored only when nothing newer exists: it is as old as
+   the database and adds nothing. Put it back owned by the server's user,
+   mode 0600.
+3. **Migrations.** If the snapshot's schema is older than the binary's,
+   migrate first, on its own: any command other than the four above
+   migrates as it starts, and `whatserverd tenants` changes nothing else.
+   The replay never migrates.
+4. **The replay**, before the server starts, as the server's user:
+   `whatserverd deletions replay -ledger FILE -snapshot-time STAMP`, where
+   `STAMP` is the snapshot's own time (`YYYYMMDDTHHMMSSZ`, a backup
+   directory's name, or RFC 3339). Run it with `-dry-run` first: that runs
+   every step in its real transaction and rolls it back, so it reports the
+   same changes and refusals and changes nothing (sequences may advance).
+   - It prints the time of the ledger's newest line beside the later of the
+     snapshot's time and the restored database's newest ledgered event, and
+     refuses a ledger that adds nothing (most likely the snapshot's own
+     copy) unless `-ledger-adds-nothing` says that is the one to use.
+   - It folds each number's lines by cause, never by time: a `purged` line
+     is final; a deletion is undone exactly when a `recovered` line names
+     its `deleted_at`. A torn last line (a crash) is skipped and reported; a
+     damaged line before valid ones, a `deleted` line whose `purge_after` is
+     not its `deleted_at` plus 30 days, or two deletions left unreversed
+     stop it before anything changes.
+   - It looks for each number in every workspace. A number found in another
+     workspace than its ledger says (a snapshot from before a move to
+     Personal) makes it refuse; `-leave-excluded ID` excludes that number
+     where it is instead (with the ledger's dates, or now and 30 days on for
+     a number that only moved), or the move can be redone by hand after the
+     replay.
+   - Then, per workspace in one transaction, every exclusion and purge
+     before any recovery. A number the ledger says is deleted is excluded
+     again with the ledger's dates, off every restricted key, its assistant
+     connections ended. One it says was purged is excluded and left due, so
+     the first janitor pass purges it. One it says was recovered is
+     recovered with no window or capacity check, and a workspace left over
+     its plan is reported. A recovery that cannot apply (the phone is
+     linked again as another number, or its purge had started in the
+     snapshot) refuses, and that workspace's transaction rolls back.
+   - It sends no notice. Each change writes its event row with the ledger
+     line's own `event_id`, marked ledgered and replayed, so it can run
+     again.
+   - On a refusal it says `do not start wappie-api`, and exits non-zero.
+5. **Start the server.**
+
+A snapshot taken while a number was deleted keeps its `purge_after`, so the
+janitor still purges it on time. If the host is lost, a deletion made after
+the last off-host copy of the ledger is lost with everything else made after
+it, and its owner has to delete again.
+
+### Rolling back below 0050
+
+A binary older than 0050 refuses a database at version 50, so its
+down-step comes first. No number may be left deleted through it: an older
+binary would show and sync it as live. And an older binary lets
+administrators delete a number at once, with no recovery. In this order:
+
+1. `whatserverd devices list-deleted`. An owner recovers each deleted
+   number in the console, or, with the owner's agreement,
+   `whatserverd devices purge-deleted -device ID -now` purges it. The purge
+   does not wait for object storage; objects it could not delete stay for a
+   later orphan pass.
+2. Stop the server, and every other process that runs this release's store
+   code against the database (the hosted billing service is one), unless it
+   already runs the release being restored.
+3. `whatserverd deletions export-ledger`, as the server's user, so no event
+   row is dropped before the ledger has it.
+4. The down-step in the header of `0050_device_deletion.sql`, after checking
+   the file's sha256 against the release's (`migration50_sha256` in a hosted
+   `RELEASE.json`), as the owner of the tables, in its one transaction. Its
+   guards run first: it refuses while a number is deleted, while an event
+   row is not in the ledger, or while a migration after 0050 is applied, and
+   a refusal changes nothing. If it refuses, start the server on this
+   release again and stop the rollback: never leave it stopped on schema 50.
+   It comes before 0049's down-step, which has no such guard.
+5. Switch back to the older binary and start it.
+6. Take a fresh backup. Restoring a snapshot older than a purge made under
+   0050 needs this release's binary: migrate to 50, replay, then run the
+   down-step again.
+
+The down-step drops the notices and the event rows; the ledger file stays
+as the record. The API keys 0050 revoked (those whose creator was disabled
+or had left) stay revoked.

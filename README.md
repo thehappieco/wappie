@@ -11,6 +11,7 @@ shared workspaces, per-number permissions and a messaging client.
 - [Messaging client](https://app.wappie.thehappie.co)
 - Hosted API: `https://api.wappie.thehappie.co` (`/v1/ws` for WebSocket)
 - [Workspace model and API contracts](docs/workspaces.md)
+- [Numbers: pause, deletion, recovery and the 30-day purge](docs/devices.md)
 - [Personal accounts, Team workspaces and invitations](docs/accounts-workspaces.md)
 - [Deployment guide](docs/deployment.md)
 - [Publishing public/private releases](docs/publication.md)
@@ -401,6 +402,10 @@ Who may reach what, on the server side:
 - An **owner or admin** administers numbers, pairing, grants and API keys. Reading
   encrypted content still requires a usable grant. Removing the last active
   reader's usable grant is refused, including disabling the member.
+- Only an **owner** deletes or recovers a number. A deleted number is kept 30
+  days, readable by nobody, then purged; the deletion asks WhatsApp to log its
+  session out, which cannot be undone. See the
+  [device lifecycle](docs/devices.md#deletion-and-recovery).
 - A human reader's **discreet mode** is a per-user, per-number preference. The
   app uses `reader.mode`; automation retains the legacy `device.mode` policy.
   Badges and the physical WhatsApp connection remain shared by the number.
@@ -470,8 +475,11 @@ A person can be removed from a tenant's archive across every device:
 
 Their direct conversation, everything they sent in groups, every receipt they
 produced, their contact row and their group memberships go; what other people
-said in those groups stays. Deleting a device, or `reset-archive`, now removes
-its attachment objects from storage as well.
+said in those groups stays. `reset-archive` removes a device's attachment
+objects from storage as well, and refuses while a deleted number of the
+workspace waits for its purge. Deleting a number keeps it 30 days, readable by
+nobody and recoverable by an owner; the purge then removes its archive and its
+attachment objects ([device lifecycle](docs/devices.md#deletion-and-recovery)).
 
 Logs mask identifiers at every level: a JID keeps its server and last four
 digits, an email its first letter and domain. `WS_LOG_WIRE` puts whatsmeow's own
@@ -672,7 +680,7 @@ nothing older.
 
 Re-pairing is how an existing deployment picks up history it never had. Pairing
 creates a new device row rather than replacing one, so nothing needs deleting
-first; deleting the old device would cascade its messages away. While both are
+first; deleting the old device would purge its messages 30 days later. While both are
 linked every message is archived twice, so unlink the old one once the new sync
 has landed.
 

@@ -38,12 +38,25 @@ reported `file_length` as occupied storage.
 
 Files referenced by more than one number appear once under `shared`. Object
 reservations without a current number reference and files awaiting confirmed
-physical deletion appear under `unassigned`. All device rows plus these two
-buckets sum to the workspace total, separately for archive, objects and overall
-usage. Deleting a number can move a shared file to the remaining number or to
-pending deletion; it does not count the file twice or free bytes prematurely.
+physical deletion appear under `unassigned`.
 
-`devices.stats` and `device.info` expose the same per-number categories.
+A deleted number ([device lifecycle](devices.md#deletion-and-recovery)) keeps
+its bytes stored and counted until its purge, 30 days later, and never under
+its name. Only owners delete and recover numbers, so only an owner sees them
+apart, under `excluded`. For anyone else, an administrator included, the store
+moves them into `other` before the breakdown leaves it, so nobody else learns
+that a number is waiting for its purge; the console draws `other` as an
+unlabelled line of other stored data, apart from `unassigned`. For an owner
+`other` is zero, and for anyone else `excluded` is. All device rows plus the
+four buckets sum to the workspace total, separately for archive, objects and
+overall usage. Deleting a number can move a shared file to the remaining
+number or to pending deletion; it does not count the file twice or free bytes
+prematurely. The purge frees them; an object whose delete fails keeps its
+charge until the orphan pass deletes it. Reconciliation rebuilds a deleted
+number's rows too.
+
+`devices.stats` and `device.info` expose the same per-number categories, for
+live numbers only.
 `media_bytes` now reports the exclusive object bytes, matching `object_bytes`;
 older servers returned a sum of reported media lengths. Clients should use
 `used_bytes` for the number's storage total and the administrative breakdown to
