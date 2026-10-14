@@ -179,11 +179,22 @@ func listen(ctx context.Context, o options) (net.Listener, error) {
 }
 
 // listenUnix listens on path, replacing a socket left by a process that
-// died, never any other file, with mode and, when set, group.
+// died, never a socket another process serves (platformd's, or a second
+// fake's) and never any other file, with mode and, when set, group.
 func listenUnix(ctx context.Context, path string, mode os.FileMode, group string) (net.Listener, error) {
 	if fi, err := os.Lstat(path); err == nil {
 		if fi.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("%s exists and is not a socket", path)
+		}
+		// Only a refused connection says nobody listens: anything else (an
+		// answer, a permission denied) may be a live server's socket.
+		d := net.Dialer{Timeout: time.Second}
+		conn, err := d.DialContext(ctx, "unix", path)
+		if err == nil {
+			_ = conn.Close() //nolint:errcheck // a probe
+		}
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			return nil, fmt.Errorf("%s is served by another process, or may be: not replaced", path)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, err

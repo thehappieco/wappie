@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	kc "github.com/thehappieco/kit/contract"
+	"github.com/thehappieco/kit/kms"
 	"github.com/thehappieco/kit/thcseal"
 
 	"whatserver2/internal/config"
@@ -127,6 +130,15 @@ func (f *loaderFixture) wantLoaded(t *testing.T, reloads int, current, other, st
 	}
 }
 
+// TestSealContext: the context both envelopes are sealed under is the one
+// the key policy allows (15.3, DB17), written out here rather than read
+// from the constant the code seals with.
+func TestSealContext(t *testing.T) {
+	if SealContext != (kms.Context{Service: "wappie", Env: "prod", Purpose: "contract-secret", Ref: "platform"}) {
+		t.Fatalf("%+v", SealContext)
+	}
+}
+
 // TestSecretLoader is TB7 of release B's plan.
 func TestSecretLoader(t *testing.T) {
 	ctx := context.Background()
@@ -138,10 +150,10 @@ func TestSecretLoader(t *testing.T) {
 			t.Fatalf("state %s", f.secrets.State())
 		}
 		// Nothing installed yet: missing, said once at INFO, never ERROR.
-		if err := f.secrets.Load(ctx); err == nil || f.secrets.Last().Error != StepMissing {
+		if err := f.secrets.Load(ctx); err == nil || f.secrets.Last().Error != "missing" {
 			t.Fatalf("%v %+v", err, f.secrets.Last())
 		}
-		f.wantLoaded(t, 0, "none", "none", StepMissing)
+		f.wantLoaded(t, 0, "none", "none", "missing")
 		fpA := f.write(ctx, t, f.cfg.SecretFile, a)
 		if f.secrets.State() != "pending" {
 			t.Fatalf("state %s", f.secrets.State())
@@ -186,7 +198,7 @@ func TestSecretLoader(t *testing.T) {
 		if k := f.client.kit.Load(); k.Secret != a || len(k.Accept) != 1 {
 			t.Fatal("the failed reload changed the client")
 		}
-		f.wantLoaded(t, 1, fpA, "none", StepCheck)
+		f.wantLoaded(t, 1, fpA, "none", "check")
 		if logs := f.logs.String(); !strings.Contains(logs, "reload failed") || strings.Contains(logs, a) {
 			t.Fatalf("logs: %s", logs)
 		}
@@ -208,7 +220,7 @@ func TestSecretLoader(t *testing.T) {
 		if err := f.secrets.Reload(ctx); err == nil {
 			t.Fatal("an unreadable file loaded")
 		}
-		f.wantLoaded(t, 1, fpA, "none", StepOpen)
+		f.wantLoaded(t, 1, fpA, "none", "open")
 	})
 
 	t.Run("an envelope of another key or context does not open", func(t *testing.T) {
@@ -217,8 +229,21 @@ func TestSecretLoader(t *testing.T) {
 		if err := os.WriteFile(f.cfg.SecretFile, seal(ctx, t, other, a), 0o640); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.secrets.Load(ctx); !errors.Is(err, thcseal.ErrDecrypt) || f.secrets.Last().Error != StepOpen {
+		if err := f.secrets.Load(ctx); !errors.Is(err, thcseal.ErrDecrypt) || f.secrets.Last().Error != "open" {
 			t.Fatalf("%v %+v", err, f.secrets.Last())
+		}
+		// The same key, another ref: the key policy's context is one, and an
+		// envelope sealed under any other never opens.
+		otherRef := kms.Context{Service: "wappie", Env: "prod", Purpose: "contract-secret", Ref: "other"}
+		env, err := thcseal.Seal(ctx, f.key, otherRef, []byte(a))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f.cfg.SecretFile, env, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.secrets.Load(ctx); !errors.Is(err, thcseal.ErrDecrypt) || f.secrets.Last().Error != "open" {
+			t.Fatalf("another context: %v %+v", err, f.secrets.Last())
 		}
 		if err := os.WriteFile(f.cfg.SecretFile, []byte(a+"\n"), 0o640); err != nil {
 			t.Fatal(err)
@@ -236,11 +261,11 @@ func TestSecretLoader(t *testing.T) {
 		runCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() { f.secrets.Run(runCtx); close(done) }()
-		waitFor(t, func() bool { return f.secrets.Last().Error == StepKMS })
+		waitFor(t, func() bool { return f.secrets.Last().Error == "kms" })
 		if _, err := f.client.Feed(ctx, 0, 0); !errors.Is(err, ErrNoSecret) || Classify(err) != Unavailable {
 			t.Fatalf("%v", err)
 		}
-		f.wantLoaded(t, 0, "none", "none", StepKMS)
+		f.wantLoaded(t, 0, "none", "none", "kms")
 		// KMS reachable again, the next try loads, and Run ends.
 		f.key.SetDescribeFail(nil)
 		select {
@@ -254,11 +279,34 @@ func TestSecretLoader(t *testing.T) {
 		}
 		// A Decrypt that KMS refuses is the key's step, not the file's.
 		f.key.SetFail(membershiptest.ErrUnreachable)
-		if err := f.secrets.Reload(ctx); err == nil || f.secrets.Last().Error != StepKMS {
+		if err := f.secrets.Reload(ctx); err == nil || f.secrets.Last().Error != "kms" {
 			t.Fatalf("%v %+v", err, f.secrets.Last())
 		}
 		if !strings.Contains(f.logs.String(), "level=ERROR") {
 			t.Fatal("a KMS failure is said at ERROR")
+		}
+	})
+
+	t.Run("a KMS refusal is logged by its class, never its text", func(t *testing.T) {
+		f := newLoader(t, nil)
+		f.write(ctx, t, f.cfg.SecretFile, a)
+		denied := apiError{"AccessDeniedException"}
+		f.key.SetDescribeFail(fmt.Errorf("awskms: describe key: %w", denied))
+		if err := f.secrets.Load(ctx); err == nil || f.secrets.Last().Error != "kms" {
+			t.Fatalf("%v %+v", err, f.secrets.Last())
+		}
+		f.key.SetDescribeFail(nil)
+		if err := f.secrets.Load(ctx); err != nil {
+			t.Fatal(err)
+		}
+		f.key.SetFail(fmt.Errorf("awskms: decrypt: %w", denied))
+		if err := f.secrets.Reload(ctx); err == nil || f.secrets.Last().Error != "kms" {
+			t.Fatalf("%v %+v", err, f.secrets.Last())
+		}
+		logs := f.logs.String()
+		if strings.Count(logs, "class=AccessDeniedException") != 2 || strings.Contains(logs, "arn:") ||
+			strings.Contains(logs, "111122223333") || strings.Contains(logs, "assumed-role") {
+			t.Fatalf("logs: %s", logs)
 		}
 	})
 
@@ -358,6 +406,44 @@ func TestSecretLoader(t *testing.T) {
 			t.Fatal("KMS was called for a plain-text file")
 		}
 	})
+}
+
+// apiError is an AWS API error as the SDK gives one: a code, and a message
+// that names the instance role, the account and the key.
+type apiError struct{ code string }
+
+func (e apiError) Error() string {
+	return "operation error KMS: Decrypt, https response error StatusCode: 400, api error " + e.code +
+		": User: arn:aws:sts::111122223333:assumed-role/thehappie-host/i-0123456789abcdef0 is not authorized to perform: kms:Decrypt on resource: " + testARN
+}
+
+func (e apiError) ErrorCode() string { return e.code }
+
+func TestErrorClass(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "none"},
+		{fmt.Errorf("membership: the current secret: %w", thcseal.ErrMalformed), "malformed"},
+		{thcseal.ErrDecrypt, "decrypt"},
+		{thcseal.ErrProviderMismatch, "provider_mismatch"},
+		{thcseal.ErrTooLarge, "too_large"},
+		{fmt.Errorf("thcseal: unwrap the data key: %w", kms.ErrUnwrap), "unwrap"},
+		{kms.ErrInvalidContext, "context"},
+		{fmt.Errorf("contract: %w", kc.ErrSecret), "secret_shape"},
+		{&fs.PathError{Op: "open", Path: "/opt/wappie/sealed/x", Err: syscall.ENOENT}, "not_found"},
+		{&fs.PathError{Op: "open", Path: "/opt/wappie/sealed/x", Err: syscall.EACCES}, "permission"},
+		{fmt.Errorf("awskms: describe key: %w", context.DeadlineExceeded), "timeout"},
+		{fmt.Errorf("awskms: describe key: %w", apiError{"AccessDeniedException"}), "AccessDeniedException"},
+		{apiError{"not a code: arn:aws:kms"}, "other"},
+		{&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, "unreachable"},
+		{errors.New("membership: no KMS wrapper"), "other"},
+	} {
+		if got := ErrorClass(tc.err); got != tc.want {
+			t.Errorf("%v: %s, want %s", tc.err, got, tc.want)
+		}
+	}
 }
 
 // restore sets *v to x and returns what puts it back.

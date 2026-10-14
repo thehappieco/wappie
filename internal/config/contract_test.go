@@ -137,6 +137,23 @@ func TestContractInDevelopment(t *testing.T) {
 	if _, _, err := LoadContract(); err == nil {
 		t.Fatal("LoadContract took an unknown WS_ENV")
 	}
+	t.Setenv("WS_ENV", "dev")
+	// The secret as a setting is refused in development too, with the
+	// transport and without one: nothing reads it.
+	t.Setenv("WS_CONTRACT_SECRET", "x")
+	for _, transport := range []bool{true, false} {
+		if !transport {
+			for _, k := range []string{"WS_CONTRACT_ADDR", "WS_CONTRACT_SECRET_FILE", "WS_CONTRACT_KMS_KEY_ARN", "WS_CONTRACT_KMS_REGION"} {
+				t.Setenv(k, "")
+			}
+		}
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "WS_CONTRACT_SECRET is refused") {
+			t.Errorf("Load, transport %v: %v", transport, err)
+		}
+		if _, _, err := LoadContract(); err == nil || !strings.Contains(err.Error(), "WS_CONTRACT_SECRET is refused") {
+			t.Errorf("LoadContract, transport %v: %v", transport, err)
+		}
+	}
 }
 
 func TestParseDotEnvTouchesNoEnvironment(t *testing.T) {
@@ -145,7 +162,8 @@ func TestParseDotEnvTouchesNoEnvironment(t *testing.T) {
 WS_POSTGRES_DSN=postgres://wappie:hunter2@db/wappie
 export WS_CONTRACT_KMS_KEY_ARN="arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 WS_CONTRACT_KMS_REGION = eu-west-1
-WS_CONTRACT_KMS_REGION=us-east-1
+WS_LOGIN_DECOY_KEY_HEX=00
+WS_LOGIN_DECOY_KEY_HEX=01
 `
 	for _, k := range []string{"WS_POSTGRES_DSN", "WS_CONTRACT_KMS_KEY_ARN", "WS_CONTRACT_KMS_REGION"} {
 		t.Setenv(k, "")
@@ -153,11 +171,13 @@ WS_CONTRACT_KMS_REGION=us-east-1
 			t.Fatal(err)
 		}
 	}
-	got, err := ParseDotEnv(strings.NewReader(body))
+	// The keys named, and nothing else of the file; a key it does not name
+	// may repeat.
+	got, err := ParseDotEnv(strings.NewReader(body), "WS_CONTRACT_KMS_KEY_ARN", "WS_CONTRACT_KMS_REGION", "WS_ABSENT")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["WS_CONTRACT_KMS_KEY_ARN"] != testKeyARN || got["WS_CONTRACT_KMS_REGION"] != testRegion || len(got) != 3 {
+	if got["WS_CONTRACT_KMS_KEY_ARN"] != testKeyARN || got["WS_CONTRACT_KMS_REGION"] != testRegion || len(got) != 2 {
 		t.Fatalf("%v", got)
 	}
 	for _, k := range []string{"WS_POSTGRES_DSN", "WS_CONTRACT_KMS_KEY_ARN", "WS_CONTRACT_KMS_REGION"} {
@@ -165,12 +185,20 @@ WS_CONTRACT_KMS_REGION=us-east-1
 			t.Errorf("ParseDotEnv set %s", k)
 		}
 	}
+	// A named key assigned twice is refused, by name and lines, never by
+	// value: systemd would take the last, LoadDotEnv the first.
+	_, err = ParseDotEnv(strings.NewReader(body+"WS_CONTRACT_KMS_KEY_ARN=arn:aws:kms:eu-west-1:111122223333:key/other\n"),
+		"WS_CONTRACT_KMS_KEY_ARN", "WS_CONTRACT_KMS_REGION")
+	if err == nil || !strings.Contains(err.Error(), "WS_CONTRACT_KMS_KEY_ARN is assigned twice, lines 4 and 8") ||
+		strings.Contains(err.Error(), "arn:") {
+		t.Fatalf("a repeated key: %v", err)
+	}
 	// A malformed line is named, its text never echoed: it may be a secret.
-	_, err = ParseDotEnv(strings.NewReader("WS_OK=1\nhunter2-pasted-alone\n"))
+	_, err = ParseDotEnv(strings.NewReader("WS_OK=1\nhunter2-pasted-alone\n"), "WS_OK")
 	if err == nil || !strings.Contains(err.Error(), "line 2") || strings.Contains(err.Error(), "hunter2") {
 		t.Fatalf("malformed: %v", err)
 	}
-	if _, err := ParseDotEnv(strings.NewReader("=value\n")); err == nil || !strings.Contains(err.Error(), "empty key") {
+	if _, err := ParseDotEnv(strings.NewReader("=value\n"), "WS_OK"); err == nil || !strings.Contains(err.Error(), "empty key") {
 		t.Fatalf("empty key: %v", err)
 	}
 }

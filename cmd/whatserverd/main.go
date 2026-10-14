@@ -77,7 +77,7 @@ const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions ...
        whatserverd contract check [--other|--only-current|--only-other]
-       whatserverd contract-secret seal | promote | unpromote | drop | capabilities ...
+       whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
 // usageError is a command line whatserverd does not know.
@@ -551,14 +551,23 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	return a, closeAll, nil
 }
 
-func serve() error {
-	// SIGHUP reloads the contract's secret and never stops the process. It
-	// is taken before anything else: Go's default for it is to exit, which
-	// systemd counts as clean and would not restart, so a SIGHUP that came
-	// before this line would end capture.
+// takeHangup makes SIGHUP this process's to handle, delivered on the
+// channel it returns, until the function it returns gives it back. Go's
+// default for SIGHUP is to exit, which systemd counts as clean and would not
+// restart: contract-secret capabilities' "sighup" promises the installer
+// that serve calls this before anything else.
+func takeHangup() (<-chan os.Signal, func()) {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
-	defer signal.Stop(hup)
+	return hup, func() { signal.Stop(hup) }
+}
+
+func serve() error {
+	// SIGHUP reloads the contract's secret and never stops the process. It
+	// is taken before anything else, so a SIGHUP that came before this line
+	// would not end capture.
+	hup, giveBack := takeHangup()
+	defer giveBack()
 	// SIGINT and SIGTERM cancel the root context, unwinding everything below.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

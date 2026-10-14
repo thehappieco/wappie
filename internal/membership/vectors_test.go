@@ -271,6 +271,20 @@ func TestContractSignatureVectors(t *testing.T) {
 			"stale": func(r *http.Request, now time.Time) *http.Response {
 				return signedAnswer(r, secret, 200, body, now.Add(-61*time.Second))
 			},
+			// Signed, but not README 6.1's answer to a DELETE: the sweep
+			// would remove its row while the platform still follows the sub.
+			"a signed subscribed true": func(r *http.Request, now time.Time) *http.Response {
+				return signedAnswer(r, secret, 200, []byte(`{"subscribed":true}`), now)
+			},
+			"a signed empty object": func(r *http.Request, now time.Time) *http.Response {
+				return signedAnswer(r, secret, 200, []byte(`{}`), now)
+			},
+			"a signed null": func(r *http.Request, now time.Time) *http.Response {
+				return signedAnswer(r, secret, 200, []byte(`{"subscribed":null}`), now)
+			},
+			"a signed body that is not JSON": func(r *http.Request, now time.Time) *http.Response {
+				return signedAnswer(r, secret, 200, []byte(`subscribed: false`), now)
+			},
 		} {
 			now := time.Now()
 			client := clientOn(func(r *http.Request) (*http.Response, error) { return spoil(r, now), nil }, func() time.Time { return now })
@@ -279,6 +293,22 @@ func TestContractSignatureVectors(t *testing.T) {
 			}
 			if err := client.Unsubscribe(context.Background(), "0199a0c2-7d3e-7b51-9f0a-2c4e6b8d1f20"); Classify(err) != Unverified {
 				t.Errorf("%s: %v (%s)", name, err, Classify(err))
+			}
+		}
+		// The two answers a DELETE may have: README 6.1's, and a refusal.
+		for _, tc := range []struct {
+			body string
+			want Outcome
+		}{{`{"subscribed":false}`, Answered}, {`{"code":"unavailable","message":"no"}`, Refused}} {
+			now := time.Now()
+			client := clientOn(func(r *http.Request) (*http.Response, error) {
+				return signedAnswer(r, secret, 200, []byte(tc.body), now), nil
+			}, func() time.Time { return now })
+			if err := client.Use(secret, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.Unsubscribe(context.Background(), "0199a0c2-7d3e-7b51-9f0a-2c4e6b8d1f20"); Classify(err) != tc.want {
+				t.Errorf("%s: %v (%s)", tc.body, err, Classify(err))
 			}
 		}
 	})
@@ -306,7 +336,7 @@ func TestContractSignatureVectors(t *testing.T) {
 				if (err == nil) != c.Valid || client.Loaded() != c.Valid {
 					t.Errorf("%s (sealed %v): loaded %v, err %v", c.Name, sealed, client.Loaded(), err)
 				}
-				if !c.Valid && s.Last().Error != StepCheck {
+				if !c.Valid && s.Last().Error != "check" {
 					t.Errorf("%s (sealed %v): step %s", c.Name, sealed, s.Last().Error)
 				}
 				if err != nil && (c.Current != "" && strings.Contains(err.Error(), c.Current) || c.Next != "" && strings.Contains(err.Error(), c.Next)) {

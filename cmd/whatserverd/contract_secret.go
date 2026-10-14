@@ -35,7 +35,14 @@ import (
 //	promote --dir D                                  next -> promoted (Linux)
 //	unpromote --dir D                                promoted -> next (Linux)
 //	drop --dir D                                     next|promoted -> steady
+//	reset --dir D                                    any state -> none (reinstall)
 //	capabilities                                     what this binary handles
+//
+// A crash between a step's file and its state leaves them disagreeing,
+// which every command refuses, but for the step that stopped there: seal
+// --slot other and drop finish what an earlier run of themselves left half
+// done. Anything else that disagrees (an install a crash stopped, a hand
+// in the directory) goes by reset, a reinstall's first half.
 
 // secretCommand is the command's world, so its tests can give it theirs.
 type secretCommand struct {
@@ -98,7 +105,7 @@ func contractSecret(args []string, c secretCommand) error {
 		return nil
 	}
 	switch args[0] {
-	case "seal", "promote", "unpromote", "drop":
+	case "seal", "promote", "unpromote", "drop", "reset":
 	default:
 		return usageError{arg: "contract-secret " + strings.Join(args, " ")}
 	}
@@ -114,6 +121,8 @@ func contractSecret(args []string, c secretCommand) error {
 		return c.swap(args[1:], "unpromote", membership.StatePromoted, membership.StateNext)
 	case "drop":
 		return c.drop(args[1:])
+	case "reset":
+		return c.reset(args[1:])
 	}
 	return usageError{arg: "contract-secret " + strings.Join(args, " ")}
 }
@@ -126,15 +135,41 @@ func (c secretCommand) flags(name string) *flag.FlagSet {
 
 // sealDir opens --dir and reads where its files stand.
 func sealDir(path string) (membership.SealDir, membership.SealState, error) {
-	if path == "" {
-		return "", "", errors.New("--dir is required")
-	}
-	dir := membership.SealDir(path)
-	if err := dir.Check(); err != nil {
+	dir, err := openSealDir(path)
+	if err != nil {
 		return "", "", err
 	}
 	state, err := dir.State()
 	return dir, state, err
+}
+
+// openSealDir checks --dir, and reads nothing in it.
+func openSealDir(path string) (membership.SealDir, error) {
+	if path == "" {
+		return "", errors.New("--dir is required")
+	}
+	dir := membership.SealDir(path)
+	if err := dir.Check(); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// halfDone reads a directory that State refused for the one disagreement a
+// crash leaves inside a step that changes a file and then the state: the
+// files already as the step leaves them (current, other), and the state
+// file still at one of the states the step starts from, which it returns.
+func halfDone(dir membership.SealDir, before []membership.SealState, current, other bool) (membership.SealState, bool) {
+	state, cur, oth, err := dir.Files()
+	if err != nil || cur != current || oth != other {
+		return "", false
+	}
+	for _, b := range before {
+		if state == b {
+			return state, true
+		}
+	}
+	return "", false
 }
 
 func (c secretCommand) seal(args []string) error {
@@ -164,25 +199,37 @@ func (c secretCommand) seal(args []string) error {
 
 	// Out of turn is refused before the secret is read: the pipe's secret is
 	// never taken into this process for a step that cannot happen.
+	var name string
+	var before, next membership.SealState
+	switch *slot {
+	case "current":
+		name, before, next = membership.SecretFileName, membership.StateNone, membership.StateSteady
+	case "other":
+		name, before, next = membership.SecretOtherFileName, membership.StateSteady, membership.StateNext
+	default:
+		return errors.New("contract-secret seal: --slot must be current or other")
+	}
 	dir, state, err := sealDir(*dirPath)
+	// An earlier seal of the other slot that wrote its file and stopped
+	// before its state left the file unrecorded, and the server takes a file
+	// only at its next load: this seal replaces it. (A current file without
+	// a state is a reinstall's: reset, then seal.)
+	replacing := false
+	if errors.Is(err, membership.ErrSealDisagree) && *slot == "other" {
+		state, replacing = halfDone(dir, []membership.SealState{before}, true, true)
+		if replacing {
+			err = nil
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("contract-secret seal: %w", err)
 	}
-	var name string
-	var next membership.SealState
-	switch *slot {
-	case "current":
-		if state != membership.StateNone {
-			return errors.New("contract-secret seal: a current secret is installed already (reinstall removes it first)")
-		}
-		name, next = membership.SecretFileName, membership.StateSteady
-	case "other":
-		if state != membership.StateSteady {
-			return fmt.Errorf("contract-secret seal: --slot other needs the state steady, not %q", stateWord(state))
-		}
-		name, next = membership.SecretOtherFileName, membership.StateNext
+	switch {
+	case state == before:
+	case *slot == "current":
+		return errors.New("contract-secret seal: a current secret is installed already (reinstall resets the directory first: contract-secret reset)")
 	default:
-		return errors.New("contract-secret seal: --slot must be current or other")
+		return fmt.Errorf("contract-secret seal: --slot other needs the state steady, not %q", stateWord(state))
 	}
 	if c.stdinTTY() {
 		return errors.New("contract-secret seal: stdin is a terminal: the secret comes only through platform-cli's pipe, never typed or pasted")
@@ -241,6 +288,10 @@ func (c secretCommand) seal(args []string) error {
 	if err := dir.WriteState(next); err != nil {
 		return fmt.Errorf("contract-secret seal: write the state: %w", err)
 	}
+	if replacing {
+		//nolint:errcheck // a note for the owner; stdout keeps its one line
+		fmt.Fprintf(c.stderr, "contract-secret seal: replaced the %s file an earlier seal wrote and did not record\n", *slot)
+	}
 	//nolint:errcheck // writing to stdout; the installer reads it
 	fmt.Fprintf(c.stdout, "sealed %s %s\n", *slot, membership.Fingerprint(envelope))
 	return nil
@@ -286,7 +337,7 @@ func readKMSSettings(path string) (region, keyARN string, err error) {
 		return "", "", err
 	}
 	defer func() { _ = f.Close() }() //nolint:errcheck // read-only
-	pairs, err := config.ParseDotEnv(f)
+	pairs, err := config.ParseDotEnv(f, envKMSKeyARN, envKMSRegion)
 	if err != nil {
 		return "", "", err
 	}
@@ -340,19 +391,56 @@ func (c secretCommand) drop(args []string) error {
 		return usageError{arg: "contract-secret drop " + strings.Join(fs.Args(), " ")}
 	}
 	dir, state, err := sealDir(*dirPath)
+	// An earlier drop that removed the other file and stopped before its
+	// state: finish it.
+	finishing := false
+	if errors.Is(err, membership.ErrSealDisagree) {
+		state, finishing = halfDone(dir, []membership.SealState{membership.StateNext, membership.StatePromoted}, true, false)
+		if finishing {
+			err = nil
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("contract-secret drop: %w", err)
 	}
 	if state != membership.StateNext && state != membership.StatePromoted {
 		return fmt.Errorf("contract-secret drop: needs the state next or promoted, not %q", stateWord(state))
 	}
-	if err := dir.Remove(membership.SecretOtherFileName); err != nil {
-		return fmt.Errorf("contract-secret drop: %w", err)
+	if !finishing {
+		if err := dir.Remove(membership.SecretOtherFileName); err != nil {
+			return fmt.Errorf("contract-secret drop: %w", err)
+		}
 	}
 	if err := dir.WriteState(membership.StateSteady); err != nil {
 		return fmt.Errorf("contract-secret drop: write the state: %w", err)
 	}
+	if finishing {
+		//nolint:errcheck // a note for the owner; stdout keeps its one line
+		fmt.Fprintln(c.stderr, "contract-secret drop: finished an earlier drop that removed the other file and did not record it")
+	}
 	return c.printFiles(dir, "drop")
+}
+
+// reset removes the secret's files from any state, disagreeing ones
+// included: a reinstall's first half, then seal --slot current (after a
+// platform restore, when Wappie holds a secret the platform no longer has).
+func (c secretCommand) reset(args []string) error {
+	fs := c.flags("reset")
+	dirPath := fs.String("dir", "", "the sealed directory, /opt/wappie/sealed")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return usageError{arg: "contract-secret reset " + strings.Join(fs.Args(), " ")}
+	}
+	dir, err := openSealDir(*dirPath)
+	if err != nil {
+		return fmt.Errorf("contract-secret reset: %w", err)
+	}
+	if err := dir.Reset(); err != nil {
+		return fmt.Errorf("contract-secret reset: %w", err)
+	}
+	return c.printFiles(dir, "reset")
 }
 
 // printFiles prints the files' fingerprints after a step, as the server

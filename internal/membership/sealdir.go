@@ -80,26 +80,15 @@ func (d SealDir) Check() error {
 // State reads the state the files and the state file agree on, or
 // ErrSealDisagree.
 func (d SealDir) State() (SealState, error) {
-	current, err := d.exists(SecretFileName)
+	state, current, other, err := d.Files()
 	if err != nil {
 		return "", err
 	}
-	other, err := d.exists(SecretOtherFileName)
-	if err != nil {
-		return "", err
-	}
-	raw, err := os.ReadFile(d.Path(SecretStateFileName))
-	if errors.Is(err, fs.ErrNotExist) {
+	switch state {
+	case StateNone:
 		if current || other {
 			return "", fmt.Errorf("%w: envelopes without a state file", ErrSealDisagree)
 		}
-		return StateNone, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("membership: read the state file: %w", err)
-	}
-	state := SealState(strings.TrimSpace(string(raw)))
-	switch state {
 	case StateSteady:
 		if !current || other {
 			return "", fmt.Errorf("%w: steady wants the current file only", ErrSealDisagree)
@@ -112,6 +101,54 @@ func (d SealDir) State() (SealState, error) {
 		return "", fmt.Errorf("%w: the state file holds no known state", ErrSealDisagree)
 	}
 	return state, nil
+}
+
+// Files reads what is on disk without judging it: the state file's word
+// (StateNone when there is no state file) and whether each envelope is
+// there. State is what a caller wants; a command reads this only to finish
+// a step that an earlier run of itself stopped in the middle of.
+func (d SealDir) Files() (state SealState, current, other bool, err error) {
+	if current, err = d.exists(SecretFileName); err != nil {
+		return "", false, false, err
+	}
+	if other, err = d.exists(SecretOtherFileName); err != nil {
+		return "", false, false, err
+	}
+	raw, err := os.ReadFile(d.Path(SecretStateFileName))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return StateNone, current, other, nil
+	case err != nil:
+		return "", false, false, fmt.Errorf("membership: read the state file: %w", err)
+	}
+	if state = SealState(strings.TrimSpace(string(raw))); state == StateNone {
+		return "", false, false, fmt.Errorf("%w: the state file is empty", ErrSealDisagree)
+	}
+	return state, current, other, nil
+}
+
+// Reset empties the directory of the secret, from whatever state it is in,
+// disagreeing ones included: the state file first, then the other envelope,
+// then the current one, each removal synced, then any temporary file a
+// crash left. It is a reinstall's first half (after a platform restore
+// Wappie may hold a secret the platform no longer has), and running it
+// again finishes one a crash stopped.
+func (d SealDir) Reset() error {
+	for _, name := range []string{SecretStateFileName, SecretOtherFileName, SecretFileName} {
+		if err := d.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	left, err := filepath.Glob(d.Path(".contract-secret*.tmp-*"))
+	if err != nil {
+		return err
+	}
+	for _, f := range left {
+		if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return d.Sync()
 }
 
 func (d SealDir) exists(name string) (bool, error) {

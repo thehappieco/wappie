@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -138,6 +140,11 @@ func (w *secretWorld) fingerprint(t *testing.T, name string) string {
 	return membership.Fingerprint(b)
 }
 
+// readerFunc is an io.Reader in a function.
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
 // describeDenied is KMS's SDK refusing DescribeKey, for awskms.NewWithAPI.
 type describeDenied struct{}
 
@@ -150,20 +157,65 @@ func (describeDenied) Decrypt(context.Context, *kmssdk.DecryptInput, ...func(*km
 }
 
 func (describeDenied) DescribeKey(_ context.Context, in *kmssdk.DescribeKeyInput, _ ...func(*kmssdk.Options)) (*kmssdk.DescribeKeyOutput, error) {
-	return nil, errors.New("AccessDeniedException: not authorized to perform kms:DescribeKey on " + aws.ToString(in.KeyId))
+	return nil, kmsAPIError{code: "AccessDeniedException", msg: "User: arn:aws:sts::111122223333:assumed-role/thehappie-host/i-0123456789abcdef0 " +
+		"is not authorized to perform: kms:DescribeKey on resource: " + aws.ToString(in.KeyId)}
+}
+
+// kmsAPIError is an AWS API error as the SDK gives one: a code, and a
+// message that names the instance role, the account and the key.
+type kmsAPIError struct{ code, msg string }
+
+func (e kmsAPIError) Error() string     { return "api error " + e.code + ": " + e.msg }
+func (e kmsAPIError) ErrorCode() string { return e.code }
+
+// TestKMSErrorClass: the server's log names a failed load by a closed word,
+// awskms's refusals included, never by the error's text (DB22).
+func TestKMSErrorClass(t *testing.T) {
+	ctx := context.Background()
+	_, denied := awskms.NewWithAPI(ctx, describeDenied{}, testKeyARN)
+	_, region := awskms.New(ctx, "us-east-1", testKeyARN)
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{denied, "AccessDeniedException"},
+		{region, "key_arn"},
+		{fmt.Errorf("%w: state Disabled", awskms.ErrKeyRefused), "key_refused"},
+		{fmt.Errorf("%w: no output", awskms.ErrUnexpectedResponse), "unexpected_response"},
+		{thcseal.ErrDecrypt, "decrypt"},
+	} {
+		if tc.err == nil {
+			t.Fatalf("no error for %s", tc.want)
+		}
+		if got := kmsErrorClass(tc.err); got != tc.want {
+			t.Errorf("%v: %s, want %s", tc.err, got, tc.want)
+		}
+	}
+	if !strings.Contains(denied.Error(), "arn:") {
+		t.Fatalf("the fake SDK error should name the ARNs, as KMS's does: %v", denied)
+	}
 }
 
 // TestContractSecretCommands is TB8 of release B's plan: the root half of
 // the secret's life, step by step, out of turn, and never printing it.
 func TestContractSecretCommands(t *testing.T) {
 	a, b := membershiptest.Secret(t), membershiptest.Secret(t)
-	noSecretIn := func(t *testing.T, w *secretWorld, secrets ...string) {
+	// noSecretIn checks what reaches the terminal: stdout, stderr, and the
+	// error main prints on stderr.
+	noSecretIn := func(t *testing.T, w *secretWorld, err error, secrets ...string) {
 		t.Helper()
 		for _, s := range secrets {
-			if strings.Contains(w.out.String(), s) || strings.Contains(w.err.String(), s) {
-				t.Fatalf("the output holds a secret: %q %q", w.out.String(), w.err.String())
+			if strings.Contains(w.out.String(), s) || strings.Contains(w.err.String(), s) || err != nil && strings.Contains(err.Error(), s) {
+				t.Fatalf("the output holds a secret: %q %q %v", w.out.String(), w.err.String(), err)
 			}
 		}
+	}
+	// unread is a stdin the command must not read.
+	unread := func(t *testing.T) io.Reader {
+		return readerFunc(func([]byte) (int, error) {
+			t.Error("stdin was read")
+			return 0, io.EOF
+		})
 	}
 
 	t.Run("seal current", func(t *testing.T) {
@@ -175,8 +227,10 @@ func TestContractSecretCommands(t *testing.T) {
 			}
 		}
 		// A terminal on stdin is refused, before anything is read or written.
-		err := contractSecret([]string{"seal", "--slot", "current", "--dir", string(w.dir), "--env-file", w.envFile}, w.cmd(a, true))
-		if err == nil || !strings.Contains(err.Error(), "terminal") || w.state(t) != membership.StateNone {
+		c := w.cmd("", true)
+		c.stdin = unread(t)
+		err := contractSecret([]string{"seal", "--slot", "current", "--dir", string(w.dir), "--env-file", w.envFile}, c)
+		if err == nil || !strings.Contains(err.Error(), "terminal") || w.state(t) != membership.StateNone || len(w.opened) != 0 {
 			t.Fatalf("a terminal: %v", err)
 		}
 		// Nothing on stdin is 4, apart from every other failure.
@@ -190,6 +244,7 @@ func TestContractSecretCommands(t *testing.T) {
 			if err == nil || errors.As(err, &exit) || w.state(t) != membership.StateNone {
 				t.Fatalf("%q: %v", bad, err)
 			}
+			noSecretIn(t, w, err, strings.TrimSuffix(bad, "\n"))
 		}
 		w.seal(t, "current", a)
 		fi, err := os.Stat(w.dir.Path(membership.SecretFileName))
@@ -202,7 +257,7 @@ func TestContractSecretCommands(t *testing.T) {
 		if got := w.out.String(); got != "sealed current "+w.fingerprint(t, membership.SecretFileName)+"\n" {
 			t.Fatalf("printed %q", got)
 		}
-		noSecretIn(t, w, a)
+		noSecretIn(t, w, nil, a)
 		if left, _ := filepath.Glob(w.dir.Path(".*")); len(left) != 0 {
 			t.Fatalf("temporary files left: %v", left)
 		}
@@ -234,14 +289,26 @@ func TestContractSecretCommands(t *testing.T) {
 		refused := func(why string, stdin string, args ...string) {
 			t.Helper()
 			before := w.state(t)
-			if err := w.run(t, stdin, args...); err == nil {
+			err := w.run(t, stdin, args...)
+			if err == nil {
 				t.Fatalf("%s: accepted", why)
 			}
 			if w.state(t) != before {
 				t.Fatalf("%s: the refusal changed the state", why)
 			}
-			noSecretIn(t, w, a, b)
+			noSecretIn(t, w, err, a, b)
 		}
+		// Out of turn, seal refuses before it reads the pipe.
+		outOfTurn := func(why string, args ...string) {
+			t.Helper()
+			before := w.state(t)
+			c := w.cmd("", false)
+			c.stdin = unread(t)
+			if err := contractSecret(args, c); err == nil || w.state(t) != before {
+				t.Fatalf("%s: %v", why, err)
+			}
+		}
+		outOfTurn("other before current, unread", "seal", "--slot", "other", "--dir", dir, "--env-file", w.envFile)
 		refused("other before current", b+"\n", "seal", "--slot", "other", "--dir", dir, "--env-file", w.envFile)
 		refused("promote with nothing", "", "promote", "--dir", dir)
 		refused("drop with nothing", "", "drop", "--dir", dir)
@@ -255,6 +322,8 @@ func TestContractSecretCommands(t *testing.T) {
 			t.Fatal("next")
 		}
 		refused("a second other", membershiptest.Secret(t)+"\n", "seal", "--slot", "other", "--dir", dir, "--env-file", w.envFile)
+		outOfTurn("a second other, unread", "seal", "--slot", "other", "--dir", dir, "--env-file", w.envFile)
+		outOfTurn("a second current, unread", "seal", "--slot", "current", "--dir", dir, "--env-file", w.envFile)
 		refused("unpromote in next", "", "unpromote", "--dir", dir)
 		if runtime.GOOS != "linux" {
 			// The swap needs renameat2: elsewhere promote refuses, whole.
@@ -308,6 +377,118 @@ func TestContractSecretCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("a step a crash stopped half done is finished by running it again", func(t *testing.T) {
+		w := newSecretWorld(t)
+		dir := string(w.dir)
+		disagree := func(why string, args ...string) {
+			t.Helper()
+			if err := w.run(t, membershiptest.Secret(t)+"\n", args...); !errors.Is(err, membership.ErrSealDisagree) {
+				t.Fatalf("%s: %v", why, err)
+			}
+		}
+		w.seal(t, "current", a)
+		// seal --slot other wrote its file and stopped before its state:
+		// steady, with an other file nothing recorded.
+		if err := w.dir.WriteFile(membership.SecretOtherFileName, []byte("an envelope nobody recorded")); err != nil {
+			t.Fatal(err)
+		}
+		disagree("promote", "promote", "--dir", dir)
+		disagree("unpromote", "unpromote", "--dir", dir)
+		disagree("drop", "drop", "--dir", dir)
+		disagree("seal current", "seal", "--slot", "current", "--dir", dir, "--env-file", w.envFile)
+		w.seal(t, "other", b)
+		if w.state(t) != membership.StateNext || w.open(t, membership.SecretOtherFileName) != b ||
+			!strings.Contains(w.err.String(), "replaced the other file") {
+			t.Fatalf("seal other again: %s %q", w.state(t), w.err.String())
+		}
+		// drop removed the other file and stopped before its state, from
+		// next and from promoted.
+		for _, promoted := range []bool{false, true} {
+			if promoted {
+				w.seal(t, "other", b)
+				if err := w.run(t, "", "promote", "--dir", dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := w.open(t, membership.SecretFileName)
+			if err := w.dir.Remove(membership.SecretOtherFileName); err != nil {
+				t.Fatal(err)
+			}
+			disagree("seal other", "seal", "--slot", "other", "--dir", dir, "--env-file", w.envFile)
+			disagree("promote", "promote", "--dir", dir)
+			if err := w.run(t, "", "drop", "--dir", dir); err != nil {
+				t.Fatalf("drop again (promoted %v): %v", promoted, err)
+			}
+			if w.state(t) != membership.StateSteady || w.open(t, membership.SecretFileName) != want ||
+				!strings.Contains(w.err.String(), "finished an earlier drop") {
+				t.Fatalf("drop again (promoted %v): %s %q", promoted, w.state(t), w.err.String())
+			}
+		}
+	})
+
+	t.Run("reset empties the directory from any state, then install", func(t *testing.T) {
+		for name, setup := range map[string]func(w *secretWorld){
+			"none":   func(*secretWorld) {},
+			"steady": func(w *secretWorld) { w.seal(t, "current", a) },
+			"next":   func(w *secretWorld) { w.seal(t, "current", a); w.seal(t, "other", b) },
+			"promoted": func(w *secretWorld) {
+				w.seal(t, "current", a)
+				w.seal(t, "other", b)
+				if err := w.run(t, "", "promote", "--dir", string(w.dir)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"envelopes without a state": func(w *secretWorld) {
+				w.seal(t, "current", a)
+				w.seal(t, "other", b)
+				if err := os.Remove(w.dir.Path(membership.SecretStateFileName)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"a state without its envelopes": func(w *secretWorld) {
+				if err := w.dir.WriteState(membership.StatePromoted); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"an unknown word, and a temporary file a crash left": func(w *secretWorld) {
+				w.seal(t, "current", a)
+				if err := os.WriteFile(w.dir.Path(membership.SecretStateFileName), []byte("rotating\n"), 0o640); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(w.dir.Path(".contract-secret.other.thcseal.tmp-123"), []byte("half"), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			},
+		} {
+			w := newSecretWorld(t)
+			setup(w)
+			for range 2 { // and again: reset is idempotent
+				before := w.noCores
+				if err := w.run(t, "", "reset", "--dir", string(w.dir)); err != nil {
+					t.Fatalf("%s: reset: %v", name, err)
+				}
+				if w.out.String() != "reset: current none other none\n" || w.noCores != before+1 {
+					t.Fatalf("%s: printed %q, core dumps off %d", name, w.out.String(), w.noCores-before)
+				}
+				if left, _ := os.ReadDir(string(w.dir)); len(left) != 0 {
+					t.Fatalf("%s: left %v", name, left)
+				}
+			}
+			w.seal(t, "current", b)
+			if w.state(t) != membership.StateSteady || w.open(t, membership.SecretFileName) != b {
+				t.Fatalf("%s: the install after reset", name)
+			}
+		}
+		w := newSecretWorld(t)
+		var usage usageError
+		if err := w.run(t, "", "reset", "--dir", string(w.dir), "extra"); !errors.As(err, &usage) {
+			t.Fatalf("%v", err)
+		}
+		if err := w.run(t, "", "reset"); err == nil || !strings.Contains(err.Error(), "--dir is required") {
+			t.Fatalf("%v", err)
+		}
+	})
+
 	t.Run("check-kms names the step that fails", func(t *testing.T) {
 		w := newSecretWorld(t)
 		if err := w.run(t, "", "seal", "--check-kms", "--env-file", w.envFile); err != nil || w.out.String() != "kms: ok\n" {
@@ -339,6 +520,51 @@ func TestContractSecretCommands(t *testing.T) {
 		}
 		if err := w.run(t, "", "seal", "--check-kms", "--env-file", bare); err == nil || !strings.Contains(err.Error(), "WS_CONTRACT_KMS_KEY_ARN") {
 			t.Fatalf("no key: %v", err)
+		}
+		// An env file that names the key twice, as an append would, is
+		// refused before KMS is asked anything: the server, under systemd,
+		// would take the last line, and this command the first.
+		twice := filepath.Join(t.TempDir(), "runtime.env")
+		body, err := os.ReadFile(w.envFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = append(body, "WS_CONTRACT_KMS_KEY_ARN=arn:aws:kms:eu-west-1:111122223333:key/0000aaaa-00aa-00aa-00aa-000000aaaaaa\n"...)
+		if err := os.WriteFile(twice, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		opened := len(w.opened)
+		for _, args := range [][]string{
+			{"seal", "--check-kms", "--env-file", twice},
+			{"seal", "--slot", "current", "--dir", string(w.dir), "--env-file", twice},
+		} {
+			err := w.run(t, a+"\n", args...)
+			if err == nil || !strings.Contains(err.Error(), "WS_CONTRACT_KMS_KEY_ARN is assigned twice") || strings.Contains(err.Error(), "arn:") {
+				t.Fatalf("%v: %v", args, err)
+			}
+		}
+		if len(w.opened) != opened || w.state(t) != membership.StateNone {
+			t.Fatal("a repeated key reached KMS, or the directory")
+		}
+	})
+
+	t.Run("core dumps off first, for every command but capabilities", func(t *testing.T) {
+		w := newSecretWorld(t)
+		dir := string(w.dir)
+		for _, args := range [][]string{
+			{"seal", "--slot", "other", "--dir", dir, "--env-file", w.envFile},
+			{"seal", "--check-kms", "--env-file", w.envFile},
+			{"promote", "--dir", dir}, {"unpromote", "--dir", dir}, {"drop", "--dir", dir}, {"reset", "--dir", dir},
+		} {
+			before := w.noCores
+			_ = w.run(t, "", args...) //nolint:errcheck // out of turn or not, the limit comes first
+			if w.noCores != before+1 {
+				t.Errorf("%v: core dumps were not turned off first", args)
+			}
+		}
+		before := w.noCores
+		if err := w.run(t, "", "capabilities"); err != nil || w.noCores != before {
+			t.Fatalf("capabilities: %v", err)
 		}
 	})
 

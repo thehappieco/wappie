@@ -168,3 +168,51 @@ func TestFakeContractFlags(t *testing.T) {
 		t.Fatal("an empty secret")
 	}
 }
+
+// TestListenUnixNeverTakesALiveSocket: a socket a process still serves is
+// never replaced (in the host simulation, platformd's or a second fake's);
+// one left by a process that died is.
+func TestListenUnixNeverTakesALiveSocket(t *testing.T) {
+	dir := membershiptest.SocketDir(t)
+	live := filepath.Join(dir, "live.sock")
+	ln, err := net.Listen("unix", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if _, err := listenUnix(context.Background(), live, 0o660, ""); err == nil || !strings.Contains(err.Error(), "served by another process") {
+		t.Fatalf("a live socket: %v", err)
+	}
+	// The first listener still has the path.
+	accepted := make(chan error, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			_ = c.Close()
+		}
+		accepted <- err
+	}()
+	conn, err := net.Dial("unix", live)
+	if err != nil {
+		t.Fatalf("the live socket was taken: %v", err)
+	}
+	_ = conn.Close()
+	if err := <-accepted; err != nil {
+		t.Fatal(err)
+	}
+
+	stale := filepath.Join(dir, "stale.sock")
+	old, err := net.Listen("unix", stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := listenUnix(context.Background(), stale, 0o660, "")
+	if err != nil {
+		t.Fatalf("a dead process's socket: %v", err)
+	}
+	_ = fresh.Close()
+}

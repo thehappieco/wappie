@@ -48,24 +48,37 @@ func LoadDotEnv(path string) (err error) {
 	return nil
 }
 
-// ParseDotEnv reads KEY=VALUE pairs, in LoadDotEnv's syntax, without
-// touching the process environment: a key that appears twice keeps its
-// first value, as LoadDotEnv would. It exists for the root commands that
-// need two settings of a file holding many secrets (contract-secret seal
-// reads runtime.env for its KMS key alone): they take what they name from
-// the map, and nothing else of the file enters their environment.
+// ParseDotEnv reads the keys named from KEY=VALUE pairs, in LoadDotEnv's
+// syntax, without touching the process environment. It exists for the root
+// commands that need two settings of a file holding many secrets
+// (contract-secret seal reads runtime.env for its KMS key alone): the map
+// holds what they name and nothing else of the file.
 //
-// An error names the line, never its text, which may hold a secret.
-func ParseDotEnv(r io.Reader) (map[string]string, error) {
+// A named key assigned twice is refused: LoadDotEnv keeps a repeated key's
+// first value and systemd's EnvironmentFile= its last, so the root step and
+// the service the unit runs would each take a different one. An error names
+// keys and lines, never a line's text, which may hold a secret.
+func ParseDotEnv(r io.Reader, keys ...string) (map[string]string, error) {
 	pairs, err := parseDotEnv(r)
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	out := make(map[string]string, len(pairs))
+	named := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		named[k] = true
+	}
+	out := make(map[string]string, len(keys))
+	lines := make(map[string]int, len(keys))
 	for _, p := range pairs {
-		if _, seen := out[p.key]; !seen {
-			out[p.key] = p.value
+		if !named[p.key] {
+			continue
 		}
+		if first, seen := lines[p.key]; seen {
+			return nil, fmt.Errorf("config: %s is assigned twice, lines %d and %d: keep one "+
+				"(LoadDotEnv would take the first, systemd's EnvironmentFile= the last)", p.key, first, p.line)
+		}
+		lines[p.key] = p.line
+		out[p.key] = p.value
 	}
 	return out, nil
 }

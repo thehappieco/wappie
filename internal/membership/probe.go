@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	kc "github.com/thehappieco/kit/contract"
@@ -128,7 +131,7 @@ func (c *Client) Probe(ctx context.Context, mode ProbeMode) ProbeResult {
 			}
 			return ProbeResult{ProbeFailed, reason}
 		}
-		return ProbeResult{ProbeNoAnswer, "no answer from the platform"}
+		return ProbeResult{ProbeNoAnswer, "no answer from the platform" + noAnswerCause(err)}
 	}
 	//nolint:errcheck // a failed close on an answer read whole tells us nothing
 	defer func() { _ = res.Body.Close() }()
@@ -161,9 +164,29 @@ func (c *Client) Probe(ctx context.Context, mode ProbeMode) ProbeResult {
 	case res.StatusCode == http.StatusTooManyRequests, res.StatusCode == http.StatusServiceUnavailable:
 		return ProbeResult{ProbeNoAnswer, fmt.Sprintf("unsigned %d: the platform is busy", res.StatusCode)}
 	case res.StatusCode == http.StatusNotFound:
-		return ProbeResult{ProbeFailed, "unsigned 404: the platform does not serve wappie (PLATFORM_CONTRACT_APPS)"}
+		// README 4, step 1: an unmapped peer uid is a 404 too.
+		return ProbeResult{ProbeFailed, "unsigned 404: the platform does not serve this caller: wappie is not mapped " +
+			"(PLATFORM_CONTRACT_APPS), or this process is not the wappie user"}
 	}
 	return ProbeResult{ProbeFailed, fmt.Sprintf("unsigned %d", res.StatusCode)}
+}
+
+// noAnswerCause names why a request got no answer, as a class and never
+// the address: the installer acts on the exit status (5, try again), and
+// the owner reads the line, which tells a configuration fault that no retry
+// fixes (the socket's group) from the platform restarting.
+func noAnswerCause(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		return ": permission denied on the socket (run as wappie with SupplementaryGroups=platform-contract)"
+	case errors.Is(err, fs.ErrNotExist):
+		return ": no socket at the configured path (the platform is down or restarting)"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return ": the connection was refused (the platform is down or restarting)"
+	case errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err):
+		return ": timeout"
+	}
+	return ""
 }
 
 // verified reads a verified answer: a feed page, or a signed refusal, which

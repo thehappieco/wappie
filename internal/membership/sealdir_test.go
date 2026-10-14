@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -74,5 +75,45 @@ func TestSealDirStates(t *testing.T) {
 	}
 	if Fingerprint([]byte("x")) != "2d711642b726" {
 		t.Fatalf("fingerprint %s", Fingerprint([]byte("x")))
+	}
+}
+
+// TestSealDirGivesTheDirectorysGroup: every file WriteFile makes is the
+// directory's group, mode 0640. In production seal runs as root in
+// /opt/wappie/sealed (root:wappie 0750), where Linux gives a new file the
+// process's group, 0: without the chown wappie-api could not read the
+// envelope. A directory of another group of this user's shows it here (on
+// darwin a new file takes its directory's group anyway; Linux is the test).
+func TestSealDirGivesTheDirectorysGroup(t *testing.T) {
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := -1
+	for _, g := range groups {
+		if g != os.Getgid() {
+			gid = g
+			break
+		}
+	}
+	if gid < 0 {
+		t.Skip("this user is in no group but its own")
+	}
+	dir := SealDir(t.TempDir())
+	if err := os.Chown(string(dir), -1, gid); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{SecretFileName, SecretStateFileName} {
+		if err := dir.WriteFile(name, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Stat(dir.Path(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || int64(st.Gid) != int64(gid) || fi.Mode().Perm() != 0o640 {
+			t.Fatalf("%s: group %v mode %v, want the directory's group %d and 0640", name, st.Gid, fi.Mode(), gid)
+		}
 	}
 }

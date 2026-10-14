@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -82,7 +83,7 @@ func TestSocketPeerChecks(t *testing.T) {
 	})
 	t.Run("a socket another uid owns", func(t *testing.T) {
 		if me != 0 {
-			t.Skip("chown needs root (it runs in the Linux container's root pass)")
+			t.Skip("chown needs root: CI runs this case under sudo (ci.yml, \"Socket peer check as root\")")
 		}
 		other := filepath.Join(dir, "other.sock")
 		serveOK(t, other)
@@ -135,6 +136,20 @@ func TestSocketPeerChecks(t *testing.T) {
 			t.Fatal(err)
 		}
 		unavailable(t, &SocketDialer{Path: stale, Owner: me})
+	})
+	t.Run("a socket this process may not connect to is no answer, not a peer failure", func(t *testing.T) {
+		if me == 0 {
+			t.Skip("root connects to any socket")
+		}
+		denied := filepath.Join(dir, "denied.sock")
+		serveOK(t, denied)
+		if err := os.Chmod(denied, 0); err != nil {
+			t.Fatal(err)
+		}
+		_, err := (&SocketDialer{Path: denied, Owner: me}).DialContext(context.Background(), "tcp", "contract:80")
+		if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrPeer) || !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("want ErrUnavailable (permission denied), got %v", err)
+		}
 	})
 	t.Run("a peer that failed is refused for a minute, and said once", func(t *testing.T) {
 		loose := membershiptest.SocketDir(t)
@@ -194,5 +209,29 @@ func TestTransportShape(t *testing.T) {
 	}
 	if _, err := (TCPDialer{Addr: addr}).DialContext(context.Background(), "tcp", "contract:80"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("closed port: %v", err)
+	}
+}
+
+// TestTCPTransport: the development transport reaches the kit's fake on
+// loopback TCP, whatever host the URL names: a feed page and a probe, each
+// answered and verified.
+func TestTCPTransport(t *testing.T) {
+	current := membershiptest.Secret(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: membershiptest.Platform(t, current, ""), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	c := NewClient(HTTP(TCPDialer{Addr: ln.Addr().String()}.DialContext), Base, nil)
+	if err := c.Use(current, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Feed(context.Background(), 0, 0); err != nil {
+		t.Fatalf("the feed over TCP: %v", err)
+	}
+	if res := c.Probe(context.Background(), ProbeBoth); res.Code != ProbeVerified || !strings.HasPrefix(res.Line, "signed answer: generation ") {
+		t.Fatalf("%+v", res)
 	}
 }

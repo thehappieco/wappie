@@ -2,7 +2,9 @@ package membership
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -156,9 +158,29 @@ func (c *Client) Account(ctx context.Context, sub string) (kc.AccountDoc, error)
 	return d, err
 }
 
-// Unsubscribe follows sub no more (DELETE /contract/v1/accounts/{sub}).
+// Unsubscribe follows sub no more (DELETE /contract/v1/accounts/{sub}). It
+// answers nil only for a signed {"subscribed": false}, README 6.1's one
+// answer: the sweep removes its intent row on that alone, so a signed body
+// that says anything else is unverified, never an unsubscribe. (The kit's
+// own Unsubscribe takes any signed answer that is not a refusal.)
 func (c *Client) Unsubscribe(ctx context.Context, sub string) error {
-	return c.call(func(k *kc.Client) error { return k.Unsubscribe(ctx, sub) })
+	return c.call(func(k *kc.Client) error {
+		status, answer, err := k.Do(ctx, http.MethodDelete, "/contract/v1/accounts/"+sub, nil)
+		if err != nil {
+			return err
+		}
+		var refusal kc.Error
+		if json.Unmarshal(answer, &refusal) == nil && refusal.Code != "" {
+			return &kc.Refusal{Status: status, Code: refusal.Code, Message: refusal.Message}
+		}
+		var r struct {
+			Subscribed *bool `json:"subscribed"`
+		}
+		if err := json.Unmarshal(answer, &r); err != nil || r.Subscribed == nil || *r.Subscribed {
+			return fmt.Errorf("%w: the answer is not an unsubscribe", kc.ErrUnverified)
+		}
+		return nil
+	})
 }
 
 // Feed returns the documents after the cursor after, waiting up to wait

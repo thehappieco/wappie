@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	kc "github.com/thehappieco/kit/contract"
 	"github.com/thehappieco/kit/kms"
 	"github.com/thehappieco/kit/thcseal"
 
@@ -83,7 +85,12 @@ type Secrets struct {
 	Client *Client
 	// OpenWrapper opens the KMS key, for sealed files.
 	OpenWrapper OpenWrapper
-	Log         *slog.Logger
+	// Class names a failed load's error in the log by one closed word
+	// (ErrorClass when nil; cmd/whatserverd's knows awskms's errors too).
+	// The log never takes the error's text: a KMS refusal's names the
+	// instance role's ARN, the account and the key (DB22).
+	Class func(error) string
+	Log   *slog.Logger
 	// Now is the clock of loaded_at (time.Now when nil).
 	Now func() time.Time
 
@@ -197,12 +204,77 @@ func (s *Secrets) load(ctx context.Context, reload bool) error {
 		s.missing = true
 	case reload && s.Client.Loaded():
 		s.Log.Error("contract: secrets reload failed; the secrets loaded before stay in use",
-			"step", step, "error", err, "reloads", out.Reloads)
+			"step", step, "class", s.class(err), "reloads", out.Reloads)
 	default:
 		s.Log.Error("contract: secrets not loaded; the contract is unavailable",
-			"step", step, "error", err, "reloads", out.Reloads)
+			"step", step, "class", s.class(err), "reloads", out.Reloads)
 	}
 	return err
+}
+
+func (s *Secrets) class(err error) string {
+	if s.Class != nil {
+		return s.Class(err)
+	}
+	return ErrorClass(err)
+}
+
+// ErrorClass names a failed load's error by one closed word, for a log line
+// (DB22: codes, never text): the envelope's fault (malformed, decrypt,
+// provider_mismatch, too_large, unwrap, context), the secret's
+// (secret_shape), a file's (not_found, permission), KMS's own error code
+// (AccessDeniedException, KMSInvalidStateException, ...), timeout,
+// unreachable, or other. The text, which may name ARNs and the account, is
+// the owner's to read at the prompt (contract check, contract-secret).
+func ErrorClass(err error) string {
+	// An AWS API error carries its code; the SDK is never imported here.
+	var api interface{ ErrorCode() string }
+	var ne net.Error
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, thcseal.ErrMalformed):
+		return "malformed"
+	case errors.Is(err, thcseal.ErrDecrypt):
+		return "decrypt"
+	case errors.Is(err, thcseal.ErrProviderMismatch):
+		return "provider_mismatch"
+	case errors.Is(err, thcseal.ErrTooLarge):
+		return "too_large"
+	case errors.Is(err, kms.ErrUnwrap):
+		return "unwrap"
+	case errors.Is(err, kms.ErrInvalidContext):
+		return "context"
+	case errors.Is(err, kc.ErrSecret):
+		return "secret_shape"
+	case errors.Is(err, fs.ErrNotExist):
+		return "not_found"
+	case errors.Is(err, fs.ErrPermission):
+		return "permission"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "timeout"
+	case errors.As(err, &api) && errorCode(api.ErrorCode()):
+		return api.ErrorCode()
+	case errors.As(err, &ne):
+		return "unreachable"
+	}
+	return "other"
+}
+
+// errorCode reports a word fit for a log line: an API error's code, never
+// a message.
+func errorCode(code string) bool {
+	if code == "" || len(code) > 64 {
+		return false
+	}
+	for _, r := range code {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // open reads, opens and checks both files and hands them to the client.

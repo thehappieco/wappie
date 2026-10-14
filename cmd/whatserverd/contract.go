@@ -40,6 +40,21 @@ func openKMS(ctx context.Context, region, keyARN string) (kms.Wrapper, error) {
 	return w, nil
 }
 
+// kmsErrorClass is the loader's log word for a failed load (DB22): awskms's
+// own refusals by name, then membership.ErrorClass (KMS's error code, a
+// timeout, ...), never the error's text, which names ARNs and the account.
+func kmsErrorClass(err error) string {
+	switch {
+	case errors.Is(err, awskms.ErrKeyARN):
+		return "key_arn"
+	case errors.Is(err, awskms.ErrKeyRefused):
+		return "key_refused"
+	case errors.Is(err, awskms.ErrUnexpectedResponse):
+		return "unexpected_response"
+	}
+	return membership.ErrorClass(err)
+}
+
 // newContractClient is the client on the configured transport, with no
 // secret yet.
 func newContractClient(cfg config.Contract, log *slog.Logger) *membership.Client {
@@ -72,7 +87,7 @@ func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 		return
 	}
 	a.contract = newContractClient(a.cfg.Contract, a.log)
-	a.secrets = &membership.Secrets{Config: a.cfg.Contract, Client: a.contract, OpenWrapper: openKMS, Log: a.log}
+	a.secrets = &membership.Secrets{Config: a.cfg.Contract, Client: a.contract, OpenWrapper: openKMS, Class: kmsErrorClass, Log: a.log}
 	go a.secrets.Watch(ctx, hup)
 	go a.secrets.Run(ctx)
 }
