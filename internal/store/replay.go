@@ -46,11 +46,14 @@ var (
 	// database: most likely the snapshot's own copy, put back instead of a
 	// newer one.
 	ErrLedgerAddsNothing = errors.New("store: the ledger holds nothing newer than the restored database")
+	// errReplayDryRun rolls back a dry run's transaction once its steps ran.
+	errReplayDryRun = errors.New("store: a dry run changes nothing")
 )
 
 // ReplayOptions changes what ReplayLedger does.
 type ReplayOptions struct {
-	// DryRun reports what the replay would change, and changes nothing.
+	// DryRun runs every step, reports what it changed and what refused, and
+	// rolls each workspace's transaction back.
 	DryRun bool
 	// SnapshotTime is the restored snapshot's stamp.
 	SnapshotTime time.Time
@@ -244,6 +247,15 @@ func ReplayLedger(ctx context.Context, pool *pgxpool.Pool, lines []ledger.Line, 
 				out.Kept = append(out.Kept, d.DeviceID)
 				continue
 			}
+			// A started purge has deleted rows already: recovering it would
+			// bring the number back with part of its archive gone, which
+			// Recover never allows either. Only a damaged ledger pairs the
+			// two.
+			if row.purgeStarted {
+				out.Refusals = append(out.Refusals, fmt.Sprintf("number %s: its purge had started in the restored database, "+
+					"and the ledger says its deletion was recovered; it cannot be recovered", d.DeviceID))
+				continue
+			}
 			step.action, step.reversal = ReplayRecovered, d.Reversed[i]
 		}
 		byTenant[row.tenant] = append(byTenant[row.tenant], step)
@@ -264,20 +276,16 @@ func ReplayLedger(ctx context.Context, pool *pgxpool.Pool, lines []ledger.Line, 
 		sort.SliceStable(steps, func(i, j int) bool {
 			return steps[i].action != ReplayRecovered && steps[j].action == ReplayRecovered
 		})
-		if opts.DryRun {
-			for _, s := range steps {
-				out.Changes = append(out.Changes, ReplayChange{DeviceID: s.device.DeviceID, Workspace: tenant, Action: s.action,
-					DeletedAt: s.device.DeletedAt, PurgeAfter: s.device.PurgeAfter})
-			}
-			continue
-		}
+		// A dry run runs the same steps in the same transaction and rolls
+		// it back, so it meets every refusal the real replay would.
 		var changes []ReplayChange
-		recovered := false
+		over := false
 		err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenant); err != nil {
 				return err
 			}
-			return withQuarantine(ctx, tx, func() error {
+			err := withQuarantine(ctx, tx, func() error {
+				recovered := false
 				for _, s := range steps {
 					c, err := replayStepTx(ctx, tx, tenant, s)
 					if err != nil {
@@ -286,8 +294,22 @@ func ReplayLedger(ctx context.Context, pool *pgxpool.Pool, lines []ledger.Line, 
 					changes = append(changes, c)
 					recovered = recovered || s.action == ReplayRecovered
 				}
+				if !recovered {
+					return nil
+				}
+				var capacity *int64
+				var used int64
+				if err := tx.QueryRow(ctx, `SELECT (SELECT max_devices FROM workspace_capacity WHERE tenant_id = $1), workspace_device_usage($1)`,
+					tenant).Scan(&capacity, &used); err != nil {
+					return err
+				}
+				over = capacity != nil && used > *capacity
 				return nil
 			})
+			if err == nil && opts.DryRun {
+				return errReplayDryRun
+			}
+			return err
 		})
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -295,22 +317,12 @@ func ReplayLedger(ctx context.Context, pool *pgxpool.Pool, lines []ledger.Line, 
 				"nothing in that workspace was replayed", tenant, pgErr.ConstraintName))
 			continue
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, errReplayDryRun) {
 			return out, fmt.Errorf("store: replay in workspace %s: %w", tenant, err)
 		}
 		out.Changes = append(out.Changes, changes...)
-		if recovered {
-			var capacity *int64
-			var used int64
-			if err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
-				return tx.QueryRow(ctx, `SELECT (SELECT max_devices FROM workspace_capacity WHERE tenant_id = $1), workspace_device_usage($1)`,
-					tenant).Scan(&capacity, &used)
-			}); err != nil {
-				return out, err
-			}
-			if capacity != nil && used > *capacity {
-				out.OverCapacity = append(out.OverCapacity, tenant)
-			}
+		if over {
+			out.OverCapacity = append(out.OverCapacity, tenant)
 		}
 	}
 	if len(out.Refusals) > 0 {
@@ -326,8 +338,12 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 	change := ReplayChange{DeviceID: d.DeviceID, Workspace: tenant, Action: s.action}
 	if s.action == ReplayRecovered {
 		var name, pushName, pn string
-		err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, purge_started_at = NULL, wa_leftover = NULL
-			WHERE id = $1 AND deleted_at = $2 RETURNING label, push_name, coalesce(pn, '')`, d.DeviceID, s.reversal.DeletedAt).Scan(&name, &pushName, &pn)
+		err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL
+			WHERE id = $1 AND deleted_at = $2 AND purge_started_at IS NULL RETURNING label, push_name, coalesce(pn, '')`,
+			d.DeviceID, s.reversal.DeletedAt).Scan(&name, &pushName, &pn)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return change, fmt.Errorf("number %s changed during the replay, or its purge started: it was not recovered", d.DeviceID)
+		}
 		if err != nil {
 			return change, err
 		}
@@ -349,12 +365,19 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 	}
 	purge := d.State == ledger.StatePurged
 	same := s.row.deletedAt != nil && s.row.deletedAt.Equal(deletedAt)
+	// The fingerprint of the session the restore brought back, as
+	// Quarantine takes it: only for a number restored live, whose session
+	// is the one under its JID. A number restored excluded keeps the
+	// fingerprint its deletion took. Once that logout was confirmed, or
+	// when there was no session, whatever holds its JID now is a phone
+	// linked again, perhaps in another workspace, which the purge must
+	// never delete.
 	var session *WASession
 	present, err := sessionTableTx(ctx, tx)
 	if err != nil {
 		return change, err
 	}
-	if present {
+	if present && s.row.deletedAt == nil {
 		var w WASession
 		err := tx.QueryRow(ctx, `SELECT w.jid, w.registration_id FROM whatsmeow_device w JOIN devices d ON d.pn = w.jid WHERE d.id = $1`,
 			d.DeviceID).Scan(&w.JID, &w.RegistrationID)
@@ -371,18 +394,18 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 		jid, reg = &session.JID, &session.RegistrationID
 	}
 	if same {
-		// Already excluded by this deletion: a purge only makes it due.
-		err = tx.QueryRow(ctx, `UPDATE devices SET purge_after = least(purge_after, $2, clock_timestamp()),
-			wa_leftover = coalesce(wa_leftover, CASE WHEN $3::text IS NOT NULL THEN jsonb_build_object('jid', $3::text, 'registration_id', $4::bigint) END)
-			WHERE id = $1 RETURNING deleted_at, purge_after`, d.DeviceID, purgeAfter, jid, reg).Scan(&change.DeletedAt, &change.PurgeAfter)
+		// Already excluded by this deletion: a purge only makes it due, and
+		// its fingerprint stays the deletion's.
+		err = tx.QueryRow(ctx, `UPDATE devices SET purge_after = least(purge_after, $2, clock_timestamp())
+			WHERE id = $1 RETURNING deleted_at, purge_after`, d.DeviceID, purgeAfter).Scan(&change.DeletedAt, &change.PurgeAfter)
 		if err != nil {
 			return change, err
 		}
 	} else {
 		// As a deletion excludes it: off every key restricted to it, its
 		// assistants ended, paused, its dead status kept, and the
-		// fingerprint of the session the restore brought back, which the
-		// purge removes. No notice: nobody is told twice.
+		// fingerprint above, which the purge removes; a number excluded by
+		// another deletion keeps its own. No notice: nobody is told twice.
 		rows, err := tx.Query(ctx, `SELECT DISTINCT c.id FROM mcp_connections c
 			JOIN api_key_devices x ON x.api_key_id = c.api_key_id AND x.device_id = $2
 			WHERE c.tenant_id = $1 AND c.status IN ('pending', 'active', 'reseal')`, tenant, d.DeviceID)
@@ -409,7 +432,8 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 			deleted_by = (SELECT id FROM users WHERE id = $5), paused = true,
 			status = CASE WHEN status IN ('logged_out', 'banned') THEN status ELSE 'offline' END,
 			status_reason = CASE WHEN status IN ('logged_out', 'banned') THEN status_reason ELSE '`+reasonDeleted+`' END,
-			wa_leftover = CASE WHEN $6::text IS NULL THEN NULL ELSE jsonb_build_object('jid', $6::text, 'registration_id', $7::bigint) END
+			wa_leftover = CASE WHEN deleted_at IS NOT NULL THEN wa_leftover
+			                   WHEN $6::text IS NULL THEN NULL ELSE jsonb_build_object('jid', $6::text, 'registration_id', $7::bigint) END
 			WHERE id = $1 RETURNING deleted_at, purge_after`, d.DeviceID, deletedAt, purgeAfter, purge, d.DeletedBy, jid, reg).
 			Scan(&change.DeletedAt, &change.PurgeAfter)
 		if err != nil {

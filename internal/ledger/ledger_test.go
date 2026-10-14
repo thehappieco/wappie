@@ -280,7 +280,28 @@ func TestCompaction(t *testing.T) {
 	}
 
 	before := readAll(t, path)
-	res, err := f.Compact(now, 91*24*time.Hour)
+	// The compaction waits for an export that holds the lock.
+	unlock, err = lock(f.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type compacted struct {
+		res CompactResult
+		err error
+	}
+	compaction := make(chan compacted, 1)
+	go func() {
+		res, err := f.Compact(now, 91*24*time.Hour)
+		compaction <- compacted{res, err}
+	}()
+	select {
+	case c := <-compaction:
+		t.Fatalf("the compaction did not wait for the lock: %+v", c)
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	c := <-compaction
+	res, err := c.res, c.err
 	if err != nil || !res.Rewritten || res.Dropped != 1 || res.Kept != 4 {
 		t.Fatalf("compaction: %+v %v", res, err)
 	}
@@ -330,6 +351,16 @@ func TestCompaction(t *testing.T) {
 		if strings.Contains(e.Name(), ".compact-") {
 			t.Fatalf("a temporary file was left: %s", e.Name())
 		}
+	}
+	// An export after the compaction appends to the file now at the path,
+	// never to the one the rename replaced.
+	after := deleted(uuid.New(), "2027-02-28T12:00:00Z")
+	if err := f.Export(func(write func([]Line) error) error { return write([]Line{after}) }); err != nil {
+		t.Fatal(err)
+	}
+	reread := readAll(t, path)
+	if n := len(reread.Lines); n != len(want)+1 || reread.Lines[n-1].EventID != after.EventID {
+		t.Fatalf("after an export that followed the compaction: %+v", reread.Lines)
 	}
 	// Nothing more to drop: the file is left alone.
 	if res, err := f.Compact(now, 91*24*time.Hour); err != nil || res.Rewritten {

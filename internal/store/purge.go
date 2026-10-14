@@ -72,21 +72,23 @@ func (d *Devices) DueDeletions(ctx context.Context, tenant uuid.UUID, limit int)
 // Storage.DeleteObject with Remove as the bucket's delete, under its own
 // bound and cut off from the caller's cancellation: DeleteObject holds the
 // workspace's row across the bucket call, and every archive write of the
-// workspace waits on that row. After Trip consecutive deletes ran out of
-// their bound in one pass, every later one is skipped, and the objects stay
-// for the next orphan pass. One ObjectDeletes is one pass.
+// workspace waits on that row. After Trip consecutive deletes failed in one
+// pass, whether they ran out of their bound or the bucket refused them at
+// once, every later one is skipped, and the objects stay for the next
+// orphan pass: a bucket that is down costs a pass three deletes, not one
+// workspace-row hold per object. One ObjectDeletes is one pass.
 type ObjectDeletes struct {
 	Storage *Storage
 	Remove  func(context.Context, string) error
 	// Timeout bounds each delete; zero is 10 seconds.
 	Timeout time.Duration
-	// Trip is how many timeouts in a row stop the deletes; zero is 3.
+	// Trip is how many failures in a row stop the deletes; zero is 3.
 	Trip int
 	// OnTrip runs once, when the deletes stop.
 	OnTrip func()
 
 	mu       sync.Mutex
-	timeouts int
+	failures int
 	tripped  bool
 	skipped  int
 }
@@ -107,20 +109,19 @@ func (o *ObjectDeletes) Delete(ctx context.Context, tenant uuid.UUID, key string
 	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	err := o.Storage.DeleteObject(bounded, tenant, key, o.Remove)
-	timedOut := errors.Is(bounded.Err(), context.DeadlineExceeded)
 	trip := o.Trip
 	if trip <= 0 {
 		trip = 3
 	}
 	o.mu.Lock()
 	var tripped bool
-	if timedOut {
-		o.timeouts++
-		if o.timeouts >= trip && !o.tripped {
+	if err != nil {
+		o.failures++
+		if o.failures >= trip && !o.tripped {
 			o.tripped, tripped = true, true
 		}
 	} else {
-		o.timeouts = 0
+		o.failures = 0
 	}
 	o.mu.Unlock()
 	if tripped && o.OnTrip != nil {
@@ -147,6 +148,9 @@ type PurgeOptions struct {
 	// AfterBatch, for tests, runs after each batch's commit with the table
 	// and the rows it deleted.
 	AfterBatch func(table string, rows int64)
+	// BeforeEnd, for tests, runs once the batches are done, before the
+	// final transaction begins.
+	BeforeEnd func()
 }
 
 // PurgeResult is what a PurgeDevice call did.
@@ -200,7 +204,8 @@ var purgeTables = []struct{ name, sql string }{
 //   - The end: the row, whose cascade takes its keys, grants, permissions
 //     and the rest; its readers' deletion notices kept with no label or
 //     hint, its other notices deleted; the label and hint nulled in every
-//     event row of the number; and the purged event.
+//     event row of the number, in this workspace and in any team it moved
+//     out of; and the purged event.
 //
 // Another purger of the same number (the janitor runs in every process)
 // waits on the workspace's row at each step, so the two serialize batch by
@@ -343,6 +348,9 @@ func PurgeDevice(ctx context.Context, pool *pgxpool.Pool, tenant, device uuid.UU
 	}
 
 	// The end.
+	if opts.BeforeEnd != nil {
+		opts.BeforeEnd()
+	}
 	err = pg.InTenantTx(txCtx, pool, tenant.String(), func(tx pgx.Tx) error {
 		if err := lockTenant(tx); err != nil {
 			return err
@@ -369,6 +377,9 @@ func PurgeDevice(ctx context.Context, pool *pgxpool.Pool, tenant, device uuid.UU
 			if _, err := tx.Exec(txCtx, `UPDATE item_events SET label = NULL, hint = NULL WHERE item_id = $1`, device); err != nil {
 				return err
 			}
+			if err := scrubFormerWorkspacesTx(txCtx, tx, tenant, device); err != nil {
+				return err
+			}
 			var at time.Time
 			if err := tx.QueryRow(txCtx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
 				return err
@@ -388,6 +399,34 @@ func PurgeDevice(ctx context.Context, pool *pgxpool.Pool, tenant, device uuid.UU
 		})
 	})
 	return out, err
+}
+
+// scrubFormerWorkspacesTx nulls the label and hint of the number's event
+// rows in each team it moved out of, its moved_out among them. They were
+// written before the move, and usually go 30 days after it, before any
+// purge; but an operator's early purge, or an export that has not taken
+// them yet, finds them still there. It runs before the row's delete, whose
+// cascade takes device_transfers, and leaves tx in tenant.
+func scrubFormerWorkspacesTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID) error {
+	rows, err := tx.Query(ctx, `SELECT DISTINCT source_workspace_id FROM device_transfers WHERE device_id = $1 AND source_workspace_id <> $2`,
+		device, tenant)
+	if err != nil {
+		return err
+	}
+	sources, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil || len(sources) == 0 {
+		return err
+	}
+	for _, source := range sources {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, source.String()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE item_events SET label = NULL, hint = NULL WHERE item_id = $1`, device); err != nil {
+			return fmt.Errorf("store: purge the number's rows in workspace %s: %w", source, err)
+		}
+	}
+	_, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant.String())
+	return err
 }
 
 // purgeMessagesTx deletes up to batch of the number's messages, their

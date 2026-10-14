@@ -1,6 +1,7 @@
 // Command whatserverd is the whatserver2 API server.
 //
-// Run with no arguments to serve. The bootstrap subcommand creates a tenant and
+// Run with no arguments, or with serve, to serve; any other command line it
+// does not know is refused. The bootstrap subcommand creates a tenant and
 // prints an API key, which is how a fresh installation gets its first
 // credential.
 package main
@@ -16,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -49,42 +51,70 @@ import (
 )
 
 func main() {
-	var err error
-	switch {
-	case len(os.Args) > 1 && os.Args[1] == "bootstrap":
-		err = bootstrap(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "tenants":
-		err = listTenants()
-	case len(os.Args) > 1 && os.Args[1] == "key":
-		err = issueKey(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "device-key":
-		err = deviceKey(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "invite":
-		err = issueInvite(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "reset-archive":
-		err = resetArchive(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "storage":
-		err = storageAdmin(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "retention":
-		err = setRetention(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "erase":
-		err = eraseContact(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "reproject":
-		err = reproject(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "mcp-relay-secret":
-		err = mcpRelaySecret(os.Args[2:], os.Stdin, os.Stdout)
-	case len(os.Args) > 1 && os.Args[1] == "devices":
-		err = devicesCommand(os.Args[2:], os.Stdout)
-	case len(os.Args) > 1 && os.Args[1] == "deletions":
-		err = deletionsCommand(os.Args[2:], os.Stdout)
-	default:
-		err = serve()
+	err := runCommand(os.Args[1:], serve)
+	var usage usageError
+	if errors.As(err, &usage) {
+		fmt.Fprintf(os.Stderr, "%v\n\n%s", err, commandList)
+		os.Exit(2)
 	}
 	if err != nil {
 		// The logger may not exist yet if configuration itself failed.
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// commandList is what an unknown command line prints.
+const commandList = `usage: whatserverd [serve]
+       whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
+                   retention | erase | reproject | mcp-relay-secret | devices | deletions ...
+`
+
+// usageError is a command line whatserverd does not know.
+type usageError struct{ arg string }
+
+func (e usageError) Error() string { return fmt.Sprintf("whatserverd: unknown command %q", e.arg) }
+
+// runCommand runs the command args name. It serves only with no arguments,
+// or with serve alone: anything else it does not know is a usage error, and
+// opens nothing. Serving migrates the database, resumes every number and
+// starts the janitor, whose first pass purges what is due, so a mistyped
+// command (deletion for deletions, a stray -h) must never fall through to
+// it, least of all while a restore has wappie-api stopped.
+func runCommand(args []string, serve func() error) error {
+	if len(args) == 0 || len(args) == 1 && args[0] == "serve" {
+		return serve()
+	}
+	rest := args[1:]
+	switch args[0] {
+	case "bootstrap":
+		return bootstrap(rest)
+	case "tenants":
+		return listTenants()
+	case "key":
+		return issueKey(rest)
+	case "device-key":
+		return deviceKey(rest)
+	case "invite":
+		return issueInvite(rest)
+	case "reset-archive":
+		return resetArchive(rest)
+	case "storage":
+		return storageAdmin(rest)
+	case "retention":
+		return setRetention(rest)
+	case "erase":
+		return eraseContact(rest)
+	case "reproject":
+		return reproject(rest)
+	case "mcp-relay-secret":
+		return mcpRelaySecret(rest, os.Stdin, os.Stdout)
+	case "devices":
+		return devicesCommand(rest, os.Stdout)
+	case "deletions":
+		return deletionsCommand(rest, os.Stdout)
+	}
+	return usageError{arg: strings.Join(args, " ")}
 }
 
 // app holds everything the server needs, wired once.

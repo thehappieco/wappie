@@ -298,6 +298,15 @@ func TestPurgeLeavesFailedObjectsToTheOrphanPass(t *testing.T) {
 		if err != nil || !res.Final || res.ObjectsRemoved != 0 {
 			t.Fatalf("crash %v: the purge: %+v %v", crash, res, err)
 		}
+		// A delete the bucket refused failed; one never tried was skipped.
+		// The deploy's checks read both off the "number purged" line.
+		failed, skipped := len(keys), 0
+		if crash {
+			failed, skipped = 0, len(keys)
+		}
+		if res.ObjectsFailed != failed || res.ObjectsSkipped != skipped {
+			t.Fatalf("crash %v: %d objects failed and %d skipped, want %d and %d", crash, res.ObjectsFailed, res.ObjectsSkipped, failed, skipped)
+		}
 		if left := a.left(t, a.excluded); len(left) != 0 {
 			t.Fatalf("crash %v: the purge left %v", crash, left)
 		}
@@ -462,6 +471,186 @@ func TestPurgeLocksTheWorkspaceFirst(t *testing.T) {
 	}
 	if n := len(eventsOf(t, a.pool, a.tenant, a.excluded, "purged")); n != 1 {
 		t.Fatalf("%d purged rows", n)
+	}
+}
+
+// A purge its budget cuts short after a batch keeps its start: no recovery
+// can land on the half-purged number, and the next pass finishes it with
+// one purged row.
+func TestPurgeResumesAfterItsBudget(t *testing.T) {
+	a := newExcludedArchive(t)
+	a.quarantine(t, a.excluded)
+	makeDue(t, a.pool, a.tenant, a.excluded)
+	budget, cut := context.WithCancel(context.Background())
+	defer cut()
+	batches := 0
+	res, err := store.PurgeDevice(budget, a.pool, a.tenant, a.excluded, nil, store.PurgeOptions{Batch: 1, AfterBatch: func(string, int64) {
+		batches++
+		cut()
+	}})
+	if !errors.Is(err, context.Canceled) || res.Final || res.Done || batches != 1 || res.Batches != 1 {
+		t.Fatalf("a purge cut after its first batch: %+v %v (%d batches)", res, err, batches)
+	}
+	if left := a.left(t, a.excluded); len(left) == 0 {
+		t.Fatal("the first batch emptied the archive: the budget was never checked between batches")
+	}
+	ctx := context.Background()
+	var started bool
+	inTenantTx(ctx, t, a.pool, a.tenant, func(tx pgx.Tx) error {
+		return store.WithQuarantineForTest(ctx, tx, func() error {
+			return tx.QueryRow(ctx, `SELECT purge_started_at IS NOT NULL FROM devices WHERE id = $1`, a.excluded).Scan(&started)
+		})
+	})
+	if !started {
+		t.Fatal("the cut purge did not keep its start")
+	}
+	if _, err := store.NewDevices(a.pool).Recover(ctx, a.tenant, a.owner, a.excluded); !errors.Is(err, store.ErrRecoveryClosed) {
+		t.Fatalf("recovering a number whose purge started: %v", err)
+	}
+	res, err = store.PurgeDevice(ctx, a.pool, a.tenant, a.excluded, nil, store.PurgeOptions{Batch: 1})
+	if err != nil || !res.Final {
+		t.Fatalf("the next pass: %+v %v", res, err)
+	}
+	if left := a.left(t, a.excluded); len(left) != 0 {
+		t.Fatalf("the next pass left %v", left)
+	}
+	if n := len(eventsOf(t, a.pool, a.tenant, a.excluded, "purged")); n != 1 {
+		t.Fatalf("%d purged rows", n)
+	}
+}
+
+// The final transaction takes the workspace's row before the number's too,
+// and a recovery racing a batch waits its turn on the workspace and is
+// refused, never deadlocked (the plan's test 12).
+func TestPurgeEndAndRecoveryWaitOnTheWorkspace(t *testing.T) {
+	a := newExcludedArchive(t)
+	ctx := context.Background()
+	a.quarantine(t, a.excluded)
+	makeDue(t, a.pool, a.tenant, a.excluded)
+	// hold takes the workspace's row in a transaction of its own, which a
+	// failed test still releases, so the purgers behind it end.
+	hold := func() (pgx.Tx, int) {
+		t.Helper()
+		blocker, err := a.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = blocker.Rollback(ctx) })
+		if _, err := blocker.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, a.tenant); err != nil {
+			t.Fatal(err)
+		}
+		return blocker, int(blocker.Conn().PgConn().PID())
+	}
+	// numberFree probes the number's row while every purger waits.
+	numberFree := func() {
+		t.Helper()
+		if err := pg.InTenantTx(ctx, a.pool, a.tenant.String(), func(tx pgx.Tx) error {
+			return store.WithQuarantineForTest(ctx, tx, func() error {
+				_, err := tx.Exec(ctx, `SELECT 1 FROM devices WHERE id = $1 FOR UPDATE NOWAIT`, a.excluded)
+				return err
+			})
+		}); err != nil {
+			t.Fatalf("a transaction waiting on the workspace holds the number's row: %v", err)
+		}
+	}
+
+	// A recovery and the next batch, both behind one blocker.
+	recovered := make(chan error, 1)
+	atEnd, finish := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	var first sync.Once
+	var blocker pgx.Tx
+	var blockerPID int
+	held := make(chan struct{})
+	go func() {
+		res, err := store.PurgeDevice(ctx, a.pool, a.tenant, a.excluded, nil, store.PurgeOptions{Batch: 1,
+			AfterBatch: func(string, int64) {
+				first.Do(func() {
+					blocker, blockerPID = hold()
+					close(held)
+					go func() {
+						_, err := store.NewDevices(a.pool).Recover(ctx, a.tenant, a.owner, a.excluded)
+						recovered <- err
+					}()
+				})
+			},
+			BeforeEnd: func() {
+				close(atEnd)
+				<-finish
+			}})
+		if err == nil && !res.Final {
+			err = errors.New("the purge did not end the number")
+		}
+		done <- err
+	}()
+	select {
+	case <-held:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first batch never ran")
+	}
+	waitBlockedOn(t, a.pool, blockerPID, 2)
+	numberFree()
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-recovered; !errors.Is(err, store.ErrRecoveryClosed) {
+		t.Fatalf("a recovery racing a batch: %v", err)
+	}
+
+	// The final transaction, behind another blocker.
+	<-atEnd
+	blocker, blockerPID = hold()
+	close(finish)
+	waitBlockedOn(t, a.pool, blockerPID, 1)
+	numberFree()
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := len(eventsOf(t, a.pool, a.tenant, a.excluded, "purged")); n != 1 {
+		t.Fatalf("%d purged rows", n)
+	}
+}
+
+// A number moved to Personal keeps rows in its team, written before the
+// move, its moved_out among them. A purge, even one an operator runs the
+// next day, leaves none of them its name.
+func TestPurgeClearsTheTeamsRows(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	device := w.number(t, "Vendas")
+	w.reads(t, w.owner, device)
+	var personal uuid.UUID
+	if err := w.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE personal_owner_id = $1`, w.owner).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.devices.SetPaused(ctx, w.tenant.String(), device.String(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.devices.TransferPersonal(ctx, w.tenant, w.owner, device, personal); err != nil {
+		t.Fatal(err)
+	}
+	if moved := eventsOf(t, w.pool, w.tenant, device, "moved_out"); len(moved) != 1 || moved[0].Label == nil || moved[0].Hint == nil {
+		t.Fatalf("the team's moved_out row: %+v", moved)
+	}
+	if _, err := w.devices.Quarantine(ctx, personal, w.owner, device, nil); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := store.PurgeDevice(ctx, w.pool, personal, device, nil, store.PurgeOptions{Now: true}); err != nil || !res.Final {
+		t.Fatalf("the purge: %+v %v", res, err)
+	}
+	for _, tenant := range []uuid.UUID{w.tenant, personal} {
+		rows := readEvents(t, w.pool, tenant, device)
+		if len(rows) == 0 {
+			t.Fatalf("no rows in %s", tenant)
+		}
+		for _, e := range rows {
+			if e.Label != nil || e.Hint != nil {
+				t.Fatalf("a %s row in %s kept the number's name: %+v", e.Type, tenant, e)
+			}
+		}
 	}
 }
 

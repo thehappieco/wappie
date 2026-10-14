@@ -124,7 +124,7 @@ func deletionsCommand(args []string, out io.Writer) error {
 		fs := flag.NewFlagSet("deletions replay", flag.ContinueOnError)
 		path := fs.String("ledger", "", "the deletion ledger to replay (required): the host's own, else the newest off-host copy")
 		snapshot := fs.String("snapshot-time", "", "the restored snapshot's stamp, YYYYMMDDTHHMMSSZ or RFC 3339 (required)")
-		dryRun := fs.Bool("dry-run", false, "say what would change, and change nothing")
+		dryRun := fs.Bool("dry-run", false, "run every step and roll it back: say what would change, and what would refuse, and change nothing")
 		addsNothing := fs.Bool("ledger-adds-nothing", false, "go on with a ledger that holds nothing newer than the snapshot")
 		var leave ids
 		fs.Var(&leave, "leave-excluded", "a number found in another workspace than its ledger says: exclude it where it is (repeatable)")
@@ -371,15 +371,15 @@ func replayLedger(ctx context.Context, a *app, path string, opts store.ReplayOpt
 	}
 	report, err := store.ReplayLedger(ctx, a.pools.API, read.Lines, opts)
 	p.say("%s", report.String())
+	if opts.DryRun {
+		p.say("dry run: nothing was changed\n")
+	}
 	switch {
 	case errors.Is(err, store.ErrLedgerAddsNothing):
 		return errors.New("deletions replay: the ledger holds nothing newer than the restored snapshot; " +
 			"use the host's own ledger or the newest off-host copy, or pass -ledger-adds-nothing if this is that copy")
 	case err != nil:
 		return fmt.Errorf("deletions replay: %w; do not start wappie-api", err)
-	}
-	if opts.DryRun {
-		p.say("dry run: nothing was changed\n")
 	}
 	return p.err
 }

@@ -53,8 +53,19 @@ var ErrRefused = errors.New("blob: object storage refused the credentials")
 // Store is object storage.
 type Store struct {
 	client *minio.Client
-	bucket string
+	// deletes is the client Delete uses: one attempt, no retry loop
+	// (decision 0038's plan, section 7). A delete runs while the caller
+	// holds the workspace's row, under its own short bound, and a failed
+	// one is retried by the next orphan pass; minio-go's default of ten
+	// attempts with backoff would hold that row for seconds per object
+	// while the bucket is down, and hide the failure from the janitor's
+	// breaker until then.
+	deletes *minio.Client
+	bucket  string
 }
+
+// deleteAttempts is how many times Delete asks the bucket.
+const deleteAttempts = 1
 
 // New builds a store from configuration. A store that is not configured is
 // returned as nil, which every method below tolerates.
@@ -77,15 +88,23 @@ func New(cfg config.Storage) (*Store, error) {
 		endpoint = u.Host
 	}
 
-	client, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: secure,
-		Region: cfg.Region,
-	})
+	options := func(retries int) *minio.Options {
+		return &minio.Options{
+			Creds:      credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
+			Secure:     secure,
+			Region:     cfg.Region,
+			MaxRetries: retries,
+		}
+	}
+	client, err := minio.New(endpoint, options(0))
 	if err != nil {
 		return nil, fmt.Errorf("blob: connect to %s: %w", endpoint, err)
 	}
-	return &Store{client: client, bucket: cfg.Bucket}, nil
+	deletes, err := minio.New(endpoint, options(deleteAttempts))
+	if err != nil {
+		return nil, fmt.Errorf("blob: connect to %s: %w", endpoint, err)
+	}
+	return &Store{client: client, deletes: deletes, bucket: cfg.Bucket}, nil
 }
 
 // Configured reports whether this store can be used.
@@ -204,12 +223,16 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, int64, error) {
 	return true, info.Size, nil
 }
 
-// Delete removes an object.
+// Delete removes an object, asking the bucket once: its caller retries.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	if !s.Configured() {
 		return ErrNotConfigured
 	}
-	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
+	client := s.deletes
+	if client == nil {
+		client = s.client
+	}
+	if err := client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
 		return fmt.Errorf("blob: delete %s: %w", key, err)
 	}
 	return nil

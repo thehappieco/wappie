@@ -432,4 +432,181 @@ func TestLedgerReplay(t *testing.T) {
 			t.Fatalf("a dry run wrote %d rows", n)
 		}
 	})
+
+	t.Run("a dry run meets the real run's refusals", func(t *testing.T) {
+		ctx := context.Background()
+		// The fixture of "a recovery whose phone is in use": only running
+		// the step finds that the phone is taken.
+		w := newDelWorld(t)
+		a := w.number(t, "A")
+		pn := w.pn(ctx, t, a)
+		qa := w.quarantine(t, a)
+		linkedNumber(t, w.pool, w.tenant, "B", strings.TrimSuffix(pn, "@s.whatsapp.net"), "200000000000099")
+		back := w.dbTime(t, `clock_timestamp()`)
+		var migrations string
+		if err := w.pool.QueryRow(ctx, `SELECT string_agg(version::text, ',' ORDER BY version) FROM schema_migrations`).Scan(&migrations); err != nil {
+			t.Fatal(err)
+		}
+		events := len(readEvents(t, w.pool, w.tenant, a))
+		report, err := w.replay(t, []ledger.Line{w.line(ledger.TypeDeleted, a, &qa.DeletedAt, &qa.PurgeAfter, qa.DeletedAt),
+			w.line(ledger.TypeRecovered, a, &qa.DeletedAt, nil, back)}, store.ReplayOptions{DryRun: true})
+		if !errors.Is(err, store.ErrReplayRefused) || len(report.Refusals) != 1 || !strings.Contains(report.Refusals[0], "linked again") {
+			t.Fatalf("the dry run: %v\n%s", err, report)
+		}
+		if ra, _ := w.row(t, w.tenant, a); !ra.excluded || !ra.deletedAt.Equal(qa.DeletedAt) {
+			t.Fatalf("A after a dry run: %+v", ra)
+		}
+		if n := len(readEvents(t, w.pool, w.tenant, a)); n != events {
+			t.Fatalf("a dry run left %d event rows, there were %d", n, events)
+		}
+		var after string
+		if err := w.pool.QueryRow(ctx, `SELECT string_agg(version::text, ',' ORDER BY version) FROM schema_migrations`).Scan(&after); err != nil || after != migrations {
+			t.Fatalf("a dry run changed schema_migrations: %v", err)
+		}
+	})
+
+	t.Run("a phone linked again after a confirmed logout", func(t *testing.T) {
+		// The deletion's logout was confirmed, so the number kept no
+		// fingerprint; the phone was then linked again under the same JID
+		// (another registration id), and the snapshot holds that session.
+		// Neither the replay nor the purge it leaves due may take it.
+		w := newDelWorld(t)
+		sessionStore(t, w.pool)
+		relinked := func(t *testing.T, label string) (uuid.UUID, string, store.Quarantined) {
+			t.Helper()
+			ctx := context.Background()
+			device := w.number(t, label)
+			jid := w.pn(ctx, t, device)
+			if _, err := w.pool.Exec(ctx, `INSERT INTO whatsmeow_device VALUES ($1, 7)`, jid); err != nil {
+				t.Fatal(err)
+			}
+			q := w.quarantine(t, device)
+			if _, err := w.pool.Exec(ctx, `DELETE FROM whatsmeow_device WHERE jid = $1`, jid); err != nil {
+				t.Fatal(err)
+			}
+			if rec, err := w.devices.RecordUnlink(ctx, w.tenant, device, q.DeletedAt, true); err != nil || !rec.Unlinked {
+				t.Fatalf("the confirmed logout: %+v %v", rec, err)
+			}
+			for _, sql := range []string{`INSERT INTO whatsmeow_device VALUES ($1, 8)`,
+				`INSERT INTO whatsmeow_privacy_tokens VALUES ($1, 'them@s.whatsapp.net', '\x01', 1)`} {
+				if _, err := w.pool.Exec(ctx, sql, jid); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return device, jid, q
+		}
+		survives := func(t *testing.T, device uuid.UUID, jid string) {
+			t.Helper()
+			ctx := context.Background()
+			if r, _ := w.row(t, w.tenant, device); !r.excluded || !r.due || r.leftover {
+				t.Fatalf("after the replay: %+v", r)
+			}
+			res, err := store.PurgeDevice(ctx, w.pool, w.tenant, device, nil, store.PurgeOptions{})
+			if err != nil || !res.Final || res.SessionRemoved {
+				t.Fatalf("the janitor's purge: %+v %v", res, err)
+			}
+			var sessions, tokens int
+			if err := w.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM whatsmeow_device WHERE jid = $1 AND registration_id = 8),
+				(SELECT count(*) FROM whatsmeow_privacy_tokens WHERE our_jid = $1)`, jid).Scan(&sessions, &tokens); err != nil || sessions != 1 || tokens != 1 {
+				t.Fatalf("the phone linked again: %d sessions, %d tokens %v", sessions, tokens, err)
+			}
+		}
+
+		// Restored excluded by the deletion the ledger then purged.
+		same, sameJID, q := relinked(t, "Mesma")
+		purgedAt := w.dbTime(t, `clock_timestamp()`)
+		if report, err := w.replay(t, []ledger.Line{w.line(ledger.TypeDeleted, same, &q.DeletedAt, &q.PurgeAfter, q.DeletedAt),
+			w.line(ledger.TypePurged, same, &q.DeletedAt, &q.PurgeAfter, purgedAt)}, store.ReplayOptions{}); err != nil {
+			t.Fatalf("the replay: %v\n%s", err, report)
+		}
+		survives(t, same, sameJID)
+
+		// Restored excluded by a deletion the ledger says was recovered,
+		// then deleted again and purged.
+		again, againJID, q0 := relinked(t, "Outra")
+		recoveredAt := w.dbTime(t, `$1::timestamptz + interval '1 minute'`, q0.DeletedAt)
+		d1 := w.dbTime(t, `$1::timestamptz + interval '2 minutes'`, q0.DeletedAt)
+		p1 := w.dbTime(t, `$1::timestamptz + interval '30 days'`, d1)
+		purgedAt = w.dbTime(t, `$1::timestamptz + interval '3 minutes'`, q0.DeletedAt)
+		if report, err := w.replay(t, []ledger.Line{w.line(ledger.TypeDeleted, again, &q0.DeletedAt, &q0.PurgeAfter, q0.DeletedAt),
+			w.line(ledger.TypeRecovered, again, &q0.DeletedAt, nil, recoveredAt),
+			w.line(ledger.TypeDeleted, again, &d1, &p1, d1), w.line(ledger.TypePurged, again, &d1, &p1, purgedAt)}, store.ReplayOptions{}); err != nil {
+			t.Fatalf("the replay: %v\n%s", err, report)
+		}
+		if r, _ := w.row(t, w.tenant, again); !r.deletedAt.Equal(d1) {
+			t.Fatalf("the number deleted again: %+v", r)
+		}
+		survives(t, again, againJID)
+	})
+
+	t.Run("a recovery of a number whose purge had started", func(t *testing.T) {
+		w := newDelWorld(t)
+		device := w.number(t, "Vendas")
+		q := w.quarantine(t, device)
+		w.scoped(t, func(tx pgx.Tx) error {
+			_, err := tx.Exec(context.Background(), `UPDATE devices SET purge_started_at = clock_timestamp() WHERE id = $1`, device)
+			return err
+		})
+		back := w.dbTime(t, `clock_timestamp()`)
+		report, err := w.replay(t, []ledger.Line{w.line(ledger.TypeDeleted, device, &q.DeletedAt, &q.PurgeAfter, q.DeletedAt),
+			w.line(ledger.TypeRecovered, device, &q.DeletedAt, nil, back)}, store.ReplayOptions{})
+		if !errors.Is(err, store.ErrReplayRefused) || len(report.Refusals) != 1 || !strings.Contains(report.Refusals[0], "purge had started") {
+			t.Fatalf("the replay: %v\n%s", err, report)
+		}
+		if r, _ := w.row(t, w.tenant, device); !r.excluded || !r.started {
+			t.Fatalf("a number whose purge had started: %+v", r)
+		}
+	})
+
+	t.Run("a deletion the ledger lacks", func(t *testing.T) {
+		// The restored row is excluded by a deletion the ledger does not
+		// have, while it has a later deleted and recovered pair of the
+		// number: kept excluded, as restored, and reported.
+		w := newDelWorld(t)
+		device := w.number(t, "Vendas")
+		q := w.quarantine(t, device)
+		later, laterUntil := w.window(t, "+1 hour")
+		back := w.dbTime(t, `$1::timestamptz + interval '1 minute'`, later)
+		report, err := w.replay(t, []ledger.Line{w.line(ledger.TypeDeleted, device, &later, &laterUntil, later),
+			w.line(ledger.TypeRecovered, device, &later, nil, back)}, store.ReplayOptions{})
+		if err != nil || len(report.Kept) != 1 || report.Kept[0] != device || len(report.Changes) != 0 || !strings.Contains(report.String(), "kept") {
+			t.Fatalf("the replay: %v\n%s", err, report)
+		}
+		if r, _ := w.row(t, w.tenant, device); !r.excluded || !r.deletedAt.Equal(q.DeletedAt) {
+			t.Fatalf("the number kept excluded: %+v", r)
+		}
+	})
+
+	t.Run("recoveries over the workspace's plan", func(t *testing.T) {
+		// The replay recovers with no capacity check, and reports a
+		// workspace its recoveries left over its plan.
+		w := newDelWorld(t)
+		a, b := w.number(t, "A"), w.number(t, "B")
+		qa, qb := w.quarantine(t, a), w.quarantine(t, b)
+		w.capacity(t, 1)
+		back := w.dbTime(t, `clock_timestamp()`)
+		report, err := w.replay(t, []ledger.Line{
+			w.line(ledger.TypeDeleted, a, &qa.DeletedAt, &qa.PurgeAfter, qa.DeletedAt), w.line(ledger.TypeRecovered, a, &qa.DeletedAt, nil, back),
+			w.line(ledger.TypeDeleted, b, &qb.DeletedAt, &qb.PurgeAfter, qb.DeletedAt), w.line(ledger.TypeRecovered, b, &qb.DeletedAt, nil, back),
+		}, store.ReplayOptions{})
+		if err != nil || len(report.Changes) != 2 || len(report.OverCapacity) != 1 || report.OverCapacity[0] != w.tenant ||
+			!strings.Contains(report.String(), "over its plan") {
+			t.Fatalf("the replay: %v\n%s", err, report)
+		}
+		for _, device := range []uuid.UUID{a, b} {
+			if r, _ := w.row(t, w.tenant, device); r.excluded {
+				t.Fatalf("%s was not recovered: %+v", device, r)
+			}
+		}
+		// Within the plan, nothing is reported.
+		w.capacity(t, 3)
+		c := w.number2(t)
+		qc := w.quarantine(t, c)
+		back = w.dbTime(t, `clock_timestamp()`)
+		report, err = w.replay(t, []ledger.Line{w.line(ledger.TypeDeleted, c, &qc.DeletedAt, &qc.PurgeAfter, qc.DeletedAt),
+			w.line(ledger.TypeRecovered, c, &qc.DeletedAt, nil, back)}, store.ReplayOptions{})
+		if err != nil || len(report.Changes) != 1 || len(report.OverCapacity) != 0 {
+			t.Fatalf("a recovery within the plan: %v\n%s", err, report)
+		}
+	})
 }

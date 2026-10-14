@@ -90,22 +90,32 @@ func (r *recorder) atLeast(level slog.Level) []logLine {
 	return out
 }
 
-// bucket is the object store: it records deletes, and hangs on the keys
-// told to, until its context ends.
+// bucket is the object store: it records deletes, hangs on the keys told
+// to until its context ends, refuses every delete at once while fail is
+// set, and runs wait, when set, before each delete with its call's number.
 type bucket struct {
 	mu      sync.Mutex
 	deleted []string
 	hang    func(key string) bool
+	fail    error
+	wait    func(call int32)
 	calls   atomic.Int32
 }
 
 func (b *bucket) Configured() bool { return true }
 
 func (b *bucket) Delete(ctx context.Context, key string) error {
-	b.calls.Add(1)
+	call := b.calls.Add(1)
+	if b.wait != nil {
+		b.wait(call)
+	}
 	if b.hang != nil && b.hang(key) {
 		<-ctx.Done()
 		return ctx.Err()
+	}
+	if b.fail != nil {
+		time.Sleep(20 * time.Millisecond)
+		return b.fail
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -274,9 +284,11 @@ func TestMaintainPurgesExcluded(t *testing.T) {
 	team, owner := w.workspace(t, "team")
 	suspended, other := w.workspace(t, "suspended")
 	due, dueKey := w.number(t, team)
+	almost, almostKey := w.number(t, team)
 	early, _ := w.number(t, team)
 	overdue, overdueKey := w.number(t, suspended)
 	w.deleteNumber(t, team, owner, due, "-1 minute")
+	w.deleteNumber(t, team, owner, almost, "-119 minutes")
 	w.deleteNumber(t, team, owner, early, "1 minute")
 	w.deleteNumber(t, suspended, other, overdue, "-3 hours")
 	if _, err := w.pool.Exec(ctx, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, suspended); err != nil {
@@ -291,7 +303,7 @@ func TestMaintainPurgesExcluded(t *testing.T) {
 	w.app.cfg.Deletion.PurgeHold = true
 	b := &bucket{}
 	w.app.maintainOnce(ctx, 30*24*time.Hour, b)
-	if held := w.log.find(slog.LevelWarn, "purges are held"); len(held) != 1 || held[0].attrs["due"] != "2" {
+	if held := w.log.find(slog.LevelWarn, "purges are held"); len(held) != 1 || held[0].attrs["due"] != "3" {
 		t.Fatalf("the valve's warning: %+v", held)
 	}
 	if !w.exists(t, team, due) || !w.exists(t, suspended, overdue) {
@@ -300,25 +312,28 @@ func TestMaintainPurgesExcluded(t *testing.T) {
 	w.app.cfg.Deletion.PurgeHold = false
 
 	w.app.maintainOnce(ctx, 30*24*time.Hour, b)
-	if w.exists(t, team, due) || w.exists(t, suspended, overdue) || !w.exists(t, team, early) {
-		t.Fatalf("after the pass: due %v, overdue %v, early %v", w.exists(t, team, due), w.exists(t, suspended, overdue), w.exists(t, team, early))
+	if w.exists(t, team, due) || w.exists(t, team, almost) || w.exists(t, suspended, overdue) || !w.exists(t, team, early) {
+		t.Fatalf("after the pass: due %v, almost %v, overdue %v, early %v", w.exists(t, team, due), w.exists(t, team, almost),
+			w.exists(t, suspended, overdue), w.exists(t, team, early))
 	}
-	if got, want := b.keys(), []string{dueKey, "orphan", overdueKey}; !slices.Equal(got, sorted(want)) {
+	if got, want := b.keys(), []string{dueKey, almostKey, "orphan", overdueKey}; !slices.Equal(got, sorted(want)) {
 		t.Fatalf("the bucket deleted %q, want %q", got, sorted(want))
 	}
 	purged := w.log.find(slog.LevelInfo, "number purged")
-	if len(purged) != 2 {
+	if len(purged) != 3 {
 		t.Fatalf("%d number purged lines", len(purged))
 	}
-	if late := w.log.find(slog.LevelWarn, "overdue"); len(late) == 0 || late[0].attrs["device"] != overdue.String() {
-		t.Fatalf("no warning for the overdue number: %+v", late)
+	// Only the number due for more than two hours is warned about: not
+	// the one due for a minute, nor the one due for 1 h 59 min.
+	if late := w.log.find(slog.LevelWarn, "overdue"); len(late) != 1 || late[0].attrs["device"] != overdue.String() {
+		t.Fatalf("the overdue warnings: %+v", late)
 	}
 	// The purges are in the ledger, as are the deletions.
 	types := map[string]int{}
 	for _, l := range w.ledgerLines(t) {
 		types[l.Type]++
 	}
-	if types["deleted"] != 3 || types["purged"] != 2 {
+	if types["deleted"] != 4 || types["purged"] != 3 {
 		t.Fatalf("the ledger: %v", types)
 	}
 	if errs := w.log.atLeast(slog.LevelError); len(errs) != 0 {
@@ -364,17 +379,174 @@ func TestMaintainPurgeBudget(t *testing.T) {
 	if w.app.purgeTurn.Load() != turn+1 {
 		t.Fatal("the next pass starts where this one did")
 	}
-	// Two passes start at two workspaces.
-	tenants := []uuid.UUID{a, bTenant}
-	if purgeStart(tenants, 0) == purgeStart(tenants, 1) {
-		t.Fatal("two passes start at the same workspace")
+	// Two passes start at two workspaces: the budget's warning lists the
+	// workspaces in the order the pass visited them, one later each pass.
+	w.app.maintainOnce(ctx, 30*24*time.Hour, b)
+	out = w.log.find(slog.LevelWarn, "ran out of its budget")
+	if len(out) != 2 {
+		t.Fatalf("the budget's warnings: %+v", out)
+	}
+	tenants, err := w.app.listAllTenantIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pass, warning := range out {
+		// Every workspace in the pass's order; only a and b have one due.
+		var want []string
+		for i := range tenants {
+			if tenant := tenants[(int(turn)+pass+i)%len(tenants)]; tenant == a || tenant == bTenant {
+				want = append(want, tenant.String()+":1")
+			}
+		}
+		if got := warning.attrs["not_reached"]; got != strings.Join(want, ",") {
+			t.Fatalf("pass %d visited %s, want %s", pass, got, strings.Join(want, ","))
+		}
+	}
+	if out[0].attrs["not_reached"] == out[1].attrs["not_reached"] {
+		t.Fatal("two passes started at the same workspace")
 	}
 }
 
-// Object deletes that hang end at their bound; after three in a row, the
-// rest of the pass skips them, once warned; the purge and retention still
-// run, and the skipped objects wait for the next orphan pass.
+// A purge its budget cuts after its first batch goes on at the next pass,
+// which finishes it; meanwhile nobody can recover the half-purged number.
+func TestMaintainPurgeGoesOnAfterItsBudget(t *testing.T) {
+	w := newPurgeWorld(t)
+	ctx := context.Background()
+	team, owner := w.workspace(t, "team")
+	device, _ := w.number(t, team)
+	for range 3 {
+		w.attachment(t, team, device, time.Now())
+	}
+	w.deleteNumber(t, team, owner, device, "-1 minute")
+	// The first object delete outlasts the purge's budget: the pass stops
+	// after the batch that released it.
+	w.app.janitor.purge = 2 * time.Second
+	b := &bucket{wait: func(call int32) {
+		if call == 1 {
+			time.Sleep(2500 * time.Millisecond)
+		}
+	}}
+	w.app.maintainOnce(ctx, 30*24*time.Hour, b)
+	if l := w.log.find(slog.LevelInfo, "goes on at the next pass"); len(l) != 1 || l[0].attrs["batches"] != "1" {
+		t.Fatalf("the cut purge: %+v", l)
+	}
+	if !w.exists(t, team, device) || len(w.log.find(slog.LevelInfo, "number purged")) != 0 {
+		t.Fatal("a purge cut by its budget finished in the same pass")
+	}
+	if _, err := w.devices.Recover(ctx, team, owner, device); !errors.Is(err, store.ErrRecoveryClosed) {
+		t.Fatalf("recovering a number whose purge started: %v", err)
+	}
+	w.app.janitor.purge = 0
+	w.app.maintainOnce(ctx, 30*24*time.Hour, b)
+	if l := w.log.find(slog.LevelInfo, "number purged"); len(l) != 1 || w.exists(t, team, device) {
+		t.Fatalf("the next pass: %+v", l)
+	}
+	if errs := w.log.atLeast(slog.LevelError); len(errs) != 0 {
+		t.Fatalf("errors: %+v", errs)
+	}
+}
+
+// Retention's object deletes stop when the pass's time is up, though each
+// delete is cut off from it: what is left waits for the next orphan pass.
+func TestRetentionStopsAtTheEndOfThePass(t *testing.T) {
+	w := newPurgeWorld(t)
+	team, _ := w.workspace(t, "team")
+	if _, err := w.pool.Exec(context.Background(), `UPDATE tenants SET retention_days = 30 WHERE id = $1`, team); err != nil {
+		t.Fatal(err)
+	}
+	live, _ := w.number(t, team)
+	for range 3 {
+		w.attachment(t, team, live, time.Now().Add(-40*24*time.Hour))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := &bucket{wait: func(int32) { cancel() }}
+	w.app.applyRetention(ctx, w.app.objectDeletes(b, time.Second))
+	if n := b.calls.Load(); n != 1 {
+		t.Fatalf("%d deletes after the pass's end", n)
+	}
+	if l := w.log.find(slog.LevelInfo, "retention applied"); len(l) != 1 || l[0].attrs["objects_removed"] != "1" || l[0].attrs["objects_left"] != "2" {
+		t.Fatalf("retention: %+v", l)
+	}
+}
+
+// The ledger keeps a number's lines past the life of every snapshot that
+// may still be restored: decision 0027's 90 days, the daily prune's
+// interval and random delay (commercial deploy/prune-backups.sh and
+// wappie-prune-backups.timer, whose test_backups.py holds them to what is
+// stated here), and slack for a host or an off-host copy that was down.
+func TestLedgerOutlivesTheBackups(t *testing.T) {
+	const (
+		backupsKeep = 90 * 24 * time.Hour
+		pruneEvery  = 24 * time.Hour
+		pruneDelay  = 30 * time.Minute
+		slack       = 24 * time.Hour
+	)
+	if ledgerKeep < backupsKeep+pruneEvery+pruneDelay+slack {
+		t.Fatalf("the ledger keeps a number %s after its newest line: a snapshot can be restored for %s",
+			ledgerKeep, backupsKeep+pruneEvery+pruneDelay)
+	}
+}
+
+// The janitor compacts the ledger with its own bound, at most once a day:
+// a number whose newest line is past it goes, a younger one stays.
+func TestMaintainCompactsTheLedger(t *testing.T) {
+	w := newPurgeWorld(t)
+	ctx := context.Background()
+	line := func(daysAgo int) ledger.Line {
+		at := time.Now().Add(-time.Duration(daysAgo) * 24 * time.Hour).UTC()
+		until := at.Add(30 * 24 * time.Hour)
+		return ledger.Line{V: ledger.Version, EventID: uuid.New(), Type: ledger.TypeDeleted, WorkspaceID: uuid.New(), DeviceID: uuid.New(),
+			DeletedAt: &at, PurgeAfter: &until, OccurredAt: at}
+	}
+	write := func(lines ...ledger.Line) {
+		t.Helper()
+		if err := w.app.ledger.Export(func(write func([]ledger.Line) error) error { return write(lines) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	devices := func() map[uuid.UUID]bool {
+		t.Helper()
+		out := map[uuid.UUID]bool{}
+		for _, l := range w.ledgerLines(t) {
+			out[l.DeviceID] = true
+		}
+		return out
+	}
+	gone, kept := line(94), line(92)
+	write(gone, kept)
+	w.app.maintainOnce(ctx, 30*24*time.Hour, &bucket{})
+	if d := devices(); d[gone.DeviceID] || !d[kept.DeviceID] {
+		t.Fatalf("after the compaction: %v (94 days old %s, 92 days old %s)", d, gone.DeviceID, kept.DeviceID)
+	}
+	if l := w.log.find(slog.LevelInfo, "deletion ledger compacted"); len(l) != 1 || l[0].attrs["dropped"] != "1" {
+		t.Fatalf("the compaction's line: %+v", l)
+	}
+	// Within the day, the next pass leaves the file alone.
+	old := line(120)
+	write(old)
+	w.app.maintainOnce(ctx, 30*24*time.Hour, &bucket{})
+	if !devices()[old.DeviceID] {
+		t.Fatal("a second pass within the day compacted the ledger")
+	}
+	w.app.compacted = w.app.compacted.Add(-25 * time.Hour)
+	w.app.maintainOnce(ctx, 30*24*time.Hour, &bucket{})
+	if devices()[old.DeviceID] {
+		t.Fatal("a pass a day later did not compact the ledger")
+	}
+}
+
+// Object deletes that hang end at their bound, and a bucket that refuses
+// them at once fails them; after three failures in a row, the rest of the
+// pass skips them, once warned; the purge and retention still run, and the
+// skipped objects wait for the next orphan pass.
 func TestMaintainObjectBreaker(t *testing.T) {
+	for _, down := range []string{"hangs", "refuses"} {
+		t.Run(down, func(t *testing.T) { objectBreaker(t, down) })
+	}
+}
+
+func objectBreaker(t *testing.T, down string) {
 	w := newPurgeWorld(t)
 	ctx := context.Background()
 	team, owner := w.workspace(t, "team")
@@ -396,22 +568,33 @@ func TestMaintainObjectBreaker(t *testing.T) {
 		}
 	}
 	w.app.janitor.object = 250 * time.Millisecond
-	b := &bucket{hang: func(string) bool { return true }}
+	b := &bucket{}
+	if down == "hangs" {
+		b.hang = func(string) bool { return true }
+	} else {
+		b.fail = errors.New("503 Service Unavailable")
+	}
 	start := time.Now()
 	w.app.maintainOnce(ctx, 30*24*time.Hour, b)
-	// Three deletes ran out of their bound (in the bucket, or before it on
-	// a loaded database), and none after them reached it.
+	// Three deletes failed (in the bucket, or before it on a loaded
+	// database), and none after them reached it.
 	if n := b.calls.Load(); n < 1 || n > 3 {
 		t.Fatalf("%d deletes reached the bucket, want at most the breaker's 3", n)
 	}
 	if took := time.Since(start); took > 30*time.Second {
 		t.Fatalf("the pass took %s: the deletes did not end at their bound", took)
 	}
-	if trip := w.log.find(slog.LevelWarn, "keep timing out"); len(trip) != 1 {
+	if trip := w.log.find(slog.LevelWarn, "keep failing"); len(trip) != 1 {
 		t.Fatalf("the breaker's warning: %+v", trip)
 	}
 	if w.exists(t, team, device) {
 		t.Fatal("the purge did not finish")
+	}
+	// The purge's four objects: three failed, the fourth left by the
+	// breaker; the deploy's checks read both.
+	if l := w.log.find(slog.LevelInfo, "number purged"); len(l) != 1 || l[0].attrs["objects_failed"] != "3" || l[0].attrs["objects_left"] != "1" ||
+		l[0].attrs["objects_removed"] != "0" {
+		t.Fatalf("the number purged line: %+v", l)
 	}
 	if l := w.log.find(slog.LevelInfo, "retention applied"); len(l) != 1 || l[0].attrs["messages"] != "3" {
 		t.Fatalf("retention: %+v", l)
@@ -421,7 +604,7 @@ func TestMaintainObjectBreaker(t *testing.T) {
 	if err != nil || len(orphans) != 10 {
 		t.Fatalf("orphans left: %d %v", len(orphans), err)
 	}
-	b.hang = nil
+	b.hang, b.fail = nil, nil
 	w.app.maintainOnce(ctx, 30*24*time.Hour, b)
 	if orphans, err := w.app.storage.UnreferencedObjects(ctx, team, 1000); err != nil || len(orphans) != 0 {
 		t.Fatalf("the next pass left %d orphans: %v", len(orphans), err)
@@ -818,5 +1001,89 @@ func noMailer(t *testing.T, path string) {
 		if imp.Path.Value == strconv.Quote("whatserver2/internal/mailer") {
 			t.Errorf("%s imports the mailer", path)
 		}
+	}
+}
+
+// Only no arguments, or serve, serves: a mistyped command never migrates a
+// restored database, resumes a number or starts the janitor, whose first
+// pass would purge what a restore's replay has yet to recover.
+func TestUnknownCommandNeverServes(t *testing.T) {
+	served := 0
+	serve := func() error { served++; return nil }
+	for _, args := range [][]string{{"deletion", "replay", "-ledger", "x"}, {"device", "purge-deleted"}, {"-h"}, {"--help"},
+		{"help"}, {"serve", "now"}, {""}} {
+		var usage usageError
+		if err := runCommand(args, serve); !errors.As(err, &usage) {
+			t.Fatalf("%q: %v", args, err)
+		}
+	}
+	if served != 0 {
+		t.Fatalf("an unknown command served %d times", served)
+	}
+	for _, args := range [][]string{nil, {}, {"serve"}} {
+		if err := runCommand(args, serve); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if served != 3 {
+		t.Fatalf("served %d times, want 3", served)
+	}
+}
+
+// The replay command says when the ledger's last line was cut short by a
+// crash, and how many lines repeated an event, and replays the rest; a
+// line that does not parse followed by valid ones stops it before anything
+// changes (the plan's test 17, its torn line).
+func TestReplayCommandReadsTheLedger(t *testing.T) {
+	ctx := context.Background()
+	w := newPurgeWorld(t)
+	team, owner := w.workspace(t, "team")
+	device, _ := w.number(t, team)
+	var deletedAt, purgeAfter time.Time
+	if err := w.pool.QueryRow(ctx, `SELECT t, t + interval '30 days' FROM (SELECT clock_timestamp() - interval '1 hour' AS t) n`).Scan(&deletedAt, &purgeAfter); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	file := &ledger.File{Path: filepath.Join(dir, "ledger.jsonl")}
+	line := ledger.Line{V: ledger.Version, EventID: uuid.New(), Type: ledger.TypeDeleted, WorkspaceID: team, DeviceID: device,
+		DeletedAt: &deletedAt, PurgeAfter: &purgeAfter, DeletedBy: &owner, OccurredAt: deletedAt}
+	if err := file.Export(func(write func([]ledger.Line) error) error { return write([]ledger.Line{line, line}) }); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(file.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandEnv(t, w.pool, file.Path)
+	replay := func(path string) (string, error) {
+		var out bytes.Buffer
+		err := deletionsCommand([]string{"replay", "-ledger", path, "-snapshot-time", "20200101T000000Z"}, &out)
+		return out.String(), err
+	}
+
+	damaged := filepath.Join(dir, "damaged.jsonl")
+	if err := os.WriteFile(damaged, append([]byte(`{"v":1,"event_id":"`+"\n"), raw...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := replay(damaged); err == nil || !strings.Contains(err.Error(), "damaged") {
+		t.Fatalf("a damaged ledger: %v\n%s", err, out)
+	}
+	if d, err := w.devices.Get(ctx, team.String(), device.String()); err != nil || d.Paused {
+		t.Fatalf("a refused replay changed the number: %+v %v", d, err)
+	}
+
+	torn := filepath.Join(dir, "torn.jsonl")
+	if err := os.WriteFile(torn, append(slices.Clone(raw), []byte(`{"v":1,"event_id":"`)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := replay(torn)
+	if err != nil {
+		t.Fatalf("a torn ledger: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "cut short") || !strings.Contains(out, "1 line(s) repeated an event") {
+		t.Fatalf("the replay's notes:\n%s", out)
+	}
+	if _, err := w.devices.Get(ctx, team.String(), device.String()); !errors.Is(err, store.ErrNotFound) || !w.exists(t, team, device) {
+		t.Fatalf("the torn ledger's deletion was not replayed: %v", err)
 	}
 }

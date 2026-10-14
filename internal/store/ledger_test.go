@@ -275,3 +275,85 @@ func TestNoticeHousekeeping(t *testing.T) {
 		t.Fatalf("a notice seen 31 days ago: %+v", c)
 	}
 }
+
+// Each of housekeeping's 30-day timers, on the database's clock: an
+// exported event row's created_at, a seen notice's seen_at, a resumed and
+// unseen pause notice's resumed_at, and an unseen deletion notice's
+// purged_at. A row 29 days on stays; 31 days on, it goes.
+func TestDeletionHousekeepingTimers(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	reader := w.person(t, "ana", "member")
+	// An event row the ledger has.
+	exported := w.number(t, "Exportado")
+	w.quarantine(t, exported)
+	if _, err := store.ExportLedger(ctx, w.pool, w.tenant, &ledger.File{Path: filepath.Join(t.TempDir(), "ledger.jsonl")}); err != nil {
+		t.Fatal(err)
+	}
+	var event uuid.UUID
+	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT event_id FROM item_events WHERE item_id = $1 AND ledgered_at IS NOT NULL`, exported).Scan(&event)
+	})
+	// A seen deletion notice.
+	seen := w.number(t, "Visto")
+	w.reads(t, reader, seen)
+	w.quarantine(t, seen, reader)
+	// A pause notice, resumed and never seen.
+	resumed := w.number(t, "Retomado")
+	w.reads(t, w.owner, resumed)
+	w.reads(t, reader, resumed)
+	w.pause(t, resumed, store.PauseActor{User: w.owner})
+	w.resume(t, resumed)
+	// An unseen deletion notice of a purged number.
+	purged := w.number(t, "Purgado")
+	w.reads(t, reader, purged)
+	w.quarantine(t, purged, reader)
+	makeDue(t, w.pool, w.tenant, purged)
+	if res, err := store.PurgeDevice(ctx, w.pool, w.tenant, purged, nil, store.PurgeOptions{}); err != nil || !res.Final {
+		t.Fatalf("the purge: %+v %v", res, err)
+	}
+	notice := func(device uuid.UUID) int64 {
+		t.Helper()
+		var id int64
+		inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT id FROM device_notices WHERE device_id = $1 AND user_id = $2`, device, reader).Scan(&id)
+		})
+		return id
+	}
+	seenNotice := notice(seen)
+	if _, err := w.devices.SeeNotices(ctx, w.tenant, reader, []store.SeenNotice{{ID: seenNotice}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, timer := range []struct {
+		name, update, exists string
+		id                   any
+	}{
+		{"an exported event row's created_at", `UPDATE item_events SET created_at = clock_timestamp() - make_interval(days => $2) WHERE event_id = $1`,
+			`SELECT count(*) FROM item_events WHERE event_id = $1`, event},
+		{"a seen notice's seen_at", `UPDATE device_notices SET seen_at = clock_timestamp() - make_interval(days => $2) WHERE id = $1`,
+			`SELECT count(*) FROM device_notices WHERE id = $1`, seenNotice},
+		{"a resumed pause notice's resumed_at", `UPDATE device_notices SET resumed_at = clock_timestamp() - make_interval(days => $2) WHERE id = $1`,
+			`SELECT count(*) FROM device_notices WHERE id = $1`, notice(resumed)},
+		{"a purged number's notice's purged_at", `UPDATE device_notices SET purged_at = clock_timestamp() - make_interval(days => $2) WHERE id = $1`,
+			`SELECT count(*) FROM device_notices WHERE id = $1`, notice(purged)},
+	} {
+		for _, days := range []int{29, 31} {
+			inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+				tag, err := tx.Exec(ctx, timer.update, timer.id, days)
+				if err == nil && tag.RowsAffected() != 1 {
+					err = errors.New("no row to backdate")
+				}
+				return err
+			})
+			if _, err := store.DeletionHousekeeping(ctx, w.pool, w.tenant); err != nil {
+				t.Fatal(err)
+			}
+			var n int
+			inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error { return tx.QueryRow(ctx, timer.exists, timer.id).Scan(&n) })
+			if want := map[int]int{29: 1, 31: 0}[days]; n != want {
+				t.Fatalf("%s %d days ago: %d rows left, want %d", timer.name, days, n, want)
+			}
+		}
+	}
+}

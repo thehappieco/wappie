@@ -63,9 +63,16 @@ const (
 	// every pass warns about it.
 	overdueAfter = 2 * time.Hour
 	// ledgerKeep is how long the ledger keeps a number after its newest
-	// line: backups live 90 days at most (decision 0027), and the off-host
-	// copy is synced daily.
-	ledgerKeep = 91 * 24 * time.Hour
+	// line, so every snapshot that can still be restored finds the lines
+	// written after it. Backups live 90 days (decision 0027), but the
+	// prune that deletes them runs once a day, up to half an hour late,
+	// and catches up a day the host was down only at its next start
+	// (commercial deploy/prune-backups.sh, wappie-prune-backups.timer), so
+	// a snapshot can outlive its 90 days by a day and more; an off-host
+	// copy whose expiry also runs daily, the same. 90 days, a day for the
+	// prune's interval and delay, and two days of slack for a host or a
+	// copy that was down. TestLedgerOutlivesTheBackups holds the bound.
+	ledgerKeep = 93 * 24 * time.Hour
 	// compactEvery is how often a process compacts the ledger.
 	compactEvery = 24 * time.Hour
 )
@@ -195,7 +202,7 @@ func (a *app) objectDeletes(objects objectStore, timeout time.Duration) *store.O
 	}
 	return &store.ObjectDeletes{Storage: a.storage, Remove: objects.Delete, Timeout: timeout,
 		OnTrip: func() {
-			a.log.Warn("object deletes keep timing out; the rest of this pass leaves them for the next orphan pass", "timeout", timeout)
+			a.log.Warn("object deletes keep failing; the rest of this pass leaves them for the next orphan pass", "timeout", timeout)
 		}}
 }
 
@@ -221,9 +228,15 @@ func (a *app) applyRetention(ctx context.Context, deletes *store.ObjectDeletes) 
 			a.log.Warn("retention purge failed", "tenant", t.ID, "error", err)
 			continue
 		}
-		removed, failed := 0, 0
+		// Each delete is cut off from ctx, so the pass's own end is
+		// checked here: what is left stays for the next orphan pass.
+		removed, failed, left := 0, 0, 0
 		if deletes != nil {
-			for _, key := range counts.ObjectKeys {
+			for i, key := range counts.ObjectKeys {
+				if ctx.Err() != nil {
+					left = len(counts.ObjectKeys) - i
+					break
+				}
 				if err := deleteObject(ctx, deletes, t.ID, key); err != nil {
 					failed++
 					continue
@@ -231,10 +244,10 @@ func (a *app) applyRetention(ctx context.Context, deletes *store.ObjectDeletes) 
 				removed++
 			}
 		}
-		if counts.Messages+counts.Receipts+counts.Changes > 0 || removed+failed > 0 {
+		if counts.Messages+counts.Receipts+counts.Changes > 0 || removed+failed+left > 0 {
 			a.log.Info("retention applied", "tenant", t.ID, "days", t.Days,
 				"messages", counts.Messages, "receipts", counts.Receipts,
-				"group_events", counts.Changes, "objects_removed", removed, "objects_failed", failed)
+				"group_events", counts.Changes, "objects_removed", removed, "objects_failed", failed, "objects_left", left)
 		}
 	}
 }
