@@ -84,6 +84,22 @@ func (w *transferWorld) stripSelf(t *testing.T, user uuid.UUID) {
 	w.permit(t, user, store.DevicePermission{})
 }
 
+// onlyItsKey leaves a connection's service account with no row for the
+// number: only the connection's key still names it.
+func (w *transferWorld) onlyItsKey(t *testing.T, service uuid.UUID) {
+	t.Helper()
+	w.inTenantSQL(t, `DELETE FROM device_permissions WHERE device_id=$1 AND user_id=$2`, w.device, service)
+	w.inTenantSQL(t, `DELETE FROM device_key_grants WHERE device_id=$1 AND user_id=$2`, w.device, service)
+}
+
+// onlyItsRows takes the number off a connection's key: only its service
+// account's rows still reach it.
+func (w *transferWorld) onlyItsRows(t *testing.T, connection string) {
+	t.Helper()
+	w.inTenantSQL(t, `DELETE FROM api_key_devices WHERE device_id=$1
+		AND api_key_id=(SELECT api_key_id FROM mcp_connections WHERE id=$2)`, w.device, connection)
+}
+
 func (w *transferWorld) inTenantSQL(t *testing.T, sql string, args ...any) {
 	t.Helper()
 	ctx := context.Background()
@@ -155,7 +171,14 @@ func TestTransferRefusedWhileOthersHaveAccess(t *testing.T) {
 	assistantOwner, aiOwner, keyOwner := w.member(t, "admin"), w.member(t, "admin"), w.member(t, "admin")
 	w.ownerReads(ctx, t, assistantOwner, w.device)
 	assistant, _ := w.consentContent(ctx, t, assistantOwner)
+	// Each way a connection reaches the number counts by itself: its key
+	// naming it, with its service account's rows gone, or those rows, with
+	// its key no longer naming it.
+	byKey, byKeyConsent := w.consentContent(ctx, t, assistantOwner)
+	byRows, _ := w.consentContent(ctx, t, assistantOwner)
 	w.stripSelf(t, assistantOwner)
+	w.onlyItsKey(t, byKeyConsent.service)
+	w.onlyItsRows(t, byRows.ID)
 	w.ownerReads(ctx, t, aiOwner, w.device)
 	ai, _ := w.consentAI(ctx, t, aiOwner, w.aiKeys(ctx, t, aiOwner), nil)
 	w.stripSelf(t, aiOwner)
@@ -191,6 +214,17 @@ func TestTransferRefusedWhileOthersHaveAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.permit(t, svc.ID, store.DevicePermission{Read: true})
+	// The current key and nothing else, no flag set: a member, and a
+	// standing service account.
+	keyOnly := w.member(t, "member")
+	keySvc, err := w.users.CreateService(ctx, w.tenant, "backup", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []uuid.UUID{keyOnly, keySvc.ID} {
+		w.permit(t, user, store.DevicePermission{})
+		w.grant(t, user, 2)
+	}
 
 	before := w.countIn(t, w.tenant, `SELECT (SELECT count(*) FROM device_permissions WHERE device_id=$1) + (SELECT count(*) FROM device_key_grants WHERE device_id=$1)`, w.device)
 	p := w.wantRefused(t,
@@ -199,13 +233,21 @@ func TestTransferRefusedWhileOthersHaveAccess(t *testing.T) {
 		"person:"+oldKey.String()+":old_key:active",
 		"person:"+disabled.String()+":read:disabled",
 		"service:"+svc.ID.String()+":read:active",
+		"person:"+keyOnly.String()+":key:active",
+		"service:"+keySvc.ID.String()+":key:active",
 		"assistant:"+assistant.ID+":read,old_key",
+		"assistant:"+byKey.ID+":read",
+		"assistant:"+byRows.ID+":read,old_key",
 		"ai:"+ai.ID+":read,old_key",
 		"key:erp-key:read,send",
 		"key:orphan-key:read",
 	)
+	serviceNames := map[uuid.UUID]string{}
+	for _, s := range []store.User{svc, keySvc} {
+		serviceNames[s.ID] = store.ServiceName(store.User{Email: s.Email, Role: store.RoleService})
+	}
 	for _, o := range p.Others {
-		if o.Kind == "service" && o.Name != store.ServiceName(store.User{Email: svc.Email, Role: store.RoleService}) {
+		if o.Kind == "service" && (o.UserID == nil || o.Name != serviceNames[*o.UserID]) {
 			t.Fatalf("a service account by another name: %+v", o)
 		}
 		switch o.Kind {
@@ -223,7 +265,7 @@ func TestTransferRefusedWhileOthersHaveAccess(t *testing.T) {
 
 	// A refusal changes nothing: rows, the pause, notices, events, moves.
 	var denied *store.TransferDenied
-	if _, err := w.move(t); !errors.As(err, &denied) || denied.Code != store.ReasonOthersHaveAccess || len(denied.Others) != 9 {
+	if _, err := w.move(t); !errors.As(err, &denied) || denied.Code != store.ReasonOthersHaveAccess || len(denied.Others) != 13 {
 		t.Fatalf("the move: %v", err)
 	}
 	if d, err := w.devices.Get(ctx, w.tenant.String(), w.device.String()); err != nil || !d.Paused {
@@ -243,17 +285,21 @@ func TestTransferRefusedWhileOthersHaveAccess(t *testing.T) {
 	}
 
 	// The ways out, one by one.
-	for _, user := range []uuid.UUID{sender, manager, svc.ID, oldKey} {
+	for _, user := range []uuid.UUID{sender, manager, svc.ID, oldKey, keyOnly, keySvc.ID} {
 		w.permit(t, user, store.DevicePermission{})
 	}
-	if n := w.countIn(t, w.tenant, `SELECT count(*) FROM device_key_grants WHERE user_id=$1`, oldKey); n != 0 {
-		t.Fatalf("the old-epoch holder kept %d grants", n)
+	for _, user := range []uuid.UUID{oldKey, keyOnly, keySvc.ID} {
+		if n := w.countIn(t, w.tenant, `SELECT count(*) FROM device_key_grants WHERE user_id=$1`, user); n != 0 {
+			t.Fatalf("a key holder kept %d grants", n)
+		}
 	}
 	if err := w.users.RemoveMember(ctx, w.tenant, w.owner, disabled); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.conns.Revoke(ctx, w.tenant, w.owner, assistant.ID); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{assistant.ID, byKey.ID, byRows.ID} {
+		if _, err := w.conns.Revoke(ctx, w.tenant, w.owner, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, _, err := w.conns.RevokeAI(ctx, w.tenant, w.owner, ai.ID, false); err != nil {
 		t.Fatal(err)
@@ -295,7 +341,8 @@ func TestTransferIgnoresWhatHasNoAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.keys.IssueActingAs(ctx, w.tenant.String(), "as-idle", store.ScopeRead, &ticked, &idle.ID); err != nil {
+	// Restricted to the number, so only acting as the account sets it aside.
+	if _, err := w.keys.IssueActingAsForDevices(ctx, w.tenant.String(), "as-idle", store.ScopeRead, &ticked, &idle.ID, []uuid.UUID{w.device}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// The owner's own assistant and AI authorization, and a consent of the
@@ -351,6 +398,17 @@ func TestTransferRecordsMovedOut(t *testing.T) {
 	}
 	mine, mineConsent := w.consentContent(ctx, t, w.owner)
 	myAI, aiConsent := w.consentAI(ctx, t, w.owner, w.aiKeys(ctx, t, w.owner), nil)
+	// Each way the owner's own connection reaches the number ends it by
+	// itself.
+	byKey, byKeyConsent := w.consentContent(ctx, t, w.owner)
+	byRows, _ := w.consentContent(ctx, t, w.owner)
+	w.onlyItsKey(t, byKeyConsent.service)
+	w.onlyItsRows(t, byRows.ID)
+	other, err := w.devices.Create(ctx, w.tenant.String(), "other", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherNumber := uuid.MustParse(other.ID)
 	// The owner's own notice: a key with no creator paused the number.
 	cli, err := w.keys.IssueActingAsForDevices(ctx, w.tenant.String(), "cli", store.ScopeFull, nil, nil, []uuid.UUID{w.device}, nil)
 	if err != nil {
@@ -384,13 +442,13 @@ func TestTransferRecordsMovedOut(t *testing.T) {
 	for _, a := range out.AssistantsEnded {
 		kinds[a.ID.String()] = a.Kind
 	}
-	if len(kinds) != 2 || kinds[mine.ID] != "assistant" || kinds[myAI.ID] != "ai" {
+	if len(kinds) != 4 || kinds[mine.ID] != "assistant" || kinds[myAI.ID] != "ai" || kinds[byKey.ID] != "assistant" || kinds[byRows.ID] != "assistant" {
 		t.Fatalf("assistants_ended: %+v", out.AssistantsEnded)
 	}
 	if len(out.KeysNarrowed) != 1 || out.KeysNarrowed[0].Name != "mine" {
 		t.Fatalf("keys_narrowed: %+v", out.KeysNarrowed)
 	}
-	for _, id := range []string{mine.ID, myAI.ID} {
+	for _, id := range []string{mine.ID, myAI.ID, byKey.ID, byRows.ID} {
 		var status, reason string
 		if err := w.pool.QueryRow(ctx, `SELECT status, coalesce(revoke_reason,'') FROM mcp_connections WHERE id=$1`, id).Scan(&status, &reason); err != nil {
 			t.Fatal(err)
@@ -404,17 +462,30 @@ func TestTransferRecordsMovedOut(t *testing.T) {
 			t.Fatalf("an ended connection's service account remains: %+v", tr)
 		}
 	}
-	// The owner's key is narrowed, not revoked, and reaches nothing; the key
-	// for every number stays in the Team and does not reach it either.
+	// The owner's key is narrowed, not revoked: still restricted, to no
+	// number, so it reaches none, the Team's others included. The key for
+	// every number stays in the Team, reaching its numbers but not the
+	// moved one.
 	mineID, allID := w.keyID(ctx, t, mineKey), w.keyID(ctx, t, all)
-	for _, id := range []uuid.UUID{mineID, allID} {
-		if ok, err := w.keys.AllowsDevice(ctx, id, w.personal, w.device); err != nil || ok {
-			t.Fatalf("key %s reaches the moved number: %v %v", id, ok, err)
+	reaches := func(key, device uuid.UUID) bool {
+		t.Helper()
+		ok, err := w.keys.AllowsDevice(ctx, key, w.tenant, device)
+		if err != nil {
+			t.Fatal(err)
 		}
+		return ok
 	}
-	var revoked bool
-	if err := w.pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM api_keys WHERE id=$1`, mineID).Scan(&revoked); err != nil || revoked {
-		t.Fatalf("the owner's key was revoked: %v %v", revoked, err)
+	if reaches(mineID, w.device) || reaches(mineID, otherNumber) || reaches(allID, w.device) || !reaches(allID, otherNumber) {
+		t.Fatalf("after the move: mine %v %v, all %v %v", reaches(mineID, w.device), reaches(mineID, otherNumber),
+			reaches(allID, w.device), reaches(allID, otherNumber))
+	}
+	var revoked, restricted bool
+	if err := w.pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL, devices_restricted FROM api_keys WHERE id=$1`, mineID).Scan(&revoked, &restricted); err != nil ||
+		revoked || !restricted {
+		t.Fatalf("the owner's key: revoked %v, restricted %v (%v)", revoked, restricted, err)
+	}
+	if n := w.countIn(t, w.tenant, `SELECT count(*) FROM api_key_devices WHERE api_key_id=$1`, mineID); n != 0 {
+		t.Fatalf("the owner's key still names %d numbers", n)
 	}
 
 	// One moved_out, in the Team, from the move's own clock.
@@ -430,7 +501,7 @@ func TestTransferRecordsMovedOut(t *testing.T) {
 	if moved.Type != "moved_out" || moved.ToTenantID == nil || *moved.ToTenantID != w.personal || moved.ActorKind != "person" ||
 		moved.ActorSub == nil || *moved.ActorSub != ownerSub || !sameSubs(moved.ReaderSubs, ownerSub) || !moved.OccurredAt.Equal(completed) ||
 		moved.DedupeKey != "moved_out:"+w.device.String()+":"+strconv.FormatInt(completed.UnixMicro(), 10) || moved.Ledgered ||
-		moved.Hint == nil || *moved.Hint != "…0042" {
+		moved.Hint == nil || *moved.Hint != "…0042" || moved.Label == nil || *moved.Label != "phone" {
 		t.Fatalf("moved_out: %+v (completed %s)", moved, completed)
 	}
 	if n := len(eventsOf(t, w.pool, w.personal, w.device, "moved_out")) + len(eventsOf(t, w.pool, w.personal, w.device, "sync_paused")); n != 0 {
@@ -613,4 +684,83 @@ func waitBlockedOn(t *testing.T, pool interface {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("fewer than %d transactions waited", n)
+}
+
+// A transfer's own pause is undone only while nobody paused the number
+// since (the plan's 4.12): a stop that found it paused, or another of
+// Wappie's own pauses, stands, and so does a resume; a number that moved
+// is not found and stays paused in Personal.
+func TestMovePauseUndo(t *testing.T) {
+	w := newTransferWorld(t)
+	ctx := context.Background()
+	paused := func() bool {
+		t.Helper()
+		d, err := w.devices.Get(ctx, w.tenant.String(), w.device.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.Paused
+	}
+	set := func(on bool) {
+		t.Helper()
+		if err := w.devices.SetPaused(ctx, w.tenant.String(), w.device.String(), on); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pauseForMove := func() store.MovePause {
+		t.Helper()
+		p, err := w.devices.PauseForMove(ctx, w.tenant, w.device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	undo := func(p store.MovePause) bool {
+		t.Helper()
+		undone, err := w.devices.UndoMovePause(ctx, w.tenant, w.device, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return undone
+	}
+
+	if p := pauseForMove(); !p.Changed || !paused() || !undo(p) || paused() {
+		t.Fatalf("the handler's own pause, undone: %+v, paused %v", p, paused())
+	}
+	set(true)
+	if p := pauseForMove(); p.Changed || undo(p) || !paused() {
+		t.Fatalf("a number paused before the move: %+v, paused %v", p, paused())
+	}
+	set(false)
+	for name, stop := range map[string]func(){
+		"a person's stop": func() {
+			if _, err := w.devices.Pause(ctx, w.tenant, w.device, store.PauseActor{User: w.owner}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"Wappie's own pause": func() { set(true) },
+	} {
+		p := pauseForMove()
+		stop()
+		if undo(p) || !paused() {
+			t.Fatalf("%s during the move was undone", name)
+		}
+		set(false)
+	}
+	resumed := pauseForMove()
+	set(false)
+	if undo(resumed) || paused() {
+		t.Fatal("a resume during the move: the undo paused the number or reported undoing")
+	}
+
+	p := pauseForMove()
+	if _, err := w.devices.TransferPersonal(ctx, w.tenant, w.owner, w.device, w.personal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.devices.UndoMovePause(ctx, w.tenant, w.device, p); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the undo of a number that moved: %v", err)
+	}
+	if d, err := w.devices.Get(ctx, w.personal.String(), w.device.String()); err != nil || !d.Paused {
+		t.Fatalf("the moved number: %+v %v", d, err)
+	}
 }

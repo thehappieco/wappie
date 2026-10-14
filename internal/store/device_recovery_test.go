@@ -644,10 +644,10 @@ func TestDeletionNotices(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Someone else's id changes nothing.
-	if left, err := w.devices.SeeNotices(ctx, w.tenant, coOwner, []int64{notices[0].ID}); err != nil || len(left) != 1 {
+	if left, err := w.devices.SeeNotices(ctx, w.tenant, coOwner, []store.SeenNotice{{ID: notices[0].ID}}); err != nil || len(left) != 1 {
 		t.Fatalf("another person's seen mark: %+v %v", left, err)
 	}
-	if left, err := w.devices.SeeNotices(ctx, w.tenant, reader, []int64{notices[0].ID}); err != nil || len(left) != 0 {
+	if left, err := w.devices.SeeNotices(ctx, w.tenant, reader, []store.SeenNotice{{ID: notices[0].ID}}); err != nil || len(left) != 0 {
 		t.Fatalf("seen: %+v %v", left, err)
 	}
 	w.recover(t, device)

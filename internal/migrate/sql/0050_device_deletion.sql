@@ -23,6 +23,11 @@
 --                       logout is confirmed. The purge removes a session
 --                       only by this exact fingerprint, never by the JID
 --                       alone, and never sends a logout.
+--   devices.pause_seq   counts the pauses asked of a number (a person's or
+--                       a key's stop, and Wappie's own pauses), whether or
+--                       not it was paused already, so a transfer that failed
+--                       undoes its own pause only while nobody has paused
+--                       the number since.
 --   devices_lid, devices_pn
 --                       an identity is unique among live rows only: a
 --                       phone linked again while its old row is excluded
@@ -166,7 +171,7 @@
 --      CREATE UNIQUE INDEX devices_lid ON devices (tenant_id, lid) WHERE lid IS NOT NULL;
 --      CREATE UNIQUE INDEX devices_pn  ON devices (tenant_id, pn)  WHERE pn IS NOT NULL;
 --      ALTER TABLE devices DROP CONSTRAINT devices_deletion_shape,
---          DROP COLUMN wa_leftover, DROP COLUMN purge_started_at, DROP COLUMN purge_after,
+--          DROP COLUMN pause_seq, DROP COLUMN wa_leftover, DROP COLUMN purge_started_at, DROP COLUMN purge_after,
 --          DROP COLUMN deleted_by, DROP COLUMN deleted_at;
 --      ALTER TABLE devices ENABLE ROW LEVEL SECURITY;
 --      ALTER TABLE devices FORCE ROW LEVEL SECURITY;
@@ -190,6 +195,7 @@ ALTER TABLE devices
     ADD COLUMN purge_after      timestamptz,
     ADD COLUMN purge_started_at timestamptz,
     ADD COLUMN wa_leftover      jsonb,
+    ADD COLUMN pause_seq        bigint NOT NULL DEFAULT 0,
     ADD CONSTRAINT devices_deletion_shape CHECK (
             (deleted_at IS NULL) = (purge_after IS NULL)
         AND (deleted_at IS NULL OR paused)

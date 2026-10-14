@@ -521,11 +521,18 @@ func (s *session) handleDeviceNoticeSeen(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())
 		return
 	}
-	if len(req.NoticeIDs) == 0 || len(req.NoticeIDs) > 500 {
+	if n := len(req.NoticeIDs) + len(req.Notices); n == 0 || n > 500 {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "name between 1 and 500 notices")
 		return
 	}
-	left, err := s.srv.cfg.Devices.SeeNotices(ctx, uuid.MustParse(who.tenant), who.userID, req.NoticeIDs)
+	seen := make([]store.SeenNotice, 0, len(req.NoticeIDs)+len(req.Notices))
+	for _, id := range req.NoticeIDs {
+		seen = append(seen, store.SeenNotice{ID: id})
+	}
+	for _, n := range req.Notices {
+		seen = append(seen, store.SeenNotice{ID: n.ID, Pauses: n.Pauses})
+	}
+	left, err := s.srv.cfg.Devices.SeeNotices(ctx, uuid.MustParse(who.tenant), who.userID, seen)
 	if err != nil {
 		s.log.Error("acknowledging notices failed", "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not acknowledge the notices")

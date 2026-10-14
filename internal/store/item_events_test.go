@@ -198,11 +198,19 @@ func TestPauseNotices(t *testing.T) {
 		t.Fatalf("pause, resume, pause: %+v", n)
 	}
 	first := w.notices(t, b)[0].RaisedAt
-	// The seen mark is per viewer and per notice.
-	if left, err := w.devices.SeeNotices(ctx, w.tenant, b, []int64{n[0].ID}); err != nil || len(left) != 1 {
+	// The seen mark is per viewer and per notice, and per version: a pause
+	// notice keeps its id when a pause folds into it, so seeing the version
+	// before the fold, or naming it by a bare id, leaves it unseen.
+	shown := store.SeenNotice{ID: n[0].ID, Pauses: n[0].Pauses}
+	if left, err := w.devices.SeeNotices(ctx, w.tenant, b, []store.SeenNotice{shown}); err != nil || len(left) != 1 {
 		t.Fatalf("b acknowledged a's notice: %+v %v", left, err)
 	}
-	if left, err := w.devices.SeeNotices(ctx, w.tenant, a, []int64{n[0].ID}); err != nil || len(left) != 0 {
+	for _, stale := range []store.SeenNotice{{ID: n[0].ID, Pauses: 1}, {ID: n[0].ID}} {
+		if left, err := w.devices.SeeNotices(ctx, w.tenant, a, []store.SeenNotice{stale}); err != nil || len(left) != 1 || left[0].Pauses != 2 {
+			t.Fatalf("a's acknowledgement of %+v, the notice at 2 pauses: %+v %v", stale, left, err)
+		}
+	}
+	if left, err := w.devices.SeeNotices(ctx, w.tenant, a, []store.SeenNotice{shown}); err != nil || len(left) != 0 {
 		t.Fatalf("a's acknowledgement: %+v %v", left, err)
 	}
 	if len(w.notices(t, b)) != 1 {
@@ -288,6 +296,54 @@ func TestPauseNotices(t *testing.T) {
 	}
 	if left := w.count(t, `SELECT count(*) FROM device_notices WHERE device_id=$1 AND kind='sync_paused'`, device); left != 0 {
 		t.Fatalf("%d pause notices outlived the deletion", left)
+	}
+}
+
+// A pause that commits after a resume's checks, before it marks the
+// notices resumed, leaves them open: the number is paused.
+func TestResumeMarksNothingOnAPausedNumber(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	device := w.number(t, "Vendas")
+	a := w.person(t, "ana", "member")
+	for _, u := range []uuid.UUID{w.owner, a} {
+		w.reads(t, u, device)
+	}
+	w.pause(t, device, store.PauseActor{User: w.owner})
+	// device.start's own write, then a stop before it marks the notices.
+	if err := w.devices.SetPaused(ctx, w.tenant.String(), device.String(), false); err != nil {
+		t.Fatal(err)
+	}
+	w.pause(t, device, store.PauseActor{User: w.owner})
+	if err := w.devices.MarkResumed(ctx, w.tenant, device); err != nil {
+		t.Fatal(err)
+	}
+	if n := w.notices(t, a); len(n) != 1 || n[0].Pauses != 2 || n[0].ResumedAt != nil {
+		t.Fatalf("a paused number's notice was marked resumed: %+v", n)
+	}
+	w.resume(t, device)
+	if n := w.notices(t, a); len(n) != 1 || n[0].ResumedAt == nil {
+		t.Fatalf("after the resume: %+v", n)
+	}
+}
+
+// The same person pausing, then their own key: a fold says that more than
+// one actor paused, since a key is an actor of its own kind.
+func TestPauseFoldTellsAPersonFromTheirKey(t *testing.T) {
+	w := newDelWorld(t)
+	device := w.number(t, "Dupla")
+	// Only owners and admins create keys.
+	a, b := w.person(t, "ana", "admin"), w.person(t, "bia", "member")
+	for _, u := range []uuid.UUID{a, b} {
+		w.reads(t, u, device)
+	}
+	w.pause(t, device, store.PauseActor{User: a})
+	w.resume(t, device)
+	w.pause(t, device, store.PauseActor{Key: w.keyBy(t, &a, device)})
+	n := w.notices(t, b)
+	if len(n) != 1 || n[0].Pauses != 2 || n[0].RaisedByKind != "key" || n[0].RaisedByName == nil ||
+		!strings.HasPrefix(*n[0].RaisedByName, "ana") || !n[0].SeveralActors {
+		t.Fatalf("b's notice after a's pause and then a's key's: %+v", n)
 	}
 }
 
@@ -412,19 +468,21 @@ func TestPauseLocksTheWorkspaceFirst(t *testing.T) {
 	}
 }
 
-// The pauses Wappie makes on its own record nothing: the transfer's and the
-// failed resume's (SetPaused) and the deletion's.
+// The pauses Wappie makes on its own record nothing: the transfer's and its
+// undo, and the deletion's. The failed resume's goes through device.start
+// (wsapi's TestResumeOverTheSocket).
 func TestOwnPausesRecordNothing(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()
 	device := w.number(t, "Own")
 	a := w.person(t, "ana", "member")
 	w.reads(t, a, device)
-	if err := w.devices.SetPaused(ctx, w.tenant.String(), device.String(), true); err != nil {
-		t.Fatal(err)
+	p, err := w.devices.PauseForMove(ctx, w.tenant, device)
+	if err != nil || !p.Changed {
+		t.Fatalf("the transfer's pause: %+v %v", p, err)
 	}
-	if err := w.devices.SetPaused(ctx, w.tenant.String(), device.String(), false); err != nil {
-		t.Fatal(err)
+	if undone, err := w.devices.UndoMovePause(ctx, w.tenant, device, p); err != nil || !undone {
+		t.Fatalf("its undo: %v %v", undone, err)
 	}
 	w.quarantine(t, device, a)
 	if rows := eventsOf(t, w.pool, w.tenant, device, "sync_paused"); len(rows) != 0 {

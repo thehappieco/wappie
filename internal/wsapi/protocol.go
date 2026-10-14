@@ -514,9 +514,21 @@ type DeviceNotice struct {
 	PurgedAt      *time.Time `json:"purged_at,omitempty"`
 }
 
-// DeviceNoticeSeen acknowledges notices, the person's own only.
+// DeviceNoticeSeen acknowledges notices, the person's own only. Notices
+// names each one as it was shown, with its pauses: a sync_paused notice
+// keeps its id when a later pause folds into it, and is acknowledged only
+// at the version its person saw, so a fold that came after stays unseen and
+// returns in the reply. NoticeIDs, bare ids, acknowledge only notices that
+// never fold (number_deleted).
 type DeviceNoticeSeen struct {
-	NoticeIDs []int64 `json:"notice_ids"`
+	NoticeIDs []int64      `json:"notice_ids,omitempty"`
+	Notices   []SeenNotice `json:"notices,omitempty"`
+}
+
+// SeenNotice is one notice as it was shown.
+type SeenNotice struct {
+	ID     int64 `json:"id"`
+	Pauses int   `json:"pauses"`
 }
 
 // DeviceNotices is what is left unseen, the reply to device.notice.seen.

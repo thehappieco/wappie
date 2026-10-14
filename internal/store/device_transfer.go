@@ -176,6 +176,70 @@ func transferPreviewTx(ctx context.Context, tx pgx.Tx, source, actor, device uui
 	return out, nil
 }
 
+// MovePause is the pause a transfer's handler makes before the move. Seq
+// is the pause count it left; Changed is false when the number was paused
+// already, and the handler then has nothing to undo.
+type MovePause struct {
+	Changed bool
+	Seq     int64
+}
+
+// PauseForMove pauses a live number before its move, in one statement, and
+// says whether this call paused it. It is Wappie's own pause: it tells
+// nobody and records nothing (the plan's section 5).
+func (d *Devices) PauseForMove(ctx context.Context, tenant, device uuid.UUID) (MovePause, error) {
+	var out MovePause
+	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_seq = pause_seq + 1 WHERE id = $1 AND NOT paused
+			RETURNING pause_seq`, device).Scan(&out.Seq)
+		if err == nil {
+			out.Changed = true
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		err = tx.QueryRow(ctx, `SELECT pause_seq FROM devices WHERE id = $1`, device).Scan(&out.Seq)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return out, err
+}
+
+// UndoMovePause takes back a transfer's own pause after a move that did not
+// happen, unless the number was paused again since: a person's or a key's
+// stop (which finds it paused and changes nothing else) or another of
+// Wappie's own pauses then stands, and so does a resume. It reports whether
+// it unpaused the number, and ErrNotFound when the number is no longer in
+// the workspace (the move committed and only its answer was lost, or it was
+// deleted).
+func (d *Devices) UndoMovePause(ctx context.Context, tenant, device uuid.UUID, p MovePause) (bool, error) {
+	if !p.Changed {
+		return false, nil
+	}
+	var undone bool
+	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE devices SET paused = false WHERE id = $1 AND paused AND pause_seq = $2`, device, p.Seq)
+		if err != nil {
+			return err
+		}
+		if undone = tag.RowsAffected() == 1; undone {
+			return nil
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)`, device).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		return nil
+	})
+	return undone, err
+}
+
 func (d *Devices) PreviewPersonalTransfer(ctx context.Context, source, actor, device uuid.UUID) (PersonalTransferPreview, error) {
 	var out PersonalTransferPreview
 	err := pg.InTenantTx(ctx, d.pool, source.String(), func(tx pgx.Tx) error {

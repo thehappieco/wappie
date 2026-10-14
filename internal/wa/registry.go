@@ -58,6 +58,10 @@ type RegistryConfig struct {
 	// NewClient builds the client for a stored session. Nil is whatsmeow's
 	// own client with this server's client policy; a test passes a fake.
 	NewClient func(ds *store.Device, log waLog.Logger) Client
+	// LoadSession finds a stored session by JID, nil when there is none.
+	// Nil is the container's own lookup; a test passes one that needs no
+	// session store.
+	LoadSession func(ctx context.Context, jid types.JID) (*store.Device, error)
 }
 
 // Registry owns every supervised device in this process.
@@ -77,8 +81,9 @@ type Registry struct {
 	// (BeginUnlink): the supervisor and the deletion's notification leave
 	// their client alone, since the logout runs on it and then stops it.
 	unlinking map[string]int
-	// loadSession is the session store's lookup, apart so a test of Unlink
-	// needs no database.
+	// loadSession is the session store's lookup (RegistryConfig.LoadSession,
+	// else the container's), apart so a test of Unlink or of a resume needs
+	// no database.
 	loadSession func(ctx context.Context, jid types.JID) (*store.Device, error)
 }
 
@@ -107,8 +112,12 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	load := cfg.LoadSession
+	if load == nil {
+		load = cfg.Container.GetDevice
+	}
 	return &Registry{cfg: cfg, log: cfg.Log, devices: map[string]*entry{}, unlinking: map[string]int{},
-		loadSession: cfg.Container.GetDevice}, nil
+		loadSession: load}, nil
 }
 
 // newClient builds the client for a stored session.
@@ -167,7 +176,7 @@ func (r *Registry) StartExisting(ctx context.Context, tenantID, deviceID string,
 			continue
 		}
 		tried = append(tried, jid.String())
-		ds, err := r.cfg.Container.GetDevice(ctx, jid)
+		ds, err := r.loadSession(ctx, jid)
 		if err != nil {
 			return nil, fmt.Errorf("wa: load session for %s: %w", jid, err)
 		}

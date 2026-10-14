@@ -320,9 +320,11 @@ func (d *Devices) Rename(ctx context.Context, tenantID, deviceID, label string) 
 }
 
 // SetPaused is durable: automatic supervision and restart both respect it.
+// A pause counts in pause_seq, as every pause does, so a transfer's undo
+// leaves it standing.
 func (d *Devices) SetPaused(ctx context.Context, tenantID, deviceID string, paused bool) error {
 	return pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE devices SET paused=$2 WHERE id=$1`, deviceID, paused)
+		tag, err := tx.Exec(ctx, `UPDATE devices SET paused=$2, pause_seq=pause_seq+CASE WHEN $2 THEN 1 ELSE 0 END WHERE id=$1`, deviceID, paused)
 		if err != nil {
 			return err
 		}

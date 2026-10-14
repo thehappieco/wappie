@@ -50,9 +50,10 @@ func (s *session) handleDeviceTransferPreview(ctx context.Context, f Frame) {
 // paused, and the store decides it again under its locks. Any error after
 // the handler paused the number (that refusal from inside the move, a
 // timeout, a deadlock) rolls the move back, so the handler undoes its own
-// pause and the supervisor resumes the number. No platform call runs inside
-// the move's transaction (the plan's D13): a later release asks for a fresh
-// membership document before it, never inside.
+// pause, unless someone paused the number meanwhile, and the supervisor
+// resumes it. No platform call runs inside the move's transaction (the
+// plan's D13): a later release asks for a fresh membership document before
+// it, never inside.
 func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	who, ok := s.requireAdmin(f.ReqID)
 	if !ok {
@@ -83,16 +84,12 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		s.transferError(f.ReqID, &store.TransferDenied{Reason: out.Reason, Code: out.ReasonCode, Others: out.Others})
 		return
 	}
-	dev, err := s.srv.cfg.Devices.Get(ctx, source.String(), device.String())
-	if err != nil {
-		s.transferError(f.ReqID, err)
-		return
-	}
 	// The sessions that see the number now, the Team's owners and admins
 	// who manage it by role, are told it is gone once it moved; nobody else
 	// can be reading it.
 	viewers := s.srv.viewersOf(ctx, source, device)
-	if err = s.srv.cfg.Devices.SetPaused(ctx, source.String(), device.String(), true); err != nil {
+	pause, err := s.srv.cfg.Devices.PauseForMove(ctx, source, device)
+	if err != nil {
 		s.transferError(f.ReqID, err)
 		return
 	}
@@ -108,20 +105,33 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	moveCtx, cancel := context.WithTimeout(ctx, 115*time.Second)
 	defer cancel()
 	out, err = s.srv.transfer(moveCtx, source, who.userID, device, target)
+	// On every path, the move's or not: a pipeline an outbound send rebuilt
+	// meanwhile carries the source's scope.
+	if s.srv.cfg.Router != nil {
+		s.srv.cfg.Router.Forget(device)
+	}
 	if err != nil {
-		if !dev.Paused {
-			s.undoTransferPause(ctx, source, device)
+		if gone, moved := s.settleFailedTransfer(ctx, source, target, device, pause); gone {
+			if moved {
+				// The move committed and only its answer was lost.
+				s.srv.RevalidateAccess()
+				s.tellMoved(viewers, device)
+			}
+			s.transferError(f.ReqID, store.ErrNotFound)
+			return
 		}
 		s.transferError(f.ReqID, err)
 		return
-	}
-	if s.srv.cfg.Router != nil {
-		s.srv.cfg.Router.Forget(device)
 	}
 	s.log.Info("device moved to Personal", "device", device, "source", source, "destination", target, "by", who.userID,
 		"assistants_ended", len(out.AssistantsEnded), "keys_narrowed", len(out.KeysNarrowed))
 	s.reply(TypeDeviceTransferred, f.ReqID, out)
 	s.srv.RevalidateAccess()
+	s.tellMoved(viewers, device)
+}
+
+// tellMoved tells the other sessions that saw the number that it moved.
+func (s *session) tellMoved(viewers []*session, device uuid.UUID) {
 	for _, viewer := range viewers {
 		if viewer != s {
 			viewer.reply(TypeDeviceRemoved, "", DeviceRemoved{DeviceID: device.String(), Reason: DeviceRemovedMoved})
@@ -137,21 +147,36 @@ func (s *Server) transfer(ctx context.Context, source, actor, device, target uui
 	return s.cfg.Devices.TransferPersonal(ctx, source, actor, device, target)
 }
 
-// undoTransferPause takes back the pause this handler made before a move
+// settleFailedTransfer takes back the pause this handler made before a move
 // that did not happen, on a context of its own: a closing socket must not
-// leave the number's sync silently off. A move whose commit went through
-// and only its answer was lost has left the workspace, so the row is not
-// found here, and the number stays paused in Personal, as a move leaves it.
-func (s *session) undoTransferPause(ctx context.Context, source, device uuid.UUID) {
+// leave the number's sync silently off. The store leaves the number paused
+// when someone paused it since (a stop that came during the move found it
+// paused and changed nothing else). It reports whether the number is no
+// longer in the workspace, and whether that is because the move had in fact
+// committed and only its answer was lost: the number is then in the
+// destination, where it stays paused, as a move leaves it.
+func (s *session) settleFailedTransfer(ctx context.Context, source, target, device uuid.UUID, pause store.MovePause) (gone, moved bool) {
 	undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	err := s.srv.cfg.Devices.SetPaused(undoCtx, source.String(), device.String(), false)
+	undone, err := s.srv.cfg.Devices.UndoMovePause(undoCtx, source, device, pause)
+	if err == nil && !pause.Changed {
+		// Paused before the move: nothing to undo, but the move may still
+		// have committed.
+		_, err = s.srv.cfg.Devices.Get(undoCtx, source.String(), device.String())
+	}
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		s.log.Warn("a transfer failed after its commit; the number stays paused in Personal", "device", device)
+		if _, err := s.srv.cfg.Devices.Get(undoCtx, target.String(), device.String()); err == nil {
+			s.log.Warn("a transfer failed after its commit; the number stays paused in Personal", "device", device)
+			return true, true
+		}
+		return true, false
 	case err != nil:
 		s.log.Error("could not undo a failed transfer's pause", "device", device, "error", err)
+	case pause.Changed && !undone:
+		s.log.Info("a failed transfer left its pause alone: the number was paused or resumed meanwhile", "device", device)
 	}
+	return false, false
 }
 
 func (s *session) transferError(reqID string, err error) {

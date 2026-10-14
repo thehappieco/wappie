@@ -172,7 +172,18 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	if opt.registry {
 		var err error
 		registry, err = wa.NewRegistry(wa.RegistryConfig{Container: &sqlstore.Container{}, Store: devices, Log: slog.New(slog.DiscardHandler),
-			NewClient: func(*waStore.Device, waLog.Logger) wa.Client { return fakewa.New() }})
+			NewClient: func(*waStore.Device, waLog.Logger) wa.Client { return fakewa.New() },
+			// A session is stored while its row is in the session store's
+			// table, so a start runs, on a fake client, until that row goes.
+			LoadSession: func(ctx context.Context, jid types.JID) (*waStore.Device, error) {
+				var stored bool
+				if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM whatsmeow_device WHERE jid=$1)`, jid.String()).Scan(&stored); err != nil || !stored {
+					return nil, err
+				}
+				ds := (&sqlstore.Container{}).NewDevice()
+				ds.ID = &jid
+				return ds, nil
+			}})
 		if err != nil {
 			t.Fatal(err)
 		}

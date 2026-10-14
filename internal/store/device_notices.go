@@ -97,13 +97,31 @@ func noticesTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID) ([]Device
 	return scanNotices(rows)
 }
 
-// SeeNotices marks user's own notices among ids seen, and returns what is
-// left unseen. Another person's notice is never touched.
-func (d *Devices) SeeNotices(ctx context.Context, tenant, user uuid.UUID, ids []int64) ([]DeviceNotice, error) {
+// SeenNotice is a notice as its person saw it: a pause notice keeps its id
+// when a later pause folds into it, so Pauses says which version was
+// shown. Zero is a bare id, which acknowledges only a notice that never
+// folds (number_deleted).
+type SeenNotice struct {
+	ID     int64
+	Pauses int
+}
+
+// SeeNotices marks user's own notices among seen as seen, and returns what
+// is left unseen. A sync_paused notice is marked only at the version its
+// person saw: one a pause folded into since stays unseen, and comes back
+// in the reply, so nobody acknowledges a pause they were never shown.
+// Another person's notice is never touched.
+func (d *Devices) SeeNotices(ctx context.Context, tenant, user uuid.UUID, seen []SeenNotice) ([]DeviceNotice, error) {
+	ids, pauses := make([]int64, 0, len(seen)), make([]int64, 0, len(seen))
+	for _, n := range seen {
+		ids, pauses = append(ids, n.ID), append(pauses, int64(n.Pauses))
+	}
 	var out []DeviceNotice
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE device_notices SET seen_at = clock_timestamp()
-			WHERE tenant_id = $1 AND user_id = $2 AND id = ANY($3) AND seen_at IS NULL`, tenant, user, ids); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE device_notices n SET seen_at = clock_timestamp()
+			FROM unnest($3::bigint[], $4::bigint[]) AS s(id, pauses)
+			WHERE n.tenant_id = $1 AND n.user_id = $2 AND n.id = s.id AND n.seen_at IS NULL
+			  AND (n.kind <> 'sync_paused' OR n.pauses = s.pauses)`, tenant, user, ids, pauses); err != nil {
 			return err
 		}
 		var err error
@@ -164,14 +182,16 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 			return err
 		}
 		var name, pushName, pn string
-		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true WHERE id = $1 AND NOT paused
+		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_seq = pause_seq + 1 WHERE id = $1 AND NOT paused
 			RETURNING label, push_name, coalesce(pn, '')`, device).Scan(&name, &pushName, &pn)
 		if errors.Is(err, pgx.ErrNoRows) {
-			var exists bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)`, device).Scan(&exists); err != nil {
+			// Already paused: nobody is told, but the stop still counts, so
+			// a failed transfer's undo leaves the number paused.
+			tag, err := tx.Exec(ctx, `UPDATE devices SET pause_seq = pause_seq + 1 WHERE id = $1`, device)
+			if err != nil {
 				return err
 			}
-			if !exists {
+			if tag.RowsAffected() == 0 {
 				return ErrNotFound
 			}
 			return nil
@@ -270,11 +290,18 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 
 // MarkResumed marks the number's open sync_paused notices resumed, after a
 // person or a key turned its sync on again. Nothing is deleted: a reader who
-// was away meanwhile still learns, in the past tense, that it was off.
+// was away meanwhile still learns, in the past tense, that it was off. It
+// takes the workspace's row first, as Pause does, and marks nothing once
+// the number is paused again: a pause that committed after the resume
+// reopened the notice, which stays open while the number is paused.
 func (d *Devices) MarkResumed(ctx context.Context, tenant, device uuid.UUID) error {
 	return pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenant); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `UPDATE device_notices SET resumed_at = clock_timestamp()
-			WHERE tenant_id = $1 AND device_id = $2 AND kind = 'sync_paused' AND resumed_at IS NULL AND seen_at IS NULL`, tenant, device)
+			WHERE tenant_id = $1 AND device_id = $2 AND kind = 'sync_paused' AND resumed_at IS NULL AND seen_at IS NULL
+			  AND EXISTS (SELECT 1 FROM devices d WHERE d.id = $2 AND NOT d.paused)`, tenant, device)
 		return err
 	})
 }

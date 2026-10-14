@@ -194,8 +194,22 @@ export interface DeviceNotice {
   purged_at?: string
 }
 
+/**
+ * Acknowledges the person's own notices. Send each one as it was shown, with
+ * its pauses: a sync_paused notice keeps its id when a later pause folds into
+ * it, and is acknowledged only at the version shown, so a fold that came after
+ * stays unseen and returns in the reply. notice_ids (bare ids) acknowledge only
+ * notices that never fold (number_deleted).
+ */
 export interface DeviceNoticeSeen {
-  notice_ids: number[]
+  notices?: SeenNotice[]
+  notice_ids?: number[]
+}
+
+/** One notice as it was shown. */
+export interface SeenNotice {
+  id: number
+  pauses: number
 }
 
 export interface DeviceNotices {
