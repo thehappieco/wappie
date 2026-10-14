@@ -39,7 +39,8 @@ import (
 // Sized for a burst — a backfill landing while a client is mid-render — rather
 // than for a client that has genuinely stopped reading. Past this the
 // subscription lags rather than blocking the publisher, because one stalled
-// client must never slow ingest for everyone.
+// client must never slow ingest for everyone. It also bounds what a
+// subscription holds back while its history replays (offer).
 const queueDepth = 512
 
 // Bus routes events to subscriptions, scoped by tenant.
@@ -135,13 +136,6 @@ func (s *Subscription) EndReplay(throughSeq int64) {
 	s.buffer = nil
 
 	for _, ev := range buffered {
-		// Presence captured during a replay is already stale by the time the
-		// replay finishes, and its Seq of zero would see it discarded by the
-		// comparison below in any case. Dropped explicitly so the reason is
-		// the reason, rather than an accident of the zero value.
-		if ev.Ephemeral {
-			continue
-		}
 		if ev.Seq <= throughSeq {
 			continue
 		}
@@ -211,7 +205,24 @@ func (s *Subscription) offer(ev ingest.Event) {
 		return
 	}
 	if s.replaying {
-		s.buffer = append(s.buffer, ev)
+		// Presence captured during a replay is already stale by the time the
+		// replay finishes, and its Seq of zero would see it discarded at the
+		// handover in any case. Not held at all, so it cannot take the place
+		// of a message in the bounded buffer below.
+		if ev.Ephemeral {
+			return
+		}
+		// Bounded at what the handover can deliver: EndReplay releases the
+		// buffer into a queue of queueDepth, which is empty then. A replay
+		// goes at the pace its client reads it, so a client reading slowly
+		// would otherwise make this hold every event its tenant has for as
+		// long as it likes; past the bound the subscription lags, as a full
+		// queue does.
+		if len(s.buffer) < queueDepth {
+			s.buffer = append(s.buffer, ev)
+			return
+		}
+		s.dropLocked(ev)
 		return
 	}
 	s.deliverLocked(ev)
@@ -223,26 +234,32 @@ func (s *Subscription) deliverLocked(ev ingest.Event) {
 	select {
 	case s.events <- ev:
 	default:
-		if ev.Ephemeral {
-			// Dropped in silence, and that is the whole point of the flag.
-			//
-			// An ephemeral event has no row and no sequence number, so there
-			// is nothing for a client to resume from and nothing lost by
-			// letting it go: "somebody is typing" stops being true on its own
-			// in a few seconds. Marking the subscription lagged would be
-			// actively harmful — laggedAt would record this event's Seq, which
-			// is zero, and the client would be told to refetch the archive
-			// from the beginning because it missed a typing notification.
-			return
-		}
-		if !s.lagged {
-			// The first drop is the one worth remembering: it is where the
-			// client's view stops being continuous, and therefore where it
-			// must resume from.
-			s.lagged, s.laggedAt = true, ev.Seq
-		}
-		s.dropped++
+		s.dropLocked(ev)
 	}
+}
+
+// dropLocked records an event that did not fit, so the client can be told
+// where to resume.
+func (s *Subscription) dropLocked(ev ingest.Event) {
+	if ev.Ephemeral {
+		// Dropped in silence, and that is the whole point of the flag.
+		//
+		// An ephemeral event has no row and no sequence number, so there
+		// is nothing for a client to resume from and nothing lost by
+		// letting it go: "somebody is typing" stops being true on its own
+		// in a few seconds. Marking the subscription lagged would be
+		// actively harmful — laggedAt would record this event's Seq, which
+		// is zero, and the client would be told to refetch the archive
+		// from the beginning because it missed a typing notification.
+		return
+	}
+	if !s.lagged {
+		// The first drop is the one worth remembering: it is where the
+		// client's view stops being continuous, and therefore where it
+		// must resume from.
+		s.lagged, s.laggedAt = true, ev.Seq
+	}
+	s.dropped++
 }
 
 // Subscribers reports how many subscriptions a tenant has. For metrics.
