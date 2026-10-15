@@ -497,21 +497,79 @@ func (c *Contract) Orphans(ctx context.Context, after time.Duration, limit int) 
 	})
 }
 
+// unsubscribedSQL is the round's work: the subs Wappie holds (people linked
+// to the platform, pi) whose row (a) is missing or carries no version of
+// the stored generation (s). Unsubscribed lists them and RoundDone records
+// that none is left, by the same predicate.
+const unsubscribedSQL = `platform_identities pi
+		CROSS JOIN contract_state s
+		LEFT JOIN contract_accounts a ON a.sub = pi.sub
+		WHERE a.version IS NULL OR a.generation IS DISTINCT FROM s.generation`
+
 // Unsubscribed lists the subs Wappie holds (people linked to the platform)
 // whose row is missing or carries no version of the stored generation: the
 // round's work (the plan's 4.6). Those never tried come first, then the
 // oldest attempt: every PUT's Intend moves its sub behind the rest, so subs
 // whose PUTs keep failing never hide the ones after them.
 func (c *Contract) Unsubscribed(ctx context.Context, limit int) ([]uuid.UUID, error) {
-	rows, err := c.pool.Query(ctx, `SELECT pi.sub FROM platform_identities pi
-		CROSS JOIN contract_state s
-		LEFT JOIN contract_accounts a ON a.sub = pi.sub
-		WHERE a.version IS NULL OR a.generation IS DISTINCT FROM s.generation
+	rows, err := c.pool.Query(ctx, `SELECT pi.sub FROM `+unsubscribedSQL+`
 		ORDER BY a.subscribed_at NULLS FIRST, pi.sub LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
+// RoundDone records that every sub Wappie holds has a document of the
+// generation gen (round_generation, the plan's 4.6), only while gen is
+// still the stored generation and none is left to subscribe; false when
+// either no longer holds, and the round is not done.
+func (c *Contract) RoundDone(ctx context.Context, gen uuid.UUID) (bool, error) {
+	tag, err := c.pool.Exec(ctx, `UPDATE contract_state SET round_generation = generation, updated_at = clock_timestamp()
+		WHERE generation = $1 AND NOT EXISTS (SELECT 1 FROM `+unsubscribedSQL+`)`, gen)
+	return tag.RowsAffected() == 1, err
+}
+
+// Held reports whether Wappie holds sub, a person linked to the platform,
+// read in a statement of its own: the refusal path of a sign-up asks it
+// after the refusal, so a concurrent request that linked the sub since is
+// seen (the plan's DB21).
+func (c *Contract) Held(ctx context.Context, sub uuid.UUID) (bool, error) {
+	var held bool
+	err := c.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM platform_identities WHERE sub = $1)`, sub).Scan(&held)
+	return held, err
+}
+
+// SubsOf maps each of users to the sub it is linked to; a user with no
+// link to the platform is absent from the map.
+func (c *Contract) SubsOf(ctx context.Context, users ...uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {
+	out := make(map[uuid.UUID]uuid.UUID, len(users))
+	if len(users) == 0 {
+		return out, nil
+	}
+	rows, err := c.pool.Query(ctx, `SELECT user_id, sub FROM platform_identities WHERE user_id = ANY ($1)`, users)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var user, sub uuid.UUID
+		if err := rows.Scan(&user, &sub); err != nil {
+			return nil, err
+		}
+		out[user] = sub
+	}
+	return out, rows.Err()
+}
+
+// Wake tells every contract loop (ContractModeChannel) that something
+// changed outside a transaction that could carry the notice: a document of
+// another generation in a sign-up whose transaction rolled back
+// ("generation"), or a sub the platform answered not_found for, which the
+// round subscribes again ("round").
+func (c *Contract) Wake(ctx context.Context, why string) error {
+	_, err := c.pool.Exec(ctx, `SELECT pg_notify($1, $2)`, ContractModeChannel, why)
+	return err
 }
 
 // Unfollowed forgets sub's stored version after a signed not_found on a GET
@@ -553,6 +611,21 @@ func (c *Contract) Fresh(ctx context.Context, d time.Duration, subs ...uuid.UUID
 		out[sub] = fresh
 	}
 	return out, rows.Err()
+}
+
+// Vouched says whether the last trusted published_through vouches for sub
+// within d on the database's clock, on the terms Fresh counts it: only for
+// a sub the platform follows in the stored generation, never while it is
+// past the clock by more than ContractClockSkew. It is README 7.1's rule
+// for a sign-in the platform did not answer: a returning person signs in on
+// their last document only while it holds.
+func (c *Contract) Vouched(ctx context.Context, d time.Duration, sub uuid.UUID) (bool, error) {
+	var vouched bool
+	err := c.pool.QueryRow(ctx, `SELECT coalesce(bool_or(a.version IS NOT NULL AND a.generation = s.generation
+			AND s.published_through <= clock_timestamp() + $3::interval
+			AND s.published_through > clock_timestamp() - $2::interval), false)
+		FROM contract_state s LEFT JOIN contract_accounts a ON a.sub = $1`, sub, d, ContractClockSkew).Scan(&vouched)
+	return vouched, err
 }
 
 // compareIDs orders UUIDs as Postgres does, byte by byte.

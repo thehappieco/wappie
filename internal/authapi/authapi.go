@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"whatserver2/internal/config"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -74,6 +75,12 @@ type Handler struct {
 	// LocalLogin narrows the password routes once the provider is on: ""
 	// and "on" keep them all.
 	LocalLogin config.LocalLogin
+	// Membership is the product contract's part in signing in
+	// (internal/membership): the PUT at every sign-in through the
+	// provider, a new account's home from the platform's document, and a
+	// refused sign-up's unsubscribe. Nil is the contract's absence, as
+	// before it.
+	Membership membership.SignIns
 }
 
 // Mount registers the routes on a mux.

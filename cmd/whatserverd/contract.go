@@ -15,6 +15,7 @@ import (
 
 	"whatserver2/internal/config"
 	"whatserver2/internal/membership"
+	"whatserver2/internal/store"
 )
 
 // The product contract's membership part (decision 0040; docs/contract.md),
@@ -66,13 +67,19 @@ func newContractClient(cfg config.Contract, log *slog.Logger) *membership.Client
 	return membership.NewClient(membership.HTTP(d.DialContext), membership.Base, nil)
 }
 
-// startContract loads the contract's secret in the background when a
-// transport is configured, and reloads it on every SIGHUP. Without one, a
-// SIGHUP is said and ignored: serve takes SIGHUP in every configuration,
-// since Go's default for it is to exit, which systemd counts as clean and
-// would not restart (contract-secret capabilities says this binary takes
-// it). Nothing here calls the platform; a load reaches only KMS.
+// startContract builds the contract's sign-in calls (a.members) in every
+// configuration, and, when a transport is configured, loads the contract's
+// secret in the background and again on every SIGHUP. Without one, the
+// calls get no answer (fail-static: only a new account is refused, once the
+// contract was observed), and a SIGHUP is said and ignored: serve takes
+// SIGHUP in every configuration, since Go's default for it is to exit,
+// which systemd counts as clean and would not restart (contract-secret
+// capabilities says this binary takes it). Nothing here calls the
+// platform; a load reaches only KMS.
 func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
+	if a.pools != nil {
+		a.members = &membership.Members{Contract: store.NewContract(a.pools.API), Log: a.log}
+	}
 	if !a.cfg.Contract.Configured() {
 		go func() {
 			for {
@@ -87,6 +94,9 @@ func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 		return
 	}
 	a.contract = newContractClient(a.cfg.Contract, a.log)
+	if a.members != nil {
+		a.members.Client = a.contract
+	}
 	a.secrets = &membership.Secrets{Config: a.cfg.Contract, Client: a.contract, OpenWrapper: openKMS, Class: kmsErrorClass, Log: a.log}
 	go a.secrets.Watch(ctx, hup)
 	go a.secrets.Run(ctx)

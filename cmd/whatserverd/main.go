@@ -216,6 +216,11 @@ type app struct {
 	// (WS_CONTRACT_SOCKET).
 	contract *membership.Client
 	secrets  *membership.Secrets
+	// members is the contract's part in signing people in, in every
+	// serving process (startContract): the mode is the database's, and
+	// with no transport every call is no answer, which refuses only new
+	// accounts once the contract was observed.
+	members *membership.Members
 }
 
 // setup opens every dependency and runs migrations. The returned close
@@ -864,6 +869,9 @@ func (a *app) routes() http.Handler {
 		WorkspaceSessionLimits: a.workspaceSessions,
 		PublicSignup:           a.cfg.Signup.Enabled,
 		Platform:               a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
+	}
+	if a.members != nil {
+		authHandler.Membership = a.members
 	}
 	if a.cfg.Signup.SMTP.Configured() {
 		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}

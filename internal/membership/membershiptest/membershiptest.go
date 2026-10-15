@@ -4,16 +4,20 @@
 package membershiptest
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -209,4 +213,171 @@ func Platform(tb testing.TB, current, other string) *contracttest.Platform {
 		tb.Fatal(err)
 	}
 	return p
+}
+
+// Fake is a fake platform for wappie on loopback TCP (the development
+// transport, README 2) whose calls a test may refuse every time, watch, or
+// leave unanswered: contracttest's Refuse spoils only the next answer, and
+// Wappie's client asks once more after a signed replay or unavailable.
+type Fake struct {
+	*contracttest.Platform
+	// URL is the base the client is given.
+	URL string
+
+	mu     sync.Mutex
+	refuse map[string]string
+	before map[string]func(arg string)
+	counts map[string]int
+	down   bool
+}
+
+// StartFake serves a fake platform for wappie, with secret as its current
+// one, until the test ends. Its rate is far above the platform's, so a
+// test's burst of calls is never refused for it.
+func StartFake(tb testing.TB, secret string) *Fake {
+	tb.Helper()
+	p, err := contracttest.New(contracttest.Options{
+		Apps:         []contracttest.App{{ID: "wappie", Current: secret}},
+		StrictLabels: true, PerSecond: 10000,
+	})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	f := &Fake{Platform: p, refuse: map[string]string{}, before: map[string]func(string){}, counts: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.serve))
+	tb.Cleanup(srv.Close)
+	f.URL = srv.URL
+	return f
+}
+
+// callOf names a request's call as contracttest does, with its argument
+// (a sub or a workspace).
+func callOf(r *http.Request) (string, string) {
+	rest := strings.TrimPrefix(r.URL.Path, "/contract/v1/")
+	switch {
+	case rest == "feed":
+		return contracttest.CallFeed, ""
+	case rest == "events":
+		return contracttest.CallEvents, ""
+	case strings.HasPrefix(rest, "accounts/"):
+		sub := strings.TrimPrefix(rest, "accounts/")
+		switch r.Method {
+		case http.MethodPut:
+			return contracttest.CallSubscribe, sub
+		case http.MethodGet:
+			return contracttest.CallAccount, sub
+		case http.MethodDelete:
+			return contracttest.CallUnsubscribe, sub
+		}
+	case strings.HasPrefix(rest, "workspaces/"):
+		ws, _, _ := strings.Cut(strings.TrimPrefix(rest, "workspaces/"), "/")
+		return contracttest.CallAccess, ws
+	}
+	return "", ""
+}
+
+func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
+	call, arg := callOf(r)
+	f.mu.Lock()
+	f.counts[call]++
+	down, code, before := f.down, f.refuse[call], f.before[call]
+	f.mu.Unlock()
+	if down {
+		// No answer at all: the connection goes, as when platformd stops.
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				_ = conn.Close() //nolint:errcheck // the point is to close it
+				return
+			}
+		}
+		panic(http.ErrAbortHandler)
+	}
+	if before != nil {
+		before(arg)
+	}
+	if code != "" {
+		if err := f.Refuse("wappie", call, code); err != nil {
+			panic(err)
+		}
+	}
+	f.ServeHTTP(w, r)
+}
+
+// RefuseAlways refuses every request to call with code, signed as the
+// platform signs it, until it is called again with "".
+func (f *Fake) RefuseAlways(call, code string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if code == "" {
+		delete(f.refuse, call)
+		return
+	}
+	f.refuse[call] = code
+}
+
+// Before runs fn with each request's argument before the fake serves a
+// request to call, until it is called again with nil.
+func (f *Fake) Before(call string, fn func(arg string)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if fn == nil {
+		delete(f.before, call)
+		return
+	}
+	f.before[call] = fn
+}
+
+// Count is how many requests to call reached the fake.
+func (f *Fake) Count(call string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.counts[call]
+}
+
+// SetDown makes every request get no answer, or answers again.
+func (f *Fake) SetDown(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down = down
+}
+
+// Logs is a log a test reads back: a text handler's lines, safe for the
+// goroutines that write them.
+type Logs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// Write takes one record's line.
+func (l *Logs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+// Logger writes every level to l.
+func (l *Logs) Logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// String is everything logged so far.
+func (l *Logs) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+// Lines are the lines logged so far that hold every one of parts.
+func (l *Logs) Lines(parts ...string) []string {
+	var out []string
+	for _, line := range strings.Split(l.String(), "\n") {
+		all := line != ""
+		for _, p := range parts {
+			all = all && strings.Contains(line, p)
+		}
+		if all {
+			out = append(out, line)
+		}
+	}
+	return out
 }
