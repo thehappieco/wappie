@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -58,6 +59,13 @@ const (
 // FreshFor is how long a validated document, or a trusted
 // published_through, keeps a sub fresh (README 7.1).
 const FreshFor = time.Hour
+
+// ContractClockSkew is how far past the database's clock a time the
+// platform states may be. The platform and the database read one host's
+// clock, so a time beyond it is a fault: a revocation time past it would
+// be kept for good (they only rise), and a published_through past it would
+// keep every followed sub fresh through an outage.
+const ContractClockSkew = 5 * time.Minute
 
 // ContractPeriod is one stretch of time the contract was off after its
 // first observe.
@@ -153,12 +161,12 @@ type ContractDocWorkspace struct {
 type ContractDocOutcome string
 
 const (
-	// ContractDocStored: a newer version of the stored generation, stored,
-	// and the sub is fresh.
+	// ContractDocStored: a newer version of the stored generation, stored;
+	// an answer's makes the sub fresh.
 	ContractDocStored ContractDocOutcome = "stored"
 	// ContractDocKept: the version Wappie holds already, or a lower one:
-	// the stored document stays, and the sub is fresh all the same (the
-	// plan's DB8: only the document's columns are newer-only).
+	// the stored document stays, and an answer makes the sub fresh all the
+	// same (the plan's DB8: only the document's columns are newer-only).
 	ContractDocKept ContractDocOutcome = "kept"
 	// ContractDocOtherGeneration: of a generation Wappie does not hold:
 	// nothing stored or refreshed, and every contract loop is woken, so
@@ -169,17 +177,41 @@ const (
 	// nothing stored or refreshed, logged at ERROR (README 6.2: an app
 	// refuses, and alerts on, such a document).
 	ContractDocKindChanged ContractDocOutcome = "kind_changed"
+	// ContractDocInvalid: a document the database would not hold as
+	// received (not a JSON object by jsonb's rules: a \u0000 escape, a lone
+	// surrogate, a number past numeric's range), or one with a revocation
+	// time past the database's clock by more than ContractClockSkew:
+	// nothing stored or refreshed, logged at ERROR by sub, and the rest of
+	// the batch goes on.
+	ContractDocInvalid ContractDocOutcome = "invalid"
 )
 
-// StoreDocuments stores documents in one transaction, as the follower's
-// page, the round, a sign-in's PUT and a GET each do (the plan's 4.5, 4.7
-// and 4.8), and says for each, in order, what it did. While Wappie holds no
-// generation (the first answer, and after a gone) the first document's
-// generation is adopted. Each document of the stored generation refreshes
-// its sub's fresh_at and records every workspace it names; its own columns
-// are replaced only by a higher version, and its revocation times only
-// rise. Nothing here applies a document: that is enforce's.
-func (c *Contract) StoreDocuments(ctx context.Context, docs ...ContractDoc) ([]ContractDocOutcome, error) {
+// ContractSource is where a batch of documents came from, which decides
+// whether they make their subs fresh (the plan's DB8).
+type ContractSource int
+
+const (
+	// ContractAnswer is a PUT's or a GET's answer, computed now for its
+	// sub: each document of the stored generation refreshes its sub's
+	// fresh_at, whatever its version.
+	ContractAnswer ContractSource = iota + 1
+	// ContractFeed is a feed page's documents, which refresh nobody: a page
+	// vouches for its subs only through published_through, and only when
+	// more is false (README 6.3), so a backlog replayed after a stuck
+	// publisher never makes a sub fresh.
+	ContractFeed
+)
+
+// StoreDocuments stores documents in one transaction, as the round, a
+// sign-in's PUT and a GET each do (the plan's 4.5, 4.6 and 4.9; the
+// follower's page calls storeDocsTx in its own), and says for each, in
+// order, what it did. While Wappie holds no generation (the first answer,
+// and after a gone) the first document's generation is adopted. Each
+// document of the stored generation records every workspace it names and,
+// when it is an answer, refreshes its sub's fresh_at; its own columns are
+// replaced only by a higher version, and its revocation times only rise.
+// Nothing here applies a document: that is enforce's.
+func (c *Contract) StoreDocuments(ctx context.Context, from ContractSource, docs ...ContractDoc) ([]ContractDocOutcome, error) {
 	var out []ContractDocOutcome
 	err := retryDeadlock(ctx, func() error {
 		return pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
@@ -187,17 +219,20 @@ func (c *Contract) StoreDocuments(ctx context.Context, docs ...ContractDoc) ([]C
 			if err != nil {
 				return err
 			}
-			out, err = storeDocsTx(ctx, tx, state, docs)
+			out, err = storeDocsTx(ctx, tx, state, from, docs)
 			return err
 		})
 	})
 	return out, err
 }
 
-// storeDocsTx stores docs in tx, which holds contract_state's lock (state
-// is what it read under it): accounts in sub order, then their workspaces
-// in id order.
-func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, docs []ContractDoc) ([]ContractDocOutcome, error) {
+// storeDocsTx stores docs, all from one source, in tx, which holds
+// contract_state's lock (state is what it read under it): accounts in sub
+// order, then their workspaces in id order.
+func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, from ContractSource, docs []ContractDoc) ([]ContractDocOutcome, error) {
+	if from != ContractAnswer && from != ContractFeed {
+		return nil, fmt.Errorf("store: unknown document source %d", from)
+	}
 	out := make([]ContractDocOutcome, len(docs))
 	if len(docs) == 0 {
 		return out, nil
@@ -242,6 +277,27 @@ func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, docs []Con
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// What the database would refuse to hold, asked of it before anything
+	// is written, so that one document never aborts the batch: jsonb's
+	// input rules (Go's json.Valid passes a \u0000 escape and lone
+	// surrogates, and invalid UTF-8 would fail the statement itself), and
+	// the latest revocation time it takes for true.
+	raws := make([]string, len(docs))
+	for i, d := range docs {
+		if utf8.Valid(d.Raw) && json.Valid(d.Raw) {
+			raws[i] = string(d.Raw)
+		}
+	}
+	var latest time.Time
+	var objects []bool
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp() + $2::interval,
+		coalesce(array_agg(CASE WHEN pg_input_is_valid(r, 'jsonb') THEN jsonb_typeof(r::jsonb) = 'object' ELSE false END ORDER BY n), '{}')
+		FROM unnest($1::text[]) WITH ORDINALITY AS u(r, n)`, raws, ContractClockSkew).Scan(&latest, &objects); err != nil {
+		return nil, err
+	}
+	if len(objects) != len(docs) {
+		return nil, fmt.Errorf("store: %d verdicts on %d documents", len(objects), len(docs))
+	}
 
 	order := make([]int, len(docs))
 	for i := range order {
@@ -258,6 +314,11 @@ next:
 			other = true
 			continue
 		}
+		if reason := unstorable(d, objects[i], latest); reason != "" {
+			obs.LoggerFrom(ctx).Error("contract: a document cannot be stored", "sub", d.Sub, "version", d.Version, "reason", reason)
+			out[i] = ContractDocInvalid
+			continue
+		}
 		for _, w := range d.Workspaces {
 			if k := kinds[w.ID]; (k.recorded != "" && k.recorded != w.Kind) || (k.local != "" && k.local != w.Kind) {
 				obs.LoggerFrom(ctx).Error("contract: workspace kind changed: the document is not stored",
@@ -266,7 +327,7 @@ next:
 				continue next
 			}
 		}
-		stored, err := storeAccountTx(ctx, tx, d)
+		stored, err := storeAccountTx(ctx, tx, d, from == ContractAnswer)
 		if err != nil {
 			return nil, err
 		}
@@ -297,29 +358,40 @@ next:
 	return out, nil
 }
 
+// unstorable says why d cannot be stored as received, or "": its JSON is
+// not an object jsonb holds, or a revocation time is past latest.
+func unstorable(d ContractDoc, object bool, latest time.Time) string {
+	if !object {
+		return "json"
+	}
+	for _, t := range []struct {
+		name string
+		at   *time.Time
+	}{{"disabled_at", d.DisabledAt}, {"sessions_revoked_at", d.SessionsRevokedAt}, {"credentials_revoked_at", d.CredentialsRevokedAt}} {
+		if t.at != nil && t.at.After(latest) {
+			return t.name + "_ahead"
+		}
+	}
+	return ""
+}
+
 // storeAccountTx writes one document of the stored generation: the row's
 // document columns when its version is higher than the row's (or the row
-// has none), the revocation times at the highest seen, and fresh_at in any
-// case. It reports whether the document was the newer one.
-func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc) (bool, error) {
-	if !json.Valid(d.Raw) {
-		return false, fmt.Errorf("store: the document of %s is not JSON", d.Sub)
-	}
+// has none), the revocation times at the highest seen, and fresh_at when
+// fresh. It reports whether the document was the newer one.
+func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc, fresh bool) (bool, error) {
+	// The row is made or locked in one statement, as Intend makes it: an
+	// Intend inserting it at the same moment is waited for, not collided
+	// with, and a removal in between cannot leave nothing to lock.
 	var generation *uuid.UUID
 	var version *int64
-	err := tx.QueryRow(ctx, `SELECT generation, version FROM contract_accounts WHERE sub = $1 FOR UPDATE`, d.Sub).Scan(&generation, &version)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx, `INSERT INTO contract_accounts (sub, generation, version, status, disabled_at, sessions_revoked_at,
-			credentials_revoked_at, doc, applied_at, fresh_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp(), clock_timestamp())`,
-			d.Sub, d.Generation, d.Version, d.Status, d.DisabledAt, d.SessionsRevokedAt, d.CredentialsRevokedAt, d.Raw)
-		return err == nil, err
-	}
-	if err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO contract_accounts (sub) VALUES ($1)
+		ON CONFLICT (sub) DO UPDATE SET subscribed_at = contract_accounts.subscribed_at
+		RETURNING generation, version`, d.Sub).Scan(&generation, &version); err != nil {
 		return false, err
 	}
 	newer := version == nil || generation == nil || *generation != d.Generation || d.Version > *version
-	_, err = tx.Exec(ctx, `UPDATE contract_accounts SET
+	_, err := tx.Exec(ctx, `UPDATE contract_accounts SET
 		generation = CASE WHEN $2 THEN $3 ELSE generation END,
 		version    = CASE WHEN $2 THEN $4 ELSE version END,
 		status     = CASE WHEN $2 THEN $5 ELSE status END,
@@ -328,9 +400,9 @@ func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc) (bool, error)
 		disabled_at            = greatest(disabled_at, $7),
 		sessions_revoked_at    = greatest(sessions_revoked_at, $8),
 		credentials_revoked_at = greatest(credentials_revoked_at, $9),
-		fresh_at   = clock_timestamp()
+		fresh_at   = CASE WHEN $10 THEN clock_timestamp() ELSE fresh_at END
 		WHERE sub = $1`,
-		d.Sub, newer, d.Generation, d.Version, d.Status, d.Raw, d.DisabledAt, d.SessionsRevokedAt, d.CredentialsRevokedAt)
+		d.Sub, newer, d.Generation, d.Version, d.Status, d.Raw, d.DisabledAt, d.SessionsRevokedAt, d.CredentialsRevokedAt, fresh)
 	return newer, err
 }
 
@@ -427,13 +499,15 @@ func (c *Contract) Orphans(ctx context.Context, after time.Duration, limit int) 
 
 // Unsubscribed lists the subs Wappie holds (people linked to the platform)
 // whose row is missing or carries no version of the stored generation: the
-// round's work (the plan's 4.6).
+// round's work (the plan's 4.6). Those never tried come first, then the
+// oldest attempt: every PUT's Intend moves its sub behind the rest, so subs
+// whose PUTs keep failing never hide the ones after them.
 func (c *Contract) Unsubscribed(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	rows, err := c.pool.Query(ctx, `SELECT pi.sub FROM platform_identities pi
 		CROSS JOIN contract_state s
 		LEFT JOIN contract_accounts a ON a.sub = pi.sub
 		WHERE a.version IS NULL OR a.generation IS DISTINCT FROM s.generation
-		ORDER BY pi.sub LIMIT $1`, limit)
+		ORDER BY a.subscribed_at NULLS FIRST, pi.sub LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -450,20 +524,22 @@ func (c *Contract) Unfollowed(ctx context.Context, sub uuid.UUID) error {
 }
 
 // Fresh says, for each sub, whether it is fresh within d on the database's
-// clock: the later of its last validated document and the last trusted
+// clock: the later of its last answer and the last trusted
 // published_through, the latter only for a sub the platform follows in the
-// stored generation (README 7.1; the plan's DB8). An unknown sub is stale.
+// stored generation (README 7.1; the plan's DB8), and never while it is
+// past the clock by more than ContractClockSkew. An unknown sub is stale.
 func (c *Contract) Fresh(ctx context.Context, d time.Duration, subs ...uuid.UUID) (map[uuid.UUID]bool, error) {
 	out := make(map[uuid.UUID]bool, len(subs))
 	if len(subs) == 0 {
 		return out, nil
 	}
 	rows, err := c.pool.Query(ctx, `SELECT q.sub, coalesce(greatest(a.fresh_at,
-			CASE WHEN a.version IS NOT NULL AND a.generation = s.generation THEN s.published_through END)
+			CASE WHEN a.version IS NOT NULL AND a.generation = s.generation
+			      AND s.published_through <= clock_timestamp() + $3::interval THEN s.published_through END)
 			> clock_timestamp() - $2::interval, false)
 		FROM unnest($1::uuid[]) AS q(sub)
 		CROSS JOIN contract_state s
-		LEFT JOIN contract_accounts a ON a.sub = q.sub`, subs, d)
+		LEFT JOIN contract_accounts a ON a.sub = q.sub`, subs, d, ContractClockSkew)
 	if err != nil {
 		return nil, err
 	}

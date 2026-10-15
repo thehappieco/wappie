@@ -25,10 +25,11 @@
 --                       document carries none), newer versions only, with
 --                       the highest disabled_at, sessions_revoked_at and
 --                       credentials_revoked_at ever seen. fresh_at is the
---                       database's clock at the last validated document for
---                       the sub, whatever its version; never a refusal. No
---                       foreign key: a closed account's row outlives its
---                       user.
+--                       database's clock at the last answer to a PUT or GET
+--                       for the sub, whatever its version; never a refusal,
+--                       and never a feed page's document (a page vouches
+--                       through published_through). No foreign key: a
+--                       closed account's row outlives its user.
 --   contract_workspaces every workspace a document has named: a platform
 --                       workspace for good. Its kind never changes; its
 --                       status moves only with a higher wversion. The
@@ -52,7 +53,9 @@
 --                       written already ledgered, as sync_paused is: a
 --                       restore replays deletions, not strandings.
 --   item_mails          the self-hosted mailer's queue, one row per event
---                       and recipient. Forced row-level security.
+--                       and recipient: an event of that workspace and a
+--                       member of it, so a removed member's mails go with
+--                       the membership. Forced row-level security.
 --   device_notices      the owners' notices number_stranded and
 --                       number_moved_out.
 --   devices.pause_cause why a paused number is paused: a person's or a key's
@@ -144,7 +147,8 @@
 --          ADD CONSTRAINT device_notices_kind_check CHECK (kind IN ('sync_paused', 'number_deleted'));
 --      DROP INDEX item_events_unsent;
 --      DROP INDEX item_events_unmailed;
---      ALTER TABLE item_events DROP CONSTRAINT item_events_delivery_shape, DROP CONSTRAINT item_events_stranded_shape,
+--      ALTER TABLE item_events DROP CONSTRAINT item_events_event_tenant,
+--          DROP CONSTRAINT item_events_delivery_shape, DROP CONSTRAINT item_events_stranded_shape,
 --          DROP COLUMN mailed_at, DROP COLUMN reject_code, DROP COLUMN parked_at, DROP COLUMN coalesced_into,
 --          DROP COLUMN outcome, DROP COLUMN settled_at, DROP COLUMN reader_user_ids, DROP COLUMN cause, DROP COLUMN person_sub,
 --          DROP CONSTRAINT item_events_type_check,
@@ -210,7 +214,8 @@ CREATE TABLE contract_accounts (
     -- The document as received.
     doc                    jsonb       CHECK (doc IS NULL OR jsonb_typeof(doc) = 'object'),
     applied_at             timestamptz,
-    -- The last validated document for this sub, on the database's clock.
+    -- The last PUT's or GET's answer for this sub, on the database's
+    -- clock.
     fresh_at               timestamptz,
     CHECK ((generation IS NULL) = (version IS NULL)),
     CHECK ((doc IS NULL) = (status IS NULL))
@@ -264,7 +269,10 @@ ALTER TABLE item_events
         AND (outcome IS DISTINCT FROM 'coalesced' OR coalesced_into IS NOT NULL)
         AND (coalesced_into IS NULL OR outcome IS NULL OR outcome = 'coalesced')
         AND NOT (settled_at IS NOT NULL AND parked_at IS NOT NULL)
-        AND (parked_at IS NULL) = (reject_code IS NULL));
+        AND (parked_at IS NULL) = (reject_code IS NULL)),
+    -- What item_mails names an event by, so a mail and its event share a
+    -- workspace.
+    ADD CONSTRAINT item_events_event_tenant UNIQUE (event_id, tenant_id);
 CREATE INDEX item_events_unsent   ON item_events (tenant_id, seq) WHERE settled_at IS NULL AND parked_at IS NULL;
 CREATE INDEX item_events_unmailed ON item_events (tenant_id, seq) WHERE mailed_at IS NULL;
 
@@ -329,10 +337,14 @@ CREATE TRIGGER contract_dirty_device AFTER INSERT OR DELETE ON devices
     FOR EACH ROW EXECUTE FUNCTION contract_mark_dirty();
 -- devices changes with every connection: only what a snapshot shows wakes
 -- anyone, and a status only when it enters, leaves or moves within the
--- logged-out and banned states.
+-- logged-out and banned states. A number enters the snapshot with its
+-- first identity (a LID may come alone) or its first connection, so those
+-- wake it once; a later connection time never does.
 CREATE TRIGGER contract_dirty_device_update AFTER UPDATE ON devices FOR EACH ROW
     WHEN (OLD.label IS DISTINCT FROM NEW.label OR OLD.push_name IS DISTINCT FROM NEW.push_name
-       OR OLD.pn IS DISTINCT FROM NEW.pn OR OLD.paused IS DISTINCT FROM NEW.paused
+       OR OLD.lid IS DISTINCT FROM NEW.lid OR OLD.pn IS DISTINCT FROM NEW.pn
+       OR (OLD.last_connected_at IS NULL) IS DISTINCT FROM (NEW.last_connected_at IS NULL)
+       OR OLD.paused IS DISTINCT FROM NEW.paused
        OR OLD.pause_cause IS DISTINCT FROM NEW.pause_cause OR OLD.deleted_at IS DISTINCT FROM NEW.deleted_at
        OR OLD.purge_after IS DISTINCT FROM NEW.purge_after OR OLD.tenant_id IS DISTINCT FROM NEW.tenant_id
        OR OLD.current_epoch IS DISTINCT FROM NEW.current_epoch
@@ -371,9 +383,9 @@ ALTER TABLE security_events DROP CONSTRAINT security_events_kind_check,
         CHECK (kind IN ('platform_account_key_changed', 'platform_linked', 'platform_home_taken'));
 
 CREATE TABLE item_mails (
-    event_id  uuid        NOT NULL REFERENCES item_events(event_id) ON DELETE CASCADE,
+    event_id  uuid        NOT NULL,
     tenant_id uuid        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    user_id   uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id   uuid        NOT NULL,
     role      text        NOT NULL CHECK (role IN ('owner', 'reader')),
     queued_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     -- Past a day's cap, the next day's.
@@ -381,7 +393,12 @@ CREATE TABLE item_mails (
     tries     int         NOT NULL DEFAULT 0,
     sent_at   timestamptz,
     failed_at timestamptz,
-    PRIMARY KEY (event_id, user_id)
+    PRIMARY KEY (event_id, user_id),
+    -- The event is this workspace's (a foreign key's check ignores the
+    -- policies), and the recipient a member of it: a waiting mail goes when
+    -- its person's membership ends (README 9.1).
+    FOREIGN KEY (event_id, tenant_id) REFERENCES item_events(event_id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (tenant_id, user_id) REFERENCES workspace_memberships(tenant_id, user_id) ON DELETE CASCADE
 );
 ALTER TABLE item_mails ENABLE ROW LEVEL SECURITY;
 ALTER TABLE item_mails FORCE ROW LEVEL SECURITY;

@@ -208,6 +208,9 @@ func TestLedgerReplay(t *testing.T) {
 	t.Run("an early purge and an account's closing", func(t *testing.T) {
 		w := newDelWorld(t)
 		early, closing := w.number(t, "Cedo"), w.number(t, "Fechada")
+		// The restore was taken while a person had stopped one of them: the
+		// exclusion's cause replaces theirs.
+		w.pause(t, early, store.PauseActor{User: w.owner})
 		deletedAt, purgeAfter := w.window(t, "-2 days")
 		purgedAt := w.dbTime(t, `$1::timestamptz + interval '1 hour'`, deletedAt)
 		closedAt := w.dbTime(t, `clock_timestamp() - interval '1 day'`)

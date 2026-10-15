@@ -98,8 +98,9 @@ func (w *dirtyWatch) heard(t *testing.T, tenants ...uuid.UUID) map[string]int {
 // TestDirtyNotify is the plan's TB13: each change a workspace's snapshot
 // shows notifies that workspace once per transaction (a move both of
 // them), a person's status and a new platform link notify "all", and what
-// a snapshot does not show (a number going online or offline, its
-// connection time, a workspace's byte counters) notifies nobody.
+// a snapshot does not show (a number going online or offline, a later
+// connection time, a workspace's byte counters) notifies nobody. A number
+// enters the snapshot with its first identity or connection.
 func TestDirtyNotify(t *testing.T) {
 	a := newArchive(t)
 	ctx := context.Background()
@@ -141,6 +142,11 @@ func TestDirtyNotify(t *testing.T) {
 
 	// The number, and what its snapshot shows of it.
 	sql("its status online", none, `UPDATE devices SET status='online' FROM change WHERE id=change.device`)
+	sql("a first connection", once, `UPDATE devices SET last_connected_at=now() FROM change WHERE id=change.device`)
+	sql("a later connection time", none, `UPDATE devices SET last_connected_at=now()+interval '1 minute', status_reason='x'
+		FROM change WHERE id=change.device`)
+	sql("a LID, alone", once, `UPDATE devices SET lid='123456789@lid' FROM change WHERE id=change.device`)
+	sql("the same LID", none, `UPDATE devices SET lid='123456789@lid' FROM change WHERE id=change.device`)
 	sql("a label", once, `UPDATE devices SET label='Vendas' FROM change WHERE id=change.device`)
 	sql("the same label", none, `UPDATE devices SET label='Vendas' FROM change WHERE id=change.device`)
 	sql("a push name", once, `UPDATE devices SET push_name='Loja' FROM change WHERE id=change.device`)
@@ -149,7 +155,7 @@ func TestDirtyNotify(t *testing.T) {
 	sql("its cause", once, `UPDATE devices SET pause_cause='move' FROM change WHERE id=change.device`)
 	sql("a resume", once, `UPDATE devices SET paused=false FROM change WHERE id=change.device`)
 	sql("online to offline", none, `UPDATE devices SET status='offline' FROM change WHERE id=change.device`)
-	sql("a connection time", none, `UPDATE devices SET last_connected_at=now(), status_reason='x' FROM change WHERE id=change.device`)
+	sql("another connection time", none, `UPDATE devices SET last_connected_at=now(), status_reason='y' FROM change WHERE id=change.device`)
 	sql("logged out", once, `UPDATE devices SET status='logged_out' FROM change WHERE id=change.device`)
 	sql("banned after logged out", once, `UPDATE devices SET status='banned' FROM change WHERE id=change.device`)
 	sql("offline after banned", once, `UPDATE devices SET status='offline' FROM change WHERE id=change.device`)
