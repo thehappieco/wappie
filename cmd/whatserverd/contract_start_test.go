@@ -17,7 +17,10 @@ import (
 
 	"whatserver2/internal/config"
 	"whatserver2/internal/membership/membershiptest"
+	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
+	"whatserver2/internal/pgtest"
+	"whatserver2/internal/store"
 	"whatserver2/internal/wsapi"
 )
 
@@ -164,5 +167,30 @@ func TestStartContract(t *testing.T) {
 	// typed nil the routes would take for one.
 	if h := (&app{log: b.log, ws: &wsapi.Server{}}).authHandler(); h.Membership != nil {
 		t.Fatal("a typed nil Membership")
+	}
+}
+
+// The start line carries the mode the database holds, which B1's and
+// B2a's post-start gates read (contract: mode=off transport=… secret=…):
+// off on a database never switched, observe once switched.
+func TestContractStartLine(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := func() string {
+		t.Helper()
+		var logs lockedBuffer
+		a := &app{log: slog.New(slog.NewTextHandler(&logs, nil)), pools: &pg.Pools{API: pool}, ws: &wsapi.Server{}}
+		a.startContract(ctx, make(chan os.Signal, 1))
+		return logs.String()
+	}
+	if out := start(); !strings.Contains(out, `msg="contract: mode=off transport=none secret=missing"`) {
+		t.Fatalf("the start line of a database never switched: %s", out)
+	}
+	if _, err := store.NewContract(pool).SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	if out := start(); !strings.Contains(out, `msg="contract: mode=observe transport=none secret=missing"`) {
+		t.Fatalf("the start line once observing: %s", out)
 	}
 }

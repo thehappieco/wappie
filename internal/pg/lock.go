@@ -76,7 +76,8 @@ func (l *Locker) TryLock(ctx context.Context, key string) (release func(), ok bo
 
 // HoldHeartbeat is how often a held lock's connection is asked whether it
 // still holds the lock, when Hold is given no interval of its own: a holder
-// whose lock went quietly is stopped within it.
+// whose lock went quietly is stopped within it, and one whose link went
+// silent within twice it.
 const HoldHeartbeat = 10 * time.Second
 
 // ErrLockLost is the cause of a Held's context once its lock is gone: its
@@ -87,9 +88,10 @@ var ErrLockLost = errors.New("pg: the advisory lock is no longer held")
 // it, on a connection of its own (opened with the pool's configuration but
 // outside it, so it never takes a request's slot). Its Context ends the
 // moment the lock may no longer be held: the connection's loss (a crash of
-// the server process, pg_terminate_backend, a network cut) is seen at once,
-// since the connection always waits on the server, and a lock that went
-// quietly is seen within the heartbeat. Work done under the lock runs under
+// the server process, pg_terminate_backend, a closed link) is seen at once,
+// since the connection always waits on the server; a lock that went
+// quietly within the heartbeat, which runs every interval however many
+// notices arrive, and a link that went silent within twice it. Work done under the lock runs under
 // that context, so it stops when the lock goes; and every write it makes to
 // state other holders share must still be compare-and-set, since a commit
 // already sent may land after the lock is gone.
@@ -160,14 +162,19 @@ func (h *Held) Release() {
 	<-h.stopped
 }
 
-// watch waits on the connection for notices, which it delivers, and asks,
-// every interval without one, whether the lock is still held. Any failure of
-// the connection, or a lock the server no longer lists, ends the holder's
-// context. On the way out the lock is released and the connection closed.
+// watch waits on the connection for notices, which it delivers, and asks
+// every interval, notices or none, whether the lock is still held, waiting
+// for the answer at most that interval (and at least a second: a busy
+// server is not a lost lock). So a connection that went silent (a
+// half-open link, which the server's statement_timeout cannot end) fails
+// within twice the interval rather than when TCP gives up. Any failure of the
+// connection, or a lock the server no longer lists, ends the holder's
+// context. On the way out the lock is released, unless it is already lost,
+// and the connection closed.
 func (h *Held) watch(conn *pgx.Conn, key int64, every time.Duration, closeConn func()) {
 	defer close(h.stopped)
 	defer func() {
-		if !conn.IsClosed() {
+		if !conn.IsClosed() && !errors.Is(context.Cause(h.ctx), ErrLockLost) {
 			unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(h.ctx), 5*time.Second)
 			//nolint:errcheck // closing the connection frees the lock anyway
 			_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, key)
@@ -178,37 +185,45 @@ func (h *Held) watch(conn *pgx.Conn, key int64, every time.Duration, closeConn f
 	// pg_locks lists a bigint key as its high and low 32 bits.
 	//nolint:gosec // G115: the key's bits, split as pg_locks shows them
 	hi, lo := int64(uint32(uint64(key)>>32)), int64(uint32(uint64(key)))
+	beat := time.Now()
 	for {
-		wait, cancel := context.WithTimeout(h.ctx, every)
-		n, err := conn.WaitForNotification(wait)
+		if left := every - time.Since(beat); left > 0 {
+			wait, cancel := context.WithTimeout(h.ctx, left)
+			n, err := conn.WaitForNotification(wait)
+			cancel()
+			if h.ctx.Err() != nil {
+				return
+			}
+			switch {
+			case err == nil:
+				select {
+				case h.notes <- n:
+				case <-h.ctx.Done():
+					return
+				}
+				continue
+			case !errors.Is(err, context.DeadlineExceeded) || conn.IsClosed():
+				h.cancel(fmt.Errorf("%w: %w", ErrLockLost, err))
+				return
+			}
+		}
+		ask, cancel := context.WithTimeout(h.ctx, max(every, time.Second))
+		var held bool
+		err := conn.QueryRow(ask, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = pg_backend_pid()
+			AND locktype = 'advisory' AND granted AND classid = $1::bigint::oid AND objid = $2::bigint::oid AND objsubid = 1)`,
+			hi, lo).Scan(&held)
 		cancel()
-		if h.ctx.Err() != nil {
-			return
-		}
 		switch {
-		case err == nil:
-			select {
-			case h.notes <- n:
-			case <-h.ctx.Done():
-				return
-			}
-		case errors.Is(err, context.DeadlineExceeded) && !conn.IsClosed():
-			var held bool
-			err := conn.QueryRow(h.ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = pg_backend_pid()
-				AND locktype = 'advisory' AND granted AND classid = $1::bigint::oid AND objid = $2::bigint::oid AND objsubid = 1)`,
-				hi, lo).Scan(&held)
-			if err != nil {
-				h.cancel(fmt.Errorf("%w: the heartbeat failed: %w", ErrLockLost, err))
-				return
-			}
-			if !held {
-				h.cancel(fmt.Errorf("%w: the server no longer lists it", ErrLockLost))
-				return
-			}
-		default:
-			h.cancel(fmt.Errorf("%w: %w", ErrLockLost, err))
+		case h.ctx.Err() != nil:
+			return
+		case err != nil:
+			h.cancel(fmt.Errorf("%w: the heartbeat failed: %w", ErrLockLost, err))
+			return
+		case !held:
+			h.cancel(fmt.Errorf("%w: the server no longer lists it", ErrLockLost))
 			return
 		}
+		beat = time.Now()
 	}
 }
 

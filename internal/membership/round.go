@@ -2,6 +2,7 @@ package membership
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,13 +68,16 @@ func (p *pacer) wait(ctx context.Context) error {
 // intent row, at the round's pace, and its document stored as an answer.
 // It reports done once none is left, recording round_generation; a sub
 // whose PUT failed (no answer, a refusal, a not_found, which never means
-// closed) is tried again by the next pass, after the subs not yet tried.
+// closed) is tried again by the next pass, after the subs not yet tried,
+// and the pass records the failure's class (RoundFailed), which contract
+// status --check reports once the run has lasted.
 func (m *Members) Round(ctx context.Context) (bool, error) {
 	if !m.connected() {
 		return false, ErrUnavailable
 	}
 	tried := map[uuid.UUID]bool{}
 	pace := pacer{every: m.pace()}
+	failed := ""
 	for {
 		subs, err := m.Contract.Unsubscribed(ctx, roundBatch)
 		if err != nil {
@@ -97,13 +101,33 @@ func (m *Members) Round(ctx context.Context) (bool, error) {
 			}
 			tried[sub], progressed = true, true
 			// subscribe logs a failure; the next pass tries it again.
-			_, _ = m.subscribe(ctx, sub, true) //nolint:errcheck // logged, and retried by the next pass
+			if _, err := m.subscribe(ctx, sub, true); err != nil {
+				if ctx.Err() != nil {
+					return false, ctx.Err()
+				}
+				failed = putClass(err)
+			}
 		}
 		if !progressed {
 			// Every sub left was tried in this pass and has no document.
-			return false, nil
+			if failed == "" {
+				// Each PUT's document was stored, and a restart came in
+				// between: no failure, and the next pass looks again.
+				return false, nil
+			}
+			return false, m.Contract.RoundFailed(ctx, failed)
 		}
 	}
+}
+
+// putClass is a failed PUT's class, as contract status shows it: a
+// document the store refused by its outcome, else the call's (feedClass).
+func putClass(err error) string {
+	var notStored errNotStored
+	if errors.As(err, &notStored) {
+		return "not_stored:" + string(notStored.outcome)
+	}
+	return feedClass(err)
 }
 
 // Sweep is one pass of the sweep, the only path that unsubscribes an

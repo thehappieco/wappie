@@ -28,7 +28,8 @@ import (
 // (10 minutes without a read, the plan's 18): a long-poll answers within
 // its wait (25 s); a process that does not lead tries the lock every
 // Retry (30 s); a leader whose connection goes stops at once, one whose
-// lock went quietly within the heartbeat (10 s); after a failure the feed
+// lock went quietly within the heartbeat (10 s), one whose link went
+// silent within twice it; after a failure the feed
 // is asked again within BackoffMax (60 s); and the round and the sweep run
 // beside the feed, never in its way.
 
@@ -48,6 +49,10 @@ const (
 	feedBackoffMax = time.Minute
 	// feedSilentAfter is how long without a page before one ERROR.
 	feedSilentAfter = 15 * time.Minute
+	// roundIncompleteAfter is how long the round's passes may leave held
+	// subs with no document (their PUTs failing) before one ERROR, and
+	// before contract status --check reports them.
+	roundIncompleteAfter = 15 * time.Minute
 	// sweepEvery is how often the sweep runs, at most OrphanAfter apart:
 	// an orphan is unfollowed within OrphanAfter and this of its last PUT,
 	// well inside the 90 minutes after which the platform counts its
@@ -75,10 +80,10 @@ type Leader struct {
 	// The timings, the defaults above when zero (tests shorten them).
 	Retry, Heartbeat, ModeCheck time.Duration
 	// Wait is the long-poll's, in seconds (kc.MaxWait when zero).
-	Wait                   int
-	BackoffMin, BackoffMax time.Duration
-	SilentAfter            time.Duration
-	SweepEvery, RoundEvery time.Duration
+	Wait                         int
+	BackoffMin, BackoffMax       time.Duration
+	SilentAfter, IncompleteAfter time.Duration
+	SweepEvery, RoundEvery       time.Duration
 }
 
 func or[T comparable](v, def T) T {
@@ -279,12 +284,16 @@ func kick(c chan struct{}) {
 // 4.6): the round at once, then again after a backoff while subs are left
 // (within BackoffMax), every RoundEvery once it is done, and at once when
 // kicked (a restart, a GET's not_found); the sweep at the leader's start
-// and every SweepEvery.
+// and every SweepEvery. A run of passes whose PUTs keep failing logs one
+// ERROR once it has lasted IncompleteAfter, and records it for contract
+// status --check (DB24: someone is told when the contract fails).
 func (l *Leader) rounds(ctx context.Context, kicked <-chan struct{}) {
 	m := l.Members
 	minBack, maxBack := or(l.BackoffMin, feedBackoffMin), or(l.BackoffMax, feedBackoffMax)
 	backoff := minBack
 	sweepAt := time.Now()
+	var failingSince time.Time
+	told := false
 	for ctx.Err() == nil {
 		done, err := m.Round(ctx)
 		if err != nil && ctx.Err() == nil {
@@ -292,9 +301,19 @@ func (l *Leader) rounds(ctx context.Context, kicked <-chan struct{}) {
 		}
 		pause := or(l.RoundEvery, roundEvery)
 		if done {
-			backoff = minBack
+			backoff, failingSince, told = minBack, time.Time{}, false
 		} else {
 			pause, backoff = backoff, min(backoff*2, maxBack)
+		}
+		if !done && err == nil {
+			// Every sub left was PUT in this pass, and some got no document.
+			if failingSince.IsZero() {
+				failingSince = time.Now()
+			}
+			if !told && time.Since(failingSince) >= or(l.IncompleteAfter, roundIncompleteAfter) {
+				told = true
+				l.incomplete(ctx, failingSince)
+			}
 		}
 		if !time.Now().Before(sweepAt) {
 			if n, err := m.Sweep(ctx); err != nil && ctx.Err() == nil {
@@ -311,6 +330,19 @@ func (l *Leader) rounds(ctx context.Context, kicked <-chan struct{}) {
 		case <-kicked:
 		case <-time.After(pause):
 		}
+	}
+}
+
+// incomplete logs, and records for contract status --check, the round's
+// ERROR: held subs whose PUTs have failed since since.
+func (l *Leader) incomplete(ctx context.Context, since time.Time) {
+	attrs := []any{"since", since.UTC().Format(time.RFC3339)}
+	if state, err := l.Members.Contract.State(ctx); err == nil {
+		attrs = append(attrs, "class", state.RoundError)
+	}
+	l.log().Error("contract: held subs still have no document of this generation; their PUTs fail", attrs...)
+	if err := l.Members.Contract.RecordError(ctx, store.ContractErrorRoundIncomplete); err != nil && ctx.Err() == nil {
+		l.log().Warn("contract: could not record an ERROR", "error", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +38,9 @@ type ContractPage struct {
 	PublishedThrough time.Time
 	// Docs are the page's documents, in its order.
 	Docs []ContractDoc
+	// Unreadable are the subs of the page's documents the follower could
+	// not read (and logged at ERROR): Wappie does not hold their latest.
+	Unreadable []uuid.UUID
 }
 
 // ContractPageResult is what committing a page did.
@@ -59,6 +63,7 @@ const (
 	ContractErrorPublishedAhead  = "published_through_ahead"
 	ContractErrorDocumentInvalid = "document_invalid"
 	ContractErrorKindChanged     = "kind_changed"
+	ContractErrorRoundIncomplete = "round_incomplete"
 )
 
 // ErrPageGeneration is a page of another generation than the one the
@@ -74,7 +79,11 @@ var ErrPageGeneration = errors.New("store: a feed page of another generation is 
 // only when more is false, published_through, unless it is past the
 // database's clock by more than ContractClockSkew (then it is kept as it
 // was, and logged and recorded at ERROR). A document that cannot be stored
-// never holds the page back: the others and the cursor commit.
+// (invalid, kind_changed) or read (Unreadable) never holds the page back:
+// the others and the cursor commit, and that sub's version is forgotten,
+// as a GET's not_found forgets it (Unfollowed), so the page's
+// published_through does not vouch for the older document Wappie still
+// holds, and the round PUTs the sub again.
 func (c *Contract) CommitPage(ctx context.Context, p ContractPage) (ContractPageResult, error) {
 	if p.SeenGeneration != nil && *p.SeenGeneration != p.Generation {
 		return ContractPageResult{}, ErrPageGeneration
@@ -104,6 +113,16 @@ func (c *Contract) CommitPage(ctx context.Context, p ContractPage) (ContractPage
 			if res.Outcomes, err = storeDocsTx(ctx, tx, state, ContractFeed, p.Docs); err != nil {
 				return err
 			}
+			// The subs whose latest document Wappie does not hold.
+			behind := slices.Clone(p.Unreadable)
+			for i, o := range res.Outcomes {
+				if o == ContractDocInvalid || o == ContractDocKindChanged {
+					behind = append(behind, p.Docs[i].Sub)
+				}
+			}
+			if err := forgetVersionsTx(ctx, tx, behind); err != nil {
+				return err
+			}
 			if err := tx.QueryRow(ctx, `SELECT $1::timestamptz > clock_timestamp() + $2::interval`,
 				p.PublishedThrough, ContractClockSkew).Scan(&res.Ahead); err != nil {
 				return err
@@ -122,6 +141,9 @@ func (c *Contract) CommitPage(ctx context.Context, p ContractPage) (ContractPage
 			}
 			res.Committed = true
 			class := ""
+			if len(p.Unreadable) > 0 {
+				class = ContractErrorDocumentInvalid
+			}
 			if !p.More && res.Ahead {
 				obs.LoggerFrom(ctx).Error("contract: published_through ahead of the clock; the last trusted one is kept",
 					"generation", p.Generation, "cursor", p.NextAfter)
@@ -142,6 +164,19 @@ func (c *Contract) CommitPage(ctx context.Context, p ContractPage) (ContractPage
 		})
 	})
 	return res, err
+}
+
+// forgetVersionsTx forgets the stored version of each of subs, in sub
+// order (DB23), keeping each row's document and fresh_at.
+func forgetVersionsTx(ctx context.Context, tx pgx.Tx, subs []uuid.UUID) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_accounts WHERE sub = ANY ($1) ORDER BY sub FOR UPDATE`, subs); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE contract_accounts SET generation = NULL, version = NULL WHERE sub = ANY ($1)`, subs)
+	return err
 }
 
 func sameGeneration(a, b *uuid.UUID) bool {

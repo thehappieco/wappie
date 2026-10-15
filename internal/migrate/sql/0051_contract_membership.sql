@@ -17,8 +17,9 @@
 --                       published_through a page with more=false vouched
 --                       for, the generation in which every person held
 --                       has been subscribed (round_generation), and the
---                       leader's last read of the feed, its failures and
---                       its last ERROR, for contract status.
+--                       leader's last read of the feed, its failures, the
+--                       round's failing PUTs and its last ERROR, for
+--                       contract status.
 --   contract_accounts   one row per subscription Wappie made. The intent row
 --                       (sub, subscribed_at) is committed before each PUT,
 --                       so every subscription has a row the sweep can see;
@@ -202,6 +203,11 @@ CREATE TABLE contract_state (
     feed_read_at         timestamptz,
     feed_error           text,
     feed_error_at        timestamptz,
+    -- Since when, and why (the last failed PUT's class), the round's passes
+    -- leave held subs with no document of the stored generation; NULL once
+    -- a pass leaves none.
+    round_error          text,
+    round_error_at       timestamptz,
     -- The last contract ERROR the leader recorded, by class: --check
     -- reports one from the last day (the journal is not the service user's
     -- to read).
@@ -209,6 +215,7 @@ CREATE TABLE contract_state (
     error_class          text,
     updated_at           timestamptz NOT NULL DEFAULT clock_timestamp(),
     CHECK ((feed_error IS NULL) = (feed_error_at IS NULL)),
+    CHECK ((round_error IS NULL) = (round_error_at IS NULL)),
     CHECK ((error_class IS NULL) = (error_at IS NULL)),
     CHECK (mode = 'off' OR events_from IS NOT NULL),
     CHECK ((events_paused_at IS NULL) = (mode = 'observe') OR events_from IS NULL)

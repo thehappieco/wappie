@@ -105,6 +105,15 @@ func (f *follower) run(ctx context.Context) {
 			fail(feedClass(err), callAttrs(err)...)
 			continue
 		}
+		gen, err := uuid.Parse(page.Generation)
+		restart := err == nil && state.Generation != nil && *state.Generation != gen
+		if err != nil || (!restart && !pageMoves(page, state.FeedCursor)) {
+			// The kit validated it, signature and shape; a page that is not
+			// one README 6.3 describes is no page all the same, and taking
+			// it would have the follower ask again at once, for nothing.
+			fail("unverified")
+			continue
+		}
 		if failing {
 			failing, silent, backoff = false, false, minBack
 			l.log().Info("contract: the feed answers again")
@@ -115,13 +124,7 @@ func (f *follower) run(ctx context.Context) {
 			}
 		}
 		lastPage = time.Now()
-		gen, err := uuid.Parse(page.Generation)
-		if err != nil {
-			// The kit validated it; a page that is not one is no page.
-			fail("unverified")
-			continue
-		}
-		if state.Generation != nil && *state.Generation != gen {
+		if restart {
 			if err := f.restart(ctx, state, &gen, page.GenerationConfirmed, "generation"); err != nil {
 				fail("store", "error", err)
 			}
@@ -131,6 +134,22 @@ func (f *follower) run(ctx context.Context) {
 			fail("store", "error", err)
 		}
 	}
+}
+
+// pageMoves reports whether a page asked from cursor is one README 6.3
+// describes, which the kit does not check: its next_after is never behind
+// the cursor, and a page with more ends at its last item's seq, past the
+// cursor. A signed page that is not, committed, would have the follower
+// call again at once with nothing moved: a busy loop of the app's calls,
+// which share the platform's 50 a second with every sign-in's PUT.
+func pageMoves(page kc.Feed, cursor int64) bool {
+	switch {
+	case page.NextAfter < cursor:
+		return false
+	case page.More:
+		return len(page.Items) > 0 && page.NextAfter == page.Items[len(page.Items)-1].Seq && page.NextAfter > cursor
+	}
+	return true
 }
 
 // feedClass is a failed feed call's class, as contract status shows it.
@@ -180,10 +199,16 @@ func (f *follower) restart(ctx context.Context, state store.ContractState, gen *
 func (f *follower) commit(ctx context.Context, state store.ContractState, gen uuid.UUID, page kc.Feed) error {
 	l, m := f.l, f.l.Members
 	docs := make([]store.ContractDoc, 0, len(page.Items))
+	var unreadable []uuid.UUID
 	for _, it := range page.Items {
 		d, err := DocOf(it.Doc)
 		if err != nil {
+			// Its sub's version is forgotten when the sub can be told (the
+			// kit checked it): the round asks for its document again.
 			l.log().Error("contract: a feed document cannot be read; it is skipped", "seq", it.Seq)
+			if sub, err := uuid.Parse(it.Doc.Sub); err == nil {
+				unreadable = append(unreadable, sub)
+			}
 			continue
 		}
 		docs = append(docs, d)
@@ -191,6 +216,7 @@ func (f *follower) commit(ctx context.Context, state store.ContractState, gen uu
 	res, err := m.Contract.CommitPage(ctx, store.ContractPage{
 		After: state.FeedCursor, SeenGeneration: state.Generation, Generation: gen, Confirmed: page.GenerationConfirmed,
 		NextAfter: page.NextAfter, More: page.More, PublishedThrough: page.PublishedThrough.Time, Docs: docs,
+		Unreadable: unreadable,
 	})
 	switch {
 	case err != nil:

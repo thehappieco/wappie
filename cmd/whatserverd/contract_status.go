@@ -45,6 +45,9 @@ const (
 	// checkErrors: how far back a contract ERROR the leader recorded is
 	// reported.
 	checkErrors = 24 * time.Hour
+	// checkRound: how long the round's passes may leave held subs with no
+	// document, their PUTs failing, while on (the leader's ERROR's bound).
+	checkRound = 15 * time.Minute
 )
 
 // defaultSealedSecret is where the installer seals the current secret
@@ -112,6 +115,9 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		round = "done"
 	}
 	w.f("subs: held %d, followed %d, subscriptions %d, round %s", st.Held, st.Followed, st.Accounts, round)
+	if s.RoundErrorAt != nil {
+		w.f("round: PUTs failing since %s (%s)", ago(st.Now, s.RoundErrorAt), s.RoundError)
+	}
 	if s.ErrorAt != nil {
 		w.f("last error: %s, %s", s.ErrorClass, ago(st.Now, s.ErrorAt))
 	} else {
@@ -162,23 +168,35 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 		out = append(out, fmt.Sprintf("a contract ERROR in the last day: %s at %s", s.ErrorClass, stamp(*s.ErrorAt)))
 	}
 	if s.On() {
-		// The leader starts within seconds of the switch: a feed never
-		// read is a finding once the switch is older than the bound.
-		since := s.FeedReadAt
-		if since == nil {
-			since = &s.ModeChangedAt
+		// Each bound counts from the later of its time and the switch to
+		// the mode: the leader starts within seconds of it, so a feed never
+		// read, or last read before an off period, is a finding only once
+		// the switch is older than the bound.
+		since := func(at *time.Time) *time.Time {
+			if at == nil || at.Before(s.ModeChangedAt) {
+				return &s.ModeChangedAt
+			}
+			return at
 		}
-		if older(since, checkFeedRead) {
+		if older(since(s.FeedReadAt), checkFeedRead) {
 			out = append(out, fmt.Sprintf("the feed was last read %s (the platform alerts after 10 minutes)", ago(now, s.FeedReadAt)))
 		}
-		if pt := s.PublishedThrough; (pt == nil && now.Sub(s.ModeChangedAt) > checkPublished) || (pt != nil && now.Sub(*pt) > checkPublished) {
-			out = append(out, fmt.Sprintf("published_through is %s", ago(now, pt)))
+		if older(since(s.PublishedThrough), checkPublished) {
+			out = append(out, fmt.Sprintf("published_through is %s", ago(now, s.PublishedThrough)))
+		}
+		if s.RoundErrorAt != nil && st.Held > st.Followed && older(since(s.RoundErrorAt), checkRound) {
+			out = append(out, fmt.Sprintf("%d held subs not followed: their PUTs have failed since %s (%s)",
+				st.Held-st.Followed, stamp(*s.RoundErrorAt), s.RoundError))
 		}
 		for _, ws := range st.Workspaces {
 			if ws.Status == "closed" {
 				continue
 			}
-			if (ws.SnapshotOKAt == nil && now.Sub(ws.NamedAt) > checkSnapshot) || (ws.SnapshotOKAt != nil && now.Sub(*ws.SnapshotOKAt) > checkSnapshot) {
+			last := ws.SnapshotOKAt
+			if last == nil {
+				last = &ws.NamedAt
+			}
+			if older(since(last), checkSnapshot) {
 				out = append(out, fmt.Sprintf("workspace %s has no snapshot accepted for over 60 minutes (the platform alerts after 90)", ws.ID))
 			}
 		}

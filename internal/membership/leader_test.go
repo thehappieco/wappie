@@ -2,9 +2,12 @@ package membership
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -114,6 +117,7 @@ func TestLeaderBounds(t *testing.T) {
 		"the feed's longest pause":  {feedBackoffMax, time.Minute},
 		"the feed's first pause":    {feedBackoffMin, 2 * time.Second},
 		"the silence's ERROR":       {feedSilentAfter, 15 * time.Minute},
+		"the round's ERROR":         {roundIncompleteAfter, 15 * time.Minute},
 		"the sweep's interval":      {sweepEvery, 5 * time.Minute},
 		"an orphan's age":           {OrphanAfter, 15 * time.Minute},
 		"a done round's next pass":  {roundEvery, time.Minute},
@@ -124,9 +128,10 @@ func TestLeaderBounds(t *testing.T) {
 		}
 	}
 	// The worst gap between two reads of the feed, by the bounds above: a
-	// long-poll's wait and the kit's grace, a lost lock seen within the
-	// heartbeat and taken over within a retry, and the longest backoff.
-	worst := 25*time.Second + kc.FeedGrace + pg.HoldHeartbeat + leaderRetry + feedBackoffMax
+	// long-poll's wait and the kit's grace, a lost lock seen within twice
+	// the heartbeat (a silent link) and taken over within a retry, and the
+	// longest backoff.
+	worst := 25*time.Second + kc.FeedGrace + 2*pg.HoldHeartbeat + leaderRetry + feedBackoffMax
 	if worst >= 5*time.Minute {
 		t.Errorf("the worst gap between reads is %v, not well under the platform's 10 minutes", worst)
 	}
@@ -143,11 +148,18 @@ func TestFollowerNewerOnly(t *testing.T) {
 	_, sub := w.held(t)
 	logs := &membershiptest.Logs{}
 	stop := run(t, w.leader(w.members, logs, lockKey(t)))
-	eventually(t, 10*time.Second, "the round and a page", func() bool {
+	// The platform follows the sub once it served the PUT, and the page may
+	// store the document first: the PUT's answer, which sets fresh_at, is
+	// waited for too.
+	eventually(t, 10*time.Second, "the round's answer and a page", func() bool {
 		s := w.state(t)
-		return w.following(sub) && w.version(t, sub) > 0 && s.FeedCursor >= 1 && s.PublishedThrough != nil
+		_, _, at := w.row(context.Background(), t, sub)
+		return w.following(sub) && at != nil && w.version(t, sub) > 0 && s.FeedCursor >= 1 && s.PublishedThrough != nil
 	})
 	_, _, answered := w.row(ctx, t, sub)
+	if answered == nil {
+		t.Fatal("the round's answer set no fresh_at")
+	}
 	team, err := w.fake.AddTeam("Equipe", sub.String())
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +238,9 @@ func TestFollowerIgnoresBadAnswers(t *testing.T) {
 	_, sub := w.held(t)
 	logs := &membershiptest.Logs{}
 	l := w.leader(w.members, logs, lockKey(t))
-	l.Wait, l.BackoffMin, l.BackoffMax = 5, 20*time.Millisecond, 100*time.Millisecond
+	// The platform's long-poll: only a change, or a notice that cuts it,
+	// ends one before 25 s.
+	l.Wait, l.BackoffMin, l.BackoffMax = 25, 20*time.Millisecond, 100*time.Millisecond
 	run(t, l)
 	eventually(t, 10*time.Second, "the round and a page", func() bool { return w.following(sub) && w.state(t).FeedCursor >= 1 })
 	team, err := w.fake.AddTeam("Equipe", sub.String())
@@ -296,9 +310,9 @@ func TestFollowerIgnoresBadAnswers(t *testing.T) {
 		kc.CodeConflict, kc.CodeTooLarge, kc.CodeRateLimited, kc.CodeUnavailable} {
 		w.fake.RefuseAlways(contracttest.CallFeed, code)
 		// The long-poll in flight began before the refusals: a generation's
-		// notice cuts it, and the next request is refused.
+		// notice cuts it at once, and the next request is refused.
 		w.exec(ctx, t, `SELECT pg_notify($1, 'generation')`, store.ContractModeChannel)
-		eventually(t, 10*time.Second, code+": a refusal", func() bool { return w.state(t).FeedError != "" })
+		eventually(t, 2*time.Second, code+": a refusal soon after the notice", func() bool { return w.state(t).FeedError != "" })
 		cursor, version := w.state(t).FeedCursor, w.version(t, sub)
 		calls := w.fake.Count(contracttest.CallFeed)
 		rename()
@@ -591,11 +605,14 @@ func TestFeedNeverSilent(t *testing.T) {
 // TB24: across the platform's changes, observe stores and compares and
 // changes nothing of Wappie's own: its people, memberships, sessions,
 // keys, grants, permissions, workspaces and connections are as they were;
-// each difference of the plan's 4.8 is logged, by ids only.
+// each difference of the plan's 4.8 is logged, by ids only. The person is
+// a legacy account linked to the platform, whose user id is not its sub,
+// as the pilot's people who signed up before the platform's sign-in; what
+// enforce would end counts only what began before the revocation times.
 func TestObserveChangesNothing(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
-	user, sub := w.held(t)
+	user, sub := w.legacy(t)
 	owner := uuid.New()
 	if _, err := w.fake.AddAccount(owner.String()); err != nil {
 		t.Fatal(err)
@@ -611,16 +628,18 @@ func TestObserveChangesNothing(t *testing.T) {
 	two, three := teams["Equipe Dois"], teams["Equipe Tres"]
 	// Wappie's own: the two teams with the platform's ids; the person an
 	// admin of the first, a disabled member of the second; an unlinked
-	// colleague in the first; a session and a key from an hour ago.
+	// colleague in the first; a number of the first the person reads, with
+	// a key; and, from an hour ago (before the revocation times below) and
+	// from ten minutes ago (after them), a session, a key, an MCP
+	// connection, an AI connection and a standing service account each.
 	w.localTeam(t, two, "Equipe Dois", member{user, "admin", "active"})
 	w.localTeam(t, three, "Equipe Tres", member{user, "member", "disabled"})
 	colleague := w.localPerson(t)
 	w.localTeam(t, two, "", member{colleague, "member", "active"})
-	hourAgo := dbNow(t, w.pool, "-1 hour")
-	w.exec(ctx, t, `INSERT INTO sessions (user_id, tenant_id, token_hash, expires_at, created_at)
-		VALUES ($1, $2, $3, clock_timestamp() + interval '1 day', $4)`, user, two, random(t, 32), hourAgo)
-	w.exec(ctx, t, `INSERT INTO api_keys (tenant_id, prefix, key_hash, created_by, created_at) VALUES ($1, $2, 'x', $3, $4)`,
-		two, uuid.NewString()[:8], user, hourAgo)
+	w.reader(t, two, user)
+	for _, at := range []time.Time{dbNow(t, w.pool, "-1 hour"), dbNow(t, w.pool, "-10 minutes")} {
+		w.credentials(t, two, user, at)
+	}
 	before := w.dump(t)
 
 	logs := &membershiptest.Logs{}
@@ -675,6 +694,118 @@ func TestObserveChangesNothing(t *testing.T) {
 	if after := w.dump(t); after != before {
 		t.Fatalf("observe changed Wappie's tables:\nbefore %s\nafter  %s", before, after)
 	}
+	// The differences name the person's own user, not their sub.
+	if user == sub || !strings.Contains(all, "user="+user.String()) {
+		t.Fatalf("no difference names the person's user %s (sub %s)", user, sub)
+	}
+	diffs, compared, err := w.contract.DifferencesOf(ctx, sub)
+	if err != nil || !compared {
+		t.Fatalf("the closed document: %v %v", compared, err)
+	}
+	var sessions, credentials *store.ContractDifference
+	for i, d := range diffs {
+		switch d.Kind {
+		case store.DiffSessionsWouldEnd:
+			sessions = &diffs[i]
+		case store.DiffCredentialsWouldStop:
+			credentials = &diffs[i]
+		}
+		if d.Sub == sub && d.User != user {
+			t.Fatalf("a difference of sub %s names user %s, not %s", sub, d.User, user)
+		}
+	}
+	// Each counts what began before the revocation times only: of each
+	// pair, the one from an hour ago.
+	if sessions == nil || sessions.Count != 1 {
+		t.Fatalf("sessions that would end: %+v", sessions)
+	}
+	if credentials == nil || credentials.Keys != 1 || credentials.Connections != 2 || credentials.Services != 1 {
+		t.Fatalf("credentials that would stop: %+v, want 1 key, 2 connections (MCP and AI), 1 service", credentials)
+	}
+}
+
+// legacy is a person Wappie holds who signed up before the platform's
+// sign-in and linked their account later: their user id is not their sub,
+// and their personal workspace is Wappie's own.
+func (w *world) legacy(t *testing.T) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	user, sub := w.localPerson(t), uuid.New()
+	if _, err := w.fake.AddAccount(sub.String()); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(context.Background(), t, `INSERT INTO platform_identities (sub, user_id, email, linked_from) VALUES ($1, $2, $3, 'legacy')`,
+		sub, user, sub.String()[:8]+"@id.test")
+	return user, sub
+}
+
+// reader makes a number of tenant that user reads: a permission and a
+// grant at its archive key's epoch.
+func (w *world) reader(t *testing.T, tenant, user uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	device, err := store.NewDevices(w.pool).Create(ctx, tenant.String(), "atendimento", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.InTenantTx(ctx, w.pool, tenant.String(), func(tx pgx.Tx) error {
+		for _, q := range []string{
+			`INSERT INTO device_archive_keys (tenant_id, device_id, epoch, public_key) VALUES ($1, $2, 1, decode(repeat('ab', 32), 'hex'))`,
+			`INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk, granted_by) VALUES ($1, $2, $3, 1, '\x01', $3)`,
+			`INSERT INTO device_permissions (tenant_id, device_id, user_id, can_read) VALUES ($1, $2, $3, true)
+			 ON CONFLICT (tenant_id, device_id, user_id) DO UPDATE SET can_read = true`,
+		} {
+			args := []any{tenant, device.ID}
+			if strings.Contains(q, "$3") {
+				args = append(args, user)
+			}
+			if _, err := tx.Exec(ctx, q, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// credentials makes, in tenant at at, what enforce stops at a recovery of
+// user's account: a session, an API key, an MCP connection (with its own
+// key), an AI connection (a keychain entry), and a standing service account
+// user invited.
+func (w *world) credentials(t *testing.T, tenant, user uuid.UUID, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	w.exec(ctx, t, `INSERT INTO sessions (user_id, tenant_id, token_hash, expires_at, created_at)
+		VALUES ($1, $2, $3, clock_timestamp() + interval '1 day', $4)`, user, tenant, random(t, 32), at)
+	key := func() uuid.UUID {
+		var id uuid.UUID
+		if err := w.pool.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, created_by, created_at)
+			VALUES ($1, $2, 'x', $3, $4) RETURNING id`, tenant, uuid.NewString()[:8], user, at).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	key()
+	service := uuid.New()
+	if err := pg.InTenantTx(ctx, w.pool, tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO mcp_connections (tenant_id, request_id, api_key_id, created_by, client_name, redirect_host,
+			device_count, reader_kid, status, expires_at, created_at)
+			VALUES ($1, $2, $3, $4, 'Claude', 'claude.ai', 1, '0123456789abcdef', 'active', clock_timestamp() + interval '1 day', $5)`,
+			tenant, uuid.NewString(), key(), user, at); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO ai_keychain (id, tenant_id, user_id, provider, label, suffix, envelope, created_at)
+			VALUES ($1, $2, $3, 'anthropic', 'Chave', 'abcd', '\x01', $4)`, uuid.New(), tenant, user, at); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO users (id, tenant_id, email, public_key, role) VALUES ($1, $2, $3, $4, 'service')`,
+			service, tenant, service.String()[:8]+"@service.test", random(t, 32))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(ctx, t, `INSERT INTO invites (invite_id, tenant_id, role, created_by, expires_at, claimed_by, claimed_at, completed_at, created_at)
+		VALUES ($1, $2, 'service', $3, $4::timestamptz + interval '1 day', $5, $4, $4, $4)`, random(t, 32), tenant, user, at, service)
 }
 
 type member struct {
@@ -922,8 +1053,211 @@ func TestLeaderSweeps(t *testing.T) {
 	w.age(ctx, t, orphan, 16*time.Minute)
 	logs := &membershiptest.Logs{}
 	run(t, w.leader(w.members, logs, lockKey(t)))
-	eventually(t, 10*time.Second, "the sweep", func() bool { return !w.following(orphan) })
-	if exists, _, _ := w.row(ctx, t, orphan); exists {
-		t.Fatal("the sweep left the orphan's row")
+	// The platform unfollows on the DELETE, before the sweep's answer
+	// removes the row: both are waited for.
+	eventually(t, 10*time.Second, "the sweep, and the orphan's row removed", func() bool {
+		exists, _, _ := w.row(ctx, t, orphan)
+		return !w.following(orphan) && !exists
+	})
+}
+
+// The follower's silence (the plan's 4.7): after SilentAfter without a
+// page, one ERROR, recorded for contract status --check, however many
+// calls fail after it; a page ends the run, and a new outage is told again.
+func TestFollowerSilence(t *testing.T) {
+	w := newWorld(t)
+	_, sub := w.held(t)
+	logs := &membershiptest.Logs{}
+	l := w.leader(w.members, logs, lockKey(t))
+	l.SilentAfter = 300 * time.Millisecond
+	run(t, l)
+	eventually(t, 10*time.Second, "the round and a page", func() bool { return w.following(sub) && w.state(t).FeedCursor >= 1 })
+	silence := func() int { return len(logs.Lines("level=ERROR", "contract: no feed page for a long time")) }
+	if n := silence(); n != 0 {
+		t.Fatalf("%d silences while the feed answers", n)
+	}
+	outage := func() {
+		t.Helper()
+		w.fake.RefuseAlways(contracttest.CallFeed, kc.CodeUnavailable)
+		// The long-poll in flight began before the refusals.
+		w.exec(context.Background(), t, `SELECT pg_notify($1, 'generation')`, store.ContractModeChannel)
+	}
+	outage()
+	eventually(t, 5*time.Second, "the silence's ERROR", func() bool { return silence() == 1 })
+	calls := w.fake.Count(contracttest.CallFeed)
+	// Many more failed calls, and the ERROR recorded meanwhile.
+	time.Sleep(500 * time.Millisecond)
+	if n := w.fake.Count(contracttest.CallFeed) - calls; n < 2 || silence() != 1 {
+		t.Fatalf("%d silences over %d more failed calls, want one", silence(), n)
+	}
+	if s := w.state(t); s.ErrorClass != store.ContractErrorFeedSilent || s.ErrorAt == nil {
+		t.Fatalf("the silence was not recorded: %+v", s)
+	}
+	w.fake.RefuseAlways(contracttest.CallFeed, "")
+	eventually(t, 5*time.Second, "the feed answers again", func() bool { return len(logs.Lines("contract: the feed answers again")) > 0 })
+	w.exec(context.Background(), t, `UPDATE contract_state SET error_class = NULL, error_at = NULL`)
+	outage()
+	// The ERROR is logged, then recorded.
+	eventually(t, 5*time.Second, "the second outage's ERROR, recorded", func() bool {
+		return silence() == 2 && w.state(t).ErrorClass == store.ContractErrorFeedSilent
+	})
+}
+
+// The round's failures are told (DB24): a held sub whose PUT keeps
+// failing (a signed not_found, which never means closed, README 6.1) has
+// its class and the run's start recorded at once for contract status;
+// once the run has lasted IncompleteAfter, one ERROR, recorded too,
+// however many passes fail after it; the pass that subscribes it ends the
+// run; and a new run is told again.
+func TestRoundFailuresAreTold(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	_, sub := w.held(t)
+	w.fake.RefuseAlways(contracttest.CallSubscribe, kc.CodeNotFound)
+	logs := &membershiptest.Logs{}
+	l := w.leader(w.members, logs, lockKey(t))
+	l.IncompleteAfter = 300 * time.Millisecond
+	run(t, l)
+	told := func() int {
+		return len(logs.Lines("level=ERROR", "contract: held subs still have no document of this generation", "class=refused:not_found"))
+	}
+	eventually(t, 5*time.Second, "the failing pass recorded", func() bool {
+		s := w.state(t)
+		return s.RoundError == "refused:not_found" && s.RoundErrorAt != nil
+	})
+	if told() != 0 {
+		t.Fatal("the round's ERROR before its bound")
+	}
+	eventually(t, 5*time.Second, "the round's ERROR", func() bool { return told() == 1 })
+	puts := w.fake.Count(contracttest.CallSubscribe)
+	time.Sleep(500 * time.Millisecond)
+	if n := w.fake.Count(contracttest.CallSubscribe) - puts; n < 2 || told() != 1 {
+		t.Fatalf("%d ERRORs over %d more failed PUTs, want one", told(), n)
+	}
+	if s := w.state(t); s.ErrorClass != store.ContractErrorRoundIncomplete || s.ErrorAt == nil {
+		t.Fatalf("the round's ERROR was not recorded: %+v", s)
+	}
+	w.fake.RefuseAlways(contracttest.CallSubscribe, "")
+	eventually(t, 5*time.Second, "the round done", func() bool {
+		s := w.state(t)
+		return w.following(sub) && s.RoundGeneration != nil && s.RoundError == "" && s.RoundErrorAt == nil
+	})
+	// A GET's not_found forgets the sub's version again, and its PUTs fail.
+	w.fake.RefuseAlways(contracttest.CallSubscribe, kc.CodeUnavailable)
+	if err := w.contract.Unfollowed(ctx, sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.contract.Wake(ctx, "round"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 5*time.Second, "the second run's ERROR", func() bool {
+		return len(logs.Lines("level=ERROR", "contract: held subs still have no document of this generation")) == 2
+	})
+	if s := w.state(t); s.RoundError != "refused:unavailable" {
+		t.Fatalf("the second run's class: %+v", s)
+	}
+}
+
+// signedFeed is a client whose feed requests get page(after), signed with
+// secret, and whose other calls go to the fake platform. It counts the
+// feed requests.
+func signedFeed(t *testing.T, fake *membershiptest.Fake, secret string, calls *atomic.Int64, page func(after int64) kc.Feed) *Client {
+	t.Helper()
+	platform, err := url.Parse(fake.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := clientOn(func(r *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(r.URL.Path, "/feed") {
+			out := r.Clone(r.Context())
+			out.URL.Scheme, out.URL.Host, out.Host = platform.Scheme, platform.Host, platform.Host
+			return http.DefaultTransport.RoundTrip(out)
+		}
+		calls.Add(1)
+		after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		body, err := json.Marshal(page(after))
+		if err != nil {
+			return nil, err
+		}
+		return signedAnswer(r, secret, http.StatusOK, body, time.Now()), nil
+	}, nil)
+	if err := c.Use(secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// A signed page that does not move the cursor as README 6.3 describes,
+// which the kit does not check (more with no items, or ending at or before
+// the cursor, or before its last item's seq; a next_after behind the
+// cursor), is no page: nothing commits, and the follower backs off as for
+// any answer it cannot take, never asking again at once in a loop.
+func TestFollowerRefusesPagesThatDoNotMove(t *testing.T) {
+	w := newWorld(t)
+	_, sub := w.held(t)
+	gen, _ := w.fake.Generation()
+	const cursor = 10
+	w.exec(context.Background(), t, `UPDATE contract_state SET generation = $1, feed_cursor = $2`, uuid.MustParse(gen), cursor)
+	doc := func(seq int64) kc.FeedItem {
+		return kc.FeedItem{Seq: seq, Doc: kc.AccountDoc{V: kc.DocV, Type: kc.DocType, App: App, Generation: gen, Sub: sub.String(),
+			Version: seq, Status: kc.AccountActive, Workspaces: []kc.Workspace{}}}
+	}
+	page := func(after, next int64, more bool, items ...kc.FeedItem) kc.Feed {
+		return kc.Feed{Generation: gen, Head: after + 5, PublishedThrough: kc.T(time.Now().Add(-time.Minute)),
+			Items: append([]kc.FeedItem{}, items...), NextAfter: next, More: more}
+	}
+	for _, c := range []struct {
+		name string
+		page func(after int64) kc.Feed
+	}{
+		{"more with no items", func(after int64) kc.Feed { return page(after, after, true) }},
+		{"more ending at the cursor", func(after int64) kc.Feed { return page(after, after, true, doc(after)) }},
+		{"more ending before its last item", func(after int64) kc.Feed { return page(after, after+1, true, doc(after+1), doc(after+2)) }},
+		{"next_after behind the cursor", func(after int64) kc.Feed { return page(after, after-1, false) }},
+	} {
+		logs := &membershiptest.Logs{}
+		var calls atomic.Int64
+		m := &Members{Client: signedFeed(t, w.fake, w.secret, &calls, c.page), Contract: w.contract, Log: logs.Logger(), ModeCache: -1,
+			Pace: time.Millisecond}
+		stop := run(t, w.leader(m, logs, lockKey(t)))
+		eventually(t, 5*time.Second, c.name+": the round", func() bool { return w.following(sub) && calls.Load() > 0 })
+		time.Sleep(time.Second)
+		stop()
+		// 20 ms doubling to 200 ms: a handful in a second, never a loop.
+		if n := calls.Load(); n > 15 {
+			t.Fatalf("%s: %d feed calls in about a second", c.name, n)
+		}
+		if s := w.state(t); s.FeedCursor != cursor || s.FeedReadAt != nil || s.FeedError != "unverified" {
+			t.Fatalf("%s: the state %+v, want the cursor at %d, never read, unverified", c.name, s, cursor)
+		}
+	}
+}
+
+// A process whose secret is not loaded never takes the leader's lock (the
+// plan's 4.7: only while the contract is on and a secret is loaded), so it
+// never holds the feed up for the process that has one, which leads.
+func TestLeaderNeedsASecret(t *testing.T) {
+	w := newWorld(t)
+	_, sub := w.held(t)
+	key := lockKey(t)
+	bare := &counting{}
+	logs := &membershiptest.Logs{}
+	m := &Members{Client: NewClient(&http.Client{Transport: bare}, w.fake.URL, nil), Contract: w.contract, Log: logs.Logger(),
+		ModeCache: -1, Pace: time.Millisecond}
+	run(t, w.leader(m, logs, key))
+	// Past several of its retries (300 ms).
+	time.Sleep(time.Second)
+	if pid := w.lockHolder(t, key); pid != 0 || len(logs.Lines("contract: leading")) != 0 {
+		t.Fatalf("a process with no secret leads (backend %d)", pid)
+	}
+	run(t, w.leader(w.members, &membershiptest.Logs{}, key))
+	eventually(t, 5*time.Second, "the process with the secret leads", func() bool {
+		return w.following(sub) && w.state(t).FeedCursor >= 1 && w.lockHolder(t, key) != 0
+	})
+	if n := bare.feed.Load(); n != 0 || len(logs.Lines("contract: leading")) != 0 {
+		t.Fatalf("the process with no secret made %d feed calls", n)
 	}
 }

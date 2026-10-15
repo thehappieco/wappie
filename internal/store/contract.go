@@ -95,6 +95,12 @@ type ContractState struct {
 	FeedReadAt  *time.Time
 	FeedError   string
 	FeedErrorAt *time.Time
+	// RoundErrorAt is the first pass of the round, in the run that goes on,
+	// that left a held sub with no document of the stored generation, and
+	// RoundError the class of its last failed PUT; both unset once a pass
+	// leaves none (RoundFailed, RoundDone).
+	RoundError   string
+	RoundErrorAt *time.Time
 	// ErrorAt and ErrorClass are the last contract ERROR the leader
 	// recorded (RecordError).
 	ErrorAt    *time.Time
@@ -114,14 +120,15 @@ func (s ContractState) Observed() bool { return s.EventsFrom != nil }
 
 const contractStateColumns = `mode, mode_changed_at, events_from, events_paused_at, events_off, mail_from,
 	generation, generation_confirmed, feed_cursor, published_through, round_generation,
-	feed_read_at, coalesce(feed_error, ''), feed_error_at, error_at, coalesce(error_class, ''), updated_at`
+	feed_read_at, coalesce(feed_error, ''), feed_error_at, coalesce(round_error, ''), round_error_at,
+	error_at, coalesce(error_class, ''), updated_at`
 
 func scanContractState(row pgx.Row) (ContractState, error) {
 	var s ContractState
 	var off pgtype.Multirange[pgtype.Range[pgtype.Timestamptz]]
 	if err := row.Scan(&s.Mode, &s.ModeChangedAt, &s.EventsFrom, &s.EventsPausedAt, &off, &s.MailFrom,
 		&s.Generation, &s.GenerationConfirmed, &s.FeedCursor, &s.PublishedThrough, &s.RoundGeneration,
-		&s.FeedReadAt, &s.FeedError, &s.FeedErrorAt, &s.ErrorAt, &s.ErrorClass, &s.UpdatedAt); err != nil {
+		&s.FeedReadAt, &s.FeedError, &s.FeedErrorAt, &s.RoundError, &s.RoundErrorAt, &s.ErrorAt, &s.ErrorClass, &s.UpdatedAt); err != nil {
 		return ContractState{}, err
 	}
 	for _, r := range off {
@@ -257,14 +264,18 @@ func (c *Contract) StoreDocuments(ctx context.Context, from ContractSource, docs
 // unsubscribes an orphan and a sign-up committed later keeps the newer
 // version. An answer is always a held sub's (a sign-in's, the round's, a
 // GET's), or the sign-up's own, whose identity its transaction has just
-// written. A stored document that
+// written. A held sub's document that is kept because Wappie stores a
+// newer one records the stored one's workspaces too: that one may have
+// come from a page while the sub was not yet held (a sign-up's PUT
+// answered, then the account was committed with that older answer), and no
+// later document need ever name them again. A stored document that
 // changes a workspace's members (its sub joins, leaves or changes role)
 // makes that workspace's snapshot due now; and every document stored or
-// kept that names a workspace the platform refused (not_found), parked, or
-// never accepted a snapshot of since the last restart makes its snapshot and
-// event queue due now and unparks it (the plan's 4.7, "Round 2,
-// recovery"), so a workspace named again comes back at once rather than at
-// its backoff.
+// kept that names a workspace the platform refused (not_found), or never
+// accepted a snapshot of since the last restart, makes its snapshot and
+// event queue due now, releasing a park for not_found (the plan's 4.7,
+// "Round 2, recovery"), so a workspace named again comes back at once
+// rather than at its backoff.
 func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, from ContractSource, docs []ContractDoc) ([]ContractDocOutcome, error) {
 	if from != ContractAnswer && from != ContractFeed {
 		return nil, fmt.Errorf("store: unknown document source %d", from)
@@ -291,26 +302,8 @@ func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, from Contr
 			ids = append(ids, w.ID)
 		}
 	}
-	type known struct{ recorded, local string }
-	kinds := map[uuid.UUID]known{}
-	rows, err := tx.Query(ctx, `SELECT w.id, coalesce(cw.kind, ''), coalesce(t.kind, '')
-		FROM unnest($1::uuid[]) AS w(id)
-		LEFT JOIN contract_workspaces cw ON cw.workspace_id = w.id
-		LEFT JOIN tenants t ON t.id = w.id`, ids)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var id uuid.UUID
-		var k known
-		if err := rows.Scan(&id, &k.recorded, &k.local); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		kinds[id] = k
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	kinds := map[uuid.UUID]knownKind{}
+	if err := workspaceKindsTx(ctx, tx, ids, kinds); err != nil {
 		return nil, err
 	}
 	// What the database would refuse to hold, asked of it before anything
@@ -361,6 +354,13 @@ func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, from Contr
 	slices.SortStableFunc(order, func(a, b int) int { return compareIDs(docs[a].Sub, docs[b].Sub) })
 	named := map[uuid.UUID]ContractDocWorkspace{}
 	changed := map[uuid.UUID]bool{}
+	// For each held sub's document kept, the workspaces of the one stored,
+	// each with its sub.
+	type storedName struct {
+		sub uuid.UUID
+		w   ContractDocWorkspace
+	}
+	var kept []storedName
 	other := false
 next:
 	for _, i := range order {
@@ -398,6 +398,10 @@ next:
 			for _, id := range membersChanged(before, d.Workspaces) {
 				changed[id] = true
 			}
+		} else {
+			for _, w := range before {
+				kept = append(kept, storedName{d.Sub, w})
+			}
 		}
 		for _, w := range d.Workspaces {
 			// A later document of this batch is held to the kind this one
@@ -405,6 +409,33 @@ next:
 			if k := kinds[w.ID]; k.recorded == "" {
 				k.recorded = w.Kind
 				kinds[w.ID] = k
+			}
+			if n, ok := named[w.ID]; !ok || w.WVersion > n.WVersion {
+				named[w.ID] = w
+			}
+		}
+	}
+	if len(kept) > 0 {
+		var more []uuid.UUID
+		for _, k := range kept {
+			if _, ok := kinds[k.w.ID]; !ok {
+				more = append(more, k.w.ID)
+			}
+		}
+		if err := workspaceKindsTx(ctx, tx, more, kinds); err != nil {
+			return nil, err
+		}
+		for _, k := range kept {
+			w := k.w
+			if kk := kinds[w.ID]; (kk.recorded != "" && kk.recorded != w.Kind) || (kk.local != "" && kk.local != w.Kind) {
+				// The document is kept all the same (its outcome is the
+				// incoming one's), so the ERROR is recorded here.
+				obs.LoggerFrom(ctx).Error("contract: workspace kind changed: a stored document's workspace is not recorded",
+					"sub", k.sub, "workspace", w.ID, "kind", w.Kind, "recorded", kk.recorded, "local", kk.local)
+				if err := recordErrorTx(ctx, tx, ContractErrorKindChanged); err != nil {
+					return nil, err
+				}
+				continue
 			}
 			if n, ok := named[w.ID]; !ok || w.WVersion > n.WVersion {
 				named[w.ID] = w
@@ -423,6 +454,34 @@ next:
 		}
 	}
 	return out, nil
+}
+
+// knownKind is what Wappie knows of a workspace's kind: the record's, and
+// the local workspace's of the same id ("" for none).
+type knownKind struct{ recorded, local string }
+
+// workspaceKindsTx adds to into the kinds Wappie knows of each of ids.
+func workspaceKindsTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, into map[uuid.UUID]knownKind) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `SELECT w.id, coalesce(cw.kind, ''), coalesce(t.kind, '')
+		FROM unnest($1::uuid[]) AS w(id)
+		LEFT JOIN contract_workspaces cw ON cw.workspace_id = w.id
+		LEFT JOIN tenants t ON t.id = w.id`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var k knownKind
+		if err := rows.Scan(&id, &k.recorded, &k.local); err != nil {
+			return err
+		}
+		into[id] = k
+	}
+	return rows.Err()
 }
 
 // unstorable says why d cannot be stored as received, or "": its JSON is
@@ -446,7 +505,8 @@ func unstorable(d ContractDoc, object bool, latest time.Time) string {
 // document columns when its version is higher than the row's (or the row
 // has none), the revocation times at the highest seen, and fresh_at when
 // fresh. It reports whether the document was the newer one, and the
-// workspaces of the document it replaced (none for a row without one).
+// workspaces of the document the row held before (the one it replaced, or
+// the one it keeps; none for a row without one).
 func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc, fresh bool) (bool, []ContractDocWorkspace, error) {
 	// The row is made or locked in one statement, as Intend makes it: an
 	// Intend inserting it at the same moment is waited for, not collided
@@ -462,14 +522,17 @@ func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc, fresh bool) (
 	var previous []ContractDocWorkspace
 	if len(before) > 0 && !bytes.Equal(before, []byte("null")) {
 		var ws []struct {
-			ID   uuid.UUID `json:"id"`
-			Role string    `json:"role"`
+			ID       uuid.UUID `json:"id"`
+			Kind     string    `json:"kind"`
+			Role     string    `json:"role"`
+			Status   string    `json:"status"`
+			WVersion int64     `json:"wversion"`
 		}
 		if err := json.Unmarshal(before, &ws); err != nil {
 			return false, nil, fmt.Errorf("store: a stored document's workspaces: %w", err)
 		}
 		for _, w := range ws {
-			previous = append(previous, ContractDocWorkspace{ID: w.ID, Role: w.Role})
+			previous = append(previous, ContractDocWorkspace{ID: w.ID, Kind: w.Kind, Role: w.Role, Status: w.Status, WVersion: w.WVersion})
 		}
 	}
 	newer := version == nil || generation == nil || *generation != d.Generation || d.Version > *version
@@ -511,10 +574,13 @@ func membersChanged(before, after []ContractDocWorkspace) []uuid.UUID {
 
 // workspacesDueTx makes due now, in id order, the snapshot of every
 // workspace whose members changed, and the snapshot and event queue of
-// every named workspace the platform refused (not_found), that was parked,
-// or that has no accepted snapshot since the last restart, unparking it:
-// the platform knows a workspace again once a document names it. (P5 adds
-// the release of the events parked not_found to this.)
+// every named workspace the platform refused (not_found) or that has no
+// accepted snapshot since the last restart: the platform knows a workspace
+// again once a document names it, so a park for not_found (which keeps
+// not_found_since) is released too. A park for any other reason stays
+// (invalid_request is a Wappie bug, the plan's 4.10): naming it again
+// would only send it to be refused again. (P5 adds the release of the
+// events parked not_found to this.)
 func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]ContractDocWorkspace, changed map[uuid.UUID]bool) error {
 	var names, members []uuid.UUID
 	for id := range named {
@@ -537,9 +603,9 @@ func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]Contrac
 			events_due_at   = CASE WHEN back AND w.events_due_at IS NOT NULL THEN least(w.events_due_at, clock_timestamp()) ELSE w.events_due_at END,
 			events_tries    = CASE WHEN back THEN 0 ELSE w.events_tries END,
 			not_found_since = CASE WHEN back THEN NULL ELSE w.not_found_since END,
-			parked_at       = CASE WHEN back THEN NULL ELSE w.parked_at END
+			parked_at       = CASE WHEN back AND w.not_found_since IS NOT NULL THEN NULL ELSE w.parked_at END
 		FROM (SELECT c.workspace_id, c.workspace_id = ANY ($1)
-		             AND (c.not_found_since IS NOT NULL OR c.parked_at IS NOT NULL OR c.snapshot_ok_at IS NULL) AS back
+		             AND (c.not_found_since IS NOT NULL OR c.snapshot_ok_at IS NULL) AS back
 		        FROM contract_workspaces c
 		       WHERE c.workspace_id = ANY ($1) OR c.workspace_id = ANY ($2)) due
 		WHERE w.workspace_id = due.workspace_id AND (due.back OR w.workspace_id = ANY ($2))`, names, members); err != nil {
@@ -664,12 +730,26 @@ func (c *Contract) Unsubscribed(ctx context.Context, limit int) ([]uuid.UUID, er
 
 // RoundDone records that every sub Wappie holds has a document of the
 // generation gen (round_generation, the plan's 4.6), only while gen is
-// still the stored generation and none is left to subscribe; false when
-// either no longer holds, and the round is not done.
+// still the stored generation and none is left to subscribe, and ends the
+// run of failing passes (RoundFailed); false when either no longer holds,
+// and the round is not done.
 func (c *Contract) RoundDone(ctx context.Context, gen uuid.UUID) (bool, error) {
-	tag, err := c.pool.Exec(ctx, `UPDATE contract_state SET round_generation = generation, updated_at = clock_timestamp()
+	tag, err := c.pool.Exec(ctx, `UPDATE contract_state SET round_generation = generation,
+		round_error = NULL, round_error_at = NULL, updated_at = clock_timestamp()
 		WHERE generation = $1 AND NOT EXISTS (SELECT 1 FROM `+unsubscribedSQL+`)`, gen)
 	return tag.RowsAffected() == 1, err
+}
+
+// RoundFailed records that a pass of the round left held subs with no
+// document, every PUT tried: class is the last failure's (a refusal's code,
+// an outcome, a transport's class; never a message), and the run's start,
+// kept from its first such pass, is what contract status --check measures
+// (README 6.1: such a PUT is retried, and never means closed, so nothing
+// else would tell anyone). RoundDone ends the run.
+func (c *Contract) RoundFailed(ctx context.Context, class string) error {
+	_, err := c.pool.Exec(ctx, `UPDATE contract_state SET round_error = $1,
+		round_error_at = coalesce(round_error_at, clock_timestamp())`, class)
+	return err
 }
 
 // Held reports whether Wappie holds sub, a person linked to the platform,

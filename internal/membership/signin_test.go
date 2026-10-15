@@ -666,3 +666,41 @@ func TestRoundAndSweepArePaced(t *testing.T) {
 		t.Fatalf("the default pace is %v", p)
 	}
 }
+
+// A sign-in's answer, with no leader running (the plan's 4.5, "compare and
+// log"): a newly stored document is compared with Wappie's tables, one line
+// for the sub, and the same version answered again is not compared twice;
+// an answer Wappie cannot store is recorded at ERROR for contract status.
+func TestSignInAnswers(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	// A home of Wappie's own: the document's personal workspace differs.
+	_, sub := w.held(t)
+	logs := &membershiptest.Logs{}
+	w.members.Log = logs.Logger()
+	compared := func() int {
+		return len(logs.Lines("contract observe: differences", "sub="+sub.String(), "kind="+store.DiffPersonalMismatch))
+	}
+	w.members.SignIn(ctx, sub)
+	if n := compared(); n != 1 {
+		t.Fatalf("the sign-in's document compared %d times:\n%s", n, logs.String())
+	}
+	w.members.SignIn(ctx, sub)
+	if n := compared(); n != 1 {
+		t.Fatalf("the same version compared again: %d lines", n)
+	}
+	if s := w.state(t); s.ErrorAt != nil {
+		t.Fatalf("an ERROR recorded for answers Wappie stored: %+v", s)
+	}
+	// Disabled half an hour past the database's clock: not storable.
+	if err := w.fake.Disable(sub.String(), dbNow(t, w.pool, "30 minutes")); err != nil {
+		t.Fatal(err)
+	}
+	w.members.SignIn(ctx, sub)
+	if s := w.state(t); s.ErrorClass != store.ContractErrorDocumentInvalid || s.ErrorAt == nil {
+		t.Fatalf("an answer that cannot be stored was not recorded: %+v", s)
+	}
+	if len(logs.Lines("contract: an answer's document was not stored", "outcome=invalid")) != 1 {
+		t.Fatalf("no WARN of the answer:\n%s", logs.String())
+	}
+}

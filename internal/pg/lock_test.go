@@ -3,6 +3,8 @@ package pg_test
 import (
 	"context"
 	"errors"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -244,4 +246,172 @@ func TestHoldListens(t *testing.T) {
 	if holderPID(t, pool, name) != 0 {
 		t.Fatal("the lock outlived its holder's context")
 	}
+}
+
+// The heartbeat runs every interval however many notices arrive: a steady
+// stream of them never postpones it (DB7: a holder whose lock went
+// quietly stops within the heartbeat). The holder's backend shows the
+// heartbeat as its latest query while notices keep coming.
+func TestHoldBeatsThroughNotices(t *testing.T) {
+	pool := pgtest.Connect(t)
+	name := lockName(t)
+	channel := "hold_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	held, ok, err := pg.NewLocker(pool).Hold(context.Background(), name, 100*time.Millisecond, channel)
+	if err != nil || !ok {
+		t.Fatalf("hold: ok=%v err=%v", ok, err)
+	}
+	defer held.Release()
+	pid := holderPID(t, pool, name)
+	latest := func() string {
+		t.Helper()
+		var q string
+		if err := pool.QueryRow(context.Background(), `SELECT query FROM pg_stat_activity WHERE pid = $1`, pid).Scan(&q); err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+	if q := latest(); !strings.HasPrefix(q, "LISTEN") {
+		t.Fatalf("the holder's latest query before any heartbeat: %q", q)
+	}
+	// A notice every 10 ms, each delivered, for a second.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-held.Notifications():
+			}
+		}
+	})
+	for end := time.Now().Add(time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if _, err := pool.Exec(context.Background(), `SELECT pg_notify($1, 'x')`, channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := latest()
+	close(stop)
+	wg.Wait()
+	if !strings.Contains(q, "pg_locks") {
+		t.Fatalf("no heartbeat in a second of notices every 10 ms: the holder's latest query is %q", q)
+	}
+	if err := held.Context().Err(); err != nil {
+		t.Fatalf("the hold ended: %v", context.Cause(held.Context()))
+	}
+}
+
+// relay forwards TCP connections to the database until frozen: then it
+// reads and drops whatever either side sends, keeping every connection
+// open, as a half-open link does.
+type relay struct {
+	ln     net.Listener
+	mu     sync.Mutex
+	frozen bool
+	conns  []net.Conn
+}
+
+func newRelay(t *testing.T, to string) *relay {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &relay{ln: ln}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			up, err := net.Dial("tcp", to)
+			if err != nil {
+				_ = c.Close()
+				continue
+			}
+			r.mu.Lock()
+			r.conns = append(r.conns, c, up)
+			r.mu.Unlock()
+			go r.pipe(c, up)
+			go r.pipe(up, c)
+		}
+	}()
+	t.Cleanup(r.kill)
+	return r
+}
+
+func (r *relay) pipe(from, to net.Conn) {
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := from.Read(buf)
+		if err != nil {
+			_ = to.Close()
+			return
+		}
+		r.mu.Lock()
+		frozen := r.frozen
+		r.mu.Unlock()
+		if frozen {
+			continue
+		}
+		if _, err := to.Write(buf[:n]); err != nil {
+			return
+		}
+	}
+}
+
+func (r *relay) freeze() { r.mu.Lock(); r.frozen = true; r.mu.Unlock() }
+
+// kill closes the relay and every connection through it.
+func (r *relay) kill() {
+	_ = r.ln.Close()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.conns {
+		_ = c.Close()
+	}
+}
+
+// A lock whose link goes silent (nothing answers, nothing closes) is lost
+// within twice the heartbeat's interval and its floor of a second, not
+// when TCP gives up: the heartbeat's own wait is bounded.
+func TestHoldStopsOnASilentLink(t *testing.T) {
+	direct := pgtest.Connect(t)
+	cfg := direct.Config().Copy()
+	r := newRelay(t, net.JoinHostPort(cfg.ConnConfig.Host, strconv.Itoa(int(cfg.ConnConfig.Port))))
+	port, err := strconv.Atoi(strings.TrimPrefix(r.ln.Addr().String(), "127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.Host, cfg.ConnConfig.Port, cfg.ConnConfig.Fallbacks = "127.0.0.1", uint16(port), nil
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	held, ok, err := pg.NewLocker(pool).Hold(context.Background(), lockName(t), 200*time.Millisecond)
+	if err != nil || !ok {
+		t.Fatalf("hold: ok=%v err=%v", ok, err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if err := held.Context().Err(); err != nil {
+		t.Fatalf("the hold ended on a live link: %v", context.Cause(held.Context()))
+	}
+	r.freeze()
+	frozen := time.Now()
+	select {
+	case <-held.Context().Done():
+	case <-time.After(5 * time.Second):
+		r.kill()
+		held.Release()
+		t.Fatal("the holder did not stop within 5 s of its link going silent")
+	}
+	if took := time.Since(frozen); took > 2*time.Second {
+		t.Fatalf("the holder stopped %v after its link went silent, want within 200 ms and a second", took)
+	}
+	if cause := context.Cause(held.Context()); !errors.Is(cause, pg.ErrLockLost) {
+		t.Fatalf("the cause is %v, want ErrLockLost", cause)
+	}
+	r.kill()
+	held.Release()
 }
