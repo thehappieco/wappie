@@ -33,7 +33,7 @@ import (
 // The access snapshots (README 8; the plan's 4.10, TB5, TB27 to TB30 and
 // TB2's snapshot part) on a real database and the fake platform.
 
-var updateGolden = flag.Bool("update", false, "regenerate testdata/snapshots/*.json")
+var updateGolden = flag.Bool("update", false, "regenerate testdata/snapshots/*.json and testdata/events/*.json")
 
 // The fixture's ids, fixed so that its snapshot is a golden file.
 func fixed(kind string, n int) uuid.UUID {

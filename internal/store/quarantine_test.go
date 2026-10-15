@@ -788,6 +788,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// The contract's access snapshot, which lists a deleted number
 		// until its purge (README 8).
 		"Contract.Snapshot": true,
+		// The contract's events: a replayed row, which keeps no label,
+		// takes its deleted number's until the purge (the plan's 4.11).
+		"replayedLabelsTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

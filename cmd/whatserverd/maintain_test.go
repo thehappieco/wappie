@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -132,5 +133,59 @@ func TestMaintainOnceWithExcludedNumber(t *testing.T) {
 	if _, err := messages.Insert(ctx, store.InsertMessage{UID: uuid.New(), TenantID: tenant, DeviceID: live, WAID: "after", ChatKey: "chat",
 		Kind: domain.KindMessage, Type: domain.TypeText, Source: domain.SourceLive, TS: time.Now(), BodySealed: []byte{1}}); err != nil {
 		t.Fatalf("the live number after the pass: %v", err)
+	}
+}
+
+// The hourly housekeeping parks the contract's events never delivered in
+// their 29 days (the plan's 4.11), whether or not a leader sends, logs it
+// at ERROR by workspace and count, and records it for contract status
+// --check.
+func TestHousekeepingParksExpiredEvents(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants(name) VALUES ('Equipe') RETURNING id`).Scan(&tenant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetMode(ctx, store.ContractOff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE contract_state SET events_from = clock_timestamp() - interval '40 days'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind, named_at)
+		VALUES ($1, 'team', clock_timestamp() - interval '40 days')`, tenant); err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.New()
+	if err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind,
+			deleted_at, purge_after, ledgered_at, created_at)
+			VALUES ($1, $2, 'deleted', $3, $4, clock_timestamp() - interval '29 days 1 minute', 'person',
+			clock_timestamp() - interval '29 days 1 minute', clock_timestamp() + interval '1 day', clock_timestamp(),
+			clock_timestamp() - interval '29 days 1 minute')`, id, tenant, uuid.New(), id.String())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logged := &warnings{}
+	a := &app{log: slog.New(logged), pools: &pg.Pools{Live: pool, History: pool, API: pool}}
+	a.deletionHousekeeping(ctx, []uuid.UUID{tenant})
+	if len(logged.lines) != 1 || !strings.Contains(logged.lines[0], "contract: events never delivered in their 29 days are parked") ||
+		!strings.Contains(logged.lines[0], "count=1") || !strings.Contains(logged.lines[0], tenant.String()) {
+		t.Fatalf("the housekeeping logged %q", logged.lines)
+	}
+	if st, err := c.State(ctx); err != nil || st.ErrorClass != store.ContractErrorEventParked {
+		t.Fatalf("the ERROR recorded: %+v %v", st, err)
+	}
+	var code string
+	if err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT reject_code FROM item_events WHERE event_id = $1`, id).Scan(&code)
+	}); err != nil || code != store.EventParkedExpired {
+		t.Fatalf("the row: %q %v", code, err)
 	}
 }

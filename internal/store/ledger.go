@@ -82,13 +82,20 @@ type DeletionHousekeepingCounts struct {
 	// they stay, and the oldest is named, until an export takes them.
 	Unledgered int64
 	Oldest     *uuid.UUID
+	// Expired are the contract's events never delivered in their 29 days,
+	// parked now (the plan's 4.11): the caller logs them at ERROR.
+	Expired []uuid.UUID
 }
 
 // DeletionHousekeeping removes what the deletions keep only for a while, in
 // one workspace, on the database's clock (the plan's sections 5 and 7):
 //
-//   - an event row 30 days after it was written, once the ledger has it.
-//     A row the ledger has not taken stays, however old;
+//   - an event row 30 days after it was written, once the ledger has it,
+//     unless the contract still owes it to the platform (the plan's 4.11:
+//     eligible, neither settled nor parked). A row the ledger has not taken
+//     stays, however old. An owed row whose 29 days are spent is parked as
+//     expired first, so none is kept past them, whether or not a leader
+//     sends;
 //   - a seen notice 30 days after it was seen; a pause notice still unseen
 //     30 days after its pause ended; a deletion notice still unseen 30 days
 //     after its number was purged;
@@ -98,8 +105,20 @@ type DeletionHousekeepingCounts struct {
 func DeletionHousekeeping(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID) (DeletionHousekeepingCounts, error) {
 	var out DeletionHousekeepingCounts
 	err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `DELETE FROM item_events
-			WHERE ledgered_at IS NOT NULL AND created_at < clock_timestamp() - interval '30 days'`)
+		out = DeletionHousekeepingCounts{}
+		// The workspace first, then its rows in seq order (the plan's DB23),
+		// as the contract's event sender takes them.
+		if err := shareWorkspaceTx(ctx, tx, tenant); err != nil {
+			return err
+		}
+		var err error
+		if out.Expired, err = expireEventsTx(ctx, tx, tenant); err != nil {
+			return fmt.Errorf("store: expire the contract's events: %w", err)
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM item_events e
+			WHERE e.ledgered_at IS NOT NULL AND e.created_at < clock_timestamp() - interval '30 days'
+			  AND NOT EXISTS (SELECT 1 FROM contract_state s JOIN contract_workspaces w ON w.workspace_id = e.tenant_id
+			                   WHERE `+eligibleEventSQL+`)`)
 		if err != nil {
 			return fmt.Errorf("store: event housekeeping: %w", err)
 		}

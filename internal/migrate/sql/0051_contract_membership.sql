@@ -39,10 +39,15 @@
 --                       snapshot and event queue columns are the senders':
 --                       a row made due sooner, or released from its park,
 --                       notifies wappie_contract_due with its id
---                       (contract_mark_due), so the leader sends at once
---                       whichever process made it due. No owner count: a
---                       team's move stays its only owner's (0043), checked
---                       locally.
+--                       (contract_mark_due), and an event queue made due
+--                       now notifies wappie_contract_events
+--                       (contract_mark_events_due), so the leader sends at
+--                       once whichever process made it due. The snapshot's
+--                       not_found and park are its own; the event queue's
+--                       not_found has its own clock (events_not_found_since)
+--                       and parks rows, never the workspace. No owner
+--                       count: a team's move stays its only owner's (0043),
+--                       checked locally.
 --
 -- The three carry no row-level security, as tenants and platform_identities
 -- carry none: they are read before or across workspaces, and hold no content
@@ -58,7 +63,11 @@
 --                       or not_sent when nobody but the actor reads), or
 --                       parked with a reject code, never both. stranded is
 --                       written already ledgered, as sync_paused is: a
---                       restore replays deletions, not strandings.
+--                       restore replays deletions, not strandings. A new
+--                       row of a platform workspace notifies
+--                       wappie_contract_events with its workspace's id
+--                       (contract_mark_events), so the leader's event
+--                       sender looks at once.
 --   item_mails          the self-hosted mailer's queue, one row per event
 --                       and recipient: an event of that workspace and a
 --                       member of it, so a removed member's mails go with
@@ -134,6 +143,8 @@
 --      ALTER TABLE security_events DROP CONSTRAINT security_events_kind_check,
 --          ADD CONSTRAINT security_events_kind_check CHECK (kind IN ('platform_account_key_changed', 'platform_linked'));
 --      DROP TABLE item_mails;
+--      DROP TRIGGER contract_events_new ON item_events;
+--      DROP FUNCTION contract_mark_events();
 --      DROP TRIGGER contract_dirty_identity ON platform_identities;
 --      DROP TRIGGER contract_dirty_tenant ON tenants;
 --      DROP FUNCTION contract_mark_tenant_dirty();
@@ -162,6 +173,7 @@
 --          ADD CONSTRAINT item_events_type_check CHECK (type IN ('deleted', 'sync_paused', 'recovered', 'purged', 'moved_out'));
 --      DROP TABLE contract_workspaces;
 --      DROP FUNCTION contract_mark_due();
+--      DROP FUNCTION contract_mark_events_due();
 --      DROP TABLE contract_accounts;
 --      DROP TABLE contract_state;
 --      ALTER TABLE device_notices ENABLE ROW LEVEL SECURITY;
@@ -266,13 +278,24 @@ CREATE TABLE contract_workspaces (
     -- code, an outcome, a transport's; never a message), NULL once one is:
     -- what contract status shows beside a stale or parked workspace.
     snapshot_error  text,
-    -- The event queue's backoff.
+    -- The event queue's backoff: NULL or past, the queue is due.
     events_due_at   timestamptz,
     events_tries    int         NOT NULL DEFAULT 0,
-    -- A not_found on a snapshot or an event: retried for 24 hours, then
+    -- The class of the event queue's failure since (no answer, an
+    -- unverified one, a refusal's code), NULL once a batch is answered:
+    -- what contract status --check warns on.
+    events_error    text,
+    events_error_at timestamptz,
+    -- The event queue's first not_found of the run: retried for 24 hours,
+    -- then its rows parked (never the workspace), and released when a
+    -- document names the workspace again, at a restart, or once an event of
+    -- it is accepted.
+    events_not_found_since timestamptz,
+    -- A not_found on a snapshot: retried for 24 hours, then the snapshot
     -- parked.
     not_found_since timestamptz,
-    parked_at       timestamptz
+    parked_at       timestamptz,
+    CHECK ((events_error IS NULL) = (events_error_at IS NULL))
 );
 -- A snapshot made due sooner or due now, a new record, or a park released
 -- wakes the leader's sender at once, whichever process wrote it (a
@@ -289,6 +312,17 @@ CREATE TRIGGER contract_due_sooner AFTER UPDATE OF snapshot_due_at, parked_at ON
     WHEN (NEW.snapshot_due_at < OLD.snapshot_due_at OR NEW.snapshot_due_at <= clock_timestamp()
        OR (OLD.parked_at IS NOT NULL AND NEW.parked_at IS NULL))
     EXECUTE FUNCTION contract_mark_due();
+-- An event queue made due now (a recovery, a name given again, a restart)
+-- wakes the leader's event sender, whichever process wrote it; the
+-- sender's own backoff, in the future, notifies nobody.
+CREATE FUNCTION contract_mark_events_due() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('wappie_contract_events', NEW.workspace_id::text);
+    RETURN NULL;
+END $$;
+CREATE TRIGGER contract_events_due AFTER UPDATE OF events_due_at ON contract_workspaces FOR EACH ROW
+    WHEN (NEW.events_due_at IS DISTINCT FROM OLD.events_due_at AND NEW.events_due_at <= clock_timestamp())
+    EXECUTE FUNCTION contract_mark_events_due();
 
 ALTER TABLE item_events DROP CONSTRAINT item_events_type_check;
 ALTER TABLE item_events
@@ -321,6 +355,19 @@ ALTER TABLE item_events
     ADD CONSTRAINT item_events_event_tenant UNIQUE (event_id, tenant_id);
 CREATE INDEX item_events_unsent   ON item_events (tenant_id, seq) WHERE settled_at IS NULL AND parked_at IS NULL;
 CREATE INDEX item_events_unmailed ON item_events (tenant_id, seq) WHERE mailed_at IS NULL;
+-- A platform workspace's new event wakes the leader's event sender at the
+-- writer's commit. It reads the record and locks nothing: the writers hold
+-- their workspace's row, which the sender's transactions take after the
+-- record's (the plan's DB23).
+CREATE FUNCTION contract_mark_events() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM contract_workspaces WHERE workspace_id = NEW.tenant_id) THEN
+        PERFORM pg_notify('wappie_contract_events', NEW.tenant_id::text);
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER contract_events_new AFTER INSERT ON item_events
+    FOR EACH ROW EXECUTE FUNCTION contract_mark_events();
 
 ALTER TABLE device_notices DROP CONSTRAINT device_notices_kind_check,
     ADD CONSTRAINT device_notices_kind_check

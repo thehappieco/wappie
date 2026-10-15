@@ -243,6 +243,14 @@ type Fake struct {
 	inFlight, most map[string]int
 	reads          []time.Time
 	accesses       map[string][]Access
+	// batches are the events requests, in the order the fake answered them.
+	batches []Batch
+}
+
+// Batch is one events request the fake answered: how many events its body
+// held, its size in bytes, and the status the fake answered.
+type Batch struct {
+	Events, Bytes, Status int
 }
 
 // Access is one snapshot a workspace was sent: when the fake received it,
@@ -352,6 +360,19 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var seq int64
+	var batch Batch
+	if call == contracttest.CallEvents && r.Body != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			panic(http.ErrAbortHandler)
+		}
+		var head struct {
+			Events []json.RawMessage `json:"events"`
+		}
+		_ = json.Unmarshal(body, &head) //nolint:errcheck // a body that is no batch has no events
+		batch = Batch{Events: len(head.Events), Bytes: len(body)}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
 	if call == contracttest.CallAccess && r.Body != nil {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -375,7 +396,19 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.accesses[arg] = append(f.accesses[arg], Access{At: f.recordNow(), Seq: seq, Status: sw.code})
 		f.mu.Unlock()
+	case call == contracttest.CallEvents:
+		batch.Status = sw.code
+		f.mu.Lock()
+		f.batches = append(f.batches, batch)
+		f.mu.Unlock()
 	}
+}
+
+// Batches are the events requests the fake answered, in order.
+func (f *Fake) Batches() []Batch {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Batch(nil), f.batches...)
 }
 
 // RecordOn times the reads and the accesses on clock instead of the fake's

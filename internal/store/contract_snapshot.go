@@ -534,15 +534,8 @@ func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq in
 	return rec, err
 }
 
-// snapshotBackoff is the wait after the failure that follows tries
-// failures in a row: BackoffMin doubled with each, up to BackoffMax.
+// snapshotBackoff is the wait after the failure that follows tries failures
+// in a row: BackoffMin doubled with each, up to BackoffMax.
 func snapshotBackoff(tries int, times ContractSnapshotTimes) time.Duration {
-	d := times.BackoffMin
-	for range min(tries, 40) {
-		if d >= times.BackoffMax {
-			break
-		}
-		d *= 2
-	}
-	return min(d, times.BackoffMax)
+	return backoffAfter(tries, times.BackoffMin, times.BackoffMax)
 }

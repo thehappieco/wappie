@@ -59,6 +59,11 @@ const (
 	// released (0051's contract_mark_due), by whichever process wrote it:
 	// the leader's sender looks again at once.
 	ContractDueChannel = "wappie_contract_due"
+	// ContractEventsChannel carries a recorded workspace's id when an event
+	// row of it is written (0051's contract_mark_events), when its queue is
+	// made due now (contract_mark_events_due), or when its rows parked
+	// not_found are released: the leader's event sender looks at once.
+	ContractEventsChannel = "wappie_contract_events"
 )
 
 // FreshFor is how long a validated document, or a trusted
@@ -582,13 +587,13 @@ func membersChanged(before, after []ContractDocWorkspace) []uuid.UUID {
 
 // workspacesDueTx makes due now, in id order, the snapshot of every
 // workspace whose members changed, and the snapshot and event queue of
-// every named workspace the platform refused (not_found) or that has no
-// accepted snapshot since the last restart: the platform knows a workspace
-// again once a document names it, so a park for not_found (which keeps
-// not_found_since) is released too. A park for any other reason stays
-// (invalid_request is a Wappie bug, the plan's 4.10): naming it again
-// would only send it to be refused again. (P5 adds the release of the
-// events parked not_found to this.)
+// every named workspace the platform refused (not_found, a snapshot or an
+// event) or that has no accepted snapshot since the last restart: the
+// platform knows a workspace again once a document names it, so a park for
+// not_found (which keeps not_found_since) is released too, and its events
+// parked not_found are sent again (the plan's 4.7 and 4.11). A park for any
+// other reason stays (invalid_request is a Wappie bug, the plan's 4.10):
+// naming it again would only send it to be refused again.
 func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]ContractDocWorkspace, changed map[uuid.UUID]bool) error {
 	var names, members []uuid.UUID
 	for id := range named {
@@ -604,21 +609,42 @@ func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]Contrac
 	// the time now, never an earlier due time kept: the sender then tells a
 	// snapshot measured before this change from one measured after it, and
 	// sends again (SnapshotSent's Again).
-	if _, err := tx.Exec(ctx, `UPDATE contract_workspaces w SET
+	rows, err := tx.Query(ctx, `UPDATE contract_workspaces w SET
 			snapshot_due_at = clock_timestamp(),
 			snapshot_tries  = CASE WHEN back THEN 0 ELSE w.snapshot_tries END,
-			events_due_at   = CASE WHEN back AND w.events_due_at IS NOT NULL THEN least(w.events_due_at, clock_timestamp()) ELSE w.events_due_at END,
+			events_due_at   = CASE WHEN back AND w.events_due_at IS NOT NULL THEN clock_timestamp() ELSE w.events_due_at END,
 			events_tries    = CASE WHEN back THEN 0 ELSE w.events_tries END,
+			events_not_found_since = CASE WHEN back THEN NULL ELSE w.events_not_found_since END,
 			not_found_since = CASE WHEN back THEN NULL ELSE w.not_found_since END,
 			parked_at       = CASE WHEN back AND w.not_found_since IS NOT NULL THEN NULL ELSE w.parked_at END
 		FROM (SELECT c.workspace_id, c.workspace_id = ANY ($1)
-		             AND (c.not_found_since IS NOT NULL OR c.snapshot_ok_at IS NULL) AS back
+		             AND (c.not_found_since IS NOT NULL OR c.snapshot_ok_at IS NULL OR c.events_not_found_since IS NOT NULL) AS back,
+		             c.events_not_found_since IS NOT NULL AS refused
 		        FROM contract_workspaces c
 		       WHERE c.workspace_id = ANY ($1) OR c.workspace_id = ANY ($2)) due
-		WHERE w.workspace_id = due.workspace_id AND (due.back OR w.workspace_id = ANY ($2))`, names, members); err != nil {
+		WHERE w.workspace_id = due.workspace_id AND (due.back OR w.workspace_id = ANY ($2))
+		RETURNING w.workspace_id, due.back AND due.refused`, names, members)
+	if err != nil {
 		return err
 	}
-	return nil
+	var refused []uuid.UUID
+	err = forEachRow(rows, func(row pgx.Rows) error {
+		var id uuid.UUID
+		var nf bool
+		if err := row.Scan(&id, &nf); err != nil {
+			return err
+		}
+		if nf {
+			refused = append(refused, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// Rows are parked not_found only in a queue's not_found run, which a
+	// name given again ends: sent again, after the records (DB23).
+	return releaseWorkspacesTx(ctx, tx, refused)
 }
 
 // lockNamedTx locks, in id order and in one statement, the recorded rows of

@@ -375,3 +375,101 @@ func TestContractDiffCommand(t *testing.T) {
 		t.Fatal("--tenant takes an id")
 	}
 }
+
+// The events' findings of contract status --check (the plan's 4.13): a
+// workspace's parked events while on, counted as a parked snapshot is (a
+// park since the switch to the mode at once, one from before it once the
+// switch is 2 minutes old), and a queue with no verdict on its batches
+// for over 60 minutes, counted from the later of its first failure and the
+// switch; with the status lines that name them.
+func TestContractStatusEvents(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	old := defaultSealedSecret
+	defaultSealedSecret = filepath.Join(t.TempDir(), "absent", membership.SecretFileName)
+	t.Cleanup(func() { defaultSealedSecret = old })
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '1 day',
+		feed_read_at = clock_timestamp(), published_through = clock_timestamp()`)
+	ws := uuid.New()
+	execSQL(t, pool, `INSERT INTO tenants (id, name) VALUES ($1, 'Equipe')`, ws)
+	execSQL(t, pool, `INSERT INTO contract_workspaces (workspace_id, kind, named_at, status, snapshot_ok_at)
+		VALUES ($1, 'team', clock_timestamp() - interval '1 hour', 'open', clock_timestamp())`, ws)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
+		t.Fatalf("a quiet queue: %v", findings)
+	}
+	parked := uuid.New()
+	if err := pg.InTenantTx(ctx, pool, ws.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind,
+			deleted_at, purge_after, parked_at, reject_code)
+			VALUES ($1, $2, 'deleted', $3, $4, clock_timestamp(), 'person', clock_timestamp(), clock_timestamp() + interval '30 days',
+			clock_timestamp() - interval '1 minute', 'conflict')`, parked, ws, uuid.New(), parked.String())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	told := func(what string, want bool) {
+		t.Helper()
+		out, findings, _ := statusRun(t, c, config.Contract{})
+		if got := has(findings, "workspace "+ws.String()+" has 1 events parked") && has(findings, "(conflict)"); got != want || len(findings) > 1 {
+			t.Fatalf("%s: %v, want the parked events told %v\n%s", what, findings, want, out)
+		}
+		if !strings.Contains(out, "events pending 0 parked 1") || !strings.Contains(out, "events_parked=conflict") {
+			t.Fatalf("%s: the status lines:\n%s", what, out)
+		}
+	}
+	told("a park since the switch", true)
+	// The switch after the park: told once it is 2 minutes old.
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '30 seconds'`)
+	told("30 seconds after the switch, a park from before it", false)
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '3 minutes'`)
+	told("3 minutes after the switch, a park from before it", true)
+	// A park since a switch 30 seconds ago: at once.
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '30 seconds'`)
+	if err := pg.InTenantTx(ctx, pool, ws.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE item_events SET parked_at = clock_timestamp() - interval '10 seconds' WHERE event_id = $1`, parked)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	told("a park 10 seconds old, since a switch 30 seconds ago", true)
+	// Off, nothing is sent: no finding.
+	if _, err := c.SetMode(ctx, store.ContractOff); err != nil {
+		t.Fatal(err)
+	}
+	told("off", false)
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '1 day', feed_read_at = clock_timestamp(),
+		published_through = clock_timestamp()`)
+	if err := pg.InTenantTx(ctx, pool, ws.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM item_events WHERE event_id = $1`, parked)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A queue whose batches get no verdict: 59 minutes, then 61.
+	execSQL(t, pool, `UPDATE contract_workspaces SET events_error = 'unavailable:timeout', events_error_at = clock_timestamp() - interval '59 minutes',
+		events_tries = 9, events_due_at = clock_timestamp() + interval '1 hour', events_not_found_since = clock_timestamp() - interval '2 hours'
+		WHERE workspace_id = $1`, ws)
+	out, findings, _ := statusRun(t, c, config.Contract{})
+	if len(findings) != 0 || !strings.Contains(out, "events_failing=unavailable:timeout since=") || !strings.Contains(out, "tries=9") ||
+		!strings.Contains(out, "events_not_found_since=") {
+		t.Fatalf("no verdict for 59 minutes: %v\n%s", findings, out)
+	}
+	execSQL(t, pool, `UPDATE contract_workspaces SET events_error_at = clock_timestamp() - interval '61 minutes' WHERE workspace_id = $1`, ws)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 1 ||
+		!has(findings, "workspace "+ws.String()+"'s events have had no verdict for over 60 minutes") || !has(findings, "(unavailable:timeout)") {
+		t.Fatalf("no verdict for 61 minutes: %v", findings)
+	}
+	// Counted from the switch, when it is later.
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '30 minutes'`)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
+		t.Fatalf("no verdict for 61 minutes, switched 30 minutes ago: %v", findings)
+	}
+}

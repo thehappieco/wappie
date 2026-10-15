@@ -494,7 +494,7 @@ func dbNow(t *testing.T, pool *pgxpool.Pool, offset string) time.Time {
 
 // counting counts a process's feed requests and its snapshots.
 type counting struct {
-	feed, access atomic.Int64
+	feed, access, events atomic.Int64
 }
 
 func (c *counting) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -503,6 +503,8 @@ func (c *counting) RoundTrip(r *http.Request) (*http.Response, error) {
 		c.feed.Add(1)
 	case strings.HasSuffix(r.URL.Path, "/access"):
 		c.access.Add(1)
+	case strings.HasSuffix(r.URL.Path, "/events"):
+		c.events.Add(1)
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }

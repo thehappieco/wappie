@@ -14,9 +14,10 @@ import (
 )
 
 // item_events (0050) is the local log of what happened to a number: one
-// plain row per event, in the transaction that made the change. Nothing
-// reads the rows yet but the ledger export and housekeeping; a later release
-// renders the platform contract's events from them. Every row goes in
+// plain row per event, in the transaction that made the change. The ledger
+// export and housekeeping read the rows, and the contract's event sender
+// renders them at send time (contract_events.go, 0051), never inside a
+// writer's transaction. Every row goes in
 // through recordEvent, and every writer holds the workspace's row lock until
 // its commit, so seq order within a workspace is commit order.
 

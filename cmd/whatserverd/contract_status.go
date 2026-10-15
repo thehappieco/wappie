@@ -53,6 +53,10 @@ const (
 	// try, within its retry (30 s) of the switch, twice it after a lost
 	// lock; a park since the switch is told at once.
 	checkParked = 2 * time.Minute
+	// checkEvents: how long a workspace's queue of events may go without
+	// a verdict on its batches, while on: an hour is the backoff's cap, so
+	// a queue failing this long has been tried at least a dozen times.
+	checkEvents = 60 * time.Minute
 )
 
 // defaultSealedSecret is where the installer seals the current secret
@@ -147,6 +151,15 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		if ws.SnapshotError != "" {
 			extra += fmt.Sprintf(" snapshot_failing=%s tries=%d", ws.SnapshotError, ws.SnapshotTries)
 		}
+		if ws.EventsError != "" {
+			extra += fmt.Sprintf(" events_failing=%s since=%s tries=%d", ws.EventsError, stamp(*ws.EventsErrorAt), ws.EventsTries)
+		}
+		if ws.EventsNotFoundSince != nil {
+			extra += " events_not_found_since=" + stamp(*ws.EventsNotFoundSince)
+		}
+		if ws.Parked > 0 {
+			extra += fmt.Sprintf(" events_parked=%s", strings.Join(ws.ParkedCodes, ","))
+		}
 		w.f("  %s %s %s named %s, snapshot %s, events pending %d parked %d coalesced %d%s",
 			ws.ID, ws.Kind, state, ago(st.Now, &ws.NamedAt), ago(st.Now, ws.SnapshotOKAt), ws.Pending, ws.Parked, ws.Coalesced, extra)
 	}
@@ -200,6 +213,20 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 			why := ""
 			if ws.SnapshotError != "" {
 				why = fmt.Sprintf("; the last one sent: %s", ws.SnapshotError)
+			}
+			// Parked events are told, whatever the workspace's status, while
+			// they last (housekeeping drops them 30 days after they were
+			// written), counted as a snapshot's park is: at once for one
+			// since the switch to the mode, after checkParked for one from
+			// before it.
+			if ws.Parked > 0 && ws.ParkedLatest != nil &&
+				(!ws.ParkedLatest.Before(s.ModeChangedAt) || now.Sub(s.ModeChangedAt) > checkParked) {
+				out = append(out, fmt.Sprintf("workspace %s has %d events parked, the last at %s (%s): they are not sent",
+					ws.ID, ws.Parked, stamp(*ws.ParkedLatest), strings.Join(ws.ParkedCodes, ",")))
+			}
+			if ws.EventsErrorAt != nil && older(since(ws.EventsErrorAt), checkEvents) {
+				out = append(out, fmt.Sprintf("workspace %s's events have had no verdict for over 60 minutes, since %s (%s)",
+					ws.ID, stamp(*ws.EventsErrorAt), ws.EventsError))
 			}
 			if ws.ParkedAt != nil {
 				// A park is told whatever the workspace's status: nothing is

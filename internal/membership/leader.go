@@ -18,8 +18,8 @@ import (
 
 // The leader (the plan's DB7 and 4.7): of every process on one database,
 // only the one that holds the contract's advisory lock follows the feed,
-// runs the round and the sweep and sends the snapshots (and, from P5, the
-// events), so none of them ever runs twice, even while a restart overlaps
+// runs the round and the sweep and sends the snapshots and the events, so
+// none of them ever runs twice, even while a restart overlaps
 // two processes. The lock is held through pg.Locker.Hold, whose
 // context ends the moment its connection goes; every write the leader
 // makes to the shared state is compare-and-set besides, so a late commit
@@ -93,6 +93,11 @@ type Leader struct {
 	// the debounce after a change, and the backoff after a failure.
 	SnapshotEvery, SnapshotDebounce        time.Duration
 	SnapshotBackoffMin, SnapshotBackoffMax time.Duration
+	// The events' timings (events.go): the backoff after a failure, how
+	// often every queue is looked at, and the longest wait between looks
+	// at the due ones.
+	EventBackoffMin, EventBackoffMax time.Duration
+	EventsScanEvery, EventsIdle      time.Duration
 
 	// ours, set by tests only, tells the dirty and due notices this
 	// installation's sessions sent from any other's: every test schema
@@ -132,7 +137,7 @@ func (l *Leader) Run(ctx context.Context) {
 		pause := retry
 		if l.ready(ctx) {
 			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel,
-				store.ContractDueChannel)
+				store.ContractDueChannel, store.ContractEventsChannel)
 			switch {
 			case err != nil:
 				l.log().Warn("contract: could not try the leader's lock", "error", err)
@@ -231,11 +236,13 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	l.log().Info("contract: leading")
 	f := &follower{l: l, round: make(chan struct{}, 1)}
 	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
+	events := newEventSender(l)
 	var wg sync.WaitGroup
 	wg.Go(func() { f.run(ctx) })
 	wg.Go(func() { l.rounds(ctx, f.round) })
 	wg.Go(func() { snaps.run(ctx) })
-	wg.Go(func() { l.watchMode(ctx, stop, f, snaps.notices, held, wake) })
+	wg.Go(func() { events.run(ctx) })
+	wg.Go(func() { l.watchMode(ctx, stop, f, snaps.notices, events, held, wake) })
 	wg.Wait()
 	lost = errors.Is(context.Cause(held.Context()), pg.ErrLockLost)
 	if lost {
@@ -249,10 +256,12 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 // watchMode stops the leader when the mode is off, read every ModeCheck
 // and at each mode notice, and passes the other notices on, never waiting
 // on their loops: a round to run now, a generation to look for at once
-// (the long-poll in flight is cut), and to the snapshot sender the
-// workspaces a change touched and the due times made sooner. It is the
-// held connection's one reader.
-func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, snaps *notices, held *pg.Held, wake <-chan string) {
+// (the long-poll in flight is cut), to the snapshot sender the workspaces
+// a change touched and the due times made sooner, and to the event sender
+// the queues with new rows or due again. It is the held connection's one
+// reader.
+func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, snaps *notices, events *eventSender,
+	held *pg.Held, wake <-chan string) {
 	tick := time.NewTicker(or(l.ModeCheck, modeCheck))
 	defer tick.Stop()
 	check := func() {
@@ -294,6 +303,8 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 				snaps.dirty(n.Payload)
 			case n.Channel == store.ContractDueChannel:
 				snaps.due()
+			case n.Channel == store.ContractEventsChannel:
+				events.notice(n.Payload)
 			}
 		}
 	}

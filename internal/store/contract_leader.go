@@ -69,6 +69,14 @@ const (
 	// one Wappie would not send (over README 8's limits, or not valid).
 	ContractErrorSnapshotParked  = "snapshot_parked"
 	ContractErrorSnapshotInvalid = "snapshot_invalid"
+	// ContractErrorEventParked: an event parked (conflict, invalid_request,
+	// local_invalid, a day of not_found, its 29 days spent);
+	// ContractErrorEventsRefused: a batch the platform refused whole;
+	// ContractErrorEventActor: an event's person, or key's creator, with no
+	// platform sub, sent with actor null.
+	ContractErrorEventParked   = "event_parked"
+	ContractErrorEventsRefused = "events_refused"
+	ContractErrorEventActor    = "event_actor_unknown"
 )
 
 // ErrPageGeneration is a page of another generation than the one the
@@ -201,9 +209,10 @@ func sameGeneration(a, b *uuid.UUID) bool {
 // recorded workspace gets wversion 0 (a restored platform's lower wversion
 // is then applied, README 7.4 "forgets ... its stored versions"), keeping
 // its status, and a snapshot and event queue due now, with no accepted
-// snapshot (the platform may hold none of this generation) and nothing
-// parked. (P5 releases the events parked not_found here.) It reports
-// whether it restarted: false when the state moved since it was read.
+// snapshot (the platform may hold none of this generation), nothing
+// parked and no not_found run, and every workspace's events parked
+// not_found are sent again (the plan's 4.7 and 4.11). It reports whether
+// it restarted: false when the state moved since it was read.
 func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenCursor int64, gen *uuid.UUID, confirmed bool) (bool, error) {
 	done := false
 	err := retryDeadlock(ctx, func() error {
@@ -229,10 +238,34 @@ func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenC
 			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces ORDER BY workspace_id FOR UPDATE`); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE contract_workspaces SET wversion = 0,
+			rows, err := tx.Query(ctx, `UPDATE contract_workspaces w SET wversion = 0,
 				snapshot_due_at = clock_timestamp(), snapshot_tries = 0, snapshot_ok_at = NULL,
 				events_due_at = CASE WHEN events_due_at IS NULL THEN NULL ELSE clock_timestamp() END, events_tries = 0,
-				not_found_since = NULL, parked_at = NULL`); err != nil {
+				events_not_found_since = NULL, not_found_since = NULL, parked_at = NULL
+				FROM (SELECT c.workspace_id, c.events_not_found_since IS NOT NULL AS refused FROM contract_workspaces c) was
+				WHERE w.workspace_id = was.workspace_id
+				RETURNING w.workspace_id, was.refused`)
+			if err != nil {
+				return err
+			}
+			var refused []uuid.UUID
+			err = forEachRow(rows, func(row pgx.Rows) error {
+				var id uuid.UUID
+				var nf bool
+				if err := row.Scan(&id, &nf); err != nil {
+					return err
+				}
+				if nf {
+					refused = append(refused, id)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			// Rows are parked not_found only in a not_found run, which this
+			// ends: in id order, after the records (DB23).
+			if err := releaseWorkspacesTx(ctx, tx, refused); err != nil {
 				return err
 			}
 			done = true
@@ -258,9 +291,11 @@ func (c *Contract) Recovered(ctx context.Context) (int64, error) {
 		if _, err := lockStateTx(ctx, tx); err != nil {
 			return err
 		}
+		// Due now is the time now, as every due-now writer stamps it, so a
+		// batch in flight that fails leaves it due (EventsFailed's Again).
 		tag, err := tx.Exec(ctx, `UPDATE contract_workspaces w SET
 			snapshot_due_at = clock_timestamp(), snapshot_tries = 0,
-			events_due_at = CASE WHEN w.events_due_at IS NULL THEN NULL ELSE least(w.events_due_at, clock_timestamp()) END, events_tries = 0
+			events_due_at = CASE WHEN w.events_due_at IS NULL THEN NULL ELSE clock_timestamp() END, events_tries = 0
 			FROM (`+lockWorkspacesSQL(`snapshot_tries > 0 OR events_tries > 0`)+`) l WHERE w.workspace_id = l.workspace_id`)
 		n = tag.RowsAffected()
 		return err
@@ -356,19 +391,6 @@ func (c *Contract) SetMode(ctx context.Context, mode string) (ContractModeChange
 	return out, err
 }
 
-// eligibleEventSQL is the plan's DB10 for a row e of item_events in the
-// recorded workspace w, with contract_state s: not settled, not parked,
-// and either written (not replayed) at or after both the first observe and
-// the workspace's naming, a pause, a stranding or a move not in an off
-// period; or replayed, a deletion, a recovery or a purge, which occurred at
-// or after both. (P5's sender takes this predicate with its expiry.)
-const eligibleEventSQL = `s.events_from IS NOT NULL AND e.settled_at IS NULL AND e.parked_at IS NULL AND (
-	(e.replayed_at IS NULL AND e.created_at >= greatest(s.events_from, w.named_at)
-	 AND (e.type IN ('deleted', 'recovered', 'purged')
-	      OR NOT (s.events_off @> e.created_at OR (s.events_paused_at IS NOT NULL AND e.created_at >= s.events_paused_at))))
-	OR (e.replayed_at IS NOT NULL AND e.type IN ('deleted', 'recovered', 'purged')
-	 AND e.occurred_at >= greatest(s.events_from, w.named_at)))`
-
 // offPeriodCountsTx counts, after a switch to observe that ended the off
 // period begun at paused, the events now to send and the ones held back
 // for good, workspace by workspace (item_events is each workspace's).
@@ -425,6 +447,17 @@ type ContractWorkspaceStatus struct {
 	// The workspace's events: eligible and not yet delivered, parked, and
 	// folded into another.
 	Pending, Parked, Coalesced int64
+	// ParkedLatest is the newest park of its events, and ParkedCodes their
+	// codes, each once, in order.
+	ParkedLatest *time.Time
+	ParkedCodes  []string
+	// The event queue: its backoff, the class of its failure since
+	// EventsErrorAt ("" once a batch is answered), and its not_found run.
+	EventsDueAt         *time.Time
+	EventsTries         int
+	EventsError         string
+	EventsErrorAt       *time.Time
+	EventsNotFoundSince *time.Time
 }
 
 // ContractStatus is what whatserverd contract status reads, in one
@@ -456,7 +489,8 @@ func (c *Contract) Status(ctx context.Context) (ContractStatus, error) {
 			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT w.workspace_id, w.kind, coalesce(w.status, ''), w.named_at, w.snapshot_ok_at,
-				w.snapshot_due_at, w.snapshot_tries, coalesce(w.snapshot_error, ''), w.not_found_since, w.parked_at, t.id IS NOT NULL
+				w.snapshot_due_at, w.snapshot_tries, coalesce(w.snapshot_error, ''), w.not_found_since, w.parked_at, t.id IS NOT NULL,
+				w.events_due_at, w.events_tries, coalesce(w.events_error, ''), w.events_error_at, w.events_not_found_since
 			FROM contract_workspaces w LEFT JOIN tenants t ON t.id = w.workspace_id ORDER BY w.named_at, w.workspace_id`)
 		if err != nil {
 			return err
@@ -464,7 +498,8 @@ func (c *Contract) Status(ctx context.Context) (ContractStatus, error) {
 		out.Workspaces, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (ContractWorkspaceStatus, error) {
 			var w ContractWorkspaceStatus
 			err := row.Scan(&w.ID, &w.Kind, &w.Status, &w.NamedAt, &w.SnapshotOKAt, &w.SnapshotDueAt, &w.SnapshotTries,
-				&w.SnapshotError, &w.NotFoundSince, &w.ParkedAt, &w.Local)
+				&w.SnapshotError, &w.NotFoundSince, &w.ParkedAt, &w.Local,
+				&w.EventsDueAt, &w.EventsTries, &w.EventsError, &w.EventsErrorAt, &w.EventsNotFoundSince)
 			return w, err
 		})
 		if err != nil {
@@ -481,9 +516,11 @@ func (c *Contract) Status(ctx context.Context) (ContractStatus, error) {
 			if err := tx.QueryRow(ctx, `SELECT
 					count(*) FILTER (WHERE `+eligibleEventSQL+`),
 					count(*) FILTER (WHERE e.parked_at IS NOT NULL),
-					count(*) FILTER (WHERE e.outcome = 'coalesced' OR (e.coalesced_into IS NOT NULL AND e.settled_at IS NULL))
+					count(*) FILTER (WHERE e.outcome = 'coalesced' OR (e.coalesced_into IS NOT NULL AND e.settled_at IS NULL)),
+					max(e.parked_at),
+					coalesce(array_agg(DISTINCT e.reject_code ORDER BY e.reject_code) FILTER (WHERE e.parked_at IS NOT NULL), '{}')
 				FROM item_events e CROSS JOIN contract_state s JOIN contract_workspaces w ON w.workspace_id = $1
-				WHERE e.tenant_id = $1`, w.ID).Scan(&w.Pending, &w.Parked, &w.Coalesced); err != nil {
+				WHERE e.tenant_id = $1`, w.ID).Scan(&w.Pending, &w.Parked, &w.Coalesced, &w.ParkedLatest, &w.ParkedCodes); err != nil {
 				return err
 			}
 		}
