@@ -200,3 +200,39 @@ func show(s *string) string {
 	}
 	return `"` + *s + `"`
 }
+
+// Classify is the class of what Contract does with a number's label, for
+// the snapshot's counts (the plan's 4.8): named exactly when Contract gives
+// a label, else why the first candidate holding anything was set aside.
+func TestClassify(t *testing.T) {
+	const pn = "5511912345678:12@s.whatsapp.net"
+	const id = "0199e000-0000-7000-8000-000000000004"
+	for _, c := range []struct {
+		name, label, pushName, pn string
+		want                      Class
+	}{
+		{"a name", "Vendas", "", pn, ClassNamed},
+		{"a push name under a placeholder", "Número do WhatsApp", "Loja", pn, ClassNamed},
+		{"a placeholder", "WhatsApp number", "", pn, ClassPlaceholder},
+		{"the number", "+55 11 91234-5678", "", pn, ClassPhone},
+		{"the number as a push name", "", "11 91234 5678", pn, ClassPhone},
+		{"an opaque id", "0199e0000000700080000000000000ab", "", pn, ClassLegacyID},
+		{"the start of its own id", "0199e000", "", pn, ClassLegacyID},
+		{"an address, which the rule drops", "vendas@acme.test", "", pn, ClassEmpty},
+		{"nothing", "", "", pn, ClassEmpty},
+		{"hidden characters only", "\u200b\u200e", "", pn, ClassEmpty},
+		{"a placeholder, then a name", "device", "Suporte", "", ClassNamed},
+		{"a placeholder, then the number", "device", "+55 11 91234-5678", pn, ClassPlaceholder},
+	} {
+		got := Classify(c.label, c.pushName, c.pn, id)
+		if got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+		if (got == ClassNamed) != (Contract(c.label, c.pushName, c.pn, id) != nil) {
+			t.Errorf("%s: %s, but Contract gives %s", c.name, got, show(Contract(c.label, c.pushName, c.pn, id)))
+		}
+	}
+	if n := len(Classes()); n != 5 {
+		t.Fatalf("%d classes", n)
+	}
+}

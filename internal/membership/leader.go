@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kc "github.com/thehappieco/kit/contract"
@@ -16,10 +17,10 @@ import (
 )
 
 // The leader (the plan's DB7 and 4.7): of every process on one database,
-// only the one that holds the contract's advisory lock follows the feed and
-// runs the round and the sweep (and, from P4 and P5, sends the snapshots
-// and the events), so none of them ever runs twice, even while a restart
-// overlaps two processes. The lock is held through pg.Locker.Hold, whose
+// only the one that holds the contract's advisory lock follows the feed,
+// runs the round and the sweep and sends the snapshots (and, from P5, the
+// events), so none of them ever runs twice, even while a restart overlaps
+// two processes. The lock is held through pg.Locker.Hold, whose
 // context ends the moment its connection goes; every write the leader
 // makes to the shared state is compare-and-set besides, so a late commit
 // of a leader that lost its lock changes nothing.
@@ -30,8 +31,12 @@ import (
 // Retry (30 s); a leader whose connection goes stops at once, one whose
 // lock went quietly within the heartbeat (10 s), one whose link went
 // silent within twice it; after a failure the feed
-// is asked again within BackoffMax (60 s); and the round and the sweep run
-// beside the feed, never in its way.
+// is asked again within BackoffMax (60 s); and the round, the sweep and
+// the snapshots run beside the feed, never in its way. Likewise every
+// recorded workspace's snapshot goes at the leader's start, within the
+// debounce of a change, and 55 minutes after its last accepted one, well
+// under the 90 minutes after which the platform counts it stale
+// (contract_snapshots_stale, the plan's 18).
 
 // The leader's defaults.
 const (
@@ -84,6 +89,10 @@ type Leader struct {
 	BackoffMin, BackoffMax       time.Duration
 	SilentAfter, IncompleteAfter time.Duration
 	SweepEvery, RoundEvery       time.Duration
+	// The snapshots' timings (snapshots.go): the next after one accepted,
+	// the debounce after a change, and the backoff after a failure.
+	SnapshotEvery, SnapshotDebounce        time.Duration
+	SnapshotBackoffMin, SnapshotBackoffMax time.Duration
 }
 
 func or[T comparable](v, def T) T {
@@ -115,7 +124,8 @@ func (l *Leader) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		pause := retry
 		if l.ready(ctx) {
-			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel)
+			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel,
+				store.ContractDueChannel)
 			switch {
 			case err != nil:
 				l.log().Warn("contract: could not try the leader's lock", "error", err)
@@ -213,10 +223,12 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	defer stop()
 	l.log().Info("contract: leading")
 	f := &follower{l: l, round: make(chan struct{}, 1)}
+	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
 	var wg sync.WaitGroup
 	wg.Go(func() { f.run(ctx) })
 	wg.Go(func() { l.rounds(ctx, f.round) })
-	wg.Go(func() { l.watchMode(ctx, stop, f, held, wake) })
+	wg.Go(func() { snaps.run(ctx) })
+	wg.Go(func() { l.watchMode(ctx, stop, f, snaps.notices, held, wake) })
 	wg.Wait()
 	lost = errors.Is(context.Cause(held.Context()), pg.ErrLockLost)
 	if lost {
@@ -228,10 +240,12 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 }
 
 // watchMode stops the leader when the mode is off, read every ModeCheck
-// and at each mode notice, and passes the other notices on: a round to run
-// now, a generation to look for at once (the long-poll in flight is cut).
-// The dirty channel's notices are the snapshot sender's (P4).
-func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, held *pg.Held, wake <-chan string) {
+// and at each mode notice, and passes the other notices on, never waiting
+// on their loops: a round to run now, a generation to look for at once
+// (the long-poll in flight is cut), and to the snapshot sender the
+// workspaces a change touched and the due times made sooner. It is the
+// held connection's one reader.
+func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, snaps *notices, held *pg.Held, wake <-chan string) {
 	tick := time.NewTicker(or(l.ModeCheck, modeCheck))
 	defer tick.Stop()
 	check := func() {
@@ -265,8 +279,13 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			if !ok {
 				return
 			}
-			if n.Channel == store.ContractModeChannel {
+			switch n.Channel {
+			case store.ContractModeChannel:
 				notice(n.Payload)
+			case store.ContractDirtyChannel:
+				snaps.dirty(n.Payload)
+			case store.ContractDueChannel:
+				snaps.due()
 			}
 		}
 	}

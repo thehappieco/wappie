@@ -70,10 +70,7 @@ var (
 //
 // The console never computes this: notices render the server's snapshot.
 func Contract(label, pushName, pn, deviceID string) *string {
-	last7 := ""
-	if digits := asciiDigits(userPart(pn)); len(digits) >= digitRun {
-		last7 = digits[len(digits)-digitRun:]
-	}
+	last7 := lastSeven(pn)
 	for _, candidate := range []string{label, pushName} {
 		if setAside(candidate, last7, deviceID) {
 			continue
@@ -85,17 +82,80 @@ func Contract(label, pushName, pn, deviceID string) *string {
 	return nil
 }
 
+// lastSeven is the last seven digits of the phone number's user part, or
+// "" when it has fewer.
+func lastSeven(pn string) string {
+	if digits := asciiDigits(userPart(pn)); len(digits) >= digitRun {
+		return digits[len(digits)-digitRun:]
+	}
+	return ""
+}
+
 // setAside reports a candidate that names no number: empty, a placeholder,
 // an id, or the number itself.
 func setAside(candidate, last7, deviceID string) bool {
+	return asideClass(candidate, last7, deviceID) != ""
+}
+
+// asideClass is why a candidate is set aside, or "" when it is not.
+func asideClass(candidate, last7, deviceID string) Class {
 	trimmed := strings.TrimSpace(stripHidden(candidate))
 	switch {
-	case trimmed == "", placeholders[fold(trimmed)], opaqueID.MatchString(trimmed):
-		return true
+	case trimmed == "":
+		return ClassEmpty
+	case placeholders[fold(trimmed)]:
+		return ClassPlaceholder
+	case opaqueID.MatchString(trimmed):
+		return ClassLegacyID
 	case legacyPrefix.MatchString(trimmed) && deviceID != "" && strings.HasPrefix(strings.ToLower(deviceID), strings.ToLower(trimmed)):
-		return true
+		return ClassLegacyID
+	case last7 != "" && strings.Contains(asciiDigits(candidate), last7):
+		return ClassPhone
 	}
-	return last7 != "" && strings.Contains(asciiDigits(candidate), last7)
+	return ""
+}
+
+// Class is what a number's label is, for the counts the contract's hourly
+// snapshot logs (the plan's 4.8, the reply's Q3): never its value.
+type Class string
+
+// The classes, from Classify.
+const (
+	// ClassNamed: a name a person gave it leaves Wappie (Contract).
+	ClassNamed Class = "named"
+	// ClassPhone: the candidate was the number itself.
+	ClassPhone Class = "phone"
+	// ClassPlaceholder: one of the names Wappie gives a number nobody named.
+	ClassPlaceholder Class = "placeholder"
+	// ClassLegacyID: an opaque id, or the start of the number's own id.
+	ClassLegacyID Class = "legacy_id"
+	// ClassEmpty: nothing, or nothing the contract's rule leaves.
+	ClassEmpty Class = "empty"
+)
+
+// Classes are the classes, in the order a log line lists them.
+func Classes() []Class {
+	return []Class{ClassNamed, ClassPhone, ClassPlaceholder, ClassLegacyID, ClassEmpty}
+}
+
+// Classify is the class of what Contract does with a number's label and
+// push name: named when it gives a label, else why the first candidate
+// that holds anything was set aside (or empty, when the rule left nothing
+// of it, an address for one).
+func Classify(label, pushName, pn, deviceID string) Class {
+	if Contract(label, pushName, pn, deviceID) != nil {
+		return ClassNamed
+	}
+	last7 := lastSeven(pn)
+	for _, candidate := range []string{label, pushName} {
+		if c := asideClass(candidate, last7, deviceID); c != ClassEmpty {
+			if c == "" {
+				return ClassEmpty
+			}
+			return c
+		}
+	}
+	return ClassEmpty
 }
 
 // Clean is the contract's CleanLabel over NFC text: what of a name may

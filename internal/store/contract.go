@@ -54,6 +54,11 @@ const (
 	// ContractModeChannel wakes every process's contract loop: a mode
 	// switch, or an answer of a generation Wappie does not hold.
 	ContractModeChannel = "wappie_contract_mode"
+	// ContractDueChannel carries a recorded workspace's id when its
+	// snapshot was made due sooner, it was first recorded, or its park was
+	// released (0051's contract_mark_due), by whichever process wrote it:
+	// the leader's sender looks again at once.
+	ContractDueChannel = "wappie_contract_due"
 )
 
 // FreshFor is how long a validated document, or a trusted
@@ -597,8 +602,11 @@ func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]Contrac
 		ORDER BY workspace_id FOR UPDATE`, names, members); err != nil {
 		return err
 	}
+	// Due now is the time now, never an earlier due time kept: the
+	// sender then tells a snapshot measured before this change from one
+	// measured after it, and sends again (SnapshotSent's Again).
 	if _, err := tx.Exec(ctx, `UPDATE contract_workspaces w SET
-			snapshot_due_at = least(w.snapshot_due_at, clock_timestamp()),
+			snapshot_due_at = clock_timestamp(),
 			snapshot_tries  = CASE WHEN back THEN 0 ELSE w.snapshot_tries END,
 			events_due_at   = CASE WHEN back AND w.events_due_at IS NOT NULL THEN least(w.events_due_at, clock_timestamp()) ELSE w.events_due_at END,
 			events_tries    = CASE WHEN back THEN 0 ELSE w.events_tries END,

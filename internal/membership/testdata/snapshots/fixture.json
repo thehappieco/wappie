@@ -1,0 +1,202 @@
+{
+  "v": 1,
+  "snapshot_seq": 1,
+  "items": [
+    {
+      "id": "0199e000-0000-7000-8000-000000000001",
+      "kind": "number",
+      "label": "Vendas",
+      "hint": "…5678",
+      "state": "active",
+      "reason": null,
+      "purge_at": null,
+      "other_backups": 1,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000001",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        },
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000003",
+          "can": [
+            "read"
+          ],
+          "reads": false,
+          "waiting": true,
+          "enrolled": true,
+          "holds_key": false
+        },
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000005",
+          "can": [
+            "read"
+          ],
+          "reads": false,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": false
+        }
+      ],
+      "protected": []
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000002",
+      "kind": "number",
+      "label": "Suporte",
+      "hint": "…1111",
+      "state": "sync_paused",
+      "reason": "by_person",
+      "purge_at": null,
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000001",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": [
+        "0199a0c2-0000-7000-8000-000000000001"
+      ]
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000003",
+      "kind": "number",
+      "label": null,
+      "hint": "…2222",
+      "state": "sync_paused",
+      "reason": "error",
+      "purge_at": null,
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000004",
+          "can": [
+            "send"
+          ],
+          "reads": false,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": [
+        "0199a0c2-0000-7000-8000-000000000004"
+      ]
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000004",
+      "kind": "number",
+      "label": null,
+      "hint": "…3333",
+      "state": "sync_paused",
+      "reason": "by_person",
+      "purge_at": null,
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000002",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": [
+        "0199a0c2-0000-7000-8000-000000000002"
+      ]
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000005",
+      "kind": "number",
+      "label": "Entregas",
+      "hint": "…4444",
+      "state": "sync_paused",
+      "reason": "needs_reauth",
+      "purge_at": null,
+      "other_backups": 1,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000001",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": []
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000006",
+      "kind": "number",
+      "label": "Financeiro antigo",
+      "hint": "…5555",
+      "state": "deleted",
+      "reason": null,
+      "purge_at": "2026-11-14T12:00:00Z",
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000001",
+          "can": [
+            "read",
+            "send",
+            "manage"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": [
+        "0199a0c2-0000-7000-8000-000000000001"
+      ]
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000007",
+      "kind": "number",
+      "label": "Cobrança",
+      "hint": "…6666",
+      "state": "active",
+      "reason": null,
+      "purge_at": null,
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000005",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": false,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": []
+    }
+  ]
+}

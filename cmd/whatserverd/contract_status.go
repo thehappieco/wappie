@@ -137,7 +137,10 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 			extra += " not_found_since=" + stamp(*ws.NotFoundSince)
 		}
 		if ws.ParkedAt != nil {
-			extra += " parked"
+			extra += " parked=" + stamp(*ws.ParkedAt)
+		}
+		if ws.SnapshotError != "" {
+			extra += fmt.Sprintf(" snapshot_failing=%s tries=%d", ws.SnapshotError, ws.SnapshotTries)
 		}
 		w.f("  %s %s %s named %s, snapshot %s, events pending %d parked %d coalesced %d%s",
 			ws.ID, ws.Kind, state, ago(st.Now, &ws.NamedAt), ago(st.Now, ws.SnapshotOKAt), ws.Pending, ws.Parked, ws.Coalesced, extra)
@@ -189,6 +192,17 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 				st.Held-st.Followed, stamp(*s.RoundErrorAt), s.RoundError))
 		}
 		for _, ws := range st.Workspaces {
+			why := ""
+			if ws.SnapshotError != "" {
+				why = fmt.Sprintf("; the last one sent: %s", ws.SnapshotError)
+			}
+			if ws.ParkedAt != nil {
+				// A park is told whatever the workspace's status: nothing is
+				// sent of it until a document names it again (not_found), a
+				// restart or a leader's start.
+				out = append(out, fmt.Sprintf("workspace %s is parked since %s: its snapshots are not sent%s", ws.ID, stamp(*ws.ParkedAt), why))
+				continue
+			}
 			if ws.Status == "closed" {
 				continue
 			}
@@ -197,7 +211,7 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 				last = &ws.NamedAt
 			}
 			if older(since(last), checkSnapshot) {
-				out = append(out, fmt.Sprintf("workspace %s has no snapshot accepted for over 60 minutes (the platform alerts after 90)", ws.ID))
+				out = append(out, fmt.Sprintf("workspace %s has no snapshot accepted for over 60 minutes (the platform alerts after 90)%s", ws.ID, why))
 			}
 		}
 	}

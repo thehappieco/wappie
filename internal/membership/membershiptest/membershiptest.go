@@ -10,7 +10,9 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -224,8 +226,11 @@ type Fake struct {
 	// URL is the base the client is given.
 	URL string
 
-	now    func() time.Time
-	mu     sync.Mutex
+	now func() time.Time
+	mu  sync.Mutex
+	// record is the clock the reads and the accesses are timed on (the
+	// fake's own unless RecordOn gives another).
+	record func() time.Time
 	refuse map[string]string
 	before map[string]func(arg string)
 	counts map[string]int
@@ -233,9 +238,21 @@ type Fake struct {
 	// inFlight and most count the requests of each call being served,
 	// now and at most; reads are the times, on the fake's clock, of every
 	// feed request it answered 200 (a read, as the platform's
-	// contract_feed_silent alert counts one).
+	// contract_feed_silent alert counts one); accesses are the snapshots
+	// each workspace was sent.
 	inFlight, most map[string]int
 	reads          []time.Time
+	accesses       map[string][]Access
+}
+
+// Access is one snapshot a workspace was sent: when the fake received it,
+// on its clock, its snapshot_seq (0 when the body held none), and the
+// status the fake answered (200 is accepted, as the platform's
+// contract_snapshots_stale alert counts a snapshot).
+type Access struct {
+	At     time.Time
+	Seq    int64
+	Status int
 }
 
 // StartFake serves a fake platform for wappie, with secret as its current
@@ -259,7 +276,7 @@ func StartFakeAt(tb testing.TB, secret string, now func() time.Time) *Fake {
 		tb.Fatal(err)
 	}
 	f := &Fake{Platform: p, now: now, refuse: map[string]string{}, before: map[string]func(string){}, counts: map[string]int{},
-		inFlight: map[string]int{}, most: map[string]int{}}
+		inFlight: map[string]int{}, most: map[string]int{}, accesses: map[string][]Access{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	tb.Cleanup(srv.Close)
 	f.URL = srv.URL
@@ -334,13 +351,68 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 			panic(err)
 		}
 	}
+	var seq int64
+	if call == contracttest.CallAccess && r.Body != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			panic(http.ErrAbortHandler)
+		}
+		var head struct {
+			Seq int64 `json:"snapshot_seq"`
+		}
+		_ = json.Unmarshal(body, &head) //nolint:errcheck // a body that is no snapshot has no seq
+		seq = head.Seq
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
 	sw := &status{ResponseWriter: w, code: http.StatusOK}
 	f.ServeHTTP(sw, r)
-	if call == contracttest.CallFeed && sw.code == http.StatusOK {
+	switch {
+	case call == contracttest.CallFeed && sw.code == http.StatusOK:
 		f.mu.Lock()
-		f.reads = append(f.reads, f.now())
+		f.reads = append(f.reads, f.recordNow())
+		f.mu.Unlock()
+	case call == contracttest.CallAccess:
+		f.mu.Lock()
+		f.accesses[arg] = append(f.accesses[arg], Access{At: f.recordNow(), Seq: seq, Status: sw.code})
 		f.mu.Unlock()
 	}
+}
+
+// RecordOn times the reads and the accesses on clock instead of the fake's
+// own: a test runs the platform's alerts on a clock faster than the one
+// the platform signs with, which a signature's 60 s window keeps real.
+func (f *Fake) RecordOn(clock func() time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record = clock
+}
+
+// recordNow is the time a read or an access is recorded at; f.mu is held.
+func (f *Fake) recordNow() time.Time {
+	if f.record != nil {
+		return f.record()
+	}
+	return f.now()
+}
+
+// Accesses are the snapshots workspace ws was sent, in the order the fake
+// answered them.
+func (f *Fake) Accesses(ws string) []Access {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Access(nil), f.accesses[ws]...)
+}
+
+// Accepted are the times, on the fake's clock, of the snapshots of ws it
+// answered 200.
+func (f *Fake) Accepted(ws string) []time.Time {
+	var out []time.Time
+	for _, a := range f.Accesses(ws) {
+		if a.Status == http.StatusOK {
+			out = append(out, a.At)
+		}
+	}
+	return out
 }
 
 // Most is the most requests to call the fake served at once.

@@ -88,7 +88,8 @@ func execSQL(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 // TB26's and the plan's 18 findings of contract status --check, each pinned
 // at both sides of its bound with literals: the feed last read over 5
 // minutes ago (the platform alerts at 10), an open platform workspace with
-// no snapshot accepted for 60 minutes (it alerts at 90), published_through
+// no snapshot accepted for 60 minutes (it alerts at 90), with the class of
+// its failing snapshots, a parked workspace while on, published_through
 // over an hour old, a contract ERROR in the last day, a failed secret load,
 // the server's fingerprints not the files', and a database that never
 // observed beside an installed secret.
@@ -226,7 +227,43 @@ func TestContractStatusCheck(t *testing.T) {
 	if _, findings, _ := statusRun(t, c, config.Contract{}); !has(findings, ws.String()) {
 		t.Fatalf("a snapshot 61 minutes old: %v", findings)
 	}
-	execSQL(t, pool, `UPDATE contract_workspaces SET snapshot_ok_at = clock_timestamp() WHERE workspace_id = $1`, ws)
+	// Stale with its snapshots failing: the failure's class is named.
+	execSQL(t, pool, `UPDATE contract_workspaces SET snapshot_error = 'unavailable:timeout', snapshot_tries = 9 WHERE workspace_id = $1`, ws)
+	if out, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 1 || !has(findings, "the last one sent: unavailable:timeout") ||
+		!strings.Contains(out, "snapshot_failing=unavailable:timeout tries=9") {
+		t.Fatalf("a stale snapshot failing:\n%s", out)
+	}
+	execSQL(t, pool, `UPDATE contract_workspaces SET snapshot_ok_at = clock_timestamp(), snapshot_error = NULL, snapshot_tries = 0
+		WHERE workspace_id = $1`, ws)
+
+	// A parked workspace, whatever its status, from the moment it parks:
+	// a day of not_found, or a snapshot refused as invalid, and a closed one.
+	for _, park := range []struct{ id, class, nfs string }{
+		{ws.String(), "refused:not_found", "clock_timestamp() - interval '25 hours'"},
+		{closed.String(), "refused:invalid_request", "NULL"},
+	} {
+		execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = clock_timestamp(), snapshot_error = $2,
+			not_found_since = `+park.nfs+` WHERE workspace_id = $1`, park.id, park.class)
+		out, findings, code := statusRun(t, c, config.Contract{})
+		if code != 1 || len(findings) != 1 || !has(findings, "workspace "+park.id+" is parked since") || !has(findings, park.class) ||
+			!strings.Contains(out, "parked=") {
+			t.Fatalf("parked (%s):\n%s", park.class, out)
+		}
+		execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = NULL, snapshot_error = NULL, not_found_since = NULL WHERE workspace_id = $1`, park.id)
+	}
+	// Off, a park is not the leader's to clear: nothing is sent while off.
+	execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = clock_timestamp() WHERE workspace_id = $1`, ws)
+	if _, err := c.SetMode(ctx, store.ContractOff); err != nil {
+		t.Fatal(err)
+	}
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
+		t.Fatalf("a park while off: %v", findings)
+	}
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '1 day'`)
+	execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = NULL WHERE workspace_id = $1`, ws)
 
 	// A contract ERROR the leader recorded: a day back.
 	execSQL(t, pool, `UPDATE contract_state SET error_class = 'feed_silent', error_at = clock_timestamp() - interval '23 hours'`)

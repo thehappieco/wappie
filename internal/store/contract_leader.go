@@ -64,6 +64,11 @@ const (
 	ContractErrorDocumentInvalid = "document_invalid"
 	ContractErrorKindChanged     = "kind_changed"
 	ContractErrorRoundIncomplete = "round_incomplete"
+	// ContractErrorSnapshotParked: a workspace's snapshot parked, after a
+	// day of not_found or on an invalid_request; ContractErrorSnapshotInvalid:
+	// one Wappie would not send (over README 8's limits, or not valid).
+	ContractErrorSnapshotParked  = "snapshot_parked"
+	ContractErrorSnapshotInvalid = "snapshot_invalid"
 )
 
 // ErrPageGeneration is a page of another generation than the one the
@@ -256,7 +261,7 @@ func (c *Contract) Recovered(ctx context.Context) (int64, error) {
 			return err
 		}
 		tag, err := tx.Exec(ctx, `UPDATE contract_workspaces SET
-			snapshot_due_at = least(snapshot_due_at, clock_timestamp()), snapshot_tries = 0,
+			snapshot_due_at = clock_timestamp(), snapshot_tries = 0,
 			events_due_at = CASE WHEN events_due_at IS NULL THEN NULL ELSE least(events_due_at, clock_timestamp()) END, events_tries = 0
 			WHERE snapshot_tries > 0 OR events_tries > 0`)
 		n = tag.RowsAffected()
@@ -412,6 +417,9 @@ type ContractWorkspaceStatus struct {
 	SnapshotOKAt  *time.Time
 	SnapshotDueAt time.Time
 	SnapshotTries int
+	// SnapshotError is the class of the last snapshot not accepted, ""
+	// once one is.
+	SnapshotError string
 	NotFoundSince *time.Time
 	ParkedAt      *time.Time
 	// Local: Wappie has a workspace of this id.
@@ -450,7 +458,7 @@ func (c *Contract) Status(ctx context.Context) (ContractStatus, error) {
 			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT w.workspace_id, w.kind, coalesce(w.status, ''), w.named_at, w.snapshot_ok_at,
-				w.snapshot_due_at, w.snapshot_tries, w.not_found_since, w.parked_at, t.id IS NOT NULL
+				w.snapshot_due_at, w.snapshot_tries, coalesce(w.snapshot_error, ''), w.not_found_since, w.parked_at, t.id IS NOT NULL
 			FROM contract_workspaces w LEFT JOIN tenants t ON t.id = w.workspace_id ORDER BY w.named_at, w.workspace_id`)
 		if err != nil {
 			return err
@@ -458,7 +466,7 @@ func (c *Contract) Status(ctx context.Context) (ContractStatus, error) {
 		out.Workspaces, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (ContractWorkspaceStatus, error) {
 			var w ContractWorkspaceStatus
 			err := row.Scan(&w.ID, &w.Kind, &w.Status, &w.NamedAt, &w.SnapshotOKAt, &w.SnapshotDueAt, &w.SnapshotTries,
-				&w.NotFoundSince, &w.ParkedAt, &w.Local)
+				&w.SnapshotError, &w.NotFoundSince, &w.ParkedAt, &w.Local)
 			return w, err
 		})
 		if err != nil {

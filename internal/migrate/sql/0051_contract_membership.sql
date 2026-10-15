@@ -36,9 +36,13 @@
 --   contract_workspaces every workspace a document has named: a platform
 --                       workspace for good. Its kind never changes; its
 --                       status moves only with a higher wversion. The
---                       snapshot and event queue columns are the senders'.
---                       No owner count: a team's move stays its only
---                       owner's (0043), checked locally.
+--                       snapshot and event queue columns are the senders':
+--                       a row made due sooner, or released from its park,
+--                       notifies wappie_contract_due with its id
+--                       (contract_mark_due), so the leader sends at once
+--                       whichever process made it due. No owner count: a
+--                       team's move stays its only owner's (0043), checked
+--                       locally.
 --
 -- The three carry no row-level security, as tenants and platform_identities
 -- carry none: they are read before or across workspaces, and hold no content
@@ -157,6 +161,7 @@
 --          DROP CONSTRAINT item_events_type_check,
 --          ADD CONSTRAINT item_events_type_check CHECK (type IN ('deleted', 'sync_paused', 'recovered', 'purged', 'moved_out'));
 --      DROP TABLE contract_workspaces;
+--      DROP FUNCTION contract_mark_due();
 --      DROP TABLE contract_accounts;
 --      DROP TABLE contract_state;
 --      ALTER TABLE device_notices ENABLE ROW LEVEL SECURITY;
@@ -257,6 +262,10 @@ CREATE TABLE contract_workspaces (
     snapshot_ok_at  timestamptz,
     snapshot_due_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     snapshot_tries  int         NOT NULL DEFAULT 0,
+    -- The class of the last snapshot that was not accepted (a refusal's
+    -- code, an outcome, a transport's; never a message), NULL once one is:
+    -- what contract status shows beside a stale or parked workspace.
+    snapshot_error  text,
     -- The event queue's backoff.
     events_due_at   timestamptz,
     events_tries    int         NOT NULL DEFAULT 0,
@@ -265,6 +274,21 @@ CREATE TABLE contract_workspaces (
     not_found_since timestamptz,
     parked_at       timestamptz
 );
+-- A snapshot made due sooner or due now, a new record, or a park released
+-- wakes the leader's sender at once, whichever process wrote it (a
+-- sign-in's document, the follower's page, a restart). Its own later due
+-- times, after an accepted snapshot or a failure, notify nobody.
+CREATE FUNCTION contract_mark_due() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('wappie_contract_due', NEW.workspace_id::text);
+    RETURN NULL;
+END $$;
+CREATE TRIGGER contract_due_named AFTER INSERT ON contract_workspaces
+    FOR EACH ROW EXECUTE FUNCTION contract_mark_due();
+CREATE TRIGGER contract_due_sooner AFTER UPDATE OF snapshot_due_at, parked_at ON contract_workspaces FOR EACH ROW
+    WHEN (NEW.snapshot_due_at < OLD.snapshot_due_at OR NEW.snapshot_due_at <= clock_timestamp()
+       OR (OLD.parked_at IS NOT NULL AND NEW.parked_at IS NULL))
+    EXECUTE FUNCTION contract_mark_due();
 
 ALTER TABLE item_events DROP CONSTRAINT item_events_type_check;
 ALTER TABLE item_events

@@ -785,6 +785,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// The operator's list of deleted numbers (whatserverd devices
 		// list-deleted), which has no owner to check.
 		"Devices.ListAllDeleted": true,
+		// The contract's access snapshot, which lists a deleted number
+		// until its purge (README 8).
+		"Contract.Snapshot": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

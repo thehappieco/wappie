@@ -326,16 +326,26 @@ func TestFollowerIgnoresBadAnswers(t *testing.T) {
 			t.Fatalf("%s: %d feed calls in 400 ms", code, n)
 		}
 		// A workspace backing off meanwhile (a snapshot refused for the
-		// same outage), which no document of the run names, is due at once
-		// when the feed answers again.
-		w.exec(ctx, t, `UPDATE contract_workspaces SET snapshot_tries = 3, snapshot_due_at = clock_timestamp() + interval '1 hour',
-			snapshot_ok_at = clock_timestamp() WHERE workspace_id = $1`, elsewhere)
+		// same outage), which no document of the run names, is sent again
+		// at once when the feed answers again: its backoff, an hour, is
+		// cut, and its tries start again (the platform still refuses it,
+		// never named to the app: one not_found).
+		// Set twice, a moment apart: an outcome of a send in flight
+		// (the not_found of the last recovery's) lands in between.
+		for range 2 {
+			w.exec(ctx, t, `UPDATE contract_workspaces SET snapshot_tries = 3, snapshot_due_at = clock_timestamp() + interval '1 hour',
+				snapshot_ok_at = clock_timestamp() WHERE workspace_id = $1`, elsewhere)
+			time.Sleep(200 * time.Millisecond)
+		}
+		sent := len(w.fake.Accesses(elsewhere.String()))
 		w.fake.RefuseAlways(contracttest.CallFeed, "")
 		eventually(t, 10*time.Second, code+": the document after the refusal", func() bool { return w.version(t, sub) > version })
-		var due bool
-		if err := w.pool.QueryRow(ctx, `SELECT snapshot_due_at <= clock_timestamp() AND snapshot_tries = 0 FROM contract_workspaces
-			WHERE workspace_id = $1`, elsewhere).Scan(&due); err != nil || !due {
-			t.Fatalf("%s: the backed-off workspace is not due after the recovery (%v)", code, err)
+		eventually(t, 5*time.Second, code+": the backed-off workspace's snapshot after the recovery", func() bool {
+			return len(w.fake.Accesses(elsewhere.String())) > sent
+		})
+		var tries int
+		if err := w.pool.QueryRow(ctx, `SELECT snapshot_tries FROM contract_workspaces WHERE workspace_id = $1`, elsewhere).Scan(&tries); err != nil || tries > 1 {
+			t.Fatalf("%s: the backed-off workspace's tries after the recovery: %d (%v)", code, tries, err)
 		}
 		if s := w.state(t); s.FeedError != "" || s.FeedErrorAt != nil {
 			t.Fatalf("%s: the feed's error stays after a page: %+v", code, s)
@@ -399,10 +409,22 @@ func TestGoneAndNewGeneration(t *testing.T) {
 			AND version IS NOT NULL AND generation = $3`, one, disabled, gen).Scan(&kept); err != nil || kept != 1 {
 			t.Fatalf("%s: the highest revocation times or the new version (%d, %v)", how, kept, err)
 		}
-		var due, parked int
-		if err := w.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE snapshot_due_at <= clock_timestamp()),
-			count(*) FILTER (WHERE not_found_since IS NOT NULL) FROM contract_workspaces`).Scan(&due, &parked); err != nil || due != 3 || parked != 0 {
-			t.Fatalf("%s: %d of 3 workspaces due, %d still not_found (%v)", how, due, parked, err)
+		// Every workspace's snapshot is due at the restart (it was due in a
+		// day, and not_found), and sent: after a restore the platform knows
+		// none of them until the round's PUTs name them again, and each is
+		// then sent again at once and accepted (TB27's restore clause).
+		eventually(t, 10*time.Second, how+": every workspace's snapshot accepted after the restart", func() bool {
+			var ok int
+			if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM contract_workspaces WHERE snapshot_ok_at IS NOT NULL
+				AND not_found_since IS NULL AND parked_at IS NULL`).Scan(&ok); err != nil {
+				t.Fatal(err)
+			}
+			return ok == 3
+		})
+		for _, id := range []string{team, mustPersonal(t, w, one), mustPersonal(t, w, two)} {
+			if _, ok := w.fake.Snapshot("wappie", id); !ok {
+				t.Fatalf("%s: the platform holds no snapshot of %s", how, id)
+			}
 		}
 		// The restart made every wversion 0: the new generation's are taken.
 		if err := w.fake.CloseTeam(team); err != nil {
@@ -437,14 +459,17 @@ func dbNow(t *testing.T, pool *pgxpool.Pool, offset string) time.Time {
 	return at
 }
 
-// counting counts a process's feed requests.
+// counting counts a process's feed requests and its snapshots.
 type counting struct {
-	feed atomic.Int64
+	feed, access atomic.Int64
 }
 
 func (c *counting) RoundTrip(r *http.Request) (*http.Response, error) {
-	if strings.HasSuffix(r.URL.Path, "/feed") {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/feed"):
 		c.feed.Add(1)
+	case strings.HasSuffix(r.URL.Path, "/access"):
+		c.access.Add(1)
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }
@@ -1051,6 +1076,17 @@ func TestLeaderSweeps(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.age(ctx, t, orphan, 16*time.Minute)
+	// A page carrying the orphan's document, committed after the sweep
+	// removed its row, makes the row again (a page's document of a sub
+	// Wappie does not hold is stored, so a later sweep unfollows it): the
+	// feed waits here for the platform to unfollow, after which no page
+	// carries it.
+	w.fake.Before(contracttest.CallFeed, func(string) {
+		for deadline := time.Now().Add(10 * time.Second); w.following(orphan) && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	defer w.fake.Before(contracttest.CallFeed, nil)
 	logs := &membershiptest.Logs{}
 	run(t, w.leader(w.members, logs, lockKey(t)))
 	// The platform unfollows on the DELETE, before the sweep's answer
