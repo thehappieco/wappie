@@ -117,6 +117,14 @@ func TestStartContract(t *testing.T) {
 	if h := a.authHandler(); h.Membership == nil || h.Membership != a.members {
 		t.Fatal("the sign-in routes have no contract")
 	}
+	if a.leader == nil || a.leader.Members != a.members || a.leader.Pool != pool {
+		t.Fatalf("no leader with a transport: %+v", a.leader)
+	}
+	// The start line, after the ledger's: the mode the database holds (it
+	// cannot be read here), the transport and the secret.
+	if !strings.Contains(logs.String(), `msg="contract: mode=unknown transport=socket secret=`) {
+		t.Fatalf("no start line: %s", logs.String())
+	}
 	eventually(t, "the lazy load", a.contract.Loaded)
 	if _, err := a.contract.Feed(ctx, 0, 0); err != nil {
 		t.Fatalf("a call on the loaded client: %v", err)
@@ -138,8 +146,11 @@ func TestStartContract(t *testing.T) {
 	b.startContract(ctx, hup2)
 	hup2 <- syscall.SIGHUP
 	eventually(t, "the ignored SIGHUP", func() bool { return strings.Contains(bare.String(), "nothing to reload") })
-	if b.contract != nil || b.secrets != nil {
-		t.Fatal("a client without a transport")
+	if b.contract != nil || b.secrets != nil || b.leader != nil {
+		t.Fatal("a client or a leader without a transport")
+	}
+	if !strings.Contains(bare.String(), `msg="contract: mode=unknown transport=none secret=missing"`) {
+		t.Fatalf("no start line without a transport: %s", bare.String())
 	}
 	// Still the contract's part, with no client: a new account is refused
 	// once the contract was observed, never given a home of Wappie's own.

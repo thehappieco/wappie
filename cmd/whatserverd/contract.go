@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/thehappieco/kit/kms"
 	"github.com/thehappieco/kit/kms/awskms"
@@ -69,17 +70,22 @@ func newContractClient(cfg config.Contract, log *slog.Logger) *membership.Client
 
 // startContract builds the contract's sign-in calls (a.members) in every
 // configuration, and, when a transport is configured, loads the contract's
-// secret in the background and again on every SIGHUP. Without one, the
-// calls get no answer (fail-static: only a new account is refused, once the
-// contract was observed), and a SIGHUP is said and ignored: serve takes
-// SIGHUP in every configuration, since Go's default for it is to exit,
-// which systemd counts as clean and would not restart (contract-secret
-// capabilities says this binary takes it). Nothing here calls the
-// platform; a load reaches only KMS.
+// secret in the background and again on every SIGHUP, and starts the
+// leader (membership.Leader), which follows the feed and runs the round
+// and the sweep in whichever process holds the contract's lock, while the
+// database says the contract is on. Without one, the calls get no answer
+// (fail-static: only a new account is refused, once the contract was
+// observed), and a SIGHUP is said and ignored: serve takes SIGHUP in every
+// configuration, since Go's default for it is to exit, which systemd
+// counts as clean and would not restart (contract-secret capabilities says
+// this binary takes it). Nothing here calls the platform; a load reaches
+// only KMS. It logs the start line the deploy checks:
+// contract: mode=… transport=… secret=….
 func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 	if a.pools != nil {
 		a.members = &membership.Members{Contract: store.NewContract(a.pools.API), Log: a.log}
 	}
+	defer a.logContractStart(ctx)
 	if !a.cfg.Contract.Configured() {
 		go func() {
 			for {
@@ -100,11 +106,37 @@ func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 	a.secrets = &membership.Secrets{Config: a.cfg.Contract, Client: a.contract, OpenWrapper: openKMS, Class: kmsErrorClass, Log: a.log}
 	go a.secrets.Watch(ctx, hup)
 	go a.secrets.Run(ctx)
+	if a.members != nil {
+		a.leader = &membership.Leader{Members: a.members, Pool: a.pools.API, Log: a.log}
+		go a.leader.Run(ctx)
+	}
+}
+
+// logContractStart logs the contract's start line: the mode the database
+// holds (unknown when it cannot be read within seconds), the transport, and
+// the secret (loaded, pending, or missing: none installed, or no transport
+// to use one).
+func (a *app) logContractStart(ctx context.Context) {
+	mode := "unknown"
+	if a.members != nil {
+		read, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if state, err := a.members.Contract.State(read); err == nil {
+			mode = state.Mode
+		}
+		cancel()
+	}
+	secret := "missing"
+	if a.secrets != nil {
+		secret = a.secrets.State()
+	}
+	a.log.Info(fmt.Sprintf("contract: mode=%s transport=%s secret=%s", mode, a.cfg.Contract.Transport(), secret))
 }
 
 // contractCommand is whatserverd contract, as the service user runs it
 // (systemd-run with the platform-contract group and runtime.env as its
-// environment). check reads no .env and no database.
+// environment, the release as its working directory). check reads no .env
+// and no database; status, diff and mode read the database and never
+// migrate it (contract_status.go).
 func contractCommand(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return usageError{arg: "contract"}
@@ -112,6 +144,12 @@ func contractCommand(args []string, stdout io.Writer) error {
 	switch args[0] {
 	case "check":
 		return contractCheck(args[1:], stdout, openKMS)
+	case "status":
+		return contractStatusCommand(args[1:], stdout)
+	case "diff":
+		return contractDiffCommand(args[1:], stdout)
+	case "mode":
+		return contractModeCommand(args[1:], stdout)
 	}
 	return usageError{arg: "contract " + strings.Join(args, " ")}
 }

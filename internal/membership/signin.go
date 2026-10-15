@@ -339,18 +339,38 @@ func (e errNotStored) Error() string {
 	return "membership: the document was not stored: " + string(e.outcome)
 }
 
-// keep stores an answer's document; only stored or kept counts.
+// keep stores an answer's document; only stored or kept counts. A document
+// newly stored is compared with Wappie's tables, as a feed page's is.
 func (m *Members) keep(ctx context.Context, doc store.ContractDoc) error {
 	out, err := m.Contract.StoreDocuments(ctx, store.ContractAnswer, doc)
 	if err != nil {
 		m.log().Warn("contract: could not store a document", "sub", doc.Sub, "error", err)
 		return err
 	}
-	if o := out[0]; o != store.ContractDocStored && o != store.ContractDocKept {
+	switch o := out[0]; o {
+	case store.ContractDocStored:
+		m.observe(ctx, doc.Sub, doc.Version)
+	case store.ContractDocKept:
+	default:
 		m.log().Warn("contract: an answer's document was not stored", "sub", doc.Sub, "outcome", string(o))
+		if o == store.ContractDocInvalid || o == store.ContractDocKindChanged {
+			m.recordError(ctx, o)
+		}
 		return errNotStored{outcome: o}
 	}
 	return nil
+}
+
+// recordError keeps the class of a document's ERROR (store logged it) for
+// contract status --check.
+func (m *Members) recordError(ctx context.Context, o store.ContractDocOutcome) {
+	class := store.ContractErrorDocumentInvalid
+	if o == store.ContractDocKindChanged {
+		class = store.ContractErrorKindChanged
+	}
+	if err := m.Contract.RecordError(ctx, class); err != nil {
+		m.log().Warn("contract: could not record an ERROR", "error", err)
+	}
 }
 
 // callAttrs describes a call's failure for a log line: its outcome, a

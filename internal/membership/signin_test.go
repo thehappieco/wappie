@@ -32,21 +32,28 @@ type world struct {
 	contract *store.Contract
 	users    *store.Users
 	logs     *membershiptest.Logs
+	// secret is the fake platform's current one, for a second process's
+	// client.
+	secret string
 }
 
-func newWorld(t *testing.T) *world {
+func newWorld(t *testing.T) *world { return newWorldAt(t, nil) }
+
+// newWorldAt is newWorld with the fake platform and the client on clock
+// (time.Now when nil).
+func newWorldAt(t *testing.T, clock func() time.Time) *world {
 	t.Helper()
 	backends := &pgtest.Backends{}
 	pool := pgtest.FreshWith(t, migrate.Run, backends.Configure)
 	secret := membershiptest.Secret(t)
-	fake := membershiptest.StartFake(t, secret)
-	client := NewClient(&http.Client{}, fake.URL, nil)
+	fake := membershiptest.StartFakeAt(t, secret, clock)
+	client := NewClient(&http.Client{}, fake.URL, clock)
 	if err := client.Use(secret, ""); err != nil {
 		t.Fatal(err)
 	}
 	logs := &membershiptest.Logs{}
 	c := store.NewContract(pool)
-	w := &world{pool: pool, backends: backends, fake: fake, contract: c, users: store.NewUsers(pool), logs: logs,
+	w := &world{pool: pool, backends: backends, fake: fake, contract: c, users: store.NewUsers(pool), logs: logs, secret: secret,
 		members: &Members{Client: client, Contract: c, Log: logs.Logger(), ModeCache: -1, Pace: time.Millisecond}}
 	if _, err := pool.Exec(context.Background(), `UPDATE contract_state SET mode = 'observe', events_from = clock_timestamp()`); err != nil {
 		t.Fatal(err)
@@ -202,7 +209,7 @@ func TestUnsubscribeRaces(t *testing.T) {
 
 	// An orphan: a refused sign-up's subscription, over 15 minutes old.
 	// Under it, the sweep leaves it: its sign-up may still be under way.
-	// Over it, the sweep, run every 15 minutes (P3b), unfollows it well
+	// Over it, the sweep, run every 5 minutes (TestLeaderBounds), unfollows it well
 	// before the platform counts the workspaces its document named as
 	// stale (90 minutes without a snapshot, its contract_snapshots_stale
 	// alert), which Wappie never records for an orphan and never sends.

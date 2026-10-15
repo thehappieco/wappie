@@ -76,7 +76,8 @@ func main() {
 const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions ...
-       whatserverd contract check [--other|--only-current|--only-other]
+       whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
+                   diff [--tenant T] | mode off|observe
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
@@ -221,6 +222,10 @@ type app struct {
 	// with no transport every call is no answer, which refuses only new
 	// accounts once the contract was observed.
 	members *membership.Members
+	// leader follows the contract's feed and runs its round and sweep, in
+	// the one process of the database that holds the contract's lock; nil
+	// unless a transport is configured.
+	leader *membership.Leader
 }
 
 // setup opens every dependency and runs migrations. The returned close

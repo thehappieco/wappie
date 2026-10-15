@@ -981,7 +981,7 @@ func TestContractCheckNeedsATransport(t *testing.T) {
 	if err := contractCommand(nil, &out); !errors.As(err, &usage) {
 		t.Fatalf("%v", err)
 	}
-	if err := contractCommand([]string{"status"}, &out); !errors.As(err, &usage) {
+	if err := contractCommand([]string{"stat"}, &out); !errors.As(err, &usage) {
 		t.Fatalf("%v", err)
 	}
 	if err := contractCheck([]string{"extra"}, &out, nil); !errors.As(err, &usage) {

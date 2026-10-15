@@ -224,26 +224,42 @@ type Fake struct {
 	// URL is the base the client is given.
 	URL string
 
+	now    func() time.Time
 	mu     sync.Mutex
 	refuse map[string]string
 	before map[string]func(arg string)
 	counts map[string]int
 	down   bool
+	// inFlight and most count the requests of each call being served,
+	// now and at most; reads are the times, on the fake's clock, of every
+	// feed request it answered 200 (a read, as the platform's
+	// contract_feed_silent alert counts one).
+	inFlight, most map[string]int
+	reads          []time.Time
 }
 
 // StartFake serves a fake platform for wappie, with secret as its current
 // one, until the test ends. Its rate is far above the platform's, so a
 // test's burst of calls is never refused for it.
-func StartFake(tb testing.TB, secret string) *Fake {
+func StartFake(tb testing.TB, secret string) *Fake { return StartFakeAt(tb, secret, nil) }
+
+// StartFakeAt is StartFake on the clock now (time.Now when nil): the
+// platform's, which stamps its answers, checks the requests' timestamps
+// and times the reads.
+func StartFakeAt(tb testing.TB, secret string, now func() time.Time) *Fake {
 	tb.Helper()
+	if now == nil {
+		now = time.Now
+	}
 	p, err := contracttest.New(contracttest.Options{
 		Apps:         []contracttest.App{{ID: "wappie", Current: secret}},
-		StrictLabels: true, PerSecond: 10000,
+		StrictLabels: true, PerSecond: 10000, Now: now,
 	})
 	if err != nil {
 		tb.Fatal(err)
 	}
-	f := &Fake{Platform: p, refuse: map[string]string{}, before: map[string]func(string){}, counts: map[string]int{}}
+	f := &Fake{Platform: p, now: now, refuse: map[string]string{}, before: map[string]func(string){}, counts: map[string]int{},
+		inFlight: map[string]int{}, most: map[string]int{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	tb.Cleanup(srv.Close)
 	f.URL = srv.URL
@@ -276,12 +292,30 @@ func callOf(r *http.Request) (string, string) {
 	return "", ""
 }
 
+// status keeps the status an answer was written with.
+type status struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *status) WriteHeader(code int) {
+	s.code = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
 func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	call, arg := callOf(r)
 	f.mu.Lock()
 	f.counts[call]++
+	f.inFlight[call]++
+	f.most[call] = max(f.most[call], f.inFlight[call])
 	down, code, before := f.down, f.refuse[call], f.before[call]
 	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.inFlight[call]--
+		f.mu.Unlock()
+	}()
 	if down {
 		// No answer at all: the connection goes, as when platformd stops.
 		if hj, ok := w.(http.Hijacker); ok {
@@ -300,7 +334,28 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 			panic(err)
 		}
 	}
-	f.ServeHTTP(w, r)
+	sw := &status{ResponseWriter: w, code: http.StatusOK}
+	f.ServeHTTP(sw, r)
+	if call == contracttest.CallFeed && sw.code == http.StatusOK {
+		f.mu.Lock()
+		f.reads = append(f.reads, f.now())
+		f.mu.Unlock()
+	}
+}
+
+// Most is the most requests to call the fake served at once.
+func (f *Fake) Most(call string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.most[call]
+}
+
+// Reads are the times, on the fake's clock, of the feed requests it
+// answered 200, in order.
+func (f *Fake) Reads() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Time(nil), f.reads...)
 }
 
 // RefuseAlways refuses every request to call with code, signed as the

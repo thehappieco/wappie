@@ -9,7 +9,8 @@ import (
 
 // The round and the sweep (the plan's 4.6): the round subscribes everyone
 // Wappie holds, the sweep unsubscribes the subscriptions of everyone it
-// does not. The leader runs both (P3b); each is one pass here.
+// does not. Each is one pass here; the leader runs both, one after the
+// other (Leader.rounds).
 
 // roundPace is the pace of the round and of the sweep: 10 calls a second,
 // a fifth of the platform's limit on all of an app's calls (README 4), so
@@ -26,9 +27,9 @@ const roundBatch = 50
 // because the platform watches every account an app follows: a workspace
 // such a document names goes stale after 90 minutes without a snapshot
 // (its contract_snapshots_stale alert), and Wappie never records an
-// orphan's workspaces, so never sends them one. The leader's sweep must
-// therefore run at least every OrphanAfter (P3b), which unfollows an
-// orphan within about twice OrphanAfter of its last PUT.
+// orphan's workspaces, so never sends them one. The leader's sweep runs at
+// its start and every sweepEvery, less than OrphanAfter, so an orphan is
+// unfollowed within about OrphanAfter and sweepEvery of its last PUT.
 const OrphanAfter = 15 * time.Minute
 
 func (m *Members) pace() time.Duration {

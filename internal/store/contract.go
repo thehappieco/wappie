@@ -89,7 +89,17 @@ type ContractState struct {
 	FeedCursor          int64
 	PublishedThrough    *time.Time
 	RoundGeneration     *uuid.UUID
-	UpdatedAt           time.Time
+	// FeedReadAt is the leader's last feed page committed, on the
+	// database's clock; FeedError the class of the feed calls' failure
+	// since (empty once a page commits), from FeedErrorAt.
+	FeedReadAt  *time.Time
+	FeedError   string
+	FeedErrorAt *time.Time
+	// ErrorAt and ErrorClass are the last contract ERROR the leader
+	// recorded (RecordError).
+	ErrorAt    *time.Time
+	ErrorClass string
+	UpdatedAt  time.Time
 }
 
 // On reports whether the contract is on: every mode but off, so a mode a
@@ -103,13 +113,15 @@ func (s ContractState) On() bool { return s.Mode != ContractOff }
 func (s ContractState) Observed() bool { return s.EventsFrom != nil }
 
 const contractStateColumns = `mode, mode_changed_at, events_from, events_paused_at, events_off, mail_from,
-	generation, generation_confirmed, feed_cursor, published_through, round_generation, updated_at`
+	generation, generation_confirmed, feed_cursor, published_through, round_generation,
+	feed_read_at, coalesce(feed_error, ''), feed_error_at, error_at, coalesce(error_class, ''), updated_at`
 
 func scanContractState(row pgx.Row) (ContractState, error) {
 	var s ContractState
 	var off pgtype.Multirange[pgtype.Range[pgtype.Timestamptz]]
 	if err := row.Scan(&s.Mode, &s.ModeChangedAt, &s.EventsFrom, &s.EventsPausedAt, &off, &s.MailFrom,
-		&s.Generation, &s.GenerationConfirmed, &s.FeedCursor, &s.PublishedThrough, &s.RoundGeneration, &s.UpdatedAt); err != nil {
+		&s.Generation, &s.GenerationConfirmed, &s.FeedCursor, &s.PublishedThrough, &s.RoundGeneration,
+		&s.FeedReadAt, &s.FeedError, &s.FeedErrorAt, &s.ErrorAt, &s.ErrorClass, &s.UpdatedAt); err != nil {
 		return ContractState{}, err
 	}
 	for _, r := range off {
@@ -234,6 +246,25 @@ func (c *Contract) StoreDocuments(ctx context.Context, from ContractSource, docs
 // storeDocsTx stores docs, all from one source, in tx, which holds
 // contract_state's lock (state is what it read under it): accounts in sub
 // order, then their workspaces in id order.
+//
+// A feed page's document records its workspaces only for a sub Wappie
+// holds (a person linked to the platform): a page may carry the document of
+// a sign-up refused after its PUT, or of one whose account is not yet
+// committed, and such a document's workspaces must never become platform
+// workspaces (their snapshots would be owed, the platform's 90-minute alert
+// would count them, and their teams' person invitations would close, DB6).
+// Its account row is stored all the same, newer only, so the sweep
+// unsubscribes an orphan and a sign-up committed later keeps the newer
+// version. An answer is always a held sub's (a sign-in's, the round's, a
+// GET's), or the sign-up's own, whose identity its transaction has just
+// written. A stored document that
+// changes a workspace's members (its sub joins, leaves or changes role)
+// makes that workspace's snapshot due now; and every document stored or
+// kept that names a workspace the platform refused (not_found), parked, or
+// never accepted a snapshot of since the last restart makes its snapshot and
+// event queue due now and unparks it (the plan's 4.7, "Round 2,
+// recovery"), so a workspace named again comes back at once rather than at
+// its backoff.
 func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, from ContractSource, docs []ContractDoc) ([]ContractDocOutcome, error) {
 	if from != ContractAnswer && from != ContractFeed {
 		return nil, fmt.Errorf("store: unknown document source %d", from)
@@ -304,12 +335,32 @@ func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, from Contr
 		return nil, fmt.Errorf("store: %d verdicts on %d documents", len(objects), len(docs))
 	}
 
+	held := map[uuid.UUID]bool{}
+	if from == ContractFeed {
+		subs := make([]uuid.UUID, len(docs))
+		for i, d := range docs {
+			subs[i] = d.Sub
+		}
+		heldRows, err := tx.Query(ctx, `SELECT sub FROM platform_identities WHERE sub = ANY ($1)`, subs)
+		if err != nil {
+			return nil, err
+		}
+		heldSubs, err := pgx.CollectRows(heldRows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return nil, err
+		}
+		for _, sub := range heldSubs {
+			held[sub] = true
+		}
+	}
+
 	order := make([]int, len(docs))
 	for i := range order {
 		order[i] = i
 	}
 	slices.SortStableFunc(order, func(a, b int) int { return compareIDs(docs[a].Sub, docs[b].Sub) })
 	named := map[uuid.UUID]ContractDocWorkspace{}
+	changed := map[uuid.UUID]bool{}
 	other := false
 next:
 	for _, i := range order {
@@ -332,13 +383,21 @@ next:
 				continue next
 			}
 		}
-		stored, err := storeAccountTx(ctx, tx, d, from == ContractAnswer)
+		stored, before, err := storeAccountTx(ctx, tx, d, from == ContractAnswer)
 		if err != nil {
 			return nil, err
 		}
 		out[i] = ContractDocKept
 		if stored {
 			out[i] = ContractDocStored
+		}
+		if from == ContractFeed && !held[d.Sub] {
+			continue
+		}
+		if stored {
+			for _, id := range membersChanged(before, d.Workspaces) {
+				changed[id] = true
+			}
 		}
 		for _, w := range d.Workspaces {
 			// A later document of this batch is held to the kind this one
@@ -353,6 +412,9 @@ next:
 		}
 	}
 	if err := recordWorkspacesTx(ctx, tx, named); err != nil {
+		return nil, err
+	}
+	if err := workspacesDueTx(ctx, tx, named, changed); err != nil {
 		return nil, err
 	}
 	if other {
@@ -383,17 +445,32 @@ func unstorable(d ContractDoc, object bool, latest time.Time) string {
 // storeAccountTx writes one document of the stored generation: the row's
 // document columns when its version is higher than the row's (or the row
 // has none), the revocation times at the highest seen, and fresh_at when
-// fresh. It reports whether the document was the newer one.
-func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc, fresh bool) (bool, error) {
+// fresh. It reports whether the document was the newer one, and the
+// workspaces of the document it replaced (none for a row without one).
+func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc, fresh bool) (bool, []ContractDocWorkspace, error) {
 	// The row is made or locked in one statement, as Intend makes it: an
 	// Intend inserting it at the same moment is waited for, not collided
 	// with, and a removal in between cannot leave nothing to lock.
 	var generation *uuid.UUID
 	var version *int64
+	var before []byte
 	if err := tx.QueryRow(ctx, `INSERT INTO contract_accounts (sub) VALUES ($1)
 		ON CONFLICT (sub) DO UPDATE SET subscribed_at = contract_accounts.subscribed_at
-		RETURNING generation, version`, d.Sub).Scan(&generation, &version); err != nil {
-		return false, err
+		RETURNING generation, version, doc->'workspaces'`, d.Sub).Scan(&generation, &version, &before); err != nil {
+		return false, nil, err
+	}
+	var previous []ContractDocWorkspace
+	if len(before) > 0 && !bytes.Equal(before, []byte("null")) {
+		var ws []struct {
+			ID   uuid.UUID `json:"id"`
+			Role string    `json:"role"`
+		}
+		if err := json.Unmarshal(before, &ws); err != nil {
+			return false, nil, fmt.Errorf("store: a stored document's workspaces: %w", err)
+		}
+		for _, w := range ws {
+			previous = append(previous, ContractDocWorkspace{ID: w.ID, Role: w.Role})
+		}
 	}
 	newer := version == nil || generation == nil || *generation != d.Generation || d.Version > *version
 	_, err := tx.Exec(ctx, `UPDATE contract_accounts SET
@@ -408,7 +485,67 @@ func storeAccountTx(ctx context.Context, tx pgx.Tx, d ContractDoc, fresh bool) (
 		fresh_at   = CASE WHEN $10 THEN clock_timestamp() ELSE fresh_at END
 		WHERE sub = $1`,
 		d.Sub, newer, d.Generation, d.Version, d.Status, d.Raw, d.DisabledAt, d.SessionsRevokedAt, d.CredentialsRevokedAt, fresh)
-	return newer, err
+	return newer, previous, err
+}
+
+// membersChanged lists the workspaces whose members a document changes
+// against the one before it: the sub joined or left one, or its role there
+// changed.
+func membersChanged(before, after []ContractDocWorkspace) []uuid.UUID {
+	roles := map[uuid.UUID]string{}
+	for _, w := range before {
+		roles[w.ID] = w.Role
+	}
+	var out []uuid.UUID
+	for _, w := range after {
+		if role, ok := roles[w.ID]; !ok || role != w.Role {
+			out = append(out, w.ID)
+		}
+		delete(roles, w.ID)
+	}
+	for id := range roles {
+		out = append(out, id)
+	}
+	return out
+}
+
+// workspacesDueTx makes due now, in id order, the snapshot of every
+// workspace whose members changed, and the snapshot and event queue of
+// every named workspace the platform refused (not_found), that was parked,
+// or that has no accepted snapshot since the last restart, unparking it:
+// the platform knows a workspace again once a document names it. (P5 adds
+// the release of the events parked not_found to this.)
+func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]ContractDocWorkspace, changed map[uuid.UUID]bool) error {
+	var names, members []uuid.UUID
+	for id := range named {
+		names = append(names, id)
+	}
+	for id := range changed {
+		members = append(members, id)
+	}
+	if len(names) == 0 && len(members) == 0 {
+		return nil
+	}
+	// The rows are locked in id order first (DB23), then written.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces WHERE workspace_id = ANY ($1) OR workspace_id = ANY ($2)
+		ORDER BY workspace_id FOR UPDATE`, names, members); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE contract_workspaces w SET
+			snapshot_due_at = least(w.snapshot_due_at, clock_timestamp()),
+			snapshot_tries  = CASE WHEN back THEN 0 ELSE w.snapshot_tries END,
+			events_due_at   = CASE WHEN back AND w.events_due_at IS NOT NULL THEN least(w.events_due_at, clock_timestamp()) ELSE w.events_due_at END,
+			events_tries    = CASE WHEN back THEN 0 ELSE w.events_tries END,
+			not_found_since = CASE WHEN back THEN NULL ELSE w.not_found_since END,
+			parked_at       = CASE WHEN back THEN NULL ELSE w.parked_at END
+		FROM (SELECT c.workspace_id, c.workspace_id = ANY ($1)
+		             AND (c.not_found_since IS NOT NULL OR c.parked_at IS NOT NULL OR c.snapshot_ok_at IS NULL) AS back
+		        FROM contract_workspaces c
+		       WHERE c.workspace_id = ANY ($1) OR c.workspace_id = ANY ($2)) due
+		WHERE w.workspace_id = due.workspace_id AND (due.back OR w.workspace_id = ANY ($2))`, names, members); err != nil {
+		return err
+	}
+	return nil
 }
 
 // recordWorkspacesTx records every named workspace for good, in id order:

@@ -2,9 +2,13 @@ package pg_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/pg"
@@ -121,5 +125,123 @@ func TestConcurrentLockAttempts(t *testing.T) {
 
 	if len(won) != 1 {
 		t.Fatalf("%d of %d racers took the same lock, want exactly 1", len(won), racers)
+	}
+}
+
+// holderPID is the backend that holds the advisory lock name, or 0.
+func holderPID(t *testing.T, pool *pgxpool.Pool, name string) int32 {
+	t.Helper()
+	key := pg.LockKey(name)
+	//nolint:gosec // G115: the key's bits, split as pg_locks shows them
+	hi, lo := int64(uint32(uint64(key)>>32)), int64(uint32(uint64(key)))
+	var pid int32
+	err := pool.QueryRow(context.Background(), `SELECT coalesce(max(pid), 0) FROM pg_locks WHERE locktype = 'advisory' AND granted
+		AND classid = $1::bigint::oid AND objid = $2::bigint::oid AND objsubid = 1`, hi, lo).Scan(&pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func lockName(t *testing.T) string { return "hold:" + t.Name() + ":" + uuid.NewString() }
+
+// A held lock is exclusive, and its release lets the next holder in.
+func TestHoldIsExclusive(t *testing.T) {
+	pool := pgtest.Connect(t)
+	ctx := context.Background()
+	name := lockName(t)
+	locker := pg.NewLocker(pool)
+	held, ok, err := locker.Hold(ctx, name, 0)
+	if err != nil || !ok {
+		t.Fatalf("the first hold: ok=%v err=%v", ok, err)
+	}
+	if holderPID(t, pool, name) == 0 {
+		t.Fatal("pg_locks lists no holder of a held lock")
+	}
+	if _, ok, err := locker.Hold(ctx, name, 0); err != nil || ok {
+		t.Fatalf("a second hold of a held lock: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := locker.TryLock(ctx, name); err != nil || ok {
+		t.Fatalf("TryLock of a held lock: ok=%v err=%v", ok, err)
+	}
+	held.Release()
+	held.Release() // idempotent
+	if held.Context().Err() == nil {
+		t.Fatal("a released hold's context is still alive")
+	}
+	if holderPID(t, pool, name) != 0 {
+		t.Fatal("a released lock is still held")
+	}
+	again, ok, err := locker.Hold(ctx, name, 0)
+	if err != nil || !ok {
+		t.Fatalf("a hold after the release: ok=%v err=%v", ok, err)
+	}
+	again.Release()
+}
+
+// The holder learns at once that its lock's connection is gone, and its
+// heartbeat, run many times, keeps a lock that is still held.
+func TestHoldEndsWithItsConnection(t *testing.T) {
+	pool := pgtest.Connect(t)
+	ctx := context.Background()
+	name := lockName(t)
+	held, ok, err := pg.NewLocker(pool).Hold(ctx, name, 20*time.Millisecond)
+	if err != nil || !ok {
+		t.Fatalf("hold: ok=%v err=%v", ok, err)
+	}
+	defer held.Release()
+	// Many heartbeats: a heartbeat that asked the wrong question would end
+	// the hold of a lock still held.
+	time.Sleep(300 * time.Millisecond)
+	if err := held.Context().Err(); err != nil {
+		t.Fatalf("the heartbeat ended a lock that is held: %v", context.Cause(held.Context()))
+	}
+	pid := holderPID(t, pool, name)
+	if _, err := pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-held.Context().Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the holder did not see its connection go")
+	}
+	if cause := context.Cause(held.Context()); !errors.Is(cause, pg.ErrLockLost) {
+		t.Fatalf("the cause is %v, want ErrLockLost", cause)
+	}
+	next, ok, err := pg.NewLocker(pool).Hold(ctx, name, 0)
+	if err != nil || !ok {
+		t.Fatalf("the lock was not free after its connection went: ok=%v err=%v", ok, err)
+	}
+	next.Release()
+}
+
+// The holder's connection delivers the notices of its channels, and the
+// parent context's end ends the hold and frees the lock.
+func TestHoldListens(t *testing.T) {
+	pool := pgtest.Connect(t)
+	name := lockName(t)
+	channel := "hold_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	held, ok, err := pg.NewLocker(pool).Hold(ctx, name, 20*time.Millisecond, channel)
+	if err != nil || !ok {
+		t.Fatalf("hold: ok=%v err=%v", ok, err)
+	}
+	for _, payload := range []string{"one", "two"} {
+		if _, err := pool.Exec(context.Background(), `SELECT pg_notify($1, $2)`, channel, payload); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case n := <-held.Notifications():
+			if n.Channel != channel || n.Payload != payload {
+				t.Fatalf("got %q on %q, want %q", n.Payload, n.Channel, payload)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no notice %q", payload)
+		}
+	}
+	cancel()
+	held.Release()
+	if holderPID(t, pool, name) != 0 {
+		t.Fatal("the lock outlived its holder's context")
 	}
 }
