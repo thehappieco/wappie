@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thehappieco/kit/contract/contracttest"
 
 	"whatserver2/internal/config"
 	"whatserver2/internal/membership"
 	"whatserver2/internal/membership/membershiptest"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
 )
 
@@ -97,6 +99,61 @@ func (h *contractHarness) signUp(t *testing.T, p person) (int, platformAnswer) {
 }
 
 func (h *contractHarness) following(sub string) bool { return h.fake.Following("wappie", sub) }
+
+// now is the database's clock: a platform time Wappie stores, as a
+// document's disabled_at, is refused past it (store.ContractClockSkew), and
+// the Docker database's clock drifts from the host's.
+func (h *contractHarness) now(t *testing.T) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := h.pool.QueryRow(context.Background(), `SELECT clock_timestamp()`).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+// older moves the subs' intent rows back by d, on the database's clock.
+func (h *contractHarness) older(t *testing.T, d time.Duration, subs ...string) {
+	t.Helper()
+	if _, err := h.pool.Exec(context.Background(), `UPDATE contract_accounts SET subscribed_at = subscribed_at - $2::interval
+		WHERE sub = ANY ($1::uuid[])`, subs, d); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// docsAtDelete records, for each DELETE the fake gets, whether Wappie had
+// stored a document for its sub by then: a refused sign-up's never is.
+func (h *contractHarness) docsAtDelete(t *testing.T) func() map[string]bool {
+	t.Helper()
+	var mu sync.Mutex
+	stored := map[string]bool{}
+	h.fake.Before(contracttest.CallUnsubscribe, func(sub string) {
+		var doc bool
+		if err := h.pool.QueryRow(context.Background(), `SELECT coalesce(bool_or(doc IS NOT NULL), false) FROM contract_accounts WHERE sub = $1`, sub).Scan(&doc); err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		stored[sub] = stored[sub] || doc
+	})
+	return func() map[string]bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return stored
+	}
+}
+
+// noneStored fails when a refused sign-up left a document or a workspace
+// it names recorded: they are stored only with the account.
+func (h *contractHarness) noneStored(t *testing.T, sub string, workspaces ...uuid.UUID) {
+	t.Helper()
+	if n := h.count(t, `SELECT count(*) FROM contract_accounts WHERE sub = $1 AND (doc IS NOT NULL OR version IS NOT NULL)`, sub); n != 0 {
+		t.Fatalf("%s: a refused sign-up stored its document", sub)
+	}
+	if n := h.count(t, `SELECT count(*) FROM contract_workspaces WHERE workspace_id = ANY ($1::uuid[])`, workspaces); n != 0 {
+		t.Fatalf("%s: a refused sign-up recorded %d of its workspaces", sub, n)
+	}
+}
 
 // intent is sub's contract_accounts row: whether it exists, and whether a
 // document's version is stored on it.
@@ -200,6 +257,32 @@ func TestSignInSubscribes(t *testing.T) {
 		t.Fatal("the linked person's document was not stored")
 	}
 
+	// The PUT comes before Wappie's own answers: a sign-in that must rewrap
+	// sends it, and so does one Wappie refuses, a held person keeping the
+	// subscription (DB21).
+	r, _ := h.platformPerson(t, "rui@example.com")
+	code, made := h.signUp(t, r)
+	if code != http.StatusOK {
+		t.Fatalf("account: %d", code)
+	}
+	if code, out := h.signIn(t, r, 2); code != http.StatusOK || out.Kind != "rewrap_required" {
+		t.Fatalf("a new product key: %d %+v", code, out)
+	}
+	afterIntents(r.sub, 2)
+	if err := pg.InTenantTx(ctx, h.pool, made.User.TenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, r.sub)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := h.signIn(t, r, 1); code != http.StatusForbidden || out.Code != "account_disabled" {
+		t.Fatalf("a disabled account: %d %+v", code, out)
+	}
+	afterIntents(r.sub, 3)
+	if !h.following(r.sub) || h.fake.Count(contracttest.CallUnsubscribe) != 0 {
+		t.Fatal("a held person refused at sign-in was unsubscribed")
+	}
+
 	// The platform down: the sign-in goes on. With no trusted
 	// published_through, the sign-in would be refused at enforce.
 	h.fake.SetDown(true)
@@ -227,7 +310,7 @@ func TestSignInSubscribes(t *testing.T) {
 	h.fake.SetDown(false)
 
 	// A disabled document at sign-in: would refuse, and the sign-in goes on.
-	if err := h.fake.Disable(p.sub, time.Now()); err != nil {
+	if err := h.fake.Disable(p.sub, h.now(t)); err != nil {
 		t.Fatal(err)
 	}
 	if code, out := h.signIn(t, p, 1); code != http.StatusOK || out.Kind != "session" {
@@ -298,8 +381,34 @@ func TestSignUpHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A fault after the insert: the stored generation is not the
-	// platform's, so the document cannot be stored with the account.
+	code, first := h.signIn(t, p, 1)
+	if code != http.StatusOK {
+		t.Fatalf("sign-in: %d", code)
+	}
+	// A fault after the document and its workspaces are stored: the
+	// account's last insert fails. Its transaction takes them all back.
+	for _, stmt := range []string{
+		`CREATE FUNCTION fail_link() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'injected'; END $$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER fail_link BEFORE INSERT ON security_events FOR EACH ROW WHEN (NEW.kind = 'platform_linked') EXECUTE FUNCTION fail_link()`,
+	} {
+		if _, err := h.pool.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, out, _, _ := h.createAccount(t, first.Ticket); code != http.StatusInternalServerError {
+		t.Fatalf("a fault after the store: %d %+v", code, out)
+	}
+	if _, err := h.pool.Exec(ctx, `DROP TRIGGER fail_link ON security_events`); err != nil {
+		t.Fatal(err)
+	}
+	h.noneStored(t, p.sub, personal, uuid.MustParse(team))
+	if n := h.count(t, `SELECT count(*) FROM users WHERE id = $1`, p.sub) + h.count(t, `SELECT count(*) FROM contract_workspaces`) +
+		h.count(t, `SELECT count(*) FROM contract_state WHERE generation IS NOT NULL`); n != 0 {
+		t.Fatal("a fault after the store left the account, a workspace or a generation")
+	}
+
+	// A fault in the store: the stored generation is not the platform's,
+	// so the document cannot be stored with the account.
 	other := uuid.New()
 	if _, err := h.pool.Exec(ctx, `UPDATE contract_state SET generation = $1`, other); err != nil {
 		t.Fatal(err)
@@ -311,10 +420,6 @@ func TestSignUpHome(t *testing.T) {
 	defer listen.Release()
 	if _, err := listen.Exec(ctx, `LISTEN `+store.ContractModeChannel); err != nil {
 		t.Fatal(err)
-	}
-	code, first := h.signIn(t, p, 1)
-	if code != http.StatusOK {
-		t.Fatalf("sign-in: %d", code)
 	}
 	if code, out, _, _ := h.createAccount(t, first.Ticket); code != http.StatusServiceUnavailable || out.Code != "platform_unavailable" {
 		t.Fatalf("a document of another generation: %d %+v", code, out)
@@ -334,12 +439,13 @@ func TestSignUpHome(t *testing.T) {
 	if n := h.count(t, `SELECT count(*) FROM contract_workspaces`); n != 0 {
 		t.Fatalf("after the fault, %d workspaces recorded", n)
 	}
-	// The notice of the other generation outlives the rollback.
+	// The notice of the other generation outlives the rollback. Only this
+	// test's own counts: other packages' tests send it too.
 	wait, cancel := context.WithTimeout(ctx, 5*time.Second)
-	n, err := listen.Conn().WaitForNotification(wait)
+	err = h.backends.Notice(wait, listen.Conn(), store.ContractModeChannel, "generation")
 	cancel()
-	if err != nil || n.Payload != "generation" {
-		t.Fatalf("no notice of another generation: %v %v", n, err)
+	if err != nil {
+		t.Fatalf("no notice of another generation: %v", err)
 	}
 
 	// The same ticket, once the generation is the platform's.
@@ -389,6 +495,7 @@ func TestSignUpRefusesExistingHome(t *testing.T) {
 	if _, err := h.pool.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ($1, 'taken')`, personal); err != nil {
 		t.Fatal(err)
 	}
+	stored := h.docsAtDelete(t)
 	code, out := h.signUp(t, p)
 	if code != http.StatusConflict || out.Code != "workspace_conflict" {
 		t.Fatalf("a taken home: %d %+v", code, out)
@@ -410,12 +517,17 @@ func TestSignUpRefusesExistingHome(t *testing.T) {
 	if h.following(p.sub) || h.fake.Count(contracttest.CallUnsubscribe) != 1 {
 		t.Fatalf("the refused sub is still followed (%d unsubscribes)", h.fake.Count(contracttest.CallUnsubscribe))
 	}
+	h.noneStored(t, p.sub, personal)
+	if stored()[p.sub] {
+		t.Fatal("the refused account's document was stored before its DELETE")
+	}
 }
 
 // TB18: once the contract was observed, a new account with no signed
 // document is refused, retryably, and never given a home of Wappie's
 // choosing: with the platform down, a signed 503, a signed not_found (a
-// platform fault, README 6.1), or no transport. The ticket stays valid and
+// platform fault, README 6.1), no transport, or routes without the
+// contract's part. The ticket stays valid and
 // nothing is written but the intent row. Before the first observe it is
 // release A's path; off after an observe, the platform's home still.
 func TestSignUpWithoutPlatform(t *testing.T) {
@@ -454,6 +566,9 @@ func TestSignUpWithoutPlatform(t *testing.T) {
 		{"signed not_found", func() { h.fake.RefuseAlways(contracttest.CallSubscribe, "not_found") }, func() { h.fake.RefuseAlways(contracttest.CallSubscribe, "") }, true},
 		{"unverified", func() { h.fake.RefuseAlways(contracttest.CallSubscribe, "unauthenticated") }, func() { h.fake.RefuseAlways(contracttest.CallSubscribe, "") }, true},
 		{"no transport", func() { h.members.Client = nil }, func() { h.members.Client = client }, false},
+		// The routes without the contract's part: the database still
+		// refuses a home of Wappie's own (store.ErrHomeRequired).
+		{"no contract", func() { h.handler.Membership = nil }, func() { h.handler.Membership = h.members }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, personal := h.platformPerson(t, strings.ReplaceAll(tc.name, " ", "-")+"@example.com")
@@ -482,14 +597,17 @@ func TestSignUpWithoutPlatform(t *testing.T) {
 	}
 }
 
-// TB19, the routes' part: email_taken, workspace_conflict and a document
-// not active each unsubscribe the sub once it is seen unlinked;
-// already_linked (two tabs) and a spent ticket (a double submit) never do,
-// and leave the winner subscribed with its document; a DELETE that fails
-// leaves the intent row, which the sweep removes an hour later.
+// TB19, the routes' part: email_taken, workspace_conflict (a home taken, a
+// workspace of another kind) and a document not active each unsubscribe
+// the sub once it is seen unlinked, none having stored the document or a
+// workspace it names; already_linked (two tabs) and a spent ticket (a
+// double submit) never do, and leave the winner subscribed with its
+// document; a DELETE that fails leaves the intent row, which the sweep
+// removes once it is OrphanAfter old.
 func TestUnsubscribeAfterRefusal(t *testing.T) {
 	h := newContractHarness(t, modeObserve)
 	ctx := context.Background()
+	stored := h.docsAtDelete(t)
 	unsubscribed := func(t *testing.T, sub string) {
 		t.Helper()
 		if exists, _ := h.intent(t, sub); exists || h.following(sub) {
@@ -502,22 +620,46 @@ func TestUnsubscribeAfterRefusal(t *testing.T) {
 	if code, _ := h.signUp(t, a); code != http.StatusOK {
 		t.Fatalf("first account: %d", code)
 	}
-	b, _ := h.platformPerson(t, "ema@example.com")
+	b, bhome := h.platformPerson(t, "ema@example.com")
 	if code, out := h.signUp(t, b); code != http.StatusConflict || out.Code != "email_taken" {
 		t.Fatalf("a taken address: %d %+v", code, out)
 	}
 	unsubscribed(t, b.sub)
+	h.noneStored(t, b.sub, bhome)
 	// A document not active.
-	c, _ := h.platformPerson(t, "dis@example.com")
-	if err := h.fake.Disable(c.sub, time.Now()); err != nil {
+	c, chome := h.platformPerson(t, "dis@example.com")
+	if err := h.fake.Disable(c.sub, h.now(t)); err != nil {
 		t.Fatal(err)
 	}
 	if code, out := h.signUp(t, c); code != http.StatusForbidden || out.Code != "account_disabled" {
 		t.Fatalf("a disabled document: %d %+v", code, out)
 	}
 	unsubscribed(t, c.sub)
+	h.noneStored(t, c.sub, chome)
 	if n := h.count(t, `SELECT count(*) FROM users WHERE id = $1`, c.sub); n != 0 {
 		t.Fatal("a disabled document's account was created")
+	}
+	// A team Wappie recorded as a personal workspace: the document cannot
+	// be stored, and the account is a workspace conflict.
+	kk, kkhome := h.platformPerson(t, "kind@example.com")
+	clash, err := h.fake.AddTeam("Clash", kk.sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'personal')`, clash); err != nil {
+		t.Fatal(err)
+	}
+	before := h.fake.Count(contracttest.CallUnsubscribe)
+	if code, out := h.signUp(t, kk); code != http.StatusConflict || out.Code != "workspace_conflict" {
+		t.Fatalf("a workspace of another kind: %d %+v", code, out)
+	}
+	if n := h.fake.Count(contracttest.CallUnsubscribe); n != before+1 {
+		t.Fatalf("a workspace of another kind sent %d DELETEs", n-before)
+	}
+	unsubscribed(t, kk.sub)
+	h.noneStored(t, kk.sub, kkhome)
+	if n := h.count(t, `SELECT count(*) FROM users WHERE id = $1`, kk.sub); n != 0 {
+		t.Fatal("a workspace conflict's account was created")
 	}
 	unsubscribes := h.fake.Count(contracttest.CallUnsubscribe)
 
@@ -561,7 +703,7 @@ func TestUnsubscribeAfterRefusal(t *testing.T) {
 	// A third tab after the platform disabled the account: refused, and the
 	// person Wappie now holds keeps the subscription (DB21: never a held
 	// person's DELETE).
-	if err := h.fake.Disable(d.sub, time.Now()); err != nil {
+	if err := h.fake.Disable(d.sub, h.now(t)); err != nil {
 		t.Fatal(err)
 	}
 	if code, out, _, _ := h.createAccount(t, tab3.Ticket); code != http.StatusForbidden || out.Code != "account_disabled" {
@@ -575,7 +717,7 @@ func TestUnsubscribeAfterRefusal(t *testing.T) {
 	}
 
 	// A DELETE that fails on each refusal leaves its intent row, which the
-	// sweep removes once it is an hour old.
+	// sweep removes once it is OrphanAfter old.
 	h.fake.RefuseAlways(contracttest.CallUnsubscribe, "unavailable")
 	f, _ := h.platformPerson(t, "ema@example.com")
 	if code, _ := h.signUp(t, f); code != http.StatusConflict {
@@ -589,7 +731,7 @@ func TestUnsubscribeAfterRefusal(t *testing.T) {
 		t.Fatalf("a taken home: %d", code)
 	}
 	k, _ := h.platformPerson(t, "dis2@example.com")
-	if err := h.fake.Disable(k.sub, time.Now()); err != nil {
+	if err := h.fake.Disable(k.sub, h.now(t)); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := h.signUp(t, k); code != http.StatusForbidden {
@@ -602,12 +744,11 @@ func TestUnsubscribeAfterRefusal(t *testing.T) {
 		}
 	}
 	h.fake.RefuseAlways(contracttest.CallUnsubscribe, "")
+	h.older(t, membership.OrphanAfter-time.Minute, orphans...)
 	if n, err := h.members.Sweep(ctx); err != nil || n != 0 {
-		t.Fatalf("a sweep within the hour: %d %v", n, err)
+		t.Fatalf("a sweep under OrphanAfter: %d %v", n, err)
 	}
-	if _, err := h.pool.Exec(ctx, `UPDATE contract_accounts SET subscribed_at = subscribed_at - interval '61 minutes' WHERE sub = ANY ($1::uuid[])`, orphans); err != nil {
-		t.Fatal(err)
-	}
+	h.older(t, 2*time.Minute, orphans...)
 	if n, err := h.members.Sweep(ctx); err != nil || n != 3 {
 		t.Fatalf("the sweep: %d %v", n, err)
 	}
@@ -619,6 +760,52 @@ func TestUnsubscribeAfterRefusal(t *testing.T) {
 		if !h.following(sub) {
 			t.Fatalf("%s: a held person was unsubscribed", sub)
 		}
+	}
+	// No DELETE went for a sub whose document Wappie had stored.
+	for sub, doc := range stored() {
+		if doc {
+			t.Fatalf("%s: a DELETE after its document was stored", sub)
+		}
+	}
+	if len(stored()) < 6 {
+		t.Fatalf("%d subs unsubscribed, want 6", len(stored()))
+	}
+}
+
+// What SignupPlatform would refuse of the request itself is refused before
+// the platform is asked anything, with release A's code: no PUT, and no
+// intent row (the plan's 4.5).
+func TestSignUpChecksBeforeThePUT(t *testing.T) {
+	h := newContractHarness(t, modeObserve)
+	p, _ := h.platformPerson(t, "eva@example.com")
+	_, first := h.signIn(t, p, 1)
+	// The wrap's header byte 0x03 is its first base64 character "A"; "B"
+	// makes it 0x04 to 0x07, Wappie's own wraps' range.
+	other := "B" + randomWrap(t)[1:]
+	for _, tc := range []struct {
+		name string
+		body map[string]string
+		code int
+		want string
+	}{
+		{"a wrap of another kind", map[string]string{"ticket": first.Ticket, "public_key": randomKey(t), "platform_wrap": other}, http.StatusBadRequest, "bad_request"},
+		{"a key too short", map[string]string{"ticket": first.Ticket, "public_key": "AAAA", "platform_wrap": randomWrap(t)}, http.StatusInternalServerError, "internal"},
+		{"a name too long", map[string]string{"ticket": first.Ticket, "public_key": randomKey(t), "platform_wrap": randomWrap(t),
+			"display_name": strings.Repeat("n", 81)}, http.StatusBadRequest, "bad_request"},
+	} {
+		var out platformAnswer
+		if code := h.pagePost(t, "/v1/auth/platform/account", tc.body, &out, "", nil); code != tc.code || out.Code != tc.want {
+			t.Fatalf("%s: %d %+v", tc.name, code, out)
+		}
+	}
+	if n := h.fake.Count(contracttest.CallSubscribe); n != 0 {
+		t.Fatalf("%d PUTs for requests the account refuses", n)
+	}
+	if exists, _ := h.intent(t, p.sub); exists {
+		t.Fatal("an intent row for a request the account refuses")
+	}
+	if code, out, _, _ := h.createAccount(t, first.Ticket); code != http.StatusOK || out.Kind != "session" {
+		t.Fatalf("the same ticket, well formed: %d %+v", code, out)
 	}
 }
 

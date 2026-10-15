@@ -92,6 +92,11 @@ type ContractState struct {
 	UpdatedAt           time.Time
 }
 
+// On reports whether the contract is on: every mode but off, so a mode a
+// later release adds (enforce) counts as on wherever this code gates on
+// the contract, never as off.
+func (s ContractState) On() bool { return s.Mode != ContractOff }
+
 // Observed reports whether the contract was ever switched to observe: from
 // then on Wappie never goes back to choosing a new account's personal
 // workspace itself (the plan's DB2).

@@ -36,16 +36,17 @@ func (m *Members) cachedState(ctx context.Context) (store.ContractState, error) 
 	return s, nil
 }
 
-// observing reports whether the contract is at observe, by the cached
-// state: the mode in which returning sign-ins subscribe and the freshness
-// shadow runs (the plan's DB2).
-func (m *Members) observing(ctx context.Context) bool {
+// on reports whether the contract is on, by the cached state: the modes in
+// which returning sign-ins subscribe and freshness is checked (the plan's
+// DB2). That is every mode but off, so the mode the enforce release adds
+// gates as observe does until this code knows it, never as off.
+func (m *Members) on(ctx context.Context) bool {
 	s, err := m.cachedState(ctx)
 	if err != nil {
 		m.log().Warn("contract: could not read the contract's state", "error", err)
 		return false
 	}
-	return s.Mode == store.ContractObserve
+	return s.On()
 }
 
 // Observed reports whether the contract was ever switched to observe, read

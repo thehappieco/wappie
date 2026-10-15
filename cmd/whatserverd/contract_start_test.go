@@ -13,8 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"whatserver2/internal/config"
 	"whatserver2/internal/membership/membershiptest"
+	"whatserver2/internal/pg"
+	"whatserver2/internal/wsapi"
 )
 
 // TestTakeHangup: a process that took SIGHUP survives one. capabilities
@@ -73,8 +77,16 @@ func eventually(t *testing.T, what string, ok func() bool) {
 
 // TestStartContract: serve's wiring of the contract, with no database. With
 // a transport, the secret loads lazily and every SIGHUP reloads it and
-// publishes the load; without one, a SIGHUP is said and ignored.
+// publishes the load; without one, a SIGHUP is said and ignored. In both,
+// the sign-in routes get the contract's part, which calls the platform
+// through the transport, or gets no answer without one.
 func TestStartContract(t *testing.T) {
+	// A pool never dialled: startContract only builds the store over it.
+	pool, err := pgxpool.New(context.Background(), "postgres://wappie@127.0.0.1:1/none?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	old := socketOwner
 	socketOwner = os.Getuid()
 	t.Cleanup(func() { socketOwner = old })
@@ -92,12 +104,18 @@ func TestStartContract(t *testing.T) {
 	var logs lockedBuffer
 	a := &app{
 		cfg: config.Config{Contract: config.Contract{Socket: served.Path, SecretFile: secretFile, LoadedFile: loadedFile}},
-		log: slog.New(slog.NewTextHandler(&logs, nil)),
+		log: slog.New(slog.NewTextHandler(&logs, nil)), pools: &pg.Pools{API: pool}, ws: &wsapi.Server{},
 	}
 	hup := make(chan os.Signal, 1)
 	a.startContract(ctx, hup)
 	if a.contract == nil || a.secrets == nil {
 		t.Fatal("no client or loader with a transport")
+	}
+	if a.members == nil || a.members.Client != a.contract || a.members.Contract == nil {
+		t.Fatalf("the sign-ins' contract does not call through the transport: %+v", a.members)
+	}
+	if h := a.authHandler(); h.Membership == nil || h.Membership != a.members {
+		t.Fatal("the sign-in routes have no contract")
 	}
 	eventually(t, "the lazy load", a.contract.Loaded)
 	if _, err := a.contract.Feed(ctx, 0, 0); err != nil {
@@ -115,12 +133,25 @@ func TestStartContract(t *testing.T) {
 
 	// No transport: nothing loads, and a SIGHUP is said and ignored.
 	var bare lockedBuffer
-	b := &app{log: slog.New(slog.NewTextHandler(&bare, nil))}
+	b := &app{log: slog.New(slog.NewTextHandler(&bare, nil)), pools: &pg.Pools{API: pool}, ws: &wsapi.Server{}}
 	hup2 := make(chan os.Signal, 1)
 	b.startContract(ctx, hup2)
 	hup2 <- syscall.SIGHUP
 	eventually(t, "the ignored SIGHUP", func() bool { return strings.Contains(bare.String(), "nothing to reload") })
 	if b.contract != nil || b.secrets != nil {
 		t.Fatal("a client without a transport")
+	}
+	// Still the contract's part, with no client: a new account is refused
+	// once the contract was observed, never given a home of Wappie's own.
+	if b.members == nil || b.members.Client != nil {
+		t.Fatalf("no transport: %+v", b.members)
+	}
+	if h := b.authHandler(); h.Membership != b.members {
+		t.Fatal("the sign-in routes have no contract without a transport")
+	}
+	// An app startContract never built members for: no contract, and no
+	// typed nil the routes would take for one.
+	if h := (&app{log: b.log, ws: &wsapi.Server{}}).authHandler(); h.Membership != nil {
+		t.Fatal("a typed nil Membership")
 	}
 }

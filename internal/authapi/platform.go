@@ -656,7 +656,9 @@ func (h *Handler) signUpRefused(w http.ResponseWriter, r *http.Request, s member
 	case errors.As(err, &docErr) && docErr.Outcome == store.ContractDocKindChanged:
 		h.unsubscribeRefused(r.Context(), s)
 		workspaceConflict(w)
-	case errors.As(err, &docErr):
+	case errors.As(err, &docErr), errors.Is(err, store.ErrHomeRequired):
+		// No PUT was sent for ErrHomeRequired: the contract was turned on
+		// since this request read it, and a retry gets the platform's home.
 		platformUnavailable(w)
 	case errors.Is(err, store.ErrEmailTaken):
 		h.unsubscribeRefused(r.Context(), s)

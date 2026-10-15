@@ -33,16 +33,19 @@ type platformFixture struct {
 	users  *store.Users
 	pins   *store.PlatformPins
 	tenant uuid.UUID
+	// backends are the pool's own sessions, told from other tests'.
+	backends *pgtest.Backends
 }
 
 func newPlatformFixture(t *testing.T) *platformFixture {
 	t.Helper()
-	pool := pgtest.Fresh(t, migrate.Run)
+	backends := &pgtest.Backends{}
+	pool := pgtest.FreshWith(t, migrate.Run, backends.Configure)
 	var tenant uuid.UUID
 	if err := pool.QueryRow(context.Background(), `INSERT INTO tenants (name) VALUES ('team') RETURNING id`).Scan(&tenant); err != nil {
 		t.Fatal(err)
 	}
-	return &platformFixture{pool: pool, users: store.NewUsers(pool), pins: store.NewPlatformPins(pool), tenant: tenant}
+	return &platformFixture{pool: pool, users: store.NewUsers(pool), pins: store.NewPlatformPins(pool), tenant: tenant, backends: backends}
 }
 
 func platformBytes(t *testing.T, n int) []byte {

@@ -66,8 +66,9 @@ type Members struct {
 	// Bound bounds each call made while a person waits: a sign-in's PUT,
 	// a freshness GET, a refused sign-up's DELETE (5 s when zero).
 	Bound time.Duration
-	// Pace is the time between two of the round's PUTs (100 ms when zero:
-	// 10 a second, a fifth of the platform's limit, README 4).
+	// Pace is the time between two of the round's PUTs, or two of the
+	// sweep's DELETEs (100 ms when zero: 10 a second, a fifth of the
+	// platform's limit, README 4).
 	Pace time.Duration
 	// ModeCache is how long the contract's state read is trusted (5 s
 	// when zero; a negative one reads it every time).
@@ -116,13 +117,13 @@ func (m *Members) log() *slog.Logger {
 func (m *Members) connected() bool { return m.Client != nil && m.Client.Loaded() }
 
 // SignIn is the PUT of a returning person's sign-in through id. (README
-// 6.1), at observe only: after the provider's sign-in and the pin, before
-// Wappie's own refusals. It never refuses: at observe a document that is
-// not active, and no document while the last trusted published_through is
-// over an hour old, are logged "would refuse" (README 7.1, "Sign-in"), and
-// the sign-in goes on (DB4).
+// 6.1), while the contract is on (observe, and every mode after it): after
+// the provider's sign-in and the pin, before Wappie's own refusals. It
+// never refuses: a document that is not active, and no document while the
+// last trusted published_through is over an hour old, are logged "would
+// refuse" (README 7.1, "Sign-in"), and the sign-in goes on (DB4).
 func (m *Members) SignIn(ctx context.Context, sub uuid.UUID) {
-	if !m.observing(ctx) {
+	if !m.on(ctx) {
 		return
 	}
 	doc, err := m.subscribe(ctx, sub, true)
@@ -228,7 +229,7 @@ func (m *Members) forget(ctx context.Context, sub uuid.UUID, seen time.Time) boo
 // resubscribe PUTs sub again after an unsubscribe raced a newer PUT or a
 // link: the platform must follow whoever came meanwhile. The document is
 // stored only for a sub Wappie holds by then; an unheld one's row is the
-// sweep's again an hour later.
+// sweep's again OrphanAfter later.
 func (m *Members) resubscribe(ctx context.Context, sub uuid.UUID) {
 	held, err := m.Contract.Held(ctx, sub)
 	if err != nil {
@@ -240,12 +241,12 @@ func (m *Members) resubscribe(ctx context.Context, sub uuid.UUID) {
 	}
 }
 
-// Refresh is the step-up's GET (the reply's Q1, "Optional"), at observe
-// only: when sub is not fresh, its document is asked for and stored, so an
-// act right after a step-up finds the person fresh. Its failure changes
-// nothing.
+// Refresh is the step-up's GET (the reply's Q1, "Optional"), while the
+// contract is on: when sub is not fresh, its document is asked for and
+// stored, so an act right after a step-up finds the person fresh. Its
+// failure changes nothing.
 func (m *Members) Refresh(ctx context.Context, sub uuid.UUID) {
-	if !m.observing(ctx) {
+	if !m.on(ctx) {
 		return
 	}
 	fresh, err := m.Contract.Fresh(ctx, store.FreshFor, sub)

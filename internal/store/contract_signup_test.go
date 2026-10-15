@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
+	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
 )
 
@@ -115,6 +118,62 @@ func TestSignUpHomeRefusals(t *testing.T) {
 		t.Fatal("a refused home spent the ticket")
 	}
 
+	// The sub's own personal workspace, which a second tab's account made
+	// between this one's link check and its home check (here, a person of
+	// that id with no link yet): already linked, never a conflict, and no
+	// security event.
+	own, ownHome := uuid.New(), uuid.New()
+	if err := pg.InTenantTx(ctx, f.pool, ownHome.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO users (id, tenant_id, email, public_key, role, auth_source)
+			VALUES ($1, $2, 'tab@example.com', $3, 'owner', 'platform')`, own, ownHome, platformBytes(t, 32))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ownDoc := contractDoc(own, gen, 1, "active", ownHome)
+	in = store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, own, "tab2@example.com", uuid.Nil), PublicKey: platformBytes(t, 32),
+		Wrap: platformWrap(t), Home: ownHome, Doc: &ownDoc}
+	if _, _, err := f.users.SignupPlatform(ctx, in); !errors.Is(err, store.ErrAlreadyLinked) {
+		t.Fatalf("the sub's own personal workspace: %v", err)
+	}
+	if n := f.countOf(t, `SELECT count(*) FROM security_events WHERE kind = 'platform_home_taken' AND sub = $1`, own); n != 0 {
+		t.Fatalf("the sub's own workspace recorded %d home-taken events", n)
+	}
+
+	// A tenant of the home's id committed after the home check: the
+	// trigger's insert waits for it, and the account is refused as a home
+	// taken, with its event, rather than failing as an insert.
+	racer, racedHome := uuid.New(), uuid.New()
+	racedDoc := contractDoc(racer, gen, 1, "active", racedHome)
+	in = store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, racer, "race@example.com", uuid.Nil), PublicKey: platformBytes(t, 32),
+		Wrap: platformWrap(t), Home: racedHome, Doc: &racedDoc}
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck // committed below; a failed test's rollback
+	if _, err := tx.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ($1, 'racing')`, racedHome); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := f.users.SignupPlatform(ctx, in)
+		done <- err
+	}()
+	waitForLock(t, f, done)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, store.ErrHomeTaken) {
+		t.Fatalf("a home committed meanwhile: %v", err)
+	}
+	if n := f.countOf(t, `SELECT count(*) FROM security_events WHERE kind = 'platform_home_taken' AND sub = $1`, racer); n != 1 {
+		t.Fatalf("%d home-taken events for a home committed meanwhile", n)
+	}
+	if n := f.countOf(t, `SELECT count(*) FROM users WHERE id = $1`, racer); n != 0 {
+		t.Fatal("the racing account was created")
+	}
+
 	// A home that is not the active document's personal workspace of the
 	// ticket's sub: a caller's fault, never ErrHomeTaken nor a ticket's.
 	for name, mutate := range map[string]func(*store.NewPlatformUser, *store.ContractDoc){
@@ -149,6 +208,89 @@ func TestSignUpHomeRefusals(t *testing.T) {
 	}
 	if err := (store.NewPlatformUser{PublicKey: platformBytes(t, 32), Wrap: platformWrap(t), Name: "Ana"}).Check(); err != nil {
 		t.Fatalf("Check: %v", err)
+	}
+}
+
+// waitForLock returns once one of f's sessions waits on a lock, and fails
+// the test when done, the call that should wait, returns first.
+func waitForLock(t *testing.T, f *platformFixture, done chan error) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		waiting, err := f.backends.Waiting(context.Background(), f.pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("returned without waiting: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("nothing waited on the lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Once the contract was observed, Wappie never chooses a new account's
+// home itself (the plan's DB2), whoever calls SignupPlatform: an account
+// with no home of the platform's is refused, and nothing is created. A
+// sign-up that read the contract off races the first switch to observe on
+// contract_state's row: the switch, uncommitted, makes it wait, and it is
+// refused once the switch commits; an account created first is one the
+// switch's round subscribes.
+func TestSignUpHomeRequired(t *testing.T) {
+	f := newPlatformFixture(t)
+	ctx := context.Background()
+	newAccount := func(sub uuid.UUID) store.NewPlatformUser {
+		return store.NewPlatformUser{Ticket: f.ticket(t, store.TicketNew, sub, sub.String()[:8]+"@example.com", uuid.Nil),
+			PublicKey: platformBytes(t, 32), Wrap: platformWrap(t)}
+	}
+	created := func(sub uuid.UUID) int {
+		return f.countOf(t, `SELECT count(*) FROM users WHERE id = $1`, sub) + f.countOf(t, `SELECT count(*) FROM tenants WHERE personal_owner_id = $1`, sub)
+	}
+
+	// The switch commits while the sign-up waits on the row.
+	sub := uuid.New()
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck // committed below; a failed test's rollback
+	if _, err := tx.Exec(ctx, `UPDATE contract_state SET mode = 'observe', events_from = clock_timestamp()`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	in := newAccount(sub)
+	go func() {
+		_, _, err := f.users.SignupPlatform(ctx, in)
+		done <- err
+	}()
+	waitForLock(t, f, done)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, store.ErrHomeRequired) {
+		t.Fatalf("a sign-up racing the first observe: %v", err)
+	}
+	if n := created(sub); n != 0 {
+		t.Fatal("a sign-up racing the first observe was created")
+	}
+	if n := f.countOf(t, `SELECT count(*) FROM platform_login_tickets WHERE sub = $1 AND used_at IS NULL`, sub); n != 1 {
+		t.Fatal("the refusal spent the ticket")
+	}
+
+	// Off after an observe, the same.
+	if _, err := f.pool.Exec(ctx, `UPDATE contract_state SET mode = 'off', events_paused_at = clock_timestamp()`); err != nil {
+		t.Fatal(err)
+	}
+	other := uuid.New()
+	if _, _, err := f.users.SignupPlatform(ctx, newAccount(other)); !errors.Is(err, store.ErrHomeRequired) || created(other) != 0 {
+		t.Fatalf("off after an observe: %v", err)
 	}
 }
 

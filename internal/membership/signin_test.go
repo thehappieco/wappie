@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,9 @@ import (
 // platform (the plan's 4.6, 4.9, DB8 and DB21).
 
 type world struct {
-	pool     *pgxpool.Pool
+	pool *pgxpool.Pool
+	// backends are the pool's own sessions, told from other tests'.
+	backends *pgtest.Backends
 	fake     *membershiptest.Fake
 	members  *Members
 	contract *store.Contract
@@ -33,7 +36,8 @@ type world struct {
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
-	pool := pgtest.Fresh(t, migrate.Run)
+	backends := &pgtest.Backends{}
+	pool := pgtest.FreshWith(t, migrate.Run, backends.Configure)
 	secret := membershiptest.Secret(t)
 	fake := membershiptest.StartFake(t, secret)
 	client := NewClient(&http.Client{}, fake.URL, nil)
@@ -42,7 +46,7 @@ func newWorld(t *testing.T) *world {
 	}
 	logs := &membershiptest.Logs{}
 	c := store.NewContract(pool)
-	w := &world{pool: pool, fake: fake, contract: c, users: store.NewUsers(pool), logs: logs,
+	w := &world{pool: pool, backends: backends, fake: fake, contract: c, users: store.NewUsers(pool), logs: logs,
 		members: &Members{Client: client, Contract: c, Log: logs.Logger(), ModeCache: -1, Pace: time.Millisecond}}
 	if _, err := pool.Exec(context.Background(), `UPDATE contract_state SET mode = 'observe', events_from = clock_timestamp()`); err != nil {
 		t.Fatal(err)
@@ -60,10 +64,20 @@ func random(t *testing.T, n int) []byte {
 }
 
 // held makes a person Wappie holds, linked to a sub the fake platform has
-// an account for, and returns the user and the sub.
+// an account for, and returns the user and the sub. The person signed up
+// before the contract's first observe, as everyone the round subscribes
+// when Wappie connects, with a home of Wappie's own: once the contract was
+// observed, SignupPlatform takes only the platform's.
 func (w *world) held(t *testing.T) (uuid.UUID, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
+	var mode string
+	var from, paused *time.Time
+	if err := w.pool.QueryRow(ctx, `SELECT mode, events_from, events_paused_at FROM contract_state`).Scan(&mode, &from, &paused); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(ctx, t, `UPDATE contract_state SET mode = 'off', events_from = NULL, events_paused_at = NULL`)
+	defer w.exec(ctx, t, `UPDATE contract_state SET mode = $1, events_from = $2, events_paused_at = $3`, mode, from, paused)
 	sub := uuid.New()
 	if _, err := w.fake.AddAccount(sub.String()); err != nil {
 		t.Fatal(err)
@@ -105,6 +119,12 @@ func (w *world) exec(ctx context.Context, t *testing.T, sql string, args ...any)
 }
 
 func (w *world) following(sub uuid.UUID) bool { return w.fake.Following("wappie", sub.String()) }
+
+// age moves sub's intent row back by d, on the database's clock.
+func (w *world) age(ctx context.Context, t *testing.T, sub uuid.UUID, d time.Duration) {
+	t.Helper()
+	w.exec(ctx, t, `UPDATE contract_accounts SET subscribed_at = subscribed_at - $2::interval WHERE sub = $1`, sub, d)
+}
 
 // The round subscribes everyone Wappie holds, and only them: a sub whose
 // PUT fails (a not_found, which never means closed) is tried again by the
@@ -180,7 +200,12 @@ func TestUnsubscribeRaces(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
 
-	// An orphan: a refused sign-up's subscription, over an hour old.
+	// An orphan: a refused sign-up's subscription, over 15 minutes old.
+	// Under it, the sweep leaves it: its sign-up may still be under way.
+	// Over it, the sweep, run every 15 minutes (P3b), unfollows it well
+	// before the platform counts the workspaces its document named as
+	// stale (90 minutes without a snapshot, its contract_snapshots_stale
+	// alert), which Wappie never records for an orphan and never sends.
 	orphan := uuid.New()
 	if _, err := w.fake.AddAccount(orphan.String()); err != nil {
 		t.Fatal(err)
@@ -191,7 +216,11 @@ func TestUnsubscribeRaces(t *testing.T) {
 	if _, err := w.members.Client.Subscribe(ctx, orphan.String()); err != nil {
 		t.Fatal(err)
 	}
-	w.exec(ctx, t, `UPDATE contract_accounts SET subscribed_at = subscribed_at - interval '61 minutes' WHERE sub = $1`, orphan)
+	w.age(ctx, t, orphan, 14*time.Minute)
+	if n, err := w.members.Sweep(ctx); err != nil || n != 0 || !w.following(orphan) || w.fake.Count(contracttest.CallUnsubscribe) != 0 {
+		t.Fatalf("the sweep took a subscription 14 minutes old: %d %v", n, err)
+	}
+	w.age(ctx, t, orphan, 2*time.Minute)
 	// A sign-up's intent lands between the sweep's read and its DELETE.
 	w.fake.Before(contracttest.CallUnsubscribe, func(string) {
 		if _, err := w.contract.Intend(ctx, orphan); err != nil {
@@ -208,8 +237,8 @@ func TestUnsubscribeRaces(t *testing.T) {
 	if n := w.fake.Count(contracttest.CallSubscribe); n != 2 {
 		t.Fatalf("%d PUTs: the sweep did not subscribe again", n)
 	}
-	// An hour later, with nothing in between, it goes.
-	w.exec(ctx, t, `UPDATE contract_accounts SET subscribed_at = subscribed_at - interval '61 minutes' WHERE sub = $1`, orphan)
+	// 16 minutes later, with nothing in between, it goes.
+	w.age(ctx, t, orphan, 16*time.Minute)
 	if n, err := w.members.Sweep(ctx); err != nil || n != 1 || w.following(orphan) {
 		t.Fatalf("the sweep: %d %v", n, err)
 	}
@@ -238,11 +267,12 @@ func TestUnsubscribeRaces(t *testing.T) {
 	if _, version, _ := w.row(ctx, t, sub); version != nil {
 		t.Fatal("a not_found on a GET kept the version")
 	}
+	// Only this test's own notice counts: other packages' tests send it too.
 	wait, cancel := context.WithTimeout(ctx, 5*time.Second)
-	n, err := listen.Conn().WaitForNotification(wait)
+	err = w.backends.Notice(wait, listen.Conn(), store.ContractModeChannel, "round")
 	cancel()
-	if err != nil || n.Payload != "round" {
-		t.Fatalf("the leader was not woken: %v %v", n, err)
+	if err != nil {
+		t.Fatalf("the leader was not woken: %v", err)
 	}
 	before := w.fake.Count(contracttest.CallSubscribe)
 	if done, err := w.members.Round(ctx); err != nil || !done || w.fake.Count(contracttest.CallSubscribe) != before+1 {
@@ -297,14 +327,18 @@ func TestFreshnessIsADocument(t *testing.T) {
 	refuse := func(code string) spoil {
 		return spoil{code, func(call string) { w.fake.RefuseAlways(call, code) }, func(call string) { w.fake.RefuseAlways(call, "") }}
 	}
-	spoils := []spoil{refuse("unavailable"), refuse("rate_limited"), refuse("replay"),
+	spoils := []spoil{refuse("unavailable"), refuse("rate_limited"), refuse("replay"), refuse("not_found"),
 		{"unverified", func(call string) {
 			if err := w.fake.Corrupt("wappie", call, contracttest.AnotherSecret); err != nil {
 				t.Fatal(err)
 			}
 		}, func(string) {}}}
-	// The GET, through the freshness hook of a rare act.
+	// The GET, through the freshness hook of a rare act. A GET's not_found
+	// is last: it forgets the version, which the round's PUT then restores.
 	for _, s := range spoils {
+		if s.name == "not_found" {
+			continue
+		}
 		at := stale()
 		s.apply(contracttest.CallAccount)
 		v, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: IfStale})
@@ -314,8 +348,8 @@ func TestFreshnessIsADocument(t *testing.T) {
 		}
 		unchanged("GET "+s.name, at)
 	}
-	if n := len(w.logs.Lines("freshness: would refuse", "act=device.delete", sub.String())); n != len(spoils) {
-		t.Fatalf("%d would-refuse lines, want %d", n, len(spoils))
+	if n := len(w.logs.Lines("freshness: would refuse", "act=device.delete", sub.String())); n != len(spoils)-1 {
+		t.Fatalf("%d would-refuse lines, want %d", n, len(spoils)-1)
 	}
 	// The PUT, through a sign-in and the round.
 	for _, s := range spoils {
@@ -345,13 +379,18 @@ func TestFreshnessIsADocument(t *testing.T) {
 		t.Fatalf("a fresh sub's IfStale: %+v %v", v, err)
 	}
 
-	// A not_found on a GET: no document, and the version is forgotten.
-	stale()
+	// A not_found on a GET: no document, fresh_at as it was, and the
+	// version is forgotten.
+	at = stale()
 	w.fake.RefuseAlways(contracttest.CallAccount, "not_found")
 	if v, _ := w.members.RequireFresh(ctx, "grant.add", tenant, Party{User: user, How: Always}); !v.Refuse || v.Reasons[user] != "refused:not_found" {
 		t.Fatalf("a not_found GET: %+v", v)
 	}
 	w.fake.RefuseAlways(contracttest.CallAccount, "")
+	unchanged("GET not_found", at)
+	if n := len(w.logs.Lines("freshness: would refuse", "act=grant.add", sub.String(), "reason=refused:not_found")); n != 1 {
+		t.Fatalf("%d would-refuse lines for a not_found GET", n)
+	}
 
 	// A restore: the restart forgot every version and fresh_at (P3b's
 	// restart, played here in SQL), and an empty page of the new
@@ -418,17 +457,63 @@ func TestRequireFresh(t *testing.T) {
 	if n := len(w.logs.Lines("freshness: stale at act", "act=message.send", sub.String())); n != 1 {
 		t.Fatalf("%d stale-at-act lines", n)
 	}
+	// Actor is the first party's document from this call's GET only: none
+	// when the actor was fresh and not asked, the actor's and never a
+	// recipient's when both were.
+	recipient, recipientSub := w.held(t)
+	if err := w.fake.SetRole(team, recipientSub.String(), "member"); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := w.members.Round(ctx); err != nil || !done {
+		t.Fatalf("round: %v %v", done, err)
+	}
+	if _, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: Always}); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := w.members.RequireFresh(ctx, "grant.add", tenant, Party{User: user, How: IfStale}, Party{User: recipient, How: Always}); err != nil || v.Refuse || v.Actor != nil {
+		t.Fatalf("a fresh actor and a recipient asked: %+v %v", v, err)
+	}
+	if v, err := w.members.RequireFresh(ctx, "device.transfer", tenant, Party{User: user, How: Always}, Party{User: recipient, How: Always}); err != nil || v.Refuse || v.Actor == nil || v.Actor.Sub != sub {
+		t.Fatalf("both asked: the actor's document is not the actor's: %+v %v", v, err)
+	}
 	// Enforce turns the verdict into a refusal.
 	w.members.Enforce = true
 	w.fake.RefuseAlways(contracttest.CallAccount, "unavailable")
-	if _, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: IfStale}); !errors.Is(err, ErrMembershipsUnconfirmed) {
+	if _, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: Always}); !errors.Is(err, ErrMembershipsUnconfirmed) {
 		t.Fatalf("enforce: %v", err)
 	}
+	// In a mode this release does not know (the enforce release's), the
+	// contract is on: the act is checked, never let through as off.
+	w.members.ModeCache = time.Hour
+	w.members.mu.Lock()
+	w.members.state, w.members.read = store.ContractState{Mode: "enforce"}, time.Now()
+	w.members.mu.Unlock()
+	if v, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: Always}); !v.Checked || !errors.Is(err, ErrMembershipsUnconfirmed) {
+		t.Fatalf("a mode past observe: %+v %v", v, err)
+	}
+	w.members.ModeCache, w.members.read = -1, time.Time{}
 	w.fake.RefuseAlways(contracttest.CallAccount, "")
 	if _, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: IfStale}); err != nil {
 		t.Fatalf("enforce with a document: %v", err)
 	}
+	// A failure to read: refused with Enforce, allowed at observe (DB4).
+	w.members.ModeCache = time.Hour
+	if _, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: IfStale}); err != nil {
+		t.Fatal(err)
+	}
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
+	if v, err := w.members.RequireFresh(gone, "device.delete", tenant, Party{User: user, How: IfStale}); !errors.Is(err, ErrMembershipsUnconfirmed) || !v.Refuse {
+		t.Fatalf("enforce, the database unread: %+v %v", v, err)
+	}
 	w.members.Enforce = false
+	if v, err := w.members.RequireFresh(gone, "device.delete", tenant, Party{User: user, How: IfStale}); err != nil || v.Refuse {
+		t.Fatalf("observe, the database unread: %+v %v", v, err)
+	}
+	if n := len(w.logs.Lines("freshness: could not check", "act=device.delete")); n != 2 {
+		t.Fatalf("%d could-not-check lines", n)
+	}
+	w.members.ModeCache, w.members.read = -1, time.Time{}
 	// Off after an observe: nothing is checked, and nothing is asked.
 	w.exec(ctx, t, `UPDATE contract_state SET mode = 'off', events_paused_at = clock_timestamp()`)
 	w.exec(ctx, t, `UPDATE contract_accounts SET fresh_at = clock_timestamp() - interval '2 hours' WHERE sub = $1`, sub)
@@ -451,4 +536,126 @@ func mustPersonal(t *testing.T, w *world, sub uuid.UUID) string {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// The calls a person waits on are bounded (the plan's 4.5 and 4.9): a PUT
+// or a GET the platform does not answer in time is no answer, logged as a
+// timeout, and the sign-in or the act goes on, as a refusal would. Unset,
+// the bound is 5 s.
+func TestCallsAreBounded(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	user, sub := w.held(t)
+	team, err := w.fake.AddTeam("Bounded", sub.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant := uuid.MustParse(team)
+	if done, err := w.members.Round(ctx); err != nil || !done {
+		t.Fatalf("round: %v %v", done, err)
+	}
+	// The platform answers nothing for 3 s, or until the test ends.
+	release := make(chan struct{})
+	defer close(release)
+	hang := func(string) {
+		select {
+		case <-release:
+		case <-time.After(3 * time.Second):
+		}
+	}
+	w.members.Bound = 200 * time.Millisecond
+	w.exec(ctx, t, `UPDATE contract_accounts SET fresh_at = clock_timestamp() - interval '2 hours' WHERE sub = $1`, sub)
+
+	w.fake.Before(contracttest.CallSubscribe, hang)
+	start := time.Now()
+	w.members.SignIn(ctx, sub)
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("a sign-in's PUT took %v", took)
+	}
+	if n := len(w.logs.Lines("contract: a PUT got no document", sub.String(), "class=timeout")); n != 1 {
+		t.Fatalf("%d PUT timeout lines: %s", n, w.logs.String())
+	}
+	if n := len(w.logs.Lines("contract: sign-in would refuse", sub.String(), "reason=stale")); n != 1 {
+		t.Fatalf("%d sign-in would-refuse lines", n)
+	}
+
+	w.fake.Before(contracttest.CallAccount, hang)
+	start = time.Now()
+	v, err := w.members.RequireFresh(ctx, "device.delete", tenant, Party{User: user, How: IfStale})
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("a freshness GET took %v", took)
+	}
+	if err != nil || !v.Refuse || v.Reasons[user] != "unavailable" {
+		t.Fatalf("a GET past its bound: %+v %v", v, err)
+	}
+	if n := len(w.logs.Lines("contract: a GET got no document", sub.String(), "class=timeout")); n != 1 {
+		t.Fatalf("%d GET timeout lines", n)
+	}
+	if b := (&Members{}).bound(); b != 5*time.Second {
+		t.Fatalf("the default bound is %v", b)
+	}
+}
+
+// The round's PUTs and the sweep's DELETEs go at the pace, 10 a second
+// unset (the plan's 4.6): a fifth of the platform's limit for all of an
+// app's calls, so neither crowds out a sign-in's PUT or the feed.
+func TestRoundAndSweepArePaced(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	const pace = 80 * time.Millisecond
+	w.members.Pace = pace
+	var mu sync.Mutex
+	var at []time.Time
+	stamp := func(string) {
+		mu.Lock()
+		defer mu.Unlock()
+		at = append(at, time.Now())
+	}
+	// Each call reaches the fake at least the pace after the one before,
+	// less the calls' own jitter.
+	paced := func(what string, n int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(at) != n {
+			t.Fatalf("%s: %d calls, want %d", what, len(at), n)
+		}
+		for i := 1; i < len(at); i++ {
+			if gap := at[i].Sub(at[i-1]); gap < pace*3/4 {
+				t.Fatalf("%s: call %d came %v after the one before, under the pace %v", what, i, gap, pace)
+			}
+		}
+		at = nil
+	}
+	for range 4 {
+		w.held(t)
+	}
+	w.fake.Before(contracttest.CallSubscribe, stamp)
+	if done, err := w.members.Round(ctx); err != nil || !done {
+		t.Fatalf("round: %v %v", done, err)
+	}
+	paced("the round", 4)
+	w.fake.Before(contracttest.CallSubscribe, nil)
+
+	for range 4 {
+		orphan := uuid.New()
+		if _, err := w.fake.AddAccount(orphan.String()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.contract.Intend(ctx, orphan); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.members.Client.Subscribe(ctx, orphan.String()); err != nil {
+			t.Fatal(err)
+		}
+		w.age(ctx, t, orphan, OrphanAfter+time.Minute)
+	}
+	w.fake.Before(contracttest.CallUnsubscribe, stamp)
+	if n, err := w.members.Sweep(ctx); err != nil || n != 4 {
+		t.Fatalf("the sweep: %d %v", n, err)
+	}
+	paced("the sweep", 4)
+	if p := (&Members{}).pace(); p != 100*time.Millisecond {
+		t.Fatalf("the default pace is %v", p)
+	}
 }

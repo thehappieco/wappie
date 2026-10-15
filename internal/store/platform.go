@@ -81,6 +81,12 @@ var (
 	// branch), as its owner. Nothing is created, and a platform_home_taken
 	// security event is recorded after the rollback.
 	ErrHomeTaken = errors.New("store: the new account's personal workspace exists here already")
+	// ErrHomeRequired refuses a new account with no home of the platform's
+	// once the contract was ever observed (contract_state.events_from set):
+	// from then on Wappie never chooses a personal workspace itself (the
+	// plan's DB2). A sign-up that read the contract off just before its
+	// first observe gets it, and is retried with the platform's home.
+	ErrHomeRequired = errors.New("store: the contract was observed: a new account's home is the platform's")
 )
 
 // ContractDocError refuses a new account whose document could not be
@@ -470,7 +476,8 @@ func (in NewPlatformUser) checkHome(sub uuid.UUID) error {
 // workspace, as for every person: with the id in.Home once the contract
 // gives one (the platform's personal workspace, refused with ErrHomeTaken
 // when a tenant has that id), else a new one (interim, as before the
-// contract). With a home, the same transaction stores in.Doc, the PUT's
+// contract), which is refused with ErrHomeRequired once the contract was
+// ever observed. With a home, the same transaction stores in.Doc, the PUT's
 // answer, and records the workspaces it names, accounts then workspaces in
 // id order after contract_state's lock (the plan's DB23). It also returns
 // the ticket's auth_time, the proof its first session starts with
@@ -572,6 +579,19 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 			}
 			if o := outcomes[0]; o != ContractDocStored && o != ContractDocKept {
 				return &ContractDocError{Outcome: o}
+			}
+		} else {
+			// The database, not the caller, says whether Wappie may still
+			// choose the home. The row's share lock makes the first switch
+			// to observe wait for this account, which its round then
+			// subscribes; a switch committed first refuses it. Taken last,
+			// as the home's own lock above, so both orders agree.
+			var observed bool
+			if err := tx.QueryRow(ctx, `SELECT events_from IS NOT NULL FROM contract_state FOR SHARE`).Scan(&observed); err != nil {
+				return err
+			}
+			if observed {
+				return ErrHomeRequired
 			}
 		}
 		return securityEvent(ctx, tx, "platform_linked", &t.Sub, t.Sub, map[string]string{"from": "new", "product_key_id": t.ProductKeyID})

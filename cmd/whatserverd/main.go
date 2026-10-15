@@ -849,6 +849,30 @@ func (a *app) probes(mux *http.ServeMux) {
 	mux.Handle("GET /metrics", a.metrics.Handler())
 }
 
+// authHandler is the sign-up and sign-in routes' handler, with the
+// contract's part in every serving process (a.members, startContract).
+func (a *app) authHandler() *authapi.Handler {
+	h := &authapi.Handler{
+		Storage:       a.storage,
+		AccessChanged: a.ws.RevalidateAccess,
+		Users:         a.users, Keys: a.keys,
+		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
+		WorkspaceSessionLimits: a.workspaceSessions,
+		PublicSignup:           a.cfg.Signup.Enabled,
+		Platform:               a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
+	}
+	// Never a typed nil: a nil Membership is the contract's absence.
+	if a.members != nil {
+		h.Membership = a.members
+	}
+	if a.cfg.Signup.SMTP.Configured() {
+		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
+		h.SendSignupVerification = sender.SignupVerification
+		h.SendWorkspaceInvite = sender.WorkspaceInvite
+	}
+	return h
+}
+
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mcpServers := advertisedMCP(a.cfg.MCP)
@@ -861,24 +885,7 @@ func (a *app) routes() http.Handler {
 
 	// Signing up and signing in. Over HTTP because the websocket wants
 	// credentials before it opens, and this is where credentials come from.
-	authHandler := &authapi.Handler{
-		Storage:       a.storage,
-		AccessChanged: a.ws.RevalidateAccess,
-		Users:         a.users, Keys: a.keys,
-		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
-		WorkspaceSessionLimits: a.workspaceSessions,
-		PublicSignup:           a.cfg.Signup.Enabled,
-		Platform:               a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
-	}
-	if a.members != nil {
-		authHandler.Membership = a.members
-	}
-	if a.cfg.Signup.SMTP.Configured() {
-		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
-		authHandler.SendSignupVerification = sender.SignupVerification
-		authHandler.SendWorkspaceInvite = sender.WorkspaceInvite
-	}
-	authHandler.Mount(mux)
+	a.authHandler().Mount(mux)
 	(&restapi.Handler{
 		APIKeys: a.apiKeys, Users: a.users, Keys: a.keys, Devices: a.devices,
 		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log,

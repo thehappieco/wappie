@@ -134,6 +134,13 @@ func TestContractState(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
 	c := store.NewContract(pool)
+	// The contract is on in every mode but off, the modes a later release
+	// adds included: none of them gates as off.
+	for mode, on := range map[string]bool{store.ContractOff: false, store.ContractObserve: true, "enforce": true} {
+		if (store.ContractState{Mode: mode}).On() != on {
+			t.Errorf("mode %s: on %v", mode, !on)
+		}
+	}
 	s, err := c.State(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +176,8 @@ func TestContractState(t *testing.T) {
 // generation, a workspace's status moves only with its wversion, and
 // another generation stores nothing and wakes the contract loops.
 func TestContractDocuments(t *testing.T) {
-	pool := pgtest.Fresh(t, migrate.Run)
+	backends := &pgtest.Backends{}
+	pool := pgtest.FreshWith(t, migrate.Run, backends.Configure)
 	ctx := context.Background()
 	c := store.NewContract(pool)
 	gen, sub, home, team := uuid.New(), uuid.New(), uuid.New(), uuid.New()
@@ -286,16 +294,11 @@ func TestContractDocuments(t *testing.T) {
 	if after := readAccount(t, pool, sub); *after.Version != 1 || !after.FreshAt.Equal(*before.FreshAt) {
 		t.Fatalf("another generation changed the row: %+v", after)
 	}
+	// Only this test's own notice counts: other packages' tests send it too.
 	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	for {
-		n, err := listener.Conn().WaitForNotification(wait)
-		if err != nil {
-			t.Fatalf("no wake for another generation: %v", err)
-		}
-		if n.Payload == "generation" {
-			break
-		}
+	if err := backends.Notice(wait, listener.Conn(), store.ContractModeChannel, "generation"); err != nil {
+		t.Fatalf("no wake for another generation: %v", err)
 	}
 }
 

@@ -52,7 +52,7 @@ type Party struct {
 
 // Verdict is RequireFresh's.
 type Verdict struct {
-	// Checked: the act is gated here (observe, in a recorded team).
+	// Checked: the act is gated here (the contract on, in a recorded team).
 	Checked bool
 	// Refuse: a party has no document that confirms it now. At observe it
 	// is only logged.
@@ -73,14 +73,15 @@ func (m *Members) Fresh(ctx context.Context, subs ...uuid.UUID) (map[uuid.UUID]b
 
 // RequireFresh is the freshness hook of a gated act in tenant (the plan's
 // 4.9 and 4.12), called before the act's store transaction, never inside
-// one. It gates only at observe and only in a recorded team: personal
-// workspaces never wait (the reply's Q5). A party with no sub, a stale
-// Stored party, and a party whose GET got no document (no answer, an
-// unverified one, a signed refusal of any code) make the verdict a
-// refusal, logged "freshness: would refuse"; a Stored party's staleness is
-// logged "freshness: stale at act" and makes no call. Only with Enforce is
-// a refusal returned, as ErrMembershipsUnconfirmed; at observe the act
-// goes on whatever the verdict, a failure to read included.
+// one. It gates only while the contract is on (observe, and every mode
+// after it) and only in a recorded team: personal workspaces never wait
+// (the reply's Q5). A party with no sub, a stale Stored party, and a party
+// whose GET got no document (no answer, an unverified one, a signed
+// refusal of any code) make the verdict a refusal, logged "freshness:
+// would refuse"; a Stored party's staleness is logged "freshness: stale at
+// act" and makes no call. Only with Enforce is a refusal returned, as
+// ErrMembershipsUnconfirmed; without it the act goes on whatever the
+// verdict, a failure to read included.
 func (m *Members) RequireFresh(ctx context.Context, act string, tenant uuid.UUID, parties ...Party) (Verdict, error) {
 	v, err := m.requireFresh(ctx, act, tenant, parties)
 	if err != nil {
@@ -97,7 +98,7 @@ func (m *Members) RequireFresh(ctx context.Context, act string, tenant uuid.UUID
 }
 
 func (m *Members) requireFresh(ctx context.Context, act string, tenant uuid.UUID, parties []Party) (Verdict, error) {
-	if !m.observing(ctx) || len(parties) == 0 {
+	if !m.on(ctx) || len(parties) == 0 {
 		return Verdict{}, nil
 	}
 	w, recorded, err := m.Contract.Workspace(ctx, tenant)
