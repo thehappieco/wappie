@@ -93,6 +93,13 @@ type Leader struct {
 	// the debounce after a change, and the backoff after a failure.
 	SnapshotEvery, SnapshotDebounce        time.Duration
 	SnapshotBackoffMin, SnapshotBackoffMax time.Duration
+
+	// ours, set by tests only, tells the dirty and due notices this
+	// installation's sessions sent from any other's: every test schema
+	// shares one database, whose NOTIFY reaches every session listening,
+	// and another package's test sends "all". Nil takes every notice, as
+	// production's one database for one installation does.
+	ours func(pid uint32) bool
 }
 
 func or[T comparable](v, def T) T {
@@ -279,12 +286,13 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			if !ok {
 				return
 			}
-			switch n.Channel {
-			case store.ContractModeChannel:
+			switch {
+			case n.Channel == store.ContractModeChannel:
 				notice(n.Payload)
-			case store.ContractDirtyChannel:
+			case l.ours != nil && !l.ours(n.PID):
+			case n.Channel == store.ContractDirtyChannel:
 				snaps.dirty(n.Payload)
-			case store.ContractDueChannel:
+			case n.Channel == store.ContractDueChannel:
 				snaps.due()
 			}
 		}

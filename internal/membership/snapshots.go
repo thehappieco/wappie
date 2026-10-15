@@ -313,8 +313,11 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 	}
 	snap := SnapshotOf(read, seq)
 	if why, rule := snapshotRule(snap); why != "" {
-		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, store.SnapshotFailed, "local_invalid:"+why)
-		if rec.Tries <= 1 {
+		class := "local_invalid:" + why
+		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, store.SnapshotFailed, class)
+		// Once per run, whichever leader, however many tries a document or
+		// a restart asks for in between (which count none).
+		if ok && rec.Recorded && rec.Before != class {
 			attrs := []any{"workspace", ws, "reason", why, "items", len(snap.Items)}
 			if rule != nil {
 				attrs = append(attrs, "rule", rule.Error())

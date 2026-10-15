@@ -42,6 +42,28 @@
           "waiting": false,
           "enrolled": true,
           "holds_key": false
+        },
+        {
+          "sub": "0199a0c2-0000-7000-8000-00000000000b",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": false,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        },
+        {
+          "sub": "0199a0c2-0000-7000-8000-00000000000c",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": false,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
         }
       ],
       "protected": []
@@ -197,6 +219,107 @@
         }
       ],
       "protected": []
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000008",
+      "kind": "number",
+      "label": null,
+      "hint": null,
+      "state": "active",
+      "reason": null,
+      "purge_at": null,
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000001",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": [
+        "0199a0c2-0000-7000-8000-000000000001"
+      ]
+    },
+    {
+      "id": "0199e000-0000-7000-8000-000000000009",
+      "kind": "number",
+      "label": null,
+      "hint": null,
+      "state": "active",
+      "reason": null,
+      "purge_at": null,
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000001",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        }
+      ],
+      "protected": [
+        "0199a0c2-0000-7000-8000-000000000001"
+      ]
+    },
+    {
+      "id": "0199e000-0000-7000-8000-00000000000a",
+      "kind": "number",
+      "label": "Recepção",
+      "hint": "…7777",
+      "state": "active",
+      "reason": null,
+      "purge_at": null,
+      "other_backups": 0,
+      "people": [
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000001",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": true,
+          "waiting": false,
+          "enrolled": true,
+          "holds_key": true
+        },
+        {
+          "sub": "0199a0c2-0000-7000-8000-000000000009",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": false,
+          "waiting": true,
+          "enrolled": true,
+          "holds_key": true
+        },
+        {
+          "sub": "0199a0c2-0000-7000-8000-00000000000a",
+          "can": [
+            "read",
+            "send"
+          ],
+          "reads": false,
+          "waiting": true,
+          "enrolled": true,
+          "holds_key": false
+        }
+      ],
+      "protected": [
+        "0199a0c2-0000-7000-8000-000000000001",
+        "0199a0c2-0000-7000-8000-000000000009"
+      ]
     }
   ]
 }

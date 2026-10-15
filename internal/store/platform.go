@@ -500,7 +500,7 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 	var out User
 	var authTime time.Time
 	var sub uuid.UUID
-	err = pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+	signup := func(tx pgx.Tx) error {
 		t, err := readTicket(ctx, tx, sum, true, []string{TicketNew})
 		if err != nil {
 			return err
@@ -595,7 +595,10 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 			}
 		}
 		return securityEvent(ctx, tx, "platform_linked", &t.Sub, t.Sub, map[string]string{"from": "new", "product_key_id": t.ProductKeyID})
-	})
+	}
+	// With a 40P01 retry, as every transaction that writes the contract's
+	// accounts and workspaces (DB23).
+	err = retryDeadlock(ctx, func() error { return pg.InTx(ctx, u.pool, signup) })
 	var docErr *ContractDocError
 	switch {
 	case errors.Is(err, ErrHomeTaken):

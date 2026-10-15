@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/thehappieco/kit/contract/contracttest"
 
 	cryptoseal "whatserver2/internal/crypto/seal"
+	"whatserver2/internal/label"
 	"whatserver2/internal/membership/membershiptest"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
@@ -48,17 +50,29 @@ type snapshotFixture struct {
 	devices     map[string]uuid.UUID
 }
 
-// The numbers, by name: their ids and phone numbers.
+// The numbers, by name: their labels, phone numbers ("" for none), LIDs
+// ("" for none), and whether they ever connected.
 var fixtureNumbers = []struct {
-	name, label, pn string
+	name, label, pn, lid string
+	connected            bool
 }{
-	{"live", "Vendas", "5511912345678"},
-	{"paused", "Suporte", "5511900001111"},
-	{"moving", "Número do WhatsApp", "5511900002222"},
-	{"moved_back", "+55 11 90000-3333", "5511900003333"},
-	{"logged_out", "Entregas", "5511900004444"},
-	{"deleted", "Financeiro antigo", "5511900005555"},
-	{"disabled_holder", "Cobrança", "5511900006666"},
+	{"live", "Vendas", "5511912345678", "", true},
+	{"paused", "Suporte", "5511900001111", "", true},
+	{"moving", "Número do WhatsApp", "5511900002222", "", true},
+	{"moved_back", "+55 11 90000-3333", "5511900003333", "", true},
+	{"logged_out", "Entregas", "5511900004444", "", true},
+	{"deleted", "Financeiro antigo", "5511900005555", "", true},
+	{"disabled_holder", "Cobrança", "5511900006666", "", true},
+	{"lid_only", "", "", "190000000000001@lid", false},
+	{"connected_only", "0199e000", "", "", true},
+	{"rotated", "Recepção", "5511900007777", "", true},
+}
+
+// The fixture's label counts by class (its labels in turn: five names, a
+// placeholder, the number itself, nothing, the start of its own id, a
+// name).
+var fixtureLabels = map[label.Class]int{
+	label.ClassNamed: 6, label.ClassPlaceholder: 1, label.ClassPhone: 1, label.ClassEmpty: 1, label.ClassLegacyID: 1,
 }
 
 // newSnapshotFixture builds it in w, all but the deletion (deleteFixture):
@@ -78,6 +92,20 @@ var fixtureNumbers = []struct {
 //   - deleted: the owner reads, sends and manages it, the only holder;
 //   - disabled_holder: the only holder is a person whose account is
 //     disabled: neither protected nor refused (the plan's 3, notes);
+//   - lid_only: a LID and nothing else, and connected_only: a past
+//     connection and nothing else, each a number of the workspace's (the
+//     owner its only holder);
+//   - rotated: its key at epoch 3, epoch 2 not retired, epoch 1 retired;
+//     the owner holds the current key, a member only epoch 2's (holds a
+//     key, does not read, waits; the only holder of that epoch, so
+//     protected by Wappie's rule) and another only epoch 1's (no key held,
+//     waits);
+//   - on live, besides: a member whose membership's deadline has passed
+//     and one whose membership is disabled, each with Read and the current
+//     key (neither reads nor waits);
+//   - on logged_out, besides: holders without a sub that are no backup: a
+//     service account with a deadline and no connection, a disabled local
+//     person, and a local person without Read;
 //   - and a pending registration, which is no number of the workspace's.
 func newSnapshotFixture(t *testing.T, w *world) *snapshotFixture {
 	t.Helper()
@@ -90,6 +118,8 @@ func newSnapshotFixture(t *testing.T, w *world) *snapshotFixture {
 		{"owner", "owner", true}, {"second_owner", "owner", true}, {"member", "member", true},
 		{"holder", "member", true}, {"disabled", "member", true}, {"unlinked", "member", false},
 		{"standing_service", "service", false}, {"assistant_service", "service", false},
+		{"old_key", "member", true}, {"retired_key", "member", true}, {"expired", "member", true}, {"suspended", "member", true},
+		{"deadline_service", "service", false}, {"disabled_local", "member", false}, {"keyonly_local", "member", false},
 	}
 	for i, p := range people {
 		f.users[p.name] = fixed("b0c2", i+1)
@@ -140,16 +170,23 @@ func newSnapshotFixture(t *testing.T, w *world) *snapshotFixture {
 			t.Fatal(err)
 		}
 		in(func(tx pgx.Tx) error {
-			_, err := tx.Exec(ctx, `UPDATE devices SET pn = $2, status = 'online', last_connected_at = clock_timestamp() WHERE id = $1`,
-				id, n.pn+"@s.whatsapp.net")
+			_, err := tx.Exec(ctx, `UPDATE devices SET pn = nullif($2, '') || '@s.whatsapp.net', lid = nullif($3, ''),
+				status = CASE WHEN $4 THEN 'online' ELSE 'offline' END, last_connected_at = CASE WHEN $4 THEN clock_timestamp() END
+				WHERE id = $1`, id, n.pn, n.lid, n.connected)
 			return err
 		})
-		pub, _, err := cryptoseal.GenerateKeyPair()
-		if err != nil {
-			t.Fatal(err)
+		epochs := []uint16{1}
+		if n.name == "rotated" {
+			epochs = []uint16{1, 2, 3}
 		}
-		if err := keys.CreateArchiveKey(ctx, f.team, id, 1, pub); err != nil {
-			t.Fatal(err)
+		for _, epoch := range epochs {
+			pub, _, err := cryptoseal.GenerateKeyPair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := keys.CreateArchiveKey(ctx, f.team, id, epoch, pub); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if _, err := devices.CreateWithID(ctx, f.team.String(), fixed("e000", 99).String(), "pendente", wa.ModePassive); err != nil {
@@ -161,18 +198,25 @@ func newSnapshotFixture(t *testing.T, w *world) *snapshotFixture {
 		t.Fatal(err)
 	}
 	in(func(tx pgx.Tx) error {
-		grant := func(number, person string) error {
+		grant := func(number, person string, epoch int) error {
 			// A grant brings Read and Send, as 0023's trigger gives them.
 			_, err := tx.Exec(ctx, `INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk)
-				VALUES ($1, $2, $3, 1, 'grant')`, f.team, f.devices[number], f.users[person])
+				VALUES ($1, $2, $3, $4, 'grant')`, f.team, f.devices[number], f.users[person], epoch)
 			return err
 		}
-		for _, g := range [][2]string{
-			{"live", "owner"}, {"live", "standing_service"}, {"live", "assistant_service"},
-			{"paused", "owner"}, {"moving", "holder"}, {"moved_back", "second_owner"},
-			{"logged_out", "owner"}, {"logged_out", "unlinked"}, {"deleted", "owner"}, {"disabled_holder", "disabled"},
+		for _, g := range []struct {
+			number, person string
+			epoch          int
+		}{
+			{"live", "owner", 1}, {"live", "standing_service", 1}, {"live", "assistant_service", 1},
+			{"paused", "owner", 1}, {"moving", "holder", 1}, {"moved_back", "second_owner", 1},
+			{"logged_out", "owner", 1}, {"logged_out", "unlinked", 1}, {"deleted", "owner", 1}, {"disabled_holder", "disabled", 1},
+			{"lid_only", "owner", 1}, {"connected_only", "owner", 1},
+			{"rotated", "owner", 3}, {"rotated", "old_key", 2}, {"rotated", "retired_key", 1},
+			{"live", "expired", 1}, {"live", "suspended", 1},
+			{"logged_out", "deadline_service", 1}, {"logged_out", "disabled_local", 1}, {"logged_out", "keyonly_local", 1},
 		} {
-			if err := grant(g[0], g[1]); err != nil {
+			if err := grant(g.number, g.person, g.epoch); err != nil {
 				return err
 			}
 		}
@@ -197,6 +241,14 @@ func newSnapshotFixture(t *testing.T, w *world) *snapshotFixture {
 				'content', $4, 'ephemeral', 1, 'enclave')`,
 				[]any{f.team, apiKey, f.users["owner"], f.users["assistant_service"]}},
 			{`UPDATE devices SET status = 'logged_out' WHERE id = $1`, []any{f.devices["logged_out"]}},
+			{`UPDATE device_archive_keys SET retired_at = clock_timestamp() WHERE device_id = $1 AND epoch = 1`, []any{f.devices["rotated"]}},
+			{`UPDATE workspace_memberships SET expires_at = clock_timestamp() - interval '1 day' WHERE tenant_id = $1 AND user_id = $2`,
+				[]any{f.team, f.users["expired"]}},
+			{`UPDATE workspace_memberships SET status = 'disabled' WHERE tenant_id = $1 AND user_id = $2`, []any{f.team, f.users["suspended"]}},
+			{`UPDATE workspace_memberships SET expires_at = clock_timestamp() + interval '1 day' WHERE tenant_id = $1 AND user_id = $2`,
+				[]any{f.team, f.users["deadline_service"]}},
+			{`UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`,
+				[]any{f.devices["logged_out"], f.users["keyonly_local"]}},
 		} {
 			if _, err := tx.Exec(ctx, q.sql, q.args...); err != nil {
 				return fmt.Errorf("%s: %w", q.sql, err)
@@ -205,9 +257,10 @@ func newSnapshotFixture(t *testing.T, w *world) *snapshotFixture {
 		return nil
 	})
 	in(func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, f.users["disabled"])
-		if err == nil && tag.RowsAffected() != 1 {
-			err = errors.New("the disabled person was not disabled")
+		tag, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = ANY ($1)`,
+			[]uuid.UUID{f.users["disabled"], f.users["disabled_local"]})
+		if err == nil && tag.RowsAffected() != 2 {
+			err = errors.New("the disabled people were not disabled")
 		}
 		return err
 	})
@@ -304,9 +357,56 @@ func TestSnapshotGolden(t *testing.T) {
 	if _, listed := itemOf(snap, fixed("e000", 99)); listed {
 		t.Fatal("a pending registration is listed")
 	}
+	// The read model's predicates, each case by name (the golden file pins
+	// them too, but an -update would not tell them apart).
+	person := func(number, name string) kc.Person {
+		t.Helper()
+		it, ok := itemOf(snap, f.devices[number])
+		if !ok {
+			t.Fatalf("%s is not listed", number)
+		}
+		for _, p := range it.People {
+			if p.Sub == f.subs[name].String() {
+				return p
+			}
+		}
+		t.Fatalf("%s is not listed on %s", name, number)
+		return kc.Person{}
+	}
+	for _, c := range []struct {
+		number, name             string
+		reads, waiting, holdsKey bool
+	}{
+		{"rotated", "owner", true, false, true},
+		{"rotated", "old_key", false, true, true},
+		{"rotated", "retired_key", false, true, false},
+		{"live", "expired", false, false, true},
+		{"live", "suspended", false, false, true},
+		{"live", "disabled", false, false, false},
+		{"live", "member", false, true, false},
+		{"lid_only", "owner", true, false, true},
+		{"connected_only", "owner", true, false, true},
+	} {
+		if p := person(c.number, c.name); p.Reads != c.reads || p.Waiting != c.waiting || p.HoldsKey != c.holdsKey {
+			t.Errorf("%s on %s: reads %v waiting %v holds_key %v, want %v %v %v", c.name, c.number, p.Reads, p.Waiting, p.HoldsKey,
+				c.reads, c.waiting, c.holdsKey)
+		}
+	}
+	for number, want := range map[string]int{"live": 1, "logged_out": 1, "rotated": 0} {
+		if it, _ := itemOf(snap, f.devices[number]); it.OtherBackups != want {
+			t.Errorf("%s: %d backups without a sub, want %d", number, it.OtherBackups, want)
+		}
+	}
+	if it, _ := itemOf(snap, f.devices["rotated"]); !slices.Equal(it.Protected, []string{f.subs["old_key"].String(), f.subs["owner"].String()}) &&
+		!slices.Equal(it.Protected, []string{f.subs["owner"].String(), f.subs["old_key"].String()}) {
+		t.Errorf("rotated: protected %v, want the owner and the only holder of epoch 2", it.Protected)
+	}
+	if !reflect.DeepEqual(read.Labels, fixtureLabels) {
+		t.Errorf("the label counts: %v, want %v", read.Labels, fixtureLabels)
+	}
 	for _, it := range snap.Items {
 		for _, p := range it.People {
-			for _, name := range []string{"unlinked", "standing_service", "assistant_service"} {
+			for _, name := range []string{"unlinked", "standing_service", "assistant_service", "deadline_service", "disabled_local", "keyonly_local"} {
 				if p.Sub == f.users[name].String() {
 					t.Fatalf("%s is listed on %s", name, it.ID)
 				}
@@ -406,8 +506,8 @@ func TestSnapshotProtectedMatchesRefusal(t *testing.T) {
 		}
 		seen[refused]++
 	}
-	if seen[true] != 3 || seen[false] != 2 {
-		t.Fatalf("the fixture's members: %d protected, %d not; want 3 and 2", seen[true], seen[false])
+	if seen[true] != 4 || seen[false] != 5 {
+		t.Fatalf("the fixture's members: %d protected, %d not; want 4 and 5", seen[true], seen[false])
 	}
 	if protected[f.subs["disabled"].String()] {
 		t.Fatal("a disabled sole holder is protected")
@@ -502,6 +602,57 @@ func TestSnapshotWireVectors(t *testing.T) {
 	crowd := kc.Snapshot{V: 1, SnapshotSeq: 1, Items: []kc.Item{{People: make([]kc.Person, kc.MaxPeople+1)}}}
 	if why := checkSnapshot(crowd); why != "people" {
 		t.Errorf("5001 people: %q", why)
+	}
+	// Within README 8's counts, but over the call's 1 MiB body: two items of
+	// 5000 people each; one of them is under it.
+	big := kc.Snapshot{V: kc.SnapshotV, SnapshotSeq: 1, Items: []kc.Item{}}
+	for range 2 {
+		it := kc.Item{ID: uuid.NewString(), Kind: kc.ItemNumber, State: kc.StateActive, People: []kc.Person{}, Protected: []string{}}
+		for range kc.MaxPeople {
+			it.People = append(it.People, kc.Person{Sub: uuid.NewString(), Can: []string{kc.CanRead}, Reads: true, Enrolled: true, HoldsKey: true})
+		}
+		big.Items = append(big.Items, it)
+	}
+	if body, err := json.Marshal(big); err != nil || len(body) <= 1<<20 || len(body) > 2<<20 {
+		t.Fatalf("the big snapshot is %d bytes (%v), want just over 1 MiB", len(body), err)
+	}
+	if why := checkSnapshot(big); why != "too_large" {
+		t.Errorf("a body over 1 MiB: %q", why)
+	}
+	big.Items = big.Items[:1]
+	if why := checkSnapshot(big); why != "" {
+		t.Errorf("a body under 1 MiB: %q", why)
+	}
+}
+
+// snapshotResult sorts PutAccess's answer as README 8's "The answer" does:
+// a signed accepted; a signed not_found, retried for a day, then parked; a
+// signed invalid_request, parked; anything else retried with the backoff,
+// an unverified answer and no answer included, neither being the
+// platform's word.
+func TestSnapshotResult(t *testing.T) {
+	refusal := func(status int, code string) error { return &kc.Refusal{Status: status, Code: code, Message: "m"} }
+	for _, c := range []struct {
+		what    string
+		err     error
+		outcome store.ContractSnapshotOutcome
+		class   string
+	}{
+		{"accepted", nil, store.SnapshotAccepted, ""},
+		{"a signed not_found", refusal(404, kc.CodeNotFound), store.SnapshotNotFound, "refused:not_found"},
+		{"a signed not_found, wrapped", fmt.Errorf("put: %w", refusal(404, kc.CodeNotFound)), store.SnapshotNotFound, "refused:not_found"},
+		{"a signed invalid_request", refusal(400, kc.CodeInvalid), store.SnapshotRefused, "refused:invalid_request"},
+		{"a signed unavailable", refusal(503, kc.CodeUnavailable), store.SnapshotFailed, "refused:unavailable"},
+		{"a signed rate_limited", refusal(429, kc.CodeRateLimited), store.SnapshotFailed, "refused:rate_limited"},
+		{"a signed replay", refusal(409, kc.CodeReplay), store.SnapshotFailed, "refused:replay"},
+		{"an unverified answer", fmt.Errorf("%w: the signature", kc.ErrUnverified), store.SnapshotFailed, "unverified"},
+		{"no answer: a timeout", fmt.Errorf("put: %w", context.DeadlineExceeded), store.SnapshotFailed, "timeout"},
+		{"no answer: no transport", ErrUnavailable, store.SnapshotFailed, "no_transport"},
+		{"no answer: no secret", ErrNoSecret, store.SnapshotFailed, "no_secret"},
+	} {
+		if outcome, class := snapshotResult(c.err); outcome != c.outcome || class != c.class {
+			t.Errorf("%s: %d %q, want %d %q", c.what, outcome, class, c.outcome, c.class)
+		}
 	}
 }
 
@@ -637,8 +788,11 @@ func TestSnapshotCadence(t *testing.T) {
 	l := w.leader(w.members, logs, key)
 	l.SnapshotEvery = time.Hour
 	stop := run(t, l)
+	// At least one each: the round's PUT and the feed's first page, at the
+	// leader's start too, name both before their first snapshot is
+	// accepted, which makes them due once more (the plan's 4.7).
 	for _, ws := range []uuid.UUID{w.home, w.team} {
-		eventually(t, 3*time.Second, "the leader's start: "+ws.String(), func() bool { return w.accepted(ws) == 1 })
+		eventually(t, 3*time.Second, "the leader's start: "+ws.String(), func() bool { return w.accepted(ws) >= 1 })
 	}
 	if s, _ := w.fake.Snapshot("wappie", w.team.String()); len(s.Items) != 1 || s.Items[0].ID != w.device.String() {
 		t.Fatalf("the team's snapshot: %+v", s)
@@ -935,15 +1089,18 @@ func TestSnapshotNotFoundParks(t *testing.T) {
 		t.Fatalf("%d snapshots sent while parked", got-n)
 	}
 
-	// A document that names it again: released, and sent at once.
+	// A document that names it again: released, and sent at once. The
+	// count is taken before the document: the park holds every snapshot
+	// until it comes (above), and the one it releases may be accepted
+	// before the document's row is seen here.
 	w.fake.RefuseAlways(contracttest.CallAccess, "")
 	version := w.version(t, w.sub)
+	accepted := w.accepted(w.team)
+	named := time.Now()
 	if err := w.fake.RenameTeam(w.team.String(), "Equipe 2"); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 5*time.Second, "the document naming it", func() bool { return w.version(t, w.sub) > version })
-	named := time.Now()
-	accepted := w.accepted(w.team)
 	eventually(t, 3*time.Second, "the snapshot after the document", func() bool { return w.accepted(w.team) > accepted })
 	if took := time.Since(named); took > 3*time.Second {
 		t.Fatalf("the snapshot went %v after the document", took)
@@ -1017,7 +1174,7 @@ func TestSnapshotsNeverStale(t *testing.T) {
 			Retry: leaderRetry / scale, Heartbeat: pg.HoldHeartbeat / scale, ModeCheck: modeCheck / scale, Wait: 1,
 			BackoffMin: feedBackoffMin / scale, BackoffMax: feedBackoffMax / scale, SweepEvery: sweepEvery / scale, RoundEvery: roundEvery / scale,
 			SnapshotEvery: snapshotEvery / scale, SnapshotDebounce: snapshotDebounce / scale,
-			SnapshotBackoffMin: snapshotBackoffMin / scale, SnapshotBackoffMax: snapshotBackoffMax / scale}
+			SnapshotBackoffMin: snapshotBackoffMin / scale, SnapshotBackoffMax: snapshotBackoffMax / scale, ours: w.backends.Has}
 	}
 	second := func() *Members {
 		client := NewClient(&http.Client{}, w.fake.URL, nil)
@@ -1089,5 +1246,138 @@ func TestSnapshotsNeverStale(t *testing.T) {
 			t.Errorf("%s: after the outage a snapshot was accepted %v later on the platform's clock", ws, back)
 		}
 		t.Logf("%s: the longest gap %v, the first after the outage %v later, %d snapshots", ws, worst, back, len(got))
+	}
+}
+
+// The sender's own refusal (the plan's 4.10): a workspace over README 8's
+// 1000 numbers is never sent; one ERROR per run names the rule, never a
+// value, and is recorded for contract status --check (snapshot_invalid);
+// the workspace keeps local_invalid:items, is never parked, and is tried
+// again with the backoff; once a deletion brings it to 1000 it is sent.
+func TestSnapshotOverTheLimits(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO devices (tenant_id, label, status, pn)
+			SELECT $1, 'n' || g, 'online', '5521' || lpad(g::text, 9, '0') || '@s.whatsapp.net' FROM generate_series(1, 1000) g`, w.team)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logs := &membershiptest.Logs{}
+	l := w.leader(w.members, logs, lockKey(t))
+	l.SnapshotBackoffMin, l.SnapshotBackoffMax = 50*time.Millisecond, 200*time.Millisecond
+	run(t, l)
+	row := func() (tries int, parked *time.Time, class *string) {
+		t.Helper()
+		if err := w.pool.QueryRow(ctx, `SELECT snapshot_tries, parked_at, snapshot_error FROM contract_workspaces WHERE workspace_id = $1`,
+			w.team).Scan(&tries, &parked, &class); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	eventually(t, 5*time.Second, "retried with the backoff", func() bool {
+		tries, parked, class := row()
+		return tries >= 4 && parked == nil && class != nil && *class == "local_invalid:items"
+	})
+	eventually(t, 5*time.Second, "the ERROR recorded", func() bool { return w.state(t).ErrorClass == store.ContractErrorSnapshotInvalid })
+	if n := len(w.fake.Accesses(w.team.String())); n != 0 {
+		t.Fatalf("%d snapshots of 1001 numbers sent", n)
+	}
+	lines := logs.Lines("level=ERROR", "Wappie would not send it")
+	if len(lines) != 1 || !strings.Contains(lines[0], "workspace="+w.team.String()) || !strings.Contains(lines[0], "reason=items") ||
+		!strings.Contains(lines[0], "items=1001") || strings.Contains(lines[0], "n1") || strings.Contains(lines[0], "5521") {
+		t.Fatalf("the ERRORs: %q", lines)
+	}
+	if w.accepted(w.home) == 0 {
+		t.Fatal("the other workspace's snapshot waits on this one")
+	}
+	if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM devices WHERE tenant_id = $1 AND label = 'n1000'`, w.team)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 5*time.Second, "sent at 1000 numbers", func() bool { return w.accepted(w.team) == 1 })
+	if s, _ := w.fake.Snapshot("wappie", w.team.String()); len(s.Items) != 1000 {
+		t.Fatalf("the snapshot sent has %d items", len(s.Items))
+	}
+	eventually(t, 5*time.Second, "the run ended", func() bool { tries, parked, class := row(); return tries == 0 && parked == nil && class == nil })
+	if n := len(logs.Lines("level=ERROR", "Wappie would not send it")); n != 1 {
+		t.Fatalf("%d ERRORs for one run", n)
+	}
+}
+
+// The snapshots go at the pace, as the round's PUTs (P3a's review: all of
+// the app's calls stay well under the platform's 50 a second, one unsigned
+// 429 being a new account's failed PUT), even at a leader's start, when
+// every workspace is due at once.
+func TestSnapshotsArePaced(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	const pace = 80 * time.Millisecond
+	w.members.Pace = pace
+	for range 5 {
+		w.exec(ctx, t, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, uuid.New())
+	}
+	var mu sync.Mutex
+	var at []time.Time
+	w.fake.Before(contracttest.CallAccess, func(string) {
+		mu.Lock()
+		defer mu.Unlock()
+		at = append(at, time.Now())
+	})
+	run(t, w.leader(w.members, &membershiptest.Logs{}, lockKey(t)))
+	eventually(t, 5*time.Second, "five snapshots", func() bool { mu.Lock(); defer mu.Unlock(); return len(at) >= 5 })
+	mu.Lock()
+	defer mu.Unlock()
+	for i := 1; i < len(at); i++ {
+		if gap := at[i].Sub(at[i-1]); gap < pace*3/4 {
+			t.Fatalf("snapshot %d came %v after the one before, under the pace %v", i, gap, pace)
+		}
+	}
+}
+
+// The label counts (the plan's 4.8 and DB22): one INFO line for a
+// workspace on its first accepted snapshot, with the counts by class, and
+// none more within the hour; no label, hint or phone number anywhere in
+// the leader's logs.
+func TestSnapshotLabelCounts(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	f := newSnapshotFixture(t, w)
+	logs := &membershiptest.Logs{}
+	w.members.Log = logs.Logger()
+	run(t, w.leader(w.members, logs, lockKey(t)))
+	counted := func() []string {
+		return logs.Lines("level=INFO", "contract: snapshot labels", "workspace="+f.team.String())
+	}
+	eventually(t, 10*time.Second, "the team's label counts", func() bool { return len(counted()) > 0 })
+	line := counted()[0]
+	for _, want := range []string{"items=10", "named=6", "phone=1", "placeholder=1", "legacy_id=1", "empty=1"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the label counts %q lack %s", line, want)
+		}
+	}
+	accepted := w.accepted(f.team)
+	if err := store.NewDevices(w.pool).Rename(ctx, f.team.String(), f.devices["live"].String(), "Vendas Sul"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 5*time.Second, "the next snapshot", func() bool { return w.accepted(f.team) > accepted })
+	w.settle(t, f.team)
+	if n := len(counted()); n != 1 {
+		t.Fatalf("%d label count lines within the hour", n)
+	}
+	values := []string{"Vendas", "Suporte", "WhatsApp", "90000-3333", "Entregas", "Financeiro", "Cobran", "Recep"}
+	for _, n := range fixtureNumbers {
+		if n.pn != "" {
+			values = append(values, n.pn, *label.HintFromPN(n.pn), n.pn[len(n.pn)-7:])
+		}
+	}
+	all := logs.String() + w.logs.String()
+	for _, v := range values {
+		if strings.Contains(all, v) {
+			t.Errorf("the logs hold %q", v)
+		}
 	}
 }

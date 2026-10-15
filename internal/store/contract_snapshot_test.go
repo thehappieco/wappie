@@ -6,11 +6,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/migrate"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 )
 
 // The snapshot sender's state on each recorded workspace (the plan's
@@ -83,6 +86,11 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 
 	sent := func(outcome store.ContractSnapshotOutcome, class string) store.ContractSnapshotRecord {
 		t.Helper()
+		// The sender measures a snapshot once it is due.
+		if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = least(snapshot_due_at, clock_timestamp())
+			WHERE workspace_id = $1`, ws); err != nil {
+			t.Fatal(err)
+		}
 		measured := dbClock(t, pool, "0") //nolint:contextcheck // the database's clock, read for the test
 		rec, err := c.SnapshotSent(ctx, ws, seq, measured, outcome, class, snapshotTimes)
 		if err != nil || !rec.Recorded {
@@ -104,6 +112,10 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 		r := readSnapshotRow(t, pool, ws)
 		if rec.Tries != i || r.Tries != i || r.Error == nil || *r.Error != "unavailable:timeout" || r.OKAt != nil {
 			t.Fatalf("failure %d: %+v %+v", i, rec, r)
+		}
+		// The run's class, as it was before this failure: none at its start.
+		if before := map[bool]string{true: "", false: "unavailable:timeout"}[i == 1]; rec.Before != before {
+			t.Fatalf("failure %d: the class before it %q, want %q", i, rec.Before, before)
 		}
 		near("failure", r.DueIn, min(want, time.Hour))
 		want *= 2
@@ -332,7 +344,9 @@ func TestContractDueNotify(t *testing.T) {
 // A document stored while a snapshot is in flight, measured before it,
 // which changes the workspace's members: the snapshot goes again at once
 // (Again), not an hour later, though the workspace was due already when
-// the document came.
+// the document came. Likewise the late outcome of a leader that lost its
+// lock without knowing it yet: another leader's start leaves the workspace
+// due now, and its debounce of a change due within 2 s.
 func TestContractSnapshotInFlight(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -357,5 +371,147 @@ func TestContractSnapshotInFlight(t *testing.T) {
 	}
 	if r := readSnapshotRow(t, pool, team); r.DueIn > 0 || r.OKAt == nil {
 		t.Fatalf("not due again after the document: %+v", r)
+	}
+
+	// L1 measures a workspace due now and sends it; L2 starts (SnapshotsDue);
+	// then L1's accepted comes back.
+	ws := recordWorkspace(t, pool, "team")
+	measured = dbClock(t, pool, "0")
+	if seq, ok, err = c.SnapshotSeq(ctx, ws, measured); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := c.SnapshotsDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := c.SnapshotSent(ctx, ws, seq, measured, store.SnapshotAccepted, "", snapshotTimes); err != nil || !rec.Recorded || !rec.Again {
+		t.Fatalf("a late outcome after another leader's start: %+v %v", rec, err)
+	}
+	if r := readSnapshotRow(t, pool, ws); r.DueIn > 0 || r.OKAt == nil {
+		t.Fatalf("not due after another leader's start: %+v", r)
+	}
+
+	// L1 measures; L2 debounces a change committed since; then L1's outcome,
+	// accepted or failed, comes back: still due within 2 s, and no try.
+	for _, outcome := range []store.ContractSnapshotOutcome{store.SnapshotAccepted, store.SnapshotFailed} {
+		if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = clock_timestamp() + interval '50 minutes',
+			snapshot_tries = 0 WHERE workspace_id = $1`, ws); err != nil {
+			t.Fatal(err)
+		}
+		measured = dbClock(t, pool, "0")
+		if seq, ok, err = c.SnapshotSeq(ctx, ws, measured); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		if err := c.SnapshotsDirty(ctx, []uuid.UUID{ws}, false, 2*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		rec, err := c.SnapshotSent(ctx, ws, seq, measured, outcome, "unavailable:timeout", snapshotTimes)
+		if err != nil || !rec.Recorded || !rec.Again || rec.Tries != 0 {
+			t.Fatalf("outcome %d after another leader's debounce: %+v %v", outcome, rec, err)
+		}
+		if r := readSnapshotRow(t, pool, ws); r.DueIn > 2*time.Second || r.DueIn < time.Second || r.Tries != 0 {
+			t.Fatalf("outcome %d after another leader's debounce: due in %v, %+v", outcome, r.DueIn, r)
+		}
+	}
+	// A debounce longer than the failure's backoff: the sooner stands.
+	if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = clock_timestamp() + interval '50 minutes'
+		WHERE workspace_id = $1`, ws); err != nil {
+		t.Fatal(err)
+	}
+	measured = dbClock(t, pool, "0")
+	if seq, ok, err = c.SnapshotSeq(ctx, ws, measured); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := c.SnapshotsDirty(ctx, []uuid.UUID{ws}, false, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SnapshotSent(ctx, ws, seq, measured, store.SnapshotFailed, "unavailable:timeout", snapshotTimes); err != nil {
+		t.Fatal(err)
+	}
+	if r := readSnapshotRow(t, pool, ws); r.DueIn > 5*time.Second || r.DueIn < 4*time.Second {
+		t.Fatalf("a failure's backoff sooner than another leader's debounce: due in %v", r.DueIn)
+	}
+}
+
+// A number's state as its workspace makes it (the plan's 4.10 and DB12):
+// paused for quota exactly when the workspace's storage check refuses
+// capture (Storage.Check's verdict, read in a transaction rolled back, as
+// it records the stop it finds): a stop recorded, 105% of the limit, or
+// the 72 hours of grace spent; and paused in error in a workspace that is
+// not active.
+func TestSnapshotTenantStates(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ('Equipe') RETURNING id`).Scan(&tenant); err != nil {
+		t.Fatal(err)
+	}
+	d, err := store.NewDevices(pool).Create(ctx, tenant.String(), "Vendas", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET pn = '5511912345678@s.whatsapp.net', status = 'online' WHERE id = $1`, d.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stateOf := func() (string, string) {
+		t.Helper()
+		s, err := c.Snapshot(ctx, tenant)
+		if err != nil || len(s.Items) != 1 {
+			t.Fatalf("the snapshot: %+v %v", s, err)
+		}
+		return s.Items[0].State, s.Items[0].Reason
+	}
+	refused := func() bool {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck // the check's stop is not kept
+		if _, err := tx.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, tenant.String()); err != nil {
+			t.Fatal(err)
+		}
+		u, err := store.StorageUsageTx(ctx, tx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.PausedAt != nil
+	}
+	const reset = `status = 'active', storage_limit_bytes = NULL, storage_archive_bytes = 0, storage_object_bytes = 0,
+		storage_over_since = NULL, storage_paused_at = NULL`
+	for _, x := range []struct {
+		what, set     string
+		quota         bool
+		state, reason string
+	}{
+		{"capturing", `storage_limit_bytes = 1000, storage_archive_bytes = 900`, false, store.SnapshotActive, ""},
+		{"a stop recorded", `storage_paused_at = clock_timestamp()`, true, store.SnapshotSyncPaused, store.SnapshotQuota},
+		{"105% of the limit, no stop recorded", `storage_limit_bytes = 1000, storage_archive_bytes = 1000, storage_object_bytes = 50,
+			storage_over_since = clock_timestamp()`, true, store.SnapshotSyncPaused, store.SnapshotQuota},
+		{"104% of the limit", `storage_limit_bytes = 1000, storage_archive_bytes = 1000, storage_object_bytes = 40,
+			storage_over_since = clock_timestamp()`, false, store.SnapshotActive, ""},
+		{"over for 73 hours", `storage_limit_bytes = 1000, storage_archive_bytes = 1001,
+			storage_over_since = clock_timestamp() - interval '73 hours'`, true, store.SnapshotSyncPaused, store.SnapshotQuota},
+		{"over for 71 hours", `storage_limit_bytes = 1000, storage_archive_bytes = 1001,
+			storage_over_since = clock_timestamp() - interval '71 hours'`, false, store.SnapshotActive, ""},
+		{"over since 73 hours, no limit now", `storage_over_since = clock_timestamp() - interval '73 hours'`, false, store.SnapshotActive, ""},
+		{"a suspended workspace", `status = 'suspended'`, false, store.SnapshotSyncPaused, store.SnapshotError},
+	} {
+		if _, err := pool.Exec(ctx, `UPDATE tenants SET `+reset+` WHERE id = $1`, tenant); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE tenants SET `+x.set+` WHERE id = $1`, tenant); err != nil {
+			t.Fatalf("%s: %v", x.what, err)
+		}
+		state, reason := stateOf()
+		if state != x.state || reason != x.reason {
+			t.Errorf("%s: %s/%s, want %s/%s", x.what, state, reason, x.state, x.reason)
+		}
+		if got := refused(); got != x.quota {
+			t.Errorf("%s: the storage check refuses capture %v, want %v", x.what, got, x.quota)
+		}
 	}
 }

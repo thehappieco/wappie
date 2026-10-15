@@ -252,18 +252,38 @@ func TestContractStatusCheck(t *testing.T) {
 		execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = NULL, snapshot_error = NULL, not_found_since = NULL WHERE workspace_id = $1`, park.id)
 	}
 	// Off, a park is not the leader's to clear: nothing is sent while off.
-	execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = clock_timestamp() WHERE workspace_id = $1`, ws)
+	execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = clock_timestamp() - interval '2 days',
+		snapshot_error = 'refused:invalid_request' WHERE workspace_id = $1`, ws)
 	if _, err := c.SetMode(ctx, store.ContractOff); err != nil {
 		t.Fatal(err)
 	}
 	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
 		t.Fatalf("a park while off: %v", findings)
 	}
+	// Back to observe: the leader's start releases a park from before the
+	// switch, which is told once the switch is 2 minutes old; one since the
+	// switch at once.
 	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
 		t.Fatal(err)
 	}
+	if _, findings, code := statusRun(t, c, config.Contract{}); code != 0 || len(findings) != 0 {
+		t.Fatalf("right after the switch, a park from before it: %v", findings)
+	}
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '1 minute'`)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
+		t.Fatalf("a minute after the switch, a park from before it: %v", findings)
+	}
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '3 minutes'`)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 1 || !has(findings, "workspace "+ws.String()+" is parked since") {
+		t.Fatalf("3 minutes after the switch, a park from before it: %v", findings)
+	}
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '1 minute'`)
+	execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = clock_timestamp() - interval '30 seconds' WHERE workspace_id = $1`, ws)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 1 || !has(findings, "workspace "+ws.String()+" is parked since") {
+		t.Fatalf("a park since the switch: %v", findings)
+	}
 	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '1 day'`)
-	execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = NULL WHERE workspace_id = $1`, ws)
+	execSQL(t, pool, `UPDATE contract_workspaces SET parked_at = NULL, snapshot_error = NULL WHERE workspace_id = $1`, ws)
 
 	// A contract ERROR the leader recorded: a day back.
 	execSQL(t, pool, `UPDATE contract_state SET error_class = 'feed_silent', error_at = clock_timestamp() - interval '23 hours'`)

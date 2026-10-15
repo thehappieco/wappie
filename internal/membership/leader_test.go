@@ -36,7 +36,8 @@ import (
 func (w *world) leader(m *Members, logs *membershiptest.Logs, key string) *Leader {
 	return &Leader{Members: m, Pool: w.pool, Log: logs.Logger(), Key: key,
 		Retry: 300 * time.Millisecond, Heartbeat: 100 * time.Millisecond, ModeCheck: 100 * time.Millisecond, Wait: 1,
-		BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond, SweepEvery: time.Hour, RoundEvery: 200 * time.Millisecond}
+		BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond, SweepEvery: time.Hour, RoundEvery: 200 * time.Millisecond,
+		ours: w.backends.Has}
 }
 
 // run starts l until the test ends or stop.
@@ -391,7 +392,28 @@ func TestGoneAndNewGeneration(t *testing.T) {
 			not_found_since = clock_timestamp()`)
 		var gen string
 		if how == "restore" {
+			// TB27's restore clause: the restored platform knows none of the
+			// workspaces, so the team's snapshot is refused not_found
+			// before the round's PUTs name it again (they wait for that
+			// here); the document that names it then makes it due at once,
+			// not at the not_found's 5 s backoff.
+			accepted, refused := w.accepted(ws), w.refusedNotFound(ws)
+			hold := make(chan struct{})
+			w.fake.Before(contracttest.CallSubscribe, func(string) { <-hold })
 			gen = w.fake.Restore()
+			eventually(t, 4*time.Second, "restore: the team's snapshot refused not_found", func() bool { return w.refusedNotFound(ws) > refused })
+			w.fake.Before(contracttest.CallSubscribe, nil)
+			close(hold)
+			eventually(t, 5*time.Second, "restore: the PUT's document stored", func() bool {
+				var ok bool
+				_ = w.pool.QueryRow(ctx, `SELECT generation = $2 AND version IS NOT NULL FROM contract_accounts WHERE sub = $1`, one, gen).Scan(&ok) //nolint:errcheck // a test's read
+				return ok
+			})
+			stored := time.Now()
+			eventually(t, 3*time.Second, "restore: the team's snapshot after the document", func() bool { return w.accepted(ws) > accepted })
+			if took := time.Since(stored); took > 3*time.Second {
+				t.Fatalf("restore: the team's snapshot went %v after the document naming it", took)
+			}
 		} else {
 			gen = w.fake.NewGeneration()
 		}
@@ -447,6 +469,17 @@ func TestGoneAndNewGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 10*time.Second, "the confirmation", func() bool { return w.state(t).GenerationConfirmed })
+}
+
+// refusedNotFound counts the snapshots of ws the fake refused not_found.
+func (w *world) refusedNotFound(ws uuid.UUID) int {
+	n := 0
+	for _, a := range w.fake.Accesses(ws.String()) {
+		if a.Status == http.StatusNotFound {
+			n++
+		}
+	}
+	return n
 }
 
 // dbNow is the database's clock moved by offset.
@@ -568,7 +601,8 @@ func TestFeedNeverSilent(t *testing.T) {
 	scaled := func(m *Members, logs *membershiptest.Logs) *Leader {
 		return &Leader{Members: m, Pool: w.pool, Log: logs.Logger(), Key: key,
 			Retry: leaderRetry / scale, Heartbeat: pg.HoldHeartbeat / scale, ModeCheck: modeCheck / scale, Wait: 1,
-			BackoffMin: feedBackoffMin / scale, BackoffMax: feedBackoffMax / scale, SweepEvery: sweepEvery / scale, RoundEvery: roundEvery / scale}
+			BackoffMin: feedBackoffMin / scale, BackoffMax: feedBackoffMax / scale, SweepEvery: sweepEvery / scale, RoundEvery: roundEvery / scale,
+			ours: w.backends.Has}
 	}
 	second := func() *Members {
 		client := NewClient(&http.Client{}, w.fake.URL, clock)

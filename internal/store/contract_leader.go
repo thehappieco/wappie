@@ -251,19 +251,17 @@ func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenC
 func (c *Contract) Recovered(ctx context.Context) (int64, error) {
 	var n int64
 	err := pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
-		// contract_state first, as every writer of several of these rows
-		// (DB23), then the rows in id order.
+		// contract_state first, as the follower's writers of several of
+		// these rows, then the rows in id order (DB23), locked and written
+		// in one statement: a row that starts backing off meanwhile is never
+		// locked out of order.
 		if _, err := lockStateTx(ctx, tx); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces WHERE snapshot_tries > 0 OR events_tries > 0
-			ORDER BY workspace_id FOR UPDATE`); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx, `UPDATE contract_workspaces SET
+		tag, err := tx.Exec(ctx, `UPDATE contract_workspaces w SET
 			snapshot_due_at = clock_timestamp(), snapshot_tries = 0,
-			events_due_at = CASE WHEN events_due_at IS NULL THEN NULL ELSE least(events_due_at, clock_timestamp()) END, events_tries = 0
-			WHERE snapshot_tries > 0 OR events_tries > 0`)
+			events_due_at = CASE WHEN w.events_due_at IS NULL THEN NULL ELSE least(w.events_due_at, clock_timestamp()) END, events_tries = 0
+			FROM (`+lockWorkspacesSQL(`snapshot_tries > 0 OR events_tries > 0`)+`) l WHERE w.workspace_id = l.workspace_id`)
 		n = tag.RowsAffected()
 		return err
 	})

@@ -334,47 +334,49 @@ func (c *Contract) NextSnapshot(ctx context.Context) (ContractSnapshotDue, bool,
 }
 
 // SnapshotsDue makes every recorded workspace's snapshot due now, a parked
-// one's included, in id order: what a leader's start does (README 8: a
-// snapshot of every platform workspace; the plan's 4.10). A park is
-// released for one try only, since its not_found_since stays: one more
-// not_found parks it again at once, and a snapshot refused as invalid (a
-// Wappie bug, which a new binary may have fixed) is parked again by its
-// refusal.
+// one's included: what a leader's start does (README 8: a snapshot of every
+// platform workspace; the plan's 4.10). Due now is the time now, as every
+// due-now writer stamps it, so that the late outcome of a snapshot another
+// leader measured before this start leaves it due (SnapshotSent's Again).
+// A park is released for one try only, since its not_found_since stays:
+// one more not_found parks it again at once, and a snapshot refused as
+// invalid (a Wappie bug, which a new binary may have fixed) is parked
+// again by its refusal.
 func (c *Contract) SnapshotsDue(ctx context.Context) error {
 	return retryDeadlock(ctx, func() error {
-		return pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces ORDER BY workspace_id FOR UPDATE`); err != nil {
-				return err
-			}
-			_, err := tx.Exec(ctx, `UPDATE contract_workspaces SET
-				snapshot_due_at = least(snapshot_due_at, clock_timestamp()), parked_at = NULL`)
-			return err
-		})
+		_, err := c.pool.Exec(ctx, `UPDATE contract_workspaces w SET snapshot_due_at = clock_timestamp(), parked_at = NULL
+			FROM (`+lockWorkspacesSQL(`true`)+`) l WHERE w.workspace_id = l.workspace_id`)
+		return err
 	})
 }
 
+// lockWorkspacesSQL selects the recorded workspaces of which where holds,
+// locked in id order (DB23). An UPDATE that joins it locks and writes its
+// rows in one statement, so none is locked out of order, as a row that
+// matched only when a second statement ran would be while another
+// transaction holds a lower one. SnapshotsDue and SnapshotsDirty take no
+// contract_state lock: every writer of several of these rows (storeDocsTx,
+// Restart, Recovered) locks them in this one order.
+func lockWorkspacesSQL(where string) string {
+	return `SELECT workspace_id FROM contract_workspaces WHERE ` + where + ` ORDER BY workspace_id FOR UPDATE`
+}
+
 // SnapshotsDirty makes the snapshots of the workspaces ids (or of every
-// recorded workspace, with all) due within debounce, in id order: a change
-// they show was committed (0051's triggers). A snapshot due sooner stays
-// due then, so a run of changes waits at most debounce from its first; a
-// workspace backing off after a failure keeps its backoff, and a parked
-// one its park.
+// recorded workspace, with all) due within debounce: a change they show
+// was committed (0051's triggers). A snapshot due sooner stays due then,
+// so a run of changes waits at most debounce from its first; a workspace
+// backing off after a failure keeps its backoff, and a parked one its
+// park.
 func (c *Contract) SnapshotsDirty(ctx context.Context, ids []uuid.UUID, all bool, debounce time.Duration) error {
 	if len(ids) == 0 && !all {
 		return nil
 	}
-	const which = `($1 OR workspace_id = ANY ($2)) AND parked_at IS NULL AND snapshot_tries = 0
-		AND snapshot_due_at > clock_timestamp() + $3::interval`
 	return retryDeadlock(ctx, func() error {
-		return pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces WHERE `+which+`
-				ORDER BY workspace_id FOR UPDATE`, all, ids, debounce); err != nil {
-				return err
-			}
-			_, err := tx.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = clock_timestamp() + $3::interval
-				WHERE `+which, all, ids, debounce)
-			return err
-		})
+		_, err := c.pool.Exec(ctx, `UPDATE contract_workspaces w SET snapshot_due_at = clock_timestamp() + $3::interval
+			FROM (`+lockWorkspacesSQL(`($1 OR workspace_id = ANY ($2)) AND parked_at IS NULL AND snapshot_tries = 0
+				AND snapshot_due_at > clock_timestamp() + $3::interval`)+`) l
+			WHERE w.workspace_id = l.workspace_id`, all, ids, debounce)
+		return err
 	})
 }
 
@@ -429,9 +431,10 @@ type ContractSnapshotRecord struct {
 	// False when another leader has sent a later one since: nothing was
 	// written.
 	Recorded bool
-	// Again: someone made the snapshot due now after it was measured (a
-	// change a document made, a restart, a name given again), and that due
-	// time stands rather than the outcome's next or backoff.
+	// Again: someone made the snapshot due after it was measured, now (a
+	// change a document made, a restart, a name given again, another
+	// leader's start) or soon (another leader's debounce), and that due time
+	// stands rather than the outcome's later next or backoff.
 	Again bool
 	// Parked: this outcome parked it.
 	Parked bool
@@ -439,6 +442,9 @@ type ContractSnapshotRecord struct {
 	Tries int
 	// NotFoundSince is the first not_found of the run.
 	NotFoundSince *time.Time
+	// Before is the failure's class recorded before this outcome, "" for
+	// none: a run of failures of one class starts where it differs.
+	Before string
 }
 
 // SnapshotSent records the outcome of the snapshot of workspace sent as
@@ -449,8 +455,11 @@ type ContractSnapshotRecord struct {
 // and parked once it is SnapshotNotFoundFor old, else the backoff.
 // Refused: parked, with no not_found_since, so no document releases it.
 // Failed: the backoff. A due time someone set after the measurement stands
-// whatever the outcome (Again), and a failure then counts no try: the
-// snapshot measured after that change is what goes next.
+// whatever the outcome, unless the outcome's own is sooner (Again), and a
+// failure then counts no try: the snapshot measured after that change is
+// what goes next. So the late outcome of a leader that lost its lock
+// without knowing it yet never puts off what the next leader's start or
+// debounce asked.
 func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq int64, measured time.Time,
 	outcome ContractSnapshotOutcome, class string, times ContractSnapshotTimes) (ContractSnapshotRecord, error) {
 	var rec ContractSnapshotRecord
@@ -459,25 +468,33 @@ func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq in
 		var due, now time.Time
 		var notFound *time.Time
 		var tries int
-		err := tx.QueryRow(ctx, `SELECT snapshot_due_at, not_found_since, snapshot_tries, clock_timestamp()
+		err := tx.QueryRow(ctx, `SELECT snapshot_due_at, not_found_since, snapshot_tries, coalesce(snapshot_error, ''), clock_timestamp()
 			FROM contract_workspaces WHERE workspace_id = $1 AND snapshot_seq = $2 FOR UPDATE`, workspace, seq).
-			Scan(&due, &notFound, &tries, &now)
+			Scan(&due, &notFound, &tries, &rec.Before, &now)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		// Again: due since the measurement, by a writer that asked for it
-		// now (a later due time is the sender's own debounce or backoff).
-		again := due.After(measured) && !due.After(now)
+		// Again: a due time set since the measurement, by another writer:
+		// now (a document, a restart, a recovery, another leader's start) or
+		// soon (another leader's debounce of a change). It is never this
+		// sender's own: its debounce and its send run one after the other.
+		again := due.After(measured)
 		rec.Recorded, rec.Again, rec.Tries, rec.NotFoundSince = true, again, tries, notFound
-		backoff := func() {
-			if rec.Again {
-				return
+		// next is the outcome's next due time; one set since the
+		// measurement stands, unless the outcome's is sooner.
+		next := func(at time.Time) {
+			if !rec.Again || at.Before(due) {
+				due = at
 			}
-			rec.Tries = tries + 1
-			due = now.Add(snapshotBackoff(tries, times))
+		}
+		backoff := func() {
+			if !rec.Again {
+				rec.Tries = tries + 1
+			}
+			next(now.Add(snapshotBackoff(tries, times)))
 		}
 		var parked *time.Time
 		var errClass *string
@@ -488,9 +505,7 @@ func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq in
 		switch outcome {
 		case SnapshotAccepted:
 			accepted, errClass, rec.Tries, rec.NotFoundSince = &now, nil, 0, nil
-			if !rec.Again {
-				due = now.Add(times.Every)
-			}
+			next(now.Add(times.Every))
 		case SnapshotNotFound:
 			if !rec.Again {
 				if rec.NotFoundSince == nil {

@@ -447,6 +447,9 @@ next:
 			}
 		}
 	}
+	if err := lockNamedTx(ctx, tx, named, changed); err != nil {
+		return nil, err
+	}
 	if err := recordWorkspacesTx(ctx, tx, named); err != nil {
 		return nil, err
 	}
@@ -597,14 +600,10 @@ func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]Contrac
 	if len(names) == 0 && len(members) == 0 {
 		return nil
 	}
-	// The rows are locked in id order first (DB23), then written.
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces WHERE workspace_id = ANY ($1) OR workspace_id = ANY ($2)
-		ORDER BY workspace_id FOR UPDATE`, names, members); err != nil {
-		return err
-	}
-	// Due now is the time now, never an earlier due time kept: the
-	// sender then tells a snapshot measured before this change from one
-	// measured after it, and sends again (SnapshotSent's Again).
+	// The rows are locked already (lockNamedTx), or new in tx. Due now is
+	// the time now, never an earlier due time kept: the sender then tells a
+	// snapshot measured before this change from one measured after it, and
+	// sends again (SnapshotSent's Again).
 	if _, err := tx.Exec(ctx, `UPDATE contract_workspaces w SET
 			snapshot_due_at = clock_timestamp(),
 			snapshot_tries  = CASE WHEN back THEN 0 ELSE w.snapshot_tries END,
@@ -620,6 +619,29 @@ func workspacesDueTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]Contrac
 		return err
 	}
 	return nil
+}
+
+// lockNamedTx locks, in id order and in one statement, the recorded rows of
+// every workspace named or changed, before any of them is written (DB23):
+// recordWorkspacesTx's upsert locks the named ones whatever its WHERE
+// says, and workspacesDueTx writes the changed ones too, so without this a
+// workspace the sub left with an id below a named one's would be locked
+// after it, across SnapshotsDue and SnapshotsDirty, which lock theirs in id
+// order without contract_state. A new one is inserted later, by tx alone:
+// every inserter holds contract_state.
+func lockNamedTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]ContractDocWorkspace, changed map[uuid.UUID]bool) error {
+	ids := make([]uuid.UUID, 0, len(named)+len(changed))
+	for id := range named {
+		ids = append(ids, id)
+	}
+	for id := range changed {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, lockWorkspacesSQL(`workspace_id = ANY ($1)`), ids)
+	return err
 }
 
 // recordWorkspacesTx records every named workspace for good, in id order:

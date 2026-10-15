@@ -48,6 +48,11 @@ const (
 	// checkRound: how long the round's passes may leave held subs with no
 	// document, their PUTs failing, while on (the leader's ERROR's bound).
 	checkRound = 15 * time.Minute
+	// checkParked: how long after the switch to the mode a park from
+	// before it is told. The leader's start releases every park for one
+	// try, within its retry (30 s) of the switch, twice it after a lost
+	// lock; a park since the switch is told at once.
+	checkParked = 2 * time.Minute
 )
 
 // defaultSealedSecret is where the installer seals the current secret
@@ -199,8 +204,12 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 			if ws.ParkedAt != nil {
 				// A park is told whatever the workspace's status: nothing is
 				// sent of it until a document names it again (not_found), a
-				// restart or a leader's start.
-				out = append(out, fmt.Sprintf("workspace %s is parked since %s: its snapshots are not sent%s", ws.ID, stamp(*ws.ParkedAt), why))
+				// restart or a leader's start. One from before the switch,
+				// which the leader's start releases, only once the switch
+				// is older than checkParked.
+				if !ws.ParkedAt.Before(s.ModeChangedAt) || now.Sub(s.ModeChangedAt) > checkParked {
+					out = append(out, fmt.Sprintf("workspace %s is parked since %s: its snapshots are not sent%s", ws.ID, stamp(*ws.ParkedAt), why))
+				}
 				continue
 			}
 			if ws.Status == "closed" {
