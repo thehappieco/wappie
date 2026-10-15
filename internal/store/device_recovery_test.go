@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.mau.fi/whatsmeow/types"
 
+	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -657,16 +659,36 @@ func TestDeletionNotices(t *testing.T) {
 }
 
 // 0050 comes down after a real deletion and recovery, once the events are
-// in the ledger.
+// in the ledger, and only after 0051, whose own down-step takes an excluded
+// number and an unledgered event as they are. The recovery runs on 0051's
+// schema, as the release that makes it does.
 func TestDownStepAfterDeletionAndRecovery(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()
 	device := w.number(t, "Suporte")
 	w.quarantine(t, device)
+	if _, err := w.pool.Exec(ctx, downStep(t, 50)); err == nil || !strings.Contains(err.Error(), "a migration after 0050 is applied") {
+		t.Fatalf("0050's down-step before 0051's: %v", err)
+	}
+	down51 := func() {
+		t.Helper()
+		if _, err := w.pool.Exec(ctx, downStep(t, 51)); err != nil {
+			t.Fatalf("0051 down-step: %v", err)
+		}
+	}
+	up51 := func() {
+		t.Helper()
+		if err := migrate.Run(ctx, w.pool, slog.New(slog.DiscardHandler)); err != nil {
+			t.Fatalf("0051 again: %v", err)
+		}
+	}
+	down51()
 	if _, err := w.pool.Exec(ctx, downStep(t, 50)); err == nil || !strings.Contains(err.Error(), "excluded numbers exist") {
 		t.Fatalf("the down-step with an excluded number: %v", err)
 	}
+	up51()
 	w.recover(t, device)
+	down51()
 	if _, err := w.pool.Exec(ctx, downStep(t, 50)); err == nil || !strings.Contains(err.Error(), "not in the ledger yet") {
 		t.Fatalf("the down-step with unledgered events: %v", err)
 	}

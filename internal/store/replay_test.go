@@ -225,6 +225,9 @@ func TestLedgerReplay(t *testing.T) {
 			if r, _ := w.row(t, w.tenant, device); !r.excluded || !r.due {
 				t.Fatalf("%s is not due at once: %+v", device, r)
 			}
+			if got := pauseCause(context.Background(), t, w.pool, w.tenant, device); got != store.PauseForDeletion {
+				t.Fatalf("%s excluded by the replay: pause_cause %q", device, got)
+			}
 		}
 	})
 
@@ -251,6 +254,10 @@ func TestLedgerReplay(t *testing.T) {
 		}
 		if after, _ := w.row(t, w.tenant, device); after.excluded || !after.paused {
 			t.Fatalf("the recovered number: %+v (deleted %+v)", after, q)
+		}
+		// Paused as the owner's recovery leaves it (0051's pause_cause).
+		if got := pauseCause(ctx, t, w.pool, w.tenant, device); got != store.PauseByPerson {
+			t.Fatalf("the recovered number's pause_cause: %q", got)
 		}
 		if got := w.replayed(t, w.tenant, device); len(got["recovered"]) != 1 || got["recovered"][0] != lines[1].EventID {
 			t.Fatalf("the replayed recovery: %+v", got)

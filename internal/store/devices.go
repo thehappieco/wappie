@@ -47,7 +47,10 @@ type Device struct {
 	StatusReason    string
 	ReceiptMode     wa.ReceiptMode
 	Paused          bool
-	CreatedAt       time.Time
+	// PauseCause is why a paused number is paused (PauseByPerson,
+	// PauseForMove or PauseForDeletion), and empty for a live one.
+	PauseCause string
+	CreatedAt  time.Time
 	// LastConnectedAt is when this device last reached "online", not when it
 	// went offline. Zero for a device that has never connected.
 	LastConnectedAt time.Time
@@ -276,7 +279,7 @@ func (d *Devices) Delete(ctx context.Context, tenantID, deviceID string) error {
 const selectDevices = `
 	SELECT id::text, tenant_id::text, coalesce(lid,''), coalesce(pn,''),
 	       push_name, label, status, status_reason, receipt_mode,
-	       created_at, last_connected_at, current_epoch, paused, archive_tenant_id::text
+	       created_at, last_connected_at, current_epoch, paused, coalesce(pause_cause, ''), archive_tenant_id::text
 	  FROM devices
 	 WHERE deleted_at IS NULL`
 
@@ -288,7 +291,7 @@ func scanDevice(s scanner, dev *Device) error {
 	var connected *time.Time
 	if err := s.Scan(&dev.ID, &dev.TenantID, &lid, &pn,
 		&dev.Identity.PushName, &dev.Label, &dev.Status, &dev.StatusReason,
-		&dev.ReceiptMode, &dev.CreatedAt, &connected, &dev.Epoch, &dev.Paused, &dev.ArchiveTenantID); err != nil {
+		&dev.ReceiptMode, &dev.CreatedAt, &connected, &dev.Epoch, &dev.Paused, &dev.PauseCause, &dev.ArchiveTenantID); err != nil {
 		return err
 	}
 	if connected != nil {
@@ -319,12 +322,44 @@ func (d *Devices) Rename(ctx context.Context, tenantID, deviceID, label string) 
 	})
 }
 
+// Why a number is paused (devices.pause_cause, 0051).
+const (
+	// PauseByPerson is a person's or an API key's stop, and an owner's
+	// recovery, which leaves the number paused until someone resumes it.
+	PauseByPerson = "person"
+	// PauseForMove is Wappie's own pause around a move to Personal.
+	PauseForMove = "move"
+	// PauseForDeletion is an excluded number's.
+	PauseForDeletion = "deletion"
+)
+
 // SetPaused is durable: automatic supervision and restart both respect it.
 // A pause counts in pause_seq, as every pause does, so a transfer's undo
-// leaves it standing.
+// leaves it standing. A pause here is a person's (PauseByPerson); a resume
+// clears the cause.
 func (d *Devices) SetPaused(ctx context.Context, tenantID, deviceID string, paused bool) error {
+	cause := ""
+	if paused {
+		cause = PauseByPerson
+	}
+	return d.setPaused(ctx, tenantID, deviceID, paused, cause)
+}
+
+// RestorePause pauses a number again with the cause it had: a resume that
+// failed puts back the pause it took away (a move's stays a move's). A
+// number that was not paused before is paused as a person's, since the
+// person's own resume is what stopped it.
+func (d *Devices) RestorePause(ctx context.Context, tenantID, deviceID, cause string) error {
+	if cause == "" {
+		cause = PauseByPerson
+	}
+	return d.setPaused(ctx, tenantID, deviceID, true, cause)
+}
+
+func (d *Devices) setPaused(ctx context.Context, tenantID, deviceID string, paused bool, cause string) error {
 	return pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE devices SET paused=$2, pause_seq=pause_seq+CASE WHEN $2 THEN 1 ELSE 0 END WHERE id=$1`, deviceID, paused)
+		tag, err := tx.Exec(ctx, `UPDATE devices SET paused=$2, pause_cause=CASE WHEN $2 THEN $3 END,
+			pause_seq=pause_seq+CASE WHEN $2 THEN 1 ELSE 0 END WHERE id=$1`, deviceID, paused, cause)
 		if err != nil {
 			return err
 		}

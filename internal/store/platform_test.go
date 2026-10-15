@@ -1080,6 +1080,9 @@ func TestMigration0048DownStepAfter0049(t *testing.T) {
 	if _, err := f.users.Authenticate(ctx, "lia@example.com", "lia-auth-key"); !errors.Is(err, store.ErrBadCredentials) {
 		t.Fatalf("the old password after 0049: %v", err)
 	}
+	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
+		t.Fatalf("0051 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
 		t.Fatalf("0050 down-step: %v", err)
 	}
@@ -1154,9 +1157,12 @@ func TestMigration0048DownStep(t *testing.T) {
 		t.Fatalf("new account: %v", err)
 	}
 
-	// 0050's down-step comes first, then 0049's: its ledger row. This
-	// account was linked after 0049 ran (on the empty database), so it kept
-	// its old password.
+	// 0051's and 0050's down-steps come first, then 0049's: its ledger row.
+	// This account was linked after 0049 ran (on the empty database), so it
+	// kept its old password.
+	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
+		t.Fatalf("0051 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
 		t.Fatalf("0050 down-step: %v", err)
 	}

@@ -55,20 +55,29 @@ type itemEvent struct {
 	ActorKind   string
 	ActorSub    *uuid.UUID
 	ActorUserID *uuid.UUID
-	ReaderSubs  []uuid.UUID
-	Label, Hint *string
-	DeletedAt   *time.Time
-	PurgeAfter  *time.Time
+	// ReaderSubs are the readers' platform subs, the actor included;
+	// ReaderUserIDs the same readers' local accounts, never sent (the
+	// self-hosted mailer's, 0051).
+	ReaderSubs    []uuid.UUID
+	ReaderUserIDs []uuid.UUID
+	Label, Hint   *string
+	DeletedAt     *time.Time
+	PurgeAfter    *time.Time
 	// ToTenantID is the workspace a moved_out number went to.
 	ToTenantID *uuid.UUID
+	// PersonSub and Cause are a stranded row's: the sub the number lost
+	// (nil for a person without one), and disabled or revoked.
+	PersonSub *uuid.UUID
+	Cause     *string
 }
 
 // recordEvent writes ev in the workspace of tx, the one INSERT into
 // item_events. A row with the same dedupe key is already the event, and
 // nothing is written again; a replayed row whose event id is already there
-// is that same event. A sync_paused row is never ledgered, so it is written
-// as if it were: the ledger keeps what a restore must replay. A replayed
-// row came from the ledger, so it is in it already.
+// is that same event. A sync_paused or stranded row is never ledgered, so it
+// is written as if it were: the ledger keeps what a restore must replay,
+// and a restore replays deletions, not pauses or strandings. A replayed row
+// came from the ledger, so it is in it already.
 func recordEvent(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, ev itemEvent) error {
 	id := ev.EventID
 	if id == uuid.Nil {
@@ -77,20 +86,38 @@ func recordEvent(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, ev itemEvent)
 			return fmt.Errorf("store: event id: %w", err)
 		}
 	}
-	subs := ev.ReaderSubs
+	subs, users := ev.ReaderSubs, ev.ReaderUserIDs
 	if subs == nil {
 		subs = []uuid.UUID{}
 	}
+	if users == nil {
+		users = []uuid.UUID{}
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at,
-		actor_kind, actor_sub, actor_user_id, reader_subs, label, hint, deleted_at, purge_after, to_tenant_id, ledgered_at, replayed_at)
+		actor_kind, actor_sub, actor_user_id, reader_subs, label, hint, deleted_at, purge_after, to_tenant_id, ledgered_at, replayed_at,
+		reader_user_ids, person_sub, cause)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-		  CASE WHEN $3 = 'sync_paused' OR $16 THEN clock_timestamp() END, CASE WHEN $16 THEN clock_timestamp() END)
+		  CASE WHEN $3 IN ('sync_paused', 'stranded') OR $16 THEN clock_timestamp() END, CASE WHEN $16 THEN clock_timestamp() END,
+		  $17, $18, $19)
 		ON CONFLICT DO NOTHING`,
 		id, tenant, ev.Type, ev.ItemID, ev.DedupeKey, ev.OccurredAt, ev.ActorKind, ev.ActorSub, ev.ActorUserID,
-		subs, ev.Label, ev.Hint, ev.DeletedAt, ev.PurgeAfter, ev.ToTenantID, ev.Replayed); err != nil {
+		subs, ev.Label, ev.Hint, ev.DeletedAt, ev.PurgeAfter, ev.ToTenantID, ev.Replayed, users, ev.PersonSub, ev.Cause); err != nil {
 		return fmt.Errorf("store: record %s: %w", ev.Type, err)
 	}
 	return nil
+}
+
+// readerIDs is what an event row keeps of a number's readers: their
+// platform subs (a reader without one has none to give) and their local
+// accounts, in the readers' order.
+func readerIDs(readers []reader) (subs, users []uuid.UUID) {
+	for _, r := range readers {
+		if r.sub != nil {
+			subs = append(subs, *r.sub)
+		}
+		users = append(users, r.UserID)
+	}
+	return subs, users
 }
 
 // dedupeKey is type:item:instant, the instant in microseconds, as the

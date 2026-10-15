@@ -1432,9 +1432,12 @@ func TestMigration0044DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 0050 (deleted numbers) comes down first, then 0049 (the end of the
-	// sign-in's rollback window, its ledger row only), 0048 (platform
-	// sign-in) and 0047 (fewer steps).
+	// 0051 (the contract) comes down first, then 0050 (deleted numbers),
+	// 0049 (the end of the sign-in's rollback window, its ledger row only),
+	// 0048 (platform sign-in) and 0047 (fewer steps).
+	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
+		t.Fatalf("0051 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
 		t.Fatalf("0050 down-step: %v", err)
 	}

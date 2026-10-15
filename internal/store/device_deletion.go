@@ -512,11 +512,9 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 				return err
 			}
 			var others []Person
-			var told, readerSubs []uuid.UUID
+			var told []uuid.UUID
+			readerSubs, readerUsers := readerIDs(readers)
 			for _, r := range readers {
-				if r.sub != nil {
-					readerSubs = append(readerSubs, *r.sub)
-				}
 				if r.UserID == actor {
 					continue
 				}
@@ -618,6 +616,7 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 			var lbl, pushName, pn string
 			if err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
 				UPDATE devices SET deleted_at = now.t, deleted_by = $2, purge_after = now.t + interval '30 days', paused = true,
+				  pause_cause = 'deletion',
 				  status = CASE WHEN $3::text IS NULL AND status <> 'banned' THEN 'logged_out'
 				                WHEN status IN ('logged_out', 'banned') THEN status ELSE 'offline' END,
 				  status_reason = CASE WHEN $3::text IS NULL THEN '`+reasonNoSession+`'
@@ -670,7 +669,8 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 			if err := recordEvent(ctx, tx, tenant, itemEvent{
 				Type: eventDeleted, ItemID: device, DedupeKey: dedupeKey(eventDeleted, device, out.DeletedAt),
 				OccurredAt: out.DeletedAt, ActorKind: "person", ActorSub: sub, ActorUserID: &actor,
-				ReaderSubs: readerSubs, Label: itemName, Hint: hint, DeletedAt: &out.DeletedAt, PurgeAfter: &out.PurgeAfter,
+				ReaderSubs: readerSubs, ReaderUserIDs: readerUsers, Label: itemName, Hint: hint,
+				DeletedAt: &out.DeletedAt, PurgeAfter: &out.PurgeAfter,
 			}); err != nil {
 				return err
 			}
@@ -1153,9 +1153,10 @@ type Recovered struct {
 // refused; the window, closed past purge_after or once a purge started; the
 // device lock, held by a running client or a deletion's logout; the plan's
 // capacity, counted with the number still hidden, as check_device_capacity
-// counts it; the row un-deleted, with the status RecordUnlink left; its
-// deletion notices gone; everyone else's access bumped, so their consoles
-// list it again; and the recovered event. What does not come back: the
+// counts it; the row un-deleted, with the status RecordUnlink left and its
+// pause now the owner's (pause_cause person), which only an explicit resume
+// ends; its deletion notices gone; everyone else's access bumped, so their
+// consoles list it again; and the recovered event. What does not come back: the
 // assistant connections, the number's place in restricted keys, and anything
 // of a person who left or was disabled meanwhile.
 func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) (Recovered, error) {
@@ -1237,6 +1238,7 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			var status wa.Status
 			var reason, pn, name, pushName string
 			err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
+				pause_cause = 'person',
 				status = CASE WHEN $3 AND status <> 'banned' THEN 'logged_out' ELSE status END,
 				status_reason = CASE WHEN $3 THEN '`+reasonUnlinkedWhenGone+`' ELSE status_reason END
 				WHERE id = $1 AND deleted_at = $2 RETURNING status, status_reason, coalesce(pn, ''), label, push_name`,
@@ -1273,12 +1275,7 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			if err != nil {
 				return err
 			}
-			var subs []uuid.UUID
-			for _, r := range readers {
-				if r.sub != nil {
-					subs = append(subs, *r.sub)
-				}
-			}
+			subs, users := readerIDs(readers)
 			sub, err := actorSubTx(ctx, tx, actor)
 			if err != nil {
 				return err
@@ -1290,7 +1287,7 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			itemName, hint := itemLabel(device, name, pushName, pn)
 			return recordEvent(ctx, tx, tenant, itemEvent{
 				Type: eventRecovered, ItemID: device, DedupeKey: dedupeKey(eventRecovered, device, deletedAt),
-				OccurredAt: at, ActorKind: "person", ActorSub: sub, ActorUserID: &actor, ReaderSubs: subs,
+				OccurredAt: at, ActorKind: "person", ActorSub: sub, ActorUserID: &actor, ReaderSubs: subs, ReaderUserIDs: users,
 				Label: itemName, Hint: hint, DeletedAt: &deletedAt,
 			})
 		})

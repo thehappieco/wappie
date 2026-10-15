@@ -182,12 +182,14 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 			return err
 		}
 		var name, pushName, pn string
-		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_seq = pause_seq + 1 WHERE id = $1 AND NOT paused
+		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_cause = 'person', pause_seq = pause_seq + 1
+			WHERE id = $1 AND NOT paused
 			RETURNING label, push_name, coalesce(pn, '')`, device).Scan(&name, &pushName, &pn)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Already paused: nobody is told, but the stop still counts, so
-			// a failed transfer's undo leaves the number paused.
-			tag, err := tx.Exec(ctx, `UPDATE devices SET pause_seq = pause_seq + 1 WHERE id = $1`, device)
+			// a failed transfer's undo leaves the number paused, and it is
+			// now a person's pause, which a snapshot reports as theirs.
+			tag, err := tx.Exec(ctx, `UPDATE devices SET pause_cause = 'person', pause_seq = pause_seq + 1 WHERE id = $1`, device)
 			if err != nil {
 				return err
 			}
@@ -222,11 +224,9 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 		if err != nil {
 			return err
 		}
-		var told, subs []uuid.UUID
+		var told []uuid.UUID
+		subs, users := readerIDs(readers)
 		for _, r := range readers {
-			if r.sub != nil {
-				subs = append(subs, *r.sub)
-			}
 			if out.ActorUser == nil || r.UserID != *out.ActorUser {
 				told = append(told, r.UserID)
 			}
@@ -282,7 +282,8 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 		out.Recorded = true
 		return recordEvent(ctx, tx, tenant, itemEvent{
 			Type: eventSyncPaused, ItemID: device, DedupeKey: dedupeKey(eventSyncPaused, device, at), OccurredAt: at,
-			ActorKind: out.ActorKind, ActorSub: sub, ActorUserID: out.ActorUser, ReaderSubs: subs, Label: itemName, Hint: hint,
+			ActorKind: out.ActorKind, ActorSub: sub, ActorUserID: out.ActorUser, ReaderSubs: subs, ReaderUserIDs: users,
+			Label: itemName, Hint: hint,
 		})
 	})
 	return out, err
