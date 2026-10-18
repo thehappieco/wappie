@@ -28,6 +28,14 @@ const (
 	eventSyncPaused = "sync_paused"
 	eventMovedOut   = "moved_out"
 	eventPurged     = "purged"
+	eventStranded   = "stranded"
+)
+
+// The causes a stranded row of Wappie's own act carries (README 9): the
+// local disable, and the local removal. The platform's path leaves it NULL.
+const (
+	strandDisabled = "disabled"
+	strandRevoked  = "revoked"
 )
 
 // Actor kinds of an event row: the app is the purge, with nobody behind it.

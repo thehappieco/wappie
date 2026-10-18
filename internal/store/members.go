@@ -114,13 +114,37 @@ func (u *Users) Members(ctx context.Context, tenant, actor uuid.UUID) ([]Member,
 // be converted into people, or vice versa. Disabling strips grants and machine
 // credentials; re-enabling never silently restores them.
 func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUID, role, status string) error {
+	return u.updateMember(ctx, tenant, actor, target, role, status, false)
+}
+
+// UpdateMemberStrandDeleted is UpdateMember with the owner's strand
+// override (decision 0040; the plan's DB13): a disable that would strand
+// numbers that are all deleted goes on where the platform will mail the
+// workspace's other owners (ownersMailedTx), and records item.stranded
+// with the cause disabled for each (strandTx). Anyone but an owner, by
+// live role under the lock, gets ErrOwnerOnly; outside the gate release
+// A's ErrLastReaderOfDeleted stands; a live number is never stranded
+// (ErrLastDeviceReader). The caller has checked the owner's recent
+// step-up.
+func (u *Users) UpdateMemberStrandDeleted(ctx context.Context, tenant, actor, target uuid.UUID, role, status string) error {
+	return u.updateMember(ctx, tenant, actor, target, role, status, true)
+}
+
+func (u *Users) updateMember(ctx context.Context, tenant, actor, target uuid.UUID, role, status string, strandDeleted bool) error {
 	if (role != "owner" && role != "admin" && role != "member" && role != RoleService) || (status != "active" && status != "disabled") {
 		return ErrInvalidMembership
 	}
 	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		override, err := strandGateTx(ctx, tx, tenant, strandDeleted)
+		if err != nil {
+			return err
+		}
 		actorRole, err := lockWorkspaceManager(ctx, tx, tenant, actor)
 		if err != nil {
 			return err
+		}
+		if strandDeleted && actorRole != "owner" {
+			return ErrOwnerOnly
 		}
 		var oldRole, oldStatus string
 		err = tx.QueryRow(ctx, `SELECT role,status FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2`, tenant, target).Scan(&oldRole, &oldStatus)
@@ -145,7 +169,12 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 			}
 		}
 		if status == "disabled" {
-			if err := strandCheckTx(ctx, tx, tenant, target, actorRole); err != nil {
+			stranded, err := strandCheckTx(ctx, tx, tenant, target, actorRole, override)
+			if err != nil {
+				return err
+			}
+			// What the numbers lose is read before the membership changes.
+			if err := strandTx(ctx, tx, tenant, actor, target, strandDisabled, stranded); err != nil {
 				return err
 			}
 			// A disabled consenter's connections end with their access, and
@@ -182,6 +211,15 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 	})
 }
 
+// strandGateTx is ownersMailedTx for an act that asks for the strand
+// override, and false, reading nothing, for one that does not.
+func strandGateTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, strandDeleted bool) (bool, error) {
+	if !strandDeleted {
+		return false, nil
+	}
+	return ownersMailedTx(ctx, tx, tenant)
+}
+
 // requireOtherOwner runs under the workspace lock, before access is removed.
 // The personal owner is covered too: a personal space has no other human owner.
 func requireOtherOwner(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID) error {
@@ -200,10 +238,28 @@ func requireOtherOwner(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID)
 // workspace and other memberships remain. Unlike disabling, removal requires a
 // fresh invitation to join again and never restores previous credentials.
 func (u *Users) RemoveMember(ctx context.Context, tenant, actor, target uuid.UUID) error {
+	return u.removeMember(ctx, tenant, actor, target, false)
+}
+
+// RemoveMemberStrandDeleted is RemoveMember with the owner's strand
+// override, as UpdateMemberStrandDeleted is UpdateMember's: each deleted
+// number it strands records item.stranded with the cause revoked.
+func (u *Users) RemoveMemberStrandDeleted(ctx context.Context, tenant, actor, target uuid.UUID) error {
+	return u.removeMember(ctx, tenant, actor, target, true)
+}
+
+func (u *Users) removeMember(ctx context.Context, tenant, actor, target uuid.UUID, strandDeleted bool) error {
 	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		override, err := strandGateTx(ctx, tx, tenant, strandDeleted)
+		if err != nil {
+			return err
+		}
 		actorRole, err := lockWorkspaceManager(ctx, tx, tenant, actor)
 		if err != nil {
 			return err
+		}
+		if strandDeleted && actorRole != "owner" {
+			return ErrOwnerOnly
 		}
 		var role, status, email string
 		err = tx.QueryRow(ctx, `SELECT m.role,m.status,u.email FROM workspace_memberships m JOIN users u ON u.id=m.user_id
@@ -222,7 +278,12 @@ func (u *Users) RemoveMember(ctx context.Context, tenant, actor, target uuid.UUI
 				return err
 			}
 		}
-		if err := strandCheckTx(ctx, tx, tenant, target, actorRole); err != nil {
+		stranded, err := strandCheckTx(ctx, tx, tenant, target, actorRole, override)
+		if err != nil {
+			return err
+		}
+		// What the numbers lose is read before the membership goes.
+		if err := strandTx(ctx, tx, tenant, actor, target, strandRevoked, stranded); err != nil {
 			return err
 		}
 		// A consent does not outlive the person who gave it in this

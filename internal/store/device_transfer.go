@@ -454,11 +454,25 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			return err
 		}
 		itemName, hint := itemLabel(device, name, pushName, pn)
-		return recordEvent(ctx, tx, source, itemEvent{
+		if err := recordEvent(ctx, tx, source, itemEvent{
 			Type: eventMovedOut, ItemID: device, DedupeKey: dedupeKey(eventMovedOut, device, completed), OccurredAt: completed,
 			ActorKind: actorPerson, ActorSub: sub, ActorUserID: &actor, ReaderSubs: readerSubs, ReaderUserIDs: readerUsers,
 			Label: itemName, Hint: hint, ToTenantID: &target,
-		})
+		}); err != nil {
+			return err
+		}
+		// And in Wappie's own pages (DB14): each other active owner of the
+		// Team, never the actor. Only the Team's only owner moves a number
+		// (decision 0043), so there is nobody to tell unless an owner joined
+		// between the check and this row.
+		_, err = tx.Exec(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind)
+			SELECT $1, $2, m.user_id, 'number_moved_out', $3, $4, $5, 'person'
+			FROM workspace_memberships m JOIN users o ON o.id = m.user_id
+			WHERE m.tenant_id = $1 AND m.role = 'owner' AND m.status = 'active' AND o.status = 'active' AND m.user_id <> $5
+			ON CONFLICT (tenant_id, device_id, user_id, kind) WHERE seen_at IS NULL DO UPDATE
+			SET label = excluded.label, hint = excluded.hint, raised_at = excluded.raised_at, raised_by = excluded.raised_by,
+			    raised_by_kind = excluded.raised_by_kind`, source, device, itemName, hint, actor)
+		return err
 	})
 	return out, err
 }

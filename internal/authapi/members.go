@@ -3,6 +3,7 @@ package authapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"whatserver2/internal/store"
@@ -25,6 +26,8 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "invite_invalid", "the invitation is expired, revoked or already accepted")
 	case errors.Is(err, store.ErrInviteNotRecoverable):
 		fail(w, http.StatusConflict, "invite_not_recoverable", "the original code cannot be recovered; generate a new invitation")
+	case errors.Is(err, store.ErrOwnerOnly):
+		fail(w, http.StatusForbidden, "owner_only", "only an owner of this workspace may remove or disable the last key holder of a deleted number")
 	case errors.Is(err, store.ErrMembershipForbidden):
 		fail(w, http.StatusForbidden, "not_authorized", "this action requires a workspace owner or an authorized administrator")
 	case errors.Is(err, store.ErrLastOwner):
@@ -57,7 +60,7 @@ func (h *Handler) members(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticate(w, r)
+	session, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
@@ -69,11 +72,22 @@ func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Role   string `json:"role"`
 		Status string `json:"status"`
+		// StrandDeleted is the owner's strand override (decision 0040):
+		// a disable goes on although the person holds the last key of
+		// deleted numbers (strandOverride).
+		StrandDeleted bool `json:"strand_deleted"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := h.Users.UpdateMember(r.Context(), user.TenantID, user.ID, target, req.Role, req.Status); err != nil {
+	update := h.Users.UpdateMember
+	if req.StrandDeleted {
+		if !h.strandOverride(w, r, session, user) {
+			return
+		}
+		update = h.Users.UpdateMemberStrandDeleted
+	}
+	if err := update(r.Context(), user.TenantID, user.ID, target, req.Role, req.Status); err != nil {
 		h.memberError(w, err)
 		return
 	}
@@ -81,8 +95,24 @@ func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// strandOverride admits a member change that asks to strand deleted
+// numbers (strand_deleted, on the disable and remove routes only): an
+// owner, by the session's role as the fast path (owner_only for anyone
+// else, before any step-up prompt, as a deletion's), with a recent
+// step-up. The store checks the live role again under the workspace's
+// lock, and lets the override through only where the platform will mail
+// the other owners; elsewhere it answers last_reader_of_deleted, as
+// without the flag.
+func (h *Handler) strandOverride(w http.ResponseWriter, r *http.Request, session store.Session, user store.User) bool {
+	if user.Role != "owner" {
+		h.memberError(w, store.ErrOwnerOnly)
+		return false
+	}
+	return h.stepUpFresh(w, r, session)
+}
+
 func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticate(w, r)
+	session, user, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
@@ -91,10 +121,24 @@ func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "user id must be a UUID")
 		return
 	}
+	strand := false
+	if v := r.URL.Query().Get("strand_deleted"); v != "" {
+		if strand, err = strconv.ParseBool(v); err != nil {
+			fail(w, http.StatusBadRequest, "bad_request", "strand_deleted must be true or false")
+			return
+		}
+	}
 	if !h.allow(w, r, user.Email) {
 		return
 	}
-	if err := h.Users.RemoveMember(r.Context(), user.TenantID, user.ID, target); err != nil {
+	remove := h.Users.RemoveMember
+	if strand {
+		if !h.strandOverride(w, r, session, user) {
+			return
+		}
+		remove = h.Users.RemoveMemberStrandDeleted
+	}
+	if err := remove(r.Context(), user.TenantID, user.ID, target); err != nil {
 		h.memberError(w, err)
 		return
 	}

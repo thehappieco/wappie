@@ -791,6 +791,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// The contract's events: a replayed row, which keeps no label,
 		// takes its deleted number's until the purge (the plan's 4.11).
 		"replayedLabelsTx": true,
+		// The owner's strand override: a deleted number's readers just
+		// before, for its item.stranded (the plan's DB13).
+		"strandTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

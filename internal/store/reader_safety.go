@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -81,11 +82,15 @@ func (e *ErrLastReaderOfDeleted) Error() string {
 // strandCheckTx refuses removing or disabling target when that would strand
 // a number: ErrLastDeviceReader when any of them is live, as 0032 always
 // did, and ErrLastReaderOfDeleted, naming them for an owner, when they are
-// all deleted. This release has no override for either.
-func strandCheckTx(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID, actorRole string) error {
+// all deleted. With override, an owner's strand override that the gate
+// lets through (UpdateMemberStrandDeleted, RemoveMemberStrandDeleted),
+// numbers that are all deleted are not refused: they are returned, for
+// strandTx to record, and the act goes on. A live number is never
+// overridden.
+func strandCheckTx(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID, actorRole string, override bool) ([]DeletedNumberRef, error) {
 	doomed, err := strandedDevicesTx(ctx, tx, tenant, target, nil)
 	if err != nil || len(doomed) == 0 {
-		return err
+		return nil, err
 	}
 	refusal := &ErrLastReaderOfDeleted{Numbers: []DeletedNumberRef{}}
 	live := false
@@ -121,12 +126,92 @@ func strandCheckTx(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID, act
 	})
 	switch {
 	case err != nil:
-		return err
+		return nil, err
 	case live:
-		return ErrLastDeviceReader
+		return nil, ErrLastDeviceReader
+	case override && actorRole == "owner":
+		return refusal.Numbers, nil
 	}
 	if actorRole != "owner" {
 		refusal.Numbers = []DeletedNumberRef{}
 	}
-	return refusal
+	return nil, refusal
+}
+
+// ownersMailedTx is the gate of the owner's strand override (the plan's
+// DB2, as the owner confirmed it on 2026-10-14): it goes on only where the
+// platform will mail the workspace's other owners its item.stranded, which
+// is a team the platform names (contract_workspaces), not closed there,
+// while the contract is on (observe or later). Everywhere else, a
+// self-hosted installation included, where no platform mails anyone,
+// release A's refusal stands. It reads contract_state under its share lock,
+// held to the commit, so a switch to off waits for the act, whose row is
+// then never written in an off period (DB10); and it is called before the
+// workspace's lock, since every transaction that takes contract_state takes
+// it first (DB23).
+func ownersMailedTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (bool, error) {
+	var mailed bool
+	err := tx.QueryRow(ctx, `SELECT s.mode <> 'off' AND EXISTS (SELECT 1 FROM contract_workspaces w
+		WHERE w.workspace_id = $1 AND w.kind = 'team' AND w.status IS DISTINCT FROM 'closed')
+		FROM contract_state s FOR SHARE OF s`, tenant).Scan(&mailed)
+	return mailed, err
+}
+
+// strandTx records what an owner's override takes from each deleted number
+// it strands (the plan's DB13), before the act changes target's membership,
+// whose readers it reads: one stranded row per number, with target's sub as
+// the person it lost (NULL for an account without one), cause (disabled or
+// revoked), the owner as the actor and the people who read it just before,
+// target among them when they did (README 9); and a number_stranded notice,
+// until its purge, for each other active owner of the workspace, never the
+// actor or target (DB14). The number keeps its purge_after. The caller holds
+// the workspace's row lock.
+func strandTx(ctx context.Context, tx pgx.Tx, tenant, actor, target uuid.UUID, cause string, numbers []DeletedNumberRef) error {
+	if len(numbers) == 0 {
+		return nil
+	}
+	var person *uuid.UUID
+	err := tx.QueryRow(ctx, `SELECT sub FROM platform_identities WHERE user_id = $1`, target).Scan(&person)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	sub, err := actorSubTx(ctx, tx, actor)
+	if err != nil {
+		return err
+	}
+	var at time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
+		return err
+	}
+	return withQuarantine(ctx, tx, func() error {
+		for _, n := range numbers {
+			readers, err := readersTx(ctx, tx, tenant, n.DeviceID)
+			if err != nil {
+				return err
+			}
+			readerSubs, readerUsers := readerIDs(readers)
+			itemName, hint := itemLabel(n.DeviceID, n.Label, n.PushName, n.PN)
+			if err := recordEvent(ctx, tx, tenant, itemEvent{
+				Type: eventStranded, ItemID: n.DeviceID,
+				DedupeKey:  eventStranded + ":" + n.DeviceID.String() + ":" + target.String() + ":" + strconv.FormatInt(at.UnixMicro(), 10),
+				OccurredAt: at, ActorKind: actorPerson, ActorSub: sub, ActorUserID: &actor,
+				ReaderSubs: readerSubs, ReaderUserIDs: readerUsers, Label: itemName, Hint: hint,
+				PersonSub: person, Cause: &cause,
+			}); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind, until)
+				SELECT $1, $2, m.user_id, 'number_stranded', $3, $4, $5, 'person', $6
+				FROM workspace_memberships m JOIN users o ON o.id = m.user_id
+				WHERE m.tenant_id = $1 AND m.role = 'owner' AND m.status = 'active' AND o.status = 'active'
+				  AND m.user_id <> $5 AND m.user_id <> $7
+				ON CONFLICT (tenant_id, device_id, user_id, kind) WHERE seen_at IS NULL DO UPDATE
+				SET label = excluded.label, hint = excluded.hint, raised_at = excluded.raised_at, raised_by = excluded.raised_by,
+				    raised_by_kind = excluded.raised_by_kind, until = excluded.until`,
+				tenant, n.DeviceID, itemName, hint, actor, n.PurgeAfter, target); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

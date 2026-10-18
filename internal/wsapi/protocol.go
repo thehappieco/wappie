@@ -502,9 +502,11 @@ type DeviceRecovered struct {
 }
 
 // DeviceNotice is something a person is told about a number in Wappie's own
-// pages: number_deleted (its readers and the workspace's other owners) or
-// sync_paused (its readers). Label and Hint are the notice's own snapshot,
-// null after the purge.
+// pages: number_deleted (its readers and the workspace's other owners),
+// sync_paused (its readers), or, to the workspace's other owners only,
+// number_stranded (an owner's override took its last key holder; Until is
+// its purge) and number_moved_out (it moved to the actor's Personal). Label
+// and Hint are the notice's own snapshot, null after the purge.
 type DeviceNotice struct {
 	ID            int64      `json:"id"`
 	DeviceID      string     `json:"device_id"`
@@ -527,7 +529,7 @@ type DeviceNotice struct {
 // keeps its id when a later pause folds into it, and is acknowledged only
 // at the version its person saw, so a fold that came after stays unseen and
 // returns in the reply. NoticeIDs, bare ids, acknowledge only notices that
-// never fold (number_deleted).
+// never fold (every kind but sync_paused).
 type DeviceNoticeSeen struct {
 	NoticeIDs []int64      `json:"notice_ids,omitempty"`
 	Notices   []SeenNotice `json:"notices,omitempty"`
