@@ -445,8 +445,10 @@ type ContractWorkspaceStatus struct {
 	// Local: Wappie has a workspace of this id.
 	Local bool
 	// The workspace's events: eligible and not yet delivered, parked, and
-	// folded into another.
+	// folded into another. PendingSince is when the oldest pending one was
+	// written, nil for none.
 	Pending, Parked, Coalesced int64
+	PendingSince               *time.Time
 	// ParkedLatest is the newest park of its events, and ParkedCodes their
 	// codes, each once, in order.
 	ParkedLatest *time.Time
@@ -518,9 +520,10 @@ func (c *Contract) Status(ctx context.Context) (ContractStatus, error) {
 					count(*) FILTER (WHERE e.parked_at IS NOT NULL),
 					count(*) FILTER (WHERE e.outcome = 'coalesced' OR (e.coalesced_into IS NOT NULL AND e.settled_at IS NULL)),
 					max(e.parked_at),
-					coalesce(array_agg(DISTINCT e.reject_code ORDER BY e.reject_code) FILTER (WHERE e.parked_at IS NOT NULL), '{}')
+					coalesce(array_agg(DISTINCT e.reject_code ORDER BY e.reject_code) FILTER (WHERE e.parked_at IS NOT NULL), '{}'),
+					min(e.created_at) FILTER (WHERE `+eligibleEventSQL+`)
 				FROM item_events e CROSS JOIN contract_state s JOIN contract_workspaces w ON w.workspace_id = $1
-				WHERE e.tenant_id = $1`, w.ID).Scan(&w.Pending, &w.Parked, &w.Coalesced, &w.ParkedLatest, &w.ParkedCodes); err != nil {
+				WHERE e.tenant_id = $1`, w.ID).Scan(&w.Pending, &w.Parked, &w.Coalesced, &w.ParkedLatest, &w.ParkedCodes, &w.PendingSince); err != nil {
 				return err
 			}
 		}

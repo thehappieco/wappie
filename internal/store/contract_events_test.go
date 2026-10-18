@@ -164,10 +164,63 @@ func TestEventHousekeeping(t *testing.T) {
 	}
 }
 
+// The current off period (DB10, 4.4): once observed, then off, a pause
+// written since the switch to off is not owed while the contract is still
+// off: contract status counts no event pending for it (a deletion written
+// beside it is), and at 30 days the housekeeping drops it, never parking
+// it as expired.
+func TestEventsOfTheCurrentOffPeriod(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	team := uuid.MustParse(newTenant(t, pool, "Equipe"))
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind, named_at)
+		VALUES ($1, 'team', clock_timestamp() - interval '1 minute')`, team); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetMode(ctx, store.ContractOff); err != nil {
+		t.Fatal(err)
+	}
+	paused := pastEvent(t, pool, team, "sync_paused", "0", "0", "")
+	deleted := pastEvent(t, pool, team, "deleted", "0", "0", "")
+	st, err := c.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Workspaces) != 1 || st.Workspaces[0].Pending != 1 {
+		t.Fatalf("while off: %+v, want only the deletion pending", st.Workspaces)
+	}
+	// 30 days on, still off: the switches and the naming moved back with
+	// the pause.
+	if _, err := pool.Exec(ctx, `UPDATE contract_state SET events_from = clock_timestamp() - interval '40 days',
+		events_paused_at = clock_timestamp() - interval '31 days'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET named_at = clock_timestamp() - interval '40 days'`); err != nil {
+		t.Fatal(err)
+	}
+	inTenantTx(ctx, t, pool, team, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE item_events SET created_at = clock_timestamp() - interval '30 days 1 minute',
+			occurred_at = clock_timestamp() - interval '30 days 1 minute' WHERE event_id = $1`, paused)
+		return err
+	})
+	counts, err := store.DeletionHousekeeping(ctx, pool, team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Events != 1 || len(counts.Expired) != 0 || eventState(t, pool, team, paused) != "gone" || eventState(t, pool, team, deleted) != "owed" {
+		t.Fatalf("30 days on: %+v, the pause %s, the deletion %s", counts, eventState(t, pool, team, paused), eventState(t, pool, team, deleted))
+	}
+}
+
 // The queue's read (DB11, README 9): a pause folded into a delivered one
-// of the hour, its own folded rows heading their events again; a row
-// folded into one no longer owed heading its own; a pause nobody but its
-// actor reads settled not_sent; and the limit.
+// of the hour, 50 and 59 minutes after it, its own folded rows heading
+// their events again; a row folded into one no longer owed heading its
+// own; a pause nobody but its actor reads settled not_sent, with the row
+// folded into it settled coalesced by that same read; and the limit.
 func TestEventBatchFolds(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -191,11 +244,14 @@ func TestEventBatchFolds(t *testing.T) {
 	}
 	delivered := pausing("70 minutes", "settled_at = clock_timestamp(), outcome = 'accepted'")
 	under := pausing("20 minutes", "")
+	late := pausing("11 minutes", "")
 	// Folded into under in an earlier read, and over an hour after the
 	// delivered one: once under folds into it, it heads its own event.
 	after := pausing("0", "coalesced_into = '"+under.String()+"'")
 	orphan := pastEvent(t, pool, team, "deleted", "0", "0", "coalesced_into = '"+uuid.NewString()+"'")
-	lonely := pastEvent(t, pool, team, "sync_paused", "0", "0", fmt.Sprintf(`actor_sub = '%s', reader_subs = ARRAY['%s']::uuid[]`, actor, actor))
+	only := fmt.Sprintf(`actor_sub = '%s', reader_subs = ARRAY['%s']::uuid[]`, actor, actor)
+	lonely := pastEvent(t, pool, team, "sync_paused", "0", "0", only)
+	lonelyFold := pastEvent(t, pool, team, "sync_paused", "0", "0", only+", coalesced_into = '"+lonely.String()+"'")
 	batch, err := c.EventBatch(ctx, team, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -204,18 +260,20 @@ func TestEventBatchFolds(t *testing.T) {
 	for _, e := range batch.Events {
 		heads = append(heads, e.EventID)
 	}
-	if !slices.Equal(heads, []uuid.UUID{after, orphan}) || batch.NotSent != 1 || batch.Coalesced != 1 || batch.More {
+	if !slices.Equal(heads, []uuid.UUID{after, orphan}) || batch.NotSent != 1 || batch.Coalesced != 3 || batch.More {
 		t.Fatalf("the read: heads %v (want %v), %+v", heads, []uuid.UUID{after, orphan}, batch)
 	}
-	if got := eventState(t, pool, team, under); got != "coalesced" {
-		t.Fatalf("a pause under an hour after a delivered one: %s", got)
+	// Each settled by that one read, before any other.
+	for id, want := range map[uuid.UUID]string{under: "coalesced", late: "coalesced", lonely: "not_sent", lonelyFold: "coalesced"} {
+		if got := eventState(t, pool, team, id); got != want {
+			t.Fatalf("event %s after the read: %s, want %s (under %s, late %s, lonely %s)", id, got, want, under, late, lonely)
+		}
 	}
-	if got := eventState(t, pool, team, lonely); got != "not_sent" {
-		t.Fatalf("a pause nobody else reads: %s", got)
-	}
-	var into *uuid.UUID
+	var into, lateInto, lonelyInto *uuid.UUID
 	inTenantTx(ctx, t, pool, team, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT coalesced_into FROM item_events WHERE event_id = $1`, under).Scan(&into); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT (SELECT coalesced_into FROM item_events WHERE event_id = $1),
+				(SELECT coalesced_into FROM item_events WHERE event_id = $2), (SELECT coalesced_into FROM item_events WHERE event_id = $3)`,
+			under, late, lonelyFold).Scan(&into, &lateInto, &lonelyInto); err != nil {
 			return err
 		}
 		var n int
@@ -225,8 +283,11 @@ func TestEventBatchFolds(t *testing.T) {
 		}
 		return nil
 	})
-	if into == nil || *into != delivered {
-		t.Fatalf("folded into %v, want the delivered pause %s", into, delivered)
+	if into == nil || *into != delivered || lateInto == nil || *lateInto != delivered {
+		t.Fatalf("folded into %v and %v, want the delivered pause %s", into, lateInto, delivered)
+	}
+	if lonelyInto == nil || *lonelyInto != lonely {
+		t.Fatalf("the lonely pause's folded row into %v, want %s", lonelyInto, lonely)
 	}
 	// The limit: the first of them, and more.
 	if batch, err := c.EventBatch(ctx, team, 1); err != nil || len(batch.Events) != 1 || batch.Events[0].EventID != after || !batch.More {
@@ -450,6 +511,82 @@ func TestMailerAndPurgeDoNotDeadlock(t *testing.T) {
 		}
 	}
 	deadlocked("two documents in opposite orders and the sender")
+}
+
+// TB50's release across workspaces: a restart releases the rows parked
+// not_found of every workspace in their run, while a purge ending in the
+// later of two holds it FOR UPDATE and then scrubs the earlier one's rows
+// of a number that moved out of it (purge.go's scrubFormerWorkspacesTx).
+// The release takes both workspaces before any row, so it waits for the
+// purge: no deadlock, so no retry, and the row is sent again.
+func TestReleaseAcrossWorkspacesWaitsForAPurge(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	a, b := uuid.MustParse(newTenant(t, pool, "A")), uuid.MustParse(newTenant(t, pool, "B"))
+	if strings.Compare(a.String(), b.String()) > 0 {
+		a, b = b, a
+	}
+	for _, id := range []uuid.UUID{a, b} {
+		if _, err := pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind, named_at, events_not_found_since)
+			VALUES ($1, 'team', clock_timestamp() - interval '1 hour', clock_timestamp() - interval '2 days')`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The moved number's row in the earlier workspace, parked not_found.
+	parked := pastEvent(t, pool, a, "deleted", "0", "0", "parked_at = clock_timestamp(), reject_code = 'not_found'")
+	var item uuid.UUID
+	inTenantTx(ctx, t, pool, a, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT item_id FROM item_events WHERE event_id = $1`, parked).Scan(&item)
+	})
+	var log bytes.Buffer
+	var logMu sync.Mutex
+	logged := obs.WithLogger(ctx, slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return log.Write(p)
+	}), nil)))
+
+	purge, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer purge.Rollback(ctx) //nolint:errcheck // committed below
+	if _, err := purge.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, b); err != nil {
+		t.Fatal(err)
+	}
+	restarted := make(chan error, 1)
+	gen := uuid.New()
+	go func() {
+		_, err := c.Restart(logged, nil, 0, &gen, true)
+		restarted <- err
+	}()
+	waitBlockedOn(t, pool, int(purge.Conn().PgConn().PID()), 1)
+	if _, err := purge.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, a.String()); err != nil {
+		t.Fatal(err)
+	}
+	quick, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := purge.Exec(quick, `UPDATE item_events SET label = NULL, hint = NULL WHERE item_id = $1`, item); err != nil {
+		t.Fatalf("the purge's scrub of the earlier workspace's rows behind a release: %v", err)
+	}
+	if err := purge.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-restarted; err != nil {
+		t.Fatal(err)
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	if strings.Contains(log.String(), "deadlocked") {
+		t.Fatalf("the release crossed the purge:\n%s", log.String())
+	}
+	if got := eventState(t, pool, a, parked); got != "owed" {
+		t.Fatalf("the parked row after the restart: %s", got)
+	}
 }
 
 // writerFunc is an io.Writer in a function.

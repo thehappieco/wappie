@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -1311,29 +1310,28 @@ func TestSnapshotOverTheLimits(t *testing.T) {
 // The snapshots go at the pace, as the round's PUTs (P3a's review: all of
 // the app's calls stay well under the platform's 50 a second, one unsigned
 // 429 being a new account's failed PUT), even at a leader's start, when
-// every workspace is due at once.
+// every workspace is due at once. Each is timed as the client sends it,
+// not as the fake platform receives it, which a loaded machine delays.
 func TestSnapshotsArePaced(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
-	const pace = 80 * time.Millisecond
-	w.members.Pace = pace
+	const pace = 200 * time.Millisecond
 	for range 5 {
 		w.exec(ctx, t, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, uuid.New())
 	}
-	var mu sync.Mutex
-	var at []time.Time
-	w.fake.Before(contracttest.CallAccess, func(string) {
-		mu.Lock()
-		defer mu.Unlock()
-		at = append(at, time.Now())
-	})
-	run(t, w.leader(w.members, &membershiptest.Logs{}, lockKey(t)))
-	eventually(t, 5*time.Second, "five snapshots", func() bool { mu.Lock(); defer mu.Unlock(); return len(at) >= 5 })
-	mu.Lock()
-	defer mu.Unlock()
-	for i := 1; i < len(at); i++ {
-		if gap := at[i].Sub(at[i-1]); gap < pace*3/4 {
-			t.Fatalf("snapshot %d came %v after the one before, under the pace %v", i, gap, pace)
+	c := &counting{}
+	client := NewClient(&http.Client{Transport: c}, w.fake.URL, nil)
+	if err := client.Use(w.secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	m := &Members{Client: client, Contract: w.contract, Log: w.logs.Logger(), ModeCache: -1, Pace: pace}
+	run(t, w.leader(m, &membershiptest.Logs{}, lockKey(t)))
+	eventually(t, 10*time.Second, "five snapshots", func() bool { return c.access.Load() >= 5 })
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := 1; i < len(c.puts); i++ {
+		if gap := c.puts[i].Sub(c.puts[i-1]); gap < pace*3/4 {
+			t.Fatalf("snapshot %d went %v after the one before, under the pace %v", i, gap, pace)
 		}
 	}
 }

@@ -126,7 +126,8 @@ func (l *Leader) log() *slog.Logger {
 // secret is loaded it tries the lock, at once after a mode notice and
 // every Retry otherwise; it leads until the mode is off, the lock goes or
 // ctx ends. A leader that lost its lock waits twice Retry before it tries
-// again, so a process that was waiting takes over first.
+// again, whatever notice comes meanwhile (one wakes every process at once),
+// so a process that was waiting takes over first.
 func (l *Leader) Run(ctx context.Context) {
 	wake := make(chan string, 1)
 	go l.listen(ctx, wake)
@@ -134,7 +135,7 @@ func (l *Leader) Run(ctx context.Context) {
 	key := or(l.Key, LockName)
 	retry := or(l.Retry, leaderRetry)
 	for ctx.Err() == nil {
-		pause := retry
+		pause, woken := retry, (<-chan string)(wake)
 		if l.ready(ctx) {
 			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel,
 				store.ContractDueChannel, store.ContractEventsChannel)
@@ -147,13 +148,13 @@ func (l *Leader) Run(ctx context.Context) {
 				if !lost {
 					continue
 				}
-				pause = 2 * retry
+				pause, woken = 2*retry, nil
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-wake:
+		case <-woken:
 		case <-time.After(pause):
 		}
 	}

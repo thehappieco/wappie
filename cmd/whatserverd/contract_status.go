@@ -55,7 +55,9 @@ const (
 	checkParked = 2 * time.Minute
 	// checkEvents: how long a workspace's queue of events may go without
 	// a verdict on its batches, while on: an hour is the backoff's cap, so
-	// a queue failing this long has been tried at least a dozen times.
+	// a queue failing this long has been tried at least a dozen times. Its
+	// events may stay pending as long, whatever the cause (a sender whose
+	// own store calls fail records no failure on the queue).
 	checkEvents = 60 * time.Minute
 )
 
@@ -160,6 +162,9 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		if ws.Parked > 0 {
 			extra += fmt.Sprintf(" events_parked=%s", strings.Join(ws.ParkedCodes, ","))
 		}
+		if ws.PendingSince != nil {
+			extra += " events_pending_since=" + stamp(*ws.PendingSince)
+		}
 		w.f("  %s %s %s named %s, snapshot %s, events pending %d parked %d coalesced %d%s",
 			ws.ID, ws.Kind, state, ago(st.Now, &ws.NamedAt), ago(st.Now, ws.SnapshotOKAt), ws.Pending, ws.Parked, ws.Coalesced, extra)
 	}
@@ -224,9 +229,16 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 				out = append(out, fmt.Sprintf("workspace %s has %d events parked, the last at %s (%s): they are not sent",
 					ws.ID, ws.Parked, stamp(*ws.ParkedLatest), strings.Join(ws.ParkedCodes, ",")))
 			}
-			if ws.EventsErrorAt != nil && older(since(ws.EventsErrorAt), checkEvents) {
+			switch {
+			case ws.EventsErrorAt != nil && older(since(ws.EventsErrorAt), checkEvents):
 				out = append(out, fmt.Sprintf("workspace %s's events have had no verdict for over 60 minutes, since %s (%s)",
 					ws.ID, stamp(*ws.EventsErrorAt), ws.EventsError))
+			case ws.PendingSince != nil && older(since(ws.PendingSince), checkEvents):
+				// The backstop, whatever the cause: the queue records no
+				// failure when the sender's own store calls fail, nor when
+				// no leader sends at all.
+				out = append(out, fmt.Sprintf("workspace %s has %d events pending for over 60 minutes, the oldest written at %s: they are not delivered",
+					ws.ID, ws.Pending, stamp(*ws.PendingSince)))
 			}
 			if ws.ParkedAt != nil {
 				// A park is told whatever the workspace's status: nothing is

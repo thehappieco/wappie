@@ -209,10 +209,20 @@ func (l *Leader) eventTimes() store.ContractEventTimes {
 
 // run sends events until ctx ends: every queue that owes anything at the
 // leader's start and every EventsScanEvery, and each queue a notice names,
-// one batch of each due queue in turn, at the round's pace.
+// one batch of each due queue in turn, at the round's pace. A queue whose
+// store calls failed (its batch could not be read, or the platform's answer
+// recorded) is due as it was, and tried again only after a backoff of its
+// own, from BackoffMin doubled up to BackoffMax, which no notice cuts: a
+// store that keeps failing is not sent the same batch every pass, and
+// contract status --check tells of its events pending.
 func (s *eventSender) run(ctx context.Context) {
 	l, c := s.l, s.l.Members.Contract
-	minBack := or(l.BackoffMin, feedBackoffMin)
+	minBack, maxBack := or(l.BackoffMin, feedBackoffMin), or(l.BackoffMax, feedBackoffMax)
+	type retry struct {
+		at   time.Time
+		next time.Duration
+	}
+	failing := map[uuid.UUID]retry{}
 	pause := func(d time.Duration) bool {
 		select {
 		case <-ctx.Done():
@@ -265,9 +275,13 @@ func (s *eventSender) run(ctx context.Context) {
 			// A notice of a workspace no document named (another
 			// installation's, in tests) names no queue.
 			clear(queues)
-			sent, failed := false, false
+			sent := false
 			for _, q := range qs {
 				queues[q.Workspace] = true
+				if r, ok := failing[q.Workspace]; ok && time.Now().Before(r.at) {
+					wait = min(wait, time.Until(r.at))
+					continue
+				}
 				if !q.Due {
 					wait = min(wait, q.Wait)
 					continue
@@ -282,14 +296,18 @@ func (s *eventSender) run(ctx context.Context) {
 				if !more {
 					delete(queues, q.Workspace)
 				}
-				sent, failed = true, failed || !ok
-			}
-			if failed {
-				// What could not be stored is due as it was: not again at once.
-				if !pause(minBack) {
-					return
+				if ok {
+					delete(failing, q.Workspace)
+				} else {
+					// What could not be stored is due as it was: not again at
+					// once.
+					r, again := failing[q.Workspace]
+					if !again {
+						r.next = minBack
+					}
+					failing[q.Workspace] = retry{at: time.Now().Add(r.next), next: min(r.next*2, maxBack)}
 				}
-				continue
+				sent = true
 			}
 			if sent {
 				continue

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -492,9 +493,16 @@ func dbNow(t *testing.T, pool *pgxpool.Pool, offset string) time.Time {
 	return at
 }
 
-// counting counts a process's feed requests and its snapshots.
+// counting counts a process's feed requests, its snapshots and its
+// batches of events, and keeps the time each snapshot and batch went, as
+// the client sends it; with marks, it logs each batch there too, in order
+// with the process's own lines.
 type counting struct {
 	feed, access, events atomic.Int64
+	marks                *slog.Logger
+
+	mu          sync.Mutex
+	puts, posts []time.Time
 }
 
 func (c *counting) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -503,15 +511,70 @@ func (c *counting) RoundTrip(r *http.Request) (*http.Response, error) {
 		c.feed.Add(1)
 	case strings.HasSuffix(r.URL.Path, "/access"):
 		c.access.Add(1)
+		c.mu.Lock()
+		c.puts = append(c.puts, time.Now())
+		c.mu.Unlock()
 	case strings.HasSuffix(r.URL.Path, "/events"):
 		c.events.Add(1)
+		c.mu.Lock()
+		c.posts = append(c.posts, time.Now())
+		c.mu.Unlock()
+		if c.marks != nil {
+			c.marks.Info("test: a batch of events goes")
+		}
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }
 
+// sentAfterLoss reports whether logs show a batch of events between the
+// loss of the process's lock and its next lead, if any.
+func sentAfterLoss(logs *membershiptest.Logs) bool {
+	lost := false
+	for _, line := range strings.Split(logs.String(), "\n") {
+		switch {
+		case strings.Contains(line, "contract: the leader's lock is lost"):
+			lost = true
+		case strings.Contains(line, `msg="contract: leading"`):
+			lost = false
+		case lost && strings.Contains(line, "test: a batch of events goes"):
+			return true
+		}
+	}
+	return false
+}
+
+// foreignModeNotices sends a mode notice no leader acts on (as another
+// test's SetMode does, on the database every test shares) every 10 ms
+// until stop or the test's end: each wakes every waiting process at once.
+func (w *world) foreignModeNotices(t *testing.T) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ctx.Err() == nil {
+			if _, err := w.pool.Exec(ctx, `SELECT pg_notify($1, 'elsewhere')`, store.ContractModeChannel); err != nil && ctx.Err() == nil {
+				t.Errorf("a foreign notice: %v", err)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
 // TB23: two processes on one database: one long-poll at a time, one round;
 // when the leader's lock connection is killed, it makes no feed call
-// again, and the other takes over within its retry.
+// again, and the other takes over within its retry, however many mode
+// notices wake both meanwhile (the old one waits out twice its retry).
 func TestOneLeader(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
@@ -564,6 +627,7 @@ func TestOneLeader(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("no backend holds the lock")
 	}
+	quiet := w.foreignModeNotices(t)
 	if _, err := w.pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid); err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +638,10 @@ func TestOneLeader(t *testing.T) {
 	if took := time.Since(killed); took > 2*time.Second {
 		t.Fatalf("the takeover took %v with a retry of 300 ms", took)
 	}
-	time.Sleep(time.Second)
+	// Past the old one's twice its retry, still beside the notices.
+	time.Sleep(700 * time.Millisecond)
+	quiet()
+	time.Sleep(300 * time.Millisecond)
 	if n := old.count.feed.Load(); n != calls {
 		t.Fatalf("the old leader made %d feed calls after its lock went", n-calls)
 	}

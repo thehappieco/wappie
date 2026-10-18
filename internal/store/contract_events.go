@@ -54,6 +54,10 @@ const (
 // rather than mailed again or late (the plan's 4.11).
 const ContractEventExpiry = 29 * 24 * time.Hour
 
+// eventExpirySQL is ContractEventExpiry as an SQL interval, the one every
+// statement here reads.
+var eventExpirySQL = fmt.Sprintf("interval '%d hours'", int64(ContractEventExpiry/time.Hour))
+
 // ContractEventNotFoundFor is how long a queue is retried after the
 // platform first answered not_found for one of its events, before its rows
 // are parked (README 9: a workspace the app was not told of).
@@ -77,13 +81,13 @@ const owedEventSQL = `s.events_from IS NOT NULL AND e.settled_at IS NULL AND e.p
 // ContractEventExpiry since it occurred. An owed row past it is parked as
 // expired, by the sender or by the hourly housekeeping, whichever meets it
 // first.
-const eligibleEventSQL = owedEventSQL + ` AND e.occurred_at > clock_timestamp() - interval '29 days'`
+var eligibleEventSQL = owedEventSQL + ` AND e.occurred_at > clock_timestamp() - ` + eventExpirySQL
 
 // releasableEventSQL is a row e parked for the platform's not_found that a
 // release sends again: under ContractEventExpiry (it was eligible when it
 // was parked, and its periods do not change).
-const releasableEventSQL = `e.parked_at IS NOT NULL AND e.reject_code = 'not_found' AND e.settled_at IS NULL
-	AND e.occurred_at > clock_timestamp() - interval '29 days'`
+var releasableEventSQL = `e.parked_at IS NOT NULL AND e.reject_code = 'not_found' AND e.settled_at IS NULL
+	AND e.occurred_at > clock_timestamp() - ` + eventExpirySQL
 
 // owedFromSQL joins what owedEventSQL reads: e, s and w.
 const owedFromSQL = `item_events e CROSS JOIN contract_state s JOIN contract_workspaces w ON w.workspace_id = e.tenant_id`
@@ -125,8 +129,13 @@ type ContractEvent struct {
 // ActorUnknown reports a person, or a key whose creator is known, with no
 // platform sub: a fault where people sign in through the platform (README
 // 9: such an actor goes as actor null). A key with no creator has nobody
-// behind it.
+// behind it, and a replayed row with no local account no sub to miss: the
+// ledger keeps no actor of a recovery, and a deletion's deleter may be gone
+// since. Both still go as actor null.
 func (e ContractEvent) ActorUnknown() bool {
+	if e.Replayed && e.ActorUser == nil {
+		return false
+	}
 	switch e.ActorKind {
 	case actorPerson:
 		return e.ActorSub == nil
@@ -258,7 +267,7 @@ func owedEventsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) ([]pendin
 	rows, err := tx.Query(ctx, `SELECT e.seq, e.event_id, e.type, e.item_id, e.occurred_at, e.actor_kind,
 			coalesce(e.actor_sub, CASE WHEN e.actor_kind <> 'app' THEN (SELECT pi.sub FROM platform_identities pi WHERE pi.user_id = e.actor_user_id) END),
 			e.actor_user_id, e.reader_subs, e.label, e.hint, e.purge_after, e.person_sub, e.cause, e.replayed_at IS NOT NULL,
-			e.coalesced_into, e.occurred_at <= clock_timestamp() - interval '29 days'
+			e.coalesced_into, e.occurred_at <= clock_timestamp() - `+eventExpirySQL+`
 		FROM `+owedFromSQL+`
 		WHERE e.tenant_id = $1 AND `+owedEventSQL+`
 		ORDER BY e.seq FOR UPDATE OF e`, workspace)
@@ -482,11 +491,14 @@ func sameHead(a, b *uuid.UUID) bool {
 
 // replayedLabelsTx gives each replayed event its number's label and hint,
 // read with deleted numbers visible: the ledger keeps none. A purged
-// number has no row left, and none.
+// number has no row left, and none; a purge has none either, whether or not
+// the janitor has purged the number yet, as the live purge's row has none
+// (purge.go).
 func replayedLabelsTx(ctx context.Context, tx pgx.Tx, events []ContractEvent) error {
+	labelled := func(e ContractEvent) bool { return e.Replayed && e.Type != eventPurged }
 	var ids []uuid.UUID
 	for _, e := range events {
-		if e.Replayed {
+		if labelled(e) {
 			ids = append(ids, e.ItemID)
 		}
 	}
@@ -514,7 +526,7 @@ func replayedLabelsTx(ctx context.Context, tx pgx.Tx, events []ContractEvent) er
 			return err
 		}
 		for i := range events {
-			if n, ok := found[events[i].ItemID]; ok && events[i].Replayed {
+			if n, ok := found[events[i].ItemID]; ok && labelled(events[i]) {
 				events[i].Label, events[i].Hint = n.label, n.hint
 			}
 		}
@@ -831,7 +843,11 @@ func releaseEventsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) (int64
 // releaseWorkspacesTx is releaseEventsTx for each of workspaces, in id
 // order, each under its own row-level security, leaving tx's workspace as
 // it found it: a document's store (a name given again) and a restart call
-// it with their records locked.
+// it with their records locked. Every workspace is taken FOR KEY SHARE, in
+// id order and in one statement, before any of their rows (DB23): a purge
+// that holds one of them FOR UPDATE and then writes another's rows (a
+// number that moved out of it, scrubFormerWorkspacesTx) finds none of
+// those rows locked, and the release waits for it.
 func releaseWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUID) error {
 	if len(workspaces) == 0 {
 		return nil
@@ -839,6 +855,9 @@ func releaseWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUID)
 	ids := slices.Clone(workspaces)
 	slices.SortFunc(ids, compareIDs)
 	ids = slices.Compact(ids)
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = ANY ($1) ORDER BY id FOR KEY SHARE`, ids); err != nil {
+		return err
+	}
 	var was string
 	if err := tx.QueryRow(ctx, `SELECT coalesce(current_setting($1, true), '')`, pg.TenantGUC).Scan(&was); err != nil {
 		return err
@@ -863,9 +882,9 @@ func releaseWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUID)
 func expireEventsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := tx.Query(ctx, `WITH x AS (
 			SELECT e.seq FROM `+owedFromSQL+`
-			 WHERE e.tenant_id = $1 AND `+owedEventSQL+` AND (e.occurred_at <= clock_timestamp() - interval '29 days'
+			 WHERE e.tenant_id = $1 AND `+owedEventSQL+` AND (e.occurred_at <= clock_timestamp() - `+eventExpirySQL+`
 			    OR e.coalesced_into IN (SELECT h.event_id FROM item_events h WHERE h.tenant_id = $1 AND h.coalesced_into IS NULL
-			         AND h.settled_at IS NULL AND h.parked_at IS NULL AND h.occurred_at <= clock_timestamp() - interval '29 days'))
+			         AND h.settled_at IS NULL AND h.parked_at IS NULL AND h.occurred_at <= clock_timestamp() - `+eventExpirySQL+`))
 			 ORDER BY e.seq FOR UPDATE OF e)
 		UPDATE item_events e SET parked_at = clock_timestamp(), reject_code = 'expired' FROM x
 		WHERE e.tenant_id = $1 AND e.seq = x.seq RETURNING e.event_id`, workspace)

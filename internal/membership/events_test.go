@@ -495,11 +495,16 @@ func TestEventWireVectors(t *testing.T) {
 // Never: a row written before the first observe, or before the workspace
 // was named; one of a workspace no document names; a pause, a stranding
 // or a move written while the contract was off; a replayed pause; a
-// replayed deletion from before the first observe. Sent: everything else,
-// a deletion, a recovery and a purge written while off included (after the
+// replayed deletion, recovery or purge that occurred before the first
+// observe, or after it and before the naming. Sent: everything else, a
+// deletion, a recovery and a purge written while off included (after the
 // return to observe, a purge after its deletion), and a replayed deletion,
-// recovery or purge that occurred after the first observe, which comes
-// back duplicate when the platform holds it already.
+// recovery or purge that occurred after both, in an off period too, which
+// comes back duplicate when the platform holds it already. A replayed row
+// is as release A's replay writes it (no readers, no sub, a recovery with
+// no actor at all): none is told as an actor without a sub, a deletion's
+// and a recovery's take their number's label, a deleted one's included,
+// and a purge's has none.
 func TestEventsBeforeTransportNotSent(t *testing.T) {
 	w := newEventWorld(t)
 	ctx := context.Background()
@@ -536,12 +541,35 @@ func TestEventsBeforeTransportNotSent(t *testing.T) {
 			never = append(never, id)
 		}
 	}
-	never = append(never, row(eventRow{kind: "sync_paused", occurred: "30 minutes", created: "0", replayed: true}))
+	// A replayed row as release A's replay writes it (replay.go): the
+	// ledger's id and time, no readers and no sub; a deletion with its
+	// deleter's local account, a recovery with no actor at all, a purge
+	// the app's.
+	replay := func(r eventRow) uuid.UUID {
+		t.Helper()
+		r.created, r.replayed = "0", true
+		switch r.kind {
+		case "deleted":
+			r.user = &w.owner
+		case "purged":
+			r.actorKind = "app"
+		}
+		return w.event(t, w.team, r)
+	}
+	never = append(never, replay(eventRow{kind: "sync_paused", occurred: "30 minutes"}))
+	var replayed []uuid.UUID
 	for _, kind := range []string{"deleted", "recovered", "purged"} {
-		want = append(want, row(eventRow{kind: kind, occurred: "30 minutes", created: "0", replayed: true}))
-		never = append(never, row(eventRow{kind: kind, occurred: "4 hours", created: "0", replayed: true}))
+		// After the first observe and the naming, in an off period too
+		// (Round 2: off periods do not hold these three back).
+		ids := []uuid.UUID{replay(eventRow{kind: kind, occurred: "30 minutes"}), replay(eventRow{kind: kind, occurred: "45 minutes"})}
+		want, replayed = append(want, ids...), append(replayed, ids...)
+		// Before the first observe; after it, before the naming.
+		never = append(never, replay(eventRow{kind: kind, occurred: "4 hours"}), replay(eventRow{kind: kind, occurred: "150 minutes"}))
 	}
 	notNamed := w.event(t, unnamed, eventRow{kind: "deleted", actor: &w.sub, readers: readers})
+	if ids, err := w.contract.EventWorkspaces(ctx); err != nil || !slices.Contains(ids, w.team) || slices.Contains(ids, unnamed) {
+		t.Fatalf("the queues that owe: %v %v, want the team's and not the unnamed one's", ids, err)
+	}
 	flush(t, s, w.team)
 	if got := idsOf(w.sentTo(w.team)); !slices.Equal(got, want) {
 		t.Fatalf("sent %v, want %v", got, want)
@@ -551,6 +579,9 @@ func TestEventsBeforeTransportNotSent(t *testing.T) {
 			t.Errorf("a row never to send was delivered or parked: %+v", d)
 		}
 	}
+	if more, ok := s.send(ctx, unnamed); more || !ok {
+		t.Fatalf("the queue of a workspace no document names: more %v, ok %v", more, ok)
+	}
 	if len(w.sentTo(unnamed)) != 0 || w.delivery(t, unnamed, notNamed).settled {
 		t.Fatal("a workspace no document names sent an event")
 	}
@@ -559,19 +590,38 @@ func TestEventsBeforeTransportNotSent(t *testing.T) {
 			t.Errorf("a sent row: %+v", d)
 		}
 	}
-	// A replayed row takes its number's label; the others keep theirs.
-	replayed := w.sentTo(w.team)[len(want)-3]
-	if replayed.Item.Label != nil {
-		t.Fatalf("a replayed row of a number Wappie no longer has took a label: %v", *replayed.Item.Label)
+	// A replayed row of a number Wappie no longer has: no label; the actor
+	// as the ledger left it, never told as one without a sub.
+	for _, ev := range w.sentTo(w.team) {
+		if !slices.Contains(replayed, uuid.MustParse(ev.EventID)) {
+			continue
+		}
+		var actor string
+		if ev.Actor != nil {
+			actor = *ev.Actor
+		}
+		ledgered := map[string]string{kc.EventDeleted: w.sub.String(), kc.EventRecovered: "", kc.EventPurged: ""}[ev.Type]
+		if ev.Item.Label != nil || ev.Item.Hint != nil || actor != ledgered || (ev.Readers != nil && len(*ev.Readers) != 0) {
+			t.Fatalf("a replayed %s rendered: %+v", ev.Type, ev)
+		}
+	}
+	if lines := logs.Lines("actor has no platform sub"); len(lines) != 0 || w.state(t).ErrorClass == store.ContractErrorEventActor {
+		t.Fatalf("a replayed row told as an actor without a sub: %v", lines)
 	}
 
-	// A restore's replay of a deletion the platform holds already: the
-	// same event (its id, type, item and time), which comes back duplicate.
-	held := w.event(t, w.team, eventRow{kind: "deleted", item: w.device, actor: &w.sub, readers: readers})
+	// A restore's replay of a deletion the platform holds already, of a
+	// number deleted since: the same event (its id, type, item and time),
+	// which comes back duplicate.
+	deleted := w.number(t, w.team, "Vendas", 9, w.owner)
+	if _, err := store.NewDevices(w.pool).Quarantine(ctx, w.team, w.owner, deleted, nil); err != nil {
+		t.Fatal(err)
+	}
 	flush(t, s, w.team)
+	var held uuid.UUID
 	var at time.Time
 	if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT occurred_at FROM item_events WHERE event_id = $1`, held).Scan(&at); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT event_id, occurred_at FROM item_events WHERE item_id = $1 AND type = 'deleted'`,
+			deleted).Scan(&held, &at); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `DELETE FROM item_events WHERE event_id = $1`, held)
@@ -579,16 +629,22 @@ func TestEventsBeforeTransportNotSent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	w.event(t, w.team, eventRow{id: held, kind: "deleted", item: w.device, at: &at, created: "0", replayed: true, user: &w.owner})
-	// The ledger keeps no label and no sub: the number's label and the
-	// actor's link, at send time.
+	replay(eventRow{id: held, kind: "deleted", item: deleted, at: &at})
+	// And of its purge, the janitor not yet run: the number's row still
+	// there, its label not the purge's.
+	replay(eventRow{kind: "purged", item: deleted, occurred: "0"})
+	// The ledger keeps no label and no sub: the number's label, read with
+	// deleted numbers visible, and the actor's link, at send time.
 	batch, err := w.contract.EventBatch(ctx, w.team, kc.MaxEvents)
-	if err != nil || len(batch.Events) != 1 {
+	if err != nil || len(batch.Events) != 2 {
 		t.Fatalf("the replayed deletion's queue: %+v %v", batch, err)
 	}
 	if ev := EventOf(w.team, batch.Events[0]); ev.Item.Label == nil || *ev.Item.Label != "Vendas" || ev.Item.Hint == nil ||
 		ev.Actor == nil || *ev.Actor != w.sub.String() || !ev.OccurredAt.Equal(at) {
 		t.Fatalf("the replayed deletion rendered: %+v", ev)
+	}
+	if ev := EventOf(w.team, batch.Events[1]); ev.Type != kc.EventPurged || ev.Item.Label != nil || ev.Item.Hint != nil {
+		t.Fatalf("the replayed purge of a number not yet purged rendered: %+v", ev)
 	}
 	flush(t, s, w.team)
 	if d := w.delivery(t, w.team, held); d.outcome != store.ContractEventDuplicate {
@@ -635,12 +691,77 @@ func TestEventsBeforeTransportNotSent(t *testing.T) {
 	}
 }
 
+// The actor (README 9; the plan's 4.11): a person with no platform sub, a
+// key whose creator has none, and a replayed deletion whose deleter is
+// such a local account go as actor null with their kind, each logged at
+// ERROR once per event and leader however often it is sent, and recorded
+// event_actor_unknown for contract status --check; a key with no creator,
+// and a replayed recovery, of which the ledger keeps no actor, go as actor
+// null with no ERROR.
+func TestEventActorWithoutSub(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	local := w.localPerson(t)
+	readers := []uuid.UUID{w.sub, w.secondSub}
+	faults := []uuid.UUID{
+		w.event(t, w.team, eventRow{kind: "deleted", user: &local, readers: readers}),
+		w.event(t, w.team, eventRow{kind: "sync_paused", actorKind: "key", user: &local, readers: readers}),
+		w.event(t, w.team, eventRow{kind: "deleted", user: &local, replayed: true}),
+	}
+	quiet := []uuid.UUID{
+		w.event(t, w.team, eventRow{kind: "sync_paused", actorKind: "key", readers: readers}),
+		w.event(t, w.team, eventRow{kind: "recovered", replayed: true}),
+	}
+	// The first batch answered 503 (both the client's tries): every event
+	// read twice, and sent three times.
+	var calls atomic.Int32
+	client := w.relay(t, func(r *http.Request, body []byte) *http.Response {
+		if calls.Add(1) <= 2 {
+			return w.refused(r, http.StatusServiceUnavailable, kc.CodeUnavailable)
+		}
+		return nil
+	})
+	logs := &membershiptest.Logs{}
+	s := w.sender(t, &Members{Client: client, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: time.Millisecond}, logs)
+	if _, ok := s.send(ctx, w.team); !ok {
+		t.Fatal("the store")
+	}
+	flush(t, s, w.team)
+	if calls.Load() != 3 {
+		t.Fatalf("%d batches, want 3", calls.Load())
+	}
+	kinds := map[uuid.UUID]string{}
+	for _, ev := range w.sentTo(w.team) {
+		if ev.Actor != nil {
+			t.Fatalf("an actor without a sub sent as %s", *ev.Actor)
+		}
+		kinds[uuid.MustParse(ev.EventID)] = ev.ActorKind
+	}
+	for i, id := range append(slices.Clone(faults), quiet...) {
+		want := []string{"person", "key", "person", "key", "person"}[i]
+		if kinds[id] != want {
+			t.Fatalf("event %d sent with actor_kind %q, want %q", i, kinds[id], want)
+		}
+		told := len(logs.Lines("level=ERROR", "actor has no platform sub", id.String()))
+		if fault := i < len(faults); (told == 1) != fault || told > 1 {
+			t.Fatalf("event %d: %d ERRORs, a fault %v:\n%s", i, told, fault, logs)
+		}
+	}
+	if !strings.Contains(logs.Lines("actor has no platform sub", faults[0].String())[0], "user="+local.String()) {
+		t.Fatalf("the ERROR does not name the local account:\n%s", logs)
+	}
+	if st := w.state(t); st.ErrorClass != store.ContractErrorEventActor {
+		t.Fatalf("the ERROR recorded: %q", st.ErrorClass)
+	}
+}
+
 // TB32 (with TB23's sender clauses): one queue per workspace, each sent in
 // its order; a workspace the platform does not know holds only its own
 // queue; at most 100 events a batch, and a body under 248 KiB; one sender
-// across two processes, the old one silent once its lock is gone; and
-// after an outage at the backoff's cap, the first signed feed answer makes
-// every queue due at once.
+// across two processes, the old one silent once its lock is gone, until it
+// leads again if it does, and whichever leads next sending; and after an
+// outage at the backoff's cap, the first signed feed answer makes every
+// queue due at once.
 func TestEventQueues(t *testing.T) {
 	w := newEventWorld(t)
 	ctx := context.Background()
@@ -696,6 +817,7 @@ func TestEventQueues(t *testing.T) {
 			t.Fatal(err)
 		}
 		logs := &membershiptest.Logs{}
+		c.marks = logs.Logger()
 		m := &Members{Client: client, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: time.Millisecond}
 		l := w.leader(m, logs, key)
 		l.EventBackoffMin, l.EventBackoffMax = 50*time.Millisecond, 200*time.Millisecond
@@ -759,20 +881,22 @@ func TestEventQueues(t *testing.T) {
 	if leading < 0 {
 		t.Fatal("no process sent events")
 	}
-	old, other := procs[leading], procs[1-leading]
+	// The leader's lock connection killed: whichever process leads next
+	// sends (TB23 pins which), and the old one sends nothing from the loss
+	// until it leads again, if it does.
+	old := procs[leading]
 	pid := w.lockHolder(t, key)
 	if _, err := w.pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 10*time.Second, "the old leader stops", func() bool { return len(old.logs.Lines("contract: the leader's lock is lost")) > 0 })
-	calls := old.count.events.Load()
 	late := w.event(t, w.team, eventRow{kind: "deleted", actor: &w.sub, readers: readers})
-	eventually(t, 10*time.Second, "the other sends", func() bool {
-		return w.delivery(t, w.team, late).outcome == store.ContractEventAccepted && other.count.events.Load() > 0
+	eventually(t, 10*time.Second, "a leader sends after the takeover", func() bool {
+		return w.delivery(t, w.team, late).outcome == store.ContractEventAccepted
 	})
 	time.Sleep(500 * time.Millisecond)
-	if n := old.count.events.Load(); n != calls {
-		t.Fatalf("the old leader sent %d batches after its lock went", n-calls)
+	if sentAfterLoss(old.logs) {
+		t.Fatalf("the old leader sent a batch after its lock went:\n%s", old.logs)
 	}
 
 	// An outage with the queue's backoff at its cap (set in the database);
@@ -793,6 +917,51 @@ func TestEventQueues(t *testing.T) {
 	if took := time.Since(back); took > 5*time.Second {
 		t.Fatalf("the queue came back %v after the platform", took)
 	}
+}
+
+// A queue whose store calls fail (here the platform's answer cannot be
+// recorded: a trigger refuses every settle) is due as it was, and the
+// leader's sender tries it again only after a backoff of its own, doubled
+// up to its cap, not every pass; once the store takes the answer, the
+// events are delivered.
+func TestEventStoreFailuresBackOff(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	w.exec(ctx, t, `CREATE FUNCTION refuse_settle() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.settled_at IS NOT NULL AND OLD.settled_at IS NULL THEN
+				RAISE EXCEPTION 'test: the settle is refused';
+			END IF;
+			RETURN NEW;
+		END $$`)
+	w.exec(ctx, t, `CREATE TRIGGER refuse_settle BEFORE UPDATE ON item_events FOR EACH ROW EXECUTE FUNCTION refuse_settle()`)
+	row := w.event(t, w.team, eventRow{kind: "deleted", actor: &w.sub, readers: []uuid.UUID{w.sub, w.secondSub}})
+	c := &counting{}
+	client := NewClient(&http.Client{Transport: c}, w.fake.URL, nil)
+	if err := client.Use(w.secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	logs := &membershiptest.Logs{}
+	m := &Members{Client: client, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: time.Millisecond}
+	// The backoff from 20 ms, doubled up to 200 ms.
+	run(t, w.leader(m, logs, lockKey(t)))
+	eventually(t, 10*time.Second, "the first batch", func() bool { return c.events.Load() > 0 })
+	time.Sleep(1500 * time.Millisecond)
+	// 20, 40, 80 and 160 ms, then 200 ms: about a dozen in 1.5 s; every
+	// pass (20 ms apart) would be over fifty.
+	if n := c.events.Load(); n > 16 {
+		t.Fatalf("%d batches in 1.5 s while the store fails", n)
+	}
+	if d := w.delivery(t, w.team, row); d.settled {
+		t.Fatalf("settled while the store refuses: %+v", d)
+	}
+	if len(logs.Lines("level=WARN", "could not record the platform's answer to events")) == 0 {
+		t.Fatalf("no WARN for the store's failure:\n%s", logs)
+	}
+	w.exec(ctx, t, `DROP TRIGGER refuse_settle ON item_events`)
+	eventually(t, 5*time.Second, "the events delivered once the store takes the answer", func() bool {
+		return w.delivery(t, w.team, row).outcome == store.ContractEventDuplicate
+	})
 }
 
 // TB32's resend: a signed 503 after the platform kept the batch (both the
@@ -907,13 +1076,25 @@ func TestEventOutcomes(t *testing.T) {
 		t.Fatalf("no ERROR for the conflict:\n%s", logs)
 	}
 	recorded(store.ContractErrorEventParked)
-	// An event Wappie would not send (an address for a label): parked
-	// before the send; the rest of its batch goes.
-	bad := deleted(w.team, func(r *eventRow) { r.label = ptr("vendas@loja.com") })
+	// An event Wappie would not send (an address for a label), a pause the
+	// read folds two more into: parked before the send, its folded rows
+	// with it, by that one send; the rest of its batch goes.
+	item := uuid.New()
+	pausing := func() uuid.UUID {
+		t.Helper()
+		return w.event(t, w.team, eventRow{kind: "sync_paused", item: item, actor: &w.sub, user: &w.owner, readers: readers,
+			label: ptr("vendas@loja.com")})
+	}
+	bad := pausing()
+	folds := []uuid.UUID{pausing(), pausing()}
 	good := deleted(w.team)
-	flush(t, s, w.team)
-	if d := w.delivery(t, w.team, bad); d.code != store.EventParkedLocalInvalid {
-		t.Fatalf("local_invalid: %+v", d)
+	if _, ok := s.send(ctx, w.team); !ok {
+		t.Fatal("the store")
+	}
+	for _, id := range append([]uuid.UUID{bad}, folds...) {
+		if d := w.delivery(t, w.team, id); d.code != store.EventParkedLocalInvalid || d.settled {
+			t.Fatalf("local_invalid, a pause or a row folded into it: %+v", d)
+		}
 	}
 	if d := w.delivery(t, w.team, good); d.outcome != store.ContractEventAccepted {
 		t.Fatalf("beside a local_invalid: %+v", d)
@@ -975,6 +1156,41 @@ func TestEventOutcomes(t *testing.T) {
 		t.Fatalf("no ERROR for the batch refused whole:\n%s", logs)
 	}
 	recorded(store.ContractErrorEventParked)
+	// A batch refused whole whose first event alone gets a signed 503: the
+	// queue backs off, and the events after it wait with it (README 9: a
+	// workspace's in order); its next try sends all three, in order.
+	ordered := []uuid.UUID{deleted(w.team), deleted(w.team), deleted(w.team)}
+	before := len(w.sentTo(w.team))
+	halted := w.relay(t, func(r *http.Request, body []byte) *http.Response {
+		evs := batchOf(t, body)
+		if len(evs) > 1 {
+			return w.refused(r, http.StatusBadRequest, kc.CodeInvalid)
+		}
+		if evs[0].EventID == ordered[0].String() {
+			return w.refused(r, http.StatusServiceUnavailable, kc.CodeUnavailable)
+		}
+		return nil
+	})
+	halting := w.sender(t, &Members{Client: halted, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: time.Millisecond}, logs)
+	if _, ok := halting.send(ctx, w.team); !ok {
+		t.Fatal("the store")
+	}
+	if got := w.sentTo(w.team)[before:]; len(got) != 0 {
+		t.Fatalf("events after a failed first one were delivered first: %v", idsOf(got))
+	}
+	if q := w.queue(t, w.team); q.tries != 1 || q.due || q.class != "refused:unavailable" {
+		t.Fatalf("the queue after the first event's 503: %+v", q)
+	}
+	for _, id := range ordered {
+		if d := w.delivery(t, w.team, id); d.settled || d.code != "" {
+			t.Fatalf("an event of the halted batch: %+v", d)
+		}
+	}
+	recorded(store.ContractErrorEventsRefused)
+	flush(t, s, w.team)
+	if got := idsOf(w.sentTo(w.team)[before:]); !slices.Equal(got, ordered) {
+		t.Fatalf("sent %v after the backoff, want %v", got, ordered)
+	}
 
 	// A result naming another event: an unverified answer, nothing settled.
 	stray := deleted(w.team)
@@ -1053,13 +1269,28 @@ func TestEventOutcomes(t *testing.T) {
 		w.exec(ctx, t, `UPDATE contract_state SET error_class = NULL, error_at = NULL`)
 	}
 	// Named again: Wappie's held sub joins the first team, and its sign-in's
-	// document names it.
+	// document names it. The release wakes the leader's sender: the parked
+	// queue has no due time for the naming to make due.
+	listen, err := w.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listen.Release()
+	if _, err := listen.Exec(ctx, `LISTEN `+store.ContractEventsChannel); err != nil {
+		t.Fatal(err)
+	}
 	if err := w.fake.SetRole(teams[0].String(), w.sub.String(), kc.RoleMember); err != nil {
 		t.Fatal(err)
 	}
 	w.members.SignIn(ctx, w.sub)
 	if q := w.queue(t, teams[0]); q.notFound || !q.due {
 		t.Fatalf("named again: %+v", q)
+	}
+	woken, cancel := context.WithTimeout(ctx, 5*time.Second)
+	err = w.backends.Notice(woken, listen.Conn(), store.ContractEventsChannel, teams[0].String())
+	cancel()
+	if err != nil {
+		t.Fatalf("the release woke no sender: %v", err)
 	}
 	flush(t, s, teams[0])
 	for _, id := range parked[teams[0]] {
@@ -1105,6 +1336,67 @@ func TestEventOutcomes(t *testing.T) {
 		t.Fatalf("no ERROR for the expired event:\n%s", logs)
 	}
 	recorded(store.ContractErrorEventParked)
+}
+
+// The events' bounds (README 3, 9 and 11; the plan's 4.11), pinned with
+// literals: a test that reads a constant cannot pin it.
+func TestEventBounds(t *testing.T) {
+	for name, c := range map[string]struct{ got, want time.Duration }{
+		"the first backoff":       {eventBackoffMin, 5 * time.Second},
+		"the longest backoff":     {eventBackoffMax, time.Hour},
+		"the look at every queue": {eventsScanEvery, 5 * time.Minute},
+		"the longest idle":        {eventsIdle, time.Minute},
+		"a not_found's day":       {store.ContractEventNotFoundFor, 24 * time.Hour},
+		"the expiry":              {store.ContractEventExpiry, 29 * 24 * time.Hour},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s: %v, want %v", name, c.got, c.want)
+		}
+	}
+	if eventsBodyLimit != 248<<10 || eventsBodyLimit >= 256<<10 {
+		t.Errorf("a batch's body limit: %d, want 248 KiB, under the call's 256 (README 3)", eventsBodyLimit)
+	}
+	// A resend at the backoff's cap still comes back duplicate: the
+	// platform's inbox holds an event for 30 days (README 11).
+	if store.ContractEventExpiry+eventBackoffMax >= 30*24*time.Hour {
+		t.Errorf("the expiry %v leaves no room in the platform's 30 days", store.ContractEventExpiry)
+	}
+}
+
+// The event sender paces its calls (the P3a review): each batch goes at
+// least Members.Pace after the one before, timed as the client sends it,
+// with one due queue each in five workspaces.
+func TestEventsArePaced(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	const pace = 200 * time.Millisecond
+	readers := []uuid.UUID{w.sub, w.secondSub}
+	for i := range 5 {
+		team, err := w.fake.AddTeam(fmt.Sprintf("Equipe %d", i), w.sub.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := uuid.MustParse(team)
+		w.localTeam(t, id, fmt.Sprintf("Equipe %d", i), member{w.owner, "owner", "active"})
+		w.exec(ctx, t, `INSERT INTO contract_workspaces (workspace_id, kind, named_at) VALUES ($1, 'team', clock_timestamp() - interval '1 minute')`, id)
+		w.event(t, id, eventRow{kind: "deleted", actor: &w.sub, readers: readers})
+	}
+	c := &counting{}
+	client := NewClient(&http.Client{Transport: c}, w.fake.URL, nil)
+	if err := client.Use(w.secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	logs := &membershiptest.Logs{}
+	m := &Members{Client: client, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: pace}
+	run(t, w.leader(m, logs, lockKey(t)))
+	eventually(t, 10*time.Second, "five batches", func() bool { return c.events.Load() >= 5 })
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := 1; i < len(c.posts); i++ {
+		if gap := c.posts[i].Sub(c.posts[i-1]); gap < pace*3/4 {
+			t.Fatalf("batch %d went %v after the one before, under the pace %v", i, gap, pace)
+		}
+	}
 }
 
 // The results matched by position (README 9): one per event, each the

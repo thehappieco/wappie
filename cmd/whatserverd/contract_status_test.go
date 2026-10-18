@@ -379,9 +379,11 @@ func TestContractDiffCommand(t *testing.T) {
 // The events' findings of contract status --check (the plan's 4.13): a
 // workspace's parked events while on, counted as a parked snapshot is (a
 // park since the switch to the mode at once, one from before it once the
-// switch is 2 minutes old), and a queue with no verdict on its batches
-// for over 60 minutes, counted from the later of its first failure and the
-// switch; with the status lines that name them.
+// switch is 2 minutes old), a queue with no verdict on its batches for
+// over 60 minutes, counted from the later of its first failure and the
+// switch, and, whatever the cause, events pending for over 60 minutes,
+// counted from the later of the oldest one's writing and the switch, told
+// once with the queue's own finding; with the status lines that name them.
 func TestContractStatusEvents(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -471,5 +473,61 @@ func TestContractStatusEvents(t *testing.T) {
 	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '30 minutes'`)
 	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
 		t.Fatalf("no verdict for 61 minutes, switched 30 minutes ago: %v", findings)
+	}
+
+	// Events pending with no failure on the queue (a sender whose store
+	// calls fail, or none at all): 59 minutes, then 61.
+	execSQL(t, pool, `UPDATE contract_workspaces SET events_error = NULL, events_error_at = NULL, events_tries = 0, events_due_at = NULL,
+		events_not_found_since = NULL, named_at = clock_timestamp() - interval '1 day' WHERE workspace_id = $1`, ws)
+	execSQL(t, pool, `UPDATE contract_state SET events_from = clock_timestamp() - interval '1 day', mode_changed_at = clock_timestamp() - interval '1 day'`)
+	pending := uuid.New()
+	written := func(ago string) {
+		t.Helper()
+		pending := pending
+		if ago == "0" {
+			pending = uuid.New()
+		}
+		if err := pg.InTenantTx(ctx, pool, ws.String(), func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind,
+				deleted_at, purge_after, created_at)
+				VALUES ($1, $2, 'deleted', $3, $4, clock_timestamp() - $5::interval, 'person', clock_timestamp() - $5::interval,
+				clock_timestamp() + interval '30 days', clock_timestamp() - $5::interval)
+				ON CONFLICT (event_id) DO UPDATE SET created_at = excluded.created_at, occurred_at = excluded.occurred_at`,
+				pending, ws, uuid.New(), pending.String(), ago)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	written("59 minutes")
+	out, findings, _ = statusRun(t, c, config.Contract{})
+	if len(findings) != 0 || !strings.Contains(out, "events pending 1 parked 0") || !strings.Contains(out, "events_pending_since=") {
+		t.Fatalf("an event pending for 59 minutes: %v\n%s", findings, out)
+	}
+	// The oldest counts: a newer one beside it.
+	written("61 minutes")
+	written("0")
+	backstop := "workspace " + ws.String() + " has 2 events pending for over 60 minutes"
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 1 || !has(findings, backstop) {
+		t.Fatalf("an event pending for 61 minutes: %v", findings)
+	}
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '30 minutes'`)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
+		t.Fatalf("an event pending for 61 minutes, switched 30 minutes ago: %v", findings)
+	}
+	// The queue's own finding tells of them: not twice.
+	execSQL(t, pool, `UPDATE contract_state SET mode_changed_at = clock_timestamp() - interval '1 day'`)
+	execSQL(t, pool, `UPDATE contract_workspaces SET events_error = 'unavailable:timeout', events_error_at = clock_timestamp() - interval '61 minutes'
+		WHERE workspace_id = $1`, ws)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 1 || has(findings, backstop) {
+		t.Fatalf("pending, and no verdict for 61 minutes: %v", findings)
+	}
+	// Off, nothing is sent: no finding.
+	if _, err := c.SetMode(ctx, store.ContractOff); err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, pool, `UPDATE contract_workspaces SET events_error = NULL, events_error_at = NULL WHERE workspace_id = $1`, ws)
+	if _, findings, _ := statusRun(t, c, config.Contract{}); len(findings) != 0 {
+		t.Fatalf("pending while off: %v", findings)
 	}
 }
