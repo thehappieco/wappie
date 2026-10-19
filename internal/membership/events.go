@@ -158,7 +158,6 @@ func eventResults(events []kc.Event, results []kc.EventResult) ([]store.Contract
 // eventSender is one leader's sender of events.
 type eventSender struct {
 	l    *Leader
-	pace pacer
 	wake chan struct{}
 
 	mu sync.Mutex
@@ -171,7 +170,7 @@ type eventSender struct {
 }
 
 func newEventSender(l *Leader) *eventSender {
-	return &eventSender{l: l, pace: pacer{every: l.Members.pace()}, wake: make(chan struct{}, 1),
+	return &eventSender{l: l, wake: make(chan struct{}, 1),
 		named: map[uuid.UUID]bool{}, told: map[uuid.UUID]bool{}}
 }
 
@@ -286,7 +285,7 @@ func (s *eventSender) run(ctx context.Context) {
 					wait = min(wait, q.Wait)
 					continue
 				}
-				if err := s.pace.wait(ctx); err != nil {
+				if err := s.l.Members.paced(ctx); err != nil {
 					return
 				}
 				more, ok := s.send(ctx, q.Workspace)
@@ -407,7 +406,7 @@ func (s *eventSender) post(ctx context.Context, ws uuid.UUID, readAt time.Time, 
 			"count", len(events))
 		s.recordError(ctx, store.ContractErrorEventsRefused)
 		for _, ev := range events {
-			if err := s.pace.wait(ctx); err != nil {
+			if err := s.l.Members.paced(ctx); err != nil {
 				return true
 			}
 			if !s.post(ctx, ws, readAt, []kc.Event{ev}) {

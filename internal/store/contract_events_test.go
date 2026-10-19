@@ -294,24 +294,33 @@ func TestEventBatchFolds(t *testing.T) {
 		t.Fatalf("a limit of 1: %+v %v", batch, err)
 	}
 
-	// The hour, and the actor's kind: a pause of another item, then the
-	// same item's under the hour (folded, its readers joining), 61 minutes
-	// on (its own), and by the actor's key (its own).
+	// The hour, and the actor: a pause of another item, then the same
+	// item's under the hour (folded, its readers joining), 61 minutes on
+	// (its own), by the actor's key (folded: README 9's actor is the
+	// person behind the act, a key's creator for a key), and by a key with
+	// no creator (its own: nobody's is never a person's).
+	owner, _, _ := heldPerson(t, pool)
 	other := uuid.New()
-	pause := func(occurred, kind string, readers ...uuid.UUID) uuid.UUID {
+	pause := func(occurred, kind string, user *uuid.UUID, readers ...uuid.UUID) uuid.UUID {
 		t.Helper()
 		list := make([]string, len(readers))
 		for i, r := range readers {
 			list[i] = "'" + r.String() + "'"
 		}
+		by := "NULL"
+		if user != nil {
+			by = "'" + user.String() + "'"
+		}
 		return pastEvent(t, pool, team, "sync_paused", "0", occurred, fmt.Sprintf(
-			`item_id = '%s', actor_kind = '%s', actor_sub = '%s', reader_subs = ARRAY[%s]::uuid[]`, other, kind, actor, strings.Join(list, ", ")))
+			`item_id = '%s', actor_kind = '%s', actor_sub = '%s', actor_user_id = %s, reader_subs = ARRAY[%s]::uuid[]`,
+			other, kind, actor, by, strings.Join(list, ", ")))
 	}
-	third := uuid.New()
-	first := pause("90 minutes", "person", actor, reader)
-	joined := pause("31 minutes", "person", actor, third)
-	later := pause("29 minutes", "person", actor, reader)
-	keyed := pause("80 minutes", "key", actor, reader)
+	third, fourth := uuid.New(), uuid.New()
+	first := pause("90 minutes", "person", &owner, actor, reader)
+	joined := pause("31 minutes", "person", &owner, actor, third)
+	later := pause("29 minutes", "person", &owner, actor, reader)
+	keyed := pause("80 minutes", "key", &owner, actor, fourth)
+	nobodys := pause("85 minutes", "key", nil, actor, reader)
 	batch, err = c.EventBatch(ctx, team, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -319,12 +328,15 @@ func TestEventBatchFolds(t *testing.T) {
 	heads = nil
 	for _, e := range batch.Events {
 		heads = append(heads, e.EventID)
-		if e.EventID == first && (e.Folded != 1 || !slices.Equal(e.Readers, []uuid.UUID{actor, reader, third})) {
+		if e.EventID == first && (e.Folded != 2 || !slices.Equal(e.Readers, []uuid.UUID{actor, reader, third, fourth})) {
 			t.Fatalf("the first pause: %d folded, readers %v", e.Folded, e.Readers)
 		}
+		if e.EventID == first && e.ActorKind != "person" {
+			t.Fatalf("the first pause goes as actor_kind %q", e.ActorKind)
+		}
 	}
-	if want := []uuid.UUID{after, orphan, first, later, keyed}; !slices.Equal(heads, want) {
-		t.Fatalf("heads %v, want %v (joined %s folded)", heads, want, joined)
+	if want := []uuid.UUID{after, orphan, first, later, nobodys}; !slices.Equal(heads, want) {
+		t.Fatalf("heads %v, want %v (joined %s and keyed %s folded)", heads, want, joined, keyed)
 	}
 }
 

@@ -1399,6 +1399,61 @@ func TestEventsArePaced(t *testing.T) {
 	}
 }
 
+// The leader's calls share one pace (the whole-branch review): the round's
+// PUTs, the snapshots and the batches of events, all due at once at a
+// leader's start, go at most one every Members.Pace between them, so that
+// together they stay at a fifth of the platform's 50 a second, as the
+// hook's budget counts them. Each is timed as the client sends it; no
+// window of a second holds more than about one second's worth of the pace.
+func TestTheLeadersCallsShareOnePace(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	const pace = 100 * time.Millisecond
+	readers := []uuid.UUID{w.sub, w.secondSub}
+	for i := range 6 {
+		team, err := w.fake.AddTeam(fmt.Sprintf("Equipe %d", i), w.sub.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := uuid.MustParse(team)
+		w.localTeam(t, id, fmt.Sprintf("Equipe %d", i), member{w.owner, "owner", "active"})
+		w.exec(ctx, t, `INSERT INTO contract_workspaces (workspace_id, kind, named_at) VALUES ($1, 'team', clock_timestamp() - interval '1 minute')`, id)
+		w.event(t, id, eventRow{kind: "deleted", actor: &w.sub, readers: readers})
+	}
+	for range 6 {
+		_, sub, _ := w.heldAtHome(t)
+		if err := w.contract.Unfollowed(ctx, sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &counting{}
+	client := NewClient(&http.Client{Transport: c}, w.fake.URL, nil)
+	if err := client.Use(w.secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	logs := &membershiptest.Logs{}
+	m := &Members{Client: client, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: pace}
+	run(t, w.leader(m, logs, lockKey(t)))
+	eventually(t, 20*time.Second, "the round, the snapshots and the events", func() bool {
+		return c.accounts.Load() >= 6 && c.access.Load() >= 6 && c.events.Load() >= 6
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	most := 0
+	for i := range c.all {
+		n := 0
+		for j := i; j < len(c.all) && c.all[j].Sub(c.all[i]) < time.Second; j++ {
+			n++
+		}
+		most = max(most, n)
+	}
+	// One every 100 ms is 10 in a second; three senders each at their own
+	// pace would be up to 30.
+	if most > 14 {
+		t.Fatalf("%d of the leader's calls within a second, at a pace of %v between any two (%d calls in all)", most, pace, len(c.all))
+	}
+}
+
 // The results matched by position (README 9): one per event, each the
 // event's own id or empty, each an outcome README 9 defines.
 func TestEventResults(t *testing.T) {
@@ -1591,6 +1646,48 @@ func TestPauseCoalescing(t *testing.T) {
 	flush(t, s, w.team)
 	if ids := pauses(served); len(ids) != 0 || len(w.sentTo(w.team)) != before {
 		t.Fatalf("a pause only a service account reads: %v", ids)
+	}
+}
+
+// README 9's actor is the person behind the act, "for an API key, its
+// creator's sub, so the creator counts as the actor": a person's stop and
+// one by their key under the hour after it send one item.sync_paused, the
+// person's, with the union of the readers.
+func TestPauseCoalescingByAKeysCreator(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	devices := store.NewDevices(w.pool)
+	logs := &membershiptest.Logs{}
+	s := w.sender(t, w.members, logs)
+	var key uuid.UUID
+	if err := w.pool.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, created_by) VALUES ($1, $2, 'x', $3) RETURNING id`,
+		w.team, uuid.NewString()[:8], w.owner).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	third, thirdSub, _ := w.heldAtHome(t)
+	w.localTeam(t, w.team, "", member{third, "member", "active"})
+	for i, by := range []store.PauseActor{{User: w.owner}, {Key: key}} {
+		if i == 1 {
+			if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
+				return readsTx(ctx, tx, w.team, w.device, third)
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := devices.Pause(ctx, w.team, w.device, by); err != nil {
+			t.Fatal(err)
+		}
+		if err := devices.SetPaused(ctx, w.team.String(), w.device.String(), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flush(t, s, w.team)
+	sent := w.sentTo(w.team)
+	if len(sent) != 1 || sent[0].Type != kc.EventSyncPaused || sent[0].ActorKind != "person" || *sent[0].Actor != w.sub.String() {
+		t.Fatalf("a person's pause and their key's: %d events %+v", len(sent), sent)
+	}
+	if got, want := *sent[0].Readers, []string{w.sub.String(), w.secondSub.String(), thirdSub.String()}; !sameSet(got, want) {
+		t.Fatalf("the readers %v, want the union %v", got, want)
 	}
 }
 

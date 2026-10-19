@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -443,11 +444,31 @@ func contractModeCommand(args []string, out io.Writer) error {
 		return err
 	}
 	defer closeAll()
-	return contractMode(ctx, store.NewContract(a.pools.API), args[0], out)
+	ready := func() error { return observeReady(a.cfg.Contract, running) }
+	return contractMode(ctx, store.NewContract(a.pools.API), args[0], ready, out)
 }
 
-// contractMode switches the mode and says what the switch did.
-func contractMode(ctx context.Context, c *store.Contract, mode string, out io.Writer) error {
+// exitNotReady is contract mode observe's refusal: the server cannot take
+// part in the contract yet, and nothing changed.
+const exitNotReady = 3
+
+// contractMode switches the mode and says what the switch did. A switch
+// from off to observe asks ready first and refuses, exit exitNotReady with
+// nothing changed, on its error: once the contract was observed, a new
+// account is refused 503 platform_unavailable while the server has no
+// transport or no secret, in every mode, until 0051's down-step.
+func contractMode(ctx context.Context, c *store.Contract, mode string, ready func() error, out io.Writer) error {
+	if mode == store.ContractObserve && ready != nil {
+		state, err := c.State(ctx)
+		if err != nil {
+			return err
+		}
+		if state.Mode != store.ContractObserve {
+			if err := ready(); err != nil {
+				return exitError{code: exitNotReady, err: err}
+			}
+		}
+	}
 	change, err := c.SetMode(ctx, mode)
 	if err != nil {
 		return err
@@ -463,6 +484,43 @@ func contractMode(ctx context.Context, c *store.Contract, mode string, out io.Wr
 		w.f("events held back for good: %d (pauses, strandings and moves while off)", change.HeldBack)
 	}
 	return w.err
+}
+
+// observeReady says why the server cannot observe yet, or nil: a transport
+// configured, and what the server published of its secrets
+// (WS_CONTRACT_LOADED_FILE) names a current one, with no error, under a
+// process still running (B2a's settings and restart, then the owner's
+// install).
+func observeReady(cfg config.Contract, alive func(pid int) bool) error {
+	if !cfg.Configured() {
+		return errors.New("contract mode observe: not ready: no transport is configured (WS_CONTRACT_SOCKET); nothing changed")
+	}
+	l, published, err := readLoaded(cfg.LoadedFile)
+	switch {
+	case err != nil:
+		return fmt.Errorf("contract mode observe: not ready: cannot read what the server published of its secrets: %w; nothing changed", err)
+	case !published:
+		return errors.New("contract mode observe: not ready: the server published no secrets (is it running with the contract's settings?); nothing changed")
+	case l.Error != "none" || l.Current == "" || l.Current == "none":
+		return fmt.Errorf("contract mode observe: not ready: the server holds no secret (current=%s error=%s); nothing changed", l.Current, l.Error)
+	case !alive(l.PID):
+		return fmt.Errorf("contract mode observe: not ready: the server that published its secrets (pid %d) is not running; nothing changed", l.PID)
+	}
+	return nil
+}
+
+// running reports whether a process pid runs: one that may not be
+// signalled by this user runs too.
+func running(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // lines writes one line per call and keeps the first error.

@@ -10,10 +10,12 @@
 --                       count (events_from, set once at the first observe;
 --                       events_off, the off periods since; events_paused_at,
 --                       the current one), mail_from (the self-hosted
---                       mailer's start: this migration's time, moved by
---                       every start that signs in through the platform),
---                       the platform database's generation and whether it
---                       is confirmed, the feed's cursor, the last
+--                       mailer's start, DB15: this migration's time until
+--                       that mailer, which this release does not include,
+--                       moves it at its first enabled start; nothing in
+--                       this release moves or uses it), the platform
+--                       database's generation and whether it is
+--                       confirmed, the feed's cursor, the last
 --                       published_through a page with more=false vouched
 --                       for, the generation in which every person held
 --                       has been subscribed (round_generation), and the
@@ -354,6 +356,8 @@ ALTER TABLE item_events
     -- workspace.
     ADD CONSTRAINT item_events_event_tenant UNIQUE (event_id, tenant_id);
 CREATE INDEX item_events_unsent   ON item_events (tenant_id, seq) WHERE settled_at IS NULL AND parked_at IS NULL;
+-- The self-hosted mailer's (DB15), unused until it lands: nothing in this
+-- release sets mailed_at.
 CREATE INDEX item_events_unmailed ON item_events (tenant_id, seq) WHERE mailed_at IS NULL;
 -- A platform workspace's new event wakes the leader's event sender at the
 -- writer's commit. It reads the record and locks nothing: the writers hold

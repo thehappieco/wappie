@@ -539,8 +539,9 @@ release, which a rollback of the release keeps):
   group fails the unit, so it is set only where the group exists;
 - `LimitCORE=0`: the secret is in the process's memory;
 - no `ExecReload`: a SIGHUP reloads the secret, and an older binary exits on
-  one, so only the installer signals the server, after `whatserverd
-  contract-secret capabilities` on the running binary prints `sighup`;
+  one, so only the installer signals the server, by its pid, after `whatserverd
+  contract-secret capabilities` on the running binary prints `sighup` and
+  the process has published its first load;
 - `/var/lib/wappie` writable (`StateDirectory=wappie`, as for the deletion
   ledger), for the published load;
 - no `Requires=` or `Wants=` on the platform's units: without the platform
@@ -585,8 +586,10 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   `finding:` line each and exits 1 when there is any, for a daily job that
   adds them to its warnings ([contract status](contract.md#contract-status)).
 - `contract diff` lists what observe found different, by ids.
-- `contract mode observe` turns the contract on; `contract mode off` stops
-  it at once ([the mode](contract.md#the-mode)).
+- `contract mode observe` turns the contract on, and refuses (exit 3,
+  "contract mode observe: not ready: …", nothing changed) until the
+  running server has a transport and a loaded secret; `contract mode off`
+  stops it at once ([the mode](contract.md#the-mode)).
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database

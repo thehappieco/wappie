@@ -236,7 +236,6 @@ func (s *snapshotSender) run(ctx context.Context) {
 			return
 		}
 	}
-	pace := pacer{every: l.Members.pace()}
 	for ctx.Err() == nil {
 		if ids, all := s.notices.take(); all || len(ids) > 0 {
 			if err := c.SnapshotsDirty(ctx, ids, all, or(l.SnapshotDebounce, snapshotDebounce)); err != nil {
@@ -262,7 +261,7 @@ func (s *snapshotSender) run(ctx context.Context) {
 				return
 			}
 		case ok && next.Due:
-			if err := pace.wait(ctx); err != nil {
+			if err := l.Members.paced(ctx); err != nil {
 				return
 			}
 			if !s.send(ctx, next) && !pause(minBack) {

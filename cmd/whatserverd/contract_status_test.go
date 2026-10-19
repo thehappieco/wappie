@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -339,12 +341,90 @@ func TestContractModeCommand(t *testing.T) {
 		{"observe", "events held back for good: 0"},
 	} {
 		var out bytes.Buffer
-		if err := contractMode(ctx, c, step.mode, &out); err != nil || !strings.Contains(out.String(), step.want) {
+		if err := contractMode(ctx, c, step.mode, func() error { return nil }, &out); err != nil || !strings.Contains(out.String(), step.want) {
 			t.Fatalf("contract mode %s: %q %v", step.mode, out.String(), err)
 		}
 	}
 	if err := contractModeCommand([]string{"enforce"}, &bytes.Buffer{}); !errors.As(err, &usageError{}) {
 		t.Fatalf("an unknown mode: %v", err)
+	}
+}
+
+// The switch to observe waits for a server that can take part (the
+// whole-branch review): from off, a server not ready refuses it, exit 3,
+// and nothing changes, events_from above all, which a mistaken observe at
+// B1 would set for good (every new account refused platform_unavailable
+// until 0051's down-step). At observe already, and to off, it asks nothing.
+func TestContractModeObserveNeedsTheServer(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	c := store.NewContract(pool)
+	ctx := context.Background()
+	notReady := errors.New("contract mode observe: not ready: the test's")
+	asked := 0
+	refuse := func() error { asked++; return notReady }
+	var out bytes.Buffer
+	err := contractMode(ctx, c, store.ContractObserve, refuse, &out)
+	var exit exitError
+	if !errors.As(err, &exit) || exit.code != exitNotReady || !errors.Is(err, notReady) || asked != 1 || out.Len() != 0 {
+		t.Fatalf("observe, not ready: %v (asked %d) %q", err, asked, out.String())
+	}
+	var mode string
+	var from *time.Time
+	if err := pool.QueryRow(ctx, `SELECT mode, events_from FROM contract_state`).Scan(&mode, &from); err != nil || mode != "off" || from != nil {
+		t.Fatalf("after the refusal: mode %q, events_from %v, %v", mode, from, err)
+	}
+	if err := contractMode(ctx, c, store.ContractObserve, func() error { return nil }, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{store.ContractObserve, store.ContractOff} {
+		if err := contractMode(ctx, c, mode, refuse, &out); err != nil || asked != 1 {
+			t.Fatalf("%s from observe: %v (asked %d)", mode, err, asked)
+		}
+	}
+}
+
+// What the server must have published before the switch: a transport,
+// then a current secret, no error, under a process that runs.
+func TestObserveReady(t *testing.T) {
+	dir := t.TempDir()
+	loaded := filepath.Join(dir, "contract-secrets.loaded")
+	cfg := config.Contract{Socket: "/run/platform/contract.sock", LoadedFile: loaded}
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	publish := func(pid int, current, failed string) {
+		t.Helper()
+		l := membership.Loaded{PID: pid, LoadedAt: time.Now(), Current: current, Other: "none", Error: failed}
+		if err := os.WriteFile(loaded, []byte(l.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		cfg     config.Contract
+		publish func()
+		want    string
+	}{
+		{"no transport", config.Contract{LoadedFile: loaded}, func() { publish(os.Getpid(), "0123456789ab", "none") }, "no transport is configured"},
+		{"nothing published", cfg, func() { _ = os.Remove(loaded) }, "the server published no secrets"},
+		{"no secret installed", cfg, func() { publish(os.Getpid(), "none", membership.StepMissing) }, "the server holds no secret (current=none error=missing)"},
+		{"a failed load", cfg, func() { publish(os.Getpid(), "none", membership.StepKMS) }, "the server holds no secret (current=none error=kms)"},
+		{"a failed reload", cfg, func() { publish(os.Getpid(), "0123456789ab", membership.StepOpen) }, "error=open"},
+		{"a server that stopped", cfg, func() { publish(gone.Process.Pid, "0123456789ab", "none") }, "is not running"},
+		{"ready", cfg, func() { publish(os.Getpid(), "0123456789ab", "none") }, ""},
+	} {
+		c.publish()
+		err := observeReady(c.cfg, running)
+		if c.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v", c.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), c.want) || !strings.HasPrefix(err.Error(), "contract mode observe: not ready: ") {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
 	}
 }
 

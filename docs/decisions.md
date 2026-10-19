@@ -1610,7 +1610,10 @@ its `occurred_at`; the platform answers `duplicate` for one it holds.
 
 **DB11. One `item.sync_paused` per number, actor and hour.** Later pauses
 fold into the first, which carries their readers; a pause under an hour
-after a delivered one sends nothing. Folded rows settle only with their
+after a delivered one sends nothing. The actor is the person behind the
+act: a key's creator counts as the actor (README 9), so a person's pause
+and their key's fold together; a key with no creator is nobody's, never a
+person's. Folded rows settle only with their
 head's signed answer. A pause nobody but its actor reads is `not_sent`.
 
 **DB12. `devices.pause_cause`**: `person`, `move` or `deletion`, set by every

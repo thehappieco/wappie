@@ -66,9 +66,10 @@ type Members struct {
 	// Bound bounds each call made while a person waits: a sign-in's PUT,
 	// a freshness GET, a refused sign-up's DELETE (5 s when zero).
 	Bound time.Duration
-	// Pace is the time between two of the round's PUTs, or two of the
-	// sweep's DELETEs (100 ms when zero: 10 a second, a fifth of the
-	// platform's limit, README 4).
+	// Pace is the time between two of the leader's calls, whichever of the
+	// round's PUTs, the sweep's DELETEs and the senders' snapshots and
+	// batches of events they are (100 ms when zero: 10 a second together,
+	// a fifth of the platform's limit, README 4).
 	Pace time.Duration
 	// ModeCache is how long the contract's state read is trusted (5 s
 	// when zero; a negative one reads it every time).
@@ -82,6 +83,8 @@ type Members struct {
 	read  time.Time
 	// calls is the freshness hook's budget of GETs (budget.go).
 	calls *callBudget
+	// pacing gives the leader's calls their turns (Pace).
+	pacing pacer
 }
 
 // SignUp is a new account's subscription: its home and document when the

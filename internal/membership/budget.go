@@ -15,11 +15,13 @@ import (
 // acts, each with its own GET, would fail the round, the feed, the
 // snapshots, the events and every sign-up with them. So the hook's GETs,
 // and only theirs, take a token from this process's bucket and from their
-// workspace's: the process's leaves room under 50 a second for the round's
-// 10 (Pace), sign-ins and the feed, and the workspace's keeps one team's
-// stream from taking all of it. A GET waits for its tokens within its act's
-// bound; one that would not get them in time is no answer, throttled, which
-// at observe is only logged.
+// workspace's. The process's leaves room under 50 a second for the
+// leader's calls, 10 a second for the round, the sweep and both senders
+// together (Members.paced), for the sign-ins and for the feed: the two
+// make 20 a second, and 40 in a second that starts with this bucket full;
+// the workspace's keeps one team's stream from taking all of it. A GET
+// waits for its tokens within its act's bound; one that would not get them
+// in time is no answer, throttled, which at observe is only logged.
 const (
 	hookPerSecond   = 10
 	hookBurst       = 20

@@ -145,10 +145,11 @@ A load never stops the process.
   which systemd counts as clean and would not restart; without a
   transport it logs "SIGHUP: nothing to reload, the contract has no
   transport configured". The unit needs no `ExecReload`: the installer
-  signals the main process itself, and only after
+  signals the main process itself, by its pid, and only after
   `whatserverd contract-secret capabilities` on the running binary prints
   `sighup` (an older binary answers any unknown command with exit 2, and
-  dies on a SIGHUP).
+  dies on a SIGHUP) and that process has published a load of its own:
+  before its first, it may still be starting, where a SIGHUP ends it too.
 - **What it published.** After every load and reload, successful or not,
   the server writes `WS_CONTRACT_LOADED_FILE`, one `key=value` a line:
   `pid`, `loaded_at`, `reloads` (the SIGHUPs since it started), `current`
@@ -311,6 +312,15 @@ whatserverd contract mode off|observe
 A database write only, as the service user from the server's working
 directory ([contract commands](deployment.md#contract-commands)).
 
+- **Only a server that can take part.** From `off`, `contract mode
+  observe` first reads what the server published of its secrets
+  (`WS_CONTRACT_LOADED_FILE`) and refuses, exit `3` with "contract mode
+  observe: not ready: …" and nothing changed, unless a transport is
+  configured and that file names a current secret, with error `none`,
+  under a process that still runs. Once observed, a new account is refused
+  `503 platform_unavailable` whenever there is no transport or no secret,
+  in every mode, until 0051's down-step: a switch before the settings and
+  the install would refuse every sign-up for good.
 - **`off` to `observe`**, in one transaction: the mode, `events_from` set
   once (the first switch: no item event written before it is ever sent),
   the off period that ends added to `events_off`, and the round asked again.
@@ -363,7 +373,10 @@ a file not loaded yet, or `missing`).
 - **The round** (spec 6.1, "once for every person the app holds when it
   connects"; 7.4): the leader PUTs every sub Wappie holds
   (`platform_identities`) whose row has no version of the stored
-  generation, 10 calls a second, each after its intent row. Once none is
+  generation, each after its intent row, at the leader's one pace: 10
+  calls a second for all of the leader's calls together, the round's, the
+  sweep's and both senders', which take their turns from it, so the
+  leader never makes more than that whatever runs at once. Once none is
   left it records `round_generation`. It runs at the leader's start, after
   a new generation, at the switch to observe, within a minute of a GET's
   `not_found` for a held sub, and every minute once done; a pass that left
@@ -384,7 +397,7 @@ a file not loaded yet, or `missing`).
   On the platform's signed `{"subscribed": false}` the row is removed by
   compare-and-set on the intent it read; when that removes nothing (a
   sign-in's PUT or a link came in between), the sub is PUT again at once.
-  It runs at the leader's start and every 5 minutes, at the round's pace.
+  It runs at the leader's start and every 5 minutes, at the leader's pace.
   A sub Wappie holds is never unsubscribed.
 
 ## The leader and the follower
@@ -440,6 +453,10 @@ wait of 25 seconds, from the stored cursor.
   a long time"). The first page after a run of failures makes every
   backed-off snapshot and queue due at once, so they come back with the
   platform.
+- **An early empty page** (no items, `more: false`, back in under half
+  the wait it asked for: the platform shutting down, or a faulty answer)
+  is a page and commits, and the next call waits the backoff's first 2
+  seconds, so an answer that comes at once never makes a loop of calls.
 - An answer at sign-in of another generation than the stored one is not
   stored; it wakes the leader, whose next call finds it.
 
@@ -523,12 +540,16 @@ transaction):
   5-second bound, and each first takes a token from the process's budget
   (10 a second, bursts of 20) and its workspace's (5 a second, bursts of
   20): one that would not get them in time is `throttled`, with no call. A
-  late answer is still stored.
+  late answer is still stored. With the leader's 10 a second, that is 20
+  calls a second, 40 in a second that starts with the budget full, under
+  the platform's 50 for all of an app's calls, sign-ins and the feed
+  included.
 - **The hot paths** never wait: a send's or a group act's check runs in
   the background on the stored freshness, at most once a minute per
-  session, act and number (per connection and number for `mcp.send`), and
-  at most 16 at once per process; the rest are skipped. They make no
-  contract call.
+  session, act and number (per connection and number for `mcp.send`). Two
+  bounds, each per process, keep them few: at most 16 at once for the
+  socket's sends and group acts, and 16 at once for `mcp.send`; the rest
+  are skipped. They make no contract call.
 - **The step-up's GET.** After a step-up at id., a stale person's document
   is asked for, so an act right after it finds them fresh; its failure
   changes nothing.
@@ -600,7 +621,7 @@ the workspace's status or storage stop: 0051's triggers notify the leader
 at each commit); at once after a document that changes the workspace's
 members or names it first; and 55 minutes after the last accepted one, so
 a snapshot is never an hour old. One sender, in the order they are due, at
-the round's pace.
+the leader's pace.
 
 **Outcomes.** `{"accepted": true}` resets its backoff. A signed `not_found`
 is retried with the backoff for 24 hours, then the workspace's snapshots
@@ -799,7 +820,7 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | hot path | 1 minute | a send's or a group act's background check, at most once per session, act and number (per connection and number for `mcp.send`) |
 | hot path bound | 5 seconds | one such background check, which reads the stored freshness only |
 | mode cache | 5 seconds | how long a process trusts the mode it read |
-| pace | 100 milliseconds | between two of the round's PUTs, the sweep's DELETEs, or the senders' calls |
+| pace | 100 milliseconds | between two of the leader's calls, whichever they are: the round's PUTs, the sweep's DELETEs and the senders' calls take turns |
 | orphan | 15 minutes | a subscription of a sub Wappie does not hold, before the sweep |
 | sweep | 5 minutes | how often the sweep runs |
 | round | 1 minute | how often a round that is done is asked again |

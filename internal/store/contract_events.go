@@ -187,14 +187,15 @@ type deliveredPause struct {
 	occurredAt time.Time
 }
 
-// sameActor is DB11's actor: the kind and the local account (a key's
-// creator for a key), the same nobody included.
+// sameActor is DB11's actor, README 9's: the person behind the act, by
+// local account, a key's creator for a key ("the creator counts as the
+// actor"), so a person's pause and their key's are the same actor's. With
+// no account on either side (a key with no creator, a person whose account
+// is gone) only the same kind with none is: nobody behind a key is never a
+// person.
 func sameActor(kind string, user *uuid.UUID, otherKind string, other *uuid.UUID) bool {
-	if kind != otherKind {
-		return false
-	}
 	if user == nil || other == nil {
-		return user == nil && other == nil
+		return user == nil && other == nil && kind == otherKind
 	}
 	return *user == *other
 }

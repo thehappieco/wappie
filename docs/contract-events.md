@@ -124,9 +124,13 @@ the replay keeps the ledger's id and time.
 One `item.sync_paused` per number, actor and hour (the spec's "Floods"):
 
 - When a queue's next event is a pause, every later unsent pause of the
-  same number by the same actor (the same kind and local account; a key's
-  creator for a key) under an hour after it is folded into it, and it
-  carries the union of their readers. The folded rows are settled
+  same number by the same actor under an hour after it is folded into it,
+  and it carries the union of their readers. The actor is the person
+  behind the act, by local account, a key's creator for a key (the spec's
+  "the creator counts as the actor"), so a person's stop and their key's
+  are one actor's, and the event goes with the first one's `actor_kind`;
+  with no account (a key with no creator, a person whose account is gone),
+  only the same kind with none is the same actor. The folded rows are settled
   `coalesced` only in the transaction that records its own signed answer,
   and parked with it when it is parked.
 - A pause under an hour after one of the same number and actor that the
@@ -152,7 +156,7 @@ added within the hour is told in Wappie even when no second mail goes.
 - A new row of a platform workspace, a queue made due again and a release
   of parked rows wake the sender at once (0051's notices); it also looks
   at every queue at the leader's start and every 5 minutes. Calls go at the
-  round's pace, 10 a second.
+  leader's pace, 10 a second for all of the leader's calls together.
 - **Results are matched by position** (the spec's "one per event, in
   order"): a result whose `event_id` is neither the event sent at that
   place nor empty (the platform's, for an event it could not decode), or

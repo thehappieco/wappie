@@ -3,6 +3,7 @@ package membership
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,9 +14,11 @@ import (
 // does not. Each is one pass here; the leader runs both, one after the
 // other (Leader.rounds).
 
-// roundPace is the pace of the round and of the sweep: 10 calls a second,
-// a fifth of the platform's limit on all of an app's calls (README 4), so
-// neither crowds out a sign-in's PUT or the feed.
+// roundPace is the pace of the leader's calls, the round's PUTs, the
+// sweep's DELETEs and the two senders' snapshots and batches of events, all
+// together (Members.paced): 10 calls a second, a fifth of the platform's
+// limit on all of an app's calls (README 4), so that with the hook's budget
+// (budget.go) they never crowd out a sign-in's PUT or the feed.
 const roundPace = 100 * time.Millisecond
 
 // roundBatch is how many subs the round, or the sweep, reads at once.
@@ -40,17 +43,27 @@ func (m *Members) pace() time.Duration {
 	return roundPace
 }
 
-// pacer spaces a pass's calls at least every apart, the first at once.
+// pacer hands out turns at least every apart, to every caller of one
+// Members: the round, the sweep and the two senders run side by side in
+// the leader, and each pacing itself would add their rates up.
 type pacer struct {
-	every time.Duration
-	last  time.Time
+	mu   sync.Mutex
+	next time.Time
 }
 
-// wait returns once every has passed since the call before, or with the
-// context's error.
-func (p *pacer) wait(ctx context.Context) error {
-	if !p.last.IsZero() {
-		t := time.NewTimer(time.Until(p.last.Add(p.every)))
+// wait returns at the caller's turn, every after the turn before it of any
+// caller, the first at once; or with the context's error, the turn spent.
+func (p *pacer) wait(ctx context.Context, every time.Duration) error {
+	p.mu.Lock()
+	now := time.Now()
+	at := p.next
+	if at.Before(now) {
+		at = now
+	}
+	p.next = at.Add(every)
+	p.mu.Unlock()
+	if d := time.Until(at); d > 0 {
+		t := time.NewTimer(d)
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -58,9 +71,11 @@ func (p *pacer) wait(ctx context.Context) error {
 		case <-t.C:
 		}
 	}
-	p.last = time.Now()
 	return nil
 }
+
+// paced waits for the next turn of m's leader calls (roundPace).
+func (m *Members) paced(ctx context.Context) error { return m.pacing.wait(ctx, m.pace()) }
 
 // Round is one pass of the round (README 6.1, "once for every person the
 // app holds when it connects"; 7.4): every sub Wappie holds whose row is
@@ -76,7 +91,6 @@ func (m *Members) Round(ctx context.Context) (bool, error) {
 		return false, ErrUnavailable
 	}
 	tried := map[uuid.UUID]bool{}
-	pace := pacer{every: m.pace()}
 	failed := ""
 	for {
 		subs, err := m.Contract.Unsubscribed(ctx, roundBatch)
@@ -96,7 +110,7 @@ func (m *Members) Round(ctx context.Context) (bool, error) {
 			if tried[sub] {
 				continue
 			}
-			if err := pace.wait(ctx); err != nil {
+			if err := m.paced(ctx); err != nil {
 				return false, err
 			}
 			tried[sub], progressed = true, true
@@ -148,9 +162,8 @@ func (m *Members) Sweep(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	n := 0
-	pace := pacer{every: m.pace()}
 	for _, o := range orphans {
-		if err := pace.wait(ctx); err != nil {
+		if err := m.paced(ctx); err != nil {
 			return n, err
 		}
 		call, cancel := context.WithTimeout(ctx, m.bound())

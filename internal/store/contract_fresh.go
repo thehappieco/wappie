@@ -38,6 +38,15 @@ func (s ContractStanding) Lists(workspace uuid.UUID) bool {
 	return slices.Contains(s.Workspaces, workspace)
 }
 
+// vouchedThroughSQL is the last trusted published_through as it vouches for
+// the sub of row a of contract_accounts, of contract_state s, or NULL: only
+// for a sub the platform follows in the stored generation (README 7.1; the
+// plan's DB8), and never while it is past the clock by more than $3
+// (ContractClockSkew). Standing and Vouched both read it, so one clause
+// decides what a page vouches for everywhere.
+const vouchedThroughSQL = `CASE WHEN a.version IS NOT NULL AND a.generation = s.generation
+	AND s.published_through <= clock_timestamp() + $3::interval THEN s.published_through END`
+
 // Standing says, for each sub, whether it is fresh within d on the
 // database's clock, with its stored document's status and workspaces: one
 // query. Fresh is the later of its last answer and the last trusted
@@ -50,9 +59,7 @@ func (c *Contract) Standing(ctx context.Context, d time.Duration, subs ...uuid.U
 	if len(subs) == 0 {
 		return out, nil
 	}
-	rows, err := c.pool.Query(ctx, `SELECT q.sub, coalesce(greatest(a.fresh_at,
-			CASE WHEN a.version IS NOT NULL AND a.generation = s.generation
-			      AND s.published_through <= clock_timestamp() + $3::interval THEN s.published_through END)
+	rows, err := c.pool.Query(ctx, `SELECT q.sub, coalesce(greatest(a.fresh_at, `+vouchedThroughSQL+`)
 			> clock_timestamp() - $2::interval, false), coalesce(a.status, ''),
 			ARRAY(SELECT (w->>'id')::uuid FROM jsonb_array_elements(coalesce(a.doc->'workspaces', '[]')) AS w)
 		FROM unnest($1::uuid[]) AS q(sub)

@@ -493,35 +493,44 @@ func dbNow(t *testing.T, pool *pgxpool.Pool, offset string) time.Time {
 	return at
 }
 
-// counting counts a process's feed requests, its snapshots and its
-// batches of events, and keeps the time each snapshot and batch went, as
-// the client sends it; with marks, it logs each batch there too, in order
-// with the process's own lines.
+// counting counts a process's feed requests, its snapshots, its batches of
+// events and its PUTs of accounts, and keeps the time each snapshot and
+// batch went, as the client sends it, and each call but the feed's (all);
+// with marks, it logs each batch there too, in order with the process's
+// own lines.
 type counting struct {
-	feed, access, events atomic.Int64
-	marks                *slog.Logger
+	feed, access, events, accounts atomic.Int64
+	marks                          *slog.Logger
 
-	mu          sync.Mutex
-	puts, posts []time.Time
+	mu               sync.Mutex
+	puts, posts, all []time.Time
 }
 
 func (c *counting) RoundTrip(r *http.Request) (*http.Response, error) {
+	now := time.Now()
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/feed"):
 		c.feed.Add(1)
 	case strings.HasSuffix(r.URL.Path, "/access"):
 		c.access.Add(1)
 		c.mu.Lock()
-		c.puts = append(c.puts, time.Now())
+		c.puts = append(c.puts, now)
 		c.mu.Unlock()
 	case strings.HasSuffix(r.URL.Path, "/events"):
 		c.events.Add(1)
 		c.mu.Lock()
-		c.posts = append(c.posts, time.Now())
+		c.posts = append(c.posts, now)
 		c.mu.Unlock()
 		if c.marks != nil {
 			c.marks.Info("test: a batch of events goes")
 		}
+	case strings.Contains(r.URL.Path, "/accounts/") && r.Method == http.MethodPut:
+		c.accounts.Add(1)
+	}
+	if !strings.HasSuffix(r.URL.Path, "/feed") {
+		c.mu.Lock()
+		c.all = append(c.all, now)
+		c.mu.Unlock()
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }
@@ -1372,6 +1381,42 @@ func TestFollowerRefusesPagesThatDoNotMove(t *testing.T) {
 		if s := w.state(t); s.FeedCursor != cursor || s.FeedReadAt != nil || s.FeedError != "unverified" {
 			t.Fatalf("%s: the state %+v, want the cursor at %d, never read, unverified", c.name, s, cursor)
 		}
+	}
+}
+
+// A signed empty page with more false is a page (the long-poll's answer
+// when its time is up or the platform shuts down, README 6.3), and it
+// commits; one that comes back well before the wait it asked for is
+// followed by the backoff's first pause, so a platform that answers at
+// once never has the follower call it in a loop of the app's calls.
+func TestFollowerPausesAfterAnEarlyEmptyPage(t *testing.T) {
+	w := newWorld(t)
+	w.held(t)
+	gen, _ := w.fake.Generation()
+	const cursor = 10
+	w.exec(context.Background(), t, `UPDATE contract_state SET generation = $1, feed_cursor = $2`, uuid.MustParse(gen), cursor)
+	logs := &membershiptest.Logs{}
+	var calls atomic.Int64
+	empty := func(after int64) kc.Feed {
+		return kc.Feed{Generation: gen, Head: after, PublishedThrough: kc.T(time.Now().Add(-time.Minute)), Items: []kc.FeedItem{},
+			NextAfter: after}
+	}
+	m := &Members{Client: signedFeed(t, w.fake, w.secret, &calls, empty), Contract: w.contract, Log: logs.Logger(), ModeCache: -1,
+		Pace: time.Millisecond}
+	l := w.leader(m, logs, lockKey(t))
+	l.BackoffMin = 100 * time.Millisecond
+	stop := run(t, l)
+	eventually(t, 5*time.Second, "the first page", func() bool { return w.state(t).FeedReadAt != nil })
+	before := calls.Load()
+	time.Sleep(time.Second)
+	n := calls.Load() - before
+	stop()
+	// One call every 100 ms or so: about ten in the second, never a loop.
+	if n > 15 {
+		t.Fatalf("%d feed calls in about a second after empty pages that came back at once", n)
+	}
+	if s := w.state(t); s.FeedCursor != cursor || s.FeedError != "" {
+		t.Fatalf("the state %+v, want the cursor at %d and no error: an empty page is a page", s, cursor)
 	}
 }
 

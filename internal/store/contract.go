@@ -880,14 +880,13 @@ func (c *Contract) Fresh(ctx context.Context, d time.Duration, subs ...uuid.UUID
 // Vouched says whether the last trusted published_through vouches for sub
 // within d on the database's clock, on the terms Fresh counts it: only for
 // a sub the platform follows in the stored generation, never while it is
-// past the clock by more than ContractClockSkew. It is README 7.1's rule
-// for a sign-in the platform did not answer: a returning person signs in on
-// their last document only while it holds.
+// past the clock by more than ContractClockSkew (vouchedThroughSQL, the
+// clause Standing reads too). It is README 7.1's rule for a sign-in the
+// platform did not answer: a returning person signs in on their last
+// document only while it holds.
 func (c *Contract) Vouched(ctx context.Context, d time.Duration, sub uuid.UUID) (bool, error) {
 	var vouched bool
-	err := c.pool.QueryRow(ctx, `SELECT coalesce(bool_or(a.version IS NOT NULL AND a.generation = s.generation
-			AND s.published_through <= clock_timestamp() + $3::interval
-			AND s.published_through > clock_timestamp() - $2::interval), false)
+	err := c.pool.QueryRow(ctx, `SELECT coalesce(bool_or(`+vouchedThroughSQL+` > clock_timestamp() - $2::interval), false)
 		FROM contract_state s LEFT JOIN contract_accounts a ON a.sub = $1`, sub, d, ContractClockSkew).Scan(&vouched)
 	return vouched, err
 }

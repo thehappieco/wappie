@@ -83,6 +83,7 @@ func (f *follower) run(ctx context.Context) {
 		f.mu.Lock()
 		f.cut = cut
 		f.mu.Unlock()
+		asked := time.Now()
 		page, err := m.Client.Feed(poll, state.FeedCursor, l.wait())
 		interrupted := poll.Err() != nil && ctx.Err() == nil
 		cut()
@@ -132,8 +133,33 @@ func (f *follower) run(ctx context.Context) {
 		}
 		if err := f.commit(ctx, state, gen, page); err != nil {
 			fail("store", "error", err)
+			continue
+		}
+		if early(page, time.Since(asked), l.wait()) {
+			f.pause(ctx, minBack)
 		}
 	}
+}
+
+// early reports whether a committed page is an empty final one that came
+// back in under half the wait it asked for. README 6.3's long-poll answers
+// so only when the platform shuts down, and a faulty platform may at any
+// time: calling again at once would be a busy loop of the app's calls,
+// which share the platform's 50 a second with every sign-in's PUT. A page
+// with items, or with more, is never early: its call follows at once.
+func early(page kc.Feed, took time.Duration, wait int) bool {
+	return len(page.Items) == 0 && !page.More && took < time.Duration(wait)*time.Second/2
+}
+
+// pause waits d before the next feed call, or less when ctx ends or a
+// notice interrupts it (another generation seen: the next call finds it).
+func (f *follower) pause(ctx context.Context, d time.Duration) {
+	wait, cut := context.WithTimeout(ctx, d)
+	defer cut()
+	f.mu.Lock()
+	f.cut = cut
+	f.mu.Unlock()
+	<-wait.Done()
 }
 
 // pageMoves reports whether a page asked from cursor is one README 6.3
@@ -141,7 +167,9 @@ func (f *follower) run(ctx context.Context) {
 // the cursor, and a page with more ends at its last item's seq, past the
 // cursor. A signed page that is not, committed, would have the follower
 // call again at once with nothing moved: a busy loop of the app's calls,
-// which share the platform's 50 a second with every sign-in's PUT.
+// which share the platform's 50 a second with every sign-in's PUT. An
+// empty page with more false moves nothing either, and is a page: early
+// spaces the call after it.
 func pageMoves(page kc.Feed, cursor int64) bool {
 	switch {
 	case page.NextAfter < cursor:

@@ -26,7 +26,7 @@ func TestSendCheckTimingsMatchTheDocs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := fmt.Sprintf("at most %d at once per process", sendChecksInFlight); !strings.Contains(strings.Join(strings.Fields(string(b)), " "), s) {
+	if s := fmt.Sprintf("and %d at once for `mcp.send`", sendChecksInFlight); !strings.Contains(strings.Join(strings.Fields(string(b)), " "), s) {
 		t.Errorf("docs/contract.md does not say %q", s)
 	}
 }

@@ -346,20 +346,33 @@ func TestContractSignInReads(t *testing.T) {
 		t.Fatalf("round_generation %v %v", round, err)
 	}
 
-	// published_through vouches for a followed sub only, within the hour,
-	// and never past the clock's bound.
+	// published_through vouches for a followed sub only, of the stored
+	// generation, within the hour, and never past the clock's bound; and
+	// Vouched and the freshness every act reads (Standing, here with the
+	// sub's own answer two hours old) say the same, from one clause.
+	if _, err := f.pool.Exec(ctx, `UPDATE contract_accounts SET fresh_at = clock_timestamp() - interval '2 hours' WHERE sub = $1`, sub); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		through string
-		follow  bool
-		want    bool
+		through  string
+		follow   bool
+		otherGen bool
+		want     bool
 	}{
-		{"-30 minutes", true, true},
-		{"-61 minutes", true, false},
-		{"+10 minutes", true, false},
-		{"-30 minutes", false, false},
+		{"-30 minutes", true, false, true},
+		{"+4 minutes", true, false, true},
+		{"-61 minutes", true, false, false},
+		{"+10 minutes", true, false, false},
+		{"-30 minutes", true, true, false},
+		{"-30 minutes", false, false, false},
 	} {
 		if _, err := f.pool.Exec(ctx, `UPDATE contract_state SET published_through = $1`, dbClock(t, f.pool, tc.through)); err != nil {
 			t.Fatal(err)
+		}
+		if tc.otherGen {
+			if _, err := f.pool.Exec(ctx, `UPDATE contract_state SET generation = $1`, uuid.New()); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if !tc.follow {
 			if err := c.Unfollowed(ctx, sub); err != nil {
@@ -367,7 +380,15 @@ func TestContractSignInReads(t *testing.T) {
 			}
 		}
 		if v, err := c.Vouched(ctx, store.FreshFor, sub); err != nil || v != tc.want {
-			t.Fatalf("published_through %s (followed %v): vouched %v, want %v (%v)", tc.through, tc.follow, v, tc.want, err)
+			t.Fatalf("published_through %s (followed %v, another generation %v): vouched %v, want %v (%v)", tc.through, tc.follow, tc.otherGen, v, tc.want, err)
+		}
+		if fresh, err := c.Fresh(ctx, store.FreshFor, sub); err != nil || fresh[sub] != tc.want {
+			t.Fatalf("published_through %s (followed %v, another generation %v): fresh %v, want %v (%v)", tc.through, tc.follow, tc.otherGen, fresh[sub], tc.want, err)
+		}
+		if tc.otherGen {
+			if _, err := f.pool.Exec(ctx, `UPDATE contract_state SET generation = $1`, gen); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if v, err := c.Vouched(ctx, store.FreshFor, stranger); err != nil || v {
