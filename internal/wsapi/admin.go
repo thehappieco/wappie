@@ -292,7 +292,7 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 	}
 	// Creating an API key waits for the person's fresh memberships in a
 	// team (README 7.1), before the key exists.
-	if !s.fresh(ctx, f.ReqID, TypeKeyCreate, person(who, membership.IfStale)) {
+	if !s.widening(ctx, f.ReqID, TypeKeyCreate, person(who, membership.IfStale)) {
 		return
 	}
 	author := who.userID
@@ -426,7 +426,7 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 	if user != who.userID {
 		parties = append(parties, membership.Party{User: user, How: membership.Always})
 	}
-	if !s.fresh(ctx, f.ReqID, TypeGrantAdd, parties...) {
+	if !s.widening(ctx, f.ReqID, TypeGrantAdd, parties...) {
 		return
 	}
 

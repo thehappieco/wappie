@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/authapi"
+	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/membership"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
@@ -28,7 +29,7 @@ import (
 // flag a refusal is 503 memberships_unconfirmed and nothing changes.
 
 type routeCall struct {
-	act            string
+	kind, act      string
 	tenant         uuid.UUID
 	parties        []membership.Party
 	device, losing uuid.UUID
@@ -54,11 +55,15 @@ func (r *routeRecorder) record(ctx context.Context, c routeCall) error {
 }
 
 func (r *routeRecorder) RequireFresh(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
-	return membership.Verdict{}, r.record(ctx, routeCall{act: act, tenant: tenant, parties: parties})
+	return membership.Verdict{}, r.record(ctx, routeCall{kind: "fresh", act: act, tenant: tenant, parties: parties})
+}
+
+func (r *routeRecorder) RequireWidening(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
+	return membership.Verdict{}, r.record(ctx, routeCall{kind: "widening", act: act, tenant: tenant, parties: parties})
 }
 
 func (r *routeRecorder) RequireBackups(ctx context.Context, act string, tenant, device, losing uuid.UUID) (membership.Verdict, error) {
-	return membership.Verdict{}, r.record(ctx, routeCall{act: act, tenant: tenant, device: device, losing: losing})
+	return membership.Verdict{}, r.record(ctx, routeCall{kind: "backups", act: act, tenant: tenant, device: device, losing: losing})
 }
 
 func (r *routeRecorder) RequireMover(context.Context, uuid.UUID, uuid.UUID) (membership.Verdict, error) {
@@ -78,11 +83,17 @@ func (r *routeRecorder) count() int {
 	return len(r.calls)
 }
 
+// one checks that the calls since n are exactly one, for act in tenant
+// with these parties, its probe unlocked: the minute rule's, or a widening
+// act's (every route's other act widens access, gated at home too).
 func (r *routeRecorder) one(t *testing.T, n int, act string, tenant uuid.UUID, parties ...membership.Party) routeCall {
 	t.Helper()
 	calls := r.since(n)
 	if len(calls) != 1 || calls[0].act != act || calls[0].tenant != tenant || !slices.Equal(calls[0].parties, parties) || calls[0].probe != nil {
 		t.Fatalf("%s: %+v, want one with %+v", act, calls, parties)
+	}
+	if want := "widening"; calls[0].kind != "backups" && calls[0].kind != want {
+		t.Fatalf("%s asked %s, want %s", act, calls[0].kind, want)
 	}
 	return calls[0]
 }
@@ -154,6 +165,48 @@ func TestFreshnessHook(t *testing.T) {
 		t.Fatalf("lowering Send: %d", code)
 	}
 	rec.none(t, n, "lowering Send without Read or a key")
+	// Each flag alone is a raise.
+	n = rec.count()
+	if code := put(token, store.DevicePermission{UserID: member.ID, Send: true}); code != http.StatusNoContent {
+		t.Fatalf("raising Send: %d", code)
+	}
+	rec.one(t, n, "permission.raise", h.tenant, ifStale(owner.ID), ifStale(member.ID))
+	n = rec.count()
+	if code := put(token, store.DevicePermission{UserID: member.ID, Send: true, Manage: true}); code != http.StatusNoContent {
+		t.Fatalf("raising Manage: %d", code)
+	}
+	rec.one(t, n, "permission.raise", h.tenant, ifStale(owner.ID), ifStale(member.ID))
+	if code := put(token, store.DevicePermission{UserID: member.ID}); code != http.StatusNoContent {
+		t.Fatalf("lowering: %d", code)
+	}
+	// One's own row: the actor alone.
+	n = rec.count()
+	put(token, store.DevicePermission{UserID: owner.ID, Read: true, Send: true})
+	rec.one(t, n, "permission.raise", h.tenant, ifStale(owner.ID))
+	// Withholding Read from someone who holds the key without it narrows
+	// who holds the key: the store deletes their grants.
+	holder, _ := memberAccount(t, h, "holder@example.com", "member")
+	pub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.keys.CreateArchiveKey(ctx, h.tenant, device, 1, pub); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: holder.ID, Epoch: 1, SealedDSK: []byte("grant")}, &owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.InTenantTx(ctx, h.pool, h.tenant.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, device, holder.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n = rec.count()
+	put(token, store.DevicePermission{UserID: holder.ID})
+	if call := rec.one(t, n, "permission.withhold_read", h.tenant); call.device != device || call.losing != holder.ID {
+		t.Fatalf("withholding Read from a key holder: %+v", call)
+	}
 
 	// A standing service account: its invitation and its registration, the
 	// inviting person IfStale; a person's invitation and a provisional one
@@ -232,5 +285,34 @@ func TestFreshnessHook(t *testing.T) {
 	var completed *time.Time
 	if err := h.pool.QueryRow(ctx, `SELECT completed_at FROM invites WHERE invite_id = $1`, shaInvite(t, waiting)).Scan(&completed); err != nil || completed != nil {
 		t.Fatalf("a refused registration spent its code: %v %v", completed, err)
+	}
+
+	// A read the hook needs that fails: 500, nothing changes, and the act
+	// is never let through unchecked. The permission's stored row reads the
+	// number's epochs, which a raise does not touch; the invitation's
+	// issuer is a column the registration itself does not read.
+	ddl := func(q string) {
+		t.Helper()
+		if _, err := h.pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unread := func(what string, code int, body map[string]string) {
+		t.Helper()
+		if code != http.StatusInternalServerError || body["code"] != "internal" {
+			t.Fatalf("%s with its pre-read failing: %d %v", what, code, body)
+		}
+	}
+	ddl(`ALTER TABLE device_archive_keys RENAME TO device_archive_keys_hidden`)
+	unread("a raise", methodRequest(t, h, http.MethodPut, path, store.DevicePermission{UserID: member.ID, Read: true, Send: true, Manage: true}, token, &body), body)
+	ddl(`ALTER TABLE device_archive_keys_hidden RENAME TO device_archive_keys`)
+	if p := flags(); p.Manage {
+		t.Fatalf("a raise went through unchecked: %+v", p)
+	}
+	ddl(`ALTER TABLE invites RENAME COLUMN created_by TO created_by_hidden`)
+	unread("a registration", h.post(t, "/v1/auth/signup", map[string]string{"invite": waiting, "name": "erp3", "public_key": publicKey(t)}, &body, ""), body)
+	ddl(`ALTER TABLE invites RENAME COLUMN created_by_hidden TO created_by`)
+	if err := h.pool.QueryRow(ctx, `SELECT completed_at FROM invites WHERE invite_id = $1`, shaInvite(t, waiting)).Scan(&completed); err != nil || completed != nil {
+		t.Fatalf("a registration went through unchecked: %v %v", completed, err)
 	}
 }

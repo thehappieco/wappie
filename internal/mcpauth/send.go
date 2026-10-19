@@ -346,8 +346,9 @@ func (h *Handler) enclaveSend(w http.ResponseWriter, r *http.Request, caller *At
 	}
 	// A connection's send is the consenting person's, by their freshness:
 	// checked in the background on the stored freshness only, so the send
-	// never waits on it (freshness.go).
-	h.freshAtSend(r.Context(), conn.TenantID, conn.CreatedBy)
+	// never waits on it, once a minute per connection and number
+	// (freshness.go).
+	h.freshAtSend(r.Context(), conn.ID, conn.TenantID, device, conn.CreatedBy)
 
 	// The send and its record run to their end whoever hangs up: a reader
 	// that loses the answer calls it uncertain and never repeats it.

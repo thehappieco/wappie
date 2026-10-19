@@ -197,6 +197,8 @@ type Handler struct {
 	requests *requestCache
 	replay   *replayCache
 	dropped  *refusalDrops
+	// sendChecks are the sends' freshness checks (freshness.go).
+	sendChecks *sendChecks
 	// notices are the notice e-mails on their way, for WaitNotices.
 	notices sync.WaitGroup
 	// renewalTimer is the pending send of a renewal round's notices, and
@@ -213,6 +215,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	h.requests = newRequestCache()
 	h.replay = newReplayCache(replayCap)
 	h.dropped = newRefusalDrops()
+	h.sendChecks = newSendChecks()
 	mux.HandleFunc("GET /v1/mcp/requests/{id}", h.descriptor)
 	mux.HandleFunc("POST /v1/mcp/requests/{id}/prepare", h.prepare)
 	mux.HandleFunc("POST /v1/mcp/connections", h.create)

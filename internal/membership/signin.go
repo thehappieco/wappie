@@ -80,6 +80,8 @@ type Members struct {
 	mu    sync.Mutex
 	state store.ContractState
 	read  time.Time
+	// calls is the freshness hook's budget of GETs (budget.go).
+	calls *callBudget
 }
 
 // SignUp is a new account's subscription: its home and document when the
@@ -300,10 +302,17 @@ func (m *Members) put(ctx context.Context, sub uuid.UUID) (store.ContractDoc, er
 // says the platform follows sub no more: its version is forgotten, so the
 // round subscribes it again (the plan's DB21).
 func (m *Members) get(ctx context.Context, sub uuid.UUID) (store.ContractDoc, error) {
+	return m.fetch(ctx, time.Now().Add(m.bound()), sub)
+}
+
+// fetch is get with the GET bounded by deadline, which an act's GETs share
+// (getAll); the answer is stored, and a not_found forgotten, on ctx, so a
+// document that came in time is kept however late in the window.
+func (m *Members) fetch(ctx context.Context, deadline time.Time, sub uuid.UUID) (store.ContractDoc, error) {
 	if !m.connected() {
 		return store.ContractDoc{}, ErrUnavailable
 	}
-	call, cancel := context.WithTimeout(ctx, m.bound())
+	call, cancel := context.WithDeadline(ctx, deadline)
 	d, err := m.Client.Account(call, sub.String())
 	cancel()
 	var doc store.ContractDoc

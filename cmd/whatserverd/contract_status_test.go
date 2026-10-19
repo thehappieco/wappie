@@ -562,6 +562,17 @@ func TestContractStatusInvitations(t *testing.T) {
 	invite(team, "member", "revoked_at = now()")
 	invite(team, "member", "expires_at = now() - interval '1 minute'")
 	invite(other, "owner", "")
+	// A personal workspace's, written past the store's own refusal.
+	person, err := store.NewUsers(pool).Create(context.Background(), store.NewUser{TenantID: other, Email: "person@example.test", Role: "member", AuthKey: "test",
+		KDFSalt: make([]byte, 16), KDFParams: store.DefaultKDFParams(), PublicKey: make([]byte, 32), WrappedUSK: []byte("wrapped")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var personal uuid.UUID
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM tenants WHERE personal_owner_id = $1`, person.ID).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	invite(personal, "member", "")
 	execSQL(t, pool, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, team)
 	out, _, _ := statusRun(t, c, config.Contract{})
 	for _, want := range []string{
@@ -572,5 +583,28 @@ func TestContractStatusInvitations(t *testing.T) {
 		if !strings.Contains(out, want+"\n") {
 			t.Fatalf("no %q in:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, personal.String()) {
+		t.Fatalf("a personal workspace is listed:\n%s", out)
+	}
+}
+
+// whatserverd invite says why a person invitation into a team a document
+// names is refused, and that a service's still works (the plan's 4.12).
+func TestInvitePausedInAPlatformTeam(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	commandEnv(t, pool, filepath.Join(t.TempDir(), "deletions.ledger"))
+	var team uuid.UUID
+	if err := pool.QueryRow(context.Background(), `INSERT INTO tenants (name) VALUES ('TBFG') RETURNING id`).Scan(&team); err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, pool, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, team)
+	err := issueInvite([]string{"-tenant", team.String(), "-role", "member"})
+	if err == nil || !strings.Contains(err.Error(), "this team's people join through The Happie Co; person invitations are paused here "+
+		"until Wappie applies the platform's members") || !strings.Contains(err.Error(), "-role service") {
+		t.Fatalf("a person's invitation: %v", err)
+	}
+	if err := issueInvite([]string{"-tenant", team.String(), "-role", store.RoleService}); err != nil {
+		t.Fatalf("a service's invitation: %v", err)
 	}
 }

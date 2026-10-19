@@ -25,8 +25,8 @@ import (
 // contract's routes wired with no transport and without them. A code
 // issued before the record stays unspent; service invitations, a content
 // consent's provisional one included, are issued and redeemed; a personal
-// workspace and a team no document names are as before; contract status
-// counts each team's pending person invitations.
+// workspace and a team no document names as a team are as before; contract
+// status counts each team's pending person invitations.
 func TestPersonInvitationsClosed(t *testing.T) {
 	for _, mode := range []string{"off", "observe"} {
 		for _, wired := range []bool{false, true} {
@@ -157,7 +157,12 @@ func personInvitationsClosed(t *testing.T, mode string, wired bool) {
 		t.Fatalf("registering the provisional service: %d", status)
 	}
 
-	// A team no document names is as before; a personal one too.
+	// A team no document names as a team is as before, recorded as
+	// personal included (a closed gate, as the strand override's); a
+	// personal workspace too.
+	if _, err := h.pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'personal')`, other.ID); err != nil {
+		t.Fatal(err)
+	}
 	otherToken := sessionIn(t, h, owner, other.ID)
 	if code := h.post(t, "/v1/auth/workspaces/invites", map[string]string{"role": "member"}, nil, otherToken); code != http.StatusCreated {
 		t.Fatalf("an unnamed team's invitation: %d", code)

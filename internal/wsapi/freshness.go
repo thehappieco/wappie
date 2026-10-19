@@ -15,13 +15,16 @@ import (
 // design 2.6; the plan's 4.9 and 4.12). Each rare act asks before its
 // store transaction, never inside one, so no platform call ever holds a
 // lock: a team's delete, recover and person's stop (IfStale), a move out
-// of a team (Always, with the mover's role), a grant (the actor IfStale,
-// a person recipient Always), a grant's revocation (the minute rule for the
-// remaining key holders), an API key's creation and a pairing (IfStale). A
-// person's sends and group administration from a number are checked in the
-// background on the stored freshness only (Stored): a send never waits and
-// the platform gets no call for it. An API key's own acts are never gated
-// (README 7.1, "Never gated"), and a personal workspace never waits.
+// of a team (Always, with the mover's role, once the preview finds the move
+// possible), a pairing (IfStale, its grants' recipients Always), a grant
+// (the actor IfStale, a person recipient Always), a grant's revocation (the
+// minute rule for the remaining key holders) and an API key's creation
+// (IfStale). A person's sends and group administration from a number are
+// checked in the background on the stored freshness only (Stored): a send
+// never waits and the platform gets no call for it. An API key's own acts
+// are never gated (README 7.1, "Never gated"). The acts on a team's number
+// are gated in a team only; a grant and an API key, which widen access, in
+// a personal workspace too, on the person's own status, never waiting.
 // Release B only logs the verdicts (DB4); with the enforce flag a refusal
 // is answered memberships_unconfirmed and the act changes nothing.
 
@@ -37,9 +40,13 @@ const (
 	atActBound = 5 * time.Second
 )
 
-// fresh asks the hook for an act of this session's workspace, before the
-// act's store transaction; false when the act is refused, which is
-// answered. Without a hook every act goes on.
+// Membership is the freshness hook the server's acts ask
+// (Config.Membership): what serve wired, for its tests.
+func (s *Server) Membership() membership.Freshness { return s.cfg.Membership }
+
+// fresh asks the hook for an act on a team's number in this session's
+// workspace, before the act's store transaction; false when the act is
+// refused, which is answered. Without a hook every act goes on.
 func (s *session) fresh(ctx context.Context, reqID, act string, parties ...membership.Party) bool {
 	m := s.srv.cfg.Membership
 	if m == nil {
@@ -50,6 +57,21 @@ func (s *session) fresh(ctx context.Context, reqID, act string, parties ...membe
 		return true
 	}
 	_, err = m.RequireFresh(ctx, act, tenant, parties...)
+	return s.freshAnswer(reqID, err)
+}
+
+// widening is fresh for an act that widens access (sharing a key, an API
+// key), which the hook gates in a personal workspace too.
+func (s *session) widening(ctx context.Context, reqID, act string, parties ...membership.Party) bool {
+	m := s.srv.cfg.Membership
+	if m == nil {
+		return true
+	}
+	tenant, err := uuid.Parse(s.tenantID())
+	if err != nil {
+		return true
+	}
+	_, err = m.RequireWidening(ctx, act, tenant, parties...)
 	return s.freshAnswer(reqID, err)
 }
 

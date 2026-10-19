@@ -26,6 +26,7 @@ import (
 // memberships_unconfirmed and change nothing.
 
 type hookCall struct {
+	kind    string
 	act     string
 	tenant  uuid.UUID
 	parties []membership.Party
@@ -42,12 +43,20 @@ type hookRecorder struct {
 }
 
 func (r *hookRecorder) RequireFresh(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
+	return r.record(ctx, "fresh", act, tenant, parties)
+}
+
+func (r *hookRecorder) RequireWidening(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
+	return r.record(ctx, "widening", act, tenant, parties)
+}
+
+func (r *hookRecorder) record(ctx context.Context, kind, act string, tenant uuid.UUID, parties []membership.Party) (membership.Verdict, error) {
 	probe := pg.InTenantTx(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE NOWAIT`, tenant)
 		return err
 	})
 	r.mu.Lock()
-	r.calls = append(r.calls, hookCall{act: act, tenant: tenant, parties: parties, probe: probe})
+	r.calls = append(r.calls, hookCall{kind: kind, act: act, tenant: tenant, parties: parties, probe: probe})
 	refuse, hold := r.refuse, r.hold
 	r.mu.Unlock()
 	if hold != nil && len(parties) > 0 && parties[0].How == membership.Stored {
@@ -93,6 +102,10 @@ func (r *hookRecorder) one(t *testing.T, n int, act string, tenant uuid.UUID, pa
 	if len(calls) != 1 || calls[0].act != act || calls[0].tenant != tenant || !slices.Equal(calls[0].parties, parties) || calls[0].probe != nil {
 		t.Fatalf("%s: %+v, want one with %+v", act, calls, parties)
 	}
+	// A send is a team number's act; every other widens access.
+	if want := map[bool]string{true: "fresh", false: "widening"}[act == "mcp.send"]; calls[0].kind != want {
+		t.Fatalf("%s asked %s, want %s", act, calls[0].kind, want)
+	}
 }
 
 func (h *attestedHarness) connections(t *testing.T) int {
@@ -133,6 +146,14 @@ func TestFreshnessHook(t *testing.T) {
 		rec.mu.Lock()
 		rec.hold = nil
 		rec.mu.Unlock()
+		// The same connection's next send from the number, within the
+		// minute: not checked again.
+		n = rec.count()
+		expect(t, h.selfSend(t, c, clientRef(), "a second note"), http.StatusOK, "")
+		time.Sleep(200 * time.Millisecond)
+		if got := rec.count(); got != n {
+			t.Fatalf("a second send within the minute was checked: %d calls", got-n)
+		}
 		// The enforce flag: a new connection is refused, a send goes on.
 		rec.setRefuse(membership.ErrMembershipsUnconfirmed)
 		before := h.connections(t)

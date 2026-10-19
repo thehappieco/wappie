@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,9 +12,10 @@ import (
 )
 
 // What the freshness hook reads (README 7.1; the plan's 4.9 and 4.12):
-// each party's stored freshness and account status, which of an act's
-// parties are service identities (never platform members, so never
-// gated), and the people a narrowing act leaves holding a number's key.
+// each party's stored freshness, account status and workspaces, which of an
+// act's parties are the workspace's persons (a service identity or someone
+// of another workspace is never gated), and the people a narrowing act
+// leaves holding a number's key.
 
 // BackupFreshFor is how fresh a remaining key holder's document must be
 // for an act that narrows who holds a number's key to count them as a
@@ -23,14 +25,26 @@ import (
 const BackupFreshFor = time.Minute
 
 // ContractStanding is one sub's freshness and its stored document's
-// account status (active, disabled or closed; empty with no document).
+// account status (active, disabled or closed; empty with no document) and
+// workspaces (none with no document).
 type ContractStanding struct {
-	Fresh  bool
-	Status string
+	Fresh      bool
+	Status     string
+	Workspaces []uuid.UUID
 }
 
-// Standing is Fresh with each sub's stored account status: one query, on
-// the database's clock. An unknown sub is stale, with no status.
+// Lists says whether the stored document names workspace.
+func (s ContractStanding) Lists(workspace uuid.UUID) bool {
+	return slices.Contains(s.Workspaces, workspace)
+}
+
+// Standing says, for each sub, whether it is fresh within d on the
+// database's clock, with its stored document's status and workspaces: one
+// query. Fresh is the later of its last answer and the last trusted
+// published_through, the latter only for a sub the platform follows in the
+// stored generation (README 7.1; the plan's DB8), and never while it is past
+// the clock by more than ContractClockSkew. An unknown sub is stale, with no
+// status.
 func (c *Contract) Standing(ctx context.Context, d time.Duration, subs ...uuid.UUID) (map[uuid.UUID]ContractStanding, error) {
 	out := make(map[uuid.UUID]ContractStanding, len(subs))
 	if len(subs) == 0 {
@@ -39,7 +53,8 @@ func (c *Contract) Standing(ctx context.Context, d time.Duration, subs ...uuid.U
 	rows, err := c.pool.Query(ctx, `SELECT q.sub, coalesce(greatest(a.fresh_at,
 			CASE WHEN a.version IS NOT NULL AND a.generation = s.generation
 			      AND s.published_through <= clock_timestamp() + $3::interval THEN s.published_through END)
-			> clock_timestamp() - $2::interval, false), coalesce(a.status, '')
+			> clock_timestamp() - $2::interval, false), coalesce(a.status, ''),
+			ARRAY(SELECT (w->>'id')::uuid FROM jsonb_array_elements(coalesce(a.doc->'workspaces', '[]')) AS w)
 		FROM unnest($1::uuid[]) AS q(sub)
 		CROSS JOIN contract_state s
 		LEFT JOIN contract_accounts a ON a.sub = q.sub`, subs, d, ContractClockSkew)
@@ -50,7 +65,7 @@ func (c *Contract) Standing(ctx context.Context, d time.Duration, subs ...uuid.U
 	for rows.Next() {
 		var sub uuid.UUID
 		var st ContractStanding
-		if err := rows.Scan(&sub, &st.Fresh, &st.Status); err != nil {
+		if err := rows.Scan(&sub, &st.Fresh, &st.Status, &st.Workspaces); err != nil {
 			return nil, err
 		}
 		out[sub] = st
@@ -58,12 +73,14 @@ func (c *Contract) Standing(ctx context.Context, d time.Duration, subs ...uuid.U
 	return out, rows.Err()
 }
 
-// Services says which of users are service identities in tenant: a
-// standing service account (role service), a membership with a deadline
-// (a consent's provisional account), or the account a connection names.
-// They have no sub and are never platform members (design 2.7), so an act
-// never waits on their freshness.
-func (c *Contract) Services(ctx context.Context, tenant uuid.UUID, users ...uuid.UUID) (map[uuid.UUID]bool, error) {
+// Persons says which of users are tenant's persons: a membership there,
+// whatever its status, that is not a service identity's (role service, a
+// deadline, a consent's provisional account; or the account a connection
+// names). Only they are an act's parties. A service identity has no sub and
+// is never a platform member (design 2.7), and someone of another workspace
+// is refused by the act's own store, so an act never waits on, asks for or
+// logs either.
+func (c *Contract) Persons(ctx context.Context, tenant uuid.UUID, users ...uuid.UUID) (map[uuid.UUID]bool, error) {
 	out := map[uuid.UUID]bool{}
 	if len(users) == 0 {
 		return out, nil
@@ -71,8 +88,8 @@ func (c *Contract) Services(ctx context.Context, tenant uuid.UUID, users ...uuid
 	err := pg.InTenantTx(ctx, c.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT q.user_id FROM unnest($2::uuid[]) AS q(user_id)
 			WHERE EXISTS (SELECT 1 FROM workspace_memberships m WHERE m.tenant_id = $1 AND m.user_id = q.user_id
-			               AND (m.role = 'service' OR m.expires_at IS NOT NULL))
-			   OR EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = q.user_id)`, tenant, users)
+			               AND m.role <> 'service' AND m.expires_at IS NULL)
+			  AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = q.user_id)`, tenant, users)
 		if err != nil {
 			return err
 		}

@@ -305,6 +305,9 @@ func TestFreshnessIsADocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	tenant := uuid.MustParse(team)
+	// Wappie holds the team, the person its owner: only a workspace's
+	// persons are an act's parties.
+	w.localTeam(t, tenant, "TBFG", member{user, "owner", "active"})
 	if done, err := w.members.Round(ctx); err != nil || !done {
 		t.Fatalf("round: %v %v", done, err)
 	}
@@ -435,6 +438,7 @@ func TestRequireFresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	tenant := uuid.MustParse(team)
+	w.localTeam(t, tenant, "Piloto", member{user, "owner", "active"})
 	if done, err := w.members.Round(ctx); err != nil || !done {
 		t.Fatalf("round: %v %v", done, err)
 	}
@@ -449,8 +453,9 @@ func TestRequireFresh(t *testing.T) {
 			t.Fatalf("a workspace that is not a recorded team: %+v %v", v, err)
 		}
 	}
-	// A person with no sub in a platform team.
-	stranger := uuid.New()
+	// A person of the team with no sub.
+	stranger := w.localPerson(t)
+	w.localTeam(t, tenant, "", member{stranger, "member", "active"})
 	v, err := w.members.RequireFresh(ctx, "grant.add", tenant, Party{User: user, How: IfStale}, Party{User: stranger, How: Always})
 	if err != nil || !v.Refuse || v.Reasons[stranger] != "no_sub" || v.Reasons[user] != "" {
 		t.Fatalf("a recipient with no sub: %+v %v", v, err)
@@ -471,6 +476,7 @@ func TestRequireFresh(t *testing.T) {
 	if err := w.fake.SetRole(team, recipientSub.String(), "member"); err != nil {
 		t.Fatal(err)
 	}
+	w.localTeam(t, tenant, "", member{recipient, "member", "active"})
 	if done, err := w.members.Round(ctx); err != nil || !done {
 		t.Fatalf("round: %v %v", done, err)
 	}
@@ -558,6 +564,7 @@ func TestCallsAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	tenant := uuid.MustParse(team)
+	w.localTeam(t, tenant, "Bounded", member{user, "owner", "active"})
 	if done, err := w.members.Round(ctx); err != nil || !done {
 		t.Fatalf("round: %v %v", done, err)
 	}

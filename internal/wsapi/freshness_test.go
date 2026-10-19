@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,6 +49,8 @@ type freshRecorder struct {
 	calls  []freshCall
 	refuse error
 	hold   chan struct{}
+	// hard holds past the call's own bound, until hold closes.
+	hard bool
 }
 
 // probe locks the workspace's row and every number's, NOWAIT: an act whose
@@ -69,12 +72,16 @@ func (r *freshRecorder) record(ctx context.Context, c freshCall) error {
 	c.probe = r.probe(ctx, c.tenant)
 	r.mu.Lock()
 	r.calls = append(r.calls, c)
-	refuse, hold := r.refuse, r.hold
+	refuse, hold, hard := r.refuse, r.hold, r.hard
 	r.mu.Unlock()
 	if hold != nil && len(c.parties) > 0 && c.parties[0].How == membership.Stored && c.act != wsapi.TypeDeviceTransferPreview {
+		done := ctx.Done()
+		if hard {
+			done = nil
+		}
 		select {
 		case <-hold:
-		case <-ctx.Done():
+		case <-done:
 		}
 	}
 	return refuse
@@ -82,6 +89,10 @@ func (r *freshRecorder) record(ctx context.Context, c freshCall) error {
 
 func (r *freshRecorder) RequireFresh(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
 	return membership.Verdict{}, r.record(ctx, freshCall{kind: "fresh", act: act, tenant: tenant, parties: parties})
+}
+
+func (r *freshRecorder) RequireWidening(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
+	return membership.Verdict{}, r.record(ctx, freshCall{kind: "widening", act: act, tenant: tenant, parties: parties})
 }
 
 func (r *freshRecorder) RequireBackups(ctx context.Context, act string, tenant, device, losing uuid.UUID) (membership.Verdict, error) {
@@ -202,6 +213,32 @@ func TestFreshnessHook(t *testing.T) {
 		t.Fatalf("a group: %s", f.Type)
 	}
 	rec.eventuallyOne(t, n, "fresh", wsapi.TypeGroupCreate, stored(c.owner))
+	// Every group frame: each its own act, so each is checked once.
+	group := "120363000000000001@g.us"
+	for i, frame := range []struct {
+		kind string
+		body any
+	}{
+		{wsapi.TypeGroupParticipants, wsapi.GroupParticipantsRequest{DeviceID: device.String(), Chat: group, Action: "add", Participants: []string{"5511999990001"}}},
+		{wsapi.TypeGroupLeave, wsapi.GroupLeaveRequest{DeviceID: device.String(), Chat: group}},
+		{wsapi.TypeGroupJoin, wsapi.GroupJoinRequest{DeviceID: device.String(), GroupJID: group, Inviter: "5511999990002@s.whatsapp.net"}},
+	} {
+		n = rec.count()
+		id := "g" + strconv.Itoa(i+2)
+		request(t, conn, id, frame.kind, frame.body)
+		if f, _ := replyTo(t, conn, id); f.Type != wsapi.TypeError {
+			t.Fatalf("%s: %s", frame.kind, f.Type)
+		}
+		rec.eventuallyOne(t, n, "fresh", frame.kind, stored(c.owner))
+	}
+	// The call list needs Send but only reads: never checked.
+	n = rec.count()
+	request(t, conn, "c1", wsapi.TypeCallsList, wsapi.CallsListRequest{DeviceID: device.String()})
+	replyTo(t, conn, "c1")
+	time.Sleep(200 * time.Millisecond)
+	if calls := rec.since(n); len(calls) != 0 {
+		t.Fatalf("the call list was checked: %+v", calls)
+	}
 	close(hold)
 	rec.set(nil, nil)
 	n = rec.count()
@@ -222,12 +259,12 @@ func TestFreshnessHook(t *testing.T) {
 	if f := ask(t, c.console, owner, wsapi.TypeGrantAdd, grant(second)); f.Type == wsapi.TypeError {
 		t.Fatalf("a grant: %s", f.Payload)
 	}
-	rec.one(t, n, "fresh", wsapi.TypeGrantAdd, ifStale(c.owner), always(second))
+	rec.one(t, n, "widening", wsapi.TypeGrantAdd, ifStale(c.owner), always(second))
 	n = rec.count()
 	if f := ask(t, c.console, owner, wsapi.TypeGrantAdd, grant(c.owner)); f.Type == wsapi.TypeError {
 		t.Fatalf("a grant to oneself: %s", f.Payload)
 	}
-	rec.one(t, n, "fresh", wsapi.TypeGrantAdd, ifStale(c.owner))
+	rec.one(t, n, "widening", wsapi.TypeGrantAdd, ifStale(c.owner))
 	n = rec.count()
 	if f := ask(t, c.console, owner, wsapi.TypeGrantRevoke, wsapi.GrantRevoke{DeviceID: device.String(), UserID: second.String()}); f.Type == wsapi.TypeError {
 		t.Fatalf("a revocation: %s", f.Payload)
@@ -241,7 +278,7 @@ func TestFreshnessHook(t *testing.T) {
 	if f := ask(t, c.console, owner, wsapi.TypeKeyCreate, wsapi.APIKeyRequest{Name: "erp", Scope: "read"}); f.Type == wsapi.TypeError {
 		t.Fatalf("a key: %s", f.Payload)
 	}
-	rec.one(t, n, "fresh", wsapi.TypeKeyCreate, ifStale(c.owner))
+	rec.one(t, n, "widening", wsapi.TypeKeyCreate, ifStale(c.owner))
 
 	// A move out of the team: the preview on the stored freshness, the
 	// move with the mover's document.
@@ -252,8 +289,26 @@ func TestFreshnessHook(t *testing.T) {
 	n = rec.count()
 	ask(t, c.console, owner, wsapi.TypeDeviceTransferPreview, ref)
 	rec.one(t, n, "fresh", wsapi.TypeDeviceTransferPreview, stored(c.owner))
+	// Only a move the preview finds possible asks: not one for a number
+	// others read, nor one for a number that does not exist.
+	moveOf := func(d uuid.UUID) wsapi.DeviceTransferRequest {
+		return wsapi.DeviceTransferRequest{DeviceID: d.String(), Confirm: d.String(), TargetWorkspaceID: personal.String()}
+	}
+	for what, d := range map[string]uuid.UUID{"a number others read": device, "no number": uuid.New()} {
+		n = rec.count()
+		if f := ask(t, c.console, owner, wsapi.TypeDeviceTransfer, moveOf(d)); f.Type != wsapi.TypeError {
+			t.Fatalf("a move of %s: %s", what, f.Type)
+		}
+		if calls := rec.since(n); len(calls) != 0 {
+			t.Fatalf("a move of %s asked the platform: %+v", what, calls)
+		}
+	}
+	mine := c.linkedDevice(t, "Pessoal")
+	c.reads(t, c.owner, mine)
 	n = rec.count()
-	ask(t, c.console, owner, wsapi.TypeDeviceTransfer, wsapi.DeviceTransferRequest{DeviceID: device.String(), Confirm: device.String(), TargetWorkspaceID: personal.String()})
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceTransfer, moveOf(mine)); f.Type != wsapi.TypeDeviceTransferred {
+		t.Fatalf("a move: %s %s", f.Type, f.Payload)
+	}
 	rec.one(t, n, "mover", membership.ActTransfer, always(c.owner))
 
 	// A deletion and a recovery.
@@ -314,6 +369,20 @@ func TestFreshnessHook(t *testing.T) {
 	if after, err := c.devices.List(ctx, c.tenant.String()); err != nil || len(after) != len(devices) {
 		t.Fatalf("a refused pairing made a number: %d, %d %v", len(devices), len(after), err)
 	}
+	// A retried pairing: the person IfStale, its grants as they were.
+	pending := uuid.MustParse(c.deviceWithKey(t, "Pendente"))
+	retry := wsapi.PairRequest{DeviceID: pending.String(), Resume: true, Method: "qr"}
+	n = rec.count()
+	refused("a retried pairing", wsapi.TypePair, retry)
+	rec.one(t, n, "fresh", wsapi.TypePair, ifStale(c.owner))
+	// A key's pairing is the workspace's own act: never gated.
+	n = rec.count()
+	if f := ask(t, c.console, key, wsapi.TypePair, retry); f.Type == wsapi.TypeError && payload[wsapi.Error](t, f).Code == wsapi.ErrCodeMembershipsUnconfirmed {
+		t.Fatalf("a key's pairing was refused: %s", f.Payload)
+	}
+	if calls := rec.since(n); len(calls) != 0 {
+		t.Fatalf("a key's pairing was gated: %+v", calls)
+	}
 	refused("a deletion", wsapi.TypeDeviceDelete, deleteFrame(other, reader))
 	if deleted, _, _, _ := c.row(t, other); deleted {
 		t.Fatal("a refused deletion deleted the number")
@@ -330,11 +399,12 @@ func TestFreshnessHook(t *testing.T) {
 	if deleted, _, _, _ := c.row(t, device); !deleted {
 		t.Fatal("a refused recovery recovered the number")
 	}
-	transfer := wsapi.DeviceTransferRequest{DeviceID: other.String(), Confirm: other.String(), TargetWorkspaceID: personal.String()}
-	refused("a move", wsapi.TypeDeviceTransfer, transfer)
+	movable := c.linkedDevice(t, "Pessoal 2")
+	c.reads(t, c.owner, movable)
+	refused("a move", wsapi.TypeDeviceTransfer, moveOf(movable))
 	rec.set(membership.ErrNotTheOnlyOwner, nil)
-	wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceTransfer, transfer), wsapi.ErrCodeConflict)
-	if d, err := c.devices.Get(ctx, c.tenant.String(), other.String()); err != nil || d.Paused {
+	wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceTransfer, moveOf(movable)), wsapi.ErrCodeConflict)
+	if d, err := c.devices.Get(ctx, c.tenant.String(), movable.String()); err != nil || d.Paused {
 		t.Fatalf("a refused move touched the number: %+v %v", d, err)
 	}
 	rec.set(membership.ErrMembershipsUnconfirmed, nil)
@@ -349,6 +419,48 @@ func TestFreshnessHook(t *testing.T) {
 		if call.tenant != c.tenant {
 			t.Fatalf("%s asked for %s", call.act, call.tenant)
 		}
+	}
+}
+
+// A send never waits for its check: with every slot of the process's
+// background checks taken, a further send is answered at once and its
+// check is skipped, never run later.
+func TestFreshnessHookSkipsPastInFlight(t *testing.T) {
+	rec := &freshRecorder{hard: true}
+	c := newDeletionConsoleWith(t, deletionOptions{fresh: rec})
+	rec.pool = c.pool
+	owner := wsapi.Hello{Session: c.token}
+	device := c.linkedDevice(t, "Vendas")
+	c.reads(t, c.owner, device)
+	hold := make(chan struct{})
+	var released sync.Once
+	release := func() { released.Do(func() { close(hold) }) }
+	t.Cleanup(release)
+	rec.set(nil, hold)
+	send := wsapi.SendRequest{DeviceID: device.String(), Chat: "5511999990000@s.whatsapp.net", Body: "oi"}
+	// Each socket is a session of its own, so no minute stands between
+	// their checks.
+	for i := range wsapi.AtActsInFlight {
+		ask(t, c.console, owner, wsapi.TypeSend, send)
+		deadline := time.Now().Add(5 * time.Second)
+		for rec.count() <= i && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if rec.count() != i+1 {
+			t.Fatalf("check %d did not start: %d", i, rec.count())
+		}
+	}
+	start := time.Now()
+	if f := ask(t, c.console, owner, wsapi.TypeSend, send); f.Type != wsapi.TypeError || payload[wsapi.Error](t, f).Code != wsapi.ErrCodeConflict {
+		t.Fatalf("a send past the slots: %s %s", f.Type, f.Payload)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("a send past the slots waited %s", took)
+	}
+	release()
+	time.Sleep(300 * time.Millisecond)
+	if n := rec.count(); n != wsapi.AtActsInFlight {
+		t.Fatalf("%d checks, want %d: the skipped one ran", n, wsapi.AtActsInFlight)
 	}
 }
 
@@ -372,6 +484,10 @@ type lateFresh struct {
 
 func (l *lateFresh) RequireFresh(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
 	return l.m.Load().RequireFresh(ctx, act, tenant, parties...)
+}
+
+func (l *lateFresh) RequireWidening(ctx context.Context, act string, tenant uuid.UUID, parties ...membership.Party) (membership.Verdict, error) {
+	return l.m.Load().RequireWidening(ctx, act, tenant, parties...)
 }
 
 func (l *lateFresh) RequireBackups(ctx context.Context, act string, tenant, device, losing uuid.UUID) (membership.Verdict, error) {

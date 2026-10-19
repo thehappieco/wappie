@@ -15,8 +15,11 @@ import (
 // raising someone's flags (the actor and the recipient IfStale), withholding
 // Read (the minute rule for the number's remaining key holders), and a
 // standing service account, at its invitation and at its registration (the
-// issuer IfStale). Release B only logs the verdicts (DB4); with the enforce
-// flag a refusal is 503 memberships_unconfirmed and nothing changes.
+// issuer IfStale). Each widens access, so it is gated in a personal
+// workspace too (RequireWidening). Release B only logs the verdicts (DB4);
+// with the enforce flag a refusal is 503 memberships_unconfirmed and nothing
+// changes. A read the hook needs that fails answers 500 and changes
+// nothing: the act is never let through unchecked.
 
 // fresh asks the hook for an act in tenant; false when it is refused,
 // which is answered.
@@ -24,7 +27,7 @@ func (h *Handler) fresh(ctx context.Context, w http.ResponseWriter, act string, 
 	if h.Freshness == nil {
 		return true
 	}
-	_, err := h.Freshness.RequireFresh(ctx, act, tenant, parties...)
+	_, err := h.Freshness.RequireWidening(ctx, act, tenant, parties...)
 	return freshAnswer(w, err)
 }
 
@@ -58,9 +61,11 @@ func (h *Handler) freshPermission(ctx context.Context, w http.ResponseWriter, us
 	}
 	was, err := h.Users.StoredDevicePermission(ctx, user.TenantID, p.UserID, p.DeviceID)
 	if err != nil {
-		// The store's own read decides the change; the hook asks nothing.
-		h.log().Warn("freshness: could not read a permission before its change", "tenant", user.TenantID, "error", err)
-		return true
+		// Without the row the hook cannot tell what the change does, so it
+		// is not made unchecked.
+		h.log().Error("freshness: could not read a permission before its change", "tenant", user.TenantID, "error", err)
+		fail(w, http.StatusInternalServerError, "internal", "could not check the permission; nothing changed")
+		return false
 	}
 	if (p.Read && !was.Read) || (p.Send && !was.Send) || (p.Manage && !was.Manage) {
 		parties := []membership.Party{{User: user.ID, How: membership.IfStale}}

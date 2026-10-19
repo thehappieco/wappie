@@ -259,3 +259,40 @@ func TestStandingReplyMediaAndSend(t *testing.T) {
 		}
 	}
 }
+
+// The sends' background checks: one per connection and number a minute,
+// at most sendChecksInFlight at once, the rest skipped; a key checked over
+// a minute ago is checked again, and the old keys are forgotten.
+func TestSendChecks(t *testing.T) {
+	now := time.Unix(1_790_300_000, 0)
+	c := newSendChecks()
+	if !c.start("a/1", now) {
+		t.Fatal("the first check")
+	}
+	<-c.slots
+	if c.start("a/1", now.Add(30*time.Second)) {
+		t.Fatal("the same connection and number within the minute")
+	}
+	for i := range sendChecksInFlight {
+		if !c.start("b/"+strconv.Itoa(i), now) {
+			t.Fatalf("check %d of the slots", i)
+		}
+	}
+	if c.start("c/1", now) {
+		t.Fatal("a check past the slots")
+	}
+	if _, ok := c.seen["c/1"]; ok {
+		t.Fatal("a skipped check counted as checked")
+	}
+	<-c.slots
+	if !c.start("c/1", now) {
+		t.Fatal("a check once a slot is free")
+	}
+	for range len(c.slots) {
+		<-c.slots
+	}
+	later := now.Add(sendCheckEvery)
+	if !c.start("a/1", later) || len(c.seen) != 1 {
+		t.Fatalf("a minute on: %d keys", len(c.seen))
+	}
+}

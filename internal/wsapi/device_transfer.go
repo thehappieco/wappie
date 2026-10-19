@@ -58,9 +58,10 @@ func (s *session) handleDeviceTransferPreview(ctx context.Context, f Frame) {
 // timeout, a deadlock) rolls the move back, so the handler undoes its own
 // pause, unless someone paused the number meanwhile, and the supervisor
 // resumes it. No platform call runs inside the move's transaction (the
-// plan's D13): the mover's document is asked for before anything, always
-// with a fresh GET (README 7.1), and must list them as the team's only
-// owner (decision 0043; freshness.go).
+// plan's D13): once the preview finds the move possible, and before
+// anything changes, the mover's document is asked for, always with a fresh
+// GET (README 7.1), and must list them as the team's only owner (decision
+// 0043; freshness.go).
 func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	who, ok := s.requireAdmin(f.ReqID)
 	if !ok {
@@ -82,9 +83,6 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		return
 	}
 	source := uuid.MustParse(s.tenantID())
-	if !s.freshMover(ctx, f.ReqID, source, who.userID) {
-		return
-	}
 	out, err := s.srv.cfg.Devices.PreviewPersonalTransfer(ctx, source, who.userID, device)
 	if err != nil {
 		s.transferError(f.ReqID, err)
@@ -92,6 +90,12 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	}
 	if !out.Eligible || out.TargetWorkspaceID != target.String() {
 		s.transferError(f.ReqID, &store.TransferDenied{Reason: out.Reason, Code: out.ReasonCode, Others: out.Others})
+		return
+	}
+	// Only a move the preview, a read, finds possible asks the platform:
+	// a frame for a number that is missing or cannot move costs no call.
+	// The move decides it again under its locks.
+	if !s.freshMover(ctx, f.ReqID, source, who.userID) {
 		return
 	}
 	// The sessions that see the number now, the Team's owners and admins

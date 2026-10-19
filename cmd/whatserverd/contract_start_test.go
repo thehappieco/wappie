@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/config"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/membership/membershiptest"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
@@ -117,7 +118,7 @@ func TestStartContract(t *testing.T) {
 	if a.members == nil || a.members.Client != a.contract || a.members.Contract == nil {
 		t.Fatalf("the sign-ins' contract does not call through the transport: %+v", a.members)
 	}
-	if h := a.authHandler(); h.Membership == nil || h.Membership != a.members {
+	if h := a.authHandler(); h.Membership == nil || h.Membership != a.members || h.Freshness != membership.Freshness(a.members) {
 		t.Fatal("the sign-in routes have no contract")
 	}
 	if a.leader == nil || a.leader.Members != a.members || a.leader.Pool != pool {
@@ -163,10 +164,59 @@ func TestStartContract(t *testing.T) {
 	if h := b.authHandler(); h.Membership != b.members {
 		t.Fatal("the sign-in routes have no contract without a transport")
 	}
+	// Members built before (setup's, which the socket's acts already ask)
+	// are kept, and given the transport.
+	pre := &membership.Members{Contract: store.NewContract(pool), Log: a.log}
+	p := &app{
+		cfg: config.Config{Contract: config.Contract{Socket: served.Path, SecretFile: secretFile, LoadedFile: filepath.Join(tmp, "pre.loaded")}},
+		log: a.log, pools: &pg.Pools{API: pool}, ws: &wsapi.Server{}, members: pre,
+	}
+	p.startContract(ctx, make(chan os.Signal, 1))
+	if p.members != pre || pre.Client == nil || pre.Client != p.contract {
+		t.Fatalf("setup's members were not kept with the transport: %p %p, client %p %p", p.members, pre, pre.Client, p.contract)
+	}
+	// Its loader publishes once, before the directory goes.
+	eventually(t, "the kept members' load", func() bool {
+		b, err := os.ReadFile(filepath.Join(tmp, "pre.loaded"))
+		return p.contract.Loaded() && err == nil && strings.Contains(string(b), "\nerror=none\n")
+	})
 	// An app startContract never built members for: no contract, and no
 	// typed nil the routes would take for one.
 	if h := (&app{log: b.log, ws: &wsapi.Server{}}).authHandler(); h.Membership != nil {
 		t.Fatal("a typed nil Membership")
+	}
+}
+
+// serve's freshness hook (the plan's 4.12): setup builds the contract's
+// Members once, before the socket's server, and the socket's acts, the
+// sign-in routes and the connector all ask that one, which startContract
+// keeps.
+func TestServeWiresFreshness(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	commandEnv(t, pool, filepath.Join(t.TempDir(), "deletions.ledger"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// With WhatsApp, as serve's: the socket's server is built only then.
+	a, closeAll, err := setup(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeAll()
+	members := a.members
+	if members == nil || a.ws.Membership() != membership.Freshness(members) {
+		t.Fatalf("the socket's acts ask %v, not setup's members %p", a.ws.Membership(), members)
+	}
+	if h := a.authHandler(); h.Freshness != membership.Freshness(members) || h.Membership != membership.SignIns(members) {
+		t.Fatal("the routes ask another hook")
+	}
+	a.cfg.MCP = enclaveConfig()
+	a.routes()
+	if a.mcp == nil || a.mcp.Membership != membership.Freshness(members) {
+		t.Fatal("the connector asks another hook")
+	}
+	a.startContract(ctx, make(chan os.Signal, 1))
+	if a.members != members {
+		t.Fatal("startContract built members of its own")
 	}
 }
 

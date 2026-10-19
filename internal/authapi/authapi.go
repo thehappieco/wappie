@@ -425,8 +425,12 @@ func (h *Handler) signupService(w http.ResponseWriter, r *http.Request, req sign
 	if h.Freshness != nil {
 		tenant, issuer, ok, err := h.Users.ServiceInviteIssuer(r.Context(), req.Invite)
 		if err != nil {
-			h.log().Warn("freshness: could not read a service invitation's issuer", "error", err)
-		} else if ok && !h.fresh(r.Context(), w, actServiceSignup, tenant, membership.Party{User: issuer, How: membership.IfStale}) {
+			// Never registered unchecked; nothing is spent.
+			h.log().Error("freshness: could not read a service invitation's issuer", "error", err)
+			fail(w, http.StatusInternalServerError, "internal", "could not check the invitation; nothing was spent")
+			return
+		}
+		if ok && !h.fresh(r.Context(), w, actServiceSignup, tenant, membership.Party{User: issuer, How: membership.IfStale}) {
 			return
 		}
 	}

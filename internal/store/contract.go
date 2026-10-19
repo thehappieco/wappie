@@ -864,31 +864,17 @@ func (c *Contract) Unfollowed(ctx context.Context, sub uuid.UUID) error {
 // published_through, the latter only for a sub the platform follows in the
 // stored generation (README 7.1; the plan's DB8), and never while it is
 // past the clock by more than ContractClockSkew. An unknown sub is stale.
+// It is Standing's Fresh: one query decides freshness everywhere.
 func (c *Contract) Fresh(ctx context.Context, d time.Duration, subs ...uuid.UUID) (map[uuid.UUID]bool, error) {
-	out := make(map[uuid.UUID]bool, len(subs))
-	if len(subs) == 0 {
-		return out, nil
-	}
-	rows, err := c.pool.Query(ctx, `SELECT q.sub, coalesce(greatest(a.fresh_at,
-			CASE WHEN a.version IS NOT NULL AND a.generation = s.generation
-			      AND s.published_through <= clock_timestamp() + $3::interval THEN s.published_through END)
-			> clock_timestamp() - $2::interval, false)
-		FROM unnest($1::uuid[]) AS q(sub)
-		CROSS JOIN contract_state s
-		LEFT JOIN contract_accounts a ON a.sub = q.sub`, subs, d, ContractClockSkew)
+	standing, err := c.Standing(ctx, d, subs...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var sub uuid.UUID
-		var fresh bool
-		if err := rows.Scan(&sub, &fresh); err != nil {
-			return nil, err
-		}
-		out[sub] = fresh
+	out := make(map[uuid.UUID]bool, len(standing))
+	for sub, st := range standing {
+		out[sub] = st.Fresh
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Vouched says whether the last trusted published_through vouches for sub
