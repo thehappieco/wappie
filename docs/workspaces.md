@@ -53,8 +53,8 @@ The authenticated session selects the workspace for these routes. They accept no
 | Method and path | Request | Response |
 | --- | --- | --- |
 | `GET /v1/auth/workspaces/members` | None | `{"members":[{"id":"UUID","email":"person@example.com","role":"member","status":"active","last_owner":false,"created_at":"RFC3339"}]}`; disabled memberships are included. No password or key envelopes are returned. |
-| `PUT /v1/auth/workspaces/members/{userID}` | `{"role":"member","status":"disabled"}`; both fields required | `204` |
-| `DELETE /v1/auth/workspaces/members/{userID}` | None | `204`; removes membership only, preserving the account and its other workspaces. |
+| `PUT /v1/auth/workspaces/members/{userID}` | `{"role":"member","status":"disabled"}`; both fields required; `"strand_deleted":true` is [the strand override](#the-strand-override) | `204` |
+| `DELETE /v1/auth/workspaces/members/{userID}` | None; `?strand_deleted=true` is [the strand override](#the-strand-override) | `204`; removes membership only, preserving the account and its other workspaces. |
 | `POST /v1/auth/workspaces/invites` | `{"role":"member","email":"person@example.com"}`; email optional | `201 {"invite":"one-use-code","invitation":{...},"email_sent":false}`; expires in seven days. Configured mail delivery sets `email_sent:true`. |
 
 Owners can manage all roles. Administrators can manage members and service accounts, but cannot modify administrators/owners or invite/promote somebody to those roles. Members and service accounts cannot manage memberships. Service accounts cannot be converted into people or vice versa.
@@ -74,6 +74,21 @@ Migration 0022 introduces a membership access revision, also advanced by grant d
 Logout, password change/recovery, membership changes, service disabling, API key revocation, grant removal and workspace suspension invalidate affected open connections. The connection closes with WebSocket code `1008`; clients must authenticate/reconnect as appropriate. Role changes intentionally require a new session rather than retaining cached privileges.
 
 Members and service accounts see only currently granted devices in the device directory, history replay, live subscription and device-status notifications. Explicit subscription requests for ungranted devices are refused. Accounts with no grants cannot subscribe. Administrative roles do not implicitly grant conversation access.
+
+### The strand override
+
+An owner may remove or disable the last key holder of deleted numbers anyway, when the platform will tell the workspace's other owners (decision 0040; the owner's confirmation of 2026-10-14): `"strand_deleted": true` in the `PUT`'s body, or `?strand_deleted=true` on the `DELETE` (a value that is not a boolean is `400 bad_request`; `false` is no flag). In this order:
+
+1. the sign-in's rate budget (`429 rate_limited`);
+2. owners only, by the session's role (`403 owner_only` for anyone else, before any step-up prompt);
+3. a recent sign-in (`403 step_up_required`);
+4. under the workspace's lock, the live role again (`403 owner_only`), and the gate: the contract is on and the workspace is a team a platform document names, not closed ([the contract](contract.md#the-owners-acts)). Where the gate is closed, a self-hosted installation included, the flag changes nothing and the answer is `409 last_reader_of_deleted`, as without it. When the gate is open and the workspace stays locked by another change for over 2 seconds, `503 workspace_busy` with `Retry-After: 2`, and nothing changed.
+
+The act then goes on, and each deleted number it leaves with no key holder keeps its purge date, readable by nobody. For each, one `stranded` [event](item-events.md) (the owner as actor; `person`, the target's platform sub; `cause`, `revoked` for a removal or `disabled` for a disable; the readers just before the change, the target among them), which the platform mails the other owners, and a `number_stranded` notice for each other active owner, never the actor or the target, until the purge (a recovery clears its date). A live number's last key holder stays unremovable (`409 last_device_reader`).
+
+### Person invitations into platform teams
+
+In a team a platform document names, person invitations (owner, admin or member) are paused while Wappie observes the platform's members ([the contract](contract.md#person-invitations-into-platform-teams)): issuing one (`POST /v1/auth/workspaces/invites`, the console's invite form), regenerating one, accepting one (`POST /v1/auth/workspaces/accept-invite`, or an invited sign-up) and the operator's `whatserverd invite` are refused with `409 invitations_paused`, before anything is spent, so a pending code stays valid. Service invitations stay open. The record of the team is the key, in every mode: only the 0051 down-step reopens them.
 
 ## Delivery phases
 

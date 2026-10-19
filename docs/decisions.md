@@ -1533,3 +1533,144 @@ or mark. A claim checks the connection is still live under the connection's
 `TestRaiseAndClaimNoticeDoNotDeadlock` and
 `TestNoticesAndEndingDoNotDeadlock` force each cycle and also race the real
 paths. Every cycle failed before the change.
+
+## The contract's membership part, connected and observing (2026-10-19)
+
+Release B of platform decisions 0040 and 0041 ([the contract](contract.md)):
+Wappie subscribes the people it holds, follows the platform's feed,
+compares, and sends access snapshots and item events. It enforces nothing
+yet. Twenty-four decisions shaped it (the plan's DB1 to DB24); where the
+owner or the platform changed one since, the entry says what holds.
+
+**DB1. Connect and observe ship together.** Observe is "receives and
+sends, does not enforce" (0005), and connecting alone already receives and
+sends: the comparison is a read-only function over rows stored anyway. A
+new account's home must come with the first PUT, and the first snapshot
+must follow it within seconds, or the console counts every followed
+member's numbers as unknown protection. One migration (0051), one binary.
+
+**DB2. The mode is in the database, the transport in the configuration.**
+`contract_state.mode` is `off` or `observe`; `WS_CONTRACT_*` only say how to
+reach the platform. `off` before the first observe is release A; `off`
+after one stops the leader, the returning sign-ins' PUTs and the
+freshness shadow, but a new account still takes the platform's home or is
+refused: Wappie never goes back to homes of its own. Without a transport,
+observe is fail-static and refuses only new accounts. The owners' acts that
+the platform mails about are gated on where that mail goes (DB13).
+
+**DB3. Observe compares and logs only.** No membership, role, status,
+revocation, closing, rename or closure is applied, and nothing is deleted.
+The exceptions: a new account's home, the record of platform workspaces,
+and paused person invitations (DB6). A new account whose document is not
+`active` is refused and unsubscribed: creating it would be acting.
+
+**DB4. The freshness hook is wired at every gated act, and refuses only
+from enforce** (the owner, 2026-10-14: "só registrar"). At observe Wappie
+applies no document, so a fresh one changes no authorization: a refusal
+would only refuse while the platform is down. The shadow's logs ("freshness:
+would refuse", "freshness: stale at act") are enforce's evidence. The hot
+paths (sends, group administration, MCP sends) read only the stored
+freshness, in the background, and make no call.
+
+**DB5. A move out of a team stays its only owner's** (decision 0043, which
+replaced the co-owner move of the owner's first answer). The local
+sole-owner check and the access refusal decide; the hook asks for the
+mover's document with a fresh GET and logs "transfer: would refuse" unless
+it lists them as the team's owner with an owner count of 1, which enforce
+makes binding. 0051 records no owner count.
+
+**DB6. Person invitations into a platform team are paused** (the owner,
+2026-10-14). The key is the record, never a setting, so a container, a
+restored `runtime.env` or a return to `off` never reopens them; only the
+0051 down-step does. `409 invitations_paused`, not `managed_elsewhere`:
+at observe the platform's invitations do not reach Wappie. Service
+invitations stay open.
+
+**DB7. One leader for all background contract work**, by the advisory lock
+`contract` held on its own connection (`pg.Locker.Hold`), whose loss ends
+the leader within its heartbeat; every leader write is compare-and-set.
+
+**DB8. Freshness per sub, in the database, on its clock, from answers
+only.** A PUT's or GET's validated document sets `fresh_at` whatever its
+version; a feed page never does, and vouches through `published_through`
+only for subs the platform follows in the stored generation. A signed
+refusal of any code confirms nothing. Platform times past the database's
+clock by over 5 minutes are refused.
+
+**DB9. A snapshot for every recorded platform workspace from observe**,
+empty when Wappie has none: the console reads a missing one as unknown
+protection.
+
+**DB10. Which rows are sent.** Rows written at or after the first observe
+and the workspace's naming. Pauses, strandings and moves written while off
+after an observe are never sent; deletions, recoveries and purges are, on
+the return (the spec always sends them, and a purge must not arrive
+without its deletion). A replayed deletion, recovery or purge is sent by
+its `occurred_at`; the platform answers `duplicate` for one it holds.
+
+**DB11. One `item.sync_paused` per number, actor and hour.** Later pauses
+fold into the first, which carries their readers; a pause under an hour
+after a delivered one sends nothing. Folded rows settle only with their
+head's signed answer. A pause nobody but its actor reads is `not_sent`.
+
+**DB12. `devices.pause_cause`**: `person`, `move` or `deletion`, set by every
+writer and defaulted by a trigger, so the snapshot's `by_person` is a
+person's stop and never Wappie's own pause.
+
+**DB13. The owner's strand override, where the platform mails the other
+owners.** `strand_deleted` lets an owner, after a step-up, remove or disable
+a deleted number's last key holder, writing `item.stranded` and the other
+owners' `number_stranded`. The owner confirmed on 2026-10-14 that it goes
+only where the platform will mail the other owners: the contract on, in a
+recorded team that is not closed. A self-hosted installation keeps release
+A's refusal; opening it there would need the owner's agreement and a
+mailer. Its readers are those just before the change (README 9).
+
+**DB14. The owners' in-app notices** `number_stranded` and
+`number_moved_out`, for the workspace's other active owners, never the
+actor, in every edition.
+
+**DB15. A self-hosted mail path.** 0051 carries its schema (`item_mails`,
+`mail_from`, `reader_user_ids`, `mailed_at`); its sender is a separate
+change that this release does not include, and the cloud never runs it.
+It may run only where the installation never used the platform.
+
+**DB16. Capture is released for a workspace that is not active**, by the
+supervisor, before enforce can close one.
+
+**DB17. The secret's envelopes use Wappie's own KMS key**, under one
+context for both files (`service=wappie`, `env=prod`,
+`purpose=contract-secret`, `ref=platform`), so a promote is a rename. The
+key, its policy and the managed policy on the shared role follow the
+account's pattern and are the owner's to create, from a local file never
+committed. `runtime.env` pins the full key ARN.
+
+**DB18. The kit moves to v0.8.0 for Go only.** The TypeScript pins stay,
+and CI holds `packages/client`'s built `dist` equal to release A's, so the
+enclave reader's measurement does not change.
+
+**DB19. One label rule**: `label.Clean` is NFC then the kit's
+`contract.CleanLabel`, tested against the kit's vectors.
+
+**DB20. The last document is stored as received** (`contract_accounts.doc`):
+subs, workspace ids, roles, statuses, counts and team names, never an email
+or a person's name. Enforce applies from it.
+
+**DB21. Never unsubscribe a person Wappie holds.** Every PUT follows a
+committed intent row; a refused sign-up DELETEs only after a fresh read
+finds the sub unlinked, and `already_linked` and `ticket_invalid` never do;
+every other orphan is the sweep's, 15 minutes after its last PUT, by
+compare-and-set.
+
+**DB22. What a log line may hold**: subs, user, workspace and device ids,
+counts, codes and classes; never an email, a name, a label, a hint, a phone
+number, a secret, or an error's text (a KMS refusal's names ARNs).
+
+**DB23. One lock order for the contract's writers**: `contract_state`, the
+records by id, the workspace `FOR KEY SHARE`, then its `item_events` rows in
+`seq` order, with a deadlock retry, so none crosses a purge.
+
+**DB24. Someone is told when the contract fails.** No metrics are scraped
+on the pilot, so `whatserverd contract status --check` is the alert: it
+exits 1 with one line per finding, well before the platform's own two
+alerts fire, for a daily job to add to its warnings.

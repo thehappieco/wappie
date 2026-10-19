@@ -13,6 +13,7 @@ shared workspaces, per-number permissions and a messaging client.
 - [Workspace model and API contracts](docs/workspaces.md)
 - [Numbers: pause, deletion, recovery and the 30-day purge](docs/devices.md)
 - [Personal accounts, Team workspaces and invitations](docs/accounts-workspaces.md)
+- [The Happie Co's product contract: memberships, access snapshots and item events (hosted cloud)](docs/contract.md)
 - [Deployment guide](docs/deployment.md)
 - [Publishing public/private releases](docs/publication.md)
 - [Passkeys and encrypted login](docs/passkeys-api.md)
