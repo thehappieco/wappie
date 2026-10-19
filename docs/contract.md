@@ -180,9 +180,13 @@ A load never stops the process.
 ### The root commands
 
 `whatserverd contract-secret` is the secret's root half. The hosted cloud
-runs it only through its installer (wappie-cloud's `contract-secret.sh`),
-at the owner's prompt on the host, never from a kit or an agent's session
-(the platform's answer of 2026-10-14). It opens no database and reads no
+runs the subcommands that take or move the secret (`seal --slot`,
+`promote`, `unpromote`, `drop`, `reset`) only through its installer
+(wappie-cloud's `contract-secret.sh`), at the owner's prompt on the host,
+never from a kit or an agent's session (the platform's answer of
+2026-10-14). `seal --check-kms` and `capabilities` carry no secret and
+write nothing: a deploy kit runs them as root, `--check-kms` as the
+transport release's KMS gate. It opens no database and reads no
 `.env`; of the env file it takes `WS_CONTRACT_KMS_KEY_ARN` and
 `WS_CONTRACT_KMS_REGION` alone, and refuses a file that assigns either
 twice. Every subcommand but `capabilities` turns core dumps off first.
