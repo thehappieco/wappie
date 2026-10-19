@@ -8,7 +8,7 @@ import { openSealedState, SEALED_MAX_PLAINTEXT, sealedCollection, StateError } f
 import { aadFor, contextFor, createSealer, decodeEnvelope, MAGIC } from '../sealer.mjs'
 import { fakeKms } from './fixtures.mjs'
 
-const READER_KEY = 'arn:aws:kms:eu-west-1:768406580484:key/11111111-1111-4111-8111-111111111111'
+const READER_KEY = 'arn:aws:kms:eu-west-1:123456789012:key/11111111-1111-4111-8111-111111111111'
 const ORIGIN = 'https://mcp.wappie.thehappie.co'
 const quietLog = () => { const events = []; return { events, event: (code, fields) => events.push({ code, ...fields }) } }
 

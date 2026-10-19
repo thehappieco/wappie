@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
-ROLE = "arn:aws:iam::000000000000:role/ci"
+ROLE = "arn:aws:iam::123456789012:role/ci"
 PREVIOUS, THIS = "a" * 96, "b" * 96
 
 

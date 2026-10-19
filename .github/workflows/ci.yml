@@ -203,7 +203,7 @@ jobs:
           node --check deploy/enclave/probe/probe-report.mjs
           for f in deploy/enclave/jailcheck/*.mjs; do node --check "$f"; done
           for t in deploy/enclave/kms/*.template.json; do
-            python3 deploy/enclave/kms/render.py "$t" --role-arn arn:aws:iam::000000000000:role/ci \
+            python3 deploy/enclave/kms/render.py "$t" --role-arn arn:aws:iam::123456789012:role/ci \
               --pcr0 "$(printf 'a%.0s' $(seq 96))" > /dev/null
           done
 
