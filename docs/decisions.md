@@ -1681,3 +1681,12 @@ records by id, the workspace `FOR KEY SHARE`, then its `item_events` rows in
 on the pilot, so `whatserverd contract status --check` is the alert: it
 exits 1 with one line per finding, well before the platform's own two
 alerts fire, for a daily job to add to its warnings.
+
+**A suspended sole holder stays protected** (the platform's message of
+2026-10-19, after Wappie's reply of 2026-10-14). `sole_key_holders` checks
+a person whose account is disabled, their membership active and with no
+deadline, as it checks an active one, so release A's refusal and the
+snapshot's `protected` both keep them while their keys are kept. Only an
+active person is a backup, as before. No Wappie path disables an account
+yet (only an operator's SQL does), so this only widens the refusal, on
+the safe side.

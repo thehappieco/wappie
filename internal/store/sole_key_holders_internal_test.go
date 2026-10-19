@@ -19,16 +19,19 @@ import (
 )
 
 // releaseAStrandedQuery is strandedDevicesTx as release A shipped it, kept
-// here as the oracle sole_key_holders (0051) must agree with: a target that
-// is a connection's service account (a membership with a deadline, or an
-// account a connection names) strands nothing; otherwise every number on
-// which the target's grant at a live epoch is the last one an active,
-// undeadlined, non-connection member with Read holds.
+// here as the oracle sole_key_holders (0051) must agree with, with one
+// change on its target side (the plan's 19): a suspended person, whose
+// account is disabled and whose membership stands, is checked as an active
+// one is. A target that is a connection's service account (a membership
+// with a deadline, or an account a connection names) strands nothing;
+// otherwise every number on which the target's grant at a live epoch is
+// the last one an active, undeadlined, non-connection member with Read
+// holds.
 const releaseAStrandedQuery = `SELECT DISTINCT doomed.device_id
 	FROM device_key_grants doomed
 	JOIN device_archive_keys k ON k.device_id=doomed.device_id AND k.epoch=doomed.epoch AND k.retired_at IS NULL
 	JOIN workspace_memberships m ON m.tenant_id=doomed.tenant_id AND m.user_id=doomed.user_id AND m.status='active'
-	JOIN users u ON u.id=m.user_id AND u.status='active'
+	JOIN users u ON u.id=m.user_id AND u.status IN ('active','disabled')
 	WHERE doomed.tenant_id=$1 AND doomed.user_id=$2 AND ($3::uuid IS NULL OR doomed.device_id=$3)
 	AND NOT EXISTS(
 		SELECT 1 FROM device_key_grants backup
@@ -59,14 +62,16 @@ func releaseAStranded(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID, 
 }
 
 // TestSoleKeyHoldersAgree is the plan's TB11: strandedDevicesTx, now read
-// from sole_key_holders, gives what release A's query gave, for every
-// member and every number of a workspace whose shape changes at random
-// between rounds through each case of reader_safety_test.go and the
-// deletion's test 13: a sole holder, one whose Read was withheld, two
-// holders at once, a disabled membership or account, a connection's
-// service account (by its deadline, by its connection, or both), a holder
-// only at a retired epoch, several unretired epochs, a deleted number, a
-// grant of someone who is no member, and a number nobody holds.
+// from sole_key_holders, gives what release A's query gave (with a
+// suspended target checked, the plan's 19), for every member and every
+// number of a workspace whose shape changes at random between rounds
+// through each case of reader_safety_test.go and the deletion's test 13: a
+// sole holder, one whose Read was withheld, two holders at once, a
+// disabled membership, a disabled account (as the target and as the
+// backup), a connection's service account (by its deadline, by its
+// connection, or both), a holder only at a retired epoch, several
+// unretired epochs, a deleted number, a grant of someone who is no member,
+// and a number nobody holds.
 func TestSoleKeyHoldersAgree(t *testing.T) {
 	ctx := context.Background()
 	pool := pgtest.Fresh(t, migrate.Run)
@@ -140,8 +145,9 @@ func TestSoleKeyHoldersAgree(t *testing.T) {
 	}
 	rng := rand.New(rand.NewPCG(51, 11))
 	chance := func(p float64) bool { return rng.Float64() < p }
-	compared, stranded := 0, 0
+	compared, stranded, strandedSuspended := 0, 0, 0
 	for round := range 40 {
+		suspended := map[uuid.UUID]bool{}
 		scoped(func(tx pgx.Tx) error {
 			for _, q := range []string{`DELETE FROM device_key_grants WHERE tenant_id = $1`,
 				`DELETE FROM device_permissions WHERE tenant_id = $1`, `DELETE FROM mcp_connections WHERE tenant_id = $1`} {
@@ -167,9 +173,12 @@ func TestSoleKeyHoldersAgree(t *testing.T) {
 					WHERE tenant_id = $1 AND user_id = $2`, tenant, u, status, expires); err != nil {
 					return err
 				}
+				// A suspended person: the account disabled, the
+				// membership as it was drawn above.
 				userStatus := "active"
-				if chance(0.1) {
+				if chance(0.25) {
 					userStatus = "disabled"
+					suspended[u] = true
 				}
 				if _, err := tx.Exec(ctx, `UPDATE users SET status = $2 WHERE id = $1`, u, userStatus); err != nil {
 					return err
@@ -263,13 +272,18 @@ func TestSoleKeyHoldersAgree(t *testing.T) {
 					}
 					compared++
 					stranded += len(want)
+					if suspended[target] {
+						strandedSuspended += len(want)
+					}
 				}
 			}
 			return nil
 		})
 	}
-	// The rounds reached both answers, not only the empty one.
-	if stranded == 0 || compared == 0 {
-		t.Fatalf("%d comparisons stranded %d numbers: the fixture never reached a sole holder", compared, stranded)
+	// The rounds reached both answers, not only the empty one, and a
+	// suspended sole holder among them.
+	if stranded == 0 || compared == 0 || strandedSuspended == 0 {
+		t.Fatalf("%d comparisons stranded %d numbers, %d of a suspended person's: the fixture never reached a sole holder of each kind",
+			compared, stranded, strandedSuspended)
 	}
 }

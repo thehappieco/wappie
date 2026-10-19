@@ -90,7 +90,8 @@ var fixtureLabels = map[label.Class]int{
 //     (a backup without a sub);
 //   - deleted: the owner reads, sends and manages it, the only holder;
 //   - disabled_holder: the only holder is a person whose account is
-//     disabled: neither protected nor refused (the plan's 3, notes);
+//     disabled, their membership standing: a suspended sole holder, both
+//     protected and refused (the plan's 19);
 //   - lid_only: a LID and nothing else, and connected_only: a past
 //     connection and nothing else, each a number of the workspace's (the
 //     owner its only holder);
@@ -467,11 +468,10 @@ func TestSnapshotGolden(t *testing.T) {
 // TB30: for each member of the fixture with a sub, protected lists them
 // exactly when removing them is refused with last_device_reader or
 // last_reader_of_deleted, by Wappie's own rule (one function, read by
-// both); a sole holder whose account is disabled is in neither (release
-// B keeps release A's predicate; enforce changes both together, the plan's
-// 4.8). Each removal is tried and taken back: a trigger refuses the
-// membership's delete, the last write a removal makes once its checks
-// pass.
+// both); a sole holder whose account is disabled is in both (a suspended
+// sole holder stays protected, the plan's 19). Each removal is tried and
+// taken back: a trigger refuses the membership's delete, the last write a
+// removal makes once its checks pass.
 func TestSnapshotProtectedMatchesRefusal(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
@@ -505,11 +505,11 @@ func TestSnapshotProtectedMatchesRefusal(t *testing.T) {
 		}
 		seen[refused]++
 	}
-	if seen[true] != 4 || seen[false] != 5 {
-		t.Fatalf("the fixture's members: %d protected, %d not; want 4 and 5", seen[true], seen[false])
+	if seen[true] != 5 || seen[false] != 4 {
+		t.Fatalf("the fixture's members: %d protected, %d not; want 5 and 4", seen[true], seen[false])
 	}
-	if protected[f.subs["disabled"].String()] {
-		t.Fatal("a disabled sole holder is protected")
+	if !protected[f.subs["disabled"].String()] {
+		t.Fatal("a suspended sole holder is not protected")
 	}
 }
 

@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -513,5 +514,77 @@ func TestSnapshotTenantStates(t *testing.T) {
 		if got := refused(); got != x.quota {
 			t.Errorf("%s: the storage check refuses capture %v, want %v", x.what, got, x.quota)
 		}
+	}
+}
+
+// A suspended sole holder stays protected (the plan's 19; Wappie's reply
+// of 2026-10-14, which the platform's verdict follows): a person whose
+// account is disabled, whose membership stands, and who holds a number's
+// only key is in the snapshot's protected for it, and an owner's removal
+// or disable of them is refused, with last_device_reader for a live
+// number and last_reader_of_deleted for a deleted one. Only an active
+// person is a backup: a second suspended holder changes nothing, and an
+// active one with Read and the key lets the removal through, and is then
+// the one protected.
+func TestSuspendedSoleHolderProtected(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	c := store.NewContract(w.pool)
+	holder, gone := w.person(t, "holder", "member"), w.person(t, "gone-holder", "member")
+	holderSub, goneSub := linkSub(t, w.pool, holder), linkSub(t, w.pool, gone)
+	live, deleted := w.number(t, "Vendas"), w.number(t, "Suporte")
+	w.reads(t, holder, live)
+	w.reads(t, gone, deleted)
+	w.quarantine(t, deleted, gone)
+	// A second holder of the live number, suspended too: no backup.
+	suspendedBackup := w.person(t, "suspended-backup", "member")
+	w.reads(t, suspendedBackup, live)
+	for _, u := range []uuid.UUID{holder, gone, suspendedBackup} {
+		w.disableAccount(t, u)
+	}
+	protectedOn := func(device uuid.UUID) []uuid.UUID {
+		t.Helper()
+		s, err := c.Snapshot(ctx, w.tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, it := range s.Items {
+			if it.ID == device {
+				return it.Protected
+			}
+		}
+		t.Fatalf("%s is not in the snapshot", device)
+		return nil
+	}
+	if got := protectedOn(live); !sameSubs(got, holderSub) {
+		t.Fatalf("the live number protects %v, want the suspended sole holder %s", got, holderSub)
+	}
+	if got := protectedOn(deleted); !sameSubs(got, goneSub) {
+		t.Fatalf("the deleted number protects %v, want the suspended sole holder %s", got, goneSub)
+	}
+	if err := w.users.RemoveMember(ctx, w.tenant, w.owner, holder); !errors.Is(err, store.ErrLastDeviceReader) {
+		t.Fatalf("removing a live number's suspended sole holder: %v", err)
+	}
+	if err := w.users.UpdateMember(ctx, w.tenant, w.owner, holder, "member", "disabled"); !errors.Is(err, store.ErrLastDeviceReader) {
+		t.Fatalf("disabling a live number's suspended sole holder: %v", err)
+	}
+	var refused *store.ErrLastReaderOfDeleted
+	if err := w.users.RemoveMember(ctx, w.tenant, w.owner, gone); !errors.As(err, &refused) ||
+		len(refused.Numbers) != 1 || refused.Numbers[0].DeviceID != deleted {
+		t.Fatalf("removing a deleted number's suspended sole holder: %v", err)
+	}
+
+	// An active backup, linked, with Read and the key.
+	backup := w.person(t, "backup", "member")
+	backupSub := linkSub(t, w.pool, backup)
+	w.reads(t, backup, live)
+	if got := protectedOn(live); !sameSubs(got, backupSub) {
+		t.Fatalf("with an active backup the live number protects %v, want only the backup %s", got, backupSub)
+	}
+	if err := w.users.RemoveMember(ctx, w.tenant, w.owner, holder); err != nil {
+		t.Fatalf("removing a suspended holder with an active backup: %v", err)
+	}
+	if n := w.count(t, `SELECT count(*) FROM workspace_memberships WHERE tenant_id = $1 AND user_id = $2`, w.tenant, holder); n != 0 {
+		t.Fatal("the suspended holder's membership is still there")
 	}
 }

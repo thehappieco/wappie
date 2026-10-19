@@ -599,11 +599,14 @@ missing snapshot as unknown protection.
 - **`protected`** is Wappie's own rule, the one that refuses removing or
   disabling them: the subs whose key is the number's last recoverable one
   (the SQL function `sole_key_holders`, which the removal's refusal reads
-  too). **`other_backups`** counts the holders without a sub the rule
-  counts as a backup: standing service accounts and people never linked to
-  the platform. A deleted number is reported as it was live until its
-  purge, its readers, holders and `protected` included (platform decision
-  0044).
+  too). A suspended person, whose account is disabled while their
+  membership stands, is protected as an active one is (Wappie's reply of
+  2026-10-14; the platform's verdict ignores the account's status); only
+  an active person counts as their backup. **`other_backups`** counts the
+  holders without a sub the rule counts as a backup: standing service
+  accounts and people never linked to the platform. A deleted number is
+  reported as it was live until its purge, its readers, holders and
+  `protected` included (platform decision 0044).
 - **Limits.** At most 1000 items, 5000 people on an item and a 1 MiB body,
   and the kit's validation (labels and hints as the platform's strict
   intake checks them). A snapshot past them is not sent (ERROR "contract: a
@@ -799,7 +802,6 @@ Nothing below ships in this release:
   last-owner checks in platform teams, in place of `invitations_paused`;
 - the freshness refusals made binding, the hot paths given a synchronous
   GET, and the mover's owner count of 1 checked beside the local one;
-- `protected` keeping a suspended sole holder whose keys are kept;
 - the reconciliation of the pilot's team and the retirement of the teams no
   document names.
 

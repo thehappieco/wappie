@@ -86,8 +86,10 @@
 --                       last recoverable one in workspace t: the rule that
 --                       refuses removing or disabling them (store's
 --                       strandedDevicesTx) and the snapshot's protected
---                       list, written once. SECURITY INVOKER, so the
---                       caller's policies apply.
+--                       list, written once. A person whose account is
+--                       disabled (suspended, keys kept) is still held by
+--                       it; only an active one is a backup. SECURITY
+--                       INVOKER, so the caller's policies apply.
 --   contract_mark_dirty and its triggers
 --                       a change a workspace's snapshot shows notifies
 --                       wappie_contract_dirty with the workspace's id ('all'
@@ -402,7 +404,9 @@ LANGUAGE sql STABLE AS $$
       FROM device_key_grants doomed
       JOIN device_archive_keys k ON k.device_id = doomed.device_id AND k.epoch = doomed.epoch AND k.retired_at IS NULL
       JOIN workspace_memberships m ON m.tenant_id = doomed.tenant_id AND m.user_id = doomed.user_id AND m.status = 'active'
-      JOIN users u ON u.id = m.user_id AND u.status = 'active'
+      -- A suspended person (a disabled account) whose membership stands
+      -- keeps their keys, so stays protected; a backup must be active.
+      JOIN users u ON u.id = m.user_id AND u.status IN ('active', 'disabled')
      WHERE doomed.tenant_id = $1
        -- A connection's service account is never the one checked: its
        -- grants are copies of someone else's.

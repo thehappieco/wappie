@@ -25,8 +25,10 @@ func lockWorkspaceAccess(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) error
 // requireRemainingReader is called before deleting this member's grants. A nil
 // device checks every number affected by disabling a membership. Existing
 // keyless CLI devices remain supported; the check only protects envelopes held
-// by active members. Even a holder whose read flag was withheld may be the
-// only recoverable copy. Old non-retired epochs need a reader too.
+// by active members, a suspended person's (a disabled account) included,
+// though only an active person is a backup. Even a holder whose read flag was
+// withheld may be the only recoverable copy. Old non-retired epochs need a
+// reader too.
 //
 // A connection service account never counts: not as a backup, because its
 // grants are sealed to a key that lives only in a reader and dies with it
