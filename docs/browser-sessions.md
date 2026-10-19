@@ -89,6 +89,10 @@ so the same person can return to that number on a later sign-in. It does not
 synchronize between computers, browser profiles, or separate self-hosted origins.
 If browser storage is unavailable, the app still works with its ordinary fallback.
 
+The cloud console's shared-shell screens also keep the last menu they showed
+(`thehappie-shell.last`, platform decision 0047), erased at sign-out:
+`commercial/docs/platform-shell.md`.
+
 On a fresh opening, a valid explicit device link takes priority. Otherwise the
 app restores the remembered number if it still appears in the current server
 list and the account still has a readable grant. The fallback is an authorized

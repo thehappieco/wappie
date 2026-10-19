@@ -605,7 +605,12 @@ func TestTheConsoleRoutesGetThePage(t *testing.T) {
 					if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
 						t.Errorf("Content-Type = %q", got)
 					}
-					if rec.Header().Get("Content-Security-Policy") == "" || rec.Header().Get("Cache-Control") != "no-cache" {
+					// The shell's screens are never stored (speculation.go); the console's own documents are revalidated.
+					cache := "no-cache"
+					if strings.HasPrefix(route, "/console/") && route != "/console/" {
+						cache = "no-store"
+					}
+					if rec.Header().Get("Content-Security-Policy") == "" || rec.Header().Get("Cache-Control") != cache {
 						t.Errorf("served without the document's headers: %v", rec.Header())
 					}
 					if method == http.MethodGet && !strings.Contains(rec.Body.String(), "<title>whatserver2</title>") {
