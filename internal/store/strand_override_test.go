@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -497,5 +498,116 @@ func TestStrandOverrideGivesUpOnABusyWorkspace(t *testing.T) {
 	}
 	if n := w.count(t, `SELECT count(*) FROM item_events WHERE type='stranded'`); n != 0 {
 		t.Fatal("a busy override recorded a stranding")
+	}
+}
+
+// The members list tells the console where the override's dialog opens
+// (the plan's 4.12): an owner reads each deleted number a member is the
+// last key holder of, with its purge date, and the gate as strand_override
+// on every row; an admin reads only that there is one, and never the gate;
+// a member who would strand a live number, or nothing, is not listed.
+func TestMembersListTheStrandOverride(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	admin := w.person(t, "admin", "admin")
+	target := w.person(t, "target", "member")
+	device := w.number(t, "Suporte")
+	w.reads(t, target, device)
+	q := w.quarantine(t, device, target)
+	other := w.number(t, "Atendimento")
+	w.reads(t, target, other)
+	qOther := w.quarantine(t, other, target)
+	// Both a live and a deleted number: the live one decides.
+	mixed := w.person(t, "mixed", "member")
+	live := w.number(t, "Vivo")
+	w.reads(t, mixed, live)
+	gone := w.number(t, "Antigo")
+	w.reads(t, mixed, gone)
+	w.quarantine(t, gone, mixed)
+	// A deleted number someone else also reads strands nobody.
+	shared := w.number(t, "Compartilhado")
+	reader := w.person(t, "reader", "member")
+	w.reads(t, reader, shared)
+	w.reads(t, w.owner, shared)
+	w.quarantine(t, shared, reader, w.owner)
+
+	list := func(actor uuid.UUID) map[uuid.UUID]store.Member {
+		t.Helper()
+		members, err := w.users.Members(ctx, w.tenant, actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[uuid.UUID]store.Member{}
+		for _, m := range members {
+			out[m.ID] = m
+		}
+		return out
+	}
+	for _, gate := range []struct {
+		name   string
+		open   bool
+		mode   string
+		kind   string
+		status string
+	}{
+		{"off before the first observe", false, "off", "team", ""},
+		{"observing, the team unnamed", false, "observe", "", ""},
+		{"observing, the team closed on the platform", false, "observe", "team", "closed"},
+		{"observing, in a team the platform names", true, "observe", "team", ""},
+	} {
+		w.contractGate(t, gate.mode, gate.mode == "observe", gate.kind, gate.status)
+		owners := list(w.owner)
+		got := owners[target].LastKeyHolderOfDeleted
+		if len(got) != 2 || owners[target].LastKeyHolderOfDeletedAny {
+			t.Fatalf("%s: the owner reads %+v for the target", gate.name, owners[target])
+		}
+		purges := map[uuid.UUID]time.Time{device: q.PurgeAfter, other: qOther.PurgeAfter}
+		labels := map[uuid.UUID]string{device: "Suporte", other: "Atendimento"}
+		for _, n := range got {
+			if !n.PurgeAfter.Equal(purges[n.DeviceID]) || n.Label != labels[n.DeviceID] || n.PN == "" {
+				t.Fatalf("%s: the target's number %+v", gate.name, n)
+			}
+		}
+		for _, id := range []uuid.UUID{w.owner, admin, mixed, reader} {
+			if m := owners[id]; len(m.LastKeyHolderOfDeleted) != 0 || m.LastKeyHolderOfDeletedAny {
+				t.Fatalf("%s: the owner reads %+v for %s", gate.name, m, id)
+			}
+		}
+		for id, m := range owners {
+			if m.StrandOverride != gate.open {
+				t.Fatalf("%s: strand_override %t for %s", gate.name, m.StrandOverride, id)
+			}
+		}
+		admins := list(admin)
+		if m := admins[target]; len(m.LastKeyHolderOfDeleted) != 0 || !m.LastKeyHolderOfDeletedAny || m.StrandOverride {
+			t.Fatalf("%s: the admin reads %+v for the target", gate.name, m)
+		}
+		for id, m := range admins {
+			if id != target && (m.LastKeyHolderOfDeletedAny || m.StrandOverride) {
+				t.Fatalf("%s: the admin reads %+v for %s", gate.name, m, id)
+			}
+		}
+	}
+	// The JSON a console reads: the fields' names, and nothing for a member
+	// with nothing to say.
+	owners := list(w.owner)
+	b, err := json.Marshal([]store.Member{owners[target], owners[reader]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire []map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if numbers, ok := wire[0]["last_key_holder_of_deleted"].([]any); !ok || len(numbers) != 2 || wire[0]["strand_override"] != true {
+		t.Fatalf("the target on the wire: %s", b)
+	}
+	if _, ok := wire[1]["last_key_holder_of_deleted"]; ok {
+		t.Fatalf("a member with nothing to strand: %s", b)
+	}
+	// A recovered number is live again: its last key holder is not listed.
+	w.recover(t, device)
+	if m := list(w.owner)[target]; len(m.LastKeyHolderOfDeleted) != 0 {
+		t.Fatalf("after a recovery: %+v", m)
 	}
 }

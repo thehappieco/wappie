@@ -40,6 +40,20 @@ type Member struct {
 	Status       string               `json:"status"`
 	LastOwner    bool                 `json:"last_owner"`
 	CreatedAt    time.Time            `json:"created_at"`
+	// LastKeyHolderOfDeleted, for an owner who reads the list, is every
+	// deleted number not yet purged whose last recoverable key this member
+	// holds, when every number they would strand is deleted: removing or
+	// disabling them is last_reader_of_deleted, which only the strand
+	// override goes past. A member who would strand a live number is never
+	// listed (last_device_reader, whatever the flag).
+	LastKeyHolderOfDeleted []DeletedNumberRef `json:"last_key_holder_of_deleted,omitempty"`
+	// LastKeyHolderOfDeletedAny is the same, for an admin who reads the
+	// list, without a label or a date.
+	LastKeyHolderOfDeletedAny bool `json:"last_key_holder_of_deleted_any,omitempty"`
+	// StrandOverride, for an owner who reads the list, is the override's
+	// gate (ownersMailedTx): the platform will mail the other owners, so
+	// strand_deleted would go on. False for anyone else.
+	StrandOverride bool `json:"strand_override,omitempty"`
 }
 
 // lockWorkspaceManager serializes permission changes and last-owner checks on
@@ -73,7 +87,14 @@ func lockWorkspaceManager(ctx context.Context, tx pgx.Tx, tenant, actor uuid.UUI
 func (u *Users) Members(ctx context.Context, tenant, actor uuid.UUID) ([]Member, error) {
 	out := []Member{}
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
-		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
+		// The strand override's gate, read without a lock and before the
+		// workspace's, as every reader of contract_state does (DB23).
+		mailed, err := ownersMailedTx(ctx, tx, tenant)
+		if err != nil {
+			return err
+		}
+		role, err := lockWorkspaceManager(ctx, tx, tenant, actor)
+		if err != nil {
 			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT u.id,u.email,m.role,m.status,m.created_at,
@@ -109,8 +130,68 @@ func (u *Users) Members(ctx context.Context, tenant, actor uuid.UUID) ([]Member,
 			}
 			out = append(out, member)
 		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		stranding, err := memberStrandsTx(ctx, tx, tenant)
+		if err != nil {
+			return err
+		}
+		for i := range out {
+			if numbers, ok := stranding[out[i].ID]; ok {
+				if role == "owner" {
+					out[i].LastKeyHolderOfDeleted = numbers
+				} else {
+					out[i].LastKeyHolderOfDeletedAny = true
+				}
+			}
+			out[i].StrandOverride = role == "owner" && mailed
+		}
+		return nil
+	})
+	return out, err
+}
+
+// memberStrandsTx is, for each member of the workspace whose removal or
+// disable strandCheckTx would refuse with ErrLastReaderOfDeleted, the
+// deleted numbers it names: one sole_key_holders read, classified with
+// the quarantine scope open as strandCheckTx classifies one member's. A
+// member who would strand a live number, or one this workspace cannot see
+// (failing closed, as there), is left out: that act is
+// ErrLastDeviceReader, whatever the flag.
+func memberStrandsTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (map[uuid.UUID][]DeletedNumberRef, error) {
+	out := map[uuid.UUID][]DeletedNumberRef{}
+	live := map[uuid.UUID]bool{}
+	err := withQuarantine(ctx, tx, func() error {
+		rows, err := tx.Query(ctx, `SELECT h.user_id, h.device_id, d.id IS NOT NULL AND d.deleted_at IS NOT NULL,
+			coalesce(d.label, ''), coalesce(d.push_name, ''), coalesce(d.pn, ''), d.purge_after
+			FROM sole_key_holders($1) h LEFT JOIN devices d ON d.id = h.device_id
+			ORDER BY h.user_id, h.device_id`, tenant)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var user uuid.UUID
+			var n DeletedNumberRef
+			var deleted bool
+			var purgeAfter *time.Time
+			if err := rows.Scan(&user, &n.DeviceID, &deleted, &n.Label, &n.PushName, &n.PN, &purgeAfter); err != nil {
+				return err
+			}
+			if !deleted || purgeAfter == nil {
+				live[user] = true
+				continue
+			}
+			n.PurgeAfter = *purgeAfter
+			out[user] = append(out[user], n)
+		}
 		return rows.Err()
 	})
+	for user := range live {
+		delete(out, user)
+	}
 	return out, err
 }
 

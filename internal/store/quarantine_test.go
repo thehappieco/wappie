@@ -794,6 +794,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// The owner's strand override: a deleted number's readers just
 		// before, for its item.stranded (the plan's DB13).
 		"strandTx": true,
+		// The members list: which deleted numbers a member is the last key
+		// holder of, for the override's dialog (the plan's 4.12).
+		"memberStrandsTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string
