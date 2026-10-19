@@ -32,11 +32,16 @@ var shellScreens = []string{
 	"/console/installations",
 }
 
+// waitingDocument is the cloud build's document as far as this is
+// concerned: it says its boot waits for the person on a prerendered page.
+const waitingDocument = `<!doctype html><meta name="wappie-prerender" content="when-activated" /><title>whatserver2</title>`
+
 // shellHandler is the pilot's handler: the issuer and the console set, with
-// a session bridge in the directory.
+// a session bridge in the directory, serving a client whose boot waits.
 func shellHandler(t *testing.T, issuer, console string) *webui.Handler {
 	t.Helper()
 	dir := build(t)
+	write(t, filepath.Join(dir, "index.html"), waitingDocument)
 	write(t, filepath.Join(dir, "session-bridge.html"), "<!doctype html><title>session bridge</title>")
 	h, err := webui.New(dir, nil)
 	if err != nil {
@@ -99,6 +104,40 @@ func TestConsoleScreensNameTheRules(t *testing.T) {
 	rec := serve(on, http.MethodGet, "https://console.wappie.thehappie.co/console/numbers?workspace="+shellTenant, shellConsole+"/")
 	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Speculation-Rules") != "" || rec.Header().Get("Supports-Loading-Mode") != "" {
 		t.Errorf("the console.wappie redirect: %d %v", rec.Code, rec.Header())
+	}
+}
+
+// A client whose document does not say its boot waits (one built before
+// it did, paired with this core) is never prerendered from the console: its
+// boot would mint a session and write storage on hover. Its screens still
+// name the rules and are never stored.
+func TestNoCredentialedPrerenderForAClientThatDoesNotWait(t *testing.T) {
+	for name, document := range map[string]string{
+		"no marker":     "<!doctype html><title>whatserver2</title>",
+		"another value": `<!doctype html><meta name="wappie-prerender" content="no" /><title>whatserver2</title>`,
+		"another name":  `<!doctype html><meta name="prerender" content="when-activated" /><title>whatserver2</title>`,
+	} {
+		dir := build(t)
+		write(t, filepath.Join(dir, "index.html"), document)
+		h, err := webui.New(dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.PlatformIssuer, h.PlatformConsole = shellIssuer, shellConsole
+		for _, target := range shellScreens {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				rec := serve(h, method, target, shellConsole+"/")
+				if got := rec.Header().Values("Supports-Loading-Mode"); len(got) != 0 {
+					t.Errorf("%s: %s %s: Supports-Loading-Mode %q", name, method, target, got)
+				}
+				if rec.Code != http.StatusOK || rec.Header().Get("Speculation-Rules") != `"/speculation-rules.json"` || rec.Header().Get("Cache-Control") != "no-store" {
+					t.Errorf("%s: %s %s: %d %v", name, method, target, rec.Code, rec.Header())
+				}
+			}
+		}
+	}
+	if got := serve(shellHandler(t, shellIssuer, shellConsole), http.MethodGet, shellScreens[0], shellConsole+"/").Header().Get("Supports-Loading-Mode"); got != "credentialed-prerender" {
+		t.Errorf("a client that waits: Supports-Loading-Mode %q", got)
 	}
 }
 

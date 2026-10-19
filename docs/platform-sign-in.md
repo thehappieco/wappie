@@ -537,7 +537,13 @@ private console draws it around Wappie's settings screens, at
     after it is fine). A neighbour on the same site, another port or scheme,
     user info, two Referers or none get no opt-in, so nobody else can
     prerender a screen with this page's session. `Sec-Fetch-Site` is never
-    read: a prerender sends `none`;
+    read: a prerender sends `none`. It also needs a client whose
+    `index.html` carries `<meta name="wappie-prerender"
+    content="when-activated">` (the cloud build writes it: its boot waits
+    for the person), read once as the server starts: a core paired with a
+    client built before that never lets the console run that client's boot
+    on hover (a session minted, storage written). The rules and `no-store`
+    do not depend on it;
   - every `/console/*` document is `Cache-Control: no-store`, whatever its
     status and whether the shell is on, and is answered whole: its
     conditional and range headers are dropped, so it is never a 304 or a

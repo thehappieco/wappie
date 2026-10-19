@@ -32,6 +32,11 @@ import (
 //     rules ask for it, and a neighbour on the same site never gets it,
 //     which would otherwise prerender a screen with this page's session.
 //     Sec-Fetch-Site cannot say who asked: a prerender sends "none";
+//   - and only for a client whose document says its boot waits for the
+//     person (prerenderMarker): a client built before that would, on the
+//     console's hover, mint a workspace's session, open the bridge, write
+//     storage and mark notices seen. The rules and no-store do not depend
+//     on it;
 //   - so a screen's document is never stored (Cache-Control: no-store),
 //     whatever its status and whether the shell is on, and is always
 //     answered whole: a stored copy revalidated with a 304 would keep the
@@ -42,6 +47,13 @@ import (
 //     Referrer-Policy stays the document's (strict-origin, or
 //     strict-origin-when-cross-origin without the issuer), which sends the
 //     console this origin, as its opt-in needs.
+
+// prerenderMarker is what the client's document carries when every side
+// effect of its boot waits until the person arrives on a prerendered page
+// (the shell's whenActivated): the cloud build writes it (commercial
+// web/vite.config.ts platformDocument). New reads it once, from the
+// index.html it serves.
+const prerenderMarker = `<meta name="wappie-prerender" content="when-activated"`
 
 // speculationRulesPath is where the screens' rules are served.
 const speculationRulesPath = "/speculation-rules.json"

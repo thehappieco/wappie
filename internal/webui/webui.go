@@ -91,6 +91,9 @@ type Handler struct {
 	dir             string
 	files           http.Handler
 	log             *slog.Logger
+	// prerenderReady says the client's document carries prerenderMarker:
+	// only then may a screen opt in to the console's prerender.
+	prerenderReady bool
 }
 
 // ErrNotBuilt says the directory holds no client.
@@ -115,7 +118,10 @@ func New(dir string, log *slog.Logger) (*Handler, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{dir: dir, files: http.FileServer(http.Dir(dir)), log: log}, nil
+	// A document that cannot be read now says nothing of its boot: no opt-in.
+	index, err := fs.ReadFile(os.DirFS(dir), "index.html")
+	ready := err == nil && bytes.Contains(index, []byte(prerenderMarker))
+	return &Handler{dir: dir, files: http.FileServer(http.Dir(dir)), log: log, prerenderReady: ready}, nil
 }
 
 // Dir reports where the client is being served from, for the boot log.
@@ -185,9 +191,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(clean, shellScreenPrefix) {
 		// One of the shared shell's screens (speculation.go): never stored,
 		// answered whole, and while the shell is on, naming the rules and
-		// opting in to the console's prerender only when the console asked.
+		// opting in to the console's prerender only when the console asked,
+		// for a client whose boot waits for the person.
 		console := h.shellConsole()
-		w = &screenWriter{ResponseWriter: w, rules: console != "", optIn: console != "" && fromOrigin(r, console)}
+		w = &screenWriter{ResponseWriter: w, rules: console != "", optIn: console != "" && h.prerenderReady && fromOrigin(r, console)}
 		r = wholeRequest(r)
 	}
 	http.ServeFile(w, r, path.Join(h.dir, "index.html"))
