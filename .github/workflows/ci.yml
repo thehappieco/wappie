@@ -50,6 +50,18 @@ jobs:
         # coverage on a CI runner, near go test's default 10-minute limit.
         run: go test -race -timeout=30m -coverprofile=coverage.out ./...
 
+      # The contract socket's peer check on a socket another uid owns needs
+      # chown, so root, which the runner user is not, and the step above
+      # skips it. The test binary is built as the runner user and run under
+      # sudo; the case must pass, so a skip fails the step.
+      - name: Socket peer check as root
+        run: |
+          go test -c -o "$RUNNER_TEMP/membership.test" ./internal/membership
+          sudo "$RUNNER_TEMP/membership.test" -test.run '^TestSocketPeerChecks$/^a_socket_another_uid_owns$' \
+            -test.count=1 -test.v=test2json | go tool test2json -t -p whatserver2/internal/membership > peer-root.json
+          jq -e 'select(.Action == "pass" and .Test == "TestSocketPeerChecks/a_socket_another_uid_owns")' peer-root.json > /dev/null \
+            || { jq -r 'select(.Action == "output") | .Output' peer-root.json; exit 1; }
+
       - name: Coverage floor for the domain packages
         run: |
           go tool cover -func=coverage.out > cov.txt
@@ -127,6 +139,14 @@ jobs:
         working-directory: packages/client
       - run: npm pack --dry-run
         working-directory: packages/client
+      # The attested reader's image measures packages/client's build into
+      # PCR0: what it keeps of the client must equal release A's (c9ec561),
+      # whose reader the pilot runs, or the change needs a reader release.
+      # Type-only edits pass.
+      - name: The reader's measured client is release A's
+        run: |
+          git fetch --no-tags --depth=1 origin c9ec561ca2cc669cdec12d5d90523269c3c2396a
+          scripts/check-client-dist.sh c9ec561ca2cc669cdec12d5d90523269c3c2396a
       - run: npm ci && npm test
         working-directory: packages/cli
       - run: npm ci && npm test && npm pack --dry-run

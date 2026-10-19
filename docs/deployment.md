@@ -239,8 +239,8 @@ policy and is not charged Wappie storage. See [storage](storage.md).
 
 Retain a matching previous private artifact and database/object backups before
 rollout. Database migrations are forward-only, except for the documented
-down-steps, such as the [remote MCP one](#remote-mcp-connector) and
-[0050's](#rolling-back-below-0050); verify old binary compatibility
+down-steps, such as the [remote MCP one](#remote-mcp-connector),
+[0050's](#rolling-back-below-0050) and [0051's](#rolling-back-below-0051); verify old binary compatibility
 before reverting an executable. Do not restore an older archive over newer
 messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
@@ -448,7 +448,13 @@ it, and its owner has to delete again.
 A binary older than 0050 refuses a database at version 50, so its
 down-step comes first. No number may be left deleted through it: an older
 binary would show and sync it as live. And an older binary lets
-administrators delete a number at once, with no recovery. In this order:
+administrators delete a number at once, with no recovery. On a database at
+version 51 (the [contract's](#the-contract)), run `whatserverd contract mode
+off` before step 2, and 0051's down-step
+([Rolling back below 0051](#rolling-back-below-0051), its step 3) between
+steps 3 and 4: 0050's guard refuses while 51 is applied, and this release's
+commands refuse a database at 50, so the ledger's export comes first. In
+this order:
 
 1. `whatserverd devices list-deleted`. An owner recovers each deleted
    number in the console, or, with the owner's agreement,
@@ -497,3 +503,185 @@ administrators delete a number at once, with no recovery. In this order:
 The down-step drops the notices and the event rows; the ledger file stays
 as the record. The API keys 0050 revoked (those whose creator was disabled
 or had left) stay revoked.
+
+## The contract
+
+The hosted cloud follows The Happie Co's platform through the product
+contract's membership part ([the contract](contract.md)). A self-hosted
+installation sets none of its settings, and nothing calls the platform.
+Migration 0051 adds its state; it changes nothing until an operator turns
+the contract to observe.
+
+**The settings** (`.env.example` lists them; [the contract](contract.md#settings)
+says each one's rules):
+
+- `WS_CONTRACT_SOCKET`: the platform's socket, `/run/platform/contract.sock`;
+- `WS_CONTRACT_SECRET_FILE` and `WS_CONTRACT_SECRET_OTHER_FILE`: the two
+  envelopes, both required in prod;
+- `WS_CONTRACT_KMS_KEY_ARN` and `WS_CONTRACT_KMS_REGION`: Wappie's own KMS
+  key, a full key ARN, never an alias;
+- `WS_CONTRACT_LOADED_FILE`: where the server publishes what it loaded, by
+  default `/var/lib/wappie/contract-secrets.loaded`, in the unit's state
+  directory;
+- `WS_CONTRACT_ADDR`, development only; `WS_CONTRACT_SECRET` is refused
+  everywhere.
+
+The secret's value is never in `runtime.env`, a backup or an argument: it
+reaches the host only through a pipe from the platform's `platform-cli
+export-contract-secret wappie` into `whatserverd contract-secret seal`, at
+the owner's prompt on the host, which seals it at once
+([the secret](contract.md#the-secret)).
+
+**The unit** needs (in the cloud, from a systemd drop-in outside the
+release, which a rollback of the release keeps):
+
+- `SupplementaryGroups=platform-contract`, to reach the socket. A missing
+  group fails the unit, so it is set only where the group exists;
+- `LimitCORE=0`: the secret is in the process's memory;
+- no `ExecReload`: a SIGHUP reloads the secret, and an older binary exits on
+  one, so only the installer signals the server, by its pid, after `whatserverd
+  contract-secret capabilities` on the running binary prints `sighup` and
+  the process has published its first load;
+- `/var/lib/wappie` writable (`StateDirectory=wappie`, as for the deletion
+  ledger), for the published load;
+- no `Requires=` or `Wants=` on the platform's units: without the platform
+  Wappie is fail-static.
+
+Each start logs, after the deletion ledger's line and before "starting",
+the contract's line, which a deploy checks:
+`contract: mode=off transport=none secret=missing` (the mode, `socket`,
+`tcp` or `none`, and `loaded`, `pending` or `missing`).
+
+### Contract commands
+
+```
+whatserverd contract check [--other|--only-current|--only-other]
+whatserverd contract status [--check]
+whatserverd contract diff [--tenant T]
+whatserverd contract mode off|observe
+```
+
+Run them as the server's user, with the socket's group and its
+configuration, and from the server's own working directory, as the
+deletion commands above: `status`, `diff` and `mode` read the `.env` of
+their working directory (a root-only one stops them before they do
+anything) and the database, which they never migrate, refusing a schema
+that is not exactly this binary's. `check` reads neither a `.env` nor the
+database, only its environment and the secret's files. For example:
+
+```
+sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
+  -p SupplementaryGroups=platform-contract -p LimitCORE=0 \
+  -p EnvironmentFile=/opt/wappie/runtime.env -p WorkingDirectory=/opt/wappie/release \
+  /opt/wappie/release/bin/whatserverd contract status --check
+```
+
+- `contract check` sends one signed feed request and exits `0` on a signed
+  answer (`signed answer: generation …`), `3` when the platform refuses the
+  secret, `4` on an answer signed with the secret it excludes, `5` with no
+  answer, `1` otherwise ([checking the secret](contract.md#checking-the-secret-contract-check)).
+- `contract status` prints the mode, the server's loaded secrets beside the
+  files', the feed, the round, every platform workspace's snapshot and
+  events, and the pending person invitations; `--check` prints one
+  `finding:` line each and exits 1 when there is any, for a daily job that
+  adds them to its warnings ([contract status](contract.md#contract-status)).
+- `contract diff` lists what observe found different, by ids.
+- `contract mode observe` turns the contract on, and refuses (exit 3,
+  "contract mode observe: not ready: …", nothing changed) until the
+  running server has a transport and a loaded secret; `contract mode off`
+  stops it at once ([the mode](contract.md#the-mode)).
+
+`whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
+is root's, at the owner's prompt only, and reads no `.env` and no database
+([the root commands](contract.md#the-root-commands)).
+
+### Turning it on
+
+After the platform has mapped Wappie (`PLATFORM_CONTRACT_APPS=wappie:wappie`)
+and says its secret exists, and after the owner has created Wappie's KMS
+key and its policies:
+
+1. Add the settings to `runtime.env`, after `whatserverd contract-secret
+   seal --check-kms --env-file <the staged runtime.env>` prints `kms: ok`,
+   and restart the server: its line says `transport=socket secret=missing`.
+2. The owner installs the secret at the host's prompt; `contract check`
+   prints `signed answer: generation …`, and `contract status` shows the
+   server's fingerprints equal to the files'.
+3. `contract status` lists each team's pending person invitations: those of
+   a team a document names stop being redeemable.
+4. `whatserverd contract mode observe`. Within minutes `contract status`
+   shows the round done, the workspaces named, their snapshots accepted and
+   `published_through` fresh, and `contract status --check` finds nothing.
+
+Undo: `whatserverd contract mode off`, and tell the platform, which may
+unmap Wappie. The subscriptions stay on the platform (Wappie never
+unsubscribes a person it holds), so the platform still counts Wappie as an
+app that follows accounts: with the feed no longer read and no snapshot
+sent, its `contract_feed_silent` alert fires after 10 minutes and
+`contract_snapshots_stale` after 90, and from then the console shows the
+protection of the people in those snapshots as unknown: removing one of
+them from a platform team needs an owner's override, after a recent
+sign-in (the spec's 10). Keep the settings and the sealed secret after the
+first observe: at `off` a new account still takes the platform's personal
+workspace, and without a transport or a secret every sign-up is refused
+`503 platform_unavailable`. Only 0051's down-step
+([Rolling back below 0051](#rolling-back-below-0051)) brings back personal
+workspaces of Wappie's choosing. Removing the settings is safe only while
+the contract was never observed (`events_from` unset).
+
+### Restoring with the contract
+
+A restore of Wappie's database brings back the contract's state as it was
+in the snapshot. After step 4 of [Restoring a backup](#restoring-a-backup),
+run `whatserverd contract status --check`:
+
+- `contract never observed but a secret is installed`: the snapshot is from
+  before the first observe, so the mode is `off` with homes of Wappie's
+  choosing. Run `whatserverd contract mode observe` again if the contract was
+  observing.
+- Otherwise the mode is the snapshot's. The follower reads the feed again
+  from the snapshot's cursor and keeps only newer documents; events the
+  snapshot had not delivered yet are sent again, and the platform answers
+  `duplicate` for those it holds (within its 30 days).
+
+A restore of the platform's database is the platform's: Wappie sees its new
+generation, or `gone`, and subscribes everyone again by itself. If a
+rotation happened after the platform's backup, Wappie holds a secret the
+platform no longer has: `contract check` exits `3`, and the owner
+reinstalls it (`contract-secret reset`, then the install).
+
+### Rolling back below 0051
+
+A binary older than 0051 refuses a database at version 51, so its
+down-step comes first. In this order:
+
+1. `whatserverd contract mode off`, as the server's user from its working
+   directory. Tell the platform, which may unmap Wappie.
+2. Stop the server, and every other process that runs this release's store
+   code against the database (the hosted billing service is one), unless it
+   already runs the release being restored.
+3. The down-step in the header of `0051_contract_membership.sql`, after
+   checking the file's sha256 against the release's (`migration51_sha256`
+   in a hosted `RELEASE.json`), as the owner of the tables, in its one
+   transaction. Its guards run first: it refuses while the contract is on
+   (`the contract is on: run whatserverd contract mode off first`) and while
+   a migration after 0051 is applied (`a migration after 0051 is applied;
+   run its down-step first`), and a refusal changes nothing. It says what
+   it drops (`dropping N stranded rows, N owners' notices, N unsent events,
+   N home-taken security events`). If it refuses, start the server on this
+   release again. It comes before 0050's down-step, whose guard refuses
+   while 51 is applied ([Rolling back below 0050](#rolling-back-below-0050)).
+4. Switch back to the older binary and start it, and the billing service on
+   its release.
+
+What it loses: the stored documents, the cursor, the record of platform
+workspaces (the platform keeps its own; person invitations into those teams
+open again, the only way they do), the events not sent yet (their rows stay,
+as the older release's, and are never sent), the strandings' rows, the
+owners' `number_stranded` and `number_moved_out` notices, and the
+`platform_home_taken` security events. What it keeps: the personal
+workspaces created with the platform's ids (an id is all they took from
+it), the sealed files and the `WS_CONTRACT_*` settings (an older binary
+ignores both), and the unit's group. A release with 0051 deployed again
+starts afresh: it sends only what is written after its own first switch to
+observe, and subscribes everyone again.

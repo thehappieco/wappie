@@ -403,6 +403,16 @@ func (a *app) deletionHousekeeping(ctx context.Context, tenants []uuid.UUID) {
 			a.log.Error("event rows 30 days old are still not in the deletion ledger; they stay until it takes them",
 				"tenant", tenant, "rows", counts.Unledgered, "oldest", counts.Oldest)
 		}
+		if len(counts.Expired) > 0 {
+			// The contract owed them to the platform, which has not had them
+			// in their 29 days: the queue was stopped (the contract off after
+			// an observe) or failing all along.
+			a.log.Error("contract: events never delivered in their 29 days are parked", "workspace", tenant,
+				"code", store.EventParkedExpired, "count", len(counts.Expired), "first", counts.Expired[0])
+			if err := store.NewContract(a.pools.API).RecordError(ctx, store.ContractErrorEventParked); err != nil {
+				a.log.Warn("contract: could not record an ERROR", "error", err)
+			}
+		}
 	}
 }
 

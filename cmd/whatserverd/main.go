@@ -39,6 +39,7 @@ import (
 	"whatserver2/internal/mailer"
 	"whatserver2/internal/mcpauth"
 	"whatserver2/internal/media"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
@@ -57,6 +58,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n\n%s", err, commandList)
 		os.Exit(2)
 	}
+	var exit exitError
+	if errors.As(err, &exit) {
+		if exit.err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", exit.err)
+		}
+		os.Exit(exit.code)
+	}
 	if err != nil {
 		// The logger may not exist yet if configuration itself failed.
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
@@ -68,12 +76,32 @@ func main() {
 const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions ...
+       whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
+                   diff [--tenant T] | mode off|observe
+       whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
 // usageError is a command line whatserverd does not know.
 type usageError struct{ arg string }
 
 func (e usageError) Error() string { return fmt.Sprintf("whatserverd: unknown command %q", e.arg) }
+
+// exitError ends a command with an exit status of its own, which a script
+// acts on (contract check's 3, 4 and 5; contract-secret seal's 4), and
+// prints err, when there is one, on stderr.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e exitError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("exit status %d", e.code)
+	}
+	return e.err.Error()
+}
+
+func (e exitError) Unwrap() error { return e.err }
 
 // runCommand runs the command args name. It serves only with no arguments,
 // or with serve alone: anything else it does not know is a usage error, and
@@ -113,6 +141,10 @@ func runCommand(args []string, serve func() error) error {
 		return devicesCommand(rest, os.Stdout)
 	case "deletions":
 		return deletionsCommand(rest, os.Stdout)
+	case "contract":
+		return contractCommand(rest, os.Stdout)
+	case "contract-secret":
+		return contractSecret(rest, defaultSecretCommand())
 	}
 	return usageError{arg: strings.Join(args, " ")}
 }
@@ -180,6 +212,20 @@ type app struct {
 	purgeTurn atomic.Uint64
 	// compacted is when this process last compacted the ledger.
 	compacted time.Time
+	// contract is the client of the platform's product contract, and
+	// secrets loads its secret; both nil unless a transport is configured
+	// (WS_CONTRACT_SOCKET).
+	contract *membership.Client
+	secrets  *membership.Secrets
+	// members is the contract's part in signing people in, in every
+	// serving process (startContract): the mode is the database's, and
+	// with no transport every call is no answer, which refuses only new
+	// accounts once the contract was observed.
+	members *membership.Members
+	// leader follows the contract's feed and runs its round and sweep, in
+	// the one process of the database that holds the contract's lock; nil
+	// unless a transport is configured.
+	leader *membership.Leader
 }
 
 // setup opens every dependency and runs migrations. The returned close
@@ -255,6 +301,10 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		setups:            ratelimit.DefaultSetups(cfg.TrustedProxies),
 		workspaceSessions: ratelimit.DefaultWorkspaceSessions(cfg.TrustedProxies),
 	}
+	// The contract's part in signing in and its freshness hook, in every
+	// configuration: the socket's acts ask it from the first frame
+	// (startContract gives it its transport).
+	a.members = &membership.Members{Contract: store.NewContract(pools.API), Log: lg}
 	if cfg.Deletion.Ledger != "" {
 		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}
@@ -509,13 +559,32 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// A deletion, a recovery and a move are in the ledger as soon as
 		// their reply goes.
 		ExportLedger: a.exportLedger,
+		// Every act README 7.1 gates asks the contract's freshness first;
+		// release B only logs the verdicts.
+		Membership: a.members,
 	})
 
 	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws
 	return a, closeAll, nil
 }
 
+// takeHangup makes SIGHUP this process's to handle, delivered on the
+// channel it returns, until the function it returns gives it back. Go's
+// default for SIGHUP is to exit, which systemd counts as clean and would not
+// restart: contract-secret capabilities' "sighup" promises the installer
+// that serve calls this before anything else.
+func takeHangup() (<-chan os.Signal, func()) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	return hup, func() { signal.Stop(hup) }
+}
+
 func serve() error {
+	// SIGHUP reloads the contract's secret and never stops the process. It
+	// is taken before anything else, so a SIGHUP that came before this line
+	// would not end capture.
+	hup, giveBack := takeHangup()
+	defer giveBack()
 	// SIGINT and SIGTERM cancel the root context, unwinding everything below.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -530,6 +599,7 @@ func serve() error {
 	// while the file cannot be written, and a refusal would crash-loop the
 	// unit and stop every workspace's sync over a file only a restore reads.
 	checkDeletionLedger(a.cfg, a.ledger, a.log)
+	a.startContract(ctx, hup)
 	a.log.Info("starting", "config", a.cfg.String())
 	if !a.cfg.Storage.Configured {
 		a.log.Warn("object storage is not configured; media features will be unavailable " +
@@ -791,6 +861,30 @@ func (a *app) probes(mux *http.ServeMux) {
 	mux.Handle("GET /metrics", a.metrics.Handler())
 }
 
+// authHandler is the sign-up and sign-in routes' handler, with the
+// contract's part in every serving process (a.members, startContract).
+func (a *app) authHandler() *authapi.Handler {
+	h := &authapi.Handler{
+		Storage:       a.storage,
+		AccessChanged: a.ws.RevalidateAccess,
+		Users:         a.users, Keys: a.keys,
+		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
+		WorkspaceSessionLimits: a.workspaceSessions,
+		PublicSignup:           a.cfg.Signup.Enabled,
+		Platform:               a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
+	}
+	// Never a typed nil: a nil Membership is the contract's absence.
+	if a.members != nil {
+		h.Membership, h.Freshness = a.members, a.members
+	}
+	if a.cfg.Signup.SMTP.Configured() {
+		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
+		h.SendSignupVerification = sender.SignupVerification
+		h.SendWorkspaceInvite = sender.WorkspaceInvite
+	}
+	return h
+}
+
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mcpServers := advertisedMCP(a.cfg.MCP)
@@ -803,21 +897,7 @@ func (a *app) routes() http.Handler {
 
 	// Signing up and signing in. Over HTTP because the websocket wants
 	// credentials before it opens, and this is where credentials come from.
-	authHandler := &authapi.Handler{
-		Storage:       a.storage,
-		AccessChanged: a.ws.RevalidateAccess,
-		Users:         a.users, Keys: a.keys,
-		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
-		WorkspaceSessionLimits: a.workspaceSessions,
-		PublicSignup:           a.cfg.Signup.Enabled,
-		Platform:               a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
-	}
-	if a.cfg.Signup.SMTP.Configured() {
-		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
-		authHandler.SendSignupVerification = sender.SignupVerification
-		authHandler.SendWorkspaceInvite = sender.WorkspaceInvite
-	}
-	authHandler.Mount(mux)
+	a.authHandler().Mount(mux)
 	(&restapi.Handler{
 		APIKeys: a.apiKeys, Users: a.users, Keys: a.keys, Devices: a.devices,
 		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log,
@@ -879,6 +959,11 @@ func (a *app) routes() http.Handler {
 			DCRHosts:         a.cfg.MCP.DCRHosts,
 			LiveListLimits:   ratelimit.New(mcpauth.LiveListPerMinute, mcpauth.LiveListPerMinute),
 			RevokeLinkLimits: &ratelimit.Auth{PerIP: ratelimit.New(30, 10), Proxies: a.cfg.TrustedProxies},
+		}
+		// Creating, renewing and sending ask the contract's freshness;
+		// never a typed nil.
+		if a.members != nil {
+			a.mcp.Membership = a.members
 		}
 		// The new-assistant e-mail goes only with a mail server and this
 		// server's public origin for its revoke-only link; without them no

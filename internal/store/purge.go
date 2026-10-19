@@ -205,7 +205,8 @@ var purgeTables = []struct{ name, sql string }{
 //     and the rest; its readers' deletion notices kept with no label or
 //     hint, its other notices deleted; the label and hint nulled in every
 //     event row of the number, in this workspace and in any team it moved
-//     out of; and the purged event.
+//     out of, and in that team's number_moved_out notices; and the purged
+//     event.
 //
 // Another purger of the same number (the janitor runs in every process)
 // waits on the workspace's row at each step, so the two serialize batch by
@@ -402,11 +403,13 @@ func PurgeDevice(ctx context.Context, pool *pgxpool.Pool, tenant, device uuid.UU
 }
 
 // scrubFormerWorkspacesTx nulls the label and hint of the number's event
-// rows in each team it moved out of, its moved_out among them. They were
-// written before the move, and usually go 30 days after it, before any
-// purge; but an operator's early purge, or an export that has not taken
-// them yet, finds them still there. It runs before the row's delete, whose
-// cascade takes device_transfers, and leaves tx in tenant.
+// rows in each team it moved out of, its moved_out among them, and of that
+// team's number_moved_out notices about it (0051). The
+// rows were written before the move, and usually go 30 days after it,
+// before any purge; but an operator's early purge, or an export that has
+// not taken them yet, finds them still there, and an unseen notice stays
+// until it is seen. It runs before the row's delete, whose cascade takes
+// device_transfers, and leaves tx in tenant.
 func scrubFormerWorkspacesTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID) error {
 	rows, err := tx.Query(ctx, `SELECT DISTINCT source_workspace_id FROM device_transfers WHERE device_id = $1 AND source_workspace_id <> $2`,
 		device, tenant)
@@ -423,6 +426,9 @@ func scrubFormerWorkspacesTx(ctx context.Context, tx pgx.Tx, tenant, device uuid
 		}
 		if _, err := tx.Exec(ctx, `UPDATE item_events SET label = NULL, hint = NULL WHERE item_id = $1`, device); err != nil {
 			return fmt.Errorf("store: purge the number's rows in workspace %s: %w", source, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE device_notices SET label = NULL, hint = NULL WHERE device_id = $1 AND kind = 'number_moved_out'`, device); err != nil {
+			return fmt.Errorf("store: purge the number's notices in workspace %s: %w", source, err)
 		}
 	}
 	_, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant.String())

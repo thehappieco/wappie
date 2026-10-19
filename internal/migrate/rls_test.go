@@ -219,3 +219,97 @@ func TestDeletionTablesForceRowLevelSecurity(t *testing.T) {
 		t.Fatalf("an event written in another workspace's name: %v", err)
 	}
 }
+
+// TestContractTablesRLS is the plan's TB14. The self-hosted mailer's queue
+// names who is mailed about which number: it forces its policy, like
+// item_events, so a workspace sees and writes only its own rows, and its
+// keys hold each mail to an event of its workspace and a member of it. The
+// contract's three tables carry no policy on purpose, as tenants and
+// platform_identities carry none: they are read before a workspace is
+// known or across all of them (a sign-in's sub, the follower's page, the
+// senders' queues), and hold no content.
+func TestContractTablesRLS(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.Fresh(t, Run)
+	rls := func(table string) (enabled, forced bool) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+			WHERE relname=$1 AND relnamespace=current_schema()::regnamespace`, table).Scan(&enabled, &forced); err != nil {
+			t.Fatalf("%s: %v", table, err)
+		}
+		return enabled, forced
+	}
+	if enabled, forced := rls("item_mails"); !enabled || !forced {
+		t.Errorf("item_mails: row-level security %v, forced %v", enabled, forced)
+	}
+	for _, table := range []string{"contract_state", "contract_accounts", "contract_workspaces"} {
+		if enabled, forced := rls(table); enabled || forced {
+			t.Errorf("%s: row-level security %v, forced %v; it is read across workspaces", table, enabled, forced)
+		}
+	}
+
+	tenants, readers, events := make([]uuid.UUID, 2), make([]uuid.UUID, 2), make([]uuid.UUID, 2)
+	for i, name := range []string{"one", "two"} {
+		if err := pool.QueryRow(ctx, `INSERT INTO tenants(name) VALUES ($1) RETURNING id`, name).Scan(&tenants[i]); err != nil {
+			t.Fatal(err)
+		}
+		readers[i] = person(t, pool, tenants[i], name+"@example.test", "member")
+		if err := pg.InTenantTx(ctx, pool, tenants[i].String(), func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, `INSERT INTO item_events(event_id,tenant_id,type,item_id,dedupe_key,occurred_at,actor_kind,deleted_at,purge_after)
+				VALUES (uuidv7(),$1,'deleted',$2,$3,clock_timestamp(),'person',clock_timestamp(),clock_timestamp()+interval '30 days')
+				RETURNING event_id`, tenants[i], uuid.New(), "deleted:"+name).Scan(&events[i]); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO item_mails(event_id,tenant_id,user_id,role) VALUES ($1,$2,$3,'owner')`, events[i], tenants[i], readers[i])
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var none int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM item_mails`).Scan(&none); err != nil || none != 0 {
+		t.Errorf("item_mails: %d rows visible with no workspace set (%v)", none, err)
+	}
+	for i := range tenants {
+		var own int
+		if err := pg.InTenantTx(ctx, pool, tenants[i].String(), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM item_mails`).Scan(&own)
+		}); err != nil || own != 1 {
+			t.Errorf("item_mails: workspace %d sees %d rows, want its own one (%v)", i, own, err)
+		}
+	}
+	// WITH CHECK: a workspace cannot queue a mail in another's name.
+	err := pg.InTenantTx(ctx, pool, tenants[0].String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO item_mails(event_id,tenant_id,user_id,role)
+			SELECT event_id, $1, (SELECT id FROM users LIMIT 1), 'reader' FROM item_events LIMIT 1`, tenants[1])
+		return err
+	})
+	if sqlState(err) != "42501" {
+		t.Fatalf("a mail queued in another workspace's name: %v", err)
+	}
+	// The keys, which no policy can bypass: another workspace's event, and
+	// someone who is not a member, are refused.
+	for _, c := range []struct {
+		name        string
+		event, user uuid.UUID
+	}{{"another workspace's event", events[1], readers[0]}, {"someone who is not a member", events[0], readers[1]}} {
+		err := pg.InTenantTx(ctx, pool, tenants[0].String(), func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `INSERT INTO item_mails(event_id,tenant_id,user_id,role) VALUES ($1,$2,$3,'reader')`, c.event, tenants[0], c.user)
+			return err
+		})
+		if sqlState(err) != "23503" {
+			t.Fatalf("a mail about %s: %v", c.name, err)
+		}
+	}
+	// A member removed from the team is mailed no more about it: a mail
+	// waiting for them goes with the membership (README 9.1).
+	var left int
+	if err := pg.InTenantTx(ctx, pool, tenants[0].String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE tenant_id = $1 AND user_id = $2`, tenants[0], readers[0]); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT count(*) FROM item_mails`).Scan(&left)
+	}); err != nil || left != 0 {
+		t.Fatalf("a removed member's waiting mails: %d left (%v)", left, err)
+	}
+}

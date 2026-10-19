@@ -30,12 +30,17 @@ import (
 )
 
 // A process lets go of what it should no longer hold: a number paused,
-// deleted (and so hidden from its list), or moved to another workspace.
+// deleted (and so hidden from its list), moved to another workspace, or of
+// a workspace that is not active.
 
 func released(held []wa.HeldDevice, listed map[string]tenantList) []string {
+	return releasedWith(held, listed, nil)
+}
+
+func releasedWith(held []wa.HeldDevice, listed map[string]tenantList, inactive map[string]bool) []string {
 	var out []string
-	for _, h := range toRelease(held, listed) {
-		out = append(out, h.ID)
+	for _, r := range toRelease(held, listed, inactive) {
+		out = append(out, r.ID)
 	}
 	slices.Sort(out)
 	return out
@@ -73,6 +78,74 @@ func TestReleaseHeldSkipsFailedList(t *testing.T) {
 	}
 	if got := released(held, listed); len(got) != 0 {
 		t.Fatalf("released %v after a failed list", got)
+	}
+}
+
+// TB38: a held number of a workspace that is not active (suspended today,
+// a closed team at enforce) is released, with its reason, though no list
+// shows it (only active workspaces are listed); a reservation and a client
+// a deletion is logging out are not; and a failed read of the inactive
+// workspaces releases none of them.
+func TestReleaseHeldInactiveTenant(t *testing.T) {
+	listed := map[string]tenantList{"team": {devices: []store.Device{device("live", wa.StatusOnline)}}}
+	held := []wa.HeldDevice{
+		{ID: "live", TenantID: "team"},
+		{ID: "suspended-1", TenantID: "suspended"},
+		{ID: "suspended-2", TenantID: "suspended"},
+		{ID: "reserved", TenantID: "suspended", Reserved: true},
+		{ID: "unlinking", TenantID: "suspended", Unlinking: true},
+		// A workspace neither listed nor inactive: not this tick's to judge.
+		{ID: "elsewhere", TenantID: "unlisted"},
+	}
+	inactive := map[string]bool{"suspended": true}
+	if got, want := releasedWith(held, listed, inactive), []string{"suspended-1", "suspended-2"}; !slices.Equal(got, want) {
+		t.Fatalf("released %v, want %v", got, want)
+	}
+	for _, r := range toRelease(held, listed, inactive) {
+		if r.why != "its workspace is not active" {
+			t.Fatalf("%s released because %q", r.ID, r.why)
+		}
+	}
+	// A workspace listed active this tick and inactive by the later read
+	// went inactive in between: its numbers go too.
+	listed["suspended"] = tenantList{devices: []store.Device{device("suspended-1", wa.StatusOnline)}}
+	if got, want := releasedWith(held, listed, inactive), []string{"suspended-1", "suspended-2"}; !slices.Equal(got, want) {
+		t.Fatalf("released %v, want %v", got, want)
+	}
+	delete(listed, "suspended")
+	// The read failed: nothing of the inactive workspace is released.
+	if got := released(held, listed); len(got) != 0 {
+		t.Fatalf("released %v after a failed read of the inactive workspaces", got)
+	}
+	// Where the lists say so, the old reason stands.
+	paused := device("paused", wa.StatusOnline)
+	paused.Paused = true
+	listed["team"] = tenantList{devices: []store.Device{paused}}
+	got := toRelease([]wa.HeldDevice{{ID: "paused", TenantID: "team"}}, listed, inactive)
+	if len(got) != 1 || got[0].why != "no longer live and unpaused here" {
+		t.Fatalf("a paused number: %+v", got)
+	}
+}
+
+// The supervisor's read of the inactive workspaces: every status but
+// active, whoever's workspace it is (tenants has no row-level security).
+func TestInactiveTenants(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	var active, suspended uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants(name) VALUES ('active') RETURNING id`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants(name, status) VALUES ('suspended', 'suspended') RETURNING id`).Scan(&suspended); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{pools: &pg.Pools{Live: pool, History: pool, API: pool}}
+	got, err := a.inactiveTenants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[suspended.String()] || got[active.String()] {
+		t.Fatalf("inactive = %v", got)
 	}
 }
 

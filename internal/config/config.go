@@ -59,6 +59,10 @@ type Config struct {
 	Log Log
 	// Deletion is how deleted numbers are kept and purged (decision 0038).
 	Deletion Deletion
+	// Contract is how this server reaches the platform's product contract
+	// (decision 0040), off unless WS_CONTRACT_SOCKET (or, in development,
+	// WS_CONTRACT_ADDR) is set.
+	Contract Contract
 }
 
 // Deletion holds the deletion ledger's path and the purge's valve.
@@ -205,6 +209,7 @@ func Load() (Config, error) {
 			Wire:   boolean("WS_LOG_WIRE", false, &errs),
 		},
 		Deletion: Deletion{Ledger: strings.TrimSpace(str("WS_DELETION_LEDGER", DefaultDeletionLedger))},
+		Contract: loadContract(),
 	}
 	switch purge := strings.ToLower(strings.TrimSpace(str("WS_DELETED_NUMBER_PURGE", "on"))); purge {
 	case "on":
@@ -237,6 +242,9 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 	if err := cfg.MCP.Validate(env.IsProd()); err != nil {
+		errs = append(errs, err)
+	}
+	if err := cfg.Contract.Validate(env.IsProd()); err != nil {
 		errs = append(errs, err)
 	}
 

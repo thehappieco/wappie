@@ -502,9 +502,12 @@ type DeviceRecovered struct {
 }
 
 // DeviceNotice is something a person is told about a number in Wappie's own
-// pages: number_deleted (its readers and the workspace's other owners) or
-// sync_paused (its readers). Label and Hint are the notice's own snapshot,
-// null after the purge.
+// pages: number_deleted (its readers and the workspace's other owners),
+// sync_paused (its readers), or, to the workspace's other owners only,
+// number_stranded (an owner's override took its last key holder; Until is
+// its purge, none once it is recovered) and number_moved_out (it moved to
+// the actor's Personal). Label and Hint are the notice's own snapshot, null
+// after the purge.
 type DeviceNotice struct {
 	ID            int64      `json:"id"`
 	DeviceID      string     `json:"device_id"`
@@ -527,7 +530,7 @@ type DeviceNotice struct {
 // keeps its id when a later pause folds into it, and is acknowledged only
 // at the version its person saw, so a fold that came after stays unseen and
 // returns in the reply. NoticeIDs, bare ids, acknowledge only notices that
-// never fold (number_deleted).
+// never fold (every kind but sync_paused).
 type DeviceNoticeSeen struct {
 	NoticeIDs []int64      `json:"notice_ids,omitempty"`
 	Notices   []SeenNotice `json:"notices,omitempty"`
@@ -1830,6 +1833,11 @@ const (
 	// while anyone else has access to it (decision 0040); the error carries
 	// who, and why.
 	ErrCodeOthersHaveAccess = "others_have_access"
+	// ErrCodeMembershipsUnconfirmed refuses an act README 7.1 gates while
+	// the platform has not confirmed the memberships it needs for over an
+	// hour (decision 0040). Only the enforce release answers it; release B
+	// logs what it would refuse.
+	ErrCodeMembershipsUnconfirmed = "memberships_unconfirmed"
 )
 
 // Error is the failure payload. Readers comes with device_has_readers, and

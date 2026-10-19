@@ -43,6 +43,7 @@ import (
 	"github.com/thehappieco/kit/oidcrp"
 
 	"whatserver2/internal/config"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -335,6 +336,13 @@ func (h *Handler) platformSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "internal", "could not sign in")
 		return
 	}
+	// The contract's PUT (README 6.1), for a person Wappie holds only: after
+	// the provider's sign-in and the pin, before Wappie's own refusals, so a
+	// refused or rewrapping sign-in subscribes too. It never refuses: a
+	// sign-in the platform does not answer goes on (README 7.2).
+	if h.Membership != nil {
+		h.Membership.SignIn(r.Context(), sub)
+	}
 
 	user, err := h.Users.PlatformAccount(r.Context(), ident.UserID)
 	if err != nil || user.Status != "active" || user.Role == store.RoleService {
@@ -384,7 +392,9 @@ func authTimeOf(ui *oidcrp.Userinfo) time.Time {
 
 // platformUnlinked answers a sub nobody here has: new, or link_required when
 // an unlinked password account already has the provider's address. That is
-// a hint shown to the verified owner of the address, never a link.
+// a hint shown to the verified owner of the address, never a link. It never
+// subscribes the sub: it only issues a ticket, and an abandoned ticket would
+// leave a subscription behind.
 //
 // With WS_LOCAL_LOGIN=off the link routes are closed, and a new account
 // cannot take an address another account holds, so such a sign-in has no
@@ -564,12 +574,108 @@ func (h *Handler) platformAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok2 {
 		return
 	}
-	user, authTime, err := h.Users.SignupPlatform(r.Context(), store.NewPlatformUser{Ticket: req.Ticket, PublicKey: pub, Wrap: wrap, Name: req.DisplayName})
+	in := store.NewPlatformUser{Ticket: req.Ticket, PublicKey: pub, Wrap: wrap, Name: req.DisplayName}
+	var signup membership.SignUp
+	if h.Membership != nil {
+		var ok bool
+		if signup, ok = h.platformHome(w, r, &in); !ok {
+			return
+		}
+	}
+	user, authTime, err := h.Users.SignupPlatform(r.Context(), in)
 	if err != nil {
-		h.ticketError(w, err)
+		h.signUpRefused(w, r, signup, err)
 		return
 	}
 	h.platformIssue(w, r, user, platformReply{}, platformProof{authTime: authTime})
+}
+
+// platformHome subscribes a new account's sub and takes its home from the
+// platform's document, once the contract was ever observed (the plan's DB2
+// and 4.5); before that it does nothing, and Wappie chooses the home as it
+// always did. The ticket is read, not spent. Without a signed document the
+// account is refused, retryably, and never given a home of Wappie's
+// choosing: the ticket stays valid, and nothing is written but the PUT's
+// intent row, which the sweep removes.
+func (h *Handler) platformHome(w http.ResponseWriter, r *http.Request, in *store.NewPlatformUser) (membership.SignUp, bool) {
+	observed, err := h.Membership.Observed(r.Context())
+	if err != nil {
+		h.log().Error("could not read the contract's state", "error", err)
+		fail(w, http.StatusInternalServerError, "internal", "could not finish signing in")
+		return membership.SignUp{}, false
+	}
+	if !observed {
+		return membership.SignUp{}, true
+	}
+	// What SignupPlatform would refuse of the request is refused before
+	// the platform is asked anything.
+	if err := in.Check(); err != nil {
+		h.ticketError(w, err)
+		return membership.SignUp{}, false
+	}
+	t, err := h.Users.PlatformTicketFor(r.Context(), in.Ticket, store.TicketNew)
+	if err != nil {
+		h.ticketError(w, err)
+		return membership.SignUp{}, false
+	}
+	s, err := h.Membership.SignUp(r.Context(), t.Sub)
+	switch {
+	case err == nil:
+		in.Home, in.Doc = s.Home, s.Doc
+		return s, true
+	case errors.Is(err, membership.ErrPlatformUnavailable):
+		platformUnavailable(w)
+	case errors.Is(err, membership.ErrAccountNotActive):
+		h.Membership.Unsubscribe(r.Context(), s)
+		fail(w, http.StatusForbidden, "account_disabled", "this account is disabled")
+	default:
+		h.log().Error("could not subscribe a new account", "error", err)
+		fail(w, http.StatusInternalServerError, "internal", "could not finish signing in")
+	}
+	return s, false
+}
+
+func platformUnavailable(w http.ResponseWriter) {
+	fail(w, http.StatusServiceUnavailable, "platform_unavailable", "could not set up your workspace with The Happie Co; try again in a minute")
+}
+
+// signUpRefused answers a refused new account and, for the refusals that
+// say no concurrent request holds its sub (an address taken, a home taken,
+// a workspace of another kind), unsubscribes it (the plan's DB21).
+// already_linked and ticket_invalid never do: both mean a second tab or a
+// double submit may have created the person. Every other refusal's
+// subscription is the sweep's.
+func (h *Handler) signUpRefused(w http.ResponseWriter, r *http.Request, s membership.SignUp, err error) {
+	var docErr *store.ContractDocError
+	switch {
+	case errors.Is(err, store.ErrHomeTaken):
+		h.log().Error("refused a new account: its personal workspace's id is a workspace here already",
+			slog.String("event", "platform_home_taken"), slog.String("sub", s.Sub.String()), slog.String("workspace", s.Home.String()))
+		h.unsubscribeRefused(r.Context(), s)
+		workspaceConflict(w)
+	case errors.As(err, &docErr) && docErr.Outcome == store.ContractDocKindChanged:
+		h.unsubscribeRefused(r.Context(), s)
+		workspaceConflict(w)
+	case errors.As(err, &docErr), errors.Is(err, store.ErrHomeRequired):
+		// No PUT was sent for ErrHomeRequired: the contract was turned on
+		// since this request read it, and a retry gets the platform's home.
+		platformUnavailable(w)
+	case errors.Is(err, store.ErrEmailTaken):
+		h.unsubscribeRefused(r.Context(), s)
+		h.ticketError(w, err)
+	default:
+		h.ticketError(w, err)
+	}
+}
+
+func (h *Handler) unsubscribeRefused(ctx context.Context, s membership.SignUp) {
+	if h.Membership != nil {
+		h.Membership.Unsubscribe(ctx, s)
+	}
+}
+
+func workspaceConflict(w http.ResponseWriter) {
+	fail(w, http.StatusConflict, "workspace_conflict", "this account's workspace conflicts with one here; contact support")
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +772,14 @@ func (h *Handler) platformLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.accessChanged()
+	// The contract's PUT, as at a sign-in: the person is Wappie's now.
+	if h.Membership != nil {
+		if sub, err := h.Users.PlatformSubOf(r.Context(), user.ID); err == nil {
+			h.Membership.SignIn(r.Context(), sub)
+		} else {
+			h.log().Warn("could not read a linked account's sub", "error", err)
+		}
+	}
 	h.platformIssue(w, r, user, platformReply{}, platformProof{now: true})
 }
 

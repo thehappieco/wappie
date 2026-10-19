@@ -15,6 +15,7 @@ import (
 
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 	"whatserver2/internal/wsapi"
 )
 
@@ -160,6 +161,60 @@ func TestResumeOverTheSocket(t *testing.T) {
 	}
 	if e, n := recorded(); e != events || n != notices {
 		t.Fatalf("the failed start's pause: %d sync_paused rows (was %d), %d notices (was %d)", e, events, n, notices)
+	}
+}
+
+// A start that fails puts back the pause it took away with its cause
+// (release B's plan, TB12): a person's stays a person's, and a move's stays
+// the move's, which a snapshot reports as Wappie's own, never as a person's.
+func TestFailedResumeKeepsItsPauseCause(t *testing.T) {
+	c := newDeletionConsoleWith(t, deletionOptions{registry: true})
+	ctx := context.Background()
+	device := c.linkedDevice(t, "Vendas")
+	ref := wsapi.DeviceRef{DeviceID: device.String()}
+	owner := wsapi.Hello{Session: c.token}
+	// The session is gone from the store: every start fails.
+	if _, err := c.pool.Exec(ctx, `DELETE FROM whatsmeow_device`); err != nil {
+		t.Fatal(err)
+	}
+	cause := func() string {
+		t.Helper()
+		d, err := c.devices.Get(ctx, c.tenant.String(), device.String())
+		if err != nil || !d.Paused {
+			t.Fatalf("after the failed start: paused %v, %v", d.Paused, err)
+		}
+		return d.PauseCause
+	}
+	for _, pause := range []struct {
+		name string
+		do   func() error
+		want string
+	}{
+		{"a person's stop", func() error {
+			if f := ask(t, c.console, owner, wsapi.TypeDeviceStop, ref); f.Type != wsapi.TypeDeviceStatus {
+				return errors.New(f.Type + " " + string(f.Payload))
+			}
+			return nil
+		}, store.PauseByPerson},
+		{"a move's pause", func() error {
+			_, err := c.devices.PauseForMove(ctx, c.tenant, device)
+			return err
+		}, store.PauseForMove},
+	} {
+		// Live and offline again, as before each start.
+		if err := c.devices.SetPaused(ctx, c.tenant.String(), device.String(), false); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.devices.SetStatus(ctx, c.tenant.String(), device.String(), wa.StatusOffline, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := pause.do(); err != nil {
+			t.Fatalf("%s: %v", pause.name, err)
+		}
+		wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceStart, ref), wsapi.ErrCodeConflict)
+		if got := cause(); got != pause.want {
+			t.Fatalf("a failed start after %s: pause_cause %q, want %q", pause.name, got, pause.want)
+		}
 	}
 }
 

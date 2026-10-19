@@ -31,6 +31,7 @@ import (
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
 	"whatserver2/internal/ledger"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
@@ -139,6 +140,8 @@ type deletionOptions struct {
 	transfer func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
 	// ledger is a deletion ledger the handlers export to.
 	ledger string
+	// fresh is the contract's freshness hook.
+	fresh membership.Freshness
 }
 
 func newDeletionConsole(t *testing.T) *deletionConsole {
@@ -197,6 +200,9 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	}
 	if opt.hook != nil {
 		wsapi.SetSubscribeHook(&cfg, opt.hook)
+	}
+	if opt.fresh != nil {
+		cfg.Membership = opt.fresh
 	}
 	if opt.transfer != nil {
 		wsapi.SetTransferHook(&cfg, opt.transfer)

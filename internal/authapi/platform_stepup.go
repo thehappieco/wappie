@@ -222,6 +222,12 @@ func (h *Handler) platformStepUpFinish(w http.ResponseWriter, r *http.Request) {
 	if !h.stepUpFinishError(w, err) {
 		return
 	}
+	// The acts a step-up opens (a deletion, a recovery) want the person
+	// fresh: their document is asked for now if it is not. Its failure
+	// changes nothing.
+	if h.Membership != nil {
+		h.Membership.Refresh(r.Context(), link.Sub)
+	}
 	h.log().Info("step-up confirmed", "user", user.ID, "method", "provider")
 	h.stepUpReply(w, r, session, user)
 }

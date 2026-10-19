@@ -70,6 +70,24 @@ func devicePermissionTx(ctx context.Context, tx pgx.Tx, tenant, user, device uui
 	return out, err
 }
 
+// StoredDevicePermission is user's row for device as stored, before a
+// change: the flags themselves, with no role folded in (false without a
+// row), and HasKey, whether user holds the number's key at any epoch not
+// retired. A permission change reads it first to tell an act that raises a
+// flag, or that narrows who holds the key, from one that does neither
+// (README 7.1), outside its own transaction.
+func (u *Users) StoredDevicePermission(ctx context.Context, tenant, user, device uuid.UUID) (DevicePermission, error) {
+	out := DevicePermission{DeviceID: device, UserID: user}
+	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT coalesce(p.can_read, false), coalesce(p.can_send, false), coalesce(p.can_manage, false),
+			EXISTS (SELECT 1 FROM device_key_grants g JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch AND k.retired_at IS NULL
+			         WHERE g.tenant_id = $1 AND g.device_id = $3 AND g.user_id = $2)
+			FROM (SELECT 1) one LEFT JOIN device_permissions p ON p.tenant_id = $1 AND p.device_id = $3 AND p.user_id = $2`,
+			tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey)
+	})
+	return out, err
+}
+
 func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID, p DevicePermission) error {
 	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {

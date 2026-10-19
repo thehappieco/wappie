@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"whatserver2/internal/config"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -74,6 +75,17 @@ type Handler struct {
 	// LocalLogin narrows the password routes once the provider is on: ""
 	// and "on" keep them all.
 	LocalLogin config.LocalLogin
+	// Membership is the product contract's part in signing in
+	// (internal/membership): the PUT at every sign-in through the
+	// provider, a new account's home from the platform's document, and a
+	// refused sign-up's unsubscribe. Nil is the contract's absence, as
+	// before it.
+	Membership membership.SignIns
+	// Freshness is the contract's hook at the acts README 7.1 gates
+	// (freshness.go): raising a flag or withholding Read, and a standing
+	// service account's invitation and registration. Nil gates nothing; at
+	// observe it only logs (the plan's DB4).
+	Freshness membership.Freshness
 }
 
 // Mount registers the routes on a mux.
@@ -408,7 +420,20 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request, user store.User)
 // What it gets instead is an API key acting as this account, minted by an
 // operator in the console once the devices have been granted.
 func (h *Handler) signupService(w http.ResponseWriter, r *http.Request, req signupRequest, pub []byte) {
-
+	// Registering a standing service account creates it: the freshness
+	// hook asks for the person who invited it, before anything is spent.
+	if h.Freshness != nil {
+		tenant, issuer, ok, err := h.Users.ServiceInviteIssuer(r.Context(), req.Invite)
+		if err != nil {
+			// Never registered unchecked; nothing is spent.
+			h.log().Error("freshness: could not read a service invitation's issuer", "error", err)
+			fail(w, http.StatusInternalServerError, "internal", "could not check the invitation; nothing was spent")
+			return
+		}
+		if ok && !h.fresh(r.Context(), w, actServiceSignup, tenant, membership.Party{User: issuer, How: membership.IfStale}) {
+			return
+		}
+	}
 	user, err := h.Users.SignupService(r.Context(), req.Invite, req.Name, pub)
 	if h.signupError(w, err) {
 		return
@@ -422,6 +447,8 @@ func (h *Handler) signupError(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch {
+	case errors.Is(err, store.ErrInvitationsPaused):
+		invitationsPaused(w)
 	case errors.Is(err, store.ErrInviteEmailMismatch):
 		fail(w, http.StatusForbidden, "invite_email_mismatch", "this invitation belongs to another email address; the code remains valid")
 	case errors.Is(err, store.ErrInviteInvalid):

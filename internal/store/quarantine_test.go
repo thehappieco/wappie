@@ -785,6 +785,18 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// The operator's list of deleted numbers (whatserverd devices
 		// list-deleted), which has no owner to check.
 		"Devices.ListAllDeleted": true,
+		// The contract's access snapshot, which lists a deleted number
+		// until its purge (README 8).
+		"Contract.Snapshot": true,
+		// The contract's events: a replayed row, which keeps no label,
+		// takes its deleted number's until the purge (the plan's 4.11).
+		"replayedLabelsTx": true,
+		// The owner's strand override: a deleted number's readers just
+		// before, for its item.stranded (the plan's DB13).
+		"strandTx": true,
+		// The members list: which deleted numbers a member is the last key
+		// holder of, for the override's dialog (the plan's 4.12).
+		"memberStrandsTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

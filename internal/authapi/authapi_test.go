@@ -33,11 +33,14 @@ type harness struct {
 	users  *store.Users
 	keys   *store.Keys
 	tenant uuid.UUID
+	// backends are the pool's own sessions, told from other tests'.
+	backends *pgtest.Backends
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	pool := pgtest.Fresh(t, migrate.Run)
+	backends := &pgtest.Backends{}
+	pool := pgtest.FreshWith(t, migrate.Run, backends.Configure)
 
 	var tenantID string
 	if err := pool.QueryRow(context.Background(),
@@ -58,7 +61,7 @@ func newHarness(t *testing.T) *harness {
 
 	return &harness{
 		srv: srv, pool: pool, users: store.NewUsers(pool),
-		keys: store.NewKeys(pool), tenant: uuid.MustParse(tenantID),
+		keys: store.NewKeys(pool), tenant: uuid.MustParse(tenantID), backends: backends,
 	}
 }
 

@@ -237,7 +237,7 @@ func TestMigration0050Checks(t *testing.T) {
 		v    e
 		code string
 	}{
-		"a type the log does not keep":     {e{typ: "stranded", dedupe: "x1", actor: "person", ledger: "now"}, "23514"},
+		"a type the log does not keep":     {e{typ: "renamed", dedupe: "x1", actor: "person", ledger: "now"}, "23514"},
 		"an actor that is neither":         {e{typ: "sync_paused", dedupe: "x2", actor: "owner", ledger: "now"}, "23514"},
 		"an unledgered pause":              {e{typ: "sync_paused", dedupe: "x3", actor: "person"}, "23514"},
 		"a move with nowhere to go":        {e{typ: "moved_out", dedupe: "x4", actor: "person"}, "23514"},
@@ -295,10 +295,11 @@ func downStepSQL(t *testing.T, version int) string {
 	return strings.Join(out, "\n")
 }
 
-// 0050's down-step refuses while a number is excluded or an event row is not
-// in the ledger, and changes nothing then, the forced policy on devices
-// included; once neither holds, it leaves exactly 49's schema, so a binary
-// that knows 49 but not 50 starts on it, and 0050 applies again.
+// 0050's down-step refuses while 0051 is applied, a number is excluded or an
+// event row is not in the ledger, and changes nothing then, the forced
+// policy on devices included; once none holds, it leaves exactly 49's
+// schema, so a binary that knows 49 but not 50 starts on it, and 0050
+// applies again.
 func TestMigration0050DownStep(t *testing.T) {
 	ctx := context.Background()
 	lg := quietLogger(t)
@@ -355,13 +356,10 @@ func TestMigration0050DownStep(t *testing.T) {
 			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 50 %v, devices forced %v", rows, before, has50, forced)
 		}
 	}
-	// A later migration comes down first, before any other guard is asked.
-	if _, err := pool.Exec(ctx, `INSERT INTO schema_migrations(version,name,checksum,duration_ms) VALUES (51,'later','x',0)`); err != nil {
-		t.Fatal(err)
-	}
+	// 0051 comes down first, before any other guard is asked.
 	refused("a migration after 0050 is applied")
-	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 51`); err != nil {
-		t.Fatal(err)
+	if _, err := pool.Exec(ctx, downStepSQL(t, 51)); err != nil {
+		t.Fatalf("0051's down-step: %v", err)
 	}
 	refused("excluded numbers exist")
 	if _, err := pool.Exec(ctx, `ALTER TABLE devices DISABLE ROW LEVEL SECURITY;
@@ -421,10 +419,13 @@ func TestMigration0050WaitsForBilling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var through49 []Migration
+	var through49, through50 []Migration
 	for _, m := range ms {
 		if m.Version <= 49 {
 			through49 = append(through49, m)
+		}
+		if m.Version <= 50 {
+			through50 = append(through50, m)
 		}
 	}
 	pool := pgtest.Empty(t)
@@ -475,7 +476,7 @@ func TestMigration0050WaitsForBilling(t *testing.T) {
 			t.Fatalf("%s beside a billing request: the request %v, the migration %v", name, countErr, err)
 		}
 	}
-	during("0050", func() error { return Run(ctx, pool, lg) })
+	during("0050", func() error { return run(ctx, pool, lg, through50) })
 	during("0050's down-step", func() error {
 		_, err := pool.Exec(ctx, downStepSQL(t, 50))
 		return err
