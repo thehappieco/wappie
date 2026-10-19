@@ -934,6 +934,35 @@ func (r *rotation) cancel() int {
 	return 0
 }
 
+// again is the installer's step run again at the state it left, after its
+// signal, its wait or its last probe failed: it changes nothing, signals and
+// waits unless the server already holds the files, and runs the step's
+// last probe, when it has one (check; flags for contract check).
+func (r *rotation) again(step string, check bool, flags ...string) {
+	r.t.Helper()
+	r.begin()
+	l := r.server.Last()
+	held := l.Error == "none" && l.Current == r.w.fingerprint(r.t, membership.SecretFileName) &&
+		l.Other == r.w.fingerprint(r.t, membership.SecretOtherFileName)
+	if !held {
+		r.signal()
+	}
+	if check {
+		if code := r.check(flags...); code != 0 {
+			r.t.Fatalf("%s: check %v %d", step, flags, code)
+		}
+	}
+	if !held {
+		r.played(step, false)
+		return
+	}
+	// The row without its signal and wait, as docs/contract.md says.
+	want := slices.DeleteFunc(slices.Clone(rotationTable(r.t)[step]), func(c string) bool { return c == "signal" || c == "wait" })
+	if !slices.Equal(r.ran, want) {
+		r.t.Fatalf("step %q, the files held, ran %q; docs/contract.md's Rotation table says %q without the signal", step, r.ran, want)
+	}
+}
+
 // unchanged is the files' fingerprints and state, to compare across a
 // refusal.
 func (r *rotation) unchanged() func() {
@@ -979,6 +1008,67 @@ func TestRotationNeverFails(t *testing.T) {
 		r.feed("step 6")
 		if code := r.check(); code != 0 || r.w.state(t) != membership.StateSteady || r.w.open(t, membership.SecretFileName) != b {
 			t.Fatalf("after the rotation: %d %s", code, r.w.state(t))
+		}
+	})
+
+	t.Run("a step that stopped after it changed the files, run again", func(t *testing.T) {
+		// Each step's change, then no signal (the server not running, a
+		// reload that failed, a wait that ran out): the server holds what it
+		// held, a call still works, and the step run again finishes it.
+		r := newRotation(t, a)
+		r.begin()
+		r.seal("current", a)
+		r.again("install, run again", true)
+		r.feed("installed")
+		r.setSecrets(a, b) // 1
+		r.begin()
+		r.seal("other", b)
+		r.feed("the next sealed, not loaded")
+		r.again("2, run again", true, "--other")
+		r.begin()
+		if code := r.check("--other"); code != 0 {
+			t.Fatalf("promote: check --other %d", code)
+		}
+		r.run("promote")
+		r.feed("promoted, not loaded")
+		r.again("3, run again", true)
+		r.setSecrets(b, a) // 4
+		r.feed("step 4")
+		r.begin()
+		if code := r.check("--only-current"); code != 0 {
+			t.Fatalf("drop: check --only-current %d", code)
+		}
+		r.run("drop")
+		r.feed("dropped, not loaded")
+		r.again("5, run again", false)
+		r.setSecrets(b, "") // 6
+		r.feed("step 6")
+		// A cancel from next that dropped the next secret and stopped: the
+		// server still accepts it until the cancel is run again.
+		c := membershiptest.Secret(t)
+		r.setSecrets(b, c)
+		r.next(c)
+		r.begin()
+		if code := r.check("--only-current"); code != 0 {
+			t.Fatalf("cancel: check --only-current %d", code)
+		}
+		r.run("drop")
+		if r.server.Last().Other == "none" {
+			t.Fatal("the server let go of the next secret without a signal")
+		}
+		r.again("cancel from `steady`", true, "--only-current")
+		if r.server.Last().Other != "none" {
+			t.Fatal("the cancel run again left the next secret loaded")
+		}
+		r.setSecrets(b, "") // secret-cancel
+		r.feed("cancelled")
+		// Run again where the server holds the files (a probe that failed
+		// after the wait): no signal, only the probe.
+		before := r.server.Last().Reloads
+		r.again("cancel from `steady`", true, "--only-current")
+		r.again("5, run again", false)
+		if r.server.Last().Reloads != before {
+			t.Fatalf("a step run again with the files held signalled: reloads %d to %d", before, r.server.Last().Reloads)
 		}
 	})
 

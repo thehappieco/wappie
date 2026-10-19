@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -468,6 +469,45 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
 		says("contract-events.md", "`"+store.ContractErrorEventParked+"`")
+	})
+
+	t.Run("the members list's override fields", func(t *testing.T) {
+		// docs/workspaces.md names each field by the JSON name a console
+		// reads, and names no other: the store's tags, both ways.
+		section := docSection(t, "../../docs/workspaces.md", "### The strand override")
+		tag := func(typ reflect.Type, field string) string {
+			t.Helper()
+			f, ok := typ.FieldByName(field)
+			if !ok {
+				t.Fatalf("%s has no field %s", typ, field)
+			}
+			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			return name
+		}
+		member := reflect.TypeFor[store.Member]()
+		fields := map[string]bool{}
+		for _, f := range []string{"LastKeyHolderOfDeleted", "LastKeyHolderOfDeletedAny", "StrandOverride"} {
+			fields[tag(member, f)] = true
+		}
+		ref := reflect.TypeFor[store.DeletedNumberRef]()
+		for i := range ref.NumField() {
+			fields[tag(ref, ref.Field(i).Name)] = true
+		}
+		named := map[string]bool{}
+		for _, m := range backticked.FindAllStringSubmatch(section, -1) {
+			name, _, _ := strings.Cut(m[1], ": ")
+			named[name] = true
+			if strings.HasPrefix(name, "last_key_holder") || name == "strand_override" {
+				if !fields[name] {
+					t.Errorf("docs/workspaces.md's strand override names %q, which the members list does not send", name)
+				}
+			}
+		}
+		for name := range fields {
+			if !named[name] {
+				t.Errorf("docs/workspaces.md's strand override does not name the members list's %q", name)
+			}
+		}
 	})
 
 	t.Run("words", func(t *testing.T) {

@@ -397,6 +397,29 @@ func TestStrandOverrideHoldsTheMode(t *testing.T) {
 	}
 }
 
+// moveOut moves a number's row into another workspace and leaves its key
+// and grants here, as a move in flight would: this workspace's grants then
+// name a number it cannot see, whatever scope it opens.
+func (w *delWorld) moveOut(t *testing.T, device uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	elsewhere := uuid.MustParse(newTenant(t, w.pool, "elsewhere"))
+	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.device_move_id',$1,true),set_config('app.device_move_source',$2,true),set_config('app.device_move_target',$3,true)`,
+			device.String(), w.tenant.String(), elsewhere.String()); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `UPDATE devices SET tenant_id=$2 WHERE id=$1`, device, elsewhere)
+		if err == nil && tag.RowsAffected() != 1 {
+			return errors.New("no such number")
+		}
+		return err
+	})
+	if n := w.count(t, `SELECT count(*) FROM devices WHERE id=$1`, device); n != 0 {
+		t.Fatal("the number moved out is still visible here")
+	}
+}
+
 // blockWorkspace holds w's workspace row, as another member change does,
 // until the test rolls it back or ends; it answers its backend's pid.
 func (w *delWorld) blockWorkspace(t *testing.T) (pgx.Tx, int) {
@@ -505,7 +528,8 @@ func TestStrandOverrideGivesUpOnABusyWorkspace(t *testing.T) {
 // (the plan's 4.12): an owner reads each deleted number a member is the
 // last key holder of, with its purge date, and the gate as strand_override
 // on every row; an admin reads only that there is one, and never the gate;
-// a member who would strand a live number, or nothing, is not listed.
+// a member who would strand a live number, one the workspace cannot see,
+// or nothing, is not listed.
 func TestMembersListTheStrandOverride(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()
@@ -530,6 +554,18 @@ func TestMembersListTheStrandOverride(t *testing.T) {
 	w.reads(t, reader, shared)
 	w.reads(t, w.owner, shared)
 	w.quarantine(t, shared, reader, w.owner)
+	// A deleted number, and a grant for one this workspace cannot see: the
+	// unseen one counts as live, failing closed as strandCheckTx does.
+	unseen := w.person(t, "unseen", "member")
+	lost := w.number(t, "Perdido")
+	w.reads(t, unseen, lost)
+	w.quarantine(t, lost, unseen)
+	away := w.number(t, "Movido")
+	w.reads(t, unseen, away)
+	w.moveOut(t, away)
+	if err := w.users.RemoveMember(ctx, w.tenant, w.owner, unseen); !errors.Is(err, store.ErrLastDeviceReader) {
+		t.Fatalf("removing the key holder of a number the workspace cannot see: %v", err)
+	}
 
 	list := func(actor uuid.UUID) map[uuid.UUID]store.Member {
 		t.Helper()
@@ -568,7 +604,7 @@ func TestMembersListTheStrandOverride(t *testing.T) {
 				t.Fatalf("%s: the target's number %+v", gate.name, n)
 			}
 		}
-		for _, id := range []uuid.UUID{w.owner, admin, mixed, reader} {
+		for _, id := range []uuid.UUID{w.owner, admin, mixed, reader, unseen} {
 			if m := owners[id]; len(m.LastKeyHolderOfDeleted) != 0 || m.LastKeyHolderOfDeletedAny {
 				t.Fatalf("%s: the owner reads %+v for %s", gate.name, m, id)
 			}
@@ -604,6 +640,20 @@ func TestMembersListTheStrandOverride(t *testing.T) {
 	}
 	if _, ok := wire[1]["last_key_holder_of_deleted"]; ok {
 		t.Fatalf("a member with nothing to strand: %s", b)
+	}
+	// An admin's view: the boolean alone, by its own name, and no gate.
+	b, err = json.Marshal(list(admin)[target])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var adminWire map[string]any
+	if err := json.Unmarshal(b, &adminWire); err != nil {
+		t.Fatal(err)
+	}
+	_, numbers := adminWire["last_key_holder_of_deleted"]
+	_, gate := adminWire["strand_override"]
+	if adminWire["last_key_holder_of_deleted_any"] != true || numbers || gate {
+		t.Fatalf("the target on the wire, for an admin: %s", b)
 	}
 	// A recovered number is live again: its last key holder is not listed.
 	w.recover(t, device)

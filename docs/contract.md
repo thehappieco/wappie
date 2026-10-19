@@ -274,6 +274,23 @@ as "not promoted".
 | cancel from `next` | `next` to `steady` | `contract check --only-current` must exit `0` (on `4` the platform promoted early: finish the rotation instead), then `drop`, signal, wait, `contract check --only-current` |
 | cancel from `promoted` | `promoted` to `next` to `steady` | `contract check --only-other` must exit `0` (on `4` the platform promoted: finish the rotation), then `unpromote`, signal, wait, `contract check --only-current`, `drop`, signal, wait, `contract check --only-current`; only then may the platform run `secret-cancel` |
 | reinstall | any to `steady` | `reset`, then the install |
+| install, run again | `steady`, unchanged | signal, wait, `contract check` |
+| 2, run again | `next`, unchanged | signal, wait, `contract check --other` |
+| 3, run again | `promoted`, unchanged | signal, wait, `contract check` |
+| 5, run again | `steady`, unchanged | signal, wait |
+| cancel from `steady` | `steady`, unchanged | signal, wait, `contract check --only-current`; only then may the platform run `secret-cancel` |
+
+A step that changed the files and then stopped (its signal, its wait or its
+last probe failed: the server not running, a reload that failed, a wait that
+ran out, no answer) has not told the platform to go on, and is run again as
+it is: at the state it leaves, it changes nothing, signals and waits, and
+runs its last probe (the rows "run again"). The signal and the wait are left
+out when the server already published, under the pid running and with no
+error, that it holds the files on disk. A cancel from `steady` is a cancel
+that dropped the next secret and stopped, or one of a rotation Wappie never
+took; a cancel from `promoted` that stopped after its unpromote is at
+`next`, and goes on as a cancel from `next`. The installer runs one step at
+a time.
 
 `TestRotationNeverFails` plays these rules between the kit's fake platform
 and Wappie's commands, with a feed call after each step: none fails. Each
