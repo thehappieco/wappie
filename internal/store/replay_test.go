@@ -248,6 +248,14 @@ func TestLedgerReplay(t *testing.T) {
 			return err
 		})
 		r, _ := w.row(t, w.tenant, device)
+		// An owner's override had stranded it in the snapshot: the other
+		// owner's notice names its purge, as strandTx writes it.
+		coOwner := w.person(t, "co-owner", "owner")
+		w.scoped(t, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind, until)
+				VALUES ($1, $2, $3, 'number_stranded', 'Vendas', '…5678', $4, 'person', $5)`, w.tenant, device, coOwner, w.owner, *r.purgeAfter)
+			return err
+		})
 		recoveredAt := w.dbTime(t, `$1::timestamptz + interval '1 day'`, *r.deletedAt)
 		lines := []ledger.Line{w.line(ledger.TypeDeleted, device, r.deletedAt, r.purgeAfter, *r.deletedAt),
 			w.line(ledger.TypeRecovered, device, r.deletedAt, nil, recoveredAt)}
@@ -264,6 +272,10 @@ func TestLedgerReplay(t *testing.T) {
 		}
 		if got := w.replayed(t, w.tenant, device); len(got["recovered"]) != 1 || got["recovered"][0] != lines[1].EventID {
 			t.Fatalf("the replayed recovery: %+v", got)
+		}
+		// The stranded notice stays, naming no purge now.
+		if got := w.noticesOfKind(t, coOwner, store.NoticeNumberStranded); len(got) != 1 || got[0].Until != nil {
+			t.Fatalf("the recovered number's stranded notice: %+v", got)
 		}
 		// The first janitor pass finds nothing due.
 		if due, n, err := w.devices.DueDeletions(ctx, w.tenant, 5); err != nil || n != 0 || len(due) != 0 {

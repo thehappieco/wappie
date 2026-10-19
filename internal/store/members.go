@@ -15,6 +15,10 @@ var (
 	ErrMembershipForbidden = errors.New("store: membership action is not authorized")
 	ErrLastOwner           = errors.New("store: workspace needs an active owner")
 	ErrInvalidMembership   = errors.New("store: invalid membership role or status")
+	// ErrWorkspaceBusy is an owner's strand override that waited too long
+	// for the workspace (holdOwnersMailedTx); nothing changed, and it can
+	// be tried again.
+	ErrWorkspaceBusy = errors.New("store: the workspace is busy; try again in a few seconds")
 )
 
 type MemberDeviceAccess struct {
@@ -120,12 +124,13 @@ func (u *Users) UpdateMember(ctx context.Context, tenant, actor, target uuid.UUI
 // UpdateMemberStrandDeleted is UpdateMember with the owner's strand
 // override (decision 0040; the plan's DB13): a disable that would strand
 // numbers that are all deleted goes on where the platform will mail the
-// workspace's other owners (ownersMailedTx), and records item.stranded
+// workspace's other owners (holdOwnersMailedTx), and records item.stranded
 // with the cause disabled for each (strandTx). Anyone but an owner, by
 // live role under the lock, gets ErrOwnerOnly; outside the gate release
 // A's ErrLastReaderOfDeleted stands; a live number is never stranded
 // (ErrLastDeviceReader). The caller has checked the owner's recent
-// step-up.
+// step-up. ErrWorkspaceBusy is an act that gave up waiting for the
+// workspace, with the gate open.
 func (u *Users) UpdateMemberStrandDeleted(ctx context.Context, tenant, actor, target uuid.UUID, role, status string) error {
 	return u.updateMember(ctx, tenant, actor, target, role, status, true)
 }
@@ -134,7 +139,7 @@ func (u *Users) updateMember(ctx context.Context, tenant, actor, target uuid.UUI
 	if (role != "owner" && role != "admin" && role != "member" && role != RoleService) || (status != "active" && status != "disabled") {
 		return ErrInvalidMembership
 	}
-	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+	return strandBusy(pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		override, err := strandGateTx(ctx, tx, tenant, strandDeleted)
 		if err != nil {
 			return err
@@ -208,16 +213,16 @@ func (u *Users) updateMember(ctx context.Context, tenant, actor, target uuid.UUI
 			}
 		}
 		return nil
-	})
+	}))
 }
 
-// strandGateTx is ownersMailedTx for an act that asks for the strand
+// strandGateTx is holdOwnersMailedTx for an act that asks for the strand
 // override, and false, reading nothing, for one that does not.
 func strandGateTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, strandDeleted bool) (bool, error) {
 	if !strandDeleted {
 		return false, nil
 	}
-	return ownersMailedTx(ctx, tx, tenant)
+	return holdOwnersMailedTx(ctx, tx, tenant)
 }
 
 // requireOtherOwner runs under the workspace lock, before access is removed.
@@ -249,7 +254,7 @@ func (u *Users) RemoveMemberStrandDeleted(ctx context.Context, tenant, actor, ta
 }
 
 func (u *Users) removeMember(ctx context.Context, tenant, actor, target uuid.UUID, strandDeleted bool) error {
-	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+	return strandBusy(pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		override, err := strandGateTx(ctx, tx, tenant, strandDeleted)
 		if err != nil {
 			return err
@@ -319,7 +324,7 @@ func (u *Users) removeMember(ctx context.Context, tenant, actor, target uuid.UUI
 		// preferences; no credentials or settings in another workspace cascade.
 		_, err = tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2`, tenant, target)
 		return err
-	})
+	}))
 }
 
 // removeServiceAccountTx revokes every key acting as a service account and

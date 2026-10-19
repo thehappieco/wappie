@@ -352,6 +352,9 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 		if _, err := tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id = $1 AND kind = 'number_deleted'`, d.DeviceID); err != nil {
 			return change, err
 		}
+		if err := recoveredStrandedTx(ctx, tx, d.DeviceID); err != nil {
+			return change, err
+		}
 		at := s.reversal.DeletedAt
 		change.DeletedAt = at
 		return change, recordEvent(ctx, tx, tenant, itemEvent{EventID: s.reversal.EventID, Replayed: true,

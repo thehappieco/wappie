@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrLastDeviceReader prevents an access change from destroying the last
@@ -138,23 +139,73 @@ func strandCheckTx(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID, act
 	return nil, refusal
 }
 
-// ownersMailedTx is the gate of the owner's strand override (the plan's
+// ownersMailedSQL is the gate of the owner's strand override (the plan's
 // DB2, as the owner confirmed it on 2026-10-14): it goes on only where the
 // platform will mail the workspace's other owners its item.stranded, which
 // is a team the platform names (contract_workspaces), not closed there,
 // while the contract is on (observe or later). Everywhere else, a
 // self-hosted installation included, where no platform mails anyone,
-// release A's refusal stands. It reads contract_state under its share lock,
-// held to the commit, so a switch to off waits for the act, whose row is
-// then never written in an off period (DB10); and it is called before the
-// workspace's lock, since every transaction that takes contract_state takes
-// it first (DB23).
+// release A's refusal stands.
+const ownersMailedSQL = `SELECT s.mode <> 'off' AND EXISTS (SELECT 1 FROM contract_workspaces w
+		WHERE w.workspace_id = $1 AND w.kind = 'team' AND w.status IS DISTINCT FROM 'closed')
+		FROM contract_state s`
+
+// ownersMailedTx reads the gate (ownersMailedSQL) without a lock, as a
+// page that only shows it does.
 func ownersMailedTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (bool, error) {
 	var mailed bool
-	err := tx.QueryRow(ctx, `SELECT s.mode <> 'off' AND EXISTS (SELECT 1 FROM contract_workspaces w
-		WHERE w.workspace_id = $1 AND w.kind = 'team' AND w.status IS DISTINCT FROM 'closed')
-		FROM contract_state s FOR SHARE OF s`, tenant).Scan(&mailed)
+	err := tx.QueryRow(ctx, ownersMailedSQL, tenant).Scan(&mailed)
 	return mailed, err
+}
+
+// strandLockTimeout bounds each lock an override waits for once it holds
+// contract_state's share lock (holdOwnersMailedTx).
+var strandLockTimeout = 2 * time.Second
+
+// holdOwnersMailedTx is the gate for an act that asks for the override. A
+// closed gate, read first without a lock, takes none: a share lock lets
+// every later sharer past a writer that waits for it, so flagged requests
+// in a stream would starve SetMode and every other writer of
+// contract_state (a sign-in's documents, the follower's page) for as long
+// as the stream lasts. An open gate is read again under contract_state's
+// share lock, held to the commit, so a switch to off waits for the act,
+// whose row is then never written in an off period (DB10). It runs before
+// the workspace's lock, since every transaction that takes contract_state
+// takes it first (DB23), and from then on the act waits at most
+// strandLockTimeout for each lock (ErrWorkspaceBusy after), so a queue on
+// the workspace holds contract_state for seconds, never the statement
+// timeout.
+func holdOwnersMailedTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (bool, error) {
+	open, err := ownersMailedTx(ctx, tx, tenant)
+	if err != nil || !open {
+		return false, err
+	}
+	if err := tx.QueryRow(ctx, ownersMailedSQL+` FOR SHARE OF s`, tenant).Scan(&open); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`,
+		strconv.FormatInt(strandLockTimeout.Milliseconds(), 10)+"ms"); err != nil {
+		return false, err
+	}
+	return open, nil
+}
+
+// recoveredStrandedTx is a recovery's part in its number's number_stranded
+// notices: they stay, since the number still has nobody with its key, but
+// no longer name a purge, which the recovery called off.
+func recoveredStrandedTx(ctx context.Context, tx pgx.Tx, device uuid.UUID) error {
+	_, err := tx.Exec(ctx, `UPDATE device_notices SET until = NULL WHERE device_id = $1 AND kind = 'number_stranded'`, device)
+	return err
+}
+
+// strandBusy is ErrWorkspaceBusy for an act that gave up waiting for a
+// lock (holdOwnersMailedTx's lock_timeout).
+func strandBusy(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return ErrWorkspaceBusy
+	}
+	return err
 }
 
 // strandTx records what an owner's override takes from each deleted number

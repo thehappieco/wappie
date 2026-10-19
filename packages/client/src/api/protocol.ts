@@ -190,7 +190,10 @@ export interface DeviceNotice {
   /** The person who acted, or a key's creator. */
   raised_by_name?: string
   raised_by_kind: 'person' | 'key'
-  /** For number_deleted: until when an owner can recover it; for number_stranded: its purge. */
+  /**
+   * For number_deleted: until when an owner can recover it; for
+   * number_stranded: its purge, absent once the number is recovered.
+   */
   until?: string
   resumed_at?: string
   purged_at?: string

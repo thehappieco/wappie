@@ -505,8 +505,9 @@ type DeviceRecovered struct {
 // pages: number_deleted (its readers and the workspace's other owners),
 // sync_paused (its readers), or, to the workspace's other owners only,
 // number_stranded (an owner's override took its last key holder; Until is
-// its purge) and number_moved_out (it moved to the actor's Personal). Label
-// and Hint are the notice's own snapshot, null after the purge.
+// its purge, none once it is recovered) and number_moved_out (it moved to
+// the actor's Personal). Label and Hint are the notice's own snapshot, null
+// after the purge.
 type DeviceNotice struct {
 	ID            int64      `json:"id"`
 	DeviceID      string     `json:"device_id"`

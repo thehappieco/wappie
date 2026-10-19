@@ -12,12 +12,12 @@ import (
 )
 
 // TB36: the owner's strand override (the plan's DB13), observing in a
-// team the platform names, as the platform takes it. A disable and a
-// removal each strand a deleted number whose last key holder the target
-// was; each item.stranded is rendered with the target's sub as person and
-// the act's cause, the owner as actor, and the target among its readers,
-// and is accepted. The other owner gets a number_stranded notice for each;
-// the acting owner gets none.
+// team the platform names, as the platform takes it. A disable strands two
+// deleted numbers whose last key holder the target was, and a removal one;
+// each item.stranded is rendered with the target's sub as person and the
+// act's cause, the owner as actor, and the target among its readers, and
+// is accepted, the disable's two at its one time. The other owner gets a
+// number_stranded notice for each; the acting owner gets none.
 func TestStrandedEvent(t *testing.T) {
 	w := newEventWorld(t)
 	ctx := context.Background()
@@ -26,8 +26,9 @@ func TestStrandedEvent(t *testing.T) {
 	w.localTeam(t, w.team, "", member{coOwner, "owner", "active"}, member{removed, "member", "active"})
 	devices := store.NewDevices(w.pool)
 	disabledNumber := w.number(t, w.team, "Suporte", 2, w.second)
+	alsoDisabled := w.number(t, w.team, "Atendimento", 4, w.second)
 	removedNumber := w.number(t, w.team, "Compras", 3, removed)
-	for device, reader := range map[uuid.UUID]uuid.UUID{disabledNumber: w.second, removedNumber: removed} {
+	for device, reader := range map[uuid.UUID]uuid.UUID{disabledNumber: w.second, alsoDisabled: w.second, removedNumber: removed} {
 		if _, err := devices.Quarantine(ctx, w.team, w.owner, device, []uuid.UUID{reader}); err != nil {
 			t.Fatal(err)
 		}
@@ -47,14 +48,17 @@ func TestStrandedEvent(t *testing.T) {
 			stranded[ev.Item.ID] = ev
 		}
 	}
-	if len(stranded) != 2 {
-		t.Fatalf("%d item.stranded sent, want two: %+v", len(stranded), w.sentTo(w.team))
+	if len(stranded) != 3 {
+		t.Fatalf("%d item.stranded sent, want three: %+v", len(stranded), w.sentTo(w.team))
 	}
 	for device, want := range map[uuid.UUID]struct {
 		person uuid.UUID
 		cause  string
 		label  string
-	}{disabledNumber: {w.secondSub, "disabled", "Suporte"}, removedNumber: {removedSub, "revoked", "Compras"}} {
+	}{
+		disabledNumber: {w.secondSub, "disabled", "Suporte"}, alsoDisabled: {w.secondSub, "disabled", "Atendimento"},
+		removedNumber: {removedSub, "revoked", "Compras"},
+	} {
 		ev, ok := stranded[device.String()]
 		if !ok {
 			t.Fatalf("no item.stranded for %s", device)
@@ -71,7 +75,10 @@ func TestStrandedEvent(t *testing.T) {
 			t.Fatalf("the %s stranding: %v", want.cause, err)
 		}
 	}
-	for _, device := range []uuid.UUID{disabledNumber, removedNumber} {
+	if a, b := stranded[disabledNumber.String()].OccurredAt, stranded[alsoDisabled.String()].OccurredAt; !a.Equal(b.Time) {
+		t.Fatalf("one disable's strandings at %s and %s", a, b)
+	}
+	for _, device := range []uuid.UUID{disabledNumber, alsoDisabled, removedNumber} {
 		id := uuid.MustParse(stranded[device.String()].EventID)
 		if d := w.delivery(t, w.team, id); !d.settled || d.outcome != "accepted" {
 			t.Fatalf("the stranding of %s: %+v", device, d)
@@ -93,11 +100,11 @@ func TestStrandedEvent(t *testing.T) {
 		return out
 	}
 	got := notices(coOwner)
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("the other owner's notices: %+v", got)
 	}
 	for _, n := range got {
-		if n.DeviceID != disabledNumber && n.DeviceID != removedNumber || n.Until == nil || n.RaisedByKind != "person" {
+		if n.DeviceID != disabledNumber && n.DeviceID != alsoDisabled && n.DeviceID != removedNumber || n.Until == nil || n.RaisedByKind != "person" {
 			t.Fatalf("a notice: %+v", n)
 		}
 	}

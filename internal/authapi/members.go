@@ -28,6 +28,9 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "invite_not_recoverable", "the original code cannot be recovered; generate a new invitation")
 	case errors.Is(err, store.ErrOwnerOnly):
 		fail(w, http.StatusForbidden, "owner_only", "only an owner of this workspace may remove or disable the last key holder of a deleted number")
+	case errors.Is(err, store.ErrWorkspaceBusy):
+		w.Header().Set("Retry-After", "2")
+		fail(w, http.StatusServiceUnavailable, "workspace_busy", "another change to this workspace is still running; try again in a few seconds")
 	case errors.Is(err, store.ErrMembershipForbidden):
 		fail(w, http.StatusForbidden, "not_authorized", "this action requires a workspace owner or an authorized administrator")
 	case errors.Is(err, store.ErrLastOwner):
@@ -82,6 +85,11 @@ func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request) {
 	}
 	update := h.Users.UpdateMember
 	if req.StrandDeleted {
+		// On the sign-in budget, as a removal is: a flagged act may hold
+		// the contract's state, which every contract write waits for.
+		if !h.allow(w, r, user.Email) {
+			return
+		}
 		if !h.strandOverride(w, r, session, user) {
 			return
 		}

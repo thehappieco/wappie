@@ -1265,6 +1265,9 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			if _, err := tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id = $1 AND kind = 'number_deleted'`, device); err != nil {
 				return err
 			}
+			if err := recoveredStrandedTx(ctx, tx, device); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx, `UPDATE workspace_memberships SET access_version = access_version
 				WHERE tenant_id = $1 AND user_id <> $2 AND user_id IN (
 				  SELECT user_id FROM device_key_grants WHERE device_id = $3

@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.mau.fi/whatsmeow/types"
+	"whatserver2/internal/authapi"
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/pg"
+	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -302,6 +305,13 @@ func deletedNumberOf(t *testing.T, h *harness, owner, reader store.User, pn stri
 // in the body) or a removal (DELETE, in the query string, as query says).
 func strandRequest(t *testing.T, h *harness, token, method string, target uuid.UUID, query string) (int, refusal) {
 	t.Helper()
+	code, out, _ := strandResponse(t, h, token, method, target, query)
+	return code, out
+}
+
+// strandResponse is strandRequest with the answer's headers.
+func strandResponse(t *testing.T, h *harness, token, method string, target uuid.UUID, query string) (int, refusal, http.Header) {
+	t.Helper()
 	var body *bytes.Reader
 	if method == http.MethodPut {
 		raw, _ := json.Marshal(map[string]any{"role": "member", "status": "disabled", "strand_deleted": true})
@@ -326,7 +336,7 @@ func strandRequest(t *testing.T, h *harness, token, method string, target uuid.U
 			t.Fatal(err)
 		}
 	}
-	return resp.StatusCode, out
+	return resp.StatusCode, out, resp.Header
 }
 
 // Test 52 (the plan's DB13, 4.12's routes, and DB2's gate as the owner
@@ -437,6 +447,26 @@ func TestMemberStrandNeedsStepUp(t *testing.T) {
 	if code, got := strandRequest(t, h, token, http.MethodDelete, liveReader.ID, "?strand_deleted=true"); code != http.StatusConflict || got.Code != "last_device_reader" {
 		t.Fatalf("a live number's last reader: %d %+v", code, got)
 	}
+	// Behind a change to the workspace that outlasts the override's lock
+	// timeout: workspace_busy, to try again, and nothing changed.
+	blocker, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, h.tenant); err != nil {
+		t.Fatal(err)
+	}
+	if code, got, header := strandResponse(t, h, token, http.MethodPut, disabled.ID, ""); code != http.StatusServiceUnavailable ||
+		got.Code != "workspace_busy" || header.Get("Retry-After") == "" {
+		t.Fatalf("a busy workspace: %d %+v %v", code, got, header)
+	}
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := stranded(); len(s) != 0 {
+		t.Fatalf("a busy override stranded %v", s)
+	}
 	for name, act := range both(token) {
 		if code, got := act(); code != http.StatusNoContent {
 			t.Fatalf("%s by a fresh owner: %d %+v", name, code, got)
@@ -450,5 +480,36 @@ func TestMemberStrandNeedsStepUp(t *testing.T) {
 	deletedNumberOf(t, h, owner, again, "5511912340003")
 	if code, got := strandRequest(t, h, token, http.MethodDelete, again.ID, "?strand_deleted=false"); code != http.StatusConflict || got.Code != "last_reader_of_deleted" {
 		t.Fatalf("strand_deleted=false: %d %+v", code, got)
+	}
+}
+
+// A flagged member change is on the sign-in budget, as a removal is: it
+// may hold the contract's state (store.ErrWorkspaceBusy). An unflagged one
+// stays off it, as in release A.
+func TestMemberStrandIsRateLimited(t *testing.T) {
+	h := newHarness(t)
+	_, token := memberAccount(t, h, "owner@limit.test", "owner")
+	target, _ := memberAccount(t, h, "target@limit.test", "member")
+	mux := http.NewServeMux()
+	(&authapi.Handler{
+		Users: h.users, Keys: h.keys, Devices: store.NewDevices(h.pool),
+		Limits: &ratelimit.Auth{PerIP: ratelimit.New(60, 100), PerSubject: ratelimit.New(1, 2)},
+	}).Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	limited := &harness{srv: srv, pool: h.pool, users: h.users, keys: h.keys, tenant: h.tenant}
+	for i := range 2 {
+		if code, got := strandRequest(t, limited, token, http.MethodPut, target.ID, ""); code != http.StatusNoContent {
+			t.Fatalf("flagged change %d: %d %+v", i+1, code, got)
+		}
+	}
+	if code, got, header := strandResponse(t, limited, token, http.MethodPut, target.ID, ""); code != http.StatusTooManyRequests ||
+		got.Code != "rate_limited" || header.Get("Retry-After") == "" {
+		t.Fatalf("a third flagged change: %d %+v", code, got)
+	}
+	for i := range 3 {
+		if code := setMember(t, limited, token, target.ID, "member", "disabled"); code != http.StatusNoContent {
+			t.Fatalf("unflagged change %d: %d", i+1, code)
+		}
 	}
 }

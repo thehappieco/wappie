@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,3 +28,11 @@ const (
 	DeleteObjectCheckQuery   = deleteObjectCheck
 	UnreferencedObjectsQuery = unreferencedObjects
 )
+
+// SetStrandLockTimeoutForTest sets how long an owner's override waits for
+// each lock once it holds the contract's state, until the test ends.
+func SetStrandLockTimeoutForTest(t testing.TB, d time.Duration) {
+	old := strandLockTimeout
+	strandLockTimeout = d
+	t.Cleanup(func() { strandLockTimeout = old })
+}
