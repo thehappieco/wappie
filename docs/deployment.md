@@ -597,8 +597,9 @@ is root's, at the owner's prompt only, and reads no `.env` and no database
 
 ### Turning it on
 
-After the platform has mapped Wappie (`PLATFORM_CONTRACT_APPS=wappie:wappie`)
-and says its secret exists, and after the owner has created Wappie's KMS
+After the platform has mapped Wappie (its `PLATFORM_CONTRACT_APPS` lists
+`wappie:wappie` among the other apps; the value is the whole list, so it is
+the platform's to set) and says its secret exists, and after the owner has created Wappie's KMS
 key and its policies:
 
 1. Add the settings to `runtime.env`, after `whatserverd contract-secret
