@@ -1664,7 +1664,11 @@ compare-and-set.
 
 **DB22. What a log line may hold**: subs, user, workspace and device ids,
 counts, codes and classes; never an email, a name, a label, a hint, a phone
-number, a secret, or an error's text (a KMS refusal's names ARNs).
+number or a secret. A platform call's failure is logged by its outcome,
+code or class; a database or file error by its text, which names neither a
+person nor a secret; the secret loader's failures by step and class only,
+never by text, because a KMS refusal's text names the role's ARN, the
+account and the key.
 
 **DB23. One lock order for the contract's writers**: `contract_state`, the
 records by id, the workspace `FOR KEY SHARE`, then its `item_events` rows in

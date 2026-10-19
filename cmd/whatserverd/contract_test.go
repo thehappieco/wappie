@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -426,6 +428,93 @@ func TestContractSecretCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("a swap a crash stopped is finished by running it again", func(t *testing.T) {
+		// crash is a stopped process: the panic leaves the swap where it
+		// was, as a power cut or a ^C at the owner's prompt would.
+		type crash struct{}
+		for _, stop := range []struct {
+			name string
+			// exchange is the stopped run's exchange.
+			exchange func(t *testing.T, dir, x, y string) error
+		}{
+			{"before the exchange", func(*testing.T, string, string, string) error { panic(crash{}) }},
+			{"after the exchange", func(t *testing.T, dir, x, y string) error {
+				if err := testExchange(dir, x, y); err != nil {
+					t.Fatal(err)
+				}
+				panic(crash{})
+			}},
+			{"when its state cannot be written", func(t *testing.T, dir, x, y string) error {
+				if err := testExchange(dir, x, y); err != nil {
+					t.Fatal(err)
+				}
+				// The directory read-only: the state's temporary file fails,
+				// as a full disk would.
+				return os.Chmod(dir, 0o550)
+			}},
+		} {
+			for _, swap := range []struct {
+				name     string
+				from, to membership.SealState
+			}{{"promote", membership.StateNext, membership.StatePromoted}, {"unpromote", membership.StatePromoted, membership.StateNext}} {
+				t.Run(stop.name+", "+swap.name, func(t *testing.T) {
+					if stop.name == "when its state cannot be written" && os.Geteuid() == 0 {
+						t.Skip("root writes in a read-only directory")
+					}
+					w := newSecretWorld(t)
+					dir := string(w.dir)
+					w.seal(t, "current", a)
+					w.seal(t, "other", b)
+					if swap.from == membership.StatePromoted {
+						if err := w.run(t, "", "promote", "--dir", dir); err != nil {
+							t.Fatal(err)
+						}
+					}
+					wantCurrent, wantOther := w.open(t, membership.SecretOtherFileName), w.open(t, membership.SecretFileName)
+					c := w.cmd("", false)
+					c.exchange = func(d, x, y string) error { return stop.exchange(t, d, x, y) }
+					func() {
+						defer func() {
+							if r := recover(); r != nil && r != (crash{}) {
+								panic(r)
+							}
+						}()
+						if err := contractSecret([]string{swap.name, "--dir", dir}, c); err == nil {
+							t.Fatal("the stopped swap succeeded")
+						}
+					}()
+					if err := os.Chmod(dir, 0o750); err != nil {
+						t.Fatal(err)
+					}
+					// Half done, which State says, and every other step refuses.
+					if _, err := w.dir.State(); !errors.Is(err, membership.ErrSealDisagree) {
+						t.Fatalf("the half-done swap's state: %v", err)
+					}
+					other := "promote"
+					if swap.name == "promote" {
+						other = "unpromote"
+					}
+					for _, args := range [][]string{
+						{other, "--dir", dir}, {"drop", "--dir", dir},
+						{"seal", "--slot", "other", "--dir", dir, "--env-file", w.envFile},
+					} {
+						if err := w.run(t, membershiptest.Secret(t)+"\n", args...); !errors.Is(err, membership.ErrSealDisagree) {
+							t.Fatalf("%v during a half-done %s: %v", args, swap.name, err)
+						}
+					}
+					if err := w.run(t, "", swap.name, "--dir", dir); err != nil {
+						t.Fatalf("%s again: %v (%s)", swap.name, err, w.err.String())
+					}
+					if w.state(t) != swap.to || w.open(t, membership.SecretFileName) != wantCurrent ||
+						w.open(t, membership.SecretOtherFileName) != wantOther ||
+						!strings.Contains(w.err.String(), "finished an earlier "+swap.name) {
+						t.Fatalf("%s again: %s %q", swap.name, w.state(t), w.err.String())
+					}
+				})
+			}
+		}
+	})
+
 	t.Run("reset empties the directory from any state, then install", func(t *testing.T) {
 		for name, setup := range map[string]func(w *secretWorld){
 			"none":   func(*secretWorld) {},
@@ -592,7 +681,8 @@ func TestContractSecretCommands(t *testing.T) {
 // check's probes, each loading the files afresh as its own process would.
 // The installer's rules (contract-secret.sh, which a later phase writes)
 // are the functions below, so the probes are tested for what that script
-// will act on.
+// will act on, and each records what it ran, which must be its row of
+// docs/contract.md's Rotation table, the script's spec.
 type rotation struct {
 	t        *testing.T
 	w        *secretWorld
@@ -601,6 +691,77 @@ type rotation struct {
 	sockDir  string
 	server   *membership.Secrets
 	client   *membership.Client
+	ran      []string // the commands since the step began, as the table names them
+}
+
+// rotationTable is docs/contract.md's Rotation table: each step's Wappie
+// commands in order, as its third column names them (signal and wait
+// included, a probe's exit statuses and the platform's commands left out).
+func rotationTable(t *testing.T) map[string][]string {
+	t.Helper()
+	token := regexp.MustCompile("`([^`]+)`|\\b(signal|wait)\\b")
+	wappie := regexp.MustCompile(`^(seal --slot (current|other)|promote|unpromote|drop|reset|contract check( --other| --only-current| --only-other)?)$`)
+	platforms := map[string]bool{"export-contract-secret wappie --next": true, "secret-cancel": true}
+	steps := map[string][]string{}
+	for step, cells := range tableRows(t, "../../docs/contract.md", "### Rotation") {
+		if step == "Step" {
+			continue
+		}
+		var ran []string
+		for _, m := range token.FindAllStringSubmatch(cells[1], -1) {
+			switch c := m[1]; {
+			case m[2] != "":
+				ran = append(ran, m[2])
+			case wappie.MatchString(c):
+				ran = append(ran, c)
+			case c == "0" || c == "4" || platforms[c]:
+			default:
+				t.Fatalf("the Rotation table's step %q names %q, which is not a command Wappie has", step, c)
+			}
+		}
+		steps[step] = ran
+	}
+	for step, cells := range tableRows(t, "../../docs/contract.md", "### Rotation") {
+		if strings.HasSuffix(cells[1], ", then the install") {
+			steps[step] = append(steps[step], steps["install"]...)
+		}
+	}
+	return steps
+}
+
+// begin starts a step's record.
+func (r *rotation) begin() { r.ran = nil }
+
+// played checks the step's record against its row of the Rotation table:
+// whole, or, for a step a probe stopped, up to that probe.
+func (r *rotation) played(step string, stopped bool) {
+	r.t.Helper()
+	want, ok := rotationTable(r.t)[step]
+	if !ok {
+		r.t.Fatalf("docs/contract.md's Rotation table has no step %q", step)
+	}
+	if stopped {
+		want = want[:min(len(r.ran), len(want))]
+	}
+	if !slices.Equal(r.ran, want) {
+		r.t.Fatalf("step %q ran %q; docs/contract.md's Rotation table says %q", step, r.ran, want)
+	}
+}
+
+// run is a contract-secret command, recorded.
+func (r *rotation) run(args ...string) {
+	r.t.Helper()
+	r.ran = append(r.ran, args[0])
+	if err := r.w.run(r.t, "", append(args, "--dir", string(r.w.dir))...); err != nil {
+		r.t.Fatalf("%s: %v", args[0], err)
+	}
+}
+
+// seal is seal --slot, recorded.
+func (r *rotation) seal(slot, secret string) {
+	r.t.Helper()
+	r.ran = append(r.ran, "seal --slot "+slot)
+	r.w.seal(r.t, slot, secret)
 }
 
 func newRotation(t *testing.T, current string) *rotation {
@@ -631,6 +792,7 @@ func newRotation(t *testing.T, current string) *rotation {
 // check is contract check with a flag, as its own process: its exit status.
 func (r *rotation) check(flags ...string) int {
 	r.t.Helper()
+	r.ran = append(r.ran, strings.Join(append([]string{"contract check"}, flags...), " "))
 	var out bytes.Buffer
 	err := contractCheck(flags, &out, r.w.key.Open)
 	var exit exitError
@@ -650,6 +812,7 @@ func (r *rotation) check(flags ...string) int {
 // must hold what is on disk.
 func (r *rotation) signal() {
 	r.t.Helper()
+	r.ran = append(r.ran, "signal", "wait")
 	if err := r.server.Reload(context.Background()); err != nil {
 		r.t.Fatalf("reload: %v", err)
 	}
@@ -669,50 +832,69 @@ func (r *rotation) feed(why string) {
 
 func (r *rotation) install(secret string) {
 	r.t.Helper()
-	r.w.seal(r.t, "current", secret)
+	r.begin()
+	r.seal("current", secret)
 	r.signal()
 	if code := r.check(); code != 0 {
 		r.t.Fatalf("install: check %d", code)
 	}
+	r.played("install", false)
+}
+
+// reinstall is the installer's reinstall, after a platform restore that
+// left Wappie holding a secret the platform no longer has.
+func (r *rotation) reinstall(secret string) {
+	r.t.Helper()
+	r.begin()
+	r.run("reset")
+	r.seal("current", secret)
+	r.signal()
+	if code := r.check(); code != 0 {
+		r.t.Fatalf("reinstall: check %d", code)
+	}
+	r.played("reinstall", false)
 }
 
 // next is README 7.3 step 2.
 func (r *rotation) next(secret string) {
 	r.t.Helper()
-	r.w.seal(r.t, "other", secret)
+	r.begin()
+	r.seal("other", secret)
 	r.signal()
 	if code := r.check("--other"); code != 0 {
 		r.t.Fatalf("next: check --other %d", code)
 	}
+	r.played("2, the next secret", false)
 }
 
 // promote is step 3.
 func (r *rotation) promote() {
 	r.t.Helper()
+	r.begin()
 	if code := r.check("--other"); code != 0 {
 		r.t.Fatalf("promote: check --other %d", code)
 	}
-	if err := r.w.run(r.t, "", "promote", "--dir", string(r.w.dir)); err != nil {
-		r.t.Fatal(err)
-	}
+	r.run("promote")
 	r.signal()
 	if code := r.check(); code != 0 {
 		r.t.Fatalf("promote: check %d", code)
 	}
+	r.played("3, the promote", false)
 }
 
 // drop is step 5: refused unless the platform answers with the secret
 // Wappie now signs with (its step 4). It returns the probe's status.
 func (r *rotation) drop() int {
 	r.t.Helper()
+	r.begin()
 	code := r.check("--only-current")
 	if code != 0 {
+		r.played("5, the drop", true)
 		return code
 	}
-	if err := r.w.run(r.t, "", "drop", "--dir", string(r.w.dir)); err != nil {
-		r.t.Fatal(err)
-	}
+	r.run("drop")
 	r.signal()
+	r.played("5, the drop", false)
 	return 0
 }
 
@@ -720,18 +902,22 @@ func (r *rotation) drop() int {
 // returns the first probe's status, and changes nothing unless it is 0.
 func (r *rotation) cancel() int {
 	r.t.Helper()
+	r.begin()
+	var step string
 	switch r.w.state(r.t) {
 	case membership.StateNext:
+		step = "cancel from `next`"
 		if code := r.check("--only-current"); code != 0 {
+			r.played(step, true)
 			return code
 		}
 	case membership.StatePromoted:
+		step = "cancel from `promoted`"
 		if code := r.check("--only-other"); code != 0 {
+			r.played(step, true)
 			return code
 		}
-		if err := r.w.run(r.t, "", "unpromote", "--dir", string(r.w.dir)); err != nil {
-			r.t.Fatal(err)
-		}
+		r.run("unpromote")
 		r.signal()
 		if code := r.check("--only-current"); code != 0 {
 			r.t.Fatalf("cancel: after unpromote, check --only-current %d", code)
@@ -739,13 +925,12 @@ func (r *rotation) cancel() int {
 	default:
 		return 0
 	}
-	if err := r.w.run(r.t, "", "drop", "--dir", string(r.w.dir)); err != nil {
-		r.t.Fatal(err)
-	}
+	r.run("drop")
 	r.signal()
 	if code := r.check("--only-current"); code != 0 {
 		r.t.Fatalf("cancel: after drop, check --only-current %d", code)
 	}
+	r.played(step, false)
 	return 0
 }
 
@@ -924,6 +1109,89 @@ func TestRotationNeverFails(t *testing.T) {
 				t.Fatalf("cancel with the socket back: %d", code)
 			}
 			r.feed("after the cancel")
+		}
+	})
+
+	t.Run("a reinstall after the platform's restore, from any state", func(t *testing.T) {
+		for _, state := range []membership.SealState{membership.StateSteady, membership.StateNext, membership.StatePromoted} {
+			r := newRotation(t, a)
+			r.install(a)
+			if state != membership.StateSteady {
+				r.setSecrets(a, b)
+				r.next(b)
+			}
+			if state == membership.StatePromoted {
+				r.promote()
+			}
+			// The platform restored a backup: it holds a secret Wappie has
+			// never seen, and refuses both of Wappie's.
+			restored := membershiptest.Secret(t)
+			r.setSecrets(restored, "")
+			if code := r.check(); code != membership.ProbeRejected {
+				t.Fatalf("from %s, the restored platform: check %d", state, code)
+			}
+			r.reinstall(restored)
+			r.feed("reinstalled from " + string(state))
+			if r.w.state(t) != membership.StateSteady || r.w.open(t, membership.SecretFileName) != restored ||
+				r.w.fingerprint(t, membership.SecretOtherFileName) != "none" {
+				t.Fatalf("reinstalled from %s: %s", state, r.w.state(t))
+			}
+		}
+	})
+
+	t.Run("contract check's flags sign and accept as docs/contract.md's table says", func(t *testing.T) {
+		r := newRotation(t, a)
+		r.install(a)
+		r.setSecrets(a, b)
+		r.next(b) // current a, other b
+		of := map[string]string{a: "current", b: "other"}
+		flags := 0
+		for flag, cells := range tableRows(t, "../../docs/contract.md", "### Checking the secret: contract check") {
+			var args []string
+			switch {
+			case flag == "none":
+			case strings.HasPrefix(flag, "`--"):
+				args = []string{strings.Trim(flag, "`")}
+			default:
+				continue // the headers and the exit table
+			}
+			flags++
+			// Signs with: the platform accepts one secret alone, and only a
+			// request signed with it gets an answer (else an unsigned 401).
+			var signs []string
+			for _, s := range []string{a, b} {
+				r.setSecrets(s, "")
+				if code := r.check(args...); code != membership.ProbeRejected {
+					signs = append(signs, of[s])
+				}
+			}
+			// Accepts: the platform accepts both and signs with one; an
+			// answer signed with a secret the probe excludes exits 4.
+			var accepts []string
+			for _, s := range []string{a, b} {
+				other := b
+				if s == b {
+					other = a
+				}
+				r.setSecrets(s, other)
+				switch code := r.check(args...); code {
+				case membership.ProbeVerified:
+					accepts = append(accepts, of[s])
+				case membership.ProbeExcluded:
+				default:
+					t.Fatalf("%s, answered with the %s secret: check %d", flag, of[s], code)
+				}
+			}
+			accepted := strings.Join(accepts, " ")
+			if len(accepts) == 2 {
+				accepted = "either"
+			}
+			if len(signs) != 1 || cells[0] != signs[0] || cells[1] != accepted {
+				t.Errorf("contract check %s signs with %q and accepts %q; docs/contract.md says %q and %q", flag, signs, accepted, cells[0], cells[1])
+			}
+		}
+		if flags != 4 {
+			t.Fatalf("docs/contract.md's flags table has %d rows, not none and the three flags", flags)
 		}
 	})
 

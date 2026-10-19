@@ -246,14 +246,14 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 			}
 			switch {
 			case ws.EventsErrorAt != nil && older(since(ws.EventsErrorAt), checkEvents):
-				out = append(out, fmt.Sprintf("workspace %s's events have had no verdict for over 60 minutes, since %s (%s)",
-					ws.ID, stamp(*ws.EventsErrorAt), ws.EventsError))
+				out = append(out, fmt.Sprintf("workspace %s's events have had no verdict for over %d minutes, since %s (%s)",
+					ws.ID, int(checkEvents/time.Minute), stamp(*ws.EventsErrorAt), ws.EventsError))
 			case ws.PendingSince != nil && older(since(ws.PendingSince), checkEvents):
 				// The backstop, whatever the cause: the queue records no
 				// failure when the sender's own store calls fail, nor when
 				// no leader sends at all.
-				out = append(out, fmt.Sprintf("workspace %s has %d events pending for over 60 minutes, the oldest written at %s: they are not delivered",
-					ws.ID, ws.Pending, stamp(*ws.PendingSince)))
+				out = append(out, fmt.Sprintf("workspace %s has %d events pending for over %d minutes, the oldest written at %s: they are not delivered",
+					ws.ID, ws.Pending, int(checkEvents/time.Minute), stamp(*ws.PendingSince)))
 			}
 			if ws.ParkedAt != nil {
 				// A park is told whatever the workspace's status: nothing is
@@ -274,7 +274,8 @@ func statusFindings(st store.ContractStatus, cfg config.Contract, loaded members
 				last = &ws.NamedAt
 			}
 			if older(since(last), checkSnapshot) {
-				out = append(out, fmt.Sprintf("workspace %s has no snapshot accepted for over 60 minutes (the platform alerts after 90)%s", ws.ID, why))
+				out = append(out, fmt.Sprintf("workspace %s has no snapshot accepted for over %d minutes (the platform alerts after 90)%s",
+					ws.ID, int(checkSnapshot/time.Minute), why))
 			}
 		}
 	}

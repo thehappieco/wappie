@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -60,6 +61,23 @@ func TestSealDirStates(t *testing.T) {
 	disagree("promoted with one file")
 	write(SecretStateFileName, "rotating\n")
 	disagree("an unknown word")
+	// A swap's intent is a disagreement too, which only the swap finishes.
+	write(SecretOtherFileName, "other")
+	write(SecretStateFileName, string(SwapIntent(SwapPromoting, Fingerprint([]byte("other"))))+"\n")
+	if _, err := state(); !errors.Is(err, ErrSealDisagree) || !strings.Contains(err.Error(), "a swap stopped") {
+		t.Fatalf("a swap's intent: %v", err)
+	}
+	for word, ok := range map[string]bool{
+		"promoting 2d711642b726": true, "unpromoting 2d711642b726": true, "promoting 2d711642b72": false,
+		"promoting 2D711642B726": false, "dropping 2d711642b726": false, "promoting": false, "next": false,
+	} {
+		if w, fp, got := SealState(word).Intent(); got != ok || ok && (w+" "+fp != word) {
+			t.Errorf("Intent(%q) = %q %q %v", word, w, fp, got)
+		}
+	}
+	if err := dir.Remove(SecretOtherFileName); err != nil {
+		t.Fatal(err)
+	}
 	// No temporary file is left behind.
 	if left, _ := filepath.Glob(dir.Path(".*")); len(left) != 0 {
 		t.Fatalf("left: %v", left)

@@ -116,7 +116,9 @@ release link keeps them):
 - `contract-secret.state`: one word, where the two stand: `steady` (the
   current file only), `next` (current is the old secret, other the next:
   the spec's 7.3 step 2 done), `promoted` (current is the next secret, other
-  the old: step 3 done). No state file and no envelope is "none".
+  the old: step 3 done). No state file and no envelope is "none". While
+  `promote` or `unpromote` runs it holds the swap's intent instead
+  (below), which every other command reads as a disagreement.
 
 Each is written through a temporary file in the same directory, synced,
 renamed and the directory synced, 0640 in the directory's group. Both
@@ -154,7 +156,11 @@ A load never stops the process.
   development file; a failed reload keeps the ones before it) and `error`
   (the step that failed, or `none`). The installer waits for it, with its
   own pid and fingerprints, before it calls a step done. It logs INFO
-  "contract: secrets loaded" with the same fingerprints and count.
+  "contract: secrets loaded" with the same fingerprints and count. A file
+  it cannot write logs ERROR "contract: could not publish the loaded
+  secrets; the installer will not see this load": the installer's wait then
+  times out, and `--check` finds the published fingerprints unequal to the
+  files' (or no load published).
 - **A failure** is logged by its step (`kms`, `open`, `check`) and a closed
   class (`malformed`, `decrypt`, `provider_mismatch`, `too_large`, `unwrap`,
   `context`, `secret_shape`, `not_found`, `permission`, `timeout`, KMS's
@@ -206,17 +212,22 @@ whatserverd contract-secret capabilities
   and prints `kms: ok`, or names the step that failed (`kms: describe`,
   `kms: generate`, `kms: decrypt`).
 - `promote` (`next` to `promoted`) and `unpromote` (`promoted` to `next`)
-  swap the two files in one step, `renameat2(RENAME_EXCHANGE)`, so a crash
-  leaves both whole: Linux only (elsewhere they refuse). `drop` removes the
-  other file and writes `steady`, from `next` or `promoted`. `reset`
-  removes everything from any state, a reinstall's first half (after a
-  platform restore, when Wappie holds a secret the platform no longer has).
-  Each prints the files' fingerprints as the server publishes them.
+  first write their intent in the state file (`promoting` or
+  `unpromoting`, and the fingerprint of the file the swap makes current),
+  then swap the two files in one step, `renameat2(RENAME_EXCHANGE)`, so a
+  crash leaves both whole, then write the state: Linux only (elsewhere they
+  refuse, and the state is as before). `drop` removes the other file and
+  writes `steady`, from `next` or `promoted`. `reset` removes everything
+  from any state, a reinstall's first half (after a platform restore, when
+  Wappie holds a secret the platform no longer has). Each prints the files'
+  fingerprints as the server publishes them.
 - Each refuses out of turn, and when the files and the state disagree, but
   for the one disagreement a crash inside a step leaves: `seal --slot
-  other` and `drop` finish what an earlier run of themselves left half
-  done, and say so on stderr. A current file with no state (an install a
-  crash stopped) goes by `reset`.
+  other`, `promote`, `unpromote` and `drop` finish what an earlier run of
+  themselves left half done, and say so on stderr (a swap's intent tells
+  from the files' fingerprints whether they were exchanged already, so a
+  second run never swaps them back). A current file with no state (an
+  install a crash stopped) goes by `reset`.
 - `capabilities` prints `sighup`: the installer's probe of the running
   binary before it signals it.
 
@@ -242,7 +253,7 @@ server reads. It reads no `.env` and no database, and publishes nothing.
 | `0` | `signed answer: generation <id> confirmed <bool> head <n>`, or `signed refusal: <code>` | a signed answer this check accepts (a signed refusal proves the secret as well) |
 | `3` | `unsigned 401: not the platform's secret` | the platform refuses the request's secret |
 | `4` | `signed answer, but signed with the other secret, which this check does not accept` (or `current`) | signed with the secret this check excludes |
-| `5` | `no answer from the platform`, with its cause (a permission denied on the socket, no socket at the path, a refused connection, a timeout), or `unsigned 429: the platform is busy` | no answer: try again, never proceed |
+| `5` | `no answer from the platform`, with its cause (a permission denied on the socket, no socket at the path, a refused connection, a timeout), or `unsigned 429: the platform is busy` / `unsigned 503: the platform is busy` | no answer: try again, never proceed |
 | `1` | anything else: `unsigned 404: the platform does not serve this caller: wappie is not mapped (PLATFORM_CONTRACT_APPS), or this process is not the wappie user`, `unsigned 401 stale_timestamp: this host's clock and the platform's differ by over a minute`, a peer that failed its checks, no such secret | a fault no retry fixes |
 
 ### Rotation
@@ -265,7 +276,10 @@ as "not promoted".
 | reinstall | any to `steady` | `reset`, then the install |
 
 `TestRotationNeverFails` plays these rules between the kit's fake platform
-and Wappie's commands, with a feed call after each step: none fails.
+and Wappie's commands, with a feed call after each step: none fails. Each
+step it plays runs the commands of its row above, in that order (a step a
+probe refuses, up to that probe), and each flag of `contract check` signs
+and accepts as the table before says.
 
 ## The mode
 
@@ -291,7 +305,13 @@ directory ([contract commands](deployment.md#contract-commands)).
   sign-ins stop subscribing within 5 seconds, and the freshness shadow
   stops. Item events written while off wait: deletions, recoveries and
   purges are sent after the return to observe; pauses, strandings and moves
-  never ([events](contract-events.md#which-rows-are-sent)).
+  never ([events](contract-events.md#which-rows-are-sent)). The
+  subscriptions stay (a held sub is never unsubscribed), so tell the
+  platform, which may unmap Wappie: for the off period its two alerts fire
+  (the feed silent after 10 minutes, the snapshots stale after 90), and
+  after 90 minutes the console shows the protection of the people in the
+  stale snapshots as unknown, and removing one of them from a platform team
+  needs an owner's override (the spec's 10).
 - **`off` before the first observe** (`events_from` unset) is release A:
   no call, a home of Wappie's choosing, nothing sent. **`off` after an
   observe** keeps the home rule: a new account still subscribes for the
@@ -335,10 +355,15 @@ a file not loaded yet, or `missing`).
   still have no document of this generation; their PUTs fail") and a
   `--check` finding. A `not_found` on a PUT is a platform fault, retried,
   never "closed".
-- **The sweep**, the only path that unsubscribes a sub Wappie does not hold
-  (a sign-up refused after its PUT, a DELETE that failed, an abandoned
-  sign-up): a row whose sub has no `platform_identities` row and whose last
-  intent is over 15 minutes old gets `DELETE /contract/v1/accounts/{sub}`.
+- **The sweep** is the backstop: it unsubscribes every sub Wappie does not
+  hold that no DELETE at sign-up removed (a refused sign-up whose DELETE
+  failed or was never sent, an `already_linked` or `ticket_invalid`
+  refusal's subscription, an abandoned sign-up). A sign-up refused
+  `email_taken` or `workspace_conflict`, or whose document is not active, is
+  DELETEd inline, once a fresh read finds the sub still not linked
+  ([sign-in](platform-sign-in.md#the-contract-at-sign-in)). A row whose sub
+  has no `platform_identities` row and whose last intent is over 15 minutes
+  old gets `DELETE /contract/v1/accounts/{sub}`.
   On the platform's signed `{"subscribed": false}` the row is removed by
   compare-and-set on the intent it read; when that removes nothing (a
   sign-in's PUT or a link came in between), the sub is PUT again at once.
@@ -358,7 +383,9 @@ went silent within 20. A leader that lost its lock waits a minute before
 it tries again, so a process that was waiting takes over first. Every
 write the leader makes to the shared state is compare-and-set on what it
 read, so a late commit of a stale leader changes nothing. It logs INFO
-"contract: leading" and "contract: no longer leading". Sign-in PUTs and the
+"contract: leading" when it starts; a leader that loses its lock logs WARN
+"contract: the leader's lock is lost; stopping", and one that stops for the
+mode or at shutdown INFO "contract: no longer leading". Sign-in PUTs and the
 freshness GETs run in whichever process serves the request.
 
 **The follower** (spec 6.3, 7.4) long-polls `GET /contract/v1/feed` with a
@@ -708,6 +735,13 @@ changed", "contract: held subs still have no document of this generation;
 their PUTs fail", "contract: a workspace's snapshot is parked", "contract: a
 workspace's snapshot is not sent: Wappie would not send it", and the
 events' ([contract events](contract-events.md#outcomes-parks-and-releases)).
+Three more have no class of their own: "contract: could not publish the
+loaded secrets; the installer will not see this load" (`--check`'s
+fingerprint findings show it), "contract: a feed document cannot be read;
+it is skipped" (its sub's version is forgotten, so the round asks again,
+and `round_incomplete` if that keeps failing), and "contract: a new
+account's document names no personal workspace" (the sign-up is refused
+`503 platform_unavailable`).
 
 **Lock order.** Every transaction that touches several of the contract's
 rows takes them in one order: `contract_state`, then `contract_accounts`
@@ -742,6 +776,11 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | backup fresh | 1 minute | a remaining key holder's stored document counts for the minute rule |
 | clock skew | 5 minutes | the furthest a platform time may be past the database's clock |
 | call bound | 5 seconds | each call made while a person waits: a sign-in's PUT, a hook's GETs, a refused sign-up's DELETE |
+| call timeout | 15 seconds | the kit's bound on every other call |
+| feed grace | 15 seconds | the kit's bound on a long-poll, past its wait |
+| peer checks | 1 minute | a socket that failed its peer checks gets no request |
+| hot path | 1 minute | a send's or a group act's background check, at most once per session, act and number (per connection and number for `mcp.send`) |
+| hot path bound | 5 seconds | one such background check, which reads the stored freshness only |
 | mode cache | 5 seconds | how long a process trusts the mode it read |
 | pace | 100 milliseconds | between two of the round's PUTs, the sweep's DELETEs, or the senders' calls |
 | orphan | 15 minutes | a subscription of a sub Wappie does not hold, before the sweep |
@@ -752,10 +791,12 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | long-poll | 25 seconds | the feed's wait |
 | feed backoff | 2 seconds to 1 minute | after a feed call that got no page, or a round that left subs |
 | feed silent | 15 minutes | without a page, before the follower's ERROR |
+| warn | 1 minute | the follower's and the senders' WARN for a run of failures, at most once |
 | round failing | 15 minutes | the round's PUTs failing, before its ERROR |
 | debounce | 2 seconds | a snapshot after the first change of a run |
 | snapshot | 55 minutes | the next snapshot after one accepted |
 | snapshot backoff | 5 seconds to 1 hour | after a snapshot that was not accepted |
+| labels | 1 hour | a workspace's "contract: snapshot labels" line, at most once |
 | snapshot not found | 24 hours | a workspace's snapshot refused `not_found`, before it parks |
 | event backoff | 5 seconds to 1 hour | after a batch that got no verdict |
 | event scan | 5 minutes | how often every queue is looked at, beside the notices |

@@ -23,7 +23,8 @@ const (
 	// promote, the old one after it.
 	SecretOtherFileName = "contract-secret.other.thcseal"
 	// SecretStateFileName holds one word, which step of a rotation the two
-	// files are at (SealState).
+	// files are at (SealState), or, while promote or unpromote runs, the
+	// swap's intent (SwapIntent).
 	SecretStateFileName = "contract-secret.state"
 )
 
@@ -47,6 +48,31 @@ const (
 // ErrSealDisagree means the sealed files and the state file do not tell the
 // same story: every command refuses until an operator looks.
 var ErrSealDisagree = errors.New("membership: the sealed files and their state disagree")
+
+// The swaps' intents: promote and unpromote write one before they exchange
+// the two files, so a crash anywhere in a swap leaves a state that says
+// which file the swap makes current, exchanged yet or not.
+const (
+	SwapPromoting   = "promoting"
+	SwapUnpromoting = "unpromoting"
+)
+
+// SwapIntent is the state file of a swap under way: its word and the
+// fingerprint of the envelope it makes the current one.
+func SwapIntent(word, makesCurrent string) SealState {
+	return SealState(word + " " + makesCurrent)
+}
+
+// Intent reads a swap's intent from the state file's word: the swap and
+// the fingerprint it makes current, false for any other state.
+func (s SealState) Intent() (word, makesCurrent string, ok bool) {
+	word, makesCurrent, ok = strings.Cut(string(s), " ")
+	if !ok || (word != SwapPromoting && word != SwapUnpromoting) || len(makesCurrent) != 12 ||
+		strings.Trim(makesCurrent, "0123456789abcdef") != "" {
+		return "", "", false
+	}
+	return word, makesCurrent, true
+}
 
 // Fingerprint names an envelope file without saying anything about the
 // secret inside it: the first 12 hex digits of the file's sha256, as
@@ -98,6 +124,10 @@ func (d SealDir) State() (SealState, error) {
 			return "", fmt.Errorf("%w: %s wants both files", ErrSealDisagree, state)
 		}
 	default:
+		if word, _, ok := state.Intent(); ok {
+			// Only the same swap, run again, finishes it.
+			return "", fmt.Errorf("%w: a swap stopped before it recorded its state (%s): run it again", ErrSealDisagree, word)
+		}
 		return "", fmt.Errorf("%w: the state file holds no known state", ErrSealDisagree)
 	}
 	return state, nil

@@ -371,8 +371,8 @@ func TestContractDiffCommand(t *testing.T) {
 	if err := contractDiff(ctx, c, uuid.New(), &out); err != nil || out.String() != "0 differences\n" {
 		t.Fatalf("--tenant of another: %q %v", out.String(), err)
 	}
-	if err := contractDiffCommand([]string{"--tenant", "nope"}, &out); err == nil {
-		t.Fatal("--tenant takes an id")
+	if err := contractDiffCommand([]string{"--tenant", "nope"}, &out); err == nil || err.Error() != "contract diff: --tenant takes a workspace id" {
+		t.Fatalf("--tenant takes an id: %v", err)
 	}
 }
 

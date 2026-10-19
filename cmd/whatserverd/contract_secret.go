@@ -40,9 +40,10 @@ import (
 //
 // A crash between a step's file and its state leaves them disagreeing,
 // which every command refuses, but for the step that stopped there: seal
-// --slot other and drop finish what an earlier run of themselves left half
-// done. Anything else that disagrees (an install a crash stopped, a hand
-// in the directory) goes by reset, a reinstall's first half.
+// --slot other, promote, unpromote and drop finish what an earlier run of
+// themselves left half done. Anything else that disagrees (an install a
+// crash stopped, a hand in the directory) goes by reset, a reinstall's
+// first half.
 
 // secretCommand is the command's world, so its tests can give it theirs.
 type secretCommand struct {
@@ -116,9 +117,9 @@ func contractSecret(args []string, c secretCommand) error {
 	case "seal":
 		return c.seal(args[1:])
 	case "promote":
-		return c.swap(args[1:], "promote", membership.StateNext, membership.StatePromoted)
+		return c.swap(args[1:], "promote", membership.SwapPromoting, membership.StateNext, membership.StatePromoted)
 	case "unpromote":
-		return c.swap(args[1:], "unpromote", membership.StatePromoted, membership.StateNext)
+		return c.swap(args[1:], "unpromote", membership.SwapUnpromoting, membership.StatePromoted, membership.StateNext)
 	case "drop":
 		return c.drop(args[1:])
 	case "reset":
@@ -349,9 +350,15 @@ func readKMSSettings(path string) (region, keyARN string, err error) {
 }
 
 // swap is promote (next -> promoted) and unpromote (promoted -> next): the
-// two files exchanged in one step, so a crash leaves both whole, then the
-// state.
-func (c secretCommand) swap(args []string, name string, from, to membership.SealState) error {
+// swap's intent first (its word and the fingerprint of the file it makes
+// current), then the two files exchanged in one step, so a crash leaves
+// both whole, then the state. A crash after the intent leaves it in the
+// state file, and running the same swap again finishes it: the files'
+// fingerprints say whether they were exchanged already. Without the
+// intent, a run after a crash that came after the exchange would swap the
+// files back and record the state the first run meant: current would hold
+// the old secret, and every later step would carry the mismatch.
+func (c secretCommand) swap(args []string, name, word string, from, to membership.SealState) error {
 	fs := c.flags(name)
 	dirPath := fs.String("dir", "", "the sealed directory, /opt/wappie/sealed")
 	if err := fs.Parse(args); err != nil {
@@ -361,22 +368,88 @@ func (c secretCommand) swap(args []string, name string, from, to membership.Seal
 		return usageError{arg: "contract-secret " + name + " " + strings.Join(fs.Args(), " ")}
 	}
 	dir, state, err := sealDir(*dirPath)
+	makesCurrent, resuming := "", false
+	if errors.Is(err, membership.ErrSealDisagree) {
+		if makesCurrent, resuming = swapIntent(dir, word); resuming {
+			state, err = from, nil
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("contract-secret %s: %w", name, err)
 	}
 	if state != from {
 		return fmt.Errorf("contract-secret %s: needs the state %s, not %q", name, from, stateWord(state))
 	}
-	if err := c.exchange(string(dir), membership.SecretFileName, membership.SecretOtherFileName); err != nil {
+	current, err := fileFingerprint(dir, membership.SecretFileName)
+	if err != nil {
 		return fmt.Errorf("contract-secret %s: %w", name, err)
 	}
-	if err := dir.Sync(); err != nil {
+	other, err := fileFingerprint(dir, membership.SecretOtherFileName)
+	if err != nil {
 		return fmt.Errorf("contract-secret %s: %w", name, err)
+	}
+	if current == other {
+		return fmt.Errorf("contract-secret %s: %w: both files are one envelope", name, membership.ErrSealDisagree)
+	}
+	if !resuming {
+		makesCurrent = other
+		if err := dir.WriteState(membership.SwapIntent(word, makesCurrent)); err != nil {
+			return fmt.Errorf("contract-secret %s: write the intent: %w", name, err)
+		}
+	}
+	switch makesCurrent {
+	case current:
+		// An earlier run exchanged the files and stopped before the state.
+	case other:
+		if err := c.exchange(string(dir), membership.SecretFileName, membership.SecretOtherFileName); err != nil {
+			// A refused exchange (not Linux, ...) changed nothing: the
+			// state goes back to where it was, so nothing is half done.
+			if now, ferr := fileFingerprint(dir, membership.SecretFileName); ferr == nil && now == current {
+				if werr := dir.WriteState(from); werr != nil {
+					err = errors.Join(err, werr)
+				}
+			}
+			return fmt.Errorf("contract-secret %s: %w", name, err)
+		}
+		if err := dir.Sync(); err != nil {
+			return fmt.Errorf("contract-secret %s: %w", name, err)
+		}
+	default:
+		return fmt.Errorf("contract-secret %s: %w: the intent names %s, and the files are current=%s other=%s",
+			name, membership.ErrSealDisagree, makesCurrent, current, other)
 	}
 	if err := dir.WriteState(to); err != nil {
 		return fmt.Errorf("contract-secret %s: write the state: %w", name, err)
 	}
+	if resuming {
+		//nolint:errcheck // a note for the owner; stdout keeps its one line
+		fmt.Fprintf(c.stderr, "contract-secret %s: finished an earlier %s that stopped before it recorded its state\n", name, name)
+	}
 	return c.printFiles(dir, name)
+}
+
+// swapIntent reads a directory that State refused for the disagreement a
+// crash leaves inside a swap: both files there, and the state file holding
+// this swap's intent, whose fingerprint it returns.
+func swapIntent(dir membership.SealDir, word string) (string, bool) {
+	state, current, other, err := dir.Files()
+	if err != nil || !current || !other {
+		return "", false
+	}
+	w, makesCurrent, ok := state.Intent()
+	if !ok || w != word {
+		return "", false
+	}
+	return makesCurrent, true
+}
+
+// fileFingerprint is the fingerprint of an envelope in the directory.
+func fileFingerprint(dir membership.SealDir, name string) (string, error) {
+	b, err := os.ReadFile(dir.Path(name))
+	if err != nil {
+		return "", err
+	}
+	return membership.Fingerprint(b), nil
 }
 
 // drop removes the other secret: the old one after the promote (README 7.3

@@ -610,8 +610,21 @@ key and its policies:
    shows the round done, the workspaces named, their snapshots accepted and
    `published_through` fresh, and `contract status --check` finds nothing.
 
-Undo: `whatserverd contract mode off`. The settings and the sealed files may
-stay; without the settings nothing is called.
+Undo: `whatserverd contract mode off`, and tell the platform, which may
+unmap Wappie. The subscriptions stay on the platform (Wappie never
+unsubscribes a person it holds), so the platform still counts Wappie as an
+app that follows accounts: with the feed no longer read and no snapshot
+sent, its `contract_feed_silent` alert fires after 10 minutes and
+`contract_snapshots_stale` after 90, and from then the console shows the
+protection of the people in those snapshots as unknown: removing one of
+them from a platform team needs an owner's override, after a recent
+sign-in (the spec's 10). Keep the settings and the sealed secret after the
+first observe: at `off` a new account still takes the platform's personal
+workspace, and without a transport or a secret every sign-up is refused
+`503 platform_unavailable`. Only 0051's down-step
+([Rolling back below 0051](#rolling-back-below-0051)) brings back personal
+workspaces of Wappie's choosing. Removing the settings is safe only while
+the contract was never observed (`events_from` unset).
 
 ### Restoring with the contract
 

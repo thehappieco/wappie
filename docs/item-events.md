@@ -37,7 +37,7 @@ which a restore replays.
 | `person_sub`, `cause` | A `stranded` row's: the sub of the person whose removal or disable stranded the number (null without one), and `revoked` (a removal) or `disabled` (a disable). Null on every other type. |
 | `created_at` | When the row was written. |
 | `ledgered_at` | When the row's line was synced to the deletion ledger. |
-| `replayed_at` | Set on a row a restore's replay wrote from the ledger. Such a row is sent only if it is a deletion, a recovery or a purge that occurred after the contract was first observed; the platform answers `duplicate` for one it holds. |
+| `replayed_at` | Set on a row a restore's replay wrote from the ledger. Such a row is sent only if it is a deletion, a recovery or a purge that occurred at or after both the contract's first observe and the platform's first naming of its workspace; the platform answers `duplicate` for one it holds. |
 | `settled_at`, `outcome` | The contract's sender is done with it: `accepted` or `duplicate` (delivered, on a signed answer), `coalesced` (folded into a pause of the same number and actor that was delivered), or `not_sent` (a pause nobody but its actor reads). |
 | `coalesced_into` | The pause this one was folded into (one `item.sync_paused` per number, actor and hour). |
 | `parked_at`, `reject_code` | A row that is not sent: `invalid_request`, `not_found` (a day of it; sent again when the platform knows the workspace), `conflict`, `local_invalid` (Wappie would not send it) or `expired` (29 days unsent). Never both settled and parked. |

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 
 	"whatserver2/internal/config"
 	"whatserver2/internal/membership"
+	"whatserver2/internal/membership/membershiptest"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -64,6 +66,65 @@ func contractCode(t *testing.T) string {
 	return joinedLiterals.ReplaceAllString(b.String(), "")
 }
 
+// rawCode is a package's non-test Go source as written, for the patterns
+// a line's layout matters to.
+func rawCode(t *testing.T, dir string) string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f) //nolint:gosec // G304: the package's own sources
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(src)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// funcBody is the body of the function name in src, to its closing brace
+// at the start of a line.
+func funcBody(t *testing.T, src, name string) string {
+	t.Helper()
+	_, body, ok := strings.Cut(src, "\nfunc "+name+"(")
+	if !ok {
+		t.Fatalf("no func %s", name)
+	}
+	body, _, _ = strings.Cut(body, "\n}\n")
+	return body
+}
+
+// docSection is a doc's text under heading, to the next heading of its
+// level or above, white space folded.
+func docSection(t *testing.T, path, heading string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(b), "\n"+heading+"\n")
+	if !ok {
+		t.Fatalf("%s has no %q", path, heading)
+	}
+	level := heading[:strings.Index(heading, " ")+1]
+	for _, l := range []string{"# ", "## ", "### "} {
+		if section, _, _ = strings.Cut(section, "\n"+l); l == level {
+			break
+		}
+	}
+	return strings.Join(strings.Fields(section), " ")
+}
+
+// backticked is every `quoted` span of text, in order.
+var backticked = regexp.MustCompile("`([^`]+)`")
+
 func TestContractDocsMatchTheCode(t *testing.T) {
 	code := contractCode(t)
 	docs := map[string]string{}
@@ -86,6 +147,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 	}
 
 	t.Run("log lines", func(t *testing.T) {
+		// A doc quotes a line whole, but these, which it quotes as the start
+		// of every line that begins with them.
+		prefixes := map[string]bool{"contract: workspace kind changed": true}
 		// What each doc quotes of the code's log lines and messages.
 		for doc, lines := range map[string][]string{
 			"contract.md": {
@@ -97,6 +161,10 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"SIGHUP: nothing to reload, the contract has no transport configured",
 				"contract: leading",
 				"contract: no longer leading",
+				"contract: the leader's lock is lost; stopping",
+				"contract: could not publish the loaded secrets; the installer will not see this load",
+				"contract: a feed document cannot be read; it is skipped",
+				"contract: a new account's document names no personal workspace",
 				"contract: held subs still have no document of this generation; their PUTs fail",
 				"contract: no feed page for a long time",
 				"contract: published_through ahead of the clock; the last trusted one is kept",
@@ -137,10 +205,30 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			},
 		} {
 			for _, line := range lines {
-				if !strings.Contains(code, `"`+line) && !strings.Contains(code, line+`"`) {
+				quoted := `"` + line + `"`
+				if prefixes[line] {
+					quoted = `"` + line
+				}
+				if !strings.Contains(code, quoted) {
 					t.Errorf("the code no longer says %q", line)
 				}
 				says(doc, line)
+			}
+		}
+		// And the other way: every contract ERROR the code writes is in the
+		// docs, so an operator grepping for the documented ones finds all.
+		both := docs["contract.md"] + " " + docs["contract-events.md"]
+		lines := regexp.MustCompile(`\.Error\("(contract[^"]*)"`).FindAllStringSubmatch(code, -1)
+		if len(lines) < 20 {
+			t.Fatalf("only %d contract ERROR lines in the code", len(lines))
+		}
+		for _, m := range lines {
+			documented := strings.Contains(both, m[1])
+			for p := range prefixes {
+				documented = documented || strings.HasPrefix(m[1], p) && strings.Contains(both, p)
+			}
+			if !documented {
+				t.Errorf("docs/contract.md and docs/contract-events.md do not say the ERROR %q", m[1])
 			}
 		}
 		// The start line, as a deploy checks it.
@@ -163,8 +251,19 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				t.Errorf("whatserverd's usage does not show %q", c.usage)
 			}
 		}
-		for _, name := range []string{`"other"`, `"only-current"`, `"only-other"`, `"check"`, `"tenant"`} {
-			codeSays("(" + name)
+		// The flags, parsed by the commands themselves, which refuse before
+		// they open anything: three flags that parse are exclusive, a
+		// --tenant that parses is checked, and --check that parses leaves
+		// the extra word.
+		if err := contractCheck([]string{"--other", "--only-current", "--only-other"}, io.Discard, nil); err == nil ||
+			err.Error() != "contract check: --other, --only-current and --only-other are exclusive" {
+			t.Errorf("contract check --other --only-current --only-other: %v", err)
+		}
+		if err := contractDiffCommand([]string{"--tenant", "nope"}, io.Discard); err == nil || err.Error() != "contract diff: --tenant takes a workspace id" {
+			t.Errorf("contract diff --tenant nope: %v", err)
+		}
+		if err := contractStatusCommand([]string{"--check", "extra"}, io.Discard); !errors.As(err, new(usageError)) {
+			t.Errorf("contract status --check extra: %v", err)
 		}
 		if store.ContractOff != "off" || store.ContractObserve != "observe" {
 			t.Errorf("the modes are %q and %q", store.ContractOff, store.ContractObserve)
@@ -264,9 +363,13 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		if len(known) < 8 {
 			t.Fatalf("config/contract.go reads only %v", known)
 		}
+		// A whole name: WS_CONTRACT_SECRET_FILE is not WS_CONTRACT_SECRET.
 		for name := range known {
+			whole := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
 			for _, doc := range []string{"contract.md", "deployment.md", ".env.example"} {
-				says(doc, name)
+				if !whole.MatchString(docs[doc]) {
+					t.Errorf("docs/%s does not name %s", doc, name)
+				}
 			}
 		}
 		for doc, text := range docs {
@@ -332,19 +435,29 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"(the platform alerts after 10 minutes)",
 			"published_through is ",
 			"held subs not followed: their PUTs have failed since ",
-			"has no snapshot accepted for over 60 minutes (the platform alerts after 90)",
+			"has no snapshot accepted for over %d minutes (the platform alerts after 90)",
 			"is parked since ",
 			": its snapshots are not sent",
 			"events parked, the last at ",
-			"'s events have had no verdict for over 60 minutes",
-			"events pending for over 60 minutes, the oldest written at ",
+			"'s events have had no verdict for over %d minutes",
+			"events pending for over %d minutes, the oldest written at ",
 			"the server's last secret load failed at step ",
+			"the server holds current=",
+			", the files are current=",
 			"a secret is installed but the server has published no load",
 			"the server's published secrets cannot be read",
 			"contract never observed but a secret is installed",
 			"finding: ",
 		} {
 			codeSays(f)
+			if strings.Contains(f, "%d") {
+				// The bound, as --check prints it: from its constant.
+				bound := checkEvents
+				if strings.Contains(f, "snapshot") {
+					bound = checkSnapshot
+				}
+				f = fmt.Sprintf(f, int(bound/time.Minute))
+			}
 			says("contract.md", strings.TrimSpace(f))
 		}
 		says("deployment.md", "contract never observed but a secret is installed")
@@ -363,9 +476,70 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.DiffCredentialsWouldStop, store.DiffUnnamedTenant} {
 			says("contract.md", "| `"+kind+"` |")
 		}
+		snapshots := docSection(t, "../../docs/contract.md", "## Access snapshots")
 		for _, word := range []string{store.SnapshotActive, store.SnapshotSyncPaused, store.SnapshotDeleted, store.SnapshotByPerson,
 			store.SnapshotNeedsReauth, store.SnapshotQuota, store.SnapshotError, store.PauseByPerson} {
-			says("contract.md", "`"+word+"`")
+			if !strings.Contains(snapshots, "`"+word+"`") {
+				t.Errorf("docs/contract.md's Access snapshots do not say %q", word)
+			}
+		}
+
+		// The acts, by the names the hooks log: each one the code gives a
+		// hook is in the Act table, and each the table names is the code's.
+		inTable := map[string]bool{}
+		for key := range tableRows(t, "../../docs/contract.md", "## Freshness") {
+			for _, m := range backticked.FindAllStringSubmatch(key, -1) {
+				if !strings.HasPrefix(m[1], "Require") {
+					inTable[m[1]] = true
+					codeSays(`"` + m[1] + `"`)
+				}
+			}
+		}
+		for _, act := range gatedActs(t) {
+			if !inTable[act] {
+				t.Errorf("docs/contract.md's Act table does not name %q, which the code gives a hook", act)
+			}
+		}
+		// The verdicts' reasons, which an operator greps the WARNs for: each
+		// the code's, and the docs' two lists exactly those.
+		for _, w := range []string{"no_sub", "unverified", "unavailable", "throttled", "not_stored", "no_confirmed_backup",
+			"no_document", "not_a_member"} {
+			codeSays(`"` + w + `"`)
+		}
+		for _, c := range []string{`"account_" + st.Status`, `"refused:" + RefusalCode(err)`, `"role_" + w.Role`, `fmt.Sprintf("owners_%d", n)`} {
+			codeSays(c)
+		}
+		says("contract.md", "reason: `no_sub`, `account_"+kc.AccountDisabled+"`, `account_"+kc.AccountClosed+"`, `refused:<code>`, "+
+			"`unverified`, `unavailable`, `throttled`, `not_stored`, or `no_confirmed_backup` with each holder's)")
+		says("contract.md", `"transfer: would refuse" (`+"`no_document`, `not_a_member`, `role_<role>`, `owners_<n>`)")
+		codeSays(`"contract: sign-in would refuse", "sub", sub, "reason", "stale"`)
+		says("contract.md", "`account_"+kc.AccountDisabled+"`, `account_"+kc.AccountClosed+"` or `stale`), and the sign-in goes on")
+
+		// A failed secret load's classes: every one the code gives is in the
+		// docs' list, and the list holds no other but its example of KMS's
+		// own codes.
+		classes := map[string]bool{"AccessDeniedException": true}
+		for _, src := range []string{funcBody(t, rawCode(t, "../../internal/membership"), "ErrorClass"),
+			funcBody(t, rawCode(t, "."), "kmsErrorClass")} {
+			for _, m := range regexp.MustCompile(`return "([a-z_]+)"`).FindAllStringSubmatch(src, -1) {
+				if m[1] != "none" {
+					classes[m[1]] = true
+				}
+			}
+		}
+		_, list, _ := strings.Cut(docs["contract.md"], "and a closed class (")
+		list, _, _ = strings.Cut(list, "), never the error's text")
+		listed := map[string]bool{}
+		for _, m := range backticked.FindAllStringSubmatch(list, -1) {
+			listed[m[1]] = true
+			if !classes[m[1]] {
+				t.Errorf("docs/contract.md lists the class %q, which the code never gives", m[1])
+			}
+		}
+		for c := range classes {
+			if !listed[c] {
+				t.Errorf("docs/contract.md does not list the class %q", c)
+			}
 		}
 		for _, word := range []string{store.PauseByPerson, store.PauseForMove, store.PauseForDeletion} {
 			says("devices.md", "`"+word+"`")
@@ -391,6 +565,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		for _, state := range []membership.SealState{membership.StateSteady, membership.StateNext, membership.StatePromoted} {
 			says("contract.md", "`"+string(state)+"`")
 		}
+		says("contract.md", "(`"+membership.SwapPromoting+"` or `"+membership.SwapUnpromoting+"`, and the fingerprint of the file the swap makes current)")
 		for _, step := range []string{membership.StepKMS, membership.StepOpen, membership.StepCheck, membership.StepMissing} {
 			says("contract.md", "`"+step+"`")
 		}
@@ -452,13 +627,15 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 
 	t.Run("timings", func(t *testing.T) {
 		rows := tableRows(t, "../../docs/contract.md", "## Timings")
-		for name, want := range map[string]string{
+		ours := map[string]string{
 			"fresh":              spoken(store.FreshFor),
 			"backup fresh":       spoken(store.BackupFreshFor),
 			"clock skew":         spoken(store.ContractClockSkew),
 			"orphan":             spoken(membership.OrphanAfter),
 			"heartbeat":          spoken(pg.HoldHeartbeat),
 			"long-poll":          spoken(time.Duration(kc.MaxWait) * time.Second),
+			"call timeout":       spoken(kc.CallTimeout),
+			"feed grace":         spoken(kc.FeedGrace),
 			"snapshot not found": spoken(store.SnapshotNotFoundFor),
 			"event not found":    spoken(store.ContractEventNotFoundFor),
 			"event expiry":       spoken(store.ContractEventExpiry),
@@ -469,9 +646,20 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"check round":        spoken(checkRound),
 			"check parked":       spoken(checkParked),
 			"check events":       spoken(checkEvents),
-		} {
+		}
+		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
+		// which lists these as checked here), and wsapi's and mcpauth's.
+		elsewhere := []string{"call bound", "mode cache", "pace", "sweep", "round", "leader retry", "peer checks",
+			"feed backoff", "feed silent", "warn", "round failing", "debounce", "snapshot", "snapshot backoff", "labels",
+			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound"}
+		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)
+			}
+		}
+		for name := range rows {
+			if _, mine := ours[name]; name != "Timing" && !mine && !slices.Contains(elsewhere, name) {
+				t.Errorf("docs/contract.md's timing %q is checked by no test", name)
 			}
 		}
 	})
@@ -514,26 +702,7 @@ func tableRows(t *testing.T, path, heading string) map[string][]string {
 
 // spoken is a duration as the docs write it: "1 hour", "55 minutes",
 // "29 days", "100 milliseconds".
-func spoken(d time.Duration) string {
-	unit := func(n int64, one string) string {
-		if n == 1 {
-			return "1 " + one
-		}
-		return fmt.Sprintf("%d %ss", n, one)
-	}
-	day := 24 * time.Hour
-	switch {
-	case d > day && d%day == 0:
-		return unit(int64(d/day), "day")
-	case d%time.Hour == 0:
-		return unit(int64(d/time.Hour), "hour")
-	case d%time.Minute == 0:
-		return unit(int64(d/time.Minute), "minute")
-	case d%time.Second == 0:
-		return unit(int64(d/time.Second), "second")
-	}
-	return unit(int64(d/time.Millisecond), "millisecond")
-}
+var spoken = membershiptest.Spoken
 
 func TestSpoken(t *testing.T) {
 	got := []string{spoken(time.Hour), spoken(55 * time.Minute), spoken(29 * 24 * time.Hour), spoken(24 * time.Hour),
@@ -542,4 +711,34 @@ func TestSpoken(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("spoken: %q", got)
 	}
+}
+
+// gatedActs are the acts the code gives the freshness hooks by name: the
+// socket's frames (wsapi's fresh, widening and freshBackups), the act
+// constants of mcpauth and authapi, and the mover's.
+func gatedActs(t *testing.T) []string {
+	t.Helper()
+	ws := rawCode(t, "../../internal/wsapi")
+	frames := map[string]string{}
+	for _, m := range regexp.MustCompile(`\b(Type\w+)\s*=\s*"([^"]+)"`).FindAllStringSubmatch(ws, -1) {
+		frames[m[1]] = m[2]
+	}
+	var acts []string
+	for _, m := range regexp.MustCompile(`s\.(?:fresh|widening|freshBackups)\(ctx, [\w.]+, (Type\w+)`).FindAllStringSubmatch(ws, -1) {
+		act, ok := frames[m[1]]
+		if !ok {
+			t.Fatalf("wsapi gives a hook %s, which names no frame", m[1])
+		}
+		acts = append(acts, act)
+	}
+	for _, dir := range []string{"../../internal/mcpauth", "../../internal/authapi"} {
+		for _, m := range regexp.MustCompile(`\bact[A-Z]\w*\s*=\s*"([^"]+)"`).FindAllStringSubmatch(rawCode(t, dir), -1) {
+			acts = append(acts, m[1])
+		}
+	}
+	acts = append(acts, membership.ActTransfer)
+	if len(acts) < 18 {
+		t.Fatalf("only %d gated acts found: %q", len(acts), acts)
+	}
+	return acts
 }
