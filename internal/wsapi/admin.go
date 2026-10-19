@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatserver2/internal/access"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -289,6 +290,11 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 		at = at.UTC()
 		expiresAt = &at
 	}
+	// Creating an API key waits for the person's fresh memberships in a
+	// team (README 7.1), before the key exists.
+	if !s.fresh(ctx, f.ReqID, TypeKeyCreate, person(who, membership.IfStale)) {
+		return
+	}
 	author := who.userID
 	key, err := s.srv.cfg.Keys.IssueActingAsForDevices(ctx, tenant, name, scope, &author, actsAs, deviceIDs, expiresAt)
 	if errors.Is(err, store.ErrInvalidKeyDevices) {
@@ -413,6 +419,16 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 	if !s.stepUpRecent(ctx, f.ReqID, who) {
 		return
 	}
+	// Sharing a key (README 7.1): the person IfStale and the recipient
+	// always with a fresh GET; a service account is no party (the hook
+	// leaves it out), and a person's grant to themselves shares nothing.
+	parties := []membership.Party{person(who, membership.IfStale)}
+	if user != who.userID {
+		parties = append(parties, membership.Party{User: user, How: membership.Always})
+	}
+	if !s.fresh(ctx, f.ReqID, TypeGrantAdd, parties...) {
+		return
+	}
 
 	_, epoch, err := s.srv.cfg.Keys2.ArchiveKey(ctx, tenantUUID, deviceUUID)
 	if errors.Is(err, store.ErrNoArchiveKey) {
@@ -476,6 +492,12 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 	user, err := uuid.Parse(req.UserID)
 	if err != nil {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "that is not an account id")
+		return
+	}
+	// It narrows who holds the number's key: the remaining holders count
+	// as backups only on a fresh document (README 7.1, the minute rule),
+	// asked for before the revocation's transaction.
+	if !s.freshBackups(ctx, f.ReqID, TypeGrantRevoke, tenantUUID, deviceUUID, user) {
 		return
 	}
 	if err := s.srv.cfg.Keys2.RevokeGrant(ctx, tenantUUID, deviceUUID, user); err != nil {

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 )
 
@@ -22,6 +23,8 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 			"wait for its purge, or recover it and share its key with someone else first"}, deleted.Numbers})
 	case errors.Is(err, store.ErrPersonalWorkspace):
 		fail(w, http.StatusConflict, "personal_workspace", "create a team workspace to invite people")
+	case errors.Is(err, store.ErrInvitationsPaused):
+		invitationsPaused(w)
 	case errors.Is(err, store.ErrInviteInvalid):
 		fail(w, http.StatusConflict, "invite_invalid", "the invitation is expired, revoked or already accepted")
 	case errors.Is(err, store.ErrInviteNotRecoverable):
@@ -45,6 +48,14 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 		h.log().Error("workspace membership operation failed", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not manage workspace members")
 	}
+}
+
+// invitationsPaused answers a person invitation into a team The Happie Co
+// names, issued or redeemed (the plan's DB6): 409, and no link to the
+// platform's Members page, whose invitations reach Wappie only at enforce.
+func invitationsPaused(w http.ResponseWriter) {
+	fail(w, http.StatusConflict, "invitations_paused", "people join this team through The Happie Co; "+
+		"person invitations are paused here until Wappie applies the platform's members")
 }
 
 func (h *Handler) members(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +207,13 @@ func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		send(w, http.StatusCreated, map[string]any{"invite": invite, "invitation": invitation, "email_sent": false})
+		return
+	}
+	// A standing service account's invitation creates it as soon as it is
+	// redeemed: the freshness hook asks for the inviting person's, before
+	// anything is written (README 7.1, "creating ... a service account").
+	if req.Role == store.RoleService && !h.fresh(r.Context(), w, actServiceInvite, user.TenantID,
+		membership.Party{User: user.ID, How: membership.IfStale}) {
 		return
 	}
 	invite, invitation, err := h.Users.NewMemberInvitation(r.Context(), user.TenantID, user.ID, req.Role, req.Email)

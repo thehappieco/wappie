@@ -1833,6 +1833,11 @@ const (
 	// while anyone else has access to it (decision 0040); the error carries
 	// who, and why.
 	ErrCodeOthersHaveAccess = "others_have_access"
+	// ErrCodeMembershipsUnconfirmed refuses an act README 7.1 gates while
+	// the platform has not confirmed the memberships it needs for over an
+	// hour (decision 0040). Only the enforce release answers it; release B
+	// logs what it would refuse.
+	ErrCodeMembershipsUnconfirmed = "memberships_unconfirmed"
 )
 
 // Error is the failure payload. Readers comes with device_has_readers, and

@@ -301,6 +301,10 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		setups:            ratelimit.DefaultSetups(cfg.TrustedProxies),
 		workspaceSessions: ratelimit.DefaultWorkspaceSessions(cfg.TrustedProxies),
 	}
+	// The contract's part in signing in and its freshness hook, in every
+	// configuration: the socket's acts ask it from the first frame
+	// (startContract gives it its transport).
+	a.members = &membership.Members{Contract: store.NewContract(pools.API), Log: lg}
 	if cfg.Deletion.Ledger != "" {
 		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}
@@ -555,6 +559,9 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// A deletion, a recovery and a move are in the ledger as soon as
 		// their reply goes.
 		ExportLedger: a.exportLedger,
+		// Every act README 7.1 gates asks the contract's freshness first;
+		// release B only logs the verdicts.
+		Membership: a.members,
 	})
 
 	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws
@@ -868,7 +875,7 @@ func (a *app) authHandler() *authapi.Handler {
 	}
 	// Never a typed nil: a nil Membership is the contract's absence.
 	if a.members != nil {
-		h.Membership = a.members
+		h.Membership, h.Freshness = a.members, a.members
 	}
 	if a.cfg.Signup.SMTP.Configured() {
 		sender := mailer.Sender{Config: a.cfg.Signup.SMTP, AppURL: a.cfg.Signup.AppURL}
@@ -952,6 +959,11 @@ func (a *app) routes() http.Handler {
 			DCRHosts:         a.cfg.MCP.DCRHosts,
 			LiveListLimits:   ratelimit.New(mcpauth.LiveListPerMinute, mcpauth.LiveListPerMinute),
 			RevokeLinkLimits: &ratelimit.Auth{PerIP: ratelimit.New(30, 10), Proxies: a.cfg.TrustedProxies},
+		}
+		// Creating, renewing and sending ask the contract's freshness;
+		// never a typed nil.
+		if a.members != nil {
+			a.mcp.Membership = a.members
 		}
 		// The new-assistant e-mail goes only with a mail server and this
 		// server's public origin for its revoke-only link; without them no

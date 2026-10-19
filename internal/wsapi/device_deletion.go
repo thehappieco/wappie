@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/access"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -27,8 +28,10 @@ import (
 // out.
 //
 // No platform call runs inside the deletion's or the recovery's store
-// transaction (the plan's D13): when a later release waits for a fresh
-// membership document, it asks before the transaction, never inside it.
+// transaction (the plan's D13): the freshness hook (freshness.go) asks
+// before the transaction, never inside it. In a team a deletion logs the
+// number out of WhatsApp, which cannot be undone, so it waits for fresh
+// memberships there, and never in a personal workspace (README 7.1).
 
 // Unlinker logs a deleted number out of WhatsApp: on the client this process
 // holds, or on one of its own (wa.Registry.Unlink). BeginUnlink marks the
@@ -186,6 +189,9 @@ func (s *session) handleDeviceDelete(ctx context.Context, f Frame) {
 		return
 	}
 	if !s.stepUpRecent(ctx, f.ReqID, who) {
+		return
+	}
+	if !s.fresh(ctx, f.ReqID, TypeDeviceDelete, person(who, membership.IfStale)) {
 		return
 	}
 	acknowledged := make([]uuid.UUID, 0, len(req.AcknowledgedReaders))
@@ -477,6 +483,9 @@ func (s *session) handleDeviceRecover(ctx context.Context, f Frame) {
 		return
 	}
 	if !s.stepUpRecent(ctx, f.ReqID, who) {
+		return
+	}
+	if !s.fresh(ctx, f.ReqID, TypeDeviceRecover, person(who, membership.IfStale)) {
 		return
 	}
 	tenant := uuid.MustParse(who.tenant)

@@ -531,3 +531,46 @@ func TestContractStatusEvents(t *testing.T) {
 		t.Fatalf("pending while off: %v", findings)
 	}
 }
+
+// contract status counts each local team's pending person invitations and
+// says which are paused (the plan's DB6; B2b reads the count before the
+// switch): a service invitation, a spent, revoked or expired one, and a
+// personal workspace's count for nothing.
+func TestContractStatusInvitations(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	c := store.NewContract(pool)
+	old := defaultSealedSecret
+	defaultSealedSecret = filepath.Join(t.TempDir(), membership.SecretFileName)
+	t.Cleanup(func() { defaultSealedSecret = old })
+	team, other := uuid.New(), uuid.New()
+	execSQL(t, pool, `INSERT INTO tenants (id, name) VALUES ($1, 'TBFG'), ($2, 'Piloto A')`, team, other)
+	invite := func(tenant uuid.UUID, role, extra string) {
+		t.Helper()
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			t.Fatal(err)
+		}
+		execSQL(t, pool, `INSERT INTO invites (invite_id, tenant_id, role, expires_at) VALUES ($1, $2, $3, now() + interval '1 day')`, raw, tenant, role)
+		if extra != "" {
+			execSQL(t, pool, `UPDATE invites SET `+extra+` WHERE invite_id = $1`, raw)
+		}
+	}
+	invite(team, "member", "")
+	invite(team, "admin", "")
+	invite(team, store.RoleService, "")
+	invite(team, "member", "completed_at = now()")
+	invite(team, "member", "revoked_at = now()")
+	invite(team, "member", "expires_at = now() - interval '1 minute'")
+	invite(other, "owner", "")
+	execSQL(t, pool, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, team)
+	out, _, _ := statusRun(t, c, config.Contract{})
+	for _, want := range []string{
+		"person invitations pending: 3 in 2 local teams",
+		"  " + team.String() + " pending 2 paused (a platform team)",
+		"  " + other.String() + " pending 1 open",
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("no %q in:\n%s", want, out)
+		}
+	}
+}

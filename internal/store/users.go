@@ -1050,12 +1050,23 @@ func (u *Users) RedeemInvite(ctx context.Context, secret string) (Invite, error)
 
 	var inv Invite
 	var mail *string
+	// A person invitation into a team the platform names stays unspent
+	// (ErrInvitationsPaused), as lockSignupInvite leaves it.
 	err = u.pool.QueryRow(ctx, `
 		UPDATE invites SET completed_at = now()
 		 WHERE invite_id = $1 AND completed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+		   AND (role = 'service' OR NOT EXISTS (SELECT 1 FROM contract_workspaces w WHERE w.workspace_id = invites.tenant_id AND w.kind = 'team'))
 		 RETURNING tenant_id, role, email, expires_at`, sum[:]).
 		Scan(&inv.TenantID, &inv.Role, &mail, &inv.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
+		var paused bool
+		if err := u.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM invites i JOIN contract_workspaces w ON w.workspace_id = i.tenant_id AND w.kind = 'team'
+			WHERE i.invite_id = $1 AND i.role <> 'service' AND i.completed_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now())`, sum[:]).Scan(&paused); err != nil {
+			return Invite{}, fmt.Errorf("store: redeem invite: %w", err)
+		}
+		if paused {
+			return Invite{}, ErrInvitationsPaused
+		}
 		return Invite{}, ErrInviteInvalid
 	}
 	if err != nil {

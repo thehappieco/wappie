@@ -10,9 +10,31 @@ import (
 	"github.com/google/uuid"
 
 	"whatserver2/internal/crypto/seal"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
+
+// freshPairing is the freshness hook of a person's pairing, before
+// anything is written (README 7.1, "linking a number ... to a team"): the
+// person IfStale, and each other account the pairing's grants hand the
+// number's key to Always, as a grant's recipient (the hook leaves service
+// accounts out). A key's pairing is the workspace's own act, never gated.
+func (s *session) freshPairing(ctx context.Context, reqID string, grants []KeyGrant) bool {
+	who := s.actor()
+	if !who.person {
+		return true
+	}
+	parties := []membership.Party{person(who, membership.IfStale)}
+	seen := map[uuid.UUID]bool{who.userID: true}
+	for _, g := range grants {
+		if user, err := uuid.Parse(g.UserID); err == nil && !seen[user] {
+			seen[user] = true
+			parties = append(parties, membership.Party{User: user, How: membership.Always})
+		}
+	}
+	return s.fresh(ctx, reqID, TypePair, parties...)
+}
 
 // handlePair creates a device row and starts a pairing attempt, streaming
 // codes back to the client until the phone accepts or the window closes.
@@ -83,6 +105,9 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 			s.replyError(f.ReqID, ErrCodeBadRequest, "retry pairing must preserve existing keys and grants")
 			return
 		}
+		if !s.freshPairing(ctx, f.ReqID, nil) {
+			return
+		}
 		mode = dev.ReceiptMode
 	} else {
 		// The archive key has to exist before the device does anything, because the
@@ -109,6 +134,9 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 		tenantUUID, err := uuid.Parse(tenant)
 		if err != nil {
 			s.replyError(f.ReqID, ErrCodeInternal, "bad tenant")
+			return
+		}
+		if !s.freshPairing(ctx, f.ReqID, req.Grants) {
 			return
 		}
 		label := req.Label
@@ -364,12 +392,15 @@ func (s *session) handleDeviceStop(ctx context.Context, f Frame) {
 	}
 	// A person's or a key's stop tells the number's readers (decision 0039),
 	// in the same transaction as the pause. No platform call runs inside it
-	// (the plan's D13): a later release asks for a fresh membership document
-	// before it, never inside.
+	// (the plan's D13): a person's stop asks the freshness hook before it,
+	// never inside (README 7.1, "turning off a team item's sync"); a key's
+	// stop is the workspace's own act, never gated.
 	who := s.actor()
 	by := store.PauseActor{User: who.userID}
 	if !who.person {
 		by = store.PauseActor{Key: who.keyID}
+	} else if !s.fresh(ctx, f.ReqID, TypeDeviceStop, person(who, membership.IfStale)) {
+		return
 	}
 	paused, err := s.srv.cfg.Devices.Pause(ctx, uuid.MustParse(tenant), resolved, by)
 	if errors.Is(err, store.ErrNotFound) {

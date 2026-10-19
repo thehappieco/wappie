@@ -69,7 +69,8 @@ func newContractClient(cfg config.Contract, log *slog.Logger) *membership.Client
 }
 
 // startContract builds the contract's sign-in calls (a.members) in every
-// configuration, and, when a transport is configured, loads the contract's
+// configuration, unless setup built them already for the socket's
+// freshness hook, and, when a transport is configured, loads the contract's
 // secret in the background and again on every SIGHUP, and starts the
 // leader (membership.Leader), which follows the feed and runs the round
 // and the sweep in whichever process holds the contract's lock, while the
@@ -82,7 +83,7 @@ func newContractClient(cfg config.Contract, log *slog.Logger) *membership.Client
 // only KMS. It logs the start line the deploy checks:
 // contract: mode=… transport=… secret=….
 func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
-	if a.pools != nil {
+	if a.members == nil && a.pools != nil {
 		a.members = &membership.Members{Contract: store.NewContract(a.pools.API), Log: a.log}
 	}
 	defer a.logContractStart(ctx)

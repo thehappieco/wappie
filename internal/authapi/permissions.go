@@ -32,6 +32,9 @@ func (h *Handler) permissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.DeviceID = device
+	if !h.freshPermission(r.Context(), w, user, p) {
+		return
+	}
 	if err := h.Users.SetDevicePermission(r.Context(), user.TenantID, user.ID, p); err != nil {
 		h.memberError(w, err)
 		return

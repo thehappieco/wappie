@@ -26,6 +26,16 @@ import { endpoint } from './endpoint.js'
 import type { BrowserLogin } from '../session.js'
 import { sealBrowserAccountKey, type BrowserKeyEnvelope } from '../crypto/browserAccount.js'
 
+/**
+ * The codes the invitation routes answer as an AuthError's code, for a
+ * console that branches on them. invitations_paused: a person invitation
+ * into a team The Happie Co names, refused at issue and at redemption, its
+ * code left unspent (decision 0040); a service invitation is never paused.
+ * A type only, so the built JavaScript, which the attested reader measures,
+ * does not change.
+ */
+export type InvitationErrorCode = 'invite_invalid' | 'invite_email_mismatch' | 'invitations_paused'
+
 export class AuthError extends Error {
   constructor(
     readonly code: string,

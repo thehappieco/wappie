@@ -18,6 +18,33 @@ import (
 
 var ErrInviteNotRecoverable = errors.New("store: the original invitation code is not recoverable; generate a new code")
 
+// ErrInvitationsPaused refuses a person invitation into a team the
+// platform's documents name (decision 0040; the plan's DB6): its people
+// join through The Happie Co, and until Wappie applies the platform's
+// members (enforce) person invitations are neither issued nor redeemed
+// there. Service invitations stay open.
+var ErrInvitationsPaused = errors.New("store: person invitations into this team are paused: its people join through The Happie Co")
+
+// invitationsPausedTx is ErrInvitationsPaused's one predicate: a person's
+// role, and a team recorded as a platform workspace. The record is the
+// key, in every mode and with or without a transport, so neither a
+// configuration nor a return to off reopens these invitations; only the
+// 0051 down-step, which drops the record, does.
+func invitationsPausedTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, role string) error {
+	if role == RoleService {
+		return nil
+	}
+	var paused bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM contract_workspaces WHERE workspace_id = $1 AND kind = 'team')`,
+		tenant).Scan(&paused); err != nil {
+		return err
+	}
+	if paused {
+		return ErrInvitationsPaused
+	}
+	return nil
+}
+
 type Invitation struct {
 	ID          uuid.UUID  `json:"id"`
 	Email       string     `json:"email"`
@@ -70,7 +97,13 @@ func (u *Users) createInviteTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID,
 
 // createInviteKindTx is createInviteTx for either kind of invitation;
 // provisional is the thirty-minute service invitation of a content consent.
+// It is the one writer of invites, so a person invitation into a recorded
+// team is refused here for every route: a member's, a regenerated one and
+// the operator's whatserverd invite.
 func (u *Users) createInviteKindTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, role, email string, creator *uuid.UUID, ttl time.Duration, provisional bool) (string, Invitation, error) {
+	if err := invitationsPausedTx(ctx, tx, tenant, role); err != nil {
+		return "", Invitation{}, err
+	}
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		return "", Invitation{}, err
@@ -201,6 +234,11 @@ func (u *Users) RegenerateInvitation(ctx context.Context, tenant, actor, id uuid
 		if e = canInviteHuman(ctx, tx, tenant, old.Role); e != nil {
 			return e
 		}
+		// Refused before the old code is revoked: a paused invitation stays
+		// as it was (a rollback to release A could still use it).
+		if e = invitationsPausedTx(ctx, tx, tenant, old.Role); e != nil {
+			return e
+		}
 		if _, e = tx.Exec(ctx, `UPDATE invites SET revoked_at=coalesce(revoked_at,now()),secret_ciphertext=NULL WHERE id=$1 AND tenant_id=$2`, id, tenant); e != nil {
 			return e
 		}
@@ -247,6 +285,29 @@ func (u *Users) NewMemberInvitation(ctx context.Context, tenant, actor uuid.UUID
 		return e
 	})
 	return secret, inv, err
+}
+
+// ServiceInviteIssuer reads who issued a pending standing service
+// invitation, and in which workspace, without spending it: the person whose
+// freshness registering its account needs (README 7.1, "creating ... a
+// service account"). ok is false for any other code: a person invitation,
+// a content consent's provisional one, one the operator issued, or one not
+// pending; SignupService then answers as it would.
+func (u *Users) ServiceInviteIssuer(ctx context.Context, secret string) (tenant, issuer uuid.UUID, ok bool, err error) {
+	sum, err := inviteDigest(secret)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, false, nil //nolint:nilerr // a malformed code is no invitation; SignupService refuses it
+	}
+	var by *uuid.UUID
+	err = u.pool.QueryRow(ctx, `SELECT tenant_id, created_by FROM invites WHERE invite_id = $1 AND role = 'service' AND NOT provisional
+		AND completed_at IS NULL AND revoked_at IS NULL AND expires_at > now()`, sum).Scan(&tenant, &by)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && by == nil) {
+		return uuid.Nil, uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, uuid.Nil, false, err
+	}
+	return tenant, *by, true, nil
 }
 
 // ProvisionalServiceTTL is how long a content consent's service invitation,

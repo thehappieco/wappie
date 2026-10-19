@@ -472,6 +472,19 @@ type ContractStatus struct {
 	// (subscriptions Wappie made, orphans included).
 	Held, Followed, Accounts int64
 	Workspaces               []ContractWorkspaceStatus
+	// Invitations are the local teams with pending person invitations,
+	// in id order: B2b reports how many stop being redeemable once a
+	// document names their team (the plan's DB6).
+	Invitations []ContractTeamInvitations
+}
+
+// ContractTeamInvitations is one local team's pending person invitations:
+// a count only, and whether the team is recorded as a platform workspace,
+// where they are paused already.
+type ContractTeamInvitations struct {
+	Team     uuid.UUID
+	Pending  int64
+	Recorded bool
 }
 
 // Status reads the contract's state, its counts and every recorded
@@ -527,7 +540,22 @@ func (c *Contract) Status(ctx context.Context) (ContractStatus, error) {
 				return err
 			}
 		}
-		return nil
+		// tenants and invites carry no row-level security (0001, 0009).
+		rows, err = tx.Query(ctx, `SELECT t.id, count(*),
+				EXISTS (SELECT 1 FROM contract_workspaces w WHERE w.workspace_id = t.id AND w.kind = 'team')
+			FROM tenants t JOIN invites i ON i.tenant_id = t.id
+			WHERE t.kind = 'team' AND i.role <> 'service' AND i.completed_at IS NULL AND i.revoked_at IS NULL
+			  AND i.expires_at > clock_timestamp()
+			GROUP BY t.id ORDER BY t.id`)
+		if err != nil {
+			return err
+		}
+		out.Invitations, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (ContractTeamInvitations, error) {
+			var i ContractTeamInvitations
+			err := row.Scan(&i.Team, &i.Pending, &i.Recorded)
+			return i, err
+		})
+		return err
 	})
 	return out, err
 }

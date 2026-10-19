@@ -139,6 +139,14 @@ jobs:
         working-directory: packages/client
       - run: npm pack --dry-run
         working-directory: packages/client
+      # The attested reader's image measures packages/client's build into
+      # PCR0: what it keeps of the client must equal release A's (c9ec561),
+      # whose reader the pilot runs, or the change needs a reader release.
+      # Type-only edits pass.
+      - name: The reader's measured client is release A's
+        run: |
+          git fetch --no-tags --depth=1 origin c9ec561ca2cc669cdec12d5d90523269c3c2396a
+          scripts/check-client-dist.sh c9ec561ca2cc669cdec12d5d90523269c3c2396a
       - run: npm ci && npm test
         working-directory: packages/cli
       - run: npm ci && npm test && npm pack --dry-run

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/google/uuid"
 	"time"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 )
 
@@ -36,6 +37,11 @@ func (s *session) handleDeviceTransferPreview(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "Número inválido.")
 		return
 	}
+	// The preview reads the stored freshness only; the move itself asks
+	// for a fresh document (handleDeviceTransfer).
+	if !s.fresh(ctx, f.ReqID, TypeDeviceTransferPreview, person(who, membership.Stored)) {
+		return
+	}
 	out, err := s.srv.cfg.Devices.PreviewPersonalTransfer(ctx, uuid.MustParse(s.tenantID()), who.userID, device)
 	if err != nil {
 		s.transferError(f.ReqID, err)
@@ -52,8 +58,9 @@ func (s *session) handleDeviceTransferPreview(ctx context.Context, f Frame) {
 // timeout, a deadlock) rolls the move back, so the handler undoes its own
 // pause, unless someone paused the number meanwhile, and the supervisor
 // resumes it. No platform call runs inside the move's transaction (the
-// plan's D13): a later release asks for a fresh membership document before
-// it, never inside.
+// plan's D13): the mover's document is asked for before anything, always
+// with a fresh GET (README 7.1), and must list them as the team's only
+// owner (decision 0043; freshness.go).
 func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	who, ok := s.requireAdmin(f.ReqID)
 	if !ok {
@@ -75,6 +82,9 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		return
 	}
 	source := uuid.MustParse(s.tenantID())
+	if !s.freshMover(ctx, f.ReqID, source, who.userID) {
+		return
+	}
 	out, err := s.srv.cfg.Devices.PreviewPersonalTransfer(ctx, source, who.userID, device)
 	if err != nil {
 		s.transferError(f.ReqID, err)

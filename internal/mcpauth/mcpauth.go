@@ -50,6 +50,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatserver2/internal/mailer"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/netguard"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/stepup"
@@ -183,6 +184,13 @@ type Handler struct {
 	// authorization and their renewals (internal/stepup). Nil is the session
 	// store's own record, Users'.
 	StepUp stepup.Checker
+	// Membership is the contract's freshness hook (internal/membership;
+	// README 7.1): creating a connection, an AI authorization or a token
+	// waits for the person's fresh memberships in a team, a renewal always
+	// asks for a fresh document, and a connection's send is checked in the
+	// background on the consenting person's (freshness.go). Nil gates
+	// nothing; at observe it only logs (the plan's DB4).
+	Membership membership.Freshness
 
 	// Set up by Mount.
 	readers  []reader
@@ -693,6 +701,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !h.fresh(ctx, w, actConnect, user.TenantID, membership.Party{User: user.ID, How: membership.IfStale}) {
+		return
+	}
 	conn, err := h.Connections.Create(ctx, user.TenantID, user.ID, in)
 	if err != nil {
 		h.connectionError(w, err)

@@ -168,6 +168,21 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		w.f("  %s %s %s named %s, snapshot %s, events pending %d parked %d coalesced %d%s",
 			ws.ID, ws.Kind, state, ago(st.Now, &ws.NamedAt), ago(st.Now, ws.SnapshotOKAt), ws.Pending, ws.Parked, ws.Coalesced, extra)
 	}
+	// Person invitations into a recorded team are paused (the plan's DB6):
+	// before the switch, B2b reads here how many of a team's will stop
+	// being redeemable once a document names it.
+	var invited int64
+	for _, i := range st.Invitations {
+		invited += i.Pending
+	}
+	w.f("person invitations pending: %d in %d local teams", invited, len(st.Invitations))
+	for _, i := range st.Invitations {
+		state := "open"
+		if i.Recorded {
+			state = "paused (a platform team)"
+		}
+		w.f("  %s pending %d %s", i.Team, i.Pending, state)
+	}
 	if w.err != nil || !check {
 		return w.err
 	}

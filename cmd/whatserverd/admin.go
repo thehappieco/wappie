@@ -57,6 +57,10 @@ func issueInvite(args []string) error {
 
 	users := store.NewUsers(a.pools.API)
 	code, err := users.CreateInvite(ctx, tenant, *role, *email, nil, inviteTTL)
+	if errors.Is(err, store.ErrInvitationsPaused) {
+		return errors.New("invite: this team's people join through The Happie Co; person invitations are paused here " +
+			"until Wappie applies the platform's members (a service invitation still works: -role service)")
+	}
 	if err != nil {
 		return err
 	}

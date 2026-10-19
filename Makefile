@@ -1,5 +1,5 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
-	fixtures-check client-install client-build client-test client-check mcp-check mcp-http-check public-source \
+	fixtures-check client-install client-build client-test client-check client-dist-check mcp-check mcp-http-check public-source \
 	enclave-check enclave-image enclave-jail media-worker-check media-jail-check reader-verify
 
 GO      ?= go
@@ -74,6 +74,12 @@ client-test: ## Check SDK types and cryptographic interoperability
 	$(NPM) --prefix packages/client test
 
 client-check: client-test client-build ## Verify the public SDK
+
+# The attested reader measures packages/client's build into PCR0
+# (deploy/enclave/Dockerfile), so a change that moves those bytes needs a
+# reader release; this holds them equal to release A's, c9ec561.
+client-dist-check: ## The reader's measured client equals c9ec561's
+	scripts/check-client-dist.sh
 
 mcp-check: client-build ## Install and verify the local MCP server
 	$(NPM) --prefix packages/mcp ci
