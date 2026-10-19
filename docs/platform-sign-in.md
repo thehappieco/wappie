@@ -519,6 +519,39 @@ private console draws it around Wappie's settings screens, at
   release's, they are served `no-cache` like the document, so a release is
   never drawn with an old copy. Other root files keep an hour and `/assets/`
   a year (`internal/webui`).
+- Prerendering between the console and the shell's screens (platform
+  decision 0047, shell 1.4.0, contract 2.4; `internal/webui/speculation.go`).
+  Only while the issuer and a console origin other than the issuer's are
+  both set, as for `connect-src`:
+  - every `/console/*` document (a 200 `text/html` answer) names
+    `Speculation-Rules: "/speculation-rules.json"`. That file is served as
+    `application/speculationrules+json` (the one type Chromium takes header
+    rules in), `no-store`. It prerenders, at moderate eagerness, the
+    console's `/workspaces`, `/workspaces/*`, `/account`, `/contacts` and
+    `/ai`; never `/auth`, `/signout`, `/v1` or an invitation. With the
+    shell off it is a 404, and a file of that name in the client's directory
+    is never served;
+  - a `/console/*` document says `Supports-Loading-Mode:
+    credentialed-prerender` only when the request's one `Referer` has the
+    console's exact origin (scheme and host, byte for byte; a path or query
+    after it is fine). A neighbour on the same site, another port or scheme,
+    user info, two Referers or none get no opt-in, so nobody else can
+    prerender a screen with this page's session. `Sec-Fetch-Site` is never
+    read: a prerender sends `none`;
+  - every `/console/*` document is `Cache-Control: no-store`, whatever its
+    status and whether the shell is on, and is answered whole: its
+    conditional and range headers are dropped, so it is never a 304 or a
+    206. A stored copy revalidated with a 304 would carry one request's
+    opt-in to another's. `/` and `/console` keep `no-cache`;
+  - nothing else changes. The CSP is byte for byte the other documents'
+    (the rules are same-origin, under `'self'`, and a navigation has no
+    directive), `frame-ancestors` stays `'none'`, and the Referrer-Policy
+    stays `strict-origin`: cross-origin it sends the console this origin,
+    which the console's own opt-in reads, and it is never `no-referrer`,
+    whose `Origin: null` broke the MCP consent on 2026-09-22.
+
+  The page keeps every side effect of its boot until the person arrives on
+  a prerendered screen (`commercial/docs/platform-shell.md`).
 
 The shell's data is display only. The workspace in the address is
 authorized against this server's own session (`POST

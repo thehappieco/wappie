@@ -83,8 +83,10 @@ type Handler struct {
 	// PlatformConsole is The Happie Co's console origin while it is
 	// configured (WS_PLATFORM_CONSOLE_ORIGIN, with the issuer): the console
 	// document may then read the shared shell's data there (GET /v1/shell,
-	// contract v1 2.2). frame-ancestors stays 'none'. Empty leaves
-	// connect-src as it was.
+	// contract v1 2.2), and the shell's screens prerender the console's
+	// pages and may be prerendered from them (speculation.go).
+	// frame-ancestors stays 'none'. Empty leaves connect-src as it was, and
+	// the screens name no rules.
 	PlatformConsole string
 	dir             string
 	files           http.Handler
@@ -134,6 +136,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if clean == speculationRulesPath {
+		h.serveSpeculationRules(w, r)
+		return
+	}
 
 	if clean == sessionBridgePath {
 		// This exception must never turn an SPA fallback or another host's
@@ -176,6 +182,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.headers(w, "/", r.Host, r.URL.Query().Get("server_origin"))
+	if strings.HasPrefix(clean, shellScreenPrefix) {
+		// One of the shared shell's screens (speculation.go): never stored,
+		// answered whole, and while the shell is on, naming the rules and
+		// opting in to the console's prerender only when the console asked.
+		console := h.shellConsole()
+		w = &screenWriter{ResponseWriter: w, rules: console != "", optIn: console != "" && fromOrigin(r, console)}
+		r = wholeRequest(r)
+	}
 	http.ServeFile(w, r, path.Join(h.dir, "index.html"))
 }
 
@@ -260,10 +274,11 @@ func (h *Handler) headers(w http.ResponseWriter, clean, host, external string) {
 			// /auth/callback is served here like every page, with ?code,
 			// ?state and ?iss in its address until the page drops them.
 			// strict-origin also keeps the Origin of the consent post (it is
-			// not no-referrer), and only the bare origin ever leaves.
+			// not no-referrer), and only the bare origin ever leaves: the
+			// console's opt-in to prerendering reads it (speculation.go).
 			header.Set("Referrer-Policy", "strict-origin")
 			policy = strings.Replace(policy, "connect-src 'self'", "connect-src 'self' "+issuer, 1)
-			if console := platformIssuer(h.PlatformConsole); console != "" && console != issuer {
+			if console := h.shellConsole(); console != "" {
 				policy = strings.Replace(policy, "connect-src 'self' "+issuer, "connect-src 'self' "+issuer+" "+console, 1)
 			}
 		}
