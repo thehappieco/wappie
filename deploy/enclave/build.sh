@@ -23,7 +23,7 @@
 #   KMS_READER_KEY_ARN, KMS_BOOT_KEY_ARN  required: the two keys by key-id ARN.
 #                    The public constants.mjs carries markers for them; the
 #                    build context gets the real values, so they are measured.
-#   PARENT_ROLE_ARN  [arn:aws:iam::768406580484:role/wappie-enclave-spike-parent]
+#   PARENT_ROLE_ARN  [arn:aws:iam::<the keys' account>:role/wappie-enclave-spike-parent]
 #                    PCR3 measures it, so it flows into both policies.
 #   IMAGE_REPO       [ghcr.io/thehappieco/wappie-reader]
 #   NODE_IMAGE, RUST_IMAGE  override the Dockerfile's pinned digests.
@@ -47,7 +47,6 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-PARENT_ROLE_ARN=${PARENT_ROLE_ARN:-arn:aws:iam::768406580484:role/wappie-enclave-spike-parent}
 IMAGE_REPO=${IMAGE_REPO:-ghcr.io/thehappieco/wappie-reader}
 # Run Command shells and plain SSH sessions do not source nitro-cli's profile
 # script (spike, Day 1: E51 without these).
@@ -69,6 +68,10 @@ boot_key=${KMS_BOOT_KEY_ARN:?set KMS_BOOT_KEY_ARN (the wappie-mcp-boot key, by k
 [[ "$reader_key" =~ $key_arn ]] || die "KMS_READER_KEY_ARN must be an eu-west-1 key-id ARN"
 [[ "$boot_key" =~ $key_arn ]] || die "KMS_BOOT_KEY_ARN must be an eu-west-1 key-id ARN"
 [ "$reader_key" != "$boot_key" ] || die "the reader and boot keys must differ"
+# One account holds the keys and the parent (docs/mcp-enclave.md), so the
+# default role's account is the reader key's and the repository names none.
+key_account=${reader_key#arn:aws:kms:eu-west-1:}
+PARENT_ROLE_ARN=${PARENT_ROLE_ARN:-arn:aws:iam::${key_account%%:*}:role/wappie-enclave-spike-parent}
 
 commit=$(git -C "$root" rev-parse HEAD)
 if [ -n "$(git -C "$root" status --porcelain)" ]; then

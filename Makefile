@@ -1,5 +1,5 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
-	fixtures-check client-install client-build client-test client-check client-dist-check mcp-check mcp-http-check public-source \
+	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check mcp-check mcp-http-check public-source \
 	enclave-check enclave-image enclave-jail media-worker-check media-jail-check reader-verify
 
 GO      ?= go
@@ -58,7 +58,19 @@ lint-layout: ## Reject parallel legacy package copies
 fixtures-check: ## Check the cross-language fixtures against their recorded hashes
 	shasum -a 256 -c --quiet .github/fixtures.sha256
 
-check: fmt vet lint-layout fixtures-check test-race ## Everything CI runs (Go only; see client-check)
+# No id of a real AWS account in the files, paths or message of the commits of
+# IDENTIFIERS_REVS (the checked-out commit by default; origin/main..HEAD before
+# a push): only AWS's documentation placeholders may appear in an ARN or an
+# account-id field, and nothing of the owner's private list anywhere
+# (scripts/identifiers-check.sh). The list comes from the environment variable
+# WAPPIE_IDENTIFIERS (in CI, the repository secret) or from
+# identifiers.local.txt (git-ignored); without one the check runs the classes
+# only, and fails in CI.
+IDENTIFIERS_REVS ?=
+identifiers-check: ## Reject AWS account ids outside the documentation placeholders
+	scripts/identifiers-check.sh $(IDENTIFIERS_REVS)
+
+check: fmt vet lint-layout fixtures-check identifiers-check test-race ## Everything CI runs (Go only; see client-check)
 
 # Public SDK and interoperability checks build independently of Go.
 NPM ?= npm

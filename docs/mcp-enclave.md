@@ -22,8 +22,9 @@ that is the value to implement. A change goes through the lead, not through a
 workstream editing another's files.
 
 **Fixed by the owner (2026-09-25):** one environment only (`mcp.`, no
-`mcp-staging.`), so the Go readers are `hosted` and `enclave`. AWS account
-`768406580484`, `eu-west-1`. The parent is the spike instance
+`mcp-staging.`), so the Go readers are `hosted` and `enclave`. One AWS
+account, in `eu-west-1`; each release's key ARNs and key policies name it
+(§9), and the source tree does not. The parent is the spike instance
 `i-05cdefb4833fdf39e` (`c7g.large`, enclave CID 16, 1 vCPU, 1536 MiB). PCR3 is
 SHA-384(48 zero bytes ‖ the parent's **role** ARN), so the spike role name
 flows into the key policy. Ephemeral key mode is the 2b default, and attachments
@@ -462,7 +463,7 @@ and the registry. The image goes to `ghcr.io/thehappieco/wappie-reader@sha256:�
   "eif": { "file": "wappie-reader-0.2.0.eif", "sha256": "<64 hex>", "size": 0 },
   "pcrs": { "0": "<96 hex>", "1": "<96 hex>", "2": "<96 hex>" },
   "nitro_cli": { "version": "1.5.0", "blobs": { "<file name>": "<64 hex>" } },
-  "kms": { "region": "eu-west-1", "reader_key_arn": "arn:aws:kms:eu-west-1:768406580484:key/<id>", "boot_key_arn": "…" },
+  "kms": { "region": "eu-west-1", "reader_key_arn": "arn:aws:kms:eu-west-1:<account>:key/<id>", "boot_key_arn": "…" },
   "policies": [ { "phase": "transition", "file": "reader-key-policy.transition.json", "sha256": "<64 hex>",
                   "pins_pcr0": ["<96 hex: previous PCR0>", "<96 hex: this PCR0>"] },
                 { "phase": "steady", "file": "reader-key-policy.steady.json", "sha256": "<64 hex>",

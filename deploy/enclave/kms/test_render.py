@@ -11,9 +11,9 @@ _spec = importlib.util.spec_from_file_location("render", HERE / "render.py")
 render = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(render)
 
-ROLE = "arn:aws:iam::000000000000:role/ci"
-ROOT = "arn:aws:iam::000000000000:root"
-SSO = "arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/eu-west-1/AWSReservedSSO_Owner_0123456789abcdef"
+ROLE = "arn:aws:iam::123456789012:role/ci"
+ROOT = "arn:aws:iam::123456789012:root"
+SSO = "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/eu-west-1/AWSReservedSSO_Owner_0123456789abcdef"
 PCR_A, PCR_B = "a" * 96, "b" * 96
 ADMIN = {"kms:CancelKeyDeletion", "kms:DisableKey", "kms:EnableKey", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion"}
 TEMPLATES = {name: HERE / f"{name}-key-policy.template.json" for name in ("reader", "boot")}
@@ -76,7 +76,7 @@ class OwnerTest(unittest.TestCase):
                 # be able to PutKeyPolicy afterwards.
                 self.assertTrue(allowed(policy, SSO, action), (name, action))
                 self.assertTrue(allowed(policy, ROOT, action), (name, action))
-                self.assertFalse(allowed(policy, "arn:aws:iam::000000000000:role/operator", action), (name, action))
+                self.assertFalse(allowed(policy, "arn:aws:iam::123456789012:role/operator", action), (name, action))
                 self.assertFalse(allowed(policy, ROLE, action), (name, action))
             # Nobody creates grants, the owner included.
             self.assertFalse(allowed(policy, SSO, "kms:CreateGrant"))
@@ -93,7 +93,7 @@ class OwnerTest(unittest.TestCase):
         self.assertEqual(actions(deny), {"kms:Encrypt"})
         self.assertEqual(deny["Condition"], {"StringNotEquals": {"aws:PrincipalArn": SSO}})
         self.assertFalse(allowed(policy, ROLE, "kms:Encrypt"))
-        self.assertFalse(allowed(policy, "arn:aws:iam::000000000000:role/operator", "kms:Encrypt"))
+        self.assertFalse(allowed(policy, "arn:aws:iam::123456789012:role/operator", "kms:Encrypt"))
         # The owner's Allow carries the relay context; the Deny must not add
         # another path to Encrypt.
         allow = statements(policy)["OwnerEncryptsRelaySecret"]
@@ -103,10 +103,10 @@ class OwnerTest(unittest.TestCase):
 
     def test_rejects_bad_owners(self):
         for bad in (
-            "arn:aws:iam::111111111111:root",                                  # another account
-            "arn:aws:sts::000000000000:assumed-role/Owner/session",            # a session, not aws:PrincipalArn
-            "arn:aws:iam::000000000000:group/owners",
-            "000000000000",
+            "arn:aws:iam::111122223333:root",                                  # another account
+            "arn:aws:sts::123456789012:assumed-role/Owner/session",            # a session, not aws:PrincipalArn
+            "arn:aws:iam::123456789012:group/owners",
+            "123456789012",                                                    # an account id, not an ARN
             ROLE,                                                              # the parent itself
         ):
             with self.assertRaises(SystemExit, msg=bad):
@@ -136,11 +136,13 @@ class KmsNormalFormTest(unittest.TestCase):
 
     def test_reader_0_2_0_matches_what_kms_returned(self):
         # The live reader key policy of release 0.2.0, read back with
-        # GetKeyPolicy after the owner applied the published transition policy.
+        # GetKeyPolicy after the owner applied the published transition policy,
+        # as KMS formatted it, with AWS's documentation account in place of the
+        # real one and PCR3 computed for that role ARN.
         live = json.loads((HERE / "testdata/reader-policy-0.2.0-from-kms.json").read_text())
         pcr0 = "be920347aa10867b596120b85be1a6c66316f318812142f1c273056ae0867f4c2e7d98b5215c5650dcd5493ce82ba086"
         out = io.StringIO()
-        render.main([str(TEMPLATES["reader"]), "--role-arn", "arn:aws:iam::768406580484:role/wappie-enclave-spike-parent", "--pcr0", pcr0], out=out)
+        render.main([str(TEMPLATES["reader"]), "--role-arn", "arn:aws:iam::123456789012:role/wappie-enclave-spike-parent", "--pcr0", pcr0], out=out)
         self.assertEqual(json.loads(out.getvalue()), live)
 
     def test_one_element_arrays_become_values_and_longer_ones_stay(self):
