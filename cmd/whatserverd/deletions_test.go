@@ -1063,7 +1063,8 @@ func TestUnknownCommandNeverServes(t *testing.T) {
 	served := 0
 	serve := func() error { served++; return nil }
 	for _, args := range [][]string{{"deletion", "replay", "-ledger", "x"}, {"device", "purge-deleted"}, {"-h"}, {"--help"},
-		{"help"}, {"serve", "now"}, {""}, {"deletions", "replai"}, {"deletions"}, {"devices"}, {"devices", "purge"}} {
+		{"help"}, {"serve", "now"}, {""}, {"deletions", "replai"}, {"deletions"}, {"devices"}, {"devices", "purge"},
+		{"contract"}, {"contract", "chek"}, {"contract-secret"}, {"contract-secret", "rotate"}} {
 		var usage usageError
 		if err := runCommand(args, serve); !errors.As(err, &usage) {
 			t.Fatalf("%q: %v", args, err)

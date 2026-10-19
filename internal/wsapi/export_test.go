@@ -17,3 +17,6 @@ func SetSubscribeHook(cfg *Config, hook func(stage string)) { cfg.subscribeHook 
 func SetTransferHook(cfg *Config, hook func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)) {
 	cfg.transferHook = hook
 }
+
+// AtActsInFlight is how many sends' background checks run at once.
+const AtActsInFlight = atActsInFlight

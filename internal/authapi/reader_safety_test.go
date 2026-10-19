@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.mau.fi/whatsmeow/types"
+	"whatserver2/internal/authapi"
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/pg"
+	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -279,4 +283,233 @@ func TestLastKeyHolderOfADeletedNumber(t *testing.T) {
 type refusal struct {
 	Code    string                   `json:"code"`
 	Numbers []store.DeletedNumberRef `json:"numbers"`
+}
+
+// deletedNumberOf is a number of the harness's workspace whose only key
+// holder is reader, deleted by owner.
+func deletedNumberOf(t *testing.T, h *harness, owner, reader store.User, pn string) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	device := protectedNumber(t, h, reader)
+	devices := store.NewDevices(h.pool)
+	if err := devices.SetIdentity(ctx, h.tenant.String(), device.String(), wa.Identity{PN: types.NewJID(pn, types.DefaultUserServer)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := devices.Quarantine(ctx, h.tenant, owner.ID, device, []uuid.UUID{reader.ID}); err != nil {
+		t.Fatal(err)
+	}
+	return device
+}
+
+// strandRequest is a member change with strand_deleted: a disable (PUT,
+// in the body) or a removal (DELETE, in the query string, as query says).
+func strandRequest(t *testing.T, h *harness, token, method string, target uuid.UUID, query string) (int, refusal) {
+	t.Helper()
+	code, out, _ := strandResponse(t, h, token, method, target, query)
+	return code, out
+}
+
+// strandResponse is strandRequest with the answer's headers.
+func strandResponse(t *testing.T, h *harness, token, method string, target uuid.UUID, query string) (int, refusal, http.Header) {
+	t.Helper()
+	var body *bytes.Reader
+	if method == http.MethodPut {
+		raw, _ := json.Marshal(map[string]any{"role": "member", "status": "disabled", "strand_deleted": true})
+		body = bytes.NewReader(raw)
+	} else {
+		body = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequest(method, h.srv.URL+"/v1/auth/workspaces/members/"+target.String()+query, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // Response body cleanup in tests.
+	var out refusal
+	if resp.StatusCode >= 300 {
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return resp.StatusCode, out, resp.Header
+}
+
+// Test 52 (the plan's DB13, 4.12's routes, and DB2's gate as the owner
+// confirmed it): strand_deleted on the disable and remove routes. Anyone
+// but an owner gets owner_only before any step-up prompt; an owner needs a
+// recent step-up; and the override goes on only where the platform will
+// mail the other owners (observing, in a team the platform names), else
+// last_reader_of_deleted as without the flag. A live number's last reader
+// is never stranded.
+func TestMemberStrandNeedsStepUp(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	owner, token := memberAccount(t, h, "owner@strand.test", "owner")
+	_, adminToken := memberAccount(t, h, "admin@strand.test", "admin")
+	removed, _ := memberAccount(t, h, "removed@strand.test", "member")
+	disabled, _ := memberAccount(t, h, "disabled@strand.test", "member")
+	liveReader, _ := memberAccount(t, h, "live@strand.test", "member")
+	removedNumber := deletedNumberOf(t, h, owner, removed, "5511912340001")
+	disabledNumber := deletedNumberOf(t, h, owner, disabled, "5511912340002")
+	protectedNumber(t, h, liveReader)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := h.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stranded := func() map[uuid.UUID]string {
+		t.Helper()
+		out := map[uuid.UUID]string{}
+		if err := pg.InTenantTx(ctx, h.pool, h.tenant.String(), func(tx pgx.Tx) error {
+			rows, err := tx.Query(ctx, `SELECT item_id, cause FROM item_events WHERE type = 'stranded'`)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var id uuid.UUID
+				var cause string
+				if err := rows.Scan(&id, &cause); err != nil {
+					return err
+				}
+				out[id] = cause
+			}
+			return rows.Err()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	both := func(tok string) map[string]func() (int, refusal) {
+		return map[string]func() (int, refusal){
+			"disable": func() (int, refusal) { return strandRequest(t, h, tok, http.MethodPut, disabled.ID, "") },
+			"remove": func() (int, refusal) {
+				return strandRequest(t, h, tok, http.MethodDelete, removed.ID, "?strand_deleted=true")
+			},
+		}
+	}
+
+	// Outside the gate (the contract off), an owner's flag is ignored.
+	for name, act := range both(token) {
+		if code, got := act(); code != http.StatusConflict || got.Code != "last_reader_of_deleted" || len(got.Numbers) != 1 {
+			t.Fatalf("%s outside the gate: %d %+v", name, code, got)
+		}
+	}
+	exec(`UPDATE contract_state SET mode = 'observe', events_from = clock_timestamp()`)
+	// Observing, in a team the platform does not name: the same.
+	for name, act := range both(token) {
+		if code, got := act(); code != http.StatusConflict || got.Code != "last_reader_of_deleted" {
+			t.Fatalf("%s in an unnamed team: %d %+v", name, code, got)
+		}
+	}
+	exec(`INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, h.tenant)
+
+	// An admin: owner_only, fresh or not, never a step-up prompt.
+	for _, stale := range []bool{false, true} {
+		if stale {
+			h.age(t, adminToken)
+		}
+		for name, act := range both(adminToken) {
+			if code, got := act(); code != http.StatusForbidden || got.Code != "owner_only" {
+				t.Fatalf("%s by an admin (stale %v): %d %+v", name, stale, code, got)
+			}
+		}
+	}
+	// A flag that is not a boolean.
+	if code, got := strandRequest(t, h, token, http.MethodDelete, removed.ID, "?strand_deleted=maybe"); code != http.StatusBadRequest || got.Code != "bad_request" {
+		t.Fatalf("strand_deleted=maybe: %d %+v", code, got)
+	}
+	// An owner whose sign-in is over ten minutes old: step_up_required.
+	h.age(t, token)
+	for name, act := range both(token) {
+		if code, got := act(); code != http.StatusForbidden || got.Code != stepup.Code {
+			t.Fatalf("%s by a stale owner: %d %+v", name, code, got)
+		}
+	}
+	if s := stranded(); len(s) != 0 {
+		t.Fatalf("refusals stranded %v", s)
+	}
+	// Without the flag, nothing asks for a step-up and release A's refusal
+	// stands.
+	if status, code := removeMember(t, h, token, removed.ID.String()); status != http.StatusConflict || code != "last_reader_of_deleted" {
+		t.Fatalf("a removal without the flag: %d %s", status, code)
+	}
+	if code := h.post(t, "/v1/auth/step-up/password", map[string]string{"auth_key": "proof"}, nil, token); code != http.StatusOK {
+		t.Fatalf("the owner's step-up: %d", code)
+	}
+	// A live number's last reader stays, flag or not.
+	if code, got := strandRequest(t, h, token, http.MethodDelete, liveReader.ID, "?strand_deleted=true"); code != http.StatusConflict || got.Code != "last_device_reader" {
+		t.Fatalf("a live number's last reader: %d %+v", code, got)
+	}
+	// Behind a change to the workspace that outlasts the override's lock
+	// timeout: workspace_busy, to try again, and nothing changed.
+	blocker, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, h.tenant); err != nil {
+		t.Fatal(err)
+	}
+	if code, got, header := strandResponse(t, h, token, http.MethodPut, disabled.ID, ""); code != http.StatusServiceUnavailable ||
+		got.Code != "workspace_busy" || header.Get("Retry-After") == "" {
+		t.Fatalf("a busy workspace: %d %+v %v", code, got, header)
+	}
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := stranded(); len(s) != 0 {
+		t.Fatalf("a busy override stranded %v", s)
+	}
+	for name, act := range both(token) {
+		if code, got := act(); code != http.StatusNoContent {
+			t.Fatalf("%s by a fresh owner: %d %+v", name, code, got)
+		}
+	}
+	if s := stranded(); len(s) != 2 || s[removedNumber] != "revoked" || s[disabledNumber] != "disabled" {
+		t.Fatalf("stranded %v", s)
+	}
+	// ?strand_deleted=false is no flag.
+	again, _ := memberAccount(t, h, "again@strand.test", "member")
+	deletedNumberOf(t, h, owner, again, "5511912340003")
+	if code, got := strandRequest(t, h, token, http.MethodDelete, again.ID, "?strand_deleted=false"); code != http.StatusConflict || got.Code != "last_reader_of_deleted" {
+		t.Fatalf("strand_deleted=false: %d %+v", code, got)
+	}
+}
+
+// A flagged member change is on the sign-in budget, as a removal is: it
+// may hold the contract's state (store.ErrWorkspaceBusy). An unflagged one
+// stays off it, as in release A.
+func TestMemberStrandIsRateLimited(t *testing.T) {
+	h := newHarness(t)
+	_, token := memberAccount(t, h, "owner@limit.test", "owner")
+	target, _ := memberAccount(t, h, "target@limit.test", "member")
+	mux := http.NewServeMux()
+	(&authapi.Handler{
+		Users: h.users, Keys: h.keys, Devices: store.NewDevices(h.pool),
+		Limits: &ratelimit.Auth{PerIP: ratelimit.New(60, 100), PerSubject: ratelimit.New(1, 2)},
+	}).Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	limited := &harness{srv: srv, pool: h.pool, users: h.users, keys: h.keys, tenant: h.tenant}
+	for i := range 2 {
+		if code, got := strandRequest(t, limited, token, http.MethodPut, target.ID, ""); code != http.StatusNoContent {
+			t.Fatalf("flagged change %d: %d %+v", i+1, code, got)
+		}
+	}
+	if code, got, header := strandResponse(t, limited, token, http.MethodPut, target.ID, ""); code != http.StatusTooManyRequests ||
+		got.Code != "rate_limited" || header.Get("Retry-After") == "" {
+		t.Fatalf("a third flagged change: %d %+v", code, got)
+	}
+	for i := range 3 {
+		if code := setMember(t, limited, token, target.ID, "member", "disabled"); code != http.StatusNoContent {
+			t.Fatalf("unflagged change %d: %d", i+1, code)
+		}
+	}
 }

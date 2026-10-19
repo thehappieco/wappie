@@ -22,6 +22,7 @@ import (
 	"whatserver2/internal/calling"
 	"whatserver2/internal/ingest"
 	"whatserver2/internal/media"
+	"whatserver2/internal/membership"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/stepup"
@@ -106,6 +107,12 @@ type Config struct {
 	// exporter's to report, and the janitor exports again within the hour.
 	// Called after each such commit, before its reply. Nil exports nothing.
 	ExportLedger func(ctx context.Context, tenant uuid.UUID)
+	// Membership is the contract's freshness hook (internal/membership;
+	// README 7.1, the plan's 4.12): every act it gates asks it before the
+	// act's store transaction, and a person's sends and group
+	// administration ask it in the background (freshness.go). Nil gates
+	// nothing; at observe it only logs (the plan's DB4).
+	Membership membership.Freshness
 
 	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
 	// once access is known and before the bus registers the subscription,
@@ -125,6 +132,9 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[*session]struct{}
+
+	// atActs bounds the background freshness checks of sends in flight.
+	atActs chan struct{}
 }
 
 // exportLedger runs the configured export, if any.
@@ -139,7 +149,8 @@ func NewServer(cfg Config) *Server {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Server{cfg: cfg, log: cfg.Log, device: cfg.Registry.Get, sessions: map[*session]struct{}{}}
+	return &Server{cfg: cfg, log: cfg.Log, device: cfg.Registry.Get, sessions: map[*session]struct{}{},
+		atActs: make(chan struct{}, atActsInFlight)}
 }
 
 const (
@@ -397,6 +408,11 @@ type session struct {
 
 	subMu sync.Mutex
 	sub   *bus.Subscription
+
+	// atActMu guards atActSeen: when each act's background freshness
+	// check last ran, by act and number (freshness.go).
+	atActMu   sync.Mutex
+	atActSeen map[string]time.Time
 }
 
 func (s *session) tenantID() string {

@@ -124,6 +124,12 @@ func lockSignupInvite(ctx context.Context, tx pgx.Tx, secret, email string, serv
 	if (inv.Role == RoleService) != service {
 		return inv, nil, ErrInviteInvalid
 	}
+	// A person invitation into a team the platform names is refused before
+	// anything is spent, an invitation issued before the record included:
+	// its code stays unspent (the plan's DB6).
+	if err = invitationsPausedTx(ctx, tx, inv.TenantID, inv.Role); err != nil {
+		return inv, nil, err
+	}
 	if !service && inv.Email != "" && inv.Email != normaliseEmail(email) {
 		return inv, nil, ErrInviteEmailMismatch
 	}

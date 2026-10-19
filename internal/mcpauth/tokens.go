@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 )
 
@@ -314,6 +315,9 @@ func (h *Handler) tokenBundle(w http.ResponseWriter, r *http.Request) {
 	in.Reader, in.ReaderMeasurement = rd.id, entry.measurement()
 	if content {
 		in.ReaderPublicKey = append([]byte(nil), entry.publicKey...)
+	}
+	if !h.fresh(ctx, w, actToken, user.TenantID, membership.Party{User: user.ID, How: membership.IfStale}) {
+		return
 	}
 	conn, err := h.Connections.Create(ctx, user.TenantID, user.ID, in)
 	if err != nil {

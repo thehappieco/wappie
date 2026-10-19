@@ -1,5 +1,5 @@
 {
-  "description": "Wappie's contractLabel (decision 0038's plan, 4.11): label, else push name; placeholders, opaque or legacy ids and the number itself are set aside; then the contract's CleanLabel. want null is no label. The contract's own vectors are contract-v1-labels.json, copied from the platform's docs/contract/v1/vectors/labels.json at 463f320.",
+  "description": "Wappie's contractLabel (decision 0038's plan, 4.11): label, else push name; placeholders, opaque or legacy ids and the number itself are set aside; then the contract's CleanLabel. want null is no label. The contract's own vectors are the kit's (vectors.FS, platform/contract-v1/labels.json), read by TestContractLabelVectors.",
   "cases": [
     {"name": "a plain label", "label": "Vendas", "want": "Vendas"},
     {"name": "the push name when there is no label", "label": "", "push_name": "Loja Centro", "want": "Loja Centro"},

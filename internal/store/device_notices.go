@@ -16,12 +16,18 @@ import (
 // about a number: that it was deleted (its readers, and the workspace's other
 // owners), or that its sync was turned off (its readers). They are required
 // until the platform's mails start (decision 0039) and kept afterwards. A
-// person has at most one unseen notice per number and kind.
+// person has at most one unseen notice per number and kind. 0051 adds the
+// owners' two (the plan's DB14): that a number lost its last key holder to
+// an owner's override (number_stranded), and that it moved out of the team
+// (number_moved_out), each to the workspace's other active owners, never
+// the actor, in every edition.
 
 // Notice kinds.
 const (
-	NoticeSyncPaused    = "sync_paused"
-	NoticeNumberDeleted = "number_deleted"
+	NoticeSyncPaused     = "sync_paused"
+	NoticeNumberDeleted  = "number_deleted"
+	NoticeNumberStranded = "number_stranded"
+	NoticeNumberMovedOut = "number_moved_out"
 )
 
 // DeviceNotice is one unseen notice. Label and Hint are the snapshot the
@@ -45,9 +51,10 @@ type DeviceNotice struct {
 	PurgedAt     *time.Time
 }
 
-// Notices is what user has not seen yet: every number_deleted notice, from
-// its snapshot, and a sync_paused one only while the number is live and the
-// person still reads it.
+// Notices is what user has not seen yet: every number_deleted,
+// number_stranded and number_moved_out notice, from its snapshot, and a
+// sync_paused one only while the number is live and the person still reads
+// it.
 func (d *Devices) Notices(ctx context.Context, tenant, user uuid.UUID) ([]DeviceNotice, error) {
 	var out []DeviceNotice
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -80,7 +87,7 @@ func scanNotices(rows pgx.Rows) ([]DeviceNotice, error) {
 func noticesTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID) ([]DeviceNotice, error) {
 	rows, err := tx.Query(ctx, noticeColumns+`
 		WHERE n.tenant_id = $1 AND n.user_id = $2 AND n.seen_at IS NULL
-		  AND (n.kind = 'number_deleted' OR EXISTS (
+		  AND (n.kind <> 'sync_paused' OR EXISTS (
 		    SELECT 1 FROM workspace_memberships m
 		    JOIN users r ON r.id = m.user_id
 		    JOIN tenants t ON t.id = m.tenant_id
@@ -100,7 +107,7 @@ func noticesTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID) ([]Device
 // SeenNotice is a notice as its person saw it: a pause notice keeps its id
 // when a later pause folds into it, so Pauses says which version was
 // shown. Zero is a bare id, which acknowledges only a notice that never
-// folds (number_deleted).
+// folds (every kind but sync_paused).
 type SeenNotice struct {
 	ID     int64
 	Pauses int
@@ -182,12 +189,14 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 			return err
 		}
 		var name, pushName, pn string
-		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_seq = pause_seq + 1 WHERE id = $1 AND NOT paused
+		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_cause = 'person', pause_seq = pause_seq + 1
+			WHERE id = $1 AND NOT paused
 			RETURNING label, push_name, coalesce(pn, '')`, device).Scan(&name, &pushName, &pn)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Already paused: nobody is told, but the stop still counts, so
-			// a failed transfer's undo leaves the number paused.
-			tag, err := tx.Exec(ctx, `UPDATE devices SET pause_seq = pause_seq + 1 WHERE id = $1`, device)
+			// a failed transfer's undo leaves the number paused, and it is
+			// now a person's pause, which a snapshot reports as theirs.
+			tag, err := tx.Exec(ctx, `UPDATE devices SET pause_cause = 'person', pause_seq = pause_seq + 1 WHERE id = $1`, device)
 			if err != nil {
 				return err
 			}
@@ -222,11 +231,9 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 		if err != nil {
 			return err
 		}
-		var told, subs []uuid.UUID
+		var told []uuid.UUID
+		subs, users := readerIDs(readers)
 		for _, r := range readers {
-			if r.sub != nil {
-				subs = append(subs, *r.sub)
-			}
 			if out.ActorUser == nil || r.UserID != *out.ActorUser {
 				told = append(told, r.UserID)
 			}
@@ -282,7 +289,8 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 		out.Recorded = true
 		return recordEvent(ctx, tx, tenant, itemEvent{
 			Type: eventSyncPaused, ItemID: device, DedupeKey: dedupeKey(eventSyncPaused, device, at), OccurredAt: at,
-			ActorKind: out.ActorKind, ActorSub: sub, ActorUserID: out.ActorUser, ReaderSubs: subs, Label: itemName, Hint: hint,
+			ActorKind: out.ActorKind, ActorSub: sub, ActorUserID: out.ActorUser, ReaderSubs: subs, ReaderUserIDs: users,
+			Label: itemName, Hint: hint,
 		})
 	})
 	return out, err

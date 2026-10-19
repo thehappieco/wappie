@@ -208,6 +208,9 @@ func TestLedgerReplay(t *testing.T) {
 	t.Run("an early purge and an account's closing", func(t *testing.T) {
 		w := newDelWorld(t)
 		early, closing := w.number(t, "Cedo"), w.number(t, "Fechada")
+		// The restore was taken while a person had stopped one of them: the
+		// exclusion's cause replaces theirs.
+		w.pause(t, early, store.PauseActor{User: w.owner})
 		deletedAt, purgeAfter := w.window(t, "-2 days")
 		purgedAt := w.dbTime(t, `$1::timestamptz + interval '1 hour'`, deletedAt)
 		closedAt := w.dbTime(t, `clock_timestamp() - interval '1 day'`)
@@ -224,6 +227,9 @@ func TestLedgerReplay(t *testing.T) {
 		for _, device := range []uuid.UUID{early, closing} {
 			if r, _ := w.row(t, w.tenant, device); !r.excluded || !r.due {
 				t.Fatalf("%s is not due at once: %+v", device, r)
+			}
+			if got := pauseCause(context.Background(), t, w.pool, w.tenant, device); got != store.PauseForDeletion {
+				t.Fatalf("%s excluded by the replay: pause_cause %q", device, got)
 			}
 		}
 	})
@@ -242,6 +248,14 @@ func TestLedgerReplay(t *testing.T) {
 			return err
 		})
 		r, _ := w.row(t, w.tenant, device)
+		// An owner's override had stranded it in the snapshot: the other
+		// owner's notice names its purge, as strandTx writes it.
+		coOwner := w.person(t, "co-owner", "owner")
+		w.scoped(t, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind, until)
+				VALUES ($1, $2, $3, 'number_stranded', 'Vendas', '…5678', $4, 'person', $5)`, w.tenant, device, coOwner, w.owner, *r.purgeAfter)
+			return err
+		})
 		recoveredAt := w.dbTime(t, `$1::timestamptz + interval '1 day'`, *r.deletedAt)
 		lines := []ledger.Line{w.line(ledger.TypeDeleted, device, r.deletedAt, r.purgeAfter, *r.deletedAt),
 			w.line(ledger.TypeRecovered, device, r.deletedAt, nil, recoveredAt)}
@@ -252,8 +266,16 @@ func TestLedgerReplay(t *testing.T) {
 		if after, _ := w.row(t, w.tenant, device); after.excluded || !after.paused {
 			t.Fatalf("the recovered number: %+v (deleted %+v)", after, q)
 		}
+		// Paused as the owner's recovery leaves it (0051's pause_cause).
+		if got := pauseCause(ctx, t, w.pool, w.tenant, device); got != store.PauseByPerson {
+			t.Fatalf("the recovered number's pause_cause: %q", got)
+		}
 		if got := w.replayed(t, w.tenant, device); len(got["recovered"]) != 1 || got["recovered"][0] != lines[1].EventID {
 			t.Fatalf("the replayed recovery: %+v", got)
+		}
+		// The stranded notice stays, naming no purge now.
+		if got := w.noticesOfKind(t, coOwner, store.NoticeNumberStranded); len(got) != 1 || got[0].Until != nil {
+			t.Fatalf("the recovered number's stranded notice: %+v", got)
 		}
 		// The first janitor pass finds nothing due.
 		if due, n, err := w.devices.DueDeletions(ctx, w.tenant, 5); err != nil || n != 0 || len(due) != 0 {

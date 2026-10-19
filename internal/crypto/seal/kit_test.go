@@ -491,8 +491,8 @@ func TestFixturesMatchTheKit(t *testing.T) {
 // twice, in go.mod and in the release asset packages/client installs.
 // packages/client is measured in the reader image, so its pin moves only in a
 // reader release; go.mod may move ahead of it between reader releases (kit
-// v0.5.0's platform wrap check and relying party rule, for the server alone),
-// never behind: a client on a newer kit than the vectors Go reads would be
+// v0.5.0's platform wrap check and relying party rule, v0.8.0's contract
+// client and THCSEAL, for the server alone), never behind: a client on a newer kit than the vectors Go reads would be
 // tested against vectors of another kit than the one it runs, and the vectors
 // being append-only, an older kit would still pass them. The client's own
 // manifest, its lockfile and every package that links it always agree.

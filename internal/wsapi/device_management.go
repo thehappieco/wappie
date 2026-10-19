@@ -72,7 +72,9 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 	if err != nil && !errors.Is(err, wa.ErrAlreadyRunning) {
 		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if pauseErr := s.srv.cfg.Devices.SetPaused(restoreCtx, tenant, dev.ID, true); pauseErr != nil {
+		// The pause it took away comes back with its cause: a move's
+		// stays a move's, never a person's.
+		if pauseErr := s.srv.cfg.Devices.RestorePause(restoreCtx, tenant, dev.ID, dev.PauseCause); pauseErr != nil {
 			s.log.Error("could not preserve pause after failed resume", "device", dev.ID, "error", pauseErr)
 		}
 		if errors.Is(err, wa.ErrNoSession) {

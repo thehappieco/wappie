@@ -30,7 +30,7 @@ import (
 type eventRow struct {
 	Type, ActorKind, DedupeKey string
 	ActorSub, ActorUserID      *uuid.UUID
-	ReaderSubs                 []uuid.UUID
+	ReaderSubs, ReaderUserIDs  []uuid.UUID
 	Label, Hint                *string
 	OccurredAt                 time.Time
 	DeletedAt, PurgeAfter      *time.Time
@@ -44,16 +44,16 @@ func readEvents(t *testing.T, pool *pgxpool.Pool, tenant, device uuid.UUID) []ev
 	ctx := context.Background()
 	var out []eventRow
 	inTenantTx(ctx, t, pool, tenant, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT type, actor_kind, dedupe_key, actor_sub, actor_user_id, reader_subs, label, hint,
-			occurred_at, deleted_at, purge_after, to_tenant_id, ledgered_at IS NOT NULL, seq
+		rows, err := tx.Query(ctx, `SELECT type, actor_kind, dedupe_key, actor_sub, actor_user_id, reader_subs, reader_user_ids,
+			label, hint, occurred_at, deleted_at, purge_after, to_tenant_id, ledgered_at IS NOT NULL, seq
 			FROM item_events WHERE item_id = $1 ORDER BY seq`, device)
 		if err != nil {
 			return err
 		}
 		out, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (eventRow, error) {
 			var e eventRow
-			err := row.Scan(&e.Type, &e.ActorKind, &e.DedupeKey, &e.ActorSub, &e.ActorUserID, &e.ReaderSubs, &e.Label, &e.Hint,
-				&e.OccurredAt, &e.DeletedAt, &e.PurgeAfter, &e.ToTenantID, &e.Ledgered, &e.Seq)
+			err := row.Scan(&e.Type, &e.ActorKind, &e.DedupeKey, &e.ActorSub, &e.ActorUserID, &e.ReaderSubs, &e.ReaderUserIDs,
+				&e.Label, &e.Hint, &e.OccurredAt, &e.DeletedAt, &e.PurgeAfter, &e.ToTenantID, &e.Ledgered, &e.Seq)
 			return e, err
 		})
 		return err
@@ -535,8 +535,9 @@ func TestItemEvents(t *testing.T) {
 		recovered.PurgeAfter != nil {
 		t.Fatalf("recovered: %+v", recovered)
 	}
-	// No column but actor_user_id holds a Wappie user id or a key id, and
-	// no column holds the phone number or the LID.
+	// No column but actor_user_id and reader_user_ids (both local, never
+	// sent) holds a Wappie user id or a key id, and no column holds the
+	// phone number or the LID.
 	var leaks int
 	pn := w.pn(ctx, t, device)
 	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
@@ -563,7 +564,7 @@ func TestItemEvents(t *testing.T) {
 
 	// The CHECKs.
 	for name, insert := range map[string]string{
-		"an unknown type":                  `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind) VALUES ($1,$2,'stranded',$3,$4,now(),'app')`,
+		"an unknown type":                  `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind) VALUES ($1,$2,'renamed',$3,$4,now(),'app')`,
 		"moved_out with no target":         `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind) VALUES ($1,$2,'moved_out',$3,$4,now(),'person')`,
 		"deleted with no dates":            `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind) VALUES ($1,$2,'deleted',$3,$4,now(),'person')`,
 		"sync_paused not ledgered":         `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind) VALUES ($1,$2,'sync_paused',$3,$4,now(),'person')`,
@@ -604,6 +605,49 @@ func TestItemEvents(t *testing.T) {
 	})
 	if seen != 0 {
 		t.Fatalf("%d rows outlived their workspace", seen)
+	}
+}
+
+// Every writer keeps its readers' local accounts beside their subs (0051's
+// reader_user_ids, for the self-hosted mailer): a reader with no sub is
+// there too, the actor among them when they read.
+func TestEventReaderUserIDs(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	device := w.number(t, "Loja")
+	unlinked := w.person(t, "local", "member")
+	w.reads(t, w.owner, device)
+	w.reads(t, unlinked, device)
+	ownerSub := linkSub(t, w.pool, w.owner)
+	w.pause(t, device, store.PauseActor{User: w.owner})
+	w.quarantine(t, device, unlinked)
+	w.recover(t, device)
+	rows := readEvents(t, w.pool, w.tenant, device)
+	if len(rows) != 3 {
+		t.Fatalf("rows: %+v", rows)
+	}
+	for _, e := range rows {
+		if !sameSubs(e.ReaderUserIDs, w.owner, unlinked) || !sameSubs(e.ReaderSubs, ownerSub) {
+			t.Fatalf("%s row: readers %v, subs %v", e.Type, e.ReaderUserIDs, e.ReaderSubs)
+		}
+	}
+
+	// The move's row keeps the one reader it may have: the mover.
+	moving := w.number(t, "Pessoal")
+	w.reads(t, w.owner, moving)
+	if err := w.devices.SetPaused(ctx, w.tenant.String(), moving.String(), true); err != nil {
+		t.Fatal(err)
+	}
+	var personal uuid.UUID
+	if err := w.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE personal_owner_id=$1`, w.owner).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.devices.TransferPersonal(ctx, w.tenant, w.owner, moving, personal); err != nil {
+		t.Fatal(err)
+	}
+	moved := eventsOf(t, w.pool, w.tenant, moving, "moved_out")
+	if len(moved) != 1 || !sameSubs(moved[0].ReaderUserIDs, w.owner) || !sameSubs(moved[0].ReaderSubs, ownerSub) {
+		t.Fatalf("the moved_out row: %+v", moved)
 	}
 }
 

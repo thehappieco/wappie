@@ -170,14 +170,16 @@ export interface Devices {
 
 /**
  * Something a person is told about a number in Wappie's own pages:
- * number_deleted (its readers and the workspace's other owners) or sync_paused
- * (its readers). label and hint are the notice's own snapshot, never the
- * number itself, and null after the purge.
+ * number_deleted (its readers and the workspace's other owners), sync_paused
+ * (its readers), or, to the workspace's other owners only, number_stranded
+ * (an owner's override took its last key holder) and number_moved_out (it
+ * moved to the actor's Personal). label and hint are the notice's own
+ * snapshot, never the number itself, and null after the purge.
  */
 export interface DeviceNotice {
   id: number
   device_id: string
-  kind: 'sync_paused' | 'number_deleted'
+  kind: 'sync_paused' | 'number_deleted' | 'number_stranded' | 'number_moved_out'
   label: string | null
   /** "…" and the last four digits of the phone number. */
   hint: string | null
@@ -188,7 +190,10 @@ export interface DeviceNotice {
   /** The person who acted, or a key's creator. */
   raised_by_name?: string
   raised_by_kind: 'person' | 'key'
-  /** For number_deleted: until when an owner can recover it. */
+  /**
+   * For number_deleted: until when an owner can recover it; for
+   * number_stranded: its purge, absent once the number is recovered.
+   */
   until?: string
   resumed_at?: string
   purged_at?: string
@@ -199,7 +204,7 @@ export interface DeviceNotice {
  * its pauses: a sync_paused notice keeps its id when a later pause folds into
  * it, and is acknowledged only at the version shown, so a fold that came after
  * stays unseen and returns in the reply. notice_ids (bare ids) acknowledge only
- * notices that never fold (number_deleted).
+ * notices that never fold (every kind but sync_paused).
  */
 export interface DeviceNoticeSeen {
   notices?: SeenNotice[]

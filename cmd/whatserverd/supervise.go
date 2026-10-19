@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -90,9 +92,35 @@ func (a *app) claimUnheldDevices(ctx context.Context, attempts map[string]int) {
 			a.claim(ctx, tenant.String(), d, attempts)
 		}
 	}
-	for _, h := range toRelease(snapshot, listed) {
-		a.release(ctx, h.ID, "no longer live and unpaused here")
+	// A workspace that is not active captures nothing: a suspended one
+	// today, a closed team once the contract applies closures (the plan's
+	// DB16). Its numbers are in no list, since only active workspaces are
+	// listed, so they are named here. A failed read names none.
+	inactive, err := a.inactiveTenants(ctx)
+	if err != nil {
+		a.log.Error("supervise: list inactive workspaces", "error", err)
 	}
+	for _, r := range toRelease(snapshot, listed, inactive) {
+		a.release(ctx, r.ID, r.why)
+	}
+}
+
+// inactiveTenants is every workspace whose status is not active. tenants
+// carries no row-level security (0001).
+func (a *app) inactiveTenants(ctx context.Context) (map[string]bool, error) {
+	rows, err := a.pools.API.Query(ctx, `SELECT id FROM tenants WHERE status <> 'active'`)
+	if err != nil {
+		return nil, fmt.Errorf("list inactive tenants: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("list inactive tenants: %w", err)
+	}
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id.String()] = true
+	}
+	return out, nil
 }
 
 // tenantList is one workspace's devices.List this tick, or its failure.
@@ -101,22 +129,35 @@ type tenantList struct {
 	err     error
 }
 
+// releasing is a held device to let go of, and why.
+type releasing struct {
+	wa.HeldDevice
+	why string
+}
+
 // toRelease picks the devices this process holds and should not: held,
-// while its workspace's list, which succeeded this tick, does not show it
-// live and unpaused (it was paused, deleted and so hidden, or moved out).
+// while its workspace is not active (inactive, read this tick), or while its
+// workspace's list, which succeeded this tick, does not show it live and
+// unpaused (it was paused, deleted and so hidden, or moved out).
 //
 // Separated from the I/O for the same reason as needsClaim, and with the
 // same two opposite mistakes. A client left running keeps the device lock,
 // so a deletion's logout elsewhere waits on it, and it keeps relaying
-// presence and typing for a number nobody may read. Releasing on a list that
-// failed would stop every running number of the workspace over one
-// transient error, so a failed list releases nothing; and neither does a
-// reservation with no device yet, or a client a deletion is logging out
-// here, which the deletion stops itself.
-func toRelease(held []wa.HeldDevice, listed map[string]tenantList) []wa.HeldDevice {
-	var out []wa.HeldDevice
+// presence and typing for a number nobody may read, or capturing for a
+// workspace that is suspended or closed. Releasing on a list that failed
+// would stop every running number of the workspace over one transient
+// error, so a failed list releases nothing, and a failed read of the
+// inactive workspaces (nil) names none; and neither releases a reservation
+// with no device yet, or a client a deletion is logging out here, which the
+// deletion stops itself.
+func toRelease(held []wa.HeldDevice, listed map[string]tenantList, inactive map[string]bool) []releasing {
+	var out []releasing
 	for _, h := range held {
 		if h.Reserved || h.Unlinking {
+			continue
+		}
+		if inactive[h.TenantID] {
+			out = append(out, releasing{h, "its workspace is not active"})
 			continue
 		}
 		list, ok := listed[h.TenantID]
@@ -131,7 +172,7 @@ func toRelease(held []wa.HeldDevice, listed map[string]tenantList) []wa.HeldDevi
 			}
 		}
 		if !live {
-			out = append(out, h)
+			out = append(out, releasing{h, "no longer live and unpaused here"})
 		}
 	}
 	return out

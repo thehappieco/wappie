@@ -4,7 +4,7 @@ In the console, open the number's details and choose **Move to Personal**. The p
 
 ## Requirements and outcome
 
-- You must be the Team's sole owner and hold the keys to the number's complete history.
+- Only the Team's only owner moves a number out, when nobody else has access to it (platform decision 0043): you must be the Team's only owner (a disabled owner's membership counts as one), and hold the keys to the number's complete history. A co-owner does not move a number while the Team has other owners.
 - Nobody else may have access to the number (decision 0040), so a move never ends anyone's reading, sending or integration. Otherwise it is refused with `others_have_access`, naming who still has access (below).
 - The destination is your own active Personal workspace, with an available number binding and storage capacity.
 - History, attachments, WhatsApp identity and keys are preserved. The Team's API keys for every number, and your own keys limited to chosen numbers, stop reaching it; another member's key limited to it blocks the move until it is revoked.
@@ -40,7 +40,7 @@ The transfer runs in a transaction that locks both workspaces and WhatsApp super
 
 Objects are not rewritten. Each workspace has its own usage ledger; an internal physical-owner index prevents an object from being deleted while another workspace still depends on it. Transfer history records the actor, source, destination and time. Message and event sequences are reassigned without changing identifiers or encrypted envelopes.
 
-The Team records a `moved_out` [event](item-events.md), with its readers before the move (at most you). The deletion ledger keeps it, so a restore from a snapshot taken before the move never puts the number back in the Team ([restoring a backup](deployment.md#restoring-a-backup)). Once the platform contract's transport exists, the platform tells the Team's other owners from it; while only the Team's sole owner may move a number, there is nobody to tell. Other sessions that saw the number get `device.removed` with `reason: "moved"`. A deleted number cannot be moved.
+The Team records a `moved_out` [event](item-events.md), with its readers before the move (at most you). The deletion ledger keeps it, so a restore from a snapshot taken before the move never puts the number back in the Team ([restoring a backup](deployment.md#restoring-a-backup)). The [contract](contract-events.md) sends it to the platform as `item.moved_out`, with `to: "personal"`, in a team the platform names, and the platform mails the Team's other owners from it. Since only the Team's only owner moves a number, there are none, unless an owner joined between the check and the move: such an owner also gets a `number_moved_out` notice in Wappie, and the mover never does. In a team the platform names, the move also asks for the mover's platform document with a fresh request, which must list them as the team's only owner; in this release a document that does not is only logged ("transfer: would refuse"), and the local check above decides. Other sessions that saw the number get `device.removed` with `reason: "moved"`. A deleted number cannot be moved.
 
 ## Upgrade and rollback
 

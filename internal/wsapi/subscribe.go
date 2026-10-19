@@ -656,6 +656,11 @@ func (s *session) resolveDevice(ctx context.Context, f Frame, deviceID string) (
 	if !s.authorizeDevice(ctx, f, device, action) {
 		return uuid.Nil, uuid.Nil, false
 	}
+	// A person's send or group administration: the freshness hook, in the
+	// background, so the frame never waits on it (freshness.go).
+	if atAct(f.Type, action) {
+		s.freshAtAct(ctx, f.Type, tenant, device)
+	}
 	return tenant, device, true
 }
 

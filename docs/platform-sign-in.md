@@ -241,7 +241,9 @@ with no unknown member. Answers are `Cache-Control: no-store`.
    - `client_id` must be `wappie-app`;
    - `product_key_id` must be `wappie:<epoch>` with a valid key;
    - the insert-only pin (`store.PlatformPins`).
-2. Then, by what Wappie knows of the sub:
+2. For a linked sub, while the contract is on, the contract's `PUT`
+   ([below](#the-contract-at-sign-in)), before Wappie's own refusals.
+3. Then, by what Wappie knows of the sub:
 
 | Answer | When |
 |---|---|
@@ -286,18 +288,25 @@ Refusals:
 
 ### `POST /v1/auth/platform/account {ticket, public_key, platform_wrap, display_name?}`
 
-For a `new` ticket. One transaction:
+For a `new` ticket. Once the contract has been observed, the ticket is
+read (not spent) and the sub subscribed first, for its home
+([below](#the-contract-at-sign-in)). Then one transaction:
 
 - spends the ticket;
 - inserts the account (`users.id = sub`, `auth_source = 'platform'`, no
   password columns). The insertion trigger creates its personal workspace,
-  as it does for every person (D6, until the platform's workspaces);
+  as it does for every person: with the id of the platform's personal
+  workspace once the contract has been observed, else a new one (D6);
 - inserts the link and the wrap;
+- with the platform's home, stores its document and records the workspaces
+  it names;
 - records `platform_linked {from: "new"}`.
 
 It then answers `kind: "session"`, whose proof is the ticket's `auth_time`,
 as at `/platform/session`. Possible refusals: `401 ticket_invalid`,
-`409 email_taken`, `409 already_linked`, `400 bad_request`.
+`409 email_taken`, `409 already_linked`, `400 bad_request`, and the
+contract's: `503 platform_unavailable`, `409 workspace_conflict`,
+`403 account_disabled`.
 
 ### `POST /v1/auth/platform/link/prepare {ticket, email, auth_key | recovery_proof}`
 
@@ -326,7 +335,8 @@ One transaction, under the account's lock. It:
 It then answers `kind: "session"`, whose proof is now: the link proved the
 old password (or the recovery code) in the same request, as a password
 sign-in does. Two id. accounts racing for one Wappie account: one links and
-the other gets `409 already_linked`.
+the other gets `409 already_linked`. After the link, while the contract is
+on, the person is subscribed as at a sign-in.
 
 ### `POST /v1/auth/platform/rewrap {ticket, platform_wrap}` (with a bearer session)
 
@@ -406,6 +416,54 @@ start; a new start replaces it.
 The `auth_time` is id.'s clock, the proof always this database's. The minute
 allows for the two clocks behind the start and nothing ahead of it: a proof
 is never dated later than now.
+
+### The contract at sign-in
+
+The product contract ([the contract](contract.md)) subscribes the people
+Wappie holds and takes a new account's home from the platform. Each call is
+bounded to 5 seconds and runs outside every transaction, after a committed
+intent row ([the round and the sweep](contract.md#sign-in-the-round-and-the-sweep)).
+
+- **A returning sign-in** (`/platform/session`, and after `/platform/link`)
+  of a linked sub sends `PUT /contract/v1/accounts/{sub}` while the contract
+  is on (not `off`): after the provider's sign-in and the pin, before
+  Wappie's own refusals, so a rewrapping or a locally disabled sign-in
+  subscribes too. A changed account key never does, and neither does an
+  unlinked sign-in, which only gets a ticket (an abandoned ticket would
+  leave a subscription). It never refuses (fail-static, the spec's 7.2): a
+  document that is not `active`, or no document while the last trusted
+  `published_through` is over an hour old, logs WARN "contract: sign-in
+  would refuse" and the sign-in goes on.
+- **A new account** (`/platform/account`), once the contract has been
+  observed, in every mode since (`off` included): its sub is subscribed
+  before the account is made, and its personal workspace takes the id of
+  the document's first workspace, which must be the personal one. Before
+  the first observe nothing is sent and Wappie chooses the id, as before
+  the contract. The refusals, each leaving the ticket valid unless said:
+  - `503 platform_unavailable` ("could not set up your workspace with The
+    Happie Co; try again in a minute"): no signed document (no transport or
+    no secret, no answer, an unverified one, a signed refusal of any code),
+    or a document that cannot be stored or names no personal workspace.
+    Never a home of Wappie's choosing;
+  - `403 account_disabled`: the document is not `active`; the sub is
+    unsubscribed;
+  - `409 workspace_conflict` ("this account's workspace conflicts with one
+    here; contact support"): a workspace with that id exists here already,
+    or a workspace the document names is of another kind here. ERROR
+    "refused a new account: its personal workspace's id is a workspace here
+    already", a `platform_home_taken` security event (the sub only), and
+    the sub unsubscribed.
+- **Unsubscribing** a refused sign-up: `email_taken`, `workspace_conflict`
+  and a document not `active` send `DELETE /contract/v1/accounts/{sub}` once
+  a fresh read finds the sub still not linked; `already_linked` and
+  `ticket_invalid` never do (a second tab or a double submit may hold the
+  sub). Every other refusal's subscription, and every failed DELETE, is the
+  sweep's, 15 minutes after its last PUT. A person Wappie holds is never
+  unsubscribed.
+- **The step-up's GET.** After `/platform/step-up/finish`, while the
+  contract is on, a stale person's document is asked for, so the act the
+  step-up opens (a deletion, a recovery) finds them fresh. Its failure
+  changes nothing.
 
 ### Discovery and headers
 

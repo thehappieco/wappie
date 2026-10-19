@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 )
 
@@ -214,6 +215,9 @@ func (h *Handler) createAI(w http.ResponseWriter, r *http.Request, user store.Us
 	in.Reader, in.ReaderMeasurement = rd.id, entry.measurement()
 	in.ReaderPublicKey = append([]byte(nil), entry.publicKey...)
 
+	if !h.fresh(ctx, w, actAIConnect, user.TenantID, membership.Party{User: user.ID, How: membership.IfStale}) {
+		return
+	}
 	conn, err := h.Connections.Create(ctx, user.TenantID, user.ID, in)
 	if err != nil {
 		h.aiConnectionError(w, err)

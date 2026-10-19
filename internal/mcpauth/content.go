@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 )
 
@@ -396,6 +397,12 @@ func (h *Handler) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Connections.CheckRenewal(ctx, user.TenantID, user.ID, id, in); err != nil {
 		h.aiConnectionError(w, err)
+		return
+	}
+	// A renewal hands the numbers' keys to the reader again, on the
+	// consenting person's behalf: their document is asked for, always,
+	// before the bundle goes (README 7.1, sharing a key).
+	if !h.fresh(ctx, w, actRenew, user.TenantID, membership.Party{User: user.ID, How: membership.Always}) {
 		return
 	}
 	// The expiry is the connection's, unchanged, in UTC as the consent's

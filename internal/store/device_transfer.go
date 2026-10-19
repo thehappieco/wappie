@@ -185,12 +185,13 @@ type MovePause struct {
 }
 
 // PauseForMove pauses a live number before its move, in one statement, and
-// says whether this call paused it. It is Wappie's own pause: it tells
-// nobody and records nothing (the plan's section 5).
+// says whether this call paused it. It is Wappie's own pause (pause_cause
+// move): it tells nobody and records nothing (the plan's section 5).
 func (d *Devices) PauseForMove(ctx context.Context, tenant, device uuid.UUID) (MovePause, error) {
 	var out MovePause
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_seq = pause_seq + 1 WHERE id = $1 AND NOT paused
+		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_cause = 'move', pause_seq = pause_seq + 1
+			WHERE id = $1 AND NOT paused
 			RETURNING pause_seq`, device).Scan(&out.Seq)
 		if err == nil {
 			out.Changed = true
@@ -210,7 +211,7 @@ func (d *Devices) PauseForMove(ctx context.Context, tenant, device uuid.UUID) (M
 
 // UndoMovePause takes back a transfer's own pause after a move that did not
 // happen, unless the number was paused again since: a person's or a key's
-// stop (which finds it paused and changes nothing else) or another of
+// stop (which finds it paused and makes the pause a person's) or another of
 // Wappie's own pauses then stands, and so does a resume. It reports whether
 // it unpaused the number, and ErrNotFound when the number is no longer in
 // the workspace (the move committed and only its answer was lost, or it was
@@ -221,7 +222,7 @@ func (d *Devices) UndoMovePause(ctx context.Context, tenant, device uuid.UUID, p
 	}
 	var undone bool
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE devices SET paused = false WHERE id = $1 AND paused AND pause_seq = $2`, device, p.Seq)
+		tag, err := tx.Exec(ctx, `UPDATE devices SET paused = false, pause_cause = NULL WHERE id = $1 AND paused AND pause_seq = $2`, device, p.Seq)
 		if err != nil {
 			return err
 		}
@@ -305,12 +306,7 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 		if err != nil {
 			return err
 		}
-		var readerSubs []uuid.UUID
-		for _, r := range readers {
-			if r.sub != nil {
-				readerSubs = append(readerSubs, *r.sub)
-			}
-		}
+		readerSubs, readerUsers := readerIDs(readers)
 		var name, pushName, pn string
 		if err = tx.QueryRow(ctx, `SELECT label, push_name, coalesce(pn, '') FROM devices WHERE id=$1`, device).Scan(&name, &pushName, &pn); err != nil {
 			return err
@@ -349,7 +345,9 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 		if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id',$1,true)`, target.String()); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE devices SET tenant_id=$2,status='offline',status_reason='moved to Personal',paused=true WHERE id=$1`, device, target); err != nil {
+		// A person's pause stays theirs; any other is now the move's.
+		if _, err = tx.Exec(ctx, `UPDATE devices SET tenant_id=$2,status='offline',status_reason='moved to Personal',paused=true,
+			pause_cause=CASE WHEN pause_cause='person' THEN 'person' ELSE 'move' END WHERE id=$1`, device, target); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id',$1,true)`, source.String()); err != nil {
@@ -456,11 +454,25 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			return err
 		}
 		itemName, hint := itemLabel(device, name, pushName, pn)
-		return recordEvent(ctx, tx, source, itemEvent{
+		if err := recordEvent(ctx, tx, source, itemEvent{
 			Type: eventMovedOut, ItemID: device, DedupeKey: dedupeKey(eventMovedOut, device, completed), OccurredAt: completed,
-			ActorKind: actorPerson, ActorSub: sub, ActorUserID: &actor, ReaderSubs: readerSubs, Label: itemName, Hint: hint,
-			ToTenantID: &target,
-		})
+			ActorKind: actorPerson, ActorSub: sub, ActorUserID: &actor, ReaderSubs: readerSubs, ReaderUserIDs: readerUsers,
+			Label: itemName, Hint: hint, ToTenantID: &target,
+		}); err != nil {
+			return err
+		}
+		// And in Wappie's own pages (DB14): each other active owner of the
+		// Team, never the actor. Only the Team's only owner moves a number
+		// (decision 0043), so there is nobody to tell unless an owner joined
+		// between the check and this row.
+		_, err = tx.Exec(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind)
+			SELECT $1, $2, m.user_id, 'number_moved_out', $3, $4, $5, 'person'
+			FROM workspace_memberships m JOIN users o ON o.id = m.user_id
+			WHERE m.tenant_id = $1 AND m.role = 'owner' AND m.status = 'active' AND o.status = 'active' AND m.user_id <> $5
+			ON CONFLICT (tenant_id, device_id, user_id, kind) WHERE seen_at IS NULL DO UPDATE
+			SET label = excluded.label, hint = excluded.hint, raised_at = excluded.raised_at, raised_by = excluded.raised_by,
+			    raised_by_kind = excluded.raised_by_kind`, source, device, itemName, hint, actor)
+		return err
 	})
 	return out, err
 }

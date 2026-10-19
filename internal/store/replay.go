@@ -338,7 +338,9 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 	change := ReplayChange{DeviceID: d.DeviceID, Workspace: tenant, Action: s.action}
 	if s.action == ReplayRecovered {
 		var name, pushName, pn string
-		err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL
+		// Paused as the owner's recovery leaves a number: theirs.
+		err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
+			pause_cause = 'person'
 			WHERE id = $1 AND deleted_at = $2 AND purge_started_at IS NULL RETURNING label, push_name, coalesce(pn, '')`,
 			d.DeviceID, s.reversal.DeletedAt).Scan(&name, &pushName, &pn)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -348,6 +350,9 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 			return change, err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id = $1 AND kind = 'number_deleted'`, d.DeviceID); err != nil {
+			return change, err
+		}
+		if err := recoveredStrandedTx(ctx, tx, d.DeviceID); err != nil {
 			return change, err
 		}
 		at := s.reversal.DeletedAt
@@ -429,7 +434,7 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 		}
 		err = tx.QueryRow(ctx, `UPDATE devices SET deleted_at = $2,
 			purge_after = CASE WHEN $4 THEN least($3, clock_timestamp()) ELSE $3 END,
-			deleted_by = (SELECT id FROM users WHERE id = $5), paused = true,
+			deleted_by = (SELECT id FROM users WHERE id = $5), paused = true, pause_cause = 'deletion',
 			status = CASE WHEN status IN ('logged_out', 'banned') THEN status ELSE 'offline' END,
 			status_reason = CASE WHEN status IN ('logged_out', 'banned') THEN status_reason ELSE '`+reasonDeleted+`' END,
 			wa_leftover = CASE WHEN deleted_at IS NOT NULL THEN wa_leftover

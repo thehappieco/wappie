@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thehappieco/kit/profiles/wappie"
 
+	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 )
 
@@ -74,7 +75,31 @@ var (
 	// ErrPlatformWrap is a wrap that is not 61 bytes starting with the
 	// header 0x03.
 	ErrPlatformWrap = errors.New("store: the platform wrap is malformed")
+	// ErrHomeTaken refuses a new account whose personal workspace, the
+	// platform's, has an id a tenant here has already: the insertion
+	// trigger would otherwise add the person to that tenant (0031's first
+	// branch), as its owner. Nothing is created, and a platform_home_taken
+	// security event is recorded after the rollback.
+	ErrHomeTaken = errors.New("store: the new account's personal workspace exists here already")
+	// ErrHomeRequired refuses a new account with no home of the platform's
+	// once the contract was ever observed (contract_state.events_from set):
+	// from then on Wappie never chooses a personal workspace itself (the
+	// plan's DB2). A sign-up that read the contract off just before its
+	// first observe gets it, and is retried with the platform's home.
+	ErrHomeRequired = errors.New("store: the contract was observed: a new account's home is the platform's")
 )
+
+// ContractDocError refuses a new account whose document could not be
+// stored with it (StoreDocuments' outcome: of a generation Wappie does not
+// hold, not storable as received, or naming a workspace with another kind
+// than Wappie holds). Its transaction rolled back, so nothing was created
+// but the intent row; Wappie's contract loops are woken for another
+// generation, as storing it outside a sign-up would have.
+type ContractDocError struct{ Outcome ContractDocOutcome }
+
+func (e *ContractDocError) Error() string {
+	return "store: the new account's document was not stored: " + string(e.Outcome)
+}
 
 // ValidPlatformWrap reports whether wrap has the platform wrap's shape (kit
 // SPEC section 6.8): wappie.PlatformWrapLen (61) bytes starting with
@@ -406,14 +431,57 @@ type NewPlatformUser struct {
 	PublicKey []byte
 	Wrap      []byte
 	Name      string
+	// Home is the platform's personal workspace of the ticket's sub, the
+	// first workspace of Doc: the person's personal workspace is created
+	// with this id (the reply's Q1), and refused with ErrHomeTaken when a
+	// tenant has it already. Zero before the contract's first observe: a
+	// new id, as before the contract (the plan's DB2).
+	Home uuid.UUID
+	// Doc is the PUT's document Home comes from, required with Home: it is
+	// stored with the account, in its transaction, with every workspace it
+	// names (the plan's 4.5), and the account is refused when it cannot
+	// be (ContractDocError).
+	Doc *ContractDoc
+}
+
+// Check refuses what SignupPlatform refuses of the request itself, so a
+// sign-up asks nothing of the platform for a request it would refuse.
+func (in NewPlatformUser) Check() error {
+	if len(in.PublicKey) != 32 {
+		return errors.New("store: a public key is 32 bytes")
+	}
+	if !ValidPlatformWrap(in.Wrap) {
+		return ErrPlatformWrap
+	}
+	if !validProfileName(strings.TrimSpace(in.Name), false) {
+		return ErrInvalidMembership
+	}
+	return nil
+}
+
+// checkHome refuses a home that is not the active document's personal
+// workspace of sub: a caller's fault, never a person's.
+func (in NewPlatformUser) checkHome(sub uuid.UUID) error {
+	d := in.Doc
+	if d == nil || d.Sub != sub || d.Status != "active" || len(d.Workspaces) == 0 ||
+		d.Workspaces[0].Kind != "personal" || d.Workspaces[0].ID != in.Home {
+		return errors.New("store: a new account's home is the active document's personal workspace of its sub")
+	}
+	return nil
 }
 
 // SignupPlatform creates the account of a ticket of kind "new", with
 // users.id = sub and auth_source = 'platform', in one transaction with its
 // link, its wrap and its event. The insertion trigger creates the personal
-// workspace, as for every person (interim, until the platform's workspaces).
-// It also returns the ticket's auth_time, the proof its first session starts
-// with (StartPlatformSession).
+// workspace, as for every person: with the id in.Home once the contract
+// gives one (the platform's personal workspace, refused with ErrHomeTaken
+// when a tenant has that id), else a new one (interim, as before the
+// contract), which is refused with ErrHomeRequired once the contract was
+// ever observed. With a home, the same transaction stores in.Doc, the PUT's
+// answer, and records the workspaces it names, accounts then workspaces in
+// id order after contract_state's lock (the plan's DB23). It also returns
+// the ticket's auth_time, the proof its first session starts with
+// (StartPlatformSession).
 func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, time.Time, error) {
 	if len(in.PublicKey) != 32 {
 		return User{}, time.Time{}, errors.New("store: a public key is 32 bytes")
@@ -431,12 +499,13 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 	}
 	var out User
 	var authTime time.Time
-	err = pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+	var sub uuid.UUID
+	signup := func(tx pgx.Tx) error {
 		t, err := readTicket(ctx, tx, sum, true, []string{TicketNew})
 		if err != nil {
 			return err
 		}
-		authTime = t.AuthTime
+		authTime, sub = t.AuthTime, t.Sub
 		if name == "" {
 			name = t.Name
 		}
@@ -452,6 +521,26 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 			return ErrAlreadyLinked
 		}
 		home := uuid.New()
+		if in.Home != uuid.Nil {
+			if err := in.checkHome(t.Sub); err != nil {
+				return err
+			}
+			// tenants carries no row-level security (0001): any tenant of
+			// that id is seen, whoever's it is. The sub's own personal
+			// workspace, committed since the link check above by a second
+			// tab, is that tab's account: already linked, not a conflict.
+			var owner *uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT personal_owner_id FROM tenants WHERE id = $1`, in.Home).Scan(&owner)
+			switch {
+			case err == nil && owner != nil && *owner == t.Sub:
+				return ErrAlreadyLinked
+			case err == nil:
+				return ErrHomeTaken
+			case !errors.Is(err, pgx.ErrNoRows):
+				return err
+			}
+			home = in.Home
+		}
 		if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, home.String()); err != nil {
 			return err
 		}
@@ -462,6 +551,11 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 		if err != nil {
 			if uniqueOn(err, "users_pkey") {
 				return ErrAlreadyLinked
+			}
+			// A tenant of the home's id committed after the check above:
+			// the sub's own is caught as users_pkey first.
+			if in.Home != uuid.Nil && uniqueOn(err, "tenants_pkey") {
+				return ErrHomeTaken
 			}
 			return accountInsertError(err)
 		}
@@ -474,8 +568,51 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 		if _, err := tx.Exec(ctx, `INSERT INTO platform_wraps (user_id, product_key_id, wrap) VALUES ($1, $2, $3)`, t.Sub, t.ProductKeyID, in.Wrap); err != nil {
 			return err
 		}
+		if in.Home != uuid.Nil {
+			state, err := lockStateTx(ctx, tx)
+			if err != nil {
+				return err
+			}
+			outcomes, err := storeDocsTx(ctx, tx, state, ContractAnswer, []ContractDoc{*in.Doc})
+			if err != nil {
+				return err
+			}
+			if o := outcomes[0]; o != ContractDocStored && o != ContractDocKept {
+				return &ContractDocError{Outcome: o}
+			}
+		} else {
+			// The database, not the caller, says whether Wappie may still
+			// choose the home. The row's share lock makes the first switch
+			// to observe wait for this account, which its round then
+			// subscribes; a switch committed first refuses it. Taken last,
+			// as the home's own lock above, so both orders agree.
+			var observed bool
+			if err := tx.QueryRow(ctx, `SELECT events_from IS NOT NULL FROM contract_state FOR SHARE`).Scan(&observed); err != nil {
+				return err
+			}
+			if observed {
+				return ErrHomeRequired
+			}
+		}
 		return securityEvent(ctx, tx, "platform_linked", &t.Sub, t.Sub, map[string]string{"from": "new", "product_key_id": t.ProductKeyID})
-	})
+	}
+	// With a 40P01 retry, as every transaction that writes the contract's
+	// accounts and workspaces (DB23).
+	err = retryDeadlock(ctx, func() error { return pg.InTx(ctx, u.pool, signup) })
+	var docErr *ContractDocError
+	switch {
+	case errors.Is(err, ErrHomeTaken):
+		// After the rollback, in a transaction of its own: the refusal is
+		// what an operator must see (security_events is insert-only).
+		if e := u.RecordSecurityEvent(ctx, "platform_home_taken", nil, sub, nil); e != nil {
+			obs.LoggerFrom(ctx).Error("could not record a security event", "event", "platform_home_taken", "error", e)
+		}
+	case errors.As(err, &docErr) && docErr.Outcome == ContractDocOtherGeneration:
+		// storeDocsTx's notice rolled back with the transaction.
+		if e := NewContract(u.pool).Wake(ctx, "generation"); e != nil {
+			obs.LoggerFrom(ctx).Warn("contract: could not wake the contract's loops", "error", e)
+		}
+	}
 	if err != nil {
 		return User{}, time.Time{}, err
 	}
