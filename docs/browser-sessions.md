@@ -130,7 +130,7 @@ internal credential replacement. Password changes still revoke older sessions
 and update the remembered token.
 
 Each logout with a bearer leaves one INFO line, `signed out`, with `source`,
-`all_related`, `revoked` (the sessions it ended, none on a repeat) and the
+`all_related`, `revoked` (the live sessions it ended, none on a repeat) and the
 `user` whose they were. The source is a label the console sends in the
 `X-Wappie-Logout-Source` header: the control the person pressed (`chatlist`,
 `admin`, `shell-back`, `error-card`, `account-section`, `switcher`,

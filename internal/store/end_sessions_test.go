@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"testing"
@@ -13,9 +14,10 @@ import (
 	"whatserver2/internal/store"
 )
 
-// A logout's log line says how many sessions it ended (authapi logout.go):
-// the family of a browser that opened two workspaces is three, a repeat is
-// none, one token alone is one, and a token that names nothing is nobody's.
+// A logout's log line says how many live sessions it ended (authapi
+// logout.go): the family of a browser that opened two workspaces is three, a
+// repeat is none, one token alone is one, a member that had expired is not
+// counted, and a token that names nothing is nobody's.
 // EndSession and EndSessionFamily do what they did.
 func TestEndSessionsCounts(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
@@ -77,6 +79,21 @@ func TestEndSessionsCounts(t *testing.T) {
 		t.Fatalf("another browser's family, from a workspace token: %+v %v, want all three", ended, err)
 	}
 	gone(other, otherDerived[0], otherDerived[1])
+	// A member of the family that expired without a logout was no longer
+	// live: the family's logout still revokes it, and does not count it.
+	third, thirdDerived := browser()
+	expired := hashOf(t, thirdDerived[0])
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET expires_at=now()-interval '1 hour' WHERE token_hash=$1`, expired); err != nil {
+		t.Fatal(err)
+	}
+	if ended, err = users.EndSessions(ctx, third, true); err != nil || ended != (store.EndedSessions{User: user.ID, Revoked: 2}) {
+		t.Fatalf("a family with an expired member: %+v %v, want the two live", ended, err)
+	}
+	var revoked bool
+	if err := pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM sessions WHERE token_hash=$1`, expired).Scan(&revoked); err != nil || !revoked {
+		t.Fatalf("the expired member was left unrevoked: %v %v", revoked, err)
+	}
+	gone(third, thirdDerived[1])
 	for _, token := range []string{"", "malformed", base64.RawURLEncoding.EncodeToString(make([]byte, 32))} {
 		for _, all := range []bool{false, true} {
 			if ended, err := users.EndSessions(ctx, token, all); err != nil || ended != (store.EndedSessions{}) {
@@ -101,4 +118,15 @@ func TestEndSessionsCounts(t *testing.T) {
 	if err := users.EndSessionFamily(ctx, "malformed"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// hashOf is the token's row key, as the store keeps it.
+func hashOf(t *testing.T, token string) []byte {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	return sum[:]
 }

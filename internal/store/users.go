@@ -1012,15 +1012,17 @@ func (u *Users) endSession(ctx context.Context, token string, allRelated bool) (
 			}
 			return err
 		}
-		statement, args := `UPDATE sessions SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL`, []any{id}
+		// The family's members that expired unrevoked are revoked with the
+		// rest, as they always were, but were not live: the count leaves them out.
+		statement, args := `UPDATE sessions SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING expires_at`, []any{id}
 		if allRelated {
-			statement, args = `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND family_id=$2 AND revoked_at IS NULL`, []any{userID, familyID}
+			statement, args = `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND family_id=$2 AND revoked_at IS NULL RETURNING expires_at`, []any{userID, familyID}
 		}
-		tag, err := tx.Exec(ctx, statement, args...)
-		if err != nil {
+		var revoked int64
+		if err := tx.QueryRow(ctx, `WITH ended AS (`+statement+`) SELECT count(*) FILTER (WHERE expires_at>clock_timestamp()) FROM ended`, args...).Scan(&revoked); err != nil {
 			return err
 		}
-		ended = EndedSessions{User: userID, Revoked: tag.RowsAffected()}
+		ended = EndedSessions{User: userID, Revoked: revoked}
 		return nil
 	})
 	if err != nil {
