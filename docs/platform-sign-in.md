@@ -260,9 +260,11 @@ always empty in a platform answer (see "The rollback window").
 The session is `via_provider`, and its step-up proof is userinfo's
 `auth_time` (owner Decision 2 of step 4), never later than now on the
 database's clock and never the session's creation: the console asks id.
-for `prompt=login`, so a fresh sign-in asks nothing more for ten minutes,
-while one id. answered from an old session of its own proves only what its
-`auth_time` says. A userinfo with no `auth_time` gives no proof
+for `prompt=login` (its "Criar conta" for `prompt=create` with `max_age=0`,
+which id. holds to the same freshness), so a fresh sign-in asks nothing more
+for ten minutes, while one id. answered from an old session of its own
+proves only what its `auth_time` says. The server never sees `max_age`: an
+`auth_time` of the moment, as `max_age=0` gives, is a proof like any other. A userinfo with no `auth_time` gives no proof
 (`-infinity`).
 
 Refusals:
@@ -684,7 +686,8 @@ The rules (owner Decisions 2 to 4 of step 4, approved 2026-10-06):
 
 - **A sign-in through id. is a proof** from its userinfo's `auth_time`,
   never from the session's creation, and never later than now; the console's
-  sign-in asks for `prompt=login`. A new account's first session takes the
+  sign-in asks for `prompt=login` ("Criar conta" for `prompt=create` and
+  `max_age=0`). A new account's first session takes the
   `auth_time` its ticket was issued on.
 - **The clocks.** An `auth_time` up to a minute before the start counts;
   nothing ahead of the start is needed or credited, since the proof is
