@@ -1,0 +1,4 @@
+{
+  "header": "X-Wappie-Logout-Source",
+  "sources": ["chatlist", "admin", "shell-back", "error-card", "account-section", "switcher", "assistant-page", "draft-link", "message-link"]
+}

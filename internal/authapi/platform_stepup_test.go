@@ -825,6 +825,16 @@ func TestPlatformSignInProofIsTheAuthTime(t *testing.T) {
 	if state := h.state(t, created.Token); !state.Fresh || state.RemainingSeconds < 590 {
 		t.Fatalf("a new account from a recent sign-in: %+v", state)
 	}
+	// Nor one from the console's "Criar conta", whose max_age=0 has id.
+	// answer with a sign-in of the moment: an auth_time of now.
+	moment := newPerson(t, "created@example.com")
+	ticket = signInAt(moment, time.Now())
+	if code, created, _, _ = h.createAccount(t, ticket.Ticket); code != http.StatusOK {
+		t.Fatalf("a new account from a sign-in of the moment: %d", code)
+	}
+	if state := h.state(t, created.Token); !state.Fresh || state.RemainingSeconds < 590 {
+		t.Fatalf("a new account from a sign-in of the moment: %+v", state)
+	}
 	if code := h.post(t, "/v1/auth/workspaces/invites", provisionalInvite, nil, created.Token); code != http.StatusCreated {
 		t.Fatalf("a guarded write right after the sign-in: %d", code)
 	}
@@ -834,6 +844,7 @@ func TestPlatformSignInProofIsTheAuthTime(t *testing.T) {
 		min, max int
 	}{
 		"three minutes ago": {time.Now().Add(-3 * time.Minute), 400, 425},
+		"just now":          {time.Now(), 590, 600},
 		"eleven ago":        {time.Now().Add(-11 * time.Minute), 0, 0},
 		"none":              {time.Time{}, 0, 0},
 		"an hour ahead":     {time.Now().Add(time.Hour), 590, 600},

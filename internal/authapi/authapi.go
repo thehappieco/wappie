@@ -667,18 +667,14 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "malformed logout request")
 		return
 	}
-	var err error
-	if req.AllRelated {
-		err = h.Users.EndSessionFamily(r.Context(), token)
-	} else {
-		err = h.Users.EndSession(r.Context(), token)
-	}
+	ended, err := h.Users.EndSessions(r.Context(), token, req.AllRelated)
 	if err != nil {
 		h.log().Warn("could not end a session", "error", err)
 		fail(w, http.StatusInternalServerError, "internal", "could not end session")
 		return
 	}
 	h.accessChanged()
+	h.logSignOut(r, req.AllRelated, ended)
 	w.WriteHeader(http.StatusNoContent)
 }
 

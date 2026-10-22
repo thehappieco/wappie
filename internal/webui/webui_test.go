@@ -108,6 +108,36 @@ func TestServesAssets(t *testing.T) {
 	}
 }
 
+// The cloud console's sign-in bundles its font (Schibsted Grotesk, woff2 with
+// a woff fallback) under /assets/, so that the document's CSP, default-src
+// 'self' with no font-src, needs no font host. Under nosniff a font answered
+// as anything else is refused: Go's own table has no woff2, and the host's
+// mime.types or the file server's sniffing (wOF2, wOFF) must name them.
+func TestFontAssetsAreServedAsFonts(t *testing.T) {
+	dir := build(t)
+	write(t, filepath.Join(dir, "assets", "schibsted-grotesk-latin-400-normal-abc123.woff2"), "wOF2\x00\x01\x00\x00 synthetic font bytes")
+	write(t, filepath.Join(dir, "assets", "schibsted-grotesk-latin-400-normal-abc123.woff"), "wOFF\x00\x01\x00\x00 synthetic font bytes")
+	h, err := webui.New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"woff2": "font/woff2", "woff": "font/woff"} {
+		resp := get(t, h, "/assets/schibsted-grotesk-latin-400-normal-abc123."+name)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("the %s font returned %d", name, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Content-Type"); got != want {
+			t.Errorf("the %s font is served as %q, want %q", name, got, want)
+		}
+		for header, value := range map[string]string{"X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "same-origin", "Cache-Control": "public, max-age=31536000, immutable"} {
+			if got := resp.Header.Get(header); got != value {
+				t.Errorf("the %s font's %s is %q, want %q", name, header, got, value)
+			}
+		}
+	}
+}
+
 // The cloud console's first-frame files have no hash in their names and
 // shape the first paint of every release. The document names each with the
 // version of its bytes (?v=, the first 16 hex digits of their SHA-256), which

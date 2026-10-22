@@ -949,7 +949,8 @@ func (u *Users) MarkStepUp(ctx context.Context, session uuid.UUID) error {
 
 // EndSession revokes one token.
 func (u *Users) EndSession(ctx context.Context, token string) error {
-	return u.endSession(ctx, token, false)
+	_, err := u.endSession(ctx, token, false)
+	return err
 }
 
 // EndSessionFamily revokes the browser login and all tokens derived from it
@@ -957,7 +958,22 @@ func (u *Users) EndSession(ctx context.Context, token string) error {
 // after token-only logout, so switching spaces cannot leave a hidden login.
 // Unknown, malformed, and expired tokens all have the same idempotent result.
 func (u *Users) EndSessionFamily(ctx context.Context, token string) error {
-	return u.endSession(ctx, token, true)
+	_, err := u.endSession(ctx, token, true)
+	return err
+}
+
+// EndedSessions is what a logout ended, for its log line: whose sessions,
+// and how many were still live. Both are zero for a token that names no
+// unexpired session; Revoked is zero for one already revoked.
+type EndedSessions struct {
+	User    uuid.UUID
+	Revoked int64
+}
+
+// EndSessions is EndSession, or with allRelated EndSessionFamily, and says
+// what it ended.
+func (u *Users) EndSessions(ctx context.Context, token string, allRelated bool) (EndedSessions, error) {
+	return u.endSession(ctx, token, allRelated)
 }
 
 func lockSessionFamily(ctx context.Context, tx pgx.Tx, familyID uuid.UUID) error {
@@ -965,22 +981,23 @@ func lockSessionFamily(ctx context.Context, tx pgx.Tx, familyID uuid.UUID) error
 	return err
 }
 
-func (u *Users) endSession(ctx context.Context, token string, allRelated bool) error {
+func (u *Users) endSession(ctx context.Context, token string, allRelated bool) (EndedSessions, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
 	if err != nil || len(raw) != 32 {
 		//nolint:nilerr // Logging out with a malformed token is intentionally idempotent.
-		return nil
+		return EndedSessions{}, nil
 	}
 	sum := sha256.Sum256(raw)
 	var userID, familyID uuid.UUID
 	err = u.pool.QueryRow(ctx, `SELECT user_id, family_id FROM sessions WHERE token_hash=$1 AND expires_at>now()`, sum[:]).Scan(&userID, &familyID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return EndedSessions{}, nil
 	}
 	if err != nil {
-		return err
+		return EndedSessions{}, err
 	}
-	return pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+	var ended EndedSessions
+	err = pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
 		if err := lockPasskeyRegistration(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -995,13 +1012,23 @@ func (u *Users) endSession(ctx context.Context, token string, allRelated bool) e
 			}
 			return err
 		}
+		// The family's members that expired unrevoked are revoked with the
+		// rest, as they always were, but were not live: the count leaves them out.
+		statement, args := `UPDATE sessions SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING expires_at`, []any{id}
 		if allRelated {
-			_, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND family_id=$2 AND revoked_at IS NULL`, userID, familyID)
+			statement, args = `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND family_id=$2 AND revoked_at IS NULL RETURNING expires_at`, []any{userID, familyID}
+		}
+		var revoked int64
+		if err := tx.QueryRow(ctx, `WITH ended AS (`+statement+`) SELECT count(*) FILTER (WHERE expires_at>clock_timestamp()) FROM ended`, args...).Scan(&revoked); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL`, id)
-		return err
+		ended = EndedSessions{User: userID, Revoked: revoked}
+		return nil
 	})
+	if err != nil {
+		return EndedSessions{}, err
+	}
+	return ended, nil
 }
 
 // ---------------------------------------------------------------------------
