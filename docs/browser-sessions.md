@@ -129,6 +129,22 @@ valid. The existing empty-body logout semantics revoke only one token, for
 internal credential replacement. Password changes still revoke older sessions
 and update the remembered token.
 
+Each logout with a bearer leaves one INFO line, `signed out`, with `source`,
+`all_related`, `revoked` (the sessions it ended, none on a repeat) and the
+`user` whose they were. The source is a label the console sends in the
+`X-Wappie-Logout-Source` header: the control the person pressed (`chatlist`,
+`admin`, `shell-back`, `error-card`, `account-section`, `switcher`,
+`assistant-page`, `draft-link`, `message-link`;
+`internal/authapi/testdata/logout-sources.json`). Anything else, a missing,
+unknown or repeated header included, is logged as `other`, which is what the
+client's own token-only logouts (a replaced workspace token, one signed out as
+its page goes) and older consoles send. The label authorizes nothing and
+changes nothing the logout does. It is a header because the body is decoded
+strictly, and an older server would answer a new field with 400 and keep the
+session. The console sends it only to its own origin: the browser origin policy
+does not list it, so a cross-origin installation's preflight would refuse the
+logout, and there it is sent without one.
+
 Normal document navigation and component disposal clear in-memory state without
 logging out. Explicit logout clears persisted state and broadcasts a non-secret
 invalidation to other open app/console tabs. Session issuance, family logout,
