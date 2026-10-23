@@ -8799,8 +8799,13 @@ sessions, it has no row-level security: it is looked up by the hash of a
     still never leaves in a `Referer`. The Go test mounts the handler behind
     the guard and posts with the page's origin and with `Origin: null`
     (amended 2026-10-01: the first build was refused in every real browser).
-  - The page's texts (five languages, the person's `Accept-Language`;
-    drafts for the owner): "Revoke this assistant connection?", "This
+  - The page's texts (five languages; drafts for the owner) are in The
+    Happie Co's language cookie's language (`thehappie_locale`: `pt-BR`,
+    `en` or `es`, set on `thehappie.co`, so it reaches the API's host
+    there; its English is the web client's own French or German, kept in
+    `wappie_locale`), else the person's `Accept-Language` (amended
+    2026-10-23, the platform's decision 0052; `revokePageLanguage`):
+    "Revoke this assistant connection?", "This
     revokes only the connection of {host} to your Wappie. Nothing else
     changes." (a token: "…only the console connection token “{label}”…"),
     "Revoke only this connection"; then "Connection revoked", "{host} loses
