@@ -90,9 +90,11 @@ async function persist(collection, wait) {
  * `sink` (a writer), `readLocal(port)`, `kms` (decrypt/dataKey/keyPolicy),
  * `attest` (NSM), `fetch`, `jail` (media-jail's boot check and jobs),
  * `aiTransport` (the providers' fetch, a stub: the hosts stay the image's),
- * `mediaDelay` (the inline wait's timer of open_attachment),
- * `exit(code)`, `wait`, and `overrides` for the archive URL, ACME directory,
- * run directory, ports and clock URL, the client documents' fetcher
+ * `mediaDelay` (the inline wait's timer of open_attachment), `challenges`
+ * (the TLS-ALPN-01 responder, whose listener a test reads the port of while
+ * the boot waits on the certificate), `exit(code)`, `wait`, and `overrides`
+ * for the archive URL, ACME directory, run directory, ports and clock URL,
+ * the client documents' fetcher
  * (`cimdFetcher`: never the parent's proxy in a test) and the client policy
  * (`clientPolicy`: 0.5.0's `{mode: 'allowlist', hosts}` for the tests that
  * predate 0.6.0, or fields that replace the image's `any` policy).
@@ -231,7 +233,7 @@ export async function startEnclave(options = {}) {
     // crash in between re-registers the same key (ACME returns the same account).
     infra.bind(() => Buffer.from(JSON.stringify({ version: 1, name: 'infra', acme: acmeState })))
     if (!acmeState) { acmeState = { account_uri: null, account_key: newAccountKey() }; await persist(infra, wait) }
-    const challenges = createChallenges()
+    const challenges = options.challenges ?? createChallenges()
     const acme = createAcmeClient({ directory: overrides.acmeDirectory ?? c.ACME_DIRECTORY, accountKey: acmeState.account_key, accountUri: acmeState.account_uri, challenges, fetch: options.fetch, wait })
     await step('acme_account_failed', async () => {
       for (let attempt = 0; ; attempt++) {

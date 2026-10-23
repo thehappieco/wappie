@@ -1364,8 +1364,9 @@ func TestEventBounds(t *testing.T) {
 }
 
 // The event sender paces its calls (the P3a review): each batch goes at
-// least Members.Pace after the one before, timed as the client sends it,
-// with one due queue each in five workspaces.
+// least Members.Pace after the one before, timed as the client sends it by
+// the turn it went on (counting.pace), with one due queue each in five
+// workspaces; and none goes without a turn, nor a turn before its time.
 func TestEventsArePaced(t *testing.T) {
 	w := newEventWorld(t)
 	ctx := context.Background()
@@ -1388,12 +1389,14 @@ func TestEventsArePaced(t *testing.T) {
 	}
 	logs := &membershiptest.Logs{}
 	m := &Members{Client: client, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: pace}
+	c.pace(m)
 	run(t, w.leader(m, logs, lockKey(t)))
-	eventually(t, 10*time.Second, "five batches", func() bool { return c.events.Load() >= 5 })
+	eventuallySteps(t, 30*time.Second, "five batches", 5, func() int { return int(c.events.Load()) })
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.kept(t)
 	for i := 1; i < len(c.posts); i++ {
-		if gap := c.posts[i].Sub(c.posts[i-1]); gap < pace*3/4 {
+		if gap := c.posts[i].Sub(c.posts[i-1]); gap < pace {
 			t.Fatalf("batch %d went %v after the one before, under the pace %v", i, gap, pace)
 		}
 	}
@@ -1403,8 +1406,11 @@ func TestEventsArePaced(t *testing.T) {
 // PUTs, the snapshots and the batches of events, all due at once at a
 // leader's start, go at most one every Members.Pace between them, so that
 // together they stay at a fifth of the platform's 50 a second, as the
-// hook's budget counts them. Each is timed as the client sends it; no
-// window of a second holds more than about one second's worth of the pace.
+// hook's budget counts them. Each is timed as the client sends it by the
+// turn it went on (counting.pace); no window of a second holds more than
+// one second's worth of turns and the one call each sender may still be
+// sending on an earlier turn; and none goes without a turn, nor a turn
+// before its time.
 func TestTheLeadersCallsShareOnePace(t *testing.T) {
 	w := newEventWorld(t)
 	ctx := context.Background()
@@ -1433,12 +1439,14 @@ func TestTheLeadersCallsShareOnePace(t *testing.T) {
 	}
 	logs := &membershiptest.Logs{}
 	m := &Members{Client: client, Contract: w.contract, Log: logs.Logger(), ModeCache: -1, Pace: pace}
+	c.pace(m)
 	run(t, w.leader(m, logs, lockKey(t)))
-	eventually(t, 20*time.Second, "the round, the snapshots and the events", func() bool {
-		return c.accounts.Load() >= 6 && c.access.Load() >= 6 && c.events.Load() >= 6
+	eventuallySteps(t, 30*time.Second, "the round, the snapshots and the events", 18, func() int {
+		return int(min(c.accounts.Load(), 6) + min(c.access.Load(), 6) + min(c.events.Load(), 6))
 	})
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.kept(t)
 	most := 0
 	for i := range c.all {
 		n := 0
@@ -1447,9 +1455,11 @@ func TestTheLeadersCallsShareOnePace(t *testing.T) {
 		}
 		most = max(most, n)
 	}
-	// One every 100 ms is 10 in a second; three senders each at their own
-	// pace would be up to 30.
-	if most > 14 {
+	// One turn every 100 ms is 10 in a second, and each of the three
+	// senders (the round's, the snapshots' and the events') may add one
+	// call it sends late on a turn before the window: 13. Three senders
+	// each at their own pace would be up to 30.
+	if most > 13 {
 		t.Fatalf("%d of the leader's calls within a second, at a pace of %v between any two (%d calls in all)", most, pace, len(c.all))
 	}
 }

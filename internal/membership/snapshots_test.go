@@ -1310,8 +1310,10 @@ func TestSnapshotOverTheLimits(t *testing.T) {
 // The snapshots go at the pace, as the round's PUTs (P3a's review: all of
 // the app's calls stay well under the platform's 50 a second, one unsigned
 // 429 being a new account's failed PUT), even at a leader's start, when
-// every workspace is due at once. Each is timed as the client sends it,
-// not as the fake platform receives it, which a loaded machine delays.
+// every workspace is due at once. Each is timed as the client sends it, by
+// the turn it went on (counting.pace), not by the clock, which a loaded
+// machine moves between a turn and its call; and none goes without a
+// turn, nor a turn before its time.
 func TestSnapshotsArePaced(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
@@ -1325,12 +1327,14 @@ func TestSnapshotsArePaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &Members{Client: client, Contract: w.contract, Log: w.logs.Logger(), ModeCache: -1, Pace: pace}
+	c.pace(m)
 	run(t, w.leader(m, &membershiptest.Logs{}, lockKey(t)))
-	eventually(t, 10*time.Second, "five snapshots", func() bool { return c.access.Load() >= 5 })
+	eventuallySteps(t, 30*time.Second, "five snapshots", 5, func() int { return int(c.access.Load()) })
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.kept(t)
 	for i := 1; i < len(c.puts); i++ {
-		if gap := c.puts[i].Sub(c.puts[i-1]); gap < pace*3/4 {
+		if gap := c.puts[i].Sub(c.puts[i-1]); gap < pace {
 			t.Fatalf("snapshot %d went %v after the one before, under the pace %v", i, gap, pace)
 		}
 	}
