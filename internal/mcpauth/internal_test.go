@@ -296,3 +296,53 @@ func TestSendChecks(t *testing.T) {
 		t.Fatalf("a minute on: %d keys", len(c.seen))
 	}
 }
+
+// The revoke-only link's page speaks the company's language cookie
+// (thehappie_locale, platform decision 0052) where it arrives, its English
+// as the web client's own French or German where that cookie keeps one, and
+// Accept-Language otherwise: with no cookie, one outside pt-BR, en and es,
+// or two that disagree.
+func TestRevokePageLanguage(t *testing.T) {
+	for _, c := range []struct {
+		cookies []string
+		accept  string
+		want    string
+	}{
+		{nil, "", "en"},
+		{nil, "fr-FR,es;q=0.8", "fr"},
+		{nil, "pt-BR,pt;q=0.9", "pt"},
+		{[]string{"thehappie_locale=es"}, "fr-FR", "es"},
+		{[]string{"thehappie_locale=pt-BR"}, "de", "pt"},
+		{[]string{"thehappie_locale=en"}, "pt-BR", "en"},
+		{[]string{"other=1", "thehappie_locale=es", "wappie_theme=dark"}, "", "es"},
+		// Two that agree are one; two that disagree, none.
+		{[]string{"thehappie_locale=es", "thehappie_locale=es"}, "de", "es"},
+		{[]string{"thehappie_locale=es", "thehappie_locale=pt-BR"}, "de", "de"},
+		// Outside the cookie's three: none. An emptied one: none.
+		{[]string{"thehappie_locale=fr"}, "pt", "pt"},
+		{[]string{"thehappie_locale=pt"}, "es", "es"},
+		{[]string{"thehappie_locale=EN"}, "de", "de"},
+		{[]string{"thehappie_locale="}, "es", "es"},
+		{[]string{"thehappie_locales=es"}, "pt", "pt"},
+		// The company's English is the client's French or German, kept in its own cookie.
+		{[]string{"thehappie_locale=en", "wappie_locale=fr"}, "pt", "fr"},
+		{[]string{"wappie_locale=de", "thehappie_locale=en"}, "", "de"},
+		{[]string{"thehappie_locale=en", "wappie_locale=es"}, "fr", "en"},
+		{[]string{"thehappie_locale=en", "wappie_locale=fr", "wappie_locale=de"}, "fr", "en"},
+		// Portuguese or Spanish from the company's cookie wins over the client's own.
+		{[]string{"thehappie_locale=es", "wappie_locale=fr"}, "fr", "es"},
+		// The client's own alone is not the company's: Accept-Language, as before.
+		{[]string{"wappie_locale=fr"}, "es", "es"},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/v1/mcp/revoke-link/x", nil)
+		if c.cookies != nil {
+			r.Header.Set("Cookie", strings.Join(c.cookies, "; "))
+		}
+		if c.accept != "" {
+			r.Header.Set("Accept-Language", c.accept)
+		}
+		if got := revokePageLanguage(r); got != c.want {
+			t.Errorf("cookies %v, Accept-Language %q: %s, want %s", c.cookies, c.accept, got, c.want)
+		}
+	}
+}

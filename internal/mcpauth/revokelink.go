@@ -136,15 +136,64 @@ func pageLanguage(header string) string {
 	return choices[0].lang
 }
 
+// lookLocaleCookie is The Happie Co's language cookie (its platform
+// decision 0052): the language last chosen on this device, or the account's,
+// as pt-BR, en or es, set on thehappie.co by every site and app of the
+// company, so it reaches this server there (the e-mail's link is a top-level
+// visit, the form a same-site post) and nowhere else. ownLocaleCookie is the
+// web client's own (web/src/ui/preferences.ts), which keeps a French or
+// German choice the company's cookie holds as English.
+const (
+	lookLocaleCookie = "thehappie_locale"
+	ownLocaleCookie  = "wappie_locale"
+)
+
+// revokePageLanguage is the page's language: the company's cookie where it
+// arrives, as every page under thehappie.co reads it first, else
+// Accept-Language (pageLanguage). The cookie's English is French or German
+// where the client's own cookie keeps one, as the client speaks it (web
+// i18n.ts finerLocale). A value outside the cookie's three, or two cookies
+// of that name that disagree, is no cookie.
+func revokePageLanguage(r *http.Request) string {
+	switch oneCookie(r, lookLocaleCookie) {
+	case "pt-BR":
+		return "pt"
+	case "es":
+		return "es"
+	case "en":
+		if own, _, _ := strings.Cut(strings.ToLower(oneCookie(r, ownLocaleCookie)), "-"); own == "fr" || own == "de" {
+			return own
+		}
+		return "en"
+	}
+	return pageLanguage(r.Header.Get("Accept-Language"))
+}
+
+// oneCookie is the value every non-empty cookie named name in r holds, or ""
+// when there is none or they disagree (another host's and ours).
+func oneCookie(r *http.Request, name string) string {
+	found := ""
+	for _, c := range r.CookiesNamed(name) {
+		if c.Value == "" {
+			continue
+		}
+		if found != "" && found != c.Value {
+			return ""
+		}
+		found = c.Value
+	}
+	return found
+}
+
 type revokeView struct {
 	Lang, Title, Body, Button, Footer string
 }
 
-// writeRevokePage answers with the page in the request's language, naming
-// the connection's client host or, for a token, its label (the zero target
-// for a dead link).
+// writeRevokePage answers with the page in the request's language
+// (revokePageLanguage), naming the connection's client host or, for a token,
+// its label (the zero target for a dead link).
 func writeRevokePage(w http.ResponseWriter, r *http.Request, status int, state string, target store.RevokeTarget) {
-	lang := pageLanguage(r.Header.Get("Accept-Language"))
+	lang := revokePageLanguage(r)
 	t := revokeTexts[lang]
 	view := revokeView{Lang: lang, Footer: t["footer"]}
 	body := func(client, token string) string {

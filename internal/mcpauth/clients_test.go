@@ -689,6 +689,20 @@ func TestRevokeLink(t *testing.T) {
 	if w := page(http.MethodGet, first, "de", ""); !strings.Contains(w.Body.String(), "zu Ihrem Wappie") || strings.Contains(w.Body.String(), "dein") {
 		t.Fatalf("German page = %s", w.Body.String())
 	}
+	// The company's language cookie (platform decision 0052), which reaches
+	// this host under thehappie.co, comes before Accept-Language.
+	{
+		req := httptest.NewRequest(http.MethodGet, first, nil)
+		req.Host = apiHost
+		req.RemoteAddr = "198.51.100.7:4242"
+		req.Header.Set("Accept-Language", "fr")
+		req.Header.Set("Cookie", "thehappie_locale=es; thehappie_theme=dark")
+		w := httptest.NewRecorder()
+		guarded.ServeHTTP(w, req)
+		if !strings.Contains(w.Body.String(), `lang="es"`) || !strings.Contains(w.Body.String(), "Revocar solo esta conexión") {
+			t.Fatalf("the company's cookie: %s", w.Body.String())
+		}
+	}
 
 	// What a browser sends from a no-referrer page is refused by the guard
 	// and revokes nothing.
