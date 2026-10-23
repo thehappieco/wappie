@@ -72,6 +72,26 @@ func eventually(t *testing.T, within time.Duration, what string, ok func() bool)
 	}
 }
 
+// eventuallySteps is eventually for a goal reached step by step, as the
+// leader's calls reach theirs: it fails only once stall passes with no
+// step, so a loaded machine takes longer and a stuck leader still fails.
+func eventuallySteps(t *testing.T, stall time.Duration, what string, goal int, steps func() int) {
+	t.Helper()
+	last, deadline := -1, time.Time{}
+	for {
+		n := steps()
+		switch {
+		case n >= goal:
+			return
+		case n > last:
+			last, deadline = n, time.Now().Add(stall)
+		case time.Now().After(deadline):
+			t.Fatalf("timed out after %v with no step, at %d of %d: %s", stall, n, goal, what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (w *world) state(t *testing.T) store.ContractState {
 	t.Helper()
 	s, err := w.contract.State(context.Background())
@@ -497,40 +517,83 @@ func dbNow(t *testing.T, pool *pgxpool.Pool, offset string) time.Time {
 // events and its PUTs of accounts, and keeps the time each snapshot and
 // batch went, as the client sends it, and each call but the feed's (all);
 // with marks, it logs each batch there too, in order with the process's
-// own lines.
+// own lines. Paced (pace), it times those calls by the leader's turns.
 type counting struct {
 	feed, access, events, accounts atomic.Int64
 	marks                          *slog.Logger
 
 	mu               sync.Mutex
 	puts, posts, all []time.Time
+	// paced: turn is the latest turn given, turns how many were, early
+	// how many came before their time; calls is how many calls but the
+	// feed's went, unturned the most that ever outnumbered the turns given:
+	// at least that many went with no turn of their own.
+	paced                         bool
+	turn                          time.Time
+	turns, early, calls, unturned int
+}
+
+// pace times c's calls by m's turns (pacer.turned) rather than by the
+// clock: each call at the latest turn given when the client sends it,
+// which its own turn is not after. A loaded machine delays a call after its
+// turn, and so may send it close to the next sender's, but moves no turn:
+// a sender's next turn comes at least the pace after the latest given, so
+// its own calls stay at least the pace apart however late each goes. It
+// counts the turns given before their time, on the clock, and the calls
+// that went with no turn of their own.
+func (c *counting) pace(m *Members) {
+	c.paced = true
+	m.pacing.turned = func(at time.Time) {
+		now := time.Now()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.turns++
+		if now.Before(at) {
+			c.early++
+		}
+		if at.After(c.turn) {
+			c.turn = at
+		}
+	}
+}
+
+// kept fails t when a paced turn came before its time or a call went
+// with no turn of its own; c.mu is held.
+func (c *counting) kept(t *testing.T) {
+	t.Helper()
+	if c.early > 0 || c.unturned > 0 {
+		t.Fatalf("of %d turns, %d came before their time; of %d calls, at least %d went with no turn of their own",
+			c.turns, c.early, c.calls, c.unturned)
+	}
 }
 
 func (c *counting) RoundTrip(r *http.Request) (*http.Response, error) {
-	now := time.Now()
+	feed := strings.HasSuffix(r.URL.Path, "/feed")
+	c.mu.Lock()
+	at := time.Now()
+	if c.paced && !feed {
+		at = c.turn
+		c.calls++
+		c.unturned = max(c.unturned, c.calls-c.turns)
+	}
 	switch {
-	case strings.HasSuffix(r.URL.Path, "/feed"):
+	case feed:
 		c.feed.Add(1)
 	case strings.HasSuffix(r.URL.Path, "/access"):
 		c.access.Add(1)
-		c.mu.Lock()
-		c.puts = append(c.puts, now)
-		c.mu.Unlock()
+		c.puts = append(c.puts, at)
 	case strings.HasSuffix(r.URL.Path, "/events"):
 		c.events.Add(1)
-		c.mu.Lock()
-		c.posts = append(c.posts, now)
-		c.mu.Unlock()
-		if c.marks != nil {
-			c.marks.Info("test: a batch of events goes")
-		}
+		c.posts = append(c.posts, at)
 	case strings.Contains(r.URL.Path, "/accounts/") && r.Method == http.MethodPut:
 		c.accounts.Add(1)
 	}
-	if !strings.HasSuffix(r.URL.Path, "/feed") {
-		c.mu.Lock()
-		c.all = append(c.all, now)
-		c.mu.Unlock()
+	if !feed {
+		c.all = append(c.all, at)
+	}
+	c.mu.Unlock()
+	if c.marks != nil && strings.HasSuffix(r.URL.Path, "/events") {
+		c.marks.Info("test: a batch of events goes")
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }

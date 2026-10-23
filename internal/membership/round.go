@@ -49,6 +49,10 @@ func (m *Members) pace() time.Duration {
 type pacer struct {
 	mu   sync.Mutex
 	next time.Time
+	// turned, set by tests only, is told each turn's time as the turn is
+	// given, before the call it paces goes: the tests time the calls by
+	// their turns, which a loaded machine does not move.
+	turned func(at time.Time)
 }
 
 // wait returns at the caller's turn, every after the turn before it of any
@@ -70,6 +74,9 @@ func (p *pacer) wait(ctx context.Context, every time.Duration) error {
 			return ctx.Err()
 		case <-t.C:
 		}
+	}
+	if p.turned != nil {
+		p.turned(at)
 	}
 	return nil
 }
