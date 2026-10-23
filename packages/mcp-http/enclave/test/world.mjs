@@ -5,12 +5,12 @@ import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { createServer as createNetServer } from 'node:net'
 import { join } from 'node:path'
 import { bytes, hpke, seal } from '@whatserver2/client'
 import { aiConfigScope, aiConfigTag, deviceCheck, deviceScope, keysSHA256 } from '@whatserver2/mcp/bundle'
 import { fixture, vector, workspace } from '@whatserver2/mcp/test/fixture'
 import { pkce, proof, sealBundle, waiter } from '../../test/harness.mjs'
+import { createChallenges } from '../acme.mjs'
 import { attest } from '../attest.mjs'
 import * as constants from '../constants.mjs'
 import { startEnclave } from '../main.mjs'
@@ -58,9 +58,13 @@ export async function world(t, { bootJson, archive, constants: replaced = {} } =
   const go = await createEnclaveGo({ upstream: f.server, secrets: () => goSecrets, upstreamToken: apiKey, workspace, now: clock }).listen()
   go.onAnswer = waits.wake
   const ca = testCA()
-  // The challenge listener opens during boot, before startEnclave returns, so its port is chosen here.
-  const challengePort = await freePort()
-  const acme = await createFakeAcme({ ca, challengePort: () => challengePort }).listen()
+  // The challenge listener opens on port 0 during boot, before startEnclave
+  // returns: the fake ACME validates against the one the latest boot opened,
+  // from a responder of each boot's own (a port chosen here and freed again
+  // could be taken by another test before the boot listens on it).
+  let challengeServer = null
+  const challenges = () => { const made = createChallenges(); return { ...made, server: () => (challengeServer = made.server()) } }
+  const acme = await createFakeAcme({ ca, challengePort: () => challengeServer.address().port }).listen()
   const bin = await fakeNsm()
   const nsmCalls = []
   const nsm = fields => { nsmCalls.push(fields); return attest(fields, { bin }) }
@@ -86,13 +90,13 @@ export async function world(t, { bootJson, archive, constants: replaced = {} } =
     freeze() { w.frozenAt = Date.now() },
     async start() {
       w.enclave = await startEnclave({
-        constants: c, sink, kms, attest: nsm, now: clock, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)),
+        constants: c, sink, kms, attest: nsm, now: clock, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)), challenges: challenges(),
         ...(w.jail ? { jail: w.jail } : {}),
         // Never a real provider: the AI egress goes to w.aiTransport (ai-stubs.mjs), or fails.
         aiTransport: (url, init) => (w.aiTransport ? w.aiTransport(url, init) : Promise.reject(new TypeError('fetch failed'))),
         ...(w.mediaDelay ? { mediaDelay: w.mediaDelay } : {}),
         readLocal: async port => { if (port === 7001) return boot; throw new Error('unexpected port') },
-        overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: challengePort },
+        overrides: { archive: go.url, acmeDirectory: acme.directory, runDir, clockUrl: `${go.url}/clock`, ports: { public: 0, internal: 0, challenge: 0 },
           clientPolicy: w.clientPolicy, cimdFetcher: w.cimdFetcher ?? { fetch: async () => ({ ok: false, code: 'proxy_refused', network: true }) } },
       })
       return w.enclave
@@ -112,10 +116,6 @@ export async function world(t, { bootJson, archive, constants: replaced = {} } =
   }
   t.after(() => w.close())
   return w
-}
-
-export function freePort() {
-  return new Promise(resolve => { const server = createNetServer(); server.listen(0, '127.0.0.1', () => { const { port } = server.address(); server.close(() => resolve(port)) }) })
 }
 
 export const form = fields => ({ method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString() })
