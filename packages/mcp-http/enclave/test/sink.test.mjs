@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer as createHTTPServer } from 'node:http'
-import { connect, createServer as createNetServer } from 'node:net'
+import { connect, createServer as createNetServer, Socket } from 'node:net'
 import { createLog } from '../../log.mjs'
 import { clockSkew, createHealthLine, prefix } from '../health.mjs'
 import { createSinkWriter, lineAllowed, MAX_LINE_BYTES, MAX_QUEUE } from '../logsink.mjs'
@@ -11,12 +11,28 @@ import { createSinkWriter, lineAllowed, MAX_LINE_BYTES, MAX_QUEUE } from '../log
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)))
 
 test('sink writer: schema-checked lines only, queued while the parent is away, at most 1000, then delivered in order', async t => {
-  const received = []
+  const peers = [], received = []
   let buffer = ''
-  const server = createNetServer(socket => socket.on('data', chunk => { buffer += chunk; const parts = buffer.split('\n'); buffer = parts.pop(); received.push(...parts) }))
+  const server = createNetServer(socket => { peers.push(socket); socket.on('data', chunk => { buffer += chunk; const parts = buffer.split('\n'); buffer = parts.pop(); received.push(...parts) }) })
   const port = await listen(server)
-  await new Promise(resolve => server.close(resolve)) // nobody listens yet
-  const writer = createSinkWriter({ port })
+  t.after(() => new Promise(resolve => { for (const peer of peers) peer.destroy(); server.close(resolve) }))
+  // The parent is away: each attempt fails as connect() does when nobody
+  // listens ('error', then 'close', never 'connect'), so the writer backs off
+  // and retries. The server keeps its port all along: closing it and listening
+  // again on the same number lets another process take the port in between.
+  let away = true, refused = null
+  const attempts = []
+  const writer = createSinkWriter({
+    port,
+    connectTo: options => {
+      attempts.push(away ? 'refused' : 'connected')
+      if (!away) return connect(options)
+      const socket = new Socket()
+      refused = new Promise(resolve => socket.once('close', resolve))
+      process.nextTick(() => socket.destroy(Object.assign(new Error(`connect ECONNREFUSED ${options.host}:${options.port}`), { code: 'ECONNREFUSED' })))
+      return socket
+    },
+  })
   t.after(() => writer.close())
   const log = createLog(line => writer.write(line))
   log.event('first', { n: 1 })
@@ -25,12 +41,17 @@ test('sink writer: schema-checked lines only, queued while the parent is away, a
   for (let i = 0; i < MAX_QUEUE + 5; i++) log.event('filler', { i })
   assert.equal(writer.queued(), MAX_QUEUE)
   assert.equal(writer.dropped(), 2 + 6)
-  await new Promise(resolve => server.listen(port, '127.0.0.1', resolve))
-  t.after(() => new Promise(resolve => server.close(resolve)))
+  await refused
+  assert.deepEqual(attempts, ['refused'])
+  assert.equal(peers.length, 0)
+  assert.equal(writer.queued(), MAX_QUEUE, 'a refusal keeps the queue')
+  away = false // the parent is back: the writer's next attempt reaches the server
   const until = Date.now() + 5000
   while (received.length < MAX_QUEUE && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 50))
   assert.equal(received.length, MAX_QUEUE)
+  assert.deepEqual(attempts, ['refused', 'connected'])
   assert.equal(JSON.parse(received[0]).event, 'first')
+  assert.deepEqual(received.slice(1).map(line => JSON.parse(line).i), Array.from({ length: MAX_QUEUE - 1 }, (_, i) => i), 'in order, the newest lines dropped')
   assert.ok(received.every(lineAllowed))
   assert.equal(received.some(line => line.includes('secret words')), false)
   log.event('after', { ok: true })
