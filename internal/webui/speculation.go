@@ -23,9 +23,11 @@ import (
 //   - the rules prerender, at moderate eagerness, exactly the console's
 //     pages the shell links to: every workspace (/workspaces), a
 //     workspace's pages and an app's overview and AI tab (/workspaces/*),
-//     My account, Contacts and AI integrations; never the console's
-//     sign-in (/auth), its sign-out page (/signout), its API (/v1) or an
-//     invitation;
+//     and its Minha conta group (shell 1.6.0): the profile (/account), My
+//     purchases (/account/purchases), Contacts and AI integrations; never
+//     the console's sign-in (/auth), its sign-out page (/signout), its API
+//     (/v1) or an invitation. The group's Segurança is id.'s account page,
+//     on id.'s origin, which the platform's rules do not prerender either;
 //   - a screen's document opts in to a credentialed prerender
 //     (Supports-Loading-Mode: credentialed-prerender) only when its
 //     request's one Referer has the console's exact origin: the console's
@@ -62,8 +64,9 @@ const speculationRulesPath = "/speculation-rules.json"
 const speculationRulesType = "application/speculationrules+json"
 
 // consolePages are the console's pages the shell links to (shell contract
-// 1.3 and 2.4), as URL patterns on the console's origin.
-var consolePages = []string{"/workspaces", "/workspaces/*", "/account", "/contacts", "/ai"}
+// 1.3 and 2.4; shell 1.6.0's Minha conta), as URL patterns on the console's
+// origin: the platform's reference app (tools/fakeproduct) names the same.
+var consolePages = []string{"/workspaces", "/workspaces/*", "/account", "/account/purchases", "/contacts", "/ai"}
 
 // shellScreenPrefix is where the shared shell's screens live: every
 // document under it is a screen (commercial web/src/ui/settingsScreens.ts
