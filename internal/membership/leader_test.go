@@ -112,6 +112,26 @@ func (w *world) version(t *testing.T, sub uuid.UUID) int64 {
 	return *v
 }
 
+// nextPage waits for a feed page the follower asked for after now and
+// stored, and returns the state it left. The follower asks for a page once
+// the last is stored, so the second committed after now, on the database's
+// clock, was asked after it; the first may have been answered before. (The
+// fake's reads tell neither: it records one after its answer, and answers
+// a long-poll another test's generation notice cut.)
+func (w *world) nextPage(t *testing.T) store.ContractState {
+	t.Helper()
+	page := func(after time.Time) store.ContractState {
+		t.Helper()
+		var s store.ContractState
+		eventually(t, soon, "a feed page", func() bool {
+			s = w.state(t)
+			return s.FeedReadAt != nil && s.FeedReadAt.After(after)
+		})
+		return s
+	}
+	return page(*page(dbNow(t, w.pool, "0")).FeedReadAt)
+}
+
 func lockKey(t *testing.T) string { return "contract:" + t.Name() + ":" + uuid.NewString() }
 
 // lockHolder is the backend holding the advisory lock name, 0 for none.
@@ -203,15 +223,11 @@ func TestFollowerNewerOnly(t *testing.T) {
 	if err := w.fake.RenameTeam(team, "Outra"); err != nil {
 		t.Fatal(err)
 	}
-	reads := len(w.fake.Reads())
-	eventually(t, 10*time.Second, "two long-polls after the held change", func() bool { return len(w.fake.Reads()) >= reads+2 })
-	held := *w.state(t).PublishedThrough
+	held := *w.nextPage(t).PublishedThrough
 	if held.After(changed.Add(time.Second)) {
 		t.Fatalf("published_through %v ran past the change held at %v", held, changed)
 	}
-	reads = len(w.fake.Reads())
-	eventually(t, 10*time.Second, "two more long-polls", func() bool { return len(w.fake.Reads()) >= reads+2 })
-	if pt := w.state(t).PublishedThrough; !pt.Equal(held) {
+	if pt := w.nextPage(t).PublishedThrough; !pt.Equal(held) {
 		t.Fatalf("published_through moved from %v to %v while the publisher is stuck", held, pt)
 	}
 	if err := w.fake.Release("wappie"); err != nil {
@@ -265,6 +281,8 @@ func TestFollowerIgnoresBadAnswers(t *testing.T) {
 	l.Wait, l.BackoffMin, l.BackoffMax = 25, 20*time.Millisecond, 100*time.Millisecond
 	run(t, l)
 	eventually(t, 10*time.Second, "the round and a page", func() bool { return w.following(sub) && w.state(t).FeedCursor >= 1 })
+	notices := w.generations(t)
+	quiet := notices()
 	team, err := w.fake.AddTeam("Equipe", sub.String())
 	if err != nil {
 		t.Fatal(err)
@@ -302,26 +320,39 @@ func TestFollowerIgnoresBadAnswers(t *testing.T) {
 	// A corruption spoils the next answer, the long-poll in flight, which
 	// the change wakes: the request after it finds the state as it was
 	// (no page committed, not even its read) and the failure recorded.
+	// Another test's generation notice (every test shares the database)
+	// cuts the long-poll: the fake may answer the cut one all the same, the
+	// corruption with it, to no client, or the follower may drop the
+	// corrupted answer as cut. The change's page is then taken whole, and
+	// the corruption is made again. A change wakes every long-poll the fake
+	// holds, so only a notice since the change before can have done it
+	// (since the team's, for the first).
 	for _, how := range []contracttest.Corruption{contracttest.Unsigned, contracttest.AnotherNonce, contracttest.AnotherBody,
 		contracttest.AnotherSecret, contracttest.Stale} {
-		if err := w.fake.Corrupt("wappie", contracttest.CallFeed, how); err != nil {
-			t.Fatal(err)
-		}
-		// Read after the corruption is set: every answer since is the
-		// corrupted one, which must change nothing.
-		was := w.state(t)
-		mu.Lock()
-		from := len(log)
-		mu.Unlock()
-		version := w.version(t, sub)
-		rename()
-		eventually(t, 10*time.Second, "the document after the corruption", func() bool { return w.version(t, sub) > version })
-		mu.Lock()
-		after := slices.Clone(log[from:])
-		mu.Unlock()
-		if !slices.Contains(after, seen{was.FeedCursor, version, "unverified", *was.FeedReadAt}) {
-			t.Fatalf("corruption %d: the requests after it saw %+v, want one from cursor %d, version %d, read at %v, after an unverified answer",
-				how, after, was.FeedCursor, version, was.FeedReadAt)
+		for try := 1; ; try++ {
+			if err := w.fake.Corrupt("wappie", contracttest.CallFeed, how); err != nil {
+				t.Fatal(err)
+			}
+			// Read after the corruption is set: every answer since is the
+			// corrupted one, which must change nothing.
+			was := w.state(t)
+			mu.Lock()
+			from := len(log)
+			mu.Unlock()
+			version, since := w.version(t, sub), quiet
+			quiet = notices()
+			rename()
+			eventually(t, 10*time.Second, "the document after the corruption", func() bool { return w.version(t, sub) > version })
+			mu.Lock()
+			after := slices.Clone(log[from:])
+			mu.Unlock()
+			if slices.Contains(after, seen{was.FeedCursor, version, "unverified", *was.FeedReadAt}) {
+				break
+			}
+			if notices() == since || try == 5 {
+				t.Fatalf("corruption %d: the requests after it saw %+v, want one from cursor %d, version %d, read at %v, after an unverified answer",
+					how, after, was.FeedCursor, version, was.FeedReadAt)
+			}
 		}
 	}
 	elsewhere := uuid.New()
@@ -336,16 +367,23 @@ func TestFollowerIgnoresBadAnswers(t *testing.T) {
 		w.exec(ctx, t, `SELECT pg_notify($1, 'generation')`, store.ContractModeChannel)
 		eventually(t, 2*time.Second, code+": a refusal soon after the notice", func() bool { return w.state(t).FeedError != "" })
 		cursor, version := w.state(t).FeedCursor, w.version(t, sub)
-		calls := w.fake.Count(contracttest.CallFeed)
+		calls, began := w.fake.Count(contracttest.CallFeed), time.Now()
 		rename()
+		// A few backoffs' time, and four calls refused from here: a whole
+		// turn after the change at least (a turn asks once, or twice: a
+		// signed replay or unavailable is asked again at once), however
+		// long a loaded machine takes.
 		time.Sleep(400 * time.Millisecond)
+		eventually(t, soon, code+": a turn refused after the change", func() bool { return w.fake.Count(contracttest.CallFeed) >= calls+4 })
+		n, took := w.fake.Count(contracttest.CallFeed)-calls, time.Since(began)
 		if s := w.state(t); s.FeedCursor != cursor || w.version(t, sub) != version || s.FeedError == "" || s.FeedErrorAt == nil {
 			t.Fatalf("%s: cursor %d (was %d), version %d (was %d), error %q", code, s.FeedCursor, cursor, w.version(t, sub), version, s.FeedError)
 		}
-		// 20 ms doubling to 100: a handful in 400 ms (a signed replay or
-		// unavailable is asked twice), never a busy loop.
-		if n := w.fake.Count(contracttest.CallFeed) - calls; n < 2 || n > 30 {
-			t.Fatalf("%s: %d feed calls in 400 ms", code, n)
+		// 20 ms doubling to 100: a turn's calls come at least the first
+		// backoff after the last turn's, never in a busy loop (a turn under
+		// way as the count began counts too).
+		if most := 2 * (2 + int(took/l.BackoffMin)); n > most {
+			t.Fatalf("%s: %d feed calls in %v, more than %d", code, n, took, most)
 		}
 		// A workspace backing off meanwhile (a snapshot refused for the
 		// same outage), which no document of the run names, is sent again
@@ -643,6 +681,41 @@ func (w *world) foreignModeNotices(t *testing.T) (stop func()) {
 	return stop
 }
 
+// generations counts the generation notices on the database every test
+// shares, any test's (other packages' send them too), from now until the
+// test's end: each cuts every leader's long-poll in flight.
+func (w *world) generations(t *testing.T) func() int {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	listener, err := w.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := listener.Exec(ctx, `LISTEN `+store.ContractModeChannel); err != nil {
+		t.Fatal(err)
+	}
+	var n atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			note, err := listener.Conn().WaitForNotification(ctx)
+			if err != nil {
+				return
+			}
+			if note.Payload == "generation" {
+				n.Add(1)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		_ = listener.Hijack().Close(context.Background()) //nolint:errcheck // a test's listener, closed with what it listened to
+	})
+	return func() int { return int(n.Load()) }
+}
+
 // TB23: two processes on one database: one long-poll at a time, one round;
 // when the leader's lock connection is killed, it makes no feed call
 // again, and the other takes over within its retry, however many mode
@@ -775,7 +848,14 @@ func TestFeedNeverSilent(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	w.fake.SetDown(false)
 	up := clock()
-	time.Sleep(2 * time.Second)
+	// As the platform comes back the follower may be in a backoff of over a
+	// second (100 ms doubling to 3 s here), and a read is the answer to a
+	// long-poll, a second after its request: the read after the outage is
+	// waited for, then timed on the platform's clock.
+	eventually(t, soon, "a read after the outage", func() bool {
+		reads := w.fake.Reads()
+		return len(reads) > 0 && reads[len(reads)-1].After(up)
+	})
 
 	reads := w.fake.Reads()
 	worst, back := time.Duration(0), time.Duration(-1)
@@ -1295,17 +1375,23 @@ func TestFollowerSilence(t *testing.T) {
 	}
 	outage()
 	eventually(t, 5*time.Second, "the silence's ERROR", func() bool { return silence() == 1 })
+	// More failed calls, and the ERROR recorded meanwhile. A turn asks twice
+	// (unavailable is asked again at once) and the next begins once it has
+	// failed: at the fifth call from here, two whole turns after the
+	// ERROR's have failed, however long a loaded machine takes over them.
 	calls := w.fake.Count(contracttest.CallFeed)
-	// Many more failed calls, and the ERROR recorded meanwhile.
-	time.Sleep(500 * time.Millisecond)
-	if n := w.fake.Count(contracttest.CallFeed) - calls; n < 2 || silence() != 1 {
-		t.Fatalf("%d silences over %d more failed calls, want one", silence(), n)
+	eventually(t, soon, "two more failed turns", func() bool { return w.fake.Count(contracttest.CallFeed) >= calls+5 })
+	if n := silence(); n != 1 {
+		t.Fatalf("%d silences over two more failed turns, want one", n)
 	}
 	if s := w.state(t); s.ErrorClass != store.ContractErrorFeedSilent || s.ErrorAt == nil {
 		t.Fatalf("the silence was not recorded: %+v", s)
 	}
 	w.fake.RefuseAlways(contracttest.CallFeed, "")
-	eventually(t, 5*time.Second, "the feed answers again", func() bool { return len(logs.Lines("contract: the feed answers again")) > 0 })
+	// A page comes a long-poll after the last generation notice (any
+	// test's, on the database every test shares), which cuts the
+	// long-poll in flight.
+	eventually(t, soon, "the feed answers again", func() bool { return len(logs.Lines("contract: the feed answers again")) > 0 })
 	w.exec(context.Background(), t, `UPDATE contract_state SET error_class = NULL, error_at = NULL`)
 	outage()
 	// The ERROR is logged, then recorded.
@@ -1340,10 +1426,13 @@ func TestRoundFailuresAreTold(t *testing.T) {
 		t.Fatal("the round's ERROR before its bound")
 	}
 	eventually(t, 5*time.Second, "the round's ERROR", func() bool { return told() == 1 })
+	// A pass makes one PUT, and the next begins once it is done: at the
+	// third PUT from here, two whole passes after the ERROR's have failed,
+	// however long a loaded machine takes over them.
 	puts := w.fake.Count(contracttest.CallSubscribe)
-	time.Sleep(500 * time.Millisecond)
-	if n := w.fake.Count(contracttest.CallSubscribe) - puts; n < 2 || told() != 1 {
-		t.Fatalf("%d ERRORs over %d more failed PUTs, want one", told(), n)
+	eventually(t, soon, "two more failed passes", func() bool { return w.fake.Count(contracttest.CallSubscribe) >= puts+3 })
+	if n := told(); n != 1 {
+		t.Fatalf("%d ERRORs over two more failed passes, want one", n)
 	}
 	if s := w.state(t); s.ErrorClass != store.ContractErrorRoundIncomplete || s.ErrorAt == nil {
 		t.Fatalf("the round's ERROR was not recorded: %+v", s)
@@ -1354,6 +1443,11 @@ func TestRoundFailuresAreTold(t *testing.T) {
 		return w.following(sub) && s.RoundGeneration != nil && s.RoundError == "" && s.RoundErrorAt == nil
 	})
 	// A GET's not_found forgets the sub's version again, and its PUTs fail.
+	// The pass's PUT published the sub's document to the feed, and a page
+	// that carries it, stored after the version is forgotten, would bring
+	// it back with no PUT left to fail: the version is forgotten once the
+	// follower stored a page asked after the round was done.
+	w.nextPage(t)
 	w.fake.RefuseAlways(contracttest.CallSubscribe, kc.CodeUnavailable)
 	if err := w.contract.Unfollowed(ctx, sub); err != nil {
 		t.Fatal(err)

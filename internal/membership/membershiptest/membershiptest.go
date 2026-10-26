@@ -249,9 +249,14 @@ type Fake struct {
 }
 
 // Batch is one events request the fake answered: how many events its body
-// held, its size in bytes, and the status the fake answered.
+// held, its size in bytes, and the status the fake answered; and the
+// workspace of its events ("" when they are not all one's). The fake logs
+// a batch once it has answered it, after it took its events: a test that
+// waits for the events (Events) and then reads the log waits for the log
+// too.
 type Batch struct {
 	Events, Bytes, Status int
+	Workspace             string
 }
 
 // Access is one snapshot a workspace was sent: when the fake received it,
@@ -368,10 +373,20 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 			panic(http.ErrAbortHandler)
 		}
 		var head struct {
-			Events []json.RawMessage `json:"events"`
+			Events []struct {
+				Workspace string `json:"workspace_id"`
+			} `json:"events"`
 		}
 		_ = json.Unmarshal(body, &head) //nolint:errcheck // a body that is no batch has no events
 		batch = Batch{Events: len(head.Events), Bytes: len(body)}
+		for i, ev := range head.Events {
+			switch {
+			case i == 0:
+				batch.Workspace = ev.Workspace
+			case ev.Workspace != batch.Workspace:
+				batch.Workspace = ""
+			}
+		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	if call == contracttest.CallAccess && r.Body != nil {

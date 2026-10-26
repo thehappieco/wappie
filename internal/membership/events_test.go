@@ -824,8 +824,20 @@ func TestEventQueues(t *testing.T) {
 		run(t, l)
 		procs = append(procs, process{c, logs})
 	}
-	eventually(t, 30*time.Second, "both queues the platform knows sent", func() bool {
-		return len(w.sentTo(w.team)) == len(order) && len(w.sentTo(bigID)) == len(heavy)
+	// The fake logs a batch once it has answered it, after it took its
+	// events: the wait covers each queue's log too.
+	logged := func(ws uuid.UUID) int {
+		n := 0
+		for _, b := range w.fake.Batches() {
+			if b.Workspace == ws.String() && b.Status == http.StatusOK {
+				n += b.Events
+			}
+		}
+		return n
+	}
+	eventually(t, 30*time.Second, "both queues the platform knows sent, and their batches logged", func() bool {
+		return len(w.sentTo(w.team)) == len(order) && len(w.sentTo(bigID)) == len(heavy) &&
+			logged(w.team) == len(order) && logged(bigID) == len(heavy)
 	})
 	if got := idsOf(w.sentTo(w.team)); !slices.Equal(got, order) {
 		t.Fatal("the team's events left out of their order")
@@ -833,23 +845,20 @@ func TestEventQueues(t *testing.T) {
 	if got := idsOf(w.sentTo(bigID)); !slices.Equal(got, heavy) {
 		t.Fatal("the big team's events left out of their order")
 	}
-	var hundreds, fifty int
-	var crowded []int
+	var plain, crowded []int
 	for _, b := range w.fake.Batches() {
 		if b.Events > kc.MaxEvents || b.Bytes > 248<<10 {
 			t.Fatalf("a batch of %d events, %d bytes", b.Events, b.Bytes)
 		}
-		switch {
-		case b.Bytes > 100_000:
+		switch b.Workspace {
+		case w.team.String():
+			plain = append(plain, b.Events)
+		case big:
 			crowded = append(crowded, b.Events)
-		case b.Events == 100:
-			hundreds++
-		case b.Events == 50:
-			fifty++
 		}
 	}
-	if hundreds != 2 || fifty != 1 || !slices.Equal(crowded, []int{2, 2, 1}) {
-		t.Fatalf("batches: %d of 100, %d of 50, of 3000 readers %v", hundreds, fifty, crowded)
+	if !slices.Equal(plain, []int{100, 100, 50}) || !slices.Equal(crowded, []int{2, 2, 1}) {
+		t.Fatalf("batches: %v, of 3000 readers %v", plain, crowded)
 	}
 	// The workspace the platform does not know: its queue backs off, alone.
 	eventually(t, 10*time.Second, "the unknown workspace refused", func() bool {
@@ -909,13 +918,26 @@ func TestEventQueues(t *testing.T) {
 	w.exec(ctx, t, `UPDATE contract_workspaces SET events_due_at = clock_timestamp() + interval '1 hour', events_tries = 12
 		WHERE workspace_id = $1`, w.team)
 	time.Sleep(300 * time.Millisecond)
+	// The follower's first page after the outage brings the queue back. It
+	// comes a long-poll after the last generation notice (any test's, on
+	// the database every test shares), which cuts the long-poll in flight:
+	// the queue is timed from the leader's own word of that page.
+	answered := func() int {
+		n := 0
+		for _, p := range procs {
+			n += len(p.logs.Lines("contract: the feed answers again"))
+		}
+		return n
+	}
+	pages := answered()
 	w.fake.SetDown(false)
+	eventually(t, soon, "the feed's first page after the outage", func() bool { return answered() > pages })
 	back := time.Now()
-	eventually(t, 10*time.Second, "the queue back with the platform", func() bool {
+	eventually(t, 10*time.Second, "the queue back with the feed", func() bool {
 		return w.delivery(t, w.team, down).outcome == store.ContractEventAccepted
 	})
 	if took := time.Since(back); took > 5*time.Second {
-		t.Fatalf("the queue came back %v after the platform", took)
+		t.Fatalf("the queue came back %v after the feed", took)
 	}
 }
 

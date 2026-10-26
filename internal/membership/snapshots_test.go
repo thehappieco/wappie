@@ -1051,15 +1051,26 @@ func TestSnapshotSeqRises(t *testing.T) {
 	stopA := process()
 	process()
 	devices := store.NewDevices(w.pool)
+	// kept is the label of the snapshot the platform keeps, "" for none.
+	kept := func() string {
+		s, ok := w.fake.Snapshot("wappie", w.team.String())
+		if !ok || len(s.Items) == 0 || s.Items[0].Label == nil {
+			return ""
+		}
+		return *s.Items[0].Label
+	}
+	// A change waits for its own snapshot: a leader's start sends one too,
+	// which may have been measured before the change, and may be the next
+	// to be accepted.
 	change := func(i int) {
 		t.Helper()
-		n := w.accepted(w.team)
-		if err := devices.Rename(ctx, w.team.String(), w.device.String(), fmt.Sprintf("Vendas %d", i)); err != nil {
+		name := fmt.Sprintf("Vendas %d", i)
+		if err := devices.Rename(ctx, w.team.String(), w.device.String(), name); err != nil {
 			t.Fatal(err)
 		}
-		eventually(t, 5*time.Second, fmt.Sprintf("change %d's snapshot", i), func() bool { return w.accepted(w.team) > n })
+		eventually(t, soon, fmt.Sprintf("change %d's snapshot", i), func() bool { return kept() == name })
 	}
-	eventually(t, 5*time.Second, "the leader's start", func() bool { return w.accepted(w.team) >= 1 })
+	eventually(t, soon, "the leader's start", func() bool { return w.accepted(w.team) >= 1 })
 	for i := range 8 {
 		change(i)
 		switch i {
@@ -1078,6 +1089,8 @@ func TestSnapshotSeqRises(t *testing.T) {
 				WHERE workspace_id = $1`, w.team)
 		}
 	}
+	// The platform answers before Wappie records the answer.
+	w.settle(t, w.team)
 	var seqs []int64
 	for _, a := range w.fake.Accesses(w.team.String()) {
 		seqs = append(seqs, a.Seq)
@@ -1091,12 +1104,12 @@ func TestSnapshotSeqRises(t *testing.T) {
 	if err := w.pool.QueryRow(ctx, `SELECT snapshot_seq FROM contract_workspaces WHERE workspace_id = $1`, w.team).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	kept, _ := w.fake.Snapshot("wappie", w.team.String())
-	if len(seqs) < 9 || kept.SnapshotSeq != seqs[len(seqs)-1] || stored != kept.SnapshotSeq || *kept.Items[0].Label != "Vendas 7" {
-		t.Fatalf("%d snapshots; the platform keeps %d (%v), Wappie stored %d, the last sent %d", len(seqs), kept.SnapshotSeq,
-			kept.Items, stored, seqs[len(seqs)-1])
+	last, _ := w.fake.Snapshot("wappie", w.team.String())
+	if len(seqs) < 9 || last.SnapshotSeq != seqs[len(seqs)-1] || stored != last.SnapshotSeq || kept() != "Vendas 7" {
+		t.Fatalf("%d snapshots; the platform keeps %d (%q), Wappie stored %d, the last sent %d", len(seqs), last.SnapshotSeq,
+			kept(), stored, seqs[len(seqs)-1])
 	}
-	if ahead := time.UnixMilli(kept.SnapshotSeq); time.Until(ahead) < 50*time.Minute {
+	if ahead := time.UnixMilli(last.SnapshotSeq); time.Until(ahead) < 50*time.Minute {
 		t.Fatalf("after the clock stepped back the seq is %v, not past the one an hour ahead", ahead)
 	}
 }
