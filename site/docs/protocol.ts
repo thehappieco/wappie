@@ -139,6 +139,14 @@ export interface DeviceInfo {
   last_connected_at?: string
   paused?: boolean
   can_manage?: boolean
+  /**
+   * Whether this caller may pause and resume the number's capture
+   * (device.stop, and device.start on a paused number): an owner or an
+   * admin (in a personal workspace, its person), never through Manage; a
+   * key with full scope that reaches the number. device.start on a number
+   * that is not paused (sync now) stays can_manage's.
+   */
+  can_pause?: boolean
   can_send?: boolean
   profile_key?: string
 }

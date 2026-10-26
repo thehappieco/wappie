@@ -87,6 +87,11 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 		if !s.authorizeDevice(ctx, f, uuid.MustParse(dev.ID), store.ActionManage) {
 			return
 		}
+		// A retry is Manage's; a retry of a paused registration also lifts
+		// its pause, and that is resuming, by role (store.ActionPause).
+		if dev.Paused && !s.authorizeDevice(ctx, f, uuid.MustParse(dev.ID), store.ActionPause) {
+			return
+		}
 		if s.running(dev.ID) {
 			s.replyError(f.ReqID, ErrCodeConflict, "pairing is already in progress for this device")
 			return
@@ -195,7 +200,9 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 		return
 	}
 
-	if req.Resume {
+	// Only the pause checked above is lifted: one that lands meanwhile
+	// stays, and cancels the attempt once it is published (below).
+	if req.Resume && dev.Paused {
 		if err := s.srv.cfg.Devices.SetPaused(ctx, tenant, dev.ID, false); err != nil {
 			s.replyError(f.ReqID, ErrCodeInternal, "could not resume pairing")
 			return

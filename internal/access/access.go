@@ -50,13 +50,22 @@ func Authenticate(ctx context.Context, token string, keys *store.APIKeys, users 
 	return actor, nil
 }
 
+// Allows says whether actor may act on device. A key needs the action's
+// scope and the number in its list; a key that acts as a service account
+// also needs that account's permission, and a person needs their own.
+//
+// Pausing and resuming a number's capture (store.ActionPause) is a person's
+// by role only: an owner or an admin, which in a personal workspace is its
+// person, never a member with the Manage flag. A key keeps it under its
+// scope, full, as for managing; one that acts as a service account adds the
+// account's own Manage flag, as before: a service account acts as itself.
 func Allows(ctx context.Context, actor Actor, device uuid.UUID, action store.DeviceAction, keys *store.APIKeys, users *store.Users) (bool, error) {
 	if actor.Key != uuid.Nil {
 		need := store.ScopeRead
 		if action == store.ActionSend {
 			need = store.ScopeSend
 		}
-		if action == store.ActionManage {
+		if action == store.ActionManage || action == store.ActionPause {
 			need = store.ScopeFull
 		}
 		if !actor.Scope.Covers(need) {

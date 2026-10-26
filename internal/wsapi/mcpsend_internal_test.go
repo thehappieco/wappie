@@ -325,7 +325,7 @@ func TestAssistantKeyNeverSendsOrManages(t *testing.T) {
 	checked := 0
 	for _, kind := range features {
 		action := frameAction(kind)
-		if action != store.ActionSend && action != store.ActionManage || kind == "pair.qr" || kind == "pair.code" {
+		if action != store.ActionSend && action != store.ActionManage && action != store.ActionPause || kind == "pair.qr" || kind == "pair.code" {
 			continue
 		}
 		for _, key := range []string{full, w.connKey} {

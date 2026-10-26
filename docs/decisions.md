@@ -1690,3 +1690,49 @@ snapshot's `protected` both keep them while their keys are kept. Only an
 active person is a backup, as before. No Wappie path disables an account
 yet (only an operator's SQL does), so this only widens the refusal, on
 the safe side.
+
+## Pausing and resuming by role (2026-10-26)
+
+The owner took every recommendation of the platform's design of
+2026-10-26 (`contract-tokens-and-settings.md`, section 11), in their words
+"sim para tudo", relayed by the platform. Its question 1: people pause and
+resume an item's sync by role, in both apps, never through a stored Manage
+flag. Mailie already did; Wappie's `device.stop` and `device.start` needed
+Manage, which an owner or an admin can give a member.
+
+`device.stop`, and `device.start` on a paused number, now need
+`store.ActionPause`, not `ActionManage` (`frameAction`, and
+`resolveDevice` for the start). For a person it is the membership's role,
+owner or admin, read in the same row as the other permissions
+(`devicePermissionTx`); a personal workspace's person is its owner, and a
+member's `can_manage` never counts. A key needs `full`, as for managing,
+and the number in its list. A key that acts as a service account also
+needs the account's own Manage flag, as before: the design leaves keys
+under their scope (0053's tokens will carry `manage` the same way), and a
+service account acts as itself, so it keeps the rule it had. An assistant
+connection's key is refused it like any frame that manages.
+
+Only pausing and resuming moved. Renaming, the receipt mode, pairing
+retries, groups, backfill, grants, deletion and recovery keep their
+rules. A retry of a registration that never linked lifts its pause, if it
+has one: only then does the retry also need `ActionPause`, since an owner
+or an admin paused it and the retry, once the phone accepts, starts
+capturing. A refusal is `not_authorized` with a message naming the role
+rule, as Mailie's is, rather than a new code: the console words it, and
+`packages/client` takes no runtime change (its build is measured into the
+reader's PCR0). `can_pause` tells each caller what it may do, in
+`devices.list`, `device.info` and `GET /v1/devices`
+([devices](devices.md#who-pauses-and-resumes)).
+
+The design's "sync now", a reader's on a number that is not paused, has no
+frame of its own here: `device.start` on a number that is not paused
+connects it now. The owner's answer keeps it off the role ("sync now stays
+with the readers of an item that is not paused"), so it keeps Manage, the
+rule it had, until the contract's `item.sync_now` (its settings part)
+gives it to readers. `resolveDevice` checks Manage when the row it reads is
+not paused and the role when it is; `handleDeviceStart` checks the role
+again on its own read before it lifts a pause, so a stop that lands in
+between is never lifted under Manage. A sync now lifts no pause, and one
+that fails puts none back (a resume that fails still restores the pause
+it lifted, with its cause), so a member with Manage never leaves a number
+paused. `history.backfill` keeps Manage.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
 
@@ -52,6 +53,13 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such device")
 		return
 	}
+	// Lifting a pause is resuming, by role (store.ActionPause). resolveDevice
+	// let a number that was not paused through under Manage, as "sync now";
+	// a stop may have landed since, so this read, the one the pause is
+	// lifted on, decides.
+	if dev.Paused && !s.authorizeDevice(ctx, f, resolved, store.ActionPause) {
+		return
+	}
 	if !dev.Identity.Known() {
 		s.replyError(f.ReqID, ErrCodeConflict, "this number must be linked first")
 		return
@@ -64,18 +72,26 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeConflict, "the WhatsApp session is no longer available")
 		return
 	}
-	if err = s.srv.cfg.Devices.SetPaused(ctx, tenant, ref.DeviceID, false); err != nil {
-		s.replyError(f.ReqID, ErrCodeInternal, "could not resume the device")
-		return
+	// A sync now (a number that was not paused) lifts nothing: a stop that
+	// lands meanwhile stays, and the check after the start below stops the
+	// connection it paused.
+	if dev.Paused {
+		if err = s.srv.cfg.Devices.SetPaused(ctx, tenant, ref.DeviceID, false); err != nil {
+			s.replyError(f.ReqID, ErrCodeInternal, "could not resume the device")
+			return
+		}
 	}
 	_, err = s.srv.cfg.Registry.StartExisting(ctx, tenant, dev.ID, wa.ReceiptPolicy{Mode: dev.ReceiptMode, Recorder: s.recordReceipt}, dev.Identity.PN, dev.Identity.LID)
 	if err != nil && !errors.Is(err, wa.ErrAlreadyRunning) {
 		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		// The pause it took away comes back with its cause: a move's
-		// stays a move's, never a person's.
-		if pauseErr := s.srv.cfg.Devices.RestorePause(restoreCtx, tenant, dev.ID, dev.PauseCause); pauseErr != nil {
-			s.log.Error("could not preserve pause after failed resume", "device", dev.ID, "error", pauseErr)
+		// stays a move's, never a person's. A sync now took none, and
+		// leaves the number unpaused: a member with Manage never pauses.
+		if dev.Paused {
+			if pauseErr := s.srv.cfg.Devices.RestorePause(restoreCtx, tenant, dev.ID, dev.PauseCause); pauseErr != nil {
+				s.log.Error("could not preserve pause after failed resume", "device", dev.ID, "error", pauseErr)
+			}
 		}
 		if errors.Is(err, wa.ErrNoSession) {
 			if statusErr := s.srv.cfg.Devices.SetStatus(restoreCtx, tenant, dev.ID, wa.StatusLoggedOut, "session missing"); statusErr != nil {

@@ -81,7 +81,11 @@ globalThis.WappieDocumentationLocales = {
     "doc77": "API v1 · piloto",
     "doc78": "Documentação da API — Wappie",
     "doc79": "Autenticação, WebSocket, arquivos e permissões da API Wappie.",
-    "doc80": "Nesta página"
+    "doc80": "Nesta página",
+    "doc81": "Pausar e retomar a sincronização",
+    "doc82": "(número pausado)",
+    "doc83": "Papel de proprietário ou administrador (no espaço pessoal, sua pessoa), nunca a permissão Gerenciamento; ou um token full que alcança o número",
+    "doc84": "(número não pausado: conecta agora)"
   },
   "en": {
     "doc0": "Documentation / v1",
@@ -164,7 +168,11 @@ globalThis.WappieDocumentationLocales = {
     "doc77": "API v1 · pilot",
     "doc78": "API documentation — Wappie",
     "doc79": "Authentication, WebSocket, files, and permissions in the Wappie API.",
-    "doc80": "On this page"
+    "doc80": "On this page",
+    "doc81": "Pause and resume sync",
+    "doc82": "(paused number)",
+    "doc83": "Owner or administrator role (in a personal workspace, its person), never the Management permission; or a full token that reaches the number",
+    "doc84": "(number not paused: connects it now)"
   },
   "es": {
     "doc0": "Documentación / v1",
@@ -247,7 +255,11 @@ globalThis.WappieDocumentationLocales = {
     "doc77": "API v1 · piloto",
     "doc78": "Documentación de la API — Wappie",
     "doc79": "Autenticación, WebSocket, archivos y permisos de la API Wappie.",
-    "doc80": "En esta página"
+    "doc80": "En esta página",
+    "doc81": "Pausar y reanudar la sincronización",
+    "doc82": "(número en pausa)",
+    "doc83": "Rol de propietario o administrador (en un espacio personal, su persona), nunca el permiso Gestión; o un token full que alcance el número",
+    "doc84": "(número sin pausa: lo conecta ahora)"
   },
   "fr": {
     "doc0": "Documentation / v1",
@@ -330,7 +342,11 @@ globalThis.WappieDocumentationLocales = {
     "doc77": "API v1 · pilote",
     "doc78": "Documentation de l’API — Wappie",
     "doc79": "Authentification, WebSocket, fichiers et autorisations de l’API Wappie.",
-    "doc80": "Sur cette page"
+    "doc80": "Sur cette page",
+    "doc81": "Mettre en pause et reprendre la synchronisation",
+    "doc82": "(numéro en pause)",
+    "doc83": "Rôle de propriétaire ou d’administrateur (dans un espace personnel, sa personne), jamais l’autorisation Gestion ; ou un jeton full qui atteint le numéro",
+    "doc84": "(numéro non en pause : le connecte maintenant)"
   },
   "de": {
     "doc0": "Dokumentation / v1",
@@ -413,6 +429,10 @@ globalThis.WappieDocumentationLocales = {
     "doc77": "API v1 · Pilotprojekt",
     "doc78": "API-Dokumentation — Wappie",
     "doc79": "Authentifizierung, WebSocket, Dateien und Berechtigungen der Wappie-API.",
-    "doc80": "Auf dieser Seite"
+    "doc80": "Auf dieser Seite",
+    "doc81": "Synchronisierung pausieren und fortsetzen",
+    "doc82": "(pausierte Nummer)",
+    "doc83": "Rolle Inhaber oder Administrator (in einem persönlichen Arbeitsbereich dessen Person), nie die Berechtigung Verwaltung; oder ein full-Token, das die Nummer erreicht",
+    "doc84": "(nicht pausierte Nummer: verbindet sie sofort)"
   }
 };

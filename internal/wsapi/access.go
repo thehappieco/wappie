@@ -122,7 +122,12 @@ func frameAction(kind string) store.DeviceAction {
 		return store.ActionSend
 	case TypeChatStart, TypePollCreate, TypeLocationSend, TypeEventCreate, TypeSend, TypeSendMedia, TypeEdit, TypeRevoke, TypeReact, TypePollVote, TypeMarkRead, TypeChatTyping, TypeChatTimer:
 		return store.ActionSend
-	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceStart, TypeDeviceRename, TypeDeviceStop, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke,
+	case TypeDeviceStop, TypeDeviceStart:
+		// A number's capture, paused and resumed by role (store.ActionPause).
+		// device.start on a number that is not paused is "sync now", which
+		// keeps Manage (resolveDevice).
+		return store.ActionPause
+	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceRename, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke,
 		TypeDeviceDeleteCheck, TypeDevicesDeleted, TypeDeviceRecoverCheck, TypeDeviceRecover:
 		return store.ActionManage
 	case TypeDeviceInfo:
@@ -145,8 +150,26 @@ func (s *session) authorizeDevice(ctx context.Context, f Frame, device uuid.UUID
 		return false
 	}
 	if !allowed {
-		s.replyError(f.ReqID, ErrCodeNotAuthorized, "this account or token lacks the required "+string(action)+" permission or API key scope; reading also requires a key grant")
+		s.replyError(f.ReqID, ErrCodeNotAuthorized, refusal(who, action))
 		return false
 	}
 	return true
+}
+
+// refusal is what not_authorized says to who for action. Pausing and
+// resuming names its rule, the role, so a member with Manage reads why
+// Manage is not enough (store.ActionPause).
+func refusal(who actor, action store.DeviceAction) string {
+	if action == store.ActionPause {
+		switch {
+		case who.person:
+			return "only an owner or an admin of this workspace pauses or resumes a number's sync (in a personal workspace, its person); " +
+				"the Manage permission does not include it"
+		case who.service:
+			return "pausing or resuming a number's sync needs an API key with full scope that reaches the number, " +
+				"acting as a service account with the number's Manage permission"
+		}
+		return "pausing or resuming a number's sync needs an API key with full scope that reaches the number"
+	}
+	return "this account or token lacks the required " + string(action) + " permission or API key scope; reading also requires a key grant"
 }
