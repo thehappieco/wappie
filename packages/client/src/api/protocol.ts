@@ -160,11 +160,12 @@ export interface DeviceInfo {
   can_manage?: boolean
   /**
    * Whether this caller may pause and resume the number's capture
-   * (device.stop, device.start): a person by role only, an owner or an
-   * admin (in a personal workspace, its person), never through Manage; a
-   * key with full scope that reaches the number, as for managing. Anyone
-   * else gets not_authorized, whose message names the rule. Absent from an
-   * older core, where Manage paused.
+   * (device.stop, and device.start on a paused number): a person by role
+   * only, an owner or an admin (in a personal workspace, its person), never
+   * through Manage; a key with full scope that reaches the number, as for
+   * managing. Anyone else gets not_authorized, whose message names the
+   * rule. device.start on a number that is not paused (sync now) stays
+   * can_manage's. Absent from an older core, where Manage paused.
    */
   can_pause?: boolean
   can_send?: boolean

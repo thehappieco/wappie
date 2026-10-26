@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 	"whatserver2/internal/wsapi"
 )
 
@@ -88,22 +89,37 @@ func pauses(t *testing.T, c *deletionConsole, hello wsapi.Hello, tenant, device 
 	}
 }
 
-// refused checks that hello may neither stop nor start device, with a
-// not_authorized whose message holds each of says, and that the number's
-// pause is left as it was.
-func refused(t *testing.T, c *deletionConsole, hello wsapi.Hello, tenant, device uuid.UUID, who string, says ...string) {
+// refused checks that hello may neither stop device nor resume it once it
+// is paused, with a not_authorized whose message holds each of says, and
+// that the number's pause is left as it was. On a number that is not
+// paused, the console's owner pauses it for the resume, and resumes it after.
+func refused(t *testing.T, c *deletionConsole, hello wsapi.Hello, device uuid.UUID, who string, says ...string) {
 	t.Helper()
 	ref := wsapi.DeviceRef{DeviceID: device.String()}
-	was := c.paused(t, tenant, device)
-	for _, frame := range []string{wsapi.TypeDeviceStop, wsapi.TypeDeviceStart} {
+	owner := wsapi.Hello{Session: c.token}
+	was := c.paused(t, c.tenant, device)
+	check := func(frame string, paused bool) {
+		t.Helper()
 		e := wantError(t, ask(t, c.console, hello, frame, ref), wsapi.ErrCodeNotAuthorized)
 		for _, s := range says {
 			if !strings.Contains(e.Message, s) {
 				t.Errorf("%s's %s: the refusal %q does not say %q", who, frame, e.Message, s)
 			}
 		}
-		if c.paused(t, tenant, device) != was {
+		if c.paused(t, c.tenant, device) != paused {
 			t.Fatalf("%s's refused %s changed the pause", who, frame)
+		}
+	}
+	check(wsapi.TypeDeviceStop, was)
+	if !was {
+		if f := ask(t, c.console, owner, wsapi.TypeDeviceStop, ref); f.Type != wsapi.TypeDeviceStatus {
+			t.Fatalf("the owner's stop: %s %s", f.Type, f.Payload)
+		}
+	}
+	check(wsapi.TypeDeviceStart, true)
+	if !was {
+		if f := ask(t, c.console, owner, wsapi.TypeDeviceStart, ref); f.Type != wsapi.TypeDeviceStatus {
+			t.Fatalf("the owner's start: %s %s", f.Type, f.Payload)
 		}
 	}
 }
@@ -148,8 +164,8 @@ func TestTeamPausesAndResumesByRole(t *testing.T) {
 
 	// A member with Manage may neither pause nor resume, and is told the
 	// rule; nor may a member without it.
-	refused(t, c, member, c.tenant, device, "a member with Manage", "owner or an admin", "Manage permission does not include it")
-	refused(t, c, wsapi.Hello{Session: readerToken}, c.tenant, device, "a member without Manage", "owner or an admin")
+	refused(t, c, member, device, "a member with Manage", "owner or an admin", "Manage permission does not include it")
+	refused(t, c, wsapi.Hello{Session: readerToken}, device, "a member without Manage", "owner or an admin")
 
 	// The member keeps every other act of managing the number: its name
 	// and its receipt mode here; frameAction keeps the rest on Manage
@@ -170,7 +186,7 @@ func TestTeamPausesAndResumesByRole(t *testing.T) {
 		if f := ask(t, c.console, tc.hello, wsapi.TypeDeviceStop, ref); f.Type != wsapi.TypeDeviceStatus {
 			t.Fatalf("%s's stop: %s %s", tc.who, f.Type, f.Payload)
 		}
-		refused(t, c, member, c.tenant, device, "a member with Manage, on a paused number", "owner or an admin")
+		refused(t, c, member, device, "a member with Manage, on a paused number", "owner or an admin")
 		if !c.paused(t, c.tenant, device) {
 			t.Fatalf("the member's refused start resumed what %s paused", tc.who)
 		}
@@ -240,10 +256,10 @@ func TestKeysPauseAndResumeUnderTheirScope(t *testing.T) {
 
 	// A full key for another number, a send key and a read key may not.
 	elsewhere, _ := issue("elsewhere", store.ScopeFull, nil, []uuid.UUID{other})
-	refused(t, c, elsewhere, c.tenant, device, "a full key for another number", "full scope that reaches the number")
+	refused(t, c, elsewhere, device, "a full key for another number", "full scope that reaches the number")
 	for _, scope := range []store.KeyScope{store.ScopeSend, store.ScopeRead} {
 		hello, key := issue(string(scope), scope, nil, nil)
-		refused(t, c, hello, c.tenant, device, "a "+string(scope)+" key", "full scope")
+		refused(t, c, hello, device, "a "+string(scope)+" key", "full scope")
 		if got := listedOverHTTP(t, c, key, device); got.CanPause {
 			t.Fatalf("a %s key's number says can_pause", scope)
 		}
@@ -256,7 +272,7 @@ func TestKeysPauseAndResumeUnderTheirScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	acting, actingKey := issue("erp", store.ScopeFull, &svc.ID, nil)
-	refused(t, c, acting, c.tenant, device, "a service account without Manage", "service account with the number's Manage permission")
+	refused(t, c, acting, device, "a service account without Manage", "service account with the number's Manage permission")
 	if err := c.users.SetDevicePermission(ctx, c.tenant, c.owner, store.DevicePermission{DeviceID: device, UserID: svc.ID, Manage: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -266,5 +282,110 @@ func TestKeysPauseAndResumeUnderTheirScope(t *testing.T) {
 	pauses(t, c, acting, c.tenant, device, "a service account with Manage")
 	// Its send-scoped key may not, Manage or not.
 	sending, _ := issue("erp-send", store.ScopeSend, &svc.ID, nil)
-	refused(t, c, sending, c.tenant, device, "a service account's send key", "full scope")
+	refused(t, c, sending, device, "a service account's send key", "full scope")
+}
+
+// device.start on a number that is not paused is Wappie's "sync now": it
+// connects the number now, and keeps Manage (the platform's design of
+// 2026-10-26 gives it to readers with the contract's item.sync_now). A
+// member with Manage reconnects an offline number nobody paused, lifts no
+// pause doing it and leaves none behind when it fails; on a paused number
+// the start is a resume, and refused.
+func TestSyncNowKeepsManage(t *testing.T) {
+	c := newDeletionConsoleWith(t, deletionOptions{registry: true})
+	ctx := context.Background()
+	device := c.linkedDevice(t, "Vendas")
+	ref := wsapi.DeviceRef{DeviceID: device.String()}
+	owner := wsapi.Hello{Session: c.token}
+	manager, managerToken := c.person(t, "ana", "member")
+	if err := c.users.SetDevicePermission(ctx, c.tenant, c.owner, store.DevicePermission{DeviceID: device, UserID: manager, Read: true, Manage: true}); err != nil {
+		t.Fatal(err)
+	}
+	reader, readerToken := c.person(t, "caio", "member")
+	c.reads(t, reader, device)
+	member := wsapi.Hello{Session: managerToken}
+	offline := func() {
+		t.Helper()
+		c.registry.Stop(ctx, device.String())
+		if err := c.devices.SetStatus(ctx, c.tenant.String(), device.String(), wa.StatusOffline, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	offline()
+	if f := ask(t, c.console, member, wsapi.TypeDeviceStart, ref); f.Type != wsapi.TypeDeviceStatus {
+		t.Fatalf("the member's sync now: %s %s", f.Type, f.Payload)
+	}
+	if c.paused(t, c.tenant, device) {
+		t.Fatal("the member's sync now paused the number")
+	}
+	// A member without Manage may not: the refusal is Manage's.
+	e := wantError(t, ask(t, c.console, wsapi.Hello{Session: readerToken}, wsapi.TypeDeviceStart, ref), wsapi.ErrCodeNotAuthorized)
+	if !strings.Contains(e.Message, "manage permission") {
+		t.Errorf("a reader's sync now: %q", e.Message)
+	}
+
+	// Paused, the start is a resume: the member is told the role rule, and
+	// the pause stays.
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceStop, ref); f.Type != wsapi.TypeDeviceStatus {
+		t.Fatalf("the owner's stop: %s %s", f.Type, f.Payload)
+	}
+	e = wantError(t, ask(t, c.console, member, wsapi.TypeDeviceStart, ref), wsapi.ErrCodeNotAuthorized)
+	if !strings.Contains(e.Message, "owner or an admin") || !c.paused(t, c.tenant, device) {
+		t.Fatalf("the member's start on a paused number: %q, paused %v", e.Message, c.paused(t, c.tenant, device))
+	}
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceStart, ref); f.Type != wsapi.TypeDeviceStatus {
+		t.Fatalf("the owner's start: %s %s", f.Type, f.Payload)
+	}
+
+	// A sync now that fails puts back no pause, since it took none.
+	offline()
+	if _, err := c.pool.Exec(ctx, `DELETE FROM whatsmeow_device`); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, ask(t, c.console, member, wsapi.TypeDeviceStart, ref), wsapi.ErrCodeConflict)
+	if c.paused(t, c.tenant, device) {
+		t.Fatal("the member's failed sync now paused the number")
+	}
+}
+
+// A pairing retry stays Manage's. A retry of a registration that an owner
+// or an admin paused also lifts that pause, which is resuming, by role: a
+// member with Manage is refused it, and the pause stays.
+func TestPairingRetryLiftsAPauseByRole(t *testing.T) {
+	// No registry: a retry that passes its checks stops at the connection.
+	c := newDeletionConsole(t)
+	ctx := context.Background()
+	pending := uuid.MustParse(c.deviceWithKey(t, "pending"))
+	manager, managerToken := c.person(t, "ana", "member")
+	if err := c.users.SetDevicePermission(ctx, c.tenant, c.owner, store.DevicePermission{DeviceID: pending, UserID: manager, Manage: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, adminToken := c.person(t, "bia", "admin")
+	member, admin := wsapi.Hello{Session: managerToken}, wsapi.Hello{Session: adminToken}
+	retry := wsapi.PairRequest{DeviceID: pending.String(), Resume: true, Method: "qr"}
+	passes := func(who string, hello wsapi.Hello) {
+		t.Helper()
+		e := wantError(t, ask(t, c.console, hello, wsapi.TypePair, retry), wsapi.ErrCodeInternal)
+		if !strings.Contains(e.Message, "WhatsApp connection is unavailable") {
+			t.Fatalf("%s's retry: %q", who, e.Message)
+		}
+	}
+
+	// Not paused: the member's retry passes its checks.
+	passes("the member", member)
+
+	// Paused by an admin: the member's retry is refused with the role rule.
+	if f := ask(t, c.console, admin, wsapi.TypeDeviceStop, wsapi.DeviceRef{DeviceID: pending.String()}); f.Type != wsapi.TypeDeviceStatus {
+		t.Fatalf("the admin's stop: %s %s", f.Type, f.Payload)
+	}
+	e := wantError(t, ask(t, c.console, member, wsapi.TypePair, retry), wsapi.ErrCodeNotAuthorized)
+	if !strings.Contains(e.Message, "owner or an admin") {
+		t.Errorf("the member's retry of a paused registration: %q", e.Message)
+	}
+	if !c.paused(t, c.tenant, pending) {
+		t.Fatal("the member's refused retry lifted the admin's pause")
+	}
+	// The admin's own retry passes them.
+	passes("the admin", admin)
 }

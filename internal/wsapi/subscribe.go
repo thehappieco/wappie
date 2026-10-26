@@ -653,6 +653,13 @@ func (s *session) resolveDevice(ctx context.Context, f Frame, deviceID string) (
 	if f.Type == TypeMarkRead && s.actor().person {
 		action = store.ActionRead
 	}
+	// device.start on a number that is not paused is Wappie's "sync now":
+	// it connects the number, and keeps Manage. On a paused one it resumes
+	// it, by role (frameAction); handleDeviceStart checks that again on the
+	// row it lifts the pause on.
+	if f.Type == TypeDeviceStart && !dev.Paused {
+		action = store.ActionManage
+	}
 	if !s.authorizeDevice(ctx, f, device, action) {
 		return uuid.Nil, uuid.Nil, false
 	}

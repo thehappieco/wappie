@@ -23,7 +23,8 @@ const (
 	// stored Manage flag. A service account acts as itself through its
 	// keys, so it keeps its own Manage flag here, under the key's scope
 	// (internal/access). Every other act of managing a number stays
-	// ActionManage.
+	// ActionManage, device.start on a number that is not paused ("sync
+	// now", which connects it) among them.
 	ActionPause DeviceAction = "pause"
 )
 

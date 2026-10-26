@@ -1700,8 +1700,9 @@ resume an item's sync by role, in both apps, never through a stored Manage
 flag. Mailie already did; Wappie's `device.stop` and `device.start` needed
 Manage, which an owner or an admin can give a member.
 
-`device.stop` and `device.start` now need `store.ActionPause`, not
-`ActionManage` (`frameAction`). For a person it is the membership's role,
+`device.stop`, and `device.start` on a paused number, now need
+`store.ActionPause`, not `ActionManage` (`frameAction`, and
+`resolveDevice` for the start). For a person it is the membership's role,
 owner or admin, read in the same row as the other permissions
 (`devicePermissionTx`); a personal workspace's person is its owner, and a
 member's `can_manage` never counts. A key needs `full`, as for managing,
@@ -1711,10 +1712,12 @@ under their scope (0053's tokens will carry `manage` the same way), and a
 service account acts as itself, so it keeps the rule it had. An assistant
 connection's key is refused it like any frame that manages.
 
-Only the two frames moved. Renaming, the receipt mode, pairing retries
-(which unpause an incomplete registration, a manage act that never
-captured anything), groups, backfill, grants, deletion and recovery keep
-their rules. A refusal is `not_authorized` with a message naming the role
+Only pausing and resuming moved. Renaming, the receipt mode, pairing
+retries, groups, backfill, grants, deletion and recovery keep their
+rules. A retry of a registration that never linked lifts its pause, if it
+has one: only then does the retry also need `ActionPause`, since an owner
+or an admin paused it and the retry, once the phone accepts, starts
+capturing. A refusal is `not_authorized` with a message naming the role
 rule, as Mailie's is, rather than a new code: the console words it, and
 `packages/client` takes no runtime change (its build is measured into the
 reader's PCR0). `can_pause` tells each caller what it may do, in
@@ -1723,6 +1726,13 @@ reader's PCR0). `can_pause` tells each caller what it may do, in
 
 The design's "sync now", a reader's on a number that is not paused, has no
 frame of its own here: `device.start` on a number that is not paused
-connects it now, and goes by role with the rest of `device.start`. A
-reader's sync now comes with the contract's `item.sync_now` (its settings
-part). `history.backfill` keeps Manage.
+connects it now. The owner's answer keeps it off the role ("sync now stays
+with the readers of an item that is not paused"), so it keeps Manage, the
+rule it had, until the contract's `item.sync_now` (its settings part)
+gives it to readers. `resolveDevice` checks Manage when the row it reads is
+not paused and the role when it is; `handleDeviceStart` checks the role
+again on its own read before it lifts a pause, so a stop that lands in
+between is never lifted under Manage. A sync now lifts no pause, and one
+that fails puts none back (a resume that fails still restores the pause
+it lifted, with its cause), so a member with Manage never leaves a number
+paused. `history.backfill` keeps Manage.
