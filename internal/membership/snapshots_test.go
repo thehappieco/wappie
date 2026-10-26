@@ -754,31 +754,74 @@ func (w *world) settle(t *testing.T, wss ...uuid.UUID) {
 	})
 }
 
+// soon bounds the cadence's waits for what the sender does at once or once
+// due. A loaded machine delays the notices, the database and the calls,
+// never a due time on the database's clock, which the waits check instead
+// (dueAhead); a snapshot that never goes still fails them.
+const soon = 30 * time.Second
+
+// dueAhead is how far ahead of the database's clock the snapshot of ws is
+// due, off the hourly (under 10 minutes ahead) with no failure behind it;
+// 0 otherwise. Every writer sets a due time from the clock as it writes,
+// so it is never seen further ahead than the writer's interval (the
+// debounce, the shortened hourly), however late the look.
+func (w *world) dueAhead(t *testing.T, ws uuid.UUID) time.Duration {
+	t.Helper()
+	var due, now time.Time
+	var tries int
+	if err := w.pool.QueryRow(context.Background(), `SELECT snapshot_due_at, clock_timestamp(), snapshot_tries
+		FROM contract_workspaces WHERE workspace_id = $1`, ws).Scan(&due, &now, &tries); err != nil {
+		t.Fatal(err)
+	}
+	if ahead := due.Sub(now); tries == 0 && ahead < 10*time.Minute {
+		return ahead
+	}
+	return 0
+}
+
 // oneMore makes change once nothing is pending for ws, and waits for one
-// snapshot of it within 3 s, and none more once it has settled again.
+// snapshot of it, and none more once it has settled again (snapshots).
 func (w *world) oneMore(t *testing.T, what string, ws uuid.UUID, change func() error) {
+	t.Helper()
+	if got := w.snapshots(t, what, ws, change); got != 1 {
+		t.Fatalf("%s: %d snapshots, want one", what, got)
+	}
+}
+
+// snapshots makes change once nothing is pending for ws, waits for a
+// snapshot of it, and counts those that came once it has settled again.
+// Until the first goes, ws is never due further ahead than the debounce
+// (the leader's default).
+func (w *world) snapshots(t *testing.T, what string, ws uuid.UUID, change func() error) int {
 	t.Helper()
 	w.settle(t, ws)
 	n := w.accepted(ws)
 	if err := change(); err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
-	eventually(t, 3*time.Second, what+": a snapshot within 3 s", func() bool { return w.accepted(ws) > n })
-	w.settle(t, ws)
-	if got := w.accepted(ws) - n; got != 1 {
-		t.Fatalf("%s: %d snapshots, want one", what, got)
+	var late time.Duration
+	eventually(t, soon, what+": a snapshot", func() bool {
+		if a := w.dueAhead(t, ws); a > snapshotDebounce {
+			late = max(late, a)
+		}
+		return w.accepted(ws) > n
+	})
+	if late > 0 {
+		t.Fatalf("%s: the snapshot was due %v ahead, past the debounce %v", what, late, snapshotDebounce)
 	}
+	w.settle(t, ws)
+	return w.accepted(ws) - n
 }
 
 // TB27: the cadence (README 8). At the leader's start every recorded
 // workspace's snapshot, an empty one for a workspace Wappie has no tenant
-// for; one snapshot within 3 s of a pause, a grant, a permission, a
-// membership, a move (both workspaces) and a storage stop; ten changes in a
-// second give one; and the next is due an hour (here: shortened) after the
-// last accepted. One sender across two processes, which stops sending when
-// its lock goes; and after an hour of the platform refusing (the backoff at
-// its cap), the first signed feed answer brings every snapshot back within
-// 3 s.
+// for; one snapshot of a pause, a grant, a permission, a membership, a
+// move (both workspaces) and a storage stop, due within the 2 s debounce
+// (oneMore); ten changes in a second give one; and the next is due an hour
+// (here: shortened) after the last accepted. One sender across two
+// processes, which stops sending when its lock goes; and after an hour of
+// the platform refusing (the backoff at its cap), the first signed feed
+// answer brings every snapshot back within 3 s.
 func TestSnapshotCadence(t *testing.T) {
 	w := newSnapshotWorld(t)
 	ctx := context.Background()
@@ -791,7 +834,7 @@ func TestSnapshotCadence(t *testing.T) {
 	// leader's start too, name both before their first snapshot is
 	// accepted, which makes them due once more (the plan's 4.7).
 	for _, ws := range []uuid.UUID{w.home, w.team} {
-		eventually(t, 3*time.Second, "the leader's start: "+ws.String(), func() bool { return w.accepted(ws) >= 1 })
+		eventually(t, soon, "the leader's start: "+ws.String(), func() bool { return w.accepted(ws) >= 1 })
 	}
 	if s, _ := w.fake.Snapshot("wappie", w.team.String()); len(s.Items) != 1 || s.Items[0].ID != w.device.String() {
 		t.Fatalf("the team's snapshot: %+v", s)
@@ -803,7 +846,7 @@ func TestSnapshotCadence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 5*time.Second, "the outside team's snapshot", func() bool { return w.accepted(uuid.MustParse(outside)) == 1 })
+	eventually(t, soon, "the outside team's snapshot", func() bool { return w.accepted(uuid.MustParse(outside)) == 1 })
 	if s, _ := w.fake.Snapshot("wappie", outside); s.Items == nil || len(s.Items) != 0 {
 		t.Fatalf("the outside team's snapshot: %+v", s)
 	}
@@ -845,18 +888,37 @@ func TestSnapshotCadence(t *testing.T) {
 		return err
 	})
 
-	// Ten changes in a second: one snapshot, of the last.
-	w.oneMore(t, "ten changes in a second", w.team, func() error {
-		for i := range 10 {
-			if err := devices.Rename(ctx, w.team.String(), w.device.String(), fmt.Sprintf("Vendas %d", i)); err != nil {
+	// Ten changes in a second: one snapshot, of the last. The debounce
+	// counts from a run's first change, so a run that a loaded machine
+	// stretched near its end, on the database's clock, may rightly give
+	// two, its last notice taken after the first went: it is made again.
+	for try := 1; ; try++ {
+		var took time.Duration
+		got := w.snapshots(t, "ten changes in a second", w.team, func() error {
+			var from, to time.Time
+			if err := w.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&from); err != nil {
 				return err
 			}
-			time.Sleep(100 * time.Millisecond)
+			for i := range 10 {
+				if err := devices.Rename(ctx, w.team.String(), w.device.String(), fmt.Sprintf("Vendas %d", i)); err != nil {
+					return err
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if err := w.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&to); err != nil {
+				return err
+			}
+			took = to.Sub(from)
+			return nil
+		})
+		s, _ := w.fake.Snapshot("wappie", w.team.String())
+		label := *s.Items[0].Label
+		if got == 1 && label == "Vendas 9" {
+			break
 		}
-		return nil
-	})
-	if s, _ := w.fake.Snapshot("wappie", w.team.String()); *s.Items[0].Label != "Vendas 9" {
-		t.Fatalf("the debounced snapshot's label: %q", *s.Items[0].Label)
+		if took < snapshotDebounce*3/4 || try == 5 {
+			t.Fatalf("ten changes in %v: %d snapshots, the last of %q", took, got, label)
+		}
 	}
 
 	// A move: the workspace it leaves and the one it reaches. The member
@@ -884,8 +946,17 @@ func TestSnapshotCadence(t *testing.T) {
 	l.SnapshotEvery = 1500 * time.Millisecond
 	team := w.accepted(w.team)
 	stop = run(t, l)
-	eventually(t, 3*time.Second, "the leader's start, again", func() bool { return w.accepted(w.team) == team+1 })
-	eventually(t, 5*time.Second, "the next, with no change", func() bool { return w.accepted(w.team) >= team+3 })
+	eventually(t, soon, "the leader's start, again", func() bool { return w.accepted(w.team) >= team+1 })
+	var late time.Duration
+	eventually(t, soon, "the next, with no change", func() bool {
+		if a := w.dueAhead(t, w.team); a > l.SnapshotEvery {
+			late = max(late, a)
+		}
+		return w.accepted(w.team) >= team+3
+	})
+	if late > 0 {
+		t.Fatalf("the next snapshot was due %v ahead, past the %v after the last accepted", late, l.SnapshotEvery)
+	}
 	stop()
 
 	// One sender across two processes; it stops with its lock.
@@ -900,7 +971,7 @@ func TestSnapshotCadence(t *testing.T) {
 		run(t, w.leader(m, &membershiptest.Logs{}, key))
 		procs = append(procs, c)
 	}
-	eventually(t, 5*time.Second, "a leader's start", func() bool { return procs[0].access.Load()+procs[1].access.Load() >= 3 })
+	eventually(t, soon, "a leader's start", func() bool { return procs[0].access.Load()+procs[1].access.Load() >= 3 })
 	time.Sleep(time.Second)
 	sending := -1
 	for i, p := range procs {
@@ -918,12 +989,12 @@ func TestSnapshotCadence(t *testing.T) {
 	if _, err := w.pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, w.lockHolder(t, key)); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 5*time.Second, "the other process's start sends", func() bool { return next.access.Load() >= 3 })
+	eventually(t, soon, "the other process's start sends", func() bool { return next.access.Load() >= 3 })
 	sent := old.access.Load()
 	if err := devices.Rename(ctx, w.home.String(), w.device.String(), "Depois"); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 3*time.Second, "the change, by the new leader", func() bool { return next.access.Load() >= 4 })
+	eventually(t, soon, "the change, by the new leader", func() bool { return next.access.Load() >= 4 })
 	time.Sleep(500 * time.Millisecond)
 	if n := old.access.Load(); n != sent {
 		t.Fatalf("the old leader sent %d snapshots after its lock went", n-sent)
@@ -937,7 +1008,7 @@ func TestSnapshotCadence(t *testing.T) {
 	if err := devices.Rename(ctx, w.home.String(), w.device.String(), "Durante"); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 5*time.Second, "a snapshot refused", func() bool {
+	eventually(t, soon, "a snapshot refused", func() bool {
 		var tries int
 		_ = w.pool.QueryRow(ctx, `SELECT snapshot_tries FROM contract_workspaces WHERE workspace_id = $1`, w.home).Scan(&tries) //nolint:errcheck // a test's read
 		return tries > 0
@@ -949,8 +1020,10 @@ func TestSnapshotCadence(t *testing.T) {
 	}
 	w.fake.RefuseAlways(contracttest.CallAccess, "")
 	w.fake.RefuseAlways(contracttest.CallFeed, "")
-	reads := len(w.fake.Reads())
-	eventually(t, 5*time.Second, "a signed feed answer", func() bool { return len(w.fake.Reads()) > reads })
+	// The answer the follower takes: the one to a long-poll another test's
+	// notice cut never reaches it.
+	reads := len(w.fake.Taken())
+	eventually(t, soon, "a signed feed answer", func() bool { return len(w.fake.Taken()) > reads })
 	answered := time.Now()
 	for ws, n := range before {
 		eventually(t, 3*time.Second, "after the outage: "+ws.String(), func() bool { return w.accepted(ws) > n })

@@ -612,30 +612,48 @@ func TestCallsAreBounded(t *testing.T) {
 
 // The round's PUTs and the sweep's DELETEs go at the pace, 10 a second
 // unset (the plan's 4.6): a fifth of the platform's limit for all of an
-// app's calls, so neither crowds out a sign-in's PUT or the feed.
+// app's calls, so neither crowds out a sign-in's PUT or the feed. Each is
+// timed by the turn it went on (pacer.turned), not by the clock, which a
+// loaded machine moves between a turn and its call; and no turn is given
+// before its time.
 func TestRoundAndSweepArePaced(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
 	const pace = 80 * time.Millisecond
 	w.members.Pace = pace
 	var mu sync.Mutex
+	var turn time.Time
 	var at []time.Time
+	early := 0
+	w.members.pacing.turned = func(given time.Time) {
+		now := time.Now()
+		mu.Lock()
+		defer mu.Unlock()
+		if now.Before(given) {
+			early++
+		}
+		turn = given
+	}
+	// The round and the sweep call one at a time, so the latest turn given
+	// when the fake takes a call is the call's own.
 	stamp := func(string) {
 		mu.Lock()
 		defer mu.Unlock()
-		at = append(at, time.Now())
+		at = append(at, turn)
 	}
-	// Each call reaches the fake at least the pace after the one before,
-	// less the calls' own jitter.
+	// Each call went at least the pace after the one before.
 	paced := func(what string, n int) {
 		t.Helper()
 		mu.Lock()
 		defer mu.Unlock()
+		if early > 0 {
+			t.Fatalf("%s: %d turns came before their time", what, early)
+		}
 		if len(at) != n {
 			t.Fatalf("%s: %d calls, want %d", what, len(at), n)
 		}
 		for i := 1; i < len(at); i++ {
-			if gap := at[i].Sub(at[i-1]); gap < pace*3/4 {
+			if gap := at[i].Sub(at[i-1]); gap < pace {
 				t.Fatalf("%s: call %d came %v after the one before, under the pace %v", what, i, gap, pace)
 			}
 		}

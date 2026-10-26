@@ -1426,13 +1426,25 @@ func TestTheLeadersCallsShareOnePace(t *testing.T) {
 		w.exec(ctx, t, `INSERT INTO contract_workspaces (workspace_id, kind, named_at) VALUES ($1, 'team', clock_timestamp() - interval '1 minute')`, id)
 		w.event(t, id, eventRow{kind: "deleted", actor: &w.sub, readers: readers})
 	}
+	// Six people the platform follows no more, as a GET's signed not_found
+	// tells (Unfollowed): its feed then carries no document of theirs, so
+	// only the round's PUTs bring them back, whether the round or the
+	// feed's first page goes first at the leader's start.
 	for range 6 {
 		_, sub, _ := w.heldAtHome(t)
+		if err := w.members.Client.Unsubscribe(ctx, sub.String()); err != nil {
+			t.Fatal(err)
+		}
 		if err := w.contract.Unfollowed(ctx, sub); err != nil {
 			t.Fatal(err)
 		}
 	}
 	c := &counting{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("%d PUTs of accounts, %d snapshots, %d batches of events", c.accounts.Load(), c.access.Load(), c.events.Load())
+		}
+	})
 	client := NewClient(&http.Client{Transport: c}, w.fake.URL, nil)
 	if err := client.Use(w.secret, ""); err != nil {
 		t.Fatal(err)

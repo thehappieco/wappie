@@ -238,10 +238,11 @@ type Fake struct {
 	// inFlight and most count the requests of each call being served,
 	// now and at most; reads are the times, on the fake's clock, of every
 	// feed request it answered 200 (a read, as the platform's
-	// contract_feed_silent alert counts one); accesses are the snapshots
-	// each workspace was sent.
+	// contract_feed_silent alert counts one), and taken those whose client
+	// still waited for the answer; accesses are the snapshots each
+	// workspace was sent.
 	inFlight, most map[string]int
-	reads          []time.Time
+	reads, taken   []time.Time
 	accesses       map[string][]Access
 	// batches are the events requests, in the order the fake answered them.
 	batches []Batch
@@ -390,7 +391,11 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case call == contracttest.CallFeed && sw.code == http.StatusOK:
 		f.mu.Lock()
-		f.reads = append(f.reads, f.recordNow())
+		at := f.recordNow()
+		f.reads = append(f.reads, at)
+		if r.Context().Err() == nil {
+			f.taken = append(f.taken, at)
+		}
 		f.mu.Unlock()
 	case call == contracttest.CallAccess:
 		f.mu.Lock()
@@ -461,6 +466,16 @@ func (f *Fake) Reads() []time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]time.Time(nil), f.reads...)
+}
+
+// Taken are the Reads whose client still waited for the answer: not a
+// long-poll the client cut, as a notice of another generation (any
+// test's, on the database every test shares) cuts it, which the fake
+// answers all the same.
+func (f *Fake) Taken() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Time(nil), f.taken...)
 }
 
 // RefuseAlways refuses every request to call with code, signed as the
