@@ -529,10 +529,12 @@ private console draws it around Wappie's settings screens, at
     `Speculation-Rules: "/speculation-rules.json"`. That file is served as
     `application/speculationrules+json` (the one type Chromium takes header
     rules in), `no-store`. It prerenders, at moderate eagerness, the
-    console's `/workspaces`, `/workspaces/*`, `/account`, `/contacts` and
-    `/ai`; never `/auth`, `/signout`, `/v1` or an invitation. With the
-    shell off it is a 404, and a file of that name in the client's directory
-    is never served;
+    console's `/workspaces`, `/workspaces/*`, `/account`,
+    `/account/purchases` (Minhas compras, since shell 1.6.0), `/contacts`
+    and `/ai`; never `/auth`, `/signout`, `/v1` or an invitation, nor
+    Segurança, id.'s account page on id.'s origin. With the shell off it is
+    a 404, and a file of that name in the client's directory is never
+    served;
   - a `/console/*` document says `Supports-Loading-Mode:
     credentialed-prerender` only when the request's one `Referer` has the
     console's exact origin (scheme and host, byte for byte; a path or query

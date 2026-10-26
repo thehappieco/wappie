@@ -273,6 +273,7 @@ func TestSpeculationRulesFile(t *testing.T) {
 			`{"href_matches":"` + tc.console + `/workspaces"},` +
 			`{"href_matches":"` + tc.console + `/workspaces/*"},` +
 			`{"href_matches":"` + tc.console + `/account"},` +
+			`{"href_matches":"` + tc.console + `/account/purchases"},` +
 			`{"href_matches":"` + tc.console + `/contacts"},` +
 			`{"href_matches":"` + tc.console + `/ai"}]},"eagerness":"moderate"}]}`
 		if rec.Body.String() != want {
@@ -300,7 +301,7 @@ func TestSpeculationRulesFile(t *testing.T) {
 		for _, m := range rules.Prerender[0].Where.Or {
 			patterns = append(patterns, m.HrefMatches)
 		}
-		wantPatterns := []string{tc.console + "/workspaces", tc.console + "/workspaces/*", tc.console + "/account", tc.console + "/contacts", tc.console + "/ai"}
+		wantPatterns := []string{tc.console + "/workspaces", tc.console + "/workspaces/*", tc.console + "/account", tc.console + "/account/purchases", tc.console + "/contacts", tc.console + "/ai"}
 		if !slices.Equal(patterns, wantPatterns) || rules.Prerender[0].Eagerness != "moderate" || rules.Prerender[0].Source != "document" {
 			t.Errorf("the rules: %+v", rules)
 		}
@@ -348,6 +349,73 @@ func TestSpeculationRulesFile(t *testing.T) {
 			if rec.Code != tc.status || strings.Contains(rec.Body.String(), "elsewhere") || rec.Header().Get("Cache-Control") != "no-store" {
 				t.Errorf("issuer %q console %q %s: %d %q, Cache-Control %q", tc.issuer, tc.console, method, rec.Code, rec.Body.String(), rec.Header().Get("Cache-Control"))
 			}
+		}
+	}
+}
+
+// The console's pages shell 1.6.0 links to with the console's data (its
+// fixture answer, as its paths.ts builds the links): each one is
+// prerendered, and none that must never be. Shell 1.6.0's Minha conta added
+// My purchases, which the profile's pattern does not reach: a URL pattern
+// without a wildcard is that one path. Its Segurança is id.'s account page,
+// another origin, which the platform's own rules do not prerender.
+func TestSpeculationRulesReachTheShellsConsolePages(t *testing.T) {
+	rec := serve(shellHandler(t, shellIssuer, shellConsole), http.MethodGet, "/speculation-rules.json")
+	var rules struct {
+		Prerender []struct {
+			Where struct {
+				Or []struct {
+					HrefMatches string `json:"href_matches"`
+				} `json:"or"`
+			} `json:"where"`
+		} `json:"prerender"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rules); err != nil || len(rules.Prerender) != 1 {
+		t.Fatalf("the rules do not decode: %v", err)
+	}
+	// prerendered is href_matches as these patterns use it: a trailing "*"
+	// is any rest of the address, "/" included; anything else is the
+	// address exactly.
+	prerendered := func(href string) bool {
+		for _, m := range rules.Prerender[0].Where.Or {
+			if prefix, wild := strings.CutSuffix(m.HrefMatches, "*"); wild {
+				if strings.HasPrefix(href, prefix) {
+					return true
+				}
+			} else if href == m.HrefMatches {
+				return true
+			}
+		}
+		return false
+	}
+	ws := "/workspaces/" + shellTenant
+	for _, path := range []string{
+		// The brand and "Todos os espaços".
+		"/workspaces",
+		// Espaço: the workspace's sections.
+		ws, ws + "/members", ws + "/access", ws + "/plan", ws + "/storage", ws + "/activity", ws + "/settings",
+		// Apps: an app's overview, and its AI tab in the header.
+		ws + "/apps/wappie", ws + "/apps/mailie", ws + "/apps/wappie/ai",
+		// Minha conta: Perfil (and "Aparência e idioma", its link too), Minhas compras, Contatos, Integrações com IA.
+		"/account", "/account/purchases", "/contacts", "/ai",
+	} {
+		if !prerendered(shellConsole + path) {
+			t.Errorf("the rules do not prerender the console's %s", path)
+		}
+	}
+	for _, href := range []string{
+		// "Sair", the sign-in of a signed-out notice, the console's API and home, an invitation.
+		shellConsole + "/signout", shellConsole + "/auth/login?locale=pt-BR&return=%2Fworkspaces", shellConsole + "/v1/shell",
+		shellConsole + "/", shellConsole + "/signin", shellConsole + "/invitation", shellConsole + "/invitations/x",
+		// Segurança: id.'s account page.
+		shellIssuer + "/account",
+		// The pages under the profile are the console's own, not the menu's.
+		shellConsole + "/account/purchases/x", shellConsole + "/accounts",
+		// This origin's own screens.
+		shellApp + "/console/numbers?workspace=" + shellTenant,
+	} {
+		if prerendered(href) {
+			t.Errorf("the rules prerender %s", href)
 		}
 	}
 }
