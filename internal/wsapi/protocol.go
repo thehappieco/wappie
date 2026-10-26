@@ -291,8 +291,12 @@ type DeviceInfo struct {
 	Running           bool   `json:"running"`
 	Paused            bool   `json:"paused"`
 	CanManage         bool   `json:"can_manage"`
-	CanSend           bool   `json:"can_send"`
-	ProfileKey        string `json:"profile_key,omitempty"`
+	// CanPause is whether this caller may pause and resume the number's
+	// capture (device.stop, device.start): a person by role only, an owner
+	// or an admin, never through Manage; a key as for managing.
+	CanPause   bool   `json:"can_pause"`
+	CanSend    bool   `json:"can_send"`
+	ProfileKey string `json:"profile_key,omitempty"`
 	// CreatedAt is when the row was made, LastConnectedAt when the device last
 	// reached "online" — not when it went offline. A device that is running now
 	// has been up since then; one that is not was last seen then.

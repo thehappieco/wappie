@@ -2,7 +2,7 @@
 
 A device is a WhatsApp number linked to a workspace. Internal labels are independent of the WhatsApp profile. Profile pictures use the existing encrypted contact/avatar path and require read permission plus a usable device key.
 
-All commands below use WebSocket v1 frames (`t`, `r`, `p`). The session and device must belong to the same workspace. `device.rename`, `device.stop`, `device.start` and retries require the device's **manage** permission and an API token scope that permits management, when a token is used. Deleting a linked number requires an owner's person session, in every workspace, a personal one included; removing a registration that never linked requires an owner or administrator.
+All commands below use WebSocket v1 frames (`t`, `r`, `p`). The session and device must belong to the same workspace. `device.rename` and retries require the device's **manage** permission and an API token scope that permits management, when a token is used. `device.stop` and `device.start` go by role, not by **manage** ([who pauses and resumes](#who-pauses-and-resumes)). Deleting a linked number requires an owner's person session, in every workspace, a personal one included; removing a registration that never linked requires an owner or administrator.
 
 A number's **readers** are the people with an active membership, Read permission and a key grant at its current archive epoch. Service accounts are never readers.
 
@@ -20,7 +20,18 @@ Turning a live number's sync off tells its readers, in Wappie's own pages, until
 
 `device.start` with the same payload resumes an existing stored WhatsApp session. Both commands return `device.status`. A number that has never paired cannot be resumed this way. A logged-out or banned session cannot be resumed. A resume marks the open pause notices resumed (`resumed_at`); they stay until each reader sees them.
 
-`devices.list` and `device.info` expose `paused` (durable operator preference), `running` (authenticated, online transport on this instance), `can_manage` (effective management authorization), and `profile_key` (the device's own contact identifier). A registry reservation alone is not a running connection. Connecting, paused and logged-out devices report `running: false`.
+### Who pauses and resumes
+
+Pausing and resuming a number's sync is by role, not by the **manage** permission (the owner's answer of 2026-10-26 to the platform's design of that day, question 1):
+
+- **A person**: in a personal workspace, its person; in a team, its owners and admins. A member never does, whatever their stored flags: **manage** keeps renaming, the receipt mode, pairing retries, groups, backfill and every other act it covered, but not these two.
+- **An API key**: under its scope, as before: `full`, with the number in its list (a key for every number reaches every one). A `read` or `send` key never does. Only an owner or an admin creates a key.
+- **A key that acts as a service account**: the key's `full` scope and the service account's own **manage** permission on the number, as before. A service account acts as itself, not as the person who made it.
+- **An assistant connection's key** never does, whatever its scope, like every frame that sends or manages.
+
+Anyone else gets `not_authorized`, before anything about the number changes, and its message names the rule: for a person, that only an owner or an admin of the workspace pauses or resumes a number's sync and that the **manage** permission does not include it; for a key, the scope it needs. `devices.list`, `device.info` and `GET /v1/devices` say who may in `can_pause`. `device.start` on a number that is not paused, which connects it now, goes by role too. Wappie's own pauses (a storage stop, around a move, at a deletion) follow their own rules; a pairing retry of a registration that never linked stays under **manage**.
+
+`devices.list` and `device.info` expose `paused` (durable operator preference), `running` (authenticated, online transport on this instance), `can_manage` (effective management authorization), `can_pause` (whether this caller may pause and resume it, [by role](#who-pauses-and-resumes)), and `profile_key` (the device's own contact identifier). A registry reservation alone is not a running connection. Connecting, paused and logged-out devices report `running: false`.
 
 ## Unlinking from the phone
 

@@ -79,6 +79,11 @@ func (h *Handler) devices(q *request) {
 			q.internal(err)
 			return
 		}
+		info.CanPause, err = access.Allows(q.r.Context(), q.actor, id, store.ActionPause, h.APIKeys, h.Users)
+		if err != nil {
+			q.internal(err)
+			return
+		}
 		info.CanSend, err = access.Allows(q.r.Context(), q.actor, id, store.ActionSend, h.APIKeys, h.Users)
 		if err != nil {
 			q.internal(err)

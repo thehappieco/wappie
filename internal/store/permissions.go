@@ -15,6 +15,16 @@ const (
 	ActionSend   DeviceAction = "send"
 	ActionManage DeviceAction = "manage"
 	ActionView   DeviceAction = "view"
+	// ActionPause is pausing and resuming a number's capture (device.stop,
+	// device.start; decision 0039), by role only (the owner's answer of
+	// 2026-10-26 to the platform's design of that day, question 1): a
+	// person who is an owner or an admin of the workspace, which in a
+	// personal workspace is its person, and never a member through the
+	// stored Manage flag. A service account acts as itself through its
+	// keys, so it keeps its own Manage flag here, under the key's scope
+	// (internal/access). Every other act of managing a number stays
+	// ActionManage.
+	ActionPause DeviceAction = "pause"
 )
 
 type DevicePermission struct {
@@ -24,6 +34,10 @@ type DevicePermission struct {
 	Send     bool      `json:"send"`
 	Manage   bool      `json:"manage"`
 	HasKey   bool      `json:"has_key"`
+	// Pause is ActionPause: the role owner or admin, or a service
+	// account's own Manage flag. Derived, never stored, and never in the
+	// permissions' JSON, whose rows carry only the flags above.
+	Pause bool `json:"-"`
 }
 
 func (p DevicePermission) Allows(action DeviceAction) bool {
@@ -36,6 +50,8 @@ func (p DevicePermission) Allows(action DeviceAction) bool {
 		return p.Manage
 	case ActionView:
 		return p.Manage || p.Send || (p.Read && p.HasKey)
+	case ActionPause:
+		return p.Pause
 	}
 	return false
 }
@@ -54,16 +70,19 @@ func (u *Users) DevicePermission(ctx context.Context, tenant, user, device uuid.
 // holds for the tenant: an active user with an active, unexpired membership
 // in an active workspace, and what they may do with the device. ErrNotFound
 // when any of that is missing, or when the number is excluded (0050).
+// Pause is the role, from the same membership row, or a service account's
+// own Manage flag (ActionPause).
 func devicePermissionTx(ctx context.Context, tx pgx.Tx, tenant, user, device uuid.UUID) (DevicePermission, error) {
 	out := DevicePermission{DeviceID: device, UserID: user}
 	err := tx.QueryRow(ctx, `SELECT coalesce(p.can_read,false),coalesce(p.can_send,false),
    (m.role IN ('owner','admin') OR coalesce(p.can_manage,false)),
-   EXISTS(SELECT 1 FROM device_key_grants g WHERE g.device_id=d.id AND g.user_id=m.user_id AND g.epoch=d.current_epoch)
+   EXISTS(SELECT 1 FROM device_key_grants g WHERE g.device_id=d.id AND g.user_id=m.user_id AND g.epoch=d.current_epoch),
+   (m.role IN ('owner','admin') OR (m.role='service' AND coalesce(p.can_manage,false)))
    FROM workspace_memberships m JOIN users u ON u.id=m.user_id JOIN tenants t ON t.id=m.tenant_id
    JOIN devices d ON d.tenant_id=m.tenant_id
    LEFT JOIN device_permissions p ON p.tenant_id=m.tenant_id AND p.device_id=d.id AND p.user_id=m.user_id
    WHERE m.tenant_id=$1 AND m.user_id=$2 AND d.id=$3 AND d.deleted_at IS NULL AND m.status='active' AND u.status='active' AND t.status='active'
-   AND (m.expires_at IS NULL OR m.expires_at > now())`, tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey)
+   AND (m.expires_at IS NULL OR m.expires_at > now())`, tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey, &out.Pause)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}

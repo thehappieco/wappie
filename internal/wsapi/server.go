@@ -685,9 +685,10 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 	if !s.allowStorageOperation(ctx, f) {
 		return
 	}
-	if action := frameAction(f.Type); s.actor().assistant && (action == store.ActionSend || action == store.ActionManage) {
+	if action := frameAction(f.Type); s.actor().assistant && (action == store.ActionSend || action == store.ActionManage || action == store.ActionPause) {
 		// Before any lookup: an assistant's key is read-only by scope as
-		// well, and this makes the send route the only way it sends.
+		// well, and this makes the send route the only way it sends. It
+		// never pauses or resumes a number either.
 		s.replyError(f.ReqID, ErrCodeNotAuthorized, "an assistant connection's key cannot send or manage over this socket")
 		return
 	}

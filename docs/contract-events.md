@@ -19,7 +19,7 @@ row.
 |---|---|---|---|---|
 | `deleted` | `item.deleted` | the owner's sub, `person` | who read the number just before | `purge_at`: its `purge_after` |
 | `recovered` | `item.recovered` | the owner's sub, `person` | who reads it after the recovery | |
-| `sync_paused` | `item.sync_paused` | the person's sub, `person`; or an API key's creator's, `key` | the readers when it was paused, and those of every pause folded into it (below) | |
+| `sync_paused` | `item.sync_paused` | the person's sub, `person` (an owner or an admin, or a personal workspace's person: [who pauses](devices.md#who-pauses-and-resumes)); or an API key's creator's, `key` | the readers when it was paused, and those of every pause folded into it (below) | |
 | `purged` | `item.purged` | null, `app` | `[]` | |
 | `moved_out` | `item.moved_out` | the mover's sub, `person` | the team's readers before the move: at most the mover | `to`: `personal` |
 | `stranded` | `item.stranded` | the owner's sub, `person` | who read it just before the change, the person stranded among them | `person`: the stranded person's sub (omitted when they have none); `cause`: `revoked` (a removal) or `disabled` (a disable) |

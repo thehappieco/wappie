@@ -1690,3 +1690,39 @@ snapshot's `protected` both keep them while their keys are kept. Only an
 active person is a backup, as before. No Wappie path disables an account
 yet (only an operator's SQL does), so this only widens the refusal, on
 the safe side.
+
+## Pausing and resuming by role (2026-10-26)
+
+The owner took every recommendation of the platform's design of
+2026-10-26 (`contract-tokens-and-settings.md`, section 11), in their words
+"sim para tudo", relayed by the platform. Its question 1: people pause and
+resume an item's sync by role, in both apps, never through a stored Manage
+flag. Mailie already did; Wappie's `device.stop` and `device.start` needed
+Manage, which an owner or an admin can give a member.
+
+`device.stop` and `device.start` now need `store.ActionPause`, not
+`ActionManage` (`frameAction`). For a person it is the membership's role,
+owner or admin, read in the same row as the other permissions
+(`devicePermissionTx`); a personal workspace's person is its owner, and a
+member's `can_manage` never counts. A key needs `full`, as for managing,
+and the number in its list. A key that acts as a service account also
+needs the account's own Manage flag, as before: the design leaves keys
+under their scope (0053's tokens will carry `manage` the same way), and a
+service account acts as itself, so it keeps the rule it had. An assistant
+connection's key is refused it like any frame that manages.
+
+Only the two frames moved. Renaming, the receipt mode, pairing retries
+(which unpause an incomplete registration, a manage act that never
+captured anything), groups, backfill, grants, deletion and recovery keep
+their rules. A refusal is `not_authorized` with a message naming the role
+rule, as Mailie's is, rather than a new code: the console words it, and
+`packages/client` takes no runtime change (its build is measured into the
+reader's PCR0). `can_pause` tells each caller what it may do, in
+`devices.list`, `device.info` and `GET /v1/devices`
+([devices](devices.md#who-pauses-and-resumes)).
+
+The design's "sync now", a reader's on a number that is not paused, has no
+frame of its own here: `device.start` on a number that is not paused
+connects it now, and goes by role with the rest of `device.start`. A
+reader's sync now comes with the contract's `item.sync_now` (its settings
+part). `history.backfill` keeps Manage.

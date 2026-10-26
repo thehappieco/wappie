@@ -253,25 +253,32 @@ func (c *deletionConsole) person(t *testing.T, name, role string) (uuid.UUID, st
 // a registration that never linked.
 func (c *deletionConsole) linkedDevice(t *testing.T, label string) uuid.UUID {
 	t.Helper()
+	return c.linkedDeviceIn(t, c.tenant, label)
+}
+
+// linkedDeviceIn is linkedDevice in another workspace of the console's
+// database: a person's Personal, for one.
+func (c *deletionConsole) linkedDeviceIn(t *testing.T, tenant uuid.UUID, label string) uuid.UUID {
+	t.Helper()
 	ctx := context.Background()
 	c.pns++
-	dev, err := c.devices.Create(ctx, c.tenant.String(), label, wa.ModePassive)
+	dev, err := c.devices.Create(ctx, tenant.String(), label, wa.ModePassive)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pn := types.JID{User: fmt.Sprintf("55119%04d5678", c.pns), Server: types.DefaultUserServer}
-	if err := c.devices.SetIdentity(ctx, c.tenant.String(), dev.ID, wa.Identity{PN: pn,
+	if err := c.devices.SetIdentity(ctx, tenant.String(), dev.ID, wa.Identity{PN: pn,
 		LID: types.JID{User: fmt.Sprintf("1000000%08d", c.pns), Server: types.HiddenUserServer}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.devices.SetStatus(ctx, c.tenant.String(), dev.ID, wa.StatusOnline, ""); err != nil {
+	if err := c.devices.SetStatus(ctx, tenant.String(), dev.ID, wa.StatusOnline, ""); err != nil {
 		t.Fatal(err)
 	}
 	pub, _, err := seal.GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(c.pool).CreateArchiveKey(ctx, c.tenant, uuid.MustParse(dev.ID), 1, pub); err != nil {
+	if err := store.NewKeys(c.pool).CreateArchiveKey(ctx, tenant, uuid.MustParse(dev.ID), 1, pub); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.pool.Exec(ctx, `INSERT INTO whatsmeow_device(jid, registration_id) VALUES ($1, 7)`, pn.String()); err != nil {
