@@ -352,6 +352,15 @@ func (k *Keys) RevokeGrant(ctx context.Context, tenant, device, user uuid.UUID) 
 		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
 			return err
 		}
+		// A platform token's identity is no one's to revoke here: its grants
+		// follow its record, and the console's API keys page revokes it.
+		var identity bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND token_identity)`, user).Scan(&identity); err != nil {
+			return err
+		}
+		if identity {
+			return ErrNotFound
+		}
 		if err := requireRemainingReader(ctx, tx, tenant, user, &device); err != nil {
 			return err
 		}

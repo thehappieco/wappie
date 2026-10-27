@@ -36,8 +36,9 @@ const (
 // number a transfer to Personal would take from them. Kind is person,
 // service (a standing service account, and every key acting as it),
 // assistant or ai (another person's assistant connection or AI
-// authorization, whose access is its creator's), or key (another person's
-// Integrations key restricted to the number, whose act is its creator's).
+// authorization, whose access is its creator's), key (another person's
+// Integrations key restricted to the number, whose act is its creator's), or
+// token (a platform token of the workspace).
 // Why says what it holds; Status, for people and service accounts, whether
 // their membership is active, since a disabled one can only be removed.
 // UserID is the person, the service account, or the creator; it is empty for
@@ -54,6 +55,9 @@ type TransferAccess struct {
 	KeyID         string     `json:"key_id,omitempty"`
 	KeyName       string     `json:"key_name,omitempty"`
 	CreatedByName string     `json:"created_by_name,omitempty"`
+	// TokenID is a platform token's (kind token), named by Name; its way
+	// out is the console's API keys page.
+	TokenID string `json:"token_id,omitempty"`
 }
 
 // whyOf lists the flags that hold, in a fixed order.
@@ -119,7 +123,7 @@ func otherAccessTx(ctx context.Context, tx pgx.Tx, source, device, actor uuid.UU
 		       coalesce(m.status = 'active', false), a.r, a.s, a.mg, a.k, a.ok
 		FROM a JOIN users u ON u.id = a.user_id
 		LEFT JOIN workspace_memberships m ON m.tenant_id = $1 AND m.user_id = a.user_id
-		WHERE (a.r OR a.s OR a.mg OR a.k OR a.ok)
+		WHERE (a.r OR a.s OR a.mg OR a.k OR a.ok) AND NOT u.token_identity
 		  AND NOT ((u.role = 'service' OR coalesce(m.role, '') = 'service')
 		           AND (m.expires_at IS NOT NULL OR EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = u.id)))
 		ORDER BY u.role = 'service' OR coalesce(m.role, '') = 'service', lower(u.email), u.id`, source, device, actor)
@@ -200,7 +204,76 @@ func otherAccessTx(ctx context.Context, tx pgx.Tx, source, device, actor uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	return append(out, keys...), nil
+	out = append(out, keys...)
+	tokens, err := tokensOnNumberTx(ctx, tx, source, device)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, tokens...), nil
+}
+
+// tokensOnNumberTx is every platform token of the workspace that has not
+// ended and holds the number (kind token, by id and name): a perm the judge
+// has not refused (an applied one, or one still waiting or pending, which
+// fails closed), or a grant to its identity at an epoch that is not
+// retired. A token is never a person or a service account: its identity has
+// no membership, and otherAccessTx leaves it out of those.
+func tokensOnNumberTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID) ([]TransferAccess, error) {
+	rows, err := tx.Query(ctx, `SELECT t.id, t.name,
+			coalesce(bool_or(p.perm = 'read'), false), coalesce(bool_or(p.perm = 'send'), false), coalesce(bool_or(p.perm = 'manage'), false),
+			EXISTS (SELECT 1 FROM device_key_grants g JOIN devices d ON d.id = g.device_id
+			         WHERE g.device_id = $2 AND g.user_id = t.identity_user_id AND g.epoch = d.current_epoch),
+			EXISTS (SELECT 1 FROM device_key_grants g JOIN device_archive_keys a ON a.device_id = g.device_id AND a.epoch = g.epoch AND a.retired_at IS NULL
+			         JOIN devices d ON d.id = g.device_id
+			         WHERE g.device_id = $2 AND g.user_id = t.identity_user_id AND g.epoch <> d.current_epoch)
+		FROM contract_tokens t
+		LEFT JOIN contract_token_perms p ON p.token_id = t.id AND p.device_id = $2 AND p.state <> 'refused'
+		WHERE t.tenant_id = $1 AND t.revoked_at IS NULL AND t.unlisted_at IS NULL AND t.ended_at IS NULL AND t.expires_at > now()
+		GROUP BY t.id, t.name, t.identity_user_id
+		ORDER BY t.name, t.id`, tenant, device)
+	if err != nil {
+		return nil, err
+	}
+	all, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (TransferAccess, error) {
+		var o TransferAccess
+		var id uuid.UUID
+		var r, s, mg, k, ok bool
+		err := row.Scan(&id, &o.Name, &r, &s, &mg, &k, &ok)
+		o.Kind, o.TokenID, o.Why = "token", id.String(), whyOf(r, s, mg, k, ok)
+		return o, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := []TransferAccess{}
+	for _, o := range all {
+		if len(o.Why) > 0 {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// dropNumberTokensTx takes a number off every platform token of the
+// workspace of tx, which holds the workspace's row (DB25 step 3): its perms
+// there, in key order, each instance kept off for good with cause
+// (item_deleted, item_moved), then the token identities' grants on it at
+// every epoch. The tokens' rows are never touched.
+func dropNumberTokensTx(ctx context.Context, tx pgx.Tx, device uuid.UUID, cause string) error {
+	if _, err := tx.Exec(ctx, `WITH gone AS (
+			DELETE FROM contract_token_perms p
+			USING (SELECT token_id, device_id, perm FROM contract_token_perms WHERE device_id = $1
+			       ORDER BY token_id, device_id, perm FOR UPDATE) l
+			WHERE p.token_id = l.token_id AND p.device_id = l.device_id AND p.perm = l.perm
+			RETURNING p.token_id, p.tenant_id, p.device_id, p.perm, p.granted_by, p.granted_at)
+		INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_by, granted_at, cause)
+		SELECT token_id, tenant_id, device_id::text, perm, granted_by, granted_at, $2 FROM gone
+		ON CONFLICT DO NOTHING`, device, cause); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM device_key_grants g USING users u
+		WHERE g.device_id = $1 AND u.id = g.user_id AND u.token_identity`, device)
+	return err
 }
 
 // ownConnectionsTx is the actor's own live connections, of every kind,

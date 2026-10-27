@@ -110,7 +110,10 @@ func (w *tokenWorld) linked(name, role string, sub uuid.UUID, doc bool) uuid.UUI
 	}
 	w.exec(`INSERT INTO platform_identities (sub, user_id, email, linked_from) VALUES ($1, $2, $3, 'new')`, sub, u.ID, name+"@acme.test")
 	if doc {
-		w.exec(`INSERT INTO contract_accounts (sub, generation, version, status, doc) VALUES ($1, $2, 1, 'active', '{"v":1}')`, sub, w.gen)
+		// Its document names the workspace, so the belt holds.
+		w.exec(`INSERT INTO contract_accounts (sub, generation, version, status, doc) VALUES ($1, $2, 1, 'active',
+			jsonb_build_object('v', 1, 'workspaces', jsonb_build_array(jsonb_build_object('id', $3::text, 'kind', 'team',
+				'role', $4::text, 'status', 'open', 'wversion', 1))))`, sub, w.gen, w.tenant, role)
 	}
 	return u.ID
 }

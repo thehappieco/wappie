@@ -117,6 +117,11 @@ func (s *session) handleDeviceInfo(ctx context.Context, f Frame) {
 				Epoch: int(h.Epoch), GrantedAt: h.GrantedAt, GrantedBy: h.GrantedBy,
 			})
 		}
+		if detail.Tokens, err = s.tokenHolders(ctx, tenantUUID, deviceUUID); err != nil {
+			s.log.Error("listing token readers failed", "error", err)
+			s.replyError(f.ReqID, ErrCodeInternal, "could not list who can read this device")
+			return
+		}
 	}
 
 	// Counters for this one device, from the same query the list uses. Cheaper
@@ -598,7 +603,27 @@ func (s *session) replyReaders(ctx context.Context, reqID string,
 			Epoch: int(h.Epoch), GrantedAt: h.GrantedAt, GrantedBy: h.GrantedBy,
 		})
 	}
-	s.reply(TypeReaders, reqID, Readers{DeviceID: deviceID, Readers: out})
+	tokens, err := s.tokenHolders(ctx, tenant, device)
+	if err != nil {
+		s.log.Error("listing token readers failed", "error", err)
+		s.replyError(reqID, ErrCodeInternal, "the change was made, but the list could not be read")
+		return
+	}
+	s.reply(TypeReaders, reqID, Readers{DeviceID: deviceID, Readers: out, Tokens: tokens})
+}
+
+// tokenHolders are the platform tokens whose identity holds the number's
+// key, for the readers' lists: apart from the readers (the plan's 5.4, L2).
+func (s *session) tokenHolders(ctx context.Context, tenant, device uuid.UUID) ([]TokenKeyHolder, error) {
+	held, err := s.srv.cfg.Keys2.TokenReaders(ctx, tenant, device)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TokenKeyHolder, 0, len(held))
+	for _, h := range held {
+		out = append(out, TokenKeyHolder{ID: h.ID.String(), Name: h.Name, Epoch: int(h.Epoch), GrantedAt: h.GrantedAt, GrantedBy: h.GrantedBy})
+	}
+	return out, nil
 }
 
 // toDeviceInfo converts a row for the wire, filling in what only this process

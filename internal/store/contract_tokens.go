@@ -443,12 +443,19 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 		order = append(order, ws)
 	}
 	slices.SortFunc(order, compareIDs)
-	// The workspaces' rows, before any token row (DB25 step 3), FOR KEY
-	// SHARE in id order: what a new token's foreign key takes anyway, taken
-	// first, so the commit waits behind a quarantine, a move or a grant
-	// write of the workspace (each locks the row FOR UPDATE, then the
-	// token rows or perms) instead of inverting against it.
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = ANY ($1) ORDER BY id FOR KEY SHARE`, order); err != nil {
+	// The workspaces' rows, before any token row (DB25 step 3), in one
+	// id-ordered pass: FOR UPDATE where the commit may delete a token
+	// identity's grants, else FOR KEY SHARE, what a new token's foreign key
+	// takes anyway, taken first, so the commit waits behind a quarantine, a
+	// move or a grant write of the workspace (each locks the row FOR
+	// UPDATE, then the token rows or perms) instead of inverting against it.
+	if err := lockPageWorkspacesTx(ctx, tx, order, `id = ANY ($1)`, func(ws uuid.UUID) []any {
+		ids := make([]uuid.UUID, 0, len(groups[ws]))
+		for _, it := range groups[ws] {
+			ids = append(ids, it.id)
+		}
+		return []any{ids}
+	}); err != nil {
 		return res, err
 	}
 	for _, ws := range order {
@@ -696,6 +703,9 @@ type storedToken struct {
 	Version    *int64
 	Unlisted   bool
 	KeyChanged bool
+	// Identity is the token's hidden identity while it stands (not
+	// dropped), nil otherwise.
+	Identity *uuid.UUID
 }
 
 // expiredAt reports whether the stored expiry is at or before now.
@@ -746,7 +756,7 @@ func readRoundTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, devices []uuid
 	st := roundState{tokens: map[uuid.UUID]storedToken{}, perms: map[uuid.UUID]map[permKey]storedPerm{},
 		removed: map[instanceKey]string{}, live: map[uuid.UUID]bool{}, pins: map[uuid.UUID][]byte{}}
 	rows, err := tx.Query(ctx, `SELECT id, created_by, created_at, expires_at, revoked_at IS NOT NULL, generation, version,
-		unlisted_at IS NOT NULL, key_changed_at IS NOT NULL
+		unlisted_at IS NOT NULL, key_changed_at IS NOT NULL, CASE WHEN identity_dropped_at IS NULL THEN identity_user_id END
 		FROM contract_tokens WHERE id = ANY ($1) ORDER BY id FOR UPDATE`, ids)
 	if err != nil {
 		return st, err
@@ -754,7 +764,8 @@ func readRoundTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, devices []uuid
 	err = forEachRow(rows, func(row pgx.Rows) error {
 		var id uuid.UUID
 		var s storedToken
-		if err := row.Scan(&id, &s.CreatedBy, &s.CreatedAt, &s.ExpiresAt, &s.Revoked, &s.Generation, &s.Version, &s.Unlisted, &s.KeyChanged); err != nil {
+		if err := row.Scan(&id, &s.CreatedBy, &s.CreatedAt, &s.ExpiresAt, &s.Revoked, &s.Generation, &s.Version, &s.Unlisted, &s.KeyChanged,
+			&s.Identity); err != nil {
 			return err
 		}
 		st.tokens[id] = s
@@ -842,14 +853,18 @@ type tokenWrites struct {
 	inserts   []tokenInsert
 	updates   []tokenUpdate
 	drops     []permDrop
-	keeps     []permKeep
-	adds      []permAdd
-	removed   []removedRow
-	refusals  []tokenRefusalRow
-	held      []heldRow
-	sticky    []stickyWrite
-	pins      []pinRow
-	lifts     []string
+	grants    []grantDrop
+	// identities are the tokens whose hidden identity goes (a
+	// revocation), its grants with it.
+	identities []uuid.UUID
+	keeps      []permKeep
+	adds       []permAdd
+	removed    []removedRow
+	refusals   []tokenRefusalRow
+	held       []heldRow
+	sticky     []stickyWrite
+	pins       []pinRow
+	lifts      []string
 }
 
 type tokenInsert struct {
@@ -888,6 +903,13 @@ type permDrop struct {
 	device uuid.UUID
 	perm   string
 	cause  string
+}
+
+// grantDrop is a token identity's grants on a number, at every epoch,
+// deleted in the write that dropped the token's Read there (design 3.5).
+type grantDrop struct {
+	identity uuid.UUID
+	device   uuid.UUID
 }
 
 type permKeep struct {
@@ -1071,6 +1093,9 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 	}
 	if revoked {
 		w.sticky = append(w.sticky, stickyWrite{id: it.id, revokedAt: revokedTime(rec, g.now), until: until})
+		if stored.Identity != nil {
+			w.identities = append(w.identities, it.id)
+		}
 	}
 	if full {
 		u.name = rec.Name
@@ -1094,6 +1119,9 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 		case !ok:
 			w.drops = append(w.drops, permDrop{token: it.id, device: k.Device, perm: k.Perm, cause: "dropped"})
 			u.bump = true
+			if k.Perm == kc.CanRead && stored.Identity != nil {
+				w.grants = append(w.grants, grantDrop{identity: *stored.Identity, device: k.Device})
+			}
 		case full && (l.GrantedBy != p.GrantedBy.String() || !l.GrantedAt.Truncate(time.Microsecond).Equal(p.GrantedAt)):
 			// Another grant instance in place of the stored one: the
 			// stored one goes, and the new one is judged afresh below.
@@ -1468,6 +1496,15 @@ func (w *tokenWrites) run(ctx context.Context, tx pgx.Tx, g tokenGroup) error {
 			g.ws, g.gen, tokens, devices, perms, by, at, versions); err != nil {
 			return err
 		}
+	}
+	// The identities' grants and the identities (DB25 step 6), in the same
+	// write: no tenants lock here, the commit took the workspace's row
+	// before its token rows (lockPageWorkspacesTx).
+	if err := dropTokenGrantsTx(ctx, tx, w.grants); err != nil {
+		return err
+	}
+	if err := dropTokenIdentitiesTx(ctx, tx, g.now, w.identities); err != nil {
+		return err
 	}
 	if err := insertRemovedTx(ctx, tx, g.ws, g.now, w.removed); err != nil {
 		return err

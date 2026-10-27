@@ -119,7 +119,7 @@ func (s *session) handleDeviceDeleteCheck(ctx context.Context, f Frame) {
 	s.reply(TypeDeviceDeleteChecked, f.ReqID, DeviceDeleteChecked{
 		DeviceID: device.String(), Readers: check.Readers, ServiceAccounts: nonNil(check.ServiceAccounts),
 		Assistants: nonNil(check.Assistants), Keys: nonNil(check.Keys), AllNumberKeys: nonNil(check.AllNumberKeys),
-		Bytes: check.Bytes, CanUnlink: check.Session && s.srv.unlinker() != nil,
+		Tokens: nonNil(check.Tokens), Bytes: check.Bytes, CanUnlink: check.Session && s.srv.unlinker() != nil,
 		CheckedAt: check.CheckedAt, RecoverableUntilPreview: check.RecoverableUntilPreview,
 	})
 }

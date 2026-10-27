@@ -195,6 +195,14 @@ func TestDirtyNotify(t *testing.T) {
 		SELECT '`+token.String()+`', change.team, change.device, 'send', change.owner, now(), change.team, 1 FROM change`)
 	sql("a token's perm applied", once, `UPDATE contract_token_perms SET state='applied'`)
 	sql("a token renamed", none, `UPDATE contract_tokens SET name='m'`)
+	// Its identity's grants, through 0051's grant trigger.
+	identity := uuid.New()
+	sql("a token's identity", once, `INSERT INTO users (id, tenant_id, email, public_key, role, token_identity)
+		SELECT '`+identity.String()+`', change.team, 't-`+token.String()+`@token.invalid', decode(repeat('ab', 32), 'hex'), 'service', true FROM change`,
+		`UPDATE contract_tokens SET identity_user_id='`+identity.String()+`'`)
+	sql("its grant", once, `INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk)
+		SELECT change.team, change.device, '`+identity.String()+`', 1, 'grant' FROM change`)
+	sql("its grant gone", once, `DELETE FROM device_key_grants WHERE user_id='`+identity.String()+`'`)
 	sql("a token revoked", once, `UPDATE contract_tokens SET revoked_at=now(), revoked_reason='revoked'`)
 	sql("a token's expiry lowered", once, `UPDATE contract_tokens SET expires_at=expires_at - interval '1 hour'`)
 	sql("a token unlisted", once, `UPDATE contract_tokens SET unlisted_at=now()`)
