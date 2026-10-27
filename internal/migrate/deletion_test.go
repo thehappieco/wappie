@@ -356,8 +356,11 @@ func TestMigration0050DownStep(t *testing.T) {
 			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 50 %v, devices forced %v", rows, before, has50, forced)
 		}
 	}
-	// 0052 and 0051 come down first, before any other guard is asked.
+	// 0053, 0052 and 0051 come down first, before any other guard is asked.
 	refused("a migration after 0050 is applied")
+	if _, err := pool.Exec(ctx, downStepSQL(t, 53)); err != nil {
+		t.Fatalf("0053's down-step: %v", err)
+	}
 	if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err != nil {
 		t.Fatalf("0052's down-step: %v", err)
 	}

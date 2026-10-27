@@ -770,8 +770,10 @@ func TestScopeNeverOutlivesTx(t *testing.T) {
 }
 
 // The quarantine has one door in Go. The setting's name appears in
-// store/quarantine.go and in 0050 only, and only the functions decision
-// 0038's plan names (section 4.1) open the scope; tests reach it through
+// store/quarantine.go, in 0050, and in 0053's devices_ordinal, which opens
+// the scope for its one count of a workspace's ordinals (deleted numbers
+// keep theirs) and restores it; only the functions decision 0038's plan
+// names (section 4.1) open the scope; tests reach it through
 // WithQuarantineForTest. Test files are not scanned.
 func TestQuarantineScopeHasOneDoor(t *testing.T) {
 	// The callers of withQuarantine, by function name (with its receiver's
@@ -837,7 +839,7 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, m := range migrations {
-		if strings.Contains(m.SQL, guc) && m.Version != 50 {
+		if strings.Contains(m.SQL, guc) && m.Version != 50 && m.Version != 53 {
 			t.Errorf("%04d_%s names %s", m.Version, m.Name, guc)
 		}
 	}

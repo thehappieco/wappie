@@ -99,8 +99,8 @@ func TestMigration0051DownStep(t *testing.T) {
 	if err := run(ctx, at50, lg, through50); err != nil {
 		t.Fatal(err)
 	}
-	// A binary at 51: 0052's down-step comes first on a later one
-	// (TestMigration0052DownStep).
+	// A binary at 51: 0053's and 0052's down-steps come first on a later
+	// one (TestMigration0053DownStep, TestMigration0052DownStep).
 	through51 := migrationsThrough(t, 51)
 	pool := pgtest.Empty(t)
 	if err := run(ctx, pool, lg, through51); err != nil {

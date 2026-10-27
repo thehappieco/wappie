@@ -67,10 +67,13 @@ func TestMigration0045DownStep(t *testing.T) {
 		t.Fatalf("the result was not counted: %d, before %d %v", with.ArchiveBytes, before.ArchiveBytes, err)
 	}
 
-	// 0052 (the settings) and 0051 (the contract) come down first, then
-	// 0050 (deleted numbers), 0049 (the end of the sign-in's rollback
-	// window, its ledger row only), 0048 (platform sign-in) and 0047 (fewer
-	// steps).
+	// 0053 (the tokens), 0052 (the settings) and 0051 (the contract) come
+	// down first, then 0050 (deleted numbers), 0049 (the end of the
+	// sign-in's rollback window, its ledger row only), 0048 (platform
+	// sign-in) and 0047 (fewer steps).
+	if _, err := f.pool.Exec(ctx, downStep(t, 53)); err != nil {
+		t.Fatalf("0053 down-step: %v", err)
+	}
 	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
 		t.Fatalf("0052 down-step: %v", err)
 	}
