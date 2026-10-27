@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/obs"
 	"whatserver2/internal/store"
@@ -181,5 +182,187 @@ func execAt(t *testing.T, f *platformFixture, sql string, args ...any) {
 	t.Helper()
 	if _, err := f.pool.Exec(context.Background(), sql, args...); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// DB25 (the lock order of the token part, core/docs/decisions.md): a token
+// page's commit takes contract_token_state and never contract_state, so it
+// never waits behind the account side (CommitPage, StoreDocuments, a
+// sign-in's FOR SHARE, SetMode), nor they behind it; Restart takes both,
+// contract_state first, so it waits for a token commit in flight and never
+// deadlocks with one.
+func TestATokenCommitNeverWaitsOnTheAccountSide(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	id := uuid.New()
+	w.page(false, w.record(id, 1))
+
+	// The account side holds contract_state, as CommitPage does: a token
+	// page commits all the same.
+	holder, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM contract_state FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.tryPage(false, w.record(id, 2))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("a token commit beside the account side: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a token commit waited on contract_state")
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A token commit in flight holds contract_token_state: the account
+	// side's writers and a sign-in's read go on; Restart waits for it.
+	holder, err = w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM contract_token_state FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	gen := w.gen
+	for name, call := range map[string]func() error{
+		"StoreDocuments": func() error {
+			_, err := w.contract.StoreDocuments(ctx, store.ContractAnswer, contractDoc(w.ownerSub, gen, 2, "active", uuid.New()))
+			return err
+		},
+		"SetMode": func() error { _, err := w.contract.SetMode(ctx, store.ContractObserve); return err },
+		"a sign-in's read": func() error {
+			_, err := w.pool.Exec(ctx, `SELECT 1 FROM contract_state FOR SHARE`)
+			return err
+		},
+	} {
+		done := make(chan error, 1)
+		go func() { done <- call() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s beside a token commit: %v", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s waited on a token commit", name)
+		}
+	}
+	restarted := make(chan error, 1)
+	go func() {
+		next := uuid.New()
+		_, err := w.contract.RestartFromTokens(ctx, gen, &next, true)
+		restarted <- err
+	}()
+	untilTokenWaiters(t, w, 1)
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-restarted; err != nil {
+		t.Fatalf("Restart after a token commit: %v", err)
+	}
+}
+
+func untilTokenWaiters(t *testing.T, w *tokenWorld, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := w.pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity
+			WHERE pid = ANY ($1) AND wait_event_type = 'Lock'`, w.backends.PIDs()).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never %d lock waiters", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A token commit chosen as a deadlock's victim is tried again: another
+// transaction holds the token's row, which the commit waits on under
+// contract_token_state's lock, then asks for that lock. The commit waits
+// first, so its deadlock check runs first and it is the victim; should the
+// other's check win a slow race, the scenario runs again.
+func TestATokenCommitRetriesADeadlock(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	id := uuid.New()
+	w.page(false, w.record(id, 1))
+	for attempt, version := 1, int64(2); ; attempt, version = attempt+1, version+1 {
+		holder, err := w.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := holder.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.tenant.String()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := holder.Exec(ctx, `SELECT 1 FROM contract_tokens WHERE id = $1 FOR UPDATE`, id); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := w.tryPage(false, w.record(id, version, func(r *kc.TokenRecord) { r.Name = "Retried" }))
+			done <- err
+		}()
+		untilTokenWaiters(t, w, 1)
+		_, lockErr := holder.Exec(ctx, `SELECT 1 FROM contract_token_state FOR UPDATE`)
+		if err := holder.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("a token commit beside a deadlock: %v", err)
+		}
+		if lockErr != nil && attempt < 3 {
+			// The other transaction was the victim this time.
+			continue
+		}
+		if lockErr != nil {
+			t.Fatalf("the other transaction: %v", lockErr)
+		}
+		break
+	}
+	if !strings.Contains(w.logs.String(), "deadlocked; retrying") {
+		t.Fatalf("no deadlock, so nothing proved:\n%s", w.logs.String())
+	}
+	if strings.Contains(w.logs.String(), store.TokenErrorApplyFailed) || strings.Contains(w.logs.String(), "one by one") {
+		t.Fatalf("a deadlock was taken for a bad record:\n%s", w.logs.String())
+	}
+	if s := w.token(id); s.Name != "Retried" {
+		t.Fatalf("the retried commit did not apply: %+v", s)
+	}
+}
+
+// Numbers made at once in one workspace each get their own ordinal: the
+// trigger's advisory lock serializes them, and none deadlocks on the
+// workspace's row.
+func TestConcurrentNumbersGetTheirOwnOrdinals(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	const n = 12
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			_, err := w.devices.CreateWithID(ctx, w.tenant.String(), "", "n", "passive")
+			errs <- err
+		}()
+	}
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := w.count(`SELECT count(DISTINCT ordinal) FROM devices WHERE ordinal BETWEEN 1 AND $1`, n); got != n {
+		t.Fatalf("%d distinct ordinals among %d numbers", got, n)
 	}
 }
