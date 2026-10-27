@@ -59,9 +59,10 @@ const peerRetry = time.Minute
 // redirect (an answer is its request's, and a redirect's answer would be
 // unsigned for it), uses no proxy, and has no timeout of its own: the kit
 // bounds every call (CallTimeout, and the feed's wait plus FeedGrace). It
-// keeps up to 8 idle connections: the two long-polls (the account feed's
-// and the command feed's), the senders' calls, the round's and the
-// request path's GETs may each hold one at once.
+// keeps up to 8 idle connections: the three long-polls (the account feed's,
+// the command feed's and the token feed's), the senders' calls, the
+// acknowledgements, the round's and the request path's GETs may each hold
+// one at once.
 func HTTP(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{

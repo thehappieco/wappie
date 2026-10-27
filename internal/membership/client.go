@@ -210,3 +210,73 @@ func (c *Client) PostEvents(ctx context.Context, events []kc.Event) ([]kc.EventR
 	})
 	return r, err
 }
+
+// The token part's five calls (the kit's SPEC section 11.18, from the
+// platform's design of 2026-10-26, its 3.3 to 3.8) take call's one retry as
+// the others do: each is idempotent. The three GETs read; an
+// acknowledgement names its own generation and through, and what it reports
+// again changes nothing; the usage counts are absolute.
+
+// Tokens returns the token records after the cursor after, waiting up to
+// wait seconds (GET /contract/v1/tokens): a page the kit validated, its
+// records kept as they came. The kit checks the page, never its records, so
+// a bad record never stalls the feed: each is decoded on its own
+// (TokenFeedItem.Record) and judged before anything of it is written.
+func (c *Client) Tokens(ctx context.Context, after int64, wait int) (kc.TokenFeed, error) {
+	var f kc.TokenFeed
+	err := c.call(func(k *kc.Client) (err error) {
+		f, err = k.Tokens(ctx, after, wait)
+		return err
+	})
+	return f, err
+}
+
+// Token returns the record of the token id for Wappie, computed and
+// published now (GET /contract/v1/tokens/{id}): the signed answer a grant
+// to the token's reading key needs, under a minute old. The record comes
+// only with a nil error, and only when it is valid, Wappie's and id's; the
+// kit runs its Validate, never ReadingKey.Check, so the store compares the
+// fingerprint with the key itself before it pins one. An id that is no UUID
+// is refused before any request (contract.ErrInvalid). A token unknown, or
+// one that never named Wappie, is a signed not_found, which clears nothing.
+//
+// The answer carries no time of its own: the caller stamps the time it
+// sent the request, taken before it calls, so a retry only makes that
+// stamp older than the answer, never newer.
+func (c *Client) Token(ctx context.Context, id string) (kc.TokenRecord, error) {
+	var r kc.TokenRecord
+	err := c.call(func(k *kc.Client) (err error) {
+		r, err = k.Token(ctx, id)
+		return err
+	})
+	return r, err
+}
+
+// TokenBySelector is Token for the token whose selector is selector
+// (GET /contract/v1/token-selectors/{selector}). Nothing calls it yet: a new
+// token reaches the feed within 5 s (the design's 3.4). A caller limits it
+// per client address first, keeps a not_found 60 s, and still checks the
+// token's hash itself (contract.VerifyToken).
+func (c *Client) TokenBySelector(ctx context.Context, selector string) (kc.TokenRecord, error) {
+	var r kc.TokenRecord
+	err := c.call(func(k *kc.Client) (err error) {
+		r, err = k.TokenBySelector(ctx, selector)
+		return err
+	})
+	return r, err
+}
+
+// TokensApplied acknowledges the token feed (POST /contract/v1/tokens/applied).
+// It answers nil only for a signed {"accepted": true}, the one answer on
+// which the entries it carried count as delivered. Another generation, or a
+// through above the feed's head, is a signed gone: a reset.
+func (c *Client) TokensApplied(ctx context.Context, ack kc.TokenApplied) error {
+	return c.call(func(k *kc.Client) error { return k.TokensApplied(ctx, ack) })
+}
+
+// TokenUsage reports the tokens' last use and refused uses
+// (POST /contract/v1/tokens/usage), nil only for a signed
+// {"accepted": true}: the one answer on which its rows count as reported.
+func (c *Client) TokenUsage(ctx context.Context, u kc.TokenUsage) error {
+	return c.call(func(k *kc.Client) error { return k.TokenUsage(ctx, u) })
+}

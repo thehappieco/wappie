@@ -312,7 +312,7 @@ func StartFakeAt(tb testing.TB, secret string, now func() time.Time) *Fake {
 }
 
 // callOf names a request's call as contracttest does, with its argument
-// (a sub or a workspace; the command feed's after).
+// (a sub, a workspace, a token id or a selector; the command feed's after).
 func callOf(r *http.Request) (string, string) {
 	rest := strings.TrimPrefix(r.URL.Path, "/contract/v1/")
 	switch {
@@ -330,6 +330,16 @@ func callOf(r *http.Request) (string, string) {
 	case strings.HasPrefix(rest, "workspaces/") && strings.Contains(rest, "/settings/"):
 		ws, _, _ := strings.Cut(strings.TrimPrefix(rest, "workspaces/"), "/")
 		return contracttest.CallSettings, ws
+	case rest == "tokens":
+		return contracttest.CallTokens, ""
+	case rest == "tokens/applied":
+		return contracttest.CallTokensApplied, ""
+	case rest == "tokens/usage":
+		return contracttest.CallTokenUsage, ""
+	case strings.HasPrefix(rest, "tokens/"):
+		return contracttest.CallToken, strings.TrimPrefix(rest, "tokens/")
+	case strings.HasPrefix(rest, "token-selectors/"):
+		return contracttest.CallTokenBySelector, strings.TrimPrefix(rest, "token-selectors/")
 	case strings.HasPrefix(rest, "accounts/"):
 		sub := strings.TrimPrefix(rest, "accounts/")
 		switch r.Method {
