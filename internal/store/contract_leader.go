@@ -116,8 +116,7 @@ func (c *Contract) CommitPage(ctx context.Context, p ContractPage) (ContractPage
 				return nil
 			}
 			if state.Generation == nil {
-				if _, err := tx.Exec(ctx, `UPDATE contract_state SET generation = $1, generation_confirmed = $2,
-					updated_at = clock_timestamp() WHERE generation IS NULL`, p.Generation, p.Confirmed); err != nil {
+				if err := adoptGenerationTx(ctx, tx, p.Generation, p.Confirmed); err != nil {
 					return err
 				}
 				g := p.Generation
@@ -383,6 +382,11 @@ type ContractModeChange struct {
 	// pauses, strandings and moves written while off, never sent (the
 	// plan's DB10, 4.4).
 	ToSend, HeldBack int64
+	// TokensOff: a switch to off turned the token mode off with it, in its
+	// transaction (step 7's plan, section 8): tokens are refused whenever
+	// the contract is off, and turning the contract on again leaves them
+	// off.
+	TokensOff bool
 }
 
 // ErrContractMode is a mode Wappie does not know.
@@ -392,8 +396,10 @@ var ErrContractMode = errors.New("store: the contract's mode is off or observe")
 // and wakes every process's contract loop. To observe: events_from is set
 // the first time only, the off period that ends now joins events_off, and
 // the round is due again (round_generation unset). To off: the period
-// starts (events_paused_at). It waits for a sign-up in flight, which reads
-// the state FOR SHARE, so the round that follows subscribes that account.
+// starts (events_paused_at), and the token mode goes off with it
+// (contract_token_state, DB25 step 2), so a switch to off never refuses.
+// It waits for a sign-up in flight, which reads the state FOR SHARE, so
+// the round that follows subscribes that account.
 func (c *Contract) SetMode(ctx context.Context, mode string) (ContractModeChange, error) {
 	if mode != ContractOff && mode != ContractObserve {
 		return ContractModeChange{}, ErrContractMode
@@ -421,6 +427,9 @@ func (c *Contract) SetMode(ctx context.Context, mode string) (ContractModeChange
 			_, err = tx.Exec(ctx, `UPDATE contract_state SET mode = $1, mode_changed_at = clock_timestamp(),
 				events_paused_at = CASE WHEN events_from IS NULL THEN NULL ELSE clock_timestamp() END,
 				updated_at = clock_timestamp()`, mode)
+			if err == nil {
+				out.TokensOff, err = tokensOffTx(ctx, tx)
+			}
 		}
 		if err != nil {
 			return err

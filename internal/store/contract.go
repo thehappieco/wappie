@@ -40,6 +40,9 @@ type Contract struct{ pool *pgxpool.Pool }
 // NewContract returns the contract store backed by pool.
 func NewContract(pool *pgxpool.Pool) *Contract { return &Contract{pool: pool} }
 
+// Tokens is the contract's token part, on the same pool.
+func (c *Contract) Tokens() *Tokens { return NewTokens(c.pool) }
+
 // The contract's modes (contract_state.mode). Enforce widens them.
 const (
 	ContractOff     = "off"
@@ -297,8 +300,7 @@ func storeDocsTx(ctx context.Context, tx pgx.Tx, state ContractState, from Contr
 	generation := state.Generation
 	if generation == nil {
 		g := docs[0].Generation
-		if _, err := tx.Exec(ctx, `UPDATE contract_state SET generation = $1, generation_confirmed = false,
-			updated_at = clock_timestamp() WHERE generation IS NULL`, g); err != nil {
+		if err := adoptGenerationTx(ctx, tx, g, false); err != nil {
 			return nil, err
 		}
 		generation = &g
