@@ -62,7 +62,10 @@ type Members struct {
 	Client *Client
 	// Contract is the contract's state in the database.
 	Contract *store.Contract
-	Log      *slog.Logger
+	// Tokens is the contract's token part in the database (step 7); nil
+	// leaves the leader's token part off whatever the token mode says.
+	Tokens *store.Tokens
+	Log    *slog.Logger
 	// Bound bounds each call made while a person waits: a sign-in's PUT,
 	// a freshness GET, a refused sign-up's DELETE (5 s when zero).
 	Bound time.Duration

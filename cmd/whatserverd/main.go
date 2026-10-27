@@ -78,7 +78,10 @@ const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions ...
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
-                   diff [--tenant T] | mode off|observe | settings off|read|on|status
+                   diff [--tenant T] | mode off|observe | settings off|read|on|status |
+                   tokens on|off|status
+       whatserverd tokens suspend [-note N] [-record F] SELECTOR|TOKEN|- | suspend -replay F |
+                   lift [-record F] SELECTOR|TOKEN|- | list
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
@@ -144,6 +147,8 @@ func runCommand(args []string, serve func() error) error {
 		return deletionsCommand(rest, os.Stdout)
 	case "contract":
 		return contractCommand(rest, os.Stdout)
+	case "tokens":
+		return tokensCommand(rest, os.Stdin, os.Stdout)
 	case "contract-secret":
 		return contractSecret(rest, defaultSecretCommand())
 	}
@@ -305,7 +310,7 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	// The contract's part in signing in and its freshness hook, in every
 	// configuration: the socket's acts ask it from the first frame
 	// (startContract gives it its transport).
-	a.members = &membership.Members{Contract: store.NewContract(pools.API), Log: lg}
+	a.members = &membership.Members{Contract: store.NewContract(pools.API), Tokens: store.NewTokens(pools.API), Log: lg}
 	if cfg.Deletion.Ledger != "" {
 		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}

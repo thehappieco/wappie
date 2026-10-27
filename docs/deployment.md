@@ -562,6 +562,11 @@ whatserverd contract diff [--tenant T]
 whatserverd contract mode off|observe
 whatserverd contract settings off|read [--platform-told]
 whatserverd contract settings status [--check]
+whatserverd contract tokens on|off|status
+whatserverd tokens suspend [-note N] [-record F] SELECTOR|TOKEN|-
+whatserverd tokens suspend -replay F
+whatserverd tokens lift [-record F] SELECTOR|TOKEN|-
+whatserverd tokens list
 ```
 
 Run them as the server's user, with the socket's group and its
@@ -592,7 +597,8 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
 - `contract mode observe` turns the contract on, and refuses (exit 3,
   "contract mode observe: not ready: …", nothing changed) until the
   running server has a transport and a loaded secret; `contract mode off`
-  stops it at once ([the mode](contract.md#the-mode)).
+  stops it at once, and the settings mode and the token mode with it
+  ([the mode](contract.md#the-mode)).
 - `contract settings read` makes the leader send the numbers sections and
   follow the command feed, answering every command `kind_not_accepted`;
   `off` stops both. Each needs the contract on (exit `3`), and the first
@@ -602,6 +608,16 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   prints the mode, the feed, the ledger and each section; its `--check`
   findings are `contract status --check`'s too
   ([the settings mode](contract.md#the-settings-mode)).
+- `contract tokens on` turns the contract's token part on, and refuses
+  (exit 3, "contract tokens on: not ready: …", nothing changed) until the
+  contract is on, the running server has a transport and a loaded secret,
+  and the platform's token feed answers with the stored generation;
+  `contract tokens off` refuses every token at once
+  ([the token feed](contract.md#the-token-feed)).
+- `tokens suspend` stops a token here by its selector, with the platform
+  down too, until `tokens lift`; with `-record
+  /opt/wappie/state/token-stops.jsonl` always, so `tokens suspend -replay`
+  brings the stops back after a restore of Wappie's database.
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database

@@ -26,6 +26,7 @@ var timingsElsewhere = []string{
 	"check round", "check parked", "check events", "hot path", "hot path bound",
 	"section not found", "run backoff", "ledger", "check commands", "check results", "check taken", "check section",
 	"person not found", "resume repair", "check person", "start bound", "failed start wait",
+	"check token feed", "check token published", "check token held", "check acks", "check usage", "check token commit",
 }
 
 // docs/contract.md's timings and limits that this package sets (the rest
@@ -74,6 +75,16 @@ func TestContractTimingsMatchTheDocs(t *testing.T) {
 		"ledger trim":         spoken(trimEvery),
 		// The commands release's (commands_run.go).
 		"behind retry": spoken(behindRetry),
+		// The token part's (tokens.go).
+		"token long-poll":   spoken(time.Duration((&Leader{}).wait()) * time.Second),
+		"token backoff":     span(tokenBackoffMin, tokenBackoffMax),
+		"token stale start": spoken(tokenStaleAfter),
+		"token commit":      spoken(tokenCommitSlow),
+		"judge":             spoken(judgeEvery),
+		"ack spacing":       spoken(ackSpacing),
+		"ack every":         spoken(ackEvery),
+		"ack backoff":       span(ackBackoffMin, ackBackoffMax),
+		"usage":             spoken(usageEvery),
 	}
 	for name, want := range ours {
 		if got := rows[name]; got != want {
