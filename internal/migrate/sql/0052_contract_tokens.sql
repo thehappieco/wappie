@@ -82,6 +82,16 @@
 --                          the leader reports.
 --   key_retirements        the operator's record of tokens retire-keys:
 --                          counts and key prefixes.
+--   users.token_identity   the hidden identity a live token's grants are
+--                          sealed to (its public_key is the token's pinned
+--                          reading key): a service-shaped row with no
+--                          password, recovery or KDF salt (so sign-in
+--                          answers its address as a decoy), never a member
+--                          of any workspace (create_initial_membership
+--                          gives it none, and initial_device_permissions
+--                          no permission row), so no listing, protection
+--                          or backup ever counts it. Its grants notify
+--                          wappie_contract_tokens with its token's id.
 --   devices.ordinal        the number's place in its workspace, 1 to 9999,
 --                          the lowest free one at its insert or move-out
 --                          (devices_ordinal), kept across a deletion and a
@@ -107,9 +117,13 @@
 -- RELEASE.json, as the table owner. It refuses while tokens are on, and while
 -- schema_migrations holds a version above 52; a refusal changes nothing. It
 -- loses the token records (the platform republishes them from 0 after a
--- re-upgrade, and a reset never widens), the local stops (counted: re-apply
--- them from the stop record after a re-upgrade) and the retirement's record
--- (counted); the keys the retirement revoked stay revoked, as 0050's did.
+-- re-upgrade, and a reset never widens), the token identities and their
+-- grants (counted; users and device_key_grants are forced row-level
+-- security, so a plain delete as the owner with no workspace would delete
+-- nothing: their policies are lifted around it), the local stops (counted:
+-- re-apply them from the stop record after a re-upgrade) and the
+-- retirement's record (counted); the keys the retirement revoked stay
+-- revoked, as 0050's did.
 --
 --      BEGIN;
 --      SELECT pg_advisory_xact_lock(6289348710053007958);
@@ -124,15 +138,30 @@
 --      END $$;
 --      LOCK TABLE tenants, users, workspace_memberships, devices, device_key_grants, api_keys,
 --        contract_state, contract_accounts IN ACCESS EXCLUSIVE MODE;
+--      ALTER TABLE users DISABLE ROW LEVEL SECURITY;
+--      ALTER TABLE device_key_grants DISABLE ROW LEVEL SECURITY;
 --      ALTER TABLE contract_tokens DISABLE ROW LEVEL SECURITY;
 --      DO $$
 --      BEGIN
---        RAISE NOTICE 'dropping % tokens, % local stops (re-apply them after a re-upgrade), % retirement rows; % keys revoked by the retirement stay revoked',
+--        RAISE NOTICE 'dropping % tokens, % token identities with % grants, % local stops (re-apply them after a re-upgrade), % retirement rows; % keys revoked by the retirement stay revoked',
 --          (SELECT count(*) FROM contract_tokens),
+--          (SELECT count(*) FROM users WHERE token_identity),
+--          (SELECT count(*) FROM device_key_grants g JOIN users u ON u.id = g.user_id WHERE u.token_identity),
 --          (SELECT count(*) FROM contract_token_stops WHERE lifted_at IS NULL),
 --          (SELECT count(*) FROM key_retirements),
 --          (SELECT count(*) FROM api_keys WHERE revoke_reason = 'platform_tokens');
 --      END $$;
+--      DELETE FROM users WHERE token_identity;
+--      DO $$
+--      BEGIN
+--        IF EXISTS (SELECT 1 FROM users WHERE token_identity) THEN
+--          RAISE EXCEPTION 'token identities remain';
+--        END IF;
+--      END $$;
+--      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+--      ALTER TABLE users FORCE ROW LEVEL SECURITY;
+--      ALTER TABLE device_key_grants ENABLE ROW LEVEL SECURITY;
+--      ALTER TABLE device_key_grants FORCE ROW LEVEL SECURITY;
 --      DROP TRIGGER devices_ordinal_insert ON devices;
 --      DROP TRIGGER devices_ordinal_move ON devices;
 --      DROP FUNCTION devices_ordinal();
@@ -148,16 +177,42 @@
 --             OR (OLD.status IS DISTINCT FROM NEW.status
 --                 AND (OLD.status IN ('logged_out', 'banned') OR NEW.status IN ('logged_out', 'banned'))))
 --          EXECUTE FUNCTION contract_mark_dirty();
+--      DROP TRIGGER contract_token_identity_notify ON device_key_grants;
 --      DROP TRIGGER tenants_token_switch_notify ON tenants;
 --      DROP TRIGGER contract_state_token_notify ON contract_state;
 --      DROP TRIGGER contract_accounts_token_notify ON contract_accounts;
+--      CREATE OR REPLACE FUNCTION create_initial_membership() RETURNS trigger AS $$
+--      DECLARE personal uuid; previous_context text;
+--      BEGIN
+--       previous_context := current_setting('app.tenant_id',true);
+--       IF EXISTS(SELECT 1 FROM tenants WHERE id=NEW.tenant_id) THEN
+--        INSERT INTO workspace_memberships(tenant_id,user_id,role) VALUES(NEW.tenant_id,NEW.id,NEW.role);
+--       END IF;
+--       IF NEW.role <> 'service' THEN
+--        personal := CASE WHEN EXISTS(SELECT 1 FROM tenants WHERE id=NEW.tenant_id) THEN uuidv7() ELSE NEW.tenant_id END;
+--        INSERT INTO tenants(id,name,kind,personal_owner_id)
+--        VALUES(personal,left(coalesce(nullif(NEW.name,''),split_part(NEW.email,'@',1)),80),'personal',NEW.id);
+--        PERFORM set_config('app.tenant_id',personal::text,true);
+--        INSERT INTO workspace_memberships(tenant_id,user_id,role) VALUES(personal,NEW.id,'owner');
+--        PERFORM set_config('app.tenant_id',coalesce(previous_context,''),true);
+--       END IF;
+--       RETURN NEW;
+--      END $$ LANGUAGE plpgsql;
+--      CREATE OR REPLACE FUNCTION initial_device_permissions() RETURNS trigger AS $$
+--      BEGIN
+--          INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read,can_send)
+--          VALUES(NEW.tenant_id,NEW.device_id,NEW.user_id,true,true) ON CONFLICT DO NOTHING;
+--          RETURN NEW;
+--      END $$ LANGUAGE plpgsql;
 --      DROP FUNCTION api_key_class(api_keys);
 --      DROP TABLE key_retirements, contract_token_refusals, contract_token_used, contract_token_held_out,
 --        contract_token_refusals_out, contract_token_stops, contract_token_sticky, contract_token_removed,
 --        contract_token_perms, contract_token_pins, contract_tokens, contract_token_selectors,
 --        contract_token_state;
 --      DROP FUNCTION contract_tokens_never_widen(), contract_token_notify(), contract_tokens_notify_all(),
---        contract_token_pins_guard(), contract_token_selectors_guard(), contract_token_sticky_guard();
+--        contract_token_identity_notify(), contract_token_pins_guard(), contract_token_selectors_guard(),
+--        contract_token_sticky_guard();
+--      ALTER TABLE users DROP CONSTRAINT users_token_identity_shape, DROP COLUMN token_identity;
 --      ALTER TABLE devices DROP COLUMN ordinal;
 --      ALTER TABLE api_keys DROP COLUMN origin, DROP COLUMN revoke_reason;
 --      DELETE FROM schema_migrations WHERE version = 52;
@@ -623,3 +678,60 @@ BEGIN
     END LOOP;
     PERFORM set_config('app.tenant_id', '', true);
 END $$;
+
+-- The token identity (the plan's 5.1). After the devices' ALTERs, as
+-- wappie-billing's order asks: a billing request that has counted devices
+-- holds them, and reads users after.
+ALTER TABLE users ADD COLUMN token_identity boolean NOT NULL DEFAULT false,
+    ADD CONSTRAINT users_token_identity_shape CHECK (NOT token_identity OR (role = 'service' AND auth_source = 'local'
+        AND auth_hash IS NULL AND recovery_hash IS NULL AND kdf_salt IS NULL AND kdf_params IS NULL AND status = 'active'));
+-- 0031's, with no membership and no personal workspace for a token identity:
+-- it is never a member (3.6).
+CREATE OR REPLACE FUNCTION create_initial_membership() RETURNS trigger AS $$
+DECLARE personal uuid; previous_context text;
+BEGIN
+ IF NEW.token_identity THEN
+  RETURN NEW;
+ END IF;
+ previous_context := current_setting('app.tenant_id',true);
+ IF EXISTS(SELECT 1 FROM tenants WHERE id=NEW.tenant_id) THEN
+  INSERT INTO workspace_memberships(tenant_id,user_id,role) VALUES(NEW.tenant_id,NEW.id,NEW.role);
+ END IF;
+ IF NEW.role <> 'service' THEN
+  personal := CASE WHEN EXISTS(SELECT 1 FROM tenants WHERE id=NEW.tenant_id) THEN uuidv7() ELSE NEW.tenant_id END;
+  INSERT INTO tenants(id,name,kind,personal_owner_id)
+  VALUES(personal,left(coalesce(nullif(NEW.name,''),split_part(NEW.email,'@',1)),80),'personal',NEW.id);
+  PERFORM set_config('app.tenant_id',personal::text,true);
+  INSERT INTO workspace_memberships(tenant_id,user_id,role) VALUES(personal,NEW.id,'owner');
+  PERFORM set_config('app.tenant_id',coalesce(previous_context,''),true);
+ END IF;
+ RETURN NEW;
+END $$ LANGUAGE plpgsql;
+-- 0023's, for members only: a grant to a token identity (or to anyone with no
+-- membership) brings no permission row, which would fail on 0023's foreign
+-- key or hand out can_send. A token's Read is its record's, never a row here.
+CREATE OR REPLACE FUNCTION initial_device_permissions() RETURNS trigger AS $$
+BEGIN
+    IF EXISTS(SELECT 1 FROM workspace_memberships m WHERE m.tenant_id=NEW.tenant_id AND m.user_id=NEW.user_id) THEN
+        INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read,can_send)
+        VALUES(NEW.tenant_id,NEW.device_id,NEW.user_id,true,true) ON CONFLICT DO NOTHING;
+    END IF;
+    RETURN NEW;
+END $$ LANGUAGE plpgsql;
+-- A token identity's grant given or taken: its token's id, found by the
+-- identity it keeps after a drop, so a cascade from the identity's delete
+-- notifies too. Nothing is written: a NOTIFY takes no row lock (DB25).
+CREATE FUNCTION contract_token_identity_notify() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    r   device_key_grants;
+    tok uuid;
+BEGIN
+    IF TG_OP = 'DELETE' THEN r := OLD; ELSE r := NEW; END IF;
+    SELECT id INTO tok FROM contract_tokens WHERE identity_user_id = r.user_id;
+    IF tok IS NOT NULL THEN
+        PERFORM pg_notify('wappie_contract_tokens', tok::text);
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER contract_token_identity_notify AFTER INSERT OR DELETE ON device_key_grants
+    FOR EACH ROW EXECUTE FUNCTION contract_token_identity_notify();
