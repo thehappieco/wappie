@@ -261,9 +261,14 @@ CREATE TABLE contract_token_state (
     usage_sent_at         timestamptz,
     usage_error           text,
     usage_error_at        timestamptz,
+    -- The last page whose commit took over a second from its receipt, and
+    -- how long, for contract status --check (the design's 1 s bound).
+    slow_commit_at        timestamptz,
+    slow_commit_ms        integer     CHECK (slow_commit_ms >= 0),
     CHECK ((error IS NULL) = (error_at IS NULL)),
     CHECK ((ack_error IS NULL) = (ack_error_at IS NULL)),
-    CHECK ((usage_error IS NULL) = (usage_error_at IS NULL))
+    CHECK ((usage_error IS NULL) = (usage_error_at IS NULL)),
+    CHECK ((slow_commit_at IS NULL) = (slow_commit_ms IS NULL))
 );
 INSERT INTO contract_token_state DEFAULT VALUES;
 
@@ -545,8 +550,10 @@ CREATE TRIGGER contract_token_sticky_notify AFTER INSERT OR UPDATE ON contract_t
     FOR EACH ROW EXECUTE FUNCTION contract_token_notify();
 CREATE TRIGGER contract_token_stops_notify AFTER INSERT OR UPDATE OR DELETE ON contract_token_stops
     FOR EACH ROW EXECUTE FUNCTION contract_token_notify();
+-- caught_up_at moves at every page with more false; token auth reads only
+-- whether it is set.
 CREATE TRIGGER contract_token_state_notify AFTER UPDATE OF mode, caught_up_at ON contract_token_state FOR EACH ROW
-    WHEN (OLD.mode IS DISTINCT FROM NEW.mode OR OLD.caught_up_at IS DISTINCT FROM NEW.caught_up_at)
+    WHEN (OLD.mode IS DISTINCT FROM NEW.mode OR (OLD.caught_up_at IS NULL) IS DISTINCT FROM (NEW.caught_up_at IS NULL))
     EXECUTE FUNCTION contract_tokens_notify_all();
 CREATE TRIGGER contract_state_token_notify AFTER UPDATE OF mode ON contract_state FOR EACH ROW
     WHEN (OLD.mode IS DISTINCT FROM NEW.mode) EXECUTE FUNCTION contract_tokens_notify_all();

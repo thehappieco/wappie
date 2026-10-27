@@ -52,6 +52,11 @@ const tokenSuspendedSQL = `
 // platform accepts it.
 type TokenAck struct {
 	Body kc.TokenApplied
+	// Acked is the last through the platform accepted; More, that what is
+	// due did not all fit this body, and the next acknowledgement goes at
+	// once, at the same through.
+	Acked int64
+	More  bool
 	// refused and held are the queue entries the body carries, each with
 	// the queued_at it was read at: an entry changed since (a merge) stays
 	// due.
@@ -108,8 +113,8 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 		var through int64
 		var readAt *time.Time
 		var waitingSent, suspendedSent []byte
-		if err := tx.QueryRow(ctx, `SELECT c.generation, s.feed_cursor, s.read_at, s.waiting_sent_hash, s.suspended_sent_hash
-			FROM contract_token_state s CROSS JOIN contract_state c`).Scan(&gen, &through, &readAt, &waitingSent, &suspendedSent); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT c.generation, s.feed_cursor, s.ack_through, s.read_at, s.waiting_sent_hash, s.suspended_sent_hash
+			FROM contract_token_state s CROSS JOIN contract_state c`).Scan(&gen, &through, &out.Acked, &readAt, &waitingSent, &suspendedSent); err != nil {
 			return err
 		}
 		if gen == nil || readAt == nil {
@@ -136,6 +141,7 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 			out.Body.Refused = append(out.Body.Refused, kc.TokenRefusal{Token: r.token.String(), Version: r.version, Item: r.item, Perm: r.perm, Code: r.code})
 		}
 		budget -= len(out.refused)
+		out.More = budget == 0
 		rows, err = tx.Query(ctx, `SELECT token_id, revoked, expires_at, removed, reading_key, queued_at FROM contract_token_held_out
 			WHERE sent_at IS NULL AND generation = $1 ORDER BY queued_at, token_id LIMIT $2`, *gen, budget)
 		if err != nil {
@@ -172,6 +178,7 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 			return err
 		}
 		budget -= len(out.held)
+		out.More = out.More || budget == 0
 
 		waiting, err := waitingPermsTx(ctx, tx)
 		if err != nil {
@@ -182,6 +189,8 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 				out.Body.Waiting, out.Body.WaitingMore = capped(waiting)
 				out.waitingHash = hash
 				budget -= len(out.Body.Waiting)
+			} else {
+				out.More = true
 			}
 		}
 		suspended, err := suspendedTx(ctx, tx)
@@ -192,6 +201,8 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 			if fits(len(suspended), budget, len(out.refused)+len(out.held)+len(out.Body.Waiting)) {
 				out.Body.Suspended, out.Body.SuspendedMore = capped(suspended)
 				out.suspendedHash = hash
+			} else {
+				out.More = true
 			}
 		}
 		return nil
@@ -452,7 +463,11 @@ func (t *Tokens) AddTokenUse(ctx context.Context, u TokenUse) error {
 // TokenUsageBody is one usage report to send, and what to mark once the
 // platform accepts it.
 type TokenUsageBody struct {
-	Body     kc.TokenUsage
+	Body kc.TokenUsage
+	// More: what is due did not all fit this body; the next report goes at
+	// once (both lists are absolute, so the platform keeps the latest day
+	// and the highest count whatever the split).
+	More     bool
 	used     []TokenDay
 	refusals []TokenUseRefusal
 }
@@ -503,6 +518,7 @@ func (t *Tokens) UsageBody(ctx context.Context) (TokenUsageBody, error) {
 	if err != nil {
 		return out, err
 	}
+	out.More = len(out.used) == kc.MaxUsageEntries || len(out.refusals) == kc.MaxUsageEntries
 	for {
 		b, err := json.Marshal(out.Body)
 		if err != nil {
@@ -515,7 +531,7 @@ func (t *Tokens) UsageBody(ctx context.Context) (TokenUsageBody, error) {
 			return out, nil
 		}
 		half := len(out.Body.Refusals) / 2
-		out.Body.Refusals, out.refusals = out.Body.Refusals[:half], out.refusals[:half]
+		out.Body.Refusals, out.refusals, out.More = out.Body.Refusals[:half], out.refusals[:half], true
 	}
 }
 
