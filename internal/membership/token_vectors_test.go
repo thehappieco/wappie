@@ -305,11 +305,9 @@ type tokenWireVectors struct {
 	} `json:"usage"`
 	Actions []struct {
 		Name       string          `json:"name"`
-		App        string          `json:"app"`
 		Generation string          `json:"generation"`
 		Value      json.RawMessage `json:"value"`
 		Action     string          `json:"action"`
-		Code       *string         `json:"code"`
 	} `json:"actions"`
 }
 
@@ -328,35 +326,15 @@ func strictDecode(raw []byte, into any) error {
 	return nil
 }
 
-// tokenAction is what an app holding generation does with a record it
-// received (wire-tokens.json's actions), from the kit's functions alone in
-// the order TokenFeed.Validate gives: another app's record is refused; a
-// record of another valid generation is a reset; one that does not decode
-// or fails Validate, or whose fingerprint is not its key's, is narrowed;
-// then its revocation; else it applies.
-func tokenAction(app, generation string, it kc.TokenFeedItem) (string, string) {
-	r, err := it.Record()
-	switch {
-	case kc.ValidApp(r.App) && r.App != app:
-		return "refuse", ""
-	case kc.ValidUUID(r.Generation) && r.Generation != generation:
-		return "reset", ""
-	case err != nil || r.Validate() != nil:
-		return "narrow", kc.RefusedInvalidRecord
-	case r.ReadingKey != nil && r.ReadingKey.Check() != nil:
-		return "narrow", kc.RefusedReadingKeyChanged
-	case r.RevokedReason != nil:
-		return "revoke", *r.RevokedReason
-	}
-	return "apply", ""
-}
-
 // TestTokenWireVectors runs wire-tokens.json: every record on a feed page
 // (decoded on its own) and as the signed GET's answer, every page through
 // Wappie's client, every acknowledgement and usage body as the platform
 // decodes it and as Wappie's client sends it, and every record of the
-// actions on a page, where it never fails the page, then decided as the kit
-// orders it.
+// actions on a page, where it never fails the page and its revocation
+// sticks whatever its shape. What Wappie then does with each record, the
+// action and code the vectors give it, is the store's applier's to show
+// (CommitTokenPage): the kit's own order, run here again, would only show
+// the kit's generator agreeing with itself.
 func TestTokenWireVectors(t *testing.T) {
 	var w tokenWireVectors
 	readVectors(t, "wire-tokens.json", &w)
@@ -498,13 +476,6 @@ func TestTokenWireVectors(t *testing.T) {
 				t.Errorf("%s: the page fell with its record: %v", c.Name, err)
 				continue
 			}
-			want := ""
-			if c.Code != nil {
-				want = *c.Code
-			}
-			if action, code := tokenAction(c.App, c.Generation, f.Items[0]); action != c.Action || code != want {
-				t.Errorf("%s: %s %q, want %s %q", c.Name, action, code, c.Action, want)
-			}
 			seen[c.Action] = true
 			// A revocation sticks whatever the record's shape: revoked_at or
 			// revoked_reason by its exact name, and not null.
@@ -533,8 +504,9 @@ func TestTokenWireVectors(t *testing.T) {
 // TestTokenCallsReachTheFake: the five token calls go through Wappie's
 // client to the kit's fake platform and back, each named by membershiptest
 // as contracttest names it, with its argument, so a test may count, hold,
-// refuse or cut it; each is asked once more after a signed unavailable,
-// never after any other refusal.
+// refuse or cut it; the feed's cursor and wait reach the platform as given;
+// each is asked once more after a signed replay or unavailable (call's one
+// retry), never after any other refusal.
 func TestTokenCallsReachTheFake(t *testing.T) {
 	ctx := context.Background()
 	secret := membershiptest.Secret(t)
@@ -569,6 +541,40 @@ func TestTokenCallsReachTheFake(t *testing.T) {
 	rec, err := page.Items[0].Record()
 	if err != nil || rec.Validate() != nil || rec.ID != id || kc.VerifyToken(&rec, text) != nil {
 		t.Fatalf("the feed's record: %+v, %v", rec, err)
+	}
+	// After the head nothing comes, and a later record is all that comes
+	// after it: a cursor lost on the way would read the feed from 0 again.
+	if empty, err := client.Tokens(ctx, page.Head, 0); err != nil || len(empty.Items) != 0 || empty.Head != page.Head {
+		t.Fatalf("after the head %d: %d items, head %d, %v", page.Head, len(empty.Items), empty.Head, err)
+	}
+	second, _, err := fake.AddToken(team, vecSub, "Second", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.GrantToken(second, App, vecNumber, kc.ItemNumber, kc.CanRead, vecSub); err != nil {
+		t.Fatal(err)
+	}
+	later, err := client.Tokens(ctx, page.Head, 0)
+	if err != nil || len(later.Items) != 1 || later.Head <= page.Head {
+		t.Fatalf("after a second token: %d items, head %d of %d, %v", len(later.Items), later.Head, page.Head, err)
+	}
+	if r, err := later.Items[0].Record(); err != nil || r.ID != second {
+		t.Fatalf("the record after the head: %+v, %v", r, err)
+	}
+	// The wait goes as given too, which the fake would show only by waiting:
+	// one lost would turn the long-poll into a busy loop.
+	var queries []string
+	polled := clientOn(func(r *http.Request) (*http.Response, error) {
+		queries = append(queries, r.URL.RawQuery)
+		body := `{"generation":"` + vecGeneration + `","generation_confirmed":true,"head":9,` +
+			`"published_through":"2026-10-13T12:00:00Z","items":[],"next_after":9,"more":false}`
+		return signedAnswer(r, secret, http.StatusOK, []byte(body), time.Now()), nil
+	}, nil)
+	if err := polled.Use(secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := polled.Tokens(ctx, 7, 25); err != nil || !reflect.DeepEqual(queries, []string{"after=7&wait=25"}) {
+		t.Fatalf("the long-poll asked %q: %v", queries, err)
 	}
 	var args []string
 	for _, call := range []string{contracttest.CallToken, contracttest.CallTokenBySelector} {
@@ -616,7 +622,7 @@ func TestTokenCallsReachTheFake(t *testing.T) {
 		contracttest.CallTokenUsage:    func() error { return client.TokenUsage(ctx, usage) },
 	}
 	want := map[string]int{
-		contracttest.CallTokens: 1, contracttest.CallToken: 1, contracttest.CallTokenBySelector: 1,
+		contracttest.CallTokens: 3, contracttest.CallToken: 1, contracttest.CallTokenBySelector: 1,
 		contracttest.CallTokensApplied: 2, contracttest.CallTokenUsage: 1,
 	}
 	for call, n := range want {
