@@ -16,7 +16,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/purpshell/meowcaller v0.0.0-20260811012811-27a3c6b18657
 	github.com/rs/zerolog v1.35.1
-	github.com/thehappieco/kit v0.8.0
+	github.com/thehappieco/kit v0.9.0
 	go.mau.fi/libsignal v0.2.2
 	go.mau.fi/whatsmeow v0.0.0-20260821141805-33cfac511629
 	golang.org/x/crypto v0.57.0
