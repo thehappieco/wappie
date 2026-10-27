@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/crypto/seal"
+	"whatserver2/internal/label"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
@@ -741,6 +742,57 @@ func TestEventHintNeverFromLID(t *testing.T) {
 	w.quarantine(t, companion)
 	if rows := eventsOf(t, w.pool, w.tenant, companion, "deleted"); len(rows) != 1 || rows[0].Hint == nil || *rows[0].Hint != "…4321" {
 		t.Fatalf("a companion JID's hint: %+v", rows)
+	}
+}
+
+// TestAPushNameNeverNamesANumber is 10.27 of the platform's design of
+// 2026-10-26, through the store: a number's WhatsApp push name never stands
+// in for its label, in a snapshot, a pause or deletion notice, or an event
+// row. A number whose label is set aside has none, and its hint alone; one
+// with a label keeps it, whatever its push name.
+func TestAPushNameNeverNamesANumber(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	unnamed, named := w.number(t, "Número do WhatsApp"), w.number(t, "Vendas")
+	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET push_name = 'Loja Centro' WHERE id = ANY ($1)`, []uuid.UUID{unnamed, named})
+		return err
+	})
+	reader := w.person(t, "ana", "member")
+	for _, u := range []uuid.UUID{w.owner, reader} {
+		w.reads(t, u, unnamed)
+	}
+
+	snap, err := store.NewContract(w.pool).Snapshot(ctx, w.tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[uuid.UUID]*string{}
+	for _, it := range snap.Items {
+		labels[it.ID] = it.Label
+	}
+	if len(snap.Items) != 2 || labels[unnamed] != nil || labels[named] == nil || *labels[named] != "Vendas" ||
+		snap.Labels[label.ClassNamed] != 1 || snap.Labels[label.ClassPlaceholder] != 1 {
+		t.Fatalf("the snapshot: %+v, by class %v", snap.Items, snap.Labels)
+	}
+
+	w.pause(t, unnamed, store.PauseActor{User: w.owner})
+	if n := w.noticesOfKind(t, reader, store.NoticeSyncPaused); len(n) != 1 || n[0].Label != nil || n[0].Hint == nil {
+		t.Fatalf("the pause notice: %+v", n)
+	}
+	w.quarantine(t, unnamed, reader)
+	if n := w.noticesOfKind(t, reader, store.NoticeNumberDeleted); len(n) != 1 || n[0].Label != nil || n[0].Hint == nil {
+		t.Fatalf("the deletion's notice: %+v", n)
+	}
+	w.recover(t, unnamed)
+	rows := readEvents(t, w.pool, w.tenant, unnamed)
+	if len(rows) != 3 {
+		t.Fatalf("rows: %+v", rows)
+	}
+	for _, e := range rows {
+		if e.Label != nil || e.Hint == nil || *e.Hint != "…5678" {
+			t.Fatalf("%s row: %+v", e.Type, e)
+		}
 	}
 }
 

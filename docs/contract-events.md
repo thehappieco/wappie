@@ -79,16 +79,16 @@ byte for byte the renderer's golden file
 ## Labels and hints
 
 The `label` is the number's name for the contract: its label in Wappie,
-else its WhatsApp push name; a placeholder, an id or the phone number
-itself is skipped, every run of seven or more digits is masked, and a name
-with `@` is dropped whole; null when nothing is left. The `hint` is `…`
-and the last four digits of its phone number. Never the number itself or
-its LID. A row's label and hint are those at the act; the purge sets them
-to null in every row of the number, in its workspace and in any team it
-moved out of, so an event sent after the purge carries none. A replayed row
-(a restore's) keeps none: it takes its number's at send time, deleted
-numbers included, until the purge; a replayed purge has none. The
-snapshots use the same rule.
+never its WhatsApp push name, so an unlabelled number has none; a
+placeholder, an id or the phone number itself is skipped, every run of
+seven or more digits is masked, and a name with `@` is dropped whole; null
+when nothing is left. The `hint` is `…` and the last four digits of its
+phone number. Never the number itself or its LID. A row's label and hint
+are those at the act; the purge sets them to null in every row of the
+number, in its workspace and in any team it moved out of, so an event sent
+after the purge carries none. A replayed row (a restore's) keeps none: it
+takes its number's at send time, deleted numbers included, until the
+purge; a replayed purge has none. The snapshots use the same rule.
 
 ## Which rows are sent
 

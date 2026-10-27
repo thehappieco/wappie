@@ -507,7 +507,7 @@ func replayedLabelsTx(ctx context.Context, tx pgx.Tx, events []ContractEvent) er
 		return nil
 	}
 	return withQuarantine(ctx, tx, func() error {
-		rows, err := tx.Query(ctx, `SELECT id, label, push_name, coalesce(pn, '') FROM devices WHERE id = ANY ($1)`, ids)
+		rows, err := tx.Query(ctx, `SELECT id, label, coalesce(pn, '') FROM devices WHERE id = ANY ($1)`, ids)
 		if err != nil {
 			return err
 		}
@@ -515,11 +515,11 @@ func replayedLabelsTx(ctx context.Context, tx pgx.Tx, events []ContractEvent) er
 		found := map[uuid.UUID]names{}
 		err = forEachRow(rows, func(row pgx.Rows) error {
 			var id uuid.UUID
-			var name, pushName, pn string
-			if err := row.Scan(&id, &name, &pushName, &pn); err != nil {
+			var name, pn string
+			if err := row.Scan(&id, &name, &pn); err != nil {
 				return err
 			}
-			l, h := itemLabel(id, name, pushName, pn)
+			l, h := itemLabel(id, name, pn)
 			found[id] = names{l, h}
 			return nil
 		})

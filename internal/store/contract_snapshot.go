@@ -52,7 +52,7 @@ type ContractSnapshot struct {
 type ContractSnapshotItem struct {
 	ID uuid.UUID
 	// Label and Hint are the contract's (label.Contract, label.HintFromPN),
-	// nil for none.
+	// nil for none: the label is the number's own, never its push name.
 	Label, Hint *string
 	// State is SnapshotActive, SnapshotSyncPaused or SnapshotDeleted; Reason
 	// is a paused item's, "" for any other.
@@ -131,7 +131,7 @@ func (c *Contract) Snapshot(ctx context.Context, workspace uuid.UUID) (ContractS
 func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, active, quota bool, out *ContractSnapshot) error {
 	// The numbers. The predicate is exactly what 0051's devices trigger
 	// wakes on, so a number never enters the snapshot unannounced.
-	rows, err := tx.Query(ctx, `SELECT id, label, push_name, coalesce(pn, ''), status, paused, coalesce(pause_cause, ''),
+	rows, err := tx.Query(ctx, `SELECT id, label, coalesce(pn, ''), status, paused, coalesce(pause_cause, ''),
 			deleted_at IS NOT NULL, purge_after
 		FROM devices WHERE tenant_id = $1 AND (lid IS NOT NULL OR pn IS NOT NULL OR last_connected_at IS NOT NULL)
 		ORDER BY id`, workspace)
@@ -141,15 +141,15 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 	index := map[uuid.UUID]int{}
 	err = forEachRow(rows, func(row pgx.Rows) error {
 		var it ContractSnapshotItem
-		var name, pushName, pn, status, cause string
+		var name, pn, status, cause string
 		var paused, deleted bool
 		var purgeAfter *time.Time
-		if err := row.Scan(&it.ID, &name, &pushName, &pn, &status, &paused, &cause, &deleted, &purgeAfter); err != nil {
+		if err := row.Scan(&it.ID, &name, &pn, &status, &paused, &cause, &deleted, &purgeAfter); err != nil {
 			return err
 		}
-		it.Label = label.Contract(name, pushName, pn, it.ID.String())
+		it.Label = label.Contract(name, pn, it.ID.String())
 		it.Hint = label.HintFromPN(pn)
-		out.Labels[label.Classify(name, pushName, pn, it.ID.String())]++
+		out.Labels[label.Classify(name, pn, it.ID.String())]++
 		it.State, it.Reason = snapshotState(deleted, paused, cause, status, active, quota)
 		if it.State == SnapshotDeleted {
 			if purgeAfter == nil {
