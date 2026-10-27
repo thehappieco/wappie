@@ -789,11 +789,26 @@ and `round_incomplete` if that keeps failing), and "contract: a new
 account's document names no personal workspace" (the sign-up is refused
 `503 platform_unavailable`).
 
+The token part's (migration 0052; its own section comes with the release
+that turns it on): "contract: a token record could not be applied; its
+token is stopped here" (class `token_apply_failed`: even its narrowings
+failed, so Wappie stops the token itself, `apply_failed`, reported as
+`suspended {local_rule}`, until a later version applies), "contract: a
+token record brings another reading key than the one pinned; its new
+grants are refused" (class `token_reading_key_changed`), "contract: the
+token feed's published_through is ahead of the clock; the last trusted one
+is kept", and "contract: a good token record's hash does not decode", which
+Validate rules out (the record is passed over). Each names a token by its
+id, selector and version, never by its record's JSON.
+
 **Lock order.** Every transaction that touches several of the contract's
 rows takes them in one order: `contract_state`, then `contract_accounts`
 by sub and `contract_workspaces` by id, then the workspace (`FOR KEY
 SHARE`, behind a purge's `FOR UPDATE`), then its `item_events` rows in
-`seq` order, with a retry on a deadlock.
+`seq` order, with a retry on a deadlock. The token part's writers take
+`contract_token_state` after `contract_state` (a token commit never takes
+`contract_state`), then the workspace rows, then the tokens by id and their
+perms, workspace by workspace (decision DB25).
 
 ## What enforce adds
 
