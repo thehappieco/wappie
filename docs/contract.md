@@ -408,12 +408,15 @@ a file not loaded yet, or `missing`).
 
 **One leader.** Of every process on one database, only the one that holds
 the advisory lock `contract` runs the background work: the follower, the
-round and the sweep, the snapshot sender and the event sender. A process
-tries the lock while the contract is on and its secret is loaded, every
-30 seconds and at once on a mode notice. The lock is held on a connection
+round and the sweep, the snapshot sender and the event sender, and, while
+the token mode is on, the token feed's four loops ([the token
+feed](#the-token-feed)). A process tries the lock while the contract is on
+and its secret is loaded, every 5 seconds (one `pg_try_advisory_lock`
+each, so a leader's death delays the token feed's revocations by no more)
+and at once on a mode notice. The lock is held on a connection
 of its own, which is checked every 10 seconds: a lost connection ends the
 leader at once, a lock that went quietly within 10 seconds, a link that
-went silent within 20. A leader that lost its lock waits a minute before
+went silent within 20. A leader that lost its lock waits 10 seconds before
 it tries again, so a process that was waiting takes over first. Every
 write the leader makes to the shared state is compare-and-set on what it
 read, so a late commit of a stale leader changes nothing. It logs INFO
@@ -463,6 +466,107 @@ wait of 25 seconds, from the stored cursor.
   seconds, so an answer that comes at once never makes a loop of calls.
 - An answer at sign-in of another generation than the stored one is not
   stored; it wakes the leader, whose next call finds it.
+
+## The token feed
+
+The contract's token part (migration 0052; the design's 3): the
+platform's `thc_` tokens, whose records Wappie follows apart from the
+account documents, under the same generation. It ships off on every
+installation, and a self-hosted one never turns it on.
+
+```
+whatserverd contract tokens on|off|status
+```
+
+A database write only (status reads), as the service user from the
+server's working directory, like `contract mode`.
+
+- **`on`** refuses, exit `3` with "contract tokens on: not ready: …" and
+  nothing changed, unless the contract is on (observe), Wappie holds the
+  platform's generation, the server has a transport and a loaded secret
+  (as `contract mode observe` asks), and one signed `GET
+  /contract/v1/tokens?after=0&wait=0`, sent with the secret's files as
+  `contract check` sends its request, answers with the stored generation:
+  the proof that the platform's token routes are live. It clears
+  `caught_up_at`, so no token is accepted until the leader commits a token
+  page with `more: false`.
+- **`off`** refuses every token at once in every process, since token auth
+  reads the mode in its own query, and the leader stops the token feed's
+  loops within 5 seconds.
+- **`contract mode off`** turns the token mode off in its own transaction,
+  and says so on its second line, `tokens mode: off (with the contract)`,
+  so the way back never refuses. Turning the contract on again leaves
+  tokens off: `contract tokens on` again.
+- `status` prints the `tokens` lines of [contract status](#contract-status).
+
+**The token follower** long-polls `GET /contract/v1/tokens` with a wait of
+25 seconds from its own cursor (`contract_token_state`), and commits each
+signed page as it moves (its `next_after` never behind the cursor; with
+`more`, its last item's seq, past it), in one transaction per page, record
+by record judged in Go first, so a bad record never stalls the revocations
+behind it.
+
+- **No page** (no answer, unverified, a refusal) moves nothing: backoff
+  from 1 second doubled to 5 seconds, never the account feed's minute, a
+  WARN at most once a minute, and after 15 minutes without a page one
+  ERROR ("contract: no token feed page for a long time", class
+  `token_feed_silent`). An early empty page is followed by a pause of the
+  backoff's first second.
+- **A reset**: a signed `gone`, a page or a record of another generation,
+  or a feed rewound (its `head` or `next_after` behind the cursor in the
+  same generation) restarts both feeds in one transaction, which never
+  widens what Wappie held, and the round subscribes every sub again (WARN
+  "contract: the token feed says the platform's generation changed: every
+  sub is subscribed again and both feeds read from 0"). While Wappie holds
+  no generation (after a `gone`) the token follower asks nothing, until the
+  account feed's first answer adopts one.
+- **A stale start**: a leader whose first token page follows a stored read
+  over an hour old holds token auth until a page with `more: false`
+  commits (WARN "contract: the token feed was last read over an hour before
+  this leader; token auth holds until it has caught up"): after a restore
+  of Wappie's database, the revocations since the backup apply first.
+- A page whose commit took over a second from its receipt logs WARN
+  "contract: a token page took over a second to commit" and is kept for
+  `--check`.
+- The leader logs INFO "contract: following the token feed" when its token
+  loops start and "contract: no longer following the token feed" when they
+  stop.
+
+**The judge** decides each grant a record brought once, apart from the
+page's commit, at once after a page that brought grants, after each
+account document stored (any process's), and every minute.
+
+**The acknowledgement** (`POST /contract/v1/tokens/applied`) says how far
+Wappie applied the feed, with the grants it refused, the sets of those it
+holds back and the tokens it stops itself, and after a reset what it holds
+narrower than the platform. It goes at once after a page that narrowed
+something and after a reset's pass, otherwise at most once a second and at
+least once a minute, each on a turn of the leader's pace; one not accepted
+backs off from 1 second doubled to 30 seconds. A signed `gone` resets both
+feeds.
+
+**The usage report** (`POST /contract/v1/tokens/usage`) goes at most once
+a minute, with each token's days of use and its refusals' absolute counts;
+what does not fit one body follows at once.
+
+**The operator's own stop.**
+
+```
+whatserverd tokens suspend [-note N] [-record F] SELECTOR|TOKEN|-
+whatserverd tokens suspend -replay F
+whatserverd tokens lift [-record F] SELECTOR|TOKEN|-
+whatserverd tokens list
+```
+
+A database write only, so it works with the platform down: it stops a
+token by its selector (or the whole token, `-` reading it from stdin, of
+which only the selector is kept), even one Wappie holds no record of yet,
+at once in every process. Neither the feed nor a reset lifts it; it is
+reported to the platform as `suspended {operator}`. `-record` appends the
+stop or the lift to a file outside the database
+(`/opt/wappie/state/token-stops.jsonl`), and `-replay` applies that file's
+lines again, in order, after a restore of Wappie's database. Nothing it
+prints says whether Wappie holds a token of that selector.
 
 ## Observe's comparison
 
@@ -712,7 +816,13 @@ sealed files; never calls the platform. It prints:
 - each platform workspace: its kind and status, when it was named, the age
   of its last accepted snapshot, its events pending, parked and coalesced,
   and its parks and failing runs;
-- the pending person invitations of each team here.
+- the pending person invitations of each team here;
+- the token part, on lines that each start with `tokens ` (no line the
+  kits read by its prefix): the token mode and since when, the token feed's
+  cursor, `published_through`, last page and catching up, a failing run,
+  the acknowledgement's last `through` accepted, the usage report's last,
+  a reset's pass, the tokens held, unlisted and with a changed reading key,
+  the open stops, and the slowest page commit.
 
 No name, no email, no label, no secret.
 
@@ -726,7 +836,7 @@ clean until its bounds pass:
   journal). Its classes: `feed_silent`, `published_through_ahead`,
   `document_invalid`, `kind_changed`, `round_incomplete`, `snapshot_parked`,
   `snapshot_invalid`, `event_parked`, `events_refused`,
-  `event_actor_unknown`;
+  `event_actor_unknown`, `token_feed_silent`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
@@ -742,6 +852,22 @@ clean until its bounds pass:
   - `workspace X's events have had no verdict for over 60 minutes`, or
     `workspace X has N events pending for over 60 minutes, the oldest
     written at …: they are not delivered`;
+- while the contract and the token mode are both on, each bound counted
+  from the later of its own time and the token mode's switch:
+  - `the token feed was last read …`, past 5 minutes;
+  - `the token feed's published_through is …: tokens' send and manage are
+    refused`, past an hour;
+  - `token auth holds: no token page with more false has committed since
+    the token mode's switch at …`, past 5 minutes;
+  - `the token acknowledgement has failed since …`, past 5 minutes, and
+    `the token usage report has failed since …`, past 15 minutes;
+  - `N tokens unlisted by a reset's pass in the last day: refused here for
+    good`;
+  - `N tokens' reading key changed: their new grants are refused`, and `N
+    tokens stopped here: a record of theirs could not be applied
+    (apply_failed)`;
+  - `a token page took N ms to commit at … (over a second)`, within the
+    last hour;
 - `the server's last secret load failed at step …`, `the server holds
   current=… other=…, the files are current=… other=…`, `a secret is
   installed but the server has published no load`, and `the server's
@@ -759,7 +885,7 @@ accounts (from its first PUT until its DELETE):
 
 | The platform's alert | When | Wappie's bound | Wappie's early warning (`--check`) |
 |---|---|---|---|
-| `contract_feed_silent` | the app has not read its feed (a signed feed request answered 200) for over 10 minutes | the follower long-polls continuously; a leader whose lock goes stops within 20 seconds, and another process tries the lock every 30 seconds; after a failure the feed is asked again within a minute | the feed's last page over 5 minutes ago |
+| `contract_feed_silent` | the app has not read its feed (a signed feed request answered 200) for over 10 minutes | the follower long-polls continuously; a leader whose lock goes stops within 20 seconds, and another process tries the lock every 5 seconds; after a failure the feed is asked again within a minute | the feed's last page over 5 minutes ago |
 | `contract_snapshots_stale` | an open workspace named in a followed account's document over 90 minutes ago, whose snapshot is missing or over 90 minutes old (personal and empty ones included) | every recorded workspace at the leader's start, 2 seconds after a change, at once when first named, and 55 minutes after its last accepted one | no accepted snapshot for 60 minutes |
 
 An orphan subscription's workspaces are never recorded, so never sent a
@@ -799,7 +925,9 @@ grants are refused" (class `token_reading_key_changed`), "contract: the
 token feed's published_through is ahead of the clock; the last trusted one
 is kept", and "contract: a good token record's hash does not decode", which
 Validate rules out (the record is passed over). Each names a token by its
-id, selector and version, never by its record's JSON.
+id, selector and version, never by its record's JSON. The token follower's
+own: "contract: no token feed page for a long time" (class
+`token_feed_silent`).
 
 **Lock order.** Every transaction that touches several of the contract's
 rows takes them in one order: `contract_state`, then `contract_accounts`
@@ -849,11 +977,20 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | orphan | 15 minutes | a subscription of a sub Wappie does not hold, before the sweep |
 | sweep | 5 minutes | how often the sweep runs |
 | round | 1 minute | how often a round that is done is asked again |
-| leader retry | 30 seconds | how often a process that does not lead tries the lock |
+| leader retry | 5 seconds | how often a process that does not lead tries the lock |
 | heartbeat | 10 seconds | how often the lock's connection is checked |
 | long-poll | 25 seconds | the feed's wait |
 | feed backoff | 2 seconds to 1 minute | after a feed call that got no page, or a round that left subs |
-| feed silent | 15 minutes | without a page, before the follower's ERROR |
+| feed silent | 15 minutes | without a page, before the follower's ERROR, the token follower's likewise |
+| token long-poll | 25 seconds | the token feed's wait |
+| token backoff | 1 second to 5 seconds | after a token feed call that got no page |
+| token stale start | 1 hour | a stored token read this old at a leader's first page holds token auth until it has caught up |
+| token commit | 1 second | a token page's commit from its receipt, past which it is recorded |
+| judge | 1 minute | the token judge's pass when nothing wakes it |
+| ack spacing | 1 second | the least between two acknowledgements, but after a narrowing or a reset's pass |
+| ack every | 1 minute | the most between two acknowledgements while the token feed runs |
+| ack backoff | 1 second to 30 seconds | after an acknowledgement that was not accepted |
+| usage | 1 minute | the least between two usage reports |
 | warn | 1 minute | the follower's and the senders' WARN for a run of failures, at most once |
 | round failing | 15 minutes | the round's PUTs failing, before its ERROR |
 | debounce | 2 seconds | a snapshot after the first change of a run |
@@ -875,3 +1012,9 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check round | 15 minutes | `--check`: the round's PUTs failing |
 | check parked | 2 minutes | `--check`: a park from before the switch |
 | check events | 1 hour | `--check`: a queue with no verdict, or events pending |
+| check token feed | 5 minutes | `--check`: the token feed's last page |
+| check token published | 1 hour | `--check`: the token feed's `published_through` |
+| check token held | 5 minutes | `--check`: token auth held since the token mode's switch |
+| check acks | 5 minutes | `--check`: the acknowledgement failing |
+| check usage | 15 minutes | `--check`: the usage report failing |
+| check token commit | 1 hour | `--check`: how far back a slow token commit is told |

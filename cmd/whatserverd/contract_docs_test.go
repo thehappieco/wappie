@@ -172,6 +172,12 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: a document cannot be stored",
 				"contract: workspace kind changed",
 				"contract: the platform's generation changed: every sub is subscribed again and the feed read from 0",
+				"contract: following the token feed",
+				"contract: no longer following the token feed",
+				"contract: no token feed page for a long time",
+				"contract: the token feed says the platform's generation changed: every sub is subscribed again and both feeds read from 0",
+				"contract: the token feed was last read over an hour before this leader; token auth holds until it has caught up",
+				"contract: a token page took over a second to commit",
 				"contract observe: matches",
 				"contract observe: differences",
 				"contract: sign-in would refuse",
@@ -245,6 +251,11 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract status [--check]", "status [--check]"},
 			{"whatserverd contract diff [--tenant T]", "diff [--tenant T]"},
 			{"whatserverd contract mode off|observe", "mode off|observe"},
+			{"whatserverd contract tokens on|off|status", "tokens on|off|status"},
+			{"whatserverd tokens suspend [-note N] [-record F] SELECTOR|TOKEN|-", "tokens suspend [-note N] [-record F] SELECTOR|TOKEN|-"},
+			{"whatserverd tokens suspend -replay F", "suspend -replay F"},
+			{"whatserverd tokens lift [-record F] SELECTOR|TOKEN|-", "lift [-record F] SELECTOR|TOKEN|-"},
+			{"whatserverd tokens list", "| list"},
 		} {
 			says("contract.md", c.doc)
 			says("deployment.md", c.doc)
@@ -271,6 +282,44 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		}
 		if err := contractModeCommand([]string{"sideways"}, &bytes.Buffer{}); !errors.As(err, new(usageError)) {
 			t.Errorf("contract mode sideways: %v", err)
+		}
+		if err := contractTokensCommand([]string{"sideways"}, &bytes.Buffer{}); !errors.As(err, new(usageError)) {
+			t.Errorf("contract tokens sideways: %v", err)
+		}
+		if store.TokensOn != "on" || store.TokensOff != "off" {
+			t.Errorf("the token modes are %q and %q", store.TokensOn, store.TokensOff)
+		}
+		// tokens' flags, parsed before anything opens: each documented one
+		// is the command's, and a text that is no selector or token is
+		// refused without being repeated.
+		for _, c := range []struct {
+			args  []string
+			flags []string
+		}{
+			{[]string{"suspend", "-h"}, []string{"-note", "-record", "-replay"}},
+			{[]string{"lift", "-h"}, []string{"-record"}},
+		} {
+			var stderr bytes.Buffer
+			fs := tokensFlagOutput
+			tokensFlagOutput = &stderr
+			err := tokensCommand(c.args, strings.NewReader(""), io.Discard)
+			tokensFlagOutput = fs
+			if err == nil || errors.As(err, new(usageError)) {
+				t.Errorf("tokens %v: %v", c.args, err)
+			}
+			for _, f := range c.flags {
+				if !strings.Contains(stderr.String(), "  "+f+" ") && !strings.Contains(stderr.String(), "  "+f+"\n") {
+					t.Errorf("tokens %s has no flag %s:\n%s", c.args[0], f, stderr.String())
+				}
+			}
+		}
+		const secretLike = "thc_0123456789abcdef.not-a-secret"
+		if err := tokensCommand([]string{"suspend", secretLike}, strings.NewReader(""), io.Discard); err == nil ||
+			strings.Contains(err.Error(), "not-a-secret") || !strings.Contains(err.Error(), "neither a token's selector") {
+			t.Errorf("tokens suspend with a text that is no token: %v", err)
+		}
+		if err := tokensCommand([]string{"list", "extra"}, strings.NewReader(""), io.Discard); !errors.As(err, new(usageError)) {
+			t.Errorf("tokens list extra: %v", err)
 		}
 		if !strings.Contains(usage, "contract-secret seal | promote | unpromote | drop | reset | capabilities") {
 			t.Error("whatserverd's usage does not list contract-secret's subcommands")
@@ -448,6 +497,17 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"a secret is installed but the server has published no load",
 			"the server's published secrets cannot be read",
 			"contract never observed but a secret is installed",
+			"the token feed was last read ",
+			"the token feed's published_through is ",
+			": tokens' send and manage are refused",
+			"token auth holds: no token page with more false has committed since the token mode's switch at ",
+			"the token acknowledgement has failed since ",
+			"the token usage report has failed since ",
+			" tokens unlisted by a reset's pass in the last day: refused here for good",
+			" tokens' reading key changed: their new grants are refused",
+			" tokens stopped here: a record of theirs could not be applied (apply_failed)",
+			" ms to commit at ",
+			" (over a second)",
 			"finding: ",
 		} {
 			codeSays(f)
@@ -464,7 +524,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		says("deployment.md", "contract never observed but a secret is installed")
 		for _, class := range []string{store.ContractErrorFeedSilent, store.ContractErrorPublishedAhead, store.ContractErrorDocumentInvalid,
 			store.ContractErrorKindChanged, store.ContractErrorRoundIncomplete, store.ContractErrorSnapshotParked,
-			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor} {
+			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
+			store.ContractErrorTokenFeedSilent} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
@@ -668,30 +729,38 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 	t.Run("timings", func(t *testing.T) {
 		rows := tableRows(t, "../../docs/contract.md", "## Timings")
 		ours := map[string]string{
-			"fresh":              spoken(store.FreshFor),
-			"backup fresh":       spoken(store.BackupFreshFor),
-			"clock skew":         spoken(store.ContractClockSkew),
-			"orphan":             spoken(membership.OrphanAfter),
-			"heartbeat":          spoken(pg.HoldHeartbeat),
-			"long-poll":          spoken(time.Duration(kc.MaxWait) * time.Second),
-			"call timeout":       spoken(kc.CallTimeout),
-			"feed grace":         spoken(kc.FeedGrace),
-			"snapshot not found": spoken(store.SnapshotNotFoundFor),
-			"event not found":    spoken(store.ContractEventNotFoundFor),
-			"event expiry":       spoken(store.ContractEventExpiry),
-			"check feed":         spoken(checkFeedRead),
-			"check snapshot":     spoken(checkSnapshot),
-			"check published":    spoken(checkPublished),
-			"check errors":       spoken(checkErrors),
-			"check round":        spoken(checkRound),
-			"check parked":       spoken(checkParked),
-			"check events":       spoken(checkEvents),
+			"fresh":                 spoken(store.FreshFor),
+			"backup fresh":          spoken(store.BackupFreshFor),
+			"clock skew":            spoken(store.ContractClockSkew),
+			"orphan":                spoken(membership.OrphanAfter),
+			"heartbeat":             spoken(pg.HoldHeartbeat),
+			"long-poll":             spoken(time.Duration(kc.MaxWait) * time.Second),
+			"call timeout":          spoken(kc.CallTimeout),
+			"feed grace":            spoken(kc.FeedGrace),
+			"snapshot not found":    spoken(store.SnapshotNotFoundFor),
+			"event not found":       spoken(store.ContractEventNotFoundFor),
+			"event expiry":          spoken(store.ContractEventExpiry),
+			"check feed":            spoken(checkFeedRead),
+			"check snapshot":        spoken(checkSnapshot),
+			"check published":       spoken(checkPublished),
+			"check errors":          spoken(checkErrors),
+			"check round":           spoken(checkRound),
+			"check parked":          spoken(checkParked),
+			"check events":          spoken(checkEvents),
+			"check token feed":      spoken(checkTokenFeed),
+			"check token published": spoken(checkTokenPublished),
+			"check token held":      spoken(checkTokenHeld),
+			"check acks":            spoken(checkAcks),
+			"check usage":           spoken(checkUsage),
+			"check token commit":    spoken(checkTokenCommit),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.
 		elsewhere := []string{"call bound", "mode cache", "pace", "sweep", "round", "leader retry", "peer checks",
 			"feed backoff", "feed silent", "warn", "round failing", "debounce", "snapshot", "snapshot backoff", "labels",
-			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound"}
+			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound",
+			"token long-poll", "token backoff", "token stale start", "token commit", "judge", "ack spacing", "ack every", "ack backoff",
+			"usage"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)

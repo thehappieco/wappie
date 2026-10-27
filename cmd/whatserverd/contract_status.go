@@ -51,7 +51,7 @@ const (
 	checkRound = 15 * time.Minute
 	// checkParked: how long after the switch to the mode a park from
 	// before it is told. The leader's start releases every park for one
-	// try, within its retry (30 s) of the switch, twice it after a lost
+	// try, within its retry (5 s) of the switch, twice it after a lost
 	// lock; a park since the switch is told at once.
 	checkParked = 2 * time.Minute
 	// checkEvents: how long a workspace's queue of events may go without
@@ -95,11 +95,26 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 	if err != nil {
 		return err
 	}
+	ts, err := c.Tokens().TokenStatus(ctx, st.Now.Add(-checkErrors))
+	if err != nil {
+		return err
+	}
+	loaded, published, lerr := readLoaded(cfg.LoadedFile)
+	return statusReport(out, st, ts, cfg, loaded, published, lerr, sealedFiles(cfg), check)
+}
+
+// statusReport is contract status's output from what it read: the lines the
+// kits read by their prefixes (mode:, transport:, feed:, generation:,
+// published_through:, subs:, the workspaces' and finding:), as they were
+// before the token part, then the token part's, each starting with
+// "tokens ", then, with check, the findings, with exit status 1 when there
+// is any.
+func statusReport(out io.Writer, st store.ContractStatus, ts store.TokenStatus, cfg config.Contract, loaded membership.Loaded,
+	published bool, lerr error, files sealed, check bool) error {
 	w := &lines{w: out}
 	s := st.State
 	w.f("mode: %s (since %s)", s.Mode, stamp(s.ModeChangedAt))
 	w.f("transport: %s", cfg.Transport())
-	loaded, published, lerr := readLoaded(cfg.LoadedFile)
 	switch {
 	case lerr != nil:
 		w.f("secrets (server): unreadable: %v", lerr)
@@ -109,7 +124,6 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		w.f("secrets (server): pid=%d loaded_at=%s reloads=%d current=%s other=%s error=%s",
 			loaded.PID, stamp(loaded.LoadedAt), loaded.Reloads, loaded.Current, loaded.Other, loaded.Error)
 	}
-	files := sealedFiles(cfg)
 	w.f("secrets (files): state=%s current=%s other=%s", files.state, files.current, files.other)
 	if s.Generation != nil {
 		w.f("generation: %s confirmed=%t", s.Generation, s.GenerationConfirmed)
@@ -184,10 +198,11 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		}
 		w.f("  %s pending %d %s", i.Team, i.Pending, state)
 	}
+	tokenStatusLines(w, st.Now, ts)
 	if w.err != nil || !check {
 		return w.err
 	}
-	found := statusFindings(st, cfg, loaded, published, lerr, files)
+	found := append(statusFindings(st, cfg, loaded, published, lerr, files), tokenFindings(st.Now, s.On(), ts)...)
 	for _, f := range found {
 		w.f("finding: %s", f)
 	}
@@ -479,6 +494,11 @@ func contractMode(ctx context.Context, c *store.Contract, mode string, ready fun
 		return w.err
 	}
 	w.f("contract mode: %s -> %s", change.From, change.To)
+	if change.To == store.ContractOff {
+		// The token mode goes off in the same transaction, always: B2b's
+		// undo runs this and must never see it refuse.
+		w.f("tokens mode: off (with the contract)")
+	}
 	if change.To == store.ContractObserve {
 		w.f("events to send now: %d (undelivered from before the pause, and deletions, recoveries and purges while off)", change.ToSend)
 		w.f("events held back for good: %d (pauses, strandings and moves while off)", change.HeldBack)
@@ -492,19 +512,25 @@ func contractMode(ctx context.Context, c *store.Contract, mode string, ready fun
 // process still running (B2a's settings and restart, then the owner's
 // install).
 func observeReady(cfg config.Contract, alive func(pid int) bool) error {
+	return readyFor("contract mode observe", cfg, alive)
+}
+
+// readyFor is observeReady's check for the command cmd, which its refusal
+// names: contract tokens on asks it too.
+func readyFor(cmd string, cfg config.Contract, alive func(pid int) bool) error {
 	if !cfg.Configured() {
-		return errors.New("contract mode observe: not ready: no transport is configured (WS_CONTRACT_SOCKET); nothing changed")
+		return fmt.Errorf("%s: not ready: no transport is configured (WS_CONTRACT_SOCKET); nothing changed", cmd)
 	}
 	l, published, err := readLoaded(cfg.LoadedFile)
 	switch {
 	case err != nil:
-		return fmt.Errorf("contract mode observe: not ready: cannot read what the server published of its secrets: %w; nothing changed", err)
+		return fmt.Errorf("%s: not ready: cannot read what the server published of its secrets: %w; nothing changed", cmd, err)
 	case !published:
-		return errors.New("contract mode observe: not ready: the server published no secrets (is it running with the contract's settings?); nothing changed")
+		return fmt.Errorf("%s: not ready: the server published no secrets (is it running with the contract's settings?); nothing changed", cmd)
 	case l.Error != "none" || l.Current == "" || l.Current == "none":
-		return fmt.Errorf("contract mode observe: not ready: the server holds no secret (current=%s error=%s); nothing changed", l.Current, l.Error)
+		return fmt.Errorf("%s: not ready: the server holds no secret (current=%s error=%s); nothing changed", cmd, l.Current, l.Error)
 	case !alive(l.PID):
-		return fmt.Errorf("contract mode observe: not ready: the server that published its secrets (pid %d) is not running; nothing changed", l.PID)
+		return fmt.Errorf("%s: not ready: the server that published its secrets (pid %d) is not running; nothing changed", cmd, l.PID)
 	}
 	return nil
 }

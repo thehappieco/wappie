@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
 )
@@ -28,7 +29,8 @@ import (
 // Its gaps are bounded well under the platform's contract_feed_silent alert
 // (10 minutes without a read, the plan's 18): a long-poll answers within
 // its wait (25 s); a process that does not lead tries the lock every
-// Retry (30 s); a leader whose connection goes stops at once, one whose
+// Retry (5 s, so a leader's death delays the token feed's revocations by
+// no more); a leader whose connection goes stops at once, one whose
 // lock went quietly within the heartbeat (10 s), one whose link went
 // silent within twice it; after a failure the feed
 // is asked again within BackoffMax (60 s); and the round, the sweep and
@@ -43,8 +45,9 @@ const (
 	// LockName is the advisory lock's name.
 	LockName = "contract"
 	// leaderRetry is how often a process that does not lead tries the
-	// lock (DB7).
-	leaderRetry = 30 * time.Second
+	// lock (DB7, amended at step 7: one pg_try_advisory_lock every 5 s per
+	// process, so the token feed waits at most that for a new leader).
+	leaderRetry = 5 * time.Second
 	// modeCheck is how often the leader reads the mode, besides the
 	// notices: a switch to off stops it within it (4.4).
 	modeCheck = stateFor
@@ -98,6 +101,13 @@ type Leader struct {
 	// at the due ones.
 	EventBackoffMin, EventBackoffMax time.Duration
 	EventsScanEvery, EventsIdle      time.Duration
+	// The token part's timings (tokens.go): the token feed's backoff, the
+	// acknowledgement's spacing, its longest wait and its backoff, the
+	// usage report's interval, and the judge's when nothing wakes it.
+	TokenBackoffMin, TokenBackoffMax time.Duration
+	AckSpacing, AckEvery             time.Duration
+	AckBackoffMin, AckBackoffMax     time.Duration
+	UsageEvery, JudgeEvery           time.Duration
 
 	// ours, set by tests only, tells the dirty and due notices this
 	// installation's sessions sent from any other's: every test schema
@@ -138,7 +148,7 @@ func (l *Leader) Run(ctx context.Context) {
 		pause, woken := retry, (<-chan string)(wake)
 		if l.ready(ctx) {
 			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel,
-				store.ContractDueChannel, store.ContractEventsChannel)
+				store.ContractDueChannel, store.ContractEventsChannel, store.ContractTokensChannel)
 			switch {
 			case err != nil:
 				l.log().Warn("contract: could not try the leader's lock", "error", err)
@@ -232,10 +242,14 @@ func listenOn(ctx context.Context, pool *pgxpool.Pool, channel string, notice fu
 // the lock goes, or the parent context ends, and reports whether it ended
 // because the lock went.
 func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
-	ctx, stop := context.WithCancel(held.Context())
+	// The store's own lines (a record it could not apply, a time past the
+	// clock) go to the leader's log, as its own do.
+	ctx, stop := context.WithCancel(obs.WithLogger(held.Context(), l.log()))
 	defer stop()
 	l.log().Info("contract: leading")
 	f := &follower{l: l, round: make(chan struct{}, 1)}
+	tokens := newTokenWork(l, f.round)
+	f.tokens = tokens.interrupt
 	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
 	events := newEventSender(l)
 	var wg sync.WaitGroup
@@ -243,8 +257,9 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	wg.Go(func() { l.rounds(ctx, f.round) })
 	wg.Go(func() { snaps.run(ctx) })
 	wg.Go(func() { events.run(ctx) })
-	wg.Go(func() { l.watchMode(ctx, stop, f, snaps.notices, events, held, wake) })
+	wg.Go(func() { l.watchMode(ctx, stop, f, tokens, snaps.notices, events, held, wake) })
 	wg.Wait()
+	tokens.halt()
 	lost = errors.Is(context.Cause(held.Context()), pg.ErrLockLost)
 	if lost {
 		l.log().Warn("contract: the leader's lock is lost; stopping", "error", context.Cause(held.Context()))
@@ -254,15 +269,17 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	return lost
 }
 
-// watchMode stops the leader when the mode is off, read every ModeCheck
+// watchMode stops the leader when the mode is off, and starts or stops the
+// token part with the token mode, both read at its start, every ModeCheck
 // and at each mode notice, and passes the other notices on, never waiting
 // on their loops: a round to run now, a generation to look for at once
-// (the long-poll in flight is cut), to the snapshot sender the workspaces
-// a change touched and the due times made sooner, and to the event sender
-// the queues with new rows or due again. It is the held connection's one
-// reader.
-func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, snaps *notices, events *eventSender,
-	held *pg.Held, wake <-chan string) {
+// (both long-polls in flight are cut), to the snapshot sender the
+// workspaces a change touched and the due times made sooner, to the event
+// sender the queues with new rows or due again, and to the token judge a
+// change of what it reads (the token channel's "all": an account document,
+// a switch, a mode). It is the held connection's one reader.
+func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, tokens *tokenWork, snaps *notices,
+	events *eventSender, held *pg.Held, wake <-chan string) {
 	tick := time.NewTicker(or(l.ModeCheck, modeCheck))
 	defer tick.Stop()
 	check := func() {
@@ -272,7 +289,19 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 		}
 		if !state.On() {
 			stop()
+			return
 		}
+		if l.Members.Tokens == nil {
+			return
+		}
+		mode, err := l.Members.Tokens.Mode(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				l.log().Warn("contract: could not read the token mode", "error", err)
+			}
+			return
+		}
+		tokens.set(ctx, mode == store.TokensOn)
 	}
 	notice := func(payload string) {
 		switch payload {
@@ -280,10 +309,12 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			kick(f.round)
 		case "generation":
 			f.interrupt()
+			tokens.interrupt()
 		default:
 			check()
 		}
 	}
+	check()
 	for {
 		select {
 		case <-ctx.Done():
@@ -299,6 +330,13 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			switch {
 			case n.Channel == store.ContractModeChannel:
 				notice(n.Payload)
+			case n.Channel == store.ContractTokensChannel:
+				// A token's id is every process's, to re-check its sockets
+				// by; the leader takes only all.
+				if n.Payload == "all" {
+					check()
+					kick(tokens.judge)
+				}
 			case l.ours != nil && !l.ours(n.PID):
 			case n.Channel == store.ContractDirtyChannel:
 				snaps.dirty(n.Payload)

@@ -1589,6 +1589,11 @@ invitations stay open.
 **DB7. One leader for all background contract work**, by the advisory lock
 `contract` held on its own connection (`pg.Locker.Hold`), whose loss ends
 the leader within its heartbeat; every leader write is compare-and-set.
+Amended at step 7: a process that does not lead tries the lock every
+5 seconds, not 30, so a leader's death delays the token feed's
+revocations by no more; it costs one `pg_try_advisory_lock` every
+5 seconds per process. The token feed's loops run in the same leader,
+only while the token mode is on.
 
 **DB8. Freshness per sub, in the database, on its clock, from answers
 only.** A PUT's or GET's validated document sets `fresh_at` whatever its
@@ -1819,3 +1824,16 @@ the page back whole and is retried (`retryDeadlock`); only a record's own
 data fault (a data exception, a constraint, a trigger's RAISE) sends its
 workspace to the record-by-record fallback, so no lock conflict ever stops
 a token as `apply_failed`.
+
+**The token mode follows the contract's.** `contract mode off` turns the
+token mode off in its own transaction (DB25's steps 1 then 2) and never
+refuses, so every way back that runs it keeps working with tokens on;
+turning the contract on again leaves tokens off. Token auth refuses every
+token while either mode is off, reading both in its own query.
+
+**A gone's pass starts with the next generation.** A reset after a signed
+`gone` stores no generation, so it cannot name the one its pass from 0
+lists. The first answer that adopts a generation (the account feed's page,
+or a sign-in's) starts that pass in its transaction, so a token the
+restored platform no longer has is still refused once the pass is done. At
+the first observe the same pass runs over no token at all.

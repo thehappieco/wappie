@@ -23,6 +23,9 @@ type follower struct {
 	l *Leader
 	// round kicks the leader's round (a restart forgot every version).
 	round chan struct{}
+	// tokens wakes the token follower (tokens.go): a restart here reset
+	// its feed too, and a generation adopted here is the one it waits for.
+	tokens func()
 
 	mu sync.Mutex
 	// cut ends the long-poll in flight, when a notice says another
@@ -108,7 +111,7 @@ func (f *follower) run(ctx context.Context) {
 		}
 		gen, err := uuid.Parse(page.Generation)
 		restart := err == nil && state.Generation != nil && *state.Generation != gen
-		if err != nil || (!restart && !pageMoves(page, state.FeedCursor)) {
+		if err != nil || (!restart && !pageMoves(feedShape(page), state.FeedCursor)) {
 			// The kit validated it, signature and shape; a page that is not
 			// one README 6.3 describes is no page all the same, and taking
 			// it would have the follower ask again at once, for nothing.
@@ -135,10 +138,37 @@ func (f *follower) run(ctx context.Context) {
 			fail("store", "error", err)
 			continue
 		}
-		if early(page, time.Since(asked), l.wait()) {
+		if early(feedShape(page), time.Since(asked), l.wait()) {
 			f.pause(ctx, minBack)
 		}
 	}
+}
+
+// shape is what the followers check of a page, the account feed's or the
+// token feed's, which share one grammar (README 6.3; the design's 3.3):
+// how many items it holds, the seq of its last one, its next_after and
+// its more.
+type shape struct {
+	items     int
+	last      int64
+	nextAfter int64
+	more      bool
+}
+
+func feedShape(f kc.Feed) shape {
+	p := shape{items: len(f.Items), nextAfter: f.NextAfter, more: f.More}
+	if p.items > 0 {
+		p.last = f.Items[p.items-1].Seq
+	}
+	return p
+}
+
+func tokenShape(f kc.TokenFeed) shape {
+	p := shape{items: len(f.Items), nextAfter: f.NextAfter, more: f.More}
+	if p.items > 0 {
+		p.last = f.Items[p.items-1].Seq
+	}
+	return p
 }
 
 // early reports whether a committed page is an empty final one that came
@@ -147,8 +177,8 @@ func (f *follower) run(ctx context.Context) {
 // time: calling again at once would be a busy loop of the app's calls,
 // which share the platform's 50 a second with every sign-in's PUT. A page
 // with items, or with more, is never early: its call follows at once.
-func early(page kc.Feed, took time.Duration, wait int) bool {
-	return len(page.Items) == 0 && !page.More && took < time.Duration(wait)*time.Second/2
+func early(p shape, took time.Duration, wait int) bool {
+	return p.items == 0 && !p.more && took < time.Duration(wait)*time.Second/2
 }
 
 // pause waits d before the next feed call, or less when ctx ends or a
@@ -170,12 +200,12 @@ func (f *follower) pause(ctx context.Context, d time.Duration) {
 // which share the platform's 50 a second with every sign-in's PUT. An
 // empty page with more false moves nothing either, and is a page: early
 // spaces the call after it.
-func pageMoves(page kc.Feed, cursor int64) bool {
+func pageMoves(p shape, cursor int64) bool {
 	switch {
-	case page.NextAfter < cursor:
+	case p.nextAfter < cursor:
 		return false
-	case page.More:
-		return len(page.Items) > 0 && page.NextAfter == page.Items[len(page.Items)-1].Seq && page.NextAfter > cursor
+	case p.more:
+		return p.items > 0 && p.nextAfter == p.last && p.nextAfter > cursor
 	}
 	return true
 }
@@ -218,6 +248,9 @@ func (f *follower) restart(ctx context.Context, state store.ContractState, gen *
 	}
 	l.log().Warn("contract: the platform's generation changed: every sub is subscribed again and the feed read from 0", attrs...)
 	kick(f.round)
+	if f.tokens != nil {
+		f.tokens()
+	}
 	return nil
 }
 
@@ -252,6 +285,10 @@ func (f *follower) commit(ctx context.Context, state store.ContractState, gen uu
 	case !res.Committed:
 		// Another writer moved the state: read it again.
 		return nil
+	case state.Generation == nil && f.tokens != nil:
+		// The generation this page adopted is the one the token follower
+		// waits for.
+		f.tokens()
 	}
 	for i, o := range res.Outcomes {
 		if o == store.ContractDocStored {
