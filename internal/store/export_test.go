@@ -36,3 +36,8 @@ func SetStrandLockTimeoutForTest(t testing.TB, d time.Duration) {
 	strandLockTimeout = d
 	t.Cleanup(func() { strandLockTimeout = old })
 }
+
+// SetAppForTest makes the token store apply another app's records, for the
+// kit's vectors of a record as that app receives it (wire-tokens.json's
+// Mailie case).
+func (t *Tokens) SetAppForTest(app string) { t.app = app }

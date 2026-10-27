@@ -1736,3 +1736,59 @@ between is never lifted under Manage. A sync now lifts no pause, and one
 that fails puts none back (a resume that fails still restores the pause
 it lifted, with its cause), so a member with Manage never leaves a number
 paused. `history.backfill` keeps Manage.
+
+## Platform tokens in Wappie (step 7)
+
+The platform's design of 2026-10-26 (`contract-tokens-and-settings.md`,
+section 3; decision 0053) gives the contract a token part: tokens the
+platform's console makes, with read, send and manage per item, which each
+app takes on its own terms. Wappie follows the token feed under the
+contract's one generation (migration 0052, `store.Tokens`), judges every
+record in Go before writing any of it, and never lets one record stall the
+revocations behind it. Turning tokens on is an operator's act, and every
+installation ships with them off.
+
+**DB25. One lock order for the token part**, beside DB23's:
+
+1. `contract_state` FOR UPDATE: the account side (`CommitPage`,
+   `StoreDocuments`, `SetMode`) and the resets (`Restart`,
+   `RestartFromTokens`). A token commit never locks it: it reads the
+   generation, with no lock, after step 2.
+2. `contract_token_state` FOR UPDATE: a token page's commit,
+   `ApplyTokenRecord` (a by-id GET), `FinishTokenPass`, the token mode,
+   and the resets right after step 1, before DB23's workspace rows.
+3. `tenants` FOR UPDATE (`lockWorkspaceAccess`), in workspace id order:
+   the token grant write, a number's quarantine and move-out, the keys'
+   retirement, and the page commit for exactly the workspaces in which it
+   deletes a token identity's grants.
+4. `contract_token_selectors` and `contract_tokens` rows, in id order:
+   FOR UPDATE by the applier, the stops, retention and the expiry janitor;
+   FOR SHARE by the token grant write.
+5. `contract_token_perms` rows, in (token, number, perm) order: the
+   applier, the judge, the reset.
+6. The token identities' `users` and `device_key_grants` rows.
+
+Within one transaction, steps 4 to 6 are taken workspace by workspace, in
+workspace id order. Nobody takes a lower step after a higher one, and no
+trigger writes a row of a lower step: the perms' and the identities'
+triggers only NOTIFY (`wappie_contract_tokens`), which takes no row lock,
+and `contract_tokens.identity_user_id` has no foreign key, so a `users`
+delete never writes the token's row.
+
+The design keeps a dropped Read's grant deletion in the same write as the
+record that drops it (3.5). Step 7's plan had the page commit take no
+`tenants` lock for that; but every write to `device_key_grants` locks its
+workspace's row anyway (0036's `archive_owner_lock`, a statement trigger,
+for the device moves), so a commit that deleted grants under its token
+rows would take step 3 after step 4, and deadlock with a grant write. The
+commit therefore takes the `tenants` rows of the workspaces where it will
+delete grants, in id order, after `contract_token_state` and before any
+token row. A token identity is never counted by any protection, so no
+`requireRemainingReader` invariant depends on that lock; it is taken only
+for the order.
+
+A deadlock, a serialization failure, a timeout or a lost connection rolls
+the page back whole and is retried (`retryDeadlock`); only a record's own
+data fault (a data exception, a constraint, a trigger's RAISE) sends its
+workspace to the record-by-record fallback, so no lock conflict ever stops
+a token as `apply_failed`.

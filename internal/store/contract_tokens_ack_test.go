@@ -1,0 +1,205 @@
+package store_test
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	kc "github.com/thehappieco/kit/contract"
+
+	"whatserver2/internal/store"
+)
+
+func (w *tokenWorld) ackBody() store.TokenAck {
+	w.t.Helper()
+	a, ok, err := w.tokens.AckBody(context.Background())
+	if err != nil || !ok {
+		w.t.Fatalf("AckBody: %v %v", ok, err)
+	}
+	if err := a.Body.Validate(); err != nil {
+		w.t.Fatalf("Wappie's acknowledgement is not valid: %v", err)
+	}
+	// What the platform decodes, strictly.
+	b, err := json.Marshal(a.Body)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	var back kc.TokenApplied
+	if err := json.Unmarshal(b, &back); err != nil || back.Validate() != nil {
+		w.t.Fatalf("the acknowledgement does not round-trip: %v", err)
+	}
+	return a
+}
+
+// The acknowledgement: through is the cursor; refusals and held tokens are
+// sent once, on an accepted answer only; the waiting and suspended sets go
+// whole, only when they change, suspended computed per workspace; and every
+// body stays within the four lists' one budget of 1000.
+func TestTheAcknowledgementSendsEachEntryOnce(t *testing.T) {
+	w := newTokenWorld(t)
+	if _, ok, err := w.tokens.AckBody(context.Background()); err != nil || ok {
+		t.Fatalf("an acknowledgement before any page: %v %v", ok, err)
+	}
+	device := w.number(uuid.Nil)
+	waitingSub := uuid.New()
+	w.linked("waiting", "admin", waitingSub, false)
+	refused, waiting, stopped := uuid.New(), uuid.New(), uuid.New()
+	w.page(false,
+		w.record(refused, 1, func(r *kc.TokenRecord) {
+			r.Items = []kc.TokenItem{{ID: "gone", Kind: kc.ItemNumber, Perms: []kc.TokenPerm{{Perm: kc.CanRead, GrantedBy: w.ownerSub.String(), GrantedAt: kc.T(w.now)}}}}
+		}),
+		w.record(waiting, 1, grants(device, waitingSub, w.now, kc.CanSend)),
+		w.record(stopped, 1))
+	w.judge()
+	if err := w.tokens.StopToken(w.ctx(), selectorOf(stopped), "root", "", w.now); err != nil {
+		t.Fatal(err)
+	}
+	a := w.ackBody()
+	if a.Body.Generation != w.gen.String() || a.Body.Through != w.cursor() || !a.Body.AppliedAt.Equal(w.now) {
+		t.Fatalf("the acknowledgement's head: %+v", a.Body)
+	}
+	if len(a.Body.Refused) != 1 || a.Body.Refused[0] != (kc.TokenRefusal{Token: refused.String(), Version: 1, Item: "gone", Perm: kc.CanRead, Code: kc.RefusedItemUnknown}) {
+		t.Fatalf("refused: %+v", a.Body.Refused)
+	}
+	if len(a.Body.Waiting) != 1 || a.Body.Waiting[0].Token != waiting.String() || a.Body.Waiting[0].GrantedBy != waitingSub.String() {
+		t.Fatalf("waiting: %+v", a.Body.Waiting)
+	}
+	if len(a.Body.Suspended) != 1 || a.Body.Suspended[0] != (kc.Suspension{Token: stopped.String(), Cause: kc.SuspendedOperator}) {
+		t.Fatalf("suspended: %+v", a.Body.Suspended)
+	}
+	// Not accepted: everything again.
+	if err := w.tokens.AckFailed(context.Background(), "unavailable", w.now); err != nil {
+		t.Fatal(err)
+	}
+	if again := w.ackBody(); len(again.Body.Refused) != 1 || again.Body.Waiting == nil || again.Body.Suspended == nil {
+		t.Fatalf("after a failure: %+v", again.Body)
+	}
+	if err := w.tokens.AckSent(context.Background(), a, w.now); err != nil {
+		t.Fatal(err)
+	}
+	next := w.ackBody()
+	st, err := w.tokens.AckState(context.Background())
+	if err != nil || !next.Empty(st.Acked) || len(next.Body.Refused) != 0 || next.Body.Waiting != nil || next.Body.Suspended != nil {
+		t.Fatalf("after it was accepted: %+v %+v %v", next.Body, st, err)
+	}
+	// A change sends the whole set again; a lifted stop empties it.
+	if _, err := w.tokens.LiftToken(w.ctx(), selectorOf(stopped), w.now); err != nil {
+		t.Fatal(err)
+	}
+	if lifted := w.ackBody(); lifted.Body.Suspended == nil || len(lifted.Body.Suspended) != 0 || lifted.Body.Waiting != nil {
+		t.Fatalf("after the lift: %+v", lifted.Body)
+	}
+}
+
+// The four lists share one budget of 1000: a waiting set that does not fit
+// beside the refusals goes in its own acknowledgement at the same through,
+// and one over 1000 goes as its first 1000 with waiting_more.
+func TestOverflowGoesInFurtherAcksAtTheSameThrough(t *testing.T) {
+	w := newTokenWorld(t)
+	device := w.number(uuid.Nil)
+	w.page(false, w.record(uuid.New(), 1))
+	// 990 refusals and 20 waiting perms, written as the commit and the
+	// judge would.
+	w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code)
+		SELECT gen_random_uuid(), 1, 'x' || g, 'read', 'local_role' FROM generate_series(1, 990) g`)
+	ids := make([]uuid.UUID, 1001)
+	for i := range ids {
+		ids[i] = uuid.New()
+	}
+	waitingRows := func(n int) {
+		w.exec(`INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
+			SELECT substr(md5(t::text), 1, 16), t, $1, decode(repeat('ab', 32), 'hex'), clock_timestamp() + interval '1 day'
+			FROM unnest($2::uuid[]) t`, w.tenant, ids[:n])
+		w.scoped(func(tx pgx.Tx) error {
+			ctx := context.Background()
+			if _, err := tx.Exec(ctx, `INSERT INTO contract_tokens (id, tenant_id, name, created_by, created_at, expires_at)
+				SELECT t, $1, 'n', $2, clock_timestamp(), clock_timestamp() + interval '1 day' FROM unnest($3::uuid[]) t`, w.tenant, w.ownerSub, ids[:n]); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO contract_token_perms (token_id, tenant_id, device_id, perm, granted_by, granted_at, generation, version, state)
+				SELECT t, $1, $2, 'send', $3, clock_timestamp(), $4, 1, 'waiting' FROM unnest($5::uuid[]) t`, w.tenant, device, w.ownerSub, w.gen, ids[:n])
+			return err
+		})
+	}
+	waitingRows(20)
+	first := w.ackBody()
+	if len(first.Body.Refused) != 990 || first.Body.Waiting != nil {
+		t.Fatalf("the first: %d refused, waiting %v", len(first.Body.Refused), first.Body.Waiting != nil)
+	}
+	if err := w.tokens.AckSent(context.Background(), first, w.now); err != nil {
+		t.Fatal(err)
+	}
+	second := w.ackBody()
+	if len(second.Body.Refused) != 0 || len(second.Body.Waiting) != 20 || second.Body.Through != first.Body.Through {
+		t.Fatalf("the second: %d refused, %d waiting, through %d", len(second.Body.Refused), len(second.Body.Waiting), second.Body.Through)
+	}
+	if err := w.tokens.AckSent(context.Background(), second, w.now); err != nil {
+		t.Fatal(err)
+	}
+	// Over 1000: its first 1000, with waiting_more.
+	w.scoped(func(tx pgx.Tx) error {
+		_, err := tx.Exec(context.Background(), `DELETE FROM contract_tokens`)
+		return err
+	})
+	w.exec(`ALTER TABLE contract_token_selectors DISABLE TRIGGER contract_token_selectors_guard; DELETE FROM contract_token_selectors;
+		ALTER TABLE contract_token_selectors ENABLE TRIGGER contract_token_selectors_guard`)
+	waitingRows(1001)
+	big := w.ackBody()
+	if len(big.Body.Waiting) != 1000 || !bool(big.Body.WaitingMore) {
+		t.Fatalf("over 1000: %d waiting, more %v", len(big.Body.Waiting), big.Body.WaitingMore)
+	}
+}
+
+// TestUsageIsAbsoluteAndCountedPerRow: several processes add their deltas
+// to one row per key, the report carries each row's absolute count, a row
+// is reported only on acceptance, and only what rose since goes again.
+func TestUsageIsAbsoluteAndCountedPerRow(t *testing.T) {
+	w := newTokenWorld(t)
+	token, device := uuid.New(), uuid.New()
+	day := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	read := kc.CanRead
+	one := store.TokenUse{
+		Used: []store.TokenDay{{Token: token, Day: day.Add(3 * time.Hour)}},
+		Refusals: []store.TokenUseRefusal{
+			{Token: token, Day: day, Device: &device, Perm: &read, Code: kc.UseNoGrant, Count: 2},
+			{Token: token, Day: day, Code: kc.UseRevoked, Count: 1},
+		},
+	}
+	for range 2 { // two processes' flushes
+		if err := w.tokens.AddTokenUse(context.Background(), one); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u, err := w.tokens.UsageBody(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := u.Body.Validate(); err != nil {
+		t.Fatalf("Wappie's usage report is not valid: %v", err)
+	}
+	if len(u.Body.Used) != 1 || u.Body.Used[0] != (kc.TokenUsed{Token: token.String(), Day: "2026-10-27"}) || len(u.Body.Refusals) != 2 {
+		t.Fatalf("the report: %+v", u.Body)
+	}
+	counts := map[string]int64{}
+	for _, r := range u.Body.Refusals {
+		counts[r.Code] = r.Count
+	}
+	if counts[kc.UseNoGrant] != 4 || counts[kc.UseRevoked] != 2 {
+		t.Fatalf("the counts: %v", counts)
+	}
+	if err := w.tokens.UsageSent(context.Background(), u, w.now); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := w.tokens.UsageBody(context.Background()); err != nil || !again.Empty() {
+		t.Fatalf("after it was accepted: %+v %v", again.Body, err)
+	}
+	if err := w.tokens.AddTokenUse(context.Background(), store.TokenUse{Refusals: one.Refusals[1:]}); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := w.tokens.UsageBody(context.Background()); err != nil || len(again.Body.Refusals) != 1 || again.Body.Refusals[0].Count != 3 {
+		t.Fatalf("after one more: %+v %v", again.Body, err)
+	}
+}

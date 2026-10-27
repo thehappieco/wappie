@@ -127,6 +127,15 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	if a.cfg.MCP.Enabled {
 		a.maintainMCP(ctx)
 	}
+	// The token part's: tokens past their expiry by Wappie's clock end, an
+	// ended token's content goes after 30 days, its selector, sticky row and
+	// pin at created_at + 365 days, and the usage rows once reported. With
+	// tokens never on, its tables are empty and this finds nothing.
+	if got, err := store.NewTokens(a.pools.API).RetainTokens(ctx, time.Now()); err != nil {
+		a.log.Warn("token retention failed", "error", err)
+	} else if got.Expired+got.Forgotten+got.Ended > 0 {
+		a.log.Info("token retention", "expired", got.Expired, "forgotten", got.Forgotten, "ended", got.Ended)
+	}
 
 	// Every workspace, whatever its status: a closed team's and a suspended
 	// one's deleted numbers are purged on their date too (the owner's
