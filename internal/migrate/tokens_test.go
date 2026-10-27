@@ -1,0 +1,589 @@
+package migrate
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"whatserver2/internal/pg"
+	"whatserver2/internal/pgtest"
+)
+
+// tokenRows writes one token of each kind 0052 holds into w's workspace, as
+// the table owner with the policies in force: its selector, its row, a
+// perm, a removed instance, a pin, a sticky row, an open and a lifted stop,
+// the queues, the usage rows, a retirement and a key it revoked.
+func tokenRows(t *testing.T, w contractWorld) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	token := uuid.New()
+	if _, err := w.pool.Exec(ctx, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
+		VALUES ('0123456789abcdef', $1, $2, decode(repeat('ab', 32), 'hex'), clock_timestamp() + interval '365 days')`, token, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_tokens (id, tenant_id, name, created_by, created_at, expires_at, generation, version)
+			VALUES ($1, $2, 'Nightly', $3, clock_timestamp(), clock_timestamp() + interval '30 days', $4, 1)`,
+			token, w.tenant, uuid.New(), uuid.New()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_token_perms (token_id, tenant_id, device_id, perm, granted_by, granted_at, generation, version, state)
+			VALUES ($1, $2, $3, 'read', $4, clock_timestamp(), $4, 1, 'applied')`, token, w.tenant, w.device, uuid.New()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_at, cause)
+			VALUES ($1, $2, 'not-a-number', 'send', clock_timestamp(), 'item_unknown')`, token, w.tenant); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO contract_token_pins (token_id, tenant_id, key, fingerprint, registered_at, until)
+			VALUES ($1, $2, decode(repeat('cd', 32), 'hex'), repeat('a', 32), clock_timestamp(), clock_timestamp() + interval '365 days')`,
+			token, w.tenant)
+		return err
+	})
+	for _, q := range []string{
+		`INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until) VALUES (gen_random_uuid(), clock_timestamp(), 'revoked', clock_timestamp() + interval '1 day')`,
+		`INSERT INTO contract_token_stops (selector, cause, stopped_by) VALUES ('0123456789abcdef', 'operator', 'root')`,
+		`INSERT INTO contract_token_stops (selector, cause, stopped_by, lifted_at) VALUES ('fedcba9876543210', 'operator', 'root', clock_timestamp())`,
+		`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code) VALUES (gen_random_uuid(), 1, 'x', 'read', 'local_role')`,
+		`INSERT INTO contract_token_held_out (token_id, generation) VALUES (gen_random_uuid(), gen_random_uuid())`,
+		`INSERT INTO contract_token_used (token_id, day) VALUES (gen_random_uuid(), current_date)`,
+		`INSERT INTO contract_token_refusals (token_id, day, code, count) VALUES (gen_random_uuid(), current_date, 'revoked', 2)`,
+		`INSERT INTO key_retirements (revoked, services_removed, services_kept, report, by) VALUES (1, 0, 0, '{}', 'root')`,
+	} {
+		if _, err := w.pool.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	return token
+}
+
+// TestMigration0052DownStep is 10.2's down-step test: 0052's header text,
+// run as the NOSUPERUSER owner role the server uses, refuses while a later
+// migration is applied or tokens are on, changing nothing then; otherwise it
+// drops every token table with its counts noticed, keeps a key the
+// retirement revoked revoked, leaves exactly 51's schema (so a binary that
+// knows 51 starts on it, and 0052 applies again), and 0051's own guard
+// refuses while 52 is applied.
+func TestMigration0052DownStep(t *testing.T) {
+	ctx := context.Background()
+	lg := quietLogger(t)
+	at51 := pgtest.Empty(t)
+	if err := run(ctx, at51, lg, migrationsThrough(t, 51)); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.Empty(t)
+	if err := Run(ctx, pool, lg); err != nil {
+		t.Fatal(err)
+	}
+	var super, bypass bool
+	if err := pool.QueryRow(ctx, `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`).Scan(&super, &bypass); err != nil || super || bypass {
+		t.Fatalf("the test's role must be the server's, a NOSUPERUSER owner with no BYPASSRLS: super %v, bypass %v, %v", super, bypass, err)
+	}
+	w := newContractWorld(t, pool)
+	tokenRows(t, w)
+	var key uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, revoked_at, origin, revoke_reason)
+		VALUES ($1, 'abcd1234', 'h', 'old', clock_timestamp(), 'rest', 'platform_tokens') RETURNING id`, w.tenant).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+
+	// 0051's guard holds while 52 is applied.
+	if _, err := pool.Exec(ctx, downStepSQL(t, 51)); err == nil || !strings.Contains(err.Error(), "a migration after 0051 is applied") {
+		t.Fatalf("0051's down-step with 52 applied: %v", err)
+	}
+	counts := func() (rows int, has52 bool, tables int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM schema_migrations),
+			EXISTS(SELECT 1 FROM schema_migrations WHERE version = 52),
+			(SELECT count(*) FROM pg_class WHERE (relname LIKE 'contract_token%' OR relname = 'key_retirements')
+			   AND relnamespace = current_schema()::regnamespace AND relkind = 'r')`).Scan(&rows, &has52, &tables); err != nil {
+			t.Fatal(err)
+		}
+		return rows, has52, tables
+	}
+	refused := func(want string) {
+		t.Helper()
+		before, _, tables := counts()
+		if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("the down-step with %s: %v", want, err)
+		}
+		if rows, has52, left := counts(); rows != before || !has52 || left != tables || tables != 13 {
+			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 52 %v, %d token tables (was %d, want 13)",
+				rows, before, has52, left, tables)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO schema_migrations(version,name,checksum,duration_ms) VALUES (53,'later','x',0)`); err != nil {
+		t.Fatal(err)
+	}
+	refused("a migration after 0052 is applied")
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 53`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE contract_token_state SET mode = 'on'`); err != nil {
+		t.Fatal(err)
+	}
+	refused("tokens are on")
+	if _, err := pool.Exec(ctx, `UPDATE contract_token_state SET mode = 'off'`); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := pool.Config()
+	var mu sync.Mutex
+	var notices []string
+	cfg.ConnConfig.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		mu.Lock()
+		defer mu.Unlock()
+		notices = append(notices, n.Message)
+	}
+	operator, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer operator.Close()
+	if _, err := operator.Exec(ctx, downStepSQL(t, 52)); err != nil {
+		t.Fatalf("the down-step: %v", err)
+	}
+	mu.Lock()
+	want := "dropping 1 tokens, 1 local stops (re-apply them after a re-upgrade), 1 retirement rows; 1 keys revoked by the retirement stay revoked"
+	if !slices.Contains(notices, want) {
+		t.Errorf("the down-step's notices: %q, want %q", notices, want)
+	}
+	mu.Unlock()
+
+	want51, got := schemaShape(t, at51), schemaShape(t, pool)
+	if len(got) != len(want51) {
+		t.Fatalf("after the down-step: %d schema facts, 51 has %d", len(got), len(want51))
+	}
+	for i := range want51 {
+		if got[i] != want51[i] {
+			t.Fatalf("after the down-step: %q where 51 has %q", got[i], want51[i])
+		}
+	}
+	var revoked bool
+	if err := pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM api_keys WHERE id = $1`, key).Scan(&revoked); err != nil || !revoked {
+		t.Fatalf("a key the retirement revoked, after the down-step: revoked %v, %v", revoked, err)
+	}
+	if err := run(ctx, pool, lg, migrationsThrough(t, 51)); err != nil {
+		t.Fatalf("a binary that knows 51 after the down-step: %v", err)
+	}
+	if err := Run(ctx, pool, lg); err != nil {
+		t.Fatalf("0052 again: %v", err)
+	}
+	// And the chain: 0052 down, then 0051 down.
+	if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err != nil {
+		t.Fatalf("0052's down-step again: %v", err)
+	}
+	if _, err := pool.Exec(ctx, downStepSQL(t, 51)); err != nil {
+		t.Fatalf("0051's down-step after 0052's: %v", err)
+	}
+}
+
+// The up step on 0051-shaped rows: every number of every workspace gets its
+// place by creation, deleted ones included, NULL past 9999, with updated_at
+// as it was; and every key its origin by api_key_class's shape-first rule,
+// an old local MCP token whose creator was deleted among them.
+func TestMigration0052Backfills(t *testing.T) {
+	ctx := context.Background()
+	lg := quietLogger(t)
+	pool := pgtest.Empty(t)
+	if err := run(ctx, pool, lg, migrationsThrough(t, 51)); err != nil {
+		t.Fatal(err)
+	}
+	a, b := newContractWorld(t, pool), newContractWorld(t, pool)
+	// a's numbers: Vendas (first), a deleted one, then a later one; b's:
+	// Vendas and 10 000 more, so its last is past 9999.
+	var deleted, later uuid.UUID
+	a.exec(ctx, t, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `INSERT INTO devices (tenant_id, label, created_at) VALUES ($1, 'Apagado', clock_timestamp() + interval '1 second')
+			RETURNING id`, a.tenant).Scan(&deleted); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE devices SET deleted_at = clock_timestamp(), purge_after = clock_timestamp() + interval '30 days', paused = true
+			WHERE id = $1`, deleted); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `INSERT INTO devices (tenant_id, label, created_at) VALUES ($1, 'Depois', clock_timestamp() + interval '2 seconds')
+			RETURNING id`, a.tenant).Scan(&later)
+	})
+	b.exec(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO devices (tenant_id, label, created_at)
+			SELECT $1, 'n' || g, clock_timestamp() + g * interval '1 millisecond' FROM generate_series(1, 10000) g`, b.tenant)
+		return err
+	})
+	var updatedBefore time.Time
+	a.exec(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT updated_at FROM devices WHERE id = $1`, a.device).Scan(&updatedBefore)
+	})
+
+	// One key of each class (the plan's 7.1).
+	service := uuid.New()
+	a.exec(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO users (id, tenant_id, email, name, public_key, role) VALUES ($1, $2, 'mcp-local@service.invalid', 'mcp-local',
+			decode(repeat('ab', 32), 'hex'), 'service')`, service, a.tenant)
+		return err
+	})
+	keys := map[string]string{}
+	add := func(name, sql string, args ...any) {
+		t.Helper()
+		var id uuid.UUID
+		if err := pool.QueryRow(ctx, sql, args...).Scan(&id); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		keys[id.String()] = name
+	}
+	insert := `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, created_by, scope, devices_restricted, expires_at, acts_as, created_at)
+		VALUES ($1, substr(md5(random()::text), 1, 8), 'h', $2, $3, $4, $5, $6, $7, clock_timestamp()) RETURNING id`
+	soon := time.Now().Add(20 * time.Minute)
+	add("mcp_setup", insert, a.tenant, "MCP · Claude", a.owner, "read", true, soon, nil)
+	add("legacy_mcp", insert, a.tenant, "MCP · Local", a.owner, "read", true, nil, nil)
+	add("legacy_mcp", insert, a.tenant, "MCP · Local", nil, "read", true, nil, service)
+	add("cli", insert, a.tenant, "bootstrap", nil, "full", false, nil, nil)
+	add("rest", insert, a.tenant, "Painel", a.owner, "full", false, nil, nil)
+	add("rest", insert, a.tenant, "MCP · Local", a.owner, "full", false, nil, nil)
+	var connKey uuid.UUID
+	if err := pool.QueryRow(ctx, insert, a.tenant, "MCP · Claude", a.owner, "read", true, soon.Add(time.Hour), nil).Scan(&connKey); err != nil {
+		t.Fatal(err)
+	}
+	keys[connKey.String()] = "mcp_setup"
+	if _, err := pool.Exec(ctx, `INSERT INTO mcp_connections (tenant_id, request_id, api_key_id, created_by, client_name, redirect_host,
+		device_count, reader_kid, status, expires_at) VALUES ($1, 'r', $2, $3, 'Claude', 'claude.ai', 1, 'k', 'active', clock_timestamp() + interval '1 day')`,
+		a.tenant, connKey, a.owner); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Run(ctx, pool, lg); err != nil {
+		t.Fatal(err)
+	}
+	ordinals := func(w contractWorld) map[uuid.UUID]*int {
+		t.Helper()
+		out := map[uuid.UUID]*int{}
+		w.exec(ctx, t, func(tx pgx.Tx) error {
+			rows, err := tx.Query(ctx, `SELECT id, ordinal FROM devices`)
+			if err != nil {
+				return err
+			}
+			return forEach(rows, func(r pgx.Rows) error {
+				var id uuid.UUID
+				var o *int
+				if err := r.Scan(&id, &o); err != nil {
+					return err
+				}
+				out[id] = o
+				return nil
+			})
+		})
+		return out
+	}
+	got := ordinals(a)
+	if *got[a.device] != 1 || *got[deleted] != 2 || *got[later] != 3 {
+		t.Fatalf("a's ordinals: %d %d %d", *got[a.device], *got[deleted], *got[later])
+	}
+	gotB := ordinals(b)
+	nulls, top := 0, 0
+	for _, o := range gotB {
+		if o == nil {
+			nulls++
+		} else {
+			top = max(top, *o)
+		}
+	}
+	if len(gotB) != 10001 || nulls != 2 || top != 9999 || *gotB[b.device] != 1 {
+		t.Fatalf("b: %d numbers, %d past 9999, top %d", len(gotB), nulls, top)
+	}
+	var updatedAfter time.Time
+	a.exec(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT updated_at FROM devices WHERE id = $1`, a.device).Scan(&updatedAfter)
+	})
+	if !updatedAfter.Equal(updatedBefore) {
+		t.Fatalf("the backfill touched updated_at: %v, was %v", updatedAfter, updatedBefore)
+	}
+	rows, err := pool.Query(ctx, `SELECT id::text, origin FROM api_keys`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := forEach(rows, func(r pgx.Rows) error {
+		var id string
+		var origin *string
+		if err := r.Scan(&id, &origin); err != nil {
+			return err
+		}
+		if origin == nil || *origin != keys[id] {
+			return fmt.Errorf("key %s (%s): origin %v", id, keys[id], origin)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func forEach(rows pgx.Rows, fn func(pgx.Rows) error) error {
+	defer rows.Close()
+	for rows.Next() {
+		if err := fn(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// TestTheOrdinalSeesDeletedRowsAndTheTarget is 10.2's: under the policies a
+// new number gets the lowest free ordinal of its workspace, a deleted
+// number's place is never handed out again until its purge frees it, and a
+// move-out takes the lowest free one in the target workspace, though the
+// mover's session sees the source.
+func TestTheOrdinalSeesDeletedRowsAndTheTarget(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.Fresh(t, Run)
+	a, b := newContractWorld(t, pool), newContractWorld(t, pool)
+	number := func(w contractWorld, label string) (uuid.UUID, int) {
+		t.Helper()
+		var id uuid.UUID
+		var o int
+		if err := pg.InTenantTx(ctx, pool, w.tenant.String(), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `INSERT INTO devices (tenant_id, label) VALUES ($1, $2) RETURNING id, ordinal`, w.tenant, label).Scan(&id, &o)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return id, o
+	}
+	two, o2 := number(a, "dois")
+	_, o3 := number(a, "três")
+	if o2 != 2 || o3 != 3 {
+		t.Fatalf("ordinals %d %d", o2, o3)
+	}
+	a.exec(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET deleted_at = clock_timestamp(), purge_after = clock_timestamp() + interval '30 days', paused = true
+			WHERE id = $1`, two)
+		return err
+	})
+	// The quarantine scope is closed in this session: the trigger sees the
+	// deleted number all the same.
+	if _, o := number(a, "quatro"); o != 4 {
+		t.Fatalf("a new number beside a deleted one: %d, want 4", o)
+	}
+	a.exec(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM devices WHERE id = $1`, two)
+		return err
+	})
+	if _, o := number(a, "cinco"); o != 2 {
+		t.Fatalf("after the purge: %d, want 2", o)
+	}
+	// A move-out from a to b, as TransferPersonal's session: the source's
+	// workspace, with the move's scope.
+	moved, _ := number(a, "mudança")
+	var o int
+	if err := pg.InTenantTx(ctx, pool, a.tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.device_move_id', $1, true), set_config('app.device_move_source', $2, true),
+			set_config('app.device_move_target', $3, true)`, moved.String(), a.tenant.String(), b.tenant.String()); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `UPDATE devices SET tenant_id = $2 WHERE id = $1 RETURNING ordinal`, moved, b.tenant).Scan(&o); err != nil {
+			return err
+		}
+		var tenant string
+		return tx.QueryRow(ctx, `SELECT current_setting('app.tenant_id')`).Scan(&tenant)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if o != 2 {
+		t.Fatalf("the moved-out number's ordinal in b: %d, want 2 (b holds 1)", o)
+	}
+}
+
+// Every guard and trigger 0052 adds: the never-widen backstop on each of its
+// columns, with access_version bumped on a narrowing; the selectors', pins'
+// and sticky rows' guards; and the NOTIFYs.
+func TestMigration0052Checks(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.Fresh(t, Run)
+	w := newContractWorld(t, pool)
+	token := tokenRows(t, w)
+	refused := func(name, sql string, args ...any) {
+		t.Helper()
+		if err := w.try(sql, args...); sqlState(err) != "P0001" {
+			t.Errorf("%s: %v, want P0001", name, err)
+		}
+	}
+	version := func() int64 {
+		t.Helper()
+		var v int64
+		w.exec(ctx, t, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT access_version FROM contract_tokens WHERE id = $1`, token).Scan(&v)
+		})
+		return v
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if err := w.try(sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	v := version()
+	exec(`UPDATE contract_tokens SET name = 'Renamed' WHERE id = $1`, token)
+	if version() != v {
+		t.Fatal("a rename bumped access_version")
+	}
+	exec(`UPDATE contract_tokens SET expires_at = expires_at - interval '1 day' WHERE id = $1`, token)
+	if version() != v+1 {
+		t.Fatal("an earlier expiry did not bump access_version")
+	}
+	refused("a later expiry", `UPDATE contract_tokens SET expires_at = expires_at + interval '2 days' WHERE id = $1`, token)
+	refused("another workspace", `UPDATE contract_tokens SET tenant_id = gen_random_uuid() WHERE id = $1`, token)
+	refused("another creator", `UPDATE contract_tokens SET created_by = gen_random_uuid() WHERE id = $1`, token)
+	refused("another creation", `UPDATE contract_tokens SET created_at = created_at - interval '1 second' WHERE id = $1`, token)
+	exec(`UPDATE contract_tokens SET identity_user_id = gen_random_uuid() WHERE id = $1`, token)
+	refused("another identity", `UPDATE contract_tokens SET identity_user_id = gen_random_uuid() WHERE id = $1`, token)
+	refused("an identity cleared", `UPDATE contract_tokens SET identity_user_id = NULL WHERE id = $1`, token)
+	for _, col := range []string{"unlisted_at", "key_changed_at", "identity_dropped_at"} {
+		v := version()
+		exec(`UPDATE contract_tokens SET `+col+` = clock_timestamp() WHERE id = $1`, token)
+		if version() != v+1 {
+			t.Errorf("%s set did not bump access_version", col)
+		}
+		refused(col+" cleared", `UPDATE contract_tokens SET `+col+` = NULL WHERE id = $1`, token)
+		refused(col+" changed", `UPDATE contract_tokens SET `+col+` = `+col+` + interval '1 second' WHERE id = $1`, token)
+	}
+	exec(`UPDATE contract_tokens SET revoked_at = clock_timestamp(), revoked_reason = 'revoked' WHERE id = $1`, token)
+	refused("a revocation cleared", `UPDATE contract_tokens SET revoked_at = NULL, revoked_reason = NULL WHERE id = $1`, token)
+	refused("a revocation's reason changed", `UPDATE contract_tokens SET revoked_reason = 'operator' WHERE id = $1`, token)
+	refused("a revocation's time changed", `UPDATE contract_tokens SET revoked_at = revoked_at - interval '1 second' WHERE id = $1`, token)
+
+	refused("a selector updated", `UPDATE contract_token_selectors SET tenant_id = gen_random_uuid()`)
+	refused("a selector deleted before its until", `DELETE FROM contract_token_selectors`)
+	refused("a pin updated", `UPDATE contract_token_pins SET key = decode(repeat('ef', 32), 'hex')`)
+	refused("a pin deleted before its until", `DELETE FROM contract_token_pins`)
+	refused("a sticky revocation cleared", `UPDATE contract_token_sticky SET revoked_at = NULL`)
+	refused("a sticky ending changed", `UPDATE contract_token_sticky SET ended = 'expired'`)
+	refused("a sticky row deleted before its until", `DELETE FROM contract_token_sticky`)
+	exec(`UPDATE contract_token_sticky SET earliest_expires_at = clock_timestamp()`)
+	refused("a sticky expiry raised", `UPDATE contract_token_sticky SET earliest_expires_at = earliest_expires_at + interval '1 day'`)
+	refused("a sticky expiry cleared", `UPDATE contract_token_sticky SET earliest_expires_at = NULL`)
+	// Past until, the guards let retention through.
+	if _, err := pool.Exec(ctx, `ALTER TABLE contract_token_sticky DISABLE TRIGGER contract_token_sticky_guard;
+		UPDATE contract_token_sticky SET until = clock_timestamp() - interval '1 second';
+		ALTER TABLE contract_token_sticky ENABLE TRIGGER contract_token_sticky_guard`); err != nil {
+		t.Fatal(err)
+	}
+	exec(`DELETE FROM contract_token_sticky`)
+
+	// A perm only for a token of its own workspace, of a known state.
+	if err := w.try(`INSERT INTO contract_token_perms (token_id, tenant_id, device_id, perm, granted_by, granted_at, generation, version)
+		VALUES ($1, gen_random_uuid(), $2, 'send', gen_random_uuid(), clock_timestamp(), gen_random_uuid(), 1)`, token, w.device); err == nil {
+		t.Error("a perm of another workspace than its token's was written")
+	}
+	if err := w.try(`INSERT INTO contract_token_perms (token_id, tenant_id, device_id, perm, granted_by, granted_at, generation, version, state)
+		VALUES ($1, $2, $3, 'send', gen_random_uuid(), clock_timestamp(), gen_random_uuid(), 1, 'refused')`, token, w.tenant, w.device); sqlState(err) != "23514" {
+		t.Errorf("a refused perm with no code: %v", err)
+	}
+
+	// The notices: a token's id for its rows, all for the switches and the
+	// modes.
+	listen, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listen.Release()
+	if _, err := listen.Exec(ctx, `LISTEN wappie_contract_tokens`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ sql, want string }{
+		{`UPDATE contract_tokens SET name = 'Again' WHERE id = '` + token.String() + `'`, token.String()},
+		{`UPDATE contract_token_perms SET state = 'waiting' WHERE token_id = '` + token.String() + `'`, token.String()},
+		{`UPDATE contract_token_stops SET lifted_at = clock_timestamp() WHERE selector = '0123456789abcdef'`, token.String()},
+		{`UPDATE tenants SET mcp_text = false WHERE id = '` + w.tenant.String() + `'`, "all"},
+		{`UPDATE contract_token_state SET mode = 'on'`, "all"},
+		{`UPDATE contract_state SET mode = 'observe', events_from = clock_timestamp()`, "all"},
+	} {
+		if err := w.try(c.sql); err != nil {
+			t.Fatalf("%s: %v", c.sql, err)
+		}
+		wait, cancel := context.WithTimeout(ctx, 5*time.Second)
+		n, err := listen.Conn().WaitForNotification(wait)
+		cancel()
+		if err != nil || n.Payload != c.want {
+			t.Fatalf("%s: notice %+v, %v; want %s", c.sql, n, err, c.want)
+		}
+		for {
+			drain, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+			_, err := listen.Conn().WaitForNotification(drain)
+			cancel()
+			if err != nil {
+				break
+			}
+		}
+	}
+}
+
+// wappie-billing keeps running while 0052 and its down-step run (as 0051's
+// test has it): a billing request that holds its workspace and membership
+// rows and has counted devices finishes, and the migration goes on after
+// it, never deadlocking with it.
+func TestMigration0052WaitsForBilling(t *testing.T) {
+	ctx := context.Background()
+	lg := quietLogger(t)
+	pool := pgtest.Empty(t)
+	if err := run(ctx, pool, lg, migrationsThrough(t, 51)); err != nil {
+		t.Fatal(err)
+	}
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants(name) VALUES ('team') RETURNING id`).Scan(&tenant); err != nil {
+		t.Fatal(err)
+	}
+	owner := person(t, pool, tenant, "owner@example.test", "owner")
+	beside := func(name string, migration func() error) {
+		t.Helper()
+		billing, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer billing.Rollback(ctx)
+		if _, err := billing.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant.String()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := billing.Exec(ctx, `SELECT m.role FROM tenants t JOIN workspace_memberships m ON m.tenant_id=t.id
+			WHERE t.id=$1 AND m.user_id=$2 AND t.status='active' FOR UPDATE OF t,m`, tenant, owner); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := billing.Exec(ctx, `SELECT count(*) FROM devices WHERE tenant_id=$1`, tenant); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- migration() }()
+		for blocked := false; !blocked; {
+			if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))`,
+				billing.Conn().PgConn().PID()).Scan(&blocked); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("%s never waited for the billing request: %v", name, err)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		_, countErr := billing.Exec(ctx, `SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM devices WHERE tenant_id=$1)`, tenant)
+		if countErr == nil {
+			countErr = billing.Commit(ctx)
+		}
+		if err := <-done; countErr != nil || err != nil {
+			t.Fatalf("%s beside a billing request: the request %v, the migration %v", name, countErr, err)
+		}
+	}
+	beside("0052", func() error { return Run(ctx, pool, lg) })
+	beside("0052's down-step", func() error {
+		_, err := pool.Exec(ctx, downStepSQL(t, 52))
+		return err
+	})
+	var version int
+	if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 51 {
+		t.Fatalf("after both: version %d %v", version, err)
+	}
+}

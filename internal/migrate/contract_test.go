@@ -98,8 +98,11 @@ func TestMigration0051DownStep(t *testing.T) {
 	if err := run(ctx, at50, lg, through50); err != nil {
 		t.Fatal(err)
 	}
+	// A binary at 51: 0052's down-step comes first on a later one
+	// (TestMigration0052DownStep).
+	through51 := migrationsThrough(t, 51)
 	pool := pgtest.Empty(t)
-	if err := Run(ctx, pool, lg); err != nil {
+	if err := run(ctx, pool, lg, through51); err != nil {
 		t.Fatal(err)
 	}
 	w := newContractWorld(t, pool)
@@ -251,7 +254,7 @@ func TestMigration0051DownStep(t *testing.T) {
 		_, err := tx.Exec(ctx, `UPDATE devices SET deleted_at=now(), purge_after=now()+interval '30 days', paused=true WHERE id=$1`, w.device)
 		return err
 	})
-	if err := Run(ctx, pool, lg); err != nil {
+	if err := run(ctx, pool, lg, through51); err != nil {
 		t.Fatalf("0051 again: %v", err)
 	}
 	causes := map[uuid.UUID]string{}
@@ -514,7 +517,7 @@ func TestMigration0051WaitsForBilling(t *testing.T) {
 			t.Fatalf("%s beside a billing request: the request %v, the migration %v", name, countErr, err)
 		}
 	}
-	beside("0051", func() error { return Run(ctx, pool, lg) })
+	beside("0051", func() error { return run(ctx, pool, lg, migrationsThrough(t, 51)) })
 	beside("0051's down-step", func() error {
 		_, err := pool.Exec(ctx, downStepSQL(t, 51))
 		return err

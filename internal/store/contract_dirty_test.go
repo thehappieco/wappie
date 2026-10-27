@@ -149,7 +149,10 @@ func TestDirtyNotify(t *testing.T) {
 	sql("the same LID", none, `UPDATE devices SET lid='123456789@lid' FROM change WHERE id=change.device`)
 	sql("a label", once, `UPDATE devices SET label='Vendas' FROM change WHERE id=change.device`)
 	sql("the same label", none, `UPDATE devices SET label='Vendas' FROM change WHERE id=change.device`)
-	sql("a push name", once, `UPDATE devices SET push_name='Loja' FROM change WHERE id=change.device`)
+	// A push name never names a number (10.27): no snapshot shows it. Its
+	// ordinal does (0052).
+	sql("a push name", none, `UPDATE devices SET push_name='Loja' FROM change WHERE id=change.device`)
+	sql("an ordinal", once, `UPDATE devices SET ordinal=77 FROM change WHERE id=change.device`)
 	sql("a phone number", once, `UPDATE devices SET pn='5511912345678@s.whatsapp.net' FROM change WHERE id=change.device`)
 	sql("a pause", once, `UPDATE devices SET paused=true FROM change WHERE id=change.device`)
 	sql("its cause", once, `UPDATE devices SET pause_cause='move' FROM change WHERE id=change.device`)
@@ -182,6 +185,17 @@ func TestDirtyNotify(t *testing.T) {
 	sql("a grant gone", once, `DELETE FROM device_key_grants USING change WHERE device_id=change.device AND user_id=change.member`)
 	sql("a permission gone", once, `DELETE FROM device_permissions USING change WHERE device_id=change.device AND user_id=change.member`)
 	sql("a role", once, `UPDATE workspace_memberships SET role='admin' FROM change WHERE tenant_id=change.team AND user_id=change.member`)
+	// A token's perms and its narrowings (0052); its row alone shows nothing.
+	token := uuid.New()
+	sql("a token", none, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
+		SELECT '0123456789abcdef', '`+token.String()+`', change.team, decode(repeat('ab', 32), 'hex'), now() + interval '1 day' FROM change`,
+		`INSERT INTO contract_tokens (id, tenant_id, name, created_by, created_at, expires_at)
+		SELECT '`+token.String()+`', change.team, 'n', change.owner, now(), now() + interval '1 day' FROM change`)
+	sql("a token's perm", once, `INSERT INTO contract_token_perms (token_id, tenant_id, device_id, perm, granted_by, granted_at, generation, version)
+		SELECT '`+token.String()+`', change.team, change.device, 'send', change.owner, now(), change.team, 1 FROM change`)
+	sql("a token's perm applied", once, `UPDATE contract_token_perms SET state='applied'`)
+	sql("a token renamed", none, `UPDATE contract_tokens SET name='m'`)
+	sql("a token revoked", once, `UPDATE contract_tokens SET revoked_at=now(), revoked_reason='revoked'`)
 	sql("many changes in one transaction", once, grant,
 		`UPDATE device_permissions SET can_send=false FROM change WHERE device_id=change.device`,
 		`UPDATE devices SET label='Suporte' FROM change WHERE id=change.device`,
