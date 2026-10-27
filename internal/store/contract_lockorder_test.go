@@ -498,3 +498,124 @@ func TestATokenCommitTakesItsWorkspaceAndNumbersFirst(t *testing.T) {
 		})
 	}
 }
+
+// A token commit that deletes a token identity's grants takes the
+// workspace's row first (DB25 step 3), before its token rows: so a writer
+// that holds the workspace's row and then asks for the token's rows (the
+// grant write, FOR SHARE), its perms or its grants (a deletion's or a
+// move's), finishes first, and the commit after it. Taken the other way,
+// each would wait on the other.
+func TestATokenCommitWaitsForTheWorkspacesWriters(t *testing.T) {
+	for _, then := range []struct {
+		name string
+		sql  func(token, identity, device uuid.UUID) string
+	}{
+		{"the grant write's token row", func(token, _, _ uuid.UUID) string {
+			return `SELECT 1 FROM contract_tokens WHERE id = '` + token.String() + `' FOR SHARE`
+		}},
+		{"a deletion's perms", func(_, _, device uuid.UUID) string {
+			return `SELECT 1 FROM contract_token_perms WHERE device_id = '` + device.String() + `' ORDER BY token_id, device_id, perm FOR UPDATE`
+		}},
+		{"a deletion's grants", func(_, identity, device uuid.UUID) string {
+			return `DELETE FROM device_key_grants WHERE device_id = '` + device.String() + `' AND user_id = '` + identity.String() + `'`
+		}},
+	} {
+		t.Run(then.name, func(t *testing.T) {
+			w := newTokenWorld(t)
+			ctx := context.Background()
+			device := w.number(uuid.Nil)
+			key := readingKey(t)
+			token := w.readingToken(device, key)
+			w.tokensOn()
+			if err := w.seal(token, device, w.owner, 1); err != nil {
+				t.Fatal(err)
+			}
+			identity, _ := w.identityOf(token)
+			holder, err := w.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Rollback(ctx) //nolint:errcheck // committed below; a no-op then
+			if _, err := holder.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true), set_config('lock_timeout', '5s', true)`, w.tenant.String()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := holder.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, w.tenant); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := w.tryPage(false, w.record(token, 2, revokedBy(kc.RevokedInConsole, w.now)))
+				done <- err
+			}()
+			untilTokenWaiters(t, w, 1)
+			if _, err := holder.Exec(ctx, then.sql(token, *identity, device)); err != nil {
+				t.Fatalf("the writer, after the commit started: %v", err)
+			}
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("the commit: %v", err)
+			}
+			if strings.Contains(w.logs.String(), "deadlock") {
+				t.Fatalf("a deadlock:\n%s", w.logs.String())
+			}
+			if s := w.token(token); !s.Revoked || w.grantsOf(*identity) != 0 {
+				t.Fatalf("after both: %+v, %d grants", s, w.grantsOf(*identity))
+			}
+		})
+	}
+}
+
+// The applier deletes token identities' grants in two workspaces in one
+// page while their snapshots are read: neither waits for long nor fails.
+func TestTheApplierAcrossTwoWorkspacesBesideSnapshots(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	other := uuid.New()
+	w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'second')`, other)
+	second := *w
+	second.tenant = other
+	second.owner = second.linked("owner2", "owner", uuid.New(), true)
+	// The second workspace's owner gives its token, made by them.
+	ownerTwo := uuid.Nil
+	if err := w.pool.QueryRow(ctx, `SELECT sub FROM platform_identities WHERE user_id = $1`, second.owner).Scan(&ownerTwo); err != nil {
+		t.Fatal(err)
+	}
+	second.ownerSub = ownerTwo
+	a, b := w.number(uuid.Nil), second.number(uuid.Nil)
+	ta, tb := w.readingToken(a, readingKey(t)), second.readingToken(b, readingKey(t))
+	w.tokensOn()
+	if err := w.seal(ta, a, w.owner, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.seal(tb, b, second.owner, 1); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	reads := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				reads <- nil
+				return
+			default:
+			}
+			for _, ws := range []uuid.UUID{w.tenant, other} {
+				if _, err := w.contract.Snapshot(ctx, ws); err != nil {
+					reads <- err
+					return
+				}
+			}
+		}
+	}()
+	w.page(false, w.record(ta, 2, revokedBy(kc.RevokedInConsole, w.now)), second.record(tb, 2, revokedBy(kc.RevokedInConsole, w.now)))
+	close(stop)
+	if err := <-reads; err != nil {
+		t.Fatalf("a snapshot beside the page: %v", err)
+	}
+	if w.count(`SELECT count(*) FROM users WHERE token_identity`) != 0 || second.count(`SELECT count(*) FROM users WHERE token_identity`) != 0 {
+		t.Fatal("an identity stayed")
+	}
+}

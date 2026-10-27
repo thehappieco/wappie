@@ -361,12 +361,26 @@ type KeyHolder struct {
 	GrantedBy string    `json:"granted_by,omitempty"`
 }
 
+// TokenKeyHolder is a platform token whose hidden identity holds the
+// number's key at an epoch: listed apart from the readers, and never counted
+// as one, a holder or a backup. Its way out is the console's API keys page.
+type TokenKeyHolder struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Epoch     int       `json:"epoch"`
+	GrantedAt time.Time `json:"granted_at"`
+	GrantedBy string    `json:"granted_by,omitempty"`
+}
+
 // DeviceDetail is one device in full: identity, lifetime, counters and who can
 // read what it archived.
 type DeviceDetail struct {
 	Device  DeviceInfo  `json:"device"`
 	Stats   DeviceStat  `json:"stats"`
 	Readers []KeyHolder `json:"readers"`
+	// Tokens are the platform tokens holding its key, for those who
+	// administer it: apart from Readers.
+	Tokens []TokenKeyHolder `json:"tokens,omitempty"`
 	// Epoch is the archive key generation this device seals under. Zero means
 	// it has no key, which stops ingest rather than storing plaintext.
 	Epoch int `json:"epoch"`
@@ -437,7 +451,9 @@ type DeviceDeleteChecked struct {
 	Assistants      []store.AssistantRef      `json:"assistants"`
 	Keys            []store.RestrictedKeyRef  `json:"keys"`
 	AllNumberKeys   []store.AllNumberKey      `json:"all_number_keys"`
-	Bytes           int64                     `json:"bytes"`
+	// Tokens are the platform tokens it holds: a deletion takes it off them.
+	Tokens []store.TokenRef `json:"tokens"`
+	Bytes  int64            `json:"bytes"`
 	// CanUnlink is a WhatsApp session this server can log out.
 	CanUnlink bool `json:"can_unlink"`
 	// CheckedAt is the database's clock, and RecoverableUntilPreview that
@@ -692,6 +708,8 @@ type GrantRevoke struct {
 type Readers struct {
 	DeviceID string      `json:"device_id"`
 	Readers  []KeyHolder `json:"readers"`
+	// Tokens are the platform tokens holding its key, apart: never readers.
+	Tokens []TokenKeyHolder `json:"tokens"`
 }
 
 // Subscribe asks for everything since a cursor, then live traffic.

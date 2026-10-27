@@ -484,6 +484,11 @@ func TestGrantingAndRevoking(t *testing.T) {
 	if len(readers.Readers) != 1 || readers.Readers[0].Email != "reader@acme.test" {
 		t.Fatalf("readers = %+v", readers.Readers)
 	}
+	// The platform tokens holding its key come apart from the readers,
+	// always a list (none here).
+	if !strings.Contains(string(f.Payload), `"tokens":[]`) || readers.Tokens == nil {
+		t.Errorf("the readers' tokens: %s", f.Payload)
+	}
 	if readers.Readers[0].GrantedBy != "owner@acme.test" {
 		t.Errorf("granted_by = %q, want whoever asked", readers.Readers[0].GrantedBy)
 	}

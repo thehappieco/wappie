@@ -572,7 +572,8 @@ func TestJudgeGivesEachGrantOnce(t *testing.T) {
 	if again := w.judge(); again != (store.TokenJudgeResult{}) {
 		t.Fatalf("a second judge: %+v", again)
 	}
-	w.exec(`INSERT INTO contract_accounts (sub, generation, version, status, doc) VALUES ($1, $2, 1, 'active', '{"v":1}')`, waitingSub, w.gen)
+	w.exec(`INSERT INTO contract_accounts (sub, generation, version, status, doc) VALUES ($1, $2, 1, 'active',
+		jsonb_build_object('v', 1, 'workspaces', jsonb_build_array(jsonb_build_object('id', $3::text))))`, waitingSub, w.gen, w.tenant)
 	if again := w.judge(); again.Applied != 1 {
 		t.Fatalf("the waiting grant once its document is held: %+v", again)
 	}

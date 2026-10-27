@@ -53,6 +53,12 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 			if err != nil {
 				return err
 			}
+			// The workspaces whose expiring tokens hold an identity, whose
+			// grants go with it (DB25 step 3).
+			if err := lockGrantWorkspacesTx(ctx, tx, workspaces, `expires_at <= $1 AND ended_at IS NULL`,
+				func(uuid.UUID) []any { return []any{now} }); err != nil {
+				return err
+			}
 			var sticky []stickyWrite
 			for _, ws := range workspaces {
 				if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, ws.String()); err != nil {
@@ -68,13 +74,14 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 					return err
 				}
 				// The expiry janitor: the token's row first (DB25 step 4),
-				// then the sticky row.
+				// then its identity with its grants, then the sticky row.
 				rows, err := tx.Query(ctx, `UPDATE contract_tokens t SET ended_at = $1
 					FROM (SELECT id FROM contract_tokens WHERE expires_at <= $1 AND ended_at IS NULL ORDER BY id FOR UPDATE) l
 					WHERE t.id = l.id RETURNING t.id, t.created_at, t.expires_at`, now)
 				if err != nil {
 					return err
 				}
+				var expired []uuid.UUID
 				err = forEachRow(rows, func(row pgx.Rows) error {
 					var s stickyWrite
 					var created time.Time
@@ -83,10 +90,14 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 					}
 					s.ended, s.until = "expired", created.Add(tokenKeep)
 					sticky = append(sticky, s)
+					expired = append(expired, s.id)
 					out.Expired++
 					return nil
 				})
 				if err != nil {
+					return err
+				}
+				if err := dropTokenIdentitiesTx(ctx, tx, now, expired); err != nil {
 					return err
 				}
 				// Its content, then its perms and removed instances (DB25

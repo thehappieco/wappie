@@ -132,6 +132,12 @@ func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Ti
 			if err != nil {
 				return err
 			}
+			// An unlisted token's identity goes, with its grants (DB25
+			// step 3 first).
+			if err := lockGrantWorkspacesTx(ctx, tx, workspaces, `listed_gen IS DISTINCT FROM $1 AND unlisted_at IS NULL`,
+				func(uuid.UUID) []any { return []any{gen} }); err != nil {
+				return err
+			}
 			var sticky []stickyWrite
 			for _, ws := range workspaces {
 				if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, ws.String()); err != nil {
@@ -143,6 +149,7 @@ func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Ti
 				if err != nil {
 					return err
 				}
+				var unlisted []uuid.UUID
 				err = forEachRow(rows, func(row pgx.Rows) error {
 					var s stickyWrite
 					var created time.Time
@@ -151,12 +158,16 @@ func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Ti
 					}
 					s.ended, s.until = "unlisted", created.Add(tokenKeep)
 					sticky = append(sticky, s)
-					out.Unlisted = append(out.Unlisted, s.id)
+					unlisted = append(unlisted, s.id)
 					return nil
 				})
 				if err != nil {
 					return err
 				}
+				if err := dropTokenIdentitiesTx(ctx, tx, now, unlisted); err != nil {
+					return err
+				}
+				out.Unlisted = append(out.Unlisted, unlisted...)
 				if _, err := tx.Exec(ctx, `UPDATE contract_token_perms SET held_at_reset = false WHERE held_at_reset`); err != nil {
 					return err
 				}

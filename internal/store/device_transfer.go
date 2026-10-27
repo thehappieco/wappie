@@ -324,6 +324,13 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			}
 		}
 		out.AssistantsEnded = ended
+		// What is left of the platform tokens on it (refused perms only: a
+		// token that holds it refuses the move) goes, kept off for good
+		// (item_moved), with the identities' grants, while the number is
+		// the Team's (DB25 steps 3, 5 and 6).
+		if err := dropNumberTokensTx(ctx, tx, device, "item_moved"); err != nil {
+			return err
+		}
 		// All database work is atomic; a closed browser or failed check rolls it back.
 		if _, err = tx.Exec(ctx, `SELECT set_config('app.device_move_id',$1,true),set_config('app.device_move_source',$2,true),set_config('app.device_move_target',$3,true),set_config('app.storage_reconcile','true',true),set_config('statement_timeout','120s',true)`, device.String(), source.String(), target.String()); err != nil {
 			return err
