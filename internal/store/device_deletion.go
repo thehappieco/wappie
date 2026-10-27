@@ -613,7 +613,7 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 					return err
 				}
 			}
-			var lbl, pushName, pn string
+			var lbl, pn string
 			if err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
 				UPDATE devices SET deleted_at = now.t, deleted_by = $2, purge_after = now.t + interval '30 days', paused = true,
 				  pause_cause = 'deletion',
@@ -624,14 +624,14 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 				  wa_leftover = CASE WHEN $3::text IS NULL THEN NULL
 				                     ELSE jsonb_build_object('jid', $3::text, 'registration_id', $4::bigint) END
 				FROM now WHERE devices.id = $1
-				RETURNING deleted_at, purge_after, label, push_name, coalesce(pn, '')`, device, actor, jid, reg).
-				Scan(&out.DeletedAt, &out.PurgeAfter, &lbl, &pushName, &pn); err != nil {
+				RETURNING deleted_at, purge_after, label, coalesce(pn, '')`, device, actor, jid, reg).
+				Scan(&out.DeletedAt, &out.PurgeAfter, &lbl, &pn); err != nil {
 				return err
 			}
 			if jid != nil && reg != nil {
 				out.Session = &WASession{JID: *jid, RegistrationID: *reg}
 			}
-			itemName, hint := itemLabel(device, lbl, pushName, pn)
+			itemName, hint := itemLabel(device, lbl, pn)
 
 			// (h) Its readers, and the workspace's other owners, are told in
 			// Wappie's own pages. A pause notice gives way to the deletion's.
@@ -1236,13 +1236,13 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 				gone = !present
 			}
 			var status wa.Status
-			var reason, pn, name, pushName string
+			var reason, pn, name string
 			err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
 				pause_cause = 'person',
 				status = CASE WHEN $3 AND status <> 'banned' THEN 'logged_out' ELSE status END,
 				status_reason = CASE WHEN $3 THEN '`+reasonUnlinkedWhenGone+`' ELSE status_reason END
-				WHERE id = $1 AND deleted_at = $2 RETURNING status, status_reason, coalesce(pn, ''), label, push_name`,
-				device, deletedAt, gone).Scan(&status, &reason, &pn, &name, &pushName)
+				WHERE id = $1 AND deleted_at = $2 RETURNING status, status_reason, coalesce(pn, ''), label`,
+				device, deletedAt, gone).Scan(&status, &reason, &pn, &name)
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return ErrIdentityInUse
@@ -1287,7 +1287,7 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 			if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
 				return err
 			}
-			itemName, hint := itemLabel(device, name, pushName, pn)
+			itemName, hint := itemLabel(device, name, pn)
 			return recordEvent(ctx, tx, tenant, itemEvent{
 				Type: eventRecovered, ItemID: device, DedupeKey: dedupeKey(eventRecovered, device, deletedAt),
 				OccurredAt: at, ActorKind: "person", ActorSub: sub, ActorUserID: &actor, ReaderSubs: subs, ReaderUserIDs: users,

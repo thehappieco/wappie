@@ -31,7 +31,7 @@ which a restore replays.
 | `actor_user_id` | Local only, never to be sent: the person, or the key's creator. |
 | `reader_subs` | The platform subs of the number's readers, the actor included when they read it. A reader with no sub is left out. |
 | `reader_user_ids` | Local only, never sent: the same readers' local ids, those with no sub included, for a self-hosted mailer. |
-| `label`, `hint` | The number's name for the contract: its label, else its WhatsApp push name, with every run of seven or more digits masked, a placeholder, an id or the phone number itself skipped, and a name with `@` dropped whole (null when nothing is left); and `…` with the last four digits of its phone number. Never the number itself or its LID. Both are set to null in every row of the number at its purge. |
+| `label`, `hint` | The number's name for the contract: its label, never its WhatsApp push name, with every run of seven or more digits masked, a placeholder, an id or the phone number itself skipped, and a name with `@` dropped whole (null when nothing is left); and `…` with the last four digits of its phone number. Never the number itself or its LID. Both are set to null in every row of the number at its purge. |
 | `deleted_at`, `purge_after` | The deletion's dates on `deleted` and `purged`; `recovered` carries the `deleted_at` it reverses. |
 | `to_tenant_id` | The Personal workspace a `moved_out` number went to. |
 | `person_sub`, `cause` | A `stranded` row's: the sub of the person whose removal or disable stranded the number (null without one), and `revoked` (a removal) or `disabled` (a disable). Null on every other type. |

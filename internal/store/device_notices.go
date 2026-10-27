@@ -188,10 +188,10 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenant); err != nil {
 			return err
 		}
-		var name, pushName, pn string
+		var name, pn string
 		err := tx.QueryRow(ctx, `UPDATE devices SET paused = true, pause_cause = 'person', pause_seq = pause_seq + 1
 			WHERE id = $1 AND NOT paused
-			RETURNING label, push_name, coalesce(pn, '')`, device).Scan(&name, &pushName, &pn)
+			RETURNING label, coalesce(pn, '')`, device).Scan(&name, &pn)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Already paused: nobody is told, but the stop still counts, so
 			// a failed transfer's undo leaves the number paused, and it is
@@ -244,7 +244,7 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 		if len(told) == 0 {
 			return nil
 		}
-		itemName, hint := itemLabel(device, name, pushName, pn)
+		itemName, hint := itemLabel(device, name, pn)
 		rows, err := tx.Query(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind)
 			SELECT $1, $2, u, 'sync_paused', $3, $4, $5, $6 FROM unnest($7::uuid[]) AS u
 			ON CONFLICT (tenant_id, device_id, user_id, kind) WHERE seen_at IS NULL DO UPDATE

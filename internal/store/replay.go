@@ -337,12 +337,12 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 	d := s.device
 	change := ReplayChange{DeviceID: d.DeviceID, Workspace: tenant, Action: s.action}
 	if s.action == ReplayRecovered {
-		var name, pushName, pn string
+		var name, pn string
 		// Paused as the owner's recovery leaves a number: theirs.
 		err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
 			pause_cause = 'person'
-			WHERE id = $1 AND deleted_at = $2 AND purge_started_at IS NULL RETURNING label, push_name, coalesce(pn, '')`,
-			d.DeviceID, s.reversal.DeletedAt).Scan(&name, &pushName, &pn)
+			WHERE id = $1 AND deleted_at = $2 AND purge_started_at IS NULL RETURNING label, coalesce(pn, '')`,
+			d.DeviceID, s.reversal.DeletedAt).Scan(&name, &pn)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return change, fmt.Errorf("number %s changed during the replay, or its purge started: it was not recovered", d.DeviceID)
 		}

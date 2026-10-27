@@ -38,7 +38,7 @@ var placeholders = func() map[string]bool {
 	return out
 }()
 
-// fold is how a candidate is compared with a placeholder: NFC, case folded,
+// fold is how a label is compared with a placeholder: NFC, case folded,
 // with its controls gone and its whitespace collapsed. A Caser keeps state,
 // so each call has its own.
 func fold(s string) string {
@@ -53,14 +53,16 @@ var (
 	legacyPrefix = regexp.MustCompile(`(?i)^[0-9a-f]{6,}$`)
 )
 
-// Contract is the label a notice and an event row keep of a number (the
-// plan's contractLabel, D15): the platform contract's rule for a name a
-// person gave an item (docs/contract/v1, 8.1, the kit's contract.CleanLabel),
-// applied to the number's label, else its WhatsApp push name. Nil when
-// neither leaves anything.
+// Contract is the label a notice, an event row and a snapshot keep of a
+// number (the plan's contractLabel, D15): the platform contract's rule for a
+// name a person gave an item (docs/contract/v1, 8.1, the kit's
+// contract.CleanLabel), applied to the number's label. Nil when it leaves
+// nothing. A label is only a name a person gave the number: its WhatsApp
+// push name, the profile's own, never stands in for one, so an unlabelled
+// number has none (the platform's design of 2026-10-26, 10.27).
 //
-// First, as the contract asks of the app, a candidate is set aside when it
-// is a placeholder, an opaque or legacy id, or the number itself: its digits
+// First, as the contract asks of the app, the label is set aside when it is
+// a placeholder, an opaque or legacy id, or the number itself: its digits
 // hold the last seven of the phone number's. Then, after NFC, the kit's
 // rule: anything with an "@" (or a character that reads as one) goes, since
 // it may be an address; control and format characters go; whitespace
@@ -69,15 +71,12 @@ var (
 // 80 code points, never leaving half a flag.
 //
 // The console never computes this: notices render the server's snapshot.
-func Contract(label, pushName, pn, deviceID string) *string {
-	last7 := lastSeven(pn)
-	for _, candidate := range []string{label, pushName} {
-		if setAside(candidate, last7, deviceID) {
-			continue
-		}
-		if out := Clean(candidate); out != "" {
-			return &out
-		}
+func Contract(label, pn, deviceID string) *string {
+	if setAside(label, lastSeven(pn), deviceID) {
+		return nil
+	}
+	if out := Clean(label); out != "" {
+		return &out
 	}
 	return nil
 }
@@ -91,15 +90,15 @@ func lastSeven(pn string) string {
 	return ""
 }
 
-// setAside reports a candidate that names no number: empty, a placeholder,
-// an id, or the number itself.
-func setAside(candidate, last7, deviceID string) bool {
-	return asideClass(candidate, last7, deviceID) != ""
+// setAside reports a label that names no number: empty, a placeholder, an
+// id, or the number itself.
+func setAside(label, last7, deviceID string) bool {
+	return asideClass(label, last7, deviceID) != ""
 }
 
-// asideClass is why a candidate is set aside, or "" when it is not.
-func asideClass(candidate, last7, deviceID string) Class {
-	trimmed := strings.TrimSpace(stripHidden(candidate))
+// asideClass is why a label is set aside, or "" when it is not.
+func asideClass(label, last7, deviceID string) Class {
+	trimmed := strings.TrimSpace(stripHidden(label))
 	switch {
 	case trimmed == "":
 		return ClassEmpty
@@ -109,7 +108,7 @@ func asideClass(candidate, last7, deviceID string) Class {
 		return ClassLegacyID
 	case legacyPrefix.MatchString(trimmed) && deviceID != "" && strings.HasPrefix(strings.ToLower(deviceID), strings.ToLower(trimmed)):
 		return ClassLegacyID
-	case last7 != "" && strings.Contains(asciiDigits(candidate), last7):
+	case last7 != "" && strings.Contains(asciiDigits(label), last7):
 		return ClassPhone
 	}
 	return ""
@@ -123,7 +122,7 @@ type Class string
 const (
 	// ClassNamed: a name a person gave it leaves Wappie (Contract).
 	ClassNamed Class = "named"
-	// ClassPhone: the candidate was the number itself.
+	// ClassPhone: the label was the number itself.
 	ClassPhone Class = "phone"
 	// ClassPlaceholder: one of the names Wappie gives a number nobody named.
 	ClassPlaceholder Class = "placeholder"
@@ -138,22 +137,15 @@ func Classes() []Class {
 	return []Class{ClassNamed, ClassPhone, ClassPlaceholder, ClassLegacyID, ClassEmpty}
 }
 
-// Classify is the class of what Contract does with a number's label and
-// push name: named when it gives a label, else why the first candidate
-// that holds anything was set aside (or empty, when the rule left nothing
-// of it, an address for one).
-func Classify(label, pushName, pn, deviceID string) Class {
-	if Contract(label, pushName, pn, deviceID) != nil {
+// Classify is the class of what Contract does with a number's label: named
+// when it gives one, else why the label was set aside (or empty, when it
+// holds nothing or the rule left nothing of it, an address for one).
+func Classify(label, pn, deviceID string) Class {
+	if Contract(label, pn, deviceID) != nil {
 		return ClassNamed
 	}
-	last7 := lastSeven(pn)
-	for _, candidate := range []string{label, pushName} {
-		if c := asideClass(candidate, last7, deviceID); c != ClassEmpty {
-			if c == "" {
-				return ClassEmpty
-			}
-			return c
-		}
+	if c := asideClass(label, lastSeven(pn), deviceID); c != "" {
+		return c
 	}
 	return ClassEmpty
 }
@@ -178,7 +170,7 @@ func Clean(raw string) string {
 // characters, the soft hyphen, the word joiner), with the combining grapheme
 // joiner, which could hide, split or reorder what a reader sees. The
 // contract's rule drops the same; Contract uses it only to compare a
-// candidate with a placeholder or an id before the rule runs.
+// label with a placeholder or an id before the rule runs.
 func hidden(r rune) bool {
 	return r < 0x20 || r >= 0x7f && r <= 0x9f || r == 0x034f || unicode.Is(unicode.Cf, r)
 }
