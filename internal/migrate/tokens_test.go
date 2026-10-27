@@ -20,8 +20,9 @@ import (
 
 // tokenRows writes one token of each kind 0053 holds into w's workspace, as
 // the table owner with the policies in force: its selector, its row, a
-// perm, a removed instance, a pin, a sticky row, an open and a lifted stop,
-// the queues, the usage rows, a retirement and a key it revoked.
+// perm, a removed instance, a pin, its identity with a grant of the
+// workspace's number (an archive key at epoch 1), a sticky row, an open and
+// a lifted stop, the queues, the usage rows and a retirement.
 func tokenRows(t *testing.T, w contractWorld) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
@@ -44,9 +45,26 @@ func tokenRows(t *testing.T, w contractWorld) uuid.UUID {
 			VALUES ($1, $2, 'not-a-number', 'send', clock_timestamp(), 'item_unknown')`, token, w.tenant); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO contract_token_pins (token_id, tenant_id, key, fingerprint, registered_at, until)
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_token_pins (token_id, tenant_id, key, fingerprint, registered_at, until)
 			VALUES ($1, $2, decode(repeat('cd', 32), 'hex'), repeat('a', 32), clock_timestamp(), clock_timestamp() + interval '365 days')`,
-			token, w.tenant)
+			token, w.tenant); err != nil {
+			return err
+		}
+		var identity uuid.UUID
+		if err := tx.QueryRow(ctx, `INSERT INTO users (tenant_id, email, public_key, role, token_identity)
+			VALUES ($1, 't-' || $2::text || '@token.invalid', decode(repeat('cd', 32), 'hex'), 'service', true) RETURNING id`,
+			w.tenant, token).Scan(&identity); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE contract_tokens SET identity_user_id = $2 WHERE id = $1`, token, identity); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO device_archive_keys (tenant_id, device_id, epoch, public_key) VALUES ($1, $2, 1, decode(repeat('ef', 32), 'hex'))
+			ON CONFLICT DO NOTHING`, w.tenant, w.device); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk) VALUES ($1, $2, $3, 1, 'sealed')`,
+			w.tenant, w.device, identity)
 		return err
 	})
 	for _, q := range []string{
@@ -153,7 +171,7 @@ func TestMigration0053DownStep(t *testing.T) {
 		t.Fatalf("the down-step: %v", err)
 	}
 	mu.Lock()
-	want := "dropping 1 tokens, 1 local stops (re-apply them after a re-upgrade), 1 retirement rows; 1 keys revoked by the retirement stay revoked"
+	want := "dropping 1 tokens, 1 token identities with 1 grants, 1 local stops (re-apply them after a re-upgrade), 1 retirement rows; 1 keys revoked by the retirement stay revoked"
 	if !slices.Contains(notices, want) {
 		t.Errorf("the down-step's notices: %q, want %q", notices, want)
 	}
@@ -167,6 +185,18 @@ func TestMigration0053DownStep(t *testing.T) {
 		if got[i] != want52[i] {
 			t.Fatalf("after the down-step: %q where 52 has %q", got[i], want52[i])
 		}
+	}
+	// No identity and none of its grants is left, the policies forced again.
+	var identities, logins int
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM users WHERE email LIKE 't-%@token.invalid'),
+			(SELECT count(*) FROM device_key_grants)`).Scan(&identities, &logins)
+	})
+	if identities != 0 || logins != 0 {
+		t.Fatalf("after the down-step: %d identities, %d grants", identities, logins)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_logins WHERE email LIKE 't-%@token.invalid'`).Scan(&logins); err != nil || logins != 0 {
+		t.Fatalf("after the down-step: %d identity logins, %v", logins, err)
 	}
 	var revoked bool
 	if err := pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM api_keys WHERE id = $1`, key).Scan(&revoked); err != nil || !revoked {
@@ -465,7 +495,7 @@ func TestMigration0053Checks(t *testing.T) {
 	refused("another workspace", `UPDATE contract_tokens SET tenant_id = gen_random_uuid() WHERE id = $1`, token)
 	refused("another creator", `UPDATE contract_tokens SET created_by = gen_random_uuid() WHERE id = $1`, token)
 	refused("another creation", `UPDATE contract_tokens SET created_at = created_at - interval '1 second' WHERE id = $1`, token)
-	exec(`UPDATE contract_tokens SET identity_user_id = gen_random_uuid() WHERE id = $1`, token)
+	// tokenRows gave it its identity.
 	refused("another identity", `UPDATE contract_tokens SET identity_user_id = gen_random_uuid() WHERE id = $1`, token)
 	refused("an identity cleared", `UPDATE contract_tokens SET identity_user_id = NULL WHERE id = $1`, token)
 	for _, col := range []string{"unlisted_at", "key_changed_at", "identity_dropped_at"} {
@@ -504,6 +534,32 @@ func TestMigration0053Checks(t *testing.T) {
 	}
 	exec(`DELETE FROM contract_token_sticky`)
 
+	// The identity: no membership, no personal workspace, no permission row
+	// from its grant, and never a password, a recovery or a salt.
+	var identity uuid.UUID
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT identity_user_id FROM contract_tokens WHERE id = $1`, token).Scan(&identity)
+	})
+	var memberships, permissions, personal int
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_memberships WHERE user_id = $1),
+			(SELECT count(*) FROM device_permissions WHERE user_id = $1),
+			(SELECT count(*) FROM tenants WHERE personal_owner_id = $1)`, identity).Scan(&memberships, &permissions, &personal)
+	})
+	if memberships != 0 || permissions != 0 || personal != 0 {
+		t.Fatalf("the identity: %d memberships, %d permission rows, %d personal workspaces", memberships, permissions, personal)
+	}
+	for name, sql := range map[string]string{
+		"a password": `UPDATE users SET auth_hash = 'h' WHERE id = $1`,
+		"a salt":     `UPDATE users SET kdf_salt = decode(repeat('ab', 16), 'hex') WHERE id = $1`,
+		"a role":     `UPDATE users SET role = 'member' WHERE id = $1`,
+		"disabled":   `UPDATE users SET status = 'disabled' WHERE id = $1`,
+	} {
+		if err := w.try(sql, identity); sqlState(err) != "23514" {
+			t.Errorf("an identity with %s: %v, want 23514", name, err)
+		}
+	}
+
 	// A perm only for a token of its own workspace, of a known state.
 	if err := w.try(`INSERT INTO contract_token_perms (token_id, tenant_id, device_id, perm, granted_by, granted_at, generation, version)
 		VALUES ($1, gen_random_uuid(), $2, 'send', gen_random_uuid(), clock_timestamp(), gen_random_uuid(), 1)`, token, w.device); err == nil {
@@ -531,6 +587,7 @@ func TestMigration0053Checks(t *testing.T) {
 	}
 	for _, c := range []struct{ sql, want string }{
 		{`UPDATE contract_tokens SET name = 'Again' WHERE id = '` + token.String() + `'`, token.String()},
+		{`DELETE FROM device_key_grants WHERE device_id = '` + w.device.String() + `'`, token.String()},
 		{`UPDATE contract_token_perms SET state = 'waiting' WHERE token_id = '` + token.String() + `'`, token.String()},
 		{`UPDATE contract_token_stops SET lifted_at = clock_timestamp() WHERE selector = '0123456789abcdef'`, token.String()},
 		{`UPDATE tenants SET mcp_text = false WHERE id = '` + w.tenant.String() + `'`, "all"},
