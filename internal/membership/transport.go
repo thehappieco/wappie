@@ -58,13 +58,16 @@ const peerRetry = time.Minute
 // the socket in production, loopback TCP in development. It follows no
 // redirect (an answer is its request's, and a redirect's answer would be
 // unsigned for it), uses no proxy, and has no timeout of its own: the kit
-// bounds every call (CallTimeout, and the feed's wait plus FeedGrace).
+// bounds every call (CallTimeout, and the feed's wait plus FeedGrace). It
+// keeps up to 8 idle connections: the two long-polls (the account feed's
+// and the token feed's), the acknowledgements, the round and the request
+// path's GETs may each hold one at once.
 func HTTP(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy:               nil,
 			DialContext:         dial,
-			MaxIdleConnsPerHost: 4,
+			MaxIdleConnsPerHost: 8,
 			IdleConnTimeout:     60 * time.Second,
 			ForceAttemptHTTP2:   false,
 		},
