@@ -2021,7 +2021,9 @@ installation ships with them off.
    generation, with no lock, after step 2.
 2. `contract_token_state` FOR UPDATE: a token page's commit,
    `ApplyTokenRecord` (a by-id GET), `FinishTokenPass`, the token mode,
-   and the resets right after step 1, before DB23's workspace rows.
+   an accepted acknowledgement's record (before its queues' rows, and only
+   while its generation is still Wappie's), and the resets right after
+   step 1, before DB23's workspace rows.
 3. `tenants` rows, in workspace id order: FOR UPDATE
    (`lockWorkspaceAccess`) by the token grant write, a number's quarantine
    and move-out, and the keys' retirement; by a token page's commit and

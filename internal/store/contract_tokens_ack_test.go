@@ -145,6 +145,69 @@ func TestAHeldEntryIsSentOnceAndAMergeStaysDue(t *testing.T) {
 	}
 }
 
+// A reset that commits while an acknowledgement is in flight (after the
+// platform accepted it, before AckSent) starts the acknowledgement again:
+// the old generation's through, sets and refusals are not written over the
+// new one's, so the new generation is told both sets whole, though they did
+// not change, and a refusal its records bring again.
+func TestAResetBeforeAckSentStartsTheAcknowledgementAgain(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := w.ctx()
+	device := w.number(uuid.Nil)
+	waitingSub := uuid.New()
+	w.linked("waiting", "admin", waitingSub, false)
+	refused, waiting, stopped := uuid.New(), uuid.New(), uuid.New()
+	unknown := func(r *kc.TokenRecord) {
+		r.Items = []kc.TokenItem{{ID: "gone", Kind: kc.ItemNumber, Perms: []kc.TokenPerm{{Perm: kc.CanRead, GrantedBy: w.ownerSub.String(), GrantedAt: kc.T(w.now)}}}}
+	}
+	records := func() []any {
+		return []any{w.record(refused, 1, unknown), w.record(waiting, 1, grants(device, waitingSub, w.now, kc.CanSend)), w.record(stopped, 1)}
+	}
+	w.page(false, records()...)
+	w.judge()
+	if err := w.tokens.StopToken(ctx, selectorOf(stopped), "root", "", w.now); err != nil {
+		t.Fatal(err)
+	}
+	inFlight := w.ackBody()
+	if len(inFlight.Body.Refused) != 1 || len(inFlight.Body.Waiting) != 1 || len(inFlight.Body.Suspended) != 1 {
+		t.Fatalf("the acknowledgement in flight: %+v", inFlight.Body)
+	}
+
+	// The platform accepts it; a reset to another generation commits, and
+	// the new generation's pass from 0 brings the same records again.
+	next := uuid.New()
+	if ok, err := w.contract.RestartFromTokens(ctx, w.gen, &next, true); err != nil || !ok {
+		t.Fatalf("the reset: %v %v", ok, err)
+	}
+	w.gen, w.seq = next, 0
+	w.page(false, records()...)
+	if err := w.tokens.AckSent(ctx, inFlight, w.now); err != nil {
+		t.Fatal(err)
+	}
+	st, err := w.tokens.AckState(ctx)
+	if err != nil || st.Acked != 0 {
+		t.Fatalf("the old generation's through %d was kept in the new one (%v)", st.Acked, err)
+	}
+	again := w.ackBody()
+	if again.Body.Generation != next.String() || len(again.Body.Waiting) != 1 || len(again.Body.Suspended) != 1 {
+		t.Fatalf("the new generation's first acknowledgement: generation %s, waiting %+v, suspended %+v", again.Body.Generation,
+			again.Body.Waiting, again.Body.Suspended)
+	}
+	if len(again.Body.Refused) != 1 || again.Body.Refused[0] != inFlight.Body.Refused[0] {
+		t.Fatalf("the refusal the new generation's record brings: %+v", again.Body.Refused)
+	}
+	// Accepted in its own generation, it is marked as before.
+	if err := w.tokens.AckSent(ctx, again, w.now); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := w.tokens.AckState(ctx); err != nil || st.Acked != again.Body.Through {
+		t.Fatalf("after the new generation's acknowledgement: %+v %v", st, err)
+	}
+	if last := w.ackBody(); len(last.Body.Refused) != 0 || last.Body.Waiting != nil || last.Body.Suspended != nil {
+		t.Fatalf("after it was accepted: %+v", last.Body)
+	}
+}
+
 // The four lists share one budget of 1000: a waiting set that does not fit
 // beside the refusals goes in its own acknowledgement at the same through,
 // and one over 1000 goes as its first 1000 with waiting_more.
@@ -177,15 +240,18 @@ func TestOverflowGoesInFurtherAcksAtTheSameThrough(t *testing.T) {
 	}
 	waitingRows(20)
 	first := w.ackBody()
-	if len(first.Body.Refused) != 990 || first.Body.Waiting != nil {
-		t.Fatalf("the first: %d refused, waiting %v", len(first.Body.Refused), first.Body.Waiting != nil)
+	// More: the waiting set did not fit, and its own acknowledgement goes
+	// at once.
+	if len(first.Body.Refused) != 990 || first.Body.Waiting != nil || !first.More {
+		t.Fatalf("the first: %d refused, waiting %v, more %t", len(first.Body.Refused), first.Body.Waiting != nil, first.More)
 	}
 	if err := w.tokens.AckSent(context.Background(), first, w.now); err != nil {
 		t.Fatal(err)
 	}
 	second := w.ackBody()
-	if len(second.Body.Refused) != 0 || len(second.Body.Waiting) != 20 || second.Body.Through != first.Body.Through {
-		t.Fatalf("the second: %d refused, %d waiting, through %d", len(second.Body.Refused), len(second.Body.Waiting), second.Body.Through)
+	if len(second.Body.Refused) != 0 || len(second.Body.Waiting) != 20 || second.Body.Through != first.Body.Through || second.More {
+		t.Fatalf("the second: %d refused, %d waiting, through %d, more %t", len(second.Body.Refused), len(second.Body.Waiting),
+			second.Body.Through, second.More)
 	}
 	if err := w.tokens.AckSent(context.Background(), second, w.now); err != nil {
 		t.Fatal(err)
@@ -199,8 +265,29 @@ func TestOverflowGoesInFurtherAcksAtTheSameThrough(t *testing.T) {
 		ALTER TABLE contract_token_selectors ENABLE TRIGGER contract_token_selectors_guard`)
 	waitingRows(1001)
 	big := w.ackBody()
-	if len(big.Body.Waiting) != 1000 || !bool(big.Body.WaitingMore) {
-		t.Fatalf("over 1000: %d waiting, more %v", len(big.Body.Waiting), big.Body.WaitingMore)
+	if len(big.Body.Waiting) != 1000 || !bool(big.Body.WaitingMore) || big.More {
+		t.Fatalf("over 1000: %d waiting, waiting_more %v, more %t", len(big.Body.Waiting), big.Body.WaitingMore, big.More)
+	}
+	if err := w.tokens.AckSent(context.Background(), big, w.now); err != nil {
+		t.Fatal(err)
+	}
+	// A suspended set over 1000 behind a refusal: More, and the next
+	// acknowledgement carries its first 1000, with suspended_more.
+	w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code) VALUES (gen_random_uuid(), 1, 'y', 'read', 'local_role')`)
+	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) SELECT selector, 'operator', clock_timestamp(), 'root'
+		FROM contract_token_selectors`)
+	behind := w.ackBody()
+	if len(behind.Body.Refused) != 1 || behind.Body.Suspended != nil || !behind.More {
+		t.Fatalf("behind a refusal: %d refused, suspended %v, more %t", len(behind.Body.Refused), behind.Body.Suspended != nil, behind.More)
+	}
+	if err := w.tokens.AckSent(context.Background(), behind, w.now); err != nil {
+		t.Fatal(err)
+	}
+	stops := w.ackBody()
+	if len(stops.Body.Refused) != 0 || len(stops.Body.Suspended) != 1000 || !bool(stops.Body.SuspendedMore) || stops.More ||
+		stops.Body.Through != behind.Body.Through {
+		t.Fatalf("the suspended set: %d refused, %d suspended, suspended_more %v, more %t", len(stops.Body.Refused), len(stops.Body.Suspended),
+			stops.Body.SuspendedMore, stops.More)
 	}
 }
 

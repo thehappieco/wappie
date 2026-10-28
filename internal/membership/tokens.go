@@ -171,10 +171,28 @@ func (tw *tokenWork) follow(ctx context.Context) {
 		tw.pause(ctx, backoff)
 		backoff = min(backoff*2, maxBack)
 	}
+	// resetRun: a reset since the last page committed. One that follows it
+	// with no page between waits resetBack first, from the backoff's least
+	// doubled to its most, and no notice cuts that wait (the account side's
+	// adoption follows every reset at once): a platform that keeps sending a
+	// record of another generation than its page's would otherwise restart
+	// the whole contract in a loop, every sub PUT again each time.
+	resetRun, resetBack := false, minBack
 	reset := func(seen uuid.UUID, gen *uuid.UUID, confirmed bool, why string) {
-		if err := tw.reset(ctx, seen, gen, confirmed, why); err != nil {
-			fail("store", "error", err)
+		if resetRun {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(resetBack):
+			}
+			resetBack = min(resetBack*2, maxBack)
 		}
+		done, err := tw.reset(ctx, seen, gen, confirmed, why)
+		if err != nil {
+			fail("store", "error", err)
+			return
+		}
+		resetRun = resetRun || done
 	}
 	for ctx.Err() == nil {
 		st, err := m.Tokens.FeedState(ctx)
@@ -261,6 +279,7 @@ func (tw *tokenWork) follow(ctx context.Context) {
 			// Another writer moved the state: read it again.
 			continue
 		}
+		resetRun, resetBack = false, minBack
 		if stale {
 			l.log().Warn("contract: the token feed was last read over an hour before this leader; token auth holds until it has caught up",
 				"read_at", st.ReadAt.UTC().Format(time.RFC3339))
@@ -290,17 +309,17 @@ func (tw *tokenWork) follow(ctx context.Context) {
 }
 
 // reset restarts both feeds (RestartFromTokens), by compare-and-set on the
-// generation the follower read, then kicks the round. A failure is
-// returned, for the follower's backoff.
-func (tw *tokenWork) reset(ctx context.Context, seen uuid.UUID, gen *uuid.UUID, confirmed bool, why string) error {
+// generation the follower read, then kicks the round, and reports whether
+// it restarted them. A failure is returned, for the follower's backoff.
+func (tw *tokenWork) reset(ctx context.Context, seen uuid.UUID, gen *uuid.UUID, confirmed bool, why string) (bool, error) {
 	l := tw.l
 	done, err := l.Members.Contract.RestartFromTokens(ctx, seen, gen, confirmed)
 	switch {
 	case err != nil:
-		return err
+		return false, err
 	case !done:
 		// The state moved meanwhile: read it again.
-		return nil
+		return false, nil
 	}
 	attrs := []any{"why", why, "old", seen}
 	if gen != nil {
@@ -308,7 +327,7 @@ func (tw *tokenWork) reset(ctx context.Context, seen uuid.UUID, gen *uuid.UUID, 
 	}
 	l.log().Warn("contract: the token feed says the platform's generation changed: every sub is subscribed again and both feeds read from 0", attrs...)
 	kick(tw.round)
-	return nil
+	return true, nil
 }
 
 // finishPass ends a reset's pass of gen once a page with more false
@@ -453,7 +472,7 @@ func (tw *tokenWork) acknowledging(ctx context.Context) {
 		case RefusalCode(err) == kc.CodeGone:
 			// Signed: not the platform's generation, or past its head.
 			if gen, perr := uuid.Parse(ack.Body.Generation); perr == nil {
-				if err := tw.reset(ctx, gen, nil, false, "acknowledgement_gone"); err != nil && ctx.Err() == nil {
+				if _, err := tw.reset(ctx, gen, nil, false, "acknowledgement_gone"); err != nil && ctx.Err() == nil {
 					l.log().Warn("contract: could not reset the feeds", "error", err)
 				}
 			}

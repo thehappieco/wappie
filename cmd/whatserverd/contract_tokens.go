@@ -72,19 +72,19 @@ func contractTokensCommand(args []string, out io.Writer) error {
 	}
 	ready := func() error { return readyFor("contract tokens on", a.cfg.Contract, running) }
 	return contractTokens(ctx, c, args[0], ready, func(ctx context.Context) (kc.TokenFeed, error) {
-		return probeTokens(ctx, a.cfg.Contract)
+		return probeTokens(ctx, a.cfg.Contract, openKMS)
 	}, out)
 }
 
 // probeTokens loads the contract's secrets as contract check does, as the
-// service user from the files the server reads, publishing nothing (it is
-// not the server), and asks the token feed once: GET
-// /contract/v1/tokens?after=0&wait=0.
-func probeTokens(ctx context.Context, cfg config.Contract) (kc.TokenFeed, error) {
+// service user from the files the server reads with Wappie's key opened by
+// open, publishing nothing (it is not the server), and asks the token feed
+// once: GET /contract/v1/tokens?after=0&wait=0.
+func probeTokens(ctx context.Context, cfg config.Contract, open membership.OpenWrapper) (kc.TokenFeed, error) {
 	cfg.LoadedFile = ""
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	client := newContractClient(cfg, log)
-	secrets := &membership.Secrets{Config: cfg, Client: client, OpenWrapper: openKMS}
+	secrets := &membership.Secrets{Config: cfg, Client: client, OpenWrapper: open}
 	if err := secrets.Load(ctx); err != nil {
 		return kc.TokenFeed{}, fmt.Errorf("the secrets did not load (step %s)", secrets.Last().Error)
 	}

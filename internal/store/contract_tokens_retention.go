@@ -195,13 +195,14 @@ func (t *Tokens) StopToken(ctx context.Context, selector, by, note string, now t
 	if !kc.ValidSelector(selector) {
 		return ErrSelector
 	}
-	return t.stopChange(ctx, selector, func(tx pgx.Tx) error {
+	_, err := t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
 		_, err := tx.Exec(ctx, `INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by, note)
 			VALUES ($1, 'operator', $2, $3, $4)
 			ON CONFLICT (selector, cause) DO UPDATE SET stopped_at = EXCLUDED.stopped_at, stopped_by = EXCLUDED.stopped_by,
 				note = EXCLUDED.note, lifted_at = NULL`, selector, now, by, note)
-		return err
+		return true, err
 	})
+	return err
 }
 
 // LiftToken lifts the operator's stop of selector; it reports whether one
@@ -210,23 +211,58 @@ func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) 
 	if !kc.ValidSelector(selector) {
 		return false, ErrSelector
 	}
-	lifted := false
-	err := t.stopChange(ctx, selector, func(tx pgx.Tx) error {
+	return t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
 		tag, err := tx.Exec(ctx, `UPDATE contract_token_stops SET lifted_at = $2
 			WHERE selector = $1 AND cause = 'operator' AND lifted_at IS NULL`, selector, now)
-		lifted = tag.RowsAffected() == 1
-		return err
+		return tag.RowsAffected() == 1, err
 	})
-	return lifted, err
 }
 
-// stopChange runs change, a write of selector's stops, after locking the
-// token the selector maps to (if any) and bumping its access_version.
-func (t *Tokens) stopChange(ctx context.Context, selector string, change func(pgx.Tx) error) error {
-	return retryDeadlock(ctx, func() error {
+// ReplayTokenStop is StopToken for a line of the stop record (tokens suspend
+// -replay, after a restore of Wappie's database), at the line's own time:
+// it applies only when nothing the database holds of the selector's
+// operator stop is later, neither its stop nor its lift, so a replay never
+// rewinds what was done since without the record. It reports whether it
+// applied.
+func (t *Tokens) ReplayTokenStop(ctx context.Context, selector, by, note string, at time.Time) (bool, error) {
+	if !kc.ValidSelector(selector) {
+		return false, ErrSelector
+	}
+	return t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by, note)
+			VALUES ($1, 'operator', $2, $3, $4)
+			ON CONFLICT (selector, cause) DO UPDATE SET stopped_at = EXCLUDED.stopped_at, stopped_by = EXCLUDED.stopped_by,
+				note = EXCLUDED.note, lifted_at = NULL
+			WHERE GREATEST(contract_token_stops.stopped_at, contract_token_stops.lifted_at) <= EXCLUDED.stopped_at`, selector, at, by, note)
+		return tag.RowsAffected() == 1, err
+	})
+}
+
+// ReplayTokenLift is LiftToken for a line of the stop record: it lifts the
+// open operator stop only when that stop is no later than the lift, so a
+// lift the record kept never lifts a stop made since. It reports whether it
+// lifted one.
+func (t *Tokens) ReplayTokenLift(ctx context.Context, selector string, at time.Time) (bool, error) {
+	if !kc.ValidSelector(selector) {
+		return false, ErrSelector
+	}
+	return t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `UPDATE contract_token_stops SET lifted_at = $2
+			WHERE selector = $1 AND cause = 'operator' AND lifted_at IS NULL AND stopped_at <= $2`, selector, at)
+		return tag.RowsAffected() == 1, err
+	})
+}
+
+// stopChange runs change, a write of selector's stops that reports whether
+// it changed one, after locking the token the selector maps to (if any;
+// DB25 step 4), and bumps that token's access_version when it did.
+func (t *Tokens) stopChange(ctx context.Context, selector string, change func(pgx.Tx) (bool, error)) (bool, error) {
+	changed := false
+	err := retryDeadlock(ctx, func() error {
 		return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
 			var token, ws uuid.UUID
 			err := tx.QueryRow(ctx, `SELECT token_id, tenant_id FROM contract_token_selectors WHERE selector = $1`, selector).Scan(&token, &ws)
+			held := err == nil
 			switch {
 			case errors.Is(err, pgx.ErrNoRows):
 			case err != nil:
@@ -235,17 +271,21 @@ func (t *Tokens) stopChange(ctx context.Context, selector string, change func(pg
 				if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, ws.String()); err != nil {
 					return err
 				}
-				if _, err := tx.Exec(ctx, `UPDATE contract_tokens t SET access_version = t.access_version + 1
-					FROM (SELECT id FROM contract_tokens WHERE id = $1 FOR UPDATE) l WHERE t.id = l.id`, token); err != nil {
-					return err
-				}
-				if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', '', true)`); err != nil {
+				if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_tokens WHERE id = $1 FOR UPDATE`, token); err != nil {
 					return err
 				}
 			}
-			return change(tx)
+			if changed, err = change(tx); err != nil || !changed || !held {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE contract_tokens SET access_version = access_version + 1 WHERE id = $1`, token); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id', '', true)`)
+			return err
 		})
 	})
+	return changed, err
 }
 
 // TokenStops lists every stop, open ones first, newest first.

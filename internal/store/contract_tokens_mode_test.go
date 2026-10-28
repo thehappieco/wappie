@@ -134,7 +134,10 @@ func TestTheTokenModeAndTheFollowersState(t *testing.T) {
 
 // contract status's counts of the token part, workspace by workspace under
 // each one's app.tenant_id: live tokens, those unlisted since, those whose
-// key changed, and the open stops.
+// key changed, and the open stops: every operator's, and the apply_failed
+// stops of live tokens only, which only a later version that applies cleanly
+// lifts, so the end of a token (unlisted, expired), or a selector Wappie
+// never held, never leaves --check failing.
 func TestTokenStatusCountsEveryWorkspace(t *testing.T) {
 	w := newTokenWorld(t)
 	ctx := context.Background()
@@ -155,13 +158,25 @@ func TestTokenStatusCountsEveryWorkspace(t *testing.T) {
 	if err := w.tokens.StopToken(ctx, selectorOf(b), "test", "", w.now); err != nil {
 		t.Fatal(err)
 	}
-	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'apply_failed', clock_timestamp(), 'wappie')`, selectorOf(a))
+	for _, sel := range []string{selectorOf(a), selectorOf(c), selectorOf(uuid.New())} {
+		w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'apply_failed', clock_timestamp(), 'wappie')`, sel)
+	}
 	st, err := w.tokens.TokenStatus(ctx, w.now.Add(-time.Hour))
 	if err != nil || st.Live != 2 || st.Unlisted != 1 || st.Stopped != 1 || st.ApplyFailed != 1 {
 		t.Fatalf("the counts: live %d unlisted %d stopped %d apply_failed %d, %v", st.Live, st.Unlisted, st.Stopped, st.ApplyFailed, err)
 	}
 	if st, err := w.tokens.TokenStatus(ctx, w.now.Add(time.Hour)); err != nil || st.Unlisted != 0 {
 		t.Fatalf("the unlisted ones since later: %d %v", st.Unlisted, err)
+	}
+	// a expires, its stop still open: no longer counted.
+	if _, err := w.tokens.RetainTokens(ctx, w.now.Add(31*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := w.tokens.TokenStatus(ctx, w.now.Add(-time.Hour)); err != nil || st.ApplyFailed != 0 || st.Live != 0 {
+		t.Fatalf("after the expiry: apply_failed %d, live %d, %v", st.ApplyFailed, st.Live, err)
+	}
+	if n := w.count(`SELECT count(*) FROM contract_token_stops WHERE cause = 'apply_failed' AND lifted_at IS NULL`); n != 3 {
+		t.Fatalf("%d apply_failed stops open, want the three kept for tokens list", n)
 	}
 }
 

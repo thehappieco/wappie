@@ -5,10 +5,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,15 +115,86 @@ func TestContractTokensOnNeedsT1(t *testing.T) {
 		out.String() != "contract tokens: already on; nothing changed\n" || probed != 3 {
 		t.Fatalf("tokens on again: %v %q (asked %d)", err, out.String(), probed)
 	}
+	// Off makes the snapshots due as well, which then go without the
+	// token part's members.
+	execSQL(t, pool, `UPDATE contract_workspaces SET snapshot_due_at = clock_timestamp() + interval '1 hour' WHERE workspace_id = $1`, ws)
 	out.Reset()
 	if err := contractTokens(ctx, c, store.TokensOff, nil, nil, &out); err != nil || !strings.HasPrefix(out.String(), "contract tokens: on -> off\n") {
 		t.Fatalf("tokens off: %v %q", err, out.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT snapshot_due_at <= clock_timestamp() FROM contract_workspaces WHERE workspace_id = $1`, ws).Scan(&due); err != nil || !due {
+		t.Fatalf("the snapshot is not due after tokens off: %v", err)
 	}
 	if err := contractTokensCommand([]string{"sideways"}, &out); !errors.As(err, new(usageError)) {
 		t.Fatalf("contract tokens sideways: %v", err)
 	}
 	if err := contractTokensCommand([]string{"on", "now"}, &out); !errors.As(err, new(usageError)) {
 		t.Fatalf("contract tokens on now: %v", err)
+	}
+}
+
+// The probe tokens on sends: the contract's secret loaded from its sealed
+// file with Wappie's key, as contract check loads it, publishing nothing,
+// and one signed GET of the token feed from 0 with no wait, which the
+// platform answers at once; a refusal and a failed load each have their
+// class.
+func TestTokensOnProbesTheTokenFeedOnce(t *testing.T) {
+	w := newSecretWorld(t)
+	secret := membershiptest.Secret(t)
+	w.seal(t, "current", secret)
+	fake := membershiptest.StartFake(t, secret)
+	platform, err := url.Parse(fake.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var asked []string
+	proxy := httputil.NewSingleHostReverseProxy(platform)
+	front := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
+		proxy.ServeHTTP(rw, r)
+	}))
+	t.Cleanup(front.Close)
+	loaded := filepath.Join(t.TempDir(), "contract-secrets.loaded")
+	cfg := config.Contract{Addr: strings.TrimPrefix(front.URL, "http://"), SecretFile: w.dir.Path(membership.SecretFileName),
+		SecretOtherFile: w.dir.Path(membership.SecretOtherFileName), KMSKeyARN: testKeyARN, KMSRegion: testRegion, LoadedFile: loaded}
+	ctx := context.Background()
+
+	start := time.Now()
+	feed, err := probeTokens(ctx, cfg, w.key.Open)
+	gen, _ := fake.Generation()
+	if err != nil || feed.Generation != gen {
+		t.Fatalf("the probe: %+v %v, want generation %s", feed, err, gen)
+	}
+	// An empty token feed: a wait would have held the answer.
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the probe took %v", took)
+	}
+	mu.Lock()
+	if len(asked) != 1 || asked[0] != "GET /contract/v1/tokens?after=0&wait=0" {
+		t.Fatalf("the probe asked %q", asked)
+	}
+	mu.Unlock()
+	if _, err := os.Stat(loaded); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the probe published a load: %v", err)
+	}
+
+	fake.RefuseAlways(contracttest.CallTokens, kc.CodeNotFound)
+	_, err = probeTokens(ctx, cfg, w.key.Open)
+	if err == nil || tokenProbeClass(err) != "refused:not_found" {
+		t.Fatalf("a refused probe: %v (class %q)", err, tokenProbeClass(err))
+	}
+	fake.RefuseAlways(contracttest.CallTokens, "")
+	before := fake.Count(contracttest.CallTokens)
+	w.key.SetFail(errors.New("kms: the key is disabled"))
+	_, err = probeTokens(ctx, cfg, w.key.Open)
+	if err == nil || !strings.HasPrefix(tokenProbeClass(err), "the secrets did not load (step ") {
+		t.Fatalf("a probe whose secrets did not load: %v (class %q)", err, tokenProbeClass(err))
+	}
+	if n := fake.Count(contracttest.CallTokens); n != before {
+		t.Fatalf("a probe whose secrets did not load asked the token feed (%d calls, were %d)", n, before)
 	}
 }
 
@@ -342,8 +417,12 @@ func TestTokensSuspendCommand(t *testing.T) {
 	ctx := context.Background()
 	tokens := store.NewTokens(pool)
 	const known, unknown = "0123456789abcdef", "fedcba9876543210"
-	execSQL(t, pool, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
-		VALUES ($1, gen_random_uuid(), gen_random_uuid(), decode(repeat('ab', 32), 'hex'), clock_timestamp() + interval '1 day')`, known)
+	var knownID uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
+		VALUES ($1, gen_random_uuid(), gen_random_uuid(), decode(repeat('ab', 32), 'hex'), clock_timestamp() + interval '1 day')
+		RETURNING token_id`, known).Scan(&knownID); err != nil {
+		t.Fatal(err)
+	}
 
 	// A whole token: only its selector is kept.
 	whole := kc.TokenPrefix + known + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -414,6 +493,25 @@ func TestTokensSuspendCommand(t *testing.T) {
 	if after := state(); len(after) != 2 || after[known+" operator"] != before[known+" operator"] || after[unknown+" operator"] != before[unknown+" operator"] {
 		t.Fatalf("after the replay %v, before the restore %v", after, before)
 	}
+	// What the database holds that is later than the record (a stop, and
+	// a lift, made without -record) stands over its older lines: the stop is
+	// neither rewound nor lifted by the record's older lift, and the lift is
+	// not undone by the record's older stop.
+	for _, r := range []tokenStopRecord{{Selector: known, At: at.Add(3 * time.Second)}, {Selector: unknown, At: at.Add(4 * time.Second), Lift: true}} {
+		if err := changeTokenStop(ctx, tokens, r, "", &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	later := state()
+	out.Reset()
+	if err := replayTokenStops(ctx, tokens, record, &out); err != nil || !strings.Contains(out.String(), "0 stops and 0 lifts applied") ||
+		!strings.Contains(out.String(), "3 lines left") {
+		t.Fatalf("the replay over later changes: %v %q", err, out.String())
+	}
+	if after := state(); after[known+" operator"] != "open "+stamp(at.Add(3*time.Second)) || after[known+" operator"] != later[known+" operator"] ||
+		after[unknown+" operator"] != "lifted "+stamp(at.Add(4*time.Second)) {
+		t.Fatalf("after the replay over later changes %v, before it %v", after, later)
+	}
 	// A line that is no record refuses the replay before it changes
 	// anything.
 	if err := os.WriteFile(record, []byte(`{"selector":"`+known+`","at":"`+at.Format(time.RFC3339)+`"}`+"\nnot a record\n"), 0o600); err != nil {
@@ -435,6 +533,10 @@ func TestTokensSuspendCommand(t *testing.T) {
 	if err := listTokenStops(ctx, tokens, &out); err != nil || !strings.Contains(out.String(), known+" operator stopped ") ||
 		!strings.HasSuffix(out.String(), "1 stops\n") {
 		t.Fatalf("tokens list: %v %q", err, out.String())
+	}
+	// Never the token a selector maps to, in either spelling.
+	if list := out.String(); strings.Contains(list, knownID.String()) || strings.Contains(list, strings.ReplaceAll(knownID.String(), "-", "")) {
+		t.Fatalf("tokens list names the token behind a selector: %q", list)
 	}
 	if err := tokensCommand([]string{"suspend", "-replay", record, known}, strings.NewReader(""), &out); err == nil {
 		t.Fatal("tokens suspend -replay with a selector ran")

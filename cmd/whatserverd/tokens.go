@@ -177,7 +177,10 @@ func appendTokenStop(path string, r tokenStopRecord) error {
 
 // replayTokenStops applies a record's lines in order: each stop at its own
 // time, each lift likewise, so the stops stand as they stood before the
-// restore. A line that is not a record is refused before anything changes.
+// restore; a line older than what the database holds of its selector's stop
+// (a stop or a lift made since without the record) is left, so a replay
+// never rewinds a later stop, nor lifts one. A line that is not a record is
+// refused before anything changes.
 func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.Writer) error {
 	b, err := os.ReadFile(path) //nolint:gosec // G304: the operator names the record
 	if err != nil {
@@ -195,22 +198,28 @@ func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.
 		records = append(records, r)
 	}
 	by := osUser()
-	stops, lifts := 0, 0
+	stops, lifts, left := 0, 0, 0
 	for _, r := range records {
+		var applied bool
 		if r.Lift {
-			if _, err := t.LiftToken(ctx, r.Selector, r.At); err != nil {
-				return err
-			}
-			lifts++
-			continue
+			applied, err = t.ReplayTokenLift(ctx, r.Selector, r.At)
+		} else {
+			applied, err = t.ReplayTokenStop(ctx, r.Selector, by, r.Note, r.At)
 		}
-		if err := t.StopToken(ctx, r.Selector, by, r.Note, r.At); err != nil {
+		switch {
+		case err != nil:
 			return err
+		case !applied:
+			left++
+		case r.Lift:
+			lifts++
+		default:
+			stops++
 		}
-		stops++
 	}
 	w := &lines{w: out}
-	w.f("tokens suspend -replay: %d stops and %d lifts applied from %s", stops, lifts, path)
+	w.f("tokens suspend -replay: %d stops and %d lifts applied from %s; %d lines left, older than what the database holds or with nothing to lift",
+		stops, lifts, path, left)
 	return w.err
 }
 
