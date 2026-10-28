@@ -346,45 +346,60 @@ func suspendedTx(ctx context.Context, tx pgx.Tx) (kc.Suspensions, error) {
 // delivered, each only as the body carried it (an entry merged or recoded
 // since, whose queued_at moved, stays due), its through and the hashes of
 // the sets it carried are kept, and the acknowledgement's failure is
-// cleared.
+// cleared. Only while its generation is still Wappie's: a reset to another
+// that committed after the platform accepted it started the acknowledgement
+// again (restartTokensTx), and the old generation's through and sets written
+// over it would leave the new one never told a set that did not change, nor
+// the refusals queued since that match one of the old ones. (A reset back to
+// the same generation leaves true what the platform accepted in it.)
+// contract_token_state's lock comes first (DB25 step 2), so a reset in
+// flight is waited for, and the next statement sees what it stored.
 func (t *Tokens) AckSent(ctx context.Context, a TokenAck, at time.Time) error {
-	return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
-		if len(a.refused) > 0 {
-			n := len(a.refused)
-			tokens, versions, items, perms := make([]uuid.UUID, n), make([]int64, n), make([]string, n), make([]string, n)
-			queued := make([]time.Time, n)
-			for i, r := range a.refused {
-				tokens[i], versions[i], items[i], perms[i], queued[i] = r.token, r.version, r.item, r.perm, r.queuedAt
-			}
-			if _, err := tx.Exec(ctx, `UPDATE contract_token_refusals_out o SET sent_at = $1
-				FROM unnest($2::uuid[], $3::bigint[], $4::text[], $5::text[], $6::timestamptz[]) AS r(token, version, item, perm, queued)
-				WHERE o.token_id = r.token AND o.version = r.version AND o.item = r.item AND o.perm = r.perm AND o.sent_at IS NULL
-				  AND o.queued_at = r.queued`,
-				at, tokens, versions, items, perms, queued); err != nil {
+	return retryDeadlock(ctx, func() error {
+		return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_token_state FOR UPDATE`); err != nil {
 				return err
 			}
-		}
-		if len(a.held) > 0 {
-			gen, err := uuid.Parse(a.Body.Generation)
-			if err != nil {
+			var gen *uuid.UUID
+			if err := tx.QueryRow(ctx, `SELECT generation FROM contract_state`).Scan(&gen); err != nil {
 				return err
 			}
-			tokens, queued := make([]uuid.UUID, len(a.held)), make([]time.Time, len(a.held))
-			for i, h := range a.held {
-				tokens[i], queued[i] = h.token, h.queuedAt
+			if gen == nil || gen.String() != a.Body.Generation {
+				return nil
 			}
-			if _, err := tx.Exec(ctx, `UPDATE contract_token_held_out o SET sent_at = $1
-				FROM unnest($2::uuid[], $3::timestamptz[]) AS h(token, queued)
-				WHERE o.token_id = h.token AND o.generation = $4 AND o.sent_at IS NULL AND o.queued_at = h.queued`,
-				at, tokens, queued, gen); err != nil {
-				return err
+			if len(a.refused) > 0 {
+				n := len(a.refused)
+				tokens, versions, items, perms := make([]uuid.UUID, n), make([]int64, n), make([]string, n), make([]string, n)
+				queued := make([]time.Time, n)
+				for i, r := range a.refused {
+					tokens[i], versions[i], items[i], perms[i], queued[i] = r.token, r.version, r.item, r.perm, r.queuedAt
+				}
+				if _, err := tx.Exec(ctx, `UPDATE contract_token_refusals_out o SET sent_at = $1
+					FROM unnest($2::uuid[], $3::bigint[], $4::text[], $5::text[], $6::timestamptz[]) AS r(token, version, item, perm, queued)
+					WHERE o.token_id = r.token AND o.version = r.version AND o.item = r.item AND o.perm = r.perm AND o.sent_at IS NULL
+					  AND o.queued_at = r.queued`,
+					at, tokens, versions, items, perms, queued); err != nil {
+					return err
+				}
 			}
-		}
-		_, err := tx.Exec(ctx, `UPDATE contract_token_state SET ack_through = GREATEST(ack_through, $1), ack_sent_at = $2,
-			ack_error = NULL, ack_error_at = NULL,
-			waiting_sent_hash = coalesce($3, waiting_sent_hash), suspended_sent_hash = coalesce($4, suspended_sent_hash)`,
-			a.Body.Through, at, a.waitingHash, a.suspendedHash)
-		return err
+			if len(a.held) > 0 {
+				tokens, queued := make([]uuid.UUID, len(a.held)), make([]time.Time, len(a.held))
+				for i, h := range a.held {
+					tokens[i], queued[i] = h.token, h.queuedAt
+				}
+				if _, err := tx.Exec(ctx, `UPDATE contract_token_held_out o SET sent_at = $1
+					FROM unnest($2::uuid[], $3::timestamptz[]) AS h(token, queued)
+					WHERE o.token_id = h.token AND o.generation = $4 AND o.sent_at IS NULL AND o.queued_at = h.queued`,
+					at, tokens, queued, *gen); err != nil {
+					return err
+				}
+			}
+			_, err := tx.Exec(ctx, `UPDATE contract_token_state SET ack_through = GREATEST(ack_through, $1), ack_sent_at = $2,
+				ack_error = NULL, ack_error_at = NULL,
+				waiting_sent_hash = coalesce($3, waiting_sent_hash), suspended_sent_hash = coalesce($4, suspended_sent_hash)`,
+				a.Body.Through, at, a.waitingHash, a.suspendedHash)
+			return err
+		})
 	})
 }
 

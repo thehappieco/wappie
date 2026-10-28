@@ -170,6 +170,42 @@ func (w *tokenWorld) stored(t *testing.T, id string) (version int64, revoked, un
 	return version, revoked, unlisted
 }
 
+// held is what Wappie holds of the token, in whichever workspace: the
+// version of the record it applied and that record's token feed seq (both
+// 0 while it holds none).
+func (w *tokenWorld) held(t *testing.T, id string) (version, seq int64) {
+	t.Helper()
+	ctx := context.Background()
+	var ws uuid.UUID
+	err := w.pool.QueryRow(ctx, `SELECT tenant_id FROM contract_token_selectors WHERE token_id = $1`, id).Scan(&ws)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, 0
+	case err != nil:
+		t.Fatal(err)
+	}
+	if err := pg.InTenantTx(ctx, w.pool, ws.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT coalesce(version, 0), coalesce(seq, 0) FROM contract_tokens WHERE id = $1`, id).Scan(&version, &seq)
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatal(err)
+	}
+	return version, seq
+}
+
+// latestSeq waits until Wappie holds the fake's latest record of the token,
+// and is the token feed seq Wappie stored with it: contracttest's version is
+// its seq, which no test may rely on (the plan's 10).
+func (w *tokenWorld) latestSeq(t *testing.T, id string) int64 {
+	t.Helper()
+	var seq int64
+	eventually(t, 10*time.Second, "Wappie holds the token's latest record", func() bool {
+		var version int64
+		version, seq = w.held(t, id)
+		return version == w.version(t, id)
+	})
+	return seq
+}
+
 // settled waits for the pass of the generation the world adopted at its
 // sign-up (every first adoption starts one), whose end is acknowledged at
 // once, whatever the spacing.
@@ -234,8 +270,10 @@ func TestTokenFeedEndToEnd(t *testing.T) {
 	if v, revoked, _ := w.stored(t, id); v != w.version(t, id) || revoked {
 		t.Fatalf("Wappie holds version %d (revoked %t), the fake %d", v, revoked, w.version(t, id))
 	}
-	if f := w.feed(t); f.caughtUp == nil || f.cursor < w.version(t, id) || f.published == nil {
-		t.Fatalf("the token feed's state %+v", f)
+	if _, seq := w.held(t, id); seq == 0 {
+		t.Fatal("Wappie stored no seq with the token's record")
+	} else if f := w.feed(t); f.caughtUp == nil || f.cursor < seq || f.published == nil {
+		t.Fatalf("the token feed's state %+v, the record's seq %d", f, seq)
 	}
 
 	// Its reading key, registered in the console, is pinned, and the
@@ -261,18 +299,18 @@ func TestTokenFeedEndToEnd(t *testing.T) {
 	if err := w.fake.RevokeToken(id, kc.RevokedInConsole); err != nil {
 		t.Fatal(err)
 	}
-	seq := w.version(t, id)
-	eventually(t, 5*time.Second, "the revocation acknowledged", func() bool { return w.acked(seq) })
+	seq := w.latestSeq(t, id)
 	if _, revoked, _ := w.stored(t, id); !revoked {
-		t.Fatal("the revocation was acknowledged before it applied")
+		t.Fatal("Wappie holds the revocation's record, not revoked")
 	}
+	eventually(t, 5*time.Second, "the revocation acknowledged", func() bool { return w.acked(seq) })
 	// Taken off the app: that app's record is revoked, app_removed.
 	other, _ := w.token(t, kc.CanSend)
 	eventually(t, 5*time.Second, "the other token applied", func() bool { return w.perms(t, other)[kc.CanSend] == "applied" })
 	if err := w.fake.TakeTokenOffApp(other, "wappie"); err != nil {
 		t.Fatal(err)
 	}
-	seq = w.version(t, other)
+	seq = w.latestSeq(t, other)
 	eventually(t, 5*time.Second, "app_removed acknowledged", func() bool { return w.acked(seq) })
 	if _, revoked, _ := w.stored(t, other); !revoked {
 		t.Fatal("a token taken off Wappie is not revoked here")
@@ -309,8 +347,9 @@ func TestHeldIsReportedAfterAReset(t *testing.T) {
 	}
 	eventually(t, 5*time.Second, "send dropped and the page trusted", func() bool {
 		_, ok := w.perms(t, id)[kc.CanSend]
+		v, _ := w.held(t, id)
 		f := w.feed(t)
-		return !ok && f.cursor >= w.version(t, id) && f.published != nil && f.published.After(time.Now().Add(-time.Minute))
+		return !ok && v == w.version(t, id) && f.published != nil && f.published.After(time.Now().Add(-time.Minute))
 	})
 	gen := w.fake.Restore()
 	// A grant the restored platform holds from before the last
@@ -696,30 +735,268 @@ func TestARewoundTokenFeedResets(t *testing.T) {
 
 // While Wappie holds no generation (the first observe, or after a gone),
 // the token follower asks the platform nothing: no reset can loop. The
-// account feed's first page adopts the generation, and the token follower
-// asks at once.
+// account feed's first page adopts the generation, and wakes the token
+// follower, which asks at once: its pause with no generation is the
+// backoff's most, here 30 seconds, which only that wake (or another test's
+// generation notice) ends within seconds.
 func TestTheTokenFollowerWaitsWithNoGeneration(t *testing.T) {
 	w := newTokenWorld(t)
 	w.exec(context.Background(), t, `UPDATE contract_state SET generation = NULL, feed_cursor = 0`)
 	// The account side gets no page, and the round's PUTs no answer.
 	w.fake.RefuseAlways(contracttest.CallFeed, kc.CodeUnavailable)
 	w.fake.RefuseAlways(contracttest.CallSubscribe, kc.CodeUnavailable)
+	calls := w.stamped(contracttest.CallTokens)
 	logs := &membershiptest.Logs{}
-	run(t, w.tokenLeader(w.members, logs, lockKey(t)))
+	l := w.tokenLeader(w.members, logs, lockKey(t))
+	l.TokenBackoffMax = 30 * time.Second
+	gens := w.generations(t)
+	run(t, l)
 	eventually(t, 5*time.Second, "the token loops", func() bool { return len(logs.Lines("contract: following the token feed")) == 1 })
 	eventually(t, 5*time.Second, "the feed asked", func() bool { return w.fake.Count(contracttest.CallFeed) > 1 })
 	time.Sleep(time.Second)
-	if n := w.fake.Count(contracttest.CallTokens); n != 0 {
+	if n := len(calls()); n != 0 {
 		t.Fatalf("%d token feed calls with no generation", n)
 	}
 	w.fake.RefuseAlways(contracttest.CallFeed, "")
-	asked := time.Now()
-	eventually(t, 5*time.Second, "the token feed asked once the generation is adopted", func() bool {
-		return w.fake.Count(contracttest.CallTokens) > 0 && w.feed(t).readAt != nil
+	var adopted time.Time
+	eventually(t, 10*time.Second, "the generation adopted", func() bool {
+		adopted = time.Now()
+		return w.feed(t).generation != nil
 	})
-	// Woken by the adoption, not by the pause's 200 ms bound alone.
-	if took := time.Since(asked); took > 3*time.Second {
-		t.Fatalf("the token feed was asked %v after the feed came back", took)
+	eventually(t, 10*time.Second, "the token feed asked once the generation is adopted", func() bool { return len(calls()) > 0 })
+	if took := calls()[0].Sub(adopted); took > 3*time.Second {
+		t.Fatalf("the token feed was asked %v after the adoption (%d generation notices meanwhile)", took, gens())
+	}
+}
+
+// A grant whose giver has an account here but no document waits; once the
+// giver's document is stored (the token channel's all), the judge decides
+// it at once, never only at its minute's pass.
+func TestAWaitingGrantIsJudgedOnceItsDocumentComes(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	giver := uuid.New()
+	w.exec(ctx, t, `INSERT INTO platform_identities (sub, user_id, email, linked_from) VALUES ($1, $2, $3, 'legacy')`,
+		giver, w.localPerson(t), giver.String()[:8]+"@id.test")
+	l := w.tokenLeader(w.members, &membershiptest.Logs{}, lockKey(t))
+	l.JudgeEvery = time.Hour
+	run(t, l)
+	id, _ := w.token(t)
+	if err := w.fake.GrantToken(id, "wappie", w.number.String(), kc.ItemNumber, kc.CanSend, giver.String()); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "the grant waits for its giver's document", func() bool { return w.perms(t, id)[kc.CanSend] == "waiting" })
+	gen := w.state(t).Generation
+	if _, err := w.contract.StoreDocuments(ctx, store.ContractAnswer, store.ContractDoc{Sub: giver, Generation: *gen, Version: 1,
+		Status: kc.AccountActive, Raw: []byte(`{"v":1,"workspaces":[]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	// Judged: the giver is no owner or admin of the workspace here.
+	eventually(t, 5*time.Second, "the grant judged once the document came", func() bool {
+		return w.perms(t, id)[kc.CanSend] == "refused:"+kc.RefusedLocalRole
+	})
+}
+
+// The token follower's silence: after SilentAfter without a page, one
+// ERROR, recorded for contract status --check (token_feed_silent), however
+// many calls fail after it; a page ends the run.
+func TestTokenFollowerSilence(t *testing.T) {
+	w := newTokenWorld(t)
+	logs := &membershiptest.Logs{}
+	l := w.tokenLeader(w.members, logs, lockKey(t))
+	l.SilentAfter = 300 * time.Millisecond
+	run(t, l)
+	eventually(t, 10*time.Second, "a token page", func() bool { return w.feed(t).caughtUp != nil })
+	silence := func() int { return len(logs.Lines("level=ERROR", "contract: no token feed page for a long time")) }
+	if n := silence(); n != 0 {
+		t.Fatalf("%d silences while the token feed answers", n)
+	}
+	w.fake.RefuseAlways(contracttest.CallTokens, kc.CodeUnavailable)
+	// The long-poll in flight began before the refusals.
+	w.exec(context.Background(), t, `SELECT pg_notify($1, 'generation')`, store.ContractModeChannel)
+	eventually(t, 5*time.Second, "the silence's ERROR", func() bool { return silence() == 1 })
+	calls := w.fake.Count(contracttest.CallTokens)
+	eventually(t, 5*time.Second, "more failed calls", func() bool { return w.fake.Count(contracttest.CallTokens) >= calls+6 })
+	if n := silence(); n != 1 {
+		t.Fatalf("%d silences over more failed calls, want one", n)
+	}
+	if s := w.state(t); s.ErrorClass != store.ContractErrorTokenFeedSilent || s.ErrorAt == nil {
+		t.Fatalf("the silence was not recorded: %+v", s)
+	}
+	if f := w.feed(t); f.failing != kc.CodeUnavailable && f.failing != "refused:"+kc.CodeUnavailable {
+		t.Fatalf("the token feed's failure class: %q", f.failing)
+	}
+	w.fake.RefuseAlways(contracttest.CallTokens, "")
+	eventually(t, 10*time.Second, "the token feed answers again", func() bool { return len(logs.Lines("contract: the token feed answers again")) > 0 })
+	if n := silence(); n != 1 {
+		t.Fatalf("%d silences after the token feed came back", n)
+	}
+}
+
+// A token page whose commit took over a second from its receipt is logged
+// and recorded for --check (the design's bound on a narrowing).
+func TestASlowTokenCommitIsRecorded(t *testing.T) {
+	w := newTokenWorld(t)
+	gen := w.generation(t)
+	ctx := context.Background()
+	cursor := w.feed(t).cursor
+	var once sync.Once
+	held := make(chan error, 1)
+	page := func(after int64) kc.TokenFeed {
+		p := kc.TokenFeed{Generation: gen, Head: cursor + 1, PublishedThrough: kc.T(time.Now()), Items: []kc.TokenFeedItem{}, NextAfter: cursor + 1}
+		if after == cursor {
+			p.Items = append(p.Items, tokenItem(t, cursor+1, w.tokenRecord(gen, uuid.Must(uuid.NewV7()), 1)))
+			// The commit waits for the token state's lock, held from before
+			// the page leaves for 1.5 seconds.
+			once.Do(func() {
+				tx, err := w.pool.Begin(ctx)
+				if err == nil {
+					_, err = tx.Exec(ctx, `SELECT 1 FROM contract_token_state FOR UPDATE`)
+				}
+				if err != nil {
+					held <- err
+					return
+				}
+				go func() {
+					time.Sleep(1500 * time.Millisecond)
+					held <- tx.Commit(ctx)
+				}()
+			})
+		}
+		return p
+	}
+	logs := &membershiptest.Logs{}
+	run(t, w.tokenLeader(w.membersOn(w.signedTokens(t, &signedTokens{}, page), logs), logs, lockKey(t)))
+	eventually(t, 10*time.Second, "the page committed", func() bool { return w.feed(t).cursor == cursor+1 })
+	if err := <-held; err != nil {
+		t.Fatal(err)
+	}
+	// Recorded after the commit, by the follower.
+	eventually(t, 5*time.Second, "the slow commit recorded", func() bool { return w.feed(t).slowCommit != nil })
+	st, err := w.tokens.TokenStatus(ctx, time.Now().Add(-time.Hour))
+	if err != nil || st.SlowCommit < time.Second {
+		t.Fatalf("the slow commit's time: %v %v", st.SlowCommit, err)
+	}
+	if len(logs.Lines("level=WARN", "contract: a token page took over a second to commit")) != 1 {
+		t.Fatalf("no WARN for the slow commit:\n%s", logs.String())
+	}
+}
+
+// A token page whose record is of another generation than its page's
+// resets both feeds; a platform that keeps sending such a page never
+// restarts the contract in a loop: a reset that follows another with no
+// page committed between waits the backoff first, from its least doubled
+// to its most. (With no wait, the account side's adoption makes the next
+// reset within milliseconds.)
+func TestARecordOfAnotherGenerationNeverResetsInALoop(t *testing.T) {
+	w := newTokenWorld(t)
+	gen := w.generation(t)
+	other := uuid.NewString()
+	page := func(after int64) kc.TokenFeed {
+		rec := w.tokenRecord(other, uuid.Must(uuid.NewV7()), 1)
+		return kc.TokenFeed{Generation: gen, Head: after + 1, PublishedThrough: kc.T(time.Now()),
+			Items: []kc.TokenFeedItem{tokenItem(t, after+1, rec)}, NextAfter: after + 1}
+	}
+	logs := &membershiptest.Logs{}
+	l := w.tokenLeader(w.membersOn(w.signedTokens(t, &signedTokens{}, page), logs), logs, lockKey(t))
+	const least, most = 500 * time.Millisecond, 2 * time.Second
+	l.TokenBackoffMin, l.TokenBackoffMax = least, most
+	run(t, l)
+	resets := func() []string {
+		return logs.Lines("contract: the token feed says the platform's generation changed", "why=record_generation")
+	}
+	eventuallySteps(t, 10*time.Second, "five resets", 5, func() int { return len(resets()) })
+	var at []time.Time
+	for _, line := range resets() {
+		field, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "time="), " ")
+		ts, err := time.Parse(time.RFC3339Nano, field)
+		if err != nil {
+			t.Fatalf("a log line's time: %v", err)
+		}
+		at = append(at, ts)
+	}
+	wait := least
+	for i := 1; i < len(at); i++ {
+		// The log's times are to the millisecond.
+		if gap := at[i].Sub(at[i-1]); gap < wait-2*time.Millisecond {
+			t.Fatalf("reset %d came %v after the one before, under the backoff's %v:\n%s", i+1, gap, wait, logs.String())
+		}
+		wait = min(wait*2, most)
+	}
+	if f := w.feed(t); f.cursor != 0 {
+		t.Fatalf("a record of another generation moved the cursor to %d", f.cursor)
+	}
+}
+
+// The token loops run only while the token mode is on: a leader that leads
+// with it off asks the token feed nothing, and sends no acknowledgement and
+// no usage report. The mode turned on while it leads starts them, with no
+// restart of the leader: by the token channel's notice, well within the mode
+// check, or, the notice lost, at the next check. Turned off, they stop, and
+// the token feed is asked no more.
+func TestTheTokenLoopsFollowTheTokenMode(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	w.exec(ctx, t, `UPDATE contract_token_state SET mode = 'off'`)
+	// A use to report, which the usage sender sends at its start.
+	if err := w.tokens.AddTokenUse(ctx, store.TokenUse{Used: []store.TokenDay{{Token: uuid.Must(uuid.NewV7()), Day: time.Now()}}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := func() [3]int {
+		return [3]int{w.fake.Count(contracttest.CallTokens), w.fake.Count(contracttest.CallTokensApplied), w.fake.Count(contracttest.CallTokenUsage)}
+	}
+	following := func(logs *membershiptest.Logs) int { return len(logs.Lines("contract: following the token feed")) }
+	stopped := func(logs *membershiptest.Logs) int {
+		return len(logs.Lines("contract: no longer following the token feed"))
+	}
+	for _, c := range []struct {
+		name      string
+		modeCheck time.Duration
+		switchTo  func(mode string)
+	}{
+		{"by the notice", time.Minute, func(mode string) {
+			if _, err := w.tokens.SetMode(ctx, mode, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"by the mode check, the notice lost", 300 * time.Millisecond, func(mode string) {
+			w.exec(ctx, t, `ALTER TABLE contract_token_state DISABLE TRIGGER contract_token_state_notify;
+				UPDATE contract_token_state SET mode = '`+mode+`', caught_up_at = NULL;
+				ALTER TABLE contract_token_state ENABLE TRIGGER contract_token_state_notify`)
+		}},
+	} {
+		logs := &membershiptest.Logs{}
+		l := w.tokenLeader(w.members, logs, lockKey(t))
+		l.ModeCheck = c.modeCheck
+		stop := run(t, l)
+		eventually(t, 10*time.Second, c.name+": the leader follows the account feed", func() bool {
+			return len(logs.Lines("contract: leading")) == 1 && w.feed(t).generation != nil
+		})
+		before := calls()
+		time.Sleep(time.Second)
+		if after := calls(); after != before || following(logs) != 0 {
+			t.Fatalf("%s: with the token mode off, token calls %v (were %v), the loops started %d times", c.name, after, before, following(logs))
+		}
+
+		c.switchTo(store.TokensOn)
+		eventually(t, 5*time.Second, c.name+": the token loops started", func() bool { return following(logs) == 1 })
+		eventually(t, 5*time.Second, c.name+": a token page, an acknowledgement and a usage report", func() bool {
+			n := calls()
+			return w.feed(t).caughtUp != nil && n[0] > before[0] && n[1] > before[1] && n[2] > before[2]
+		})
+		c.switchTo(store.TokensOff)
+		eventually(t, 5*time.Second, c.name+": the token loops stopped", func() bool { return stopped(logs) == 1 })
+		before = calls()
+		time.Sleep(time.Second)
+		if after := calls(); after[0] != before[0] {
+			t.Fatalf("%s: the token feed was asked %d times after the loops stopped", c.name, after[0]-before[0])
+		}
+		if n := len(logs.Lines("contract: leading")); n != 1 || following(logs) != 1 {
+			t.Fatalf("%s: the leader led %d times, the loops started %d times:\n%s", c.name, n, following(logs), logs.String())
+		}
+		stop()
+		// The usage is reported again by the next run.
+		w.exec(ctx, t, `UPDATE contract_token_used SET reported_at = NULL`)
 	}
 }
 
@@ -916,15 +1193,19 @@ func (w *tokenWorld) lastSet(n int, pick func(kc.TokenApplied) bool) (kc.TokenAp
 	return kc.TokenApplied{}, false
 }
 
-// A narrowing is acknowledged at once, whatever the acknowledgements'
-// spacing; a widening waits for it.
+// A narrowing is acknowledged at once, and so is the end of a reset's
+// pass, whatever the acknowledgements' spacing; a widening waits for it.
+// The spacing here is a minute: an acknowledgement well within it is one
+// sent at once.
 func TestANarrowingIsAcknowledgedAtOnce(t *testing.T) {
 	w := newTokenWorld(t)
 	id, _ := w.token(t, kc.CanRead, kc.CanSend)
 	l := w.tokenLeader(w.members, &membershiptest.Logs{}, lockKey(t))
-	l.AckSpacing, l.AckEvery = 5*time.Second, time.Minute
+	const spacing = time.Minute
+	l.AckSpacing, l.AckEvery = spacing, 2*spacing
 	run(t, l)
-	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(w.version(t, id)) })
+	seq := w.latestSeq(t, id)
+	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(seq) })
 	w.settled(t)
 	n := len(w.acks())
 
@@ -932,16 +1213,27 @@ func TestANarrowingIsAcknowledgedAtOnce(t *testing.T) {
 	eventually(t, 5*time.Second, "manage applied", func() bool { return w.perms(t, id)[kc.CanManage] == "applied" })
 	time.Sleep(500 * time.Millisecond)
 	if m := len(w.acks()); m != n {
-		t.Fatalf("a widening was acknowledged within the 5-second spacing (%d acknowledgements, were %d)", m, n)
+		t.Fatalf("a widening was acknowledged within the spacing (%d acknowledgements, were %d)", m, n)
 	}
 	if err := w.fake.UngrantToken(id, "wappie", w.number.String(), kc.CanSend); err != nil {
 		t.Fatal(err)
 	}
-	seq := w.version(t, id)
-	dropped := time.Now()
-	eventually(t, 4*time.Second, "the narrowing acknowledged", func() bool { return w.acked(seq) })
-	if took := time.Since(dropped); took > 4*time.Second {
-		t.Fatalf("the narrowing was acknowledged %v after it was published", took)
+	seq = w.latestSeq(t, id)
+	eventually(t, spacing/3, "the narrowing acknowledged within a third of the spacing", func() bool { return w.acked(seq) })
+
+	// A reset: the new generation's first acknowledgement is its pass's,
+	// at once.
+	gen := w.fake.NewGeneration()
+	eventually(t, spacing/3, "an acknowledgement in the new generation within a third of the spacing", func() bool {
+		for _, a := range w.acks() {
+			if a.Generation == gen {
+				return true
+			}
+		}
+		return false
+	})
+	if f := w.feed(t); f.generation == nil || f.generation.String() != gen || !f.passDone {
+		t.Fatalf("the new generation's first acknowledgement went before its pass was done: %+v", f)
 	}
 }
 
@@ -978,7 +1270,8 @@ func TestAcksAtMostOncePerSecondAndAtLeastOncePerMinute(t *testing.T) {
 	const spacing, every = 500 * time.Millisecond, 1200 * time.Millisecond
 	l.AckSpacing, l.AckEvery = spacing, every
 	run(t, l)
-	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(w.version(t, id)) })
+	seq := w.latestSeq(t, id)
+	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(seq) })
 	w.settled(t)
 	burst := time.Now()
 	for i := range 10 {
@@ -1262,8 +1555,9 @@ func TestWaitingAndSuspendedAreWholeSets(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 10*time.Second, "both tokens applied", func() bool {
-		va, _, _ := w.stored(t, a)
-		return va == w.version(t, a) && w.acked(max(w.version(t, a), w.version(t, b)))
+		va, sa := w.held(t, a)
+		vb, sb := w.held(t, b)
+		return va == w.version(t, a) && vb == w.version(t, b) && w.acked(max(sa, sb))
 	})
 	ctx := context.Background()
 	for _, text := range []string{textA, textB} {
@@ -1317,7 +1611,8 @@ func TestTokenFailStatic(t *testing.T) {
 	logs := &membershiptest.Logs{}
 	run(t, w.tokenLeader(w.members, logs, lockKey(t)))
 	id, _ := w.token(t, kc.CanRead, kc.CanSend)
-	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(w.version(t, id)) })
+	seq := w.latestSeq(t, id)
+	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(seq) })
 	w.fake.SetDown(true)
 	// The long-poll in flight when it went down may still answer: the
 	// change is made once the calls fail.
@@ -1335,7 +1630,7 @@ func TestTokenFailStatic(t *testing.T) {
 		t.Fatalf("with the platform down: revoked %t, caught up %v, perms %v", revoked, f.caughtUp, p)
 	}
 	w.fake.SetDown(false)
-	seq := w.version(t, id)
+	seq = w.latestSeq(t, id)
 	eventually(t, 10*time.Second, "the revocation applied and acknowledged", func() bool {
 		_, revoked, _ := w.stored(t, id)
 		return revoked && w.acked(seq)
@@ -1426,7 +1721,8 @@ func TestTheOperatorsStopStandsOverTheFeed(t *testing.T) {
 	l.AckEvery = 300 * time.Millisecond
 	run(t, l)
 	id, text := w.token(t, kc.CanRead)
-	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(w.version(t, id)) })
+	seq := w.latestSeq(t, id)
+	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(seq) })
 	access := func() int64 {
 		var v int64
 		if err := pg.InTenantTx(ctx, w.pool, w.home.String(), func(tx pgx.Tx) error {
@@ -1550,7 +1846,8 @@ func TestCreatorDisabledHereAndLocalRuleAreReportedAndLifted(t *testing.T) {
 	if err := w.fake.GrantToken(id, "wappie", teamNumber.String(), kc.ItemNumber, kc.CanSend, w.sub.String()); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(w.version(t, id)) })
+	seq := w.latestSeq(t, id)
+	eventually(t, 10*time.Second, "the token acknowledged", func() bool { return w.acked(seq) })
 	set := func(want ...kc.Suspension) func() bool {
 		n := len(w.acks())
 		return func() bool {

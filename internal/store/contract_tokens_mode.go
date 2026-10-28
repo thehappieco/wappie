@@ -177,7 +177,10 @@ type TokenStatus struct {
 	// a reset's pass refused for good within the last day; KeyChanged the
 	// live ones whose reading key changed.
 	Live, Unlisted, KeyChanged int64
-	// The open stops: the operator's, and Wappie's own (apply_failed).
+	// The open stops: the operator's, of any selector; and the live tokens
+	// with one of Wappie's own (apply_failed), which only a later version
+	// that applies cleanly lifts, so that of a token that ended, or that
+	// Wappie never held, is left to tokens list.
 	Stopped, ApplyFailed int64
 }
 
@@ -191,12 +194,11 @@ func (t *Tokens) TokenStatus(ctx context.Context, since time.Time) (TokenStatus,
 		if err := tx.QueryRow(ctx, `SELECT mode, mode_changed_at, feed_cursor, published_through, caught_up_at, read_at,
 				coalesce(error, ''), error_at, ack_through, ack_sent_at, coalesce(ack_error, ''), ack_error_at,
 				usage_sent_at, coalesce(usage_error, ''), usage_error_at, pass_generation, pass_done_at, slow_commit_at, slow_commit_ms,
-				(SELECT count(*) FROM contract_token_stops WHERE cause = 'operator' AND lifted_at IS NULL),
-				(SELECT count(*) FROM contract_token_stops WHERE cause = 'apply_failed' AND lifted_at IS NULL)
+				(SELECT count(*) FROM contract_token_stops WHERE cause = 'operator' AND lifted_at IS NULL)
 			FROM contract_token_state`).Scan(&s.Mode, &s.ModeChangedAt, &s.Cursor, &s.PublishedThrough, &s.CaughtUpAt, &s.ReadAt,
 			&s.Error, &s.ErrorAt, &s.AckThrough, &s.AckSentAt, &s.AckError, &s.AckErrorAt,
 			&s.UsageSentAt, &s.UsageError, &s.UsageErrorAt, &s.PassGeneration, &s.PassDoneAt, &s.SlowCommitAt, &slow,
-			&s.Stopped, &s.ApplyFailed); err != nil {
+			&s.Stopped); err != nil {
 			return err
 		}
 		if slow != nil {
@@ -210,14 +212,18 @@ func (t *Tokens) TokenStatus(ctx context.Context, since time.Time) (TokenStatus,
 			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, ws.String()); err != nil {
 				return err
 			}
-			var live, unlisted, changed int64
-			if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE ended_at IS NULL AND revoked_at IS NULL AND unlisted_at IS NULL),
+			var live, unlisted, changed, failed int64
+			if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE live),
 					count(*) FILTER (WHERE unlisted_at >= $1),
-					count(*) FILTER (WHERE ended_at IS NULL AND revoked_at IS NULL AND unlisted_at IS NULL AND key_changed_at IS NOT NULL)
-				FROM contract_tokens`, since).Scan(&live, &unlisted, &changed); err != nil {
+					count(*) FILTER (WHERE live AND key_changed_at IS NOT NULL),
+					count(*) FILTER (WHERE live AND EXISTS (SELECT 1 FROM contract_token_selectors s
+						JOIN contract_token_stops x ON x.selector = s.selector AND x.cause = 'apply_failed' AND x.lifted_at IS NULL
+						WHERE s.token_id = t.id))
+				FROM (SELECT *, ended_at IS NULL AND revoked_at IS NULL AND unlisted_at IS NULL AS live FROM contract_tokens) t`, since).
+				Scan(&live, &unlisted, &changed, &failed); err != nil {
 				return err
 			}
-			s.Live, s.Unlisted, s.KeyChanged = s.Live+live, s.Unlisted+unlisted, s.KeyChanged+changed
+			s.Live, s.Unlisted, s.KeyChanged, s.ApplyFailed = s.Live+live, s.Unlisted+unlisted, s.KeyChanged+changed, s.ApplyFailed+failed
 		}
 		return nil
 	})

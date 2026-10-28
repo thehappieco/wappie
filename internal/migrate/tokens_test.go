@@ -622,7 +622,7 @@ func TestMigration0052Checks(t *testing.T) {
 			VALUES ('` + token.String() + `', clock_timestamp(), 'revoked', clock_timestamp() + interval '1 day')`, token.String()},
 		{`UPDATE contract_accounts SET doc = '{"v":2}'`, "all"},
 		{`UPDATE tenants SET mcp_media = false WHERE id = '` + w.tenant.String() + `'`, "all"},
-		{`UPDATE contract_token_state SET caught_up_at = clock_timestamp()`, "all"},
+		// caught_up_at's notice: set and cleared, below.
 	} {
 		if err := w.try(c.sql); err != nil {
 			t.Fatalf("%s: %v", c.sql, err)
@@ -643,16 +643,17 @@ func TestMigration0052Checks(t *testing.T) {
 		}
 	}
 
-	// A grant given to the identity notices its token, and a person's grant
-	// nothing. The writes go on one connection of the test's, so another
-	// test's notices on the shared database are told apart.
-	granter, err := pool.Acquire(ctx)
+	// caught_up_at notifies only when it is set or cleared: a page with more
+	// false moves it on at every long-poll, and token auth reads only
+	// whether it is set. The writes go on one connection of the test's, so
+	// another test's notices on the shared database are told apart.
+	writer, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer granter.Release()
-	grantPID := granter.Conn().PgConn().PID()
-	fromGranter := func(within time.Duration) (string, bool) {
+	defer writer.Release()
+	pid := writer.Conn().PgConn().PID()
+	ours := func(within time.Duration) (string, bool) {
 		wait, cancel := context.WithTimeout(ctx, within)
 		defer cancel()
 		for {
@@ -660,17 +661,45 @@ func TestMigration0052Checks(t *testing.T) {
 			if err != nil {
 				return "", false
 			}
-			if n.PID == grantPID {
+			if n.PID == pid {
 				return n.Payload, true
 			}
 		}
 	}
 	for _, c := range []struct {
+		name, sql string
+		notifies  bool
+	}{
+		{"set", `UPDATE contract_token_state SET caught_up_at = clock_timestamp()`, true},
+		{"moved on", `UPDATE contract_token_state SET caught_up_at = caught_up_at + interval '25 seconds'`, false},
+		{"moved on with the mode unchanged", `UPDATE contract_token_state SET caught_up_at = caught_up_at + interval '25 seconds', mode = mode`, false},
+		{"cleared", `UPDATE contract_token_state SET caught_up_at = NULL`, true},
+		{"left cleared", `UPDATE contract_token_state SET caught_up_at = NULL`, false},
+	} {
+		if _, err := writer.Exec(ctx, c.sql); err != nil {
+			t.Fatalf("caught_up_at %s: %v", c.name, err)
+		}
+		within := 5 * time.Second
+		if !c.notifies {
+			within = 200 * time.Millisecond
+		}
+		payload, got := ours(within)
+		switch {
+		case c.notifies && (!got || payload != "all"):
+			t.Fatalf("caught_up_at %s: notice %q (%t), want all", c.name, payload, got)
+		case !c.notifies && got:
+			t.Fatalf("caught_up_at %s: notice %q, want none", c.name, payload)
+		}
+	}
+
+	// A grant given to the identity notices its token, and a person's grant
+	// nothing, on the same connection.
+	for _, c := range []struct {
 		name string
 		user uuid.UUID
 		want string
 	}{{"the identity's", identity, token.String()}, {"a person's", w.owner, ""}} {
-		err := pgx.BeginFunc(ctx, granter, func(tx pgx.Tx) error {
+		err := pgx.BeginFunc(ctx, writer, func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.tenant.String()); err != nil {
 				return err
 			}
@@ -685,7 +714,7 @@ func TestMigration0052Checks(t *testing.T) {
 		if c.want == "" {
 			within = 200 * time.Millisecond
 		}
-		payload, got := fromGranter(within)
+		payload, got := ours(within)
 		switch {
 		case c.want != "" && (!got || payload != c.want):
 			t.Fatalf("%s grant: notice %q (%t), want %s", c.name, payload, got, c.want)

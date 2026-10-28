@@ -478,8 +478,9 @@ installation, and a self-hosted one never turns it on.
 whatserverd contract tokens on|off|status
 ```
 
-A database write only (status reads), as the service user from the
-server's working directory, like `contract mode`.
+As the service user from the server's working directory, like `contract
+mode`: `off` and `status` only touch the database, and `on` also loads the
+secret's files and makes one signed call to the platform.
 
 - **`on`** refuses, exit `3` with "contract tokens on: not ready: …" and
   nothing changed, unless the contract is on (observe), Wappie holds the
@@ -517,9 +518,12 @@ behind it.
   same generation) restarts both feeds in one transaction, which never
   widens what Wappie held, and the round subscribes every sub again (WARN
   "contract: the token feed says the platform's generation changed: every
-  sub is subscribed again and both feeds read from 0"). While Wappie holds
-  no generation (after a `gone`) the token follower asks nothing, until the
-  account feed's first answer adopts one.
+  sub is subscribed again and both feeds read from 0"). A reset that
+  follows another with no token page committed between waits the backoff
+  first, so a platform that keeps sending a record of another generation
+  never restarts the contract in a loop. While Wappie holds no generation
+  (after a `gone`) the token follower asks nothing, until the account
+  feed's first answer adopts one.
 - **A stale start**: a leader whose first token page follows a stored read
   over an hour old holds token auth until a page with `more: false`
   commits (WARN "contract: the token feed was last read over an hour before
@@ -541,9 +545,10 @@ Wappie applied the feed, with the grants it refused, the sets of those it
 holds back and the tokens it stops itself, and after a reset what it holds
 narrower than the platform. It goes at once after a page that narrowed
 something and after a reset's pass, otherwise at most once a second and at
-least once a minute, each on a turn of the leader's pace; one not accepted
-backs off from 1 second doubled to 30 seconds. A signed `gone` resets both
-feeds.
+least once a minute, each on a turn of the leader's pace; what does not fit
+one body (1000 entries across its four lists) follows at once, at the same
+`through`. One not accepted backs off from 1 second doubled to 30 seconds.
+A signed `gone` resets both feeds.
 
 **The usage report** (`POST /contract/v1/tokens/usage`) goes at most once
 a minute, with each token's days of use and its refusals' absolute counts;
@@ -565,8 +570,11 @@ at once in every process. Neither the feed nor a reset lifts it; it is
 reported to the platform as `suspended {operator}`. `-record` appends the
 stop or the lift to a file outside the database
 (`/opt/wappie/state/token-stops.jsonl`), and `-replay` applies that file's
-lines again, in order, after a restore of Wappie's database. Nothing it
-prints says whether Wappie holds a token of that selector.
+lines again, in order, after a restore of Wappie's database, leaving a line
+older than what the database holds of its selector's stop (a stop or a
+lift made since without `-record`), so a replay never rewinds a later stop
+nor lifts one. Nothing it prints says whether Wappie holds a token of that
+selector.
 
 ## Observe's comparison
 
@@ -822,7 +830,9 @@ sealed files; never calls the platform. It prints:
   cursor, `published_through`, last page and catching up, a failing run,
   the acknowledgement's last `through` accepted, the usage report's last,
   a reset's pass, the tokens held, unlisted and with a changed reading key,
-  the open stops, and the slowest page commit.
+  the open operator stops and the live tokens Wappie stopped itself
+  (`apply_failed`; those of a token that ended are left to `tokens list`),
+  and the slowest page commit.
 
 No name, no email, no label, no secret.
 
@@ -865,7 +875,7 @@ clean until its bounds pass:
     good`;
   - `N tokens' reading key changed: their new grants are refused`, and `N
     tokens stopped here: a record of theirs could not be applied
-    (apply_failed)`;
+    (apply_failed)`, both of live tokens only (one that ended clears them);
   - `a token page took N ms to commit at … (over a second)`, within the
     last hour;
 - `the server's last secret load failed at step …`, `the server holds
@@ -987,7 +997,7 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | token stale start | 1 hour | a stored token read this old at a leader's first page holds token auth until it has caught up |
 | token commit | 1 second | a token page's commit from its receipt, past which it is recorded |
 | judge | 1 minute | the token judge's pass when nothing wakes it |
-| ack spacing | 1 second | the least between two acknowledgements, but after a narrowing or a reset's pass |
+| ack spacing | 1 second | the least between two acknowledgements, but after a narrowing or a reset's pass, and for what did not fit the one before |
 | ack every | 1 minute | the most between two acknowledgements while the token feed runs |
 | ack backoff | 1 second to 30 seconds | after an acknowledgement that was not accepted |
 | usage | 1 minute | the least between two usage reports |
