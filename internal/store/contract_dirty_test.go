@@ -196,6 +196,10 @@ func TestDirtyNotify(t *testing.T) {
 	sql("a token's perm applied", once, `UPDATE contract_token_perms SET state='applied'`)
 	sql("a token renamed", none, `UPDATE contract_tokens SET name='m'`)
 	sql("a token revoked", once, `UPDATE contract_tokens SET revoked_at=now(), revoked_reason='revoked'`)
+	sql("a token's expiry lowered", once, `UPDATE contract_tokens SET expires_at=expires_at - interval '1 hour'`)
+	sql("a token unlisted", once, `UPDATE contract_tokens SET unlisted_at=now()`)
+	sql("a token's perm dropped", once, `DELETE FROM contract_token_perms`)
+	sql("a token gone", once, `DELETE FROM contract_tokens`)
 	sql("many changes in one transaction", once, grant,
 		`UPDATE device_permissions SET can_send=false FROM change WHERE device_id=change.device`,
 		`UPDATE devices SET label='Suporte' FROM change WHERE id=change.device`,

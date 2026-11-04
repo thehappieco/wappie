@@ -329,17 +329,51 @@ func TestMigration0053Backfills(t *testing.T) {
 // new number gets the lowest free ordinal of its workspace, a deleted
 // number's place is never handed out again until its purge frees it, and a
 // move-out takes the lowest free one in the target workspace, though the
-// mover's session sees the source.
+// mover's session sees the source. The trigger lifts the policies for its
+// one query only: after it, in the same transaction, the session's
+// workspace and its closed quarantine scope are as they were, so a deleted
+// number stays hidden.
 func TestTheOrdinalSeesDeletedRowsAndTheTarget(t *testing.T) {
 	ctx := context.Background()
 	pool := pgtest.Fresh(t, Run)
 	a, b := newContractWorld(t, pool), newContractWorld(t, pool)
+	// scopeKept checks, in tx, that the session's settings are its own
+	// again: the workspace of tenant, and no quarantine scope.
+	scopeKept := func(tx pgx.Tx, tenant uuid.UUID, when string) error {
+		var ws, quarantine string
+		if err := tx.QueryRow(ctx, `SELECT coalesce(current_setting('app.tenant_id', true), ''),
+			coalesce(current_setting('app.device_quarantine', true), '')`).Scan(&ws, &quarantine); err != nil {
+			return err
+		}
+		if ws != tenant.String() || quarantine != "" {
+			t.Errorf("%s: the session's app.tenant_id %q (want %s), app.device_quarantine %q (want none)", when, ws, tenant, quarantine)
+		}
+		return nil
+	}
+	// hidden, when not nil, is a deleted number of the workspace, which a
+	// SELECT after the insert must not see.
+	var hidden *uuid.UUID
 	number := func(w contractWorld, label string) (uuid.UUID, int) {
 		t.Helper()
 		var id uuid.UUID
 		var o int
 		if err := pg.InTenantTx(ctx, pool, w.tenant.String(), func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `INSERT INTO devices (tenant_id, label) VALUES ($1, $2) RETURNING id, ordinal`, w.tenant, label).Scan(&id, &o)
+			if err := tx.QueryRow(ctx, `INSERT INTO devices (tenant_id, label) VALUES ($1, $2) RETURNING id, ordinal`, w.tenant, label).Scan(&id, &o); err != nil {
+				return err
+			}
+			if err := scopeKept(tx, w.tenant, "after an insert"); err != nil {
+				return err
+			}
+			if hidden != nil {
+				var seen int
+				if err := tx.QueryRow(ctx, `SELECT count(*) FROM devices WHERE id = $1`, *hidden).Scan(&seen); err != nil {
+					return err
+				}
+				if seen != 0 {
+					t.Error("after an insert, the session sees a deleted number")
+				}
+			}
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -356,10 +390,12 @@ func TestTheOrdinalSeesDeletedRowsAndTheTarget(t *testing.T) {
 		return err
 	})
 	// The quarantine scope is closed in this session: the trigger sees the
-	// deleted number all the same.
+	// deleted number all the same, and the session, after it, does not.
+	hidden = &two
 	if _, o := number(a, "quatro"); o != 4 {
 		t.Fatalf("a new number beside a deleted one: %d, want 4", o)
 	}
+	hidden = nil
 	a.exec(ctx, t, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `DELETE FROM devices WHERE id = $1`, two)
 		return err
@@ -379,8 +415,7 @@ func TestTheOrdinalSeesDeletedRowsAndTheTarget(t *testing.T) {
 		if err := tx.QueryRow(ctx, `UPDATE devices SET tenant_id = $2 WHERE id = $1 RETURNING ordinal`, moved, b.tenant).Scan(&o); err != nil {
 			return err
 		}
-		var tenant string
-		return tx.QueryRow(ctx, `SELECT current_setting('app.tenant_id')`).Scan(&tenant)
+		return scopeKept(tx, a.tenant, "after a move-out")
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +477,11 @@ func TestMigration0053Checks(t *testing.T) {
 		refused(col+" cleared", `UPDATE contract_tokens SET `+col+` = NULL WHERE id = $1`, token)
 		refused(col+" changed", `UPDATE contract_tokens SET `+col+` = `+col+` + interval '1 second' WHERE id = $1`, token)
 	}
+	v = version()
 	exec(`UPDATE contract_tokens SET revoked_at = clock_timestamp(), revoked_reason = 'revoked' WHERE id = $1`, token)
+	if version() != v+1 {
+		t.Error("a revocation did not bump access_version")
+	}
 	refused("a revocation cleared", `UPDATE contract_tokens SET revoked_at = NULL, revoked_reason = NULL WHERE id = $1`, token)
 	refused("a revocation's reason changed", `UPDATE contract_tokens SET revoked_reason = 'operator' WHERE id = $1`, token)
 	refused("a revocation's time changed", `UPDATE contract_tokens SET revoked_at = revoked_at - interval '1 second' WHERE id = $1`, token)
@@ -485,6 +524,11 @@ func TestMigration0053Checks(t *testing.T) {
 	if _, err := listen.Exec(ctx, `LISTEN wappie_contract_tokens`); err != nil {
 		t.Fatal(err)
 	}
+	// An account document, for the belt's notice.
+	if _, err := pool.Exec(ctx, `INSERT INTO contract_accounts (sub, generation, version, status, doc)
+		VALUES (gen_random_uuid(), gen_random_uuid(), 1, 'active', '{"v":1}')`); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct{ sql, want string }{
 		{`UPDATE contract_tokens SET name = 'Again' WHERE id = '` + token.String() + `'`, token.String()},
 		{`UPDATE contract_token_perms SET state = 'waiting' WHERE token_id = '` + token.String() + `'`, token.String()},
@@ -492,6 +536,11 @@ func TestMigration0053Checks(t *testing.T) {
 		{`UPDATE tenants SET mcp_text = false WHERE id = '` + w.tenant.String() + `'`, "all"},
 		{`UPDATE contract_token_state SET mode = 'on'`, "all"},
 		{`UPDATE contract_state SET mode = 'observe', events_from = clock_timestamp()`, "all"},
+		{`INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until)
+			VALUES ('` + token.String() + `', clock_timestamp(), 'revoked', clock_timestamp() + interval '1 day')`, token.String()},
+		{`UPDATE contract_accounts SET doc = '{"v":2}'`, "all"},
+		{`UPDATE tenants SET mcp_media = false WHERE id = '` + w.tenant.String() + `'`, "all"},
+		{`UPDATE contract_token_state SET caught_up_at = clock_timestamp()`, "all"},
 	} {
 		if err := w.try(c.sql); err != nil {
 			t.Fatalf("%s: %v", c.sql, err)

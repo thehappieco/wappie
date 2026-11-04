@@ -33,19 +33,38 @@ type TokenRetention struct {
 // on Wappie's clock now: the expiry janitor first, then what ended 30 days
 // ago is forgotten, then what is past its until goes through its guards,
 // then the usage rows reported and over 2 days old and the queues' sent
-// entries over 30 days old.
+// entries over 30 days old. It visits every workspace a selector names,
+// one Wappie no longer has included, whose token rows went with it but
+// whose pins and removed instances (no foreign key) did not.
 func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetention, error) {
 	var out TokenRetention
 	err := retryDeadlock(ctx, func() error {
 		out = TokenRetention{}
 		return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
-			workspaces, err := tokenWorkspacesTx(ctx, tx)
+			// One cut for every past-until delete: Wappie's clock, never
+			// past the database's, read once, so the guards (until <=
+			// clock_timestamp()) let each through, and a token's row, its
+			// pin and its selector go in the same pass.
+			var cut time.Time
+			if err := tx.QueryRow(ctx, `SELECT least($1::timestamptz, clock_timestamp())`, now).Scan(&cut); err != nil {
+				return err
+			}
+			workspaces, err := selectorWorkspacesTx(ctx, tx)
 			if err != nil {
 				return err
 			}
 			var sticky []stickyWrite
 			for _, ws := range workspaces {
 				if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, ws.String()); err != nil {
+					return err
+				}
+				// Every token row this pass writes, in one id order (DB25
+				// step 4), before any: the expiring, those ended 30 days ago
+				// and those past until.
+				if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_tokens
+					WHERE (expires_at <= $1 AND ended_at IS NULL) OR (ended_at <= $2 AND forgotten_at IS NULL)
+					   OR id IN (SELECT token_id FROM contract_token_selectors WHERE until <= $3)
+					ORDER BY id FOR UPDATE`, now, now.Add(-tokenForgetAfter), cut); err != nil {
 					return err
 				}
 				// The expiry janitor: the token's row first (DB25 step 4),
@@ -91,14 +110,20 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 						return err
 					}
 				}
-				// Past until, on both clocks, as the guards check theirs.
+				// Past until: the token rows, their perms with them; the
+				// removed instances of every token whose row is gone (past
+				// until, or with its workspace); and the pins.
 				tag, err := tx.Exec(ctx, `DELETE FROM contract_tokens WHERE id IN (
-					SELECT token_id FROM contract_token_selectors WHERE until <= $1 AND until <= clock_timestamp())`, now)
+					SELECT token_id FROM contract_token_selectors WHERE until <= $1)`, cut)
 				if err != nil {
 					return err
 				}
 				out.Ended += tag.RowsAffected()
-				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_pins WHERE until <= $1 AND until <= clock_timestamp()`, now); err != nil {
+				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_removed r
+					WHERE NOT EXISTS (SELECT 1 FROM contract_tokens t WHERE t.id = r.token_id)`); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_pins WHERE until <= $1`, cut); err != nil {
 					return err
 				}
 			}
@@ -112,12 +137,15 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 				sql  string
 				args []any
 			}{
-				// A selector whose token row is gone, its workspace's with it.
-				{`DELETE FROM contract_token_selectors s WHERE until <= $1 AND until <= clock_timestamp()
-					AND NOT EXISTS (SELECT 1 FROM contract_tokens t WHERE t.id = s.token_id)`, []any{now}},
-				{`DELETE FROM contract_token_sticky WHERE until <= $1 AND until <= clock_timestamp()`, []any{now}},
-				{`DELETE FROM contract_token_used WHERE reported_at IS NOT NULL AND day < ($1::timestamptz - $2::interval)::date`, []any{now, tokenUsageKeep}},
-				{`DELETE FROM contract_token_refusals WHERE reported_count >= count AND day < ($1::timestamptz - $2::interval)::date`, []any{now, tokenUsageKeep}},
+				// The selectors past the cut: the loop deleted their token
+				// rows, in every workspace a selector names.
+				{`DELETE FROM contract_token_selectors WHERE until <= $1`, []any{cut}},
+				{`DELETE FROM contract_token_sticky WHERE until <= $1`, []any{cut}},
+				// UTC days, whatever the session's time zone.
+				{`DELETE FROM contract_token_used WHERE reported_at IS NOT NULL
+					AND day < (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
+				{`DELETE FROM contract_token_refusals WHERE reported_count >= count
+					AND day < (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
 				{`DELETE FROM contract_token_refusals_out WHERE sent_at < $1::timestamptz - $2::interval`, []any{now, tokenForgetAfter}},
 				{`DELETE FROM contract_token_held_out WHERE sent_at < $1::timestamptz - $2::interval`, []any{now, tokenForgetAfter}},
 			} {

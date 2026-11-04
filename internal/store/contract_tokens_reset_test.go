@@ -62,13 +62,18 @@ func (w *tokenWorld) held() map[uuid.UUID]kc.TokenHeld {
 // revocation and earliest expiry, stays to created_at + 365 days; a record
 // that comes back later, with a later expiry and no revocation (a platform
 // restore from before them), is applied for its narrowings only and never
-// revives it; an expired token by Wappie's clock sticks as expired.
+// revives it, and the reset's pass reports it held, revoked or expiring
+// earlier; an expired token by Wappie's clock sticks as expired. Past until,
+// retention lets the token's row, selector, sticky row and pin go through
+// their guards, a token's of a workspace Wappie deleted since included,
+// with its removed instances.
 func TestTheStickySetOutlivesTheContent(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
 	revoked, expiring := uuid.New(), uuid.New()
+	expiry := w.now.Add(time.Hour)
 	w.page(false, w.record(revoked, 1, grants(device, w.ownerSub, w.now, kc.CanRead)),
-		w.record(expiring, 1, func(r *kc.TokenRecord) { r.ExpiresAt = kc.T(w.now.Add(time.Hour)) }))
+		w.record(expiring, 1, func(r *kc.TokenRecord) { r.ExpiresAt = kc.T(expiry) }))
 	w.page(false, w.record(revoked, 2, revokedBy(kc.RevokedInConsole, w.now)))
 
 	// The janitor at expiry, on Wappie's clock.
@@ -78,6 +83,11 @@ func TestTheStickySetOutlivesTheContent(t *testing.T) {
 	}
 	if exists, _, ended := w.sticky(expiring); !exists || ended != "expired" {
 		t.Fatalf("an expired token is not sticky: %v %q", exists, ended)
+	}
+	var earliest time.Time
+	if err := w.pool.QueryRow(context.Background(), `SELECT earliest_expires_at FROM contract_token_sticky WHERE token_id = $1`, expiring).
+		Scan(&earliest); err != nil || !earliest.Equal(expiry) {
+		t.Fatalf("the sticky row's earliest expiry %v, want %v (%v)", earliest, expiry, err)
 	}
 	// 31 days on, the revoked token's content is forgotten; the sticky row
 	// and the selector stay.
@@ -90,26 +100,175 @@ func TestTheStickySetOutlivesTheContent(t *testing.T) {
 	if exists, rev, _ := w.sticky(revoked); !exists || !rev {
 		t.Fatal("the sticky row went with the content")
 	}
-	// A restored record, unrevoked and expiring later: never revived.
+	// A restored record of each, unrevoked, expiring later and listing a
+	// grant: never revived.
 	w.reset()
-	w.page(false, w.record(revoked, 1, grants(device, w.ownerSub, w.now, kc.CanRead), func(r *kc.TokenRecord) { r.ExpiresAt = kc.T(w.now.Add(200 * 24 * time.Hour)) }),
-		w.record(expiring, 1, func(r *kc.TokenRecord) { r.ExpiresAt = kc.T(w.now.Add(200 * 24 * time.Hour)) }))
+	restored := func(r *kc.TokenRecord) { r.ExpiresAt = kc.T(w.now.Add(200 * 24 * time.Hour)) }
+	w.page(false, w.record(revoked, 1, grants(device, w.ownerSub, w.now, kc.CanRead), restored),
+		w.record(expiring, 1, grants(device, w.ownerSub, w.now, kc.CanRead), restored))
 	for _, id := range []uuid.UUID{revoked, expiring} {
 		if s := w.token(id); len(w.perms(id)) != 0 || (id == revoked && !s.Revoked) {
 			t.Fatalf("a restored record revived %s: %+v %v", id, s, w.perms(id))
 		}
 	}
-	if h := w.held()[revoked]; !h.Revoked {
-		t.Fatalf("the restored revoked token is not held revoked: %+v", w.held())
+	var stored time.Time
+	w.scoped(func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT expires_at FROM contract_tokens WHERE id = $1`, expiring).Scan(&stored)
+	})
+	if !stored.Equal(expiry) {
+		t.Fatalf("a restored record raised the expiry to %v, want %v", stored, expiry)
 	}
-	// Past its until, retention lets it go, through the guards.
-	if _, err := w.tokens.RetainTokens(w.ctx(), w.now.Add(400*24*time.Hour)); err == nil {
-		// The database's clock is not 400 days on: the rows stay.
-		if exists, _, _ := w.sticky(revoked); !exists {
-			t.Fatal("a sticky row went before its until on the database's clock")
-		}
-	} else {
+	held := w.held()
+	if h := held[revoked]; !h.Revoked {
+		t.Fatalf("the restored revoked token is not held revoked: %+v", held)
+	}
+	if h := held[expiring]; h.Revoked || h.ExpiresAt == nil || !h.ExpiresAt.Equal(expiry) {
+		t.Fatalf("the restored expired token is not held with its earlier expiry %v: %+v", expiry, held)
+	}
+	// A retention 400 days on by Wappie's clock, but before until by the
+	// database's, which the guards read, lets nothing go.
+	if _, err := w.tokens.RetainTokens(w.ctx(), w.now.Add(400*24*time.Hour)); err != nil {
 		t.Fatal(err)
+	}
+	if exists, _, _ := w.sticky(revoked); !exists || !w.token(revoked).Exists {
+		t.Fatal("a token went before its until on the database's clock")
+	}
+
+	// A token of a second workspace, with a pin and a removed instance,
+	// whose workspace Wappie then deletes: its token row goes with it, the
+	// rest of no foreign key stays.
+	elsewhere, far := uuid.New(), uuid.New()
+	w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'elsewhere')`, elsewhere)
+	w.page(false, w.record(far, 1, func(r *kc.TokenRecord) {
+		r.WorkspaceID = elsewhere.String()
+		r.ReadingKey = readingKey(t)
+		r.Items = []kc.TokenItem{{ID: "not-a-number", Kind: kc.ItemNumber, Perms: []kc.TokenPerm{{Perm: kc.CanSend, GrantedBy: w.ownerSub.String(), GrantedAt: kc.T(w.now)}}}}
+	}))
+	in := func(ws uuid.UUID, query string, args ...any) int {
+		t.Helper()
+		var n int
+		inTenantTx(context.Background(), t, w.pool, ws, func(tx pgx.Tx) error { return tx.QueryRow(context.Background(), query, args...).Scan(&n) })
+		return n
+	}
+	if in(elsewhere, `SELECT count(*) FROM contract_token_pins`) != 1 || in(elsewhere, `SELECT count(*) FROM contract_token_removed`) != 1 {
+		t.Fatal("the second workspace's token has no pin or no removed instance")
+	}
+	w.exec(`DELETE FROM tenants WHERE id = $1`, elsewhere)
+	// Its removed instances go at the next pass, before its until.
+	if _, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil {
+		t.Fatal(err)
+	}
+	if in(elsewhere, `SELECT count(*) FROM contract_token_removed`) != 0 || in(elsewhere, `SELECT count(*) FROM contract_token_pins`) != 1 {
+		t.Fatal("a deleted workspace's removed instances stayed, or its pin went before its until")
+	}
+
+	// Past every until (moved back, the guards set aside for that alone),
+	// retention lets everything go through the guards.
+	w.exec(`ALTER TABLE contract_token_selectors DISABLE TRIGGER contract_token_selectors_guard;
+		UPDATE contract_token_selectors SET until = clock_timestamp() - interval '1 second';
+		ALTER TABLE contract_token_selectors ENABLE TRIGGER contract_token_selectors_guard;
+		ALTER TABLE contract_token_sticky DISABLE TRIGGER contract_token_sticky_guard;
+		UPDATE contract_token_sticky SET until = clock_timestamp() - interval '1 second';
+		ALTER TABLE contract_token_sticky ENABLE TRIGGER contract_token_sticky_guard;
+		ALTER TABLE contract_token_pins DISABLE TRIGGER contract_token_pins_guard, NO FORCE ROW LEVEL SECURITY;
+		UPDATE contract_token_pins SET until = clock_timestamp() - interval '1 second';
+		ALTER TABLE contract_token_pins ENABLE TRIGGER contract_token_pins_guard, FORCE ROW LEVEL SECURITY`)
+	got, err := w.tokens.RetainTokens(w.ctx(), w.now.Add(400*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Ended != 2 {
+		t.Fatalf("retention past until: %+v, want the 2 token rows of the workspace gone", got)
+	}
+	var selectors, sticky int
+	if err := w.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM contract_token_selectors), (SELECT count(*) FROM contract_token_sticky)`).
+		Scan(&selectors, &sticky); err != nil {
+		t.Fatal(err)
+	}
+	if selectors != 0 || sticky != 0 {
+		t.Fatalf("past until: %d selectors and %d sticky rows left", selectors, sticky)
+	}
+	for _, ws := range []uuid.UUID{w.tenant, elsewhere} {
+		if n := in(ws, `SELECT (SELECT count(*) FROM contract_tokens) + (SELECT count(*) FROM contract_token_pins) +
+			(SELECT count(*) FROM contract_token_removed) + (SELECT count(*) FROM contract_token_perms)`); n != 0 {
+			t.Fatalf("past until, %d token rows, pins, removed instances or perms left in %s", n, ws)
+		}
+	}
+}
+
+// TestTokenGenerationResetNeverWidens (the plan's 10.2, the design's 3.3):
+// against the new generation's record, Wappie keeps the earlier expiry, the
+// pin when the record names no key, a dropped grant's instance off and a
+// waiting one waiting, and reports in the pass's held what it keeps
+// narrower: the expiry, the pin's fingerprint and the dropped instance,
+// never the waiting one, which is judged once the giver's document comes.
+func TestTokenGenerationResetNeverWidens(t *testing.T) {
+	w := newTokenWorld(t)
+	waitingOn, droppedOn := w.number(uuid.Nil), w.number(uuid.Nil)
+	giverSub := uuid.New()
+	w.linked("giver", "admin", giverSub, false)
+	id := uuid.New()
+	key := readingKey(t)
+	early := w.now.Add(-time.Hour)
+	first := w.record(id, 1, func(r *kc.TokenRecord) { r.ReadingKey = key },
+		grants(waitingOn, giverSub, early, kc.CanSend), grants(droppedOn, w.ownerSub, early, kc.CanRead))
+	w.page(false, first)
+	if got := w.judge(); got.Waiting != 1 || got.Applied != 1 {
+		t.Fatalf("the judge: %+v", got)
+	}
+	// Shortened, its Read dropped.
+	shorter := w.now.Add(10 * 24 * time.Hour)
+	w.page(false, w.record(id, 2, func(r *kc.TokenRecord) { r.ReadingKey = key; r.ExpiresAt = kc.T(shorter) },
+		grants(waitingOn, giverSub, early, kc.CanSend)))
+	pin := func() (fp string, pinned time.Time) {
+		t.Helper()
+		w.scoped(func(tx pgx.Tx) error {
+			return tx.QueryRow(context.Background(), `SELECT fingerprint, pinned_at FROM contract_token_pins WHERE token_id = $1`, id).Scan(&fp, &pinned)
+		})
+		return fp, pinned
+	}
+	fp, pinned := pin()
+
+	// A platform restore: the new generation lists the first version again,
+	// with no key.
+	w.reset()
+	restored := first
+	restored.Generation, restored.ReadingKey = w.gen.String(), nil
+	if res := w.page(true, restored); res.Bad != 0 || res.Failed != 0 {
+		t.Fatalf("the restored record: %+v", res)
+	}
+	var expires time.Time
+	var generation uuid.UUID
+	w.scoped(func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT t.expires_at, p.generation FROM contract_tokens t
+			JOIN contract_token_perms p ON p.token_id = t.id AND p.device_id = $2 AND p.perm = 'send' WHERE t.id = $1`, id, waitingOn).
+			Scan(&expires, &generation)
+	})
+	if !expires.Equal(shorter) {
+		t.Fatalf("the expiry rose to %v, want %v", expires, shorter)
+	}
+	if p := w.perms(id); len(p) != 1 || p[waitingOn.String()+"/send"] != "waiting" || generation != w.gen {
+		t.Fatalf("the perms after the restore: %v (the waiting one's generation %s, want %s)", p, generation, w.gen)
+	}
+	if f, at := pin(); f != fp || !at.Equal(pinned) {
+		t.Fatalf("the pin changed: %s at %v, was %s at %v", f, at, fp, pinned)
+	}
+	h, ok := w.held()[id]
+	switch {
+	case !ok || h.Revoked:
+		t.Fatalf("held: %+v", w.held())
+	case h.ExpiresAt == nil || !h.ExpiresAt.Equal(shorter):
+		t.Fatalf("held.expires_at %v, want the earlier %v", h.ExpiresAt, shorter)
+	case h.ReadingKey == nil || *h.ReadingKey != key.Fingerprint:
+		t.Fatalf("held.reading_key %v, want the pin's %s", h.ReadingKey, key.Fingerprint)
+	case len(h.Removed) != 1 || h.Removed[0] != (kc.HeldPerm{Item: droppedOn.String(), Perm: kc.CanRead}):
+		t.Fatalf("held.removed %+v, want the dropped Read alone", h.Removed)
+	}
+	// The waiting grant is judged once its giver's document comes.
+	w.exec(`INSERT INTO contract_accounts (sub, generation, version, status, doc) VALUES ($1, $2, 1, 'active',
+		jsonb_build_object('v', 1, 'workspaces', jsonb_build_array(jsonb_build_object('id', $3::text))))`, giverSub, w.gen, w.tenant)
+	if got := w.judge(); got.Applied != 1 || w.perms(id)[waitingOn.String()+"/send"] != "applied" {
+		t.Fatalf("the waiting grant with its giver's document: %+v %v", got, w.perms(id))
 	}
 }
 
@@ -255,6 +414,19 @@ func TestOneGenerationResetsBothFeeds(t *testing.T) {
 	}
 	w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code) VALUES ($1, 1, 'x', 'read', 'local_role')`, id)
 	w.exec(`UPDATE contract_token_state SET ack_through = 1`)
+	// Tokens keep working within their narrowest state until the pass: a
+	// reset keeps caught_up_at, which the page with more false set.
+	caughtUp := func() *time.Time {
+		t.Helper()
+		var at *time.Time
+		if err := w.pool.QueryRow(context.Background(), `SELECT caught_up_at FROM contract_token_state`).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	if at := caughtUp(); at == nil || !at.Equal(w.now) {
+		t.Fatalf("caught_up_at %v, want %v", at, w.now)
+	}
 	// From the account feed.
 	next := uuid.New()
 	if ok, err := w.contract.Restart(w.ctx(), &w.gen, 9, &next, true); err != nil || !ok {
@@ -265,6 +437,9 @@ func TestOneGenerationResetsBothFeeds(t *testing.T) {
 	}
 	if s := w.token(id); s.Version != nil {
 		t.Fatal("the token kept its version")
+	}
+	if at := caughtUp(); at == nil || !at.Equal(w.now) {
+		t.Fatalf("Restart moved caught_up_at: %v", at)
 	}
 	// The acknowledgement starts again with the generation: none of the old
 	// one's unsent refusals, whose versions the new one never published.
@@ -281,8 +456,12 @@ func TestOneGenerationResetsBothFeeds(t *testing.T) {
 	w.page(false, w.record(id, 1))
 	w.exec(`UPDATE contract_state SET feed_cursor = 4`)
 	// From the token feed, with a signed gone: no generation then.
+	w.exec(`UPDATE contract_token_state SET caught_up_at = $1`, w.now.Add(time.Minute))
 	if ok, err := w.contract.RestartFromTokens(w.ctx(), w.gen, nil, false); err != nil || !ok {
 		t.Fatalf("RestartFromTokens: %v %v", ok, err)
+	}
+	if at := caughtUp(); at == nil || !at.Equal(w.now.Add(time.Minute)) {
+		t.Fatalf("RestartFromTokens moved caught_up_at: %v", at)
 	}
 	st, err := w.contract.State(context.Background())
 	if err != nil || st.Generation != nil || st.FeedCursor != 0 {
@@ -397,12 +576,51 @@ func TestJudgeGivesEachGrantOnce(t *testing.T) {
 	if again := w.judge(); again.Applied != 1 {
 		t.Fatalf("the waiting grant once its document is held: %+v", again)
 	}
-	// A refused instance listed again stays refused, and dropped and
-	// listed again never comes back.
+	// A refused instance, and an applied one dropped, each listed again,
+	// never come back.
 	w.page(false, w.record(id, 3, grants(device, adminSub, w.now, kc.CanRead, kc.CanSend), grants(gone, w.ownerSub, w.now, kc.CanSend)))
 	w.page(false, w.record(id, 4, grants(device, adminSub, w.now, kc.CanRead, kc.CanSend), grants(unread, adminSub, w.now, kc.CanRead)))
 	if p := w.perms(id); p[unread.String()+"/read"] != "" {
 		t.Fatalf("a refused instance came back: %v", p)
+	}
+	w.page(false, w.record(id, 5, grants(device, adminSub, w.now, kc.CanRead, kc.CanSend), grants(unread, adminSub, w.now, kc.CanManage)))
+	if p := w.perms(id); p[unread.String()+"/manage"] != "" || len(p) != 2 {
+		t.Fatalf("a dropped instance came back: %v", p)
+	}
+
+	// The creator is judged as the giver is (steps 2 and 3): given by an
+	// admin with a document, a token whose creator has a local account but
+	// no document yet waits for it; one whose creator is a member here, or
+	// has no local account, is local_role, told with the version that
+	// carried the grant.
+	creatorSub := uuid.New()
+	w.linked("creator", "admin", creatorSub, false)
+	createdBy := func(sub uuid.UUID) func(*kc.TokenRecord) {
+		return func(r *kc.TokenRecord) { r.CreatedBy = sub.String() }
+	}
+	byWaiting, byMember, byStranger := uuid.New(), uuid.New(), uuid.New()
+	w.page(false, w.record(byWaiting, 1, createdBy(creatorSub), grants(device, adminSub, w.now, kc.CanSend)),
+		w.record(byMember, 1, createdBy(memberSub), grants(device, adminSub, w.now, kc.CanSend)),
+		w.record(byStranger, 1, createdBy(strangerSub), grants(device, adminSub, w.now, kc.CanSend)))
+	if got := w.judge(); got.Waiting != 1 || got.Refused != 2 || got.Applied != 0 {
+		t.Fatalf("the creators' verdicts: %+v", got)
+	}
+	send := device.String() + "/send"
+	if p := w.perms(byWaiting)[send]; p != "waiting" {
+		t.Errorf("a creator with no document: %s, want waiting", p)
+	}
+	for name, id := range map[string]uuid.UUID{"a member": byMember, "no local account": byStranger} {
+		if p := w.perms(id)[send]; p != "refused:local_role" {
+			t.Errorf("a creator with %s: %s, want refused:local_role", name, p)
+		}
+		if r := w.refused(id); len(r) != 1 || r[0] != send+"=local_role@1" {
+			t.Errorf("a creator with %s: the refusals %v", name, r)
+		}
+	}
+	w.exec(`INSERT INTO contract_accounts (sub, generation, version, status, doc) VALUES ($1, $2, 1, 'active',
+		jsonb_build_object('v', 1, 'workspaces', jsonb_build_array(jsonb_build_object('id', $3::text))))`, creatorSub, w.gen, w.tenant)
+	if got := w.judge(); got.Applied != 1 || w.perms(byWaiting)[send] != "applied" {
+		t.Fatalf("the creator's document came: %+v %v", got, w.perms(byWaiting))
 	}
 }
 

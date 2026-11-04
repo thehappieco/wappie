@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/obs"
@@ -344,8 +345,8 @@ func TestATokenCommitRetriesADeadlock(t *testing.T) {
 }
 
 // Numbers made at once in one workspace each get their own ordinal: the
-// trigger's advisory lock serializes them, and none deadlocks on the
-// workspace's row.
+// trigger takes the workspace's row first, which serializes them, and none
+// deadlocks on it.
 func TestConcurrentNumbersGetTheirOwnOrdinals(t *testing.T) {
 	w := newTokenWorld(t)
 	ctx := context.Background()
@@ -364,5 +365,136 @@ func TestConcurrentNumbersGetTheirOwnOrdinals(t *testing.T) {
 	}
 	if got := w.count(`SELECT count(DISTINCT ordinal) FROM devices WHERE ordinal BETWEEN 1 AND $1`, n); got != n {
 		t.Fatalf("%d distinct ordinals among %d numbers", got, n)
+	}
+}
+
+// A number made in a workspace while a number moves into it (0053's
+// devices_ordinal, DB25): the move holds both workspaces' rows, then waits
+// on the number's; the insert waits on the target's row before it takes
+// anything else, so once the number is free the move's ordinal trigger
+// asks for nothing the insert holds. Neither fails, and each number has an
+// ordinal of its own in the target.
+func TestANumberMadeBesideAMoveIntoItsWorkspace(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	var personal uuid.UUID
+	if err := w.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE personal_owner_id = $1`, w.owner).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	dev, err := w.devices.CreateWithID(ctx, w.tenant.String(), "", "Vendas", "passive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moving := uuid.MustParse(dev.ID)
+	if err := w.devices.SetPaused(ctx, w.tenant.String(), dev.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck // rolled back below; a no-op then
+	if _, err := holder.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.tenant.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM devices WHERE id = $1 FOR UPDATE`, moving); err != nil {
+		t.Fatal(err)
+	}
+	moved := make(chan error, 1)
+	go func() {
+		_, err := w.devices.TransferPersonal(ctx, w.tenant, w.owner, moving, personal)
+		moved <- err
+	}()
+	untilTokenWaiters(t, w, 1)
+	made := make(chan error, 1)
+	var other string
+	go func() {
+		d, err := w.devices.CreateWithID(ctx, personal.String(), "", "Novo", "passive")
+		other = d.ID
+		made <- err
+	}()
+	untilTokenWaiters(t, w, 2)
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-moved; err != nil {
+		t.Fatalf("the move beside an insert into its target: %v", err)
+	}
+	if err := <-made; err != nil {
+		t.Fatalf("an insert beside a move into its workspace: %v", err)
+	}
+	var ordinals []int
+	inTenantTx(ctx, t, w.pool, personal, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT ordinal FROM devices WHERE id IN ($1, $2::uuid) ORDER BY ordinal`, moving, other)
+		if err != nil {
+			return err
+		}
+		ordinals, err = pgx.CollectRows(rows, pgx.RowTo[int])
+		return err
+	})
+	if len(ordinals) != 2 || ordinals[0] == ordinals[1] {
+		t.Fatalf("the target's ordinals: %v", ordinals)
+	}
+}
+
+// A token page's commit takes its workspace's row and the numbers its
+// records name FOR KEY SHARE before any token row (DB25 step 3): what the
+// foreign keys of the rows it inserts take anyway. So against a
+// transaction that holds the workspace's row, or a number's, and then takes
+// the token's perms (a quarantine or a move, which delete a number's
+// perms; a number's own delete, whose perms cascade), the commit waits
+// first and holds nothing that transaction needs: no deadlock, and no
+// retry.
+func TestATokenCommitTakesItsWorkspaceAndNumbersFirst(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		lock string
+	}{
+		{"the workspace's row", `SELECT 1 FROM tenants WHERE id = $1::uuid AND $2::uuid IS NOT NULL FOR UPDATE`},
+		{"a number's row", `SELECT 1 FROM devices WHERE id = $2::uuid AND $1::uuid IS NOT NULL FOR UPDATE`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newTokenWorld(t)
+			ctx := context.Background()
+			device, id := w.number(uuid.Nil), uuid.New()
+			w.page(false, w.record(id, 1, grants(device, w.ownerSub, w.now, kc.CanRead)))
+			holder, err := w.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Rollback(ctx) //nolint:errcheck // rolled back below; a no-op then
+			if _, err := holder.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.tenant.String()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := holder.Exec(ctx, c.lock, w.tenant, device); err != nil {
+				t.Fatal(err)
+			}
+			// A new token of the workspace, and a new perm on the number for
+			// the held one: both inserts' foreign keys meet the holder.
+			done := make(chan error, 1)
+			go func() {
+				_, err := w.tryPage(false, w.record(id, 2, grants(device, w.ownerSub, w.now, kc.CanRead, kc.CanSend)), w.record(uuid.New(), 1))
+				done <- err
+			}()
+			untilTokenWaiters(t, w, 1)
+			if _, err := holder.Exec(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := holder.Exec(ctx, `SELECT 1 FROM contract_token_perms WHERE token_id = $1 ORDER BY token_id, device_id, perm FOR UPDATE`, id); err != nil {
+				t.Fatalf("the token's perms, under %s: %v", c.name, err)
+			}
+			if err := holder.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("the commit: %v", err)
+			}
+			if strings.Contains(w.logs.String(), "deadlocked") {
+				t.Fatalf("the commit deadlocked against a holder of %s:\n%s", c.name, w.logs.String())
+			}
+			if p := w.perms(id); p[device.String()+"/send"] != "pending" {
+				t.Fatalf("the commit did not apply: %v", p)
+			}
+		})
 	}
 }
