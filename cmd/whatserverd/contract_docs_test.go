@@ -225,6 +225,13 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"accounts-workspaces.md": {
 				"people join this team through The Happie Co; person invitations are paused here until Wappie applies the platform's members",
 			},
+			"deployment.md": {
+				"token stop record writable",
+				"token stop record not writable",
+				"token stop record trim failed",
+				"token stop record trimmed",
+				"no stop record (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would lose it",
+			},
 		} {
 			for _, line := range lines {
 				quoted := `"` + line + `"`
@@ -460,6 +467,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		}
 		for _, doc := range []string{"contract.md", "deployment.md", ".env.example"} {
 			says(doc, config.DefaultContractLoaded)
+			says(doc, "WS_TOKEN_STOP_RECORD")
+			says(doc, config.DefaultTokenStopRecord)
 		}
 	})
 

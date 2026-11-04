@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,15 +10,19 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
+	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/config"
 	"whatserver2/internal/store"
 )
 
@@ -31,15 +36,20 @@ import (
 // is kept: nothing more is ever stored or printed, and nothing it prints
 // says whether Wappie holds a token of that selector.
 
-// tokenStopRecord is one line of a stop record (-record, -replay): a file
-// outside the database, which a restore of Wappie's database does not take
-// back. The runbook keeps it in /opt/wappie/state/token-stops.jsonl. Each
-// append drops the lines over 365 days old (the longest retention keeps a
-// stop), and a replay leaves them; nothing trims the file between appends.
+// tokenStopRecord is one line of the stop record (WS_TOKEN_STOP_RECORD,
+// or -record; -replay): a file outside the database, which a restore of
+// Wappie's database does not take back, so a replay brings back the stops
+// made since its snapshot. A line is a stop or a lift the operator made:
+// its selector, its time (the database's stopped_at or lifted_at, to the
+// microsecond) and whether it was a lift, nothing more; the note, the
+// account and Wappie's own apply_failed stops stay in the database. A
+// line goes 365 days after its time at the latest (the longest retention
+// keeps a stop of a selector Wappie never held), dropped at each append and
+// each hourly pass, and earlier, in the hourly pass whose retention deleted
+// its stop (trimTokenStops).
 type tokenStopRecord struct {
 	Selector string    `json:"selector"`
 	At       time.Time `json:"at"`
-	Note     string    `json:"note,omitempty"`
 	// Lift: the stop was lifted at At.
 	Lift bool `json:"lift,omitempty"`
 }
@@ -52,7 +62,7 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
 		return usageError{arg: "tokens"}
 	}
-	var run func(context.Context, *store.Tokens) error
+	var run func(context.Context, *app) error
 	switch args[0] {
 	case "suspend", "lift":
 		lift := args[0] == "lift"
@@ -60,9 +70,9 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 		fs.SetOutput(tokensFlagOutput)
 		note := new(string)
 		if !lift {
-			note = fs.String("note", "", "why, kept in Wappie's database and the record only")
+			note = fs.String("note", "", "why, kept in Wappie's database only")
 		}
-		record := fs.String("record", "", "append the stop to this file as well (the runbook's /opt/wappie/state/token-stops.jsonl)")
+		record := fs.String("record", "", "append to this file instead of the stop record WS_TOKEN_STOP_RECORD names")
 		replay := new(string)
 		if !lift {
 			replay = fs.String("replay", "", "apply every stop and lift of this record, in order, after a restore of Wappie's database")
@@ -74,7 +84,9 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 		case *replay != "" && (fs.NArg() != 0 || *record != "" || *note != ""):
 			return errors.New("tokens suspend: -replay takes no selector, -record or -note")
 		case *replay != "":
-			run = func(ctx context.Context, t *store.Tokens) error { return replayTokenStops(ctx, t, *replay, out) }
+			run = func(ctx context.Context, a *app) error {
+				return replayTokenStops(ctx, store.NewTokens(a.pools.API), *replay, out)
+			}
 		case fs.NArg() != 1:
 			return fmt.Errorf("tokens %s: give one token's selector (16 lowercase hex digits), the whole token, or - to read it from stdin", args[0])
 		default:
@@ -82,15 +94,19 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("tokens %s: %w", args[0], err)
 			}
-			run = func(ctx context.Context, t *store.Tokens) error {
-				return changeTokenStop(ctx, t, tokenStopRecord{Selector: selector, At: time.Now().UTC(), Note: *note, Lift: lift}, *record, out)
+			run = func(ctx context.Context, a *app) error {
+				path := *record
+				if path == "" {
+					path = a.cfg.TokenStopRecord
+				}
+				return changeTokenStop(ctx, store.NewTokens(a.pools.API), tokenStopRecord{Selector: selector, At: time.Now(), Lift: lift}, *note, path, out)
 			}
 		}
 	case "list":
 		if len(args) != 1 {
 			return usageError{arg: "tokens " + strings.Join(args, " ")}
 		}
-		run = func(ctx context.Context, t *store.Tokens) error { return listTokenStops(ctx, t, out) }
+		run = func(ctx context.Context, a *app) error { return listTokenStops(ctx, store.NewTokens(a.pools.API), out) }
 	default:
 		return usageError{arg: "tokens " + strings.Join(args, " ")}
 	}
@@ -101,7 +117,7 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 		return err
 	}
 	defer closeAll()
-	return run(ctx, store.NewTokens(a.pools.API))
+	return run(ctx, a)
 }
 
 // tokenSelector is the selector of the text given, a selector or a whole
@@ -132,10 +148,13 @@ func osUser() string {
 	return "unknown"
 }
 
-// changeTokenStop records the stop or its lift, then appends it to the
-// record when one is named: a stop the database holds but the record does
+// changeTokenStop records the stop (with its note, in the database alone)
+// or its lift, at r.At to the microsecond, the database's precision, so the
+// line's time is the stop's stopped_at or lifted_at exactly; then appends it
+// to the stop record, record. A stop the database holds but the record does
 // not is said, since a restore would lose it.
-func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, record string, out io.Writer) error {
+func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, note, record string, out io.Writer) error {
+	r.At = r.At.UTC().Truncate(time.Microsecond)
 	w := &lines{w: out}
 	if r.Lift {
 		lifted, err := t.LiftToken(ctx, r.Selector, r.At)
@@ -148,69 +167,156 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, re
 			w.f("tokens lift: selector %s: no operator's stop was open; nothing changed", r.Selector)
 		}
 	} else {
-		if err := t.StopToken(ctx, r.Selector, osUser(), r.Note, r.At); err != nil {
+		if err := t.StopToken(ctx, r.Selector, osUser(), note, r.At); err != nil {
 			return err
 		}
 		w.f("tokens suspend: selector %s is stopped here, whether or not Wappie holds its token yet", r.Selector)
 	}
-	if w.err != nil || record == "" {
+	if w.err != nil {
 		return w.err
 	}
-	if err := appendTokenStop(record, r, time.Now()); err != nil {
+	if record == "" {
+		w.f("no stop record (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would lose it")
+		return w.err
+	}
+	if err := appendTokenStop(ctx, record, r, time.Now()); err != nil {
 		return fmt.Errorf("tokens: the stop is in the database but not in the record %s (a restore would lose it): %w", record, err)
 	}
 	w.f("recorded in %s", record)
 	return w.err
 }
 
-// appendTokenStop adds one line to the record, made 0600 if new, and drops
-// the lines of stops retention has let go by now (store.TokenStopLapsed:
-// 365 days old), keeping the others in their order and a line that is no
-// stop's record as it is. The file is replaced whole or not at all (a
-// temporary file in its directory, with its mode and owner, synced, renamed
-// over it, the directory synced), under an exclusive lock of the file, so
-// two appends at once never lose a line; a temporary copy that an append
-// killed before its rename left goes too.
-func appendTokenStop(path string, r tokenStopRecord, now time.Time) (err error) {
+// appendTokenStop adds r's line to the record, made 0600 if new, and drops
+// the lines over 365 days old by now (store.TokenStopLapsed), whose stops
+// retention has let go.
+func appendTokenStop(ctx context.Context, path string, r tokenStopRecord, now time.Time) error {
 	line, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	f, err := lockStopRecord(path)
+	_, err = rewriteTokenStops(ctx, path, line, func() (func(tokenStopRecord) bool, error) {
+		return func(rec tokenStopRecord) bool { return !store.TokenStopLapsed(rec.At, now) }, nil
+	})
+	return err
+}
+
+// trimTokenStops is the hourly pass's trim of the record, right after
+// retention (retainTokens). It drops the lines over 365 days old by now,
+// and the lines of each selector whose operator's stop that retention
+// deleted (letGo, with the stop's last change: its lift, else its stop) up
+// to that change. It never drops a line of a stop the database holds: a
+// command writes the database before it locks the record to add its line,
+// so made, read under the lock, gives every stop of those selectors made
+// again since the delete, and the lines from each one's time on stay,
+// whatever the clocks. A stop retention deletes in the milliseconds before
+// its command adds its line leaves that line to its 365 days, as a crash
+// between retention's commit and the trim leaves the lines it would have
+// dropped. It never makes a missing record, and reports how many lines it
+// dropped.
+//
+// A line over 365 days old goes even while its stop stands. Only a stop of
+// a selector Wappie holds outlives 365 days, to the selector's until, its
+// token's created_at + 365 days, which its expires_at never passes: a stop
+// made once its token existed goes by then, in the same pass (the next one
+// if the database's clock lags Wappie's). One made before its token's
+// created_at (a selector stopped ahead of its token) stands to that until
+// with no line, which loses nothing a restore needs: every snapshot one
+// can take is under 90 days old (decision 0027), so it holds the stop as
+// it stood over 275 days after it was made, and anything since has a
+// younger line.
+func trimTokenStops(ctx context.Context, path string, now time.Time, letGo map[string]time.Time,
+	made func(selectors []string) (map[string]time.Time, error),
+) (int, error) {
+	return rewriteTokenStops(ctx, path, nil, func() (func(tokenStopRecord) bool, error) {
+		var again map[string]time.Time
+		if len(letGo) > 0 {
+			var err error
+			if again, err = made(slices.Sorted(maps.Keys(letGo))); err != nil {
+				return nil, err
+			}
+		}
+		return func(rec tokenStopRecord) bool {
+			if store.TokenStopLapsed(rec.At, now) {
+				return false
+			}
+			through, gone := letGo[rec.Selector]
+			if !gone || rec.At.After(through) {
+				return true
+			}
+			since, stopped := again[rec.Selector]
+			return stopped && !rec.At.Before(since)
+		}, nil
+	})
+}
+
+// rewriteTokenStops replaces the record whole, or not at all, under an
+// exclusive lock of the file. It keeps, in their order, a line that is no
+// stop's record as it is and each stop's line that keeper's filter, made
+// under the lock, keeps, written again as its selector, time and lift
+// alone (a line an older binary wrote with its note loses it); then adds
+// add (a line, without its newline), if any. The new text goes to a
+// temporary file in the record's directory, with its mode and owner,
+// synced and renamed over it, the directory synced: two rewrites at once
+// never lose a line. A temporary copy a rewrite killed before its rename
+// left goes too. With add, a missing record is made 0600; without, a
+// missing record stays missing, and an unchanged one is not written. It
+// reports how many lines it dropped.
+func rewriteTokenStops(ctx context.Context, path string, add []byte, keeper func() (func(tokenStopRecord) bool, error)) (dropped int, err error) {
+	f, err := lockStopRecord(ctx, path, add != nil)
+	if add == nil && errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer f.Close() //nolint:errcheck // closing releases the lock; the file was only read
+	keep, err := keeper()
+	if err != nil {
+		return 0, err
+	}
 	old, err := io.ReadAll(f)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	held, err := f.Stat()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var kept []byte
 	if text := strings.TrimSuffix(string(old), "\n"); text != "" {
 		for _, l := range strings.Split(text, "\n") {
 			var rec tokenStopRecord
-			if json.Unmarshal([]byte(l), &rec) == nil && kc.ValidSelector(rec.Selector) && !rec.At.IsZero() && store.TokenStopLapsed(rec.At, now) {
-				continue
+			if json.Unmarshal([]byte(l), &rec) == nil && kc.ValidSelector(rec.Selector) && !rec.At.IsZero() {
+				if !keep(rec) {
+					dropped++
+					continue
+				}
+				line, err := json.Marshal(rec)
+				if err != nil {
+					return 0, err
+				}
+				l = string(line)
 			}
 			kept = append(append(kept, l...), '\n')
 		}
 	}
-	kept = append(append(kept, line...), '\n')
+	if add != nil {
+		kept = append(append(kept, add...), '\n')
+	}
 	dir, prefix := filepath.Dir(path), "."+filepath.Base(path)+".tmp-"
-	// A temporary copy an append left when it was killed before its rename
-	// (no defer runs on a signal): every append makes its own under the
+	// A temporary copy a rewrite left when it was killed before its rename
+	// (no defer runs on a signal): every rewrite makes its own under the
 	// lock of the file it then replaces, which is the one held here, so no
 	// other is in flight.
 	if err := removeStaleStopTemps(dir, prefix); err != nil {
-		return err
+		return 0, err
+	}
+	if add == nil && bytes.Equal(kept, old) {
+		return 0, nil
 	}
 	tmp, err := os.CreateTemp(dir, prefix+"*")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() {
 		if err != nil {
@@ -219,38 +325,38 @@ func appendTokenStop(path string, r tokenStopRecord, now time.Time) (err error) 
 		}
 	}()
 	if _, err = tmp.Write(kept); err != nil {
-		return err
+		return 0, err
 	}
 	if err = tmp.Chmod(held.Mode().Perm()); err != nil {
-		return err
+		return 0, err
 	}
 	if want, ok := held.Sys().(*syscall.Stat_t); ok {
 		if fi, serr := tmp.Stat(); serr == nil {
 			if got, ok := fi.Sys().(*syscall.Stat_t); ok && (got.Uid != want.Uid || got.Gid != want.Gid) {
 				if err = tmp.Chown(int(want.Uid), int(want.Gid)); err != nil {
-					return err
+					return 0, err
 				}
 			}
 		}
 	}
 	if err = tmp.Sync(); err != nil {
-		return err
+		return 0, err
 	}
 	if err = tmp.Close(); err != nil {
-		return err
+		return 0, err
 	}
 	if err = os.Rename(tmp.Name(), path); err != nil { //nolint:gosec // G703: the operator names the record
-		return err
+		return 0, err
 	}
 	d, err := os.Open(dir) //nolint:gosec // G304: the record's own directory
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err = d.Sync(); err != nil {
 		_ = d.Close() //nolint:errcheck // the sync's error is the one to say
-		return err
+		return 0, err
 	}
-	return d.Close()
+	return dropped, d.Close()
 }
 
 // removeStaleStopTemps removes the record's temporary copies in dir (named
@@ -271,22 +377,22 @@ func removeStaleStopTemps(dir, prefix string) error {
 	return nil
 }
 
-// lockStopRecord opens the record, made 0600 if new, under an exclusive
-// flock, waiting for it. An append replaces the file, so one that waited
-// for the lock of a file replaced meanwhile locks the new one instead.
-func lockStopRecord(path string) (*os.File, error) {
+// lockStopRecord opens the record (made 0600 if new, with create) under an
+// exclusive flock, waiting for it until ctx ends: the hourly pass never
+// hangs on a command stopped while it holds the lock. A rewrite replaces
+// the file, so one that waited for the lock of a file replaced meanwhile
+// locks the new one instead.
+func lockStopRecord(ctx context.Context, path string, create bool) (*os.File, error) {
+	flags := os.O_RDWR
+	if create {
+		flags |= os.O_CREATE
+	}
 	for {
-		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // G304: the operator names the record
+		f, err := os.OpenFile(path, flags, 0o600) //nolint:gosec // G304: the operator names the record
 		if err != nil {
 			return nil, err
 		}
-		for {
-			err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
-			if !errors.Is(err, syscall.EINTR) {
-				break
-			}
-		}
-		if err != nil {
+		if err := flockWait(ctx, f); err != nil {
 			_ = f.Close() //nolint:errcheck // the lock was not taken
 			return nil, err
 		}
@@ -305,14 +411,76 @@ func lockStopRecord(path string) (*os.File, error) {
 	}
 }
 
+// flockWait takes f's exclusive flock, trying again every 20 ms until ctx
+// ends; a rewrite holds it for milliseconds.
+func flockWait(ctx context.Context, f *os.File) error {
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the record is locked: %w", ctx.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// checkTokenStopRecord says once, at start and in prod, whether the server
+// can write its stop record, as checkDeletionLedger says of the ledger:
+// it creates the file with mode 0600 when it is missing, and a temporary
+// file beside it, as a rewrite does, which it removes. It never stops the
+// start: a stop is made in the database whether or not its line can be
+// written (the command says when it cannot), and only a restore reads it.
+func checkTokenStopRecord(cfg config.Config, log *slog.Logger) {
+	if !cfg.Env.IsProd() {
+		return
+	}
+	path := cfg.TokenStopRecord
+	if path == "" {
+		log.Error("token stop record not writable", "path", "", "error", "WS_TOKEN_STOP_RECORD is empty")
+		return
+	}
+	if err := stopRecordWritable(path); err != nil {
+		log.Error("token stop record not writable", "path", path, "error", err)
+		return
+	}
+	log.Info("token stop record writable", "path", path)
+}
+
+// stopRecordWritable opens the record for writing, made 0600 when missing,
+// and makes and removes a temporary file in its directory.
+func stopRecordWritable(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // G304: the configured record
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name()) //nolint:errcheck,gosec // best effort: the next rewrite removes it
+		return err
+	}
+	return os.Remove(tmp.Name()) //nolint:gosec // G703: our own temporary beside the configured record
+}
+
 // replayTokenStops applies a record's lines in order: each stop at its own
-// time, each lift likewise, so the stops stand as they stood before the
-// restore; a line older than what the database holds of its selector's stop
-// (a stop or a lift made since without the record) is left, so a replay
-// never rewinds a later stop, nor lifts one, and so is a line 365 days old
-// (store.TokenStopLapsed), whose stop retention has let go, so a replay
-// never brings one back. A line that is not a record is refused before
-// anything changes.
+// time, with no note (the record keeps none), each lift likewise, so the
+// stops stand as they stood before the restore; a line older than what the
+// database holds of its selector's stop (a stop or a lift made since
+// without the record) is left, so a replay never rewinds a later stop, nor
+// lifts one, and so is a line 365 days old (store.TokenStopLapsed), whose
+// stop retention has let go, so a replay never brings one back. A line
+// that is not a record is refused before anything changes. It runs before
+// the server starts, so no hourly trim runs beside it: one that did could
+// drop the line of a stop retention had just deleted and the replay
+// brought back.
 func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.Writer) error {
 	b, err := os.ReadFile(path) //nolint:gosec // G304: the operator names the record
 	if err != nil {
@@ -340,7 +508,7 @@ func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.
 		if r.Lift {
 			applied, err = t.ReplayTokenLift(ctx, r.Selector, r.At)
 		} else {
-			applied, err = t.ReplayTokenStop(ctx, r.Selector, by, r.Note, r.At, now)
+			applied, err = t.ReplayTokenStop(ctx, r.Selector, by, "", r.At, now)
 		}
 		switch {
 		case err != nil:

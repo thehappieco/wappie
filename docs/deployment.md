@@ -548,10 +548,56 @@ release, which a rollback of the release keeps):
 - no `Requires=` or `Wants=` on the platform's units: without the platform
   Wappie is fail-static.
 
-Each start logs, after the deletion ledger's line and before "starting",
-the contract's line, which a deploy checks:
+Each start logs, after the deletion ledger's and the stop record's lines
+and before "starting", the contract's line, which a deploy checks:
 `contract: mode=off transport=none secret=missing` (the mode, `socket`,
 `tcp` or `none`, and `loaded`, `pending` or `missing`).
+
+**The stop record.** `WS_TOKEN_STOP_RECORD`, by default
+`/var/lib/wappie/token-stops.jsonl`, beside the deletion ledger: the
+operator's token stops and lifts (`tokens suspend` and `tokens lift`,
+below), outside the database, which `tokens suspend -replay` applies again
+after a restore of Wappie's database. Put it on a persistent path that is
+in the host's backups and off-host copies, with the database's, writable by
+the server's user alone, and delete its copies before they are 90 days
+old, as the backups'. In `deploy/compose.yaml` it is on the
+`deletion-ledger` volume, with the ledger. One JSON line per stop or lift:
+`{selector, at, lift}`, `lift` present only when true, `at` in UTC to the
+microsecond, the stop's `stopped_at` or its `lifted_at` in the database. It
+never holds the note, the account that ran the command, a token or
+anything else, nor Wappie's own `apply_failed` stops: those stay in the
+database. It is created with mode 0600 and replaced whole at each write: a
+temporary file beside it, with its mode and owner, synced and renamed over
+it, the directory synced, under an exclusive lock of the file, so a command
+and the server at once lose no line.
+
+- **When it is written.** By `tokens suspend` and `tokens lift`, once the
+  stop or the lift is in the database; `-record F` writes F instead. With
+  `WS_TOKEN_STOP_RECORD` empty the command still makes the stop and says
+  "no stop record (WS_TOKEN_STOP_RECORD is empty), so a restore of
+  Wappie's database would lose it"; one that cannot write the file says
+  the stop is in the database but not in the record, and exits 1.
+- **When it is trimmed.** A line goes 365 days after its time at the
+  latest: each write drops those, and so does every hourly pass, which,
+  right after its retention, also drops the lines of each stop retention
+  deleted, so a line goes with its stop ([what Wappie keeps of a
+  token](contract.md#the-token-feed)); a later stop of the same selector
+  keeps its own. The pass logs INFO "token stop record trimmed" with how
+  many lines, never which. A trim that fails logs ERROR "token stop record
+  trim failed" with the path and the error and changes nothing in the
+  database: its lines then go at their 365 days, as after a crash between
+  retention and the trim. A trim never creates the file.
+- **At start.** In prod, serve checks the file right after the deletion
+  ledger: it logs INFO "token stop record writable" with the path,
+  creating the file when it is missing (and a temporary file beside it,
+  which it removes, as every write needs), or ERROR "token stop record not
+  writable" with the path and the error (`WS_TOKEN_STOP_RECORD is empty`
+  when it is), and starts anyway: a stop is made in the database whether
+  or not its line can be written, and only a restore reads the file.
+- **The hosted unit** and the commands write it as the same user: the
+  commands run as `wappie` with `runtime.env` (below), and
+  `/var/lib/wappie` is the unit's `StateDirectory`, writable under
+  `ProtectSystem=strict`.
 
 ### Contract commands
 
@@ -615,12 +661,12 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   `contract tokens off` refuses every token at once
   ([the token feed](contract.md#the-token-feed)).
 - `tokens suspend` stops a token here by its selector, with the platform
-  down too, until `tokens lift`; with `-record
-  /opt/wappie/state/token-stops.jsonl` always, so `tokens suspend -replay`
-  brings the stops back after a restore of Wappie's database. Each
-  `-record` drops the record's lines over 365 days old, the longest
-  retention keeps a stop; nothing trims it between `-record`s
-  ([what Wappie keeps of a token](contract.md#the-token-feed)).
+  down too, until `tokens lift`; each appends to the stop record (above),
+  or to `-record F` instead, so `tokens suspend -replay
+  /var/lib/wappie/token-stops.jsonl`, before the server starts, brings the
+  stops back after a restore of Wappie's database
+  ([what Wappie keeps of a token](contract.md#the-token-feed)). `-note` is
+  kept in Wappie's database only.
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database
@@ -664,8 +710,13 @@ the contract was never observed (`events_from` unset).
 ### Restoring with the contract
 
 A restore of Wappie's database brings back the contract's state as it was
-in the snapshot. After step 4 of [Restoring a backup](#restoring-a-backup),
-run `whatserverd contract status --check`:
+in the snapshot, and the token stops as they stood then. After step 4 of
+[Restoring a backup](#restoring-a-backup), still before the server starts,
+replay the stop record, as the server's user:
+`whatserverd tokens suspend -replay /var/lib/wappie/token-stops.jsonl`.
+As for the ledger, never overwrite a record that survived on the host; use
+it, else the newest off-host copy. Then run
+`whatserverd contract status --check`:
 
 - `contract never observed but a secret is installed`: the snapshot is from
   before the first observe, so the mode is `off` with homes of Wappie's

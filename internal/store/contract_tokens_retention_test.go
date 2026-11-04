@@ -374,6 +374,59 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 	}
 }
 
+// Retention returns the operator's stops it deleted, each selector's with
+// its last change, for the stop record's trim: a held selector's at its
+// until, a never-held one's 365 days after it was made, and one at its
+// record_until, lifted; never an apply_failed stop it deletes (no line has
+// it), nor a stop it keeps.
+func TestTokenRetentionReturnsTheOperatorsStops(t *testing.T) {
+	w := newTokenWorld(t)
+	held := uuid.New()
+	w.page(false, w.record(held, 1))
+	lapsed, narrowed, standing, applyFailed := selectorOf(uuid.New()), selectorOf(uuid.New()), selectorOf(uuid.New()), selectorOf(uuid.New())
+	for sel, at := range map[string]time.Time{selectorOf(held): w.now.Add(-2 * tokenDay), lapsed: w.now.Add(-366 * tokenDay),
+		narrowed: w.now.Add(-10 * tokenDay), standing: w.now.Add(-10 * tokenDay)} {
+		if err := w.tokens.StopToken(w.ctx(), sel, "root", "", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if lifted, err := w.tokens.LiftToken(w.ctx(), narrowed, w.now.Add(-9*tokenDay)); err != nil || !lifted {
+		t.Fatalf("the lift: %v %v", lifted, err)
+	}
+	w.exec(`UPDATE contract_token_stops SET record_until = $2 WHERE selector = $1`, narrowed, w.now.Add(-time.Minute))
+	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'apply_failed', $2, 'wappie')`,
+		applyFailed, w.now.Add(-366*tokenDay))
+	w.untilBack(w.now.Add(-time.Minute))
+	got, err := w.tokens.RetainTokens(w.ctx(), w.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]time.Time{selectorOf(held): w.now.Add(-2 * tokenDay), lapsed: w.now.Add(-366 * tokenDay), narrowed: w.now.Add(-9 * tokenDay)}
+	if got.Stops != 4 || len(got.OperatorStops) != len(want) {
+		t.Fatalf("retention deleted %d stops and returned %v, want 4 and %v", got.Stops, got.OperatorStops, want)
+	}
+	for sel, through := range want {
+		if at, ok := got.OperatorStops[sel]; !ok || !at.Equal(through) {
+			t.Errorf("the stop of %s: returned %v (%v), want its last change %v", sel, at, ok, through)
+		}
+	}
+	if exists, _, _ := w.stopOf(standing); !exists {
+		t.Fatal("a standing stop went")
+	}
+
+	// What the trim reads under the record's lock: when the operator's stop
+	// the database holds again was made, never another cause's.
+	if err := w.tokens.StopToken(w.ctx(), narrowed, "root", "", w.now); err != nil {
+		t.Fatal(err)
+	}
+	failing := selectorOf(uuid.New())
+	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'apply_failed', $2, 'wappie')`, failing, w.now)
+	made, err := w.tokens.OperatorStopsMade(w.ctx(), []string{narrowed, lapsed, failing})
+	if err != nil || len(made) != 1 || !made[narrowed].Equal(w.now) {
+		t.Fatalf("the stops made again: %v %v, want %s's at %v alone", made, err, narrowed, w.now)
+	}
+}
+
 // stickyUntil is a token's sticky until, nil with no row.
 func (w *tokenWorld) stickyUntil(id uuid.UUID) *time.Time {
 	w.t.Helper()
