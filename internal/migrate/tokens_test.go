@@ -712,6 +712,42 @@ func TestMigration0053Checks(t *testing.T) {
 			t.Fatalf("%s grant: notice %q, want none", c.name, payload)
 		}
 	}
+
+	// A stop's record_until, which only retention reads, wakes no socket
+	// when it changes alone; the stop's own changes do, with its token's id.
+	for _, c := range []struct {
+		name, sql string
+		notifies  bool
+	}{
+		{"record_until set", `UPDATE contract_token_stops SET record_until = clock_timestamp() WHERE selector = '0123456789abcdef'`, false},
+		{"record_until lowered", `UPDATE contract_token_stops SET record_until = record_until - interval '1 day' WHERE selector = '0123456789abcdef'`, false},
+		{"reopened", `UPDATE contract_token_stops SET lifted_at = NULL WHERE selector = '0123456789abcdef'`, true},
+		{"stopped again, record_until with it", `UPDATE contract_token_stops SET stopped_at = clock_timestamp(), record_until = NULL
+			WHERE selector = '0123456789abcdef'`, true},
+		{"deleted", `DELETE FROM contract_token_stops WHERE selector = '0123456789abcdef'`, true},
+	} {
+		if _, err := writer.Exec(ctx, c.sql); err != nil {
+			t.Fatalf("a stop %s: %v", c.name, err)
+		}
+		within := 5 * time.Second
+		if !c.notifies {
+			within = 200 * time.Millisecond
+		}
+		payload, got := ours(within)
+		switch {
+		case c.notifies && (!got || payload != token.String()):
+			t.Fatalf("a stop %s: notice %q (%t), want %s", c.name, payload, got, token)
+		case !c.notifies && got:
+			t.Fatalf("a stop %s: notice %q, want none", c.name, payload)
+		}
+	}
+
+	// A removed instance keeps no giver.
+	var giver bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'contract_token_removed' AND column_name = 'granted_by')`).Scan(&giver); err != nil || giver {
+		t.Fatalf("contract_token_removed has a granted_by column: %v %v", giver, err)
+	}
 }
 
 // wappie-billing keeps running while 0053 and its down-step run (as 0052's

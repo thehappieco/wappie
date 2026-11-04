@@ -90,9 +90,9 @@ func restartTokensTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID) error {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `WITH gone AS (DELETE FROM contract_token_perms WHERE state = 'pending'
-				RETURNING token_id, tenant_id, device_id, perm, granted_by, granted_at)
-			INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_by, granted_at, cause)
-			SELECT token_id, tenant_id, device_id::text, perm, granted_by, granted_at, 'reset' FROM gone
+				RETURNING token_id, tenant_id, device_id, perm, granted_at)
+			INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_at, cause)
+			SELECT token_id, tenant_id, device_id::text, perm, granted_at, 'reset' FROM gone
 			ON CONFLICT DO NOTHING`); err != nil {
 			return err
 		}

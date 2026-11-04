@@ -576,6 +576,42 @@ lift made since without `-record`), so a replay never rewinds a later stop
 nor lifts one. Nothing it prints says whether Wappie holds a token of that
 selector.
 
+The record keeps a line 365 days, as retention keeps a stop (below): each
+`-record` replaces the file whole (a temporary file beside it, its mode and
+owner kept, renamed over it, under a lock of the file, so two at once lose
+no line) without the lines over 365 days old, keeping the others in their
+order and a line that is no stop's record as it is; `-replay` leaves a line
+over 365 days old and counts it ("N lines over 365 days old left, their
+stops let go"), so a replay never brings back a stop retention let go.
+
+**What Wappie keeps of a token.** The hourly maintenance pass (the plan's
+retention) deletes, on Wappie's clock and never before the database's:
+
+- **A token's record**, 30 days after it ends (revoked, expired by
+  Wappie's clock, or unlisted by a reset's pass): the record as received,
+  its name, terms and perms, and the grant instances it keeps off
+  (`contract_token_removed`, which keeps no giver).
+- **Its security record**, used only to keep it refused, at its
+  `created_at` plus 365 days, when it would have expired anyway and its
+  records have left the platform's feed: its selector and hash, its pinned
+  reading key, its revocation and end (`contract_token_sticky`), its
+  creator, workspace, times and versions. Whatever of its record is still
+  there goes then too, as for a 365-day token that just expired.
+- **A token Wappie never held** (a record of a workspace it does not hold,
+  or a bad record of an unknown token): only a revocation is kept, until
+  the record's `created_at` plus 365 days (a `created_at` ahead of the
+  clock counts as now; none at all, 365 days from now), and none once that
+  has passed.
+- **A workspace's row deleted:** its token rows go with it, their grant
+  instances at the next pass, their pins and selectors at their date.
+- **Wappie's own stops** (the operator's and `apply_failed`): one of a
+  selector Wappie holds goes with that selector, at its token's
+  `created_at` plus 365 days, however old the stop; any other 365 days
+  after it was made (a new `suspend` makes it again), or earlier at the
+  `created_at` plus 365 days of a record of its selector that came since.
+- **Usage rows** once reported and over 2 days old; **the
+  acknowledgement's queues** 30 days after they were sent.
+
 ## Observe's comparison
 
 Each document newly stored (from the feed, the round, a sign-in or a GET)

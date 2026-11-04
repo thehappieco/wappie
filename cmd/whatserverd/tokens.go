@@ -8,9 +8,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	kc "github.com/thehappieco/kit/contract"
@@ -30,7 +33,9 @@ import (
 
 // tokenStopRecord is one line of a stop record (-record, -replay): a file
 // outside the database, which a restore of Wappie's database does not take
-// back. The runbook keeps it in /opt/wappie/state/token-stops.jsonl.
+// back. The runbook keeps it in /opt/wappie/state/token-stops.jsonl. A line
+// is kept 365 days, as retention keeps a stop of a selector Wappie never
+// held: each append drops the older ones, and a replay leaves them.
 type tokenStopRecord struct {
 	Selector string    `json:"selector"`
 	At       time.Time `json:"at"`
@@ -151,36 +156,137 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, re
 	if w.err != nil || record == "" {
 		return w.err
 	}
-	if err := appendTokenStop(record, r); err != nil {
+	if err := appendTokenStop(record, r, time.Now()); err != nil {
 		return fmt.Errorf("tokens: the stop is in the database but not in the record %s (a restore would lose it): %w", record, err)
 	}
 	w.f("recorded in %s", record)
 	return w.err
 }
 
-// appendTokenStop appends one line to the record, made 0600 if new.
-func appendTokenStop(path string, r tokenStopRecord) error {
-	b, err := json.Marshal(r)
+// appendTokenStop adds one line to the record, made 0600 if new, and drops
+// the lines of stops retention has let go by now (store.TokenStopLapsed:
+// 365 days old), keeping the others in their order and a line that is no
+// stop's record as it is. The file is replaced whole or not at all (a
+// temporary file in its directory, with its mode and owner, synced, renamed
+// over it, the directory synced), under an exclusive lock of the file, so
+// two appends at once never lose a line.
+func appendTokenStop(path string, r tokenStopRecord, now time.Time) (err error) {
+	line, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: the operator names the record
+	f, err := lockStopRecord(path)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		_ = f.Close() //nolint:errcheck // the write's error is the one to say
+	defer f.Close() //nolint:errcheck // closing releases the lock; the file was only read
+	old, err := io.ReadAll(f)
+	if err != nil {
 		return err
 	}
-	return f.Close()
+	held, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	var kept []byte
+	if text := strings.TrimSuffix(string(old), "\n"); text != "" {
+		for _, l := range strings.Split(text, "\n") {
+			var rec tokenStopRecord
+			if json.Unmarshal([]byte(l), &rec) == nil && kc.ValidSelector(rec.Selector) && !rec.At.IsZero() && store.TokenStopLapsed(rec.At, now) {
+				continue
+			}
+			kept = append(append(kept, l...), '\n')
+		}
+	}
+	kept = append(append(kept, line...), '\n')
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tmp.Close()           //nolint:errcheck // already failing; the temporary file goes below
+			_ = os.Remove(tmp.Name()) //nolint:errcheck,gosec // best effort: a leftover temporary is inert; G703: our own temporary beside the record the operator names
+		}
+	}()
+	if _, err = tmp.Write(kept); err != nil {
+		return err
+	}
+	if err = tmp.Chmod(held.Mode().Perm()); err != nil {
+		return err
+	}
+	if want, ok := held.Sys().(*syscall.Stat_t); ok {
+		if fi, serr := tmp.Stat(); serr == nil {
+			if got, ok := fi.Sys().(*syscall.Stat_t); ok && (got.Uid != want.Uid || got.Gid != want.Gid) {
+				if err = tmp.Chown(int(want.Uid), int(want.Gid)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp.Name(), path); err != nil { //nolint:gosec // G703: the operator names the record
+		return err
+	}
+	d, err := os.Open(dir) //nolint:gosec // G304: the record's own directory
+	if err != nil {
+		return err
+	}
+	if err = d.Sync(); err != nil {
+		_ = d.Close() //nolint:errcheck // the sync's error is the one to say
+		return err
+	}
+	return d.Close()
+}
+
+// lockStopRecord opens the record, made 0600 if new, under an exclusive
+// flock, waiting for it. An append replaces the file, so one that waited
+// for the lock of a file replaced meanwhile locks the new one instead.
+func lockStopRecord(path string) (*os.File, error) {
+	for {
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // G304: the operator names the record
+		if err != nil {
+			return nil, err
+		}
+		for {
+			err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+			if !errors.Is(err, syscall.EINTR) {
+				break
+			}
+		}
+		if err != nil {
+			_ = f.Close() //nolint:errcheck // the lock was not taken
+			return nil, err
+		}
+		held, herr := f.Stat()
+		named, nerr := os.Stat(path) //nolint:gosec // G703: the operator names the record
+		if herr == nil && nerr == nil && os.SameFile(held, named) {
+			return f, nil
+		}
+		_ = f.Close() //nolint:errcheck // a file replaced meanwhile; its lock goes with it
+		switch {
+		case herr != nil:
+			return nil, herr
+		case nerr != nil && !errors.Is(nerr, fs.ErrNotExist):
+			return nil, nerr
+		}
+	}
 }
 
 // replayTokenStops applies a record's lines in order: each stop at its own
 // time, each lift likewise, so the stops stand as they stood before the
 // restore; a line older than what the database holds of its selector's stop
 // (a stop or a lift made since without the record) is left, so a replay
-// never rewinds a later stop, nor lifts one. A line that is not a record is
-// refused before anything changes.
+// never rewinds a later stop, nor lifts one, and so is a line 365 days old
+// (store.TokenStopLapsed), whose stop retention has let go, so a replay
+// never brings one back. A line that is not a record is refused before
+// anything changes.
 func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.Writer) error {
 	b, err := os.ReadFile(path) //nolint:gosec // G304: the operator names the record
 	if err != nil {
@@ -197,14 +303,18 @@ func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.
 		}
 		records = append(records, r)
 	}
-	by := osUser()
-	stops, lifts, left := 0, 0, 0
+	by, now := osUser(), time.Now()
+	stops, lifts, left, lapsed := 0, 0, 0, 0
 	for _, r := range records {
+		if store.TokenStopLapsed(r.At, now) {
+			lapsed++
+			continue
+		}
 		var applied bool
 		if r.Lift {
 			applied, err = t.ReplayTokenLift(ctx, r.Selector, r.At)
 		} else {
-			applied, err = t.ReplayTokenStop(ctx, r.Selector, by, r.Note, r.At)
+			applied, err = t.ReplayTokenStop(ctx, r.Selector, by, r.Note, r.At, now)
 		}
 		switch {
 		case err != nil:
@@ -218,8 +328,8 @@ func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.
 		}
 	}
 	w := &lines{w: out}
-	w.f("tokens suspend -replay: %d stops and %d lifts applied from %s; %d lines left, older than what the database holds or with nothing to lift",
-		stops, lifts, path, left)
+	w.f("tokens suspend -replay: %d stops and %d lifts applied from %s; %d lines left, older than what the database holds or with nothing to lift; %d lines over 365 days old left, their stops let go",
+		stops, lifts, path, left, lapsed)
 	return w.err
 }
 

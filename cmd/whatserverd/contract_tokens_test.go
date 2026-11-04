@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -543,5 +544,110 @@ func TestTokensSuspendCommand(t *testing.T) {
 	}
 	if err := tokensCommand([]string{"suspend"}, strings.NewReader(""), &out); err == nil || !strings.Contains(err.Error(), "give one token's selector") {
 		t.Fatalf("tokens suspend with nothing: %v", err)
+	}
+}
+
+// The stop record keeps a line 365 days, as retention keeps a stop of a
+// selector Wappie never held: each append drops the older lines, keeping
+// the others in their order, a line that is no record as it is, and the
+// file's mode, the file replaced whole; two appends at once lose no line.
+// A replay leaves a line over 365 days old, whose stop retention let go.
+func TestTokenStopRecordKeepsAYear(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	dir := t.TempDir()
+	record := filepath.Join(dir, "token-stops.jsonl")
+	const a, b = "0123456789abcdef", "fedcba9876543210"
+	line := func(sel string, at time.Time, lift bool) string {
+		r := tokenStopRecord{Selector: sel, At: at, Lift: lift}
+		if !lift {
+			r.Note = "n"
+		}
+		js, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(js)
+	}
+	lines := []string{
+		line(a, now.Add(-400*24*time.Hour), false),
+		"not a record",
+		line(b, now.Add(-364*24*time.Hour), false),
+		line(a, now.Add(-366*24*time.Hour), true),
+		line(b, now.Add(-time.Hour), true),
+	}
+	if err := os.WriteFile(record, []byte(strings.Join(lines, "\n")+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(record, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	added := tokenStopRecord{Selector: a, At: now, Note: "again"}
+	if err := appendTokenStop(record, added, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := json.Marshal(added)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Join([]string{lines[1], lines[2], lines[4], string(js)}, "\n") + "\n"; string(got) != want {
+		t.Fatalf("the record after an append:\n%s\nwant:\n%s", got, want)
+	}
+	if fi, err := os.Stat(record); err != nil || fi.Mode().Perm() != 0o640 {
+		t.Fatalf("the record's mode after an append: %v %v, want 0640", fi.Mode().Perm(), err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("the record's directory after an append: %v %v", entries, err)
+	}
+
+	// Two appends at once, 20 each: none lost.
+	var wg sync.WaitGroup
+	for _, sel := range []string{a, b} {
+		wg.Go(func() {
+			for i := range 20 {
+				if err := appendTokenStop(record, tokenStopRecord{Selector: sel, At: now.Add(time.Duration(i) * time.Second)}, now); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	got, err = os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(got), "\n"); n != 4+40 {
+		t.Fatalf("after 40 appends at once the record has %d lines, want %d", n, 4+40)
+	}
+
+	// A replay leaves the line over 365 days old.
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	old := filepath.Join(dir, "old.jsonl")
+	if err := os.WriteFile(old, []byte(line(a, now.Add(-366*24*time.Hour), false)+"\n"+line(b, now.Add(-364*24*time.Hour), false)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := replayTokenStops(ctx, store.NewTokens(pool), old, &out); err != nil ||
+		!strings.Contains(out.String(), "1 stops and 0 lifts applied") || !strings.Contains(out.String(), "1 lines over 365 days old left") {
+		t.Fatalf("the replay: %v %q", err, out.String())
+	}
+	var stops []string
+	rows, err := pool.Query(ctx, `SELECT selector FROM contract_token_stops`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		stops = append(stops, s)
+	}
+	if rows.Err() != nil || len(stops) != 1 || stops[0] != b {
+		t.Fatalf("the stops after the replay: %v %v, want only %s", stops, rows.Err(), b)
 	}
 }
