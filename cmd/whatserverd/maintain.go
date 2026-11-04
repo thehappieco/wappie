@@ -133,13 +133,10 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	// usage rows at created_at + 365 days, a stop of a selector Wappie never
 	// held 365 days after it was made (or at its valid record's created_at
 	// + 365 days), the usage rows 2 days after they were reported and the
-	// queues' entries 30 days after they were sent. With tokens never on,
-	// its tables are empty and this finds nothing.
-	if got, err := store.NewTokens(a.pools.API).RetainTokens(ctx, time.Now()); err != nil {
-		a.log.Warn("token retention failed", "error", err)
-	} else if got.Expired+got.Forgotten+got.Ended+got.Stops > 0 {
-		a.log.Info("token retention", "expired", got.Expired, "forgotten", got.Forgotten, "ended", got.Ended, "stops", got.Stops)
-	}
+	// queues' entries 30 days after they were sent; then the stop record's
+	// lines of the stops it deleted, and those 365 days old. With tokens
+	// never on, its tables are empty and this finds nothing.
+	a.retainTokens(ctx, time.Now())
 
 	// Every workspace, whatever its status: a closed team's and a suspended
 	// one's deleted numbers are purged on their date too (the owner's
@@ -155,6 +152,42 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	a.compactLedger(time.Now())
 	a.applyRetention(ctx, deletes)
 	a.deleteOrphans(ctx, tenants, deletes, limits.orphans)
+}
+
+// retainTokens is the token part's retention, then, when a stop record is
+// configured, its trim (trimTokenStops): the lines over 365 days old go,
+// and those of the operator's stops retention just deleted, up to each
+// one's last change, while a stop made again since keeps its own. With
+// retention failed, only the old lines go. A failed trim changes nothing
+// in the database, and the lines it would have dropped with their stops
+// go at their 365 days, since no later pass deletes those stops again; so
+// do they after a crash between retention's commit and the trim. Its logs
+// give counts only, never a selector: nothing in them tells whether Wappie
+// holds a token of one.
+func (a *app) retainTokens(ctx context.Context, now time.Time) {
+	tokens := store.NewTokens(a.pools.API)
+	got, err := tokens.RetainTokens(ctx, now)
+	if err != nil {
+		a.log.Warn("token retention failed", "error", err)
+	} else if got.Expired+got.Forgotten+got.Ended+got.Stops > 0 {
+		a.log.Info("token retention", "expired", got.Expired, "forgotten", got.Forgotten, "ended", got.Ended, "stops", got.Stops)
+	}
+	path := a.cfg.TokenStopRecord
+	if path == "" {
+		return
+	}
+	// A minute for the record's lock and the stops' read: a command
+	// stopped while it holds the lock never holds up the pass.
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	dropped, err := trimTokenStops(ctx, path, now, got.OperatorStops, func(selectors []string) (map[string]time.Time, error) {
+		return tokens.OperatorStopsMade(ctx, selectors)
+	})
+	if err != nil {
+		a.log.Error("token stop record trim failed", "path", path, "error", err)
+	} else if dropped > 0 {
+		a.log.Info("token stop record trimmed", "path", path, "lines", dropped)
+	}
 }
 
 // maintainMCP is the assistant connector's share of the pass.

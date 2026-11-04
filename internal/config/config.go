@@ -59,6 +59,12 @@ type Config struct {
 	Log Log
 	// Deletion is how deleted numbers are kept and purged (decision 0038).
 	Deletion Deletion
+	// TokenStopRecord is the file, outside the database, of the operator's
+	// token stops and lifts, which a restore of Wappie's database replays
+	// (WS_TOKEN_STOP_RECORD): each line a selector, a time and whether it
+	// was a lift. It must outlive the process and be in the host's backups;
+	// empty is none.
+	TokenStopRecord string
 	// Contract is how this server reaches the platform's product contract
 	// (decision 0040), off unless WS_CONTRACT_SOCKET (or, in development,
 	// WS_CONTRACT_ADDR) is set.
@@ -81,6 +87,13 @@ type Deletion struct {
 // DefaultDeletionLedger is the ledger's path unless WS_DELETION_LEDGER says
 // otherwise: the API unit's state directory.
 const DefaultDeletionLedger = "/var/lib/wappie/deletion-ledger.jsonl"
+
+// DefaultTokenStopRecord is the stop record's path unless
+// WS_TOKEN_STOP_RECORD says otherwise: the API unit's state directory,
+// beside the deletion ledger.
+//
+//nolint:gosec // G101: a path, not a credential
+const DefaultTokenStopRecord = "/var/lib/wappie/token-stops.jsonl"
 
 // Web is the browser client, served as files from disk.
 //
@@ -208,8 +221,9 @@ func Load() (Config, error) {
 			Format: strings.ToLower(str("WS_LOG_FORMAT", defaultLogFormat(env))),
 			Wire:   boolean("WS_LOG_WIRE", false, &errs),
 		},
-		Deletion: Deletion{Ledger: strings.TrimSpace(str("WS_DELETION_LEDGER", DefaultDeletionLedger))},
-		Contract: loadContract(),
+		Deletion:        Deletion{Ledger: strings.TrimSpace(str("WS_DELETION_LEDGER", DefaultDeletionLedger))},
+		TokenStopRecord: strings.TrimSpace(str("WS_TOKEN_STOP_RECORD", DefaultTokenStopRecord)),
+		Contract:        loadContract(),
 	}
 	switch purge := strings.ToLower(strings.TrimSpace(str("WS_DELETED_NUMBER_PURGE", "on"))); purge {
 	case "on":

@@ -5,6 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -12,8 +17,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,6 +33,7 @@ import (
 	"whatserver2/internal/membership"
 	"whatserver2/internal/membership/membershiptest"
 	"whatserver2/internal/migrate"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
 )
@@ -440,21 +449,21 @@ func TestTokensSuspendCommand(t *testing.T) {
 	}
 
 	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
-	said := func(r tokenStopRecord) string {
+	said := func(r tokenStopRecord, note string) string {
 		t.Helper()
 		var out bytes.Buffer
-		if err := changeTokenStop(ctx, tokens, r, record, &out); err != nil {
+		if err := changeTokenStop(ctx, tokens, r, note, record, &out); err != nil {
 			t.Fatal(err)
 		}
 		return out.String()
 	}
 	at := time.Now().UTC().Truncate(time.Second)
-	a := said(tokenStopRecord{Selector: known, At: at, Note: "leaked in a log"})
-	b := said(tokenStopRecord{Selector: unknown, At: at.Add(time.Second)})
+	a := said(tokenStopRecord{Selector: known, At: at}, "leaked in a log")
+	b := said(tokenStopRecord{Selector: unknown, At: at.Add(time.Second)}, "")
 	if strings.ReplaceAll(a, known, "S") != strings.ReplaceAll(b, unknown, "S") {
 		t.Fatalf("the words differ for a selector Wappie holds and one it does not:\n%s\n%s", a, b)
 	}
-	lifted := said(tokenStopRecord{Selector: known, At: at.Add(2 * time.Second), Lift: true})
+	lifted := said(tokenStopRecord{Selector: known, At: at.Add(2 * time.Second), Lift: true}, "")
 	if !strings.Contains(lifted, "the operator's stop is lifted") {
 		t.Fatalf("tokens lift: %q", lifted)
 	}
@@ -497,7 +506,7 @@ func TestTokensSuspendCommand(t *testing.T) {
 	// neither rewound nor lifted by the record's older lift, and the lift is
 	// not undone by the record's older stop.
 	for _, r := range []tokenStopRecord{{Selector: known, At: at.Add(3 * time.Second)}, {Selector: unknown, At: at.Add(4 * time.Second), Lift: true}} {
-		if err := changeTokenStop(ctx, tokens, r, "", &bytes.Buffer{}); err != nil {
+		if err := changeTokenStop(ctx, tokens, r, "", "", &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -525,7 +534,7 @@ func TestTokensSuspendCommand(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := changeTokenStop(ctx, tokens, tokenStopRecord{Selector: known, At: at}, "", &out); err != nil {
+	if err := changeTokenStop(ctx, tokens, tokenStopRecord{Selector: known, At: at}, "", "", &out); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
@@ -556,11 +565,7 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 	record := filepath.Join(dir, "token-stops.jsonl")
 	const a, b = "0123456789abcdef", "fedcba9876543210"
 	line := func(sel string, at time.Time, lift bool) string {
-		r := tokenStopRecord{Selector: sel, At: at, Lift: lift}
-		if !lift {
-			r.Note = "n"
-		}
-		js, err := json.Marshal(r)
+		js, err := json.Marshal(tokenStopRecord{Selector: sel, At: at, Lift: lift})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -579,8 +584,8 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 	if err := os.Chmod(record, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	added := tokenStopRecord{Selector: a, At: now, Note: "again"}
-	if err := appendTokenStop(record, added, now); err != nil {
+	added := tokenStopRecord{Selector: a, At: now}
+	if err := appendTokenStop(context.Background(), record, added, now); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(record)
@@ -606,7 +611,7 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 	for _, sel := range []string{a, b} {
 		wg.Go(func() {
 			for i := range 20 {
-				if err := appendTokenStop(record, tokenStopRecord{Selector: sel, At: now.Add(time.Duration(i) * time.Second)}, now); err != nil {
+				if err := appendTokenStop(context.Background(), record, tokenStopRecord{Selector: sel, At: now.Add(time.Duration(i) * time.Second)}, now); err != nil {
 					t.Error(err)
 				}
 			}
@@ -621,11 +626,13 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 		t.Fatalf("after 40 appends at once the record has %d lines, want %d", n, 4+40)
 	}
 
-	// A replay leaves the line over 365 days old.
+	// A replay leaves the line over 365 days old. A line an older binary
+	// wrote with its note applies, with no note.
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
 	old := filepath.Join(dir, "old.jsonl")
-	if err := os.WriteFile(old, []byte(line(a, now.Add(-366*24*time.Hour), false)+"\n"+line(b, now.Add(-364*24*time.Hour), false)+"\n"), 0o600); err != nil {
+	older := `{"selector":"` + b + `","at":"` + now.Add(-364*24*time.Hour).Format(time.RFC3339Nano) + `","note":"from an older binary"}`
+	if err := os.WriteFile(old, []byte(line(a, now.Add(-366*24*time.Hour), false)+"\n"+older+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -648,6 +655,10 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 	if rows.Err() != nil || len(stops) != 1 || stops[0] != b {
 		t.Fatalf("the stops after the replay: %v %v, want only %s", stops, rows.Err(), b)
 	}
+	var note string
+	if err := pool.QueryRow(ctx, `SELECT note FROM contract_token_stops WHERE selector = $1`, b).Scan(&note); err != nil || note != "" {
+		t.Fatalf("the replayed stop's note: %q %v", note, err)
+	}
 }
 
 // A temporary copy of the record that an append killed before its rename
@@ -663,7 +674,7 @@ func TestTokenStopRecordLeavesNoTemporaryCopy(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := appendTokenStop(record, tokenStopRecord{Selector: "fedcba9876543210", At: now}, now); err != nil {
+	if err := appendTokenStop(context.Background(), record, tokenStopRecord{Selector: "fedcba9876543210", At: now}, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(left); !errors.Is(err, os.ErrNotExist) {
@@ -674,5 +685,473 @@ func TestTokenStopRecordLeavesNoTemporaryCopy(t *testing.T) {
 	}
 	if b, err := os.ReadFile(record); err != nil || strings.Count(string(b), "\n") != 1 {
 		t.Fatalf("the record: %q %v", b, err)
+	}
+}
+
+// tokens suspend and lift append to the stop record WS_TOKEN_STOP_RECORD
+// names, or to -record's instead; a line holds the selector, its time and
+// whether it was a lift, never the note, which the database alone keeps.
+// With the setting blank, the stop is made all the same, no file is
+// written, and the command says a restore would lose it.
+func TestTokensSuspendWritesTheConfiguredRecord(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	dir := t.TempDir()
+	configured, other := filepath.Join(dir, "token-stops.jsonl"), filepath.Join(dir, "other.jsonl")
+	commandEnv(t, pool, filepath.Join(dir, "deletion-ledger.jsonl"))
+	t.Setenv("WS_TOKEN_STOP_RECORD", configured)
+	const sel, unrecorded = "0123456789abcdef", "fedcba9876543210"
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := tokensCommand(args, strings.NewReader(""), &out); err != nil {
+			t.Fatalf("tokens %s: %v", strings.Join(args, " "), err)
+		}
+		return out.String()
+	}
+	read := func(path string) []string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	}
+	if out := run("suspend", "-note", "leaked in a log", sel); !strings.Contains(out, "recorded in "+configured) {
+		t.Fatalf("tokens suspend: %q", out)
+	}
+	if out := run("lift", "-record", other, sel); !strings.Contains(out, "recorded in "+other) {
+		t.Fatalf("tokens lift -record: %q", out)
+	}
+	stop, lift := read(configured), read(other)
+	if len(stop) != 1 || len(lift) != 1 || strings.Contains(stop[0], "lift") || !strings.Contains(lift[0], `"lift":true`) {
+		t.Fatalf("the configured record %q, -record's %q: want the stop in one and the lift in the other", stop, lift)
+	}
+	for _, l := range []string{stop[0], lift[0]} {
+		var keys map[string]any
+		if err := json.Unmarshal([]byte(l), &keys); err != nil {
+			t.Fatal(err)
+		}
+		delete(keys, "lift")
+		if len(keys) != 2 || keys["selector"] != sel || keys["at"] == nil {
+			t.Fatalf("a line holds more than the selector, its time and whether it was a lift: %s", l)
+		}
+	}
+	var note string
+	if err := pool.QueryRow(ctx, `SELECT note FROM contract_token_stops WHERE selector = $1`, sel).Scan(&note); err != nil || note != "leaked in a log" {
+		t.Fatalf("the stop's note in the database: %q %v", note, err)
+	}
+
+	names := func() []string {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+	before := names()
+	t.Setenv("WS_TOKEN_STOP_RECORD", " ")
+	out := run("suspend", unrecorded)
+	if !strings.Contains(out, "selector "+unrecorded+" is stopped here") ||
+		!strings.Contains(out, "no stop record (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would lose it") {
+		t.Fatalf("tokens suspend with no record: %q", out)
+	}
+	var open bool
+	if err := pool.QueryRow(ctx, `SELECT lifted_at IS NULL FROM contract_token_stops WHERE selector = $1`, unrecorded).Scan(&open); err != nil || !open {
+		t.Fatalf("the stop made with no record: open %v, %v", open, err)
+	}
+	if after := names(); !slices.Equal(after, before) {
+		t.Fatalf("a stop with no record wrote a file: %v, before %v", after, before)
+	}
+}
+
+// The command takes a stop's time to the microsecond, Postgres' own, so a
+// line's time is its stop's stopped_at, or its lift's lifted_at, exactly.
+func TestTokenStopLineIsTheDatabasesTime(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	tokens := store.NewTokens(pool)
+	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
+	const sel = "0123456789abcdef"
+	at := time.Now().Truncate(time.Second).Add(-time.Minute + 123456789*time.Nanosecond)
+	for _, r := range []tokenStopRecord{{Selector: sel, At: at}, {Selector: sel, At: at.Add(time.Second), Lift: true}} {
+		if err := changeTokenStop(ctx, tokens, r, "", record, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	var stopped, lifted time.Time
+	if err := pool.QueryRow(ctx, `SELECT stopped_at, lifted_at FROM contract_token_stops WHERE selector = $1`, sel).Scan(&stopped, &lifted); err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("the record: %q", lines)
+	}
+	for i, want := range []time.Time{stopped, lifted} {
+		var r tokenStopRecord
+		if err := json.Unmarshal([]byte(lines[i]), &r); err != nil {
+			t.Fatal(err)
+		}
+		if !r.At.Equal(want) || r.At.Nanosecond()%1000 != 0 {
+			t.Errorf("line %d's time %s, the database's %s", i+1, r.At.Format(time.RFC3339Nano), want.UTC().Format(time.RFC3339Nano))
+		}
+	}
+}
+
+// stopLine is a stop record's line.
+func stopLine(t *testing.T, sel string, at time.Time, lift bool) string {
+	t.Helper()
+	js, err := json.Marshal(tokenStopRecord{Selector: sel, At: at, Lift: lift})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(js)
+}
+
+// The hourly trim drops the lines over 365 days old and those of each
+// stop retention deleted, up to its last change; it keeps a later line of
+// that selector, the lines of a stop the database holds of it again from
+// that stop on (whatever the clocks), and a line that is no stop's record,
+// in their order, each record written again with nothing a line must not
+// hold. It keeps the file's mode and owner, removes a temporary copy a
+// killed rewrite left, never makes a missing record, and leaves alone one
+// it would not change. A failed read of the stops changes nothing.
+func TestTokenStopRecordTrim(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	const day = 24 * time.Hour
+	dir := t.TempDir()
+	record := filepath.Join(dir, "token-stops.jsonl")
+	const old, gone, again, standing = "0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004"
+	lines := []string{
+		stopLine(t, old, now.Add(-366*day), false),
+		"not a record",
+		stopLine(t, gone, now.Add(-10*day), false),
+		stopLine(t, gone, now.Add(-9*day), true), // the deleted stop's last change
+		stopLine(t, gone, now.Add(-time.Hour), false),
+		stopLine(t, again, now.Add(-3*day), false),
+		stopLine(t, again, now.Add(-2*day), false), // stopped again, before the deleted one's lift by the clock
+		stopLine(t, standing, now.Add(-364*day), false),
+		`{"selector":"` + standing + `","at":"` + now.Add(-time.Minute).Format(time.RFC3339Nano) + `","note":"from an older binary"}`,
+	}
+	if err := os.WriteFile(record, []byte(strings.Join(lines, "\n")+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(record, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	stale, others := filepath.Join(dir, ".token-stops.jsonl.tmp-123456"), filepath.Join(dir, ".other.jsonl.tmp-1")
+	for _, p := range []string{stale, others} {
+		if err := os.WriteFile(p, []byte(lines[0]+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner := func() [2]uint32 {
+		t.Helper()
+		fi, err := os.Stat(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := fi.Sys().(*syscall.Stat_t)
+		return [2]uint32{st.Uid, st.Gid}
+	}
+	was := owner()
+	letGo := map[string]time.Time{gone: now.Add(-9 * day), again: now.Add(-day)}
+	var asked []string
+	made := func(selectors []string) (map[string]time.Time, error) {
+		asked = selectors
+		return map[string]time.Time{again: now.Add(-2 * day)}, nil
+	}
+	if dropped, err := trimTokenStops(ctx, record, now, letGo, made); err != nil || dropped != 4 {
+		t.Fatalf("the trim: %d lines dropped, %v; want 4", dropped, err)
+	}
+	if !slices.Equal(asked, []string{gone, again}) {
+		t.Fatalf("the trim asked for the stops of %v, want those retention deleted", asked)
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{lines[1], lines[4], lines[6], lines[7], stopLine(t, standing, now.Add(-time.Minute), false)}, "\n") + "\n"
+	if string(got) != want {
+		t.Fatalf("the record after the trim:\n%s\nwant:\n%s", got, want)
+	}
+	if fi, err := os.Stat(record); err != nil || fi.Mode().Perm() != 0o640 || owner() != was {
+		t.Fatalf("the record's mode after the trim: %v %v, owner %v; want 0640 and %v", fi.Mode().Perm(), err, owner(), was)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the temporary copy a killed rewrite left: %v", err)
+	}
+	if _, err := os.Stat(others); err != nil {
+		t.Fatalf("another record's temporary copy: %v", err)
+	}
+
+	// Nothing more to drop: the file is not written.
+	held, err := os.Stat(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped, err := trimTokenStops(ctx, record, now, letGo, made); err != nil || dropped != 0 {
+		t.Fatalf("a second trim: %d, %v", dropped, err)
+	}
+	if fi, err := os.Stat(record); err != nil || !os.SameFile(held, fi) {
+		t.Fatalf("a trim with nothing to drop replaced the record: %v", err)
+	}
+	// The stops not read: nothing changes, not even by age.
+	down := func([]string) (map[string]time.Time, error) { return nil, errors.New("the database is down") }
+	if _, err := trimTokenStops(ctx, record, now.Add(400*day), letGo, down); err == nil {
+		t.Fatal("a trim whose stops could not be read succeeded")
+	}
+	if b, err := os.ReadFile(record); err != nil || string(b) != want {
+		t.Fatalf("a failed trim changed the record: %q %v", b, err)
+	}
+	// A missing record stays missing.
+	missing := filepath.Join(dir, "missing.jsonl")
+	if dropped, err := trimTokenStops(ctx, missing, now, letGo, made); err != nil || dropped != 0 {
+		t.Fatalf("the trim of a missing record: %d, %v", dropped, err)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the trim made a missing record: %v", err)
+	}
+}
+
+// An append and a trim at once lose no line: each rewrite holds the
+// record's lock, and one that waited locks the file the other renamed in.
+func TestTokenStopRecordAppendBesideTrim(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
+	const gone, kept = "0000000000000001", "0000000000000002"
+	var initial []string
+	for i := range 20 {
+		initial = append(initial, stopLine(t, gone, now.Add(-time.Duration(i+1)*time.Hour), false))
+	}
+	if err := os.WriteFile(record, []byte(strings.Join(initial, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	letGo := map[string]time.Time{gone: now.Add(-time.Minute)}
+	none := func([]string) (map[string]time.Time, error) { return nil, nil }
+	var want []string
+	for i := range 20 {
+		want = append(want, stopLine(t, kept, now.Add(time.Duration(i)*time.Second), false))
+	}
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := range 20 {
+			if err := appendTokenStop(ctx, record, tokenStopRecord{Selector: kept, At: now.Add(time.Duration(i) * time.Second)}, now); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	wg.Go(func() {
+		for range 20 {
+			if _, err := trimTokenStops(ctx, record, now, letGo, none); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	wg.Wait()
+	if _, err := trimTokenStops(ctx, record, now, letGo, none); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != strings.Join(want, "\n")+"\n" {
+		t.Fatalf("after 20 appends beside 20 trims the record is:\n%s\nwant every appended line, in order", got)
+	}
+}
+
+// The hourly pass trims the configured stop record right after retention:
+// the lines of a stop retention deleted go, its lift's with it, and so do
+// those over 365 days old; a standing stop's stay. Its INFO line counts,
+// and no line names a selector. With retention failed, only the old lines
+// go; a record it cannot rewrite is an ERROR, and the database stays as
+// retention left it.
+func TestRetentionTrimsTheStopRecord(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	tokens := store.NewTokens(pool)
+	dir := t.TempDir()
+	record := filepath.Join(dir, "token-stops.jsonl")
+	log := &recorder{}
+	a := &app{log: slog.New(log), pools: &pg.Pools{API: pool}, cfg: config.Config{TokenStopRecord: record}}
+	const gone, live, old = "0123456789abcdef", "fedcba9876543210", "00000000000000aa"
+	now := time.Now().UTC()
+	const day = 24 * time.Hour
+	for _, r := range []tokenStopRecord{{Selector: gone, At: now.Add(-10 * day)}, {Selector: gone, At: now.Add(-9 * day), Lift: true},
+		{Selector: live, At: now.Add(-10 * day)}} {
+		if err := changeTokenStop(ctx, tokens, r, "", record, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() []string {
+		t.Helper()
+		b, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	}
+	written := read()
+	f, err := os.OpenFile(record, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(stopLine(t, old, now.Add(-366*day), false) + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A valid record of gone's selector came, created 365 days ago: its
+	// stop is due.
+	execSQL(t, pool, `UPDATE contract_token_stops SET record_until = clock_timestamp() - interval '1 minute' WHERE selector = $1`, gone)
+	stopped := func(sel string) bool {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM contract_token_stops WHERE selector = $1`, sel).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+
+	// Retention fails (the pass's context is gone): only the old line goes.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	a.retainTokens(cancelled, now)
+	if len(log.find(slog.LevelWarn, "token retention failed")) != 1 || !stopped(gone) {
+		t.Fatalf("a failed retention: its stop there %v, the logs %+v", stopped(gone), log.lines)
+	}
+	if got := read(); !slices.Equal(got, written) {
+		t.Fatalf("the record after a failed retention: %q, want %q", got, written)
+	}
+
+	a.retainTokens(ctx, now)
+	if stopped(gone) || !stopped(live) {
+		t.Fatalf("retention: gone's stop there %v, live's %v", stopped(gone), stopped(live))
+	}
+	if got := read(); !slices.Equal(got, written[2:]) {
+		t.Fatalf("the record after retention: %q, want live's line alone, %q", got, written[2:])
+	}
+	trimmed := log.find(slog.LevelInfo, "token stop record trimmed")
+	if len(trimmed) != 2 || trimmed[0].attrs["lines"] != "1" || trimmed[1].attrs["lines"] != "2" || trimmed[1].attrs["path"] != record {
+		t.Fatalf("the trims' lines: %+v", trimmed)
+	}
+
+	// A record the pass cannot rewrite (a directory).
+	a.cfg.TokenStopRecord = dir
+	a.retainTokens(ctx, now)
+	if bad := log.find(slog.LevelError, "token stop record trim failed"); len(bad) != 1 || bad[0].attrs["path"] != dir || bad[0].attrs["error"] == "" {
+		t.Fatalf("a record the pass cannot rewrite: %+v", bad)
+	}
+	if !stopped(live) {
+		t.Fatal("a failed trim changed the database")
+	}
+	for _, l := range log.lines {
+		for _, v := range append([]string{l.msg}, slices.Collect(maps.Values(l.attrs))...) {
+			for _, sel := range []string{gone, live, old} {
+				if strings.Contains(v, sel) {
+					t.Errorf("a log line names a selector: %+v", l)
+				}
+			}
+		}
+	}
+}
+
+// In prod, serve says once, right after the deletion ledger's line and
+// before "starting", whether it can write the stop record, creating it
+// 0600 when it is missing, and starts either way: none configured, a file
+// it cannot make, and one in a directory where no rewrite can make its
+// temporary file are ERRORs. A dev server says nothing.
+func TestServeChecksTokenStopRecordBeforeStarting(t *testing.T) {
+	dir := t.TempDir()
+	prod := func(path string) config.Config { return config.Config{Env: config.EnvProd, TokenStopRecord: path} }
+	log := &recorder{}
+	lg := slog.New(log)
+	checkTokenStopRecord(prod(filepath.Join(dir, "missing", "token-stops.jsonl")), lg)
+	checkTokenStopRecord(prod(""), lg)
+	if bad := log.find(slog.LevelError, "token stop record not writable"); len(bad) != 2 || !strings.Contains(bad[0].attrs["path"], "missing") ||
+		bad[1].attrs["error"] != "WS_TOKEN_STOP_RECORD is empty" {
+		t.Fatalf("an unwritable record, and none: %+v", log.lines)
+	}
+	path := filepath.Join(dir, "token-stops.jsonl")
+	checkTokenStopRecord(prod(path), lg)
+	if ok := log.find(slog.LevelInfo, "token stop record writable"); len(ok) != 1 || ok[0].attrs["path"] != path {
+		t.Fatalf("a writable record: %+v", log.lines)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the created record: %v %v", info, err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("the check left more than the record: %v %v", entries, err)
+	}
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(dir, "locked")
+		if err := os.Mkdir(locked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(locked, "token-stops.jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:errcheck // the temporary directory's removal says
+		checkTokenStopRecord(prod(filepath.Join(locked, "token-stops.jsonl")), lg)
+		if bad := log.find(slog.LevelError, "token stop record not writable"); len(bad) != 3 || !strings.Contains(bad[2].attrs["path"], "locked") {
+			t.Fatalf("a record in a directory the server cannot write: %+v", log.lines)
+		}
+	}
+	quiet := &recorder{}
+	checkTokenStopRecord(config.Config{Env: config.EnvDev, TokenStopRecord: filepath.Join(dir, "missing", "x")}, slog.New(quiet))
+	if len(quiet.lines) != 0 {
+		t.Fatalf("a dev server checked its stop record: %+v", quiet.lines)
+	}
+
+	// In serve, right after the ledger's check, before "starting".
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "serve" {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch f := call.Fun.(type) {
+			case *ast.Ident:
+				if f.Name == "setup" || f.Name == "checkDeletionLedger" || f.Name == "checkTokenStopRecord" {
+					order = append(order, f.Name)
+				}
+			case *ast.SelectorExpr:
+				if f.Sel.Name != "Info" || len(call.Args) == 0 {
+					return true
+				}
+				if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Value == strconv.Quote("starting") {
+					order = append(order, "starting")
+				}
+			}
+			return true
+		})
+	}
+	if !slices.Equal(order, []string{"setup", "checkDeletionLedger", "checkTokenStopRecord", "starting"}) {
+		t.Fatalf("serve's order: %v", order)
 	}
 }

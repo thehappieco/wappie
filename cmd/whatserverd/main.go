@@ -609,6 +609,9 @@ func serve() error {
 	// while the file cannot be written, and a refusal would crash-loop the
 	// unit and stop every workspace's sync over a file only a restore reads.
 	checkDeletionLedger(a.cfg, a.ledger, a.log)
+	// The stop record's likewise: a stop is made whether or not its line
+	// can be written, and the command says when it cannot.
+	checkTokenStopRecord(a.cfg, a.log)
 	a.startContract(ctx, hup)
 	a.log.Info("starting", "config", a.cfg.String())
 	if !a.cfg.Storage.Configured {
