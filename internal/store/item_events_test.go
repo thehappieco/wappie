@@ -3,6 +3,7 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/label"
+	"whatserver2/internal/ledger"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
@@ -747,17 +749,21 @@ func TestEventHintNeverFromLID(t *testing.T) {
 
 // TestAPushNameNeverNamesANumber is 10.27 of the platform's design of
 // 2026-10-26, through the store: a number's WhatsApp push name never stands
-// in for its label, in a snapshot, a pause or deletion notice, or an event
-// row. A number whose label is set aside has none, and its hint alone; one
-// with a label keeps it, whatever its push name.
+// in for its label, at any of the places that name one: the snapshot; the
+// pause, deletion and recovery rows and their notices; an owner's strand
+// override (its stranded row and number_stranded notice, from the list
+// that keeps the push name for the console); a move to Personal (its
+// moved_out row and number_moved_out notice); and a restore's replayed
+// rows, which take their number's label when they are sent. A number with
+// no label, or one set aside (a placeholder), has none, and its hint alone;
+// one with a label keeps it, whatever its push name. The numbers past the
+// first are unlabelled, where a fallback to the push name would bite
+// whether it tests for an empty label or for one set aside.
 func TestAPushNameNeverNamesANumber(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()
-	unnamed, named := w.number(t, "Número do WhatsApp"), w.number(t, "Vendas")
-	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE devices SET push_name = 'Loja Centro' WHERE id = ANY ($1)`, []uuid.UUID{unnamed, named})
-		return err
-	})
+	hintOnly := func(l, h *string) bool { return l == nil && h != nil && *h == "…5678" }
+	unnamed, named := w.pushNamed(t, "Número do WhatsApp"), w.pushNamed(t, "Vendas")
 	reader := w.person(t, "ana", "member")
 	for _, u := range []uuid.UUID{w.owner, reader} {
 		w.reads(t, u, unnamed)
@@ -777,11 +783,11 @@ func TestAPushNameNeverNamesANumber(t *testing.T) {
 	}
 
 	w.pause(t, unnamed, store.PauseActor{User: w.owner})
-	if n := w.noticesOfKind(t, reader, store.NoticeSyncPaused); len(n) != 1 || n[0].Label != nil || n[0].Hint == nil {
+	if n := w.noticesOfKind(t, reader, store.NoticeSyncPaused); len(n) != 1 || !hintOnly(n[0].Label, n[0].Hint) {
 		t.Fatalf("the pause notice: %+v", n)
 	}
 	w.quarantine(t, unnamed, reader)
-	if n := w.noticesOfKind(t, reader, store.NoticeNumberDeleted); len(n) != 1 || n[0].Label != nil || n[0].Hint == nil {
+	if n := w.noticesOfKind(t, reader, store.NoticeNumberDeleted); len(n) != 1 || !hintOnly(n[0].Label, n[0].Hint) {
 		t.Fatalf("the deletion's notice: %+v", n)
 	}
 	w.recover(t, unnamed)
@@ -790,10 +796,98 @@ func TestAPushNameNeverNamesANumber(t *testing.T) {
 		t.Fatalf("rows: %+v", rows)
 	}
 	for _, e := range rows {
-		if e.Label != nil || e.Hint == nil || *e.Hint != "…5678" {
+		if !hintOnly(e.Label, e.Hint) {
 			t.Fatalf("%s row: %+v", e.Type, e)
 		}
 	}
+
+	// A move to Personal. Only the Team's only owner moves a number, so the
+	// owner told is one who joined as the move went, as TestMovedOutNotice
+	// makes one.
+	joiner := w.person(t, "joiner", "member")
+	moving := w.pushNamed(t, "")
+	w.reads(t, w.owner, moving)
+	if err := w.devices.SetPaused(ctx, w.tenant.String(), moving.String(), true); err != nil {
+		t.Fatal(err)
+	}
+	var personal uuid.UUID
+	if err := w.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE personal_owner_id = $1`, w.owner).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(t, `CREATE FUNCTION join_as_owner() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		UPDATE workspace_memberships SET role = 'owner' WHERE tenant_id = NEW.source_workspace_id AND user_id = '`+joiner.String()+`';
+		RETURN NEW; END $$;
+		CREATE TRIGGER join_as_owner AFTER INSERT ON device_transfers FOR EACH ROW EXECUTE FUNCTION join_as_owner()`)
+	if _, err := w.devices.TransferPersonal(ctx, w.tenant, w.owner, moving, personal); err != nil {
+		t.Fatal(err)
+	}
+	if moved := eventsOf(t, w.pool, w.tenant, moving, "moved_out"); len(moved) != 1 || !hintOnly(moved[0].Label, moved[0].Hint) {
+		t.Fatalf("the moved_out row: %+v", moved)
+	}
+	if n := w.noticesOfKind(t, joiner, store.NoticeNumberMovedOut); len(n) != 1 || n[0].DeviceID != moving || !hintOnly(n[0].Label, n[0].Hint) {
+		t.Fatalf("the move's notice: %+v", n)
+	}
+
+	// An owner's strand override, the gate open: the joiner, an owner now,
+	// is told.
+	target := w.person(t, "target", "member")
+	stranded := w.pushNamed(t, "")
+	w.reads(t, target, stranded)
+	w.quarantine(t, stranded, target)
+	w.contractGate(t, "observe", true, "team", "")
+	if err := w.users.RemoveMemberStrandDeleted(ctx, w.tenant, w.owner, target); err != nil {
+		t.Fatalf("the owner's override: %v", err)
+	}
+	if r := w.stranded(t, stranded); len(r) != 1 || !hintOnly(r[0].label, r[0].hint) {
+		t.Fatalf("the stranded row: %+v", r)
+	}
+	if n := w.noticesOfKind(t, joiner, store.NoticeNumberStranded); len(n) != 1 || n[0].DeviceID != stranded || !hintOnly(n[0].Label, n[0].Hint) {
+		t.Fatalf("the stranding's notice: %+v", n)
+	}
+
+	// A restore's replay of a deletion and its recovery, after the team was
+	// named: the replayed recoveries keep no label, and are sent with their
+	// numbers', the push name never.
+	replayed := w.pushNamed(t, "")
+	var lines []ledger.Line
+	for _, d := range []uuid.UUID{replayed, named} {
+		q := w.quarantine(t, d)
+		back := w.dbTime(t, `clock_timestamp()`)
+		lines = append(lines, w.line(ledger.TypeDeleted, d, &q.DeletedAt, &q.PurgeAfter, q.DeletedAt),
+			w.line(ledger.TypeRecovered, d, &q.DeletedAt, nil, back))
+	}
+	if report, err := w.replay(t, lines, store.ReplayOptions{}); err != nil || len(report.Changes) != 2 {
+		t.Fatalf("the replay: %v\n%s", err, report)
+	}
+	batch, err := store.NewContract(w.pool).EventBatch(ctx, w.tenant, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := map[uuid.UUID]store.ContractEvent{}
+	for _, e := range batch.Events {
+		sent[e.EventID] = e
+	}
+	if e, ok := sent[lines[1].EventID]; !ok || !e.Replayed || e.Type != "recovered" || !hintOnly(e.Label, e.Hint) {
+		t.Fatalf("the replayed recovery of an unlabelled number: %+v (sent %v)", e, ok)
+	}
+	if e, ok := sent[lines[3].EventID]; !ok || !e.Replayed || e.Label == nil || *e.Label != "Vendas" || e.Hint == nil {
+		t.Fatalf("the replayed recovery of a labelled number: %+v (sent %v)", e, ok)
+	}
+}
+
+// pushNamed is a number labelled lbl ("" for none) whose WhatsApp push name
+// is Loja Centro.
+func (w *delWorld) pushNamed(t *testing.T, lbl string) uuid.UUID {
+	t.Helper()
+	d := w.number(t, "n")
+	inTenantTx(context.Background(), t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(context.Background(), `UPDATE devices SET label = $2, push_name = 'Loja Centro' WHERE id = $1`, d, lbl)
+		if err == nil && tag.RowsAffected() != 1 {
+			return fmt.Errorf("no number %s", d)
+		}
+		return err
+	})
+	return d
 }
 
 // keysFor gives a number made with linkedNumber its archive key, as
