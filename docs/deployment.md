@@ -557,23 +557,33 @@ and before "starting", the contract's line, which a deploy checks:
 `/var/lib/wappie/token-stops.jsonl`, beside the deletion ledger: the
 operator's token stops and lifts (`tokens suspend` and `tokens lift`,
 below), outside the database, which `tokens suspend -replay` applies again
-after a restore of Wappie's database. Put it on a persistent path that is
-in the host's backups and off-host copies, with the database's, writable by
-the server's user alone, and delete its copies before they are 90 days
-old, as the backups'. In `deploy/compose.yaml` it is on the
-`deletion-ledger` volume, with the ledger. One JSON line per stop or lift:
-`{selector, at, lift}`, `lift` present only when true, `at` in UTC to the
-microsecond, the stop's `stopped_at` or its `lifted_at` in the database. It
-never holds the note, the account that ran the command, a token or
-anything else, nor Wappie's own `apply_failed` stops: those stay in the
-database. It is created with mode 0600 and replaced whole at each write: a
-temporary file beside it, with its mode and owner, synced and renamed over
-it, the directory synced, under an exclusive lock of the file, so a command
-and the server at once lose no line.
+after a restore of Wappie's database. Unset or empty, as for the ledger,
+is the default; a value of spaces alone (quoted, in an env file) means
+none. Put it on a persistent path that is in the host's backups and
+off-host copies, with the database's (a backup that copies the ledger by
+its name must name this file too), writable by the server's user alone, and
+delete its copies before they are 90 days old, as the backups'. In
+`deploy/compose.yaml` it is on the `deletion-ledger` volume, with the
+ledger. One JSON line per stop or lift: `{selector, at, lift}`, `lift`
+present only when true, `at` in UTC to the microsecond, the stop's
+`stopped_at` or its `lifted_at` in the database. It never holds the note,
+the account that ran the command, a token or anything else, nor Wappie's
+own `apply_failed` stops: those stay in the database. A stop's times never
+go back, so no line is later than its stop's last change: a stop or a lift
+timed before that change (two commands at once, or a clock stepped back)
+is made at it. It is created with mode 0600 and replaced whole at each
+write: a temporary file beside it, with its mode and owner, synced and
+renamed over it, the directory synced, under an exclusive lock of the
+file, so a command and the server at once lose no line.
 
 - **When it is written.** By `tokens suspend` and `tokens lift`, once the
-  stop or the lift is in the database; `-record F` writes F instead. With
-  `WS_TOKEN_STOP_RECORD` empty the command still makes the stop and says
+  stop or the lift is in the database. `-record F` may name the file
+  again, however spelled or linked; any other file is refused before
+  anything changes, since no pass would trim it and no restore replay it.
+  A lift of a stop lifted already changes nothing and writes that lift
+  again, at its own time, so running it again records a lift whose write
+  failed; a lift with no operator's stop to lift writes nothing. With
+  `WS_TOKEN_STOP_RECORD` blank the command still makes the stop and says
   "no stop record (WS_TOKEN_STOP_RECORD is empty), so a restore of
   Wappie's database would lose it"; one that cannot write the file says
   the stop is in the database but not in the record, and exits 1.
@@ -585,8 +595,16 @@ and the server at once lose no line.
   keeps its own. The pass logs INFO "token stop record trimmed" with how
   many lines, never which. A trim that fails logs ERROR "token stop record
   trim failed" with the path and the error and changes nothing in the
-  database: its lines then go at their 365 days, as after a crash between
-  retention and the trim. A trim never creates the file.
+  database; every later pass drops those stops' lines too, until one
+  succeeds. A restart of the server before then, a crash between
+  retention and the trim, and a stop retention deletes in the
+  milliseconds between its command's write and its line leave those lines
+  to their 365 days. A trim never creates the file.
+- **A line that is no stop's record** (a hand edit, a damaged disk) is
+  kept as it is, and every pass logs ERROR "token stop record has
+  unreadable lines" with the path and how many, never what they say:
+  `tokens suspend -replay` refuses a record that holds one, so mend or
+  remove it before a restore needs the file.
 - **At start.** In prod, serve checks the file right after the deletion
   ledger: it logs INFO "token stop record writable" with the path,
   creating the file when it is missing (and a temporary file beside it,
@@ -662,10 +680,10 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   ([the token feed](contract.md#the-token-feed)).
 - `tokens suspend` stops a token here by its selector, with the platform
   down too, until `tokens lift`; each appends to the stop record (above),
-  or to `-record F` instead, so `tokens suspend -replay
-  /var/lib/wappie/token-stops.jsonl`, before the server starts, brings the
-  stops back after a restore of Wappie's database
-  ([what Wappie keeps of a token](contract.md#the-token-feed)). `-note` is
+  so `tokens suspend -replay /var/lib/wappie/token-stops.jsonl`, before
+  the server starts, brings the stops back after a restore of Wappie's
+  database ([what Wappie keeps of a token](contract.md#the-token-feed)).
+  `-record F` is optional, and refused unless F is that record. `-note` is
   kept in Wappie's database only.
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
@@ -715,7 +733,9 @@ in the snapshot, and the token stops as they stood then. After step 4 of
 replay the stop record, as the server's user:
 `whatserverd tokens suspend -replay /var/lib/wappie/token-stops.jsonl`.
 As for the ledger, never overwrite a record that survived on the host; use
-it, else the newest off-host copy. Then run
+it, else the newest off-host copy, put back in `/var/lib/wappie` owned by
+the server's user, mode 0600 (a record root owns fails every later write,
+the hourly trims too). Then run
 `whatserverd contract status --check`:
 
 - `contract never observed but a secret is installed`: the snapshot is from

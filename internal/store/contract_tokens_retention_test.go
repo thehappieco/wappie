@@ -160,7 +160,7 @@ func TestTokenRetentionVisitsADeletedWorkspace(t *testing.T) {
 		w.record(past, 1, inGone, createdAt(w.now.Add(-366*tokenDay), 300*tokenDay), unknownItem(w.ownerSub, w.now.Add(-300*tokenDay))),
 		w.record(live, 1, inGone, unknownItem(w.ownerSub, w.now)))
 	for _, id := range []uuid.UUID{past, live} {
-		if err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "", w.now); err != nil {
+		if _, err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "", w.now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -236,7 +236,7 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 	w := newTokenWorld(t)
 	// Held: stopped 400 days ago, before its record came.
 	held := uuid.New()
-	if err := w.tokens.StopToken(w.ctx(), selectorOf(held), "root", "", w.now.Add(-400*tokenDay)); err != nil {
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(held), "root", "", w.now.Add(-400*tokenDay)); err != nil {
 		t.Fatal(err)
 	}
 	w.page(false, w.record(held, 1))
@@ -253,7 +253,7 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 	// Never held: one stopped 366 days ago, one 364 days ago.
 	lapsed, standing := selectorOf(uuid.New()), selectorOf(uuid.New())
 	for sel, at := range map[string]time.Time{lapsed: w.now.Add(-366 * tokenDay), standing: w.now.Add(-364 * tokenDay)} {
-		if err := w.tokens.StopToken(w.ctx(), sel, "root", "", at); err != nil {
+		if _, err := w.tokens.StopToken(w.ctx(), sel, "root", "", at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -263,7 +263,7 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 	// nothing, then a valid one created 200 days ago, then a later one.
 	orphan, narrowed := uuid.New(), uuid.New()
 	for _, id := range []uuid.UUID{orphan, narrowed} {
-		if err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "", w.now.Add(-10*tokenDay)); err != nil {
+		if _, err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "", w.now.Add(-10*tokenDay)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -297,7 +297,7 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 		t.Fatal("a record that lowers nothing rewrote the stop")
 	}
 	// A re-stop is made now, and keeps record_until.
-	if err := w.tokens.StopToken(w.ctx(), selectorOf(narrowed), "root", "again", w.now); err != nil {
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(narrowed), "root", "again", w.now); err != nil {
 		t.Fatal(err)
 	}
 	if _, stopped, ru := w.stopOf(selectorOf(narrowed)); !stopped.Equal(w.now) || ru == nil || !ru.Equal(narrowedUntil) {
@@ -310,7 +310,7 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 	// its selector, so dated; then retention; then each token's good record.
 	leaked, claimed := uuid.New(), uuid.New()
 	for _, id := range []uuid.UUID{leaked, claimed} {
-		if err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "leak", w.now.Add(-time.Hour)); err != nil {
+		if _, err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "leak", w.now.Add(-time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -386,11 +386,11 @@ func TestTokenRetentionReturnsTheOperatorsStops(t *testing.T) {
 	lapsed, narrowed, standing, applyFailed := selectorOf(uuid.New()), selectorOf(uuid.New()), selectorOf(uuid.New()), selectorOf(uuid.New())
 	for sel, at := range map[string]time.Time{selectorOf(held): w.now.Add(-2 * tokenDay), lapsed: w.now.Add(-366 * tokenDay),
 		narrowed: w.now.Add(-10 * tokenDay), standing: w.now.Add(-10 * tokenDay)} {
-		if err := w.tokens.StopToken(w.ctx(), sel, "root", "", at); err != nil {
+		if _, err := w.tokens.StopToken(w.ctx(), sel, "root", "", at); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if lifted, err := w.tokens.LiftToken(w.ctx(), narrowed, w.now.Add(-9*tokenDay)); err != nil || !lifted {
+	if _, lifted, err := w.tokens.LiftToken(w.ctx(), narrowed, w.now.Add(-9*tokenDay)); err != nil || !lifted {
 		t.Fatalf("the lift: %v %v", lifted, err)
 	}
 	w.exec(`UPDATE contract_token_stops SET record_until = $2 WHERE selector = $1`, narrowed, w.now.Add(-time.Minute))
@@ -416,7 +416,7 @@ func TestTokenRetentionReturnsTheOperatorsStops(t *testing.T) {
 
 	// What the trim reads under the record's lock: when the operator's stop
 	// the database holds again was made, never another cause's.
-	if err := w.tokens.StopToken(w.ctx(), narrowed, "root", "", w.now); err != nil {
+	if _, err := w.tokens.StopToken(w.ctx(), narrowed, "root", "", w.now); err != nil {
 		t.Fatal(err)
 	}
 	failing := selectorOf(uuid.New())
@@ -424,6 +424,81 @@ func TestTokenRetentionReturnsTheOperatorsStops(t *testing.T) {
 	made, err := w.tokens.OperatorStopsMade(w.ctx(), []string{narrowed, lapsed, failing})
 	if err != nil || len(made) != 1 || !made[narrowed].Equal(w.now) {
 		t.Fatalf("the stops made again: %v %v, want %s's at %v alone", made, err, narrowed, w.now)
+	}
+}
+
+// A pass that fails after deleting stops rolls them back and returns none,
+// so the stop record's trim never drops a line of a stop still there.
+func TestAFailedRetentionReturnsNoStops(t *testing.T) {
+	w := newTokenWorld(t)
+	lapsed := selectorOf(uuid.New())
+	if _, err := w.tokens.StopToken(w.ctx(), lapsed, "root", "", w.now.Add(-366*tokenDay)); err != nil {
+		t.Fatal(err)
+	}
+	// A statement the pass runs after the stops' delete fails.
+	w.exec(`CREATE FUNCTION retention_fails() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'the test fails it'; END $$`)
+	w.exec(`CREATE TRIGGER retention_fails BEFORE DELETE ON contract_token_refusals_out FOR EACH STATEMENT EXECUTE FUNCTION retention_fails()`)
+	got, err := w.tokens.RetainTokens(w.ctx(), w.now)
+	if err == nil || !strings.Contains(err.Error(), "the test fails it") {
+		t.Fatalf("retention: %v", err)
+	}
+	if got.Stops != 0 || got.OperatorStops != nil {
+		t.Fatalf("a failed pass returned %+v", got)
+	}
+	if exists, _, _ := w.stopOf(lapsed); !exists {
+		t.Fatal("a failed pass deleted a stop")
+	}
+}
+
+// A stop's times never go back, so the stop record's line, which carries
+// the time the database returns, is never later than its stop's last
+// change: a re-stop timed before the stop (two commands at once, the later
+// timed first, or a clock stepped back) is made at the stop's time, a lift
+// timed before its stop at the stop's, and a re-stop timed before the lift
+// at the lift's. A lift of a stop lifted already changes nothing and gives
+// that lift's time; with no operator's stop of the selector (none, or only
+// Wappie's own), none.
+func TestAStopsTimesNeverGoBack(t *testing.T) {
+	w := newTokenWorld(t)
+	sel, failing := selectorOf(uuid.New()), selectorOf(uuid.New())
+	base, ms := w.now, time.Millisecond
+	stored := func() (time.Time, *time.Time) {
+		t.Helper()
+		var stopped time.Time
+		var lifted *time.Time
+		if err := w.pool.QueryRow(context.Background(), `SELECT stopped_at, lifted_at FROM contract_token_stops
+			WHERE selector = $1 AND cause = 'operator'`, sel).Scan(&stopped, &lifted); err != nil {
+			t.Fatal(err)
+		}
+		return stopped, lifted
+	}
+	stop := func(at, want time.Time) {
+		t.Helper()
+		got, err := w.tokens.StopToken(w.ctx(), sel, "root", "", at)
+		if stopped, lifted := stored(); err != nil || !got.Equal(want) || !stopped.Equal(want) || lifted != nil {
+			t.Fatalf("a stop at %v: returned %v, stored %v lifted %v, %v; want %v, open", at, got, stopped, lifted, err, want)
+		}
+	}
+	lift := func(at, want time.Time, wantLifted bool) {
+		t.Helper()
+		got, lifted, err := w.tokens.LiftToken(w.ctx(), sel, at)
+		if _, was := stored(); err != nil || lifted != wantLifted || !got.Equal(want) || was == nil || !was.Equal(want) {
+			t.Fatalf("a lift at %v: returned %v %v, stored %v, %v; want %v %v", at, got, lifted, was, err, want, wantLifted)
+		}
+	}
+	stop(base.Add(ms), base.Add(ms))
+	stop(base, base.Add(ms))
+	lift(base, base.Add(ms), true)
+	lift(base.Add(time.Hour), base.Add(ms), false)
+	stop(base.Add(-time.Hour), base.Add(ms))
+	lift(base.Add(2*ms), base.Add(2*ms), true)
+	stop(base.Add(3*ms), base.Add(3*ms))
+
+	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'apply_failed', $2, 'wappie')`, failing, base)
+	for _, s := range []string{failing, selectorOf(uuid.New())} {
+		if at, lifted, err := w.tokens.LiftToken(w.ctx(), s, base); err != nil || lifted || !at.IsZero() {
+			t.Fatalf("a lift with no operator's stop: %v %v %v", at, lifted, err)
+		}
 	}
 }
 

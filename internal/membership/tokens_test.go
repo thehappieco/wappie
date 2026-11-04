@@ -1565,7 +1565,7 @@ func TestWaitingAndSuspendedAreWholeSets(t *testing.T) {
 	})
 	ctx := context.Background()
 	for _, text := range []string{textA, textB} {
-		if err := w.tokens.StopToken(ctx, selector(t, text), "test", "", time.Now()); err != nil {
+		if _, err := w.tokens.StopToken(ctx, selector(t, text), "test", "", time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1596,7 +1596,7 @@ func TestWaitingAndSuspendedAreWholeSets(t *testing.T) {
 			t.Fatalf("an unchanged set was sent again: %+v %+v", ack.Suspended, ack.Waiting)
 		}
 	}
-	if _, err := w.tokens.LiftToken(ctx, selector(t, textA), time.Now()); err != nil {
+	if _, _, err := w.tokens.LiftToken(ctx, selector(t, textA), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	n = len(w.acks())
@@ -1746,7 +1746,7 @@ func TestTheOperatorsStopStandsOverTheFeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.fake.SetDown(true)
-	if err := w.tokens.StopToken(ctx, selector(t, text), "operator", "leaked", time.Now()); err != nil {
+	if _, err := w.tokens.StopToken(ctx, selector(t, text), "operator", "leaked", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if access() != before+1 {
@@ -1815,7 +1815,7 @@ func TestTheOperatorsStopStandsOverTheFeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.tokens.StopToken(ctx, selector(t, laterText), "operator", "", time.Now()); err != nil {
+	if _, err := w.tokens.StopToken(ctx, selector(t, laterText), "operator", "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	w.grant(t, later, kc.CanRead)

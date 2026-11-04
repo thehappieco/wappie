@@ -155,7 +155,7 @@ func TestTokenStatusCountsEveryWorkspace(t *testing.T) {
 	if _, err := w.tokens.FinishTokenPass(ctx, w.gen, w.now); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.tokens.StopToken(ctx, selectorOf(b), "test", "", w.now); err != nil {
+	if _, err := w.tokens.StopToken(ctx, selectorOf(b), "test", "", w.now); err != nil {
 		t.Fatal(err)
 	}
 	for _, sel := range []string{selectorOf(a), selectorOf(c), selectorOf(uuid.New())} {
