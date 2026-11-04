@@ -3,6 +3,7 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/obs"
@@ -567,8 +569,221 @@ func TestATokenCommitWaitsForTheWorkspacesWriters(t *testing.T) {
 	}
 }
 
+// A token page's commit beside the real writers that hold a workspace's row
+// (DB25 step 3) and then its number, its token rows or perms, or its grants:
+// a number's deletion and move-out (which delete the number's perms with
+// dropNumberTokensTx), the token grant write, and grant.add. The tokens are
+// of each shape whose commit takes a lock under the workspace's row: a
+// key-less token whose next version adds a perm on the number (the perm's
+// foreign key on the number), a refused perm given again (a new instance's),
+// and a Read token whose next version brings its first reading key (its
+// identity: the token row's foreign key on the workspace). Each pair runs
+// both ways round: the commit stalled on its token row, holding what it
+// takes before it, while the writer starts; and the writer stalled on a row
+// it takes under the workspace's, while the commit starts. Neither is ever
+// a deadlock's victim, and the commit never retries.
+func TestATokenCommitBesideTheWorkspacesRealWriters(t *testing.T) {
+	type shape int
+	const (
+		keyless shape = iota
+		refusedAgain
+		firstKey
+	)
+	shapes := map[shape]string{keyless: "a key-less token's new perm", refusedAgain: "a refused perm given again", firstKey: "a first reading key"}
+	type world struct {
+		*tokenWorld
+		device, token, member, personal uuid.UUID
+		key                             *kc.ReadingKey
+	}
+	type writer struct {
+		name string
+		// stall is the holder's lock that stops the writer under the
+		// workspace's row; args are w's.
+		stall string
+		run   func(w world) error
+	}
+	writers := map[string]writer{
+		"a deletion": {"a deletion", `SELECT 1 FROM devices WHERE id = $1 FOR UPDATE`, func(w world) error {
+			_, err := w.devices.Quarantine(context.Background(), w.tenant, w.owner, w.device, nil)
+			return err
+		}},
+		"a move-out": {"a move-out", `SELECT 1 FROM devices WHERE id = $1 FOR UPDATE`, func(w world) error {
+			_, err := w.devices.TransferPersonal(context.Background(), w.tenant, w.owner, w.device, w.personal)
+			return err
+		}},
+		"a token grant": {"a token grant", `SELECT 1 FROM contract_tokens WHERE id = $2 FOR UPDATE`, func(w world) error {
+			return w.tokens.PutTokenGrant(context.Background(), store.TokenGrant{Workspace: w.tenant, Token: w.token, Device: w.device, Epoch: 1,
+				SealedDSK: []byte("sealed to the token"), Sealer: w.owner, Now: w.now})
+		}},
+		"grant.add": {"grant.add", `SELECT 1 FROM workspace_memberships WHERE user_id = $3 FOR UPDATE`, func(w world) error {
+			return w.keys.PutGrant(context.Background(), store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: w.member, Epoch: 1,
+				SealedDSK: []byte("grant")}, &w.owner)
+		}},
+	}
+	// The pairs whose writer reaches the rows the commit takes: a move-out
+	// only of a number no token holds (the refused perm), a token grant
+	// only of a token that may get its identity.
+	pairs := []struct {
+		shape  shape
+		writer string
+	}{
+		{keyless, "a deletion"}, {refusedAgain, "a deletion"}, {firstKey, "a deletion"},
+		{refusedAgain, "a move-out"},
+		{firstKey, "a token grant"},
+		{keyless, "grant.add"}, {firstKey, "grant.add"},
+	}
+	for _, pair := range pairs {
+		for _, commitFirst := range []bool{true, false} {
+			order := "the writer first"
+			if commitFirst {
+				order = "the commit first"
+			}
+			wr := writers[pair.writer]
+			t.Run(shapes[pair.shape]+", "+wr.name+", "+order, func(t *testing.T) {
+				// A workspace id below every Personal's (uuidv7), so a move
+				// locks the Team's row first.
+				w := world{tokenWorld: newTokenWorldIn(t, uuid.MustParse("00000000-0000-4000-8000-"+strings.ReplaceAll(uuid.NewString(), "-", "")[:12]), uuid.Nil)}
+				ctx := context.Background()
+				w.device, w.token, w.key = w.number(uuid.Nil), uuid.New(), readingKey(t)
+				w.member = w.linked("member", "member", uuid.New(), true)
+				if err := w.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE personal_owner_id = $1`, w.owner).Scan(&w.personal); err != nil {
+					t.Fatal(err)
+				}
+				w.scoped(func(tx pgx.Tx) error {
+					_, err := tx.Exec(ctx, `UPDATE devices SET pn = '5511912345678@s.whatsapp.net', last_connected_at = now() WHERE id = $1`, w.device)
+					return err
+				})
+				if err := w.devices.SetPaused(ctx, w.tenant.String(), w.device.String(), true); err != nil {
+					t.Fatal(err)
+				}
+				before := w.now.Add(-time.Hour)
+				var next kc.TokenRecord
+				switch pair.shape {
+				case keyless:
+					w.page(false, w.record(w.token, 1, grants(w.device, w.ownerSub, before, kc.CanSend)))
+					next = w.record(w.token, 2, grants(w.device, w.ownerSub, before, kc.CanSend, kc.CanManage))
+				case refusedAgain:
+					stranger := uuid.New()
+					w.page(false, w.record(w.token, 1, grants(w.device, stranger, before, kc.CanSend)))
+					next = w.record(w.token, 2, grants(w.device, stranger, w.now, kc.CanSend))
+				case firstKey:
+					w.page(false, w.record(w.token, 1, grants(w.device, w.ownerSub, before, kc.CanRead)))
+					next = w.record(w.token, 2, grants(w.device, w.ownerSub, before, kc.CanRead), func(r *kc.TokenRecord) { r.ReadingKey = w.key })
+				}
+				w.judge()
+				w.tokensOn()
+				w.fetched(w.token, w.now)
+
+				holder, err := w.pool.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer holder.Rollback(ctx) //nolint:errcheck // rolled back below; a no-op then
+				if _, err := holder.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.tenant.String()); err != nil {
+					t.Fatal(err)
+				}
+				stall := `SELECT 1 FROM contract_tokens WHERE id = $2 AND $1::uuid IS NOT NULL AND $3::uuid IS NOT NULL FOR KEY SHARE`
+				if !commitFirst {
+					stall = `SELECT 1 FROM (` + wr.stall + `) s WHERE $1::uuid IS NOT NULL AND $2::uuid IS NOT NULL AND $3::uuid IS NOT NULL`
+				}
+				if _, err := holder.Exec(ctx, stall, w.device, w.token, w.member); err != nil {
+					t.Fatal(err)
+				}
+				committed, wrote := make(chan error, 1), make(chan error, 1)
+				commit := func() {
+					_, err := w.tryPage(false, next)
+					committed <- err
+				}
+				write := func() { wrote <- wr.run(w) }
+				if commitFirst {
+					go commit()
+					untilTokenWaiters(t, w.tokenWorld, 1)
+					go write()
+				} else {
+					go write()
+					untilTokenWaiters(t, w.tokenWorld, 1)
+					go commit()
+				}
+				untilTokenWaiters(t, w.tokenWorld, 2)
+				if err := holder.Rollback(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if err := <-committed; err != nil {
+					t.Fatalf("the commit: %v", err)
+				}
+				var pgErr *pgconn.PgError
+				if err := <-wrote; errors.As(err, &pgErr) && pgErr.Code == "40P01" || err != nil && strings.Contains(err.Error(), "deadlock") {
+					t.Fatalf("%s: %v", wr.name, err)
+				}
+				if strings.Contains(w.logs.String(), "deadlock") {
+					t.Fatalf("the commit was a deadlock's victim:\n%s", w.logs.String())
+				}
+				if pair.writer == "a deletion" {
+					if p := w.perms(w.token); len(p) != 0 {
+						t.Fatalf("the deleted number is still the token's: %v", p)
+					}
+				}
+			})
+		}
+	}
+}
+
+// A page that lists a token twice, its first record bringing the token's
+// first reading key (so its identity is made) and its second revoking it
+// (so that identity goes, and its grants' cascade locks the workspace's row
+// FOR UPDATE, 0036), takes the workspace's row FOR UPDATE before any token
+// row: against a transaction that holds the row FOR KEY SHARE (as any
+// insert under the workspace does) and then takes the token's row, the
+// commit waits first and holds nothing that transaction needs. Taken FOR
+// KEY SHARE and upgraded under the token rows, the two would deadlock.
+func TestATokenListedTwiceTakesItsWorkspaceFirst(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	device, id := w.number(uuid.Nil), uuid.New()
+	w.page(false, w.record(id, 1, grants(device, w.ownerSub, w.now, kc.CanRead)))
+	w.judge()
+	holder, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck // rolled back below; a no-op then
+	if _, err := holder.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true), set_config('lock_timeout', '5s', true)`, w.tenant.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR KEY SHARE`, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.tryPage(false,
+			w.record(id, 2, grants(device, w.ownerSub, w.now, kc.CanRead), func(r *kc.TokenRecord) { r.ReadingKey = readingKey(t) }),
+			w.record(id, 3, revokedBy(kc.RevokedInConsole, w.now)))
+		done <- err
+	}()
+	untilTokenWaiters(t, w, 1)
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM contract_tokens WHERE id = $1 FOR UPDATE`, id); err != nil {
+		t.Fatalf("the token's row, under the workspace's: %v", err)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the commit: %v", err)
+	}
+	if strings.Contains(w.logs.String(), "deadlock") {
+		t.Fatalf("a deadlock:\n%s", w.logs.String())
+	}
+	identity, dropped := w.identityOf(id)
+	if identity == nil || !dropped || w.count(`SELECT count(*) FROM users WHERE token_identity`) != 0 {
+		t.Fatalf("the identity made and dropped in one page: %v dropped %v", identity, dropped)
+	}
+}
+
 // The applier deletes token identities' grants in two workspaces in one
-// page while their snapshots are read: neither waits for long nor fails.
+// page while both workspaces' snapshots are read in a loop, which reads
+// them before the page starts and goes on until it has committed: the page
+// commits, no snapshot fails, and no identity is left. It measures no
+// time, and an overlap is likely, not forced.
 func TestTheApplierAcrossTwoWorkspacesBesideSnapshots(t *testing.T) {
 	w := newTokenWorld(t)
 	ctx := context.Background()
@@ -592,24 +807,37 @@ func TestTheApplierAcrossTwoWorkspacesBesideSnapshots(t *testing.T) {
 	if err := second.seal(tb, b, second.owner, 1); err != nil {
 		t.Fatal(err)
 	}
-	stop := make(chan struct{})
+	// A first round of both before the page, rounds while it runs, and a
+	// last whole round begun after it committed.
+	stop, started := make(chan struct{}), make(chan struct{})
 	reads := make(chan error, 1)
 	go func() {
-		for {
+		for round := 0; ; round++ {
+			if round == 1 {
+				close(started)
+			}
+			var last bool
 			select {
 			case <-stop:
-				reads <- nil
-				return
+				last = true
 			default:
 			}
 			for _, ws := range []uuid.UUID{w.tenant, other} {
 				if _, err := w.contract.Snapshot(ctx, ws); err != nil {
+					if round == 0 {
+						close(started)
+					}
 					reads <- err
 					return
 				}
 			}
+			if last {
+				reads <- nil
+				return
+			}
 		}
 	}()
+	<-started
 	w.page(false, w.record(ta, 2, revokedBy(kc.RevokedInConsole, w.now)), second.record(tb, 2, revokedBy(kc.RevokedInConsole, w.now)))
 	close(stop)
 	if err := <-reads; err != nil {

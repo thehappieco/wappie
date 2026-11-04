@@ -42,7 +42,8 @@ const (
 // Why says what it holds; Status, for people and service accounts, whether
 // their membership is active, since a disabled one can only be removed.
 // UserID is the person, the service account, or the creator; it is empty for
-// a key or connection whose creator is gone, which still counts.
+// a key or connection whose creator is gone, which still counts, and always
+// for a token, whose hidden identity is no one to show (TokenID names it).
 type TransferAccess struct {
 	Kind          string     `json:"kind"`
 	Why           []string   `json:"why"`
@@ -110,7 +111,10 @@ const accessRowsQuery = `
 //   - another person's Integrations key restricted to the number, with no
 //     acts_as and no connection behind it, which fetches its ciphertext and
 //     metadata, and sends with a send scope. A key or a connection whose
-//     creator is gone counts.
+//     creator is gone counts;
+//   - a platform token of the workspace that holds the number
+//     (tokensOnNumberTx), as kind token: never as a person or a service
+//     account, so the first list leaves its hidden identity out.
 //
 // Never counted: the actor's own keys and connections (the move narrows the
 // keys and ends the connections), keys for every number (not bound to this

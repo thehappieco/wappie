@@ -1759,14 +1759,17 @@ installation ships with them off.
    and the resets right after step 1, before DB23's workspace rows.
 3. `tenants` rows, in workspace id order: FOR UPDATE
    (`lockWorkspaceAccess`) by the token grant write, a number's quarantine
-   and move-out, and the keys' retirement; FOR KEY SHARE by a token page's
-   commit and `ApplyTokenRecord`, for every workspace the page applies,
+   and move-out, and the keys' retirement; by a token page's commit and
+   `ApplyTokenRecord`, for every workspace the page applies, in one pass
+   before any record is judged, FOR UPDATE or FOR KEY SHARE (below),
    followed in each workspace by the live numbers its records name, FOR
-   KEY SHARE too, before that workspace's token rows. The foreign keys of
-   the token rows and perms the commit inserts take those very locks; taken
-   under the token rows instead, they would wait behind a quarantine or a
-   move that holds the workspace and the number and then deletes the
-   number's perms, which wait on the commit.
+   KEY SHARE, before that workspace's token rows. The foreign keys of the
+   token rows and perms the commit inserts take those very locks, and so
+   does the update that gives a token its identity (a second write of a
+   row in one transaction checks its foreign keys again); taken under the
+   token rows instead, they would wait behind a quarantine or a move that
+   holds the workspace and the number and then deletes the number's
+   perms, which wait on the commit.
 4. `contract_token_selectors` and `contract_tokens` rows, in id order:
    FOR UPDATE by the applier, the stops, retention and the expiry janitor;
    FOR SHARE by the token grant write.
@@ -1785,15 +1788,25 @@ The design keeps a dropped Read's grant deletion in the same write as the
 record that drops it (3.5). Step 7's plan had the page commit take no
 `tenants` lock for that; but every write to `device_key_grants` locks its
 workspace's row anyway (0036's `archive_owner_lock`, a statement trigger,
-for the device moves), so a commit that deleted grants under its token
-rows would take step 3 after step 4, and deadlock with a grant write. So
-once the commit deletes token identities' grants (they come with the
-identities), it takes the rows of the workspaces where it will delete
-grants FOR UPDATE instead of FOR KEY SHARE, in the same id-ordered pass,
-after `contract_token_state` and before any token row; until then it
-takes no `tenants` row FOR UPDATE. A token identity is never counted by
-any protection, so no `requireRemainingReader` invariant depends on that
-lock; it is taken only for the order.
+for the device moves, which a delete of the identity fires too through
+its grants' cascade, with no grant to delete), so a commit that deleted
+grants under its token rows would take step 3 after step 4, and deadlock
+with a grant write. So the commit takes FOR UPDATE, in its one pass, the
+row of every workspace where it may delete an identity or its grants,
+decided before it judges any record: one where a token of the page holds
+an identity, so a reading token's rename or unchanged re-delivery takes
+it too, and one where a token is listed twice, whose identity one record
+may make and a later one drop. Elsewhere it takes FOR KEY SHARE. A token
+identity is never counted by any protection, so no
+`requireRemainingReader` invariant depends on that lock; it is taken only
+for the order.
+
+The cost is a wait: FOR KEY SHARE waits behind a `FOR UPDATE` holder as
+much as FOR UPDATE does, so a page waits for any write that holds one of
+its workspaces' rows (a number's quarantine, a move-out, whose statements
+run under a 120-second timeout, a grant, permission or member change), and
+the revocations of its other workspaces wait with it. A narrowing then
+lands when that write ends, not within the design's second.
 
 A number's ordinal (0052's `devices_ordinal`) is chosen under its
 workspace's row FOR UPDATE, taken first in the trigger: a move holds that

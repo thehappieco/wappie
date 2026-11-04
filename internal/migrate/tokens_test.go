@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -559,14 +560,28 @@ func TestMigration0052Checks(t *testing.T) {
 	if memberships != 0 || permissions != 0 || personal != 0 {
 		t.Fatalf("the identity: %d memberships, %d permission rows, %d personal workspaces", memberships, permissions, personal)
 	}
-	for name, sql := range map[string]string{
-		"a password": `UPDATE users SET auth_hash = 'h' WHERE id = $1`,
-		"a salt":     `UPDATE users SET kdf_salt = decode(repeat('ab', 16), 'hex') WHERE id = $1`,
-		"a role":     `UPDATE users SET role = 'member' WHERE id = $1`,
-		"disabled":   `UPDATE users SET status = 'disabled' WHERE id = $1`,
+	// A service's password, role and sign-in source are 0048's
+	// users_credentials_by_source's too; so a person's whole shape, which
+	// that one accepts, is the identity shape's alone to refuse.
+	for _, c := range []struct {
+		name, sql string
+		own       bool
+	}{
+		{"a password", `UPDATE users SET auth_hash = 'h' WHERE id = $1`, false},
+		{"a role", `UPDATE users SET role = 'member' WHERE id = $1`, false},
+		{"the platform's sign-in", `UPDATE users SET auth_source = 'platform' WHERE id = $1`, false},
+		{"a recovery", `UPDATE users SET recovery_hash = 'r' WHERE id = $1`, true},
+		{"a salt", `UPDATE users SET kdf_salt = decode(repeat('ab', 16), 'hex') WHERE id = $1`, true},
+		{"KDF parameters", `UPDATE users SET kdf_params = '{"m": 65536}' WHERE id = $1`, true},
+		{"disabled", `UPDATE users SET status = 'disabled' WHERE id = $1`, true},
+		{"a platform person's shape", `UPDATE users SET role = 'member', auth_source = 'platform' WHERE id = $1`, true},
+		{"a local person's shape", `UPDATE users SET role = 'member', auth_hash = 'h', kdf_salt = decode(repeat('ab', 16), 'hex'),
+			kdf_params = '{"m": 65536}', wrapped_usk = 'w' WHERE id = $1`, true},
 	} {
-		if err := w.try(sql, identity); sqlState(err) != "23514" {
-			t.Errorf("an identity with %s: %v, want 23514", name, err)
+		var pgErr *pgconn.PgError
+		err := w.try(c.sql, identity)
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || c.own && pgErr.ConstraintName != "users_token_identity_shape" {
+			t.Errorf("an identity with %s: %v, want 23514 (users_token_identity_shape's: %t)", c.name, err, c.own)
 		}
 	}
 
@@ -625,6 +640,57 @@ func TestMigration0052Checks(t *testing.T) {
 			if err != nil {
 				break
 			}
+		}
+	}
+
+	// A grant given to the identity notices its token, and a person's grant
+	// nothing. The writes go on one connection of the test's, so another
+	// test's notices on the shared database are told apart.
+	granter, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer granter.Release()
+	grantPID := granter.Conn().PgConn().PID()
+	fromGranter := func(within time.Duration) (string, bool) {
+		wait, cancel := context.WithTimeout(ctx, within)
+		defer cancel()
+		for {
+			n, err := listen.Conn().WaitForNotification(wait)
+			if err != nil {
+				return "", false
+			}
+			if n.PID == grantPID {
+				return n.Payload, true
+			}
+		}
+	}
+	for _, c := range []struct {
+		name string
+		user uuid.UUID
+		want string
+	}{{"the identity's", identity, token.String()}, {"a person's", w.owner, ""}} {
+		err := pgx.BeginFunc(ctx, granter, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.tenant.String()); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk) VALUES ($1, $2, $3, 1, 'sealed')`,
+				w.tenant, w.device, c.user)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("%s grant: %v", c.name, err)
+		}
+		within := 5 * time.Second
+		if c.want == "" {
+			within = 200 * time.Millisecond
+		}
+		payload, got := fromGranter(within)
+		switch {
+		case c.want != "" && (!got || payload != c.want):
+			t.Fatalf("%s grant: notice %q (%t), want %s", c.name, payload, got, c.want)
+		case c.want == "" && got:
+			t.Fatalf("%s grant: notice %q, want none", c.name, payload)
 		}
 	}
 }
