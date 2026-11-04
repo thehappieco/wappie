@@ -345,6 +345,8 @@ func TestUsageIsAbsoluteAndCountedPerRow(t *testing.T) {
 // TestTokenUseDaysAreUTC (the design's 3.8): a use's day, and the days
 // retention keeps, are UTC days whatever the database session's time zone:
 // here São Paulo's, three hours behind, where 01:00 UTC is the day before.
+// A day's rows, once reported, go at the start of the second UTC day after
+// it: at most 2 days after they were reported.
 func TestTokenUseDaysAreUTC(t *testing.T) {
 	pool := pgtest.FreshWith(t, migrate.Run, func(cfg *pgxpool.Config) {
 		cfg.ConnConfig.RuntimeParams["timezone"] = "America/Sao_Paulo"
@@ -352,6 +354,12 @@ func TestTokenUseDaysAreUTC(t *testing.T) {
 	tokens := store.NewTokens(pool)
 	ctx := context.Background()
 	token := uuid.New()
+	// Its selector, which Wappie keeps a year on: usage rows are written
+	// only for a token whose secret matched it.
+	if _, err := pool.Exec(ctx, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
+		VALUES ('0123456789abcdef', $1, gen_random_uuid(), decode(repeat('00', 32), 'hex'), clock_timestamp() + interval '365 days')`, token); err != nil {
+		t.Fatal(err)
+	}
 	use := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)
 	if err := tokens.AddTokenUse(ctx, store.TokenUse{Used: []store.TokenDay{{Token: token, Day: use}},
 		Refusals: []store.TokenUseRefusal{{Token: token, Day: use, Code: kc.UseRevoked, Count: 1}}}); err != nil {
@@ -367,20 +375,38 @@ func TestTokenUseDaysAreUTC(t *testing.T) {
 	if err := tokens.UsageSent(ctx, u, use); err != nil {
 		t.Fatal(err)
 	}
-	// Two days on at 01:00 UTC, the 27th is over two UTC days old and goes;
-	// the 28th stays.
+	// The 29th at 23:00 UTC (20:00 in São Paulo): the 27th, reported, goes
+	// at the start of the 29th; the 28th, reported at 01:00 on the 28th,
+	// stays to the start of the 30th, and goes then.
 	if _, err := pool.Exec(ctx, `INSERT INTO contract_token_used (token_id, day, reported_at) VALUES ($1, '2026-10-27', clock_timestamp())`, token); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tokens.RetainTokens(ctx, time.Date(2026, 10, 30, 1, 0, 0, 0, time.UTC)); err != nil {
+	usedDays := func() []string {
+		t.Helper()
+		rows, err := pool.Query(ctx, `SELECT to_char(day, 'YYYY-MM-DD') FROM contract_token_used ORDER BY day`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		days, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return days
+	}
+	if _, err := tokens.RetainTokens(ctx, time.Date(2026, 10, 29, 23, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := pool.Query(ctx, `SELECT to_char(day, 'YYYY-MM-DD') FROM contract_token_used ORDER BY day`)
-	if err != nil {
+	if days := usedDays(); len(days) != 1 || days[0] != "2026-10-28" {
+		t.Fatalf("the used days retention kept on the 29th: %v, want 2026-10-28 alone", days)
+	}
+	if _, err := tokens.RetainTokens(ctx, time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	days, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil || len(days) != 1 || days[0] != "2026-10-28" {
-		t.Fatalf("the used days retention kept: %v %v, want 2026-10-28 alone", days, err)
+	if days := usedDays(); len(days) != 0 {
+		t.Fatalf("the used days retention kept at the start of the 30th: %v, want none", days)
+	}
+	var refusals int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM contract_token_refusals`).Scan(&refusals); err != nil || refusals != 0 {
+		t.Fatalf("the refusal rows retention kept at the start of the 30th: %d %v, want none", refusals, err)
 	}
 }

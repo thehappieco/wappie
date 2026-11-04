@@ -576,41 +576,56 @@ lift made since without `-record`), so a replay never rewinds a later stop
 nor lifts one. Nothing it prints says whether Wappie holds a token of that
 selector.
 
-The record keeps a line 365 days, as retention keeps a stop (below): each
-`-record` replaces the file whole (a temporary file beside it, its mode and
-owner kept, renamed over it, under a lock of the file, so two at once lose
-no line) without the lines over 365 days old, keeping the others in their
-order and a line that is no stop's record as it is; `-replay` leaves a line
-over 365 days old and counts it ("N lines over 365 days old left, their
-stops let go"), so a replay never brings back a stop retention let go.
+Each `-record` replaces the file whole (a temporary file beside it, its
+mode and owner kept, renamed over it, under a lock of the file, so two at
+once lose no line) without the lines over 365 days old, the longest
+retention keeps a stop (below), keeping the others in their order and a
+line that is no stop's record as it is; a temporary copy that a `-record`
+killed before its rename left goes with the next. Nothing trims the file
+between `-record`s. `-replay` leaves a line over 365 days old and counts it
+("N lines over 365 days old left, their stops let go"), so a replay never
+brings back a stop older than that. A younger line of a stop made while
+Wappie held its selector, whose stop went with that selector (below),
+comes back after a restore taken since as the stop of a selector Wappie
+does not hold: kept to 365 days after it was made at most, as its line.
 
 **What Wappie keeps of a token.** The hourly maintenance pass (the plan's
-retention) deletes, on Wappie's clock and never before the database's:
+retention) deletes, on Wappie's clock (what goes at a token's `created_at`
+plus 365 days, and the stops, never before the database's clock either):
 
 - **A token's record**, 30 days after it ends (revoked, expired by
   Wappie's clock, or unlisted by a reset's pass): the record as received,
   its name, terms and perms, and the grant instances it keeps off
-  (`contract_token_removed`, which keeps no giver).
+  (`contract_token_removed`, which keeps no giver). Its hidden identity
+  (`users`, `user_logins`) goes at its end.
 - **Its security record**, used only to keep it refused, at its
   `created_at` plus 365 days, when it would have expired anyway and its
   records have left the platform's feed: its selector and hash, its pinned
   reading key, its revocation and end (`contract_token_sticky`), its
   creator, workspace, times and versions. Whatever of its record is still
-  there goes then too, as for a 365-day token that just expired.
+  there goes then too, as for a 365-day token that just expired, and so
+  does what the acknowledgement and the usage report still hold of it,
+  sent or not.
 - **A token Wappie never held** (a record of a workspace it does not hold,
-  or a bad record of an unknown token): only a revocation is kept, until
-  the record's `created_at` plus 365 days (a `created_at` ahead of the
-  clock counts as now; none at all, 365 days from now), and none once that
-  has passed.
+  or a bad record of an unknown token): only a revocation is kept, until a
+  valid record's `created_at` plus 365 days (a `created_at` ahead of the
+  clock counts as now), and none once that has passed. A bad record's
+  times are never taken: its revocation is kept 365 days from when it
+  came, until a valid record of the token narrows that.
 - **A workspace's row deleted:** its token rows go with it, their grant
-  instances at the next pass, their pins and selectors at their date.
+  instances and hidden identities at the next pass, their pins and
+  selectors at their date.
 - **Wappie's own stops** (the operator's and `apply_failed`): one of a
   selector Wappie holds goes with that selector, at its token's
   `created_at` plus 365 days, however old the stop; any other 365 days
   after it was made (a new `suspend` makes it again), or earlier at the
-  `created_at` plus 365 days of a record of its selector that came since.
-- **Usage rows** once reported and over 2 days old; **the
-  acknowledgement's queues** 30 days after they were sent.
+  `created_at` plus 365 days of a valid record of its selector that came
+  since (never a bad record's).
+- **Usage rows**, once reported, at the start of the second UTC day after
+  their day, so at most 2 days after they were reported.
+- **The acknowledgement's queues**, 30 days after they were sent; a held
+  entry of a generation a reset left, at the reset; an unsent entry of a
+  token Wappie keeps nothing of, 30 days after it was queued.
 
 ## Observe's comparison
 

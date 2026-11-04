@@ -537,6 +537,10 @@ func TestMigration0052Checks(t *testing.T) {
 	exec(`UPDATE contract_token_sticky SET earliest_expires_at = clock_timestamp()`)
 	refused("a sticky expiry raised", `UPDATE contract_token_sticky SET earliest_expires_at = earliest_expires_at + interval '1 day'`)
 	refused("a sticky expiry cleared", `UPDATE contract_token_sticky SET earliest_expires_at = NULL`)
+	// until only lowers: a valid record's created_at + 365 days narrows a
+	// bad record's Wappie's clock + 365 days.
+	refused("a sticky until raised", `UPDATE contract_token_sticky SET until = until + interval '1 day'`)
+	exec(`UPDATE contract_token_sticky SET until = until - interval '1 second'`)
 	// Past until, the guards let retention through.
 	if _, err := pool.Exec(ctx, `ALTER TABLE contract_token_sticky DISABLE TRIGGER contract_token_sticky_guard;
 		UPDATE contract_token_sticky SET until = clock_timestamp() - interval '1 second';

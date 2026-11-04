@@ -129,11 +129,12 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	}
 	// The token part's: tokens past their expiry by Wappie's clock end, an
 	// ended token's content goes after 30 days (or at its until, if that
-	// comes first), its selector, sticky row, pin and stops at created_at +
-	// 365 days, a stop of a selector Wappie never held 365 days after it was
-	// made (or at its record's created_at + 365 days), and the usage rows
-	// once reported. With tokens never on, its tables are empty and this
-	// finds nothing.
+	// comes first), its selector, sticky row, pin, stops, queue entries and
+	// usage rows at created_at + 365 days, a stop of a selector Wappie never
+	// held 365 days after it was made (or at its valid record's created_at
+	// + 365 days), the usage rows 2 days after they were reported and the
+	// queues' entries 30 days after they were sent. With tokens never on,
+	// its tables are empty and this finds nothing.
 	if got, err := store.NewTokens(a.pools.API).RetainTokens(ctx, time.Now()); err != nil {
 		a.log.Warn("token retention failed", "error", err)
 	} else if got.Expired+got.Forgotten+got.Ended+got.Stops > 0 {

@@ -22,16 +22,18 @@ import (
 // comes back later never revives it.
 const tokenForgetAfter = 30 * 24 * time.Hour
 
-// tokenUsageKeep is how long a reported usage row is kept.
+// tokenUsageKeep is how long a reported usage row is kept: a day's rows go
+// at the start of the second UTC day after it, so at most this long after
+// they were reported (a day is reported once it has begun).
 const tokenUsageKeep = 48 * time.Hour
 
 // tokenStopKeep is how long a stop of a selector Wappie never held is kept
-// after it was made (stopped_at, which a re-stop moves on), unless a record
-// of its selector came: then to that record's created_at + 365 days, if
-// earlier. A stop of a selector Wappie holds goes with it. A stop is made of
-// a token that exists, so 365 days after it the token has expired anyway;
-// a replay of the stop record leaves a stop older than that, as its trim
-// drops it.
+// after it was made (stopped_at, which a re-stop moves on), unless a valid
+// record of its selector came: then to that record's created_at + 365
+// days, if earlier. A stop of a selector Wappie holds goes with it. A stop
+// is made of a token that exists, so 365 days after it the token has
+// expired anyway; a replay of the stop record leaves a line older than
+// that.
 const tokenStopKeep = kc.MaxTokenLifetime
 
 // TokenRetention counts what a retention pass did.
@@ -40,18 +42,24 @@ type TokenRetention struct {
 }
 
 // RetainTokens is the hourly retention of the token part (maintainOnce),
-// on Wappie's clock now: the expiry janitor first, then what ended 30 days
-// ago is forgotten, then what is past its until goes through its guards
-// (the token's removed instances first, then its row with its perms, then
-// its pin; then its stops, then its selector and its sticky row), then the
-// stops of selectors Wappie never held at stopped_at + 365 days or at
-// their record_until, then the usage rows reported and over 2 days old and
-// the queues' sent entries over 30 days old. It visits every workspace a
-// selector names, from the selectors alone: one Wappie no longer has
-// included, whose token rows went with it but whose pins and removed
-// instances (no foreign key) did not; their removed instances, the
-// content of tokens that ended with their workspace, go at once, the pins
-// at their until.
+// on Wappie's clock now. Per workspace a selector names: the expiry janitor
+// first, then what ended 30 days ago is forgotten, then what is past its
+// selector's until goes, on both clocks (its row with its perms, then its
+// removed instances, then its pin). Then, after every workspace and before
+// the selectors, in one statement, every stop due (one of a selector Wappie
+// holds once that selector is past its until, whatever its own dates; any
+// other at stopped_at + 365 days, or at its record_until if earlier); then
+// what the acknowledgement and the usage report still hold of a token past
+// its until, sent or not; then the selectors and sticky rows past their
+// until (their guards); then the usage rows reported, from the start of the
+// second UTC day after their day, the queues' entries sent over 30 days
+// ago, an unsent held entry of another generation than Wappie's, and an
+// unsent entry of a token Wappie keeps nothing of, queued over 30 days ago.
+// It visits every workspace a selector names, from the selectors alone,
+// one Wappie no longer has included, whose token rows went with it but
+// whose pins, removed instances and token identities (no foreign key) did
+// not: its removed instances and identities, of tokens that ended with
+// their workspace, go at once, its pins at their until.
 func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetention, error) {
 	var out TokenRetention
 	err := retryDeadlock(ctx, func() error {
@@ -66,6 +74,10 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 				return err
 			}
 			workspaces, err := selectorWorkspacesTx(ctx, tx)
+			if err != nil {
+				return err
+			}
+			gone, err := goneWorkspacesTx(ctx, tx, workspaces)
 			if err != nil {
 				return err
 			}
@@ -137,27 +149,43 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 						return err
 					}
 				}
-				// Past until: the removed instances of every token whose
-				// selector's until passed, whether its row ended less than 30
-				// days before (a 365-day token that just expired: never
-				// forgotten) or went with its workspace; then the token rows,
-				// their perms with them; and the pins.
-				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_removed WHERE token_id IN (
-					SELECT token_id FROM contract_token_selectors WHERE until <= $1)`, cut); err != nil {
-					return err
-				}
+				// Past until: the token rows, their perms with them; then
+				// the removed instances of every token whose selector's
+				// until passed, whether its row ended less than 30 days
+				// before (a 365-day token that just expired: never
+				// forgotten) or went with its workspace. Perms before
+				// removed instances, as the forget above and a number's
+				// drop (dropNumberTokensTx: its perms, then a removed
+				// instance of the same key) take them: the other way, the
+				// drop would wait on a removed instance deleted here while
+				// this waits on the drop's perm.
 				tag, err := tx.Exec(ctx, `DELETE FROM contract_tokens WHERE id IN (
 					SELECT token_id FROM contract_token_selectors WHERE until <= $1)`, cut)
 				if err != nil {
 					return err
 				}
 				out.Ended += tag.RowsAffected()
-				// A workspace Wappie no longer has: its token rows went with
-				// its row, so they ended then, and their removed instances,
-				// part of their content, go now.
-				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_removed r
-					WHERE NOT EXISTS (SELECT 1 FROM tenants w WHERE w.id = r.tenant_id)`); err != nil {
+				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_removed WHERE token_id IN (
+					SELECT token_id FROM contract_token_selectors WHERE until <= $1)`, cut); err != nil {
 					return err
+				}
+				if gone[ws] {
+					// A workspace Wappie no longer has: its token rows went
+					// with its row, so they ended then; their removed
+					// instances, part of their content, go now, and so do
+					// their hidden identities (users and user_logins keep
+					// no foreign key to the workspace), whose grants went
+					// with the workspace's numbers. Its row is gone, so the
+					// grants' trigger, which locks it (0034), locks nothing.
+					if _, err := tx.Exec(ctx, `DELETE FROM contract_token_removed r
+						WHERE NOT EXISTS (SELECT 1 FROM tenants w WHERE w.id = r.tenant_id)`); err != nil {
+						return err
+					}
+					if _, err := tx.Exec(ctx, `DELETE FROM users u WHERE u.token_identity AND u.tenant_id = $1
+						AND NOT EXISTS (SELECT 1 FROM tenants w WHERE w.id = $1)
+						AND NOT EXISTS (SELECT 1 FROM contract_tokens t WHERE t.identity_user_id = u.id AND t.identity_dropped_at IS NULL)`, ws); err != nil {
+						return err
+					}
 				}
 				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_pins WHERE until <= $1`, cut); err != nil {
 					return err
@@ -189,18 +217,51 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 				sql  string
 				args []any
 			}{
+				// What the acknowledgement and the usage report still hold
+				// of a token past its until, sent or not, before its
+				// selector and sticky row go: the queues' entries, which a
+				// token Wappie never held has with its sticky row alone or
+				// with nothing (an unsent one, below), and the usage rows,
+				// written only for a token whose selector Wappie keeps (its
+				// secret matched), and so with none left of it.
+				{`DELETE FROM contract_token_refusals_out WHERE token_id IN (
+					SELECT token_id FROM contract_token_selectors WHERE until <= $1
+					UNION ALL SELECT token_id FROM contract_token_sticky WHERE until <= $1)`, []any{cut}},
+				{`DELETE FROM contract_token_held_out WHERE token_id IN (
+					SELECT token_id FROM contract_token_selectors WHERE until <= $1
+					UNION ALL SELECT token_id FROM contract_token_sticky WHERE until <= $1)`, []any{cut}},
+				{`DELETE FROM contract_token_used u WHERE NOT EXISTS (
+					SELECT 1 FROM contract_token_selectors s WHERE s.token_id = u.token_id AND s.until > $1)`, []any{cut}},
+				{`DELETE FROM contract_token_refusals r WHERE NOT EXISTS (
+					SELECT 1 FROM contract_token_selectors s WHERE s.token_id = r.token_id AND s.until > $1)`, []any{cut}},
 				// The selectors past the cut: the loop deleted their token
 				// rows, in every workspace a selector names, and their stops
 				// went above.
 				{`DELETE FROM contract_token_selectors WHERE until <= $1`, []any{cut}},
 				{`DELETE FROM contract_token_sticky WHERE until <= $1`, []any{cut}},
-				// UTC days, whatever the session's time zone.
+				// A day's usage rows, once reported, from the start of the
+				// second UTC day after it, whatever the session's time zone.
 				{`DELETE FROM contract_token_used WHERE reported_at IS NOT NULL
-					AND day < (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
+					AND day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
 				{`DELETE FROM contract_token_refusals WHERE reported_count >= count
-					AND day < (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
+					AND day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
 				{`DELETE FROM contract_token_refusals_out WHERE sent_at < $1::timestamptz - $2::interval`, []any{now, tokenForgetAfter}},
 				{`DELETE FROM contract_token_held_out WHERE sent_at < $1::timestamptz - $2::interval`, []any{now, tokenForgetAfter}},
+				// A held entry of another generation than Wappie's, never to
+				// be sent (AckBody sends the current one's; a reset's pass
+				// queues again what is held): restartTokensTx deletes them,
+				// and this is its belt.
+				{`DELETE FROM contract_token_held_out WHERE sent_at IS NULL
+					AND generation IS DISTINCT FROM (SELECT generation FROM contract_state)`, nil},
+				// An unsent entry of a token Wappie keeps nothing of (a bad
+				// record's refusal), 30 days after it was queued, whether
+				// the acknowledgement is off or refused that long.
+				{`DELETE FROM contract_token_refusals_out o WHERE o.sent_at IS NULL AND o.queued_at <= $1::timestamptz - $2::interval
+					AND NOT EXISTS (SELECT 1 FROM contract_token_selectors s WHERE s.token_id = o.token_id)
+					AND NOT EXISTS (SELECT 1 FROM contract_token_sticky k WHERE k.token_id = o.token_id)`, []any{now, tokenForgetAfter}},
+				{`DELETE FROM contract_token_held_out o WHERE o.sent_at IS NULL AND o.queued_at <= $1::timestamptz - $2::interval
+					AND NOT EXISTS (SELECT 1 FROM contract_token_selectors s WHERE s.token_id = o.token_id)
+					AND NOT EXISTS (SELECT 1 FROM contract_token_sticky k WHERE k.token_id = o.token_id)`, []any{now, tokenForgetAfter}},
 			} {
 				if _, err := tx.Exec(ctx, q.sql, q.args...); err != nil {
 					return err
@@ -210,6 +271,24 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 		})
 	})
 	return out, err
+}
+
+// goneWorkspacesTx are those of workspaces whose tenants row is gone.
+func goneWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUID) (map[uuid.UUID]bool, error) {
+	rows, err := tx.Query(ctx, `SELECT w.id FROM unnest($1::uuid[]) AS w(id)
+		WHERE NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = w.id)`, workspaces)
+	if err != nil {
+		return nil, err
+	}
+	gone := map[uuid.UUID]bool{}
+	return gone, forEachRow(rows, func(row pgx.Rows) error {
+		var id uuid.UUID
+		if err := row.Scan(&id); err != nil {
+			return err
+		}
+		gone[id] = true
+		return nil
+	})
 }
 
 // TokenStop is one stop of a selector, as tokens list shows it.
@@ -266,8 +345,13 @@ func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) 
 // it applies only when nothing the database holds of the selector's
 // operator stop is later, neither its stop nor its lift, so a replay never
 // rewinds what was done since without the record, and never for a line
-// 365 days old by now (Wappie's clock), whose stop retention let go, so a
-// replay never brings one back. It reports whether it applied.
+// 365 days old by now (Wappie's clock), whose stop retention has let go
+// whatever became of its selector. A younger line of a stop made while
+// Wappie held its selector, whose stop went with that selector (a restore
+// taken after that), comes back as the stop of a selector Wappie does not
+// hold: kept to 365 days after it was made at most, as its line is, or to
+// a valid record of its selector that comes again. It reports whether it
+// applied.
 func (t *Tokens) ReplayTokenStop(ctx context.Context, selector, by, note string, at, now time.Time) (bool, error) {
 	if !kc.ValidSelector(selector) {
 		return false, ErrSelector

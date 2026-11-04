@@ -67,30 +67,43 @@
 --                          revocation, its earliest expiry and how it ended
 --                          (revoked, expired, unlisted), kept to until (the
 --                          stored created_at + 365 days; for a token Wappie
---                          never held, the record's created_at + 365 days,
---                          but at most Wappie's clock + 365 days, which
---                          also stands for a record with none; no row at
---                          all once it has passed), so a record that comes
---                          back later never revives the token. Its own
---                          guard keeps every member from widening.
+--                          never held, a valid record's created_at + 365
+--                          days, but at most Wappie's clock + 365 days,
+--                          and no row at all once it has passed; a bad
+--                          record's, Wappie's clock + 365 days, never a
+--                          time of its own), so a record that comes back
+--                          later never revives the token. Its own guard
+--                          keeps every member from widening: until only
+--                          lowers, as a later valid record's narrows a bad
+--                          one's.
 --   contract_token_stops   the operator's stops (and Wappie's own
 --                          apply_failed), keyed by selector, so a stop may
 --                          come before the record. The note stays local.
 --                          A stop of a selector Wappie holds goes with it,
 --                          past its until; any other at stopped_at + 365
 --                          days, or earlier at record_until, the earliest
---                          created_at + 365 days of a record of its
---                          selector seen since.
+--                          created_at + 365 days of a valid record of its
+--                          selector seen since (never a bad record's).
 --   contract_token_refusals_out, contract_token_held_out
 --                          the acknowledgement's queues: ids, versions,
 --                          codes and the held state; never read on a
---                          request path.
+--                          request path. Retention deletes an entry 30
+--                          days after it was sent; any, sent or not, with
+--                          its token's selector or sticky row at its until;
+--                          an unsent held entry of a generation no longer
+--                          Wappie's (a reset does too); and an unsent one
+--                          of a token Wappie keeps nothing of, 30 days
+--                          after it was queued.
 --   contract_token_used, contract_token_refusals
 --                          the usage counters: one row per token and UTC
 --                          day it was accepted, and per (token, day,
 --                          number, perm, code) refused, to which every
 --                          process's flush adds its delta and whose count
---                          the leader reports.
+--                          the leader reports. Written only for a token
+--                          whose selector Wappie keeps (its secret
+--                          matched); deleted once reported, at the start of
+--                          the second UTC day after their day, and,
+--                          reported or not, with the token's selector.
 --   key_retirements        the operator's record of tokens retire-keys:
 --                          counts and key prefixes.
 --   users.token_identity   the hidden identity a live token's grants are
@@ -102,7 +115,10 @@
 --                          gives it none, and initial_device_permissions
 --                          no permission row), so no listing, protection
 --                          or backup ever counts it. Its grants notify
---                          wappie_contract_tokens with its token's id.
+--                          wappie_contract_tokens with its token's id. It
+--                          goes at its token's end; a workspace's row
+--                          deleted (no foreign key since 0021), at
+--                          retention's next pass.
 --   devices.ordinal        the number's place in its workspace, 1 to 9999,
 --                          the lowest free one at its insert or move-out
 --                          (devices_ordinal), kept across a deletion and a
@@ -458,8 +474,8 @@ CREATE TABLE contract_token_sticky (
     until               timestamptz NOT NULL
 );
 -- What a sticky row says only narrows: a revocation and an ending are never
--- cleared or changed, the earliest expiry never rises, and the row goes only
--- past until.
+-- cleared or changed, the earliest expiry and until never rise, and the row
+-- goes only past until.
 CREATE FUNCTION contract_token_sticky_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
@@ -471,7 +487,7 @@ BEGIN
     IF (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at)
        OR (OLD.ended IS NOT NULL AND NEW.ended IS DISTINCT FROM OLD.ended)
        OR (OLD.earliest_expires_at IS NOT NULL AND (NEW.earliest_expires_at IS NULL OR NEW.earliest_expires_at > OLD.earliest_expires_at))
-       OR NEW.until <> OLD.until THEN
+       OR NEW.until > OLD.until THEN
         RAISE EXCEPTION 'a sticky token only narrows' USING ERRCODE = 'P0001';
     END IF;
     RETURN NEW;
@@ -487,10 +503,11 @@ CREATE TABLE contract_token_stops (
     stopped_by text        NOT NULL,
     note       text        NOT NULL DEFAULT '' CHECK (length(note) <= 500),
     lifted_at  timestamptz,
-    -- The earliest created_at + 365 days of a record of the selector the
-    -- applier saw while the stop stood: only ever lowered, kept by a
-    -- re-stop. Retention reads it only while no selectors row names the
-    -- selector: a stop of a selector Wappie holds goes with that row.
+    -- The earliest created_at + 365 days of a valid record of the selector
+    -- (never a bad one's) the applier saw while the stop stood: only ever
+    -- lowered, kept by a re-stop. Retention reads it only while no
+    -- selectors row names the selector: a stop of a selector Wappie holds
+    -- goes with that row.
     record_until timestamptz,
     PRIMARY KEY (selector, cause)
 );

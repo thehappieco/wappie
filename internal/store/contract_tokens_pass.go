@@ -59,7 +59,9 @@ func selectorWorkspacesTx(ctx context.Context, tx pgx.Tx) ([]uuid.UUID, error) {
 func restartTokensTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID) error {
 	// The acknowledgement starts again too: the new generation is told
 	// every set whole, and none of the old one's refusals, whose versions
-	// it never published.
+	// it never published, nor its held tokens unsent (the acknowledgement
+	// sends only the current generation's), which the new pass queues
+	// again, every token's version cleared below, for what is still held.
 	if _, err := tx.Exec(ctx, `UPDATE contract_token_state SET feed_cursor = 0,
 		reset_trusted_through = coalesce(published_through, reset_trusted_through), published_through = NULL,
 		pass_generation = $1, pass_ready_at = NULL, pass_done_at = NULL,
@@ -67,6 +69,9 @@ func restartTokensTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID) error {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM contract_token_refusals_out WHERE sent_at IS NULL`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM contract_token_held_out WHERE sent_at IS NULL AND generation IS DISTINCT FROM $1`, gen); err != nil {
 		return err
 	}
 	workspaces, err := tokenWorkspacesTx(ctx, tx)

@@ -649,3 +649,30 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 		t.Fatalf("the stops after the replay: %v %v, want only %s", stops, rows.Err(), b)
 	}
 }
+
+// A temporary copy of the record that an append killed before its rename
+// left (its lines past the year the record keeps them) goes with the next
+// append; another record's stays.
+func TestTokenStopRecordLeavesNoTemporaryCopy(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	dir := t.TempDir()
+	record := filepath.Join(dir, "token-stops.jsonl")
+	left, other := filepath.Join(dir, ".token-stops.jsonl.tmp-123456"), filepath.Join(dir, ".other.jsonl.tmp-1")
+	for _, p := range []string{left, other} {
+		if err := os.WriteFile(p, []byte(`{"selector":"0123456789abcdef","at":"2020-01-01T00:00:00Z"}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := appendTokenStop(record, tokenStopRecord{Selector: "fedcba9876543210", At: now}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(left); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the temporary copy a killed append left: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("another record's temporary copy: %v", err)
+	}
+	if b, err := os.ReadFile(record); err != nil || strings.Count(string(b), "\n") != 1 {
+		t.Fatalf("the record: %q %v", b, err)
+	}
+}
