@@ -33,9 +33,9 @@ import (
 
 // tokenStopRecord is one line of a stop record (-record, -replay): a file
 // outside the database, which a restore of Wappie's database does not take
-// back. The runbook keeps it in /opt/wappie/state/token-stops.jsonl. A line
-// is kept 365 days, as retention keeps a stop of a selector Wappie never
-// held: each append drops the older ones, and a replay leaves them.
+// back. The runbook keeps it in /opt/wappie/state/token-stops.jsonl. Each
+// append drops the lines over 365 days old (the longest retention keeps a
+// stop), and a replay leaves them; nothing trims the file between appends.
 type tokenStopRecord struct {
 	Selector string    `json:"selector"`
 	At       time.Time `json:"at"`
@@ -169,7 +169,8 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, re
 // stop's record as it is. The file is replaced whole or not at all (a
 // temporary file in its directory, with its mode and owner, synced, renamed
 // over it, the directory synced), under an exclusive lock of the file, so
-// two appends at once never lose a line.
+// two appends at once never lose a line; a temporary copy that an append
+// killed before its rename left goes too.
 func appendTokenStop(path string, r tokenStopRecord, now time.Time) (err error) {
 	line, err := json.Marshal(r)
 	if err != nil {
@@ -199,8 +200,15 @@ func appendTokenStop(path string, r tokenStopRecord, now time.Time) (err error) 
 		}
 	}
 	kept = append(append(kept, line...), '\n')
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	dir, prefix := filepath.Dir(path), "."+filepath.Base(path)+".tmp-"
+	// A temporary copy an append left when it was killed before its rename
+	// (no defer runs on a signal): every append makes its own under the
+	// lock of the file it then replaces, which is the one held here, so no
+	// other is in flight.
+	if err := removeStaleStopTemps(dir, prefix); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, prefix+"*")
 	if err != nil {
 		return err
 	}
@@ -243,6 +251,24 @@ func appendTokenStop(path string, r tokenStopRecord, now time.Time) (err error) 
 		return err
 	}
 	return d.Close()
+}
+
+// removeStaleStopTemps removes the record's temporary copies in dir (named
+// prefix and more), which hold its lines past the 365 days it keeps them.
+func removeStaleStopTemps(dir, prefix string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) { //nolint:gosec // G703: our own temporaries, in the directory of the record the operator names
+			return err
+		}
+	}
+	return nil
 }
 
 // lockStopRecord opens the record, made 0600 if new, under an exclusive

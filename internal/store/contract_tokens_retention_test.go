@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,10 +118,38 @@ func TestTokenRetentionTakesRemovedInstancesAtUntil(t *testing.T) {
 	}
 }
 
+// What goes at a token's until goes on both clocks: a retention 400 days
+// on by Wappie's clock, but a day after the token's creation by the
+// database's, ends the token (its expiry is Wappie's clock's) and keeps its
+// row, its removed instances and its queue entries.
+func TestTokenRetentionWaitsForTheDatabasesClock(t *testing.T) {
+	w := newTokenWorld(t)
+	id := uuid.New()
+	w.page(false, w.record(id, 1, unknownItem(w.ownerSub, w.now)))
+	w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code) VALUES ($1, 1, 'not-a-number', 'send', 'item_unknown')
+		ON CONFLICT DO NOTHING`, id)
+	removed := func() int {
+		t.Helper()
+		return w.count(`SELECT count(*) FROM contract_token_removed WHERE token_id = $1`, id)
+	}
+	if removed() != 1 {
+		t.Fatal("the token has no removed instance")
+	}
+	got, err := w.tokens.RetainTokens(w.ctx(), w.now.Add(400*tokenDay))
+	if err != nil || got.Expired != 1 || got.Ended != 0 {
+		t.Fatalf("a retention ahead of the database's clock: %+v %v", got, err)
+	}
+	if !w.token(id).Exists || removed() != 1 || len(w.refused(id)) != 1 {
+		t.Fatalf("a retention ahead of the database's clock: the token's row %v, %d removed instances, its refusals %v",
+			w.token(id).Exists, removed(), w.refused(id))
+	}
+}
+
 // Retention visits a workspace whose tenants row is gone, from the
-// selectors alone: its tokens' removed instances go at once (the token rows
-// went with the workspace, so they ended then), their pins, stops and
-// selectors at their until, in the same pass.
+// selectors alone: its tokens' removed instances and hidden identities (and
+// their logins) go at once (the token rows went with the workspace, so they
+// ended then), their pins, stops and selectors at their until, in the same
+// pass.
 func TestTokenRetentionVisitsADeletedWorkspace(t *testing.T) {
 	w := newTokenWorld(t)
 	gone := uuid.New()
@@ -138,10 +167,26 @@ func TestTokenRetentionVisitsADeletedWorkspace(t *testing.T) {
 	if w.in(gone, `SELECT count(*) FROM contract_token_pins`) != 2 || w.in(gone, `SELECT count(*) FROM contract_token_removed`) != 2 {
 		t.Fatal("the workspace's tokens have no pins or no removed instances")
 	}
+	identities := func() (users, logins int) {
+		t.Helper()
+		if err := w.pool.QueryRow(context.Background(), `SELECT count(*) FROM user_logins WHERE email LIKE '%@token.invalid'`).Scan(&logins); err != nil {
+			t.Fatal(err)
+		}
+		return w.in(gone, `SELECT count(*) FROM users WHERE token_identity`), logins
+	}
+	if users, logins := identities(); users != 1 || logins != 1 {
+		t.Fatalf("the live token's identity: %d users, %d logins", users, logins)
+	}
 	w.exec(`DELETE FROM tenants WHERE id = $1`, gone)
+	if users, logins := identities(); users != 1 || logins != 1 {
+		t.Fatalf("the workspace's delete took the identity already (%d users, %d logins): nothing to prove", users, logins)
+	}
 	w.retain(w.now)
 	if n := w.in(gone, `SELECT count(*) FROM contract_token_removed`); n != 0 {
 		t.Errorf("%d removed instances of a deleted workspace's tokens left", n)
+	}
+	if users, logins := identities(); users != 0 || logins != 0 {
+		t.Errorf("a deleted workspace's token identities left: %d users, %d logins", users, logins)
 	}
 	pin := func(id uuid.UUID) bool {
 		t.Helper()
@@ -169,12 +214,24 @@ func TestTokenRetentionVisitsADeletedWorkspace(t *testing.T) {
 	}
 }
 
+// untilBack moves every selector's until back to at, the selectors' guard
+// set aside for that alone: on Wappie's clock, so a retention at a later
+// now is past it on both clocks unless the database's lags by more.
+func (w *tokenWorld) untilBack(at time.Time) {
+	w.t.Helper()
+	w.exec(`ALTER TABLE contract_token_selectors DISABLE TRIGGER contract_token_selectors_guard`)
+	w.exec(`UPDATE contract_token_selectors SET until = $1`, at)
+	w.exec(`ALTER TABLE contract_token_selectors ENABLE TRIGGER contract_token_selectors_guard`)
+}
+
 // A stop of a selector Wappie holds stays while the selector does,
 // however old, and no record, bad or of another token, lowers what it
 // keeps; it goes with the selector. A stop of a selector Wappie never held
 // goes 365 days after it was made, or earlier at the created_at + 365 days
-// of a record of its selector, which a later record never raises and a
-// re-stop keeps; a write that would not lower it is none.
+// of a valid record of its selector, which a later record never raises
+// and a re-stop keeps; a write that would not lower it is none. A bad
+// record never lowers it, its token's or another's, so the stop still
+// stands when the token's good record comes.
 func TestTokenRetentionTakesStops(t *testing.T) {
 	w := newTokenWorld(t)
 	// Held: stopped 400 days ago, before its record came.
@@ -201,88 +258,152 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 		}
 	}
 	// Never held, stopped 10 days ago, then a record of its selector comes:
-	// of a workspace Wappie does not hold, created 366 days ago; and a bad
-	// one, created 200 days ago, then a later one.
-	orphan, bad := uuid.New(), uuid.New()
-	for _, id := range []uuid.UUID{orphan, bad} {
+	// a valid one of a workspace Wappie does not hold, created 366 days ago;
+	// for the other, a bad one, created 366 days ago too, which tells
+	// nothing, then a valid one created 200 days ago, then a later one.
+	orphan, narrowed := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{orphan, narrowed} {
 		if err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "", w.now.Add(-10*tokenDay)); err != nil {
 			t.Fatal(err)
 		}
 	}
+	elsewhere := func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }
 	invalid := func(r *kc.TokenRecord) { r.Hash = "not a hash" }
 	w.page(false,
-		w.record(orphan, 1, func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }, createdAt(w.now.Add(-366*tokenDay), 30*tokenDay)),
-		w.record(bad, 1, invalid, createdAt(w.now.Add(-200*tokenDay), 30*tokenDay)))
-	badUntil := w.now.Add(-200 * tokenDay).Add(kc.MaxTokenLifetime)
-	if _, _, ru := w.stopOf(selectorOf(bad)); ru == nil || !ru.Equal(badUntil) {
-		t.Fatalf("a never-held stop after a bad record: record_until %v, want %v", ru, badUntil)
+		w.record(orphan, 1, elsewhere, createdAt(w.now.Add(-366*tokenDay), 30*tokenDay)),
+		w.record(narrowed, 1, invalid, createdAt(w.now.Add(-366*tokenDay), 30*tokenDay)))
+	if _, _, ru := w.stopOf(selectorOf(narrowed)); ru != nil {
+		t.Fatalf("a bad record set a never-held stop's record_until to %v", *ru)
+	}
+	w.page(false, w.record(narrowed, 2, elsewhere, createdAt(w.now.Add(-200*tokenDay), 30*tokenDay)))
+	narrowedUntil := w.now.Add(-200 * tokenDay).Add(kc.MaxTokenLifetime)
+	if _, _, ru := w.stopOf(selectorOf(narrowed)); ru == nil || !ru.Equal(narrowedUntil) {
+		t.Fatalf("a never-held stop after a valid record: record_until %v, want %v", ru, narrowedUntil)
 	}
 	xmin := func() string {
 		t.Helper()
 		var x string
-		if err := w.pool.QueryRow(context.Background(), `SELECT xmin::text FROM contract_token_stops WHERE selector = $1`, selectorOf(bad)).Scan(&x); err != nil {
+		if err := w.pool.QueryRow(context.Background(), `SELECT xmin::text FROM contract_token_stops WHERE selector = $1`, selectorOf(narrowed)).Scan(&x); err != nil {
 			t.Fatal(err)
 		}
 		return x
 	}
 	before := xmin()
-	w.page(false, w.record(bad, 2, invalid, createdAt(w.now.Add(-100*tokenDay), 30*tokenDay)))
-	if _, _, ru := w.stopOf(selectorOf(bad)); ru == nil || !ru.Equal(badUntil) {
-		t.Fatalf("a later record raised record_until to %v, want %v", ru, badUntil)
+	w.page(false, w.record(narrowed, 3, elsewhere, createdAt(w.now.Add(-100*tokenDay), 30*tokenDay)))
+	if _, _, ru := w.stopOf(selectorOf(narrowed)); ru == nil || !ru.Equal(narrowedUntil) {
+		t.Fatalf("a later record raised record_until to %v, want %v", ru, narrowedUntil)
 	}
 	if xmin() != before {
 		t.Fatal("a record that lowers nothing rewrote the stop")
 	}
 	// A re-stop is made now, and keeps record_until.
-	if err := w.tokens.StopToken(w.ctx(), selectorOf(bad), "root", "again", w.now); err != nil {
+	if err := w.tokens.StopToken(w.ctx(), selectorOf(narrowed), "root", "again", w.now); err != nil {
 		t.Fatal(err)
 	}
-	if _, stopped, ru := w.stopOf(selectorOf(bad)); !stopped.Equal(w.now) || ru == nil || !ru.Equal(badUntil) {
-		t.Fatalf("a re-stop: stopped_at %v, record_until %v; want %v and %v", stopped, ru, w.now, badUntil)
+	if _, stopped, ru := w.stopOf(selectorOf(narrowed)); !stopped.Equal(w.now) || ru == nil || !ru.Equal(narrowedUntil) {
+		t.Fatalf("a re-stop: stopped_at %v, record_until %v; want %v and %v", stopped, ru, w.now, narrowedUntil)
 	}
 
-	w.retain(w.now)
-	for name, c := range map[string]struct {
+	// A leaked token stopped before its record came: a bad record of it,
+	// whose created_at is too old (its lifetime over 365 days, so Validate
+	// refuses it), and, for another, another token's bad record that claims
+	// its selector, so dated; then retention; then each token's good record.
+	leaked, claimed := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{leaked, claimed} {
+		if err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "leak", w.now.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tooOld := func(r *kc.TokenRecord) {
+		r.CreatedAt, r.ExpiresAt = kc.T(w.now.Add(-400*tokenDay)), kc.T(w.now.Add(30*tokenDay))
+	}
+	w.page(false, w.record(leaked, 1, tooOld),
+		w.record(uuid.New(), 1, func(r *kc.TokenRecord) { r.Selector = selectorOf(claimed) }, tooOld))
+	for _, id := range []uuid.UUID{leaked, claimed} {
+		if _, _, ru := w.stopOf(selectorOf(id)); ru != nil {
+			t.Fatalf("a bad record set a stop's record_until to %v", *ru)
+		}
+	}
+
+	cases := map[string]struct {
 		sel  string
 		want bool
 	}{
-		"a held selector's, made 400 days ago":                     {selectorOf(held), true},
-		"a never-held selector's, made 366 days ago":               {lapsed, false},
-		"a never-held selector's, made 364 days ago":               {standing, true},
-		"one whose selector's record was created 366 days ago":     {selectorOf(orphan), false},
-		"one whose selector's bad record was created 200 days ago": {selectorOf(bad), true},
-	} {
+		"a held selector's, made 400 days ago":                        {selectorOf(held), true},
+		"a never-held selector's, made 366 days ago":                  {lapsed, false},
+		"a never-held selector's, made 364 days ago":                  {standing, true},
+		"one whose selector's valid record was created 366 days ago":  {selectorOf(orphan), false},
+		"one whose selector's valid record was created 200 days ago":  {selectorOf(narrowed), true},
+		"a leaked token's, after its bad record created 400 days ago": {selectorOf(leaked), true},
+		"a leaked token's, after another's bad record claiming it":    {selectorOf(claimed), true},
+	}
+	w.retain(w.now)
+	for name, c := range cases {
 		if exists, _, _ := w.stopOf(c.sel); exists != c.want {
 			t.Errorf("retention now, the stop %s: there %v, want %v", name, exists, c.want)
 		}
 	}
+	// A retention 400 days on by Wappie's clock, but not by the database's:
+	// every stop left is due by the one and not the other, and stays.
+	if got, err := w.tokens.RetainTokens(w.ctx(), w.now.Add(400*tokenDay)); err != nil || got.Stops != 0 {
+		t.Fatalf("a retention ahead of the database's clock: %+v %v", got, err)
+	}
+	for name, c := range cases {
+		if exists, _, _ := w.stopOf(c.sel); exists != c.want {
+			t.Errorf("retention ahead of the database's clock, the stop %s: there %v, want %v", name, exists, c.want)
+		}
+	}
+	// The leaked tokens' good records: each held, and still stopped.
+	w.page(false, w.record(leaked, 2), w.record(claimed, 1))
+	for _, id := range []uuid.UUID{leaked, claimed} {
+		if exists, _, _ := w.stopOf(selectorOf(id)); !w.token(id).Exists || !exists {
+			t.Errorf("a leaked token's good record: its row %v, its stop there %v", w.token(id).Exists, exists)
+		}
+	}
 
-	// The held selector past its until (moved back, its guard set aside for
-	// that alone): its stop goes with it, in the same pass.
-	w.exec(`ALTER TABLE contract_token_selectors DISABLE TRIGGER contract_token_selectors_guard;
-		UPDATE contract_token_selectors SET until = clock_timestamp() - interval '1 second';
-		ALTER TABLE contract_token_selectors ENABLE TRIGGER contract_token_selectors_guard`)
+	// The held selectors past their until on Wappie's clock (moved back, a
+	// minute's margin for the database's): each stop goes with its selector,
+	// in the same pass.
+	w.untilBack(w.now.Add(-time.Minute))
 	got, err := w.tokens.RetainTokens(w.ctx(), w.now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exists, _, _ := w.stopOf(selectorOf(held)); exists || got.Stops != 1 || got.Ended != 1 {
+	if exists, _, _ := w.stopOf(selectorOf(held)); exists || got.Stops != 3 || got.Ended != 3 {
 		t.Fatalf("past its selector's until: the stop there %v, %+v", exists, got)
 	}
 }
 
-// The revocation of a token Wappie never held sticks to the record's
-// created_at + 365 days (never past Wappie's clock + 365 days, which also
-// stands for a record with no created_at), and not at all once that has
-// passed: as a record of a workspace Wappie does not hold, and as a bad
-// record.
+// stickyUntil is a token's sticky until, nil with no row.
+func (w *tokenWorld) stickyUntil(id uuid.UUID) *time.Time {
+	w.t.Helper()
+	var at time.Time
+	err := w.pool.QueryRow(context.Background(), `SELECT until FROM contract_token_sticky WHERE token_id = $1`, id).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return &at
+}
+
+// The revocation of a token Wappie never held sticks to a valid record's
+// created_at + 365 days (never past Wappie's clock + 365 days), and not at
+// all once that has passed, as a record of a workspace Wappie does not
+// hold. A bad record's sticks to Wappie's clock + 365 days whatever its own
+// times say, a record with none too (H2), so a later unrevoked record of
+// the token, as after a platform restore, never makes a live row; a later
+// valid record lowers it, past now or not.
 func TestANeverHeldRevocationSticksToItsCreation(t *testing.T) {
 	w := newTokenWorld(t)
 	elsewhere := func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }
 	invalid := func(r *kc.TokenRecord) { r.Hash = "not a hash" }
 	revoked := revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))
-	ids := map[string]uuid.UUID{"elsewhere": uuid.New(), "bad": uuid.New(), "ahead": uuid.New(), "lapsed": uuid.New(),
-		"lapsed bad": uuid.New(), "no creation": uuid.New()}
+	ids := map[string]uuid.UUID{}
+	for _, name := range []string{"elsewhere", "bad", "ahead", "lapsed", "lapsed bad", "no creation", "narrowed", "narrowed past"} {
+		ids[name] = uuid.New()
+	}
 	noCreation, err := json.Marshal(w.record(ids["no creation"], 1, invalid, revoked))
 	if err != nil {
 		t.Fatal(err)
@@ -301,33 +422,86 @@ func TestANeverHeldRevocationSticksToItsCreation(t *testing.T) {
 		w.record(ids["ahead"], 1, elsewhere, createdAt(w.now.Add(10*tokenDay), 30*tokenDay), revoked),
 		w.record(ids["lapsed"], 1, elsewhere, createdAt(w.now.Add(-400*tokenDay), 30*tokenDay), revoked),
 		w.record(ids["lapsed bad"], 1, invalid, createdAt(w.now.Add(-365*tokenDay), 30*tokenDay), revoked),
-		json.RawMessage(noCreation))
-	until := func(id uuid.UUID) *time.Time {
+		json.RawMessage(noCreation),
+		w.record(ids["narrowed"], 1, elsewhere, invalid, createdAt(w.now.Add(-100*tokenDay), 30*tokenDay), revoked),
+		w.record(ids["narrowed past"], 1, elsewhere, invalid, createdAt(w.now.Add(-400*tokenDay), 30*tokenDay), revoked))
+	check := func(when string, wants map[string]*time.Time) {
 		t.Helper()
-		var at time.Time
-		err := w.pool.QueryRow(context.Background(), `SELECT until FROM contract_token_sticky WHERE token_id = $1`, id).Scan(&at)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+		for name, want := range wants {
+			got := w.stickyUntil(ids[name])
+			switch {
+			case want == nil && got != nil:
+				t.Errorf("%s, %s: a sticky row to %v, want none", when, name, *got)
+			case want != nil && (got == nil || !got.Equal(*want)):
+				t.Errorf("%s, %s: a sticky row to %v, want %v", when, name, got, *want)
+			}
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &at
 	}
-	for name, want := range map[string]*time.Time{
-		"elsewhere":   new(w.now.Add(-100 * tokenDay).Add(kc.MaxTokenLifetime)),
-		"bad":         new(w.now.Add(-10 * tokenDay).Add(kc.MaxTokenLifetime)),
-		"ahead":       new(w.now.Add(kc.MaxTokenLifetime)),
-		"no creation": new(w.now.Add(kc.MaxTokenLifetime)),
-		"lapsed":      nil,
-		"lapsed bad":  nil,
-	} {
-		got := until(ids[name])
-		switch {
-		case want == nil && got != nil:
-			t.Errorf("%s: a sticky row to %v, want none", name, *got)
-		case want != nil && (got == nil || !got.Equal(*want)):
-			t.Errorf("%s: a sticky row to %v, want %v", name, got, *want)
+	yearOn := w.now.Add(kc.MaxTokenLifetime)
+	check("the first records", map[string]*time.Time{
+		"elsewhere":     new(w.now.Add(-100 * tokenDay).Add(kc.MaxTokenLifetime)),
+		"bad":           &yearOn,
+		"ahead":         &yearOn,
+		"no creation":   &yearOn,
+		"lapsed":        nil,
+		"lapsed bad":    &yearOn,
+		"narrowed":      &yearOn,
+		"narrowed past": &yearOn,
+	})
+	// Their valid records: the bad ones' until lowered to theirs, one to a
+	// time already past, which the next retention lets go.
+	w.page(false,
+		w.record(ids["narrowed"], 2, elsewhere, createdAt(w.now.Add(-100*tokenDay), 30*tokenDay), revoked),
+		w.record(ids["narrowed past"], 2, elsewhere, createdAt(w.now.Add(-400*tokenDay), 30*tokenDay), revoked))
+	check("their valid records", map[string]*time.Time{
+		"narrowed":      new(w.now.Add(-100 * tokenDay).Add(kc.MaxTokenLifetime)),
+		"narrowed past": new(w.now.Add(-400 * tokenDay).Add(kc.MaxTokenLifetime)),
+	})
+	w.retain(w.now)
+	check("retention", map[string]*time.Time{"narrowed past": nil, "lapsed bad": &yearOn})
+
+	// A platform restore: the bad records' tokens listed unrevoked, valid,
+	// in the workspace: neither is ever a live row.
+	w.reset()
+	if res := w.page(false, w.record(ids["bad"], 1), w.record(ids["lapsed bad"], 1)); res.Bad != 2 {
+		t.Fatalf("the restored records: %+v", res)
+	}
+	for _, name := range []string{"bad", "lapsed bad"} {
+		if w.token(ids[name]).Exists {
+			t.Errorf("%s: a revoked token came back live after a platform restore", name)
+		}
+	}
+}
+
+// A revocation of a token whose selector Wappie keeps with no row of it
+// (its workspace's row gone) sticks to that selector's until, the stored
+// created_at + 365 days, whatever the record says: none, or a later one.
+func TestAKeptSelectorsRevocationSticksToItsUntil(t *testing.T) {
+	w := newTokenWorld(t)
+	gone := uuid.New()
+	w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'gone')`, gone)
+	inGone := func(r *kc.TokenRecord) { r.WorkspaceID = gone.String() }
+	missing, later := uuid.New(), uuid.New()
+	w.page(false, w.record(missing, 1, inGone), w.record(later, 1, inGone))
+	w.exec(`DELETE FROM tenants WHERE id = $1`, gone)
+	revoked := revokedBy(kc.RevokedInConsole, w.now)
+	noCreation, err := json.Marshal(w.record(missing, 2, inGone, revoked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(noCreation, &members); err != nil {
+		t.Fatal(err)
+	}
+	delete(members, "created_at")
+	if noCreation, err = json.Marshal(members); err != nil {
+		t.Fatal(err)
+	}
+	w.page(false, json.RawMessage(noCreation), w.record(later, 2, inGone, revoked, createdAt(w.now.Add(-time.Hour), 30*tokenDay)))
+	stored := w.now.Add(-tokenDay).Add(kc.MaxTokenLifetime)
+	for name, id := range map[string]uuid.UUID{"with no created_at": missing, "with a later created_at": later} {
+		if got := w.stickyUntil(id); got == nil || !got.Equal(stored) {
+			t.Errorf("a kept selector's revocation %s: sticky until %v, want the stored %v", name, got, stored)
 		}
 	}
 }
@@ -348,5 +522,187 @@ func TestReplayLeavesALapsedStop(t *testing.T) {
 	}
 	if exists, _, _ := w.stopOf(young); !exists {
 		t.Fatal("a line 364 days old was left")
+	}
+}
+
+// Retention past a token's until deletes its perms (the token row's
+// cascade) before its removed instances, as a number's drop does
+// (dropNumberTokensTx: the number's perms, then their instances, ON
+// CONFLICT DO NOTHING, the key a refused perm shares with its instance):
+// so with the drop holding the perm, retention waits on it having taken no
+// instance, and the drop's insert never waits on retention. Taken the other
+// way, each would wait on the other.
+func TestTokenRetentionBesideANumbersDrop(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	device, id := w.number(uuid.Nil), uuid.New()
+	// A giver with no local identity: the perm is refused, with its
+	// instance.
+	w.page(false, w.record(id, 1, grants(device, uuid.New(), w.now.Add(-time.Hour), kc.CanRead)))
+	w.judge()
+	if p := w.perms(id); p[device.String()+"/read"] != "refused:local_role" ||
+		w.count(`SELECT count(*) FROM contract_token_removed WHERE token_id = $1 AND cause = 'refused'`, id) != 1 {
+		t.Fatalf("no refused perm with its instance: %v", p)
+	}
+	w.untilBack(w.now.Add(-time.Minute))
+	drop, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drop.Rollback(ctx) //nolint:errcheck // committed below; a no-op then
+	if _, err := drop.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true), set_config('lock_timeout', '10s', true)`, w.tenant.String()); err != nil {
+		t.Fatal(err)
+	}
+	// The drop's first step: the number's perms, locked.
+	if _, err := drop.Exec(ctx, `SELECT 1 FROM contract_token_perms WHERE device_id = $1 ORDER BY token_id, device_id, perm FOR UPDATE`, device); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.tokens.RetainTokens(w.ctx(), w.now)
+		done <- err
+	}()
+	untilTokenWaiters(t, w, 1)
+	// The rest of the drop (transfer_access.go's statement).
+	if _, err := drop.Exec(ctx, `WITH gone AS (
+			DELETE FROM contract_token_perms p
+			USING (SELECT token_id, device_id, perm FROM contract_token_perms WHERE device_id = $1
+			       ORDER BY token_id, device_id, perm FOR UPDATE) l
+			WHERE p.token_id = l.token_id AND p.device_id = l.device_id AND p.perm = l.perm
+			RETURNING p.token_id, p.tenant_id, p.device_id, p.perm, p.granted_at)
+		INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_at, cause)
+		SELECT token_id, tenant_id, device_id::text, perm, granted_at, 'item_moved' FROM gone
+		ON CONFLICT DO NOTHING`, device); err != nil {
+		t.Fatalf("the number's drop beside retention: %v", err)
+	}
+	if err := drop.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("retention beside the drop: %v", err)
+	}
+	if strings.Contains(w.logs.String(), "deadlock") {
+		t.Fatalf("a deadlock:\n%s", w.logs.String())
+	}
+	if w.token(id).Exists || w.count(`SELECT count(*) FROM contract_token_removed WHERE token_id = $1`, id) != 0 {
+		t.Fatal("retention left the token past its until")
+	}
+}
+
+// A held entry queued in a reset's pass and not sent before the next reset
+// to another generation is never sent (the acknowledgement sends the
+// current generation's): the reset deletes it, and the new pass queues
+// again what is still held. Retention deletes one of another generation
+// than Wappie's all the same; a sent one stays its 30 days.
+func TestAResetLeavesNoHeldEntryBehind(t *testing.T) {
+	w := newTokenWorld(t)
+	id := uuid.New()
+	w.page(false, w.record(id, 1))
+	w.page(false, w.record(id, 2, revokedBy(kc.RevokedInConsole, w.now)))
+	stale := func() int {
+		t.Helper()
+		var n int
+		if err := w.pool.QueryRow(context.Background(), `SELECT count(*) FROM contract_token_held_out
+			WHERE sent_at IS NULL AND generation <> $1`, w.gen).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// A restore: the pass lists it unrevoked, so it is held revoked.
+	w.reset()
+	w.page(false, w.record(id, 1))
+	if h, ok := w.held()[id]; !ok || !h.Revoked {
+		t.Fatalf("the pass's held entry: %+v %v", h, ok)
+	}
+	// Another reset before the acknowledgement: the entry goes, and the new
+	// pass queues it again.
+	w.reset()
+	if n := stale(); n != 0 {
+		t.Fatalf("%d held entries of the old generation left unsent", n)
+	}
+	w.page(false, w.record(id, 1))
+	if h, ok := w.held()[id]; !ok || !h.Revoked {
+		t.Fatalf("the new pass's held entry: %+v %v", h, ok)
+	}
+	// Retention's belt: one of another generation, unsent, goes; a sent one
+	// stays.
+	other, sent := uuid.New(), uuid.New()
+	w.exec(`INSERT INTO contract_token_held_out (token_id, generation) VALUES ($1, gen_random_uuid())`, other)
+	w.exec(`INSERT INTO contract_token_held_out (token_id, generation, sent_at) VALUES ($1, gen_random_uuid(), clock_timestamp())`, sent)
+	w.retain(w.now)
+	if n := stale(); n != 0 {
+		t.Fatalf("retention left %d held entries of another generation unsent", n)
+	}
+	if n := w.count(`SELECT count(*) FROM contract_token_held_out WHERE token_id = $1`, sent); n != 1 {
+		t.Fatal("retention took a sent held entry before its 30 days")
+	}
+	if _, ok := w.held()[id]; !ok {
+		t.Fatal("retention took the current generation's held entry")
+	}
+}
+
+// What the acknowledgement and the usage report hold of a token goes with
+// its selector or sticky row at its until, sent or not, reported or not
+// (the acknowledgement or the usage report off, or refused, that long); a
+// usage row of a token Wappie keeps no selector of goes at once (they are
+// written only for one whose secret matched it); an unsent queue entry of
+// a token Wappie keeps nothing of goes 30 days after it was queued.
+func TestTokenRetentionTakesWhatWasNeverSent(t *testing.T) {
+	w := newTokenWorld(t)
+	past, kept, revoked := uuid.New(), uuid.New(), uuid.New()
+	w.page(false, w.record(past, 1, createdAt(w.now.Add(-366*tokenDay), kc.MaxTokenLifetime)), w.record(kept, 1),
+		w.record(revoked, 1, func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }, createdAt(w.now.Add(-200*tokenDay), 30*tokenDay),
+			revokedBy(kc.RevokedInConsole, w.now)))
+	never, recent, unselected := uuid.New(), uuid.New(), uuid.New()
+	today := w.now.UTC().Format(time.DateOnly)
+	for _, id := range []uuid.UUID{past, kept, revoked, recent} {
+		w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code) VALUES ($1, 1, 'item', 'read', 'local_role')`, id)
+	}
+	w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code, queued_at)
+		VALUES ($1, 1, 'item', 'read', 'invalid_record', $2)`, never, w.now.Add(-31*tokenDay))
+	w.exec(`INSERT INTO contract_token_held_out (token_id, generation, revoked, queued_at) VALUES ($1, $2, true, $3)`, never, w.gen, w.now.Add(-31*tokenDay))
+	for _, id := range []uuid.UUID{past, kept, revoked} {
+		w.exec(`INSERT INTO contract_token_held_out (token_id, generation, revoked) VALUES ($1, $2, true)`, id, w.gen)
+	}
+	for _, id := range []uuid.UUID{past, kept, unselected} {
+		w.exec(`INSERT INTO contract_token_used (token_id, day) VALUES ($1, $2::date)`, id, today)
+		w.exec(`INSERT INTO contract_token_refusals (token_id, day, code, count) VALUES ($1, $2::date, 'revoked', 1)`, id, today)
+	}
+	// The revoked one Wappie never held keeps its sticky row alone: past
+	// its until.
+	w.exec(`ALTER TABLE contract_token_sticky DISABLE TRIGGER contract_token_sticky_guard`)
+	w.exec(`UPDATE contract_token_sticky SET until = $2 WHERE token_id = $1`, revoked, w.now.Add(-time.Minute))
+	w.exec(`ALTER TABLE contract_token_sticky ENABLE TRIGGER contract_token_sticky_guard`)
+	rows := func(id uuid.UUID) int {
+		t.Helper()
+		var n int
+		if err := w.pool.QueryRow(context.Background(), `SELECT
+			(SELECT count(*) FROM contract_token_refusals_out WHERE token_id = $1) + (SELECT count(*) FROM contract_token_held_out WHERE token_id = $1) +
+			(SELECT count(*) FROM contract_token_used WHERE token_id = $1) + (SELECT count(*) FROM contract_token_refusals WHERE token_id = $1)`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	w.retain(w.now)
+	for name, c := range map[string]struct {
+		id   uuid.UUID
+		want int
+	}{
+		"a token past its selector's until":                {past, 0},
+		"a token Wappie never held, past its sticky until": {revoked, 0},
+		"a live token": {kept, 4},
+		"no token Wappie keeps, queued 31 days ago":    {never, 0},
+		"no token Wappie keeps, queued now":            {recent, 1},
+		"usage of a token Wappie keeps no selector of": {unselected, 0},
+	} {
+		if n := rows(c.id); n != c.want {
+			t.Errorf("%s: %d rows of the queues and usage left, want %d", name, n, c.want)
+		}
+	}
+	// 31 days on by Wappie's clock: the unsent entry of no token goes; a
+	// live token's stay, its until 364 days on the database's clock.
+	w.retain(w.now.Add(31 * tokenDay))
+	if n, m := rows(recent), rows(kept); n != 0 || m != 4 {
+		t.Errorf("31 days on: %d entries of no token left, want 0; %d of a live token's, want 4", n, m)
 	}
 }

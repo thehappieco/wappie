@@ -335,8 +335,8 @@ type stickyRow struct {
 // sticky row, whether its workspace exists) is read across workspaces, then
 // each workspace's records are applied under its app.tenant_id in id order,
 // then the revocations of records Wappie holds no token or workspace for
-// join the sticky set, and every record lowers the record_until of its
-// selector's stops. full is false for a by-id GET's record, which never
+// join the sticky set, and every valid record lowers the record_until of
+// its selector's stops. full is false for a by-id GET's record, which never
 // moves a pass.
 func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, state tokenFeedState, items []tokenItem,
 	now time.Time, full bool) (applyResult, error) {
@@ -414,7 +414,7 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 	// Each record's workspace: the stored one for a token Wappie holds (a
 	// record never moves it), else the record's own. A record of a
 	// workspace Wappie does not hold is skipped, its revocation kept. Every
-	// record is one of its token's selector, for the stops' record_until.
+	// valid record tells its selector's stops their record_until.
 	groups := map[uuid.UUID][]tokenItem{}
 	var orphans []stickyWrite
 	var seen []stopSeen
@@ -435,8 +435,8 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 			ws = uuid.MustParse(it.rec.WorkspaceID)
 		}
 		if ws == uuid.Nil || !held[ws] {
-			if until, keep := unheldUntil(it.rec, kept, now); it.rec.RevokedAt != nil && keep {
-				orphans = append(orphans, stickyWrite{id: it.id, revokedAt: revokedTime(it.rec, now), until: until})
+			if it.rec.RevokedAt != nil {
+				orphans = append(orphans, unheldSticky(it, kept, now))
 			}
 			if known {
 				res.bad++
@@ -509,21 +509,32 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 
 // unheldUntil is how long the sticky set keeps the revocation of a record
 // whose token Wappie holds no row of: its selector's until when Wappie keeps
-// that (kept: the stored created_at + 365 days), else the record's
-// created_at + 365 days, a created_at past Wappie's clock counting as now so
-// that a skewed one never lengthens it, or Wappie's clock + 365 days for a
-// record with no created_at. keep is false once that has passed: the
-// token's records have left the feed, and nothing is kept of it.
-func unheldUntil(rec kc.TokenRecord, kept *selectorRow, now time.Time) (until time.Time, keep bool) {
+// that (kept: the stored created_at + 365 days); else, for a valid record
+// (good: it decoded and passed Validate and the key check, so it expires by
+// its created_at + 365 days), that created_at + 365 days, one past Wappie's
+// clock counting as now so that a skewed one never lengthens it; else, a bad
+// record, Wappie's clock + 365 days, never a time of its own (H2): a bad
+// record's created_at may say anything, and a row it shortened or never made
+// would let a later unrevoked record of the token, as after a platform
+// restore, make a live row.
+func unheldUntil(rec kc.TokenRecord, kept *selectorRow, good bool, now time.Time) time.Time {
 	switch {
 	case kept != nil:
-		until = kept.Until
-	case rec.CreatedAt.IsZero(), rec.CreatedAt.After(now):
-		until = now.Add(tokenKeep)
+		return kept.Until
+	case !good, rec.CreatedAt.IsZero(), rec.CreatedAt.After(now):
+		return now.Add(tokenKeep)
 	default:
-		until = rec.CreatedAt.Add(tokenKeep)
+		return rec.CreatedAt.Add(tokenKeep)
 	}
-	return until, until.After(now)
+}
+
+// unheldSticky is the sticky write of the revocation of item it, whose token
+// Wappie holds no row of (kept: the selector Wappie keeps of it, if any), to
+// unheldUntil; once that has passed, the token's records have left the
+// feed: no row is made, and one there is only lowered to it.
+func unheldSticky(it tokenItem, kept *selectorRow, now time.Time) stickyWrite {
+	until := unheldUntil(it.rec, kept, it.bad == "", now)
+	return stickyWrite{id: it.id, revokedAt: revokedTime(it.rec, now), until: until, lowerOnly: !until.After(now)}
 }
 
 // stopSeen is a record of a selector the applier saw, and its token's
@@ -536,24 +547,28 @@ type stopSeen struct {
 }
 
 // seenStop is what a record tells of its token's selector: the one Wappie
-// keeps for the token, with its until, else the record's own with its
-// created_at + 365 days, when both are there; nothing otherwise. A bad
-// record of a token Wappie knows never tells more than Wappie keeps.
+// keeps for the token, with its until; else, from a valid record alone (it
+// decoded and passed Validate and the key check, so it expires by its
+// created_at + 365 days), the record's own selector with that created_at +
+// 365 days; nothing otherwise. A bad record never lowers a stop's
+// record_until: its created_at may say anything, and a stop it let go
+// would leave the token's later good record unstopped. A bad record of a
+// token Wappie knows never tells more than Wappie keeps.
 func seenStop(it tokenItem, byID map[uuid.UUID]selectorRow) (stopSeen, bool) {
 	if s, ok := byID[it.id]; ok {
 		return stopSeen{selector: s.Selector, token: it.id, until: s.Until}, true
 	}
-	if !kc.ValidSelector(it.rec.Selector) || it.rec.CreatedAt.IsZero() {
+	if it.bad != "" || !kc.ValidSelector(it.rec.Selector) || it.rec.CreatedAt.IsZero() {
 		return stopSeen{}, false
 	}
 	return stopSeen{selector: it.rec.Selector, token: it.id, until: it.rec.CreatedAt.Add(tokenKeep)}, true
 }
 
 // narrowStopsTx lowers the record_until of the stops of the selectors seen
-// to their records' earliest until, in (selector, cause) order: never for a
-// selector another token holds (a bad record's claim to it), never raising
-// it, and with no write where it would not change. Only retention reads it,
-// and the stops' trigger wakes nothing for it.
+// to their valid records' earliest until, in (selector, cause) order: never
+// for a selector another token holds (a record's claim to it), never
+// raising it, and with no write where it would not change. Only retention
+// reads it, and the stops' trigger wakes nothing for it.
 func narrowStopsTx(ctx context.Context, tx pgx.Tx, seen []stopSeen) error {
 	if len(seen) == 0 {
 		return nil
@@ -1052,6 +1067,9 @@ type stickyWrite struct {
 	expiresAt pgtype.Timestamptz
 	ended     string
 	until     time.Time
+	// lowerOnly: until has passed, so no row is made, and a row there only
+	// gets its until lowered to it (the next retention lets it go).
+	lowerOnly bool
 }
 
 type pinRow struct {
@@ -1124,8 +1142,12 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 			if known {
 				kept = &sel
 			}
-			if until, keep := unheldUntil(rec, kept, g.now); revoked && keep {
-				w.sticky = append(w.sticky, stickyWrite{id: it.id, revokedAt: revokedTime(rec, g.now), until: until})
+			// Its until from its own created_at only when it is valid
+			// (it.bad unset: it passed Validate and the key check, though
+			// refused here for its selector or narrowed only by the
+			// fallback).
+			if revoked {
+				w.sticky = append(w.sticky, unheldSticky(it, kept, g.now))
 			}
 			t.refuseNew(ctx, it, bad, nil, w)
 			return
@@ -1693,14 +1715,22 @@ func queueHeldTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, held []heldRow) 
 }
 
 // writeStickyTx keeps revocations, expiries and unlistings in the sticky
-// set: a row's revocation and ending are set once, its earliest expiry only
-// lowers, and its until never changes.
+// set: a row's revocation and ending are set once, and its earliest expiry
+// and its until only lower (a token Wappie never held: a bad record's
+// Wappie's clock + 365 days, then a valid record's created_at + 365 days).
+// A write past its until makes no row, and lowers one there.
 func writeStickyTx(ctx context.Context, tx pgx.Tx, sticky []stickyWrite) error {
 	if len(sticky) == 0 {
 		return nil
 	}
 	slices.SortFunc(sticky, func(a, b stickyWrite) int { return compareIDs(a.id, b.id) })
 	for _, s := range sticky {
+		if s.lowerOnly {
+			if _, err := tx.Exec(ctx, `UPDATE contract_token_sticky SET until = $2 WHERE token_id = $1 AND until > $2`, s.id, s.until); err != nil {
+				return err
+			}
+			continue
+		}
 		var revoked *time.Time
 		if !s.revokedAt.IsZero() {
 			revoked = &s.revokedAt
@@ -1724,7 +1754,8 @@ func writeStickyTx(ctx context.Context, tx pgx.Tx, sticky []stickyWrite) error {
 				earliest_expires_at = CASE WHEN contract_token_sticky.earliest_expires_at IS NULL THEN EXCLUDED.earliest_expires_at
 				                           WHEN EXCLUDED.earliest_expires_at IS NULL THEN contract_token_sticky.earliest_expires_at
 				                           ELSE LEAST(contract_token_sticky.earliest_expires_at, EXCLUDED.earliest_expires_at) END,
-				ended = coalesce(contract_token_sticky.ended, EXCLUDED.ended)`,
+				ended = coalesce(contract_token_sticky.ended, EXCLUDED.ended),
+				until = LEAST(contract_token_sticky.until, EXCLUDED.until)`,
 			s.id, revoked, expires, endedPtr, s.until); err != nil {
 			return err
 		}
