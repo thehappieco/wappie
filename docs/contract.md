@@ -1137,7 +1137,10 @@ SHARE`, behind a purge's `FOR UPDATE`), then its `item_events` rows in
 `seq` order, with a retry on a deadlock. The token part's writers take
 `contract_token_state` after `contract_state` (a token commit never takes
 `contract_state`), then the workspace rows, then the tokens by id and their
-perms, workspace by workspace (decision DB25).
+perms, workspace by workspace (decision DB25). So a token page waits for a
+write that holds one of its workspaces (a number's deletion or move-out, a
+grant, permission or member change), and its narrowings land when that
+write ends: a move-out's statements may run for up to 120 seconds.
 
 ## What enforce adds
 

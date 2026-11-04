@@ -212,12 +212,22 @@ func lockGrantWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUI
 
 // lockPageWorkspacesTx is a token commit's step 3, before any token row:
 // every workspace of the page (workspaces, in id order), in one id-ordered
-// pass, FOR UPDATE where tx may delete a token identity or its grants (as
-// lockGrantWorkspacesTx), else FOR KEY SHARE, what the foreign keys of the
-// token rows and perms it inserts take anyway. One pass, so it never takes
-// a lower workspace's row after a higher one's, nor upgrades a row it holds.
-func lockPageWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUID, cond string, args func(uuid.UUID) []any) error {
-	lock, err := grantWorkspacesTx(ctx, tx, workspaces, cond, args)
+// pass, FOR UPDATE where tx may delete a token identity or its grants, else
+// FOR KEY SHARE, what the foreign keys of the token rows and perms it
+// inserts, and of an identity's token row it updates, take anyway. of(ws)
+// is the workspace's tokens in the page, and whether one is listed twice.
+// It may delete where one of its tokens holds an identity (as
+// lockGrantWorkspacesTx), whether or not a record then drops anything, and
+// where a token is listed twice, since an identity made by one record a
+// later one may drop: any write to device_key_grants, cascades included,
+// locks the row FOR UPDATE (0036), and taken then it would come after the
+// token rows. One pass, so it never takes a lower workspace's row after a
+// higher one's, nor upgrades a row it holds.
+func lockPageWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUID, of func(uuid.UUID) ([]uuid.UUID, bool)) error {
+	lock, err := grantWorkspacesTx(ctx, tx, workspaces, `id = ANY ($1)`, func(ws uuid.UUID) []any {
+		ids, _ := of(ws)
+		return []any{ids}
+	})
 	if err != nil {
 		return err
 	}
@@ -227,7 +237,7 @@ func lockPageWorkspacesTx(ctx context.Context, tx pgx.Tx, workspaces []uuid.UUID
 	}
 	for _, ws := range workspaces {
 		strength := `FOR KEY SHARE`
-		if update[ws] {
+		if _, twice := of(ws); update[ws] || twice {
 			strength = `FOR UPDATE`
 		}
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 `+strength, ws); err != nil {

@@ -508,6 +508,95 @@ func TestGrantingAndRevoking(t *testing.T) {
 	}
 }
 
+// TestDeviceReadersListsTokensApart (the plan's 5.4, L2): a platform token
+// whose hidden identity holds a number's key is listed under tokens, with
+// its id, name, epoch and sealer, by device.info, by device.readers (the
+// reply to grant.add) and by device.delete.check, and never under readers.
+// The rows are a token's as store.Tokens leaves them after its record and
+// a grant write (its own tests cover how).
+func TestDeviceReadersListsTokensApart(t *testing.T) {
+	c := newConsole(t)
+	ctx := context.Background()
+	owner := c.account(t, "owner@acme.test", "owner")
+	_, ownerUser, err := c.users.ActiveSession(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := c.accountID(t, "reader@acme.test", "member")
+	dev := c.deviceWithKey(t, "phone")
+	token := uuid.New()
+	var identity uuid.UUID
+	if _, err := c.pool.Exec(ctx, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
+		VALUES ($1, $2, $3, decode(repeat('ab', 32), 'hex'), clock_timestamp() + interval '365 days')`,
+		strings.ReplaceAll(token.String(), "-", "")[16:], token, c.tenant); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.InTenantTx(ctx, c.pool, c.tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_tokens (id, tenant_id, name, created_by, created_at, expires_at, generation, version)
+			VALUES ($1, $2, 'Nightly', $3, clock_timestamp(), clock_timestamp() + interval '30 days', $4, 1)`, token, c.tenant, uuid.New(), uuid.New()); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `INSERT INTO users (tenant_id, email, public_key, role, token_identity)
+			VALUES ($1, 't-' || $2::text || '@token.invalid', decode(repeat('cd', 32), 'hex'), 'service', true) RETURNING id`,
+			c.tenant, token).Scan(&identity); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE contract_tokens SET identity_user_id = $2 WHERE id = $1`, token, identity); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_token_perms (token_id, tenant_id, device_id, perm, granted_by, granted_at, generation, version, state)
+			VALUES ($1, $2, $3, 'read', $4, clock_timestamp(), $4, 1, 'applied')`, token, c.tenant, dev, uuid.New()); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk, granted_by)
+			VALUES ($1, $2, $3, 1, 'sealed to the token', $4)`, c.tenant, dev, identity, ownerUser.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed := func(where string, tokens []wsapi.TokenKeyHolder, readers []wsapi.KeyHolder) {
+		t.Helper()
+		if len(tokens) != 1 || tokens[0].ID != token.String() || tokens[0].Name != "Nightly" || tokens[0].Epoch != 1 ||
+			tokens[0].GrantedBy != "owner@acme.test" || tokens[0].GrantedAt.IsZero() {
+			t.Errorf("%s: tokens %+v", where, tokens)
+		}
+		for _, r := range readers {
+			if r.UserID == identity.String() {
+				t.Errorf("%s: the token's identity among the readers: %+v", where, r)
+			}
+		}
+	}
+	hello := wsapi.Hello{Session: owner}
+	f := ask(t, c, hello, wsapi.TypeDeviceInfo, wsapi.DeviceRef{DeviceID: dev})
+	if f.Type != wsapi.TypeDeviceDetail {
+		t.Fatalf("device.info: %s %s", f.Type, f.Payload)
+	}
+	detail := payload[wsapi.DeviceDetail](t, f)
+	listed("device.info", detail.Tokens, detail.Readers)
+	f = ask(t, c, hello, wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: dev, UserID: other.String(), Epoch: 1, SealedDSK: []byte("sealed")})
+	if f.Type != wsapi.TypeReaders {
+		t.Fatalf("grant.add: %s %s", f.Type, f.Payload)
+	}
+	readers := payload[wsapi.Readers](t, f)
+	listed("device.readers", readers.Tokens, readers.Readers)
+	if len(readers.Readers) != 1 || readers.Readers[0].UserID != other.String() {
+		t.Errorf("device.readers' readers: %+v", readers.Readers)
+	}
+	f = ask(t, c, hello, wsapi.TypeDeviceDeleteCheck, wsapi.DeviceRef{DeviceID: dev})
+	if f.Type != wsapi.TypeDeviceDeleteChecked {
+		t.Fatalf("device.delete.check: %s %s", f.Type, f.Payload)
+	}
+	check := payload[wsapi.DeviceDeleteChecked](t, f)
+	if len(check.Tokens) != 1 || check.Tokens[0].ID != token || check.Tokens[0].Name != "Nightly" {
+		t.Errorf("device.delete.check's tokens: %+v", check.Tokens)
+	}
+	for _, s := range check.ServiceAccounts {
+		if s.ID == identity {
+			t.Errorf("device.delete.check lists the token as a service account: %+v", s)
+		}
+	}
+}
+
 func TestAnAPIKeyCannotGrant(t *testing.T) {
 	c := newConsole(t)
 	other := c.accountID(t, "reader@acme.test", "member")

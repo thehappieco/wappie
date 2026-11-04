@@ -15,11 +15,11 @@ import (
 // compared with Wappie's own memberships, read-only, and the differences
 // are logged by id. Nothing in users, workspace_memberships, sessions,
 // api_keys, grants or tenants changes because of a document: enforce
-// applies them, from the same stored documents. The log holds subs, user
-// ids, workspace ids, roles, statuses and counts, never an email, a name or
-// a label (DB22). That is of account documents only: token records do make
-// and delete token identities (users rows with no membership) and their
-// grants, at observe too (store.Tokens).
+// applies them, from the same stored documents. That is of account
+// documents only: token records do make and delete token identities (users
+// rows with no membership) and their grants, at observe too (store.Tokens).
+// The log holds subs, user ids, workspace ids, roles, statuses and counts,
+// never an email, a name or a label (DB22).
 
 // observe logs sub's stored document's differences: one INFO line for the
 // document, "contract observe: differences" with each difference as a

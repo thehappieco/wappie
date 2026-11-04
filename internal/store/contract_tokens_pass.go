@@ -50,7 +50,12 @@ func selectorWorkspacesTx(ctx context.Context, tx pgx.Tx) ([]uuid.UUID, error) {
 // reset, and every pending one, never effective, goes with a removed row
 // (reset); waiting perms stay waiting. The sticky set, the earliest expiries,
 // the removed instances, the pins and the stops stay; a refused perm stays
-// refused, and is told again when the new generation lists it.
+// refused, and is told again when the new generation lists it. A pending
+// Read holds no grant to delete with it: a grant is written only under an
+// applied Read, an applied one never goes back to pending, and a Read given
+// again as another instance takes its grants in that write (judgeRecord);
+// so the reset writes no device_key_grants row, which would lock the
+// workspace's row under the token rows (DB25).
 func restartTokensTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID) error {
 	// The acknowledgement starts again too: the new generation is told
 	// every set whole, and none of the old one's refusals, whose versions

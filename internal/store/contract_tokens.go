@@ -445,16 +445,21 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 	slices.SortFunc(order, compareIDs)
 	// The workspaces' rows, before any token row (DB25 step 3), in one
 	// id-ordered pass: FOR UPDATE where the commit may delete a token
-	// identity's grants, else FOR KEY SHARE, what a new token's foreign key
-	// takes anyway, taken first, so the commit waits behind a quarantine, a
-	// move or a grant write of the workspace (each locks the row FOR
-	// UPDATE, then the token rows or perms) instead of inverting against it.
-	if err := lockPageWorkspacesTx(ctx, tx, order, `id = ANY ($1)`, func(ws uuid.UUID) []any {
+	// identity or its grants, else FOR KEY SHARE, what a new token's foreign
+	// key takes anyway, taken first, so the commit waits behind a
+	// quarantine, a move or a grant write of the workspace (each locks the
+	// row FOR UPDATE, then the token rows or perms) instead of inverting
+	// against it. A token listed twice counts as one that may: a later
+	// record of it may drop the identity an earlier one made.
+	if err := lockPageWorkspacesTx(ctx, tx, order, func(ws uuid.UUID) ([]uuid.UUID, bool) {
 		ids := make([]uuid.UUID, 0, len(groups[ws]))
+		seen, twice := map[uuid.UUID]bool{}, false
 		for _, it := range groups[ws] {
+			twice = twice || seen[it.id]
+			seen[it.id] = true
 			ids = append(ids, it.id)
 		}
-		return []any{ids}
+		return ids, twice
 	}); err != nil {
 		return res, err
 	}
@@ -1124,9 +1129,16 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 			}
 		case full && (l.GrantedBy != p.GrantedBy.String() || !l.GrantedAt.Truncate(time.Microsecond).Equal(p.GrantedAt)):
 			// Another grant instance in place of the stored one: the
-			// stored one goes, and the new one is judged afresh below.
+			// stored one goes, and the new one is judged afresh below. A
+			// Read given again is a Read dropped (the feed carries only a
+			// token's latest version, so an ungrant and a grant between two
+			// reads of it arrive so): its grants go with the old instance,
+			// and only a fresh seal under the new one opens the number.
 			w.drops = append(w.drops, permDrop{token: it.id, device: k.Device, perm: k.Perm, cause: "dropped"})
 			u.bump = true
+			if k.Perm == kc.CanRead && stored.Identity != nil {
+				w.grants = append(w.grants, grantDrop{identity: *stored.Identity, device: k.Device})
+			}
 		default:
 			delete(listed, k)
 			if full && p.Generation != g.gen {
