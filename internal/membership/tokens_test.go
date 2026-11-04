@@ -960,7 +960,11 @@ func TestTheTokenLoopsFollowTheTokenMode(t *testing.T) {
 			}
 		}},
 		{"by the mode check, the notice lost", 300 * time.Millisecond, func(mode string) {
-			w.exec(ctx, t, `ALTER TABLE contract_token_state DISABLE TRIGGER contract_token_state_notify;
+			// The EXCLUSIVE lock first waits out an ack sender holding the
+			// row: the ALTER's own lock would let it keep the row and then
+			// block its UPDATE, a deadlock.
+			w.exec(ctx, t, `LOCK TABLE contract_token_state IN EXCLUSIVE MODE;
+				ALTER TABLE contract_token_state DISABLE TRIGGER contract_token_state_notify;
 				UPDATE contract_token_state SET mode = '`+mode+`', caught_up_at = NULL;
 				ALTER TABLE contract_token_state ENABLE TRIGGER contract_token_state_notify`)
 		}},
