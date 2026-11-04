@@ -337,17 +337,18 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 	d := s.device
 	change := ReplayChange{DeviceID: d.DeviceID, Workspace: tenant, Action: s.action}
 	if s.action == ReplayRecovered {
-		var name, pn string
-		// Paused as the owner's recovery leaves a number: theirs.
-		err := tx.QueryRow(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
+		// Paused as the owner's recovery leaves a number: theirs. Its
+		// replayed row keeps no label: it takes the number's when it is
+		// sent (replayedLabelsTx).
+		tag, err := tx.Exec(ctx, `UPDATE devices SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL, wa_leftover = NULL,
 			pause_cause = 'person'
-			WHERE id = $1 AND deleted_at = $2 AND purge_started_at IS NULL RETURNING label, coalesce(pn, '')`,
-			d.DeviceID, s.reversal.DeletedAt).Scan(&name, &pn)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return change, fmt.Errorf("number %s changed during the replay, or its purge started: it was not recovered", d.DeviceID)
-		}
+			WHERE id = $1 AND deleted_at = $2 AND purge_started_at IS NULL`,
+			d.DeviceID, s.reversal.DeletedAt)
 		if err != nil {
 			return change, err
+		}
+		if tag.RowsAffected() == 0 {
+			return change, fmt.Errorf("number %s changed during the replay, or its purge started: it was not recovered", d.DeviceID)
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id = $1 AND kind = 'number_deleted'`, d.DeviceID); err != nil {
 			return change, err
