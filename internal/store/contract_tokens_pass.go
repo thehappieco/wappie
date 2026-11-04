@@ -28,6 +28,18 @@ func tokenWorkspacesTx(ctx context.Context, tx pgx.Tx) ([]uuid.UUID, error) {
 	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
+// selectorWorkspacesTx are the workspaces a selector names, in id order,
+// those Wappie no longer has included: retention's, which outlives a
+// workspace's token rows (its pins and removed instances carry no foreign
+// key).
+func selectorWorkspacesTx(ctx context.Context, tx pgx.Tx) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `SELECT DISTINCT tenant_id FROM contract_token_selectors ORDER BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
 // restartTokensTx is a restart's token part, in tx, which holds
 // contract_state's and contract_token_state's locks: the cursor goes to 0
 // and published_through away, the last trusted one kept as

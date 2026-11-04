@@ -8,8 +8,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/migrate"
+	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
 )
 
@@ -34,10 +37,12 @@ func (w *tokenWorld) ackBody() store.TokenAck {
 	return a
 }
 
-// The acknowledgement: through is the cursor; refusals and held tokens are
-// sent once, on an accepted answer only; the waiting and suspended sets go
-// whole, only when they change, suspended computed per workspace; and every
-// body stays within the four lists' one budget of 1000.
+// The acknowledgement: through is the cursor; refusals are sent once, on an
+// accepted answer only (held tokens too:
+// TestAHeldEntryIsSentOnceAndAMergeStaysDue); the waiting and suspended sets
+// go whole, only when they change, suspended computed per workspace; and
+// every body stays within the four lists' one budget of 1000
+// (TestOverflowGoesInFurtherAcksAtTheSameThrough).
 func TestTheAcknowledgementSendsEachEntryOnce(t *testing.T) {
 	w := newTokenWorld(t)
 	if _, ok, err := w.tokens.AckBody(context.Background()); err != nil || ok {
@@ -91,6 +96,52 @@ func TestTheAcknowledgementSendsEachEntryOnce(t *testing.T) {
 	}
 	if lifted := w.ackBody(); lifted.Body.Suspended == nil || len(lifted.Body.Suspended) != 0 || lifted.Body.Waiting != nil {
 		t.Fatalf("after the lift: %+v", lifted.Body)
+	}
+}
+
+// TestAHeldEntryIsSentOnceAndAMergeStaysDue: a reset's pass queues a token
+// held narrower than its record; the acknowledgement carries it, and once
+// accepted it is not sent again. An entry that changed between the body and
+// its acceptance (a later page of the pass merged more into it, a refusal
+// recoded) was not what the platform accepted: it stays due, and goes
+// whole in the next body.
+func TestAHeldEntryIsSentOnceAndAMergeStaysDue(t *testing.T) {
+	w := newTokenWorld(t)
+	one, two := w.number(uuid.Nil), w.number(uuid.Nil)
+	id := uuid.New()
+	early := w.now.Add(-time.Hour)
+	// Both grants unjudged at the reset: neither was held, so the pass's
+	// record that lists them again is held narrower.
+	w.page(false, w.record(id, 1, grants(one, w.ownerSub, early, kc.CanSend), grants(two, w.ownerSub, early, kc.CanSend)))
+	w.reset()
+	w.page(true, w.record(id, 1, grants(one, w.ownerSub, early, kc.CanSend)))
+	first := w.ackBody()
+	if len(first.Body.Held) != 1 || len(first.Body.Held[0].Removed) != 1 {
+		t.Fatalf("the first body's held: %+v", first.Body.Held)
+	}
+	// A refusal in the same body, recoded before the platform accepts it.
+	w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code) VALUES ($1, 1, $2, 'read', 'local_role')`, id, one.String())
+	first = w.ackBody()
+	if len(first.Body.Refused) != 1 || len(first.Body.Held) != 1 {
+		t.Fatalf("the first body: %+v", first.Body)
+	}
+	w.page(true, w.record(id, 2, grants(one, w.ownerSub, early, kc.CanSend), grants(two, w.ownerSub, early, kc.CanSend)))
+	w.exec(`UPDATE contract_token_refusals_out SET code = 'giver_not_reader', queued_at = clock_timestamp() WHERE token_id = $1`, id)
+	if err := w.tokens.AckSent(context.Background(), first, w.now); err != nil {
+		t.Fatal(err)
+	}
+	next := w.ackBody()
+	if len(next.Body.Held) != 1 || len(next.Body.Held[0].Removed) != 2 {
+		t.Fatalf("a merged held entry was taken for sent: %+v", next.Body.Held)
+	}
+	if len(next.Body.Refused) != 1 || next.Body.Refused[0].Code != kc.RefusedGiverNotReader {
+		t.Fatalf("a recoded refusal was taken for sent: %+v", next.Body.Refused)
+	}
+	if err := w.tokens.AckSent(context.Background(), next, w.now); err != nil {
+		t.Fatal(err)
+	}
+	if last := w.ackBody(); len(last.Body.Held) != 0 || len(last.Body.Refused) != 0 {
+		t.Fatalf("sent entries went again: %+v", last.Body)
 	}
 }
 
@@ -201,5 +252,48 @@ func TestUsageIsAbsoluteAndCountedPerRow(t *testing.T) {
 	}
 	if again, err := w.tokens.UsageBody(context.Background()); err != nil || len(again.Body.Refusals) != 1 || again.Body.Refusals[0].Count != 3 {
 		t.Fatalf("after one more: %+v %v", again.Body, err)
+	}
+}
+
+// TestTokenUseDaysAreUTC (the design's 3.8): a use's day, and the days
+// retention keeps, are UTC days whatever the database session's time zone:
+// here São Paulo's, three hours behind, where 01:00 UTC is the day before.
+func TestTokenUseDaysAreUTC(t *testing.T) {
+	pool := pgtest.FreshWith(t, migrate.Run, func(cfg *pgxpool.Config) {
+		cfg.ConnConfig.RuntimeParams["timezone"] = "America/Sao_Paulo"
+	})
+	tokens := store.NewTokens(pool)
+	ctx := context.Background()
+	token := uuid.New()
+	use := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)
+	if err := tokens.AddTokenUse(ctx, store.TokenUse{Used: []store.TokenDay{{Token: token, Day: use}},
+		Refusals: []store.TokenUseRefusal{{Token: token, Day: use, Code: kc.UseRevoked, Count: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	u, err := tokens.UsageBody(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u.Body.Used) != 1 || u.Body.Used[0].Day != "2026-10-28" || len(u.Body.Refusals) != 1 || u.Body.Refusals[0].Day != "2026-10-28" {
+		t.Fatalf("the days of a use at 01:00 UTC: %+v", u.Body)
+	}
+	if err := tokens.UsageSent(ctx, u, use); err != nil {
+		t.Fatal(err)
+	}
+	// Two days on at 01:00 UTC, the 27th is over two UTC days old and goes;
+	// the 28th stays.
+	if _, err := pool.Exec(ctx, `INSERT INTO contract_token_used (token_id, day, reported_at) VALUES ($1, '2026-10-27', clock_timestamp())`, token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tokens.RetainTokens(ctx, time.Date(2026, 10, 30, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := pool.Query(ctx, `SELECT to_char(day, 'YYYY-MM-DD') FROM contract_token_used ORDER BY day`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	days, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(days) != 1 || days[0] != "2026-10-28" {
+		t.Fatalf("the used days retention kept: %v %v, want 2026-10-28 alone", days, err)
 	}
 }

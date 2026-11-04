@@ -536,8 +536,13 @@ ALTER TABLE devices ENABLE TRIGGER devices_touch;
 ALTER TABLE devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE devices FORCE ROW LEVEL SECURITY;
 -- The lowest free ordinal of NEW.tenant_id, at an insert and a move-out,
--- under the workspace's advisory lock (never tenants FOR UPDATE: an insert
--- already holds the foreign key's KEY SHARE, and upgrading it deadlocks).
+-- under the workspace's row FOR UPDATE, taken first. A move already holds it
+-- (TransferPersonal locks both workspaces before its UPDATE), and an insert
+-- takes it anyway (0024's enforce_device_capacity, whose BEFORE trigger
+-- fires after this one by name, then the foreign key's KEY SHARE after
+-- both); any other lock taken first here, such as an advisory lock, would
+-- be held by an insert while it waits on a move's workspace row, and asked
+-- for by the move under that row: a deadlock.
 -- Under row-level security the one query would miss deleted numbers
 -- (device_quarantine) and, in a session of another workspace than
 -- NEW.tenant_id, that workspace's (tenant_isolation; a move-out's own scope,
@@ -550,7 +555,7 @@ DECLARE
     prior_quarantine text := current_setting('app.device_quarantine', true);
     free             integer;
 BEGIN
-    PERFORM pg_advisory_xact_lock(52, hashtext(NEW.tenant_id::text));
+    PERFORM 1 FROM tenants WHERE id = NEW.tenant_id FOR UPDATE;
     PERFORM set_config('app.tenant_id', NEW.tenant_id::text, true);
     PERFORM set_config('app.device_quarantine', 'on', true);
     SELECT s INTO free FROM generate_series(1, 9999) s

@@ -52,9 +52,11 @@ const tokenSuspendedSQL = `
 // platform accepts it.
 type TokenAck struct {
 	Body kc.TokenApplied
-	// refused and held are the queue entries the body carries.
+	// refused and held are the queue entries the body carries, each with
+	// the queued_at it was read at: an entry changed since (a merge) stays
+	// due.
 	refused []tokenRefusalRow
-	held    []uuid.UUID
+	held    []heldSent
 	// waitingHash and suspendedHash are the sets' hashes, kept when the
 	// body carries them (Waiting or Suspended not nil).
 	waitingHash, suspendedHash []byte
@@ -65,6 +67,12 @@ type TokenAck struct {
 func (a TokenAck) Empty(acked int64) bool {
 	return len(a.Body.Refused) == 0 && len(a.Body.Held) == 0 && a.Body.Waiting == nil && a.Body.Suspended == nil &&
 		a.Body.Through <= acked
+}
+
+// heldSent is a held entry a body carries, as it was queued.
+type heldSent struct {
+	token    uuid.UUID
+	queuedAt time.Time
 }
 
 // TokenAckState is what the ack sender reads of the acknowledgement's state.
@@ -111,14 +119,14 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 		out.Body = kc.TokenApplied{Generation: gen.String(), Through: through, AppliedAt: kc.T(*readAt),
 			Refused: []kc.TokenRefusal{}, Held: []kc.TokenHeld{}}
 		budget := kc.MaxAppliedEntries
-		rows, err := tx.Query(ctx, `SELECT token_id, version, item, perm, code FROM contract_token_refusals_out
+		rows, err := tx.Query(ctx, `SELECT token_id, version, item, perm, code, queued_at FROM contract_token_refusals_out
 			WHERE sent_at IS NULL ORDER BY queued_at, token_id, version, item, perm LIMIT $1`, budget)
 		if err != nil {
 			return err
 		}
 		out.refused, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (tokenRefusalRow, error) {
 			var r tokenRefusalRow
-			err := row.Scan(&r.token, &r.version, &r.item, &r.perm, &r.code)
+			err := row.Scan(&r.token, &r.version, &r.item, &r.perm, &r.code, &r.queuedAt)
 			return r, err
 		})
 		if err != nil {
@@ -128,7 +136,7 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 			out.Body.Refused = append(out.Body.Refused, kc.TokenRefusal{Token: r.token.String(), Version: r.version, Item: r.item, Perm: r.perm, Code: r.code})
 		}
 		budget -= len(out.refused)
-		rows, err = tx.Query(ctx, `SELECT token_id, revoked, expires_at, removed, reading_key FROM contract_token_held_out
+		rows, err = tx.Query(ctx, `SELECT token_id, revoked, expires_at, removed, reading_key, queued_at FROM contract_token_held_out
 			WHERE sent_at IS NULL AND generation = $1 ORDER BY queued_at, token_id LIMIT $2`, *gen, budget)
 		if err != nil {
 			return err
@@ -138,7 +146,8 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 			var id uuid.UUID
 			var expires *time.Time
 			var removed []byte
-			if err := row.Scan(&id, &h.Revoked, &expires, &removed, &h.ReadingKey); err != nil {
+			var queued time.Time
+			if err := row.Scan(&id, &h.Revoked, &expires, &removed, &h.ReadingKey, &queued); err != nil {
 				return err
 			}
 			h.Token = id.String()
@@ -156,7 +165,7 @@ func (t *Tokens) AckBody(ctx context.Context) (TokenAck, bool, error) {
 				h.Removed = h.Removed[:kc.MaxHeldRemoved]
 			}
 			out.Body.Held = append(out.Body.Held, h)
-			out.held = append(out.held, id)
+			out.held = append(out.held, heldSent{token: id, queuedAt: queued})
 			return nil
 		})
 		if err != nil {
@@ -323,20 +332,24 @@ func suspendedTx(ctx context.Context, tx pgx.Tx) (kc.Suspensions, error) {
 
 // AckSent marks an acknowledgement the platform accepted (a signed
 // {accepted: true}, never anything less): its refusals and held tokens are
-// delivered, its through and the hashes of the sets it carried are kept,
-// and the acknowledgement's failure is cleared.
+// delivered, each only as the body carried it (an entry merged or recoded
+// since, whose queued_at moved, stays due), its through and the hashes of
+// the sets it carried are kept, and the acknowledgement's failure is
+// cleared.
 func (t *Tokens) AckSent(ctx context.Context, a TokenAck, at time.Time) error {
 	return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
 		if len(a.refused) > 0 {
 			n := len(a.refused)
 			tokens, versions, items, perms := make([]uuid.UUID, n), make([]int64, n), make([]string, n), make([]string, n)
+			queued := make([]time.Time, n)
 			for i, r := range a.refused {
-				tokens[i], versions[i], items[i], perms[i] = r.token, r.version, r.item, r.perm
+				tokens[i], versions[i], items[i], perms[i], queued[i] = r.token, r.version, r.item, r.perm, r.queuedAt
 			}
 			if _, err := tx.Exec(ctx, `UPDATE contract_token_refusals_out o SET sent_at = $1
-				FROM unnest($2::uuid[], $3::bigint[], $4::text[], $5::text[]) AS r(token, version, item, perm)
-				WHERE o.token_id = r.token AND o.version = r.version AND o.item = r.item AND o.perm = r.perm AND o.sent_at IS NULL`,
-				at, tokens, versions, items, perms); err != nil {
+				FROM unnest($2::uuid[], $3::bigint[], $4::text[], $5::text[], $6::timestamptz[]) AS r(token, version, item, perm, queued)
+				WHERE o.token_id = r.token AND o.version = r.version AND o.item = r.item AND o.perm = r.perm AND o.sent_at IS NULL
+				  AND o.queued_at = r.queued`,
+				at, tokens, versions, items, perms, queued); err != nil {
 				return err
 			}
 		}
@@ -345,8 +358,14 @@ func (t *Tokens) AckSent(ctx context.Context, a TokenAck, at time.Time) error {
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE contract_token_held_out SET sent_at = $1
-				WHERE token_id = ANY ($2) AND generation = $3 AND sent_at IS NULL`, at, a.held, gen); err != nil {
+			tokens, queued := make([]uuid.UUID, len(a.held)), make([]time.Time, len(a.held))
+			for i, h := range a.held {
+				tokens[i], queued[i] = h.token, h.queuedAt
+			}
+			if _, err := tx.Exec(ctx, `UPDATE contract_token_held_out o SET sent_at = $1
+				FROM unnest($2::uuid[], $3::timestamptz[]) AS h(token, queued)
+				WHERE o.token_id = h.token AND o.generation = $4 AND o.sent_at IS NULL AND o.queued_at = h.queued`,
+				at, tokens, queued, gen); err != nil {
 				return err
 			}
 		}
@@ -398,12 +417,14 @@ func (t *Tokens) AddTokenUse(ctx context.Context, u TokenUse) error {
 	}
 	return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
 		if len(u.Used) > 0 {
-			tokens, days := make([]uuid.UUID, len(u.Used)), make([]time.Time, len(u.Used))
+			// UTC days, as text, as the refusals' below: a timestamptz cast
+			// to date would take the session's time zone.
+			tokens, days := make([]uuid.UUID, len(u.Used)), make([]string, len(u.Used))
 			for i, d := range u.Used {
-				tokens[i], days[i] = d.Token, d.Day.UTC()
+				tokens[i], days[i] = d.Token, d.Day.UTC().Format(time.DateOnly)
 			}
 			if _, err := tx.Exec(ctx, `INSERT INTO contract_token_used (token_id, day)
-				SELECT DISTINCT token, day::date FROM unnest($1::uuid[], $2::timestamptz[]) AS u(token, day)
+				SELECT DISTINCT token, day::date FROM unnest($1::uuid[], $2::text[]) AS u(token, day)
 				ON CONFLICT DO NOTHING`, tokens, days); err != nil {
 				return err
 			}

@@ -410,7 +410,7 @@ func TestAPoisonRecordNeverStallsRevocations(t *testing.T) {
 		w.page(false, w.record(id, 1, opts...))
 		return id
 	}
-	var poisonID uuid.UUID
+	var poisonID, poisonDevice uuid.UUID
 	for _, c := range []poison{
 		{"an unknown workspace", func(w *tokenWorld) any {
 			poisonID = uuid.New()
@@ -496,6 +496,41 @@ func TestAPoisonRecordNeverStallsRevocations(t *testing.T) {
 		}, func(t *testing.T, w *tokenWorld, res store.TokenPageResult) {
 			if s := w.token(poisonID); !s.Revoked || s.Expires != "-infinity" {
 				t.Fatalf("zero times: %+v", s)
+			}
+			// A zero revoked_at beside a revocation is Wappie's clock.
+			var at time.Time
+			w.scoped(func(tx pgx.Tx) error {
+				return tx.QueryRow(context.Background(), `SELECT revoked_at FROM contract_tokens WHERE id = $1`, poisonID).Scan(&at)
+			})
+			if !at.Equal(w.now) {
+				t.Fatalf("a zero revoked_at stored as %v, want Wappie's clock %v", at, w.now)
+			}
+		}},
+		{"a widening that fails, applied for its narrowings", func(w *tokenWorld) any {
+			// The database refuses this token's new perms, never its
+			// drops: the record fails whole, then applies narrowed.
+			device := w.number(uuid.Nil)
+			poisonID = held(w, grants(device, w.ownerSub, w.now, kc.CanRead))
+			w.exec(`CREATE FUNCTION no_widening() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+				IF NEW.token_id = '` + poisonID.String() + `' THEN RAISE EXCEPTION 'no widening'; END IF; RETURN NEW; END $$`)
+			w.exec(`CREATE TRIGGER no_widening BEFORE INSERT ON contract_token_perms FOR EACH ROW EXECUTE FUNCTION no_widening()`)
+			poisonDevice = device
+			return w.record(poisonID, 2, grants(device, w.ownerSub, w.now, kc.CanSend), func(r *kc.TokenRecord) { r.Name = "Widened" })
+		}, func(t *testing.T, w *tokenWorld, res store.TokenPageResult) {
+			if res.Bad != 1 || res.Failed != 0 {
+				t.Fatalf("the result: %+v", res)
+			}
+			if n := w.count(`SELECT count(*) FROM contract_token_stops WHERE selector = $1`, selectorOf(poisonID)); n != 0 {
+				t.Fatal("a record applied narrowed stopped its token")
+			}
+			if s, p := w.token(poisonID), w.perms(poisonID); s.Name != "Nightly" || *s.Version != 1 || len(p) != 0 {
+				t.Fatalf("narrowed: %+v %v (its Read dropped, nothing else)", s, p)
+			}
+			if got := w.refused(poisonID); len(got) != 1 || got[0] != poisonDevice.String()+"/send=invalid_record@2" {
+				t.Fatalf("its new grant's refusal: %v", got)
+			}
+			if !strings.Contains(w.logs.String(), "applied for its narrowings only") {
+				t.Fatalf("no WARN of the narrowed apply:\n%s", w.logs.String())
 			}
 		}},
 		{"a failure that reaches the apply_failed stop", func(w *tokenWorld) any {
@@ -588,7 +623,10 @@ func TestZeroTimesNarrow(t *testing.T) {
 
 // TestABadRecordOfAnUnknownTokenMakesNoLiveRow: neither its selector nor a
 // row, nor a perm; only its revocation, when it has one, and its grants'
-// refusals.
+// refusals. A revocation kept so, in the sticky set alone (of a bad record,
+// or of a workspace Wappie did not hold), is never revived: a good record
+// of the token that lists it unrevoked, as after a platform restore, makes
+// no row either, and the reset's pass reports it held revoked (M8).
 func TestABadRecordOfAnUnknownTokenMakesNoLiveRow(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
@@ -608,5 +646,204 @@ func TestABadRecordOfAnUnknownTokenMakesNoLiveRow(t *testing.T) {
 	w.page(false, w.record(id, 2, grants(device, w.ownerSub, w.now, kc.CanRead)))
 	if s := w.token(id); !s.Exists || w.perms(id)[device.String()+"/read"] != "pending" {
 		t.Fatalf("the good version: %+v %v", s, w.perms(id))
+	}
+
+	// A bad record that revokes, and a revocation of a workspace Wappie
+	// does not hold yet.
+	revoked, orphan, elsewhere := uuid.New(), uuid.New(), uuid.New()
+	w.page(false, w.record(revoked, 1, revokedBy(kc.RevokedInConsole, w.now), func(r *kc.TokenRecord) { r.Name = "bad@name" }),
+		w.record(orphan, 1, revokedBy(kc.RevokedInConsole, w.now), func(r *kc.TokenRecord) { r.WorkspaceID = elsewhere.String() }))
+	for _, gone := range []uuid.UUID{revoked, orphan} {
+		if exists, rev, _ := w.sticky(gone); !exists || !rev || w.token(gone).Exists {
+			t.Fatalf("%s: the revocation is not in the sticky set alone", gone)
+		}
+	}
+	w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'elsewhere')`, elsewhere)
+	// A platform restore: the new generation lists both, unrevoked.
+	w.reset()
+	res = w.page(false, w.record(revoked, 1, grants(device, w.ownerSub, w.now, kc.CanRead)),
+		w.record(orphan, 1, func(r *kc.TokenRecord) { r.WorkspaceID = elsewhere.String() }))
+	if res.Bad != 2 {
+		t.Fatalf("the restored records: %+v", res)
+	}
+	held := w.held()
+	for _, gone := range []uuid.UUID{revoked, orphan} {
+		if w.token(gone).Exists {
+			t.Fatalf("%s: a sticky revocation was revived as a row", gone)
+		}
+		if n := w.count(`SELECT count(*) FROM contract_token_selectors WHERE token_id = $1`, gone); n != 0 {
+			t.Fatalf("%s: a sticky revocation took a selector", gone)
+		}
+		if h, ok := held[gone]; !ok || !h.Revoked {
+			t.Fatalf("%s: not held revoked in the pass: %+v", gone, held)
+		}
+	}
+	if len(w.perms(revoked)) != 0 {
+		t.Fatalf("the restored record's grant: %v", w.perms(revoked))
+	}
+}
+
+// TestANarrowingBumpsAccessVersionOnce (the plan's 3.3): every narrowing of
+// a token, a perm dropped included, which no column of its row shows,
+// raises its access_version by exactly one, so REST's finish refuses a
+// request it began before; what widens nothing, and an older or the same
+// version, leave it.
+func TestANarrowingBumpsAccessVersionOnce(t *testing.T) {
+	w := newTokenWorld(t)
+	id, device := uuid.New(), w.number(uuid.Nil)
+	w.page(false, w.record(id, 1, grants(device, w.ownerSub, w.now, kc.CanRead, kc.CanSend)))
+	version := func() int64 { return w.token(id).AccessVersion }
+	v := version()
+	w.page(false, w.record(id, 2, func(r *kc.TokenRecord) { r.Name = "Renamed" }, grants(device, w.ownerSub, w.now, kc.CanRead, kc.CanSend, kc.CanManage)))
+	if version() != v {
+		t.Fatalf("a rename and a new grant bumped access_version: %d, want %d", version(), v)
+	}
+	// A good record drops send.
+	w.page(false, w.record(id, 3, grants(device, w.ownerSub, w.now, kc.CanRead, kc.CanManage)))
+	if version() != v+1 {
+		t.Fatalf("a perm dropped: access_version %d, want %d", version(), v+1)
+	}
+	// An older and the same version.
+	w.page(false, w.record(id, 2, grants(device, w.ownerSub, w.now, kc.CanRead, kc.CanSend, kc.CanManage)),
+		w.record(id, 3, grants(device, w.ownerSub, w.now, kc.CanRead, kc.CanManage)))
+	if version() != v+1 {
+		t.Fatalf("an older and the same version: access_version %d, want %d", version(), v+1)
+	}
+	// A bad record drops manage: its narrowing only, its version not kept.
+	w.page(false, w.record(id, 4, grants(device, w.ownerSub, w.now, kc.CanRead), func(r *kc.TokenRecord) { r.Name = "bad@name" }))
+	if s := w.token(id); s.AccessVersion != v+2 || *s.Version != 3 || w.perms(id)[device.String()+"/manage"] != "" {
+		t.Fatalf("a bad record's drop: %+v %v, want access_version %d", s, w.perms(id), v+2)
+	}
+	// A drop and an earlier expiry in one record: one narrowing.
+	w.page(false, w.record(id, 5, func(r *kc.TokenRecord) { r.ExpiresAt = kc.T(r.ExpiresAt.Add(-time.Hour)) }))
+	if s := w.token(id); s.AccessVersion != v+3 || len(w.perms(id)) != 0 {
+		t.Fatalf("a drop and an earlier expiry: %+v %v, want access_version %d", s, w.perms(id), v+3)
+	}
+}
+
+// TestAStalePageCommitsNothing (the plan's 4.2): the commit compares and
+// sets the cursor and the generation the follower asked from, so a page of
+// a leader that lost its place writes nothing; a page whose generation is
+// not the follower's is a reset.
+func TestAStalePageCommitsNothing(t *testing.T) {
+	w := newTokenWorld(t)
+	id := uuid.New()
+	w.page(false, w.record(id, 1))
+	w.page(false, w.record(id, 2, func(r *kc.TokenRecord) { r.Name = "Second" }))
+	cursor := w.cursor()
+	feed := func(gen uuid.UUID) kc.TokenFeed {
+		rec := w.record(id, 3, revokedBy(kc.RevokedInConsole, w.now), func(r *kc.TokenRecord) { r.Generation = gen.String() })
+		return kc.TokenFeed{Generation: gen.String(), GenerationConfirmed: true, PublishedThrough: kc.T(w.now), More: false,
+			Head: cursor + 1, NextAfter: cursor + 1, Items: []kc.TokenFeedItem{{Seq: cursor + 1, Token: raw(t, rec)}}}
+	}
+	unchanged := func(what string) {
+		t.Helper()
+		if s := w.token(id); w.cursor() != cursor || s.Revoked || *s.Version != 2 || len(w.refused(id)) != 0 {
+			t.Fatalf("%s wrote: cursor %d (want %d), %+v", what, w.cursor(), cursor, s)
+		}
+		if exists, _, _ := w.sticky(id); exists {
+			t.Fatalf("%s wrote the sticky set", what)
+		}
+	}
+	res, err := w.tokens.CommitTokenPage(w.ctx(), store.TokenPage{After: cursor - 1, SeenGeneration: w.gen, Feed: feed(w.gen), Now: w.now})
+	if err != nil || res.Committed {
+		t.Fatalf("a page from an older cursor: %+v %v", res, err)
+	}
+	unchanged("a page from an older cursor")
+	other := uuid.New()
+	res, err = w.tokens.CommitTokenPage(w.ctx(), store.TokenPage{After: cursor, SeenGeneration: other, Feed: feed(other), Now: w.now})
+	if err != nil || res.Committed {
+		t.Fatalf("a page of a generation Wappie no longer holds: %+v %v", res, err)
+	}
+	unchanged("a page of a generation Wappie no longer holds")
+	if _, err := w.tokens.CommitTokenPage(w.ctx(), store.TokenPage{After: cursor, SeenGeneration: w.gen, Feed: feed(other), Now: w.now}); !errors.Is(err, store.ErrPageGeneration) {
+		t.Fatalf("a page of another generation than the follower's: %v", err)
+	}
+	unchanged("a page of another generation than the follower's")
+	if res := w.page(false, w.record(id, 3, revokedBy(kc.RevokedInConsole, w.now))); !res.Committed || !w.token(id).Revoked {
+		t.Fatal("the page from the stored cursor did not commit")
+	}
+}
+
+// TestAPublishedThroughAheadIsNotTrusted: a page with more false vouches for
+// its published_through only when it is at most ContractClockSkew past
+// Wappie's clock; one further ahead commits all the same, keeps the last
+// trusted value, and logs one ERROR.
+func TestAPublishedThroughAheadIsNotTrusted(t *testing.T) {
+	w := newTokenWorld(t)
+	w.page(false)
+	stored := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := w.pool.QueryRow(context.Background(), `SELECT published_through FROM contract_token_state`).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	if !stored().Equal(w.now) {
+		t.Fatalf("published_through %v, want %v", stored(), w.now)
+	}
+	commit := func(through time.Time) store.TokenPageResult {
+		t.Helper()
+		c := w.cursor()
+		res, err := w.tokens.CommitTokenPage(w.ctx(), store.TokenPage{After: c, SeenGeneration: w.gen, Now: w.now,
+			Feed: kc.TokenFeed{Generation: w.gen.String(), GenerationConfirmed: true, PublishedThrough: kc.T(through), Head: c, NextAfter: c,
+				Items: []kc.TokenFeedItem{}}})
+		if err != nil || !res.Committed {
+			t.Fatalf("the page: %+v %v", res, err)
+		}
+		return res
+	}
+	if res := commit(w.now.Add(store.ContractClockSkew + time.Minute)); !res.Ahead || res.Vouched {
+		t.Fatalf("a published_through 6 minutes ahead: %+v", res)
+	}
+	if !stored().Equal(w.now) {
+		t.Fatalf("an untrusted published_through was stored: %v", stored())
+	}
+	if !strings.Contains(w.logs.String(), "level=ERROR") || !strings.Contains(w.logs.String(), "ahead of the clock") {
+		t.Fatalf("no ERROR:\n%s", w.logs.String())
+	}
+	if res := commit(w.now.Add(4 * time.Minute)); res.Ahead || !res.Vouched || !stored().Equal(w.now.Add(4*time.Minute)) {
+		t.Fatalf("a published_through 4 minutes ahead: %+v, stored %v", res, stored())
+	}
+}
+
+// TestAStoppedTokenStaysListedInAPass: a record of a reset's pass that
+// Wappie cannot apply even narrowed stops its token (apply_failed), but the
+// platform listed it, so the pass never unlists it, which is terminal: the
+// stop lifts when a later version applies.
+func TestAStoppedTokenStaysListedInAPass(t *testing.T) {
+	w := newTokenWorld(t)
+	device := w.number(uuid.Nil)
+	id := uuid.New()
+	w.page(false, w.record(id, 1, grants(device, w.ownerSub, w.now, kc.CanRead)))
+	if got := w.judge(); got.Applied != 1 {
+		t.Fatalf("the judge: %+v", got)
+	}
+	w.reset()
+	// The database refuses to drop this token's perms: the pass's record,
+	// which drops its Read, fails whole and narrowed.
+	w.exec(`CREATE FUNCTION no_drop() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		IF OLD.token_id = '` + id.String() + `' THEN RAISE EXCEPTION 'no drop'; END IF; RETURN OLD; END $$`)
+	w.exec(`CREATE TRIGGER no_drop BEFORE DELETE ON contract_token_perms FOR EACH ROW EXECUTE FUNCTION no_drop()`)
+	if res := w.page(false, w.record(id, 1)); res.Failed != 1 {
+		t.Fatalf("the pass's record: %+v\n%s", res, w.logs.String())
+	}
+	if n := w.count(`SELECT count(*) FROM contract_token_stops WHERE selector = $1 AND cause = 'apply_failed' AND lifted_at IS NULL`, selectorOf(id)); n != 1 {
+		t.Fatal("no apply_failed stop")
+	}
+	w.exec(`UPDATE contract_state SET round_generation = $1`, w.gen)
+	if res := w.page(false); !res.PassReady {
+		t.Fatal("the pass is not ready")
+	}
+	res, err := w.tokens.FinishTokenPass(w.ctx(), w.gen, w.now)
+	if err != nil || !res.Done || len(res.Unlisted) != 0 {
+		t.Fatalf("the pass: %+v %v", res, err)
+	}
+	if s := w.token(id); s.Unlisted {
+		t.Fatal("the pass unlisted a token it listed, for a fault of Wappie's own")
+	}
+	if exists, _, _ := w.sticky(id); exists {
+		t.Fatal("the stopped token is in the sticky set")
 	}
 }

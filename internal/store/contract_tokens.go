@@ -324,6 +324,8 @@ type selectorRow struct {
 type stickyRow struct {
 	Revoked bool
 	Ended   *string
+	// Earliest is its earliest expiry, when it holds one.
+	Earliest *time.Time
 }
 
 // applyItemsTx applies items, all of generation gen, in tx, which holds
@@ -372,14 +374,15 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 		return res, err
 	}
 	sticky := map[uuid.UUID]stickyRow{}
-	rows, err = tx.Query(ctx, `SELECT token_id, revoked_at IS NOT NULL, ended FROM contract_token_sticky WHERE token_id = ANY ($1)`, ids)
+	rows, err = tx.Query(ctx, `SELECT token_id, revoked_at IS NOT NULL, ended, CASE WHEN isfinite(earliest_expires_at) THEN earliest_expires_at END
+		FROM contract_token_sticky WHERE token_id = ANY ($1)`, ids)
 	if err != nil {
 		return res, err
 	}
 	err = forEachRow(rows, func(row pgx.Rows) error {
 		var id uuid.UUID
 		var s stickyRow
-		if err := row.Scan(&id, &s.Revoked, &s.Ended); err != nil {
+		if err := row.Scan(&id, &s.Revoked, &s.Ended, &s.Earliest); err != nil {
 			return err
 		}
 		sticky[id] = s
@@ -440,9 +443,25 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 		order = append(order, ws)
 	}
 	slices.SortFunc(order, compareIDs)
+	// The workspaces' rows, before any token row (DB25 step 3), FOR KEY
+	// SHARE in id order: what a new token's foreign key takes anyway, taken
+	// first, so the commit waits behind a quarantine, a move or a grant
+	// write of the workspace (each locks the row FOR UPDATE, then the
+	// token rows or perms) instead of inverting against it.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = ANY ($1) ORDER BY id FOR KEY SHARE`, order); err != nil {
+		return res, err
+	}
 	for _, ws := range order {
 		if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, ws.String()); err != nil {
 			return res, err
+		}
+		// The live numbers its records name, likewise, before its token
+		// rows: a new perm's foreign key takes this lock, and a number's
+		// deletion locks the number before it deletes its perms.
+		if devices := namedDevices(groups[ws]); len(devices) > 0 {
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM devices WHERE id = ANY ($1) ORDER BY id FOR KEY SHARE`, devices); err != nil {
+				return res, err
+			}
 		}
 		g := tokenGroup{ws: ws, gen: gen, state: state, now: now, byID: byID, bySelector: bySelector, sticky: sticky, full: full}
 		got, err := t.applyGroupTx(ctx, tx, g, groups[ws])
@@ -461,6 +480,19 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 		}
 	}
 	return res, nil
+}
+
+// namedDevices are the numbers items' records name by a canonical UUID.
+func namedDevices(items []tokenItem) []uuid.UUID {
+	var out []uuid.UUID
+	for _, it := range items {
+		for _, item := range it.rec.Items {
+			if kc.ValidUUID(item.ID) {
+				out = append(out, uuid.MustParse(item.ID))
+			}
+		}
+	}
+	return out
 }
 
 // revokedTime is a revocation's time: the record's, or Wappie's clock for
@@ -523,7 +555,7 @@ func (t *Tokens) applyGroupTx(ctx context.Context, tx pgx.Tx, g tokenGroup, item
 				return err
 			})
 			if err == nil {
-				one.bad++
+				// judgeRecord counted it bad: a narrowings-only apply is.
 				obs.LoggerFrom(ctx).Warn("contract: a token record was applied for its narrowings only",
 					append(tokenLogAttrs(it.rec), "error", first)...)
 			}
@@ -536,6 +568,9 @@ func (t *Tokens) applyGroupTx(ctx context.Context, tx pgx.Tx, g tokenGroup, item
 				append(tokenLogAttrs(it.rec), "class", TokenErrorApplyFailed, "error", err)...)
 			one = applyResult{failed: 1, narrowed: true}
 			if err := stopApplyFailedTx(ctx, tx, it, g); err != nil {
+				return res, err
+			}
+			if err := listFailedTx(ctx, tx, it, g); err != nil {
 				return res, err
 			}
 		}
@@ -597,6 +632,31 @@ func stopApplyFailedTx(ctx context.Context, tx pgx.Tx, it tokenItem, g tokenGrou
 		ON CONFLICT (selector, cause) DO UPDATE SET stopped_at = EXCLUDED.stopped_at, lifted_at = NULL
 		WHERE contract_token_stops.lifted_at IS NOT NULL`, selector, g.now)
 	return err
+}
+
+// listFailedTx marks a token Wappie holds, whose record a page listed but
+// could not apply even narrowed, as listed by the page (listed_gen), in a
+// statement and a savepoint of its own: the platform listed it, so a reset's
+// pass must not unlist it, which is terminal, for a fault of Wappie's own;
+// the apply_failed stop refuses it meanwhile, and lifts when a later version
+// applies. A by-id GET's record lists nothing. Should even this fail, the
+// stop stands and the pass may unlist the token, which fails closed too.
+func listFailedTx(ctx context.Context, tx pgx.Tx, it tokenItem, g tokenGroup) error {
+	if _, held := g.byID[it.id]; !held || !g.full {
+		return nil
+	}
+	err := savepoint(ctx, tx, func(sp pgx.Tx) error {
+		_, err := sp.Exec(ctx, `UPDATE contract_tokens SET listed_gen = $2 WHERE id = $1 AND listed_gen IS DISTINCT FROM $2`, it.id, g.gen)
+		return err
+	})
+	if err != nil && (ctx.Err() != nil || !recordFault(err)) {
+		return err
+	}
+	if err != nil {
+		obs.LoggerFrom(ctx).Warn("contract: a stopped token could not be marked listed; a reset's pass may unlist it",
+			append(tokenLogAttrs(it.rec), "error", err)...)
+	}
+	return nil
 }
 
 // applyRoundsTx applies items in rounds in which each token appears once, in
@@ -855,13 +915,15 @@ type removedRow struct {
 	cause     string
 }
 
-// tokenRefusalRow is one entry of the acknowledgement's refused list.
+// tokenRefusalRow is one entry of the acknowledgement's refused list, and
+// when it was queued, as AckBody read it.
 type tokenRefusalRow struct {
-	token   uuid.UUID
-	version int64
-	item    string
-	perm    string
-	code    string
+	token    uuid.UUID
+	version  int64
+	item     string
+	perm     string
+	code     string
+	queuedAt time.Time
 }
 
 // heldRow is a token Wappie holds narrower than a record of a reset's
@@ -895,16 +957,10 @@ type pinRow struct {
 func (t *Tokens) applyRoundTx(ctx context.Context, tx pgx.Tx, g tokenGroup, items []tokenItem, narrowOnly bool) (applyResult, error) {
 	var res applyResult
 	ids := make([]uuid.UUID, 0, len(items))
-	var devices []uuid.UUID
 	for _, it := range items {
 		ids = append(ids, it.id)
-		for _, item := range it.rec.Items {
-			if kc.ValidUUID(item.ID) {
-				devices = append(devices, uuid.MustParse(item.ID))
-			}
-		}
 	}
-	st, err := readRoundTx(ctx, tx, ids, devices)
+	st, err := readRoundTx(ctx, tx, ids, namedDevices(items))
 	if err != nil {
 		return res, err
 	}
@@ -944,6 +1000,11 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 	if holds {
 		until = stored.CreatedAt.Add(tokenKeep)
 	}
+	expires := recordExpiry(rec)
+	s, sticks := g.sticky[it.id]
+	// Held (the design's 3.3) is told only in a reset's pass, and of an
+	// unlisted token, whose ending is the pass's.
+	inPass := g.state.PassGeneration != nil && *g.state.PassGeneration == g.gen && !g.state.PassDone
 
 	if !holds {
 		// A selector Wappie keeps with no token row (its workspace's row is
@@ -960,6 +1021,23 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 			t.refuseNew(ctx, it, bad, nil, w)
 			return
 		}
+		if sticks && !revoked && (s.Revoked || s.Ended != nil) {
+			// A token Wappie holds only in the sticky set (the revocation
+			// of a record it could not hold): a later record that lists it
+			// unrevoked, as after a platform restore, is applied for its
+			// narrowings only, of which there is none to store, and never
+			// makes a live row (M8). In a reset's pass the platform is told
+			// Wappie holds it revoked, or expiring earlier.
+			res.bad++
+			h := heldRow{token: it.id, revoked: s.Revoked || *s.Ended != "expired"}
+			if s.Earliest != nil {
+				h.expiresAt = heldExpiry(pgtype.Timestamptz{Time: *s.Earliest, Valid: true}, expires)
+			}
+			if inPass && (h.revoked || h.expiresAt != nil) {
+				w.held = append(w.held, h)
+			}
+			return
+		}
 		t.insertToken(ctx, g, st, it, w)
 		return
 	}
@@ -970,7 +1048,6 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 		rec.CreatedBy != stored.CreatedBy.String() || !rec.CreatedAt.Truncate(time.Microsecond).Equal(stored.CreatedAt)) {
 		bad = tokenRefusedInvalid
 	}
-	s := g.sticky[it.id]
 	ended := stored.Revoked || stored.Unlisted || s.Ended != nil || stored.expiredAt(g.now)
 	higher := stored.Generation == nil || *stored.Generation != g.gen || stored.Version == nil || rec.Version > *stored.Version
 	if bad == "" && !ended && !higher {
@@ -983,7 +1060,6 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 	if !full {
 		res.bad++
 	}
-	expires := recordExpiry(rec)
 	u := tokenUpdate{id: it.id, full: full, expiresAt: expires}
 	if revoked && !stored.Revoked {
 		at := revokedTime(rec, g.now)
@@ -1035,9 +1111,6 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 			}
 		}
 	}
-	// Held (the design's 3.3) is told only in a reset's pass, and of an
-	// unlisted token, whose ending is the pass's.
-	inPass := g.state.PassGeneration != nil && *g.state.PassGeneration == g.gen && !g.state.PassDone
 	if full {
 		var removedHeld []kc.HeldPerm
 		for _, k := range sortedPermKeys(listed) {
@@ -1078,13 +1151,7 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 					registeredAt: rec.ReadingKey.RegisteredAt.Time, until: until})
 			}
 		}
-		h := heldRow{token: it.id, removed: removedHeld}
-		if stored.ExpiresAt.InfinityModifier != pgtype.Finite || (expires.InfinityModifier == pgtype.Finite && stored.ExpiresAt.Time.Before(expires.Time)) {
-			if stored.ExpiresAt.InfinityModifier == pgtype.Finite {
-				at := stored.ExpiresAt.Time
-				h.expiresAt = &at
-			}
-		}
+		h := heldRow{token: it.id, removed: removedHeld, expiresAt: heldExpiry(stored.ExpiresAt, expires)}
 		if rec.ReadingKey == nil {
 			if pin, ok := st.pins[it.id]; ok {
 				fp := readingKeyFingerprint(pin)
@@ -1095,10 +1162,17 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 			w.held = append(w.held, h)
 		}
 	} else {
-		if ended && !revoked && (stored.Unlisted || (inPass && (stored.Revoked || (s.Ended != nil && *s.Ended != "expired")))) {
-			// An unlisted or revoked token is never revived: the platform
-			// is told Wappie holds it revoked (design 3.3).
-			w.held = append(w.held, heldRow{token: it.id, revoked: true})
+		// An unlisted or revoked token is never revived: the platform is
+		// told Wappie holds it revoked (design 3.3). One expired by Wappie's
+		// clock, or a bad record's, is told in a reset's pass the earlier
+		// expiry Wappie keeps, as a full record's is.
+		h := heldRow{token: it.id}
+		h.revoked = ended && !revoked && (stored.Unlisted || (inPass && (stored.Revoked || (s.Ended != nil && *s.Ended != "expired"))))
+		if inPass {
+			h.expiresAt = heldExpiry(stored.ExpiresAt, expires)
+		}
+		if h.revoked || h.expiresAt != nil {
+			w.held = append(w.held, h)
 		}
 		if bad != "" {
 			t.refuseNew(ctx, it, bad, perms, w)
@@ -1224,6 +1298,17 @@ func sortedPermKeys(m map[permKey]kc.TokenPerm) []permKey {
 	}
 	slices.SortFunc(keys, comparePermKeys)
 	return keys
+}
+
+// heldExpiry is the expiry Wappie keeps when it is earlier than a record's
+// (a held entry's expires_at), else nil: a -infinity one (a zero expiry kept)
+// is no time to tell, and a record's -infinity is no later one.
+func heldExpiry(kept, rec pgtype.Timestamptz) *time.Time {
+	if kept.InfinityModifier != pgtype.Finite || rec.InfinityModifier != pgtype.Finite || !kept.Time.Before(rec.Time) {
+		return nil
+	}
+	at := kept.Time
+	return &at
 }
 
 // recordExpiry is a record's expires_at as stored: -infinity for a zero one
