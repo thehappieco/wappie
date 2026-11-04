@@ -1791,6 +1791,15 @@ triggers only NOTIFY (`wappie_contract_tokens`), which takes no row lock,
 and `contract_tokens.identity_user_id` has no foreign key, so a `users`
 delete never writes the token's row.
 
+The stops (`contract_token_stops`, by selector) have no step of their own:
+they come after the token rows of the token they stop. The operator's stop
+locks that token's row first; the applier writes its lifts and its
+`apply_failed` stops in each workspace's write, after that workspace's
+token rows, and lowers the stops' `record_until` (retention's alone, which
+wakes no socket) once, after every workspace's rows, in (selector, cause)
+order; retention deletes stops, in the same order, after every workspace's
+token rows and before the selectors.
+
 The design keeps a dropped Read's grant deletion in the same write as the
 record that drops it (3.5). Step 7's plan had the page commit take no
 `tenants` lock for that; but every write to `device_key_grants` locks its

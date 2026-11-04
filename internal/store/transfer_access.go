@@ -269,9 +269,9 @@ func dropNumberTokensTx(ctx context.Context, tx pgx.Tx, device uuid.UUID, cause 
 			USING (SELECT token_id, device_id, perm FROM contract_token_perms WHERE device_id = $1
 			       ORDER BY token_id, device_id, perm FOR UPDATE) l
 			WHERE p.token_id = l.token_id AND p.device_id = l.device_id AND p.perm = l.perm
-			RETURNING p.token_id, p.tenant_id, p.device_id, p.perm, p.granted_by, p.granted_at)
-		INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_by, granted_at, cause)
-		SELECT token_id, tenant_id, device_id::text, perm, granted_by, granted_at, $2 FROM gone
+			RETURNING p.token_id, p.tenant_id, p.device_id, p.perm, p.granted_at)
+		INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_at, cause)
+		SELECT token_id, tenant_id, device_id::text, perm, granted_at, $2 FROM gone
 		ON CONFLICT DO NOTHING`, device, cause); err != nil {
 		return err
 	}

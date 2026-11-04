@@ -219,8 +219,7 @@ func judgeWorkspaceTx(ctx context.Context, tx pgx.Tx, ws, gen uuid.UUID, now tim
 		case tokenRefused:
 			out.Refused++
 			refusals = append(refusals, tokenRefusalRow{token: v.g.token, version: v.g.version, item: v.g.device.String(), perm: v.g.perm, code: v.code})
-			by := v.g.grantedBy
-			removed = append(removed, removedRow{token: v.g.token, item: v.g.device.String(), perm: v.g.perm, grantedBy: &by, grantedAt: v.g.grantedAt, cause: "refused"})
+			removed = append(removed, removedRow{token: v.g.token, item: v.g.device.String(), perm: v.g.perm, grantedAt: v.g.grantedAt, cause: "refused"})
 		}
 	}
 	if err := insertRemovedTx(ctx, tx, ws, now, removed); err != nil {

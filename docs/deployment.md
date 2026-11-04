@@ -605,7 +605,9 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
 - `tokens suspend` stops a token here by its selector, with the platform
   down too, until `tokens lift`; with `-record
   /opt/wappie/state/token-stops.jsonl` always, so `tokens suspend -replay`
-  brings the stops back after a restore of Wappie's database.
+  brings the stops back after a restore of Wappie's database. The record
+  keeps a line 365 days, as retention keeps the stop
+  ([what Wappie keeps of a token](contract.md#the-token-feed)).
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database

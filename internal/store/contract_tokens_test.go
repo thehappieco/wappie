@@ -591,7 +591,8 @@ func TestAPoisonRecordNeverStallsRevocations(t *testing.T) {
 }
 
 // TestZeroTimesNarrow: a zero expires_at is kept as -infinity through every
-// later LEAST, and a bad record's sticky until is never its own created_at.
+// later LEAST, and a bad record's sticky until is never past Wappie's clock
+// + 365 days, whatever it says (TestANeverHeldRevocationSticksToItsCreation).
 func TestZeroTimesNarrow(t *testing.T) {
 	w := newTokenWorld(t)
 	id := uuid.New()
@@ -607,20 +608,28 @@ func TestZeroTimesNarrow(t *testing.T) {
 		t.Fatalf("a later expiry raised -infinity: %+v", s)
 	}
 
-	// A bad record of a token Wappie does not hold, created long ago, that
-	// revokes: its sticky row lasts from Wappie's clock.
-	unknown := uuid.New()
-	old := w.record(unknown, 1, revokedBy(kc.RevokedInConsole, w.now), func(r *kc.TokenRecord) {
-		r.CreatedAt = kc.T(w.now.Add(-400 * 24 * time.Hour))
-		r.ExpiresAt = kc.T(w.now.Add(400 * 24 * time.Hour)) // over 365 days: Validate refuses it
-	})
-	w.page(false, old)
+	// A bad record of a token Wappie does not hold, that revokes and says it
+	// expires far ahead: created a day ago, its sticky row lasts to that +
+	// 365 days, never longer; created 400 days ago, its records have left
+	// the feed, and nothing is kept.
+	recent, old := uuid.New(), uuid.New()
+	farAhead := func(created time.Time) func(*kc.TokenRecord) {
+		return func(r *kc.TokenRecord) {
+			r.CreatedAt = kc.T(created)
+			r.ExpiresAt = kc.T(w.now.Add(400 * 24 * time.Hour)) // over 365 days: Validate refuses it
+		}
+	}
+	w.page(false, w.record(recent, 1, revokedBy(kc.RevokedInConsole, w.now), farAhead(w.now.Add(-24*time.Hour))),
+		w.record(old, 1, revokedBy(kc.RevokedInConsole, w.now), farAhead(w.now.Add(-400*24*time.Hour))))
 	var until time.Time
-	if err := w.pool.QueryRow(context.Background(), `SELECT until FROM contract_token_sticky WHERE token_id = $1`, unknown).Scan(&until); err != nil {
+	if err := w.pool.QueryRow(context.Background(), `SELECT until FROM contract_token_sticky WHERE token_id = $1`, recent).Scan(&until); err != nil {
 		t.Fatal(err)
 	}
-	if want := w.now.Add(365 * 24 * time.Hour); !until.Equal(want) {
-		t.Fatalf("a bad record's sticky until %v, want Wappie's clock + 365 days %v", until, want)
+	if want := w.now.Add(-24 * time.Hour).Add(365 * 24 * time.Hour); !until.Equal(want) {
+		t.Fatalf("a bad record's sticky until %v, want its created_at + 365 days %v", until, want)
+	}
+	if exists, _, _ := w.sticky(old); exists {
+		t.Fatal("a bad record created 400 days ago left a sticky row")
 	}
 }
 

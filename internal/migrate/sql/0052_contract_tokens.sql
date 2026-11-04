@@ -56,20 +56,31 @@
 --                          canonical UUID of a live number of the token's
 --                          workspace.
 --   contract_token_removed the narrowest state a reset keeps: the grant
---                          instances never to apply again, by cause. The
---                          item is the record's text, so an unknown one can
---                          be kept.
+--                          instances never to apply again, by cause, with
+--                          no giver. The item is the record's text, so an
+--                          unknown one can be kept. No foreign key:
+--                          retention deletes them with the token's content
+--                          30 days after its end, at its selector's until,
+--                          or at its next pass after its workspace's row
+--                          is gone.
 --   contract_token_sticky  per token id, checked after the hash: its
 --                          revocation, its earliest expiry and how it ended
 --                          (revoked, expired, unlisted), kept to until (the
---                          stored created_at + 365 days, else Wappie's
---                          clock + 365 days; never a bad record's), so a
---                          record that comes back later never revives the
---                          token. Its own guard keeps every member from
---                          widening.
+--                          stored created_at + 365 days; for a token Wappie
+--                          never held, the record's created_at + 365 days,
+--                          but at most Wappie's clock + 365 days, which
+--                          also stands for a record with none; no row at
+--                          all once it has passed), so a record that comes
+--                          back later never revives the token. Its own
+--                          guard keeps every member from widening.
 --   contract_token_stops   the operator's stops (and Wappie's own
 --                          apply_failed), keyed by selector, so a stop may
 --                          come before the record. The note stays local.
+--                          A stop of a selector Wappie holds goes with it,
+--                          past its until; any other at stopped_at + 365
+--                          days, or earlier at record_until, the earliest
+--                          created_at + 365 days of a record of its
+--                          selector seen since.
 --   contract_token_refusals_out, contract_token_held_out
 --                          the acknowledgement's queues: ids, versions,
 --                          codes and the held state; never read on a
@@ -102,7 +113,8 @@
 --                          and platform_tokens for a key the retirement
 --                          revoked.
 --
--- Every change to a token, its perms, its sticky row or its stops, to the
+-- Every change to a token, its perms, its sticky row or its stops (but a
+-- stop's record_until alone, which only retention reads), to the
 -- token switches of a workspace (tenants.mcp_text, mcp_media), to the modes
 -- (contract_token_state's, contract_state's) or to an account document (the
 -- belt) notifies wappie_contract_tokens with the token's id or 'all', so
@@ -420,12 +432,13 @@ CREATE POLICY tenant_isolation ON contract_token_perms
     USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
+-- An instance is its (token, item, perm, granted_at): its giver is never
+-- read, so it is not kept.
 CREATE TABLE contract_token_removed (
     token_id   uuid        NOT NULL,
     tenant_id  uuid        NOT NULL,
     item       text        NOT NULL,
     perm       text        NOT NULL,
-    granted_by uuid,
     granted_at timestamptz NOT NULL,
     cause      text        NOT NULL CHECK (cause IN ('dropped', 'item_deleted', 'item_moved', 'item_unknown', 'refused', 'reset')),
     at         timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -474,6 +487,11 @@ CREATE TABLE contract_token_stops (
     stopped_by text        NOT NULL,
     note       text        NOT NULL DEFAULT '' CHECK (length(note) <= 500),
     lifted_at  timestamptz,
+    -- The earliest created_at + 365 days of a record of the selector the
+    -- applier saw while the stop stood: only ever lowered, kept by a
+    -- re-stop. Retention reads it only while no selectors row names the
+    -- selector: a stop of a selector Wappie holds goes with that row.
+    record_until timestamptz,
     PRIMARY KEY (selector, cause)
 );
 
@@ -552,8 +570,14 @@ CREATE TRIGGER contract_token_perms_notify AFTER INSERT OR UPDATE OR DELETE ON c
     FOR EACH ROW EXECUTE FUNCTION contract_token_notify();
 CREATE TRIGGER contract_token_sticky_notify AFTER INSERT OR UPDATE ON contract_token_sticky
     FOR EACH ROW EXECUTE FUNCTION contract_token_notify();
-CREATE TRIGGER contract_token_stops_notify AFTER INSERT OR UPDATE OR DELETE ON contract_token_stops
+CREATE TRIGGER contract_token_stops_notify AFTER INSERT OR DELETE ON contract_token_stops
     FOR EACH ROW EXECUTE FUNCTION contract_token_notify();
+-- record_until is retention's alone: a change of it and nothing else wakes
+-- no socket.
+CREATE TRIGGER contract_token_stops_notify_update AFTER UPDATE ON contract_token_stops FOR EACH ROW
+    WHEN ((OLD.selector, OLD.cause, OLD.stopped_at, OLD.stopped_by, OLD.note, OLD.lifted_at)
+          IS DISTINCT FROM (NEW.selector, NEW.cause, NEW.stopped_at, NEW.stopped_by, NEW.note, NEW.lifted_at))
+    EXECUTE FUNCTION contract_token_notify();
 -- caught_up_at moves at every page with more false; token auth reads only
 -- whether it is set.
 CREATE TRIGGER contract_token_state_notify AFTER UPDATE OF mode, caught_up_at ON contract_token_state FOR EACH ROW

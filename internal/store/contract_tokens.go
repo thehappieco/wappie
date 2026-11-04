@@ -59,9 +59,9 @@ const (
 	TokensOn  = "on"
 )
 
-// tokenKeep is how long a token's selector, its sticky row and its pin are
-// kept: its created_at plus the longest life a token has, so a selector is
-// never reused while a record of it can come back.
+// tokenKeep is how long a token's selector, its sticky row, its pin and its
+// selector's stops are kept: its created_at plus the longest life a token
+// has, so a selector is never reused while a record of it can come back.
 const tokenKeep = kc.MaxTokenLifetime
 
 // The refusal codes Wappie sends (kit tokenwire.go): never not_offered,
@@ -318,6 +318,8 @@ type selectorRow struct {
 	Token    uuid.UUID
 	Tenant   uuid.UUID
 	Hash     []byte
+	// Until is the token's created_at + 365 days, as stored.
+	Until time.Time
 }
 
 // stickyRow is what a contract_token_sticky row says of a token.
@@ -333,7 +335,8 @@ type stickyRow struct {
 // sticky row, whether its workspace exists) is read across workspaces, then
 // each workspace's records are applied under its app.tenant_id in id order,
 // then the revocations of records Wappie holds no token or workspace for
-// join the sticky set. full is false for a by-id GET's record, which never
+// join the sticky set, and every record lowers the record_until of its
+// selector's stops. full is false for a by-id GET's record, which never
 // moves a pass.
 func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, state tokenFeedState, items []tokenItem,
 	now time.Time, full bool) (applyResult, error) {
@@ -356,14 +359,14 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 		}
 	}
 	byID, bySelector := map[uuid.UUID]selectorRow{}, map[string]selectorRow{}
-	rows, err := tx.Query(ctx, `SELECT selector, token_id, tenant_id, hash FROM contract_token_selectors
+	rows, err := tx.Query(ctx, `SELECT selector, token_id, tenant_id, hash, until FROM contract_token_selectors
 		WHERE token_id = ANY ($1) OR selector = ANY ($2)`, ids, selectors)
 	if err != nil {
 		return res, err
 	}
 	err = forEachRow(rows, func(row pgx.Rows) error {
 		var s selectorRow
-		if err := row.Scan(&s.Selector, &s.Token, &s.Tenant, &s.Hash); err != nil {
+		if err := row.Scan(&s.Selector, &s.Token, &s.Tenant, &s.Hash, &s.Until); err != nil {
 			return err
 		}
 		byID[s.Token], bySelector[s.Selector] = s, s
@@ -410,24 +413,30 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 
 	// Each record's workspace: the stored one for a token Wappie holds (a
 	// record never moves it), else the record's own. A record of a
-	// workspace Wappie does not hold is skipped, its revocation kept.
+	// workspace Wappie does not hold is skipped, its revocation kept. Every
+	// record is one of its token's selector, for the stops' record_until.
 	groups := map[uuid.UUID][]tokenItem{}
 	var orphans []stickyWrite
+	var seen []stopSeen
 	for _, it := range items {
 		if it.id == uuid.Nil {
 			obs.LoggerFrom(ctx).Warn("contract: a token record with no id is skipped", "seq", it.seq, "selector", it.rec.Selector)
 			res.skipped++
 			continue
 		}
+		if s, ok := seenStop(it, byID); ok {
+			seen = append(seen, s)
+		}
 		ws, known := uuid.Nil, false
+		var kept *selectorRow
 		if s, ok := byID[it.id]; ok {
-			ws, known = s.Tenant, true
+			ws, known, kept = s.Tenant, true, &s
 		} else if kc.ValidUUID(it.rec.WorkspaceID) {
 			ws = uuid.MustParse(it.rec.WorkspaceID)
 		}
 		if ws == uuid.Nil || !held[ws] {
-			if it.rec.RevokedAt != nil {
-				orphans = append(orphans, stickyWrite{id: it.id, revokedAt: revokedTime(it.rec, now), until: now.Add(tokenKeep)})
+			if until, keep := unheldUntil(it.rec, kept, now); it.rec.RevokedAt != nil && keep {
+				orphans = append(orphans, stickyWrite{id: it.id, revokedAt: revokedTime(it.rec, now), until: until})
 			}
 			if known {
 				res.bad++
@@ -491,7 +500,80 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 			return res, err
 		}
 	}
+	// After every workspace's rows, as retention deletes them (DB25).
+	if err := narrowStopsTx(ctx, tx, seen); err != nil {
+		return res, err
+	}
 	return res, nil
+}
+
+// unheldUntil is how long the sticky set keeps the revocation of a record
+// whose token Wappie holds no row of: its selector's until when Wappie keeps
+// that (kept: the stored created_at + 365 days), else the record's
+// created_at + 365 days, a created_at past Wappie's clock counting as now so
+// that a skewed one never lengthens it, or Wappie's clock + 365 days for a
+// record with no created_at. keep is false once that has passed: the
+// token's records have left the feed, and nothing is kept of it.
+func unheldUntil(rec kc.TokenRecord, kept *selectorRow, now time.Time) (until time.Time, keep bool) {
+	switch {
+	case kept != nil:
+		until = kept.Until
+	case rec.CreatedAt.IsZero(), rec.CreatedAt.After(now):
+		until = now.Add(tokenKeep)
+	default:
+		until = rec.CreatedAt.Add(tokenKeep)
+	}
+	return until, until.After(now)
+}
+
+// stopSeen is a record of a selector the applier saw, and its token's
+// created_at + 365 days: a stop of a selector Wappie never held goes then at
+// the latest (retention), when the token would have expired anyway.
+type stopSeen struct {
+	selector string
+	token    uuid.UUID
+	until    time.Time
+}
+
+// seenStop is what a record tells of its token's selector: the one Wappie
+// keeps for the token, with its until, else the record's own with its
+// created_at + 365 days, when both are there; nothing otherwise. A bad
+// record of a token Wappie knows never tells more than Wappie keeps.
+func seenStop(it tokenItem, byID map[uuid.UUID]selectorRow) (stopSeen, bool) {
+	if s, ok := byID[it.id]; ok {
+		return stopSeen{selector: s.Selector, token: it.id, until: s.Until}, true
+	}
+	if !kc.ValidSelector(it.rec.Selector) || it.rec.CreatedAt.IsZero() {
+		return stopSeen{}, false
+	}
+	return stopSeen{selector: it.rec.Selector, token: it.id, until: it.rec.CreatedAt.Add(tokenKeep)}, true
+}
+
+// narrowStopsTx lowers the record_until of the stops of the selectors seen
+// to their records' earliest until, in (selector, cause) order: never for a
+// selector another token holds (a bad record's claim to it), never raising
+// it, and with no write where it would not change. Only retention reads it,
+// and the stops' trigger wakes nothing for it.
+func narrowStopsTx(ctx context.Context, tx pgx.Tx, seen []stopSeen) error {
+	if len(seen) == 0 {
+		return nil
+	}
+	n := len(seen)
+	selectors, tokens, until := make([]string, n), make([]uuid.UUID, n), make([]time.Time, n)
+	for i, s := range seen {
+		selectors[i], tokens[i], until[i] = s.selector, s.token, s.until
+	}
+	_, err := tx.Exec(ctx, `UPDATE contract_token_stops x SET record_until = l.until
+		FROM (SELECT y.selector, y.cause, s.until FROM contract_token_stops y
+		      JOIN (SELECT u.selector, min(u.until) AS until
+		            FROM unnest($1::text[], $2::uuid[], $3::timestamptz[]) AS u(selector, token, until)
+		            WHERE NOT EXISTS (SELECT 1 FROM contract_token_selectors h WHERE h.selector = u.selector AND h.token_id <> u.token)
+		            GROUP BY u.selector) s ON s.selector = y.selector
+		      WHERE y.record_until IS NULL OR y.record_until > s.until
+		      ORDER BY y.selector, y.cause FOR UPDATE OF y) l
+		WHERE x.selector = l.selector AND x.cause = l.cause AND (x.record_until IS NULL OR x.record_until > l.until)`,
+		selectors, tokens, until)
+	return err
 }
 
 // namedDevices are the numbers items' records name by a canonical UUID.
@@ -854,7 +936,6 @@ func readRoundTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, devices []uuid
 // Wappie holds, then run set-based.
 type tokenWrites struct {
 	selectors []selectorRow
-	until     []time.Time
 	inserts   []tokenInsert
 	updates   []tokenUpdate
 	drops     []permDrop
@@ -933,11 +1014,12 @@ type permAdd struct {
 	version   int64
 }
 
+// removedRow is a grant instance never to apply again: its giver is not
+// kept, since nothing reads it.
 type removedRow struct {
 	token     uuid.UUID
 	item      string
 	perm      string
-	grantedBy *uuid.UUID
 	grantedAt time.Time
 	cause     string
 }
@@ -1023,10 +1105,6 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 		bad = tokenRefusedInvalid
 	}
 	revoked := rec.RevokedAt != nil
-	until := g.now.Add(tokenKeep)
-	if holds {
-		until = stored.CreatedAt.Add(tokenKeep)
-	}
 	expires := recordExpiry(rec)
 	s, sticks := g.sticky[it.id]
 	// Held (the design's 3.3) is told only in a reset's pass, and of an
@@ -1042,7 +1120,11 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 		}
 		if bad != "" {
 			res.bad++
-			if revoked {
+			var kept *selectorRow
+			if known {
+				kept = &sel
+			}
+			if until, keep := unheldUntil(rec, kept, g.now); revoked && keep {
 				w.sticky = append(w.sticky, stickyWrite{id: it.id, revokedAt: revokedTime(rec, g.now), until: until})
 			}
 			t.refuseNew(ctx, it, bad, nil, w)
@@ -1069,6 +1151,7 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 		return
 	}
 
+	until := stored.CreatedAt.Add(tokenKeep)
 	// The immutable members are the stored ones; a record that differs in
 	// any is bad.
 	if bad == "" && (rec.Selector != sel.Selector || !sameHash(rec.Hash, sel.Hash) || rec.WorkspaceID != g.ws.String() ||
@@ -1173,7 +1256,7 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 			if g.state.ResetTrustedThrough != nil && at.Before(*g.state.ResetTrustedThrough) {
 				// Granted before the reset and not held at it: never
 				// applied again, and held off.
-				w.removed = append(w.removed, removedRow{token: it.id, item: inst.Item, perm: k.Perm, grantedBy: &grantedBy, grantedAt: at, cause: "reset"})
+				w.removed = append(w.removed, removedRow{token: it.id, item: inst.Item, perm: k.Perm, grantedAt: at, cause: "reset"})
 				removedHeld = append(removedHeld, kc.HeldPerm{Item: inst.Item, Perm: k.Perm})
 				continue
 			}
@@ -1233,8 +1316,7 @@ func (t *Tokens) insertToken(ctx context.Context, g tokenGroup, st roundState, i
 		return
 	}
 	until := rec.CreatedAt.Add(tokenKeep)
-	w.selectors = append(w.selectors, selectorRow{Selector: rec.Selector, Token: it.id, Tenant: g.ws, Hash: hash})
-	w.until = append(w.until, until)
+	w.selectors = append(w.selectors, selectorRow{Selector: rec.Selector, Token: it.id, Tenant: g.ws, Hash: hash, Until: until})
 	ins := tokenInsert{id: it.id, name: rec.Name, createdBy: uuid.MustParse(rec.CreatedBy), createdAt: rec.CreatedAt.Time,
 		terms: marshalTerms(rec.Terms), expiresAt: recordExpiry(rec), version: rec.Version, seq: it.seq, record: it.raw,
 		generation: g.gen, listedAt: g.gen}
@@ -1307,8 +1389,7 @@ func listedPerms(rec kc.TokenRecord, live map[uuid.UUID]bool) (map[permKey]kc.To
 				continue
 			}
 			if !ok {
-				by := uuid.MustParse(p.GrantedBy)
-				unknown = append(unknown, unknownPerm{removedRow{token: uuid.MustParse(rec.ID), item: item.ID, perm: p.Perm, grantedBy: &by,
+				unknown = append(unknown, unknownPerm{removedRow{token: uuid.MustParse(rec.ID), item: item.ID, perm: p.Perm,
 					grantedAt: p.GrantedAt.Truncate(time.Microsecond), cause: "item_unknown"}})
 				continue
 			}
@@ -1382,12 +1463,13 @@ func sameHash(text string, stored []byte) bool {
 // sticky set, the pins, the stops).
 func (w *tokenWrites) run(ctx context.Context, tx pgx.Tx, g tokenGroup) error {
 	if len(w.selectors) > 0 {
-		sels, ids, tenants, hashes := make([]string, len(w.selectors)), make([]uuid.UUID, len(w.selectors)), make([]uuid.UUID, len(w.selectors)), make([][]byte, len(w.selectors))
+		n := len(w.selectors)
+		sels, ids, tenants, hashes, until := make([]string, n), make([]uuid.UUID, n), make([]uuid.UUID, n), make([][]byte, n), make([]time.Time, n)
 		for i, s := range w.selectors {
-			sels[i], ids[i], tenants[i], hashes[i] = s.Selector, s.Token, s.Tenant, s.Hash
+			sels[i], ids[i], tenants[i], hashes[i], until[i] = s.Selector, s.Token, s.Tenant, s.Hash, s.Until
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
-			SELECT * FROM unnest($1::text[], $2::uuid[], $3::uuid[], $4::bytea[], $5::timestamptz[])`, sels, ids, tenants, hashes, w.until)
+			SELECT * FROM unnest($1::text[], $2::uuid[], $3::uuid[], $4::bytea[], $5::timestamptz[])`, sels, ids, tenants, hashes, until)
 		if err != nil {
 			return err
 		}
@@ -1476,9 +1558,9 @@ func (w *tokenWrites) run(ctx context.Context, tx pgx.Tx, g tokenGroup) error {
 		if _, err := tx.Exec(ctx, `WITH gone AS (
 				DELETE FROM contract_token_perms p USING unnest($1::uuid[], $2::uuid[], $3::text[], $4::text[]) AS d(token, device, perm, cause)
 				WHERE p.token_id = d.token AND p.device_id = d.device AND p.perm = d.perm
-				RETURNING p.token_id, p.tenant_id, p.device_id, p.perm, p.granted_by, p.granted_at, d.cause)
-			INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_by, granted_at, cause, at)
-			SELECT token_id, tenant_id, device_id::text, perm, granted_by, granted_at, cause, $5 FROM gone
+				RETURNING p.token_id, p.tenant_id, p.device_id, p.perm, p.granted_at, d.cause)
+			INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_at, cause, at)
+			SELECT token_id, tenant_id, device_id::text, perm, granted_at, cause, $5 FROM gone
 			ON CONFLICT DO NOTHING`, tokens, devices, perms, causes, g.now); err != nil {
 			return err
 		}
@@ -1549,15 +1631,15 @@ func insertRemovedTx(ctx context.Context, tx pgx.Tx, ws uuid.UUID, now time.Time
 		return nil
 	}
 	n := len(removed)
-	tokens, items, perms, by := make([]uuid.UUID, n), make([]string, n), make([]string, n), make([]*uuid.UUID, n)
+	tokens, items, perms := make([]uuid.UUID, n), make([]string, n), make([]string, n)
 	at, causes := make([]time.Time, n), make([]string, n)
 	for i, r := range removed {
-		tokens[i], items[i], perms[i], by[i], at[i], causes[i] = r.token, r.item, r.perm, r.grantedBy, r.grantedAt, r.cause
+		tokens[i], items[i], perms[i], at[i], causes[i] = r.token, r.item, r.perm, r.grantedAt, r.cause
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_by, granted_at, cause, at)
-		SELECT r.token, $1, r.item, r.perm, r.by, r.at, r.cause, $2
-		FROM unnest($3::uuid[], $4::text[], $5::text[], $6::uuid[], $7::timestamptz[], $8::text[]) AS r(token, item, perm, by, at, cause)
-		ON CONFLICT DO NOTHING`, ws, now, tokens, items, perms, by, at, causes)
+	_, err := tx.Exec(ctx, `INSERT INTO contract_token_removed (token_id, tenant_id, item, perm, granted_at, cause, at)
+		SELECT r.token, $1, r.item, r.perm, r.at, r.cause, $2
+		FROM unnest($3::uuid[], $4::text[], $5::text[], $6::timestamptz[], $7::text[]) AS r(token, item, perm, at, cause)
+		ON CONFLICT DO NOTHING`, ws, now, tokens, items, perms, at, causes)
 	return err
 }
 
