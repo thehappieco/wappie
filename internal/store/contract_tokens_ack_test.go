@@ -59,7 +59,7 @@ func TestTheAcknowledgementSendsEachEntryOnce(t *testing.T) {
 		w.record(waiting, 1, grants(device, waitingSub, w.now, kc.CanSend)),
 		w.record(stopped, 1))
 	w.judge()
-	if err := w.tokens.StopToken(w.ctx(), selectorOf(stopped), "root", "", w.now); err != nil {
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(stopped), "root", "", w.now); err != nil {
 		t.Fatal(err)
 	}
 	a := w.ackBody()
@@ -91,7 +91,7 @@ func TestTheAcknowledgementSendsEachEntryOnce(t *testing.T) {
 		t.Fatalf("after it was accepted: %+v %+v %v", next.Body, st, err)
 	}
 	// A change sends the whole set again; a lifted stop empties it.
-	if _, err := w.tokens.LiftToken(w.ctx(), selectorOf(stopped), w.now); err != nil {
+	if _, _, err := w.tokens.LiftToken(w.ctx(), selectorOf(stopped), w.now); err != nil {
 		t.Fatal(err)
 	}
 	if lifted := w.ackBody(); lifted.Body.Suspended == nil || len(lifted.Body.Suspended) != 0 || lifted.Body.Waiting != nil {
@@ -165,7 +165,7 @@ func TestAResetBeforeAckSentStartsTheAcknowledgementAgain(t *testing.T) {
 	}
 	w.page(false, records()...)
 	w.judge()
-	if err := w.tokens.StopToken(ctx, selectorOf(stopped), "root", "", w.now); err != nil {
+	if _, err := w.tokens.StopToken(ctx, selectorOf(stopped), "root", "", w.now); err != nil {
 		t.Fatal(err)
 	}
 	inFlight := w.ackBody()

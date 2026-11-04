@@ -215,6 +215,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"token stop record not writable",
 				"token stop record trim failed",
 				"token stop record trimmed",
+				"token stop record has unreadable lines",
 				"no stop record (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would lose it",
 			},
 		} {

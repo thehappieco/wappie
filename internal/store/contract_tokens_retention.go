@@ -41,9 +41,10 @@ const tokenStopKeep = kc.MaxTokenLifetime
 type TokenRetention struct {
 	Expired, Forgotten, Ended, Stops int64
 	// OperatorStops are the operator's stops the pass deleted, each
-	// selector's with its last change (its lift, else its stop): the stop
-	// record's lines of that selector up to then go with it. Wappie's own
-	// apply_failed stops have no line, and are not here.
+	// selector's with its last change (the later of its stop and its
+	// lift): the stop record's lines of that selector up to then go with
+	// it. Wappie's own apply_failed stops have no line, and are not here;
+	// a pass that failed returns none.
 	OperatorStops map[string]time.Time
 }
 
@@ -297,6 +298,8 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 		})
 	})
 	if err != nil {
+		// A pass rolled back deleted nothing: its stops are still there,
+		// and the stop record keeps their lines.
 		return TokenRetention{}, err
 	}
 	return out, nil
@@ -336,37 +339,62 @@ type TokenStop struct {
 var ErrSelector = errors.New("store: a token's selector is 16 lowercase hex digits")
 
 // StopToken records the operator's stop of selector (whatserverd tokens
-// suspend), even one Wappie holds no record of yet. It writes only to the
-// database, so it works with the platform down. A token the selector maps to
-// gets its access_version bumped under its row lock (DB25 step 4), so an
-// open request's actor no longer matches; the stops' trigger notifies every
-// process. The feed and a reset never lift it. A re-stop is made now, and
-// keeps the record_until the applier gave the stop.
-func (t *Tokens) StopToken(ctx context.Context, selector, by, note string, now time.Time) error {
+// suspend), even one Wappie holds no record of yet, and returns its
+// stopped_at. It writes only to the database, so it works with the platform
+// down. A token the selector maps to gets its access_version bumped under
+// its row lock (DB25 step 4), so an open request's actor no longer matches;
+// the stops' trigger notifies every process. The feed and a reset never
+// lift it. A re-stop is made now, and keeps the record_until the applier
+// gave the stop. A stop's times never go back: a re-stop timed before the
+// stop's last change (two commands at once, each timed as it began, or a
+// clock stepped back) is made at that change, so the stop record's line,
+// which carries the time returned, is never later than its stop's last
+// change, and goes with it.
+func (t *Tokens) StopToken(ctx context.Context, selector, by, note string, now time.Time) (time.Time, error) {
 	if !kc.ValidSelector(selector) {
-		return ErrSelector
+		return time.Time{}, ErrSelector
 	}
+	var at time.Time
 	_, err := t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
-		_, err := tx.Exec(ctx, `INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by, note)
+		err := tx.QueryRow(ctx, `INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by, note)
 			VALUES ($1, 'operator', $2, $3, $4)
-			ON CONFLICT (selector, cause) DO UPDATE SET stopped_at = EXCLUDED.stopped_at, stopped_by = EXCLUDED.stopped_by,
-				note = EXCLUDED.note, lifted_at = NULL`, selector, now, by, note)
+			ON CONFLICT (selector, cause) DO UPDATE SET stopped_by = EXCLUDED.stopped_by, note = EXCLUDED.note, lifted_at = NULL,
+				stopped_at = greatest(EXCLUDED.stopped_at, contract_token_stops.stopped_at, contract_token_stops.lifted_at)
+			RETURNING stopped_at`, selector, now, by, note).Scan(&at)
 		return true, err
 	})
-	return err
+	return at, err
 }
 
-// LiftToken lifts the operator's stop of selector; it reports whether one
-// was open.
-func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) (bool, error) {
+// LiftToken lifts the operator's stop of selector at now, or at its
+// stopped_at if that is later (a stop's times never go back, as in
+// StopToken). It returns when the stop was lifted and whether this call
+// lifted it: a stop lifted already gives its own lifted_at, unchanged, and
+// none (no operator's stop of selector) the zero time.
+func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) (time.Time, bool, error) {
 	if !kc.ValidSelector(selector) {
-		return false, ErrSelector
+		return time.Time{}, false, ErrSelector
 	}
-	return t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
-		tag, err := tx.Exec(ctx, `UPDATE contract_token_stops SET lifted_at = $2
-			WHERE selector = $1 AND cause = 'operator' AND lifted_at IS NULL`, selector, now)
-		return tag.RowsAffected() == 1, err
+	var at time.Time
+	lifted, err := t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
+		at = time.Time{}
+		var was *time.Time
+		err := tx.QueryRow(ctx, `SELECT lifted_at FROM contract_token_stops
+			WHERE selector = $1 AND cause = 'operator' FOR UPDATE`, selector).Scan(&was)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return false, nil
+		case err != nil:
+			return false, err
+		case was != nil:
+			at = *was
+			return false, nil
+		}
+		err = tx.QueryRow(ctx, `UPDATE contract_token_stops SET lifted_at = greatest($2::timestamptz, stopped_at)
+			WHERE selector = $1 AND cause = 'operator' RETURNING lifted_at`, selector, now).Scan(&at)
+		return err == nil, err
 	})
+	return at, lifted, err
 }
 
 // ReplayTokenStop is StopToken for a line of the stop record (tokens suspend

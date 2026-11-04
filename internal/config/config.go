@@ -62,8 +62,8 @@ type Config struct {
 	// TokenStopRecord is the file, outside the database, of the operator's
 	// token stops and lifts, which a restore of Wappie's database replays
 	// (WS_TOKEN_STOP_RECORD): each line a selector, a time and whether it
-	// was a lift. It must outlive the process and be in the host's backups;
-	// empty is none.
+	// was a lift. It must outlive the process and be in the host's backups.
+	// Unset or empty is the default; spaces alone mean none.
 	TokenStopRecord string
 	// Contract is how this server reaches the platform's product contract
 	// (decision 0040), off unless WS_CONTRACT_SOCKET (or, in development,

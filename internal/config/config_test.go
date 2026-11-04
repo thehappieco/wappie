@@ -48,7 +48,8 @@ func TestLoadDefaults(t *testing.T) {
 
 // The stop record is in the API unit's state directory, beside the
 // deletion ledger, unless WS_TOKEN_STOP_RECORD says otherwise, its spaces
-// trimmed; blank is none.
+// trimmed. Set but empty is unset, as for the ledger: only spaces alone
+// mean none.
 func TestTokenStopRecordSetting(t *testing.T) {
 	minimalEnv(t)
 	cfg, err := Load()
@@ -58,7 +59,7 @@ func TestTokenStopRecordSetting(t *testing.T) {
 	if DefaultTokenStopRecord != "/var/lib/wappie/token-stops.jsonl" || cfg.TokenStopRecord != DefaultTokenStopRecord {
 		t.Fatalf("the default stop record: %q", cfg.TokenStopRecord)
 	}
-	for set, want := range map[string]string{" /srv/wappie/token-stops.jsonl ": "/srv/wappie/token-stops.jsonl", "  ": ""} {
+	for set, want := range map[string]string{" /srv/wappie/token-stops.jsonl ": "/srv/wappie/token-stops.jsonl", "  ": "", "": DefaultTokenStopRecord} {
 		t.Setenv("WS_TOKEN_STOP_RECORD", set)
 		if cfg, err := Load(); err != nil || cfg.TokenStopRecord != want {
 			t.Fatalf("WS_TOKEN_STOP_RECORD=%q: %q, %v; want %q", set, cfg.TokenStopRecord, err, want)

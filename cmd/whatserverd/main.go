@@ -217,6 +217,10 @@ type app struct {
 	purgeTurn atomic.Uint64
 	// compacted is when this process last compacted the ledger.
 	compacted time.Time
+	// stopsLetGo are the operator's stops retention deleted whose lines a
+	// failed trim of the stop record left, each selector's with its last
+	// change: every later pass's trim drops them too, until one succeeds.
+	stopsLetGo map[string]time.Time
 	// contract is the client of the platform's product contract, and
 	// secrets loads its secret; both nil unless a transport is configured
 	// (WS_CONTRACT_SOCKET).

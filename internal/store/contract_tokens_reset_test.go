@@ -682,12 +682,12 @@ func TestApplyTokenRecordStampsTheGET(t *testing.T) {
 func TestTheOperatorsStopStandsOverTheFeed(t *testing.T) {
 	w := newTokenWorld(t)
 	id := uuid.New()
-	if err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "lost laptop", w.now); err != nil {
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "lost laptop", w.now); err != nil {
 		t.Fatal(err)
 	}
 	w.page(false, w.record(id, 1))
 	before := w.token(id).AccessVersion
-	if err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "again", w.now); err != nil {
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(id), "root", "again", w.now); err != nil {
 		t.Fatal(err)
 	}
 	if after := w.token(id).AccessVersion; after != before+1 {
@@ -700,13 +700,13 @@ func TestTheOperatorsStopStandsOverTheFeed(t *testing.T) {
 	if err != nil || len(stops) != 1 || stops[0].LiftedAt != nil || stops[0].Token == nil || *stops[0].Token != id || stops[0].Note != "again" {
 		t.Fatalf("the stops: %+v %v", stops, err)
 	}
-	if lifted, err := w.tokens.LiftToken(w.ctx(), selectorOf(id), w.now); err != nil || !lifted {
+	if _, lifted, err := w.tokens.LiftToken(w.ctx(), selectorOf(id), w.now); err != nil || !lifted {
 		t.Fatalf("the lift: %v %v", lifted, err)
 	}
-	if lifted, err := w.tokens.LiftToken(w.ctx(), selectorOf(id), w.now); err != nil || lifted {
+	if _, lifted, err := w.tokens.LiftToken(w.ctx(), selectorOf(id), w.now); err != nil || lifted {
 		t.Fatalf("a second lift: %v %v", lifted, err)
 	}
-	if err := w.tokens.StopToken(w.ctx(), "thc_0123", "root", "", w.now); !errors.Is(err, store.ErrSelector) {
+	if _, err := w.tokens.StopToken(w.ctx(), "thc_0123", "root", "", w.now); !errors.Is(err, store.ErrSelector) {
 		t.Fatalf("a text that is no selector: %v", err)
 	}
 }

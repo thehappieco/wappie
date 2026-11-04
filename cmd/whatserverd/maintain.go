@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -154,16 +155,22 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	a.deleteOrphans(ctx, tenants, deletes, limits.orphans)
 }
 
+// tokenStopTrimWait bounds the stop record's trim, its lock and the stops'
+// read: a command stopped while it holds the lock never holds up the pass.
+// A test shortens it.
+var tokenStopTrimWait = time.Minute
+
 // retainTokens is the token part's retention, then, when a stop record is
 // configured, its trim (trimTokenStops): the lines over 365 days old go,
 // and those of the operator's stops retention just deleted, up to each
 // one's last change, while a stop made again since keeps its own. With
-// retention failed, only the old lines go. A failed trim changes nothing
-// in the database, and the lines it would have dropped with their stops
-// go at their 365 days, since no later pass deletes those stops again; so
-// do they after a crash between retention's commit and the trim. Its logs
-// give counts only, never a selector: nothing in them tells whether Wappie
-// holds a token of one.
+// retention failed, only the old lines go, and those of a failed trim. A
+// failed trim changes nothing in the database, and its stops are kept
+// (stopsLetGo) for every later pass's trim until one succeeds: no later
+// retention deletes them again. A restart before then loses them, as a
+// crash between retention's commit and the trim does: those lines then go
+// at their 365 days. Its logs give counts only, never a selector: nothing
+// in them tells whether Wappie holds a token of one.
 func (a *app) retainTokens(ctx context.Context, now time.Time) {
 	tokens := store.NewTokens(a.pools.API)
 	got, err := tokens.RetainTokens(ctx, now)
@@ -174,19 +181,41 @@ func (a *app) retainTokens(ctx context.Context, now time.Time) {
 	}
 	path := a.cfg.TokenStopRecord
 	if path == "" {
+		a.stopsLetGo = nil
 		return
 	}
-	// A minute for the record's lock and the stops' read: a command
-	// stopped while it holds the lock never holds up the pass.
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	// A selector's later deletion wins: its lines up to then go. One whose
+	// last change is 365 days old has none left to drop by it.
+	letGo := a.stopsLetGo
+	a.stopsLetGo = nil
+	for selector, through := range got.OperatorStops {
+		if was, ok := letGo[selector]; !ok || through.After(was) {
+			if letGo == nil {
+				letGo = map[string]time.Time{}
+			}
+			letGo[selector] = through
+		}
+	}
+	maps.DeleteFunc(letGo, func(_ string, through time.Time) bool { return store.TokenStopLapsed(through, now) })
+	ctx, cancel := context.WithTimeout(ctx, tokenStopTrimWait)
 	defer cancel()
-	dropped, err := trimTokenStops(ctx, path, now, got.OperatorStops, func(selectors []string) (map[string]time.Time, error) {
+	did, err := trimTokenStops(ctx, path, now, letGo, func(selectors []string) (map[string]time.Time, error) {
 		return tokens.OperatorStopsMade(ctx, selectors)
 	})
 	if err != nil {
+		if len(letGo) > 0 {
+			a.stopsLetGo = letGo
+		}
 		a.log.Error("token stop record trim failed", "path", path, "error", err)
-	} else if dropped > 0 {
-		a.log.Info("token stop record trimmed", "path", path, "lines", dropped)
+		return
+	}
+	if did.dropped > 0 {
+		a.log.Info("token stop record trimmed", "path", path, "lines", did.dropped)
+	}
+	// Kept as they are, these make -replay refuse the record: they are
+	// to be mended before a restore needs it. Never their text.
+	if did.unreadable > 0 {
+		a.log.Error("token stop record has unreadable lines", "path", path, "lines", did.unreadable)
 	}
 }
 
