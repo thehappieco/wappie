@@ -277,9 +277,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract settings off|read|on [--platform-told]", "settings off|read|on|status"},
 			{"whatserverd contract settings status [--check]", "settings off|read|on|status"},
 			{"whatserverd contract tokens on|off|status", "tokens on|off|status"},
-			{"whatserverd tokens suspend [-note N] [-record F] SELECTOR|TOKEN|-", "tokens suspend [-note N] [-record F] SELECTOR|TOKEN|-"},
+			{"whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-", "tokens suspend [-note N] SELECTOR|TOKEN|-"},
 			{"whatserverd tokens suspend -replay F", "suspend -replay F"},
-			{"whatserverd tokens lift [-record F] SELECTOR|TOKEN|-", "lift [-record F] SELECTOR|TOKEN|-"},
+			{"whatserverd tokens lift SELECTOR|TOKEN|-", "lift SELECTOR|TOKEN|-"},
 			{"whatserverd tokens list", "| list"},
 		} {
 			says("contract.md", c.doc)
@@ -327,14 +327,14 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			t.Errorf("the token modes are %q and %q", store.TokensOn, store.TokensOff)
 		}
 		// tokens' flags, parsed before anything opens: each documented one
-		// is the command's, and a text that is no selector or token is
-		// refused without being repeated.
+		// is the command's, and it has no other; a text that is no selector
+		// or token is refused without being repeated.
 		for _, c := range []struct {
 			args  []string
 			flags []string
 		}{
-			{[]string{"suspend", "-h"}, []string{"-note", "-record", "-replay"}},
-			{[]string{"lift", "-h"}, []string{"-record"}},
+			{[]string{"suspend", "-h"}, []string{"-note", "-replay"}},
+			{[]string{"lift", "-h"}, nil},
 		} {
 			var stderr bytes.Buffer
 			fs := tokensFlagOutput
@@ -344,10 +344,14 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			if err == nil || errors.As(err, new(usageError)) {
 				t.Errorf("tokens %v: %v", c.args, err)
 			}
-			for _, f := range c.flags {
-				if !strings.Contains(stderr.String(), "  "+f+" ") && !strings.Contains(stderr.String(), "  "+f+"\n") {
-					t.Errorf("tokens %s has no flag %s:\n%s", c.args[0], f, stderr.String())
+			var flags []string
+			for l := range strings.Lines(stderr.String()) {
+				if f, ok := strings.CutPrefix(l, "  -"); ok {
+					flags = append(flags, "-"+strings.Fields(f)[0])
 				}
+			}
+			if !slices.Equal(flags, c.flags) {
+				t.Errorf("tokens %s's flags: %v, want %v:\n%s", c.args[0], flags, c.flags, stderr.String())
 			}
 		}
 		const secretLike = "thc_0123456789abcdef.not-a-secret"
