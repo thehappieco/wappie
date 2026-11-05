@@ -11,11 +11,9 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -43,10 +41,8 @@ import (
 // selector, its time (the database's stopped_at or lifted_at, to the
 // microsecond) and whether it was a lift, nothing more; the note, the
 // account and Wappie's own apply_failed stops stay in the database. A
-// line goes 365 days after its time at the latest (the longest retention
-// keeps a stop of a selector Wappie never held), dropped at each append and
-// each hourly pass, and earlier, in the hourly pass whose retention deleted
-// its stop (trimTokenStops).
+// line goes 365 days after its time, whatever became of its stop: at an
+// append, or in the hourly pass (trimTokenStops).
 type tokenStopRecord struct {
 	Selector string    `json:"selector"`
 	At       time.Time `json:"at"`
@@ -72,7 +68,6 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 		if !lift {
 			note = fs.String("note", "", "why, kept in Wappie's database only")
 		}
-		record := fs.String("record", "", "the stop record WS_TOKEN_STOP_RECORD names, the only one the hourly pass trims; another file is refused before anything changes")
 		replay := new(string)
 		if !lift {
 			replay = fs.String("replay", "", "apply every stop and lift of this record, in order, after a restore of Wappie's database")
@@ -81,8 +76,8 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 			return err
 		}
 		switch {
-		case *replay != "" && (fs.NArg() != 0 || *record != "" || *note != ""):
-			return errors.New("tokens suspend: -replay takes no selector, -record or -note")
+		case *replay != "" && (fs.NArg() != 0 || *note != ""):
+			return errors.New("tokens suspend: -replay takes no selector or -note")
 		case *replay != "":
 			run = func(ctx context.Context, a *app) error {
 				return replayTokenStops(ctx, store.NewTokens(a.pools.API), *replay, out)
@@ -95,10 +90,6 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 				return fmt.Errorf("tokens %s: %w", args[0], err)
 			}
 			run = func(ctx context.Context, a *app) error {
-				if *record != "" && !isStopRecord(*record, a.cfg.TokenStopRecord) {
-					return fmt.Errorf("tokens %s: -record %s is not the stop record (WS_TOKEN_STOP_RECORD=%q), the only one the hourly pass trims and a restore replays; nothing changed",
-						args[0], *record, a.cfg.TokenStopRecord)
-				}
 				return changeTokenStop(ctx, store.NewTokens(a.pools.API), tokenStopRecord{Selector: selector, At: time.Now(), Lift: lift}, *note, a.cfg.TokenStopRecord, out)
 			}
 		}
@@ -140,24 +131,6 @@ func tokenSelector(arg string, stdin io.Reader) (string, error) {
 	return "", errors.New("that is neither a token's selector (16 lowercase hex digits) nor a whole token")
 }
 
-// isStopRecord reports whether path names the configured stop record,
-// however spelled or linked: a line written to another file would escape
-// the hourly trim and the replay. The command still writes through the
-// configured path, since a rename over a link replaces the link.
-func isStopRecord(path, configured string) bool {
-	if configured == "" {
-		return false
-	}
-	p, perr := filepath.Abs(path)
-	c, cerr := filepath.Abs(configured)
-	if perr == nil && cerr == nil && p == c {
-		return true
-	}
-	pi, perr := os.Stat(path) //nolint:gosec // G703: the operator names the record
-	ci, cerr := os.Stat(configured)
-	return perr == nil && cerr == nil && os.SameFile(pi, ci)
-}
-
 // osUser names who ran the command, as the stop records it.
 func osUser() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {
@@ -169,14 +142,14 @@ func osUser() string {
 // changeTokenStop records the stop (with its note, in the database alone)
 // or its lift, at r.At to the microsecond, the database's precision, or at
 // the stop's last change if that is later (a stop's times never go back:
-// StopToken); then appends it to the stop record, record, at the time the
-// database holds, so the line's time is the stop's stopped_at or lifted_at
-// exactly and the line goes with its stop. A lift of a stop lifted already
-// changes nothing and appends that lift again at its own time (so a lift
-// whose append failed is recorded by running it again); one with no
-// operator's stop to lift records nothing, as no line would go with a
-// stop. A stop the database holds but the record does not is said, since
-// a restore would lose it.
+// StopToken); then appends it to the stop record, record (the configured
+// one), at the time the database holds, so the line's time is the stop's
+// stopped_at or lifted_at exactly and a replay brings the stop back as it
+// stood. A lift of a stop lifted already changes nothing and appends that
+// lift again at its own time (so a lift whose append failed is recorded by
+// running it again); one with no operator's stop to lift records nothing,
+// since no lift happened. A stop the database holds but the record does
+// not is said, since a restore would lose it.
 func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, note, record string, out io.Writer) error {
 	r.At = r.At.UTC().Truncate(time.Microsecond)
 	w := &lines{w: out}
@@ -218,69 +191,36 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, no
 }
 
 // appendTokenStop adds r's line to the record, made 0600 if new, and drops
-// the lines over 365 days old by now (store.TokenStopLapsed), whose stops
-// retention has let go.
+// the lines 365 days old by now, as the hourly trim does.
 func appendTokenStop(ctx context.Context, path string, r tokenStopRecord, now time.Time) error {
 	line, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	_, err = rewriteTokenStops(ctx, path, line, func() (func(tokenStopRecord) bool, error) {
-		return func(rec tokenStopRecord) bool { return !store.TokenStopLapsed(rec.At, now) }, nil
-	})
+	_, err = rewriteTokenStops(ctx, path, line, now)
 	return err
 }
 
-// trimTokenStops is the hourly pass's trim of the record, right after
-// retention (retainTokens). It drops the lines over 365 days old by now,
-// and the lines of each selector whose operator's stop retention deleted
-// (letGo, with the stop's last change, the later of its stop and its lift)
-// up to that change: a stop's times never go back (StopToken), so every
-// line of it is at or before that change. It never drops a line of a stop
-// the database holds: a command writes the database before it locks the
-// record to add its line, so made, read under the lock, gives every stop
-// of those selectors made again since the delete, and the lines from each
-// one's time on stay, whatever the clocks. A stop retention deletes in the
-// milliseconds between its command's write and its line leaves that line
-// to its 365 days, as a crash between retention's commit and the trim, or
-// a restart before a failed trim is tried again, leaves the lines it would
-// have dropped. It never makes a missing record, and reports how many
-// lines it dropped and how many it kept as they are, being no stop's
-// record.
+// trimTokenStops is the hourly pass's trim of the record (retainTokens).
+// It drops the lines 365 days old by now, by the comparison a replay uses
+// to leave one (store.TokenStopLapsed), so the two agree, and nothing
+// else: decision 0056 keeps each line 365 days after it was written, and
+// never less than the reach of the backups Wappie may restore (90 days),
+// so a line stays to its 365 days whatever became of its stop. It never
+// makes a missing record, and reports how many lines it dropped and how
+// many it kept as they are, being no stop's record.
 //
-// A line over 365 days old goes even while its stop stands. Only a stop of
-// a selector Wappie holds outlives 365 days, to the selector's until, its
+// A line 365 days old goes even while its stop stands. Only a stop of a
+// selector Wappie holds outlives 365 days, to the selector's until, its
 // token's created_at + 365 days, which its expires_at never passes: a stop
-// made once its token existed goes by then, in the same pass (the next one
-// if the database's clock lags Wappie's). One made before its token's
+// made once its token existed goes by then. One made before its token's
 // created_at (a selector stopped ahead of its token) stands to that until
 // with no line, which loses nothing a restore needs: every snapshot one
 // can take is under 90 days old (decision 0027), so it holds the stop as
 // it stood over 275 days after it was made, and anything since has a
 // younger line.
-func trimTokenStops(ctx context.Context, path string, now time.Time, letGo map[string]time.Time,
-	made func(selectors []string) (map[string]time.Time, error),
-) (stopRecordRewrite, error) {
-	return rewriteTokenStops(ctx, path, nil, func() (func(tokenStopRecord) bool, error) {
-		var again map[string]time.Time
-		if len(letGo) > 0 {
-			var err error
-			if again, err = made(slices.Sorted(maps.Keys(letGo))); err != nil {
-				return nil, err
-			}
-		}
-		return func(rec tokenStopRecord) bool {
-			if store.TokenStopLapsed(rec.At, now) {
-				return false
-			}
-			through, gone := letGo[rec.Selector]
-			if !gone || rec.At.After(through) {
-				return true
-			}
-			since, stopped := again[rec.Selector]
-			return stopped && !rec.At.Before(since)
-		}, nil
-	})
+func trimTokenStops(ctx context.Context, path string, now time.Time) (stopRecordRewrite, error) {
+	return rewriteTokenStops(ctx, path, nil, now)
 }
 
 // stopRecordRewrite is what a rewrite of the stop record did: the lines
@@ -290,16 +230,16 @@ type stopRecordRewrite struct{ dropped, unreadable int }
 // rewriteTokenStops replaces the record whole, or not at all, under an
 // exclusive lock of the file. It keeps, in their order, a line that is no
 // stop's record as it is (counted, unless blank: -replay refuses a record
-// that holds one) and each stop's line that keeper's filter, made under
-// the lock, keeps, written again as its selector, time and lift alone (a
-// line an older binary wrote with its note loses it); then adds add (a
-// line, without its newline), if any. The new text goes to a temporary
-// file in the record's directory, with its mode and owner, synced and
-// renamed over it, the directory synced: two rewrites at once never lose a
-// line. A temporary copy a rewrite killed before its rename left goes too.
-// With add, a missing record is made 0600; without, a missing record stays
-// missing, and an unchanged one is not written.
-func rewriteTokenStops(ctx context.Context, path string, add []byte, keeper func() (func(tokenStopRecord) bool, error)) (did stopRecordRewrite, err error) {
+// that holds one) and each stop's line under 365 days old by now, written
+// again as its selector, time and lift alone (a line an older binary wrote
+// with its note loses it); then adds add (a line, without its newline), if
+// any. The new text goes to a temporary file in the record's directory,
+// with its mode and owner, synced and renamed over it, the directory
+// synced: two rewrites at once never lose a line. A temporary copy a
+// rewrite killed before its rename left goes too. With add, a missing
+// record is made 0600; without, a missing record stays missing, and an
+// unchanged one is not written.
+func rewriteTokenStops(ctx context.Context, path string, add []byte, now time.Time) (did stopRecordRewrite, err error) {
 	f, err := lockStopRecord(ctx, path, add != nil)
 	if add == nil && errors.Is(err, fs.ErrNotExist) {
 		return stopRecordRewrite{}, nil
@@ -308,10 +248,6 @@ func rewriteTokenStops(ctx context.Context, path string, add []byte, keeper func
 		return stopRecordRewrite{}, err
 	}
 	defer f.Close() //nolint:errcheck // closing releases the lock; the file was only read
-	keep, err := keeper()
-	if err != nil {
-		return stopRecordRewrite{}, err
-	}
 	old, err := io.ReadAll(f)
 	if err != nil {
 		return stopRecordRewrite{}, err
@@ -326,7 +262,7 @@ func rewriteTokenStops(ctx context.Context, path string, add []byte, keeper func
 			var rec tokenStopRecord
 			switch {
 			case json.Unmarshal([]byte(l), &rec) == nil && kc.ValidSelector(rec.Selector) && !rec.At.IsZero():
-				if !keep(rec) {
+				if store.TokenStopLapsed(rec.At, now) {
 					did.dropped++
 					continue
 				}
@@ -516,12 +452,12 @@ func stopRecordWritable(path string) error {
 // stops stand as they stood before the restore; a line older than what the
 // database holds of its selector's stop (a stop or a lift made since
 // without the record) is left, so a replay never rewinds a later stop, nor
-// lifts one, and so is a line 365 days old (store.TokenStopLapsed), whose
-// stop retention has let go, so a replay never brings one back. A line
-// that is not a record is refused before anything changes. It runs before
-// the server starts, so no hourly trim runs beside it: one that did could
-// drop the line of a stop retention had just deleted and the replay
-// brought back.
+// lifts one, and so is a line 365 days old (store.TokenStopLapsed), which
+// the hourly trim drops, so a replay never brings back a stop retention
+// let go. A line that is not a record is refused before anything changes.
+// A restore runs it before the server starts, with the token part off
+// (docs/deployment.md), so the stops stand again before a token is
+// accepted.
 func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.Writer) error {
 	b, err := os.ReadFile(path) //nolint:gosec // G304: the operator names the record
 	if err != nil {

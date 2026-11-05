@@ -557,9 +557,9 @@ what does not fit one body follows at once.
 **The operator's own stop.**
 
 ```
-whatserverd tokens suspend [-note N] [-record F] SELECTOR|TOKEN|-
+whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-
 whatserverd tokens suspend -replay F
-whatserverd tokens lift [-record F] SELECTOR|TOKEN|-
+whatserverd tokens lift SELECTOR|TOKEN|-
 whatserverd tokens list
 ```
 
@@ -569,49 +569,45 @@ which only the selector is kept), even one Wappie holds no record of yet,
 at once in every process. Neither the feed nor a reset lifts it; it is
 reported to the platform as `suspended {operator}`. Then it appends the
 stop or the lift to **the stop record**, a file outside the database
-(`WS_TOKEN_STOP_RECORD`, by default `/var/lib/wappie/token-stops.jsonl`;
-`-record F` may name it again, and any other file is refused before
-anything changes), and `-replay` applies that file's lines again, in
-order, after a restore of Wappie's database, leaving a line older than
-what the database holds of its selector's stop (a stop or a lift made
-since without the record), so a replay never rewinds a later stop nor
-lifts one. A lift of a stop lifted already changes nothing and appends
-that lift again at its own time (so a lift whose append failed is
+(`WS_TOKEN_STOP_RECORD`, by default `/var/lib/wappie/token-stops.jsonl`),
+the only file the commands write. `-replay` applies that file's lines
+again, in order, after a restore of Wappie's database, leaving a line
+older than what the database holds of its selector's stop (a stop or a
+lift made since without the record), so a replay never rewinds a later
+stop nor lifts one. A lift of a stop lifted already changes nothing and
+appends that lift again at its own time (so a lift whose append failed is
 recorded by running it again); a lift with no operator's stop to lift
-appends nothing. With no record configured (`WS_TOKEN_STOP_RECORD` of
-spaces alone; unset or empty is the default) the stop is made all the
-same, and the command says a restore would lose it. Nothing it prints says
-whether Wappie holds a token of that selector.
+appends nothing, since no lift happened. With no record configured
+(`WS_TOKEN_STOP_RECORD` of spaces alone; unset or empty is the default)
+the stop is made all the same, and the command says a restore would lose
+it. Nothing it prints says whether Wappie holds a token of that selector.
 
-A line of the record holds the selector, the time, which is the stop's
-`stopped_at` or its `lifted_at` to the microsecond, and whether it was a
-lift: never the note (`-note`, kept in Wappie's database only), the
+A line of the record holds only the selector, the time, which is the
+stop's `stopped_at` or its `lifted_at` to the microsecond, and whether it
+is a lift: never the note (`-note`, kept in Wappie's database only), the
 account that ran the command, the token, or Wappie's own `apply_failed`
 stops. A stop's times never go back: a stop or a lift timed before the
 stop's last change (two commands at once, or a clock stepped back) is made
-at that change, so no line is later than it. Each append replaces the file
-whole (a temporary file beside it, its mode and owner kept, renamed over
-it, under a lock of the file, so two at once lose no line) without the
-lines over 365 days old, the longest retention keeps a stop (below),
-keeping the others in their order and a line that is no stop's record as
-it is; a temporary copy that a rewrite killed before its rename left goes
-with the next. The hourly maintenance pass rewrites it the same way right
-after its retention (below): it drops the lines over 365 days old, and the
-lines of each operator's stop that retention deleted, up to that stop's
-last change (the later of the stop and its lift), so a line goes with its
-stop; a stop of the same selector made since keeps its own, read from the
-database under the file's lock, whatever the clocks. It never creates the
-file. A trim that fails is tried again, with the same stops, by every
-later pass until one succeeds; a restart of the server before then, a
-crash between retention's commit and the trim, and a stop retention
-deletes in the milliseconds between its command's write and its line
-leave those lines to their 365 days. A line that is no stop's record (a
-hand edit, a damaged disk) stays, and every pass logs an ERROR that counts
-it ([the stop record](deployment.md#the-contract)), since `-replay`
-refuses the file while it holds one.
+at that change, and its line carries that time, so a replay brings the
+stops back as they stood. Each append replaces the file whole (a temporary
+file beside it, its mode and owner kept, renamed over it, under a lock of
+the file, so two at once lose no line), keeping the lines in their order
+and a line that is no stop's record as it is; a temporary copy that a
+rewrite killed before its rename left goes with the next.
 
-A line over 365 days old goes even while its stop stands. Only the stop of
-a selector Wappie holds outlives 365 days, to that selector's date, its
+A line goes 365 days after it was written, whatever became of its stop:
+each append drops those lines, and so does the hourly maintenance pass,
+after its retention (below). Decision 0056 sets this, and requires it
+never to be less than the reach of the backups Wappie may restore (the
+pilot's snapshots are kept 90 days), so a restore of any of them finds
+every line written since. The trim never creates the file, and a trim
+that fails is done again by the next pass. A line that is no stop's
+record (a hand edit, a damaged disk) stays, and every pass logs an ERROR
+that counts it ([the stop record](deployment.md#the-contract)), since
+`-replay` refuses the file while it holds one.
+
+A line 365 days old goes even while its stop stands. Only the stop of a
+selector Wappie holds outlives 365 days, to that selector's date, its
 token's `created_at` plus 365 days, which its expiry never passes: a stop
 made once its token existed goes by then too. One made before the token's
 `created_at` stands to that date with no line, which loses nothing a
@@ -620,14 +616,13 @@ restore needs: every snapshot one can take is under 90 days old (decision
 and whatever changed since has a younger line.
 
 `-replay`, run before the server starts ([restoring with the
-contract](deployment.md#restoring-with-the-contract)), leaves a line over
-365 days old and counts it ("N lines over 365 days old left, their stops
-let go"), so a replay never brings back a stop older than that. A line of
-a stop that went with its selector, which a trim missed (or a copy of the
-record older than the pass that dropped it), comes back after a restore as
-the stop of a selector Wappie does not hold: kept to 365 days after it was
-made at most, as its line, which goes in the pass whose retention deletes
-that stop again.
+contract](deployment.md#restoring-with-the-contract)), leaves a line 365
+days old and counts it ("N lines over 365 days old left, their stops let
+go"), so a replay never brings back a stop older than that. A younger
+line of a stop that went sooner (with its selector, or at the `created_at`
+plus 365 days of its selector's record) comes back, after a restore of a
+snapshot taken since, as the stop of a selector Wappie does not hold:
+kept to 365 days after it was made at most, as its line.
 
 **What Wappie keeps of a token.** The hourly maintenance pass (the plan's
 retention) deletes, on Wappie's clock (what goes at a token's `created_at`
@@ -661,7 +656,8 @@ plus 365 days, and the stops, never before the database's clock either):
   after it was made (a new `suspend` makes it again), or earlier at the
   `created_at` plus 365 days of a valid record of its selector that came
   since (never a bad record's). The operator's lines in the stop record
-  go in the same pass (above).
+  go 365 days after they were written, whatever became of the stop
+  (above).
 - **Usage rows**, once reported, at the start of the second UTC day after
   their day, so at most 2 days after they were reported.
 - **The acknowledgement's queues**, 30 days after they were sent; a held

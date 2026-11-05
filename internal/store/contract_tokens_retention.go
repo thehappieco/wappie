@@ -33,19 +33,13 @@ const tokenUsageKeep = 48 * time.Hour
 // days, if earlier. A stop of a selector Wappie holds goes with it, at its
 // until, its token's created_at + 365 days, which its expires_at never
 // passes. A stop is made of a token that exists, so 365 days after it the
-// token has expired anyway, and a held one's stop has gone; the stop
-// record keeps a line no longer (TokenStopLapsed).
+// token has expired anyway. The stop record keeps each line as long after
+// its time, as decision 0056 sets (TokenStopLapsed).
 const tokenStopKeep = kc.MaxTokenLifetime
 
 // TokenRetention counts what a retention pass did.
 type TokenRetention struct {
 	Expired, Forgotten, Ended, Stops int64
-	// OperatorStops are the operator's stops the pass deleted, each
-	// selector's with its last change (the later of its stop and its
-	// lift): the stop record's lines of that selector up to then go with
-	// it. Wappie's own apply_failed stops have no line, and are not here;
-	// a pass that failed returns none.
-	OperatorStops map[string]time.Time
 }
 
 // RetainTokens is the hourly retention of the token part (maintainOnce),
@@ -55,8 +49,7 @@ type TokenRetention struct {
 // removed instances, then its pin). Then, after every workspace and before
 // the selectors, in one statement, every stop due (one of a selector Wappie
 // holds once that selector is past its until, whatever its own dates; any
-// other at stopped_at + 365 days, or at its record_until if earlier), the
-// operator's returned with their last change for the stop record; then
+// other at stopped_at + 365 days, or at its record_until if earlier); then
 // what the acknowledgement and the usage report still hold of a token past
 // its until, sent or not; then the selectors and sticky rows past their
 // until (their guards); then the usage rows reported, from the start of the
@@ -209,37 +202,18 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 			// (selector, cause) order, before the selectors: one of a
 			// selector Wappie holds only with it, past its until, whatever
 			// its own dates; any other at stopped_at + 365 days, or at its
-			// record_until if that is earlier. The operator's come back with
-			// their last change, for the stop record's trim.
-			rows, err := tx.Query(ctx, `DELETE FROM contract_token_stops x
+			// record_until if that is earlier.
+			tag, err := tx.Exec(ctx, `DELETE FROM contract_token_stops x
 				USING (SELECT y.selector, y.cause FROM contract_token_stops y
 				       LEFT JOIN contract_token_selectors s ON s.selector = y.selector
 				       WHERE CASE WHEN s.selector IS NOT NULL THEN s.until <= $1
 				                  ELSE least(y.stopped_at + $2::interval, coalesce(y.record_until, 'infinity')) <= $1 END
 				       ORDER BY y.selector, y.cause FOR UPDATE OF y) l
-				WHERE x.selector = l.selector AND x.cause = l.cause
-				RETURNING x.selector, x.cause, greatest(x.stopped_at, x.lifted_at)`, cut, tokenStopKeep)
+				WHERE x.selector = l.selector AND x.cause = l.cause`, cut, tokenStopKeep)
 			if err != nil {
 				return err
 			}
-			err = forEachRow(rows, func(row pgx.Rows) error {
-				var selector, cause string
-				var through time.Time
-				if err := row.Scan(&selector, &cause, &through); err != nil {
-					return err
-				}
-				out.Stops++
-				if cause == "operator" {
-					if out.OperatorStops == nil {
-						out.OperatorStops = map[string]time.Time{}
-					}
-					out.OperatorStops[selector] = through
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+			out.Stops = tag.RowsAffected()
 			for _, q := range []struct {
 				sql  string
 				args []any
@@ -297,12 +271,7 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 			return nil
 		})
 	})
-	if err != nil {
-		// A pass rolled back deleted nothing: its stops are still there,
-		// and the stop record keeps their lines.
-		return TokenRetention{}, err
-	}
-	return out, nil
+	return out, err
 }
 
 // goneWorkspacesTx are those of workspaces whose tenants row is gone.
@@ -347,9 +316,9 @@ var ErrSelector = errors.New("store: a token's selector is 16 lowercase hex digi
 // lift it. A re-stop is made now, and keeps the record_until the applier
 // gave the stop. A stop's times never go back: a re-stop timed before the
 // stop's last change (two commands at once, each timed as it began, or a
-// clock stepped back) is made at that change, so the stop record's line,
-// which carries the time returned, is never later than its stop's last
-// change, and goes with it.
+// clock stepped back) is made at that change. The stop record's line
+// carries the time returned, and a replay compares each line's time with
+// the stop's last change, so it brings the stops back as they stood.
 func (t *Tokens) StopToken(ctx context.Context, selector, by, note string, now time.Time) (time.Time, error) {
 	if !kc.ValidSelector(selector) {
 		return time.Time{}, ErrSelector
@@ -404,13 +373,12 @@ func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) 
 // stop is later, neither its stop nor its lift, so a replay never rewinds
 // what was done since without the record, and never for a line 365 days
 // old by now (Wappie's clock), whose stop retention has let go whatever
-// became of its selector. The hourly pass drops a line once retention has
-// deleted its stop; one it missed (a crash between the two, or a copy of
-// the record older than that pass) of a stop that went with its selector
-// comes back as the stop of a selector Wappie does not hold: kept to 365
-// days after it was made at most, as its line is, or to a valid record of
-// its selector that comes again; retention then deletes it, and the hourly
-// pass its line. It reports whether it applied.
+// became of its selector. A younger line of a stop that went sooner (with
+// its selector, or at its record_until) comes back, after a restore of a
+// snapshot taken since, as the stop of a selector Wappie does not hold:
+// kept to 365 days after it was made at most, as its line is, or to a
+// valid record of its selector that comes again. It reports whether it
+// applied.
 func (t *Tokens) ReplayTokenStop(ctx context.Context, selector, by, note string, at, now time.Time) (bool, error) {
 	if !kc.ValidSelector(selector) {
 		return false, ErrSelector
@@ -429,31 +397,10 @@ func (t *Tokens) ReplayTokenStop(ctx context.Context, selector, by, note string,
 }
 
 // TokenStopLapsed reports whether a stop made at at is past what retention
-// keeps of it by now, 365 days, so the stop record drops its line (at each
-// append and each hourly pass) and a replay leaves it.
+// keeps of it by now, 365 days. The stop record drops its line then, at
+// each append and each hourly pass (decision 0056: 365 days after it was
+// written), and a replay leaves it.
 func TokenStopLapsed(at, now time.Time) bool { return !at.Add(tokenStopKeep).After(now) }
-
-// OperatorStopsMade is when the operator's stop the database holds now of
-// each of selectors was made, for the stop record's trim: a selector whose
-// stop retention deleted and that is stopped again keeps its lines from
-// that stop on.
-func (t *Tokens) OperatorStopsMade(ctx context.Context, selectors []string) (map[string]time.Time, error) {
-	rows, err := t.pool.Query(ctx, `SELECT selector, stopped_at FROM contract_token_stops
-		WHERE cause = 'operator' AND selector = ANY ($1)`, selectors)
-	if err != nil {
-		return nil, err
-	}
-	made := map[string]time.Time{}
-	return made, forEachRow(rows, func(row pgx.Rows) error {
-		var selector string
-		var at time.Time
-		if err := row.Scan(&selector, &at); err != nil {
-			return err
-		}
-		made[selector] = at
-		return nil
-	})
-}
 
 // ReplayTokenLift is LiftToken for a line of the stop record: it lifts the
 // open operator stop only when that stop is no later than the lift, so a

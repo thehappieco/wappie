@@ -79,8 +79,8 @@ const commandList = `usage: whatserverd [serve]
                    retention | erase | reproject | mcp-relay-secret | devices | deletions ...
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
                    diff [--tenant T] | mode off|observe | tokens on|off|status
-       whatserverd tokens suspend [-note N] [-record F] SELECTOR|TOKEN|- | suspend -replay F |
-                   lift [-record F] SELECTOR|TOKEN|- | list
+       whatserverd tokens suspend [-note N] SELECTOR|TOKEN|- | suspend -replay F |
+                   lift SELECTOR|TOKEN|- | list
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
@@ -217,10 +217,6 @@ type app struct {
 	purgeTurn atomic.Uint64
 	// compacted is when this process last compacted the ledger.
 	compacted time.Time
-	// stopsLetGo are the operator's stops retention deleted whose lines a
-	// failed trim of the stop record left, each selector's with its last
-	// change: every later pass's trim drops them too, until one succeeds.
-	stopsLetGo map[string]time.Time
 	// contract is the client of the platform's product contract, and
 	// secrets loads its secret; both nil unless a transport is configured
 	// (WS_CONTRACT_SOCKET).

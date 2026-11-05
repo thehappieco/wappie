@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
@@ -135,8 +134,8 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	// held 365 days after it was made (or at its valid record's created_at
 	// + 365 days), the usage rows 2 days after they were reported and the
 	// queues' entries 30 days after they were sent; then the stop record's
-	// lines of the stops it deleted, and those 365 days old. With tokens
-	// never on, its tables are empty and this finds nothing.
+	// lines 365 days old. With tokens never on, its tables are empty and
+	// this finds nothing.
 	a.retainTokens(ctx, time.Now())
 
 	// Every workspace, whatever its status: a closed team's and a suspended
@@ -155,25 +154,20 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	a.deleteOrphans(ctx, tenants, deletes, limits.orphans)
 }
 
-// tokenStopTrimWait bounds the stop record's trim, its lock and the stops'
-// read: a command stopped while it holds the lock never holds up the pass.
+// tokenStopTrimWait bounds the stop record's trim and its wait for the
+// lock: a command stopped while it holds the lock never holds up the pass.
 // A test shortens it.
 var tokenStopTrimWait = time.Minute
 
 // retainTokens is the token part's retention, then, when a stop record is
-// configured, its trim (trimTokenStops): the lines over 365 days old go,
-// and those of the operator's stops retention just deleted, up to each
-// one's last change, while a stop made again since keeps its own. With
-// retention failed, only the old lines go, and those of a failed trim. A
-// failed trim changes nothing in the database, and its stops are kept
-// (stopsLetGo) for every later pass's trim until one succeeds: no later
-// retention deletes them again. A restart before then loses them, as a
-// crash between retention's commit and the trim does: those lines then go
-// at their 365 days. Its logs give counts only, never a selector: nothing
-// in them tells whether Wappie holds a token of one.
+// configured, its trim (trimTokenStops): the lines 365 days old go, and no
+// other, whatever retention did. The trim reads nothing of the database,
+// so it runs whether or not retention failed; a failed trim changes
+// nothing, and the next pass trims again. Its logs give counts only,
+// never a selector: nothing in them tells whether Wappie holds a token of
+// one.
 func (a *app) retainTokens(ctx context.Context, now time.Time) {
-	tokens := store.NewTokens(a.pools.API)
-	got, err := tokens.RetainTokens(ctx, now)
+	got, err := store.NewTokens(a.pools.API).RetainTokens(ctx, now)
 	if err != nil {
 		a.log.Warn("token retention failed", "error", err)
 	} else if got.Expired+got.Forgotten+got.Ended+got.Stops > 0 {
@@ -181,31 +175,12 @@ func (a *app) retainTokens(ctx context.Context, now time.Time) {
 	}
 	path := a.cfg.TokenStopRecord
 	if path == "" {
-		a.stopsLetGo = nil
 		return
 	}
-	// A selector's later deletion wins: its lines up to then go. One whose
-	// last change is 365 days old has none left to drop by it.
-	letGo := a.stopsLetGo
-	a.stopsLetGo = nil
-	for selector, through := range got.OperatorStops {
-		if was, ok := letGo[selector]; !ok || through.After(was) {
-			if letGo == nil {
-				letGo = map[string]time.Time{}
-			}
-			letGo[selector] = through
-		}
-	}
-	maps.DeleteFunc(letGo, func(_ string, through time.Time) bool { return store.TokenStopLapsed(through, now) })
 	ctx, cancel := context.WithTimeout(ctx, tokenStopTrimWait)
 	defer cancel()
-	did, err := trimTokenStops(ctx, path, now, letGo, func(selectors []string) (map[string]time.Time, error) {
-		return tokens.OperatorStopsMade(ctx, selectors)
-	})
+	did, err := trimTokenStops(ctx, path, now)
 	if err != nil {
-		if len(letGo) > 0 {
-			a.stopsLetGo = letGo
-		}
 		a.log.Error("token stop record trim failed", "path", path, "error", err)
 		return
 	}
