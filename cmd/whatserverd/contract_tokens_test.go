@@ -1369,6 +1369,16 @@ func TestTheRecordFollowsTheDatabasesOrder(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the stop is in the database but not in the record") || open != 1 {
 		t.Fatalf("a command that cannot lock the record: %v, %d open stops", err, open)
 	}
+	// A lift that cannot lock the record is made all the same, and says
+	// the lift is what the record lacks, and how to record it.
+	err = changeTokenStop(ctx, tokens, tokenStopRecord{Selector: other, At: time.Now(), Lift: true}, "", record, &bytes.Buffer{})
+	if qerr := pool.QueryRow(ctx, `SELECT count(*) FROM contract_token_stops WHERE selector = $1 AND lifted_at IS NULL`, other).Scan(&open); qerr != nil {
+		t.Fatal(qerr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "the lift is in the database but not in the record") ||
+		!strings.Contains(err.Error(), "tokens suspend, then tokens lift") || open != 0 {
+		t.Fatalf("a lift that cannot lock the record: %v, %d open stops", err, open)
+	}
 }
 
 // The hourly pass, maintainOnce, trims the stop record after the token

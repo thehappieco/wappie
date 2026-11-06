@@ -161,7 +161,8 @@ var tokenStopLockWait = 5 * time.Second
 // lines; without them a restore brings the stop back, the safe side. One
 // with no operator's stop to lift records nothing, since no lift happened.
 // A stop the database holds but the record does not is said, since a
-// restore would lose it.
+// restore would lose it; a lift likewise, since a restore would bring the
+// stop back, with the suspend and the lift that record it.
 func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, note, record string, out io.Writer) error {
 	r.At = r.At.UTC().Truncate(time.Microsecond)
 	w := &lines{w: out}
@@ -211,6 +212,9 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, no
 		err = appendHeldTokenStop(held, record, r, time.Now())
 	}
 	if err != nil {
+		if r.Lift {
+			return fmt.Errorf("tokens: the lift is in the database but not in the record %s (a restore would bring the stop back; record it with tokens suspend, then tokens lift): %w", record, err)
+		}
 		return fmt.Errorf("tokens: the stop is in the database but not in the record %s (a restore would lose it): %w", record, err)
 	}
 	w.f("recorded in %s", record)
