@@ -241,7 +241,8 @@ policy and is not charged Wappie storage. See [storage](storage.md).
 Retain a matching previous private artifact and database/object backups before
 rollout. Database migrations are forward-only, except for the documented
 down-steps, such as the [remote MCP one](#remote-mcp-connector),
-[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051) and [0052's](#rolling-back-below-0052); verify old binary compatibility
+[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051),
+[0052's](#rolling-back-below-0052) and [0053's](#rolling-back-below-0053); verify old binary compatibility
 before reverting an executable. Do not restore an older archive over newer
 messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
@@ -561,18 +562,23 @@ after a restore of Wappie's database. Unset or empty, as for the ledger,
 is the default; a value of spaces alone (quoted, in an env file) means
 none. Put it on a persistent path that is in the host's backups and
 off-host copies, with the database's. A backup must copy it by its name,
-as it copies the deletion ledger. Keep it writable by the server's user
-alone, and delete its copies before they are 90 days old, as the
-backups'. In `deploy/compose.yaml` it is on the `deletion-ledger` volume,
-with the ledger. One JSON line per stop or lift: `{selector, at, lift}`,
-`lift` present only when true, `at` in UTC to the microsecond, the stop's
-`stopped_at` or its `lifted_at` in the database. A line holds only the
-selector, the time and whether it is a lift: never the note, the account
-that ran the command, a token or anything else, nor Wappie's own
-`apply_failed` stops, which stay in the database. A stop's times only go
-forward. A stop or a lift timed at or before the stop's last change (two
-commands at once, or a clock stepped back) is made a microsecond after
-that change. One timed at or before the mark of what retention let go is
+as it copies the deletion ledger. It goes off host with every off-host
+copy of the database, and at least daily, as the ledger does. Keep it
+writable by the server's user alone, and delete its copies before they
+are 90 days old, as the backups'. In `deploy/compose.yaml` it is on the
+`deletion-ledger` volume, with the ledger. Change or blank
+`WS_TOKEN_STOP_RECORD` and nothing trims the old file any more: move it
+to the new path with the servers stopped, before the change; otherwise
+trim it by hand (drop each line whose `at` is over 365 days old) or
+delete it once no restore will replay it. One JSON line per stop or lift:
+`{selector, at, lift}`, `lift` present only when true, `at` in UTC to the
+microsecond, the stop's `stopped_at` or its `lifted_at` in the database.
+A line holds only the selector, the time and whether it is a lift: never
+the note, the account that ran the command, a token or anything else, nor
+Wappie's own `apply_failed` stops, which stay in the database. A stop's
+times only go forward. A stop or a lift timed at or before the stop's last
+change (two commands at once, or a clock stepped back) is made a
+microsecond after that change. One timed at or before the mark of what retention let go is
 made just after the mark ([what Wappie keeps of a
 token](contract.md#the-token-feed)). Its line carries the time it was
 made, so a replay brings the stops back as they stood. A command takes
@@ -600,7 +606,15 @@ command and the server at once lose no line.
   database but not in the record, and exits with status 1. A lift that
   cannot write it says "the lift is in the database but not in the
   record", names the `tokens suspend` and `tokens lift` that record it,
-  and exits with status 1.
+  and exits with status 1. Record a stop the file lacks by running
+  `tokens suspend` again with the same `-note`, as the message says: a
+  re-stop replaces the note, and its line carries the re-stop's time,
+  which the database then holds. Only two things hold the file's lock:
+  another `tokens suspend` or `tokens lift`, from before its database
+  write to its line (that write may wait on the database behind a
+  server's hourly retention), and a server's hourly trim, for
+  milliseconds. `-replay`, the start's check and a backup's copy take
+  none.
 - **When it is trimmed.** A line goes 365 days after its time, which is
   when it was written, whatever became of its stop, in the hourly pass
   (after its retention) and at each write. Decision 0056 sets this, and
@@ -610,11 +624,15 @@ command and the server at once lose no line.
   fails logs ERROR "token stop record trim failed" with the path and the
   error, and changes nothing; the next pass trims again. A trim never
   creates the file.
-- **A line that is no stop's record** (a hand edit, a damaged disk) is
-  kept as it is, and every pass logs ERROR "token stop record has
-  unreadable lines" with the path and how many, never what they say:
-  `tokens suspend -replay` refuses a record that holds one, so mend or
-  remove it before a restore needs the file.
+- **A line that is no stop's record** (a hand edit, a damaged disk, a
+  torn last line), blank or not, goes with the stop's line next to it:
+  the first after it, at that line's 365 days; with none after it, the
+  last before it; in a file of no stop's line, 365 days after the file
+  last changed. The trim's INFO counts those it dropped (`unreadable`).
+  Until then it is kept as it is, and every pass logs ERROR "token stop
+  record has unreadable lines" with the path and how many, never what
+  they say: `tokens suspend -replay` refuses a record that holds one, so
+  mend or remove it before a restore needs the file.
 - **At start.** In prod, serve checks the file right after the deletion
   ledger: it logs INFO "token stop record writable" with the path,
   creating the file when it is missing (and a temporary file beside it,
@@ -774,11 +792,57 @@ this order:
    for the feed's first page") until the feed's first page is stored after
    an observe; run it again then.
 
+A stop the replay brings back holds only its line: the selector and its
+times, with no note, as made by the account that ran the replay. Of a
+selector Wappie does not hold, it goes 365 days after its time, or earlier
+at its token's `created_at` plus 365 days once Wappie learns that date
+from a record of its selector or from the leader's lookup by selector,
+which run while the contract is on ([the token
+feed](contract.md#the-token-feed)).
+
+If the host is lost, a stop or lift made after the newest off-host copy of
+the record is lost with everything else made after it, and has to be made
+again, as a deletion made after the ledger's newest off-host copy is. A
+stop here is a stopgap: once the platform answers, have the token revoked
+in the console. A platform revocation comes back through the feed after
+any restore of Wappie's database; a stop comes back only through the
+record.
+
 A restore of the platform's database is the platform's: Wappie sees its new
 generation, or `gone`, and subscribes everyone again by itself. If a
 rotation happened after the platform's backup, Wappie holds a secret the
 platform no longer has: `contract check` exits `3`, and the owner
 reinstalls it (`contract-secret reset`, then the install).
+
+### Rolling back below 0053
+
+A binary older than 0053 (the contract's token part) refuses a database
+at version 53, so its down-step comes first, before 0052's. In this order:
+
+1. `whatserverd contract tokens off`, as the server's user from its
+   working directory (`contract mode off` turns tokens off too).
+2. Stop the server, and every other process that runs this release's store
+   code against the database (the hosted billing service is one).
+3. The down-step in the header of `0053_contract_tokens.sql`, after
+   checking the file's sha256 against the release's (`migration53_sha256`
+   in a hosted `RELEASE.json`), as the owner of the tables, in its one
+   transaction. Its guards run first: it refuses while tokens are on and
+   while a migration after 0053 is applied, and a refusal changes nothing.
+   It says what it drops: the tokens, their identities and grants, the
+   local stops and the retirement's record. The keys the retirement
+   revoked stay revoked.
+4. 0052's down-step, if the release being restored is older than 0052
+   ([Rolling back below 0052](#rolling-back-below-0052)), and so on down.
+5. Switch back to the older binary and start it, and the billing service on
+   its release.
+
+An older binary knows nothing of the stop record (`WS_TOKEN_STOP_RECORD`),
+so nothing trims it any more. Trim it by hand, dropping each line whose
+`at` is over 365 days old, or delete it, and its copies, once no
+re-upgrade will replay it. A re-upgrade re-applies the local stops from it
+(`tokens suspend -replay`); with no mark of what retention let go, a line
+of a stop retention let go before the down-step comes back too, as the
+stop of a selector Wappie does not hold.
 
 ### Rolling back below 0052
 

@@ -110,6 +110,10 @@ type Leader struct {
 	AckSpacing, AckEvery             time.Duration
 	AckBackoffMin, AckBackoffMax     time.Duration
 	UsageEvery, JudgeEvery           time.Duration
+	// The lookups' timings (lookups.go): how often they look for what is
+	// due, the wait after one that got no answer, and the most after a run
+	// of bad answers.
+	LookupEvery, LookupRetry, LookupBadMax time.Duration
 
 	// ours, set by tests only, tells the dirty and due notices this
 	// installation's sessions sent from any other's: every test schema
@@ -261,6 +265,9 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	wg.Go(func() { l.rounds(ctx, f.round) })
 	wg.Go(func() { snaps.run(ctx) })
 	wg.Go(func() { events.run(ctx) })
+	if l.Members.Tokens != nil {
+		wg.Go(func() { l.lookingUp(ctx) })
+	}
 	wg.Go(func() { l.watchMode(ctx, stop, f, settings, tokens, snaps.notices, events, held, wake) })
 	wg.Wait()
 	settings.halt()

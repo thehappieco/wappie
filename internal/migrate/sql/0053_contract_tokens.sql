@@ -67,27 +67,45 @@
 --                          stored created_at + 365 days; for a token Wappie
 --                          never held, a valid record's created_at + 365
 --                          days, but at most Wappie's clock + 365 days,
---                          and no row at all once it has passed; a bad
---                          record's, Wappie's clock + 365 days, never a
---                          time of its own), so a record that comes back
---                          later never revives the token. Its own guard
---                          keeps every member from widening: until only
---                          lowers, as a later valid record's narrows a bad
---                          one's.
+--                          and no row at all once it has passed), so a
+--                          record that comes back later never revives the
+--                          token. A bad record's revocation is never dated
+--                          by a time of its own: Wappie's clock + 365 days
+--                          (clock_until), until the leader's lookup by id
+--                          answers; then the token's own created_at + 365
+--                          days, or, on a signed not_found in the
+--                          generation the record came in, the row goes at
+--                          once. Its own guard keeps every member from
+--                          widening: until only lowers, as a later valid
+--                          record's narrows a bad one's.
 --   contract_token_stops   the operator's stops (and Wappie's own
 --                          apply_failed), keyed by selector, so a stop may
 --                          come before the record. The note stays local.
 --                          A stop of a selector Wappie holds goes with it,
 --                          past its until; any other at stopped_at + 365
---                          days, or earlier at record_until, the earliest
---                          created_at + 365 days of a valid record of its
---                          selector seen since (never a bad record's). An
---                          operator's goes only once its stop and its lift
---                          are past. Due before then, it keeps only its
---                          selector and times, as the stop record: its note
---                          is cleared and its stopped_by set to wappie; one
---                          timed past the pass that deletes its selector
---                          takes that selector's until as its record_until.
+--                          days, or earlier at the earliest created_at +
+--                          365 days of a valid record of its selector
+--                          (never a bad record's): one seen before the stop
+--                          (contract_token_dates), one seen since
+--                          (record_until), or the platform's answer to the
+--                          leader's lookup by selector, asked once when
+--                          neither dates it. A signed not_found leaves it
+--                          undated: the operator's own record, outside
+--                          decision 0056. An operator's goes only once its
+--                          stop and its lift are past. Due before then, it
+--                          keeps only its selector and times, as the stop
+--                          record: its note is cleared and its stopped_by
+--                          set to wappie; one timed past the pass that
+--                          deletes its selector takes that selector's until
+--                          as its record_until, and one timed past its
+--                          selector's date takes that date.
+--   contract_token_dates   selector -> the earliest created_at + 365 days
+--                          of a valid record of it that Wappie did not keep
+--                          (another workspace's, or a token held only in
+--                          the sticky set), at most Wappie's clock + 365
+--                          days, written by the applier and the lookups
+--                          only for a selector no selectors row holds, and
+--                          deleted past until (its own guard).
 --   contract_token_stops_let_go
 --                          one row: through, the latest time of an
 --                          operator's stop (its stop or its lift) that
@@ -106,9 +124,18 @@
 --                          days after it was sent; any, sent or not, with
 --                          its token's selector or sticky row at its until;
 --                          an unsent held entry of a generation no longer
---                          Wappie's (a reset does too); and an unsent one
---                          of a token Wappie keeps nothing of, 30 days
---                          after it was queued.
+--                          Wappie's (a reset does too); an unsent held
+--                          entry of a token Wappie keeps nothing of, 30
+--                          days after it was queued; a refusal of a token
+--                          Wappie holds no selector of, sent or not, 30
+--                          days after the earlier of its queuing and the
+--                          end its sticky row keeps; and, at the pass that
+--                          forgets a token (30 days after its end, or a
+--                          reset's pass that unlists it, or its
+--                          workspace's row gone) and every pass after,
+--                          sent or not, its refusals and its held entries'
+--                          removed items, and a held entry that then says
+--                          nothing.
 --   contract_token_used, contract_token_refusals
 --                          the usage counters: one row per token and UTC
 --                          day it was accepted, and per (token, day,
@@ -117,8 +144,10 @@
 --                          the leader reports. Written only for a token
 --                          whose selector Wappie keeps (its secret
 --                          matched); deleted once reported, at the start of
---                          the second UTC day after their day, and,
---                          reported or not, with the token's selector.
+--                          the second UTC day after their day; reported or
+--                          not, 30 days after their day, with the token's
+--                          selector, and a refusal on a number with the
+--                          token's forget.
 --   key_retirements        the operator's record of tokens retire-keys:
 --                          counts and key prefixes.
 --   users.token_identity   the hidden identity a live token's grants are
@@ -145,12 +174,13 @@
 --                          revoked.
 --
 -- Every change to a token, its perms, its sticky row or its stops (but a
--- stop's record_until alone, which only retention reads), to the
--- token switches of a workspace (tenants.mcp_text, mcp_media), to the modes
--- (contract_token_state's, contract_state's) or to an account document (the
--- belt) notifies wappie_contract_tokens with the token's id or 'all', so
--- every process re-checks its open sockets at once. No trigger writes
--- contract_tokens from another table (DB25): a NOTIFY takes no row lock.
+-- stop's record_until and lookup columns alone, which only retention and
+-- the lookups read), to the token switches of a workspace
+-- (tenants.mcp_text, mcp_media), to the modes (contract_token_state's,
+-- contract_state's) or to an account document (the belt) notifies
+-- wappie_contract_tokens with the token's id or 'all', so every process
+-- re-checks its open sockets at once. No trigger writes contract_tokens
+-- from another table (DB25): a NOTIFY takes no row lock.
 --
 -- Down-step (additive migration; `migrate.Run` refuses a binary that does not
 -- know version 53, so rolling back below it needs this first). Run only with
@@ -168,7 +198,12 @@
 -- what retention let go, a line of a stop it let go before the down-step
 -- comes back too, as the stop of a selector Wappie does not hold) and the
 -- retirement's record (counted); the keys the retirement revoked stay
--- revoked, as 0050's did.
+-- revoked, as 0050's did. Rolling back below 0053 leaves the stop record
+-- (WS_TOKEN_STOP_RECORD) with nothing that trims it: an older binary knows
+-- nothing of it. Trim it by hand, dropping each line whose at is over 365
+-- days old, or delete it once no re-upgrade will replay it
+-- (docs/deployment.md, "Rolling back below 0053"). The same goes for the
+-- old file when WS_TOKEN_STOP_RECORD is changed or blanked.
 --
 --      BEGIN;
 --      SELECT pg_advisory_xact_lock(6289348710053007958);
@@ -251,12 +286,12 @@
 --      END $$ LANGUAGE plpgsql;
 --      DROP FUNCTION api_key_class(api_keys);
 --      DROP TABLE key_retirements, contract_token_refusals, contract_token_used, contract_token_held_out,
---        contract_token_refusals_out, contract_token_stops_let_go, contract_token_stops, contract_token_sticky,
---        contract_token_removed, contract_token_perms, contract_token_pins, contract_tokens,
+--        contract_token_refusals_out, contract_token_stops_let_go, contract_token_dates, contract_token_stops,
+--        contract_token_sticky, contract_token_removed, contract_token_perms, contract_token_pins, contract_tokens,
 --        contract_token_selectors, contract_token_state;
 --      DROP FUNCTION contract_tokens_never_widen(), contract_token_notify(), contract_tokens_notify_all(),
 --        contract_token_identity_notify(), contract_token_pins_guard(), contract_token_selectors_guard(),
---        contract_token_sticky_guard();
+--        contract_token_sticky_guard(), contract_token_dates_guard();
 --      ALTER TABLE users DROP CONSTRAINT users_token_identity_shape, DROP COLUMN token_identity;
 --      ALTER TABLE devices DROP COLUMN ordinal;
 --      ALTER TABLE api_keys DROP COLUMN origin, DROP COLUMN revoke_reason;
@@ -487,8 +522,21 @@ CREATE TABLE contract_token_sticky (
     revoked_at          timestamptz,
     earliest_expires_at timestamptz,
     ended               text        CHECK (ended IN ('revoked', 'expired', 'unlisted')),
-    until               timestamptz NOT NULL
+    until               timestamptz NOT NULL,
+    -- Set while until is Wappie's clock + 365 days, from a bad record of a
+    -- token Wappie holds no selector of: the leader's lookup by id asks the
+    -- platform for the token's own date. Any other write clears it.
+    -- clock_gen is the generation that record came in.
+    clock_until         boolean     NOT NULL DEFAULT false,
+    clock_gen           uuid,
+    -- While clock_until: when to ask again (infinity: never, after a
+    -- not_found of another generation), and how many signed answers in a
+    -- row Wappie could not use.
+    lookup_after        timestamptz,
+    lookup_bad          integer     NOT NULL DEFAULT 0 CHECK (lookup_bad >= 0),
+    CHECK (NOT clock_until OR clock_gen IS NOT NULL)
 );
+CREATE INDEX contract_token_sticky_lookups ON contract_token_sticky (lookup_after) WHERE clock_until;
 -- What a sticky row says only narrows: a revocation and an ending are never
 -- cleared or changed, the earliest expiry and until never rise, and the row
 -- goes only past until.
@@ -521,14 +569,48 @@ CREATE TABLE contract_token_stops (
     note       text        NOT NULL DEFAULT '' CHECK (length(note) <= 500),
     lifted_at  timestamptz,
     -- The earliest created_at + 365 days of a valid record of the selector
-    -- (never a bad one's) the applier saw while the stop stood: only ever
-    -- lowered, kept by a re-stop. Retention reads it only while no
-    -- selectors row names the selector: a stop of a selector Wappie holds
-    -- goes with that row; an operator's timed past the pass that deletes
-    -- the row takes the row's until here.
+    -- (never a bad one's) that came while the stop stood, from the feed or
+    -- the lookup by selector: only ever lowered, kept by a re-stop.
+    -- Retention reads it only while no selectors row names the selector: a
+    -- stop of a selector Wappie holds goes with that row; an operator's
+    -- timed past the pass that deletes the row takes the row's until here,
+    -- and one timed past its selector's date (contract_token_dates) that
+    -- date.
     record_until timestamptz,
+    -- The leader's lookup by selector of a stop that nothing dates, while
+    -- no selectors row names it: when to ask again (infinity once a signed
+    -- not_found settled it), and how many signed answers in a row Wappie
+    -- could not use. Only the lookups write them, and they wake no socket.
+    lookup_after timestamptz,
+    lookup_bad   integer     NOT NULL DEFAULT 0 CHECK (lookup_bad >= 0),
     PRIMARY KEY (selector, cause)
 );
+-- A selector Wappie saw in a valid record and does not hold (another
+-- workspace's token, or one it keeps only in the sticky set), with the
+-- earliest created_at + 365 days of those records, at most Wappie's clock +
+-- 365 days: a stop of that selector goes then at the latest, whenever it
+-- was made. No row-level security, as the selectors and the stops: it holds
+-- no workspace, name, creator or item. Token auth never reads it.
+CREATE TABLE contract_token_dates (
+    selector text        PRIMARY KEY CHECK (selector ~ '^[0-9a-f]{16}$'),
+    until    timestamptz NOT NULL
+);
+-- A date only lowers, and goes only past until.
+CREATE FUNCTION contract_token_dates_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.until <= clock_timestamp() THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION '% keeps its rows until they end', TG_TABLE_NAME USING ERRCODE = 'P0001';
+    END IF;
+    IF NEW.selector <> OLD.selector OR NEW.until > OLD.until THEN
+        RAISE EXCEPTION 'a selector''s date only lowers' USING ERRCODE = 'P0001';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER contract_token_dates_guard BEFORE UPDATE OR DELETE ON contract_token_dates
+    FOR EACH ROW EXECUTE FUNCTION contract_token_dates_guard();
 CREATE TABLE contract_token_stops_let_go (
     id      boolean     PRIMARY KEY DEFAULT true CHECK (id),
     through timestamptz
@@ -612,8 +694,8 @@ CREATE TRIGGER contract_token_sticky_notify AFTER INSERT OR UPDATE ON contract_t
     FOR EACH ROW EXECUTE FUNCTION contract_token_notify();
 CREATE TRIGGER contract_token_stops_notify AFTER INSERT OR DELETE ON contract_token_stops
     FOR EACH ROW EXECUTE FUNCTION contract_token_notify();
--- record_until is retention's alone: a change of it and nothing else wakes
--- no socket.
+-- record_until and the lookup columns are retention's and the lookups':
+-- a change of them and nothing else wakes no socket.
 CREATE TRIGGER contract_token_stops_notify_update AFTER UPDATE ON contract_token_stops FOR EACH ROW
     WHEN ((OLD.selector, OLD.cause, OLD.stopped_at, OLD.stopped_by, OLD.note, OLD.lifted_at)
           IS DISTINCT FROM (NEW.selector, NEW.cause, NEW.stopped_at, NEW.stopped_by, NEW.note, NEW.lifted_at))

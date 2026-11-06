@@ -30,43 +30,59 @@ const tokenForgetAfter = 30 * 24 * time.Hour
 // they were reported (a day is reported once it has begun).
 const tokenUsageKeep = 48 * time.Hour
 
+// tokenUsageMost is how long any usage row is kept after its UTC day,
+// reported or not: the platform keeps a day's counts 30 days from the day
+// of use (decision 0056), so one reported later would tell it nothing it
+// keeps.
+const tokenUsageMost = 30 * 24 * time.Hour
+
 // tokenStopKeep is how long a stop of a selector Wappie never held is kept
-// after it was made (stopped_at, which a re-stop moves on), unless a valid
-// record of its selector came: then to that record's created_at + 365
-// days, if earlier. A stop of a selector Wappie holds goes with it, at its
-// until, its token's created_at + 365 days, which its expires_at never
+// after it was made (stopped_at, which a re-stop moves on), unless Wappie
+// learned of a valid record of its selector (from the feed, before the stop
+// or since, or from the lookup by selector): then to that record's
+// created_at + 365 days, if earlier. A signed not_found leaves the stop at
+// this: the platform does not know its token for Wappie, so the stop is the
+// operator's own record. A stop of a selector Wappie holds goes with it, at
+// its until, its token's created_at + 365 days, which its expires_at never
 // passes. A stop is made of a token that exists, so 365 days after it the
 // token has expired anyway. The stop record keeps each line as long after
 // its time, as decision 0056 sets (TokenStopLapsed).
 const tokenStopKeep = kc.MaxTokenLifetime
 
-// TokenRetention counts what a retention pass did.
+// TokenRetention counts what a retention pass did: Queues counts the
+// acknowledgement's entries and the usage rows a forgotten token's items
+// left, deleted or emptied.
 type TokenRetention struct {
-	Expired, Forgotten, Ended, Stops int64
+	Expired, Forgotten, Ended, Stops, Queues int64
 }
 
 // RetainTokens is the hourly retention of the token part (maintainOnce),
 // on Wappie's clock now. Per workspace a selector names: the expiry janitor
 // first, then what ended 30 days ago is forgotten, then what is past its
 // selector's until goes, on both clocks (its row with its perms, then its
-// removed instances, then its pin). Then, after every workspace and before
-// the selectors, in one statement, every stop due (one of a selector Wappie
-// holds once that selector is past its until, whatever its own dates; any
-// other at stopped_at + 365 days, or at its record_until if earlier; an
-// operator's only once its stop and its lift are at or before the cut, and
-// till then only its selector and times kept), with the mark of what it
-// let go (contract_token_stops_let_go); then
-// what the acknowledgement and the usage report still hold of a token past
-// its until, sent or not; then the selectors and sticky rows past their
-// until (their guards); then the usage rows reported, from the start of the
-// second UTC day after their day, the queues' entries sent over 30 days
-// ago, an unsent held entry of another generation than Wappie's, and an
-// unsent entry of a token Wappie keeps nothing of, queued over 30 days ago.
-// It visits every workspace a selector names, from the selectors alone,
-// one Wappie no longer has included, whose token rows went with it but
-// whose pins, removed instances and token identities (no foreign key) did
-// not: its removed instances and identities, of tokens that ended with
-// their workspace, go at once, its pins at their until.
+// removed instances), then what the acknowledgement and the usage report
+// hold of a forgotten token's items, sent or not (forgetQueuesTx), then its
+// pin. Then, after every workspace and before the selectors, in one
+// statement, every stop due (one of a selector Wappie holds once that
+// selector is past its until, whatever its own dates; any other at
+// stopped_at + 365 days, or at its record_until or its selector's date if
+// earlier; an operator's only once its stop and its lift are at or before
+// the cut, and till then only its selector and times kept), with the mark
+// of what it let go (contract_token_stops_let_go); then what the
+// acknowledgement and the usage report still hold of a token past its
+// until, sent or not; then the selectors, the sticky rows and the
+// selectors' dates past their until (their guards); then the usage rows
+// reported, from the start of the second UTC day after their day, and any,
+// 30 days after their day; the queues' entries sent over 30 days ago, an
+// unsent held entry of another generation than Wappie's, an unsent held
+// entry of a token Wappie keeps nothing of, queued over 30 days ago, and a
+// refusal of a token Wappie holds no selector of, sent or not, 30 days
+// after the earlier of its queuing and the end its sticky row keeps. It
+// visits every workspace a selector names, from the selectors alone, one
+// Wappie no longer has included, whose token rows went with it but whose
+// pins, removed instances, queue entries and token identities (no foreign
+// key) did not: its tokens ended with it, so their removed instances,
+// identities and items' queue entries go at once, its pins at their until.
 func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetention, error) {
 	var out TokenRetention
 	err := retryDeadlock(ctx, func() error {
@@ -197,6 +213,11 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 						return err
 					}
 				}
+				queues, err := forgetQueuesTx(ctx, tx, ws, gone[ws])
+				if err != nil {
+					return err
+				}
+				out.Queues += queues
 				if _, err := tx.Exec(ctx, `DELETE FROM contract_token_pins WHERE until <= $1`, cut); err != nil {
 					return err
 				}
@@ -211,41 +232,49 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 			// (selector, cause) order, before the selectors: one of a
 			// selector Wappie holds only with it, past its until, whatever
 			// its own dates; any other at stopped_at + 365 days, or at its
-			// record_until if that is earlier. The mark of what retention
-			// let go is locked first, as a stop or a lift takes it (between
-			// its token's row and its stop), and moves on to the latest
-			// time of an operator's stop deleted here: once this commits,
-			// no stop or lift is made at or before it (stopChange). An
-			// operator's stop goes only once its times are at or before the
-			// cut, so the mark never passes Wappie's clock: a stop timed
-			// ahead (a clock ahead when it was made) would otherwise give
-			// every later stop and lift, of any selector, its time. One due
-			// before then keeps only what the stop record may hold, its
-			// selector and its times (decision 0056): its note goes and its
-			// stopped_by reads wappie. One of a selector that goes now also
-			// takes the selector's until as its record_until, so the first
-			// pass once its times are past lets it go. It is written once:
-			// a later pass finds nothing to change.
+			// record_until or its selector's date if that is earlier. The
+			// mark of what retention let go is locked first, as a stop or a
+			// lift takes it (between its token's row and its stop), and moves
+			// on to the latest time of an operator's stop deleted here: once
+			// this commits, no stop or lift is made at or before it
+			// (stopChange). An operator's stop goes only once its times are
+			// at or before the cut, so the mark never passes Wappie's clock:
+			// a stop timed ahead (a clock ahead when it was made) would
+			// otherwise give every later stop and lift, of any selector, its
+			// time. One due before then keeps only what the stop record may
+			// hold, its selector and its times (decision 0056): its note goes
+			// and its stopped_by reads wappie. One of a selector that goes
+			// now also takes the selector's until as its record_until, so the
+			// first pass once its times are past lets it go; one of a
+			// selector Wappie does not hold takes that selector's date
+			// likewise (contract_token_dates, read here, unlocked, so a stop
+			// made before the page that dates its selector committed is dated
+			// all the same). It is written once: a later pass finds nothing
+			// to change.
 			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_token_stops_let_go FOR UPDATE`); err != nil {
 				return err
 			}
 			if err := tx.QueryRow(ctx, `WITH due AS (
-					SELECT y.selector, y.cause, s.until,
+					SELECT y.selector, y.cause, s.until AS held_until, d.until AS seen_until,
 					       y.cause <> 'operator' OR greatest(y.stopped_at, y.lifted_at) <= $1 AS ripe
 					FROM contract_token_stops y
 					LEFT JOIN contract_token_selectors s ON s.selector = y.selector
+					LEFT JOIN contract_token_dates d ON d.selector = y.selector
 					WHERE CASE WHEN s.selector IS NOT NULL THEN s.until <= $1
-					           ELSE least(y.stopped_at + $2::interval, coalesce(y.record_until, 'infinity')) <= $1 END
+					           ELSE least(y.stopped_at + $2::interval, coalesce(y.record_until, 'infinity'),
+					                      coalesce(d.until, 'infinity')) <= $1 END
 					ORDER BY y.selector, y.cause FOR UPDATE OF y),
 				gone AS (
 					DELETE FROM contract_token_stops x USING due l
 					WHERE x.selector = l.selector AND x.cause = l.cause AND l.ripe
 					RETURNING x.cause, greatest(x.stopped_at, x.lifted_at) AS last),
 				kept AS (
-					UPDATE contract_token_stops x SET note = '', stopped_by = 'wappie', record_until = least(x.record_until, l.until)
+					UPDATE contract_token_stops x SET note = '', stopped_by = 'wappie',
+					       record_until = least(x.record_until, l.held_until, l.seen_until)
 					FROM due l
 					WHERE x.selector = l.selector AND x.cause = l.cause AND NOT l.ripe
-					  AND (x.note <> '' OR x.stopped_by <> 'wappie' OR x.record_until IS DISTINCT FROM least(x.record_until, l.until)))
+					  AND (x.note <> '' OR x.stopped_by <> 'wappie'
+					       OR x.record_until IS DISTINCT FROM least(x.record_until, l.held_until, l.seen_until)))
 				UPDATE contract_token_stops_let_go
 				SET through = greatest(through, (SELECT max(last) FROM gone WHERE cause = 'operator'))
 				RETURNING (SELECT count(*) FROM gone)`, cut, tokenStopKeep).Scan(&out.Stops); err != nil {
@@ -277,12 +306,19 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 				// went above, or took their until if timed past the cut.
 				{`DELETE FROM contract_token_selectors WHERE until <= $1`, []any{cut}},
 				{`DELETE FROM contract_token_sticky WHERE until <= $1`, []any{cut}},
+				// The selectors' dates after the stops that read them.
+				{`DELETE FROM contract_token_dates WHERE until <= $1`, []any{cut}},
 				// A day's usage rows, once reported, from the start of the
-				// second UTC day after it, whatever the session's time zone.
+				// second UTC day after it, whatever the session's time zone;
+				// and any, 30 days after it.
 				{`DELETE FROM contract_token_used WHERE reported_at IS NOT NULL
 					AND day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
 				{`DELETE FROM contract_token_refusals WHERE reported_count >= count
 					AND day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
+				{`DELETE FROM contract_token_used WHERE day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`,
+					[]any{now, tokenUsageMost}},
+				{`DELETE FROM contract_token_refusals WHERE day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`,
+					[]any{now, tokenUsageMost}},
 				{`DELETE FROM contract_token_refusals_out WHERE sent_at < $1::timestamptz - $2::interval`, []any{now, tokenForgetAfter}},
 				{`DELETE FROM contract_token_held_out WHERE sent_at < $1::timestamptz - $2::interval`, []any{now, tokenForgetAfter}},
 				// A held entry of another generation than Wappie's, never to
@@ -291,12 +327,20 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 				// and this is its belt.
 				{`DELETE FROM contract_token_held_out WHERE sent_at IS NULL
 					AND generation IS DISTINCT FROM (SELECT generation FROM contract_state)`, nil},
-				// An unsent entry of a token Wappie keeps nothing of (a bad
-				// record's refusal), 30 days after it was queued, whether
-				// the acknowledgement is off or refused that long.
-				{`DELETE FROM contract_token_refusals_out o WHERE o.sent_at IS NULL AND o.queued_at <= $1::timestamptz - $2::interval
-					AND NOT EXISTS (SELECT 1 FROM contract_token_selectors s WHERE s.token_id = o.token_id)
-					AND NOT EXISTS (SELECT 1 FROM contract_token_sticky k WHERE k.token_id = o.token_id)`, []any{now, tokenForgetAfter}},
+				// A refusal of a token Wappie holds no selector of (a bad
+				// record's), sent or not, 30 days after the earlier of when
+				// it was queued and the end its sticky row keeps (its
+				// revocation, or its earliest expiry): its end + 30 days when
+				// Wappie knows the end, else 30 days after it came (a token
+				// whose end Wappie does not know may live). Whether the
+				// acknowledgement is off or refused that long.
+				{`DELETE FROM contract_token_refusals_out o
+					WHERE NOT EXISTS (SELECT 1 FROM contract_token_selectors s WHERE s.token_id = o.token_id)
+					  AND least(o.queued_at, (SELECT least(k.revoked_at, CASE WHEN isfinite(k.earliest_expires_at) THEN k.earliest_expires_at END)
+					                          FROM contract_token_sticky k WHERE k.token_id = o.token_id)) <= $1::timestamptz - $2::interval`,
+					[]any{now, tokenForgetAfter}},
+				// An unsent held entry of a token Wappie keeps nothing of, 30
+				// days after it was queued.
 				{`DELETE FROM contract_token_held_out o WHERE o.sent_at IS NULL AND o.queued_at <= $1::timestamptz - $2::interval
 					AND NOT EXISTS (SELECT 1 FROM contract_token_selectors s WHERE s.token_id = o.token_id)
 					AND NOT EXISTS (SELECT 1 FROM contract_token_sticky k WHERE k.token_id = o.token_id)`, []any{now, tokenForgetAfter}},
@@ -309,6 +353,45 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 		})
 	})
 	return out, err
+}
+
+// forgetQueuesTx deletes, in workspace ws (its app.tenant_id set), what the
+// acknowledgement and the usage report hold of the items of a token whose
+// record retention or a reset's pass forgot, sent or not, at every pass from
+// the one that forgot it: its refusals, the items its held entries keep off
+// (an entry that then says nothing goes; one still told revoked, expiring
+// earlier or with a pinned key stays, which is its security record), and
+// its usage refusals on a number. A token of a workspace whose row is gone
+// (gone) counts as forgotten: it ended with its workspace. Its usage rows
+// of the token itself (its days of use, its refusals as revoked or expired)
+// are no item's, and keep their own rules. These rows have no step of DB25:
+// they come after the workspace's token rows, perms and removed instances,
+// as the applier writes its queues. It returns how many it deleted or
+// emptied.
+func forgetQueuesTx(ctx context.Context, tx pgx.Tx, ws uuid.UUID, gone bool) (int64, error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM contract_tokens WHERE forgotten_at IS NOT NULL
+		UNION SELECT token_id FROM contract_token_selectors WHERE $1 AND tenant_id = $2`, gone, ws)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	var n int64
+	for _, q := range []string{
+		`DELETE FROM contract_token_refusals_out WHERE token_id = ANY ($1)`,
+		`UPDATE contract_token_held_out SET removed = '[]' WHERE token_id = ANY ($1) AND removed <> '[]'::jsonb`,
+		`DELETE FROM contract_token_held_out WHERE token_id = ANY ($1) AND NOT revoked AND expires_at IS NULL AND reading_key IS NULL`,
+		`DELETE FROM contract_token_refusals WHERE token_id = ANY ($1) AND device_id IS NOT NULL`,
+	} {
+		tag, err := tx.Exec(ctx, q, ids)
+		if err != nil {
+			return n, err
+		}
+		n += tag.RowsAffected()
+	}
+	return n, nil
 }
 
 // goneWorkspacesTx are those of workspaces whose tenants row is gone.

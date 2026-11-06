@@ -846,12 +846,13 @@ func stopLine(t *testing.T, sel string, at time.Time, lift bool) string {
 }
 
 // The hourly trim drops the lines 365 days old, by the comparison a replay
-// uses to leave one (store.TokenStopLapsed), and nothing else: a line
-// younger by a microsecond stays, whatever became of its stop. It keeps a
-// line that is no stop's record, counted, in their order, each record
-// written again with nothing a line must not hold. It keeps the file's
-// mode and owner, removes a temporary copy a killed rewrite left, never
-// makes a missing record, and leaves alone one it would not change.
+// uses to leave one (store.TokenStopLapsed), and with them the lines that
+// are no stop's record before them (TestUnreadableStopLinesGoWithTheirNeighbours),
+// and nothing else: a line younger by a microsecond stays, whatever became
+// of its stop. It keeps the rest in their order, each record written again
+// with nothing a line must not hold. It keeps the file's mode and owner,
+// removes a temporary copy a killed rewrite left, never makes a missing
+// record, and leaves alone one it would not change.
 func TestTokenStopRecordTrim(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -896,14 +897,16 @@ func TestTokenStopRecordTrim(t *testing.T) {
 		return [2]uint32{st.Uid, st.Gid}
 	}
 	was := owner()
-	if did, err := trimTokenStops(ctx, record, now); err != nil || did.dropped != 2 || did.unreadable != 1 {
-		t.Fatalf("the trim: %+v, %v; want 2 lines dropped and 1 kept unread", did, err)
+	// The line that is no record and the blank one go with the 365-day
+	// line after them.
+	if did, err := trimTokenStops(ctx, record, now); err != nil || did.dropped != 3 || did.unreadableDropped != 1 || did.unreadable != 0 {
+		t.Fatalf("the trim: %+v, %v; want 3 lines dropped, 1 of them unread, and none kept unread", did, err)
 	}
 	got, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := strings.Join([]string{lines[1], lines[2], lines[4], lines[5], lines[6], lines[7], stopLine(t, c, now.Add(-time.Minute), false)}, "\n") + "\n"
+	want := strings.Join([]string{lines[4], lines[5], lines[6], lines[7], stopLine(t, c, now.Add(-time.Minute), false)}, "\n") + "\n"
 	if string(got) != want {
 		t.Fatalf("the record after the trim:\n%s\nwant:\n%s", got, want)
 	}
@@ -922,7 +925,7 @@ func TestTokenStopRecordTrim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if did, err := trimTokenStops(ctx, record, now); err != nil || did.dropped != 0 || did.unreadable != 1 {
+	if did, err := trimTokenStops(ctx, record, now); err != nil || did != (stopRecordRewrite{}) {
 		t.Fatalf("a second trim: %+v, %v", did, err)
 	}
 	if fi, err := os.Stat(record); err != nil || !os.SameFile(held, fi) {
@@ -935,6 +938,70 @@ func TestTokenStopRecordTrim(t *testing.T) {
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the trim made a missing record: %v", err)
+	}
+}
+
+// F4: a line of the stop record that is no stop's record (a hand edit, a
+// damaged disk, a torn last line), blank or not, goes with the stop's line
+// next to it: the first after it, at that line's 365 days; with none after
+// it, the last before it; in a record of no stop's line, the file's last
+// change. Lines are only added at the end, so the line after it was
+// written after it, and a replay never needs it: -replay refuses the
+// record while it holds one.
+func TestUnreadableStopLinesGoWithTheirNeighbours(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	const day = 24 * time.Hour
+	dir := t.TempDir()
+	record := filepath.Join(dir, "token-stops.jsonl")
+	const a, b = "0000000000000001", "0000000000000002"
+	lines := []string{
+		"damaged",
+		"",
+		stopLine(t, a, now.Add(-366*day), false),
+		`{"selector":"` + b + `"}`,
+		stopLine(t, b, now.Add(-10*day), false),
+		"",
+		"torn",
+	}
+	if err := os.WriteFile(record, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	did, err := trimTokenStops(ctx, record, now)
+	if err != nil || did.dropped != 2 || did.unreadableDropped != 1 || did.unreadable != 2 {
+		t.Fatalf("the trim: %+v, %v; want 2 dropped, 1 of them unread, and 2 kept unread", did, err)
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Join(lines[3:], "\n") + "\n"; string(got) != want {
+		t.Fatalf("the record after the trim:\n%s\nwant:\n%s", got, want)
+	}
+	// The last lines, dated by the line before them, go with it.
+	if did, err := trimTokenStops(ctx, record, now.Add(356*day)); err != nil || did.dropped != 3 || did.unreadableDropped != 2 || did.unreadable != 0 {
+		t.Fatalf("the trim 365 days after the line before them: %+v, %v", did, err)
+	}
+	if got, err := os.ReadFile(record); err != nil || len(got) != 0 {
+		t.Fatalf("the record after its last lines went: %q, %v", got, err)
+	}
+
+	// A record of no stop's line: dated by its last change.
+	if err := os.WriteFile(record, []byte("damaged\n\ntorn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if did, err := trimTokenStops(ctx, record, now.Add(-time.Minute).Add(kc.MaxTokenLifetime)); err != nil || did.dropped != 0 || did.unreadable != 2 {
+		t.Fatalf("a record of no stop's line, under 365 days after its last change: %+v, %v", did, err)
+	}
+	changed := now.Add(-366 * day)
+	if err := os.Chtimes(record, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	if did, err := trimTokenStops(ctx, record, now); err != nil || did.dropped != 2 || did.unreadableDropped != 2 {
+		t.Fatalf("a record of no stop's line, 366 days after its last change: %+v, %v", did, err)
+	}
+	if got, err := os.ReadFile(record); err != nil || len(got) != 0 {
+		t.Fatalf("the record after its unread lines went: %q, %v", got, err)
 	}
 }
 
@@ -1368,7 +1435,10 @@ func TestTheRecordFollowsTheDatabasesOrder(t *testing.T) {
 	if qerr := pool.QueryRow(ctx, `SELECT count(*) FROM contract_token_stops WHERE selector = $1 AND lifted_at IS NULL`, other).Scan(&open); qerr != nil {
 		t.Fatal(qerr)
 	}
-	if err == nil || !strings.Contains(err.Error(), "the stop is in the database but not in the record") || open != 1 {
+	// It says how to record it, and what holds the lock.
+	if err == nil || !strings.Contains(err.Error(), "the stop is in the database but not in the record") || open != 1 ||
+		!strings.Contains(err.Error(), "record it by running tokens suspend again with the same -note, since a re-stop replaces the note") ||
+		!strings.Contains(err.Error(), "the record is locked (by another tokens suspend or lift, which may be waiting on the database behind a server's hourly retention, or by a server's hourly trim)") {
 		t.Fatalf("a command that cannot lock the record: %v, %d open stops", err, open)
 	}
 	// A lift that cannot lock the record is made all the same, and says
@@ -1378,7 +1448,7 @@ func TestTheRecordFollowsTheDatabasesOrder(t *testing.T) {
 		t.Fatal(qerr)
 	}
 	if err == nil || !strings.Contains(err.Error(), "the lift is in the database but not in the record") ||
-		!strings.Contains(err.Error(), "tokens suspend, then tokens lift") || open != 0 {
+		!strings.Contains(err.Error(), "tokens suspend with the same -note, then tokens lift") || open != 0 {
 		t.Fatalf("a lift that cannot lock the record: %v, %d open stops", err, open)
 	}
 }

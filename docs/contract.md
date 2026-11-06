@@ -554,6 +554,53 @@ A signed `gone` resets both feeds.
 a minute, with each token's days of use and its refusals' absolute counts;
 what does not fit one body follows at once.
 
+**The lookups** date what Wappie keeps of a token it does not hold, so it
+keeps it no longer than the token's `created_at` plus 365 days (decision
+0056; [what Wappie keeps of a token](#the-token-feed), below). They are
+the leader's signed GETs of one token:
+
+- **by id** (`GET /contract/v1/tokens/{id}`), for a revocation a bad
+  record brought of a token Wappie holds no selector of, which Wappie's
+  clock dates;
+- **by selector** (`GET /contract/v1/token-selectors/{selector}`), for a
+  stop of a selector Wappie does not hold that no valid record dates.
+  Each is an operator's stop, never a client's token, and is asked once.
+
+They run in the leader while the contract is on, whatever the token mode:
+they only date what Wappie keeps, and a revocation a bad record left while
+tokens were on waits on them after tokens are off. The leader looks for
+those due every minute, each GET on a turn of its pace, and writes each
+answer in a transaction of its own, never during the call. Nothing of an
+answer is applied to a token: no row, perm, pin or identity is made from
+it.
+
+- **A good record** (valid, Wappie's, the token or selector asked for, its
+  reading key's fingerprint its own) dates the token's revocation, its
+  selector's stops and its selector (below) to its `created_at` plus 365
+  days.
+- **A signed `not_found`** by id means the token is past its `created_at`
+  plus 365 days: the platform keeps a record that named Wappie until then
+  and answers `not_found` after. Its revocation goes at once, but only in
+  the generation its bad record came in: after a restore of the platform's
+  database, `not_found` also means a token the restored platform never
+  named to Wappie, which it may name later unrevoked. In another generation
+  the revocation keeps its date and is not asked again. By selector, the
+  platform knows no token of that selector for Wappie: the stop is the
+  operator's own record, kept 365 days after it was made, and is not asked
+  again.
+- **A signed answer whose record Wappie cannot use** (one that is not
+  valid, or whose fingerprint is not its key's) is asked again 15 minutes
+  later, doubled each time to 24 hours, since the platform answers with
+  the record it stores until that changes. The first logs ERROR
+  "contract: the platform answered a token lookup with a record Wappie
+  cannot use; it is asked again later" (class `token_lookup_invalid`).
+- **No answer** (none, an unsigned one, any other refusal): asked again 15
+  minutes later, for as long as the row lasts, with a WARN "contract: a
+  token lookup got no answer" at most once a minute, and INFO "contract:
+  the token lookups answer again" when they do. A platform that never
+  answers leaves each row to its outer bound: a revocation 365 days after
+  it came, a stop 365 days after it was made.
+
 **The operator's own stop.**
 
 ```
@@ -588,6 +635,19 @@ lift happened. With no record configured
 the stop is made all the same, and the command says a restore would lose
 it. Nothing it prints says whether Wappie holds a token of that selector.
 
+A stop the record lacks (the lock not taken, the file not written) is
+recorded by running `tokens suspend` again with the same `-note`: a
+re-stop replaces the note, and its line carries the re-stop's time, which
+the database then holds. The lock's holders are another `tokens suspend`
+or `tokens lift`, from before its database write to its line (that write
+may wait on the database behind a server's hourly retention), and a
+server's hourly trim, for milliseconds.
+
+A stop here is a stopgap. Once the platform answers, have the token
+revoked in the console: a platform revocation comes back through the feed
+after any restore of Wappie's database, and a stop comes back only through
+the stop record.
+
 A line of the record holds only the selector, the time, which is the
 stop's `stopped_at` or its `lifted_at` to the microsecond, and whether it
 is a lift: never the note (`-note`, kept in Wappie's database only), the
@@ -611,9 +671,14 @@ sets this, and requires it never to be less than the reach of the backups
 Wappie may restore (the pilot's snapshots are kept 90 days), so a restore
 of any of them finds every line written since. The trim never creates the
 file, and a trim that fails is done again by the next pass. A line that
-is no stop's record (a hand edit, a damaged disk) stays, and every pass
-logs an ERROR that counts it ([the stop record](deployment.md#the-contract)),
-since `-replay` refuses the file while it holds one.
+is no stop's record (a hand edit, a damaged disk, a torn last line),
+blank or not, goes with the stop's line next to it: the first after it, at
+that line's 365 days; with none after it, the last before it; in a file of
+no stop's line, 365 days after the file last changed. Lines are only added
+at the end, so the line after it was written after it, and a replay never
+needs it. Until then it stays, and every pass logs an ERROR that counts it
+([the stop record](deployment.md#the-contract)), since `-replay` refuses
+the file while it holds one.
 
 A line 365 days old goes even while its stop stands. Only the stop of a
 selector Wappie holds outlives 365 days, to that selector's date, its
@@ -650,7 +715,10 @@ Every other line applies, at its own time, with no note, as made by the
 account that runs the replay. A stop made after the snapshot, of a token
 Wappie first saw after it and whose `created_at` plus 365 days passed
 before the restore, comes back as the stop of a selector Wappie does not
-hold: kept to 365 days after it was made at most, as its line.
+hold: kept to 365 days after it was made at most, as its line, or earlier
+at its token's `created_at` plus 365 days when Wappie learns that date (a
+record of its selector, or the lookup by selector, once tokens are on
+again).
 
 **What Wappie keeps of a token.** The hourly maintenance pass (the plan's
 retention) deletes, on Wappie's clock (what goes at a token's `created_at`
@@ -666,7 +734,14 @@ plus 365 days, and the stops, never before the database's clock either):
   pass. A token a reset's pass finds unlisted loses all of this at that
   pass: an unlisting carries no time, so a restore that runs the pass
   again would start its 30 days again. Its hidden identity (`users`,
-  `user_logins`) goes at its end.
+  `user_logins`) goes at its end. With its record, at that pass and every
+  pass after, sent or not, goes what the acknowledgement and the usage
+  report hold of its items: its refusals (item, perm and code), the items
+  its held entries keep off (an entry that then says nothing goes; one
+  still told revoked, expiring earlier or with a pinned key stays, as its
+  security record), and its usage refusals on a number. Its days of use
+  and its refusals as a token (presented revoked or expired), which name
+  no item, keep the usage rows' own rule (below).
 - **Its security record**, used only to keep it refused, at its
   `created_at` plus 365 days, when it would have expired anyway and its
   records have left the platform's feed: its selector and hash, its pinned
@@ -680,16 +755,31 @@ plus 365 days, and the stops, never before the database's clock either):
   valid record's `created_at` plus 365 days (a `created_at` ahead of the
   clock counts as now), and none once that has passed. A bad record's
   times are never taken: its revocation is kept 365 days from when it
-  came, until a valid record of the token narrows that.
-- **A workspace's row deleted:** its token rows go with it, their grant
-  instances and hidden identities at the next pass, their pins and
+  came only until Wappie learns the token's own date, from a valid record
+  of it or from the lookup by id (above), which may also let it go at once
+  (a signed `not_found`). A platform that answers with a record Wappie
+  cannot use, or never answers, leaves it at 365 days from when it came.
+  Its selector, when that valid record names one no token here holds, is
+  kept with the record's `created_at` plus 365 days
+  (`contract_token_dates`), to that date: it dates a stop of that
+  selector (below). A refusal of a bad record's grants goes 30 days after
+  the earlier of its queuing and the token's end, when Wappie keeps it,
+  sent or not.
+- **A workspace's row deleted:** its token rows go with it; their grant
+  instances, hidden identities and their items' queue entries and usage
+  refusals (as for a forgotten token's) at the next pass; their pins and
   selectors at their date.
 - **Wappie's own stops** (the operator's and `apply_failed`): one of a
   selector Wappie holds goes with that selector, at its token's
   `created_at` plus 365 days, however old the stop; any other 365 days
   after it was made (a new `suspend` makes it again), or earlier at the
-  `created_at` plus 365 days of a valid record of its selector that came
-  since (never a bad record's). An operator's stop whose stop or lift is
+  earliest `created_at` plus 365 days of a valid record of its selector
+  (never a bad record's): one that came before the stop (its selector's
+  date, above), one that came since, or the platform's answer to the
+  lookup by selector (above). A signed `not_found` leaves it to 365 days
+  after it was made: the platform knows no token of that selector for
+  Wappie, so it is the operator's own record, under Wappie's rule and not
+  decision 0056's. An operator's stop whose stop or lift is
   timed ahead of the pass (a clock ahead when it was made) waits for its
   times to pass, so the mark (above) never passes Wappie's clock, and goes
   at the first pass after them. Past its date it keeps only what the stop
@@ -697,10 +787,14 @@ plus 365 days, and the stops, never before the database's clock either):
   shows it as made by `wappie`. The operator's lines in the stop record go
   365 days after their time, whatever became of the stop (above).
 - **Usage rows**, once reported, at the start of the second UTC day after
-  their day, so at most 2 days after they were reported.
+  their day, so at most 2 days after they were reported; and any,
+  reported or not, at the start of the 30th UTC day after their day: the
+  platform keeps a day's counts 30 days from the day of use, so a later
+  report would tell it nothing it keeps.
 - **The acknowledgement's queues**, 30 days after they were sent; a held
-  entry of a generation a reset left, at the reset; an unsent entry of a
-  token Wappie keeps nothing of, 30 days after it was queued.
+  entry of a generation a reset left, at the reset; an unsent held entry
+  of a token Wappie keeps nothing of, 30 days after it was queued; a
+  forgotten token's, as its record (above).
 
 ## Observe's comparison
 
@@ -1258,9 +1352,10 @@ clean until its bounds pass:
   journal). Its classes: `feed_silent`, `published_through_ahead`,
   `document_invalid`, `kind_changed`, `round_incomplete`, `snapshot_parked`,
   `snapshot_invalid`, `event_parked`, `events_refused`,
-  `event_actor_unknown`, the token part's `token_feed_silent`, and the
-  settings part's `command_invalid`, `command_stuck`, `command_reset_loop`,
-  `section_invalid`, `section_parked`, `result_parked`, `person_invalid`;
+  `event_actor_unknown`, the token part's `token_feed_silent` and
+  `token_lookup_invalid`, and the settings part's `command_invalid`,
+  `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
+  `result_parked`, `person_invalid`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
@@ -1392,7 +1487,12 @@ is kept", and "contract: a good token record's hash does not decode", which
 Validate rules out (the record is passed over). Each names a token by its
 id, selector and version, never by its record's JSON. The token follower's
 own: "contract: no token feed page for a long time" (class
-`token_feed_silent`).
+`token_feed_silent`). The lookups' (above): "contract: the platform
+answered a token lookup with a record Wappie cannot use; it is asked again
+later" (class `token_lookup_invalid`), once for each lookup, with its kind
+(`id` or `selector`), never its token or selector; and WARN "contract: a
+token lookup got no answer", INFO "contract: the token lookups answer
+again".
 
 **Lock order.** Every transaction that touches several of the contract's
 rows takes them in one order: `contract_state`, then `contract_accounts`
@@ -1409,7 +1509,11 @@ stops come after the tokens: a stop or a lift takes its token's row, then
 the mark of what retention let go (`contract_token_stops_let_go`, shared),
 then its stop; retention takes the mark after every workspace's token
 rows and before the stops. A command takes the stop record's file lock
-before any of them.
+before any of them. The selectors' dates (`contract_token_dates`) come
+after the stops. The lookups write after their call, never during it, in
+a transaction of their own that takes no workspace or token row: the
+token's sticky row, then its selector's stops, then its selector's date,
+in the applier's order.
 
 ## What enforce adds
 
@@ -1461,6 +1565,9 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | ack every | 1 minute | the most between two acknowledgements while the token feed runs |
 | ack backoff | 1 second to 30 seconds | after an acknowledgement that was not accepted |
 | usage | 1 minute | the least between two usage reports |
+| lookup | 1 minute | how often the leader looks for lookups due |
+| lookup retry | 15 minutes | after a lookup that got no answer |
+| lookup backoff | 15 minutes to 24 hours | after a signed answer whose record Wappie cannot use, doubled each time |
 | warn | 1 minute | the follower's and the senders' WARN for a run of failures, at most once |
 | round failing | 15 minutes | the round's PUTs failing, before its ERROR |
 | debounce | 2 seconds | a snapshot after the first change of a run |

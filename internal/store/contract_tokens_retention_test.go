@@ -1284,8 +1284,9 @@ func TestAResetLeavesNoHeldEntryBehind(t *testing.T) {
 // its selector or sticky row at its until, sent or not, reported or not
 // (the acknowledgement or the usage report off, or refused, that long); a
 // usage row of a token Wappie keeps no selector of goes at once (they are
-// written only for one whose secret matched it); an unsent queue entry of
-// a token Wappie keeps nothing of goes 30 days after it was queued.
+// written only for one whose secret matched it), and any 30 days after its
+// day; an unsent queue entry of a token Wappie keeps nothing of goes 30
+// days after it was queued.
 func TestTokenRetentionTakesWhatWasNeverSent(t *testing.T) {
 	w := newTokenWorld(t)
 	past, kept, revoked := uuid.New(), uuid.New(), uuid.New()
@@ -1338,10 +1339,12 @@ func TestTokenRetentionTakesWhatWasNeverSent(t *testing.T) {
 			t.Errorf("%s: %d rows of the queues and usage left, want %d", name, n, c.want)
 		}
 	}
-	// 31 days on by Wappie's clock: the unsent entry of no token goes; a
-	// live token's stay, its until 364 days on the database's clock.
+	// 31 days on by Wappie's clock: the unsent entry of no token goes, and
+	// so do a live token's usage rows, 30 days after their day, reported or
+	// not (the platform keeps a day's counts no longer); its queue entries
+	// stay, its until 364 days on the database's clock.
 	w.retain(w.now.Add(31 * tokenDay))
-	if n, m := rows(recent), rows(kept); n != 0 || m != 4 {
-		t.Errorf("31 days on: %d entries of no token left, want 0; %d of a live token's, want 4", n, m)
+	if n, m := rows(recent), rows(kept); n != 0 || m != 2 {
+		t.Errorf("31 days on: %d entries of no token left, want 0; %d of a live token's, want 2", n, m)
 	}
 }
