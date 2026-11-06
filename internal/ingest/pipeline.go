@@ -239,11 +239,12 @@ func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, err
 		TenantID: p.tenant,
 		DeviceID: deviceID,
 
-		WAID:    env.MessageID,
-		ChatKey: env.Chat.Primary().String(),
-		ChatLID: jidString(env.Chat.LID),
-		ChatPN:  jidString(env.Chat.PN),
-		IsGroup: env.IsGroup,
+		WAID:      env.MessageID,
+		ChatKey:   env.Chat.Primary().String(),
+		ChatLID:   jidString(env.Chat.LID),
+		ChatPN:    jidString(env.Chat.PN),
+		IsGroup:   env.IsGroup,
+		ProbeKeys: p.probeKeys(ctx, env),
 
 		SenderKey: jidString(env.Sender.Primary()),
 		SenderLID: jidString(env.Sender.LID),
@@ -437,6 +438,40 @@ func jidString(j jidLike) string {
 		return ""
 	}
 	return j.String()
+}
+
+// lidBook is a PhoneBook that also answers "whose LID is this number".
+type lidBook interface {
+	LIDFor(ctx context.Context, pn types.JID) (types.JID, bool)
+}
+
+// probeKeys is the other key a direct message may already be stored under,
+// so the store drops a copy of it under that key: after a relink, history
+// comes again under either the conversation's LID or its phone number. With
+// both halves known, the key is the LID and the probe the phone number.
+// With the phone number only, the probe is the LID whatsmeow's map knows
+// for it; it never becomes the chat key (resolvePhones' one direction).
+// Groups and broadcasts have none.
+func (p *Pipeline) probeKeys(ctx context.Context, env domain.Envelope) []string {
+	if env.IsGroup {
+		return nil
+	}
+	lid, pn := env.Chat.LID, env.Chat.PN
+	if pn.IsEmpty() || pn.Server != types.DefaultUserServer {
+		return nil
+	}
+	if !lid.IsEmpty() {
+		if lid.Server != types.HiddenUserServer {
+			return nil
+		}
+		return []string{pn.String()}
+	}
+	if book, ok := p.phones.(lidBook); ok {
+		if found, ok := book.LIDFor(ctx, pn); ok {
+			return []string{found.String()}
+		}
+	}
+	return nil
 }
 
 // jidLike is the slice of types.JID this package uses, so the signature does
