@@ -120,7 +120,14 @@ type TokenPassResult struct {
 // CommitTokenPage's PassReady): counting it done earlier would refuse
 // tokens the round has not reached. Every token the pass did not list gets
 // unlisted_at and a sticky row (unlisted): refused, with its narrowest state
-// kept, never revived. held_at_reset is cleared. now is Wappie's clock.
+// kept, never revived. Its end is the pass, or its expiry if that passed
+// before, and its content (its record, name, terms, perms and removed
+// instances) goes at once, as retention forgets one 30 days after its end:
+// an unlisting carries no time of its own, so a restore whose re-read of
+// the feed runs the pass again would start its 30 days again (decision
+// 0056 keeps a record at most 30 days after the platform stopped listing
+// it, and lets an app keep less). held_at_reset is cleared. now is Wappie's
+// clock.
 func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Time) (TokenPassResult, error) {
 	var out TokenPassResult
 	err := retryDeadlock(ctx, func() error {
@@ -153,7 +160,11 @@ func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Ti
 				if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, ws.String()); err != nil {
 					return err
 				}
-				rows, err := tx.Query(ctx, `UPDATE contract_tokens t SET unlisted_at = $2, ended_at = coalesce(ended_at, $2)
+				// Its row, then its perms and removed instances, as retention
+				// forgets (DB25 steps 4 and 5), then its identity.
+				rows, err := tx.Query(ctx, `UPDATE contract_tokens t SET unlisted_at = $2,
+						ended_at = coalesce(ended_at, CASE WHEN isfinite(t.expires_at) THEN least(t.expires_at, $2) ELSE $2 END),
+						record = NULL, terms = NULL, name = '', forgotten_at = coalesce(forgotten_at, $2)
 					FROM (SELECT id FROM contract_tokens WHERE listed_gen IS DISTINCT FROM $1 AND unlisted_at IS NULL ORDER BY id FOR UPDATE) l
 					WHERE t.id = l.id RETURNING t.id, t.created_at, t.expires_at`, gen, now)
 				if err != nil {
@@ -173,6 +184,14 @@ func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Ti
 				})
 				if err != nil {
 					return err
+				}
+				if len(unlisted) > 0 {
+					if _, err := tx.Exec(ctx, `DELETE FROM contract_token_perms WHERE token_id = ANY ($1)`, unlisted); err != nil {
+						return err
+					}
+					if _, err := tx.Exec(ctx, `DELETE FROM contract_token_removed WHERE token_id = ANY ($1)`, unlisted); err != nil {
+						return err
+					}
 				}
 				if err := dropTokenIdentitiesTx(ctx, tx, now, unlisted); err != nil {
 					return err

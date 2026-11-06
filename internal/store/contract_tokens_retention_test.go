@@ -148,25 +148,34 @@ func TestTokenRetentionWaitsForTheDatabasesClock(t *testing.T) {
 	}
 }
 
-// A token's record goes 30 days after its end, its revocation's or its
-// expiry's own time, however late Wappie learns of it (a restore's re-read
-// of the feed, a turn-on after a time off): a token first seen 40 days
-// after it expired, with a giver's perm, and one first seen revoked 40
-// days ago, go at the first pass; a held one whose revocation of 40 days
-// ago comes late, and one the janitor ended at its expiry 10 days ago
-// whose earlier revocation comes after, at the next. A revocation timed
+// A token's record goes 30 days after its end, the earlier of its
+// revocation's and its expiry's own times, however late Wappie learns of
+// it (a restore's re-read of the feed, a turn-on after a time off): a
+// token first seen 40 days after it expired, with a giver's perm, one
+// first seen revoked 40 days ago, one first seen revoked an hour ago 60
+// days after it expired, and a held one expired 60 days ago whose
+// revocation of an hour ago comes before the janitor ran, go at the first
+// pass; a held one whose revocation of 40 days ago comes late, one the
+// janitor ended at its expiry 10 days ago whose earlier revocation comes
+// after, and one the janitor ended at its expiry 10 days ago whose expiry
+// a later record shortens to 50 days ago, at the next. A revocation timed
 // ahead of Wappie's clock ends its token at Wappie's clock.
 func TestATokensRecordCountsFromItsEnd(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
 	created := w.now.Add(-100 * tokenDay)
 	expired, revoked, late, both, ahead := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	expiredRevoked, revokedExpired, shortened := uuid.New(), uuid.New(), uuid.New()
 	w.page(false,
 		w.record(expired, 1, createdAt(created, 60*tokenDay), grants(device, w.ownerSub, created, kc.CanRead)),
 		w.record(revoked, 1, createdAt(created, 300*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-40*tokenDay))),
 		w.record(late, 1, createdAt(created, 300*tokenDay), grants(device, w.ownerSub, created, kc.CanRead)),
 		w.record(both, 1, createdAt(created, 90*tokenDay)),
-		w.record(ahead, 1, createdAt(created, 300*tokenDay)))
+		w.record(ahead, 1, createdAt(created, 300*tokenDay)),
+		w.record(expiredRevoked, 1, createdAt(created, 40*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))),
+		w.record(revokedExpired, 1, createdAt(created, 40*tokenDay)),
+		w.record(shortened, 1, createdAt(created, 90*tokenDay)))
+	w.page(false, w.record(revokedExpired, 2, createdAt(created, 40*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))))
 	gone := func(when string, ids map[string]uuid.UUID, want bool) {
 		t.Helper()
 		for name, id := range ids {
@@ -177,22 +186,83 @@ func TestATokensRecordCountsFromItsEnd(t *testing.T) {
 		}
 	}
 	w.retain(w.now)
-	gone("the first pass", map[string]uuid.UUID{"first seen 40 days after its expiry": expired, "first seen revoked 40 days ago": revoked}, true)
-	gone("the first pass", map[string]uuid.UUID{"held": late, "expired 10 days ago": both, "held, revoked later": ahead}, false)
+	gone("the first pass", map[string]uuid.UUID{"first seen 40 days after its expiry": expired, "first seen revoked 40 days ago": revoked,
+		"first seen revoked an hour ago, 60 days after its expiry":        expiredRevoked,
+		"expired 60 days ago, revoked an hour ago before the janitor ran": revokedExpired}, true)
+	gone("the first pass", map[string]uuid.UUID{"held": late, "expired 10 days ago": both, "held, revoked later": ahead,
+		"expired 10 days ago, to be shortened": shortened}, false)
 	if w.perms(late)[device.String()+"/read"] == "" {
 		t.Fatal("the held token has no perm to forget")
 	}
 	w.page(false,
 		w.record(late, 2, createdAt(created, 300*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-40*tokenDay))),
 		w.record(both, 2, createdAt(created, 90*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-40*tokenDay))),
-		w.record(ahead, 2, createdAt(created, 300*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(time.Hour))))
+		w.record(ahead, 2, createdAt(created, 300*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(time.Hour))),
+		w.record(shortened, 2, createdAt(created, 50*tokenDay)))
 	w.retain(w.now)
-	gone("the next pass", map[string]uuid.UUID{"revoked 40 days ago, learned now": late, "expired, then revoked earlier": both}, true)
+	gone("the next pass", map[string]uuid.UUID{"revoked 40 days ago, learned now": late, "expired, then revoked earlier": both,
+		"ended at its expiry, then shortened to 50 days ago": shortened}, true)
 	gone("the next pass", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead}, false)
 	w.retain(w.now.Add(29 * tokenDay))
 	gone("29 days on", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead}, false)
 	w.retain(w.now.Add(30 * tokenDay))
 	gone("30 days on", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead}, true)
+}
+
+// A reset's pass forgets what it unlists at once: its record, name, terms,
+// perms and removed instances, since an unlisting carries no time and a
+// restore whose re-read of the feed runs the pass again would start a 30
+// days of its own again. It ends at the pass, or at its expiry if that
+// came first and the janitor has not run yet. A token the pass lists
+// keeps its content.
+func TestAResetsPassForgetsWhatItUnlists(t *testing.T) {
+	w := newTokenWorld(t)
+	device := w.number(uuid.Nil)
+	live, expired, listed := uuid.New(), uuid.New(), uuid.New()
+	expiry := w.now.Add(-60 * tokenDay)
+	w.page(false,
+		w.record(live, 1, grants(device, w.ownerSub, w.now.Add(-time.Hour), kc.CanRead), unknownItem(w.ownerSub, w.now.Add(-time.Hour))),
+		w.record(expired, 1, createdAt(expiry.Add(-40*tokenDay), 40*tokenDay)),
+		w.record(listed, 1))
+	content := func(id uuid.UUID) int {
+		t.Helper()
+		return len(w.perms(id)) + w.count(`SELECT count(*) FROM contract_token_removed WHERE token_id = $1`, id)
+	}
+	if content(live) != 2 {
+		t.Fatalf("the live token holds %d perms and removed instances, want 2", content(live))
+	}
+	w.reset()
+	w.exec(`UPDATE contract_state SET round_generation = $1`, w.gen)
+	if res := w.page(false, w.record(listed, 1)); !res.PassReady {
+		t.Fatal("the pass is not ready")
+	}
+	if res, err := w.tokens.FinishTokenPass(w.ctx(), w.gen, w.now); err != nil || !res.Done || len(res.Unlisted) != 2 {
+		t.Fatalf("the pass: %+v %v", res, err)
+	}
+	ended := func(id uuid.UUID) time.Time {
+		t.Helper()
+		var at time.Time
+		w.scoped(func(tx pgx.Tx) error {
+			return tx.QueryRow(context.Background(), `SELECT ended_at FROM contract_tokens WHERE id = $1`, id).Scan(&at)
+		})
+		return at
+	}
+	for name, c := range map[string]struct {
+		id  uuid.UUID
+		end time.Time
+	}{"live at the pass": {live, w.now}, "expired 60 days before the pass": {expired, expiry}} {
+		var record bool
+		w.scoped(func(tx pgx.Tx) error {
+			return tx.QueryRow(context.Background(), `SELECT record IS NOT NULL OR terms IS NOT NULL FROM contract_tokens WHERE id = $1`, c.id).Scan(&record)
+		})
+		if s := w.token(c.id); !s.Unlisted || !s.Forgotten || s.Name != "" || record || content(c.id) != 0 || !ended(c.id).Equal(c.end) {
+			t.Errorf("a token %s, unlisted: forgotten %v, name %q, its record kept %v, %d perms and removed instances, ended %v (want %v)",
+				name, s.Forgotten, s.Name, record, content(c.id), ended(c.id), c.end)
+		}
+	}
+	if s := w.token(listed); s.Unlisted || s.Forgotten || s.Name != "Nightly" {
+		t.Fatalf("the token the pass listed: %+v", s)
+	}
 }
 
 // Retention visits a workspace whose tenants row is gone, from the
@@ -437,18 +507,19 @@ func TestTokenRetentionTakesStops(t *testing.T) {
 	}
 }
 
-// A stop's times never go back, and each command returns the time the
+// A stop's times only go forward, and each command returns the time the
 // database holds, which the stop record's line carries: a re-stop timed
-// before the stop (two commands at once, the later timed first, or a
-// clock stepped back) is made at the stop's time, a lift timed before its
-// stop at the stop's, and a re-stop timed before the lift at the lift's.
-// A lift of a stop lifted already changes nothing and gives that lift's
-// time; with no operator's stop of the selector (none, or only Wappie's
-// own), none.
+// at or before the stop (two commands at once, the later timed first, or
+// a clock stepped back) is made a microsecond after the stop's time, a
+// lift timed at or before its stop a microsecond after the stop's, and a
+// re-stop timed at or before the lift a microsecond after the lift's, so
+// no two changes of one stop share a time. A lift of a stop lifted already
+// changes nothing and gives that lift's time; with no operator's stop of
+// the selector (none, or only Wappie's own), none.
 func TestAStopsTimesNeverGoBack(t *testing.T) {
 	w := newTokenWorld(t)
 	sel, failing := selectorOf(uuid.New()), selectorOf(uuid.New())
-	base, ms := w.now, time.Millisecond
+	base, ms, us := w.now, time.Millisecond, time.Microsecond
 	stored := func() (time.Time, *time.Time) {
 		t.Helper()
 		var stopped time.Time
@@ -474,10 +545,13 @@ func TestAStopsTimesNeverGoBack(t *testing.T) {
 		}
 	}
 	stop(base.Add(ms), base.Add(ms))
-	stop(base, base.Add(ms))
-	lift(base, base.Add(ms), true)
-	lift(base.Add(time.Hour), base.Add(ms), false)
-	stop(base.Add(-time.Hour), base.Add(ms))
+	stop(base, base.Add(ms+us))
+	stop(base.Add(ms+us), base.Add(ms+2*us))
+	lift(base, base.Add(ms+3*us), true)
+	lift(base.Add(time.Hour), base.Add(ms+3*us), false)
+	stop(base.Add(-time.Hour), base.Add(ms+4*us))
+	lift(base.Add(ms+4*us), base.Add(ms+5*us), true)
+	stop(base.Add(ms+5*us), base.Add(ms+6*us))
 	lift(base.Add(2*ms), base.Add(2*ms), true)
 	stop(base.Add(3*ms), base.Add(3*ms))
 
@@ -486,6 +560,115 @@ func TestAStopsTimesNeverGoBack(t *testing.T) {
 		if at, lifted, err := w.tokens.LiftToken(w.ctx(), s, base); err != nil || lifted || !at.IsZero() {
 			t.Fatalf("a lift with no operator's stop: %v %v %v", at, lifted, err)
 		}
+	}
+}
+
+// Two commands at once, or a clock stepped back: a lift timed before its
+// stop and a re-stop timed before that lift are each made a microsecond
+// after the change before, so their lines, replayed over a snapshot that
+// holds them, change nothing: the re-stop keeps who made it and its note.
+// Nor does a stop's line whose lift's line is missing (its lock not taken
+// in time) re-stop what the snapshot holds lifted. Over a snapshot taken
+// between the lift and the re-stop, the re-stop comes back. A line at the
+// time of the stop's last change is that change: a stop's or a lift's at
+// it is left.
+func TestAReplayOfRacedChangesKeepsTheStop(t *testing.T) {
+	w := newTokenWorld(t)
+	restopped, lifted, tied := selectorOf(uuid.New()), selectorOf(uuid.New()), selectorOf(uuid.New())
+	t0 := w.now.Add(-time.Hour)
+	type line struct {
+		sel  string
+		at   time.Time
+		lift bool
+	}
+	stop := func(sel, by, note string, at time.Time) line {
+		t.Helper()
+		got, err := w.tokens.StopToken(w.ctx(), sel, by, note, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return line{sel, got, false}
+	}
+	lift := func(sel string, at time.Time) line {
+		t.Helper()
+		got, lifted, err := w.tokens.LiftToken(w.ctx(), sel, at)
+		if err != nil || !lifted {
+			t.Fatal(lifted, err)
+		}
+		return line{sel, got, true}
+	}
+	lines := []line{stop(restopped, "alice", "leaked", t0), lift(restopped, t0.Add(-time.Second)),
+		stop(restopped, "bob", "leaked again", t0.Add(-2*time.Second)), stop(lifted, "alice", "leaked", t0)}
+	lift(lifted, t0.Add(-time.Second)) // its line missing
+	stops := func() string {
+		t.Helper()
+		list, err := w.tokens.TokenStops(w.ctx())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		for _, s := range list {
+			b.WriteString(s.Selector + " " + s.StoppedBy + " " + s.Note + " " + s.StoppedAt.UTC().Format(time.RFC3339Nano))
+			if s.LiftedAt != nil {
+				b.WriteString(" lifted " + s.LiftedAt.UTC().Format(time.RFC3339Nano))
+			}
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+	before := stops()
+	for _, l := range lines {
+		var applied bool
+		var err error
+		if l.lift {
+			applied, err = w.tokens.ReplayTokenLift(w.ctx(), l.sel, l.at)
+		} else {
+			applied, err = w.tokens.ReplayTokenStop(w.ctx(), l.sel, "replayer", "", l.at, w.now)
+		}
+		if err != nil || applied {
+			t.Errorf("a replay of %+v over the stop the snapshot holds: applied %v, %v", l, applied, err)
+		}
+	}
+	if after := stops(); after != before {
+		t.Fatalf("the replay changed the stops the snapshot held:\nbefore %s\nafter  %s", before, after)
+	}
+	// A snapshot taken between the lift and the re-stop: the re-stop's line
+	// applies, and the stop stands again at its time.
+	w.exec(`UPDATE contract_token_stops SET stopped_at = $2, lifted_at = $3, stopped_by = 'alice', note = 'leaked'
+		WHERE selector = $1 AND cause = 'operator'`, restopped, lines[0].at, lines[1].at)
+	applied := 0
+	for _, l := range lines[:3] {
+		var ok bool
+		var err error
+		if l.lift {
+			ok, err = w.tokens.ReplayTokenLift(w.ctx(), l.sel, l.at)
+		} else {
+			ok, err = w.tokens.ReplayTokenStop(w.ctx(), l.sel, "replayer", "", l.at, w.now)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			applied++
+		}
+	}
+	if _, stopped, _ := w.stopOf(restopped); applied != 1 || !stopped.Equal(lines[2].at) ||
+		w.count(`SELECT count(*) FROM contract_token_stops WHERE selector = $1 AND lifted_at IS NULL`, restopped) != 1 {
+		t.Fatalf("a replay over the lift before the re-stop: %d applied, stopped %v, want the re-stop's %v, open", applied, stopped, lines[2].at)
+	}
+	// The replay's own rule: lines at the time of the last change.
+	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by, note, lifted_at)
+		VALUES ($1, 'operator', $2, 'alice', 'held', $3)`, tied, t0, t0.Add(time.Second))
+	if applied, err := w.tokens.ReplayTokenStop(w.ctx(), tied, "replayer", "", t0.Add(time.Second), w.now); err != nil || applied {
+		t.Fatalf("a stop's line at its lift's time: applied %v, %v", applied, err)
+	}
+	w.exec(`UPDATE contract_token_stops SET lifted_at = NULL WHERE selector = $1`, tied)
+	if applied, err := w.tokens.ReplayTokenLift(w.ctx(), tied, t0); err != nil || applied {
+		t.Fatalf("a lift's line at its stop's time: applied %v, %v", applied, err)
+	}
+	if exists, _, _ := w.stopOf(tied); !exists || w.count(`SELECT count(*) FROM contract_token_stops WHERE selector = $1
+		AND stopped_by = 'alice' AND note = 'held' AND lifted_at IS NULL`, tied) != 1 {
+		t.Fatal("a line at the time of the stop's last change changed it")
 	}
 }
 
@@ -653,9 +836,12 @@ func (w *tokenWorld) letGo() *time.Time {
 // A replay after a restore never brings back a stop retention let go
 // before the snapshot: a held token's stop, gone with its selector at its
 // until, and a never-held one gone at its record_until, each with its
-// lines at or before the mark retention moved to their latest time. A
-// stop made after the snapshot still comes back. A stop or a lift timed
-// at or before the mark is made just after it, so its line replays.
+// lines at or before the mark retention moved to their latest time. The
+// mark is never lowered: not by a pass that lets no stop go, nor by one
+// that lets go a stop older than it. A stop made after the snapshot still
+// comes back. A lift's line at or before the mark lifts nothing, even a
+// stop made before it that retention kept. A stop or a lift timed at or
+// before the mark is made just after it, so its line replays.
 func TestAReplayLeavesWhatRetentionLetGo(t *testing.T) {
 	w := newTokenWorld(t)
 	if w.letGo() != nil {
@@ -677,6 +863,11 @@ func TestAReplayLeavesWhatRetentionLetGo(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.page(false, w.record(orphan, 1, func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }, createdAt(w.now.Add(-366*tokenDay), 30*tokenDay)))
+	// A never-held stop made before the orphan's, which retention keeps.
+	kept := selectorOf(uuid.New())
+	if _, err := w.tokens.StopToken(w.ctx(), kept, "root", "", w.now.Add(-20*tokenDay)); err != nil {
+		t.Fatal(err)
+	}
 	// An apply_failed stop is never in the record: it moves no mark.
 	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'apply_failed', $2, 'wappie')`,
 		selectorOf(held), w.now.Add(-time.Hour))
@@ -688,6 +879,23 @@ func TestAReplayLeavesWhatRetentionLetGo(t *testing.T) {
 	}
 	if through := w.letGo(); through == nil || !through.Equal(orphanStop) {
 		t.Fatalf("the mark after retention: %v, want the latest time of a stop let go, %v", through, orphanStop)
+	}
+	// A pass that lets no stop go, then one that lets go an operator's stop
+	// older than the mark (made before any mark, 366 days ago): the mark
+	// stays.
+	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 0 {
+		t.Fatalf("a retention with no stop due: %+v %v", got, err)
+	}
+	if through := w.letGo(); through == nil || !through.Equal(orphanStop) {
+		t.Fatalf("the mark after a pass that let no stop go: %v, want %v", through, orphanStop)
+	}
+	w.exec(`INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'operator', $2, 'root')`,
+		selectorOf(uuid.New()), w.now.Add(-366*tokenDay))
+	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 1 {
+		t.Fatalf("a retention of a stop older than the mark: %+v %v", got, err)
+	}
+	if through := w.letGo(); through == nil || !through.Equal(orphanStop) {
+		t.Fatalf("the mark after a pass that let go a stop older than it: %v, want %v", through, orphanStop)
 	}
 
 	// A snapshot taken since, then a stop made after it, then a restore of
@@ -724,6 +932,27 @@ func TestAReplayLeavesWhatRetentionLetGo(t *testing.T) {
 		t.Fatal("a stop made after the snapshot did not come back")
 	}
 
+	// A lift's line at or before the mark, over the open stop retention
+	// kept, made before it: left, the stop still open.
+	open := func(sel string) bool {
+		t.Helper()
+		return w.count(`SELECT count(*) FROM contract_token_stops WHERE selector = $1 AND cause = 'operator' AND lifted_at IS NULL`, sel) == 1
+	}
+	if applied, err := w.tokens.ReplayTokenLift(w.ctx(), kept, orphanStop.Add(-2*tokenDay)); err != nil || applied || !open(kept) {
+		t.Fatalf("a replay of a lift's line before the mark: applied %v, the stop open %v, %v", applied, open(kept), err)
+	}
+	// A lift timed before the mark, of that stop: made just after the mark,
+	// so a replay of its line over the stop as the snapshot held it, open,
+	// lifts it.
+	keptLift, lifted, err := w.tokens.LiftToken(w.ctx(), kept, orphanStop.Add(-5*tokenDay))
+	if err != nil || !lifted || !keptLift.Equal(orphanStop.Add(time.Microsecond)) {
+		t.Fatalf("a lift timed before the mark: made at %v %v, %v; want %v", keptLift, lifted, err, orphanStop.Add(time.Microsecond))
+	}
+	w.exec(`UPDATE contract_token_stops SET lifted_at = NULL WHERE selector = $1`, kept)
+	if applied, err := w.tokens.ReplayTokenLift(w.ctx(), kept, keptLift); err != nil || !applied || open(kept) {
+		t.Fatalf("a replay of a lift made just after the mark: applied %v, the stop open %v, %v", applied, open(kept), err)
+	}
+
 	// Timed before the mark (a command begun before retention moved it): made
 	// just after it, so a replay of its line applies.
 	early := selectorOf(uuid.New())
@@ -732,11 +961,61 @@ func TestAReplayLeavesWhatRetentionLetGo(t *testing.T) {
 	if at, err := w.tokens.StopToken(w.ctx(), early, "root", "", through.Add(-time.Hour)); err != nil || !at.Equal(justAfter) {
 		t.Fatalf("a stop timed before the mark: made at %v, %v; want %v", at, err, justAfter)
 	}
-	if at, lifted, err := w.tokens.LiftToken(w.ctx(), early, through.Add(-time.Hour)); err != nil || !lifted || !at.Equal(justAfter) {
-		t.Fatalf("a lift timed before the mark: made at %v %v, %v; want %v", at, lifted, err, justAfter)
+	// Its lift, timed before the mark too: made just after the stop.
+	if at, lifted, err := w.tokens.LiftToken(w.ctx(), early, through.Add(-time.Hour)); err != nil || !lifted || !at.Equal(justAfter.Add(time.Microsecond)) {
+		t.Fatalf("a lift timed before the mark: made at %v %v, %v; want %v", at, lifted, err, justAfter.Add(time.Microsecond))
 	}
 	if !store.TokenStopMarked(through, &through) || store.TokenStopMarked(justAfter, &through) || store.TokenStopMarked(through, nil) {
 		t.Fatal("TokenStopMarked: a line at the mark is marked, one after it or with no mark is not")
+	}
+}
+
+// Retention lets an operator's stop go only once its times are at or
+// before its cut, so the mark never passes Wappie's clock: a held
+// selector's stop timed 30 days ahead (a clock ahead when it was made)
+// stays when its selector goes, with the selector's until as its
+// record_until, and a stop and a lift made since, of another selector, are
+// made at their own times. Once its time has passed (moved back here, as
+// if 31 days went by) the next pass lets it go, at that record_until, not
+// 365 days after it was made, and the mark moves to its time.
+func TestAStopAheadOfTheClockWaitsForIt(t *testing.T) {
+	w := newTokenWorld(t)
+	held := uuid.New()
+	w.page(false, w.record(held, 1, createdAt(w.now.Add(-364*tokenDay), kc.MaxTokenLifetime)))
+	ahead := w.now.Add(30 * tokenDay)
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(held), "root", "", ahead); err != nil {
+		t.Fatal(err)
+	}
+	until := w.now.Add(-time.Hour)
+	w.untilBack(until)
+	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 0 || got.Ended != 1 {
+		t.Fatalf("retention past the selector's until, its stop ahead of the clock: %+v %v", got, err)
+	}
+	if exists, stopped, ru := w.stopOf(selectorOf(held)); !exists || !stopped.Equal(ahead) || ru == nil || !ru.Equal(until) {
+		t.Fatalf("a stop ahead of the clock as its selector went: there %v, stopped %v, record_until %v (want %v)", exists, stopped, ru, until)
+	}
+	if n := w.count(`SELECT count(*) FROM contract_token_selectors WHERE selector = $1`, selectorOf(held)); n != 0 {
+		t.Fatal("the selector stayed past its until")
+	}
+	if through := w.letGo(); through != nil {
+		t.Fatalf("the mark moved to %v, ahead of the clock", *through)
+	}
+	other := selectorOf(uuid.New())
+	if at, err := w.tokens.StopToken(w.ctx(), other, "root", "", w.now); err != nil || !at.Equal(w.now) {
+		t.Fatalf("a stop made now: at %v, %v; want %v", at, err, w.now)
+	}
+	if at, lifted, err := w.tokens.LiftToken(w.ctx(), other, w.now.Add(time.Second)); err != nil || !lifted || !at.Equal(w.now.Add(time.Second)) {
+		t.Fatalf("a lift made now: at %v %v, %v; want %v", at, lifted, err, w.now.Add(time.Second))
+	}
+	w.exec(`UPDATE contract_token_stops SET stopped_at = stopped_at - interval '31 days' WHERE selector = $1`, selectorOf(held))
+	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 1 {
+		t.Fatalf("retention once the stop's time passed: %+v %v", got, err)
+	}
+	if exists, _, _ := w.stopOf(selectorOf(held)); exists {
+		t.Fatal("the stop stayed once its time passed")
+	}
+	if through, want := w.letGo(), ahead.Add(-31*tokenDay); through == nil || !through.Equal(want) {
+		t.Fatalf("the mark: %v, want %v", through, want)
 	}
 }
 
