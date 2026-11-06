@@ -1798,7 +1798,9 @@ locks that token's row first; the applier writes its lifts and its
 token rows, and lowers the stops' `record_until` (retention's alone, which
 wakes no socket) once, after every workspace's rows, in (selector, cause)
 order; retention deletes stops, in the same order, after every workspace's
-token rows and before the selectors. The mark of what retention let go
+token rows and before the selectors, and in the same statement lowers the
+`record_until` of a stop it keeps past its selector's until (one timed
+ahead of its cut) to that until. The mark of what retention let go
 (`contract_token_stops_let_go`, one row) comes between the token rows and
 the stops. A stop or a lift takes it FOR SHARE after its token's row, if
 Wappie holds one. Retention takes it FOR UPDATE after every workspace's
@@ -1809,8 +1811,9 @@ never to apply again) come after its perms, as step 5's tail: the
 applier's drop and a reset write them from the perms they delete, a
 number's quarantine or move deletes the number's perms and then writes
 their instances (the same key as a refused perm's), and retention, the
-forget and the past-until delete alike, deletes the perms (the latter
-through the token rows' cascade) before the instances. Deleting the
+forget and the past-until delete alike, and a reset's pass, which forgets
+the tokens it unlists, delete the perms (the past-until delete through
+the token rows' cascade) before the instances. Deleting the
 instances first would let a number's drop wait on one retention deleted
 while retention waits on the drop's perm.
 

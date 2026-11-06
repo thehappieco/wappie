@@ -734,8 +734,10 @@ this order:
    stops stand again;
 3. `whatserverd tokens suspend -replay /var/lib/wappie/token-stops.jsonl`.
    It says how many stops and lifts it applied, and how many lines it
-   left: those no later than what the database holds, those of stops
-   retention let go before the snapshot, and those over 365 days old;
+   left: those no later than what the database holds or with nothing to
+   lift, those no later than the last stop retention let go (the database
+   holds them already, or retention let their stops go before the
+   snapshot), and those over 365 days old;
 4. start the server (step 5);
 5. `whatserverd contract status --check`:
    - `contract never observed but a secret is installed`: the snapshot is

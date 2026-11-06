@@ -588,9 +588,10 @@ A line of the record holds only the selector, the time, which is the
 stop's `stopped_at` or its `lifted_at` to the microsecond, and whether it
 is a lift: never the note (`-note`, kept in Wappie's database only), the
 account that ran the command, the token, or Wappie's own `apply_failed`
-stops. A stop's times never go back: a stop or a lift timed before the
-stop's last change (two commands at once, or a clock stepped back) is made
-at that change, and its line carries that time, so a replay brings the
+stops. A stop's times only go forward: a stop or a lift timed at or
+before the stop's last change (two commands at once, or a clock stepped
+back) is made a microsecond after that change, and its line carries that
+time. So no two changes of one stop share a time, and a replay brings the
 stops back as they stood. Nor is a stop or a lift made at or before the
 mark of what retention let go (below): one timed before it is made just
 after it. Each append replaces the file whole (a temporary file beside
@@ -628,18 +629,21 @@ of line, and counts each:
 - **A line at or before the mark of what retention let go** ("N lines
   left, no later than the last stop retention let go"). The mark is the
   latest time, a stop's or a lift's, of an operator's stop that retention
-  deleted, kept in the database (`contract_token_stops_let_go`). Retention
-  moves it in the transaction that deletes the stops, and a stop or a lift
-  is made after it, under its lock. So the restored database holds every
-  such line's stop or lift already, or retention let that stop go before
-  the snapshot, and a replay never brings it back.
+  deleted, kept in the database (`contract_token_stops_let_go`), and never
+  past Wappie's clock: retention lets an operator's stop go only once its
+  times are past. Retention moves it in the transaction that deletes the
+  stops, and a stop or a lift is made after it, under its lock. So the
+  restored database holds every such line's stop or lift already, or
+  retention let that stop go before the snapshot, and a replay never
+  brings it back.
 - **A line 365 days old** ("N lines over 365 days old left, their stops
   let go").
 - **A line no later than what the database holds of its selector's stop**
   ("N lines left, no later than what the database holds or with nothing
   to lift"): the same stop, which keeps its note and who made it, or a
   stop or a lift made since without the record, which is neither rewound
-  nor lifted. A lift with no open stop no later than it is left too.
+  nor lifted. A lift with no open stop made before it is left too, and so
+  is a lift run again, whose line carries the first lift's time.
 
 Every other line applies, at its own time, with no note, as made by the
 account that runs the replay. A stop made after the snapshot, of a token
@@ -651,15 +655,17 @@ hold: kept to 365 days after it was made at most, as its line.
 retention) deletes, on Wappie's clock (what goes at a token's `created_at`
 plus 365 days, and the stops, never before the database's clock either):
 
-- **A token's record**, 30 days after it ends (revoked, expired by
-  Wappie's clock, or unlisted by a reset's pass): the record as received,
-  its name, terms and perms, and the grant instances it keeps off
-  (`contract_token_removed`, which keeps no giver). The 30 days count from
-  the revocation's or the expiry's own time, never later than Wappie's
-  clock, so an end Wappie learns of late (a restore's re-read of the feed,
-  a turn-on after a time off) goes at the next pass. An unlisting carries
-  no time: its 30 days count from the pass that found it. Its hidden
-  identity (`users`, `user_logins`) goes at its end.
+- **A token's record**, 30 days after it ends (revoked, or expired by
+  Wappie's clock): the record as received, its name, terms and perms, and
+  the grant instances it keeps off (`contract_token_removed`, which keeps
+  no giver). The 30 days count from the earlier of the revocation's and
+  the expiry's own times, never later than Wappie's clock, so an end
+  Wappie learns of late (a restore's re-read of the feed, a turn-on after
+  a time off, an expiry shortened after the token ended) goes at the next
+  pass. A token a reset's pass finds unlisted loses all of this at that
+  pass: an unlisting carries no time, so a restore that runs the pass
+  again would start its 30 days again. Its hidden identity (`users`,
+  `user_logins`) goes at its end.
 - **Its security record**, used only to keep it refused, at its
   `created_at` plus 365 days, when it would have expired anyway and its
   records have left the platform's feed: its selector and hash, its pinned
@@ -682,8 +688,11 @@ plus 365 days, and the stops, never before the database's clock either):
   `created_at` plus 365 days, however old the stop; any other 365 days
   after it was made (a new `suspend` makes it again), or earlier at the
   `created_at` plus 365 days of a valid record of its selector that came
-  since (never a bad record's). The operator's lines in the stop record
-  go 365 days after their time, whatever became of the stop (above).
+  since (never a bad record's). An operator's stop timed ahead of the
+  pass (a clock ahead when it was made) waits for its times to pass, its
+  selector's date kept if the selector went meanwhile, and goes at the
+  first pass after them. The operator's lines in the stop record go 365
+  days after their time, whatever became of the stop (above).
 - **Usage rows**, once reported, at the start of the second UTC day after
   their day, so at most 2 days after they were reported.
 - **The acknowledgement's queues**, 30 days after they were sent; a held

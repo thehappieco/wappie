@@ -297,6 +297,17 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		if store.TokensOn != "on" || store.TokensOff != "off" {
 			t.Errorf("the token modes are %q and %q", store.TokensOn, store.TokensOff)
 		}
+		// What -replay says it left, as the command's section and the
+		// restore's runbook quote it.
+		for _, left := range []struct{ code, runbook string }{
+			{"lines left, no later than what the database holds or with nothing to lift", "those no later than what the database holds or with nothing to lift"},
+			{"lines left, no later than the last stop retention let go", "those no later than the last stop retention let go"},
+			{"lines over 365 days old left, their stops let go", "those over 365 days old"},
+		} {
+			codeSays(left.code)
+			says("contract.md", left.code)
+			says("deployment.md", left.runbook)
+		}
 		// tokens' flags, parsed before anything opens: each documented one
 		// is the command's, and it has no other; a text that is no selector
 		// or token is refused without being repeated.

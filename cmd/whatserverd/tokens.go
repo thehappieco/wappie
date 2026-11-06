@@ -146,13 +146,13 @@ var tokenStopLockWait = 5 * time.Second
 
 // changeTokenStop records the stop (with its note, in the database alone)
 // or its lift, at r.At to the microsecond, the database's precision, or
-// later (a stop's times never go back: StopToken); then appends it to the
-// stop record, record (the configured one), at the time the database
-// holds, so the line's time is the stop's stopped_at or lifted_at exactly
-// and a replay brings the stop back as it stood. It takes the record's
-// lock first and holds it to the append, so the lines of two commands on
-// one selector land in the order of their changes in the database: a
-// replay follows that order for two lines at one time. A lock not taken
+// later (a stop's times only go forward, each change after the last:
+// StopToken); then appends it to the stop record, record (the configured
+// one), at the time the database holds, so the line's time is the stop's
+// stopped_at or lifted_at exactly and a replay brings the stop back as it
+// stood. It takes the record's lock first and holds it to the append, so
+// the lines of two commands on one selector land in the order of their
+// changes in the database, which is their times' order. A lock not taken
 // in time leaves the stop made in the database, and the command says the
 // record lacks it. A lift of a stop lifted already changes nothing and
 // appends that lift again at its own time (so a lift whose append failed

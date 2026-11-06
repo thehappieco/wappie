@@ -62,7 +62,8 @@
 --                          retention deletes them with the token's content
 --                          30 days after its end, at its selector's until,
 --                          or at its next pass after its workspace's row
---                          is gone.
+--                          is gone; a reset's pass with the content of a
+--                          token it unlists.
 --   contract_token_sticky  per token id, checked after the hash: its
 --                          revocation, its earliest expiry and how it ended
 --                          (revoked, expired, unlisted), kept to until (the
@@ -83,17 +84,22 @@
 --                          past its until; any other at stopped_at + 365
 --                          days, or earlier at record_until, the earliest
 --                          created_at + 365 days of a valid record of its
---                          selector seen since (never a bad record's).
+--                          selector seen since (never a bad record's). An
+--                          operator's goes only once its stop and its lift
+--                          are past; one timed past the pass that deletes
+--                          its selector takes that selector's until as its
+--                          record_until.
 --   contract_token_stops_let_go
 --                          one row: through, the latest time of an
 --                          operator's stop (its stop or its lift) that
---                          retention deleted, never lowered. Retention
---                          writes it with its deletions under the row's
---                          lock, and a stop or a lift takes the row's share
---                          lock and is made after it. So a snapshot that
---                          holds it holds every stop record line at or
---                          before it, or retention let that stop go: tokens
---                          suspend -replay leaves those lines.
+--                          retention deleted, never lowered and never past
+--                          Wappie's clock. Retention writes it with its
+--                          deletions under the row's lock, and a stop or a
+--                          lift takes the row's share lock and is made
+--                          after it. So a snapshot that holds it holds
+--                          every stop record line at or before it, or
+--                          retention let that stop go: tokens suspend
+--                          -replay leaves those lines.
 --   contract_token_refusals_out, contract_token_held_out
 --                          the acknowledgement's queues: ids, versions,
 --                          codes and the held state; never read on a
@@ -519,7 +525,8 @@ CREATE TABLE contract_token_stops (
     -- (never a bad one's) the applier saw while the stop stood: only ever
     -- lowered, kept by a re-stop. Retention reads it only while no
     -- selectors row names the selector: a stop of a selector Wappie holds
-    -- goes with that row.
+    -- goes with that row; an operator's timed past the pass that deletes
+    -- the row takes the row's until here.
     record_until timestamptz,
     PRIMARY KEY (selector, cause)
 );

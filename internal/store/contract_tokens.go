@@ -614,14 +614,21 @@ func revokedTime(rec kc.TokenRecord, now time.Time) time.Time {
 }
 
 // endedAt is when a revoked token ended, which its record's 30 days count
-// from: its revocation's time, never past Wappie's clock. A revocation
-// Wappie learns of late (a restore's re-read of the feed, a turn-on after
-// a time off) is forgotten at the next retention once its 30 days passed.
-func endedAt(revoked, now time.Time) time.Time {
-	if revoked.After(now) {
+// from: its revocation's time, or its expiry's if earlier (a token revoked
+// after it expired ended at its expiry; a zero expiry, -infinity, gives no
+// time), never past Wappie's clock. A revocation Wappie learns of late (a
+// restore's re-read of the feed, a turn-on after a time off) is forgotten
+// at the next retention once its 30 days passed. The update moves the end
+// back to an earlier expiry the row holds (tokenWrites.run).
+func endedAt(revoked time.Time, expires pgtype.Timestamptz, now time.Time) time.Time {
+	end := revoked
+	if expires.Valid && expires.InfinityModifier == pgtype.Finite && expires.Time.Before(end) {
+		end = expires.Time
+	}
+	if end.After(now) {
 		return now
 	}
-	return revoked
+	return end
 }
 
 // tokenGroup is what one workspace's records are applied against.
@@ -1210,7 +1217,7 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 		if rec.RevokedReason != nil && slices.Contains(kc.RevokedReasons(), *rec.RevokedReason) {
 			reason = *rec.RevokedReason
 		}
-		u.revokedAt, u.reason, u.ended = &at, &reason, new(endedAt(at, g.now))
+		u.revokedAt, u.reason, u.ended = &at, &reason, new(endedAt(at, expires, g.now))
 	}
 	if revoked {
 		w.sticky = append(w.sticky, stickyWrite{id: it.id, revokedAt: revokedTime(rec, g.now), until: until})
@@ -1355,7 +1362,7 @@ func (t *Tokens) insertToken(ctx context.Context, g tokenGroup, st roundState, i
 		generation: g.gen, listedAt: g.gen}
 	if rec.RevokedAt != nil {
 		at, reason := revokedTime(rec, g.now), *rec.RevokedReason
-		ins.revokedAt, ins.reason, ins.ended = &at, &reason, new(endedAt(at, g.now))
+		ins.revokedAt, ins.reason, ins.ended = &at, &reason, new(endedAt(at, ins.expiresAt, g.now))
 		w.sticky = append(w.sticky, stickyWrite{id: it.id, revokedAt: at, until: until})
 	}
 	w.inserts = append(w.inserts, ins)
@@ -1560,15 +1567,21 @@ func (w *tokenWrites) run(ctx context.Context, tx pgx.Tx, g tokenGroup) error {
 		}
 		// The trigger bumps access_version on a column's narrowing; a perm
 		// dropped bumps it here, the row being written anyway. A token's end
-		// only moves back: a revocation earlier than the expiry the janitor
-		// ended it at is its end.
+		// only moves back, to the earliest of its revocation and its expiry
+		// (a finite one) once it has ended or this ends it: a revocation
+		// earlier than the expiry the janitor ended it at, or an expiry
+		// earlier than the revocation or than the expiry the janitor used,
+		// is its end. Every end is at or before Wappie's clock, so the least
+		// is too. A token that has only expired keeps none here: the janitor
+		// ends it, with its identity and its sticky row.
 		if _, err := tx.Exec(ctx, `UPDATE contract_tokens t SET
 				name = CASE WHEN u.whole THEN u.name ELSE t.name END,
 				terms = CASE WHEN u.whole THEN u.terms::jsonb ELSE t.terms END,
 				expires_at = LEAST(t.expires_at, u.expires),
 				revoked_at = coalesce(t.revoked_at, u.revoked),
 				revoked_reason = coalesce(t.revoked_reason, u.reason),
-				ended_at = least(t.ended_at, u.ended),
+				ended_at = CASE WHEN coalesce(t.ended_at, u.ended) IS NOT NULL THEN least(t.ended_at, u.ended,
+					CASE WHEN isfinite(LEAST(t.expires_at, u.expires)) THEN LEAST(t.expires_at, u.expires) END) END,
 				generation = CASE WHEN u.whole THEN $1 ELSE t.generation END,
 				version = CASE WHEN u.whole THEN u.version ELSE t.version END,
 				seq = CASE WHEN u.whole THEN coalesce(NULLIF(u.seq, 0), t.seq) ELSE t.seq END,

@@ -1128,8 +1128,9 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 // running it again); a lift with nothing to lift (no stop, or only
 // Wappie's own) appends nothing, as no lift happened. Commands that
 // reached the database out of their times' order (two at once, or a clock
-// stepped back) never move a stop's times back: a suspend timed before the
-// stop or its lift, a lift timed before its stop.
+// stepped back) never move a stop's times back, each made a microsecond
+// after the change before it: a suspend timed before the stop or its lift,
+// a lift timed before its stop.
 func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -1192,7 +1193,8 @@ func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 	change(tokenStopRecord{Selector: reopened, At: base})
 	change(tokenStopRecord{Selector: early, At: base.Add(ms)})
 	change(tokenStopRecord{Selector: early, At: base, Lift: true})
-	if lines := read(); len(lines) != 10 || !lines[4].At.Equal(base.Add(ms)) || !lines[7].At.Equal(base.Add(ms)) || !lines[9].At.Equal(base.Add(ms)) {
+	if lines := read(); len(lines) != 10 || !lines[4].At.Equal(base.Add(ms+time.Microsecond)) || !lines[7].At.Equal(base.Add(ms+time.Microsecond)) ||
+		!lines[9].At.Equal(base.Add(ms+time.Microsecond)) {
 		t.Fatalf("the lines of commands out of their times' order: %+v", lines)
 	}
 
@@ -1227,16 +1229,24 @@ func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 
 // A replay of the stops the restored database holds as their lines have
 // them (a snapshot taken after them) changes nothing: each keeps who made
-// it, its note and its times, and the replay says nothing applied.
+// it, its note and its times, and the replay says nothing applied. So do
+// commands that reached the database out of their times' order (two at
+// once, or a clock stepped back), each made a microsecond after the change
+// before it: a lift that came before a suspend timed earlier, a lift timed
+// before its stop, and a re-stop timed before that lift.
 func TestAReplayKeepsTheStopsItHolds(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
 	tokens := store.NewTokens(pool)
 	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
-	const open, lifted = "0123456789abcdef", "fedcba9876543210"
+	const open, lifted, restopped, early, again = "0123456789abcdef", "fedcba9876543210", "0000000000000001", "0000000000000002",
+		"0000000000000003"
 	at := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
-	for _, r := range []tokenStopRecord{{Selector: open, At: at}, {Selector: lifted, At: at}, {Selector: lifted, At: at.Add(time.Second), Lift: true}} {
-		note := "leaked in a log"
+	for _, r := range []tokenStopRecord{{Selector: open, At: at}, {Selector: lifted, At: at}, {Selector: lifted, At: at.Add(time.Second), Lift: true},
+		{Selector: restopped, At: at}, {Selector: restopped, At: at.Add(2 * time.Second), Lift: true}, {Selector: restopped, At: at.Add(time.Second)},
+		{Selector: early, At: at.Add(5 * time.Second)}, {Selector: early, At: at.Add(4 * time.Second), Lift: true},
+		{Selector: again, At: at}, {Selector: again, At: at.Add(-time.Second), Lift: true}, {Selector: again, At: at.Add(-2 * time.Second)}} {
+		note := "leaked in a log, see INC-7"
 		if r.Lift {
 			note = ""
 		}
@@ -1260,7 +1270,7 @@ func TestAReplayKeepsTheStopsItHolds(t *testing.T) {
 	before := show()
 	var out bytes.Buffer
 	if err := replayTokenStops(ctx, tokens, record, &out); err != nil || !strings.Contains(out.String(), "0 stops and 0 lifts applied") ||
-		!strings.Contains(out.String(), "3 lines left, no later than what the database holds") {
+		!strings.Contains(out.String(), "11 lines left, no later than what the database holds") {
 		t.Fatalf("the replay of the stops the database holds: %v %q", err, out.String())
 	}
 	if after := show(); after != before {
@@ -1304,7 +1314,7 @@ func TestTheRecordFollowsTheDatabasesOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A suspend timed before a lift: whichever reaches the database first,
-	// the other is made at its time or later, and so maybe at the same.
+	// the other is made after it, a microsecond on at least.
 	done := make(chan error, 2)
 	for _, r := range []tokenStopRecord{{Selector: sel, At: t0.Add(2 * time.Second), Lift: true}, {Selector: sel, At: t0.Add(time.Second)}} {
 		go func() { done <- changeTokenStop(ctx, tokens, r, "", record, &bytes.Buffer{}) }()
