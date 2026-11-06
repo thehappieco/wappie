@@ -18,7 +18,7 @@ Every paused number records why (`devices.pause_cause`, migration 0051): `person
 
 Turning a live number's sync off tells its readers, in Wappie's own pages, until the platform's mails start (decision 0039). Every reader but the one who paused it gets a `sync_paused` notice: in `devices.list`, and pushed as `device.notice` to their open sessions on the same server. A person has at most one unseen notice per number: a later pause folds into it (`pauses`, `last_raised_at`, `several_actors` when someone else paused it before). An API key's pause is its creator's act: the creator is told nothing and is named in the others' notice (`raised_by_kind: "key"`). Only a key with no creator tells every reader. A repeated `device.stop` tells nobody, and so does a pause of a number nobody else reads, which in a personal workspace is every pause by its owner or the owner's key. The pauses Wappie makes on its own (before a move, at a deletion, after a failed resume, at a storage stop) tell nobody. Each pause that tells someone is also an [item event](item-events.md).
 
-`device.start` with the same payload resumes an existing stored WhatsApp session. On a number that is not paused it is Wappie's sync now: it connects the number now, lifts no pause, and a failure leaves the number unpaused, since there was no pause to put back. Both commands return `device.status`. A number that has never paired cannot be resumed this way. A logged-out or banned session cannot be resumed. A resume marks the open pause notices resumed (`resumed_at`); they stay until each reader sees them.
+`device.start` with the same payload resumes an existing stored WhatsApp session. On a number that is not paused it is Wappie's sync now: it connects the number now, lifts no pause, and a failure leaves the number unpaused, since there was no pause to put back. Both commands return `device.status`. A number that has never paired cannot be resumed this way. A logged-out or banned session cannot be resumed. A stop keeps a logged-out or banned status (it answers and broadcasts that status); a paused, logged-out number is [linked again](#linking-a-number-again), not resumed, and its relink lifts the pause. A resume marks the open pause notices resumed (`resumed_at`); they stay until each reader sees them.
 
 ### Who pauses and resumes
 
@@ -43,17 +43,113 @@ authorized readers retain the history and attachments already archived by
 Wappie. Pending downloads may finish while their media URLs remain valid.
 
 This does not remove the Wappie device, free its plan slot or cancel a
-subscription. Resume and pending-pairing retry do not support reconnecting an
-already linked, logged-out record. A workflow for pairing that record again
-while preserving history remains unimplemented. Deleting the number (below)
-ends its history after 30 days, and is not a way to link it again: a
-recovered number whose logout WhatsApp confirmed comes back read-only.
+subscription. Resume and pending-pairing retry do not reconnect an already
+linked, logged-out record. The number stays read-only until an owner or an
+admin [links it again](#linking-a-number-again), into the same record, with
+its history kept. Deleting the number (below) ends its history after 30
+days, and is not a way to link it again.
+
+## Linking a number again
+
+A number logged out from its phone, or recovered read-only after a deletion,
+is linked again with a new QR into the same device (decision 0057; the
+contract's 14.13). Its id, archive key and epoch, grants, readers, label,
+receipt mode, messages, attachments, assistant connections and API key
+restrictions stay. Only the scanning account decides whether the link is
+kept: it must be the number's own.
+
+The request is the `pair` frame's relink branch:
+
+```json
+{ "device_id": "UUID", "relink": true, "method": "qr" }
+```
+
+`method` may be left out. Anything a new number's pairing carries (`phone`,
+`label`, `receipt_mode`, `archive_public_key`, `grants`, `orphan`, `resume`)
+and `method: "code"` are `bad_request`: a relink pairs by QR only. The
+answers, on the request's id: `pair.qr` for each QR, as for a new number;
+then `pair.success` (`{ "device_id" }`) once the number names the new link,
+or one `error`. A relink never sends `pair.code` or `pair.timeout`. The
+build announces it as `pair.relink` in the welcome's `features`; a client
+offers it only then, since an older build reads `relink` as a new number.
+
+**Who.** A signed-in owner or admin. An API key of any scope, a service
+account and a member are `not_authorized`; a person whose sign-in is older
+than 10 minutes gets `step_up_required`; in a team, the person's memberships
+must be fresh, as for any pairing.
+
+**Codes**, named as the contract's 14.9 names them, each with a fixed
+English message that names no phone number, account or QR. Before any QR, in
+this order:
+
+- `storage_paused`: the workspace's storage is paused;
+- `not_found`: no live number with that id here;
+- `item_busy`, with `retry_after` in whole seconds: another pairing of the
+  number runs (the seconds left in WhatsApp's window), or another process
+  holds it, or a move's pause holds it (160);
+- `state_changed`: the number is not logged out (online, offline, new,
+  pairing or banned);
+- `read_only`: Wappie does not hold both halves of the number's identity,
+  its phone number and its LID, to compare the scan with. A missing half is
+  first taken from whatsmeow's map of LIDs and phone numbers;
+- `no_reader`: nobody holds the number's key at its current epoch (a
+  suspended person still does);
+- `number_held`: another live number of this workspace, not logged out and
+  not banned, holds the same account.
+
+After the QR: `other_account` (the scan came from another WhatsApp account,
+or from the number's own account under another phone number; nothing was
+stored), `link_timeout` (WhatsApp's window, about 160 seconds, closed with no
+scan), `connect_failed` (the link did not start or did not finish: a socket
+drop, a passkey step, a client WhatsApp refuses), `number_held`,
+`storage_paused` and `state_changed` (the number was paused, deleted or moved
+meanwhile, or its workspace stopped being active). `capacity_reached` is
+named but never answered today: the logged-out number keeps its place.
+
+**The same account, before anything is stored.** Wappie compares the user
+parts of the scanned link's phone number and LID with the number's, never
+the device numbers, since a new link has a new one. The phone is checked in
+whatsmeow's pre-pair callback. Both halves are checked again in the session
+store's first write of the new link: a mismatch refuses that write, and
+whatsmeow then stores nothing (no session, no LID pair, no identity key) and
+never confirms the link to WhatsApp.
+
+**Until the attach** the number's row does not change: it stays logged out,
+and paused if it was. The pairing's client does not reconnect after the
+pairing, and nothing of the new link reaches the archive, the status or the
+calls handler. Once WhatsApp confirmed the link, one transaction attaches it,
+only if the number is still what the relink saw: live, logged out, not
+paused since, not held by a move, its workspace active with its storage
+running, and the account held by no other live number. It names the new
+link (phone number, LID, push name), marks the number offline, lifts its
+pause and marks its open `sync_paused` notices resumed, and deletes what is
+left of the old link's session. Then the client connects and the number goes
+online. A refused attach logs the new link out again (the phone may keep an
+entry under Linked devices when WhatsApp does not confirm the logout).
+
+**After the link**, WhatsApp sends its history again, as for a first link:
+the recent window, with what arrived while the number was unlinked, as far
+as the phone's history reaches. A direct message already stored under the
+conversation's other key (its LID or its phone number) is dropped as a
+duplicate, and a reaction, edit or delete that arrives after its target
+finds it under either key. Message secrets of older messages went with the old session, so a later
+edit or poll vote on them stays unopened.
+
+Readers and assistants are not told: the key and epoch do not change, and an
+assistant allowed to send from the number can send again once it is online.
+A relink is not a new link: no `linked` event, no new plan place, no trial
+check, and no item event. The log names the device, never the phone, the
+account or the QR: `relink started`, `relink refused` (with `code`, `stage`,
+and `half` for a scan by another account), `relink attached`, and the first
+QR's length as `pairing QR`.
 
 ## Pending pairing
 
 A new `pair` still requires a client-generated archive public key and encrypted grants. Its provisional row is removed when the attempt times out, fails or is cancelled before pairing completes. Cleanup never removes an identity that has already paired or connected.
 
 To retry an existing incomplete row, send `pair` with `{ "device_id": "UUID", "resume": true, "method": "qr" }`. Code pairing also accepts `method: "code"` and `phone`. The existing encryption key, grants and receipt mode are preserved. Supplying replacement `archive_public_key`, `grants` or `orphan` with a retry is rejected. A retry cannot replace an already linked number. An incomplete legacy row without an archive key must be deleted and recreated.
+
+A relink is not a retry: `resume` together with `relink` is refused ([linking a number again](#linking-a-number-again)).
 
 `pair.cancel` cancels the caller's pending attempt. Deleting a number also cancels a pending attempt from another browser in the same workspace.
 
@@ -65,7 +161,7 @@ A deletion always asks WhatsApp to log the session out, which cannot be undone: 
 
 A deleted number is kept 30 days with its data, readable by nobody, then purged. `deleted_at` and `recoverable_until` are the database's clock. Its plan slot is freed at once; its bytes stay counted until the purge ([storage](storage.md#consistent-totals-by-number)). Assistant connections and AI authorizations whose key names it end with `access_lost`. No API key is revoked: a key restricted to chosen numbers loses this one and keeps working for the others (one left with none reaches nothing), and a key for every number reaches it again after a recovery.
 
-Owners list deleted numbers with `devices.deleted` (replying `devices.deleted.list`: each one's dates, who deleted it, its bytes, `recoverable`, `purging`, the stored WhatsApp note and how it would come back) and recover one with `device.recover` (`{ "device_id", "confirm" }`, after a recent sign-in; `device.recover.check` lists who regains access). A recovered number comes back paused, and read-only when WhatsApp confirmed its logout, the normal case (`logged_out: true`, `can_resume: false`): syncing that phone again means linking it as a new number. Only a logout WhatsApp did not confirm leaves a session that can sync again. People who left or were disabled meanwhile get nothing back, assistant connections do not return, and restricted keys need the number given again. Refusals: `recovery_closed` after the 30 days or once the purge has started, `capacity_reached`, `identity_in_use` when the phone was linked again as another number, and `device_busy` while the logout is still running.
+Owners list deleted numbers with `devices.deleted` (replying `devices.deleted.list`: each one's dates, who deleted it, its bytes, `recoverable`, `purging`, the stored WhatsApp note and how it would come back) and recover one with `device.recover` (`{ "device_id", "confirm" }`, after a recent sign-in; `device.recover.check` lists who regains access). A recovered number comes back paused, and read-only when WhatsApp confirmed its logout, the normal case (`logged_out: true`, `can_resume: false`): an owner or an admin then [links it again](#linking-a-number-again). Only a logout WhatsApp did not confirm leaves a session that can sync again. People who left or were disabled meanwhile get nothing back, assistant connections do not return, and restricted keys need the number given again. Refusals: `recovery_closed` after the 30 days or once the purge has started, `capacity_reached`, `identity_in_use` when the phone was linked again as another number, and `device_busy` while the logout is still running.
 
 Removing or disabling the last key holder of a deleted number is refused with `last_reader_of_deleted` until its purge: recover it and share its key first ([workspaces](workspaces.md)). An owner may do it anyway with `strand_deleted` and a recent sign-in, only where the platform mails the other owners: in a team the platform names that is not closed, while the contract is on ([the strand override](workspaces.md#the-strand-override)); the number then keeps its purge date with nobody able to read it. A live number's last key holder is never removable. Disabling a person also revokes the API keys they created, as a removal does.
 

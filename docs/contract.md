@@ -584,7 +584,8 @@ missing snapshot as unknown protection.
   purge, by id, `kind: "number"`, with the contract's `label` and `hint`
   ([the label rule](contract-events.md#labels-and-hints)).
 - **State and reason**, the first that holds: `deleted` (with `purge_at`,
-  its `purge_after`); `sync_paused` with `needs_reauth` (logged out),
+  its `purge_after`); `sync_paused` with `needs_reauth` (logged out, until
+  it is [linked again](devices.md#linking-a-number-again)),
   `error` (banned, or a workspace that is not active), `quota` (the
   workspace's storage refuses capture: its stop recorded, 105% of its limit,
   or its 72 hours of grace spent), `by_person` (a person's or a key's stop,

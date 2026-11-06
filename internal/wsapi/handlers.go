@@ -47,6 +47,10 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "malformed pair request: "+err.Error())
 		return
 	}
+	if req.Relink {
+		s.handleRelink(ctx, f, req)
+		return
+	}
 
 	if !req.Resume {
 		if _, ok := s.requireOperator(f.ReqID); !ok {
@@ -207,6 +211,12 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 			s.replyError(f.ReqID, ErrCodeInternal, "could not resume pairing")
 			return
 		}
+		// A resume, as device.start's: the open pause notices say so.
+		resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if err := s.srv.cfg.Devices.MarkResumed(resumeCtx, uuid.MustParse(tenant), uuid.MustParse(dev.ID)); err != nil {
+			s.log.Warn("could not mark a resumed registration's notices", "device", dev.ID, "error", err)
+		}
+		cancel()
 	}
 	pair, err := s.srv.cfg.Registry.StartPairing(ctx, tenant, dev.ID,
 		wa.ReceiptPolicy{Mode: mode, Recorder: s.recordReceipt}, opts)
@@ -433,13 +443,17 @@ func (s *session) handleDeviceStop(ctx context.Context, f Frame) {
 	}
 	statusCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := s.srv.cfg.Devices.SetStatus(statusCtx, tenant, ref.DeviceID, wa.StatusOffline, "paused by request"); err != nil {
+	// A logged-out or banned number keeps its status: it stays one to link
+	// again, and its snapshot keeps saying why.
+	status, reason, err := s.srv.cfg.Devices.MarkPausedOffline(statusCtx, tenant, ref.DeviceID)
+	if err != nil {
 		// The durable pause already succeeded and supervision has stopped.
 		s.log.Warn("device paused but display status could not be updated", "device", ref.DeviceID, "error", err)
+		status, reason = wa.StatusOffline, "paused by request"
 	}
-	s.srv.BroadcastDeviceStatus(tenant, ref.DeviceID, string(wa.StatusOffline), "paused by request")
+	s.srv.BroadcastDeviceStatus(tenant, ref.DeviceID, string(status), reason)
 	s.reply(TypeDeviceStatus, f.ReqID, DeviceStatus{
-		DeviceID: ref.DeviceID, Status: string(wa.StatusOffline), Reason: "paused by request",
+		DeviceID: ref.DeviceID, Status: string(status), Reason: reason,
 	})
 	s.srv.pushNotices(tenant, paused.Notices)
 }
