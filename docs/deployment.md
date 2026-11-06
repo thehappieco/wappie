@@ -572,15 +572,19 @@ that ran the command, a token or anything else, nor Wappie's own
 `apply_failed` stops, which stay in the database. A stop's times never go
 back: a stop or a lift timed before the stop's last change (two commands
 at once, or a clock stepped back) is made at that change, and its line
-carries that time, so a replay brings the stops back as they stood. The
-file is created with mode 0600 and replaced whole at each write: a
-temporary file beside it, with its mode and owner, synced and renamed over
-it, the directory synced, under an exclusive lock of the file, so a
+carries that time, so a replay brings the stops back as they stood. A
+command takes the file's lock before its database write and holds it to
+its line, so two at once write their lines in the order of their changes.
+The file is created with mode 0600 and replaced whole at each write: a
+temporary file beside it, with its mode and owner, synced and renamed
+over it, the directory synced, under an exclusive lock of the file, so a
 command and the server at once lose no line.
 
 - **When it is written.** By `tokens suspend` and `tokens lift`, once the
   stop or the lift is in the database: the configured file is the only
-  one they write. A lift of a stop lifted already changes nothing and
+  one they write. A command waits 5 seconds at most for the file's lock,
+  then makes the stop in the database all the same and says the record
+  lacks it, as below. A lift of a stop lifted already changes nothing and
   writes that lift again, at its own time, so running it again records a
   lift whose write failed; a lift with no operator's stop to lift writes
   nothing. With `WS_TOKEN_STOP_RECORD` blank the command still makes the
@@ -588,14 +592,17 @@ command and the server at once lose no line.
   restore of Wappie's database would lose it"; one that cannot write the
   file says the stop is in the database but not in the record, and exits
   with status 1.
-- **When it is trimmed.** A line goes 365 days after it was written,
-  whatever became of its stop, in the hourly pass (after its retention)
-  and at each write. Decision 0056 sets this, and requires it never to be
-  less than the reach of the backups Wappie may restore (the pilot's
-  snapshots: 90 days). The pass logs INFO "token stop record trimmed"
-  with how many lines, never which. A trim that fails logs ERROR "token
-  stop record trim failed" with the path and the error, and changes
-  nothing; the next pass trims again. A trim never creates the file.
+- **When it is trimmed.** A line goes 365 days after its time, which is
+  when it was written, whatever became of its stop, in the hourly pass
+  (after its retention) and at each write. A lift run again writes the
+  first lift's time, so its line goes 365 days after that lift; every
+  snapshot in reach holds the lift by then. Decision 0056 sets this, and
+  requires it never to be less than the reach of the backups Wappie may
+  restore (the pilot's snapshots: 90 days). The pass logs INFO "token
+  stop record trimmed" with how many lines, never which. A trim that
+  fails logs ERROR "token stop record trim failed" with the path and the
+  error, and changes nothing; the next pass trims again. A trim never
+  creates the file.
 - **A line that is no stop's record** (a hand edit, a damaged disk) is
   kept as it is, and every pass logs ERROR "token stop record has
   unreadable lines" with the path and how many, never what they say:
@@ -677,9 +684,11 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
 - `tokens suspend` stops a token here by its selector, with the platform
   down too, until `tokens lift`; each appends to the stop record (above),
   so `tokens suspend -replay /var/lib/wappie/token-stops.jsonl`, before
-  the server starts, brings the stops back after a restore of Wappie's
-  database ([what Wappie keeps of a token](contract.md#the-token-feed)).
-  `-note` is kept in Wappie's database only.
+  the server starts, brings back the stops made since the snapshot after
+  a restore of Wappie's database ([what Wappie keeps of a
+  token](contract.md#the-token-feed)). It leaves the lines the restored
+  database holds already, and those of stops retention let go before the
+  snapshot. `-note` is kept in Wappie's database only.
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database
@@ -735,21 +744,26 @@ this order:
 1. the ledger's replay (step 4);
 2. `whatserverd contract tokens off`, so no token is accepted before the
    stops stand again;
-3. `whatserverd tokens suspend -replay /var/lib/wappie/token-stops.jsonl`;
+3. `whatserverd tokens suspend -replay /var/lib/wappie/token-stops.jsonl`.
+   It says how many stops and lifts it applied, and how many lines it
+   left: those no later than what the database holds, those of stops
+   retention let go before the snapshot, and those over 365 days old;
 4. start the server (step 5);
-5. `whatserverd contract tokens on`, if tokens were on before the
-   restore.
-
-Then run `whatserverd contract status --check`:
-
-- `contract never observed but a secret is installed`: the snapshot is from
-  before the first observe, so the mode is `off` with homes of Wappie's
-  choosing. Run `whatserverd contract mode observe` again if the contract was
-  observing.
-- Otherwise the mode is the snapshot's. The follower reads the feed again
-  from the snapshot's cursor and keeps only newer documents; events the
-  snapshot had not delivered yet are sent again, and the platform answers
-  `duplicate` for those it holds (within its 30 days).
+5. `whatserverd contract status --check`:
+   - `contract never observed but a secret is installed`: the snapshot is
+     from before the first observe, so the mode is `off` with homes of
+     Wappie's choosing. Run `whatserverd contract mode observe` again if
+     the contract was observing.
+   - Otherwise the mode is the snapshot's. The follower reads the feed
+     again from the snapshot's cursor and keeps only newer documents;
+     events the snapshot had not delivered yet are sent again, and the
+     platform answers `duplicate` for those it holds (within its 30 days).
+6. `whatserverd contract tokens on`, last, if tokens were on before the
+   restore. It refuses (exit 3, "contract tokens on: not ready: the
+   contract is off: turn it to observe first") while the contract is off,
+   and (exit 3, "… Wappie holds no generation of the platform's yet: wait
+   for the feed's first page") until the feed's first page is stored after
+   an observe; run it again then.
 
 A restore of the platform's database is the platform's: Wappie sees its new
 generation, or `gone`, and subscribes everyone again by itself. If a

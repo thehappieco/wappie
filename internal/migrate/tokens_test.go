@@ -135,8 +135,8 @@ func TestMigration0053DownStep(t *testing.T) {
 		if _, err := pool.Exec(ctx, downStepSQL(t, 53)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("the down-step with %s: %v", want, err)
 		}
-		if rows, has53, left := counts(); rows != before || !has53 || left != tables || tables != 13 {
-			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 53 %v, %d token tables (was %d, want 13)",
+		if rows, has53, left := counts(); rows != before || !has53 || left != tables || tables != 14 {
+			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 53 %v, %d token tables (was %d, want 14)",
 				rows, before, has53, left, tables)
 		}
 	}

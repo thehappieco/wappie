@@ -17,9 +17,11 @@ import (
 
 // tokenForgetAfter is how long a token's content (its record, name, terms,
 // perms and removed instances) is kept after it ended, at most: all of it
-// goes at its selector's until if that comes first. Its selector, sticky
-// row, pin and stops stay until its created_at + 365 days, so a record that
-// comes back later never revives it.
+// goes at its selector's until if that comes first. Its end is its
+// revocation's or its expiry's own time, never past Wappie's clock, or the
+// reset's pass that found it unlisted. Its selector, sticky row, pin and
+// stops stay until its created_at + 365 days, so a record that comes back
+// later never revives it.
 const tokenForgetAfter = 30 * 24 * time.Hour
 
 // tokenUsageKeep is how long a reported usage row is kept: a day's rows go
@@ -49,7 +51,8 @@ type TokenRetention struct {
 // removed instances, then its pin). Then, after every workspace and before
 // the selectors, in one statement, every stop due (one of a selector Wappie
 // holds once that selector is past its until, whatever its own dates; any
-// other at stopped_at + 365 days, or at its record_until if earlier); then
+// other at stopped_at + 365 days, or at its record_until if earlier), with
+// the mark of what it let go (contract_token_stops_let_go); then
 // what the acknowledgement and the usage report still hold of a token past
 // its until, sent or not; then the selectors and sticky rows past their
 // until (their guards); then the usage rows reported, from the start of the
@@ -104,7 +107,10 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 				}
 				// The expiry janitor: the token's row first (DB25 step 4),
 				// then its identity with its grants, then the sticky row.
-				rows, err := tx.Query(ctx, `UPDATE contract_tokens t SET ended_at = $1
+				// The token ended at its expiry, however late this pass
+				// sees it, so its record's 30 days count from then.
+				rows, err := tx.Query(ctx, `UPDATE contract_tokens t
+					SET ended_at = CASE WHEN isfinite(t.expires_at) THEN least(t.expires_at, $1) ELSE $1 END
 					FROM (SELECT id FROM contract_tokens WHERE expires_at <= $1 AND ended_at IS NULL ORDER BY id FOR UPDATE) l
 					WHERE t.id = l.id RETURNING t.id, t.created_at, t.expires_at`, now)
 				if err != nil {
@@ -202,18 +208,28 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 			// (selector, cause) order, before the selectors: one of a
 			// selector Wappie holds only with it, past its until, whatever
 			// its own dates; any other at stopped_at + 365 days, or at its
-			// record_until if that is earlier.
-			tag, err := tx.Exec(ctx, `DELETE FROM contract_token_stops x
-				USING (SELECT y.selector, y.cause FROM contract_token_stops y
-				       LEFT JOIN contract_token_selectors s ON s.selector = y.selector
-				       WHERE CASE WHEN s.selector IS NOT NULL THEN s.until <= $1
-				                  ELSE least(y.stopped_at + $2::interval, coalesce(y.record_until, 'infinity')) <= $1 END
-				       ORDER BY y.selector, y.cause FOR UPDATE OF y) l
-				WHERE x.selector = l.selector AND x.cause = l.cause`, cut, tokenStopKeep)
-			if err != nil {
+			// record_until if that is earlier. The mark of what retention
+			// let go is locked first, as a stop or a lift takes it (between
+			// its token's row and its stop), and moves on to the latest
+			// time of an operator's stop deleted here: no line at or before
+			// it is written after this commits (stopChange).
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_token_stops_let_go FOR UPDATE`); err != nil {
 				return err
 			}
-			out.Stops = tag.RowsAffected()
+			if err := tx.QueryRow(ctx, `WITH gone AS (
+					DELETE FROM contract_token_stops x
+					USING (SELECT y.selector, y.cause FROM contract_token_stops y
+					       LEFT JOIN contract_token_selectors s ON s.selector = y.selector
+					       WHERE CASE WHEN s.selector IS NOT NULL THEN s.until <= $1
+					                  ELSE least(y.stopped_at + $2::interval, coalesce(y.record_until, 'infinity')) <= $1 END
+					       ORDER BY y.selector, y.cause FOR UPDATE OF y) l
+					WHERE x.selector = l.selector AND x.cause = l.cause
+					RETURNING x.cause, greatest(x.stopped_at, x.lifted_at) AS last)
+				UPDATE contract_token_stops_let_go
+				SET through = greatest(through, (SELECT max(last) FROM gone WHERE cause = 'operator'))
+				RETURNING (SELECT count(*) FROM gone)`, cut, tokenStopKeep).Scan(&out.Stops); err != nil {
+				return err
+			}
 			for _, q := range []struct {
 				sql  string
 				args []any
@@ -315,37 +331,39 @@ var ErrSelector = errors.New("store: a token's selector is 16 lowercase hex digi
 // the stops' trigger notifies every process. The feed and a reset never
 // lift it. A re-stop is made now, and keeps the record_until the applier
 // gave the stop. A stop's times never go back: a re-stop timed before the
-// stop's last change (two commands at once, each timed as it began, or a
-// clock stepped back) is made at that change. The stop record's line
-// carries the time returned, and a replay compares each line's time with
-// the stop's last change, so it brings the stops back as they stood.
+// stop's last change (two commands at once, or a clock stepped back) is
+// made at that change. A stop is also made after the mark of what
+// retention let go (stopChange). The stop record's line carries the time
+// returned, and a replay compares each line's time with the stop's last
+// change, so it brings the stops back as they stood.
 func (t *Tokens) StopToken(ctx context.Context, selector, by, note string, now time.Time) (time.Time, error) {
 	if !kc.ValidSelector(selector) {
 		return time.Time{}, ErrSelector
 	}
 	var at time.Time
-	_, err := t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
+	_, err := t.stopChange(ctx, selector, func(tx pgx.Tx, through *time.Time) (bool, error) {
 		err := tx.QueryRow(ctx, `INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by, note)
-			VALUES ($1, 'operator', $2, $3, $4)
+			VALUES ($1, 'operator', greatest($2::timestamptz, $5::timestamptz + interval '1 microsecond'), $3, $4)
 			ON CONFLICT (selector, cause) DO UPDATE SET stopped_by = EXCLUDED.stopped_by, note = EXCLUDED.note, lifted_at = NULL,
 				stopped_at = greatest(EXCLUDED.stopped_at, contract_token_stops.stopped_at, contract_token_stops.lifted_at)
-			RETURNING stopped_at`, selector, now, by, note).Scan(&at)
+			RETURNING stopped_at`, selector, now, by, note, through).Scan(&at)
 		return true, err
 	})
 	return at, err
 }
 
 // LiftToken lifts the operator's stop of selector at now, or at its
-// stopped_at if that is later (a stop's times never go back, as in
-// StopToken). It returns when the stop was lifted and whether this call
-// lifted it: a stop lifted already gives its own lifted_at, unchanged, and
-// none (no operator's stop of selector) the zero time.
+// stopped_at or just after the mark of what retention let go, if either is
+// later (a stop's times never go back, as in StopToken). It returns when
+// the stop was lifted and whether this call lifted it: a stop lifted
+// already gives its own lifted_at, unchanged, and none (no operator's stop
+// of selector) the zero time.
 func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) (time.Time, bool, error) {
 	if !kc.ValidSelector(selector) {
 		return time.Time{}, false, ErrSelector
 	}
 	var at time.Time
-	lifted, err := t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
+	lifted, err := t.stopChange(ctx, selector, func(tx pgx.Tx, through *time.Time) (bool, error) {
 		at = time.Time{}
 		var was *time.Time
 		err := tx.QueryRow(ctx, `SELECT lifted_at FROM contract_token_stops
@@ -359,8 +377,9 @@ func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) 
 			at = *was
 			return false, nil
 		}
-		err = tx.QueryRow(ctx, `UPDATE contract_token_stops SET lifted_at = greatest($2::timestamptz, stopped_at)
-			WHERE selector = $1 AND cause = 'operator' RETURNING lifted_at`, selector, now).Scan(&at)
+		err = tx.QueryRow(ctx, `UPDATE contract_token_stops
+			SET lifted_at = greatest($2::timestamptz, stopped_at, $3::timestamptz + interval '1 microsecond')
+			WHERE selector = $1 AND cause = 'operator' RETURNING lifted_at`, selector, now, through).Scan(&at)
 		return err == nil, err
 	})
 	return at, lifted, err
@@ -368,17 +387,16 @@ func (t *Tokens) LiftToken(ctx context.Context, selector string, now time.Time) 
 
 // ReplayTokenStop is StopToken for a line of the stop record (tokens suspend
 // -replay, after a restore of Wappie's database), at the line's own time,
-// with the note given (a replay's is empty: the record keeps none): it
-// applies only when nothing the database holds of the selector's operator
-// stop is later, neither its stop nor its lift, so a replay never rewinds
-// what was done since without the record, and never for a line 365 days
-// old by now (Wappie's clock), whose stop retention has let go whatever
-// became of its selector. A younger line of a stop that went sooner (with
-// its selector, or at its record_until) comes back, after a restore of a
-// snapshot taken since, as the stop of a selector Wappie does not hold:
-// kept to 365 days after it was made at most, as its line is, or to a
-// valid record of its selector that comes again. It reports whether it
-// applied.
+// with the note given (a replay's is empty: the record keeps none). It
+// leaves a line at or before the mark of what retention let go
+// (TokenStopMarked): the restored database holds that stop already, or
+// retention let it go before the snapshot. It leaves a line 365 days old
+// by now (Wappie's clock), whose stop retention lets go whatever became of
+// its selector. Otherwise it applies only when the database's stop was
+// changed before the line: an open stop made earlier, or one lifted no
+// later. So a replay never rewinds what was done since without the record,
+// and never rewrites a stop the database holds as the line has it, with its
+// note and who made it. It reports whether it applied.
 func (t *Tokens) ReplayTokenStop(ctx context.Context, selector, by, note string, at, now time.Time) (bool, error) {
 	if !kc.ValidSelector(selector) {
 		return false, ErrSelector
@@ -386,31 +404,55 @@ func (t *Tokens) ReplayTokenStop(ctx context.Context, selector, by, note string,
 	if TokenStopLapsed(at, now) {
 		return false, nil
 	}
-	return t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
+	return t.stopChange(ctx, selector, func(tx pgx.Tx, through *time.Time) (bool, error) {
+		if TokenStopMarked(at, through) {
+			return false, nil
+		}
 		tag, err := tx.Exec(ctx, `INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by, note)
 			VALUES ($1, 'operator', $2, $3, $4)
 			ON CONFLICT (selector, cause) DO UPDATE SET stopped_at = EXCLUDED.stopped_at, stopped_by = EXCLUDED.stopped_by,
 				note = EXCLUDED.note, lifted_at = NULL
-			WHERE GREATEST(contract_token_stops.stopped_at, contract_token_stops.lifted_at) <= EXCLUDED.stopped_at`, selector, at, by, note)
+			WHERE CASE WHEN contract_token_stops.lifted_at IS NULL THEN contract_token_stops.stopped_at < EXCLUDED.stopped_at
+			           ELSE contract_token_stops.lifted_at <= EXCLUDED.stopped_at END`, selector, at, by, note)
 		return tag.RowsAffected() == 1, err
 	})
 }
 
 // TokenStopLapsed reports whether a stop made at at is past what retention
-// keeps of it by now, 365 days. The stop record drops its line then, at
-// each append and each hourly pass (decision 0056: 365 days after it was
-// written), and a replay leaves it.
+// keeps of it by now, 365 days. The stop record drops a line whose time is
+// that old, at each append and each hourly pass (decision 0056: 365 days
+// after it was written), and a replay leaves it.
 func TokenStopLapsed(at, now time.Time) bool { return !at.Add(tokenStopKeep).After(now) }
 
-// ReplayTokenLift is LiftToken for a line of the stop record: it lifts the
-// open operator stop only when that stop is no later than the lift, so a
-// lift the record kept never lifts a stop made since. It reports whether it
-// lifted one.
+// TokenStopMarked reports whether a line of the stop record at at is at or
+// before through, the mark of what retention let go (nil: none yet). The
+// database that holds the mark holds that stop or lift already, or
+// retention let its stop go: a replay leaves the line.
+func TokenStopMarked(at time.Time, through *time.Time) bool {
+	return through != nil && !at.After(*through)
+}
+
+// TokenStopsLetGo is the mark of what retention let go: the latest time,
+// its stop or its lift, of an operator's stop it deleted, nil before any.
+func (t *Tokens) TokenStopsLetGo(ctx context.Context) (*time.Time, error) {
+	var through *time.Time
+	err := t.pool.QueryRow(ctx, `SELECT through FROM contract_token_stops_let_go`).Scan(&through)
+	return through, err
+}
+
+// ReplayTokenLift is LiftToken for a line of the stop record: it leaves a
+// line at or before the mark of what retention let go, as ReplayTokenStop
+// does, and otherwise lifts the open operator stop only when that stop is
+// no later than the lift, so a lift the record kept never lifts a stop
+// made since. It reports whether it lifted one.
 func (t *Tokens) ReplayTokenLift(ctx context.Context, selector string, at time.Time) (bool, error) {
 	if !kc.ValidSelector(selector) {
 		return false, ErrSelector
 	}
-	return t.stopChange(ctx, selector, func(tx pgx.Tx) (bool, error) {
+	return t.stopChange(ctx, selector, func(tx pgx.Tx, through *time.Time) (bool, error) {
+		if TokenStopMarked(at, through) {
+			return false, nil
+		}
 		tag, err := tx.Exec(ctx, `UPDATE contract_token_stops SET lifted_at = $2
 			WHERE selector = $1 AND cause = 'operator' AND lifted_at IS NULL AND stopped_at <= $2`, selector, at)
 		return tag.RowsAffected() == 1, err
@@ -419,8 +461,13 @@ func (t *Tokens) ReplayTokenLift(ctx context.Context, selector string, at time.T
 
 // stopChange runs change, a write of selector's stops that reports whether
 // it changed one, after locking the token the selector maps to (if any;
-// DB25 step 4), and bumps that token's access_version when it did.
-func (t *Tokens) stopChange(ctx context.Context, selector string, change func(pgx.Tx) (bool, error)) (bool, error) {
+// DB25 step 4), then the mark of what retention let go, shared, which it
+// gives change. A stop or a lift is made after the mark. Retention moves
+// the mark under its row lock, so it waits for a change in flight, and a
+// change waits for it: no line at or before a mark is written once a
+// snapshot can hold that mark. It bumps the token's access_version when
+// change changed a stop.
+func (t *Tokens) stopChange(ctx context.Context, selector string, change func(pgx.Tx, *time.Time) (bool, error)) (bool, error) {
 	changed := false
 	err := retryDeadlock(ctx, func() error {
 		return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
@@ -439,7 +486,11 @@ func (t *Tokens) stopChange(ctx context.Context, selector string, change func(pg
 					return err
 				}
 			}
-			if changed, err = change(tx); err != nil || !changed || !held {
+			var through *time.Time
+			if err := tx.QueryRow(ctx, `SELECT through FROM contract_token_stops_let_go FOR SHARE`).Scan(&through); err != nil {
+				return err
+			}
+			if changed, err = change(tx, through); err != nil || !changed || !held {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `UPDATE contract_tokens SET access_version = access_version + 1 WHERE id = $1`, token); err != nil {

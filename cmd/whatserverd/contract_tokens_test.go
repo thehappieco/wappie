@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -1039,8 +1040,8 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 	}
 	appendLine(stopLine(t, old, now.Add(-366*day), false))
 	// A valid record of gone's selector came, created 365 days ago: its
-	// stop is due.
-	execSQL(t, pool, `UPDATE contract_token_stops SET record_until = clock_timestamp() - interval '1 minute' WHERE selector = $1`, gone)
+	// stop is due, an hour ago on Wappie's clock.
+	execSQL(t, pool, `UPDATE contract_token_stops SET record_until = $2 WHERE selector = $1`, gone, now.Add(-time.Hour))
 	stopped := func(sel string) bool {
 		t.Helper()
 		var n int
@@ -1077,6 +1078,14 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 	if trimmed := log.find(slog.LevelInfo, "token stop record trimmed"); len(trimmed) != 1 {
 		t.Fatalf("a trim with nothing to drop: %+v", trimmed)
 	}
+	// A restore of a snapshot taken since: the replay leaves every line at
+	// or before the stop retention let go, so gone's stop stays gone.
+	var replayed bytes.Buffer
+	if err := replayTokenStops(ctx, tokens, record, &replayed); err != nil || stopped(gone) ||
+		!strings.Contains(replayed.String(), "0 stops and 0 lifts applied") ||
+		!strings.Contains(replayed.String(), "3 lines left, no later than the last stop retention let go") {
+		t.Fatalf("a replay after retention let a stop go: %v, its stop there %v, %q", err, stopped(gone), replayed.String())
+	}
 
 	// A line that is no stop's record, which -replay would refuse.
 	const unread = `{"selector":"` + live + `","note":"a secret"}`
@@ -1094,7 +1103,7 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 	if _, err := tokens.StopToken(ctx, due, "root", "", now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	execSQL(t, pool, `UPDATE contract_token_stops SET record_until = clock_timestamp() - interval '1 minute' WHERE selector = $1`, due)
+	execSQL(t, pool, `UPDATE contract_token_stops SET record_until = $2 WHERE selector = $1`, due, now.Add(-time.Hour))
 	a.cfg.TokenStopRecord = dir
 	a.retainTokens(ctx, now)
 	if bad := log.find(slog.LevelError, "token stop record trim failed"); len(bad) != 1 || bad[0].attrs["path"] != dir || bad[0].attrs["error"] == "" {
@@ -1215,6 +1224,128 @@ func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 	}
 	if after := stops(); len(after) != 5 || !maps.Equal(after, before) {
 		t.Fatalf("after the replay %v, before the restore %v", after, before)
+	}
+}
+
+// A replay of the stops the restored database holds as their lines have
+// them (a snapshot taken after them) changes nothing: each keeps who made
+// it, its note and its times, and the replay says nothing applied.
+func TestAReplayKeepsTheStopsItHolds(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	tokens := store.NewTokens(pool)
+	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
+	const open, lifted = "0123456789abcdef", "fedcba9876543210"
+	at := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+	for _, r := range []tokenStopRecord{{Selector: open, At: at}, {Selector: lifted, At: at}, {Selector: lifted, At: at.Add(time.Second), Lift: true}} {
+		note := "leaked in a log"
+		if r.Lift {
+			note = ""
+		}
+		if err := changeTokenStop(ctx, tokens, r, note, record, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	execSQL(t, pool, `UPDATE contract_token_stops SET stopped_by = 'alice'`)
+	show := func() string {
+		t.Helper()
+		list, err := tokens.TokenStops(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		for _, s := range list {
+			fmt.Fprintf(&b, "%s by=%s note=%q at=%s lifted=%v\n", s.Selector, s.StoppedBy, s.Note, s.StoppedAt.UTC().Format(time.RFC3339Nano), s.LiftedAt)
+		}
+		return b.String()
+	}
+	before := show()
+	var out bytes.Buffer
+	if err := replayTokenStops(ctx, tokens, record, &out); err != nil || !strings.Contains(out.String(), "0 stops and 0 lifts applied") ||
+		!strings.Contains(out.String(), "3 lines left, no later than what the database holds") {
+		t.Fatalf("the replay of the stops the database holds: %v %q", err, out.String())
+	}
+	if after := show(); after != before {
+		t.Fatalf("the replay changed the stops the database held:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// A command takes the stop record's lock before its database write and
+// holds it to its line, so two commands on one selector write their lines
+// in the order of their changes. While the record is locked neither has
+// changed the database; once it is free, a replay of the record over the
+// stop as it stood before brings back the stop as the commands left it,
+// whichever ran first. A command that cannot take the lock in time makes
+// its stop all the same and says the record lacks it.
+func TestTheRecordFollowsTheDatabasesOrder(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	tokens := store.NewTokens(pool)
+	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
+	const sel, other = "0123456789abcdef", "fedcba9876543210"
+	t0 := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+	if err := changeTokenStop(ctx, tokens, tokenStopRecord{Selector: sel, At: t0}, "", record, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	state := func() string {
+		t.Helper()
+		var stopped time.Time
+		var lifted *time.Time
+		if err := pool.QueryRow(ctx, `SELECT stopped_at, lifted_at FROM contract_token_stops WHERE selector = $1 AND cause = 'operator'`,
+			sel).Scan(&stopped, &lifted); err != nil {
+			t.Fatal(err)
+		}
+		if lifted == nil {
+			return "open " + stopped.UTC().Format(time.RFC3339Nano)
+		}
+		return "lifted " + lifted.UTC().Format(time.RFC3339Nano)
+	}
+	before := state()
+	held, err := lockStopRecord(ctx, record, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A suspend timed before a lift: whichever reaches the database first,
+	// the other is made at its time or later, and so maybe at the same.
+	done := make(chan error, 2)
+	for _, r := range []tokenStopRecord{{Selector: sel, At: t0.Add(2 * time.Second), Lift: true}, {Selector: sel, At: t0.Add(time.Second)}} {
+		go func() { done <- changeTokenStop(ctx, tokens, r, "", record, &bytes.Buffer{}) }()
+	}
+	time.Sleep(time.Second)
+	if got := state(); got != before {
+		t.Fatalf("with the record locked, a command changed the stop: %s, was %s", got, before)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := state()
+	execSQL(t, pool, `UPDATE contract_token_stops SET stopped_at = $2, lifted_at = NULL WHERE selector = $1`, sel, t0)
+	var out bytes.Buffer
+	if err := replayTokenStops(ctx, tokens, record, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(); got != after {
+		t.Fatalf("before the restore the stop was %s; after the replay it is %s (%s)", after, got, out.String())
+	}
+
+	defer func(wait time.Duration) { tokenStopLockWait = wait }(tokenStopLockWait)
+	tokenStopLockWait = 100 * time.Millisecond
+	if held, err = lockStopRecord(ctx, record, true); err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close() //nolint:errcheck // releases the lock
+	err = changeTokenStop(ctx, tokens, tokenStopRecord{Selector: other, At: time.Now()}, "", record, &bytes.Buffer{})
+	var open int
+	if qerr := pool.QueryRow(ctx, `SELECT count(*) FROM contract_token_stops WHERE selector = $1 AND lifted_at IS NULL`, other).Scan(&open); qerr != nil {
+		t.Fatal(qerr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "the stop is in the database but not in the record") || open != 1 {
+		t.Fatalf("a command that cannot lock the record: %v, %d open stops", err, open)
 	}
 }
 
