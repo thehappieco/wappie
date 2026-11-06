@@ -84,6 +84,16 @@
 --                          days, or earlier at record_until, the earliest
 --                          created_at + 365 days of a valid record of its
 --                          selector seen since (never a bad record's).
+--   contract_token_stops_let_go
+--                          one row: through, the latest time of an
+--                          operator's stop (its stop or its lift) that
+--                          retention deleted, never lowered. Retention
+--                          writes it with its deletions under the row's
+--                          lock, and a stop or a lift takes the row's share
+--                          lock and is made after it. So a snapshot that
+--                          holds it holds every stop record line at or
+--                          before it, or retention let that stop go: tokens
+--                          suspend -replay leaves those lines.
 --   contract_token_refusals_out, contract_token_held_out
 --                          the acknowledgement's queues: ids, versions,
 --                          codes and the held state; never read on a
@@ -149,7 +159,9 @@
 -- grants (counted; users and device_key_grants are forced row-level
 -- security, so a plain delete as the owner with no workspace would delete
 -- nothing: their policies are lifted around it), the local stops (counted:
--- re-apply them from the stop record after a re-upgrade) and the
+-- re-apply them from the stop record after a re-upgrade; with no mark of
+-- what retention let go, a line of a stop it let go before the down-step
+-- comes back too, as the stop of a selector Wappie does not hold) and the
 -- retirement's record (counted); the keys the retirement revoked stay
 -- revoked, as 0050's did.
 --
@@ -234,9 +246,9 @@
 --      END $$ LANGUAGE plpgsql;
 --      DROP FUNCTION api_key_class(api_keys);
 --      DROP TABLE key_retirements, contract_token_refusals, contract_token_used, contract_token_held_out,
---        contract_token_refusals_out, contract_token_stops, contract_token_sticky, contract_token_removed,
---        contract_token_perms, contract_token_pins, contract_tokens, contract_token_selectors,
---        contract_token_state;
+--        contract_token_refusals_out, contract_token_stops_let_go, contract_token_stops, contract_token_sticky,
+--        contract_token_removed, contract_token_perms, contract_token_pins, contract_tokens,
+--        contract_token_selectors, contract_token_state;
 --      DROP FUNCTION contract_tokens_never_widen(), contract_token_notify(), contract_tokens_notify_all(),
 --        contract_token_identity_notify(), contract_token_pins_guard(), contract_token_selectors_guard(),
 --        contract_token_sticky_guard();
@@ -511,6 +523,11 @@ CREATE TABLE contract_token_stops (
     record_until timestamptz,
     PRIMARY KEY (selector, cause)
 );
+CREATE TABLE contract_token_stops_let_go (
+    id      boolean     PRIMARY KEY DEFAULT true CHECK (id),
+    through timestamptz
+);
+INSERT INTO contract_token_stops_let_go DEFAULT VALUES;
 
 CREATE TABLE contract_token_refusals_out (
     token_id  uuid        NOT NULL,

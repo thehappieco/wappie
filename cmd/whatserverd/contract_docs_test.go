@@ -767,6 +767,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"check acks":            spoken(checkAcks),
 			"check usage":           spoken(checkUsage),
 			"check token commit":    spoken(checkTokenCommit),
+			"stop record lock":      spoken(tokenStopLockWait),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.
