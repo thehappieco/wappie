@@ -337,6 +337,17 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			says("contract.md", left.code)
 			says("deployment.md", left.runbook)
 		}
+		// A lift of a stop lifted already writes no line, as both docs
+		// quote, so none says a line carries an earlier lift's time.
+		lifted := "the operator's stop was lifted already; nothing changed or recorded"
+		codeSays(lifted)
+		says("contract.md", lifted)
+		says("deployment.md", lifted)
+		for name, text := range map[string]string{"contract.md": docs["contract.md"], "deployment.md": docs["deployment.md"], "the code": code} {
+			if strings.Contains(text, "first lift's time") {
+				t.Errorf("%s says a line carries the first lift's time", name)
+			}
+		}
 		// tokens' flags, parsed before anything opens: each documented one
 		// is the command's, and it has no other; a text that is no selector
 		// or token is refused without being repeated.

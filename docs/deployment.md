@@ -588,18 +588,19 @@ command and the server at once lose no line.
   one they write. A command waits 5 seconds at most for the file's lock,
   then makes the stop in the database all the same and says the record
   lacks it, as below. A lift of a stop lifted already changes nothing and
-  writes that lift again, at its own time, so running it again records a
-  lift whose write failed; a lift with no operator's stop to lift writes
-  nothing. With `WS_TOKEN_STOP_RECORD` blank the command still makes the
-  stop and says "no stop record (WS_TOKEN_STOP_RECORD is empty), so a
-  restore of Wappie's database would lose it"; one that cannot write the
-  file says the stop is in the database but not in the record, and exits
-  with status 1.
+  writes nothing ("the operator's stop was lifted already; nothing changed
+  or recorded"): its line would carry that lift's time, and go sooner than
+  365 days after it was written. Record a lift whose write failed with
+  `tokens suspend` and then `tokens lift` of the selector, two new lines;
+  without them a restore brings the stop back, the safe side. A lift with
+  no operator's stop to lift writes nothing. With `WS_TOKEN_STOP_RECORD`
+  blank the command still makes the stop and says "no stop record
+  (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would
+  lose it"; one that cannot write the file says the stop is in the
+  database but not in the record, and exits with status 1.
 - **When it is trimmed.** A line goes 365 days after its time, which is
   when it was written, whatever became of its stop, in the hourly pass
-  (after its retention) and at each write. A lift run again writes the
-  first lift's time, so its line goes 365 days after that lift; every
-  snapshot in reach holds the lift by then. Decision 0056 sets this, and
+  (after its retention) and at each write. Decision 0056 sets this, and
   requires it never to be less than the reach of the backups Wappie may
   restore (the pilot's snapshots: 90 days). The pass logs INFO "token
   stop record trimmed" with how many lines, never which. A trim that

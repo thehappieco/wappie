@@ -2058,9 +2058,10 @@ locks that token's row first; the applier writes its lifts and its
 token rows, and lowers the stops' `record_until` (retention's alone, which
 wakes no socket) once, after every workspace's rows, in (selector, cause)
 order; retention deletes stops, in the same order, after every workspace's
-token rows and before the selectors, and in the same statement lowers the
-`record_until` of a stop it keeps past its selector's until (one timed
-ahead of its cut) to that until. The mark of what retention let go
+token rows and before the selectors, and in the same statement writes a
+due stop it keeps (one timed ahead of its cut): its note and author
+cleared, and its `record_until` lowered to its selector's until if that
+went. The mark of what retention let go
 (`contract_token_stops_let_go`, one row) comes between the token rows and
 the stops. A stop or a lift takes it FOR SHARE after its token's row, if
 Wappie holds one. Retention takes it FOR UPDATE after every workspace's

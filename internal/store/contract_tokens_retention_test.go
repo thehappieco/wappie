@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,28 @@ func unknownItem(by uuid.UUID, at time.Time) func(*kc.TokenRecord) {
 		r.Items = append(r.Items, kc.TokenItem{ID: "not-a-number", Kind: kc.ItemNumber,
 			Perms: []kc.TokenPerm{{Perm: kc.CanSend, GrantedBy: by.String(), GrantedAt: kc.T(at)}}})
 	}
+}
+
+// zeroExpiry is r's JSON with no expiry (a bad record), which Wappie
+// keeps as -infinity (TestZeroTimesNarrow).
+func zeroExpiry(t *testing.T, r kc.TokenRecord) json.RawMessage {
+	t.Helper()
+	old := []byte(`"expires_at":"` + r.ExpiresAt.UTC().Format(time.RFC3339Nano) + `"`)
+	b := raw(t, r)
+	if !bytes.Contains(b, old) {
+		t.Fatalf("no expires_at in %s", b)
+	}
+	return bytes.Replace(b, old, []byte(`"expires_at":null`), 1)
+}
+
+// endsAt reports whether token id's ended_at is at, and what it is.
+func (w *tokenWorld) endsAt(id uuid.UUID, at time.Time) (bool, string) {
+	w.t.Helper()
+	var ended string
+	w.scoped(func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT coalesce(ended_at::text, 'none') FROM contract_tokens WHERE id = $1`, id).Scan(&ended)
+	})
+	return w.count(`SELECT count(*) FROM contract_tokens WHERE id = $1 AND ended_at = $2`, id, at) == 1, ended
 }
 
 // A token's removed instances go at its selector's until at the
@@ -159,13 +182,15 @@ func TestTokenRetentionWaitsForTheDatabasesClock(t *testing.T) {
 // janitor ended at its expiry 10 days ago whose earlier revocation comes
 // after, and one the janitor ended at its expiry 10 days ago whose expiry
 // a later record shortens to 50 days ago, at the next. A revocation timed
-// ahead of Wappie's clock ends its token at Wappie's clock.
+// ahead of Wappie's clock ends its token at Wappie's clock. A zero expiry
+// (-infinity, a bad record's) gives no time: a held token revoked an hour
+// ago by a bad record with none ends at its revocation.
 func TestATokensRecordCountsFromItsEnd(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
 	created := w.now.Add(-100 * tokenDay)
 	expired, revoked, late, both, ahead := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	expiredRevoked, revokedExpired, shortened := uuid.New(), uuid.New(), uuid.New()
+	expiredRevoked, revokedExpired, shortened, zero := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	w.page(false,
 		w.record(expired, 1, createdAt(created, 60*tokenDay), grants(device, w.ownerSub, created, kc.CanRead)),
 		w.record(revoked, 1, createdAt(created, 300*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-40*tokenDay))),
@@ -174,8 +199,16 @@ func TestATokensRecordCountsFromItsEnd(t *testing.T) {
 		w.record(ahead, 1, createdAt(created, 300*tokenDay)),
 		w.record(expiredRevoked, 1, createdAt(created, 40*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))),
 		w.record(revokedExpired, 1, createdAt(created, 40*tokenDay)),
-		w.record(shortened, 1, createdAt(created, 90*tokenDay)))
-	w.page(false, w.record(revokedExpired, 2, createdAt(created, 40*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))))
+		w.record(shortened, 1, createdAt(created, 90*tokenDay)),
+		w.record(zero, 1, createdAt(created, 300*tokenDay)))
+	w.page(false, w.record(revokedExpired, 2, createdAt(created, 40*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))),
+		zeroExpiry(t, w.record(zero, 2, createdAt(created, 300*tokenDay), revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour)))))
+	if s := w.token(zero); !s.Revoked || s.Expires != "-infinity" {
+		t.Fatalf("a bad record with no expiry, revoked: %+v", s)
+	}
+	if at, ended := w.endsAt(zero, w.now.Add(-time.Hour)); !at {
+		t.Fatalf("a token revoked with no expiry ended at %s, want its revocation %v", ended, w.now.Add(-time.Hour))
+	}
 	gone := func(when string, ids map[string]uuid.UUID, want bool) {
 		t.Helper()
 		for name, id := range ids {
@@ -190,7 +223,7 @@ func TestATokensRecordCountsFromItsEnd(t *testing.T) {
 		"first seen revoked an hour ago, 60 days after its expiry":        expiredRevoked,
 		"expired 60 days ago, revoked an hour ago before the janitor ran": revokedExpired}, true)
 	gone("the first pass", map[string]uuid.UUID{"held": late, "expired 10 days ago": both, "held, revoked later": ahead,
-		"expired 10 days ago, to be shortened": shortened}, false)
+		"expired 10 days ago, to be shortened": shortened, "revoked with no expiry": zero}, false)
 	if w.perms(late)[device.String()+"/read"] == "" {
 		t.Fatal("the held token has no perm to forget")
 	}
@@ -202,62 +235,69 @@ func TestATokensRecordCountsFromItsEnd(t *testing.T) {
 	w.retain(w.now)
 	gone("the next pass", map[string]uuid.UUID{"revoked 40 days ago, learned now": late, "expired, then revoked earlier": both,
 		"ended at its expiry, then shortened to 50 days ago": shortened}, true)
-	gone("the next pass", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead}, false)
+	gone("the next pass", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead, "revoked with no expiry": zero}, false)
 	w.retain(w.now.Add(29 * tokenDay))
-	gone("29 days on", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead}, false)
+	gone("29 days on", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead, "revoked with no expiry": zero}, false)
 	w.retain(w.now.Add(30 * tokenDay))
-	gone("30 days on", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead}, true)
+	gone("30 days on", map[string]uuid.UUID{"revoked ahead of Wappie's clock": ahead, "revoked with no expiry": zero}, true)
 }
 
 // A reset's pass forgets what it unlists at once: its record, name, terms,
-// perms and removed instances, since an unlisting carries no time and a
-// restore whose re-read of the feed runs the pass again would start a 30
-// days of its own again. It ends at the pass, or at its expiry if that
-// came first and the janitor has not run yet. A token the pass lists
-// keeps its content.
+// perms (a Read applied and held at the reset among them) and removed
+// instances, since an unlisting carries no time and a restore whose
+// re-read of the feed runs the pass again would start a 30 days of its own
+// again. It ends at the pass, or at its expiry if that came first and the
+// janitor has not run yet; a zero expiry (-infinity) gives no time, so at
+// the pass. A token the pass lists keeps its content.
 func TestAResetsPassForgetsWhatItUnlists(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
-	live, expired, listed := uuid.New(), uuid.New(), uuid.New()
+	live, expired, zero, listed := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expiry := w.now.Add(-60 * tokenDay)
+	terms := func(r *kc.TokenRecord) {
+		r.Terms = &kc.TokenTerms{Version: "2026-10-api-keys-2", AgreedAt: kc.T(w.now.Add(-time.Hour))}
+	}
 	w.page(false,
-		w.record(live, 1, grants(device, w.ownerSub, w.now.Add(-time.Hour), kc.CanRead), unknownItem(w.ownerSub, w.now.Add(-time.Hour))),
+		w.record(live, 1, terms, grants(device, w.ownerSub, w.now.Add(-time.Hour), kc.CanRead), unknownItem(w.ownerSub, w.now.Add(-time.Hour))),
 		w.record(expired, 1, createdAt(expiry.Add(-40*tokenDay), 40*tokenDay)),
+		w.record(zero, 1),
 		w.record(listed, 1))
+	w.page(false, zeroExpiry(t, w.record(zero, 2)))
+	if s := w.token(zero); s.Expires != "-infinity" {
+		t.Fatalf("a bad record with no expiry: %+v", s)
+	}
 	content := func(id uuid.UUID) int {
 		t.Helper()
 		return len(w.perms(id)) + w.count(`SELECT count(*) FROM contract_token_removed WHERE token_id = $1`, id)
 	}
-	if content(live) != 2 {
-		t.Fatalf("the live token holds %d perms and removed instances, want 2", content(live))
+	kept := func(id uuid.UUID) bool {
+		t.Helper()
+		var kept bool
+		w.scoped(func(tx pgx.Tx) error {
+			return tx.QueryRow(context.Background(), `SELECT record IS NOT NULL OR terms IS NOT NULL FROM contract_tokens WHERE id = $1`, id).Scan(&kept)
+		})
+		return kept
 	}
+	w.judge()
 	w.reset()
 	w.exec(`UPDATE contract_state SET round_generation = $1`, w.gen)
+	if p := w.perms(live); len(p) != 1 || content(live) != 2 || w.count(`SELECT count(*) FROM contract_tokens WHERE id = $1 AND terms IS NOT NULL`, live) != 1 {
+		t.Fatalf("before the pass, the live token holds perms %v, %d perms and removed instances (want 2), and its terms %v", p, content(live), kept(live))
+	}
 	if res := w.page(false, w.record(listed, 1)); !res.PassReady {
 		t.Fatal("the pass is not ready")
 	}
-	if res, err := w.tokens.FinishTokenPass(w.ctx(), w.gen, w.now); err != nil || !res.Done || len(res.Unlisted) != 2 {
+	if res, err := w.tokens.FinishTokenPass(w.ctx(), w.gen, w.now); err != nil || !res.Done || len(res.Unlisted) != 3 {
 		t.Fatalf("the pass: %+v %v", res, err)
-	}
-	ended := func(id uuid.UUID) time.Time {
-		t.Helper()
-		var at time.Time
-		w.scoped(func(tx pgx.Tx) error {
-			return tx.QueryRow(context.Background(), `SELECT ended_at FROM contract_tokens WHERE id = $1`, id).Scan(&at)
-		})
-		return at
 	}
 	for name, c := range map[string]struct {
 		id  uuid.UUID
 		end time.Time
-	}{"live at the pass": {live, w.now}, "expired 60 days before the pass": {expired, expiry}} {
-		var record bool
-		w.scoped(func(tx pgx.Tx) error {
-			return tx.QueryRow(context.Background(), `SELECT record IS NOT NULL OR terms IS NOT NULL FROM contract_tokens WHERE id = $1`, c.id).Scan(&record)
-		})
-		if s := w.token(c.id); !s.Unlisted || !s.Forgotten || s.Name != "" || record || content(c.id) != 0 || !ended(c.id).Equal(c.end) {
-			t.Errorf("a token %s, unlisted: forgotten %v, name %q, its record kept %v, %d perms and removed instances, ended %v (want %v)",
-				name, s.Forgotten, s.Name, record, content(c.id), ended(c.id), c.end)
+	}{"live at the pass": {live, w.now}, "expired 60 days before the pass": {expired, expiry}, "with no expiry": {zero, w.now}} {
+		at, ended := w.endsAt(c.id, c.end)
+		if s := w.token(c.id); !s.Unlisted || !s.Forgotten || s.Name != "" || kept(c.id) || content(c.id) != 0 || !at {
+			t.Errorf("a token %s, unlisted: forgotten %v, name %q, its record or terms kept %v, %d perms and removed instances, ended %s (want %v)",
+				name, s.Forgotten, s.Name, kept(c.id), content(c.id), ended, c.end)
 		}
 	}
 	if s := w.token(listed); s.Unlisted || s.Forgotten || s.Name != "Nightly" {
@@ -971,34 +1011,95 @@ func TestAReplayLeavesWhatRetentionLetGo(t *testing.T) {
 }
 
 // Retention lets an operator's stop go only once its times are at or
-// before its cut, so the mark never passes Wappie's clock: a held
-// selector's stop timed 30 days ahead (a clock ahead when it was made)
-// stays when its selector goes, with the selector's until as its
-// record_until, and a stop and a lift made since, of another selector, are
-// made at their own times. Once its time has passed (moved back here, as
-// if 31 days went by) the next pass lets it go, at that record_until, not
-// 365 days after it was made, and the mark moves to its time.
+// before its cut, so the mark never passes Wappie's clock (a clock ahead
+// when a stop or a lift was made). Two held selectors' stops, one timed 30
+// days ahead and one lifted 30 days ahead, stay when their selectors go,
+// with the selector's until as their record_until; so does the stop of a
+// selector Wappie never held, 366 days old and lifted a day ahead. Past
+// its date each keeps only its selector and times, as the stop record
+// does: its note goes and it reads as made by wappie, once (a later pass
+// writes nothing). A young stop, not due, keeps its own. A stop and a lift
+// made since, of another selector, are made at their own times. Once a
+// stop's times have passed (moved back here, as if the days went by) the
+// next pass lets it go, at that record_until, not 365 days after it was
+// made, and the mark moves to its latest time.
 func TestAStopAheadOfTheClockWaitsForIt(t *testing.T) {
 	w := newTokenWorld(t)
-	held := uuid.New()
-	w.page(false, w.record(held, 1, createdAt(w.now.Add(-364*tokenDay), kc.MaxTokenLifetime)))
+	stopAhead, liftAhead := uuid.New(), uuid.New()
+	w.page(false, w.record(stopAhead, 1, createdAt(w.now.Add(-364*tokenDay), kc.MaxTokenLifetime)),
+		w.record(liftAhead, 1, createdAt(w.now.Add(-364*tokenDay), kc.MaxTokenLifetime)))
 	ahead := w.now.Add(30 * tokenDay)
-	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(held), "root", "", ahead); err != nil {
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(stopAhead), "alice", "leaked by bob@example.com", ahead); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.tokens.StopToken(w.ctx(), selectorOf(liftAhead), "alice", "leaked in a log", w.now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if at, lifted, err := w.tokens.LiftToken(w.ctx(), selectorOf(liftAhead), ahead); err != nil || !lifted || !at.Equal(ahead) {
+		t.Fatalf("a lift timed ahead: at %v %v, %v; want %v", at, lifted, err, ahead)
+	}
+	never, young := selectorOf(uuid.New()), selectorOf(uuid.New())
+	if _, err := w.tokens.StopToken(w.ctx(), never, "carol", "from INC-9", w.now.Add(-366*tokenDay)); err != nil {
+		t.Fatal(err)
+	}
+	if _, lifted, err := w.tokens.LiftToken(w.ctx(), never, w.now.Add(tokenDay)); err != nil || !lifted {
+		t.Fatal(lifted, err)
+	}
+	if _, err := w.tokens.StopToken(w.ctx(), young, "dave", "keep me", w.now.Add(tokenDay)); err != nil {
 		t.Fatal(err)
 	}
 	until := w.now.Add(-time.Hour)
 	w.untilBack(until)
-	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 0 || got.Ended != 1 {
-		t.Fatalf("retention past the selector's until, its stop ahead of the clock: %+v %v", got, err)
+	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 0 || got.Ended != 2 {
+		t.Fatalf("retention past the selectors' until, a stop and a lift ahead of the clock: %+v %v", got, err)
 	}
-	if exists, stopped, ru := w.stopOf(selectorOf(held)); !exists || !stopped.Equal(ahead) || ru == nil || !ru.Equal(until) {
-		t.Fatalf("a stop ahead of the clock as its selector went: there %v, stopped %v, record_until %v (want %v)", exists, stopped, ru, until)
+	type kept struct {
+		by, note, row string
+		recordUntil   *time.Time
 	}
-	if n := w.count(`SELECT count(*) FROM contract_token_selectors WHERE selector = $1`, selectorOf(held)); n != 0 {
-		t.Fatal("the selector stayed past its until")
+	keptOf := func(sel string) kept {
+		t.Helper()
+		var k kept
+		if err := w.pool.QueryRow(context.Background(), `SELECT stopped_by, note, xmin::text, record_until FROM contract_token_stops
+			WHERE selector = $1 AND cause = 'operator'`, sel).Scan(&k.by, &k.note, &k.row, &k.recordUntil); err != nil {
+			t.Fatalf("the stop of %s: %v", sel, err)
+		}
+		return k
+	}
+	first := map[string]kept{}
+	for _, c := range []struct {
+		name, sel, by, note string
+		recordUntil         *time.Time
+	}{
+		{"timed ahead, its selector gone", selectorOf(stopAhead), "wappie", "", &until},
+		{"lifted ahead, its selector gone", selectorOf(liftAhead), "wappie", "", &until},
+		{"never held, 366 days old, lifted ahead", never, "wappie", "", nil},
+		{"never held, young", young, "dave", "keep me", nil},
+	} {
+		k := keptOf(c.sel)
+		if k.by != c.by || k.note != c.note || (k.recordUntil == nil) != (c.recordUntil == nil) ||
+			(c.recordUntil != nil && !k.recordUntil.Equal(*c.recordUntil)) {
+			t.Errorf("a stop %s: by %q, note %q, record_until %v; want by %q, note %q, record_until %v",
+				c.name, k.by, k.note, k.recordUntil, c.by, c.note, c.recordUntil)
+		}
+		first[c.sel] = k
+	}
+	if exists, stopped, _ := w.stopOf(selectorOf(stopAhead)); !exists || !stopped.Equal(ahead) {
+		t.Fatalf("the stop timed ahead: there %v, stopped %v (want %v)", exists, stopped, ahead)
+	}
+	if n := w.count(`SELECT count(*) FROM contract_token_selectors`); n != 0 {
+		t.Fatal("the selectors stayed past their until")
 	}
 	if through := w.letGo(); through != nil {
 		t.Fatalf("the mark moved to %v, ahead of the clock", *through)
+	}
+	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 0 {
+		t.Fatalf("the next retention: %+v %v", got, err)
+	}
+	for sel, k := range first {
+		if again := keptOf(sel); again.row != k.row {
+			t.Errorf("the next retention wrote the stop of %s again", sel)
+		}
 	}
 	other := selectorOf(uuid.New())
 	if at, err := w.tokens.StopToken(w.ctx(), other, "root", "", w.now); err != nil || !at.Equal(w.now) {
@@ -1007,15 +1108,26 @@ func TestAStopAheadOfTheClockWaitsForIt(t *testing.T) {
 	if at, lifted, err := w.tokens.LiftToken(w.ctx(), other, w.now.Add(time.Second)); err != nil || !lifted || !at.Equal(w.now.Add(time.Second)) {
 		t.Fatalf("a lift made now: at %v %v, %v; want %v", at, lifted, err, w.now.Add(time.Second))
 	}
-	w.exec(`UPDATE contract_token_stops SET stopped_at = stopped_at - interval '31 days' WHERE selector = $1`, selectorOf(held))
-	if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 1 {
-		t.Fatalf("retention once the stop's time passed: %+v %v", got, err)
-	}
-	if exists, _, _ := w.stopOf(selectorOf(held)); exists {
-		t.Fatal("the stop stayed once its time passed")
-	}
-	if through, want := w.letGo(), ahead.Add(-31*tokenDay); through == nil || !through.Equal(want) {
-		t.Fatalf("the mark: %v, want %v", through, want)
+	// As if 31 days went by for the stop timed ahead, then 30 days and a
+	// minute for the lift: each goes at the next pass, and the mark moves
+	// to its time.
+	for _, c := range []struct {
+		name, sel, move string
+		mark            time.Time
+	}{
+		{"the stop timed ahead", selectorOf(stopAhead), `stopped_at = stopped_at - interval '31 days'`, ahead.Add(-31 * tokenDay)},
+		{"the lift timed ahead", selectorOf(liftAhead), `lifted_at = lifted_at - interval '30 days 1 minute'`, ahead.Add(-30*tokenDay - time.Minute)},
+	} {
+		w.exec(`UPDATE contract_token_stops SET `+c.move+` WHERE selector = $1`, c.sel)
+		if got, err := w.tokens.RetainTokens(w.ctx(), w.now); err != nil || got.Stops != 1 {
+			t.Fatalf("retention once %s passed: %+v %v", c.name, got, err)
+		}
+		if exists, _, _ := w.stopOf(c.sel); exists {
+			t.Fatalf("%s stayed once its time passed", c.name)
+		}
+		if through := w.letGo(); through == nil || !through.Equal(c.mark) {
+			t.Fatalf("the mark after %s went: %v, want %v", c.name, through, c.mark)
+		}
 	}
 }
 

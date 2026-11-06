@@ -1125,21 +1125,21 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 
 // The record holds what the commands did, at the times the database
 // holds, so a replay after a restore brings the stops back as they stood,
-// whatever was run. A lift of a stop lifted already appends that lift
-// again at its own time (so a lift whose append failed can be recorded by
-// running it again); a lift with nothing to lift (no stop, or only
-// Wappie's own) appends nothing, as no lift happened. Commands that
-// reached the database out of their times' order (two at once, or a clock
-// stepped back) never move a stop's times back, each made a microsecond
-// after the change before it: a suspend timed before the stop or its lift,
-// a lift timed before its stop.
+// whatever was run. A lift of a stop lifted already appends nothing, as a
+// line written now at that lift's time would go before its 365 days; a
+// lift whose append failed is recorded by a suspend and a lift. A lift
+// with nothing to lift (no stop, or only Wappie's own) appends nothing, as
+// no lift happened. Commands that reached the database out of their
+// times' order (two at once, or a clock stepped back) never move a stop's
+// times back, each made a microsecond after the change before it: a
+// suspend timed before the stop or its lift, a lift timed before its stop.
 func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
 	tokens := store.NewTokens(pool)
 	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
-	const twice, never, failing, raced, reopened, early = "0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004",
-		"0000000000000005", "0000000000000006"
+	const twice, never, failing, raced, reopened, early, lost = "0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004",
+		"0000000000000005", "0000000000000006", "0000000000000007"
 	const day, ms = 24 * time.Hour, time.Millisecond
 	base := time.Now().UTC().Truncate(time.Microsecond).Add(-10 * day)
 	change := func(r tokenStopRecord) string {
@@ -1169,12 +1169,12 @@ func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 
 	change(tokenStopRecord{Selector: twice, At: base})
 	change(tokenStopRecord{Selector: twice, At: base.Add(day), Lift: true})
-	if out := change(tokenStopRecord{Selector: twice, At: base.Add(2 * day), Lift: true}); !strings.Contains(out, "lifted already; nothing changed") ||
-		!strings.Contains(out, "recorded in") {
+	if out := change(tokenStopRecord{Selector: twice, At: base.Add(2 * day), Lift: true}); !strings.Contains(out, "lifted already; nothing changed or recorded") ||
+		strings.Contains(out, "recorded in") {
 		t.Fatalf("a second lift: %q", out)
 	}
-	if lines := read(); len(lines) != 3 || lines[2].Selector != twice || !lines[2].At.Equal(base.Add(day)) || !lines[2].Lift {
-		t.Fatalf("a second lift's line: %+v, want the first lift's again", lines)
+	if lines := read(); len(lines) != 2 {
+		t.Fatalf("a second lift wrote a line: %+v", lines)
 	}
 	execSQL(t, pool, `INSERT INTO contract_token_stops (selector, cause, stopped_at, stopped_by) VALUES ($1, 'apply_failed', $2, 'wappie')`, failing, base)
 	for _, sel := range []string{never, failing} {
@@ -1183,7 +1183,7 @@ func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 			t.Fatalf("a lift with nothing to lift: %q", out)
 		}
 	}
-	if lines := read(); len(lines) != 3 {
+	if lines := read(); len(lines) != 2 {
 		t.Fatalf("a lift with nothing to lift wrote a line: %+v", lines)
 	}
 	// Two suspends, the later timed first; a suspend timed before the lift
@@ -1195,9 +1195,23 @@ func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 	change(tokenStopRecord{Selector: reopened, At: base})
 	change(tokenStopRecord{Selector: early, At: base.Add(ms)})
 	change(tokenStopRecord{Selector: early, At: base, Lift: true})
-	if lines := read(); len(lines) != 10 || !lines[4].At.Equal(base.Add(ms+time.Microsecond)) || !lines[7].At.Equal(base.Add(ms+time.Microsecond)) ||
-		!lines[9].At.Equal(base.Add(ms+time.Microsecond)) {
+	if lines := read(); len(lines) != 9 || !lines[3].At.Equal(base.Add(ms+time.Microsecond)) || !lines[6].At.Equal(base.Add(ms+time.Microsecond)) ||
+		!lines[8].At.Equal(base.Add(ms+time.Microsecond)) {
 		t.Fatalf("the lines of commands out of their times' order: %+v", lines)
+	}
+	// A lift whose append failed (made in the database alone): run again it
+	// appends nothing; a suspend and a lift record it.
+	change(tokenStopRecord{Selector: lost, At: base})
+	if _, lifted, err := tokens.LiftToken(ctx, lost, base.Add(day)); err != nil || !lifted {
+		t.Fatal(lifted, err)
+	}
+	if out := change(tokenStopRecord{Selector: lost, At: base.Add(2 * day), Lift: true}); strings.Contains(out, "recorded in") {
+		t.Fatalf("a lift of a stop lifted already: %q", out)
+	}
+	change(tokenStopRecord{Selector: lost, At: base.Add(3 * day)})
+	change(tokenStopRecord{Selector: lost, At: base.Add(3*day + ms), Lift: true})
+	if lines := read(); len(lines) != 12 || !lines[10].At.Equal(base.Add(3*day)) || !lines[11].At.Equal(base.Add(3*day+ms)) || !lines[11].Lift {
+		t.Fatalf("a lift recorded by a suspend and a lift: %+v", lines)
 	}
 
 	// A restore of a snapshot taken before them all: the replay brings
@@ -1224,7 +1238,7 @@ func TestTheRecordReplaysWhatTheCommandsDid(t *testing.T) {
 	if err := replayTokenStops(ctx, tokens, record, &out); err != nil {
 		t.Fatalf("the replay: %v", err)
 	}
-	if after := stops(); len(after) != 5 || !maps.Equal(after, before) {
+	if after := stops(); len(after) != 6 || !maps.Equal(after, before) {
 		t.Fatalf("after the replay %v, before the restore %v", after, before)
 	}
 }
