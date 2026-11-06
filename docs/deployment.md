@@ -569,12 +569,15 @@ with the ledger. One JSON line per stop or lift: `{selector, at, lift}`,
 `stopped_at` or its `lifted_at` in the database. A line holds only the
 selector, the time and whether it is a lift: never the note, the account
 that ran the command, a token or anything else, nor Wappie's own
-`apply_failed` stops, which stay in the database. A stop's times never go
-back: a stop or a lift timed before the stop's last change (two commands
-at once, or a clock stepped back) is made at that change, and its line
-carries that time, so a replay brings the stops back as they stood. A
-command takes the file's lock before its database write and holds it to
-its line, so two at once write their lines in the order of their changes.
+`apply_failed` stops, which stay in the database. A stop's times only go
+forward. A stop or a lift timed at or before the stop's last change (two
+commands at once, or a clock stepped back) is made a microsecond after
+that change. One timed at or before the mark of what retention let go is
+made just after the mark ([what Wappie keeps of a
+token](contract.md#the-token-feed)). Its line carries the time it was
+made, so a replay brings the stops back as they stood. A command takes
+the file's lock before its database write and holds it to its line, so
+two at once write their lines in the order of their changes.
 The file is created with mode 0600 and replaced whole at each write: a
 temporary file beside it, with its mode and owner, synced and renamed
 over it, the directory synced, under an exclusive lock of the file, so a
