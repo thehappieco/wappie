@@ -24,7 +24,7 @@ var timingsElsewhere = []string{
 	"fresh", "backup fresh", "clock skew", "orphan", "heartbeat", "long-poll", "snapshot not found", "event not found",
 	"event expiry", "call timeout", "feed grace", "check feed", "check snapshot", "check published", "check errors",
 	"check round", "check parked", "check events", "check token feed", "check token published", "check token held", "check acks",
-	"check usage", "check token commit", "hot path", "hot path bound",
+	"check usage", "check token commit", "stop record lock", "hot path", "hot path bound",
 }
 
 // docs/contract.md's timings and limits that this package sets (the rest
