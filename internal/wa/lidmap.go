@@ -57,3 +57,19 @@ func (m *LIDMap) PhoneFor(ctx context.Context, lid types.JID) (types.JID, bool) 
 	}
 	return pn.ToNonAD(), true
 }
+
+// LIDFor resolves a phone number to the LID behind it, from the same shared
+// cache. The second return is false whenever there is no answer.
+func (m *LIDMap) LIDFor(ctx context.Context, pn types.JID) (types.JID, bool) {
+	if m == nil || m.container == nil || m.container.LIDMap == nil {
+		return types.JID{}, false
+	}
+	if pn.Server != types.DefaultUserServer {
+		return types.JID{}, false
+	}
+	lid, err := m.container.LIDMap.GetLIDForPN(ctx, pn.ToNonAD())
+	if err != nil || lid.IsEmpty() {
+		return types.JID{}, false
+	}
+	return lid.ToNonAD(), true
+}

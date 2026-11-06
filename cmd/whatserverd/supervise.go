@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -150,6 +151,12 @@ type releasing struct {
 // inactive workspaces (nil) names none; and neither releases a reservation
 // with no device yet, or a client a deletion is logging out here, which the
 // deletion stops itself.
+//
+// A relink's pairing that has not linked yet stays while its row is
+// listed, paused or not: its number stays logged out, and maybe paused,
+// until the attach, which refuses a pause made since. A held number whose
+// row is logged out or banned is a stopped client left holding the device
+// lock, and goes.
 func toRelease(held []wa.HeldDevice, listed map[string]tenantList, inactive map[string]bool) []releasing {
 	var out []releasing
 	for _, h := range held {
@@ -164,15 +171,15 @@ func toRelease(held []wa.HeldDevice, listed map[string]tenantList, inactive map[
 		if !ok || list.err != nil {
 			continue
 		}
-		live := false
-		for _, d := range list.devices {
-			if d.ID == h.ID && !d.Paused {
-				live = true
-				break
-			}
-		}
-		if !live {
+		i := slices.IndexFunc(list.devices, func(d store.Device) bool { return d.ID == h.ID })
+		switch {
+		case i < 0:
 			out = append(out, releasing{h, "no longer live and unpaused here"})
+		case h.Relinking:
+		case list.devices[i].Paused:
+			out = append(out, releasing{h, "no longer live and unpaused here"})
+		case list.devices[i].Status.Terminal():
+			out = append(out, releasing{h, "logged out or banned"})
 		}
 	}
 	return out

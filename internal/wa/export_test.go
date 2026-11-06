@@ -20,7 +20,7 @@ func NewRegistryForTest(cfg RegistryConfig, load func(context.Context, types.JID
 // AdoptForTest registers a running client under a device id, as a start
 // does, without connecting it.
 func (r *Registry) AdoptForTest(ctx context.Context, tenantID, deviceID string, client Client) (*Device, error) {
-	return r.adopt(ctx, tenantID, deviceID, ReceiptPolicy{}, client)
+	return r.adopt(ctx, tenantID, deviceID, ReceiptPolicy{}, client, adoptOptions{})
 }
 
 // ReserveForTest holds a reservation with no device, as a start or a
