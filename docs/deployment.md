@@ -597,7 +597,10 @@ command and the server at once lose no line.
   blank the command still makes the stop and says "no stop record
   (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would
   lose it"; one that cannot write the file says the stop is in the
-  database but not in the record, and exits with status 1.
+  database but not in the record, and exits with status 1. A lift that
+  cannot write it says "the lift is in the database but not in the
+  record", names the `tokens suspend` and `tokens lift` that record it,
+  and exits with status 1.
 - **When it is trimmed.** A line goes 365 days after its time, which is
   when it was written, whatever became of its stop, in the hourly pass
   (after its retention) and at each write. Decision 0056 sets this, and
