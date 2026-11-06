@@ -1807,6 +1807,23 @@ the stops. A stop or a lift takes it FOR SHARE after its token's row, if
 Wappie holds one. Retention takes it FOR UPDATE after every workspace's
 token rows, just before it deletes the stops.
 
+The selectors' dates (`contract_token_dates`, a valid record's selector
+that no token here holds) come after the stops: the applier writes them
+after the stops' `record_until`, retention reads them, unlocked, in its
+stops statement and deletes them after the selectors. The lookups (the
+leader's signed GETs of one token, by id or by selector, which date what
+Wappie keeps of a token it does not hold) write after their call, never
+during it, in a short transaction of their own that takes no row of steps
+1 to 6 and not the mark: the token's sticky row, then its selector's
+stops, then its selector's date, the applier's order. Retention's forget
+deletes a forgotten token's queue entries and usage refusals in its
+workspace's turn, after that workspace's token rows, perms and removed
+instances, as the applier writes the queues: deleting them after every
+workspace would meet the applier's queue writes of an earlier workspace
+the other way round. Retention still deletes the sticky rows after the
+stops, which the applier and the lookups take the other way: the two may
+deadlock there, and `retryDeadlock` retries both.
+
 A token's removed instances (`contract_token_removed`, its grant instances
 never to apply again) come after its perms, as step 5's tail: the
 applier's drop and a reset write them from the perms they delete, a

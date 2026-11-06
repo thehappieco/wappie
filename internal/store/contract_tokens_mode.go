@@ -21,6 +21,13 @@ import (
 //nolint:gosec // G101: a class, not a credential
 const ContractErrorTokenFeedSilent = "token_feed_silent"
 
+// ContractErrorTokenLookupInvalid is the class of the leader's ERROR when
+// the platform answers a token lookup with a record Wappie cannot use
+// (TokenLookupFailed), as RecordError keeps it.
+//
+//nolint:gosec // G101: a class, not a credential
+const ContractErrorTokenLookupInvalid = "token_lookup_invalid"
+
 // ErrTokensNeedTheContract refuses tokens on while the contract is off:
 // token auth refuses every token then, whatever the token mode says.
 var ErrTokensNeedTheContract = errors.New("store: the contract is off; tokens follow it")

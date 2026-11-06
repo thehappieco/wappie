@@ -237,8 +237,10 @@ func (c *Client) Tokens(ctx context.Context, after int64, wait int) (kc.TokenFee
 // only with a nil error, and only when it is valid, Wappie's and id's; the
 // kit runs its Validate, never ReadingKey.Check, so the store compares the
 // fingerprint with the key itself before it pins one. An id that is no UUID
-// is refused before any request (contract.ErrInvalid). A token unknown, or
-// one that never named Wappie, is a signed not_found, which clears nothing.
+// is refused before any request (contract.ErrInvalid). A token unknown, one
+// that never named Wappie, or one past its created_at + 365 days, is a
+// signed not_found, which clears nothing but the revocation a bad record of
+// it brought in the same generation (the lookups, store.TokenLookupNotFound).
 //
 // The answer carries no time of its own: the caller stamps the time it
 // sent the request, taken before it calls, so a retry only makes that
@@ -253,10 +255,14 @@ func (c *Client) Token(ctx context.Context, id string) (kc.TokenRecord, error) {
 }
 
 // TokenBySelector is Token for the token whose selector is selector
-// (GET /contract/v1/token-selectors/{selector}). Nothing calls it yet: a new
-// token reaches the feed within 5 s (the design's 3.4). A caller limits it
-// per client address first, keeps a not_found 60 s, and still checks the
-// token's hash itself (contract.VerifyToken).
+// (GET /contract/v1/token-selectors/{selector}). Only the lookups call it,
+// once for each stop of a selector Wappie does not hold that nothing dates:
+// an operator's stop, never a client's token, so no limit per client
+// address is needed, and a not_found settles the stop for good, never to be
+// asked again. Token auth never calls it: a new token reaches the feed
+// within 5 s (the design's 3.4). A caller that ever did for a client's
+// token would limit it per client address first, keep a not_found 60 s,
+// and still check the token's hash itself (contract.VerifyToken).
 func (c *Client) TokenBySelector(ctx context.Context, selector string) (kc.TokenRecord, error) {
 	var r kc.TokenRecord
 	err := c.call(func(k *kc.Client) (err error) {

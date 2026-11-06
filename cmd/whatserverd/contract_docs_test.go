@@ -178,6 +178,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: the token feed says the platform's generation changed: every sub is subscribed again and both feeds read from 0",
 				"contract: the token feed was last read over an hour before this leader; token auth holds until it has caught up",
 				"contract: a token page took over a second to commit",
+				"contract: a token lookup got no answer",
+				"contract: the token lookups answer again",
+				"contract: the platform answered a token lookup with a record Wappie cannot use; it is asked again later",
 				"contract observe: matches",
 				"contract observe: differences",
 				"contract: sign-in would refuse",
@@ -561,7 +564,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		for _, class := range []string{store.ContractErrorFeedSilent, store.ContractErrorPublishedAhead, store.ContractErrorDocumentInvalid,
 			store.ContractErrorKindChanged, store.ContractErrorRoundIncomplete, store.ContractErrorSnapshotParked,
 			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
-			store.ContractErrorTokenFeedSilent} {
+			store.ContractErrorTokenFeedSilent, store.ContractErrorTokenLookupInvalid} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
@@ -797,7 +800,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"feed backoff", "feed silent", "warn", "round failing", "debounce", "snapshot", "snapshot backoff", "labels",
 			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound",
 			"token long-poll", "token backoff", "token stale start", "token commit", "judge", "ack spacing", "ack every", "ack backoff",
-			"usage"}
+			"usage", "lookup", "lookup retry", "lookup backoff"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)
@@ -887,4 +890,49 @@ func gatedActs(t *testing.T) []string {
 		t.Fatalf("only %d gated acts found: %q", len(acts), acts)
 	}
 	return acts
+}
+
+// F5 and E4 of decision 0056's review: rolling back below 0052, or
+// changing WS_TOKEN_STOP_RECORD, leaves the stop record with nothing that
+// trims it, so both the down-step's header and docs/deployment.md say to
+// trim it by hand or delete it once no re-upgrade will replay it; and the
+// record's copy rules and a host's loss are said beside the ledger's.
+func TestDocsSayRollingBackBelow0052(t *testing.T) {
+	section := docSection(t, "../../docs/deployment.md", "### Rolling back below 0052")
+	for _, s := range []string{
+		"migration52_sha256",
+		"An older binary knows nothing of the stop record (`WS_TOKEN_STOP_RECORD`), so nothing trims it any more.",
+		"Trim it by hand, dropping each line whose `at` is over 365 days old, or delete it, and its copies, once no re-upgrade will replay it.",
+	} {
+		if !strings.Contains(section, s) {
+			t.Errorf("docs/deployment.md's rolling back below 0052 does not say %q", s)
+		}
+	}
+	deployment := docText(t, "../../docs/deployment.md")
+	for _, s := range []string{
+		"Change or blank `WS_TOKEN_STOP_RECORD` and nothing trims the old file any more",
+		"It goes off host with every off-host copy of the database, and at least daily, as the ledger does.",
+		"If the host is lost, a stop or lift made after the newest off-host copy of the record is lost with everything else made after it, and has to be made again",
+		"A stop here is a stopgap: once the platform answers, have the token revoked in the console.",
+		"Record a stop the file lacks by running `tokens suspend` again with the same `-note`",
+	} {
+		if !strings.Contains(deployment, s) {
+			t.Errorf("docs/deployment.md does not say %q", s)
+		}
+	}
+	sql, err := os.ReadFile("../../internal/migrate/sql/0052_contract_tokens.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Its comments as prose: no "--" between the words of two lines.
+	header := strings.Join(strings.Fields(strings.ReplaceAll(string(sql), "\n--", "\n")), " ")
+	for _, s := range []string{
+		"Rolling back below 0052 leaves the stop record (WS_TOKEN_STOP_RECORD) with nothing that trims it",
+		"or delete it once no re-upgrade will replay it",
+		"when WS_TOKEN_STOP_RECORD is changed or blanked",
+	} {
+		if !strings.Contains(header, s) {
+			t.Errorf("0052's header does not say %q", s)
+		}
+	}
 }

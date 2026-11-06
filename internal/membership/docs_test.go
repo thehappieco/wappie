@@ -68,6 +68,9 @@ func TestContractTimingsMatchTheDocs(t *testing.T) {
 		"ack every":         spoken(ackEvery),
 		"ack backoff":       span(ackBackoffMin, ackBackoffMax),
 		"usage":             spoken(usageEvery),
+		"lookup":            spoken(lookupEvery),
+		"lookup retry":      spoken(lookupRetry),
+		"lookup backoff":    span(lookupRetry, lookupBadMax),
 	}
 	for name, want := range ours {
 		if got := rows[name]; got != want {

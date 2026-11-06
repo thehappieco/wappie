@@ -336,8 +336,9 @@ type stickyRow struct {
 // each workspace's records are applied under its app.tenant_id in id order,
 // then the revocations of records Wappie holds no token or workspace for
 // join the sticky set, and every valid record lowers the record_until of
-// its selector's stops. full is false for a by-id GET's record, which never
-// moves a pass.
+// its selector's stops and, when no selectors row holds the selector, its
+// date (contract_token_dates). full is false for a by-id GET's record,
+// which never moves a pass.
 func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, state tokenFeedState, items []tokenItem,
 	now time.Time, full bool) (applyResult, error) {
 	var res applyResult
@@ -436,7 +437,7 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 		}
 		if ws == uuid.Nil || !held[ws] {
 			if it.rec.RevokedAt != nil {
-				orphans = append(orphans, unheldSticky(it, kept, now))
+				orphans = append(orphans, unheldSticky(it, kept, gen, now))
 			}
 			if known {
 				res.bad++
@@ -500,8 +501,12 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 			return res, err
 		}
 	}
-	// After every workspace's rows, as retention deletes them (DB25).
+	// After every workspace's rows, as retention deletes them (DB25): the
+	// stops, then the dates of the selectors Wappie does not hold.
 	if err := narrowStopsTx(ctx, tx, seen); err != nil {
+		return res, err
+	}
+	if err := dateSelectorsTx(ctx, tx, seen, now); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -516,7 +521,8 @@ func (t *Tokens) applyItemsTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, sta
 // record, Wappie's clock + 365 days, never a time of its own (H2): a bad
 // record's created_at may say anything, and a row it shortened or never made
 // would let a later unrevoked record of the token, as after a platform
-// restore, make a live row.
+// restore, make a live row. That one is kept only until the leader's lookup
+// by id learns the token's own date from the platform (TokenLookupAnswered).
 func unheldUntil(rec kc.TokenRecord, kept *selectorRow, good bool, now time.Time) time.Time {
 	switch {
 	case kept != nil:
@@ -528,13 +534,20 @@ func unheldUntil(rec kc.TokenRecord, kept *selectorRow, good bool, now time.Time
 	}
 }
 
-// unheldSticky is the sticky write of the revocation of item it, whose token
-// Wappie holds no row of (kept: the selector Wappie keeps of it, if any), to
-// unheldUntil; once that has passed, the token's records have left the
-// feed: no row is made, and one there is only lowered to it.
-func unheldSticky(it tokenItem, kept *selectorRow, now time.Time) stickyWrite {
+// unheldSticky is the sticky write of the revocation of item it, of
+// generation gen, whose token Wappie holds no row of (kept: the selector
+// Wappie keeps of it, if any), to unheldUntil; once that has passed, the
+// token's records have left the feed: no row is made, and one there is only
+// lowered to it. A bad record's, dated by Wappie's clock alone, is marked
+// so (clock): the leader's lookup by id asks the platform for the token's
+// own date (TokenLookupAnswered).
+func unheldSticky(it tokenItem, kept *selectorRow, gen uuid.UUID, now time.Time) stickyWrite {
 	until := unheldUntil(it.rec, kept, it.bad == "", now)
-	return stickyWrite{id: it.id, revokedAt: revokedTime(it.rec, now), until: until, lowerOnly: !until.After(now)}
+	w := stickyWrite{id: it.id, revokedAt: revokedTime(it.rec, now), until: until, lowerOnly: !until.After(now)}
+	if it.bad != "" && kept == nil {
+		w.clock, w.gen = true, gen
+	}
+	return w
 }
 
 // stopSeen is a record of a selector the applier saw, and its token's
@@ -562,6 +575,35 @@ func seenStop(it tokenItem, byID map[uuid.UUID]selectorRow) (stopSeen, bool) {
 		return stopSeen{}, false
 	}
 	return stopSeen{selector: it.rec.Selector, token: it.id, until: it.rec.CreatedAt.Add(tokenKeep)}, true
+}
+
+// dateSelectorsTx keeps the date of each selector seen that no selectors row
+// holds (one this commit inserted included): the earliest until of its
+// valid records, at most Wappie's clock + 365 days for a created_at ahead
+// of it, only ever lowered, and none once it has passed. Retention reads it
+// for a stop of that selector, whenever the stop was made: one made after
+// the record still goes by the record's date. A selector another token
+// holds, or Wappie's own, gets none: its stops go with that selectors row.
+func dateSelectorsTx(ctx context.Context, tx pgx.Tx, seen []stopSeen, now time.Time) error {
+	if len(seen) == 0 {
+		return nil
+	}
+	n := len(seen)
+	selectors, until := make([]string, n), make([]time.Time, n)
+	for i, s := range seen {
+		selectors[i], until[i] = s.selector, s.until
+		if most := now.Add(tokenKeep); until[i].After(most) {
+			until[i] = most
+		}
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO contract_token_dates (selector, until)
+		SELECT u.selector, min(u.until) FROM unnest($1::text[], $2::timestamptz[]) AS u(selector, until)
+		WHERE u.until > $3
+		  AND NOT EXISTS (SELECT 1 FROM contract_token_selectors h WHERE h.selector = u.selector)
+		GROUP BY u.selector ORDER BY u.selector
+		ON CONFLICT (selector) DO UPDATE SET until = EXCLUDED.until WHERE contract_token_dates.until > EXCLUDED.until`,
+		selectors, until, now)
+	return err
 }
 
 // narrowStopsTx lowers the record_until of the stops of the selectors seen
@@ -1088,6 +1130,11 @@ type stickyWrite struct {
 	// lowerOnly: until has passed, so no row is made, and a row there only
 	// gets its until lowered to it (the next retention lets it go).
 	lowerOnly bool
+	// clock: until is Wappie's clock + 365 days, from a bad record of gen
+	// (unheldSticky); a row stays so marked only while every write of it
+	// is.
+	clock bool
+	gen   uuid.UUID
 }
 
 type pinRow struct {
@@ -1165,7 +1212,7 @@ func (t *Tokens) judgeRecord(ctx context.Context, g tokenGroup, st roundState, i
 			// refused here for its selector or narrowed only by the
 			// fallback).
 			if revoked {
-				w.sticky = append(w.sticky, unheldSticky(it, kept, g.now))
+				w.sticky = append(w.sticky, unheldSticky(it, kept, g.gen, g.now))
 			}
 			t.refuseNew(ctx, it, bad, nil, w)
 			return
@@ -1744,7 +1791,10 @@ func queueHeldTx(ctx context.Context, tx pgx.Tx, gen uuid.UUID, held []heldRow) 
 // set: a row's revocation and ending are set once, and its earliest expiry
 // and its until only lower (a token Wappie never held: a bad record's
 // Wappie's clock + 365 days, then a valid record's created_at + 365 days).
-// A write past its until makes no row, and lowers one there.
+// A write past its until makes no row, and lowers one there. A row is
+// dated by Wappie's clock (clock_until, for the lookup by id) only while
+// every write of it is: a valid record's clears it, and a bad record's
+// takes its generation and has the lookup asked again.
 func writeStickyTx(ctx context.Context, tx pgx.Tx, sticky []stickyWrite) error {
 	if len(sticky) == 0 {
 		return nil
@@ -1752,7 +1802,8 @@ func writeStickyTx(ctx context.Context, tx pgx.Tx, sticky []stickyWrite) error {
 	slices.SortFunc(sticky, func(a, b stickyWrite) int { return compareIDs(a.id, b.id) })
 	for _, s := range sticky {
 		if s.lowerOnly {
-			if _, err := tx.Exec(ctx, `UPDATE contract_token_sticky SET until = $2 WHERE token_id = $1 AND until > $2`, s.id, s.until); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE contract_token_sticky SET until = $2, clock_until = false, clock_gen = NULL,
+				lookup_after = NULL, lookup_bad = 0 WHERE token_id = $1 AND until > $2`, s.id, s.until); err != nil {
 				return err
 			}
 			continue
@@ -1773,16 +1824,23 @@ func writeStickyTx(ctx context.Context, tx pgx.Tx, sticky []stickyWrite) error {
 		if ended != "" {
 			endedPtr = &ended
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO contract_token_sticky (token_id, revoked_at, earliest_expires_at, ended, until)
-			VALUES ($1, $2, $3, $4, $5)
+		var gen *uuid.UUID
+		if s.clock {
+			gen = &s.gen
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_token_sticky (token_id, revoked_at, earliest_expires_at, ended, until, clock_until, clock_gen)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
 			ON CONFLICT (token_id) DO UPDATE SET
 				revoked_at = coalesce(contract_token_sticky.revoked_at, EXCLUDED.revoked_at),
 				earliest_expires_at = CASE WHEN contract_token_sticky.earliest_expires_at IS NULL THEN EXCLUDED.earliest_expires_at
 				                           WHEN EXCLUDED.earliest_expires_at IS NULL THEN contract_token_sticky.earliest_expires_at
 				                           ELSE LEAST(contract_token_sticky.earliest_expires_at, EXCLUDED.earliest_expires_at) END,
 				ended = coalesce(contract_token_sticky.ended, EXCLUDED.ended),
-				until = LEAST(contract_token_sticky.until, EXCLUDED.until)`,
-			s.id, revoked, expires, endedPtr, s.until); err != nil {
+				until = LEAST(contract_token_sticky.until, EXCLUDED.until),
+				clock_until = contract_token_sticky.clock_until AND EXCLUDED.clock_until,
+				clock_gen = CASE WHEN contract_token_sticky.clock_until AND EXCLUDED.clock_until THEN EXCLUDED.clock_gen END,
+				lookup_after = NULL, lookup_bad = 0`,
+			s.id, revoked, expires, endedPtr, s.until, s.clock, gen); err != nil {
 			return err
 		}
 	}

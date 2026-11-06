@@ -23,7 +23,8 @@ import (
 // the table owner with the policies in force: its selector, its row, a
 // perm, a removed instance, a pin, its identity with a grant of the
 // workspace's number (an archive key at epoch 1), a sticky row, an open and
-// a lifted stop, the queues, the usage rows and a retirement.
+// a lifted stop, a selector's date, the queues, the usage rows and a
+// retirement.
 func tokenRows(t *testing.T, w contractWorld) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
@@ -72,6 +73,7 @@ func tokenRows(t *testing.T, w contractWorld) uuid.UUID {
 		`INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until) VALUES (gen_random_uuid(), clock_timestamp(), 'revoked', clock_timestamp() + interval '1 day')`,
 		`INSERT INTO contract_token_stops (selector, cause, stopped_by) VALUES ('0123456789abcdef', 'operator', 'root')`,
 		`INSERT INTO contract_token_stops (selector, cause, stopped_by, lifted_at) VALUES ('fedcba9876543210', 'operator', 'root', clock_timestamp())`,
+		`INSERT INTO contract_token_dates (selector, until) VALUES ('fedcba9876543210', clock_timestamp() + interval '1 day')`,
 		`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code) VALUES (gen_random_uuid(), 1, 'x', 'read', 'local_role')`,
 		`INSERT INTO contract_token_held_out (token_id, generation) VALUES (gen_random_uuid(), gen_random_uuid())`,
 		`INSERT INTO contract_token_used (token_id, day) VALUES (gen_random_uuid(), current_date)`,
@@ -135,8 +137,8 @@ func TestMigration0052DownStep(t *testing.T) {
 		if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("the down-step with %s: %v", want, err)
 		}
-		if rows, has52, left := counts(); rows != before || !has52 || left != tables || tables != 14 {
-			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 52 %v, %d token tables (was %d, want 14)",
+		if rows, has52, left := counts(); rows != before || !has52 || left != tables || tables != 15 {
+			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 52 %v, %d token tables (was %d, want 15)",
 				rows, before, has52, left, tables)
 		}
 	}
@@ -548,6 +550,27 @@ func TestMigration0052Checks(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(`DELETE FROM contract_token_sticky`)
+	// A row dated by Wappie's clock names the generation of its record.
+	if err := w.try(`INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until)
+		VALUES (gen_random_uuid(), clock_timestamp(), 'revoked', clock_timestamp() + interval '1 day', true)`); sqlState(err) != "23514" {
+		t.Errorf("a clock-dated sticky row with no generation: %v, want 23514", err)
+	}
+
+	// A selector's date only lowers, and goes only past its until.
+	refused("a selector's date raised", `UPDATE contract_token_dates SET until = until + interval '1 day'`)
+	refused("a selector's date moved to another selector", `UPDATE contract_token_dates SET selector = '0000000000000000'`)
+	refused("a selector's date deleted before its until", `DELETE FROM contract_token_dates`)
+	exec(`UPDATE contract_token_dates SET until = until - interval '1 second'`)
+	if _, err := pool.Exec(ctx, `ALTER TABLE contract_token_dates DISABLE TRIGGER contract_token_dates_guard;
+		UPDATE contract_token_dates SET until = clock_timestamp() - interval '1 second';
+		ALTER TABLE contract_token_dates ENABLE TRIGGER contract_token_dates_guard`); err != nil {
+		t.Fatal(err)
+	}
+	exec(`DELETE FROM contract_token_dates`)
+	var dates int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM contract_token_dates`).Scan(&dates); err != nil || dates != 0 {
+		t.Fatalf("a selector's date past its until: %d rows left, %v", dates, err)
+	}
 
 	// The identity: no membership, no personal workspace, no permission row
 	// from its grant, and never a password, a recovery or a salt.
