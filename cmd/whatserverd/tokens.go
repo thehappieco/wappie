@@ -155,10 +155,13 @@ var tokenStopLockWait = 5 * time.Second
 // changes in the database, which is their times' order. A lock not taken
 // in time leaves the stop made in the database, and the command says the
 // record lacks it. A lift of a stop lifted already changes nothing and
-// appends that lift again at its own time (so a lift whose append failed
-// is recorded by running it again); one with no operator's stop to lift
-// records nothing, since no lift happened. A stop the database holds but
-// the record does not is said, since a restore would lose it.
+// records nothing: its line would carry that lift's time, and go 365 days
+// after it, sooner than 365 days after it was written (decision 0056). A
+// lift whose append failed is recorded by a suspend and a lift, two new
+// lines; without them a restore brings the stop back, the safe side. One
+// with no operator's stop to lift records nothing, since no lift happened.
+// A stop the database holds but the record does not is said, since a
+// restore would lose it.
 func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, note, record string, out io.Writer) error {
 	r.At = r.At.UTC().Truncate(time.Microsecond)
 	w := &lines{w: out}
@@ -181,7 +184,8 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, no
 		case lifted:
 			w.f("tokens lift: selector %s: the operator's stop is lifted", r.Selector)
 		case !at.IsZero():
-			w.f("tokens lift: selector %s: the operator's stop was lifted already; nothing changed", r.Selector)
+			w.f("tokens lift: selector %s: the operator's stop was lifted already; nothing changed or recorded", r.Selector)
+			return w.err
 		default:
 			w.f("tokens lift: selector %s: no operator's stop to lift; nothing changed or recorded", r.Selector)
 			return w.err
@@ -242,9 +246,8 @@ func appendHeldTokenStop(f *os.File, path string, r tokenStopRecord, now time.Ti
 // written, and never less than the reach of the backups Wappie may restore
 // (90 days), so a line stays to its 365 days whatever became of its stop.
 // A line's time is when it was written, the stop's stopped_at or
-// lifted_at, but for a lift run again, whose line carries the first
-// lift's time and goes as soon as that line would: every snapshot in reach
-// was taken after the first lift and holds it. It never makes a missing
+// lifted_at, appended as the stop or the lift is made: a lift of a stop
+// lifted already writes none (changeTokenStop). It never makes a missing
 // record, and reports how many lines it dropped and how many it kept as
 // they are, being no stop's record.
 //

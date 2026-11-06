@@ -576,10 +576,14 @@ once write their lines in the order of their changes in the database. It
 waits 5 seconds at most for that lock: past them it still makes the stop
 in the database, and says the record lacks it (below). `-replay` applies
 the file's lines again, in order, after a restore of Wappie's database
-(below). A lift of a stop lifted already changes nothing and appends that
-lift again at its own time (so a lift whose append failed is recorded by
-running it again); a lift with no operator's stop to lift appends
-nothing, since no lift happened. With no record configured
+(below). A lift of a stop lifted already changes nothing and appends
+nothing ("the operator's stop was lifted already; nothing changed or
+recorded"): its line would carry that lift's time, so it would go sooner
+than 365 days after it was written (below). A lift whose append failed is
+recorded by a `suspend` and a `lift` of the selector, which append two
+new lines; without them a restore brings the stop back, the safe side. A
+lift with no operator's stop to lift appends nothing either, since no
+lift happened. With no record configured
 (`WS_TOKEN_STOP_RECORD` of spaces alone; unset or empty is the default)
 the stop is made all the same, and the command says a restore would lose
 it. Nothing it prints says whether Wappie holds a token of that selector.
@@ -605,9 +609,7 @@ whatever became of its stop: each append drops those lines, and so does
 the hourly maintenance pass, after its retention (below). Decision 0056
 sets this, and requires it never to be less than the reach of the backups
 Wappie may restore (the pilot's snapshots are kept 90 days), so a restore
-of any of them finds every line written since. A lift run again writes
-the first lift's time, so its line goes 365 days after that lift: every
-snapshot in reach then holds the lift already. The trim never creates the
+of any of them finds every line written since. The trim never creates the
 file, and a trim that fails is done again by the next pass. A line that
 is no stop's record (a hand edit, a damaged disk) stays, and every pass
 logs an ERROR that counts it ([the stop record](deployment.md#the-contract)),
@@ -642,8 +644,7 @@ of line, and counts each:
   ("N lines left, no later than what the database holds or with nothing
   to lift"): the same stop, which keeps its note and who made it, or a
   stop or a lift made since without the record, which is neither rewound
-  nor lifted. A lift with no open stop made before it is left too, and so
-  is a lift run again, whose line carries the first lift's time.
+  nor lifted. A lift with no open stop made before it is left too.
 
 Every other line applies, at its own time, with no note, as made by the
 account that runs the replay. A stop made after the snapshot, of a token
@@ -688,11 +689,13 @@ plus 365 days, and the stops, never before the database's clock either):
   `created_at` plus 365 days, however old the stop; any other 365 days
   after it was made (a new `suspend` makes it again), or earlier at the
   `created_at` plus 365 days of a valid record of its selector that came
-  since (never a bad record's). An operator's stop timed ahead of the
-  pass (a clock ahead when it was made) waits for its times to pass, its
-  selector's date kept if the selector went meanwhile, and goes at the
-  first pass after them. The operator's lines in the stop record go 365
-  days after their time, whatever became of the stop (above).
+  since (never a bad record's). An operator's stop whose stop or lift is
+  timed ahead of the pass (a clock ahead when it was made) waits for its
+  times to pass, so the mark (above) never passes Wappie's clock, and goes
+  at the first pass after them. Past its date it keeps only what the stop
+  record holds, its selector and times: its note goes, and `tokens list`
+  shows it as made by `wappie`. The operator's lines in the stop record go
+  365 days after their time, whatever became of the stop (above).
 - **Usage rows**, once reported, at the start of the second UTC day after
   their day, so at most 2 days after they were reported.
 - **The acknowledgement's queues**, 30 days after they were sent; a held

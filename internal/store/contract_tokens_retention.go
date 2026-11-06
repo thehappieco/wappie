@@ -53,8 +53,9 @@ type TokenRetention struct {
 // the selectors, in one statement, every stop due (one of a selector Wappie
 // holds once that selector is past its until, whatever its own dates; any
 // other at stopped_at + 365 days, or at its record_until if earlier; an
-// operator's only once its stop and its lift are at or before the cut),
-// with the mark of what it let go (contract_token_stops_let_go); then
+// operator's only once its stop and its lift are at or before the cut, and
+// till then only its selector and times kept), with the mark of what it
+// let go (contract_token_stops_let_go); then
 // what the acknowledgement and the usage report still hold of a token past
 // its until, sent or not; then the selectors and sticky rows past their
 // until (their guards); then the usage rows reported, from the start of the
@@ -218,10 +219,13 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 			// operator's stop goes only once its times are at or before the
 			// cut, so the mark never passes Wappie's clock: a stop timed
 			// ahead (a clock ahead when it was made) would otherwise give
-			// every later stop and lift, of any selector, its time. One of
-			// a selector that goes now takes the selector's until as its
-			// record_until, so the first pass once its times are past lets
-			// it go.
+			// every later stop and lift, of any selector, its time. One due
+			// before then keeps only what the stop record may hold, its
+			// selector and its times (decision 0056): its note goes and its
+			// stopped_by reads wappie. One of a selector that goes now also
+			// takes the selector's until as its record_until, so the first
+			// pass once its times are past lets it go. It is written once:
+			// a later pass finds nothing to change.
 			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_token_stops_let_go FOR UPDATE`); err != nil {
 				return err
 			}
@@ -238,10 +242,10 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 					WHERE x.selector = l.selector AND x.cause = l.cause AND l.ripe
 					RETURNING x.cause, greatest(x.stopped_at, x.lifted_at) AS last),
 				kept AS (
-					UPDATE contract_token_stops x SET record_until = l.until
+					UPDATE contract_token_stops x SET note = '', stopped_by = 'wappie', record_until = least(x.record_until, l.until)
 					FROM due l
-					WHERE x.selector = l.selector AND x.cause = l.cause AND NOT l.ripe AND l.until IS NOT NULL
-					  AND (x.record_until IS NULL OR x.record_until > l.until))
+					WHERE x.selector = l.selector AND x.cause = l.cause AND NOT l.ripe
+					  AND (x.note <> '' OR x.stopped_by <> 'wappie' OR x.record_until IS DISTINCT FROM least(x.record_until, l.until)))
 				UPDATE contract_token_stops_let_go
 				SET through = greatest(through, (SELECT max(last) FROM gone WHERE cause = 'operator'))
 				RETURNING (SELECT count(*) FROM gone)`, cut, tokenStopKeep).Scan(&out.Stops); err != nil {
@@ -465,8 +469,7 @@ func (t *Tokens) TokenStopsLetGo(ctx context.Context) (*time.Time, error) {
 // does, and otherwise lifts the open operator stop only when that stop was
 // made before the lift, so a lift the record kept never lifts a stop made
 // since, nor one made at its time (a re-stop is made after the lift it
-// follows). A lift run again carries the first lift's time, and is left.
-// It reports whether it lifted one.
+// follows). It reports whether it lifted one.
 func (t *Tokens) ReplayTokenLift(ctx context.Context, selector string, at time.Time) (bool, error) {
 	if !kc.ValidSelector(selector) {
 		return false, ErrSelector
@@ -487,9 +490,7 @@ func (t *Tokens) ReplayTokenLift(ctx context.Context, selector string, at time.T
 // gives change. A stop or a lift is made after the mark. Retention moves
 // the mark under its row lock, so it waits for a change in flight, and a
 // change waits for it: once retention commits, no stop or lift is made at
-// or before the mark. A lift run again writes the time of a lift made
-// earlier, under a lower mark, which every snapshot that holds the later
-// mark holds already. It bumps the token's access_version when change
+// or before the mark. It bumps the token's access_version when change
 // changed a stop.
 func (t *Tokens) stopChange(ctx context.Context, selector string, change func(pgx.Tx, *time.Time) (bool, error)) (bool, error) {
 	changed := false

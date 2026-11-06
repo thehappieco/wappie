@@ -86,9 +86,11 @@
 --                          created_at + 365 days of a valid record of its
 --                          selector seen since (never a bad record's). An
 --                          operator's goes only once its stop and its lift
---                          are past; one timed past the pass that deletes
---                          its selector takes that selector's until as its
---                          record_until.
+--                          are past. Due before then, it keeps only its
+--                          selector and times, as the stop record: its note
+--                          is cleared and its stopped_by set to wappie; one
+--                          timed past the pass that deletes its selector
+--                          takes that selector's until as its record_until.
 --   contract_token_stops_let_go
 --                          one row: through, the latest time of an
 --                          operator's stop (its stop or its lift) that
@@ -517,7 +519,8 @@ CREATE TABLE contract_token_stops (
     selector   text        NOT NULL CHECK (selector ~ '^[0-9a-f]{16}$'),
     cause      text        NOT NULL CHECK (cause IN ('operator', 'apply_failed')),
     stopped_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    -- The OS user, or wappie for apply_failed.
+    -- The OS user, or wappie for apply_failed and for an operator's stop
+    -- retention kept past its date (its note cleared too).
     stopped_by text        NOT NULL,
     note       text        NOT NULL DEFAULT '' CHECK (length(note) <= 500),
     lifted_at  timestamptz,
