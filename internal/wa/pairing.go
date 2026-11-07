@@ -20,6 +20,12 @@ import (
 // can extend it; a session that misses the window has to start over.
 const PairWindow = 160 * time.Second
 
+// RelinkWindow is a relink's deadline. whatsmeow's codes run PairWindow
+// from the first QR, which comes after the connect; the slack lets
+// whatsmeow's own timeout end the window, so the last QR shown stays
+// good until it expires.
+const RelinkWindow = PairWindow + 15*time.Second
+
 // PairMethod selects how the phone is linked.
 type PairMethod string
 
@@ -164,7 +170,11 @@ func (r *Registry) StartPairing(ctx context.Context, tenantID, deviceID string,
 
 	// Detached from the caller so the session survives the request that
 	// started it, but bounded so an abandoned attempt cannot linger.
-	sessionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), PairWindow)
+	window := PairWindow
+	if opts.Relink != nil {
+		window = RelinkWindow
+	}
+	sessionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), window)
 
 	ds := r.newPairingDevice()
 	client := r.newPairingClient(ds, "pair/"+shortID(deviceID))
@@ -189,7 +199,7 @@ func (r *Registry) StartPairing(ctx context.Context, tenantID, deviceID string,
 	// Step 2.
 	if err := dev.Start(sessionCtx); err != nil {
 		cancel()
-		r.Stop(context.WithoutCancel(ctx), deviceID)
+		r.stopIf(context.WithoutCancel(ctx), deviceID, dev)
 		return nil, fmt.Errorf("wa: connect for pairing: %w", err)
 	}
 
@@ -242,10 +252,18 @@ const (
 	// relinkLoginWait is how long a relink waits for the pairing's 515
 	// before it reconnects anyway.
 	relinkLoginWait = 15 * time.Second
+	// relinkSettleWait bounds the wait for whatsmeow's own end of a scan
+	// that passed the account check, when the window ended first.
+	relinkSettleWait = 30 * time.Second
 )
 
 func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 	defer close(s.events)
+	if p.guard != nil {
+		// In the background: a handler that runs now, such as the Device's
+		// after the attach, holds whatsmeow's handler lock.
+		defer func() { go p.client.RemoveEventHandler(p.guard.handler) }()
+	}
 
 	emit := func(e PairEvent) {
 		select {
@@ -261,10 +279,17 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 		}
 	}
 	relink := p.opts.Relink != nil
-	// endRelink ends a relink that did not link, with its reason.
+	// endRelink ends a relink that did not link, with its reason. A scan
+	// that passed the account check first gets whatsmeow's own end: a
+	// cancel or the window's end may land after whatsmeow stored the link
+	// and sent pair-device-sign, and such a link is attached as on success.
 	endRelink := func(timedOut bool, cause error) {
+		if r.settleRelink(p) {
+			r.finishRelink(ctx, p, final)
+			return
+		}
 		err := relinkEnd(&p.guard.verdict, timedOut, cause)
-		r.abandon(ctx, p.deviceID)
+		r.abandon(ctx, p)
 		final(PairEvent{Kind: PairEventError, Err: err})
 	}
 
@@ -273,7 +298,7 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 		code, err := p.client.PairPhone(ctx, p.opts.Phone, true, whatsmeow.PairClientChrome, p.opts.DisplayName)
 		if err != nil {
 			emit(PairEvent{Kind: PairEventError, Err: fmt.Errorf("wa: request linking code: %w", err)})
-			r.abandon(ctx, p.deviceID)
+			r.abandon(ctx, p)
 			return
 		}
 		emit(PairEvent{Kind: PairEventCode, Code: code, Expires: time.Now().Add(PairWindow)})
@@ -291,7 +316,7 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 			// Deliberate cleanup. Without it an abandoned attempt leaves a
 			// connected client and a half-created whatsmeow device behind,
 			// which is how the v1 server accumulated orphans.
-			r.abandon(ctx, p.deviceID)
+			r.abandon(ctx, p)
 			emit(PairEvent{Kind: PairEventTimeout})
 			return
 
@@ -338,7 +363,7 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 						errors.New("the socket closed during the window"))
 					return
 				}
-				r.abandon(ctx, p.deviceID)
+				r.abandon(ctx, p)
 				emit(PairEvent{Kind: PairEventTimeout})
 				return
 
@@ -351,7 +376,7 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 					endRelink(false, err)
 					return
 				}
-				r.abandon(ctx, p.deviceID)
+				r.abandon(ctx, p)
 				emit(PairEvent{Kind: PairEventError, Err: err})
 				return
 			}
@@ -368,7 +393,7 @@ func (r *Registry) finishRelink(ctx context.Context, p pairRun, final func(PairE
 	post, cancel := context.WithTimeout(context.WithoutCancel(ctx), relinkFinish)
 	defer cancel()
 	if p.ds.ID == nil {
-		r.abandon(post, p.deviceID)
+		r.abandon(post, p)
 		final(PairEvent{Kind: PairEventError, Err: fmt.Errorf("%w: no phone number in the new link", ErrLinkFailed)})
 		return
 	}
@@ -420,13 +445,36 @@ func (r *Registry) discardLink(ctx context.Context, p pairRun, jid types.JID) {
 	if p.opts.Relink.Discarded != nil {
 		p.opts.Relink.Discarded(ctx, jid)
 	}
-	r.Stop(ctx, p.deviceID)
+	r.abandon(ctx, p)
 	r.log.Info("relink new link logged out", "device", p.deviceID, "confirmed", confirmed)
 }
 
-// abandon tears down a pairing attempt that will not complete.
-func (r *Registry) abandon(ctx context.Context, deviceID string) {
-	r.Stop(context.WithoutCancel(ctx), deviceID)
+// settleRelink reports whether a relink whose window ended, or whose QR
+// channel ended without a success, linked anyway. Only a scan that passed
+// the account check can have: whatsmeow then stores the link and sends
+// pair-device-sign on its own goroutine. Its PairSuccess or PairError
+// settles it; until then the client stays connected, so the sign is not
+// cut off halfway.
+func (r *Registry) settleRelink(p pairRun) bool {
+	if !p.guard.verdict.isAccepted() {
+		return false
+	}
+	select {
+	case <-p.guard.verdict.settled:
+	case <-time.After(relinkSettleWait):
+		r.log.Warn("a relink's accepted scan did not settle", "device", p.deviceID)
+		return false
+	}
+	return p.guard.verdict.isLinked()
+}
+
+// abandon tears down a pairing attempt that will not complete. Only its
+// own entry: a later pairing or start of the number keeps running.
+func (r *Registry) abandon(ctx context.Context, p pairRun) {
+	stop := context.WithoutCancel(ctx)
+	if !r.stopIf(stop, p.deviceID, p.dev) {
+		p.client.Disconnect()
+	}
 }
 
 // adopt registers an already-constructed client under a device id. It shares

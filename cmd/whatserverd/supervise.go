@@ -102,7 +102,7 @@ func (a *app) claimUnheldDevices(ctx context.Context, attempts map[string]int) {
 		a.log.Error("supervise: list inactive workspaces", "error", err)
 	}
 	for _, r := range toRelease(snapshot, listed, inactive) {
-		a.release(ctx, r.ID, r.why)
+		a.releaseHeld(ctx, r.HeldDevice, r.why)
 	}
 }
 
@@ -196,6 +196,24 @@ func (a *app) release(ctx context.Context, deviceID, why string) {
 	}
 	a.log.Info("supervise: releasing a number", "device", deviceID, "reason", why)
 	a.registry.Stop(context.WithoutCancel(ctx), deviceID)
+	a.forget(deviceID)
+}
+
+// releaseHeld is release for the tick's decision on its snapshot: it stops
+// the entry the snapshot saw only, so one that replaced it since, such as
+// a relink's pairing in place of a stopped, logged-out hold, stays.
+func (a *app) releaseHeld(ctx context.Context, h wa.HeldDevice, why string) {
+	if a.registry == nil || a.registry.Unlinking(h.ID) {
+		return
+	}
+	if !a.registry.StopHeld(context.WithoutCancel(ctx), h) {
+		return
+	}
+	a.log.Info("supervise: released a number", "device", h.ID, "reason", why)
+	a.forget(h.ID)
+}
+
+func (a *app) forget(deviceID string) {
 	if id, err := uuid.Parse(deviceID); err == nil && a.router != nil {
 		a.router.Forget(id)
 	}

@@ -232,8 +232,8 @@ func TestAttachRelinkKeepsTheNumber(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ResumedPause || got.OldSessionRemoved {
-		t.Fatalf("attached %+v, want nothing lifted or removed", got)
+	if got.ResumedPause || got.OldSessionLeft {
+		t.Fatalf("attached %+v, want nothing lifted or left", got)
 	}
 	if after := w.snapshot(t, device); after != before {
 		t.Fatalf("the attach changed the number:\nbefore %+v\nafter  %+v", before, after)
@@ -293,38 +293,51 @@ func TestAttachRelinkLiftsThePause(t *testing.T) {
 	}
 }
 
-// What is left of the old link's session goes; the new link's stays.
-func TestAttachRelinkRemovesTheOldSession(t *testing.T) {
-	ctx := context.Background()
-	w := newDelWorld(t)
-	sessionStore(t, w.pool)
-	device, id := w.loggedOutNumber(t, "Loja", "155501000501", "100000000000501")
-	linked := newLink(id)
-	w.putSession(t, id.PN.String())
-	w.putSession(t, linked.PN.String())
-	for _, jid := range []string{id.PN.String(), linked.PN.String()} {
-		if _, err := w.pool.Exec(ctx, `INSERT INTO whatsmeow_privacy_tokens VALUES ($1, '155501000599@s.whatsapp.net', 'x', 1)`, jid); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := w.devices.AttachRelink(ctx, w.tenant, device, w.seen(t, device), linked)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.OldSessionRemoved {
-		t.Fatal("the old session row was not reported removed")
-	}
-	if n := w.count(t, `SELECT count(*) FROM whatsmeow_device WHERE jid = $1`, id.PN.String()); n != 0 {
-		t.Fatal("the old session row stays")
-	}
-	if n := w.count(t, `SELECT count(*) FROM whatsmeow_device WHERE jid = $1`, linked.PN.String()); n != 1 {
-		t.Fatal("the new session row went")
-	}
-	if n := w.count(t, `SELECT count(*) FROM whatsmeow_privacy_tokens WHERE our_jid = $1`, id.PN.String()); n != 0 {
-		t.Fatal("the old link's privacy tokens stay")
-	}
-	if n := w.count(t, `SELECT count(*) FROM whatsmeow_privacy_tokens WHERE our_jid = $1`, linked.PN.String()); n != 1 {
-		t.Fatal("the new link's privacy tokens went")
+// The attach deletes no session. A row under the old link's JID may be
+// another workspace's live link, since WhatsApp can give the account's freed
+// device number to a new link and number_held asks this workspace only: it
+// stays, with its privacy tokens. With no session under the old JID, the old
+// link's tokens go. The new link's stay either way.
+func TestAttachRelinkLeavesTheOldJIDsSession(t *testing.T) {
+	for name, otherLive := range map[string]bool{"another workspace's live link": true, "no session": false} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			w := newDelWorld(t)
+			sessionStore(t, w.pool)
+			device, id := w.loggedOutNumber(t, "Loja", "155501000501", "100000000000501")
+			if otherLive {
+				other := uuid.MustParse(newTenant(t, w.pool, "other"))
+				linkedNumber(t, w.pool, other, "theirs", id.PN.User, id.LID.User)
+				w.putSession(t, id.PN.String())
+			}
+			linked := newLink(id)
+			w.putSession(t, linked.PN.String())
+			for _, jid := range []string{id.PN.String(), linked.PN.String()} {
+				if _, err := w.pool.Exec(ctx, `INSERT INTO whatsmeow_privacy_tokens VALUES ($1, '155501000599@s.whatsapp.net', 'x', 1)`, jid); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := w.devices.AttachRelink(ctx, w.tenant, device, w.seen(t, device), linked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.OldSessionLeft != otherLive {
+				t.Fatalf("old session left = %v, want %v", got.OldSessionLeft, otherLive)
+			}
+			want := map[bool]int{true: 1, false: 0}[otherLive]
+			if n := w.count(t, `SELECT count(*) FROM whatsmeow_device WHERE jid = $1`, id.PN.String()); n != want {
+				t.Fatalf("%d session rows under the old JID, want %d", n, want)
+			}
+			if n := w.count(t, `SELECT count(*) FROM whatsmeow_privacy_tokens WHERE our_jid = $1`, id.PN.String()); n != want {
+				t.Fatalf("%d privacy tokens under the old JID, want %d", n, want)
+			}
+			if n := w.count(t, `SELECT count(*) FROM whatsmeow_device WHERE jid = $1`, linked.PN.String()); n != 1 {
+				t.Fatal("the new session row went")
+			}
+			if n := w.count(t, `SELECT count(*) FROM whatsmeow_privacy_tokens WHERE our_jid = $1`, linked.PN.String()); n != 1 {
+				t.Fatal("the new link's privacy tokens went")
+			}
+		})
 	}
 }
 

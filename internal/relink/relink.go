@@ -171,7 +171,7 @@ func (s *Service) Check(ctx context.Context, tenant, device uuid.UUID) (Target, 
 	}
 
 	if since, ok := s.Pairer.PairingSince(id); ok {
-		return refused(busy(time.Until(since.Add(wa.PairWindow)), "entry"))
+		return refused(busy(min(busyElsewhere, time.Until(since.Add(wa.RelinkWindow))), "entry"))
 	}
 	if row.PauseCause == store.PauseForMove {
 		return refused(busy(busyElsewhere, "entry"))
@@ -260,7 +260,7 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, err
 			a, err := s.Devices.AttachRelink(ctx, t.Tenant, t.Device, t.Seen, linked)
 			if err == nil {
 				s.log().Info("relink attached", "device", t.Device, "tenant", t.Tenant, "actor", who.ID,
-					"resumed_pause", a.ResumedPause, "old_session_removed", a.OldSessionRemoved)
+					"resumed_pause", a.ResumedPause, "old_session_left", a.OldSessionLeft)
 			}
 			return err
 		},

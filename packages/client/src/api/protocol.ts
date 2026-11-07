@@ -605,6 +605,18 @@ export interface PairRequest {
   resume?: boolean
 }
 
+/**
+ * Link a logged-out number again into the same device, by QR only (the
+ * build lists `pair.relink` in the welcome's features). The answers are
+ * pair.qr, then pair.success, or one error with a code of the contract's
+ * 14.9; never pair.code or pair.timeout.
+ */
+export interface PairRelinkRequest {
+  device_id: string
+  relink: true
+  method?: 'qr'
+}
+
 /** Retry a pending device without generating or replacing encryption material. */
 export interface PairResumeRequest {
   device_id: string
@@ -1216,6 +1228,8 @@ export interface WireError {
   readers?: PersonRef[]
   /** With others_have_access: who still has access to the number. */
   others?: TransferAccess[]
+  /** With a relink's item_busy: whole seconds to wait, 1 to 160. */
+  retry_after?: number
 }
 
 /** Stable error codes, so a client can branch without parsing prose. */

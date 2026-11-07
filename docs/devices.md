@@ -65,8 +65,9 @@ The request is the `pair` frame's relink branch:
 ```
 
 `method` may be left out. Anything a new number's pairing carries (`phone`,
-`label`, `receipt_mode`, `archive_public_key`, `grants`, `orphan`, `resume`)
-and `method: "code"` are `bad_request`: a relink pairs by QR only. The
+`display_name`, `label`, `receipt_mode`, `archive_public_key`, `grants`,
+`orphan`, `resume`), `method: "code"` and a `device_id` that is not a UUID
+are `bad_request`: a relink pairs by QR only. The
 answers, on the request's id: `pair.qr` for each QR, as for a new number;
 then `pair.success` (`{ "device_id" }`) once the number names the new link,
 or one `error`. A relink never sends `pair.code` or `pair.timeout`. The
@@ -83,6 +84,10 @@ English message that names no phone number, account or QR. Before any QR, in
 this order:
 
 - `storage_paused`: the workspace's storage is paused;
+- then the request's own checks: `bad_request`, then who asks
+  (`not_authorized`, `step_up_required`, `memberships_unconfirmed` and the
+  other freshness codes), then `internal` when this build cannot relink or
+  the database fails;
 - `not_found`: no live number with that id here;
 - `item_busy`, with `retry_after` in whole seconds: another pairing of the
   number runs (the seconds left in WhatsApp's window), or another process
@@ -99,8 +104,8 @@ this order:
 
 After the QR: `other_account` (the scan came from another WhatsApp account,
 or from the number's own account under another phone number; nothing was
-stored), `link_timeout` (WhatsApp's window, about 160 seconds, closed with no
-scan), `connect_failed` (the link did not start or did not finish: a socket
+stored), `link_timeout` (WhatsApp's window, about 160 seconds from the first QR,
+closed with no scan), `connect_failed` (the link did not start or did not finish: a socket
 drop, a passkey step, a client WhatsApp refuses), `number_held`,
 `storage_paused` and `state_changed` (the number was paused, deleted or moved
 meanwhile, or its workspace stopped being active). `capacity_reached` is
@@ -121,11 +126,29 @@ calls handler. Once WhatsApp confirmed the link, one transaction attaches it,
 only if the number is still what the relink saw: live, logged out, not
 paused since, not held by a move, its workspace active with its storage
 running, and the account held by no other live number. It names the new
-link (phone number, LID, push name), marks the number offline, lifts its
-pause and marks its open `sync_paused` notices resumed, and deletes what is
-left of the old link's session. Then the client connects and the number goes
-online. A refused attach logs the new link out again (the phone may keep an
-entry under Linked devices when WhatsApp does not confirm the logout).
+link (phone number, LID, push name), marks the number offline, and lifts its
+pause and marks its open `sync_paused` notices resumed. Then the client
+connects and the number goes online. A refused attach logs the new link out
+again (the phone may keep an entry under Linked devices when WhatsApp does
+not confirm the logout).
+
+The attach deletes no session. whatsmeow deleted the old link's own when the
+phone logged it out. A session under the old link's JID now may be another
+workspace's live link, since WhatsApp can give the account's freed device
+number to a new link and `number_held` asks this workspace only. A dead one
+left behind is named by no number, so nothing loads it; `relink attached`
+logs it as `old_session_left`. The old link's privacy tokens go unless a
+session under its JID exists.
+
+**A cancel or the window's end after the scan.** Once the account passed
+the check, whatsmeow stores the link and confirms it to WhatsApp on its own.
+A cancel (`pair.cancel`, the page closing, a pause) or the window's end that
+lands in that moment waits for whatsmeow's own end: a link WhatsApp
+confirmed is attached as on a success, under the same compare-and-set, so a
+pause or a deletion meanwhile still refuses it and logs it out; a link
+whatsmeow gave up on was already deleted by whatsmeow and ends as
+`connect_failed`. A relink's own deadline is a few seconds past WhatsApp's
+window, so the last QR shown stays good until it expires.
 
 **After the link**, WhatsApp sends its history again, as for a first link:
 the recent window, with what arrived while the number was unlinked, as far
@@ -142,6 +165,10 @@ check, and no item event. The log names the device, never the phone, the
 account or the QR: `relink started`, `relink refused` (with `code`, `stage`,
 and `half` for a scan by another account), `relink attached`, and the first
 QR's length as `pairing QR`.
+
+A pairing ends only its own hold of the number, and the supervisor releases
+only the hold it decided on, so neither stops a later pairing of the same
+number.
 
 ## Pending pairing
 

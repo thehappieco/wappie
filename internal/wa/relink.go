@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 // Relink makes a pairing land in a number Wappie already holds (decision
@@ -60,11 +61,38 @@ func sameUser(a, b types.JID) bool {
 }
 
 // verdict is a relink's answer on the account that scanned. The first
-// refusal wins and stays.
+// refusal wins and stays. settled is closed once whatsmeow ended the
+// pairing it accepted: linked after its PairSuccess, not after its
+// PairError, when whatsmeow already deleted whatever it stored.
 type verdict struct {
 	mu       sync.Mutex
 	err      error
 	accepted bool
+	linked   bool
+	settled  chan struct{}
+	once     sync.Once
+}
+
+// settle records whatsmeow's end of the pairing, once.
+func (v *verdict) settle(linked bool) {
+	v.once.Do(func() {
+		v.mu.Lock()
+		v.linked = linked
+		v.mu.Unlock()
+		close(v.settled)
+	})
+}
+
+func (v *verdict) isAccepted() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.accepted
+}
+
+func (v *verdict) isLinked() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.linked
 }
 
 func (v *verdict) refuse(err error) {
@@ -105,10 +133,13 @@ type relinkContainer struct {
 	expect  Identity
 	recheck func(context.Context) error
 	verdict verdict
+	// handler is the client's event handler that settles the verdict.
+	handler uint32
 }
 
 func newRelinkContainer(inner store.DeviceContainer, rl *Relink) *relinkContainer {
-	return &relinkContainer{inner: inner, expect: rl.Expect, recheck: rl.Recheck}
+	return &relinkContainer{inner: inner, expect: rl.Expect, recheck: rl.Recheck,
+		verdict: verdict{settled: make(chan struct{})}}
 }
 
 // armRelink puts a relink's account check on a pairing's device and its
@@ -116,7 +147,9 @@ func newRelinkContainer(inner store.DeviceContainer, rl *Relink) *relinkContaine
 // so another account is refused before anything of it is stored, and
 // whatsmeow's PrePairCallback on the phone's user part. The client also
 // stops reconnecting by itself after the pairing's 515, so nothing of the
-// new link flows before the attach (finishRelink).
+// new link flows before the attach (finishRelink). Its handler, added before
+// the QR channel's, settles the verdict on whatsmeow's own end of the
+// pairing, which a cancel or the window's end may hide from the channel.
 func armRelink(ds *store.Device, client Client, rl *Relink) *relinkContainer {
 	guard := newRelinkContainer(ds.Container, rl)
 	ds.Container = guard
@@ -124,7 +157,20 @@ func armRelink(ds *store.Device, client Client, rl *Relink) *relinkContainer {
 		real.PrePairCallback = guard.prePair
 		real.DisableLoginAutoReconnect = true
 	}
+	guard.handler = client.AddEventHandler(guard.onEvent)
 	return guard
+}
+
+// onEvent settles the verdict: whatsmeow dispatches PairSuccess once it
+// sent pair-device-sign, and PairError once it gave up, after it deleted
+// what it stored.
+func (c *relinkContainer) onEvent(evt any) {
+	switch evt.(type) {
+	case *events.PairSuccess:
+		c.verdict.settle(true)
+	case *events.PairError:
+		c.verdict.settle(false)
+	}
 }
 
 // PutDevice checks the account before the first write of the new link.

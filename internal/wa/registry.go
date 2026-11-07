@@ -350,6 +350,10 @@ type HeldDevice struct {
 	// Relinking is a relink's pairing that has not linked yet: its number
 	// stays logged out, and maybe paused, until the attach.
 	Relinking bool
+
+	// device is the entry's Device when the snapshot was taken: StopHeld
+	// stops that entry only, never a later one under the same id.
+	device *Device
 }
 
 // Held returns every entry this process holds. A snapshot, like Running.
@@ -361,13 +365,25 @@ func (r *Registry) Held() []HeldDevice {
 	defer r.mu.RUnlock()
 	out := make([]HeldDevice, 0, len(r.devices))
 	for id, e := range r.devices {
-		held := HeldDevice{ID: id, Reserved: e.device == nil, Unlinking: r.unlinking[id] > 0, Relinking: e.pairing && e.relink}
+		held := HeldDevice{ID: id, Reserved: e.device == nil, Unlinking: r.unlinking[id] > 0, Relinking: e.pairing && e.relink,
+			device: e.device}
 		if e.device != nil {
 			held.TenantID = e.device.TenantID()
 		}
 		out = append(out, held)
 	}
 	return out
+}
+
+// StopHeld stops the entry a Held snapshot saw, while it is still that
+// entry: a decision on the snapshot never stops what replaced it since,
+// such as a relink's pairing in place of a stopped, logged-out hold. It
+// reports whether it stopped one. A reservation is never stopped.
+func (r *Registry) StopHeld(ctx context.Context, h HeldDevice) bool {
+	if r == nil || h.device == nil {
+		return false
+	}
+	return r.stopIf(ctx, h.ID, h.device)
 }
 
 // PairingSince is when this process started pairing the device, while that

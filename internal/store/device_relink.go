@@ -55,8 +55,9 @@ type Attached struct {
 	// ResumedPause is a pause the attach lifted, with its open sync_paused
 	// notices marked resumed.
 	ResumedPause bool
-	// OldSessionRemoved is a dead session row of the old link it deleted.
-	OldSessionRemoved bool
+	// OldSessionLeft is a session row still stored under the old link's
+	// JID, which the attach leaves alone (AttachRelink).
+	OldSessionLeft bool
 }
 
 // RelinkRow reads a live number. A deleted one, or one of another
@@ -221,10 +222,16 @@ func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, see
 // paused again since (pause_seq) and not held by a move, and the account
 // held by no other live number of the workspace. It then names the new
 // link (pn, lid, push name), marks the number offline until its client
-// connects, lifts its pause with its open sync_paused notices marked
-// resumed, and deletes what is left of the old link's session. Every other
-// column, the key, the grants and the archive stay. It writes no
-// item_events row: a relink is not a new link.
+// connects, and lifts its pause with its open sync_paused notices marked
+// resumed. Every other column, the key, the grants and the archive stay. It
+// writes no item_events row: a relink is not a new link.
+//
+// It deletes no session. whatsmeow deleted the old link's own when the
+// phone logged it out, and a row under that JID now may be another
+// workspace's live link: WhatsApp can give the account's freed device
+// number to a new link, and number_held asks this workspace only. A dead
+// row left behind is named by no number, so nothing loads it. The old
+// link's privacy tokens go unless a session under its JID exists.
 func (d *Devices) AttachRelink(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen, linked wa.Identity) (Attached, error) {
 	var out Attached
 	if linked.PN.IsEmpty() || linked.LID.IsEmpty() {
@@ -277,20 +284,13 @@ func (d *Devices) AttachRelink(ctx context.Context, tenant, device uuid.UUID, se
 			}
 			out.ResumedPause = true
 		}
-		for _, old := range []string{oldPN, oldLID} {
-			if old == "" || old == newPN {
-				continue
-			}
-			removed, err := deleteSessionTx(ctx, tx, old)
-			if err != nil {
-				return err
-			}
-			out.OldSessionRemoved = out.OldSessionRemoved || removed
+		if oldPN == "" || oldPN == newPN {
+			return nil
 		}
-		if oldPN != "" && oldPN != newPN {
-			return deletePrivacyTokensTx(ctx, tx, oldPN)
+		if out.OldSessionLeft, err = sessionStoredTx(ctx, tx, oldPN); err != nil {
+			return err
 		}
-		return nil
+		return deletePrivacyTokensTx(ctx, tx, oldPN)
 	})
 	if err != nil {
 		return Attached{}, err
@@ -308,21 +308,6 @@ func sessionStoredTx(ctx context.Context, tx pgx.Tx, jid string) (bool, error) {
 	var stored bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM whatsmeow_device WHERE jid = $1)`, jid).Scan(&stored)
 	return stored, err
-}
-
-// deleteSessionTx deletes a dead session row of an old link, with
-// whatsmeow's cascades. Normally there is none: the phone's logout made
-// whatsmeow delete it, unless that delete failed.
-func deleteSessionTx(ctx context.Context, tx pgx.Tx, jid string) (bool, error) {
-	var table bool
-	if err := tx.QueryRow(ctx, `SELECT to_regclass('whatsmeow_device') IS NOT NULL`).Scan(&table); err != nil || !table {
-		return false, err
-	}
-	tag, err := tx.Exec(ctx, `DELETE FROM whatsmeow_device WHERE jid = $1`, jid)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
 }
 
 // ForgetDiscardedSession deletes the privacy tokens of a new link a refused

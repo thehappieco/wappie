@@ -437,3 +437,111 @@ func TestReleaseStaleDropsAStoppedTerminalEntry(t *testing.T) {
 		t.Fatal("the stale hold or its lock remains")
 	}
 }
+
+// A cancel or the window's end may land after the account passed the check,
+// while whatsmeow stores the link and sends pair-device-sign on its own
+// goroutine. The pairing then waits for whatsmeow's end: a link WhatsApp
+// confirmed is attached as on success, never left stored with no number
+// naming it; a link whatsmeow gave up on ends as a failed link.
+func TestRelinkEndAfterAnAcceptedScan(t *testing.T) {
+	for name, tc := range map[string]struct {
+		end    func(rig *relinkRig, s *wa.PairSession)
+		linked bool
+	}{
+		"a cancel, then the success": {end: func(rig *relinkRig, s *wa.PairSession) {
+			s.Cancel()
+			time.Sleep(50 * time.Millisecond)
+			rig.fake.Emit(&events.PairSuccess{ID: linkPN, LID: linkLID})
+		}, linked: true},
+		"the codes ran out as the success came": {end: func(rig *relinkRig, _ *wa.PairSession) {
+			rig.fake.PushQR(whatsmeow.QRChannelTimeout)
+			time.Sleep(50 * time.Millisecond)
+			rig.fake.Emit(&events.PairSuccess{ID: linkPN, LID: linkLID})
+		}, linked: true},
+		"a cancel, then whatsmeow's pair error": {end: func(rig *relinkRig, s *wa.PairSession) {
+			s.Cancel()
+			time.Sleep(50 * time.Millisecond)
+			rig.fake.Emit(&events.PairError{ID: linkPN, LID: linkLID, Error: errors.New("failed to send pairing confirmation")})
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newRelinkRig(t)
+			s := rig.start(t)
+			rig.fake.PushQR(whatsmeow.QRChannelItem{Event: whatsmeow.QRChannelEventCode, Code: fakeQR, Timeout: time.Minute})
+			next(t, s)
+			if err := rig.scan(linkPN, linkLID); err != nil {
+				t.Fatal(err)
+			}
+			rig.fake.Emit(&events.ManualLoginReconnect{})
+			tc.end(rig, s)
+			e := next(t, s)
+			ended(t, s)
+			if !tc.linked {
+				if e.Kind != wa.PairEventError || !errors.Is(e.Err, wa.ErrLinkFailed) || rig.attaches() != 0 {
+					t.Fatalf("end %+v with %d attaches, want a failed link and none", e, rig.attaches())
+				}
+				if len(rig.r.Held()) != 0 || rig.locker.isHeld() {
+					t.Fatal("the failed link still holds the number")
+				}
+				return
+			}
+			if e.Kind != wa.PairEventSuccess {
+				t.Fatalf("end %+v, want success", e)
+			}
+			if rig.attaches() != 1 || rig.attached[0].PN != linkPN {
+				t.Fatalf("attached %+v, want the new link once", rig.attached)
+			}
+			if held := rig.r.Held(); len(held) != 1 || held[0].Relinking {
+				t.Fatalf("held %+v, want the number held and linked", held)
+			}
+		})
+	}
+}
+
+// A pairing that ends stops its own entry only: a later pairing of the
+// number, which a stop by a deletion or the supervisor let in, keeps
+// running.
+func TestRelinkEndStopsItsOwnEntryOnly(t *testing.T) {
+	rig := newRelinkRig(t)
+	first := rig.start(t)
+	rig.r.Stop(context.Background(), relinkDevice)
+	second := rig.start(t)
+	first.Cancel()
+	if e := next(t, first); e.Kind != wa.PairEventError {
+		t.Fatalf("the first pairing ended with %+v", e)
+	}
+	ended(t, first)
+	if _, ok := rig.r.PairingSince(relinkDevice); !ok || !rig.locker.isHeld() {
+		t.Fatal("the first pairing's end stopped the second")
+	}
+	second.Cancel()
+}
+
+// The supervisor decides on a snapshot of what this process holds, then
+// releases: StopHeld stops the entry the snapshot saw, never one that
+// replaced it since.
+func TestStopHeldStopsTheSnapshotsEntryOnly(t *testing.T) {
+	ctx := context.Background()
+	locker := &lockStub{}
+	r := wa.NewRegistryForTest(wa.RegistryConfig{Locker: locker, Log: slog.New(slog.DiscardHandler)}, nil)
+	if _, err := r.AdoptForTest(ctx, relinkTenant, relinkDevice, fakewa.New()); err != nil {
+		t.Fatal(err)
+	}
+	stale := r.Held()
+	r.Stop(ctx, relinkDevice)
+	if _, err := r.AdoptForTest(ctx, relinkTenant, relinkDevice, fakewa.New()); err != nil {
+		t.Fatal(err)
+	}
+	if r.StopHeld(ctx, stale[0]) {
+		t.Fatal("StopHeld stopped an entry the snapshot never saw")
+	}
+	if !r.Holds(relinkDevice) || !locker.isHeld() {
+		t.Fatal("the later entry went")
+	}
+	if !r.StopHeld(ctx, r.Held()[0]) || r.Holds(relinkDevice) || locker.isHeld() {
+		t.Fatal("StopHeld left the snapshot's own entry held")
+	}
+	if r.StopHeld(ctx, wa.HeldDevice{ID: relinkDevice}) {
+		t.Fatal("StopHeld stopped with no snapshot entry")
+	}
+}
