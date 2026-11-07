@@ -155,8 +155,9 @@ the recent window, with what arrived while the number was unlinked, as far
 as the phone's history reaches. A direct message already stored under the
 conversation's other key (its LID or its phone number) is dropped as a
 duplicate, and a reaction, edit or delete that arrives after its target
-finds it under either key. Message secrets of older messages went with the old session, so a later
-edit or poll vote on them stays unopened.
+finds it under either key; one that arrives before its target is matched
+later under its own key only. Message secrets of older messages went with
+the old session, so a later edit or poll vote on them stays unopened.
 
 Readers and assistants are not told: the key and epoch do not change, and an
 assistant allowed to send from the number can send again once it is online.
@@ -169,6 +170,13 @@ QR's length as `pairing QR`.
 A pairing ends only its own hold of the number, and the supervisor releases
 only the hold it decided on, so neither stops a later pairing of the same
 number.
+
+**A new number with an account the workspace holds.** A new number's
+pairing ("Adicionar número") does not yet compare the scanned account with
+the workspace's other numbers. Linking a logged-out number's phone as a new
+number makes a second live number of the same account, which captures
+everything twice, and while it is live the first number's relink is
+`number_held`. Link a logged-out number again instead of adding it.
 
 ## Pending pairing
 
