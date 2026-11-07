@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,6 +64,10 @@ type InsertMessage struct {
 	ChatLID string
 	ChatPN  string
 	IsGroup bool
+	// ProbeKeys are the other keys a direct message may already be stored
+	// under: the chat's other half, LID or phone number. A copy under one of
+	// them is a duplicate. Groups have none.
+	ProbeKeys []string
 
 	SenderKey string
 	SenderLID string
@@ -132,18 +138,33 @@ func (m *Messages) Insert(ctx context.Context, in InsertMessage) (InsertResult, 
 		// the duplicate path is hot. Checking before allocating a sequence
 		// number also stops a backfill of known messages from tearing a
 		// tenant's cursor forward by thousands.
+		//
+		// A direct conversation may be stored under both its LID and its
+		// phone number (siblings.go), and a history sync after a relink sends
+		// it again under either: the same wa_id under a sibling key is the
+		// same message. Groups never fold.
+		keys, err := chatKeys(ctx, tx, in)
+		if err != nil {
+			return err
+		}
 		var existingUID uuid.UUID
 		var existingSeq int64
 		var existingRel *string
-		err := tx.QueryRow(ctx, `
-			SELECT uid, seq, target_rel FROM messages
-			 WHERE device_id = $1 AND chat_key = $2 AND wa_id = $3`,
-			in.DeviceID, in.ChatKey, in.WAID).Scan(&existingUID, &existingSeq, &existingRel)
+		var existingKey string
+		err = tx.QueryRow(ctx, `
+			SELECT uid, seq, target_rel, chat_key FROM messages
+			 WHERE device_id = $1 AND chat_key = ANY($2) AND wa_id = $3
+			 ORDER BY chat_key = $4 DESC LIMIT 1`,
+			in.DeviceID, keys, in.WAID, in.ChatKey).Scan(&existingUID, &existingSeq, &existingRel, &existingKey)
 		switch {
 		case err == nil:
 			res = InsertResult{UID: existingUID, Seq: existingSeq, Duplicate: true}
 			if existingRel != nil {
 				res.TargetRel = domain.TargetRel(*existingRel)
+			}
+			if existingKey != in.ChatKey {
+				// A copy under the conversation's other key: nothing more.
+				return nil
 			}
 			// Unless what is already there is an empty placeholder and this is
 			// the real message. That happens because a group message carrying a
@@ -154,7 +175,7 @@ func (m *Messages) Insert(ctx context.Context, in InsertMessage) (InsertResult, 
 			return fmt.Errorf("store: check for an existing message: %w", err)
 		}
 
-		rel, targetUID, err := resolveTarget(ctx, tx, in)
+		rel, targetUID, err := resolveTarget(ctx, tx, in, keys)
 		if err != nil {
 			return err
 		}
@@ -188,6 +209,36 @@ func (m *Messages) Insert(ctx context.Context, in InsertMessage) (InsertResult, 
 		return InsertResult{}, err
 	}
 	return res, nil
+}
+
+// chatKeys is the message's own chat key, then the other keys its
+// conversation may be stored under: the probe keys the pipeline found, and
+// when it found none for a conversation keyed by phone number, every chat of
+// the device with that phone number (the rare case where whatsmeow's map
+// does not know the LID). A group has its own key only.
+func chatKeys(ctx context.Context, tx pgx.Tx, in InsertMessage) ([]string, error) {
+	keys := []string{in.ChatKey}
+	if in.IsGroup {
+		return keys, nil
+	}
+	for _, k := range in.ProbeKeys {
+		if k != "" && !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) > 1 || in.ChatPN == "" || in.ChatKey != in.ChatPN || !strings.HasSuffix(in.ChatPN, "@s.whatsapp.net") {
+		return keys, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT chat_key FROM chats
+		WHERE device_id = $1 AND chat_pn = $2 AND NOT is_group AND chat_key <> $3`, in.DeviceID, in.ChatPN, in.ChatKey)
+	if err != nil {
+		return nil, fmt.Errorf("store: sibling chat keys: %w", err)
+	}
+	siblings, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("store: sibling chat keys: %w", err)
+	}
+	return append(keys, siblings...), nil
 }
 
 // nextSeq allocates the tenant's next cursor value.
@@ -230,7 +281,11 @@ func nextSeq(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (int64, error) {
 // reaction can land before the message it reacts to, especially during a
 // backfill — so the row is stored with the target unresolved and reconciled
 // when the other half arrives.
-func resolveTarget(ctx context.Context, tx pgx.Tx, in InsertMessage) (domain.TargetRel, *uuid.UUID, error) {
+//
+// The target is looked for under the conversation's sibling keys too,
+// preferring its own: a reaction filed under the LID finds a message filed
+// under the phone number.
+func resolveTarget(ctx context.Context, tx pgx.Tx, in InsertMessage, keys []string) (domain.TargetRel, *uuid.UUID, error) {
 	if in.TargetWAID == "" {
 		return domain.TargetNone, nil, nil
 	}
@@ -239,8 +294,9 @@ func resolveTarget(ctx context.Context, tx pgx.Tx, in InsertMessage) (domain.Tar
 	var kind string
 	err := tx.QueryRow(ctx, `
 		SELECT uid, kind FROM messages
-		 WHERE device_id = $1 AND chat_key = $2 AND wa_id = $3`,
-		in.DeviceID, in.ChatKey, in.TargetWAID).Scan(&uid, &kind)
+		 WHERE device_id = $1 AND chat_key = ANY($2) AND wa_id = $3
+		 ORDER BY chat_key = $4 DESC LIMIT 1`,
+		in.DeviceID, keys, in.TargetWAID, in.ChatKey).Scan(&uid, &kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Target not seen yet. For a reaction the relation is known from the
 		// message type regardless; for a delete it genuinely depends on what

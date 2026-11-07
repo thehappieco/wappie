@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/types"
 )
 
 // PairWindow is the hard deadline on a pairing attempt.
@@ -17,6 +19,12 @@ import (
 // the login socket once the sequence runs out, roughly 160 seconds in. Nothing
 // can extend it; a session that misses the window has to start over.
 const PairWindow = 160 * time.Second
+
+// RelinkWindow is a relink's deadline. whatsmeow's codes run PairWindow
+// from the first QR, which comes after the connect; the slack lets
+// whatsmeow's own timeout end the window, so the last QR shown stays
+// good until it expires.
+const RelinkWindow = PairWindow + 15*time.Second
 
 // PairMethod selects how the phone is linked.
 type PairMethod string
@@ -69,6 +77,10 @@ type PairOptions struct {
 	// not recognise with a 400, so this must look like "Browser (OS)" using a
 	// real browser and OS name. It is not free text.
 	DisplayName string
+
+	// Relink links a number Wappie already holds again, by QR only, and
+	// keeps the link only for the number's own account (relink.go).
+	Relink *Relink
 }
 
 // defaultDisplayName is a combination WhatsApp accepts.
@@ -83,6 +95,14 @@ var nonDigits = regexp.MustCompile(`\D`)
 
 // Validate checks the options and fills in defaults.
 func (o *PairOptions) Validate() error {
+	if o.Relink != nil {
+		if o.Method != PairByQR {
+			return errors.New("wa: a relink pairs by QR only")
+		}
+		if o.Relink.Expect.PN.User == "" || o.Relink.Expect.LID.User == "" {
+			return errors.New("wa: a relink needs both halves of the number's identity")
+		}
+	}
 	switch o.Method {
 	case PairByQR:
 	case PairByCode:
@@ -150,10 +170,18 @@ func (r *Registry) StartPairing(ctx context.Context, tenantID, deviceID string,
 
 	// Detached from the caller so the session survives the request that
 	// started it, but bounded so an abandoned attempt cannot linger.
-	sessionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), PairWindow)
+	window := PairWindow
+	if opts.Relink != nil {
+		window = RelinkWindow
+	}
+	sessionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), window)
 
-	client := whatsmeow.NewClient(r.cfg.Container.NewDevice(), r.waLogger("pair/"+shortID(deviceID)))
-	applyClientPolicy(client)
+	ds := r.newPairingDevice()
+	client := r.newPairingClient(ds, "pair/"+shortID(deviceID))
+	var guard *relinkContainer
+	if opts.Relink != nil {
+		guard = armRelink(ds, client, opts.Relink)
+	}
 
 	// Step 1, before connecting.
 	qrCh, err := client.GetQRChannel(sessionCtx)
@@ -162,7 +190,7 @@ func (r *Registry) StartPairing(ctx context.Context, tenantID, deviceID string,
 		return nil, fmt.Errorf("wa: open pairing channel: %w", err)
 	}
 
-	dev, err := r.adopt(sessionCtx, tenantID, deviceID, policy, client)
+	dev, err := r.adopt(sessionCtx, tenantID, deviceID, policy, client, adoptOptions{pairing: true, relink: guard != nil})
 	if err != nil {
 		cancel()
 		return nil, err
@@ -171,18 +199,71 @@ func (r *Registry) StartPairing(ctx context.Context, tenantID, deviceID string,
 	// Step 2.
 	if err := dev.Start(sessionCtx); err != nil {
 		cancel()
-		r.Stop(context.WithoutCancel(ctx), deviceID)
+		r.stopIf(context.WithoutCancel(ctx), deviceID, dev)
 		return nil, fmt.Errorf("wa: connect for pairing: %w", err)
 	}
 
 	s := &PairSession{events: make(chan PairEvent, 8), cancel: cancel, device: dev}
-	go r.runPairing(sessionCtx, s, client, qrCh, opts, deviceID)
+	go r.runPairing(sessionCtx, s, pairRun{
+		client: client, ds: ds, dev: dev, qrCh: qrCh, opts: opts, deviceID: deviceID, guard: guard,
+	})
 	return s, nil
 }
 
-func (r *Registry) runPairing(ctx context.Context, s *PairSession, client *whatsmeow.Client,
-	qrCh <-chan whatsmeow.QRChannelItem, opts PairOptions, deviceID string) {
+// newPairingDevice is a fresh whatsmeow device with no JID: new noise,
+// identity and ADV keys.
+func (r *Registry) newPairingDevice() *store.Device {
+	if r.cfg.NewPairingDevice != nil {
+		return r.cfg.NewPairingDevice()
+	}
+	return r.cfg.Container.NewDevice()
+}
+
+// newPairingClient builds a pairing's client on its device.
+func (r *Registry) newPairingClient(ds *store.Device, module string) Client {
+	log := r.pairLogger(module)
+	if r.cfg.NewPairingClient != nil {
+		return r.cfg.NewPairingClient(ds, log)
+	}
+	client := whatsmeow.NewClient(ds, log)
+	applyClientPolicy(client)
+	return client
+}
+
+// pairRun is one pairing's parts, for runPairing.
+type pairRun struct {
+	client   Client
+	ds       *store.Device
+	dev      *Device
+	qrCh     <-chan whatsmeow.QRChannelItem
+	opts     PairOptions
+	deviceID string
+	guard    *relinkContainer // a relink's account check; nil otherwise
+}
+
+const (
+	// finalEmitWait bounds the send of a pairing's last event, which must
+	// not be lost to a window that closed meanwhile.
+	finalEmitWait = 5 * time.Second
+	// relinkFinish bounds a relink's steps after WhatsApp confirmed the
+	// link: the attach, the reconnect, or the logout of a refused link. Its
+	// own context, so a scan in the window's last second still attaches.
+	relinkFinish = 30 * time.Second
+	// relinkLoginWait is how long a relink waits for the pairing's 515
+	// before it reconnects anyway.
+	relinkLoginWait = 15 * time.Second
+	// relinkSettleWait bounds the wait for whatsmeow's own end of a scan
+	// that passed the account check, when the window ended first.
+	relinkSettleWait = 30 * time.Second
+)
+
+func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 	defer close(s.events)
+	if p.guard != nil {
+		// In the background: a handler that runs now, such as the Device's
+		// after the attach, holds whatsmeow's handler lock.
+		defer func() { go p.client.RemoveEventHandler(p.guard.handler) }()
+	}
 
 	emit := func(e PairEvent) {
 		select {
@@ -190,50 +271,99 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, client *whats
 		case <-ctx.Done():
 		}
 	}
+	final := func(e PairEvent) {
+		select {
+		case s.events <- e:
+		case <-time.After(finalEmitWait):
+			r.log.Warn("a pairing's last event found nobody listening", "device", p.deviceID, "kind", e.Kind)
+		}
+	}
+	relink := p.opts.Relink != nil
+	// endRelink ends a relink that did not link, with its reason. A scan
+	// that passed the account check first gets whatsmeow's own end: a
+	// cancel or the window's end may land after whatsmeow stored the link
+	// and sent pair-device-sign, and such a link is attached as on success.
+	endRelink := func(timedOut bool, cause error) {
+		if r.settleRelink(p) {
+			r.finishRelink(ctx, p, final)
+			return
+		}
+		err := relinkEnd(&p.guard.verdict, timedOut, cause)
+		r.abandon(ctx, p)
+		final(PairEvent{Kind: PairEventError, Err: err})
+	}
 
 	// Step 3. Requested immediately, because the window is already running.
-	if opts.Method == PairByCode {
-		code, err := client.PairPhone(ctx, opts.Phone, true, whatsmeow.PairClientChrome, opts.DisplayName)
+	if p.opts.Method == PairByCode {
+		code, err := p.client.PairPhone(ctx, p.opts.Phone, true, whatsmeow.PairClientChrome, p.opts.DisplayName)
 		if err != nil {
 			emit(PairEvent{Kind: PairEventError, Err: fmt.Errorf("wa: request linking code: %w", err)})
-			r.abandon(ctx, deviceID)
+			r.abandon(ctx, p)
 			return
 		}
 		emit(PairEvent{Kind: PairEventCode, Code: code, Expires: time.Now().Add(PairWindow)})
 	}
 
+	var lastExpires time.Time
+	loggedQR := false
 	for {
 		select {
 		case <-ctx.Done():
+			if relink {
+				endRelink(errors.Is(ctx.Err(), context.DeadlineExceeded), ctx.Err())
+				return
+			}
 			// Deliberate cleanup. Without it an abandoned attempt leaves a
 			// connected client and a half-created whatsmeow device behind,
 			// which is how the v1 server accumulated orphans.
-			r.abandon(ctx, deviceID)
+			r.abandon(ctx, p)
 			emit(PairEvent{Kind: PairEventTimeout})
 			return
 
-		case item, open := <-qrCh:
+		case item, open := <-p.qrCh:
 			if !open {
+				if relink {
+					endRelink(false, errors.New("the pairing channel closed"))
+				}
 				return
 			}
 			switch item.Event {
 			case "code":
+				// The platform's measure of a real QR's size: its length,
+				// once per pairing, never its text.
+				if !loggedQR {
+					loggedQR = true
+					r.log.Info("pairing QR", "device", p.deviceID, "qr_length", len(item.Code))
+				}
 				// Only meaningful when the user is looking at a QR. During
 				// code pairing these still arrive and are simply noise.
-				if opts.Method == PairByQR {
+				if p.opts.Method == PairByQR {
+					lastExpires = time.Now().Add(item.Timeout)
 					emit(PairEvent{
 						Kind:    PairEventQR,
 						Code:    item.Code,
-						Expires: time.Now().Add(item.Timeout),
+						Expires: lastExpires,
 					})
 				}
 
 			case "success":
+				if relink {
+					r.finishRelink(ctx, p, final)
+					return
+				}
+				r.endPairing(p.deviceID, p.dev)
 				emit(PairEvent{Kind: PairEventSuccess})
 				return
 
 			case "timeout":
-				r.abandon(ctx, deviceID)
+				if relink {
+					// whatsmeow sends timeout when its codes run out, and
+					// also when the socket drops mid-window.
+					endRelink(!lastExpires.IsZero() && !time.Now().Before(lastExpires.Add(-time.Second)),
+						errors.New("the socket closed during the window"))
+					return
+				}
+				r.abandon(ctx, p)
 				emit(PairEvent{Kind: PairEventTimeout})
 				return
 
@@ -242,7 +372,11 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, client *whats
 				if err == nil {
 					err = fmt.Errorf("pairing failed: %s", item.Event)
 				}
-				r.abandon(ctx, deviceID)
+				if relink {
+					endRelink(false, err)
+					return
+				}
+				r.abandon(ctx, p)
 				emit(PairEvent{Kind: PairEventError, Err: err})
 				return
 			}
@@ -250,9 +384,97 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, client *whats
 	}
 }
 
-// abandon tears down a pairing attempt that will not complete.
-func (r *Registry) abandon(ctx context.Context, deviceID string) {
-	r.Stop(context.WithoutCancel(ctx), deviceID)
+// finishRelink keeps or drops a relink's new link once WhatsApp confirmed
+// it. The account already passed the check before the link. Attach writes
+// the link into the number; until it commits, the Device is gated and the
+// client has not reconnected, so nothing of the link reached the archive.
+// A refused attach logs the link out again.
+func (r *Registry) finishRelink(ctx context.Context, p pairRun, final func(PairEvent)) {
+	post, cancel := context.WithTimeout(context.WithoutCancel(ctx), relinkFinish)
+	defer cancel()
+	if p.ds.ID == nil {
+		r.abandon(post, p)
+		final(PairEvent{Kind: PairEventError, Err: fmt.Errorf("%w: no phone number in the new link", ErrLinkFailed)})
+		return
+	}
+	linked := Identity{PN: *p.ds.ID, LID: p.ds.LID, BusinessName: p.ds.BusinessName}
+	if err := p.opts.Relink.Attach(post, linked); err != nil {
+		r.discardLink(post, p, linked.PN)
+		final(PairEvent{Kind: PairEventError, Err: err})
+		return
+	}
+	// A pause, a storage stop or a deletion that stopped the number since
+	// keeps it stopped: its row names the new link, and the supervisor
+	// picks it up when it may.
+	if r.endPairing(p.deviceID, p.dev) {
+		p.dev.OpenGate()
+		select {
+		case <-p.dev.LoginRestarted():
+		case <-time.After(relinkLoginWait):
+		case <-post.Done():
+		}
+		p.client.Disconnect()
+		if err := p.dev.reconnectAfterPair(post); err != nil {
+			r.log.Warn("relink reconnect left to the supervisor", "device", p.deviceID, "error", err)
+			r.stopIf(post, p.deviceID, p.dev)
+		}
+	}
+	final(PairEvent{Kind: PairEventSuccess})
+}
+
+// discardLink logs out a relink's new link whose attach was refused. The
+// account is the number's own, so the link exists on WhatsApp. The gate
+// stays closed and no OnClient handler exists, so the connection captures
+// nothing. Logout comes first, while connected: it disconnects and deletes
+// the session itself, and a disconnect first would leave the link on the
+// phone.
+func (r *Registry) discardLink(ctx context.Context, p pairRun, jid types.JID) {
+	p.client.Disconnect()
+	confirmed := false
+	if err := p.client.Connect(); err == nil || errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+		confirmed = logoutOn(ctx, p.client, nil, nil) == nil
+	}
+	if !confirmed {
+		// The phone may keep the entry under Linked devices; the session
+		// goes anyway.
+		p.client.Disconnect()
+		if err := p.ds.Delete(ctx); err != nil {
+			r.log.Warn("relink could not delete a refused link's session", "device", p.deviceID, "error", err)
+		}
+	}
+	if p.opts.Relink.Discarded != nil {
+		p.opts.Relink.Discarded(ctx, jid)
+	}
+	r.abandon(ctx, p)
+	r.log.Info("relink new link logged out", "device", p.deviceID, "confirmed", confirmed)
+}
+
+// settleRelink reports whether a relink whose window ended, or whose QR
+// channel ended without a success, linked anyway. Only a scan that passed
+// the account check can have: whatsmeow then stores the link and sends
+// pair-device-sign on its own goroutine. Its PairSuccess or PairError
+// settles it; until then the client stays connected, so the sign is not
+// cut off halfway.
+func (r *Registry) settleRelink(p pairRun) bool {
+	if !p.guard.verdict.isAccepted() {
+		return false
+	}
+	select {
+	case <-p.guard.verdict.settled:
+	case <-time.After(relinkSettleWait):
+		r.log.Warn("a relink's accepted scan did not settle", "device", p.deviceID)
+		return false
+	}
+	return p.guard.verdict.isLinked()
+}
+
+// abandon tears down a pairing attempt that will not complete. Only its
+// own entry: a later pairing or start of the number keeps running.
+func (r *Registry) abandon(ctx context.Context, p pairRun) {
+	stop := context.WithoutCancel(ctx)
+	if !r.stopIf(stop, p.deviceID, p.dev) {
+		p.client.Disconnect()
+	}
 }
 
 // adopt registers an already-constructed client under a device id. It shares
@@ -260,7 +482,7 @@ func (r *Registry) abandon(ctx context.Context, deviceID string) {
 // matters here because the pairing flow must build the client itself in order
 // to call GetQRChannel before Connect.
 func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
-	policy ReceiptPolicy, client Client) (*Device, error) {
+	policy ReceiptPolicy, client Client, o adoptOptions) (*Device, error) {
 	if r.cfg.CheckStart != nil {
 		if err := r.cfg.CheckStart(ctx, tenantID); err != nil {
 			return nil, err
@@ -302,6 +524,7 @@ func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 		Contacts:   contactSourceOf(client),
 		CheckStart: r.cfg.CheckStart,
 		Policy:     policy, Log: r.log, OnStatus: r.cfg.OnStatus,
+		Gated: o.relink,
 	})
 	if err != nil {
 		if release != nil {
@@ -320,8 +543,15 @@ func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 		dev.identity.merge(identity)
 	}
 	var stopClient func()
+	var deferred func() func()
 	if real, ok := client.(*whatsmeow.Client); ok && r.cfg.OnClient != nil {
-		stopClient = r.cfg.OnClient(tenantID, deviceID, real)
+		if o.relink {
+			// Not before the attach: no call offer reaches a link Wappie
+			// has not kept.
+			deferred = func() func() { return r.cfg.OnClient(tenantID, deviceID, real) }
+		} else {
+			stopClient = r.cfg.OnClient(tenantID, deviceID, real)
+		}
 	}
 	if real, ok := client.(*whatsmeow.Client); ok {
 		installConnectionPolicy(real, tenantID, r.cfg.CheckStart)
@@ -338,9 +568,23 @@ func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 		}
 		return nil, fmt.Errorf("wa: device start was cancelled: %w", context.Canceled)
 	}
-	r.devices[deviceID] = &entry{device: dev, release: release, stopClient: stopClient}
+	e := &entry{device: dev, release: release, stopClient: stopClient, pairing: o.pairing, relink: o.relink, deferredOnClient: deferred}
+	if o.pairing {
+		e.pairingSince = time.Now()
+	}
+	r.devices[deviceID] = e
 	r.mu.Unlock()
 	return dev, nil
+}
+
+// adoptOptions says what kind of entry adopt makes.
+type adoptOptions struct {
+	// pairing is a pairing's entry until it links: Held reports it and
+	// PairingSince dates it.
+	pairing bool
+	// relink gates the Device until the attach (DeviceConfig.Gated) and
+	// defers OnClient to it.
+	relink bool
 }
 
 // contactSourceOf reaches whatsmeow's own contact cache, when there is one.

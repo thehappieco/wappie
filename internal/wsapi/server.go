@@ -25,6 +25,7 @@ import (
 	"whatserver2/internal/membership"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/relink"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -113,6 +114,9 @@ type Config struct {
 	// administration ask it in the background (freshness.go). Nil gates
 	// nothing; at observe it only logs (the plan's DB4).
 	Membership membership.Freshness
+	// Relink links a logged-out number again (the pair frame's relink
+	// branch, relink.go). Nil answers that branch internal.
+	Relink *relink.Service
 
 	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
 	// once access is known and before the bus registers the subscription,
@@ -207,8 +211,11 @@ const (
 // number moves only while nobody else has access to it. An older build moves
 // it anyway and drops everyone else's access, so a console must not tell an
 // owner that nobody else has access unless this build says it checked.
+// "pair.relink" is the pair frame's relink branch (relink.go): an older
+// build reads relink as a new number's pairing, so a client offers "Link
+// again" only when this build lists it.
 var features = []string{
-	"pair", "pair.cancel", "pair.qr", "pair.code",
+	"pair", "pair.cancel", "pair.qr", "pair.code", "pair.relink",
 	"devices.list", "users.list",
 	"subscribe", "chats.list", "chat.page", "keys.get",
 	"contacts.list", "contacts.resolve", "contacts.avatar",
@@ -403,8 +410,10 @@ type session struct {
 	callOwner     string
 	callsReleased bool
 
-	pairMu   sync.Mutex
-	pairings map[string]*wa.PairSession
+	pairMu sync.Mutex
+	// pairings is this session's pairings, a new number's or a relink's,
+	// by device: a pause, a deletion or a move cancels them.
+	pairings map[string]interface{ Cancel() }
 
 	subMu sync.Mutex
 	sub   *bus.Subscription
@@ -480,7 +489,7 @@ func (s *session) requireOperator(reqID string) (actor, bool) {
 func (s *session) run(ctx context.Context) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
-	s.pairings = map[string]*wa.PairSession{}
+	s.pairings = map[string]interface{ Cancel() }{}
 
 	defer func() {
 		// Revoke media tickets and stop calls before any potentially slow

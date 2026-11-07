@@ -66,6 +66,33 @@ func TestReleaseHeld(t *testing.T) {
 	}
 }
 
+// A relink that has not linked stays held while its row is listed: its
+// number stays logged out, and maybe paused, until the attach. A deletion, a
+// move or an inactive workspace ends it. A held number whose row is logged
+// out or banned is a stopped client that still holds the device lock: it
+// goes.
+func TestReleaseHeldPairingAndTerminal(t *testing.T) {
+	relinking := device("relinking", wa.StatusLoggedOut)
+	relinking.Paused = true
+	listed := map[string]tenantList{"team": {devices: []store.Device{
+		relinking, device("stale", wa.StatusLoggedOut), device("banned", wa.StatusBanned), device("live", wa.StatusOnline),
+	}}}
+	held := []wa.HeldDevice{
+		{ID: "relinking", TenantID: "team", Relinking: true},
+		// A relink whose number was deleted or moved meanwhile.
+		{ID: "gone", TenantID: "team", Relinking: true},
+		{ID: "stale", TenantID: "team"},
+		{ID: "banned", TenantID: "team"},
+		{ID: "live", TenantID: "team"},
+	}
+	if got, want := released(held, listed), []string{"banned", "gone", "stale"}; !slices.Equal(got, want) {
+		t.Fatalf("released %v, want %v", got, want)
+	}
+	if got, want := releasedWith(held, listed, map[string]bool{"team": true}), []string{"banned", "gone", "live", "relinking", "stale"}; !slices.Equal(got, want) {
+		t.Fatalf("in an inactive workspace released %v, want %v", got, want)
+	}
+}
+
 func TestReleaseHeldSkipsFailedList(t *testing.T) {
 	listed := map[string]tenantList{"broken": {err: errors.New("timeout")}, "team": {devices: []store.Device{}}}
 	held := []wa.HeldDevice{

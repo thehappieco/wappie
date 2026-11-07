@@ -62,6 +62,11 @@ type RegistryConfig struct {
 	// Nil is the container's own lookup; a test passes one that needs no
 	// session store.
 	LoadSession func(ctx context.Context, jid types.JID) (*store.Device, error)
+	// NewPairingDevice and NewPairingClient build a pairing's device and
+	// client. Nil is the container's new device and whatsmeow's client; a
+	// test passes fakes.
+	NewPairingDevice func() *store.Device
+	NewPairingClient func(ds *store.Device, log waLog.Logger) Client
 }
 
 // Registry owns every supervised device in this process.
@@ -91,6 +96,13 @@ type entry struct {
 	device     *Device
 	release    func()
 	stopClient func()
+	// pairing is a pairing's entry until it links, since pairingSince;
+	// relink says it is a relink's.
+	pairing      bool
+	pairingSince time.Time
+	relink       bool
+	// deferredOnClient installs a relink's OnClient once it attached.
+	deferredOnClient func() func()
 }
 
 // waLogger picks the adapter the configuration allows.
@@ -99,6 +111,15 @@ func (r *Registry) waLogger(module string) waLog.Logger {
 		return NewWireLogger(r.log, module)
 	}
 	return NewWALogger(r.log, module)
+}
+
+// pairLogger is waLogger for a pairing, which prints no JID: whatsmeow's
+// "Successfully paired" line names the new link's phone number.
+func (r *Registry) pairLogger(module string) waLog.Logger {
+	if r.cfg.WireLog {
+		return NewWireLogger(r.log, module)
+	}
+	return &slogAdapter{lg: r.log, module: module, redactJIDs: true}
 }
 
 // NewRegistry builds a registry.
@@ -200,7 +221,7 @@ func (r *Registry) StartExisting(ctx context.Context, tenantID, deviceID string,
 func (r *Registry) start(ctx context.Context, tenantID, deviceID string, policy ReceiptPolicy, ds *store.Device) (*Device, error) {
 	client := r.newClient(ds, "device/"+shortID(deviceID))
 
-	dev, err := r.adopt(ctx, tenantID, deviceID, policy, client)
+	dev, err := r.adopt(ctx, tenantID, deviceID, policy, client, adoptOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -326,6 +347,13 @@ type HeldDevice struct {
 	Reserved bool
 	// Unlinking is a device a deletion is logging out here (BeginUnlink).
 	Unlinking bool
+	// Relinking is a relink's pairing that has not linked yet: its number
+	// stays logged out, and maybe paused, until the attach.
+	Relinking bool
+
+	// device is the entry's Device when the snapshot was taken: StopHeld
+	// stops that entry only, never a later one under the same id.
+	device *Device
 }
 
 // Held returns every entry this process holds. A snapshot, like Running.
@@ -337,13 +365,126 @@ func (r *Registry) Held() []HeldDevice {
 	defer r.mu.RUnlock()
 	out := make([]HeldDevice, 0, len(r.devices))
 	for id, e := range r.devices {
-		held := HeldDevice{ID: id, Reserved: e.device == nil, Unlinking: r.unlinking[id] > 0}
+		held := HeldDevice{ID: id, Reserved: e.device == nil, Unlinking: r.unlinking[id] > 0, Relinking: e.pairing && e.relink,
+			device: e.device}
 		if e.device != nil {
 			held.TenantID = e.device.TenantID()
 		}
 		out = append(out, held)
 	}
 	return out
+}
+
+// StopHeld stops the entry a Held snapshot saw, while it is still that
+// entry: a decision on the snapshot never stops what replaced it since,
+// such as a relink's pairing in place of a stopped, logged-out hold. It
+// reports whether it stopped one. A reservation is never stopped.
+func (r *Registry) StopHeld(ctx context.Context, h HeldDevice) bool {
+	if r == nil || h.device == nil {
+		return false
+	}
+	return r.stopIf(ctx, h.ID, h.device)
+}
+
+// PairingSince is when this process started pairing the device, while that
+// pairing has not linked.
+func (r *Registry) PairingSince(deviceID string) (time.Time, bool) {
+	if r == nil {
+		return time.Time{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.devices[deviceID]
+	if !ok || !e.pairing {
+		return time.Time{}, false
+	}
+	return e.pairingSince, true
+}
+
+// Holds reports whether this process holds the device: running, pairing,
+// reserved or stopped and not yet released.
+func (r *Registry) Holds(deviceID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.devices[deviceID]
+	return ok
+}
+
+// ReleaseStale releases a hold whose Device stopped in a terminal status: a
+// number logged out or banned while this process held it keeps its entry,
+// its client and its device lock until something stops it. It reports
+// whether it released one. A pairing and a deletion's logout are never
+// stale.
+func (r *Registry) ReleaseStale(ctx context.Context, deviceID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	e, ok := r.devices[deviceID]
+	stale := ok && e.device != nil && !e.pairing && r.unlinking[deviceID] == 0
+	r.mu.RUnlock()
+	if !stale || !e.device.Status().Terminal() {
+		return false
+	}
+	if !r.stopIf(ctx, deviceID, e.device) {
+		return false
+	}
+	r.log.Info("released a stopped number's hold", "device", deviceID)
+	return true
+}
+
+// endPairing marks a pairing's entry linked, and installs a relink's
+// deferred OnClient. It is false when the entry is gone or is no longer
+// dev's: a pause, a storage stop or a deletion stopped it meanwhile.
+func (r *Registry) endPairing(deviceID string, dev *Device) bool {
+	r.mu.Lock()
+	e, ok := r.devices[deviceID]
+	if !ok || e.device != dev {
+		r.mu.Unlock()
+		return false
+	}
+	e.pairing = false
+	install := e.deferredOnClient
+	e.deferredOnClient = nil
+	r.mu.Unlock()
+	if install == nil {
+		return true
+	}
+	stop := install()
+	r.mu.Lock()
+	if r.devices[deviceID] == e {
+		e.stopClient = stop
+		r.mu.Unlock()
+		return true
+	}
+	r.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	return false
+}
+
+// stopIf is Stop, only while the entry still holds dev.
+func (r *Registry) stopIf(ctx context.Context, deviceID string, dev *Device) bool {
+	r.mu.Lock()
+	e, ok := r.devices[deviceID]
+	if !ok || e.device != dev {
+		r.mu.Unlock()
+		return false
+	}
+	delete(r.devices, deviceID)
+	r.mu.Unlock()
+	if e.stopClient != nil {
+		e.stopClient()
+	}
+	e.device.Stop(ctx)
+	if e.release != nil {
+		e.release()
+	}
+	return true
 }
 
 // BeginUnlink marks a device whose deletion's logout is about to run in this
@@ -446,6 +587,15 @@ func (r *Registry) unlink(ctx context.Context, deviceID string, jid types.JID,
 	}
 	r.mu.Lock()
 	e, held := r.devices[deviceID]
+	if held && !leftover && e.device != nil && e.pairing {
+		// A pairing's client never logged in: a logout on it would wait,
+		// fail, and report an unconfirmed logout. The pairing stops, and the
+		// logout runs as for a number this process does not hold.
+		r.mu.Unlock()
+		r.stopIf(ctx, deviceID, e.device)
+		r.mu.Lock()
+		e, held = r.devices[deviceID]
+	}
 	switch {
 	case held && (leftover || e.device == nil), leftover && r.unlinking[deviceID] > 0:
 		r.mu.Unlock()

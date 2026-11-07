@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -18,6 +19,9 @@ type slogAdapter struct {
 	lg     *slog.Logger
 	module string
 	wire   bool
+	// redactJIDs prints a JID argument as its server only: a pairing's
+	// logger, whose JIDs are a phone number.
+	redactJIDs bool
 }
 
 // NewWALogger adapts a slog.Logger to whatsmeow's logger interface.
@@ -44,9 +48,40 @@ func (a *slogAdapter) log(level slog.Level, msg string, args ...any) {
 	if !a.lg.Enabled(context.Background(), level) {
 		return
 	}
+	if a.redactJIDs {
+		args = redactJIDArgs(args)
+	}
 	// whatsmeow formats its own messages printf-style, so the arguments are
 	// substitution values, not slog key/value pairs.
 	a.lg.Log(context.Background(), level, fmt.Sprintf(msg, args...), "module", a.module)
+}
+
+// redactJIDArgs replaces every JID among a log line's arguments with its
+// server alone.
+func redactJIDArgs(args []any) []any {
+	out := make([]any, len(args))
+	for i, arg := range args {
+		switch v := arg.(type) {
+		case types.JID:
+			out[i] = redactedJID(v)
+		case *types.JID:
+			if v == nil {
+				out[i] = "<nil>"
+			} else {
+				out[i] = redactedJID(*v)
+			}
+		default:
+			out[i] = arg
+		}
+	}
+	return out
+}
+
+func redactedJID(j types.JID) string {
+	if j.IsEmpty() {
+		return ""
+	}
+	return "<redacted>@" + j.Server
 }
 
 func (a *slogAdapter) Errorf(msg string, args ...any) { a.log(slog.LevelError, msg, args...) }
@@ -63,5 +98,5 @@ func (a *slogAdapter) Debugf(msg string, args ...any) {
 }
 
 func (a *slogAdapter) Sub(module string) waLog.Logger {
-	return &slogAdapter{lg: a.lg, module: a.module + "/" + module, wire: a.wire}
+	return &slogAdapter{lg: a.lg, module: a.module + "/" + module, wire: a.wire, redactJIDs: a.redactJIDs}
 }

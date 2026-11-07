@@ -44,6 +44,7 @@ import (
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/ratelimit"
+	"whatserver2/internal/relink"
 	"whatserver2/internal/restapi"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -562,6 +563,11 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// Every act README 7.1 gates asks the contract's freshness first;
 		// release B only logs the verdicts.
 		Membership: a.members,
+		// "Link again" on a logged-out number (decision 0057).
+		Relink: &relink.Service{
+			Devices: a.devices, Pairer: relink.FromRegistry(registry), LIDs: wa.NewLIDMap(container),
+			Receipts: a.recordReceipt, Log: lg,
+		},
 	})
 
 	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws

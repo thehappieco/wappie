@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,7 +102,7 @@ func (a *app) claimUnheldDevices(ctx context.Context, attempts map[string]int) {
 		a.log.Error("supervise: list inactive workspaces", "error", err)
 	}
 	for _, r := range toRelease(snapshot, listed, inactive) {
-		a.release(ctx, r.ID, r.why)
+		a.releaseHeld(ctx, r.HeldDevice, r.why)
 	}
 }
 
@@ -150,6 +151,12 @@ type releasing struct {
 // inactive workspaces (nil) names none; and neither releases a reservation
 // with no device yet, or a client a deletion is logging out here, which the
 // deletion stops itself.
+//
+// A relink's pairing that has not linked yet stays while its row is
+// listed, paused or not: its number stays logged out, and maybe paused,
+// until the attach, which refuses a pause made since. A held number whose
+// row is logged out or banned is a stopped client left holding the device
+// lock, and goes.
 func toRelease(held []wa.HeldDevice, listed map[string]tenantList, inactive map[string]bool) []releasing {
 	var out []releasing
 	for _, h := range held {
@@ -164,15 +171,15 @@ func toRelease(held []wa.HeldDevice, listed map[string]tenantList, inactive map[
 		if !ok || list.err != nil {
 			continue
 		}
-		live := false
-		for _, d := range list.devices {
-			if d.ID == h.ID && !d.Paused {
-				live = true
-				break
-			}
-		}
-		if !live {
+		i := slices.IndexFunc(list.devices, func(d store.Device) bool { return d.ID == h.ID })
+		switch {
+		case i < 0:
 			out = append(out, releasing{h, "no longer live and unpaused here"})
+		case h.Relinking:
+		case list.devices[i].Paused:
+			out = append(out, releasing{h, "no longer live and unpaused here"})
+		case list.devices[i].Status.Terminal():
+			out = append(out, releasing{h, "logged out or banned"})
 		}
 	}
 	return out
@@ -189,6 +196,24 @@ func (a *app) release(ctx context.Context, deviceID, why string) {
 	}
 	a.log.Info("supervise: releasing a number", "device", deviceID, "reason", why)
 	a.registry.Stop(context.WithoutCancel(ctx), deviceID)
+	a.forget(deviceID)
+}
+
+// releaseHeld is release for the tick's decision on its snapshot: it stops
+// the entry the snapshot saw only, so one that replaced it since, such as
+// a relink's pairing in place of a stopped, logged-out hold, stays.
+func (a *app) releaseHeld(ctx context.Context, h wa.HeldDevice, why string) {
+	if a.registry == nil || a.registry.Unlinking(h.ID) {
+		return
+	}
+	if !a.registry.StopHeld(context.WithoutCancel(ctx), h) {
+		return
+	}
+	a.log.Info("supervise: released a number", "device", h.ID, "reason", why)
+	a.forget(h.ID)
+}
+
+func (a *app) forget(deviceID string) {
 	if id, err := uuid.Parse(deviceID); err == nil && a.router != nil {
 		a.router.Forget(id)
 	}

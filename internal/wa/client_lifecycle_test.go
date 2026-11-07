@@ -23,13 +23,13 @@ func TestProtocolAdapterInstalledBeforeConnectAndCleanedOnce(t *testing.T) {
 		attached.Add(1)
 		return func() { cleaned.Add(1) }
 	}
-	if _, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, client); err != nil {
+	if _, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, client, adoptOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if attached.Load() != 1 || cleaned.Load() != 0 {
 		t.Fatal("adapter did not follow device adoption")
 	}
-	if _, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, client); !errors.Is(err, ErrAlreadyRunning) {
+	if _, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, client, adoptOptions{}); !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("duplicate adoption: %v", err)
 	}
 	r.Stop(context.Background(), "device")
@@ -52,7 +52,7 @@ func TestCancelledAdoptionCannotPublishOrLeakProtocolAdapter(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, client)
+		_, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, client, adoptOptions{})
 		done <- err
 	}()
 	<-attached
@@ -76,7 +76,7 @@ func TestStorageGatePreventsAdoptionBeforeAnyClientSideEffect(t *testing.T) {
 		return denied
 	}
 	r.cfg.OnClient = func(_, _ string, _ *whatsmeow.Client) func() { t.Fatal("attached despite suspension"); return nil }
-	if _, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, nil); !errors.Is(err, denied) {
+	if _, err := r.adopt(context.Background(), "tenant", "device", ReceiptPolicy{}, nil, adoptOptions{}); !errors.Is(err, denied) {
 		t.Fatalf("got %v", err)
 	}
 	if len(r.Running()) != 0 {

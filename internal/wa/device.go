@@ -85,6 +85,12 @@ type DeviceConfig struct {
 	// push to subscribers. The tenant is included because the layer above fans
 	// out per tenant and cannot recover it from the device id alone. Optional.
 	OnStatus func(tenantID, deviceID string, status Status, reason string)
+
+	// Gated holds a relink's pairing device apart until OpenGate: its
+	// events change the identity in memory only, and write no status, no
+	// identity and nothing to the sink. The number's row stays as it was
+	// until the attach writes the new link into it.
+	Gated bool
 }
 
 // ContactSource is whatsmeow's cached contact list.
@@ -130,6 +136,12 @@ type Device struct {
 	running  bool
 	stop     context.CancelFunc
 	done     chan struct{}
+	gated    bool
+
+	// loginRestart is closed at the first ManualLoginReconnect: a relink's
+	// client waits there for the pairing's 515 instead of reconnecting.
+	loginRestart chan struct{}
+	loginOnce    sync.Once
 
 	// Presence requests and readiness retries are serialized independently of
 	// state reads, so a slow socket cannot block Policy, Identity or Status.
@@ -150,10 +162,30 @@ func NewDevice(cfg DeviceConfig) (*Device, error) {
 		cfg.Log = slog.Default()
 	}
 	return &Device{
-		cfg:    cfg,
-		log:    cfg.Log.With("device", cfg.ID, "tenant", cfg.TenantID),
-		status: StatusNew,
+		cfg:          cfg,
+		log:          cfg.Log.With("device", cfg.ID, "tenant", cfg.TenantID),
+		status:       StatusNew,
+		gated:        cfg.Gated,
+		loginRestart: make(chan struct{}),
 	}, nil
+}
+
+// OpenGate ends a relink's gate (DeviceConfig.Gated), once the attach
+// committed: from then on events reach the store, the sink and OnStatus.
+func (d *Device) OpenGate() {
+	d.mu.Lock()
+	d.gated = false
+	d.mu.Unlock()
+}
+
+// LoginRestarted is closed once WhatsApp asked the client to log in again
+// (the pairing's 515), which a relink's client does not do by itself.
+func (d *Device) LoginRestarted() <-chan struct{} { return d.loginRestart }
+
+// reconnectAfterPair connects a relink's client again after the attach, as
+// the first connect does.
+func (d *Device) reconnectAfterPair(ctx context.Context) error {
+	return d.connectWithBackoff(ctx)
 }
 
 // Identity returns the current identity. Safe from any goroutine.
@@ -384,6 +416,24 @@ func jitteredBackoff(attempt int) time.Duration {
 // server's handler, where connection handling, message dispatch, media
 // downloads and event publishing all shared one function.
 func (d *Device) handleEvent(ctx context.Context, evt any) {
+	if _, ok := evt.(*events.ManualLoginReconnect); ok {
+		// Only a relink's client asks for this (DisableLoginAutoReconnect).
+		// The first is the pairing's 515, which finishRelink answers after
+		// the attach. A later 515 is followed by the server closing the
+		// socket, which whatsmeow's own reconnect answers, since no
+		// disconnect is expected then.
+		d.loginOnce.Do(func() { close(d.loginRestart) })
+		return
+	}
+	d.mu.Lock()
+	gated := d.gated
+	d.mu.Unlock()
+	if gated {
+		if v, ok := evt.(*events.PairSuccess); ok {
+			d.identity.merge(Identity{LID: v.LID, PN: v.ID, BusinessName: v.BusinessName})
+		}
+		return
+	}
 	switch v := evt.(type) {
 	case *events.PairSuccess:
 		// BusinessName is the verified business name, not a push name. Our own
