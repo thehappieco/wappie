@@ -685,42 +685,56 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 // A token whose selector Wappie keeps, its workspace's row deleted, gets a
 // valid unrevoked record with another created_at: its sticky row stays at
 // the selector's until (the stored created_at + 365 days). Wappie keeps
-// the date it stored, never the record's.
+// the date it stored, never the record's. Both ways: the workspace still
+// gone (the record is skipped in applyItemsTx), and a row of the same id
+// made again (judgeRecord refuses it: the selector is Wappie's, with no
+// token row).
 func TestAKeptSelectorKeepsItsStickyRowsUntil(t *testing.T) {
-	w := newTokenWorld(t)
-	gone := uuid.New()
-	w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'gone')`, gone)
-	inGone := func(r *kc.TokenRecord) { r.WorkspaceID = gone.String() }
-	id := uuid.New()
-	w.page(false, w.record(id, 1, inGone))
-	w.page(false, w.record(id, 2, inGone, revokedBy(kc.RevokedInConsole, w.now)))
-	w.exec(`DELETE FROM tenants WHERE id = $1`, gone)
-	var until time.Time
-	if err := w.pool.QueryRow(context.Background(), `SELECT until FROM contract_token_selectors WHERE token_id = $1`, id).Scan(&until); err != nil {
-		t.Fatal(err)
-	}
-	if u := w.stickyUntil(id); u == nil || !u.Equal(until) {
-		t.Fatalf("the revocation is kept to %v, want the selector's until %v", u, until)
-	}
-	created := w.now.Add(-100 * tokenDay)
-	if !created.Add(kc.MaxTokenLifetime).Before(until) {
-		t.Fatal("the record's created_at would not lower the row: nothing to prove")
-	}
-	res := w.page(false, w.record(id, 3, inGone, createdAt(created, 200*tokenDay)))
-	if res.Narrowed {
-		t.Error("a valid unrevoked record narrowed something")
-	}
-	if exists, rv, _ := w.sticky(id); !exists || !rv {
-		t.Fatalf("after a valid unrevoked record: the row is there %v, revoked %v", exists, rv)
-	}
-	if u := w.stickyUntil(id); u == nil || !u.Equal(until) {
-		t.Errorf("after a valid unrevoked record with another created_at: the revocation is kept to %v, want the selector's until %v", u, until)
-	}
-	if clock, _ := w.stickyClock(id); clock {
-		t.Error("a valid record left the row dated by Wappie's clock")
-	}
-	if n := w.in(gone, `SELECT count(*) FROM contract_tokens WHERE id = $1`, id); n != 0 {
-		t.Error("a valid unrevoked record of a deleted workspace's token made a live row")
+	for _, back := range []bool{false, true} {
+		name := "the workspace gone"
+		if back {
+			name = "the workspace made again"
+		}
+		t.Run(name, func(t *testing.T) {
+			w := newTokenWorld(t)
+			gone := uuid.New()
+			w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'gone')`, gone)
+			inGone := func(r *kc.TokenRecord) { r.WorkspaceID = gone.String() }
+			id := uuid.New()
+			w.page(false, w.record(id, 1, inGone))
+			w.page(false, w.record(id, 2, inGone, revokedBy(kc.RevokedInConsole, w.now)))
+			w.exec(`DELETE FROM tenants WHERE id = $1`, gone)
+			var until time.Time
+			if err := w.pool.QueryRow(context.Background(), `SELECT until FROM contract_token_selectors WHERE token_id = $1`, id).Scan(&until); err != nil {
+				t.Fatal(err)
+			}
+			if u := w.stickyUntil(id); u == nil || !u.Equal(until) {
+				t.Fatalf("the revocation is kept to %v, want the selector's until %v", u, until)
+			}
+			if back {
+				w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'back')`, gone)
+			}
+			created := w.now.Add(-100 * tokenDay)
+			if !created.Add(kc.MaxTokenLifetime).Before(until) {
+				t.Fatal("the record's created_at would not lower the row: nothing to prove")
+			}
+			res := w.page(false, w.record(id, 3, inGone, createdAt(created, 200*tokenDay)))
+			if res.Narrowed {
+				t.Error("a valid unrevoked record narrowed something")
+			}
+			if exists, rv, _ := w.sticky(id); !exists || !rv {
+				t.Fatalf("after a valid unrevoked record: the row is there %v, revoked %v", exists, rv)
+			}
+			if u := w.stickyUntil(id); u == nil || !u.Equal(until) {
+				t.Errorf("after a valid unrevoked record with another created_at: the revocation is kept to %v, want the selector's until %v", u, until)
+			}
+			if clock, _ := w.stickyClock(id); clock {
+				t.Error("a valid record left the row dated by Wappie's clock")
+			}
+			if n := w.in(gone, `SELECT count(*) FROM contract_tokens WHERE id = $1`, id); n != 0 {
+				t.Error("a valid unrevoked record of a token whose workspace row was deleted made a live row")
+			}
+		})
 	}
 }
 

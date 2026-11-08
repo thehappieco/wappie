@@ -614,10 +614,14 @@ command and the server at once lose no line.
   database but not in the record, and exits with status 1. A lift that
   cannot write it says "the lift is in the database but not in the
   record", names the `tokens suspend` and `tokens lift` that record it,
-  and exits with status 1. Record a stop the file lacks by running
-  `tokens suspend` again with the same `-note`, as the message says: a
-  re-stop replaces the note, and its line carries the re-stop's time,
-  which the database then holds. Only two things hold the file's lock:
+  and exits with status 1. One whose write failed after it replaced the
+  file (at the sync of its directory) says "the stop is recorded in" or
+  "the lift is recorded in" the file, "but a crash of the host could lose
+  its line", names the same commands, and exits with status 1. Record a
+  stop the file lacks by running `tokens suspend` again with the same
+  `-note` (and one it may lose, the same way), as the message says: a re-stop
+  replaces the note, and its line carries the re-stop's time, which the
+  database then holds. Only two things hold the file's lock:
   another `tokens suspend` or `tokens lift`, from before its database
   write to its line (that write may wait on the database behind a
   server's hourly retention), and a server's hourly trim, for
