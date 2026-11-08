@@ -31,7 +31,18 @@ type Handler struct {
 	Contacts *store.Contacts
 	Receipts *store.Receipts
 	Running  func(deviceID string) bool
-	Log      *slog.Logger
+	// Access authenticates and authorizes every request; nil is a Checker
+	// of APIKeys and Users alone, which refuses every platform token.
+	Access *access.Checker
+	Log    *slog.Logger
+}
+
+// checker is the Checker every request goes through.
+func (h *Handler) checker() *access.Checker {
+	if h.Access != nil {
+		return h.Access
+	}
+	return &access.Checker{Keys: h.APIKeys, Users: h.Users, Log: h.Log}
 }
 
 // Mount adds read-only routes; Go's mux refuses unsupported write methods.
@@ -70,7 +81,7 @@ func (h *Handler) authenticated(next func(*request)) http.HandlerFunc {
 			fail(w, http.StatusUnauthorized, "unauthorized", "a bearer session or API key is required")
 			return
 		}
-		actor, err := access.Authenticate(ctx, parts[1], h.APIKeys, h.Users)
+		actor, err := h.checker().Authenticate(ctx, parts[1])
 		if err != nil {
 			fail(w, http.StatusUnauthorized, "unauthorized", "credential expired, revoked or invalid")
 			return
@@ -86,7 +97,7 @@ func (h *Handler) authenticated(next func(*request)) http.HandlerFunc {
 // finish rechecks both the credential and every returned device immediately
 // before serialization. A revoked key/grant must not publish a stale query.
 func (q *request) finish(value any) {
-	actor, err := access.Authenticate(q.r.Context(), q.token, q.h.APIKeys, q.h.Users)
+	actor, err := q.h.checker().Recheck(q.r.Context(), q.token)
 	if err != nil {
 		fail(q.w, http.StatusUnauthorized, "unauthorized", "credential expired, revoked or invalid")
 		return
@@ -96,7 +107,7 @@ func (q *request) finish(value any) {
 		return
 	}
 	for device, action := range q.checks {
-		allowed, err := access.Allows(q.r.Context(), actor, device, action, q.h.APIKeys, q.h.Users)
+		allowed, err := q.h.checker().Probe(q.r.Context(), actor, device, action)
 		if err != nil {
 			q.internal(err)
 			return
@@ -129,7 +140,7 @@ func (q *request) query(allowed ...string) (url.Values, bool) {
 }
 
 func (q *request) permitted(device uuid.UUID, action store.DeviceAction) (bool, error) {
-	ok, err := access.Allows(q.r.Context(), q.actor, device, action, q.h.APIKeys, q.h.Users)
+	ok, err := q.h.checker().Allows(q.r.Context(), q.actor, device, action)
 	if ok && err == nil {
 		q.checks[device] = action
 	}

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"whatserver2/internal/access"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 	"whatserver2/internal/wsapi"
@@ -74,17 +73,17 @@ func (h *Handler) devices(q *request) {
 			continue
 		}
 		info := wsapi.DeviceFromRow(row)
-		info.CanManage, err = access.Allows(q.r.Context(), q.actor, id, store.ActionManage, h.APIKeys, h.Users)
+		info.CanManage, err = h.checker().Probe(q.r.Context(), q.actor, id, store.ActionManage)
 		if err != nil {
 			q.internal(err)
 			return
 		}
-		info.CanPause, err = access.Allows(q.r.Context(), q.actor, id, store.ActionPause, h.APIKeys, h.Users)
+		info.CanPause, err = h.checker().Probe(q.r.Context(), q.actor, id, store.ActionPause)
 		if err != nil {
 			q.internal(err)
 			return
 		}
-		info.CanSend, err = access.Allows(q.r.Context(), q.actor, id, store.ActionSend, h.APIKeys, h.Users)
+		info.CanSend, err = h.checker().Probe(q.r.Context(), q.actor, id, store.ActionSend)
 		if err != nil {
 			q.internal(err)
 			return

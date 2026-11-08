@@ -14,10 +14,13 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kc "github.com/thehappieco/kit/contract"
+	"golang.org/x/crypto/argon2"
 
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/pg"
@@ -380,4 +384,66 @@ func readingKey(t testing.TB) *kc.ReadingKey {
 		t.Fatal(err)
 	}
 	return &kc.ReadingKey{Suite: kc.ReadingKeySuite, Key: key, Fingerprint: fp, RegisteredAt: kc.T(time.Now().Add(-time.Hour))}
+}
+
+// KeyHolding issues an API key of scope in tenant whose secret starts with
+// marker ("thc_", "THC_", "ThC_": about one key in 50,000 holds one), by
+// issuing a key and hashing the changed secret into its row as the store
+// does. It returns the key's text.
+func KeyHolding(t testing.TB, pool *pgxpool.Pool, tenant uuid.UUID, scope store.KeyScope, marker string) string {
+	t.Helper()
+	ctx := context.Background()
+	key, err := store.NewAPIKeys(pool).IssueScoped(ctx, tenant.String(), "holds "+marker, scope, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix, secret, _ := strings.Cut(key, ".")
+	secret = marker + secret[len(marker):]
+	var encoded string
+	if err := pool.QueryRow(ctx, `SELECT key_hash FROM api_keys WHERE prefix = $1`, prefix).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(encoded, "$")
+	var memory, iterations uint32
+	var threads uint8
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &threads); err != nil {
+		t.Fatal(err)
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := argon2.IDKey([]byte(secret), salt, iterations, memory, threads, 32)
+	parts[5] = base64.RawStdEncoding.EncodeToString(sum)
+	tag, err := pool.Exec(ctx, `UPDATE api_keys SET key_hash = $2 WHERE prefix = $1`, prefix, strings.Join(parts, "$"))
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewriting the key: %v", err)
+	}
+	return prefix + "." + secret
+}
+
+// SessionHolding starts a session of user whose token starts with marker,
+// by starting one and rewriting its hash. It returns the session's text.
+func SessionHolding(t testing.TB, pool *pgxpool.Pool, user store.User, marker string) string {
+	t.Helper()
+	ctx := context.Background()
+	token, _, err := store.NewUsers(pool).StartSession(ctx, user, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := marker + token[len(marker):]
+	oldRaw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRaw, err := base64.RawURLEncoding.DecodeString(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSum, newSum := sha256.Sum256(oldRaw), sha256.Sum256(newRaw)
+	tag, err := pool.Exec(ctx, `UPDATE sessions SET token_hash = $2 WHERE token_hash = $1`, oldSum[:], newSum[:])
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewriting the session: %v", err)
+	}
+	return changed
 }

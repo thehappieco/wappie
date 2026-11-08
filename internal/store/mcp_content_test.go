@@ -378,7 +378,7 @@ func TestProvisionalServiceMembershipExpires(t *testing.T) {
 	f := newContentFixture(t)
 	ctx := context.Background()
 	c := f.prepareContent(ctx, t, f.owner)
-	if _, err := access.Authenticate(ctx, c.key, f.keys, f.users); err != nil {
+	if _, err := (&access.Checker{Keys: f.keys, Users: f.users}).Authenticate(ctx, c.key); err != nil {
 		t.Fatalf("the key was refused inside the window: %v", err)
 	}
 	f.inTenant(ctx, t, func(tx pgx.Tx) error {
@@ -388,7 +388,7 @@ func TestProvisionalServiceMembershipExpires(t *testing.T) {
 	if _, err := f.users.Get(ctx, f.tenant, c.service); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("an expired membership was found: %v", err)
 	}
-	if _, err := access.Authenticate(ctx, c.key, f.keys, f.users); !errors.Is(err, store.ErrInvalidKey) {
+	if _, err := (&access.Checker{Keys: f.keys, Users: f.users}).Authenticate(ctx, c.key); !errors.Is(err, store.ErrInvalidKey) {
 		t.Fatalf("a key acting as an expired account authenticated: %v", err)
 	}
 	// A consent is refused too.

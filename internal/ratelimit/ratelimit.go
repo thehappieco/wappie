@@ -95,6 +95,27 @@ func (l *Limiter) Allow(key string) (ok bool, retryAfter time.Duration) {
 	return false, wait.Round(time.Second) + time.Second
 }
 
+// Peek reports whether key could spend a token now, spending nothing and
+// making no bucket: a key never seen, or one swept, is full.
+func (l *Limiter) Peek(key string) bool {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b, found := l.buckets[key]
+	if !found {
+		return true
+	}
+	return min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.rate) >= 1
+}
+
+// Spend spends one token for key when it has one, and reports whether it
+// had. Unlike Allow it is for counting what already happened (a failure),
+// so an empty bucket stays empty and nothing waits.
+func (l *Limiter) Spend(key string) bool {
+	ok, _ := l.Allow(key)
+	return ok
+}
+
 // sweep forgets keys that have been quiet long enough to be full again, so
 // the map does not grow with every address that ever tried once.
 func (l *Limiter) sweep(now time.Time) {
@@ -173,6 +194,21 @@ type Auth struct {
 // NAT hides a whole office behind one, and tight per subject, because a
 // person mistypes a password a few times and a script tries thousands.
 func DefaultAuth(proxies []netip.Prefix) *Auth {
+	return &Auth{
+		PerIP:      New(60, 20),
+		PerSubject: New(5, 5),
+		Proxies:    proxies,
+	}
+}
+
+// TokenFailures is the budget of failed platform-token attempts (thc_),
+// kept apart from DefaultAuth, which sign-ins and the hello spend. Only a
+// failure spends it, after the fact: per address DefaultAuth's numbers,
+// and an address over them is refused before its token is looked at; per
+// selector five a minute, which never refuses (anyone holding a selector,
+// which is not secret, could otherwise lock its token out) and only says,
+// past it, that someone is guessing at that token.
+func TokenFailures(proxies []netip.Prefix) *Auth {
 	return &Auth{
 		PerIP:      New(60, 20),
 		PerSubject: New(5, 5),
