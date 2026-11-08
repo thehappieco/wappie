@@ -183,6 +183,12 @@ func (a *app) retainTokens(ctx context.Context, now time.Time) {
 	ctx, cancel := context.WithTimeout(ctx, tokenStopTrimWait)
 	defer cancel()
 	did, err := trimTokenStops(ctx, path, now)
+	// A dropped line that was no stop's record may have been a stop's line
+	// before it was damaged, and a restore would lose that stop: said at
+	// WARN, counted, never its text.
+	if did.unreadableDropped > 0 {
+		a.log.Warn("token stop record dropped unreadable lines", "path", path, "lines", did.unreadableDropped)
+	}
 	if err != nil {
 		a.log.Error("token stop record trim failed", "path", path, "error", err)
 		return

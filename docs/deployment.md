@@ -641,7 +641,14 @@ command and the server at once lose no line.
   logs ERROR "token stop record has unreadable lines" with the path and
   how many, never what they say: `tokens suspend -replay` refuses a
   record that holds one, so mend or remove it before a restore needs the
-  file.
+  file. Such a line may have been a stop's line before it was damaged,
+  and once it goes a restore would lose that stop. A pass that drops one
+  logs WARN "token stop record dropped unreadable lines" with the path
+  and how many, never what they said; a `tokens suspend` or `tokens lift`
+  whose write dropped one says "dropped N unreadable lines; run tokens
+  list and suspend again any open stop they may have recorded". Then run
+  `tokens list`, and for each open operator's stop run `tokens suspend`
+  again with the same `-note`: its new line carries the re-stop's time.
 - **At start.** In prod, serve checks the file right after the deletion
   ledger: it logs INFO "token stop record writable" with the path,
   creating the file when it is missing (and a temporary file beside it,

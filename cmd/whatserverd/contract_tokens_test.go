@@ -1023,6 +1023,67 @@ func TestUnreadableStopLinesGoWithTheLineBefore(t *testing.T) {
 	}
 }
 
+// A suspend or a lift whose write dropped lines that were no stop's record
+// says how many, never what they said, and what to do: one may have been a
+// stop's line before it was damaged. A write that dropped none, a damaged
+// line kept included, says nothing of them.
+func TestATokenStopSaysTheDamagedLinesItDropped(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	tokens := store.NewTokens(pool)
+	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
+	const a, b = "0123456789abcdef", "fedcba9876543210"
+	const said = "dropped 2 unreadable lines; run tokens list and suspend again any open stop they may have recorded"
+	const damaged = `{"selector":"` + b + `","note":"a secret"}` + "\n\ntorn\n"
+	now := time.Now().UTC()
+	change := func(r tokenStopRecord) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := changeTokenStop(ctx, tokens, r, "", record, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	read := func() string {
+		t.Helper()
+		got, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(got)
+	}
+	// Two damaged lines and a blank one, no stop's line before them.
+	if err := os.WriteFile(record, []byte(damaged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := change(tokenStopRecord{Selector: a, At: now})
+	if !strings.Contains(out, "recorded in "+record) || !strings.Contains(out, said) || strings.Contains(out, "a secret") || strings.Contains(out, b) {
+		t.Fatalf("a suspend whose write dropped two damaged lines: %q", out)
+	}
+	if got := read(); strings.Contains(got, "a secret") || strings.Contains(got, "torn") {
+		t.Fatalf("the record after the suspend: %q", got)
+	}
+	// A damaged line after a stop's line under 365 days old is kept, not
+	// dropped: nothing is said of it.
+	if err := os.WriteFile(record, []byte(read()+"torn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := change(tokenStopRecord{Selector: b, At: now.Add(time.Second)}); strings.Contains(out, "unreadable") || !strings.Contains(out, "recorded in "+record) {
+		t.Fatalf("a suspend whose write dropped no damaged line: %q", out)
+	}
+	// A lift likewise.
+	if err := os.WriteFile(record, []byte(damaged+read()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := change(tokenStopRecord{Selector: a, At: now.Add(2 * time.Second), Lift: true}); !strings.Contains(out, "the operator's stop is lifted") ||
+		!strings.Contains(out, said) || strings.Contains(out, "a secret") {
+		t.Fatalf("a lift whose write dropped two damaged lines: %q", out)
+	}
+	if got := read(); strings.Contains(got, "a secret") || strings.Count(got, "torn") != 1 {
+		t.Fatalf("the record after the lift: %q", got)
+	}
+}
+
 // Appends and trims at once lose no line: each rewrite holds the record's
 // lock, and one that waited locks the file another renamed in. Every
 // rewrite here replaces the file: one append adds lines 365 days old,
@@ -1124,6 +1185,10 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 		}
 	}
 	appendLine(stopLine(t, old, now.Add(-366*day), false))
+	// A damaged line after it, which goes with it: a WARN counts it, never
+	// what it said.
+	const damaged = `{"selector":"` + old + `","note":"a secret"}`
+	appendLine(damaged)
 	// A valid record of gone's selector came, created 365 days ago: its
 	// stop is due, an hour ago on Wappie's clock.
 	execSQL(t, pool, `UPDATE contract_token_stops SET record_until = $2 WHERE selector = $1`, gone, now.Add(-time.Hour))
@@ -1137,7 +1202,7 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 	}
 
 	// Retention fails (the pass's context is gone): the trim runs all the
-	// same, and the old line goes.
+	// same, and the old line goes, the damaged one with it.
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	a.retainTokens(cancelled, now)
@@ -1148,8 +1213,12 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 		t.Fatalf("the record after a failed retention: %q, want %q", got, written)
 	}
 	trimmed := log.find(slog.LevelInfo, "token stop record trimmed")
-	if len(trimmed) != 1 || trimmed[0].attrs["lines"] != "1" || trimmed[0].attrs["path"] != record {
+	if len(trimmed) != 1 || trimmed[0].attrs["lines"] != "2" || trimmed[0].attrs["unreadable"] != "1" || trimmed[0].attrs["path"] != record {
 		t.Fatalf("the trim beside a failed retention: %+v", trimmed)
+	}
+	if warned := log.find(slog.LevelWarn, "token stop record dropped unreadable lines"); len(warned) != 1 ||
+		warned[0].attrs["lines"] != "1" || warned[0].attrs["path"] != record {
+		t.Fatalf("the trim dropped a damaged line: %+v", log.lines)
 	}
 
 	// Retention deletes gone's stop; its lines stay to their 365 days.
@@ -1162,6 +1231,9 @@ func TestRetentionTrimsTheStopRecord(t *testing.T) {
 	}
 	if trimmed := log.find(slog.LevelInfo, "token stop record trimmed"); len(trimmed) != 1 {
 		t.Fatalf("a trim with nothing to drop: %+v", trimmed)
+	}
+	if warned := log.find(slog.LevelWarn, "token stop record dropped unreadable lines"); len(warned) != 1 {
+		t.Fatalf("a trim that dropped no damaged line warned: %+v", warned)
 	}
 	// A restore of a snapshot taken since: the replay leaves every line at
 	// or before the stop retention let go, so gone's stop stays gone.

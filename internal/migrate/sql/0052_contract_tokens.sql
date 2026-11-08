@@ -534,15 +534,12 @@ CREATE TABLE contract_token_sticky (
     -- Set while until is Wappie's clock + 365 days, from a bad record of a
     -- token Wappie holds no selector of: the leader's lookup by id asks the
     -- platform for the token's own date. Any other write clears it.
-    -- clock_gen is the generation that record came in.
     clock_until         boolean     NOT NULL DEFAULT false,
-    clock_gen           uuid,
     -- While clock_until: when to ask again (infinity: never, after a
     -- not_found), and how many signed answers in a row Wappie could not
     -- use.
     lookup_after        timestamptz,
-    lookup_bad          integer     NOT NULL DEFAULT 0 CHECK (lookup_bad >= 0),
-    CHECK (NOT clock_until OR clock_gen IS NOT NULL)
+    lookup_bad          integer     NOT NULL DEFAULT 0 CHECK (lookup_bad >= 0)
 );
 CREATE INDEX contract_token_sticky_lookups ON contract_token_sticky (lookup_after) WHERE clock_until;
 -- What a sticky row says only narrows: a revocation and an ending are never
