@@ -202,3 +202,40 @@ WS_LOGIN_DECOY_KEY_HEX=01
 		t.Fatalf("empty key: %v", err)
 	}
 }
+
+// TestTokenSwitchesAreCheckedWithTheConnectorOff (F12): with the contract
+// configured and MCP off, a deny list or a default that does not parse
+// refuses to start, since platform tokens read both; with neither
+// configured, they stay a disabled connector's leftovers.
+func TestTokenSwitchesAreCheckedWithTheConnectorOff(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"deny not a uuid":   {"WS_MCP_DENY_TENANTS": "acme"},
+		"deny half a list":  {"WS_MCP_DENY_TENANTS": "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee,acme"},
+		"default neither":   {"WS_MCP_WORKSPACE_DEFAULT": "true"},
+		"deny the nil uuid": {"WS_MCP_DENY_TENANTS": "00000000-0000-0000-0000-000000000000"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			minimalEnv(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err != nil {
+				t.Fatalf("with no contract: %v", err)
+			}
+			t.Setenv("WS_CONTRACT_ADDR", "127.0.0.1:8291")
+			t.Setenv("WS_CONTRACT_SECRET_FILE", "contract-secret.txt")
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "WS_MCP_") {
+				t.Fatalf("with the contract: %v", err)
+			}
+		})
+	}
+	minimalEnv(t)
+	t.Setenv("WS_CONTRACT_ADDR", "127.0.0.1:8291")
+	t.Setenv("WS_CONTRACT_SECRET_FILE", "contract-secret.txt")
+	t.Setenv("WS_MCP_DENY_TENANTS", "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee")
+	t.Setenv("WS_MCP_WORKSPACE_DEFAULT", "on")
+	cfg, err := Load()
+	if err != nil || len(cfg.MCP.DenyTenants) != 1 || !cfg.MCP.WorkspaceDefault {
+		t.Fatalf("a good deny list and default: %v %+v", err, cfg.MCP.DenyTenants)
+	}
+}

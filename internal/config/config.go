@@ -261,6 +261,13 @@ func Load() (Config, error) {
 	if err := cfg.Contract.Validate(env.IsProd()); err != nil {
 		errs = append(errs, err)
 	}
+	// Platform tokens come only through the contract, and read the
+	// switches' default and deny list with the connector off too.
+	if !cfg.MCP.Enabled && cfg.Contract.Configured() {
+		if err := cfg.MCP.TokenSwitchesErr(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 
 	if cfg.Postgres.DSN == "" {
 		bad("WS_POSTGRES_DSN is required")
