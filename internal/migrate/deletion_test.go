@@ -295,7 +295,7 @@ func downStepSQL(t *testing.T, version int) string {
 	return strings.Join(out, "\n")
 }
 
-// 0050's down-step refuses while 0051 is applied, a number is excluded or an
+// 0050's down-step refuses while 0051 or 0052 is applied, a number is excluded or an
 // event row is not in the ledger, and changes nothing then, the forced
 // policy on devices included; once none holds, it leaves exactly 49's
 // schema, so a binary that knows 49 but not 50 starts on it, and 0050
@@ -356,8 +356,11 @@ func TestMigration0050DownStep(t *testing.T) {
 			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 50 %v, devices forced %v", rows, before, has50, forced)
 		}
 	}
-	// 0051 comes down first, before any other guard is asked.
+	// 0052 and 0051 come down first, before any other guard is asked.
 	refused("a migration after 0050 is applied")
+	if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err != nil {
+		t.Fatalf("0052's down-step: %v", err)
+	}
 	if _, err := pool.Exec(ctx, downStepSQL(t, 51)); err != nil {
 		t.Fatalf("0051's down-step: %v", err)
 	}
