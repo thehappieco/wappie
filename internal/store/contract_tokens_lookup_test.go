@@ -353,22 +353,22 @@ func TestAStopTakesTheDateOfARecordWappieDidNotKeep(t *testing.T) {
 }
 
 // stickyClock is a sticky row's lookup state: whether Wappie's clock dates
-// it, its generation, and whether it is settled (never asked again).
-func (w *tokenWorld) stickyClock(id uuid.UUID) (clock bool, gen *uuid.UUID, settled bool) {
+// it, and whether it is settled (never asked again).
+func (w *tokenWorld) stickyClock(id uuid.UUID) (clock, settled bool) {
 	w.t.Helper()
-	if err := w.pool.QueryRow(context.Background(), `SELECT clock_until, clock_gen, coalesce(lookup_after = 'infinity', false)
-		FROM contract_token_sticky WHERE token_id = $1`, id).Scan(&clock, &gen, &settled); err != nil {
+	if err := w.pool.QueryRow(context.Background(), `SELECT clock_until, coalesce(lookup_after = 'infinity', false)
+		FROM contract_token_sticky WHERE token_id = $1`, id).Scan(&clock, &settled); err != nil {
 		w.t.Fatal(err)
 	}
-	return clock, gen, settled
+	return clock, settled
 }
 
 // F3, the applier: a bad record's revocation of a token Wappie holds no
-// selector of is dated by Wappie's clock and marked so, with its
-// generation; a later valid record of the token clears the mark and lowers
-// until to its own date. A valid record's revocation, and a held token's
-// bad record, are never marked. After a reset, the token's bad record of
-// the new generation marks the row with it, to be asked again.
+// selector of is dated by Wappie's clock and marked so; a later valid
+// record of the token clears the mark and lowers until to its own date. A
+// valid record's revocation, and a held token's bad record, are never
+// marked. After a reset, the token's bad record of the new generation
+// leaves the row marked, to be asked again.
 func TestABadRecordsRevocationIsClockDated(t *testing.T) {
 	w := newTokenWorld(t)
 	elsewhere := func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }
@@ -390,9 +390,8 @@ func TestABadRecordsRevocationIsClockDated(t *testing.T) {
 		"a held token's bad record":                   {held, false},
 		"another workspace's bad record":              {again, true},
 	} {
-		clock, gen, _ := w.stickyClock(c.id)
-		if clock != c.clock || c.clock && (gen == nil || *gen != w.gen) {
-			t.Errorf("%s: clock-dated %v (generation %v), want %v (%v)", name, clock, gen, c.clock, w.gen)
+		if clock, _ := w.stickyClock(c.id); clock != c.clock {
+			t.Errorf("%s: clock-dated %v, want %v", name, clock, c.clock)
 		}
 	}
 	yearOn := w.now.Add(kc.MaxTokenLifetime)
@@ -401,19 +400,19 @@ func TestABadRecordsRevocationIsClockDated(t *testing.T) {
 	}
 	created := w.now.Add(-100 * tokenDay)
 	w.page(false, w.record(bad, 2, elsewhere, createdAt(created, 200*tokenDay), revoked))
-	if clock, _, _ := w.stickyClock(bad); clock {
+	if clock, _ := w.stickyClock(bad); clock {
 		t.Error("a valid record left the revocation dated by Wappie's clock")
 	}
 	if u := w.stickyUntil(bad); u == nil || !u.Equal(created.Add(kc.MaxTokenLifetime)) {
 		t.Errorf("after a valid record, the revocation is kept to %v, want %v", u, created.Add(kc.MaxTokenLifetime))
 	}
-	// Settled in its generation, then a reset: the new generation's bad
-	// record marks it with that one, and asks again.
+	// Settled, then a reset: the new generation's bad record leaves it
+	// marked, and asks again.
 	w.exec(`UPDATE contract_token_sticky SET lookup_after = 'infinity' WHERE token_id = $1`, again)
 	w.reset()
 	w.page(false, w.record(again, 1, elsewhere, invalid, revoked))
-	if clock, gen, settled := w.stickyClock(again); !clock || gen == nil || *gen != w.gen || settled {
-		t.Errorf("a bad record after a reset: clock-dated %v, generation %v (want %v), settled %v", clock, gen, w.gen, settled)
+	if clock, settled := w.stickyClock(again); !clock || settled {
+		t.Errorf("a bad record after a reset: clock-dated %v, settled %v", clock, settled)
 	}
 }
 
@@ -525,7 +524,7 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	if err := w.tokens.TokenLookupAnswered(w.ctx(), store.TokenLookup{Token: bad}, rec, w.now); err != nil {
 		t.Fatal(err)
 	}
-	if clock, _, _ := w.stickyClock(bad); clock {
+	if clock, _ := w.stickyClock(bad); clock {
 		t.Error("an answered lookup left the revocation dated by Wappie's clock")
 	}
 	if u := w.stickyUntil(bad); u == nil || !u.Equal(date) {
@@ -567,7 +566,7 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	if exists, _, _ := w.sticky(notFound); !exists {
 		t.Fatal("a not_found by id let the revocation go")
 	}
-	if clock, _, settled := w.stickyClock(notFound); !clock || !settled {
+	if clock, settled := w.stickyClock(notFound); !clock || !settled {
 		t.Errorf("a not_found by id: clock-dated %v, settled %v; want both", clock, settled)
 	}
 	if u := w.stickyUntil(notFound); u == nil || !u.Equal(*kept) {
@@ -578,7 +577,7 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	}
 	// A later valid record of the token still lowers it to its own date.
 	w.page(false, w.record(notFound, 2, elsewhere, createdAt(created, 200*tokenDay), revoked))
-	if clock, _, _ := w.stickyClock(notFound); clock {
+	if clock, _ := w.stickyClock(notFound); clock {
 		t.Error("a valid record after a not_found left the revocation dated by Wappie's clock")
 	}
 	if u := w.stickyUntil(notFound); u == nil || !u.Equal(date) {
@@ -610,7 +609,7 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 		if exists, rv, _ := w.sticky(id); !exists || !rv {
 			t.Errorf("a valid unrevoked record %s after a not_found: the row is there %v, revoked %v", name, exists, rv)
 		}
-		if clock, _, settled := w.stickyClock(id); clock || settled {
+		if clock, settled := w.stickyClock(id); clock || settled {
 			t.Errorf("a valid unrevoked record %s after a not_found: clock-dated %v, settled %v", name, clock, settled)
 		}
 		if u := w.stickyUntil(id); u == nil || !u.Equal(date) {
@@ -628,7 +627,7 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.page(false, w.record(same, 2, elsewhere, createdAt(w.now, 200*tokenDay)))
-	if clock, _, _ := w.stickyClock(same); clock {
+	if clock, _ := w.stickyClock(same); clock {
 		t.Error("a valid record dated as the row is left it dated by Wappie's clock")
 	}
 	if u := w.stickyUntil(same); u == nil || !u.Equal(w.now.Add(kc.MaxTokenLifetime)) {
@@ -680,6 +679,48 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	w.retain(w.now)
 	if exists, _, _ := w.stopOf(selectorOf(heldTok)); !exists {
 		t.Error("an answer shortened a held selector's stop")
+	}
+}
+
+// A token whose selector Wappie keeps, its workspace's row deleted, gets a
+// valid unrevoked record with another created_at: its sticky row stays at
+// the selector's until (the stored created_at + 365 days). Wappie keeps
+// the date it stored, never the record's.
+func TestAKeptSelectorKeepsItsStickyRowsUntil(t *testing.T) {
+	w := newTokenWorld(t)
+	gone := uuid.New()
+	w.exec(`INSERT INTO tenants (id, name) VALUES ($1, 'gone')`, gone)
+	inGone := func(r *kc.TokenRecord) { r.WorkspaceID = gone.String() }
+	id := uuid.New()
+	w.page(false, w.record(id, 1, inGone))
+	w.page(false, w.record(id, 2, inGone, revokedBy(kc.RevokedInConsole, w.now)))
+	w.exec(`DELETE FROM tenants WHERE id = $1`, gone)
+	var until time.Time
+	if err := w.pool.QueryRow(context.Background(), `SELECT until FROM contract_token_selectors WHERE token_id = $1`, id).Scan(&until); err != nil {
+		t.Fatal(err)
+	}
+	if u := w.stickyUntil(id); u == nil || !u.Equal(until) {
+		t.Fatalf("the revocation is kept to %v, want the selector's until %v", u, until)
+	}
+	created := w.now.Add(-100 * tokenDay)
+	if !created.Add(kc.MaxTokenLifetime).Before(until) {
+		t.Fatal("the record's created_at would not lower the row: nothing to prove")
+	}
+	res := w.page(false, w.record(id, 3, inGone, createdAt(created, 200*tokenDay)))
+	if res.Narrowed {
+		t.Error("a valid unrevoked record narrowed something")
+	}
+	if exists, rv, _ := w.sticky(id); !exists || !rv {
+		t.Fatalf("after a valid unrevoked record: the row is there %v, revoked %v", exists, rv)
+	}
+	if u := w.stickyUntil(id); u == nil || !u.Equal(until) {
+		t.Errorf("after a valid unrevoked record with another created_at: the revocation is kept to %v, want the selector's until %v", u, until)
+	}
+	if clock, _ := w.stickyClock(id); clock {
+		t.Error("a valid record left the row dated by Wappie's clock")
+	}
+	if n := w.in(gone, `SELECT count(*) FROM contract_tokens WHERE id = $1`, id); n != 0 {
+		t.Error("a valid unrevoked record of a deleted workspace's token made a live row")
 	}
 }
 

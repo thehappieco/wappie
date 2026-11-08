@@ -540,11 +540,6 @@ func TestMigration0053Checks(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(`DELETE FROM contract_token_sticky`)
-	// A row dated by Wappie's clock names the generation of its record.
-	if err := w.try(`INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until)
-		VALUES (gen_random_uuid(), clock_timestamp(), 'revoked', clock_timestamp() + interval '1 day', true)`); sqlState(err) != "23514" {
-		t.Errorf("a clock-dated sticky row with no generation: %v, want 23514", err)
-	}
 
 	// A selector's date only lowers, and goes only past its until.
 	refused("a selector's date raised", `UPDATE contract_token_dates SET until = until + interval '1 day'`)

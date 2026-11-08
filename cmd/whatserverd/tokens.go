@@ -164,7 +164,11 @@ var tokenStopLockWait = 5 * time.Second
 // with no operator's stop to lift records nothing, since no lift happened.
 // A stop the database holds but the record does not is said, since a
 // restore would lose it; a lift likewise, since a restore would bring the
-// stop back, with the suspend and the lift that record it.
+// stop back, with the suspend and the lift that record it. So are the
+// lines the append dropped that were no stop's record (counted, never
+// their text): one may have been a stop's line before it was damaged, and
+// a restore would lose that stop, so the operator makes again any open
+// stop the record no longer holds.
 func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, note, record string, out io.Writer) error {
 	r.At = r.At.UTC().Truncate(time.Microsecond)
 	w := &lines{w: out}
@@ -210,8 +214,15 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, no
 		return w.err
 	}
 	err := lockErr
+	var did stopRecordRewrite
 	if err == nil {
-		err = appendHeldTokenStop(held, record, r, time.Now())
+		did, err = appendHeldTokenStop(held, record, r, time.Now())
+	}
+	if err == nil {
+		w.f("recorded in %s", record)
+	}
+	if did.unreadableDropped > 0 {
+		w.f("dropped %d unreadable lines; run tokens list and suspend again any open stop they may have recorded", did.unreadableDropped)
 	}
 	if err != nil {
 		if r.Lift {
@@ -219,7 +230,6 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, no
 		}
 		return fmt.Errorf("tokens: the stop is in the database but not in the record %s (a restore would lose it; record it by running tokens suspend again with the same -note, since a re-stop replaces the note): %w", record, err)
 	}
-	w.f("recorded in %s", record)
 	return w.err
 }
 
@@ -231,18 +241,18 @@ func appendTokenStop(ctx context.Context, path string, r tokenStopRecord, now ti
 		return err
 	}
 	defer f.Close() //nolint:errcheck // closing releases the lock; the rewrite synced what it wrote
-	return appendHeldTokenStop(f, path, r, now)
+	_, err = appendHeldTokenStop(f, path, r, now)
+	return err
 }
 
 // appendHeldTokenStop is appendTokenStop with the record's lock held, on
-// f, the record at path.
-func appendHeldTokenStop(f *os.File, path string, r tokenStopRecord, now time.Time) error {
+// f, the record at path. It reports what the rewrite dropped.
+func appendHeldTokenStop(f *os.File, path string, r tokenStopRecord, now time.Time) (stopRecordRewrite, error) {
 	line, err := json.Marshal(r)
 	if err != nil {
-		return err
+		return stopRecordRewrite{}, err
 	}
-	_, err = rewriteHeldTokenStops(f, path, line, now)
-	return err
+	return rewriteHeldTokenStops(f, path, line, now)
 }
 
 // trimTokenStops is the hourly pass's trim of the record (retainTokens).
@@ -403,13 +413,14 @@ func rewriteHeldTokenStops(f *os.File, path string, add []byte, now time.Time) (
 	if err = os.Rename(tmp.Name(), path); err != nil { //nolint:gosec // G703: the operator names the record
 		return stopRecordRewrite{}, err
 	}
+	// Renamed: what it dropped is gone, so it is reported with any error.
 	d, err := os.Open(dir) //nolint:gosec // G304: the record's own directory
 	if err != nil {
-		return stopRecordRewrite{}, err
+		return did, err
 	}
 	if err = d.Sync(); err != nil {
 		_ = d.Close() //nolint:errcheck // the sync's error is the one to say
-		return stopRecordRewrite{}, err
+		return did, err
 	}
 	return did, d.Close()
 }

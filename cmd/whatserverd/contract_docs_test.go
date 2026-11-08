@@ -234,6 +234,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"token stop record trim failed",
 				"token stop record trimmed",
 				"token stop record has unreadable lines",
+				"token stop record dropped unreadable lines",
 				"no stop record (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would lose it",
 			},
 		} {
@@ -356,6 +357,11 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		codeSays(lifted)
 		says("contract.md", lifted)
 		says("deployment.md", lifted)
+		// What a suspend or a lift says when its write dropped a line that
+		// was no stop's record, N its count.
+		const dropped = " unreadable lines; run tokens list and suspend again any open stop they may have recorded"
+		codeSays(`"dropped %d` + dropped + `"`)
+		says("deployment.md", "dropped N"+dropped)
 		for name, text := range map[string]string{"contract.md": docs["contract.md"], "deployment.md": docs["deployment.md"], "the code": code} {
 			if strings.Contains(text, "first lift's time") {
 				t.Errorf("%s says a line carries the first lift's time", name)

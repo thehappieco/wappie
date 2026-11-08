@@ -134,15 +134,14 @@ func TestTheLeaderLooksUpABadRecordsToken(t *testing.T) {
 	l := w.tokenLeader(w.members, logs, lockKey(t))
 	l.LookupEvery = 20 * time.Millisecond
 	ctx := context.Background()
-	gen := w.generation(t)
 	known, _ := w.token(t, kc.CanRead)
 	unknown := uuid.New()
 	for _, id := range []string{known, unknown.String()} {
 		// As a bad revoked record of a token Wappie holds no selector of
 		// leaves it (store.TestABadRecordsRevocationIsClockDated), come a
 		// day after the token was made.
-		w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until, clock_gen)
-			VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '366 days', true, $2)`, id, gen)
+		w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until)
+			VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '366 days', true)`, id)
 	}
 	run(t, l)
 	w.named(t)
@@ -257,8 +256,8 @@ func TestABadLookupAnswerIsPutOffAndToldOnce(t *testing.T) {
 	l := w.tokenLeader(w.membersOn(client, logs), logs, lockKey(t))
 	l.LookupEvery, l.LookupRetry, l.LookupBadMax = 20*time.Millisecond, 100*time.Millisecond, 400*time.Millisecond
 	for id := range asked {
-		w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until, clock_gen)
-			VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '365 days', true, $2)`, id, gen)
+		w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until)
+			VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '365 days', true)`, id)
 	}
 	var until time.Time
 	if err := w.pool.QueryRow(ctx, `SELECT until FROM contract_token_sticky WHERE token_id = $1`, invalid).Scan(&until); err != nil {
@@ -327,7 +326,6 @@ func TestANotFoundKeepsTheRevocation(t *testing.T) {
 	w := newTokenWorld(t)
 	w.fake.RefuseAlways(contracttest.CallTokens, kc.CodeUnavailable)
 	ctx := context.Background()
-	gen := w.generation(t)
 	var pages atomic.Int64
 	platform, err := url.Parse(w.fake.URL)
 	if err != nil {
@@ -347,8 +345,8 @@ func TestANotFoundKeepsTheRevocation(t *testing.T) {
 	logs := &membershiptest.Logs{}
 	l := w.tokenLeader(w.membersOn(client, logs), logs, lockKey(t))
 	id := uuid.New()
-	w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until, clock_gen)
-		VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '365 days', true, $2)`, id, gen)
+	w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until)
+		VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '365 days', true)`, id)
 	var kept time.Time
 	if err := w.pool.QueryRow(ctx, `SELECT until FROM contract_token_sticky WHERE token_id = $1`, id).Scan(&kept); err != nil {
 		t.Fatal(err)
@@ -395,7 +393,6 @@ func TestTheLookupsRunWithTokensOff(t *testing.T) {
 	w.fake.RefuseAlways(contracttest.CallTokens, kc.CodeUnavailable)
 	ctx := context.Background()
 	w.exec(ctx, t, `UPDATE contract_token_state SET mode = 'off'`)
-	gen := w.generation(t)
 	logs := &membershiptest.Logs{}
 	l := w.tokenLeader(w.members, logs, lockKey(t))
 	l.LookupEvery = 20 * time.Millisecond
@@ -407,8 +404,8 @@ func TestTheLookupsRunWithTokensOff(t *testing.T) {
 	if !ok {
 		t.Fatal("the fake holds no record of the token")
 	}
-	w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until, clock_gen)
-		VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '366 days', true, $2)`, byID, gen)
+	w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until)
+		VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '366 days', true)`, byID)
 	if _, err := w.tokens.StopToken(ctx, rec.Selector, "root", "leak", time.Now()); err != nil {
 		t.Fatal(err)
 	}

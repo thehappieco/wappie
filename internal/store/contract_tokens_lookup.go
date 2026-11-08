@@ -125,7 +125,7 @@ func (t *Tokens) TokenLookupAnswered(ctx context.Context, l TokenLookup, rec kc.
 	seen := []stopSeen{{selector: rec.Selector, token: id, until: rec.CreatedAt.Add(tokenKeep)}}
 	return retryDeadlock(ctx, func() error {
 		return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `UPDATE contract_token_sticky SET until = least(until, $2), clock_until = false, clock_gen = NULL,
+			if _, err := tx.Exec(ctx, `UPDATE contract_token_sticky SET until = least(until, $2), clock_until = false,
 				lookup_after = NULL, lookup_bad = 0 WHERE token_id = $1 AND clock_until`, id, until); err != nil {
 				return err
 			}
