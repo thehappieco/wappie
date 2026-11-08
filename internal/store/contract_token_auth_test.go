@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/access"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
@@ -341,5 +342,76 @@ func TestATokensPauseIsItsCreators(t *testing.T) {
 	})
 	if kind != "key" || sub == nil || *sub != w.OwnerSub || user == nil || *user != w.Owner {
 		t.Fatalf("the event's actor: %s %v %v", kind, sub, user)
+	}
+}
+
+// identityOf is a token's hidden identity.
+func identityOf(t *testing.T, w *tokentest.World, tok *tokentest.Token) uuid.UUID {
+	t.Helper()
+	var identity *uuid.UUID
+	w.Scoped(func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT identity_user_id FROM contract_tokens WHERE id = $1`, tok.ID).Scan(&identity)
+	})
+	if identity == nil {
+		t.Fatal("the token has no identity")
+	}
+	return *identity
+}
+
+// TestATokenIdentityNeverAuthenticates (the plan's 10.4): a token's hidden
+// identity opens no session, a key cannot be issued to act as it, and a key
+// made to act as it anyway authenticates as nothing.
+func TestATokenIdentityNeverAuthenticates(t *testing.T) {
+	w := newAuthWorld(t)
+	ctx := context.Background()
+	tok := w.Token(tokentest.Read(w.Number("Vendas")))
+	identity := identityOf(t, w, tok)
+	if user, err := w.Users.Get(ctx, w.Tenant, identity); err == nil {
+		if _, _, err := w.Users.StartSession(ctx, user, "test"); err == nil {
+			t.Fatal("a token's identity opened a session")
+		}
+	}
+	keys := store.NewAPIKeys(w.Pool)
+	if _, err := keys.IssueActingAs(ctx, w.Tenant.String(), "as the identity", store.ScopeRead, &w.Owner, &identity); err == nil {
+		t.Fatal("a key was issued to act as a token's identity")
+	}
+	key, err := keys.IssueScoped(ctx, w.Tenant.String(), "made to act as it", store.ScopeRead, &w.Owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix, _, _ := strings.Cut(key, ".")
+	w.Exec(`UPDATE api_keys SET acts_as = $2 WHERE prefix = $1`, prefix, identity)
+	c := &access.Checker{Keys: keys, Users: w.Users, Tokens: w.Tokens}
+	if a, err := c.Authenticate(ctx, key); err == nil || a.User == identity {
+		t.Fatalf("a key acting as a token's identity authenticated: %+v %v", a, err)
+	}
+	if a, err := c.Authenticate(ctx, tok.Text); err != nil || a.User != uuid.Nil || a.Token.ID != tok.ID {
+		t.Fatalf("the token: %+v %v", a, err)
+	}
+}
+
+// TestATokenGrantNeverHoldsAKeyForARelink (the relink release): a number
+// whose only key holder at its current epoch is a token's identity, with
+// Read, holds no key for a relink (KeyHeld), so the relink's check answers
+// no_reader.
+func TestATokenGrantNeverHoldsAKeyForARelink(t *testing.T) {
+	w := newAuthWorld(t)
+	ctx := context.Background()
+	device := w.Number("Vendas")
+	w.Rotate(device, 2)
+	tok := w.Token(tokentest.Read(device))
+	held, err := w.Devices.KeyHeld(ctx, w.Tenant, device)
+	if err != nil || !held {
+		t.Fatalf("the owner's key: %v %v", held, err)
+	}
+	// The owner gives up the new epoch's key: only the token's identity
+	// holds it.
+	w.ExecIn(`DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2 AND epoch = 2`, device, w.Owner)
+	v, err := w.Tokens.Allows(ctx, w.Auth(tok), device, store.TokenNeed{Action: store.ActionRead}, store.TokenSwitches{Default: true}, time.Now())
+	if err != nil || !v.OK {
+		t.Fatalf("the token reads the number: %+v %v", v, err)
+	}
+	if held, err := w.Devices.KeyHeld(ctx, w.Tenant, device); err != nil || held {
+		t.Fatalf("a token's grant held the key for a relink: %v %v", held, err)
 	}
 }
