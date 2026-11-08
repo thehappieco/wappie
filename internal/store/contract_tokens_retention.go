@@ -368,9 +368,11 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 // earlier or with a pinned key stays, which is its security record), its
 // usage refusals on a number, and its days of use, which wait for the
 // usage report until then. A token of a workspace whose row is gone
-// (gone) counts as forgotten: it ended with its workspace. Its
-// refusals as a token (presented revoked or expired), which name no item,
-// keep their own rule: 30 days after their day. These rows have no step of
+// (gone) counts as forgotten: it ended with its workspace. Its refusals as
+// a token (presented revoked or expired), which name no item, keep their
+// own rule for now: 30 days after their day. No process counts uses yet
+// (only tests call AddTokenUse). The change that does makes them go here
+// too, as the platform ruled on 2026-11-08. These rows have no step of
 // DB25: they come after the workspace's token rows, perms and removed
 // instances, as the applier writes its queues. It returns how many it
 // deleted or emptied.

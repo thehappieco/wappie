@@ -74,13 +74,15 @@
 --                          record that comes back later never revives the
 --                          token. A bad record's revocation is never dated
 --                          by a time of its own: Wappie's clock + 365 days
---                          (clock_until), until the leader's lookup by id
---                          answers with a valid record; then the token's
---                          own created_at + 365 days. A signed not_found
---                          leaves it to its clock's date: a not_found never
---                          clears a revocation. Its own guard keeps every
---                          member from widening: until only lowers, as a
---                          later valid record's narrows a bad one's.
+--                          (clock_until), until a valid record of the
+--                          token, revoked or not, from the feed or the
+--                          leader's lookup by id, dates it; then the
+--                          token's own created_at + 365 days. A signed
+--                          not_found leaves it to its clock's date until
+--                          then: a not_found never clears a revocation.
+--                          Its own guard keeps every member from widening:
+--                          until only lowers, as a later valid record's
+--                          narrows a bad one's.
 --   contract_token_stops   the operator's stops (and Wappie's own
 --                          apply_failed), keyed by selector, so a stop may
 --                          come before the record. The note stays local.
