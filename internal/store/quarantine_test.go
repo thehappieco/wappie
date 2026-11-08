@@ -797,6 +797,10 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// The members list: which deleted numbers a member is the last key
 		// holder of, for the override's dialog (the plan's 4.12).
 		"memberStrandsTx": true,
+		// The contract's numbers section, which lists a deleted number
+		// until its purge as the snapshot does, and the person's document,
+		// whose deletion notices find their number (step 12a).
+		"Contract.NumbersOf": true, "Contract.PersonOf": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string
