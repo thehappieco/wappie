@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow"
 
+	"whatserver2/internal/access"
 	"whatserver2/internal/aiapi"
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/blob"
@@ -232,6 +233,10 @@ type app struct {
 	// the one process of the database that holds the contract's lock; nil
 	// unless a transport is configured.
 	leader *membership.Leader
+	// checker authenticates and authorizes every request of REST, media,
+	// upload and the socket, platform tokens included: their switches,
+	// failure limits, usage counters and NOTIFY watch are its own.
+	checker *access.Checker
 }
 
 // setup opens every dependency and runs migrations. The returned close
@@ -311,6 +316,19 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	// configuration: the socket's acts ask it from the first frame
 	// (startContract gives it its transport).
 	a.members = &membership.Members{Contract: store.NewContract(pools.API), Tokens: store.NewTokens(pools.API), Log: lg}
+	// One checker for every transport. Platform tokens read the
+	// workspaces' own text and attachments switches in SQL, beneath the
+	// operator's default and deny list, whether or not the connector is on:
+	// nothing is loaded for them, so nothing can fail to load.
+	tokens := store.NewTokens(pools.API)
+	a.checker = &access.Checker{
+		Keys: a.apiKeys, Users: a.users, Tokens: tokens,
+		Switches: store.TokenSwitches{Default: cfg.MCP.WorkspaceDefault, Deny: cfg.MCP.DenyTenants},
+		Use:      &access.TokenUse{Store: tokens, Log: lg},
+		Limits:   access.NewTokenLimits(cfg.TrustedProxies, lg),
+		Watch:    access.NewTokenWatch(),
+		Log:      lg,
+	}
 	if cfg.Deletion.Ledger != "" {
 		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}
@@ -557,7 +575,7 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		Groups:   a.groups,
 		Registry: registry, Bus: a.bus, Router: router, Metrics: a.metrics,
 		Blob: a.blob, Pool: pools.API,
-		Limits: a.limits, Log: lg,
+		Limits: a.limits, Log: lg, Access: a.checker,
 		// Wired whether or not the connector is mounted: a key a
 		// connection held never sends or manages here, and a draft is
 		// confirmed only while the switches allow it.
@@ -659,6 +677,13 @@ func serve() error {
 	// A deletion in any process tells this one at its commit, so it lets go
 	// of the number before the next tick.
 	go a.listenExcluded(ctx)
+	// A token's narrowing in any process wakes this one's token sockets and
+	// streams at its commit; their one-second checks are the bound.
+	go a.listenTokens(ctx)
+	// The token usage counts go to the database every ten seconds.
+	if a.checker != nil {
+		go a.checker.Use.Run(ctx)
+	}
 
 	// The attachment queue lives in the database, so this starts whether or
 	// not anything is waiting and picks up whatever a previous process left.
@@ -799,6 +824,12 @@ func serve() error {
 	}()
 	wg.Wait()
 
+	// What the token counters hold goes before the process does.
+	flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	if err := a.checkerUse().Flush(flushCtx); err != nil {
+		a.log.Warn("could not add the last token usage counts", "error", err)
+	}
+	flushCancel()
 	if shutdownErr != nil {
 		a.log.Error("graceful shutdown timed out", "error", shutdownErr)
 		return shutdownErr
@@ -914,7 +945,7 @@ func (a *app) routes() http.Handler {
 	a.authHandler().Mount(mux)
 	(&restapi.Handler{
 		APIKeys: a.apiKeys, Users: a.users, Keys: a.keys, Devices: a.devices,
-		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log,
+		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log, Access: a.checker,
 		Running: func(deviceID string) bool {
 			device, ok := a.registry.Get(deviceID)
 			return ok && device.Client().IsConnected()
@@ -1026,11 +1057,11 @@ func (a *app) routes() http.Handler {
 	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.switches.Media, a.switches.AI)
 	mux.Handle("GET /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
-		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
+		Media: a.media, Blob: a.blob, Gate: mediaGate, Access: a.checker, Log: a.log,
 	})
 	mux.Handle("HEAD /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
-		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
+		Media: a.media, Blob: a.blob, Gate: mediaGate, Access: a.checker, Log: a.log,
 	})
 
 	// Sending an attachment is two steps: the bytes come here, and the message
@@ -1050,6 +1081,7 @@ func (a *app) routes() http.Handler {
 			return dev.Client(), nil
 		},
 		MaxBytes: a.cfg.Storage.MaxMediaBytes,
+		Access:   a.checker,
 		Log:      a.log,
 	})
 
