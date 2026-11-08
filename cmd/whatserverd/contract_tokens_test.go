@@ -1086,6 +1086,58 @@ func TestATokenStopSaysTheDamagedLinesItDropped(t *testing.T) {
 	}
 }
 
+// A write that fails after its rename (the directory's sync) put the line
+// in the record: the suspend or lift says it is recorded, that a crash of
+// the host could lose it, and what it dropped, never that the record
+// lacks it.
+func TestATokenStopWhoseDirectoryIsNotSyncedSaysItIsRecorded(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	tokens := store.NewTokens(pool)
+	record := filepath.Join(t.TempDir(), "token-stops.jsonl")
+	const sel = "0123456789abcdef"
+	const said = "dropped 1 unreadable lines; run tokens list and suspend again any open stop they may have recorded"
+	was := syncStopRecordDir
+	t.Cleanup(func() { syncStopRecordDir = was })
+	syncStopRecordDir = func(*os.File) error { return errors.New("the disk is gone") }
+	now := time.Now().UTC()
+	for _, c := range []struct {
+		r    tokenStopRecord
+		says string
+	}{
+		{tokenStopRecord{Selector: sel, At: now}, "tokens: the stop is recorded in " + record + ", but a crash of the host could lose its line, and a restore would then lose the stop (record it again by running tokens suspend again with the same -note)"},
+		{tokenStopRecord{Selector: sel, At: now.Add(time.Second), Lift: true}, "tokens: the lift is recorded in " + record + ", but a crash of the host could lose its line, and a restore would then bring the stop back (record it again with tokens suspend with the same -note, then tokens lift)"},
+	} {
+		before, err := os.ReadFile(record)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(record, append([]byte("torn\n"), before...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		err = changeTokenStop(ctx, tokens, c.r, "", record, &out)
+		if err == nil || !strings.Contains(err.Error(), c.says) || !strings.Contains(err.Error(), "the record's directory may not be synced: the disk is gone") ||
+			strings.Contains(err.Error(), "not in the record") {
+			t.Fatalf("lift %v: %v", c.r.Lift, err)
+		}
+		if !strings.Contains(out.String(), said) || strings.Contains(out.String(), "recorded in") {
+			t.Fatalf("lift %v: %q", c.r.Lift, out.String())
+		}
+		got, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, err := json.Marshal(tokenStopRecord{Selector: sel, At: c.r.At.Truncate(time.Microsecond), Lift: c.r.Lift})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(string(got), string(line)+"\n") || strings.Contains(string(got), "torn") {
+			t.Fatalf("lift %v: the record is %q, want it to end with %s", c.r.Lift, got, line)
+		}
+	}
+}
+
 // Appends and trims at once lose no line: each rewrite holds the record's
 // lock, and one that waited locks the file another renamed in. Every
 // rewrite here replaces the file: one append adds lines 365 days old,

@@ -357,6 +357,12 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		codeSays(lifted)
 		says("contract.md", lifted)
 		says("deployment.md", lifted)
+		// What a suspend or a lift says when its write failed after the
+		// rename: the line is in the record, its directory maybe not synced.
+		for _, recorded := range []string{"the stop is recorded in", "the lift is recorded in", "but a crash of the host could lose its line"} {
+			codeSays(recorded)
+			says("deployment.md", recorded)
+		}
 		// What a suspend or a lift says when its write dropped a line that
 		// was no stop's record, N its count.
 		const dropped = " unreadable lines; run tokens list and suspend again any open stop they may have recorded"

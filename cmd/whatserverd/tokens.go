@@ -168,7 +168,10 @@ var tokenStopLockWait = 5 * time.Second
 // lines the append dropped that were no stop's record (counted, never
 // their text): one may have been a stop's line before it was damaged, and
 // a restore would lose that stop, so the operator makes again any open
-// stop the record no longer holds.
+// stop the record no longer holds. A write that failed after its rename
+// put the line in the record, but its directory may not be synced, so a
+// crash of the host could lose the line: said as such, with how to record
+// it again.
 func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, note, record string, out io.Writer) error {
 	r.At = r.At.UTC().Truncate(time.Microsecond)
 	w := &lines{w: out}
@@ -223,6 +226,12 @@ func changeTokenStop(ctx context.Context, t *store.Tokens, r tokenStopRecord, no
 	}
 	if did.unreadableDropped > 0 {
 		w.f("dropped %d unreadable lines; run tokens list and suspend again any open stop they may have recorded", did.unreadableDropped)
+	}
+	if errors.Is(err, errStopRecordUnsynced) {
+		if r.Lift {
+			return fmt.Errorf("tokens: the lift is recorded in %s, but a crash of the host could lose its line, and a restore would then bring the stop back (record it again with tokens suspend with the same -note, then tokens lift): %w", record, err)
+		}
+		return fmt.Errorf("tokens: the stop is recorded in %s, but a crash of the host could lose its line, and a restore would then lose the stop (record it again by running tokens suspend again with the same -note): %w", record, err)
 	}
 	if err != nil {
 		if r.Lift {
@@ -290,6 +299,14 @@ func trimTokenStops(ctx context.Context, path string, now time.Time) (stopRecord
 	return rewriteHeldTokenStops(f, path, nil, now)
 }
 
+// errStopRecordUnsynced marks a rewrite that failed after its rename: the
+// new record is in place, but its directory may not be synced.
+var errStopRecordUnsynced = errors.New("the record's directory may not be synced")
+
+// syncStopRecordDir syncs the record's directory after the rename. A test
+// makes it fail.
+var syncStopRecordDir = (*os.File).Sync
+
 // stopRecordRewrite is what a rewrite of the stop record did: the lines
 // it dropped, of which unreadableDropped were no stop's record (blank ones
 // uncounted), and those it kept as they are, being no stop's record.
@@ -318,7 +335,8 @@ type stopRecordLine struct {
 // record's directory, with its mode and owner, synced and renamed over it,
 // the directory synced: two rewrites at once never lose a line. A
 // temporary copy a rewrite killed before its rename left goes too. Without
-// add, an unchanged record is not written.
+// add, an unchanged record is not written. An error after the rename wraps
+// errStopRecordUnsynced.
 func rewriteHeldTokenStops(f *os.File, path string, add []byte, now time.Time) (did stopRecordRewrite, err error) {
 	old, err := io.ReadAll(f)
 	if err != nil {
@@ -416,13 +434,14 @@ func rewriteHeldTokenStops(f *os.File, path string, add []byte, now time.Time) (
 	// Renamed: what it dropped is gone, so it is reported with any error.
 	d, err := os.Open(dir) //nolint:gosec // G304: the record's own directory
 	if err != nil {
-		return did, err
+		return did, fmt.Errorf("%w: %w", errStopRecordUnsynced, err)
 	}
-	if err = d.Sync(); err != nil {
+	if err = syncStopRecordDir(d); err != nil {
 		_ = d.Close() //nolint:errcheck // the sync's error is the one to say
-		return did, err
+		return did, fmt.Errorf("%w: %w", errStopRecordUnsynced, err)
 	}
-	return did, d.Close()
+	_ = d.Close() //nolint:errcheck // synced: a read-only directory's close loses nothing
+	return did, nil
 }
 
 // removeStaleStopTemps removes the record's temporary copies in dir (named
