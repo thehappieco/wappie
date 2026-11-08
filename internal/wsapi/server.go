@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"whatserver2/internal/access"
 	"whatserver2/internal/blob"
 	"whatserver2/internal/browserorigin"
 	"whatserver2/internal/bus"
@@ -117,6 +118,10 @@ type Config struct {
 	// Relink links a logged-out number again (the pair frame's relink
 	// branch, relink.go). Nil answers that branch internal.
 	Relink *relink.Service
+	// Access authorizes every act on a number, and authenticates platform
+	// tokens; its Keys and Users are this config's own (Keys, and Sessions
+	// or Accounts by who is asking). Nil refuses every platform token.
+	Access *access.Checker
 
 	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
 	// once access is known and before the bus registers the subscription,

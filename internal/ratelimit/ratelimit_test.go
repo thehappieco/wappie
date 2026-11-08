@@ -310,3 +310,44 @@ func TestWorkspaceSwitchesHaveTheirOwnBudget(t *testing.T) {
 		t.Fatal("another address was refused because of the first")
 	}
 }
+
+// TestPeekSpendsNothingAndSpendCounts: Peek never spends nor makes a
+// bucket, and Spend spends what Allow would, leaving an empty bucket empty.
+func TestPeekSpendsNothingAndSpendCounts(t *testing.T) {
+	l := New(60, 2)
+	now := time.Unix(1_700_000_000, 0)
+	l.now = func() time.Time { return now }
+	for range 10 {
+		if !l.Peek("a") {
+			t.Fatal("a key never spent is not full")
+		}
+	}
+	if len(l.buckets) != 0 {
+		t.Fatalf("Peek made %d buckets", len(l.buckets))
+	}
+	if !l.Spend("a") || !l.Spend("a") {
+		t.Fatal("the burst was not spent")
+	}
+	if l.Peek("a") || l.Spend("a") {
+		t.Fatal("an empty bucket still has a token")
+	}
+	now = now.Add(time.Second)
+	if !l.Peek("a") || !l.Peek("a") {
+		t.Fatal("a second later Peek does not see the token back, or spent it")
+	}
+	if !l.Spend("a") || l.Peek("a") {
+		t.Fatal("Spend did not take the one token back")
+	}
+}
+
+// TestTokenFailuresAreDefaultAuthsNumbers: the address budget of token
+// failures is DefaultAuth's, apart from it.
+func TestTokenFailuresAreDefaultAuthsNumbers(t *testing.T) {
+	a, d := TokenFailures(nil), DefaultAuth(nil)
+	if a.PerIP == d.PerIP || a.PerIP.rate != d.PerIP.rate || a.PerIP.burst != d.PerIP.burst {
+		t.Fatal("the address budget of token failures is not DefaultAuth's numbers, apart")
+	}
+	if a.PerSubject.rate != float64(5)/60 || a.PerSubject.burst != 5 {
+		t.Fatal("the selector's budget is not five a minute")
+	}
+}

@@ -37,7 +37,18 @@ type Handler struct {
 	// Gate is asked about every API key before the attachment is looked
 	// up; nil lets every key through to the usual checks.
 	Gate MediaGate
-	Log  *slog.Logger
+	// Access authenticates and authorizes every request; nil is a Checker
+	// of Keys and Sessions alone, which refuses every platform token.
+	Access *access.Checker
+	Log    *slog.Logger
+}
+
+// checker is the Checker every request goes through.
+func (h *Handler) checker() *access.Checker {
+	if h.Access != nil {
+		return h.Access
+	}
+	return &access.Checker{Keys: h.Keys, Users: h.Sessions, Log: h.Log}
 }
 
 // BlobReader is the read half of object storage.
@@ -60,7 +71,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log = slog.Default()
 	}
 
-	actor, ok := authenticateActor(r, h.Keys, h.Sessions)
+	actor, ok := authenticateActor(r, h.checker())
 	tenant := actor.Tenant
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="whatserver2"`)
@@ -103,7 +114,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	allowed, err := access.Allows(r.Context(), actor, ref.DeviceID, store.ActionRead, h.Keys, h.Sessions)
+	allowed, err := h.checker().Allows(r.Context(), actor, ref.DeviceID, store.ActionRead)
 	if err != nil || !allowed {
 		http.Error(w, "no such attachment", http.StatusNotFound)
 		return
@@ -162,11 +173,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authenticateActor retains the principal so HTTP checks the same device
 // permissions as WebSocket, including service accounts and key restrictions.
-func authenticateActor(r *http.Request, keys *store.APIKeys, users *store.Users) (access.Actor, bool) {
+func authenticateActor(r *http.Request, checker *access.Checker) (access.Actor, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		return access.Actor{}, false
 	}
-	actor, err := access.Authenticate(r.Context(), token, keys, users)
+	actor, err := checker.Authenticate(r.Context(), token)
 	return actor, err == nil
 }

@@ -57,7 +57,18 @@ type UploadHandler struct {
 	// whatsmeow encrypts as it streams, so the file on disk is already
 	// unreadable.
 	TempDir string
-	Log     *slog.Logger
+	// Access authenticates and authorizes every request; nil is a Checker
+	// of Keys and Sessions alone, which refuses every platform token.
+	Access *access.Checker
+	Log    *slog.Logger
+}
+
+// checker is the Checker every request goes through.
+func (h *UploadHandler) checker() *access.Checker {
+	if h.Access != nil {
+		return h.Access
+	}
+	return &access.Checker{Keys: h.Keys, Users: h.Sessions, Log: h.Log}
 }
 
 // UploadResult is what the caller needs in order to send the attachment.
@@ -88,7 +99,7 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log = slog.Default()
 	}
 
-	actor, ok := authenticateActor(r, h.Keys, h.Sessions)
+	actor, ok := authenticateActor(r, h.checker())
 	tenant := actor.Tenant
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="whatserver2"`)
@@ -119,7 +130,7 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such device", http.StatusNotFound)
 		return
 	}
-	allowed, err := access.Allows(r.Context(), actor, uuid.MustParse(dev.ID), store.ActionSend, h.Keys, h.Sessions)
+	allowed, err := h.checker().Allows(r.Context(), actor, uuid.MustParse(dev.ID), store.ActionSend)
 	if err != nil || !allowed {
 		http.Error(w, "this credential cannot send on this number", http.StatusForbidden)
 		return

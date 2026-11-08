@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"whatserver2/internal/access"
 	"whatserver2/internal/membership"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -641,19 +640,19 @@ func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 					}
 				}
 			}
-			allowed, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionManage, s.srv.cfg.Keys, s.accountStore())
+			allowed, err := s.checker().Probe(ctx, who.accessActor(tenant), device, store.ActionManage)
 			if err != nil {
 				s.log.Warn("could not load device management permission", "device", d.ID, "error", err)
 			} else {
 				info.CanManage = allowed
 			}
-			allowed, err = access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionPause, s.srv.cfg.Keys, s.accountStore())
+			allowed, err = s.checker().Probe(ctx, who.accessActor(tenant), device, store.ActionPause)
 			if err != nil {
 				s.log.Warn("could not load the device pause permission", "device", d.ID, "error", err)
 			} else {
 				info.CanPause = allowed
 			}
-			allowed, err = access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionSend, s.srv.cfg.Keys, s.accountStore())
+			allowed, err = s.checker().Probe(ctx, who.accessActor(tenant), device, store.ActionSend)
 			if err == nil {
 				info.CanSend = allowed
 			}

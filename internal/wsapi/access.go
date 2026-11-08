@@ -98,7 +98,7 @@ func (s *session) actionDevices(ctx context.Context, action store.DeviceAction) 
 		if err != nil {
 			return nil, err
 		}
-		has, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, id, action, s.srv.cfg.Keys, s.accountStore())
+		has, err := s.checker().Probe(ctx, who.accessActor(tenant), id, action)
 		if err != nil {
 			return nil, err
 		}
@@ -107,6 +107,23 @@ func (s *session) actionDevices(ctx context.Context, action store.DeviceAction) 
 		}
 	}
 	return allowed, nil
+}
+
+// checker is the server's Checker with this session's stores: the API
+// keys, and the accounts of a person's sessions or of a key's service
+// account.
+func (s *session) checker() *access.Checker {
+	var c access.Checker
+	if s.srv.cfg.Access != nil {
+		c = *s.srv.cfg.Access
+	}
+	c.Keys, c.Users = s.srv.cfg.Keys, s.accountStore()
+	return &c
+}
+
+// accessActor is who as the access package names it.
+func (a actor) accessActor(tenant uuid.UUID) access.Actor {
+	return access.Actor{Tenant: tenant, User: a.userID, Key: a.keyID, Scope: a.scope, Role: a.role}
 }
 
 func (s *session) accountStore() *store.Users {
@@ -144,7 +161,7 @@ func (s *session) authorizeDevice(ctx context.Context, f Frame, device uuid.UUID
 		s.replyError(f.ReqID, ErrCodeInternal, "invalid workspace")
 		return false
 	}
-	allowed, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, action, s.srv.cfg.Keys, s.accountStore())
+	allowed, err := s.checker().Allows(ctx, who.accessActor(tenant), device, action)
 	if err != nil {
 		s.replyError(f.ReqID, ErrCodeInternal, "could not check device permissions")
 		return false
