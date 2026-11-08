@@ -144,15 +144,15 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	}
 	// The token part's: tokens past their expiry by Wappie's clock end, an
 	// ended token's content goes after 30 days (or at its until, if that
-	// comes first), and with it its items in the queues and the usage rows;
-	// its selector, sticky row, pin, stops, queue entries and usage rows at
-	// created_at + 365 days, a stop of a selector Wappie never held 365
-	// days after it was made (or at its valid record's created_at + 365
-	// days), the usage rows 2 days after they were reported (30 after their
-	// day at most) and the queues' entries 30 days after they were sent;
-	// then the stop record's lines 365 days old, and the unreadable lines
-	// beside them. With tokens never on, its tables are empty and this
-	// finds nothing.
+	// comes first), and with it its items in the queues, its usage
+	// refusals on a number and its days of use; its selector, sticky row,
+	// pin, stops, queue entries and usage rows at created_at + 365 days, a
+	// stop of a selector Wappie never held 365 days after it was made (or
+	// at its valid record's created_at + 365 days), the usage rows 2 days
+	// after they were reported (a refusal count 30 after its day at most)
+	// and the queues' entries 30 days after they were sent; then the stop
+	// record's lines 365 days old, and the unreadable lines beside them.
+	// With tokens never on, its tables are empty and this finds nothing.
 	a.retainTokens(ctx, time.Now())
 
 	// Every workspace, whatever its status: a closed team's and a suspended

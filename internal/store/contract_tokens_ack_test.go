@@ -353,11 +353,16 @@ func TestTokenUseDaysAreUTC(t *testing.T) {
 	})
 	tokens := store.NewTokens(pool)
 	ctx := context.Background()
-	token := uuid.New()
+	token, workspace := uuid.New(), uuid.New()
 	// Its selector, which Wappie keeps a year on: usage rows are written
-	// only for a token whose secret matched it.
+	// only for a token whose secret matched it. Its workspace is there: a
+	// token of a workspace whose row is gone loses its days of use at the
+	// next pass.
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ($1, 'Acme')`, workspace); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
-		VALUES ('0123456789abcdef', $1, gen_random_uuid(), decode(repeat('00', 32), 'hex'), clock_timestamp() + interval '365 days')`, token); err != nil {
+		VALUES ('0123456789abcdef', $1, $2, decode(repeat('00', 32), 'hex'), clock_timestamp() + interval '365 days')`, token, workspace); err != nil {
 		t.Fatal(err)
 	}
 	use := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)

@@ -240,7 +240,8 @@ func (c *Client) Tokens(ctx context.Context, after int64, wait int) (kc.TokenFee
 // is refused before any request (contract.ErrInvalid). A token unknown, one
 // that never named Wappie, or one past its created_at + 365 days, is a
 // signed not_found, which clears nothing but the revocation a bad record of
-// it brought in the same generation (the lookups, store.TokenLookupNotFound).
+// it brought in the same generation, once the platform places itself in
+// that generation after it (the lookups, store.TokenLookupNotFound).
 //
 // The answer carries no time of its own: the caller stamps the time it
 // sent the request, taken before it calls, so a retry only makes that

@@ -26,6 +26,15 @@ import (
 // leader's pace, and no transaction is open during it. The lookups by
 // selector are an operator's stops, never a client's token, so they need
 // no limit per client address (the design's 3.4); each is asked once.
+//
+// A not_found by id lets a revocation go, so the leader takes it only in
+// the generation its bad record came in, and only once the platform says
+// it is still in that generation after the not_found: a signed page of the
+// account feed asked after it (generationNow). Wappie's own generation is
+// not enough: a freshly restored platform answers not_found for a token it
+// never named to Wappie, and Wappie's feeds may not have seen its new
+// generation yet (the account feed backs off up to a minute, and the
+// token feed may be off).
 
 // The lookups' defaults.
 const (
@@ -121,10 +130,14 @@ const (
 
 // lookUpOne asks the platform one lookup and writes what it answered, on
 // Wappie's clock after the answer: a good record dates what was asked of; a
-// signed not_found lets a bad record's revocation go, or settles a stop
-// undated; a signed answer whose record Wappie cannot use puts it off,
-// longer each time, and its first logs an ERROR; anything else (no answer,
-// an unsigned one, any other refusal) puts it off LookupRetry.
+// signed not_found lets a bad record's revocation go once the platform
+// places it in the record's generation (else settles it, or puts it off
+// when the platform does not say), or settles a stop undated; an answer
+// the kit or the store refuses for anything but its signature (a record
+// that is not valid, another app's or another token's, a body that does
+// not decode, or one too large to check) puts it off, longer each time,
+// and its first logs an ERROR; anything else (no answer, one whose
+// signature fails, any other refusal) puts it off LookupRetry.
 func (l *Leader) lookUpOne(ctx context.Context, run *lookupRun, lk store.TokenLookup) int {
 	m := l.Members
 	retry, most := or(l.LookupRetry, lookupRetry), or(l.LookupBadMax, lookupBadMax)
@@ -156,21 +169,32 @@ func (l *Leader) lookUpOne(ctx context.Context, run *lookupRun, lk store.TokenLo
 			return lookupStuck
 		}
 	case RefusalCode(err) == kc.CodeNotFound:
-		if _, err := m.Tokens.TokenLookupNotFound(ctx, lk); err != nil {
-			l.lookupNotRecorded(ctx, err)
+		gen := ""
+		if lk.ByID() {
+			gen, err = l.generationNow(ctx)
+			if ctx.Err() != nil {
+				return 0
+			}
+		}
+		took, werr := m.Tokens.TokenLookupNotFound(ctx, lk, gen)
+		if werr != nil {
+			l.lookupNotRecorded(ctx, werr)
 			return lookupStuck
 		}
-		l.lookupsAnswer(run)
-		return lookupUnknown
-	case errors.Is(err, kc.ErrUnverified) && errors.Is(err, kc.ErrInvalid):
-		// Signed, but its record is not valid.
+		if took != store.NotFoundUnconfirmed {
+			l.lookupsAnswer(run)
+			return lookupUnknown
+		}
+		// The platform did not say its generation: asked again later, as
+		// a lookup with no answer.
+		l.noAnswer(run, "contract: a token lookup's not_found waits for the platform's generation", kind, err)
+	case errors.Is(err, kc.ErrUnverified) && !unsigned(err):
+		// Refused for anything but its signature: a record that is not
+		// valid, another app's or another token's, a body that does not
+		// decode, or one too large to check.
 		bad = true
 	default:
-		run.failing = true
-		if time.Since(run.warned) >= warnEvery {
-			run.warned = time.Now()
-			l.log().Warn("contract: a token lookup got no answer", append([]any{"kind", kind}, callAttrs(err)...)...)
-		}
+		l.noAnswer(run, "contract: a token lookup got no answer", kind, err)
 	}
 	n, err := m.Tokens.TokenLookupFailed(ctx, lk, now, bad, retry, most)
 	if err != nil {
@@ -190,6 +214,51 @@ func (l *Leader) lookUpOne(ctx context.Context, run *lookupRun, lk store.TokenLo
 		}
 	}
 	return lookupFailed
+}
+
+// unsigned reports whether the kit refused an answer for its signature: a
+// header missing or stale, another request's nonce, or a signature none of
+// Wappie's secrets made. As far as Wappie can tell, the platform did not
+// answer.
+func unsigned(err error) bool {
+	return errors.Is(err, kc.ErrMissing) || errors.Is(err, kc.ErrStale) ||
+		errors.Is(err, kc.ErrBad) || errors.Is(err, kc.ErrAnswerNonce)
+}
+
+// generationNow asks the platform its generation after a not_found by id,
+// on a turn of the pace: a signed page of the account feed
+// (GET /contract/v1/feed, wait 0, from Wappie's cursor), which the
+// platform answers in its generation of the moment, after the not_found.
+// The page is not stored: the follower reads it again. "" with a nil error
+// when Wappie holds no generation: nothing can be confirmed.
+func (l *Leader) generationNow(ctx context.Context) (string, error) {
+	m := l.Members
+	state, err := m.Contract.State(ctx)
+	if err != nil || state.Generation == nil {
+		return "", err
+	}
+	if err := m.paced(ctx); err != nil {
+		return "", err
+	}
+	f, err := m.Client.Feed(ctx, state.FeedCursor, 0)
+	if err != nil {
+		return "", err
+	}
+	return f.Generation, nil
+}
+
+// noAnswer marks a run of lookups with no answer and logs msg at most once
+// a warnEvery.
+func (l *Leader) noAnswer(run *lookupRun, msg, kind string, err error) {
+	run.failing = true
+	if time.Since(run.warned) >= warnEvery {
+		run.warned = time.Now()
+		attrs := []any{"kind", kind}
+		if err != nil {
+			attrs = append(attrs, callAttrs(err)...)
+		}
+		l.log().Warn(msg, attrs...)
+	}
 }
 
 // lookupsAnswer ends a run of lookups with no answer, said once.

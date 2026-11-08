@@ -130,12 +130,12 @@
 --                          Wappie holds no selector of, sent or not, 30
 --                          days after the earlier of its queuing and the
 --                          end its sticky row keeps; and, at the pass that
---                          forgets a token (30 days after its end, or a
---                          reset's pass that unlists it, or its
---                          workspace's row gone) and every pass after,
---                          sent or not, its refusals and its held entries'
---                          removed items, and a held entry that then says
---                          nothing.
+--                          forgets a token (retention's, 30 days after its
+--                          end or with its workspace's row gone, or a
+--                          reset's pass that unlists it) and every
+--                          retention pass after, sent or not, its refusals
+--                          and its held entries' removed items, and a held
+--                          entry that then says nothing.
 --   contract_token_used, contract_token_refusals
 --                          the usage counters: one row per token and UTC
 --                          day it was accepted, and per (token, day,
@@ -145,9 +145,11 @@
 --                          whose selector Wappie keeps (its secret
 --                          matched); deleted once reported, at the start of
 --                          the second UTC day after their day; reported or
---                          not, 30 days after their day, with the token's
---                          selector, and a refusal on a number with the
---                          token's forget.
+--                          not, a refusal 30 days after its day, a refusal
+--                          on a number and a day of use with the token's
+--                          forget (the platform keeps the last day of use
+--                          with its token), and any with the token's
+--                          selector.
 --   key_retirements        the operator's record of tokens retire-keys:
 --                          counts and key prefixes.
 --   users.token_identity   the hidden identity a live token's grants are

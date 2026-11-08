@@ -1,12 +1,15 @@
 package membership
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,7 +127,8 @@ func TestTheLeaderLooksUpUndatedStops(t *testing.T) {
 // F3: a bad record's revocation of a token Wappie holds no selector of,
 // dated by Wappie's clock, is looked up by id: a token the platform knows
 // takes its own created_at + 365 days; one it answers not_found for, in
-// the generation the record came in, goes at once.
+// the generation the record came in (as the account feed's page after it
+// says), goes at once.
 func TestTheLeaderLooksUpABadRecordsToken(t *testing.T) {
 	w := newTokenWorld(t)
 	w.fake.RefuseAlways(contracttest.CallTokens, kc.CodeUnavailable)
@@ -176,18 +180,28 @@ func TestTheLeaderLooksUpABadRecordsToken(t *testing.T) {
 	}
 }
 
-// A signed answer whose record Wappie cannot use (one that fails
-// Validate, which the kit refuses as unverified and invalid, and one whose
-// reading key's fingerprint is not its key's, which the store refuses) is
-// put off longer each time, from LookupRetry doubled to LookupBadMax, and
-// its first logs one ERROR, recorded for contract status --check. The
-// revocation keeps Wappie's clock's date.
+// An answer whose record Wappie cannot use, which the kit or the store
+// refuses for anything but its signature (one that fails Validate, which
+// the kit refuses as unverified and invalid; a valid record of another
+// token, or of another app, and a body that does not decode, which the kit
+// refuses as unverified alone; one whose reading key's fingerprint is not
+// its key's, which the store refuses), is put off longer each time, from
+// LookupRetry doubled to LookupBadMax, and its first logs one ERROR,
+// recorded for contract status --check. The revocation keeps Wappie's
+// clock's date. An answer whose signature fails is no answer: put off
+// LookupRetry, with no ERROR.
 func TestABadLookupAnswerIsPutOffAndToldOnce(t *testing.T) {
 	w := newTokenWorld(t)
 	w.fake.RefuseAlways(contracttest.CallTokens, kc.CodeUnavailable)
 	ctx := context.Background()
 	gen := w.generation(t)
-	invalid, badKey := uuid.New(), uuid.New()
+	invalid, badKey, otherToken, otherApp, garbled, unsignedAnswer := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	bad := map[string]uuid.UUID{"an invalid record": invalid, "another key's fingerprint": badKey,
+		"another token's record": otherToken, "another app's record": otherApp, "a body that does not decode": garbled}
+	asked := map[string]bool{unsignedAnswer.String(): true}
+	for _, id := range bad {
+		asked[id.String()] = true
+	}
 	var calls sync.Map
 	platform, err := url.Parse(w.fake.URL)
 	if err != nil {
@@ -195,7 +209,7 @@ func TestABadLookupAnswerIsPutOffAndToldOnce(t *testing.T) {
 	}
 	client := clientOn(func(r *http.Request) (*http.Response, error) {
 		id, ok := strings.CutPrefix(r.URL.Path, "/contract/v1/tokens/")
-		if !ok || (id != invalid.String() && id != badKey.String()) {
+		if !ok || !asked[id] {
 			out := r.Clone(r.Context())
 			out.URL.Scheme, out.URL.Host, out.Host = platform.Scheme, platform.Host, platform.Host
 			return http.DefaultTransport.RoundTrip(out)
@@ -203,9 +217,10 @@ func TestABadLookupAnswerIsPutOffAndToldOnce(t *testing.T) {
 		n, _ := calls.LoadOrStore(id, new(atomic.Int64))
 		n.(*atomic.Int64).Add(1)
 		rec := w.tokenRecord(gen, uuid.MustParse(id), 1)
-		if id == invalid.String() {
+		switch id {
+		case invalid.String():
 			rec.Hash = "not a hash"
-		} else {
+		case badKey.String():
 			key := make([]byte, 32)
 			key[0] = 9
 			rec.ReadingKey = &kc.ReadingKey{Suite: kc.ReadingKeySuite, Key: base64.RawURLEncoding.EncodeToString(key),
@@ -214,10 +229,20 @@ func TestABadLookupAnswerIsPutOffAndToldOnce(t *testing.T) {
 				t.Errorf("the record of another key's fingerprint: valid %v, its check %v; want valid, the check failing",
 					rec.Validate(), rec.ReadingKey.Check())
 			}
+		case otherToken.String():
+			rec = w.tokenRecord(gen, uuid.New(), 1)
+		case otherApp.String():
+			rec.App = "mailie"
 		}
 		body, err := json.Marshal(rec)
 		if err != nil {
 			return nil, err
+		}
+		switch id {
+		case garbled.String():
+			body = []byte(`[]`)
+		case unsignedAnswer.String():
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
 		}
 		return signedAnswer(r, w.secret, http.StatusOK, body, time.Now()), nil
 	}, nil)
@@ -227,7 +252,7 @@ func TestABadLookupAnswerIsPutOffAndToldOnce(t *testing.T) {
 	logs := &membershiptest.Logs{}
 	l := w.tokenLeader(w.membersOn(client, logs), logs, lockKey(t))
 	l.LookupEvery, l.LookupRetry, l.LookupBadMax = 20*time.Millisecond, 100*time.Millisecond, 400*time.Millisecond
-	for _, id := range []uuid.UUID{invalid, badKey} {
+	for id := range asked {
 		w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until, clock_gen)
 			VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '365 days', true, $2)`, id, gen)
 	}
@@ -243,27 +268,198 @@ func TestABadLookupAnswerIsPutOffAndToldOnce(t *testing.T) {
 		return n.(*atomic.Int64).Load()
 	}
 	run(t, l)
-	eventually(t, 10*time.Second, "both looked up", func() bool { return count(invalid) > 0 && count(badKey) > 0 })
+	eventually(t, 10*time.Second, "all looked up", func() bool {
+		for id := range asked {
+			if count(uuid.MustParse(id)) == 0 {
+				return false
+			}
+		}
+		return true
+	})
 	time.Sleep(2 * time.Second)
 	// At 0, 100, 300, 700, 1100, 1500 and 1900 ms: 7 or so, where a
 	// lookup put off by LookupRetry alone would be asked 20 times.
-	for name, id := range map[string]uuid.UUID{"an invalid record": invalid, "another key's fingerprint": badKey} {
+	for name, id := range bad {
 		if n := count(id); n < 3 || n > 11 {
 			t.Errorf("%s: %d GETs in about 2 seconds, want 3 to 11", name, n)
 		}
 	}
-	if n := len(logs.Lines("level=ERROR", "contract: the platform answered a token lookup with a record Wappie cannot use")); n != 2 {
-		t.Errorf("%d ERRORs for two lookups answered badly, want 2:\n%s", n, logs.String())
+	if n := len(logs.Lines("level=ERROR", "contract: the platform answered a token lookup with a record Wappie cannot use")); n != len(bad) {
+		t.Errorf("%d ERRORs for %d lookups answered badly, want one each:\n%s", n, len(bad), logs.String())
 	}
 	if s := w.state(t); s.ErrorClass != store.ContractErrorTokenLookupInvalid {
 		t.Errorf("the ERROR was not recorded: %+v", s)
 	}
-	var clock bool
-	var now time.Time
-	if err := w.pool.QueryRow(ctx, `SELECT clock_until, until FROM contract_token_sticky WHERE token_id = $1`, invalid).Scan(&clock, &now); err != nil {
+	lookup := func(id uuid.UUID) (clock bool, until time.Time, badCount int, putOff bool) {
+		t.Helper()
+		if err := w.pool.QueryRow(ctx, `SELECT clock_until, until, lookup_bad, coalesce(lookup_after <> 'infinity', false)
+			FROM contract_token_sticky WHERE token_id = $1`, id).Scan(&clock, &until, &badCount, &putOff); err != nil {
+			t.Fatal(err)
+		}
+		return clock, until, badCount, putOff
+	}
+	for name, id := range bad {
+		if _, _, n, _ := lookup(id); n < 2 {
+			t.Errorf("%s: %d bad answers in a row counted, want 2 or more", name, n)
+		}
+	}
+	if clock, now, _, _ := lookup(invalid); !clock || !now.Equal(until) {
+		t.Errorf("a revocation answered badly: clock-dated %v, until %v, want %v", clock, now, until)
+	}
+	if clock, _, n, putOff := lookup(unsignedAnswer); !clock || n != 0 || !putOff {
+		t.Errorf("an answer whose signature fails: clock-dated %v, %d bad answers, put off %v; want no bad answer, put off", clock, n, putOff)
+	}
+	if len(logs.Lines("level=WARN", "contract: a token lookup got no answer")) == 0 {
+		t.Error("no WARN for an answer whose signature fails")
+	}
+}
+
+// F3: a signed not_found by id lets a bad record's revocation go only once
+// a signed page of the account feed, asked after it, bears the generation
+// the record came in, Wappie's. A page of another generation (a restored
+// platform that Wappie's feeds have not seen yet) settles it, dated by
+// Wappie's clock; no page puts it off as a lookup with no answer; a page
+// of its generation lets it go.
+func TestANotFoundCountsOnlyInItsGeneration(t *testing.T) {
+	w := newTokenWorld(t)
+	w.fake.RefuseAlways(contracttest.CallTokens, kc.CodeUnavailable)
+	ctx := context.Background()
+	gen := w.generation(t)
+	var feedGen atomic.Value // the generation the feed answers in; "" refuses it
+	feedGen.Store("")
+	var pages atomic.Int64
+	platform, err := url.Parse(w.fake.URL)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !clock || !now.Equal(until) {
-		t.Errorf("a revocation answered badly: clock-dated %v, until %v, want %v", clock, now, until)
+	client := clientOn(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/contract/v1/feed" {
+			out := r.Clone(r.Context())
+			out.URL.Scheme, out.URL.Host, out.Host = platform.Scheme, platform.Host, platform.Host
+			return http.DefaultTransport.RoundTrip(out)
+		}
+		pages.Add(1)
+		if r.URL.Query().Get("wait") != "0" {
+			t.Errorf("the lookups' feed GET waits: %s", r.URL.RawQuery)
+		}
+		g := feedGen.Load().(string)
+		var body []byte
+		var err error
+		status := http.StatusOK
+		if g == "" {
+			status = http.StatusServiceUnavailable
+			body, err = json.Marshal(kc.Error{Code: kc.CodeUnavailable, Message: "down"})
+		} else {
+			after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+			body, err = json.Marshal(kc.Feed{Generation: g, GenerationConfirmed: true, Head: after,
+				PublishedThrough: kc.T(time.Now().UTC().Truncate(time.Second)), Items: []kc.FeedItem{}, NextAfter: after})
+		}
+		if err != nil {
+			return nil, err
+		}
+		return signedAnswer(r, w.secret, status, body, time.Now()), nil
+	}, nil)
+	if err := client.Use(w.secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	logs := &membershiptest.Logs{}
+	l := w.tokenLeader(w.membersOn(client, logs), logs, lockKey(t))
+	revoked := func() uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until, clock_gen)
+			VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '365 days', true, $2)`, id, gen)
+		return id
+	}
+	sticky := func(id uuid.UUID) (exists, clock, settled, putOff bool, badCount int) {
+		t.Helper()
+		err := w.pool.QueryRow(ctx, `SELECT clock_until, coalesce(lookup_after = 'infinity', false), coalesce(lookup_after <> 'infinity', false),
+			lookup_bad FROM contract_token_sticky WHERE token_id = $1`, id).Scan(&clock, &settled, &putOff, &badCount)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false, false, false, 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return true, clock, settled, putOff, badCount
+	}
+	pass := func() {
+		t.Helper()
+		calls := w.fake.Count(contracttest.CallToken)
+		l.lookUp(ctx, &lookupRun{})
+		if w.fake.Count(contracttest.CallToken) == calls {
+			t.Fatal("the pass asked nothing by id")
+		}
+	}
+
+	// No page: put off as a lookup with no answer, not counted bad.
+	unplaced := revoked()
+	pass()
+	if exists, clock, settled, putOff, n := sticky(unplaced); !exists || !clock || settled || !putOff || n != 0 {
+		t.Errorf("a not_found the platform did not place: there %v, clock-dated %v, settled %v, put off %v, %d bad; want there, put off",
+			exists, clock, settled, putOff, n)
+	}
+	// A page of another generation: settled, dated by Wappie's clock.
+	feedGen.Store(uuid.NewString())
+	restored := revoked()
+	pass()
+	if exists, clock, settled, _, _ := sticky(restored); !exists || !clock || !settled {
+		t.Errorf("a not_found of a restored platform: there %v, clock-dated %v, settled %v; want all", exists, clock, settled)
+	}
+	// A page of the record's generation: it goes.
+	feedGen.Store(gen)
+	gone := revoked()
+	pass()
+	if exists, _, _, _, _ := sticky(gone); exists {
+		t.Error("a not_found the platform placed in the record's generation left its revocation")
+	}
+	if exists, _, _, putOff, _ := sticky(unplaced); !exists || !putOff {
+		t.Error("the not_found put off was asked again before LookupRetry")
+	}
+	if n := pages.Load(); n < 3 {
+		t.Errorf("%d feed GETs for three not_founds, want one after each at least", n)
+	}
+	if len(logs.Lines("level=WARN", "contract: a token lookup's not_found waits for the platform's generation")) == 0 {
+		t.Errorf("no WARN for a not_found the platform did not place:\n%s", logs.String())
+	}
+}
+
+// The lookups run while the contract is on, whatever the token mode: with
+// tokens off, a bad record's revocation and an undated stop of a selector
+// Wappie does not hold are still dated by the platform's answers.
+func TestTheLookupsRunWithTokensOff(t *testing.T) {
+	w := newTokenWorld(t)
+	w.fake.RefuseAlways(contracttest.CallTokens, kc.CodeUnavailable)
+	ctx := context.Background()
+	w.exec(ctx, t, `UPDATE contract_token_state SET mode = 'off'`)
+	gen := w.generation(t)
+	logs := &membershiptest.Logs{}
+	l := w.tokenLeader(w.members, logs, lockKey(t))
+	l.LookupEvery = 20 * time.Millisecond
+	run(t, l)
+	w.named(t)
+	byID, _ := w.token(t, kc.CanRead)
+	bySelector, _ := w.token(t, kc.CanRead)
+	rec, ok := w.fake.TokenRecord("wappie", bySelector)
+	if !ok {
+		t.Fatal("the fake holds no record of the token")
+	}
+	w.exec(ctx, t, `INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until, clock_until, clock_gen)
+		VALUES ($1, clock_timestamp(), 'revoked', clock_timestamp() + interval '366 days', true, $2)`, byID, gen)
+	if _, err := w.tokens.StopToken(ctx, rec.Selector, "root", "leak", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "both looked up with tokens off", func() bool {
+		var clock, dated bool
+		if err := w.pool.QueryRow(ctx, `SELECT (SELECT clock_until FROM contract_token_sticky WHERE token_id = $1),
+			(SELECT record_until IS NOT NULL FROM contract_token_stops WHERE selector = $2 AND cause = 'operator')`,
+			byID, rec.Selector).Scan(&clock, &dated); err != nil {
+			t.Fatal(err)
+		}
+		return !clock && dated
+	})
+	var mode string
+	if err := w.pool.QueryRow(ctx, `SELECT mode FROM contract_token_state`).Scan(&mode); err != nil || mode != "off" {
+		t.Fatalf("the token mode: %q %v", mode, err)
 	}
 }
