@@ -136,11 +136,12 @@ func dedupeKey(kind string, item uuid.UUID, at time.Time) string {
 }
 
 // itemLabel is what a notice and an event row keep of a number's name: the
-// contract's label (decision 0038's plan, 4.11: its label, else its push
-// name, with phone numbers masked and addresses dropped), and "…" with the
-// last four digits of its phone number. Never the number, never its LID.
-func itemLabel(device uuid.UUID, name, pushName, pn string) (lbl, hint *string) {
-	return label.Contract(name, pushName, pn, device.String()), label.HintFromPN(pn)
+// contract's label (decision 0038's plan, 4.11: its label, with phone
+// numbers masked and addresses dropped; never its push name, the platform's
+// design of 2026-10-26, 10.27), and "…" with the last four digits of its
+// phone number. Never the number, never its LID.
+func itemLabel(device uuid.UUID, name, pn string) (lbl, hint *string) {
+	return label.Contract(name, pn, device.String()), label.HintFromPN(pn)
 }
 
 // actorSubTx is an actor's platform sub (a person, or a key's creator), or

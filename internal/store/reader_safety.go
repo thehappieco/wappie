@@ -243,7 +243,7 @@ func strandTx(ctx context.Context, tx pgx.Tx, tenant, actor, target uuid.UUID, c
 				return err
 			}
 			readerSubs, readerUsers := readerIDs(readers)
-			itemName, hint := itemLabel(n.DeviceID, n.Label, n.PushName, n.PN)
+			itemName, hint := itemLabel(n.DeviceID, n.Label, n.PN)
 			if err := recordEvent(ctx, tx, tenant, itemEvent{
 				Type: eventStranded, ItemID: n.DeviceID,
 				DedupeKey:  eventStranded + ":" + n.DeviceID.String() + ":" + target.String() + ":" + strconv.FormatInt(at.UnixMicro(), 10),

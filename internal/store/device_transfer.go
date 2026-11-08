@@ -307,8 +307,8 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 			return err
 		}
 		readerSubs, readerUsers := readerIDs(readers)
-		var name, pushName, pn string
-		if err = tx.QueryRow(ctx, `SELECT label, push_name, coalesce(pn, '') FROM devices WHERE id=$1`, device).Scan(&name, &pushName, &pn); err != nil {
+		var name, pn string
+		if err = tx.QueryRow(ctx, `SELECT label, coalesce(pn, '') FROM devices WHERE id=$1`, device).Scan(&name, &pn); err != nil {
 			return err
 		}
 		// The actor's own assistants and AI authorizations connected to the
@@ -453,7 +453,7 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 		if err != nil {
 			return err
 		}
-		itemName, hint := itemLabel(device, name, pushName, pn)
+		itemName, hint := itemLabel(device, name, pn)
 		if err := recordEvent(ctx, tx, source, itemEvent{
 			Type: eventMovedOut, ItemID: device, DedupeKey: dedupeKey(eventMovedOut, device, completed), OccurredAt: completed,
 			ActorKind: actorPerson, ActorSub: sub, ActorUserID: &actor, ReaderSubs: readerSubs, ReaderUserIDs: readerUsers,

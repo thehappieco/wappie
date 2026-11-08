@@ -21,47 +21,96 @@ const atSigns = "@＠﹫"
 // device_notices.hint).
 var hintShape = regexp.MustCompile(`^…[0-9]{4}$`)
 
+// labelTable is Wappie's own table, testdata/contract-labels.json. A case's
+// push name is the number's, which never stands in for its label (the
+// platform's design of 2026-10-26, 10.27): it is there to show that.
+type labelTable struct {
+	Cases []struct {
+		Name     string  `json:"name"`
+		Label    string  `json:"label"`
+		PushName string  `json:"push_name"`
+		PN       string  `json:"pn"`
+		DeviceID string  `json:"device_id"`
+		Want     *string `json:"want"`
+	} `json:"cases"`
+}
+
 // TestContractLabel runs Wappie's own table (the plan's test 41), whose
 // labels the contract's vectors (TestContractLabelVectors) do not cover:
-// placeholders, ids, the number itself and the push name. Every label
-// Wappie keeps must pass the contract's rule, which the platform applies
-// again on intake.
+// placeholders, ids, the number itself, and a push name that never stands
+// in. Every label Wappie keeps must pass the contract's rule, which the
+// platform applies again on intake.
 func TestContractLabel(t *testing.T) {
-	var table struct {
-		Cases []struct {
-			Name     string  `json:"name"`
-			Label    string  `json:"label"`
-			PushName string  `json:"push_name"`
-			PN       string  `json:"pn"`
-			DeviceID string  `json:"device_id"`
-			Want     *string `json:"want"`
-		} `json:"cases"`
-	}
+	var table labelTable
 	readJSON(t, "testdata/contract-labels.json", &table)
 	if len(table.Cases) == 0 {
 		t.Fatal("no cases")
 	}
 	for _, tc := range table.Cases {
-		got := Contract(tc.Label, tc.PushName, tc.PN, tc.DeviceID)
+		got := Contract(tc.Label, tc.PN, tc.DeviceID)
 		if !sameLabel(got, tc.Want) {
-			t.Errorf("%s: Contract(%q, %q, %q) = %s, want %s", tc.Name, tc.Label, tc.PushName, tc.PN, show(got), show(tc.Want))
+			t.Errorf("%s: Contract(%q, %q) with the push name %q = %s, want %s", tc.Name, tc.Label, tc.PN, tc.PushName, show(got), show(tc.Want))
 		}
 		checkKept(t, tc.Name, got)
 	}
 
 	// The cut, built here rather than counted by hand.
 	long := strings.Repeat("A", MaxLabel) + "éééé"
-	if got := Contract(long, "", "", ""); got == nil || *got != strings.Repeat("A", MaxLabel) {
+	if got := Contract(long, "", ""); got == nil || *got != strings.Repeat("A", MaxLabel) {
 		t.Errorf("cut: %s", show(got))
 	}
 	flag := strings.Repeat("A", MaxLabel-1) + "🇧🇷"
-	if got := Contract(flag, "", "", ""); got == nil || *got != strings.Repeat("A", MaxLabel-1) {
+	if got := Contract(flag, "", ""); got == nil || *got != strings.Repeat("A", MaxLabel-1) {
 		t.Errorf("half a flag: %s", show(got))
 	}
 	spaced := strings.Repeat("A", MaxLabel-1) + " B"
-	if got := Contract(spaced, "", "", ""); got == nil || *got != strings.Repeat("A", MaxLabel-1) {
+	if got := Contract(spaced, "", ""); got == nil || *got != strings.Repeat("A", MaxLabel-1) {
 		t.Errorf("a cut ending in a space: %s", show(got))
 	}
+}
+
+// FuzzContractNeverGivesThePushName is 10.27's property: whatever a
+// number's push name, Contract never gives it, cleaned, as the number's
+// label unless the label itself cleans to the same text. What it gives is
+// the label, cleaned, or nothing. The seeds are the table's cases, and each
+// of the contract's own labels as the push name of a number whose label is
+// set aside or empty; go test runs them, and go test -fuzz looks further.
+func FuzzContractNeverGivesThePushName(f *testing.F) {
+	var table labelTable
+	readJSON(f, "testdata/contract-labels.json", &table)
+	for _, tc := range table.Cases {
+		f.Add(tc.Label, tc.PushName, tc.PN, tc.DeviceID)
+	}
+	var vectors struct {
+		Clean []struct {
+			Raw string `json:"raw"`
+		} `json:"clean"`
+	}
+	raw, err := fs.ReadFile(kitvectors.FS, "platform/contract-v1/labels.json")
+	if err != nil {
+		f.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil || len(vectors.Clean) == 0 {
+		f.Fatalf("the kit's labels: %d, %v", len(vectors.Clean), err)
+	}
+	const pn, id = "5511912345678:12@s.whatsapp.net", "0199a0c2-7b1e-7c3a-9d2e-4f5a6b7c8d9e"
+	for _, v := range vectors.Clean {
+		for _, aside := range []string{"", "device", "Número do WhatsApp", "0199a0c2", "+55 11 91234-5678", "vendas@loja.com.br"} {
+			f.Add(aside, v.Raw, pn, id)
+		}
+	}
+	f.Fuzz(func(t *testing.T, label, pushName, pn, deviceID string) {
+		got := Contract(label, pn, deviceID)
+		if got == nil {
+			return
+		}
+		if push := Clean(pushName); *got == push && Clean(label) != push {
+			t.Fatalf("Contract(%q, %q, %q) = %q: the push name %q, cleaned", label, pn, deviceID, *got, pushName)
+		}
+		if *got != Clean(label) {
+			t.Fatalf("Contract(%q, %q, %q) = %q, which is not the label cleaned (%q)", label, pn, deviceID, *got, Clean(label))
+		}
+	})
 }
 
 // TestContractLabelVectors is TB3 of release B's plan, in place of the
@@ -110,7 +159,7 @@ func TestContractLabelVectors(t *testing.T) {
 		if v.Clean != "" {
 			want = &v.Clean
 		}
-		got := Contract(v.Raw, "", "5521900000000@s.whatsapp.net", "")
+		got := Contract(v.Raw, "5521900000000@s.whatsapp.net", "")
 		if !sameLabel(got, want) {
 			t.Errorf("Contract(%q) = %s, want %s", v.Raw, show(got), show(want))
 		}
@@ -163,7 +212,7 @@ func TestHintNeverFromLID(t *testing.T) {
 	}
 }
 
-func readJSON(t *testing.T, path string, v any) {
+func readJSON(t testing.TB, path string, v any) {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -203,33 +252,34 @@ func show(s *string) string {
 
 // Classify is the class of what Contract does with a number's label, for
 // the snapshot's counts (the plan's 4.8): named exactly when Contract gives
-// a label, else why the first candidate holding anything was set aside.
+// a label, else why the label was set aside. A push name never counts, so a
+// label set aside is never named (10.27).
 func TestClassify(t *testing.T) {
 	const pn = "5511912345678:12@s.whatsapp.net"
 	const id = "0199e000-0000-7000-8000-000000000004"
 	for _, c := range []struct {
-		name, label, pushName, pn string
-		want                      Class
+		name, label, pn string
+		want            Class
 	}{
-		{"a name", "Vendas", "", pn, ClassNamed},
-		{"a push name under a placeholder", "Número do WhatsApp", "Loja", pn, ClassNamed},
-		{"a placeholder", "WhatsApp number", "", pn, ClassPlaceholder},
-		{"the number", "+55 11 91234-5678", "", pn, ClassPhone},
-		{"the number as a push name", "", "11 91234 5678", pn, ClassPhone},
-		{"an opaque id", "0199e0000000700080000000000000ab", "", pn, ClassLegacyID},
-		{"the start of its own id", "0199e000", "", pn, ClassLegacyID},
-		{"an address, which the rule drops", "vendas@acme.test", "", pn, ClassEmpty},
-		{"nothing", "", "", pn, ClassEmpty},
-		{"hidden characters only", "\u200b\u200e", "", pn, ClassEmpty},
-		{"a placeholder, then a name", "device", "Suporte", "", ClassNamed},
-		{"a placeholder, then the number", "device", "+55 11 91234-5678", pn, ClassPlaceholder},
+		{"a name", "Vendas", pn, ClassNamed},
+		{"the console's placeholder, which no push name names", "Número do WhatsApp", pn, ClassPlaceholder},
+		{"a placeholder", "WhatsApp number", pn, ClassPlaceholder},
+		{"the number", "+55 11 91234-5678", pn, ClassPhone},
+		{"the number, spaced", "11 91234 5678", pn, ClassPhone},
+		{"an opaque id", "0199e0000000700080000000000000ab", pn, ClassLegacyID},
+		{"the start of its own id", "0199e000", pn, ClassLegacyID},
+		{"an address, which the rule drops", "vendas@acme.test", pn, ClassEmpty},
+		{"nothing", "", pn, ClassEmpty},
+		{"hidden characters only", "\u200b\u200e", pn, ClassEmpty},
+		{"the server's placeholder, with no phone number", "device", "", ClassPlaceholder},
+		{"the server's placeholder", "device", pn, ClassPlaceholder},
 	} {
-		got := Classify(c.label, c.pushName, c.pn, id)
+		got := Classify(c.label, c.pn, id)
 		if got != c.want {
 			t.Errorf("%s: %s, want %s", c.name, got, c.want)
 		}
-		if (got == ClassNamed) != (Contract(c.label, c.pushName, c.pn, id) != nil) {
-			t.Errorf("%s: %s, but Contract gives %s", c.name, got, show(Contract(c.label, c.pushName, c.pn, id)))
+		if (got == ClassNamed) != (Contract(c.label, c.pn, id) != nil) {
+			t.Errorf("%s: %s, but Contract gives %s", c.name, got, show(Contract(c.label, c.pn, id)))
 		}
 	}
 	if n := len(Classes()); n != 5 {
