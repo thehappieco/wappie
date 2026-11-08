@@ -442,7 +442,9 @@ stopped:
 A snapshot taken while a number was deleted keeps its `purge_after`, so the
 janitor still purges it on time. If the host is lost, a deletion made after
 the last off-host copy of the ledger is lost with everything else made after
-it, and its owner has to delete again.
+it, and its owner has to delete again. So is a token stop or lift made after
+the newest off-host copy of the stop record, which has to be made again
+([Restoring with the contract](#restoring-with-the-contract)).
 
 ### Rolling back below 0050
 
@@ -780,12 +782,12 @@ this order:
    an observe; run it again then.
 
 A stop the replay brings back holds only its line: the selector and its
-times, with no note, as made by the account that ran the replay. Of a
+times, with no note, as made by `wappie`, whoever ran the replay. Of a
 selector Wappie does not hold, it goes 365 days after its time, or earlier
 at its token's `created_at` plus 365 days once Wappie learns that date
-from a record of its selector or from the leader's lookup by selector,
-which run while the contract is on ([the token
-feed](contract.md#the-token-feed)).
+from a record of its selector (the token feed, while tokens are on) or
+from the leader's lookup by selector (while the contract is on) ([the
+token feed](contract.md#the-token-feed)).
 
 If the host is lost, a stop or lift made after the newest off-host copy of
 the record is lost with everything else made after it, and has to be made

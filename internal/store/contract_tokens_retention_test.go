@@ -1284,9 +1284,10 @@ func TestAResetLeavesNoHeldEntryBehind(t *testing.T) {
 // its selector or sticky row at its until, sent or not, reported or not
 // (the acknowledgement or the usage report off, or refused, that long); a
 // usage row of a token Wappie keeps no selector of goes at once (they are
-// written only for one whose secret matched it), and any 30 days after its
-// day; an unsent queue entry of a token Wappie keeps nothing of goes 30
-// days after it was queued.
+// written only for one whose secret matched it); a refusal count 30 days
+// after its day, reported or not, and a day of use never reported only
+// with its token's forget; an unsent queue entry of a token Wappie keeps
+// nothing of goes 30 days after it was queued.
 func TestTokenRetentionTakesWhatWasNeverSent(t *testing.T) {
 	w := newTokenWorld(t)
 	past, kept, revoked := uuid.New(), uuid.New(), uuid.New()
@@ -1340,11 +1341,20 @@ func TestTokenRetentionTakesWhatWasNeverSent(t *testing.T) {
 		}
 	}
 	// 31 days on by Wappie's clock: the unsent entry of no token goes, and
-	// so do a live token's usage rows, 30 days after their day, reported or
-	// not (the platform keeps a day's counts no longer); its queue entries
-	// stay, its until 364 days on the database's clock.
+	// so does a live token's refusal count, 30 days after its day,
+	// reported or not (the platform keeps such counts no longer); its day
+	// of use, never reported, stays (the platform keeps a token's last day
+	// of use with the token), and so do its queue entries, its until 364
+	// days on the database's clock.
 	w.retain(w.now.Add(31 * tokenDay))
-	if n, m := rows(recent), rows(kept); n != 0 || m != 2 {
-		t.Errorf("31 days on: %d entries of no token left, want 0; %d of a live token's, want 2", n, m)
+	if n, m := rows(recent), rows(kept); n != 0 || m != 3 {
+		t.Errorf("31 days on: %d entries of no token left, want 0; %d of a live token's, want 3", n, m)
+	}
+	// 60 days on, 30 days after its expiry: its record is forgotten, and
+	// with it its day of use and its refusal; its held entry, told
+	// revoked, stays.
+	w.retain(w.now.Add(60 * tokenDay))
+	if m := rows(kept); m != 1 {
+		t.Errorf("60 days on: %d of a forgotten token's left, want 1", m)
 	}
 }

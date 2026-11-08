@@ -67,11 +67,12 @@ func (w *tokenWorld) fill(id, device uuid.UUID) {
 }
 
 // F1: at the pass that forgets a token's record, 30 days after its end,
-// what the acknowledgement and the usage report hold of its items goes,
-// sent or reported or not: its refusals, the items its held entries keep
-// off (an entry that then says nothing goes; one still told revoked
-// stays), and its usage refusals on a number. Its days of use and its
-// refusals as a token stay to their own rules. A live token's stay.
+// what the acknowledgement and the usage report hold of it goes, sent or
+// reported or not: its refusals, the items its held entries keep off (an
+// entry that then says nothing goes; one still told revoked stays, its
+// queued_at as it was), its usage refusals on a number and its days of
+// use. Its refusals as a token stay to their own rule. A live token's
+// stay.
 func TestAForgottenTokensQueuesGoWithIt(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
@@ -86,6 +87,16 @@ func TestAForgottenTokensQueuesGoWithIt(t *testing.T) {
 	if q := w.queues(ended); q != full {
 		t.Fatalf("before the pass: %+v, want %+v", q, full)
 	}
+	queued := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := w.pool.QueryRow(context.Background(), `SELECT queued_at FROM contract_token_held_out
+			WHERE token_id = $1 AND generation = $2`, ended, w.gen).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	before := queued()
 	got, err := w.tokens.RetainTokens(w.ctx(), w.now)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +104,7 @@ func TestAForgottenTokensQueuesGoWithIt(t *testing.T) {
 	if !w.token(ended).Forgotten || got.Forgotten != 1 {
 		t.Fatalf("the ended token was not forgotten: %+v", got)
 	}
-	want := queues{held: 1, used: 1, tokenRefusals: 1}
+	want := queues{held: 1, tokenRefusals: 1}
 	if q := w.queues(ended); q != want {
 		t.Errorf("a forgotten token's queues: %+v, want %+v", q, want)
 	}
@@ -101,8 +112,14 @@ func TestAForgottenTokensQueuesGoWithIt(t *testing.T) {
 	if err := w.pool.QueryRow(context.Background(), `SELECT revoked FROM contract_token_held_out WHERE token_id = $1`, ended).Scan(&revoked); err != nil || !revoked {
 		t.Errorf("the forgotten token's held entry: revoked %v, %v", revoked, err)
 	}
-	if got.Queues != 7 {
-		t.Errorf("the pass counted %d queue entries and usage rows, want 7", got.Queues)
+	// Its items taken off are no news to send again sooner, nor to keep
+	// longer: an unsent entry of a token Wappie keeps nothing of goes 30
+	// days after its queued_at.
+	if after := queued(); !after.Equal(before) {
+		t.Errorf("the held entry's queued_at moved from %v to %v when its items went", before, after)
+	}
+	if got.Queues != 8 {
+		t.Errorf("the pass counted %d queue entries and usage rows, want 8", got.Queues)
 	}
 	if q := w.queues(live); q != full {
 		t.Errorf("a live token's queues: %+v, want %+v", q, full)
@@ -113,19 +130,19 @@ func TestAForgottenTokensQueuesGoWithIt(t *testing.T) {
 	}
 }
 
-// F1: a token a reset's pass unlists is forgotten at that pass, so its
-// queue entries go at the next retention, a refusal sent the day before
-// too, which the 30 days after its sending kept before.
-func TestAFinishedPassForgetsTheQueuesTooAtTheNextPass(t *testing.T) {
+// F1: a token a reset's pass unlists is forgotten at that pass, and what
+// the acknowledgement and the usage report hold of it goes at that pass
+// too, as at retention's forget: a refusal sent the day before included,
+// which the 30 days after its sending kept before. A listed token's stay.
+func TestAFinishedPassForgetsTheQueuesToo(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
 	unlisted, listed := uuid.New(), uuid.New()
 	w.page(false, w.record(unlisted, 1), w.record(listed, 1))
-	for _, id := range []uuid.UUID{unlisted, listed} {
-		w.exec(`INSERT INTO contract_token_refusals_out (token_id, version, item, perm, code, sent_at) VALUES ($1, 1, $2, 'send', 'local_role', $3)`,
-			id, device.String(), w.now.Add(-tokenDay))
-	}
 	w.reset()
+	for _, id := range []uuid.UUID{unlisted, listed} {
+		w.fill(id, device)
+	}
 	w.exec(`UPDATE contract_state SET round_generation = $1`, w.gen)
 	if res := w.page(false, w.record(listed, 1)); !res.PassReady {
 		t.Fatal("the pass is not ready")
@@ -133,15 +150,11 @@ func TestAFinishedPassForgetsTheQueuesTooAtTheNextPass(t *testing.T) {
 	if res, err := w.tokens.FinishTokenPass(w.ctx(), w.gen, w.now); err != nil || len(res.Unlisted) != 1 {
 		t.Fatalf("the pass: %+v %v", res, err)
 	}
-	if q := w.queues(unlisted); q.refused != 1 {
-		t.Fatalf("before the next retention: %+v", q)
+	if q, want := w.queues(unlisted), (queues{held: 1, tokenRefusals: 1}); q != want {
+		t.Errorf("an unlisted token's queues after the pass: %+v, want %+v", q, want)
 	}
-	w.retain(w.now)
-	if q := w.queues(unlisted); q.refused != 0 {
-		t.Errorf("an unlisted token's refusal after the next retention: %+v", q)
-	}
-	if q := w.queues(listed); q.refused != 1 {
-		t.Errorf("a listed token's refusal after the retention: %+v", q)
+	if q := w.queues(listed); q.refused != 2 || q.used != 1 || q.itemRefusals != 2 || q.tokenRefusals != 1 {
+		t.Errorf("a listed token's queues after the pass: %+v", q)
 	}
 }
 
@@ -185,8 +198,8 @@ func TestANeverHeldTokensRefusalsGoByItsEnd(t *testing.T) {
 }
 
 // F1: the tokens of a workspace whose row Wappie deleted ended with it:
-// their items' queue entries and usage refusals go at the next pass, as a
-// forgotten token's.
+// their items' queue entries, their usage refusals on a number and their
+// days of use go at the next pass, as a forgotten token's.
 func TestADeletedWorkspacesTokensLoseTheirQueues(t *testing.T) {
 	w := newTokenWorld(t)
 	device := w.number(uuid.Nil)
@@ -199,7 +212,7 @@ func TestADeletedWorkspacesTokensLoseTheirQueues(t *testing.T) {
 	}
 	w.exec(`DELETE FROM tenants WHERE id = $1`, gone)
 	w.retain(w.now)
-	if q, want := w.queues(there), (queues{held: 1, used: 1, tokenRefusals: 1}); q != want {
+	if q, want := w.queues(there), (queues{held: 1, tokenRefusals: 1}); q != want {
 		t.Errorf("a deleted workspace's token: %+v, want %+v", q, want)
 	}
 	if q, want := w.queues(live), (queues{refused: 2, held: 2, heldItems: 2, used: 1, itemRefusals: 2, tokenRefusals: 1}); q != want {
@@ -442,20 +455,24 @@ func (w *tokenWorld) stopSettled(selector string) bool {
 // held token's). A good answer dates the token's revocation and its
 // selector's stops and date; a record that cannot date them writes
 // nothing; a not_found drops the revocation in the generation its record
-// came in, settles it in another, and settles a stop undated; a call with
-// no answer puts it off, a bad answer doubling each time. A held
-// selector's stop is never shortened by an answer.
+// came in, once the platform places itself in it after the not_found,
+// writes nothing while it has not, settles it in another (Wappie's or the
+// platform's), and settles a stop undated; a call with no answer puts it
+// off, a bad answer doubling each time. A held selector's stop is never
+// shortened by an answer.
 func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	w := newTokenWorld(t)
 	elsewhere := func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }
 	invalid := func(r *kc.TokenRecord) { r.Hash = "not a hash" }
 	revoked := revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))
 	bad, gone, other, datedTok, heldTok := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	platformGone := uuid.New()
 	w.page(false, w.record(heldTok, 1, revoked))
 	w.page(false,
 		w.record(bad, 1, invalid, revoked),
 		w.record(gone, 1, invalid, revoked),
 		w.record(other, 1, invalid, revoked),
+		w.record(platformGone, 1, invalid, revoked),
 		w.record(datedTok, 1, invalid, revoked))
 	w.page(false, w.record(datedTok, 2, elsewhere, revoked))
 	stop := func(sel string, at time.Time) {
@@ -475,7 +492,7 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	stop(selectorOf(later), w.now)
 	w.page(false, w.record(later, 1, elsewhere), w.record(seenBefore, 1, elsewhere))
 	stop(selectorOf(seenBefore), w.now)
-	want := map[string]bool{"id " + bad.String(): true, "id " + gone.String(): true, "id " + other.String(): true,
+	want := map[string]bool{"id " + bad.String(): true, "id " + gone.String(): true, "id " + other.String(): true, "id " + platformGone.String(): true,
 		"selector " + undated: true, "selector " + replayed: true, "selector " + selectorOf(bad): true}
 	if got := w.due(w.now); !mapsEqual(got, want) {
 		t.Fatalf("due: %v, want %v", got, want)
@@ -535,24 +552,42 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	}
 	// A signed not_found by selector: settled, undated, standing to its
 	// stopped_at + 365 days.
-	if dropped, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Selector: replayed}); err != nil || dropped {
-		t.Fatalf("a not_found by selector: %v %v", dropped, err)
+	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Selector: replayed}, ""); err != nil || got != store.NotFoundSettled {
+		t.Fatalf("a not_found by selector: %v %v", got, err)
 	}
 	if _, _, ru := w.stopOf(replayed); ru != nil || !w.stopSettled(replayed) {
 		t.Errorf("a stop the platform does not know: record_until %v, settled %v", ru, w.stopSettled(replayed))
 	}
-	// A signed not_found by id in the record's generation: the revocation
-	// goes at once. In another: it stays, dated by Wappie's clock, and is
-	// settled.
-	if dropped, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: gone}); err != nil || !dropped {
-		t.Fatalf("a not_found by id: %v %v", dropped, err)
+	// A signed not_found by id in the record's generation, Wappie's: with
+	// no later answer that says the platform's generation, nothing is
+	// written and it stays due; with one of another generation (a restored
+	// platform Wappie's feeds have not seen yet), the revocation stays,
+	// dated by Wappie's clock, and is settled; with one of the record's,
+	// it goes at once.
+	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: gone}, ""); err != nil || got != store.NotFoundUnconfirmed {
+		t.Fatalf("a not_found by id, the platform's generation unknown: %v %v", got, err)
+	}
+	if clock, _, settled := w.stickyClock(gone); !clock || settled || !w.due(w.now)["id "+gone.String()] {
+		t.Errorf("a not_found the platform did not place: clock-dated %v, settled %v; want it due as it was", clock, settled)
+	}
+	restored := uuid.NewString()
+	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: platformGone}, restored); err != nil || got != store.NotFoundSettled {
+		t.Fatalf("a not_found by id, the platform in another generation: %v %v", got, err)
+	}
+	if clock, _, settled := w.stickyClock(platformGone); !clock || !settled {
+		t.Errorf("a not_found the platform answered in another generation: clock-dated %v, settled %v; want both", clock, settled)
+	}
+	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: gone}, w.gen.String()); err != nil || got != store.NotFoundDropped {
+		t.Fatalf("a not_found by id: %v %v", got, err)
 	}
 	if exists, _, _ := w.sticky(gone); exists {
 		t.Error("a not_found in the record's generation left its revocation")
 	}
+	// Wappie in another generation: settled, whatever the platform says,
+	// and the revocation stays, dated by Wappie's clock.
 	w.exec(`UPDATE contract_state SET generation = $1`, uuid.New())
-	if dropped, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: other}); err != nil || dropped {
-		t.Fatalf("a not_found by id in another generation: %v %v", dropped, err)
+	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: other}, w.gen.String()); err != nil || got != store.NotFoundSettled {
+		t.Fatalf("a not_found by id in another generation: %v %v", got, err)
 	}
 	w.exec(`UPDATE contract_state SET generation = $1`, w.gen)
 	if clock, _, settled := w.stickyClock(other); !clock || !settled {

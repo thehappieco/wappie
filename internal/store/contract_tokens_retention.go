@@ -30,10 +30,13 @@ const tokenForgetAfter = 30 * 24 * time.Hour
 // they were reported (a day is reported once it has begun).
 const tokenUsageKeep = 48 * time.Hour
 
-// tokenUsageMost is how long any usage row is kept after its UTC day,
-// reported or not: the platform keeps a day's counts 30 days from the day
-// of use (decision 0056), so one reported later would tell it nothing it
-// keeps.
+// tokenUsageMost is how long a refusal count is kept after its UTC day,
+// reported or not: the platform keeps an app's daily counts of refused
+// uses 30 days from the day of use (decision 0056), so one reported later
+// would tell it nothing it keeps. A day of use has no such bound: the
+// platform keeps each app's last day of use with its token, so an
+// unreported one waits for the report until its token is forgotten
+// (forgetQueuesTx) or its selector goes.
 const tokenUsageMost = 30 * 24 * time.Hour
 
 // tokenStopKeep is how long a stop of a selector Wappie never held is kept
@@ -50,8 +53,8 @@ const tokenUsageMost = 30 * 24 * time.Hour
 const tokenStopKeep = kc.MaxTokenLifetime
 
 // TokenRetention counts what a retention pass did: Queues counts the
-// acknowledgement's entries and the usage rows a forgotten token's items
-// left, deleted or emptied.
+// acknowledgement's entries and the usage rows a forgotten token left (its
+// days of use, and its items' refusals), deleted or emptied.
 type TokenRetention struct {
 	Expired, Forgotten, Ended, Stops, Queues int64
 }
@@ -61,8 +64,8 @@ type TokenRetention struct {
 // first, then what ended 30 days ago is forgotten, then what is past its
 // selector's until goes, on both clocks (its row with its perms, then its
 // removed instances), then what the acknowledgement and the usage report
-// hold of a forgotten token's items, sent or not (forgetQueuesTx), then its
-// pin. Then, after every workspace and before the selectors, in one
+// hold of a forgotten token, sent or not (forgetQueuesTx), then its pin.
+// Then, after every workspace and before the selectors, in one
 // statement, every stop due (one of a selector Wappie holds once that
 // selector is past its until, whatever its own dates; any other at
 // stopped_at + 365 days, or at its record_until or its selector's date if
@@ -72,12 +75,13 @@ type TokenRetention struct {
 // acknowledgement and the usage report still hold of a token past its
 // until, sent or not; then the selectors, the sticky rows and the
 // selectors' dates past their until (their guards); then the usage rows
-// reported, from the start of the second UTC day after their day, and any,
-// 30 days after their day; the queues' entries sent over 30 days ago, an
-// unsent held entry of another generation than Wappie's, an unsent held
-// entry of a token Wappie keeps nothing of, queued over 30 days ago, and a
-// refusal of a token Wappie holds no selector of, sent or not, 30 days
-// after the earlier of its queuing and the end its sticky row keeps. It
+// reported, from the start of the second UTC day after their day, and the
+// refusal counts, reported or not, 30 days after their day; the queues'
+// entries sent over 30 days ago, an unsent held entry of another
+// generation than Wappie's, an unsent held entry of a token Wappie keeps
+// nothing of, queued over 30 days ago, and a refusal of a token Wappie
+// holds no selector of, sent or not, 30 days after the earlier of its
+// queuing and the end its sticky row keeps. It
 // visits every workspace a selector names, from the selectors alone, one
 // Wappie no longer has included, whose token rows went with it but whose
 // pins, removed instances, queue entries and token identities (no foreign
@@ -310,13 +314,14 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 				{`DELETE FROM contract_token_dates WHERE until <= $1`, []any{cut}},
 				// A day's usage rows, once reported, from the start of the
 				// second UTC day after it, whatever the session's time zone;
-				// and any, 30 days after it.
+				// and its refusal counts, reported or not, 30 days after it.
+				// An unreported day of use waits for the report: it goes
+				// with its token's forget (forgetQueuesTx), or with its
+				// selector above.
 				{`DELETE FROM contract_token_used WHERE reported_at IS NOT NULL
 					AND day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
 				{`DELETE FROM contract_token_refusals WHERE reported_count >= count
 					AND day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`, []any{now, tokenUsageKeep}},
-				{`DELETE FROM contract_token_used WHERE day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`,
-					[]any{now, tokenUsageMost}},
 				{`DELETE FROM contract_token_refusals WHERE day <= (($1::timestamptz AT TIME ZONE 'UTC') - $2::interval)::date`,
 					[]any{now, tokenUsageMost}},
 				{`DELETE FROM contract_token_refusals_out WHERE sent_at < $1::timestamptz - $2::interval`, []any{now, tokenForgetAfter}},
@@ -356,18 +361,19 @@ func (t *Tokens) RetainTokens(ctx context.Context, now time.Time) (TokenRetentio
 }
 
 // forgetQueuesTx deletes, in workspace ws (its app.tenant_id set), what the
-// acknowledgement and the usage report hold of the items of a token whose
-// record retention or a reset's pass forgot, sent or not, at every pass from
-// the one that forgot it: its refusals, the items its held entries keep off
+// acknowledgement and the usage report hold of a token whose record
+// retention or a reset's pass forgot, sent or not, at every pass from the
+// one that forgot it: its refusals, the items its held entries keep off
 // (an entry that then says nothing goes; one still told revoked, expiring
-// earlier or with a pinned key stays, which is its security record), and
-// its usage refusals on a number. A token of a workspace whose row is gone
-// (gone) counts as forgotten: it ended with its workspace. Its usage rows
-// of the token itself (its days of use, its refusals as revoked or expired)
-// are no item's, and keep their own rules. These rows have no step of DB25:
-// they come after the workspace's token rows, perms and removed instances,
-// as the applier writes its queues. It returns how many it deleted or
-// emptied.
+// earlier or with a pinned key stays, which is its security record), its
+// usage refusals on a number, and its days of use, which wait for the
+// usage report until then. A token of a workspace whose row is gone
+// (gone) counts as forgotten: it ended with its workspace. Its
+// refusals as a token (presented revoked or expired), which name no item,
+// keep their own rule: 30 days after their day. These rows have no step of
+// DB25: they come after the workspace's token rows, perms and removed
+// instances, as the applier writes its queues. It returns how many it
+// deleted or emptied.
 func forgetQueuesTx(ctx context.Context, tx pgx.Tx, ws uuid.UUID, gone bool) (int64, error) {
 	rows, err := tx.Query(ctx, `SELECT id FROM contract_tokens WHERE forgotten_at IS NOT NULL
 		UNION SELECT token_id FROM contract_token_selectors WHERE $1 AND tenant_id = $2`, gone, ws)
@@ -384,6 +390,7 @@ func forgetQueuesTx(ctx context.Context, tx pgx.Tx, ws uuid.UUID, gone bool) (in
 		`UPDATE contract_token_held_out SET removed = '[]' WHERE token_id = ANY ($1) AND removed <> '[]'::jsonb`,
 		`DELETE FROM contract_token_held_out WHERE token_id = ANY ($1) AND NOT revoked AND expires_at IS NULL AND reading_key IS NULL`,
 		`DELETE FROM contract_token_refusals WHERE token_id = ANY ($1) AND device_id IS NOT NULL`,
+		`DELETE FROM contract_token_used WHERE token_id = ANY ($1)`,
 	} {
 		tag, err := tx.Exec(ctx, q, ids)
 		if err != nil {

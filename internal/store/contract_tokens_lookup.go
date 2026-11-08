@@ -46,10 +46,12 @@ type TokenLookup struct {
 func (l TokenLookup) ByID() bool { return l.Token != uuid.Nil }
 
 // ErrTokenLookupRecord is a signed record that cannot date what the lookup
-// asked of: not valid, another app's, another token's or selector's, with
-// no created_at, or a reading key whose fingerprint is not its own (the
-// feed's rules for a good record). Nothing is written; the leader counts
-// it as a bad answer (TokenLookupFailed).
+// asked of: with no created_at, or a reading key whose fingerprint is not
+// its own (the feed's rules for a good record). The kit refuses one that is
+// not valid, another app's or another token's or selector's before it
+// comes here; the checks are kept all the same. Nothing is written; the
+// leader counts it as a bad answer (TokenLookupFailed), as it does the
+// kit's refusals.
 var ErrTokenLookupRecord = errors.New("store: the lookup's record cannot date its token")
 
 // DueTokenLookups are the lookups due by now (Wappie's clock), at most limit
@@ -140,28 +142,52 @@ func (t *Tokens) TokenLookupAnswered(ctx context.Context, l TokenLookup, rec kc.
 	})
 }
 
-// TokenLookupNotFound takes the platform's signed not_found to l and
-// reports whether it let a sticky row go.
+// NotFound is what a signed not_found did (TokenLookupNotFound).
+type NotFound int
+
+// The outcomes of a not_found.
+const (
+	// NotFoundSettled: the lookup is not asked again, and what it asked of
+	// keeps its date (or it was no longer due).
+	NotFoundSettled NotFound = iota + 1
+	// NotFoundDropped: a bad record's revocation went.
+	NotFoundDropped
+	// NotFoundUnconfirmed: a not_found by id in the bad record's
+	// generation that the platform has not placed in it since: nothing is
+	// written, and the leader puts it off as a lookup with no answer.
+	NotFoundUnconfirmed
+)
+
+// TokenLookupNotFound takes the platform's signed not_found to l. gen is
+// the platform's generation as a signed answer after the not_found gave it
+// (the leader's page of the account feed), "" when none did.
 //
 // By id: the platform keeps a record that named Wappie, as it did this
 // one, until its token's created_at + 365 days and answers not_found after
 // (decision 0056), so the token is past its life, and its revocation goes
 // at once, in this transaction (its until lowered to the database's clock,
-// which the guard asks). Only while Wappie's generation is the one the bad
-// record came in: after a restore of the platform's database, not_found
-// also means a token the restored platform has never named to Wappie,
-// which it may name later unrevoked. Then the row keeps its clock's date
-// and is not asked again; a valid record of the token from the feed still
-// dates it.
+// which the guard asks). Only in the generation the bad record came in,
+// which both Wappie's stored generation and gen must be: after a restore
+// of the platform's database, not_found also means a token the restored
+// platform has never named to Wappie, which it may name later unrevoked,
+// and Wappie's feeds may not have seen the new generation yet. In another
+// generation (Wappie's or gen) the row keeps its clock's date and is not
+// asked again; a valid record of the token from the feed still dates it.
+// In the record's generation with gen unknown, nothing is written
+// (NotFoundUnconfirmed).
 //
 // By selector: the platform knows no token of that selector for Wappie, so
 // its stops are the operator's own record, kept to their stopped_at + 365
 // days; they are not asked again. A valid record of the selector from the
-// feed still dates them.
-func (t *Tokens) TokenLookupNotFound(ctx context.Context, l TokenLookup) (bool, error) {
-	dropped := false
+// feed still dates them. gen is not used: nothing goes.
+func (t *Tokens) TokenLookupNotFound(ctx context.Context, l TokenLookup, gen string) (NotFound, error) {
+	var platform *uuid.UUID
+	if g, err := uuid.Parse(gen); err == nil {
+		platform = &g
+	}
+	out := NotFoundSettled
 	err := retryDeadlock(ctx, func() error {
-		dropped = false
+		out = NotFoundSettled
 		return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
 			if !l.ByID() {
 				_, err := tx.Exec(ctx, `UPDATE contract_token_stops SET lookup_after = 'infinity', lookup_bad = 0
@@ -169,31 +195,41 @@ func (t *Tokens) TokenLookupNotFound(ctx context.Context, l TokenLookup) (bool, 
 				return err
 			}
 			tag, err := tx.Exec(ctx, `UPDATE contract_token_sticky SET until = least(until, clock_timestamp())
-				WHERE token_id = $1 AND clock_until AND clock_gen = (SELECT generation FROM contract_state)`, l.Token)
+				WHERE token_id = $1 AND clock_until AND clock_gen = $2 AND clock_gen = (SELECT generation FROM contract_state)`,
+				l.Token, platform)
 			if err != nil {
 				return err
 			}
 			if tag.RowsAffected() == 1 {
-				dropped = true
+				out = NotFoundDropped
 				_, err := tx.Exec(ctx, `DELETE FROM contract_token_sticky WHERE token_id = $1`, l.Token)
 				return err
 			}
-			_, err = tx.Exec(ctx, `UPDATE contract_token_sticky SET lookup_after = 'infinity', lookup_bad = 0
-				WHERE token_id = $1 AND clock_until AND lookup_after IS DISTINCT FROM 'infinity'`, l.Token)
-			return err
+			tag, err = tx.Exec(ctx, `UPDATE contract_token_sticky SET lookup_after = 'infinity', lookup_bad = 0
+				WHERE token_id = $1 AND clock_until AND lookup_after IS DISTINCT FROM 'infinity'
+				  AND (clock_gen IS NULL OR clock_gen IS DISTINCT FROM (SELECT generation FROM contract_state)
+				       OR ($2::uuid IS NOT NULL AND clock_gen <> $2::uuid))`, l.Token, platform)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 0 && platform == nil {
+				out = NotFoundUnconfirmed
+			}
+			return nil
 		})
 	})
-	return dropped, err
+	return out, err
 }
 
 // TokenLookupFailed puts l off after a call that got nothing Wappie can
 // use, on Wappie's clock now: no answer (bad false), asked again after
-// retry; or a signed answer whose record Wappie cannot take (bad true: one
-// that is not valid, or ErrTokenLookupRecord), counted, and asked again
-// after retry doubled for each such answer in a row before it, at most
-// most, since the platform answers with the record it stores until that
-// record changes. It returns how many such answers in a row l has had (0
-// when it is no longer due: answered, or its row gone).
+// retry; or an answer whose record Wappie cannot take (bad true: one the
+// kit refused for anything but its signature, or ErrTokenLookupRecord),
+// counted, and asked again after retry doubled for each such answer in a
+// row before it, capped at most, since the platform answers with the
+// record it stores until that record changes. It returns how many such
+// answers in a row l has had (0 when it is no longer due: answered, or its
+// row gone).
 func (t *Tokens) TokenLookupFailed(ctx context.Context, l TokenLookup, now time.Time, bad bool, retry, most time.Duration) (int, error) {
 	q, arg := `UPDATE contract_token_sticky SET lookup_bad = lookup_bad + CASE WHEN $2 THEN 1 ELSE 0 END,
 			lookup_after = $3::timestamptz + CASE WHEN $2 THEN least($4::interval * power(2::float8, least(lookup_bad, 20)), $5::interval)

@@ -559,7 +559,8 @@ func TestTokensSuspendCommand(t *testing.T) {
 // selector Wappie never held: each append drops the older lines, keeping
 // the others in their order, a line that is no record as it is, and the
 // file's mode, the file replaced whole; two appends at once lose no line.
-// A replay leaves a line over 365 days old, whose stop retention let go.
+// A replay leaves a line over 365 days old, whose stop retention let go,
+// and applies the others with no note, made by wappie.
 func TestTokenStopRecordKeepsAYear(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	dir := t.TempDir()
@@ -656,9 +657,12 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 	if rows.Err() != nil || len(stops) != 1 || stops[0] != b {
 		t.Fatalf("the stops after the replay: %v %v, want only %s", stops, rows.Err(), b)
 	}
-	var note string
-	if err := pool.QueryRow(ctx, `SELECT note FROM contract_token_stops WHERE selector = $1`, b).Scan(&note); err != nil || note != "" {
-		t.Fatalf("the replayed stop's note: %q %v", note, err)
+	// It holds only what its line holds, made by wappie: the account that
+	// ran the replay made no stop.
+	var note, by string
+	if err := pool.QueryRow(ctx, `SELECT note, stopped_by FROM contract_token_stops WHERE selector = $1`, b).Scan(&note, &by); err != nil ||
+		note != "" || by != "wappie" {
+		t.Fatalf("the replayed stop's note %q and maker %q, want none and wappie: %v", note, by, err)
 	}
 }
 

@@ -122,12 +122,13 @@ type TokenPassResult struct {
 // unlisted_at and a sticky row (unlisted): refused, with its narrowest state
 // kept, never revived. Its end is the pass, or its expiry if that passed
 // before, and its content (its record, name, terms, perms and removed
-// instances) goes at once, as retention forgets one 30 days after its end:
-// an unlisting carries no time of its own, so a restore whose re-read of
-// the feed runs the pass again would start its 30 days again (decision
-// 0056 keeps a record at most 30 days after the platform stopped listing
-// it, and lets an app keep less). held_at_reset is cleared. now is Wappie's
-// clock.
+// instances) goes at once, with what the acknowledgement and the usage
+// report hold of it (forgetQueuesTx), as retention forgets one 30 days
+// after its end: an unlisting carries no time of its own, so a restore
+// whose re-read of the feed runs the pass again would start its 30 days
+// again (decision 0056 keeps a record at most 30 days after the platform
+// stopped listing it, and lets an app keep less). held_at_reset is
+// cleared. now is Wappie's clock.
 func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Time) (TokenPassResult, error) {
 	var out TokenPassResult
 	err := retryDeadlock(ctx, func() error {
@@ -194,6 +195,13 @@ func (t *Tokens) FinishTokenPass(ctx context.Context, gen uuid.UUID, now time.Ti
 					}
 				}
 				if err := dropTokenIdentitiesTx(ctx, tx, now, unlisted); err != nil {
+					return err
+				}
+				// What the acknowledgement and the usage report hold of
+				// it goes with its content, at this pass, as retention's
+				// forget takes it (after the workspace's token rows, perms
+				// and removed instances: DB25).
+				if _, err := forgetQueuesTx(ctx, tx, ws, false); err != nil {
 					return err
 				}
 				out.Unlisted = append(out.Unlisted, unlisted...)

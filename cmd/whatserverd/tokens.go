@@ -545,8 +545,9 @@ func stopRecordWritable(path string) error {
 }
 
 // replayTokenStops applies a record's lines in order: each stop at its own
-// time, with no note (the record keeps none), each lift likewise, so the
-// stops stand as they stood before the restore. It leaves a line at or
+// time, with no note and made by wappie (the record keeps neither, and the
+// account that runs the replay made none of them), each lift likewise, so
+// the stops stand as they stood before the restore. It leaves a line at or
 // before the mark of what retention let go (store.TokenStopMarked): the
 // restored database holds that stop or lift already, or retention let its
 // stop go before the snapshot, so a replay never brings that stop back. It
@@ -578,7 +579,7 @@ func replayTokenStops(ctx context.Context, t *store.Tokens, path string, out io.
 	if err != nil {
 		return err
 	}
-	by, now := osUser(), time.Now()
+	by, now := "wappie", time.Now()
 	stops, lifts, left, marked, lapsed := 0, 0, 0, 0, 0
 	for _, r := range records {
 		switch {
