@@ -325,15 +325,19 @@ func TestPeekSpendsNothingAndSpendCounts(t *testing.T) {
 	if len(l.buckets) != 0 {
 		t.Fatalf("Peek made %d buckets", len(l.buckets))
 	}
-	if !l.Spend("a") || !l.Spend("a") {
-		t.Fatal("the burst was not spent")
+	for range 2 {
+		if !l.Spend("a") {
+			t.Fatal("the burst was not spent")
+		}
 	}
 	if l.Peek("a") || l.Spend("a") {
 		t.Fatal("an empty bucket still has a token")
 	}
 	now = now.Add(time.Second)
-	if !l.Peek("a") || !l.Peek("a") {
-		t.Fatal("a second later Peek does not see the token back, or spent it")
+	for range 2 {
+		if !l.Peek("a") {
+			t.Fatal("a second later Peek does not see the token back, or spent it")
+		}
 	}
 	if !l.Spend("a") || l.Peek("a") {
 		t.Fatal("Spend did not take the one token back")

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/access"
 	"whatserver2/internal/blob"
@@ -41,6 +42,16 @@ type Handler struct {
 	// of Keys and Sessions alone, which refuses every platform token.
 	Access *access.Checker
 	Log    *slog.Logger
+
+	// streamHook, for tests, runs once a token's download has its headers
+	// and its monitor, before the first chunk.
+	streamHook func(stage string)
+}
+
+func (h *Handler) hook(stage string) {
+	if h.streamHook != nil {
+		h.streamHook(stage)
+	}
 }
 
 // checker is the Checker every request goes through.
@@ -82,6 +93,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	uid, err := uuid.Parse(r.PathValue("uid"))
 	if err != nil {
 		http.Error(w, "not a message id", http.StatusBadRequest)
+		return
+	}
+	if actor.IsToken() {
+		h.serveToken(w, r, actor, uid, log)
 		return
 	}
 
@@ -173,7 +188,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authenticateActor retains the principal so HTTP checks the same device
 // permissions as WebSocket, including service accounts and key restrictions.
+//
+// A platform token's request is decided on the raw header first
+// (access.TokenRequest): its text comes only from the kit's reading of the
+// header, so "bearer thc_..." reaches it in any case, and every refusal is
+// this endpoint's one 401, after a fixed wait. The case-sensitive
+// "Bearer " below stays for sessions and keys.
 func authenticateActor(r *http.Request, checker *access.Checker) (access.Actor, bool) {
+	if values := r.Header.Values("Authorization"); access.TokenRequest(values) {
+		text, err := kc.BearerToken(values)
+		var actor access.Actor
+		if err == nil {
+			actor, err = checker.AuthenticateToken(r.Context(), text, checker.Peer(r))
+		}
+		if err != nil {
+			access.Wait(r.Context())
+			return access.Actor{}, false
+		}
+		return actor, true
+	}
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		return access.Actor{}, false

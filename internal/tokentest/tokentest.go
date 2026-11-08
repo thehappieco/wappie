@@ -102,6 +102,19 @@ func (w *World) Scoped(fn func(pgx.Tx) error) {
 	}
 }
 
+// ExecIn runs sql in the workspace, under its row-level security, and
+// fails the test unless it changed a row.
+func (w *World) ExecIn(sql string, args ...any) {
+	w.T.Helper()
+	w.Scoped(func(tx pgx.Tx) error {
+		tag, err := tx.Exec(context.Background(), sql, args...)
+		if err == nil && tag.RowsAffected() == 0 {
+			w.T.Fatalf("%s changed nothing", sql)
+		}
+		return err
+	})
+}
+
 // Linked is a person of the workspace with role, linked to the platform
 // as sub, with an account document that names the workspace.
 func (w *World) Linked(name, role string, sub uuid.UUID) uuid.UUID {
@@ -152,9 +165,13 @@ type Perm struct {
 	Perm   string
 }
 
-// Read, Send and Manage are a perm on device.
-func Read(device uuid.UUID) Perm   { return Perm{device, kc.CanRead} }
-func Send(device uuid.UUID) Perm   { return Perm{device, kc.CanSend} }
+// Read is the read perm on device.
+func Read(device uuid.UUID) Perm { return Perm{device, kc.CanRead} }
+
+// Send is the send perm on device.
+func Send(device uuid.UUID) Perm { return Perm{device, kc.CanSend} }
+
+// Manage is the manage perm on device.
 func Manage(device uuid.UUID) Perm { return Perm{device, kc.CanManage} }
 
 // Token is a live token: its id, its text, and its record's latest
@@ -171,7 +188,7 @@ type Token struct {
 
 // Token mints a token with perms, given by the owner, and makes it live:
 // its record committed and judged, and a grant sealed to its identity at
-// epoch 1 of every number it reads.
+// the current epoch of every number it reads.
 func (w *World) Token(perms ...Perm) *Token {
 	w.T.Helper()
 	text, selector, hash := Mint()
@@ -189,10 +206,20 @@ func (w *World) TokenWith(text, selector, hash string, perms ...Perm) *Token {
 	}
 	for _, p := range perms {
 		if p.Perm == kc.CanRead {
-			w.Seal(tok, p.Device, 1)
+			w.Seal(tok, p.Device, w.Epoch(p.Device))
 		}
 	}
 	return tok
+}
+
+// Epoch is device's current epoch.
+func (w *World) Epoch(device uuid.UUID) uint16 {
+	w.T.Helper()
+	var epoch int32
+	w.Scoped(func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT current_epoch FROM devices WHERE id = $1`, device).Scan(&epoch)
+	})
+	return uint16(epoch) //nolint:gosec // G115: an epoch is a small positive integer
 }
 
 // Record is tok's record at its version, with its perms, created by the
@@ -280,9 +307,10 @@ func (w *World) TrySeal(tok *Token, device uuid.UUID, epoch uint16) error {
 		SealedDSK: []byte("sealed to the token"), Sealer: w.Owner, Now: now})
 }
 
-// Narrow commits tok's record again at the next version with perms, which
-// drops every perm it held and does not list again.
-func (w *World) Narrow(tok *Token, perms ...Perm) {
+// SetPerms commits tok's record again at the next version with perms in
+// place of those it held, and judges them: a perm dropped narrows (and
+// bumps its access_version), one added widens.
+func (w *World) SetPerms(tok *Token, perms ...Perm) {
 	w.T.Helper()
 	tok.Version++
 	tok.Perms = perms
@@ -316,6 +344,18 @@ func (w *World) Rotate(device uuid.UUID, epoch uint16) {
 	}
 	// The owner reads the new epoch, so it can seal it to a token again.
 	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: w.Owner, Epoch: epoch, SealedDSK: []byte("grant")}, &w.Owner); err != nil {
+		w.T.Fatal(err)
+	}
+}
+
+// Delete deletes device as its owner does: the row excluded for 30 days.
+func (w *World) Delete(device uuid.UUID) {
+	w.T.Helper()
+	// Linked first, so there is a number to delete and not a registration
+	// to drop.
+	w.ExecIn(`UPDATE devices SET pn = coalesce(pn, '55119' || lpad((random() * 1e8)::int::text, 8, '0') || '@s.whatsapp.net'),
+		last_connected_at = now() WHERE id = $1`, device)
+	if _, err := w.Devices.Quarantine(context.Background(), w.Tenant, w.Owner, device, nil); err != nil {
 		w.T.Fatal(err)
 	}
 }

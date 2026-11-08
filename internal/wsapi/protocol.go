@@ -820,6 +820,11 @@ type SealedMessage struct {
 	PayloadSealed []byte `json:"payload_sealed,omitempty"`
 
 	Media *SealedMedia `json:"media,omitempty"`
+
+	// Withheld says why the row's sealed content is not here: "attachments"
+	// for a row with an attachment, read by a platform token while its
+	// workspace's attachments switch is off (WithholdAttachments).
+	Withheld string `json:"withheld,omitempty"`
 }
 
 // SendRequest sends a text message.
@@ -1555,6 +1560,8 @@ type ChatSummary struct {
 	LastUID        string `json:"last_uid,omitempty"`
 	LastBodySealed []byte `json:"last_body_sealed,omitempty"`
 	LastBodyKeyID  uint32 `json:"last_body_key_id,omitempty"`
+	// LastWithheld is SealedMessage.Withheld for the newest message.
+	LastWithheld string `json:"last_withheld,omitempty"`
 }
 
 // Chats is the response to chats.list.

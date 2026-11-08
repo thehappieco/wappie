@@ -164,6 +164,9 @@
           "last_uid": {
             "type": "string"
           },
+          "last_withheld": {
+            "type": "string"
+          },
           "name_key_id": {
             "type": "integer"
           },
@@ -769,6 +772,9 @@
           },
           "wa_id": {
             "type": "string"
+          },
+          "withheld": {
+            "type": "string"
           }
         },
         "required": [
@@ -1019,6 +1025,9 @@
           },
           "wa_id": {
             "type": "string"
+          },
+          "withheld": {
+            "type": "string"
           }
         },
         "required": [
@@ -1238,6 +1247,9 @@
             "type": "boolean"
           },
           "wa_id": {
+            "type": "string"
+          },
+          "withheld": {
             "type": "string"
           }
         },
