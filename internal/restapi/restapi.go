@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	kc "github.com/thehappieco/kit/contract"
+
 	"whatserver2/internal/access"
 	"whatserver2/internal/store"
 )
@@ -76,6 +78,25 @@ func (h *Handler) authenticated(next func(*request)) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		r = r.WithContext(ctx)
+		// A platform token's request, decided on the raw header before
+		// anything else reads it: the token's text comes only from the
+		// kit's reading of the header, is never trimmed and never tried as a
+		// session or a key, and every refusal, from the header's shape to
+		// the token's state, is the one token 401 after a fixed wait.
+		if values := r.Header.Values("Authorization"); access.TokenRequest(values) {
+			text, err := kc.BearerToken(values)
+			var actor access.Actor
+			if err == nil {
+				actor, err = h.checker().AuthenticateToken(ctx, text, h.checker().Peer(r))
+			}
+			if err != nil {
+				access.Wait(ctx)
+				fail(w, http.StatusUnauthorized, "unauthorized", "credential expired, revoked or invalid")
+				return
+			}
+			next(&request{h: h, w: w, r: r, actor: actor, token: text, checks: map[uuid.UUID]store.DeviceAction{}})
+			return
+		}
 		parts := strings.Fields(r.Header.Get("Authorization"))
 		if len(r.Header.Values("Authorization")) != 1 || len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 4096 {
 			fail(w, http.StatusUnauthorized, "unauthorized", "a bearer session or API key is required")
@@ -106,6 +127,10 @@ func (q *request) finish(value any) {
 		fail(q.w, http.StatusForbidden, "not_authorized", "workspace access changed; retry the request")
 		return
 	}
+	if actor.IsToken() {
+		q.finishToken(value)
+		return
+	}
 	for device, action := range q.checks {
 		allowed, err := q.h.checker().Probe(q.r.Context(), actor, device, action)
 		if err != nil {
@@ -118,6 +143,46 @@ func (q *request) finish(value any) {
 		}
 	}
 	writeJSON(q.w, http.StatusOK, value)
+}
+
+// finishToken is finish's last check for a token: what it reaches now, in
+// one query and never counted (F4). Every number the answer holds must
+// still be in its set, and with the attachments switch off every row with
+// an attachment is withheld.
+func (q *request) finishToken(value any) {
+	live, err := q.h.checker().TokenSets(q.r.Context(), q.actor)
+	if err != nil {
+		q.internal(err)
+		return
+	}
+	if !live.Live {
+		fail(q.w, http.StatusForbidden, "not_authorized", "workspace access changed; retry the request")
+		return
+	}
+	for device, action := range q.checks {
+		if !tokenReaches(live, device, action) {
+			fail(q.w, http.StatusForbidden, "not_authorized", "device access changed; retry the request")
+			return
+		}
+	}
+	if w, ok := value.(interface{ WithholdAttachments() }); ok && !live.MediaOn {
+		w.WithholdAttachments()
+	}
+	writeJSON(q.w, http.StatusOK, value)
+}
+
+// tokenReaches reports whether a token's sets hold device for action: read
+// and view are Reads, send Sends, manage and pause Manages.
+func tokenReaches(live store.TokenLive, device uuid.UUID, action store.DeviceAction) bool {
+	set := live.Reads
+	switch action {
+	case store.ActionSend:
+		set = live.Sends
+	case store.ActionManage, store.ActionPause:
+		set = live.Manages
+	}
+	_, ok := set[device]
+	return ok
 }
 
 func (q *request) query(allowed ...string) (url.Values, bool) {
@@ -148,9 +213,13 @@ func (q *request) permitted(device uuid.UUID, action store.DeviceAction) (bool, 
 }
 
 func (q *request) device(action store.DeviceAction) (store.Device, bool) {
-	id, ok := q.uuid(q.r.PathValue("device"))
+	raw := q.r.PathValue("device")
+	id, ok := q.uuid(raw)
 	if !ok {
 		return store.Device{}, false
+	}
+	if q.actor.IsToken() {
+		return q.tokenDevice(raw, id, action)
 	}
 	device, err := q.h.Devices.Get(q.r.Context(), q.actor.Tenant.String(), id.String())
 	if err != nil {
@@ -163,6 +232,35 @@ func (q *request) device(action store.DeviceAction) (store.Device, bool) {
 		return store.Device{}, false
 	}
 	if !allowed {
+		fail(q.w, http.StatusForbidden, "not_authorized", "this credential cannot access the device")
+		return store.Device{}, false
+	}
+	return device, true
+}
+
+// tokenDevice is device for a token: a full canonical id only, and the
+// check before any lookup, so a number that does not exist, one deleted,
+// another workspace's and one refused all get the same answer, which holds
+// no id.
+func (q *request) tokenDevice(raw string, id uuid.UUID, action store.DeviceAction) (store.Device, bool) {
+	if id.String() != raw {
+		q.bad("a complete, nonzero UUID is required")
+		return store.Device{}, false
+	}
+	allowed, err := q.permitted(id, action)
+	if err != nil {
+		q.internal(err)
+		return store.Device{}, false
+	}
+	var device store.Device
+	if allowed {
+		device, err = q.h.Devices.Get(q.r.Context(), q.actor.Tenant.String(), id.String())
+		if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, pgx.ErrNoRows) {
+			q.internal(err)
+			return store.Device{}, false
+		}
+	}
+	if !allowed || err != nil {
 		fail(q.w, http.StatusForbidden, "not_authorized", "this credential cannot access the device")
 		return store.Device{}, false
 	}

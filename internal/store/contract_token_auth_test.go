@@ -32,18 +32,6 @@ func forAuth(t *testing.T, w *tokentest.World, text string) (store.TokenAuth, st
 	return auth, fail, err != nil
 }
 
-// scopedExec runs sql in the workspace and fails unless it changed a row.
-func scopedExec(t *testing.T, w *tokentest.World, sql string, args ...any) {
-	t.Helper()
-	w.Scoped(func(tx pgx.Tx) error {
-		tag, err := tx.Exec(context.Background(), sql, args...)
-		if err == nil && tag.RowsAffected() == 0 {
-			t.Fatalf("%s changed nothing", sql)
-		}
-		return err
-	})
-}
-
 // TestForAuthVerifiesTheSecretFirst: a text that does not parse, a
 // selector Wappie holds none of, and a wrong secret under a known selector
 // are each refused with their class and no token, so nothing is counted;
@@ -86,7 +74,6 @@ func TestForAuthVerifiesTheSecretFirst(t *testing.T) {
 func TestForAuthRefusesEveryPartWithItsCode(t *testing.T) {
 	w := newAuthWorld(t)
 	device := w.Number("Vendas")
-	ctx := context.Background()
 	cases := []struct {
 		name       string
 		code       string
@@ -114,18 +101,15 @@ func TestForAuthRefusesEveryPartWithItsCode(t *testing.T) {
 			w.Exec(`UPDATE contract_token_stops SET lifted_at = clock_timestamp() WHERE selector = $1`, tok.Selector)
 		}},
 		{"the creator disabled here", kc.UseSuspendedHere, func(*tokentest.Token) {
-			scopedExec(t, w, `UPDATE users SET status = 'disabled' WHERE id = $1`, w.Owner)
-		}, func(*tokentest.Token) { scopedExec(t, w, `UPDATE users SET status = 'active' WHERE id = $1`, w.Owner) }},
+			w.ExecIn(`UPDATE users SET status = 'disabled' WHERE id = $1`, w.Owner)
+		}, func(*tokentest.Token) { w.ExecIn(`UPDATE users SET status = 'active' WHERE id = $1`, w.Owner) }},
 		{"local_rule: the creator a member", kc.UseSuspendedHere, func(*tokentest.Token) {
-			scopedExec(t, w, `UPDATE workspace_memberships SET role = 'member' WHERE user_id = $1`, w.Owner)
+			w.ExecIn(`UPDATE workspace_memberships SET role = 'member' WHERE user_id = $1`, w.Owner)
 		}, func(*tokentest.Token) {
-			scopedExec(t, w, `UPDATE workspace_memberships SET role = 'owner' WHERE user_id = $1`, w.Owner)
+			w.ExecIn(`UPDATE workspace_memberships SET role = 'owner' WHERE user_id = $1`, w.Owner)
 		}},
 		{"unlisted", "", func(tok *tokentest.Token) {
-			w.Scoped(func(tx pgx.Tx) error {
-				_, err := tx.Exec(ctx, `UPDATE contract_tokens SET unlisted_at = clock_timestamp() WHERE id = $1`, tok.ID)
-				return err
-			})
+			w.ExecIn(`UPDATE contract_tokens SET unlisted_at = clock_timestamp() WHERE id = $1`, tok.ID)
 		}, nil},
 		{"tokens off", "", func(*tokentest.Token) { w.Exec(`UPDATE contract_token_state SET mode = 'off'`) },
 			func(*tokentest.Token) {
@@ -139,18 +123,12 @@ func TestForAuthRefusesEveryPartWithItsCode(t *testing.T) {
 		{"an inactive workspace", "", func(*tokentest.Token) { w.Exec(`UPDATE tenants SET status = 'suspended' WHERE id = $1`, w.Tenant) },
 			func(*tokentest.Token) { w.Exec(`UPDATE tenants SET status = 'active' WHERE id = $1`, w.Tenant) }},
 		{"a row retention forgot, revoked in the sticky set", kc.UseRevoked, func(tok *tokentest.Token) {
-			w.Scoped(func(tx pgx.Tx) error {
-				_, err := tx.Exec(ctx, `DELETE FROM contract_tokens WHERE id = $1`, tok.ID)
-				return err
-			})
+			w.ExecIn(`DELETE FROM contract_tokens WHERE id = $1`, tok.ID)
 			w.Exec(`INSERT INTO contract_token_sticky (token_id, revoked_at, ended, until) VALUES ($1, clock_timestamp(), 'revoked',
 				clock_timestamp() + interval '1 day') ON CONFLICT (token_id) DO UPDATE SET revoked_at = excluded.revoked_at, ended = excluded.ended`, tok.ID)
 		}, nil},
 		{"a row retention forgot, unlisted", "", func(tok *tokentest.Token) {
-			w.Scoped(func(tx pgx.Tx) error {
-				_, err := tx.Exec(ctx, `DELETE FROM contract_tokens WHERE id = $1`, tok.ID)
-				return err
-			})
+			w.ExecIn(`DELETE FROM contract_tokens WHERE id = $1`, tok.ID)
 		}, nil},
 	}
 	for _, c := range cases {
@@ -249,7 +227,7 @@ func TestTokenAllowsGivesEachRefusalItsCode(t *testing.T) {
 	w.Exec(`UPDATE contract_workspaces SET status = 'open' WHERE workspace_id = $1`, w.Tenant)
 
 	// A narrowing: the old version acts on nothing, and says no code.
-	w.Narrow(tok, tokentest.Read(readable))
+	w.SetPerms(tok, tokentest.Read(readable))
 	if v := allows(readable, read, on); v.OK || v.Live || v.Code != "" {
 		t.Errorf("a narrowed token's old version: %+v", v)
 	}

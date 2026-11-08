@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 	"whatserver2/internal/wsapi"
@@ -50,6 +52,10 @@ type Grants struct {
 
 func (h *Handler) devices(q *request) {
 	if _, ok := q.query(); !ok {
+		return
+	}
+	if q.actor.IsToken() {
+		h.tokenDevices(q)
 		return
 	}
 	rows, err := h.Devices.List(q.r.Context(), q.actor.Tenant.String())
@@ -102,6 +108,42 @@ func (h *Handler) devices(q *request) {
 	q.finish(Devices{q.actor.Tenant.String(), out})
 }
 
+// tokenDevices is the listing for a token: only the numbers it reads (no
+// metadata without Read, decision 0053), with its flags from the same
+// query, never counted (F4). A send-only or manage-only token works by
+// number id and lists nothing.
+func (h *Handler) tokenDevices(q *request) {
+	live, err := h.checker().TokenSets(q.r.Context(), q.actor)
+	if err != nil {
+		q.internal(err)
+		return
+	}
+	rows, err := h.Devices.List(q.r.Context(), q.actor.Tenant.String())
+	if err != nil {
+		q.internal(err)
+		return
+	}
+	out := make([]wsapi.DeviceInfo, 0, len(live.Reads))
+	for _, row := range rows {
+		id, err := uuid.Parse(row.ID)
+		if err != nil {
+			q.internal(err)
+			return
+		}
+		if _, ok := live.Reads[id]; !ok {
+			continue
+		}
+		q.checks[id] = store.ActionView
+		info := wsapi.DeviceFromRow(row)
+		_, info.CanSend = live.Sends[id]
+		_, info.CanManage = live.Manages[id]
+		info.CanPause = info.CanManage
+		info.Running = h.Running != nil && row.Status == wa.StatusOnline && !row.Paused && h.Running(row.ID)
+		out = append(out, info)
+	}
+	q.finish(Devices{q.actor.Tenant.String(), out})
+}
+
 func (h *Handler) chats(q *request) {
 	values, ok := q.query("limit", "chat_key")
 	if !ok {
@@ -139,7 +181,7 @@ func (h *Handler) chats(q *request) {
 	for _, row := range rows {
 		out = append(out, wsapi.ChatFromRow(row))
 	}
-	q.finish(Chats{q.actor.Tenant.String(), wsapi.Chats{DeviceID: device.ID, Chats: out}, limit, truncated})
+	q.finish(&Chats{q.actor.Tenant.String(), wsapi.Chats{DeviceID: device.ID, Chats: out}, limit, truncated})
 }
 
 func (h *Handler) page(q *request) {
@@ -217,7 +259,7 @@ func (h *Handler) page(q *request) {
 		}
 		page.Receipts = wsapi.PageReceipts(rows, acks)
 	}
-	q.finish(Page{q.actor.Tenant.String(), page})
+	q.finish(&Page{q.actor.Tenant.String(), page})
 }
 
 func (q *request) messageRow() (store.Row, bool) {
@@ -229,6 +271,27 @@ func (q *request) messageRow() (store.Row, bool) {
 		return store.Row{}, false
 	}
 	row, err := q.h.Messages.Get(q.r.Context(), q.actor.Tenant, uid)
+	if q.actor.IsToken() {
+		// One answer for a token (F8): a message that does not exist and
+		// one it cannot read are the same, and only a refusal on a message
+		// that exists is counted, its number then known.
+		if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, pgx.ErrNoRows) {
+			q.internal(err)
+			return store.Row{}, false
+		}
+		allowed := false
+		if err == nil {
+			if allowed, err = q.permitted(row.DeviceID, store.ActionRead); err != nil {
+				q.internal(err)
+				return store.Row{}, false
+			}
+		}
+		if !allowed {
+			fail(q.w, http.StatusForbidden, "not_authorized", "this credential cannot read the message")
+			return store.Row{}, false
+		}
+		return row, true
+	}
 	if err != nil {
 		q.storeError(err)
 		return store.Row{}, false
@@ -249,7 +312,7 @@ func (h *Handler) message(q *request) {
 	if !ok {
 		return
 	}
-	q.finish(Message{q.actor.Tenant.String(), wsapi.SealedMessageFromRow(row)})
+	q.finish(&Message{q.actor.Tenant.String(), wsapi.SealedMessageFromRow(row)})
 }
 func (h *Handler) history(q *request) {
 	row, ok := q.messageRow()
@@ -261,7 +324,7 @@ func (h *Handler) history(q *request) {
 		q.storeError(err)
 		return
 	}
-	q.finish(History{q.actor.Tenant.String(), row.UID.String(), wsapi.HistoryFromStore(history)})
+	q.finish(&History{q.actor.Tenant.String(), row.UID.String(), wsapi.HistoryFromStore(history)})
 }
 
 func (h *Handler) contentKeys(q *request) {
