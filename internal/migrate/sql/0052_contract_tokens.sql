@@ -75,12 +75,12 @@
 --                          token. A bad record's revocation is never dated
 --                          by a time of its own: Wappie's clock + 365 days
 --                          (clock_until), until the leader's lookup by id
---                          answers; then the token's own created_at + 365
---                          days, or, on a signed not_found in the
---                          generation the record came in, the row goes at
---                          once. Its own guard keeps every member from
---                          widening: until only lowers, as a later valid
---                          record's narrows a bad one's.
+--                          answers with a valid record; then the token's
+--                          own created_at + 365 days. A signed not_found
+--                          leaves it to its clock's date: a not_found never
+--                          clears a revocation. Its own guard keeps every
+--                          member from widening: until only lowers, as a
+--                          later valid record's narrows a bad one's.
 --   contract_token_stops   the operator's stops (and Wappie's own
 --                          apply_failed), keyed by selector, so a stop may
 --                          come before the record. The note stays local.
@@ -536,8 +536,8 @@ CREATE TABLE contract_token_sticky (
     clock_until         boolean     NOT NULL DEFAULT false,
     clock_gen           uuid,
     -- While clock_until: when to ask again (infinity: never, after a
-    -- not_found of another generation), and how many signed answers in a
-    -- row Wappie could not use.
+    -- not_found), and how many signed answers in a row Wappie could not
+    -- use.
     lookup_after        timestamptz,
     lookup_bad          integer     NOT NULL DEFAULT 0 CHECK (lookup_bad >= 0),
     CHECK (NOT clock_until OR clock_gen IS NOT NULL)

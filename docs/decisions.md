@@ -1812,11 +1812,10 @@ that no token here holds) come after the stops: the applier writes them
 after the stops' `record_until`, retention reads them, unlocked, in its
 stops statement and deletes them after the selectors. The lookups (the
 leader's signed GETs of one token, by id or by selector, which date what
-Wappie keeps of a token it does not hold) write after their calls (the
-GET, and after a `not_found` by id the account feed's page that says the
-platform's generation), never during them, in a short transaction of
-their own that takes no row of steps 1 to 6 and not the mark: the token's
-sticky row, then its selector's stops, then its selector's date, the
+Wappie keeps of a token it does not hold) write after their GET, never
+during it, in a short transaction of their own that takes no row of
+steps 1 to 6 and not the mark: the token's sticky row, then its
+selector's stops, then its selector's date, the
 applier's order. Retention's forget, and a reset's pass that unlists a
 token, delete a forgotten token's queue entries and usage rows in its
 workspace's turn, after that workspace's token rows, perms, removed

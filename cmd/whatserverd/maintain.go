@@ -136,7 +136,7 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	// at its valid record's created_at + 365 days), the usage rows 2 days
 	// after they were reported (a refusal count 30 after its day at most)
 	// and the queues' entries 30 days after they were sent; then the stop
-	// record's lines 365 days old, and the unreadable lines beside them.
+	// record's lines 365 days old, and the unreadable lines after them.
 	// With tokens never on, its tables are empty and this finds nothing.
 	a.retainTokens(ctx, time.Now())
 
@@ -190,7 +190,7 @@ func (a *app) retainTokens(ctx context.Context, now time.Time) {
 	if did.dropped > 0 {
 		a.log.Info("token stop record trimmed", "path", path, "lines", did.dropped, "unreadable", did.unreadableDropped)
 	}
-	// Kept as they are, until the stop's line next to them goes, these
+	// Kept as they are, until the stop's line before them goes, these
 	// make -replay refuse the record: they are to be mended before a
 	// restore needs it. Never their text.
 	if did.unreadable > 0 {

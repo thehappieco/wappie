@@ -578,23 +578,15 @@ it.
   reading key's fingerprint its own) dates the token's revocation, its
   selector's stops and its selector (below) to its `created_at` plus 365
   days.
-- **A signed `not_found`** by id means the token is past its `created_at`
-  plus 365 days: the platform keeps a record that named Wappie until then
-  and answers `not_found` after. Its revocation goes at once, but only in
-  the generation its bad record came in: after a restore of the platform's
-  database, `not_found` also means a token the restored platform never
-  named to Wappie, which it may name later unrevoked. So the leader then
-  asks the account feed for a page (`wait=0`, from Wappie's cursor), which
-  the platform answers in its generation of that moment, and does not
-  store it. The revocation goes only when that page and Wappie both hold
-  the bad record's generation: Wappie's feeds may not have seen a restored
-  platform's new generation yet. With another generation in either, the
-  revocation keeps its date and is not asked again. With no page, it is
-  asked again 15 minutes later, as a lookup with no answer, with a WARN
-  "contract: a token lookup's not_found waits for the platform's
-  generation" at most once a minute. By selector, the platform knows no
-  token of that selector for Wappie: the stop is the operator's own
-  record, kept 365 days after it was made, and is not asked again.
+- **A signed `not_found`** never clears a revocation (the design's 3.4,
+  and the kit's SPEC 11.18). By id, the platform answers it for a token
+  past its `created_at` plus 365 days, but also, after a restore of its
+  database, for a token it never named to Wappie, which it may name later
+  unrevoked. So the revocation keeps its date, 365 days after it came,
+  and is not asked again. A later valid record of the token still lowers
+  it. By selector, the platform knows no token of that selector for
+  Wappie: the stop is the operator's own record, kept 365 days after it
+  was made, and is not asked again.
 - **An answer whose record Wappie cannot use**, which the kit refuses for
   anything but its signature (a record that is not valid, another app's
   or another token's, a body that does not decode, or one too large to
@@ -681,13 +673,14 @@ Wappie may restore (the pilot's snapshots are kept 90 days), so a restore
 of any of them finds every line written since. The trim never creates the
 file, and a trim that fails is done again by the next pass. A line that
 is no stop's record (a hand edit, a damaged disk, a torn last line),
-blank or not, goes with the stop's line next to it: the first after it, at
-that line's 365 days; with none after it, the last before it; in a file of
-no stop's line, 365 days after the file last changed. Lines are only added
-at the end, so the line after it was written after it, and a replay never
-needs it. Until then it stays, and every pass logs an ERROR that counts it
-([the stop record](deployment.md#the-contract)), since `-replay` refuses
-the file while it holds one.
+blank or not, serves no restore: `-replay` refuses the whole file while it
+holds one. It goes with the nearest stop's line before it, at that line's
+365 days. Lines are only added at the end, so that line's time is no later
+than this one's writing, and it goes at most 365 days after it was
+written, as decision 0056 says. One with no stop's line before it goes at
+the next trim. Until it goes, every pass logs an ERROR that counts it
+([the stop record](deployment.md#the-contract)), so that it is mended
+before a restore needs the file.
 
 A line 365 days old goes even while its stop stands. Only the stop of a
 selector Wappie holds outlives 365 days, to that selector's date, its
@@ -751,7 +744,9 @@ plus 365 days, and the stops, never before the database's clock either):
   told revoked, expiring earlier or with a pinned key stays, as its
   security record), its usage refusals on a number, and its days of use
   not yet reported. Its refusals as a token (presented revoked or
-  expired), which name no item, keep their own rule (below).
+  expired), which name no item, keep their own rule for now (below).
+  No process counts uses yet; the change that does makes these go at the
+  forget too, as the platform ruled on 2026-11-08.
 - **Its security record**, used only to keep it refused, at its
   `created_at` plus 365 days, when it would have expired anyway and its
   records have left the platform's feed: its selector and hash, its pinned
@@ -766,9 +761,10 @@ plus 365 days, and the stops, never before the database's clock either):
   clock counts as now), and none once that has passed. A bad record's
   times are never taken: its revocation is kept 365 days from when it
   came only until Wappie learns the token's own date, from a valid record
-  of it or from the lookup by id (above), which may also let it go at once
-  (a signed `not_found`). A platform that answers with a record Wappie
-  cannot use, or never answers, leaves it at 365 days from when it came.
+  of it or from the lookup by id (above). A platform that answers
+  `not_found`, answers with a record Wappie cannot use, or never answers,
+  leaves it at 365 days from when it came: a `not_found` never clears a
+  revocation.
   Its selector, when that valid record names one no token here holds, is
   kept with the record's `created_at` plus 365 days
   (`contract_token_dates`), to that date: it dates a stop of that
@@ -1174,9 +1170,8 @@ own: "contract: no token feed page for a long time" (class
 answered a token lookup with a record Wappie cannot use; it is asked again
 later" (class `token_lookup_invalid`), once for each lookup, with its kind
 (`id` or `selector`), never its token or selector; and WARN "contract: a
-token lookup got no answer", WARN "contract: a token lookup's not_found
-waits for the platform's generation", INFO "contract: the token lookups
-answer again".
+token lookup got no answer", INFO "contract: the token lookups answer
+again".
 
 **Lock order.** Every transaction that touches several of the contract's
 rows takes them in one order: `contract_state`, then `contract_accounts`
@@ -1194,9 +1189,8 @@ the mark of what retention let go (`contract_token_stops_let_go`, shared),
 then its stop; retention takes the mark after every workspace's token
 rows and before the stops. A command takes the stop record's file lock
 before any of them. The selectors' dates (`contract_token_dates`) come
-after the stops. The lookups write after their calls (the GET, and the
-account feed's page after a `not_found` by id), never during them, in a
-transaction of their own that takes no workspace or token row: the
+after the stops. The lookups write after their calls, never during them,
+in a transaction of their own that takes no workspace or token row: the
 token's sticky row, then its selector's stops, then its selector's date,
 in the applier's order.
 

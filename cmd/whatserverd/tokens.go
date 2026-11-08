@@ -42,8 +42,9 @@ import (
 // microsecond) and whether it was a lift, nothing more; the note, the
 // account and Wappie's own apply_failed stops stay in the database. A
 // line goes 365 days after its time, whatever became of its stop, and a
-// line that is no stop's record with the stop's line next to it: at an
-// append, or in the hourly pass (trimTokenStops).
+// line that is no stop's record with the stop's line before it, or at
+// once with none before it: at an append, or in the hourly pass
+// (trimTokenStops).
 type tokenStopRecord struct {
 	Selector string    `json:"selector"`
 	At       time.Time `json:"at"`
@@ -247,16 +248,16 @@ func appendHeldTokenStop(f *os.File, path string, r tokenStopRecord, now time.Ti
 // trimTokenStops is the hourly pass's trim of the record (retainTokens).
 // It drops the lines whose time is 365 days old by now, by the comparison
 // a replay uses to leave one (store.TokenStopLapsed), so the two agree,
-// and with them the lines that are no stop's record they date
-// (rewriteHeldTokenStops), and nothing else: decision 0056 keeps each line
-// 365 days after it was written, and never less than the reach of the
-// backups Wappie may restore (90 days), so a line stays to its 365 days
-// whatever became of its stop. A line's time is when it was written, the
-// stop's stopped_at or lifted_at, appended as the stop or the lift is
-// made: a lift of a stop lifted already writes none (changeTokenStop). It
-// never makes a missing record, and reports how many lines it dropped, how
-// many of those were no stop's record, and how many such lines it kept as
-// they are.
+// and with them the lines that are no stop's record they date, or that no
+// stop's line comes before (rewriteHeldTokenStops), and nothing else:
+// decision 0056 keeps each line 365 days after it was written, and never
+// less than the reach of the backups Wappie may restore (90 days), so a
+// line stays to its 365 days whatever became of its stop. A line's time
+// is when it was written, the stop's stopped_at or lifted_at, appended as
+// the stop or the lift is made: a lift of a stop lifted already writes
+// none (changeTokenStop). It never makes a missing record, and reports how
+// many lines it dropped, how many of those were no stop's record, and how
+// many such lines it kept as they are.
 //
 // A line 365 days old goes even while its stop stands. Only a stop of a
 // selector Wappie holds outlives 365 days, to the selector's until, its
@@ -297,13 +298,12 @@ type stopRecordLine struct {
 // each stop's line under 365 days old by now, written again as its
 // selector, time and lift alone (a line an older binary wrote with its note
 // loses it), and a line that is no stop's record as it is (counted, unless
-// blank: -replay refuses a record that holds one) until the stop's line
-// next to it goes: the first after it, or with none after it the last
-// before it, or in a record of no stop's line at all the file's last
-// change, which is at least as late as the line's writing. Lines are only
-// ever added at the end, so such a line is about as old as the line after
-// it, and goes with it at 365 days; a replay never needs it, since -replay
-// refuses the record while it holds one. Then it adds add (a line, without
+// blank: -replay refuses a record that holds one) until the nearest stop's
+// line before it goes. Lines are only ever added at the end, so that
+// line's time is no later than this one's writing: it goes at most 365
+// days after it was written, as decision 0056 says. One with no stop's
+// line before it goes at once: -replay refuses the whole record while it
+// holds one, so it can serve no restore. Then it adds add (a line, without
 // its newline), if any. The new text goes to a temporary file in the
 // record's directory, with its mode and owner, synced and renamed over it,
 // the directory synced: two rewrites at once never lose a line. A
@@ -326,40 +326,25 @@ func rewriteHeldTokenStops(f *os.File, path string, add []byte, now time.Time) (
 			lines = append(lines, stopRecordLine{text: l, rec: rec, ok: ok})
 		}
 	}
-	// The time each line that is no stop's record goes by: its neighbour's.
-	dated := make([]time.Time, len(lines))
-	var before time.Time
-	for i, l := range lines {
-		if l.ok {
-			before = l.rec.At
-		}
-		dated[i] = before
-	}
-	after := time.Time{}
-	for i := len(lines) - 1; i >= 0; i-- {
-		if lines[i].ok {
-			after = lines[i].rec.At
-		} else if !after.IsZero() {
-			dated[i] = after
-		}
-		if dated[i].IsZero() {
-			dated[i] = held.ModTime()
-		}
-	}
+	// A line that is no stop's record goes by the time of the nearest
+	// stop's line before it (zero: none, so at once).
 	var kept []byte
-	for i, l := range lines {
+	var before time.Time
+	for _, l := range lines {
 		blank := strings.TrimSpace(l.text) == ""
 		switch {
 		case l.ok && store.TokenStopLapsed(l.rec.At, now):
+			before = l.rec.At
 			did.dropped++
 			continue
 		case l.ok:
+			before = l.rec.At
 			line, err := json.Marshal(l.rec)
 			if err != nil {
 				return stopRecordRewrite{}, err
 			}
 			l.text = string(line)
-		case store.TokenStopLapsed(dated[i], now):
+		case before.IsZero() || store.TokenStopLapsed(before, now):
 			if !blank {
 				did.dropped++
 				did.unreadableDropped++

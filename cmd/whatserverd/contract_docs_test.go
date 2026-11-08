@@ -249,6 +249,16 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				t.Errorf("docs/contract.md and docs/contract-events.md do not say the ERROR %q", m[1])
 			}
 		}
+		// And every contract line the docs quote is still the code's, so a
+		// line the code no longer writes leaves the docs too.
+		quoted := regexp.MustCompile(`"(contract: [^"]+)"`)
+		for _, doc := range []string{"contract.md", "contract-events.md", "deployment.md"} {
+			for _, m := range quoted.FindAllStringSubmatch(docs[doc], -1) {
+				if !strings.Contains(code, m[1]) {
+					t.Errorf("docs/%s quotes %q, which the code no longer says", doc, m[1])
+				}
+			}
+		}
 		// The start line, as a deploy checks it.
 		codeSays(`"contract: mode=%s transport=%s secret=%s"`)
 		says("contract.md", "contract: mode=off transport=none secret=missing")
