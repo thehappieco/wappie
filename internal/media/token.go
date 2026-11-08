@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -90,7 +91,16 @@ func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request, actor acces
 
 	var cut atomic.Bool
 	done := make(chan struct{})
-	defer close(done)
+	// The response controller is the handler's until it returns: the
+	// monitor sets its deadline only under mu, and never once finished.
+	var mu sync.Mutex
+	finished := false
+	defer func() {
+		mu.Lock()
+		finished = true
+		mu.Unlock()
+		close(done)
+	}()
 	rc := http.NewResponseController(w)
 	go func() {
 		t := time.NewTicker(streamRecheck)
@@ -105,8 +115,12 @@ func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request, actor acces
 			if !streamAllowed(r, checker, actor, ref.DeviceID) {
 				cut.Store(true)
 				// A write blocked on a slow client fails now.
-				//nolint:errcheck // a writer without deadlines is cut at its next chunk
-				_ = rc.SetWriteDeadline(time.Now())
+				mu.Lock()
+				if !finished {
+					//nolint:errcheck // a writer without deadlines is cut at its next chunk
+					_ = rc.SetWriteDeadline(time.Now())
+				}
+				mu.Unlock()
 				return
 			}
 		}
