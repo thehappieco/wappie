@@ -1528,10 +1528,16 @@ func TestOverflowGoesInFurtherAcksAtTheSameThrough(t *testing.T) {
 			t.Fatalf("the overflow at through %d, the first at %d", a.Through, carrying[0].Through)
 		}
 	}
-	var sent int
-	if err := w.pool.QueryRow(context.Background(), `SELECT count(*) FROM contract_token_refusals_out WHERE sent_at IS NOT NULL`).Scan(&sent); err != nil || sent != queued {
-		t.Fatalf("%d refusals marked sent, %v", sent, err)
-	}
+	// The sender marks a batch sent once the platform has accepted it, so
+	// the last mark may commit just after the fake recorded its
+	// acknowledgement.
+	eventually(t, 10*time.Second, "every refusal marked sent", func() bool {
+		var sent int
+		if err := w.pool.QueryRow(context.Background(), `SELECT count(*) FROM contract_token_refusals_out WHERE sent_at IS NOT NULL`).Scan(&sent); err != nil {
+			t.Fatal(err)
+		}
+		return sent == queued
+	})
 }
 
 // The waiting set and the suspended set go whole, only when they change
