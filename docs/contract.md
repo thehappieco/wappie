@@ -584,9 +584,11 @@ it.
   database, for a token it never named to Wappie, which it may name later
   unrevoked. So the revocation keeps its date, 365 days after it came,
   and is not asked again. A later valid record of the token still lowers
-  it. By selector, the platform knows no token of that selector for
-  Wappie: the stop is the operator's own record, kept 365 days after it
-  was made, and is not asked again.
+  it, as a good answer would, whether or not it revokes the token. One
+  that does not revoke it never makes a live token. By selector, the
+  platform knows no token of that selector for Wappie: the stop is the
+  operator's own record, kept 365 days after it was made, and is not
+  asked again.
 - **An answer whose record Wappie cannot use**, which the kit refuses for
   anything but its signature (a record that is not valid, another app's
   or another token's, a body that does not decode, or one too large to
@@ -761,10 +763,10 @@ plus 365 days, and the stops, never before the database's clock either):
   clock counts as now), and none once that has passed. A bad record's
   times are never taken: its revocation is kept 365 days from when it
   came only until Wappie learns the token's own date, from a valid record
-  of it or from the lookup by id (above). A platform that answers
-  `not_found`, answers with a record Wappie cannot use, or never answers,
-  leaves it at 365 days from when it came: a `not_found` never clears a
-  revocation.
+  of it, revoked or not, or from the lookup by id (above). A platform
+  that answers `not_found`, answers with a record Wappie cannot use, or
+  never answers, leaves it at 365 days from when it came, unless such a
+  valid record comes later: a `not_found` never clears a revocation.
   Its selector, when that valid record names one no token here holds, is
   kept with the record's `created_at` plus 365 days
   (`contract_token_dates`), to that date: it dates a stop of that

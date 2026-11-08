@@ -584,6 +584,62 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	if u := w.stickyUntil(notFound); u == nil || !u.Equal(date) {
 		t.Errorf("a valid record after a not_found: the revocation is kept to %v, want %v", u, date)
 	}
+	// So does one that does not revoke it, as when the platform names the
+	// token again unrevoked after a restore: of another workspace; of
+	// Wappie's own, which never makes a live row (M8); and one refused for
+	// a selector another token holds. It dates the row, revoked as before,
+	// and narrows nothing. A valid record makes no row where none is.
+	unrevoked := map[string]uuid.UUID{"of another workspace": uuid.New(), "of Wappie's workspace": uuid.New(), "with a taken selector": uuid.New()}
+	for _, id := range unrevoked {
+		w.page(false, w.record(id, 1, invalid, revoked))
+		if err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := w.due(w.now); len(got) != 0 {
+		t.Fatalf("after the not_founds, due: %v", got)
+	}
+	res := w.page(false,
+		w.record(unrevoked["of another workspace"], 2, elsewhere, createdAt(created, 200*tokenDay)),
+		w.record(unrevoked["of Wappie's workspace"], 2, createdAt(created, 200*tokenDay)),
+		w.record(unrevoked["with a taken selector"], 2, createdAt(created, 200*tokenDay), func(r *kc.TokenRecord) { r.Selector = selectorOf(heldTok) }))
+	if res.Narrowed {
+		t.Error("valid records that only date revocations narrowed something")
+	}
+	for name, id := range unrevoked {
+		if exists, rv, _ := w.sticky(id); !exists || !rv {
+			t.Errorf("a valid unrevoked record %s after a not_found: the row is there %v, revoked %v", name, exists, rv)
+		}
+		if clock, _, settled := w.stickyClock(id); clock || settled {
+			t.Errorf("a valid unrevoked record %s after a not_found: clock-dated %v, settled %v", name, clock, settled)
+		}
+		if u := w.stickyUntil(id); u == nil || !u.Equal(date) {
+			t.Errorf("a valid unrevoked record %s after a not_found: the revocation is kept to %v, want %v", name, u, date)
+		}
+		if tok := w.token(id); tok.Exists {
+			t.Errorf("a valid unrevoked record %s made a live row", name)
+		}
+	}
+	// One created when the bad record came gives the row the same date,
+	// now the token's own, not Wappie's clock's.
+	same := uuid.New()
+	w.page(false, w.record(same, 1, invalid, revoked))
+	if err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: same}); err != nil {
+		t.Fatal(err)
+	}
+	w.page(false, w.record(same, 2, elsewhere, createdAt(w.now, 200*tokenDay)))
+	if clock, _, _ := w.stickyClock(same); clock {
+		t.Error("a valid record dated as the row is left it dated by Wappie's clock")
+	}
+	if u := w.stickyUntil(same); u == nil || !u.Equal(w.now.Add(kc.MaxTokenLifetime)) {
+		t.Errorf("a valid record dated as the row: the revocation is kept to %v, want %v", u, w.now.Add(kc.MaxTokenLifetime))
+	}
+	if exists, _, _ := w.sticky(later); exists {
+		t.Error("a valid unrevoked record of a token Wappie holds nothing of made a sticky row")
+	}
+	if got := w.due(w.now); len(got) != 0 {
+		t.Fatalf("after the dates, due: %v", got)
+	}
 
 	// No answer: asked again 15 minutes on. Bad answers: 15 minutes, then
 	// 30, the count rising.

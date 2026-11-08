@@ -151,8 +151,8 @@ func (t *Tokens) TokenLookupAnswered(ctx context.Context, l TokenLookup, rec kc.
 // a token it has never named to Wappie, which it may name later unrevoked.
 // A not_found never clears a revocation (the design's 3.4; the kit's SPEC
 // 11.18), so the bad record's revocation keeps Wappie's clock's date, its
-// receipt + 365 days. A later valid record of the token from the feed
-// still lowers it, and a later bad record asks again.
+// receipt + 365 days. A later valid record of the token, revoked or not,
+// still lowers it (datingSticky), and a later bad record asks again.
 //
 // By selector: the platform knows no token of that selector for Wappie, so
 // its stops are the operator's own record, kept to their stopped_at + 365
