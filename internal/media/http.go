@@ -44,7 +44,8 @@ type Handler struct {
 	Log    *slog.Logger
 
 	// streamHook, for tests, runs once a token's download has its headers
-	// and its monitor, before the first chunk.
+	// and its monitor, before the first chunk ("streaming"), and when its
+	// monitor cuts it ("cut").
 	streamHook func(stage string)
 }
 

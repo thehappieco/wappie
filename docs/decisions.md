@@ -1867,6 +1867,17 @@ row already, and an insert takes it anyway for the capacity check, so no
 other lock, such as an advisory one, comes between a number's insert and a
 move into the same workspace.
 
+The usage rows (`contract_token_used`, `contract_token_refusals`) take no
+row of steps 1 to 6. Every process's flush (`AddTokenUse`) writes the used
+rows and then the refusals, each in the order a usage report lists them:
+(day, token), then (day, token, number, perm, code), with no number and no
+perm first. The leader's mark of an accepted report (`UsageSent`) updates
+its refusal rows one by one in that order, and its update of the used rows
+waits on no flush: a flush's new row is not the update's to see before it
+commits, and a conflict with a committed row takes no lock. So two flushes
+over the same keys, or a flush and the mark, never wait on each other in a
+cycle.
+
 A deadlock, a serialization failure, a timeout or a lost connection rolls
 the page back whole and is retried (`retryDeadlock`); only a record's own
 data fault (a data exception, a constraint, a trigger's RAISE) sends its

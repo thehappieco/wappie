@@ -279,6 +279,88 @@ func TestATokensDownloadEndsShortOnceItsAccessEnds(t *testing.T) {
 	})
 }
 
+// TestATokensDownloadEndsWhenItsCheckCannotRun (the plan's 4.6): a check
+// that cannot answer within its second, its pool at its limit or its
+// database stalled, is a failed one. A token revoked while its download's
+// checks wait for a connection never gets the whole body.
+func TestATokensDownloadEndsWhenItsCheckCannotRun(t *testing.T) {
+	m := newTokenMedia(t)
+	w := m.w
+	cut := make(chan struct{})
+	var once sync.Once
+	media.SetStreamHook(m.handler, func(stage string) {
+		if stage == "cut" {
+			once.Do(func() { close(cut) })
+		}
+	})
+	// The checker's own pool, of two connections, which the test takes
+	// once the download is under way.
+	cfg := m.pool.Config().Copy()
+	cfg.MaxConns = 2
+	busy, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(busy.Close)
+	m.checker.Tokens = store.NewTokens(busy)
+	device := w.Number("Vendas")
+	srv := httptest.NewServer(m.mux)
+	defer srv.Close()
+	const size = 3 << 20
+	tok := w.Token(tokentest.Read(device))
+	uid := m.attachment(t, device, size)
+	m.blob.release = make(chan struct{})
+	m.blob.first = 512 << 10
+	var held []*pgxpool.Conn
+	// Whatever happens, the body and the pool go on before the server
+	// closes, which waits for the handler.
+	var unblock sync.Once
+	release := func() {
+		unblock.Do(func() {
+			close(m.blob.release)
+			for _, c := range held {
+				c.Release()
+			}
+		})
+	}
+	defer release()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/media/"+uid.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok.Text)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK || res.ContentLength != size {
+		t.Fatalf("the download: %d %d", res.StatusCode, res.ContentLength)
+	}
+	head := make([]byte, 256<<10)
+	if _, err := io.ReadFull(res.Body, head); err != nil {
+		t.Fatalf("the first chunk: %v", err)
+	}
+	for range 2 {
+		c, err := busy.Acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, c)
+	}
+	w.Revoke(tok)
+	select {
+	case <-cut:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the download was not cut while its check could not run")
+	}
+	release()
+	rest, err := io.ReadAll(res.Body)
+	if n := len(head) + len(rest); err == nil || n >= size {
+		t.Fatalf("the body came whole: %d bytes, %v", n, err)
+	}
+}
+
 // TestATokensUploadIsCheckedAgainBeforeItsKeys (F11, the plan's 6.3): a
 // token uploads only on a number it sends on, named by its full id; a
 // number it cannot send on, a missing one and another workspace's get one

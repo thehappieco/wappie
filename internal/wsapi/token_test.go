@@ -3,9 +3,12 @@ package wsapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,14 +20,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thehappieco/kit/vectors"
+	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/access"
 	"whatserver2/internal/bus"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
+	"whatserver2/internal/media"
 	"whatserver2/internal/membership"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pgtest"
+	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/store"
 	"whatserver2/internal/tokentest"
 	"whatserver2/internal/wa"
@@ -34,6 +40,7 @@ import (
 const (
 	tokenFrameRefused  = "a platform token cannot do this"
 	tokenNumberRefused = "this token cannot do that on this number"
+	tokenStartRefused  = "this number cannot be resumed now"
 )
 
 // tokenSocket is a socket server whose checker takes platform tokens, over
@@ -657,5 +664,144 @@ func TestEveryTokenVectorOnTheHello(t *testing.T) {
 		if e.Message != want {
 			t.Errorf("refused %q: %q, want %q", c.Name, e.Message, want)
 		}
+	}
+}
+
+// TestATokensHelloSpendsOnlyTheAddress (M12, the plan's 3.6): a token's
+// hello spends the hello's limit by its address alone, never under a
+// subject. A selector is not secret: six wrong secrets under it, each from
+// an address of its own, are past DefaultAuth's five a minute per subject
+// and still never lock its token out. Six garbled texts make no subject
+// either.
+func TestATokensHelloSpendsOnlyTheAddress(t *testing.T) {
+	loopback := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+	ts := newTokenSocket(t, func(cfg *wsapi.Config) { cfg.Limits = ratelimit.DefaultAuth(loopback) })
+	w := ts.w
+	tok := w.Token(tokentest.Read(w.Number("Vendas")))
+	helloFrom := func(addr, text string) wsapi.Frame {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		//nolint:bodyclose // coder/websocket: "You never need to close resp.Body yourself."
+		conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.srv.URL, "http")+"/v1/ws",
+			&websocket.DialOptions{HTTPHeader: http.Header{"X-Forwarded-For": {addr}}})
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.CloseNow() })
+		send(t, conn, wsapi.TypeHello, wsapi.Hello{Version: wsapi.Version, APIKey: text})
+		return read(t, conn)
+	}
+	other, _, _ := tokentest.Mint()
+	dot := strings.IndexByte(tok.Text, '.') + 1
+	wrong := tok.Text[:dot] + other[dot:]
+	for i := range 6 {
+		wantError(t, helloFrom(fmt.Sprintf("203.0.113.%d", i+1), wrong), wsapi.ErrCodeUnauthorized)
+	}
+	if f := helloFrom("203.0.113.100", tok.Text); f.Type != wsapi.TypeWelcome {
+		t.Fatalf("the token after six wrong secrets under its selector: %s %s", f.Type, f.Payload)
+	}
+	for i := range 6 {
+		wantError(t, helloFrom(fmt.Sprintf("198.51.100.%d", i+1), "thc_garbled"), wsapi.ErrCodeUnauthorized)
+	}
+}
+
+// retryReceipts records the media retry receipts sent, and through which
+// number.
+type retryReceipts struct {
+	mu      sync.Mutex
+	numbers []string
+	sent    []*types.MessageInfo
+}
+
+func (r *retryReceipts) client(device string) media.RetryClient {
+	return retryClient{r, device}
+}
+
+type retryClient struct {
+	r      *retryReceipts
+	device string
+}
+
+func (c retryClient) SendMediaRetryReceipt(_ context.Context, m *types.MessageInfo, _ []byte) error {
+	c.r.mu.Lock()
+	defer c.r.mu.Unlock()
+	c.r.numbers = append(c.r.numbers, c.device)
+	c.r.sent = append(c.r.sent, m)
+	return nil
+}
+
+// TestATokensMediaRetryStaysOnItsNumber: media.retry names a number and a
+// message's uid. A token that reads a, attachments on, retries a's own
+// attachment through a. Naming a with the uid of a message on b, which it
+// cannot read, sends nothing through a's connection for b's message and
+// answers as a uid that does not exist does: the one refusal, whether b's
+// message has an attachment or not (F8).
+func TestATokensMediaRetryStaysOnItsNumber(t *testing.T) {
+	receipts := &retryReceipts{}
+	ts := newTokenSocket(t, func(cfg *wsapi.Config) {
+		cfg.Retrier = &media.Retrier{Messages: cfg.Messages, Media: cfg.Media,
+			Devices: func(_ context.Context, _ uuid.UUID, device string) (media.RetryClient, error) {
+				return receipts.client(device), nil
+			}}
+	})
+	w := ts.w
+	a, b := w.Number("Vendas"), w.Number("Suporte")
+	tok := w.Token(tokentest.Read(a))
+	insert := func(device uuid.UUID, typ domain.Type, chat string) uuid.UUID {
+		t.Helper()
+		uid := uuid.New()
+		in := store.InsertMessage{UID: uid, TenantID: w.Tenant, DeviceID: device, WAID: "wa-" + uid.String(), ChatKey: chat,
+			TS: time.Now(), Kind: domain.KindMessage, Type: typ, Source: domain.SourceLive, BodySealed: []byte("caption")}
+		if typ.HasMedia() {
+			in.Media = &store.InsertMedia{MediaType: string(typ), MimeType: "image/jpeg", MediaKeySealed: []byte("key")}
+		}
+		if _, err := store.NewMessages(ts.pool).Insert(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+		return uid
+	}
+	aImage := insert(a, domain.TypeImage, "5511999999999@s.whatsapp.net")
+	bImage := insert(b, domain.TypeImage, "5511888888888@s.whatsapp.net")
+	bText := insert(b, domain.TypeText, "5511888888888@s.whatsapp.net")
+	conn := ts.open(t, tok)
+	key := make([]byte, 32)
+	retry := func(device, uid uuid.UUID) wsapi.Frame {
+		return on(t, conn, wsapi.TypeMediaRetry, wsapi.MediaRetryRequest{DeviceID: device.String(), UID: uid.String(), MediaKey: key})
+	}
+	if f := retry(a, aImage); f.Type != wsapi.TypeRetryQueued {
+		t.Fatalf("a's own attachment: %s %s", f.Type, f.Payload)
+	}
+	refusedWith(t, "b named", retry(b, bImage), tokenNumberRefused)
+	for name, uid := range map[string]uuid.UUID{"b's image": bImage, "b's text": bText, "a uid of no message": uuid.New()} {
+		refusedWith(t, name+" under a", retry(a, uid), tokenNumberRefused)
+	}
+	receipts.mu.Lock()
+	defer receipts.mu.Unlock()
+	if len(receipts.sent) != 1 || receipts.numbers[0] != a.String() || receipts.sent[0].Chat.String() != "5511999999999@s.whatsapp.net" {
+		t.Fatalf("the receipts sent: %v through %v", receipts.sent, receipts.numbers)
+	}
+}
+
+// TestDeviceStartTellsAManageOnlyTokenNothingOfTheNumber: device.stop hides
+// a number's status from a token that cannot read it, and so does
+// device.start: a linked number and one never linked fail with one answer.
+// With Read the reason is the token's to see.
+func TestDeviceStartTellsAManageOnlyTokenNothingOfTheNumber(t *testing.T) {
+	ts := newTokenSocket(t)
+	w := ts.w
+	linked, unlinked := w.Number("Vendas"), w.Number("Suporte")
+	w.ExecIn(`UPDATE devices SET pn = '5511777777777@s.whatsapp.net', lid = '1234567@lid' WHERE id = $1`, linked)
+	conn := ts.open(t, w.Token(tokentest.Manage(linked), tokentest.Manage(unlinked)))
+	for name, device := range map[string]uuid.UUID{"linked": linked, "never linked": unlinked} {
+		e := wantError(t, on(t, conn, wsapi.TypeDeviceStart, wsapi.DeviceRef{DeviceID: device.String()}), wsapi.ErrCodeConflict)
+		if e.Message != tokenStartRefused {
+			t.Errorf("%s: %+v, want %q", name, e, tokenStartRefused)
+		}
+	}
+	reader := ts.open(t, w.Token(tokentest.Read(unlinked), tokentest.Manage(unlinked)))
+	e := wantError(t, on(t, reader, wsapi.TypeDeviceStart, wsapi.DeviceRef{DeviceID: unlinked.String()}), wsapi.ErrCodeConflict)
+	if e.Message != "this number must be linked first" {
+		t.Fatalf("with Read: %+v", e)
 	}
 }

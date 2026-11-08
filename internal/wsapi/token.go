@@ -22,11 +22,13 @@ import (
 // that bumps it, or a token no longer live, closes the socket.
 
 // The texts of a token's refusals: one for a frame a token never sends, one
-// for every act on a number, missing included, and one for a hello.
+// for every act on a number, missing included, one for a hello, and one for
+// every failed device.start of a token that cannot read the number.
 const (
 	tokenFrameRefused  = "a platform token cannot do this"
 	tokenNumberRefused = "this token cannot do that on this number"
 	tokenHelloRefused  = "credential expired, revoked or invalid" //nolint:gosec // G101: a refusal's text, not a credential
+	tokenStartRefused  = "this number cannot be resumed now"
 )
 
 // tokenRule is what a frame needs of a token: its action on the number the
@@ -153,31 +155,59 @@ func (s *session) tokenSets() store.TokenLive {
 	return s.tokenLive
 }
 
-// refreshToken reads what the token reaches now and keeps it. It reports
-// false once the token is no longer live or its version changed: the
-// socket closes.
-func (s *session) refreshToken(ctx context.Context, who actor) bool {
+// refreshToken reads what the token reaches now and returns it. It keeps
+// what it read unless a check that started after this one already kept its
+// own: readLoop, writeLoop and accessLoop all check, and their reads land
+// in any order. It reports false once the token is no longer live or its
+// version changed: the socket closes.
+func (s *session) refreshToken(ctx context.Context, who actor) (store.TokenLive, bool) {
 	tenant, err := uuid.Parse(who.tenant)
 	if err != nil {
-		return false
-	}
-	live, err := s.checker().TokenSets(ctx, access.Actor{Tenant: tenant, Token: who.token})
-	if err != nil || !live.Live {
-		return false
+		return store.TokenLive{}, false
 	}
 	s.mu.Lock()
-	s.tokenLive = live
+	s.tokenAsked++
+	asked := s.tokenAsked
 	s.mu.Unlock()
-	if s.srv.cfg.tokenHook != nil {
-		s.srv.cfg.tokenHook("checked")
+	s.tokenHook("asked")
+	live, err := s.checker().TokenSets(ctx, access.Actor{Tenant: tenant, Token: who.token})
+	if err != nil || !live.Live {
+		return store.TokenLive{}, false
 	}
-	return true
+	s.tokenHook("queried")
+	s.mu.Lock()
+	if asked > s.tokenStored {
+		s.tokenLive, s.tokenStored = live, asked
+	}
+	s.mu.Unlock()
+	s.tokenHook("checked")
+	return live, true
 }
 
-// tokenReads reports whether the token reads device, as last checked.
-func (s *session) tokenReads(device uuid.UUID) bool {
-	_, ok := s.tokenSets().Reads[device]
-	return ok
+// tokenHook runs the tests' hook at a seam of a token session.
+func (s *session) tokenHook(stage string) {
+	if s.srv.cfg.tokenHook != nil {
+		s.srv.cfg.tokenHook(stage)
+	}
+}
+
+// narrower is what both a and b let a token reach. The writer judges each
+// frame under the narrower of its own check and the newest one kept: its
+// own started after the batch's frames were queued, and the newest kept
+// may have seen a narrowing since. A check that started later can still
+// have read earlier (a wait for a connection), so neither alone is enough.
+func narrower(a, b store.TokenLive) store.TokenLive {
+	both := func(x, y map[uuid.UUID]struct{}) map[uuid.UUID]struct{} {
+		out := make(map[uuid.UUID]struct{}, len(x))
+		for d := range x {
+			if _, ok := y[d]; ok {
+				out[d] = struct{}{}
+			}
+		}
+		return out
+	}
+	return store.TokenLive{Live: a.Live && b.Live, Closed: a.Closed || b.Closed, MediaOn: a.MediaOn && b.MediaOn,
+		Reads: both(a.Reads, b.Reads), Sends: both(a.Sends, b.Sends), Manages: both(a.Manages, b.Manages)}
 }
 
 // tokenReqKey carries a token's request through its handler: the numbers
@@ -229,9 +259,10 @@ func (s *session) replyRead(ctx context.Context, frameType, reqID string, payloa
 		}
 		r.mu.Unlock()
 		f.reads = tag
-		if s.srv.cfg.tokenHook != nil {
-			s.srv.cfg.tokenHook("reply")
-		}
+		s.tokenHook("reply")
+		s.send(f)
+		s.tokenHook("queued")
+		return
 	}
 	s.send(f)
 }

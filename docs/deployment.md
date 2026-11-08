@@ -529,6 +529,13 @@ says each one's rules):
 - `WS_CONTRACT_ADDR`, development only; `WS_CONTRACT_SECRET` is refused
   everywhere.
 
+With `WS_CONTRACT_SOCKET` or `WS_CONTRACT_ADDR` set, platform tokens can
+reach the server, and each reads its workspace's switches. So the server
+then checks `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS`
+([MCP setup](mcp.md)) at start with MCP off too, and a value that does not
+parse stops it. An older binary skipped both with MCP off: check them
+before upgrading a server with the contract configured.
+
 The secret's value is never in `runtime.env`, a backup or an argument: it
 reaches the host only through a pipe from the platform's `platform-cli
 export-contract-secret wappie` into `whatserverd contract-secret seal`, at

@@ -26,15 +26,23 @@ func (s *Server) RevalidateAccess() {
 }
 
 func (s *session) validAccess(ctx context.Context) bool {
+	_, valid := s.checkAccess(ctx)
+	return valid
+}
+
+// checkAccess is validAccess that also returns, for a token, what its
+// check read: the writer judges its batch under it.
+func (s *session) checkAccess(ctx context.Context) (store.TokenLive, bool) {
 	who := s.actor()
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	valid := true
+	var live store.TokenLive
 	if who.isToken() {
 		// What the token reaches now: a token no longer live, or one that
 		// narrowed (a new version), closes the socket; anything else
-		// replaces the sets every frame is written under.
-		valid = s.refreshToken(checkCtx, who)
+		// renews the sets frames are written under.
+		live, valid = s.refreshToken(checkCtx, who)
 	} else if !who.person {
 		valid = s.srv.cfg.Keys != nil && s.srv.cfg.Keys.ConnectionKey(checkCtx, who.keyID, who.tenant, who.scope, who.userID, who.keyVersion) == nil
 	}
@@ -58,7 +66,7 @@ func (s *session) validAccess(ctx context.Context) bool {
 	if !valid {
 		s.closeWith(websocket.StatusPolicyViolation, "access changed or expired; reconnect")
 	}
-	return valid
+	return live, valid
 }
 
 func (s *session) accessLoop(ctx context.Context) {

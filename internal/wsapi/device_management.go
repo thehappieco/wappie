@@ -56,9 +56,19 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 	}
 	ref.DeviceID = resolved.String()
 	tenant := s.tenantID()
+	// refuse answers a start that failed. A token without Read on the
+	// number gets one answer for every failure: whether the number is
+	// linked, whether its session is gone and why a resume failed are the
+	// number's, which it cannot read, as device.stop hides its status.
+	refuse := func(code, message string) {
+		if s.actor().isToken() && !s.tokenReadsNow(ctx, resolved) {
+			code, message = ErrCodeConflict, tokenStartRefused
+		}
+		s.replyError(f.ReqID, code, message)
+	}
 	dev, err := s.srv.cfg.Devices.Get(ctx, tenant, ref.DeviceID)
 	if err != nil {
-		s.replyError(f.ReqID, ErrCodeNotFound, "no such device")
+		refuse(ErrCodeNotFound, "no such device")
 		return
 	}
 	// Lifting a pause is resuming, by role (store.ActionPause). resolveDevice
@@ -69,15 +79,15 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 		return
 	}
 	if !dev.Identity.Known() {
-		s.replyError(f.ReqID, ErrCodeConflict, "this number must be linked first")
+		refuse(ErrCodeConflict, "this number must be linked first")
 		return
 	}
 	if s.srv.cfg.Registry == nil {
-		s.replyError(f.ReqID, ErrCodeInternal, "WhatsApp connection is unavailable")
+		refuse(ErrCodeInternal, "WhatsApp connection is unavailable")
 		return
 	}
 	if dev.Status == wa.StatusLoggedOut || dev.Status == wa.StatusBanned {
-		s.replyError(f.ReqID, ErrCodeConflict, "the WhatsApp session is no longer available")
+		refuse(ErrCodeConflict, "the WhatsApp session is no longer available")
 		return
 	}
 	// A sync now (a number that was not paused) lifts nothing: a stop that
@@ -85,7 +95,7 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 	// connection it paused.
 	if dev.Paused {
 		if err = s.srv.cfg.Devices.SetPaused(ctx, tenant, ref.DeviceID, false); err != nil {
-			s.replyError(f.ReqID, ErrCodeInternal, "could not resume the device")
+			refuse(ErrCodeInternal, "could not resume the device")
 			return
 		}
 	}
@@ -106,14 +116,14 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 				s.log.Error("could not record missing WhatsApp session", "device", dev.ID, "error", statusErr)
 			}
 		}
-		s.replyError(f.ReqID, ErrCodeConflict, "could not resume this connection: "+err.Error())
+		refuse(ErrCodeConflict, "could not resume this connection: "+err.Error())
 		return
 	}
 	// Report the persisted state; connection may still be completing.
 	current, err := s.srv.cfg.Devices.Get(ctx, tenant, dev.ID)
 	if err != nil || current.Paused {
 		s.srv.cfg.Registry.Stop(context.WithoutCancel(ctx), dev.ID)
-		s.replyError(f.ReqID, ErrCodeConflict, "this connection was paused or removed while resuming")
+		refuse(ErrCodeConflict, "this connection was paused or removed while resuming")
 		return
 	}
 	// The readers' pause notices stay until each one sees them, now in the

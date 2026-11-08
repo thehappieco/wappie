@@ -21,7 +21,9 @@ func SetTransferHook(cfg *Config, hook func(ctx context.Context, source, actor, 
 // AtActsInFlight is how many sends' background checks run at once.
 const AtActsInFlight = atActsInFlight
 
-// SetTokenHook installs a hook a token session runs after each check of
-// its sets ("checked") and before it queues a reply read under its numbers
-// ("reply").
+// SetTokenHook installs a hook a token session runs at its seams: once a
+// check of its sets has its number ("asked"), between the check's query
+// and its store ("queried"), after the check ("checked"), before and after
+// it queues a reply read under its numbers ("reply", "queued"), and after
+// each frame it writes ("wrote").
 func SetTokenHook(cfg *Config, hook func(stage string)) { cfg.tokenHook = hook }

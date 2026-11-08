@@ -436,7 +436,10 @@ type TokenUseRefusal struct {
 
 // AddTokenUse adds one process's counts: each key is one row, to which the
 // flush adds its delta (the plan's 3.6), so several processes never lose a
-// count.
+// count. Every process flushes into the same rows, and the leader marks
+// them reported (UsageSent): each takes them in one order, the used rows
+// and then the refusals, each in the order UsageBody lists them, so no two
+// wait on each other in a cycle (DB25).
 func (t *Tokens) AddTokenUse(ctx context.Context, u TokenUse) error {
 	if len(u.Used) == 0 && len(u.Refusals) == 0 {
 		return nil
@@ -451,6 +454,7 @@ func (t *Tokens) AddTokenUse(ctx context.Context, u TokenUse) error {
 			}
 			if _, err := tx.Exec(ctx, `INSERT INTO contract_token_used (token_id, day)
 				SELECT DISTINCT token, day::date FROM unnest($1::uuid[], $2::text[]) AS u(token, day)
+				ORDER BY day::date, token
 				ON CONFLICT DO NOTHING`, tokens, days); err != nil {
 				return err
 			}
@@ -466,6 +470,7 @@ func (t *Tokens) AddTokenUse(ctx context.Context, u TokenUse) error {
 				SELECT token, day::date, device, perm, code, sum(count) FROM unnest($1::uuid[], $2::text[], $3::uuid[], $4::text[], $5::text[], $6::bigint[])
 					AS r(token, day, device, perm, code, count) WHERE count > 0
 				GROUP BY token, day, device, perm, code
+				ORDER BY day::date, token, device NULLS FIRST, perm NULLS FIRST, code
 				ON CONFLICT (token_id, day, device_id, perm, code) DO UPDATE SET count = contract_token_refusals.count + EXCLUDED.count`,
 				tokens, days, devices, perms, codes, counts); err != nil {
 				return err

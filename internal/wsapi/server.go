@@ -130,9 +130,11 @@ type Config struct {
 	// transferHook, for tests, stands in for Devices.TransferPersonal: a
 	// move that fails, or one that commits and loses its answer.
 	transferHook func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
-	// tokenHook, for tests, runs after each check of a token session's
-	// sets ("checked"), and before a reply read under its numbers is
-	// queued ("reply").
+	// tokenHook, for tests, runs in a token session: once a check of its
+	// sets has its number, before its query ("asked"), between its query
+	// and its store ("queried"), after the check ("checked"), before and
+	// after a reply read under its numbers is queued ("reply", "queued"),
+	// and after each frame is written ("wrote").
 	tokenHook func(stage string)
 }
 
@@ -420,10 +422,14 @@ type session struct {
 	who      actor
 	clientID string
 	closed   bool
-	// tokenLive is what a token session's token reaches, as last checked
-	// (refreshToken); tokenWake is its NOTIFY.
-	tokenLive store.TokenLive
-	tokenWake <-chan struct{}
+	// tokenLive is what a token session's token reaches, as the newest
+	// check kept it (refreshToken); tokenWake is its NOTIFY. tokenAsked
+	// numbers each check as it starts, and tokenStored is the number of the
+	// one tokenLive holds: three loops check, and a check never replaces
+	// one that started after it.
+	tokenLive               store.TokenLive
+	tokenWake               <-chan struct{}
+	tokenAsked, tokenStored uint64
 
 	callMu        sync.Mutex
 	callOwner     string
@@ -605,8 +611,10 @@ func (s *session) handshake(ctx context.Context) (string, error) {
 	} else {
 		who, err = s.credentials(ctx, hello)
 	}
-	if err == nil && who.isToken() && !s.refreshToken(ctx, who) {
-		err = errTokenHello
+	if err == nil && who.isToken() {
+		if _, live := s.refreshToken(ctx, who); !live {
+			err = errTokenHello
+		}
 	}
 	if err != nil {
 		// A fixed delay on failure. Without it, response time distinguishes a
@@ -914,28 +922,31 @@ func (s *session) writeLoop(ctx context.Context) {
 			batch = append(batch, f)
 		}
 		batch = s.gather(batch)
-		if !s.validAccess(ctx) {
+		own, ok := s.checkAccess(ctx)
+		if !ok {
 			return
 		}
 		who := s.actor()
-		var live store.TokenLive
-		if who.isToken() {
-			// validAccess just read them: the frames below go out under
-			// what the token reaches now.
-			live = s.tokenSets()
-		}
 		// Read once per batch too, and only when a status frame needs it.
 		var viewable map[uuid.UUID]struct{}
 		for _, f := range batch {
+			var live store.TokenLive
+			if who.isToken() {
+				// Per frame, under the narrower of the writer's own check
+				// and the newest one kept: accessLoop renews that every
+				// second, and at once on the token's NOTIFY, while a slow
+				// client stretches the batch. A narrowing that bumps no
+				// version stops the frames still in it.
+				live = narrower(own, s.tokenSets())
+			}
 			// Checked per frame, as it is written, not per batch: a number
 			// the bus dropped after its frames were queued, or taken into
 			// this batch, stops here, so nothing of it is written once its
 			// deletion has committed (bus.DropDevice runs right after).
-			if f.device != uuid.Nil && !s.carries(f.device) {
+			if f.device != uuid.Nil && !s.carries(f.device, live) {
 				continue
 			}
 			if who.isToken() {
-				var ok bool
 				if f, ok = s.tokenWritable(f, live); !ok {
 					continue
 				}
@@ -948,7 +959,7 @@ func (s *session) writeLoop(ctx context.Context) {
 				if err := json.Unmarshal(f.Payload, &status); err != nil {
 					continue
 				}
-				if viewable == nil && who.isToken() {
+				if who.isToken() {
 					viewable = live.Reads
 				}
 				if viewable == nil {
@@ -971,6 +982,9 @@ func (s *session) writeLoop(ctx context.Context) {
 				s.closeQuietly()
 				return
 			}
+			if who.isToken() {
+				s.tokenHook("wrote")
+			}
 			if s.srv.cfg.Metrics != nil {
 				s.srv.cfg.Metrics.WSFramesSent.WithLabelValues(f.Type).Inc()
 			}
@@ -981,17 +995,21 @@ func (s *session) writeLoop(ctx context.Context) {
 // carries reports whether the connection's subscription delivers a device
 // now, as the bus's filter has it (bus.Subscription.Allows): no database
 // read, so it costs a frame two uncontended locks. No subscription, as
-// after one ended, carries nothing.
-func (s *session) carries(device uuid.UUID) bool {
+// after one ended, carries nothing. A token's subscription stops carrying
+// a number as soon as the token no longer reads it under live, whatever
+// its filter says.
+func (s *session) carries(device uuid.UUID, live store.TokenLive) bool {
 	s.subMu.Lock()
 	sub := s.sub
 	s.subMu.Unlock()
 	if sub == nil || !sub.Allows(device) {
 		return false
 	}
-	// A token's subscription stops carrying a number as soon as the token
-	// no longer reads it, whatever its filter says.
-	return !s.actor().isToken() || s.tokenReads(device)
+	if !s.actor().isToken() {
+		return true
+	}
+	_, ok := live.Reads[device]
+	return ok
 }
 
 // gather fills a batch with frames already queued, without waiting.

@@ -270,6 +270,12 @@ func (s *session) handleMediaRetry(ctx context.Context, f Frame) {
 	}
 
 	if err := s.srv.cfg.Retrier.Request(ctx, tenant, device, uid, req.MediaKey); err != nil {
+		// A uid of a number the token cannot read, or of none, is the
+		// one refusal (F8), as message.get answers it.
+		if errors.Is(err, media.ErrNoMessage) && s.actor().isToken() {
+			s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenNumberRefused)
+			return
+		}
 		if errors.Is(err, media.ErrTooManyPending) {
 			s.replyError(f.ReqID, ErrCodeRateLimited, err.Error())
 			return
