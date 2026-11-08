@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -30,7 +31,10 @@ import (
 // streamChunk is what one write of a token's download carries.
 const streamChunk = 256 << 10
 
-// streamRecheck bounds how long a token's download goes between checks.
+// streamRecheck bounds how long a token's download goes between checks,
+// and how long one check may take: a check that cannot answer in time (a
+// pool at its limit, a stalled database) is a failed one, and the body
+// ends, so a stuck check never lets the copy run on.
 const streamRecheck = time.Second
 
 func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request, actor access.Actor, uid uuid.UUID, log *slog.Logger) {
@@ -112,7 +116,7 @@ func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request, actor acces
 			case <-t.C:
 			case <-wake:
 			}
-			if !streamAllowed(r, checker, actor, ref.DeviceID) {
+			if !streamAllowed(ctx, checker, actor, ref.DeviceID) {
 				cut.Store(true)
 				// A write blocked on a slow client fails now.
 				mu.Lock()
@@ -121,6 +125,7 @@ func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request, actor acces
 					_ = rc.SetWriteDeadline(time.Now())
 				}
 				mu.Unlock()
+				h.hook("cut")
 				return
 			}
 		}
@@ -152,9 +157,12 @@ func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request, actor acces
 }
 
 // streamAllowed is a token download's check between chunks: the token is
-// live, reads the number now, and its attachments switch is on.
-func streamAllowed(r *http.Request, checker *access.Checker, actor access.Actor, device uuid.UUID) bool {
-	live, err := checker.TokenSets(r.Context(), actor)
+// live, reads the number now, and its attachments switch is on, as read
+// within streamRecheck.
+func streamAllowed(ctx context.Context, checker *access.Checker, actor access.Actor, device uuid.UUID) bool {
+	ctx, cancel := context.WithTimeout(ctx, streamRecheck)
+	defer cancel()
+	live, err := checker.TokenSets(ctx, actor)
 	if err != nil || !live.Live || !live.MediaOn {
 		return false
 	}

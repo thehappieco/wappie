@@ -342,6 +342,55 @@ func TestUsageIsAbsoluteAndCountedPerRow(t *testing.T) {
 	}
 }
 
+// TestTokenUseTakesItsRowsInOneOrder (DB25): every process flushes its
+// counts into the same rows, and the leader marks them reported. A flush
+// takes its used rows and then its refusals, each in the order UsageBody
+// lists them, (day, token) and then (day, token, number, perm, code) with
+// no number and no perm first, whatever order the process counted them
+// in. So two flushes over the same keys, or a flush and the leader's mark,
+// never wait on each other in a cycle (40P01). Triggers record the order
+// the rows are taken in.
+func TestTokenUseTakesItsRowsInOneOrder(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	w.exec(`CREATE TABLE use_order (n bigserial PRIMARY KEY, kind text NOT NULL, token uuid NOT NULL, day date NOT NULL,
+		device uuid, perm text, code text)`)
+	w.exec(`CREATE FUNCTION use_order_used() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN INSERT INTO use_order (kind, token, day) VALUES ('used', NEW.token_id, NEW.day); RETURN NEW; END $$`)
+	w.exec(`CREATE FUNCTION use_order_refusal() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN INSERT INTO use_order (kind, token, day, device, perm, code)
+			VALUES ('refusal', NEW.token_id, NEW.day, NEW.device_id, NEW.perm, NEW.code); RETURN NEW; END $$`)
+	w.exec(`CREATE TRIGGER use_order BEFORE INSERT ON contract_token_used FOR EACH ROW EXECUTE FUNCTION use_order_used()`)
+	w.exec(`CREATE TRIGGER use_order BEFORE INSERT ON contract_token_refusals FOR EACH ROW EXECUTE FUNCTION use_order_refusal()`)
+	day := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	numbers := []uuid.UUID{uuid.New(), uuid.New()}
+	read, send := kc.CanRead, kc.CanSend
+	var u store.TokenUse
+	for i := range 40 {
+		token, d := uuid.New(), day.AddDate(0, 0, -(i%3))
+		u.Used = append(u.Used, store.TokenDay{Token: token, Day: d})
+		u.Refusals = append(u.Refusals,
+			store.TokenUseRefusal{Token: token, Day: d, Device: &numbers[i%2], Perm: &read, Code: kc.UseNoGrant, Count: 1},
+			store.TokenUseRefusal{Token: token, Day: d, Code: kc.UseRevoked, Count: 1},
+			store.TokenUseRefusal{Token: token, Day: d, Device: &numbers[(i+1)%2], Perm: &send, Code: kc.UseNoPermission, Count: 1})
+	}
+	if err := w.tokens.AddTokenUse(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	for kind, want := range map[string]int{"used": 40, "refusal": 120} {
+		var rows, out int
+		if err := w.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE taken <> listed) FROM (
+			SELECT row_number() OVER (ORDER BY n) AS taken,
+				row_number() OVER (ORDER BY day, token, device NULLS FIRST, perm NULLS FIRST, code) AS listed
+			FROM use_order WHERE kind = $1) o`, kind).Scan(&rows, &out); err != nil {
+			t.Fatal(err)
+		}
+		if rows != want || out != 0 {
+			t.Errorf("%s: %d rows taken, %d of them out of the report's order", kind, rows, out)
+		}
+	}
+}
+
 // TestTokenUseDaysAreUTC (the design's 3.8): a use's day, and the days
 // retention keeps, are UTC days whatever the database session's time zone:
 // here São Paulo's, three hours behind, where 01:00 UTC is the day before.

@@ -330,8 +330,8 @@ and AI ([contract](mcp-enclave.md#1935-fewer-steps-without-a-new-image-a1-to-a7)
 | Variable | Rule |
 |---|---|
 | `WS_MCP_CONTENT_ENABLED` | boolean, default `false`; lets the `enclave` reader hold **content** connections. On without an `enclave` reader in `WS_MCP_READERS` is a configuration error |
-| `WS_MCP_WORKSPACE_DEFAULT` | `on` or `off`, default `off`: what each workspace's own switches are until its owner sets them. Wappie Cloud sets `on`; a self-hosted server keeps text off unless configured. Anything else is a configuration error |
-| `WS_MCP_DENY_TENANTS` | workspace UUIDs, comma separated, refused text, attachments, drafts and AI whatever their own switches say; empty by default; `*` is refused (the switches above are for every workspace at once) |
+| `WS_MCP_WORKSPACE_DEFAULT` | `on` or `off`, default `off`: what each workspace's own switches are until its owner sets them. Wappie Cloud sets `on`; a self-hosted server keeps text off unless configured. Anything else is a configuration error, with MCP off too when the contract is configured (platform tokens read it) |
+| `WS_MCP_DENY_TENANTS` | workspace UUIDs, comma separated, refused text, attachments, drafts and AI whatever their own switches say; empty by default; `*` is refused (the switches above are for every workspace at once). Platform tokens are refused there too, so with the contract configured a value that does not parse stops the server even with MCP off |
 
 `WS_MCP_CONTENT_TENANTS`, `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and
 `WS_AI_TENANTS`, the lists that used to name every workspace allowed, are
