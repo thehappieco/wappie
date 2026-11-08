@@ -33,6 +33,14 @@ func (s *session) handleDeviceRename(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeInternal, "could not rename the device")
 		return
 	}
+	if s.actor().isToken() {
+		// device.info needs Read: a Manage-only token's rename answers with
+		// what it changed (F9).
+		s.replyTokenAct(ctx, TypeDeviceDetail, f.ReqID, resolved, TokenAct{Label: &req.Label}, func(ctx context.Context) {
+			s.deviceDetail(ctx, f, resolved)
+		})
+		return
+	}
 	s.handleDeviceInfo(ctx, f)
 }
 
@@ -115,6 +123,13 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 	defer cancel()
 	if err := s.srv.cfg.Devices.MarkResumed(resumedCtx, uuid.MustParse(tenant), resolved); err != nil {
 		s.log.Warn("could not mark the pause notices resumed", "device", dev.ID, "error", err)
+	}
+	if s.actor().isToken() {
+		paused := false
+		s.replyTokenAct(ctx, TypeDeviceStatus, f.ReqID, resolved, TokenAct{Paused: &paused}, func(ctx context.Context) {
+			s.replyRead(ctx, TypeDeviceStatus, f.ReqID, DeviceStatus{DeviceID: dev.ID, Status: string(current.Status)})
+		})
+		return
 	}
 	s.reply(TypeDeviceStatus, f.ReqID, DeviceStatus{DeviceID: dev.ID, Status: string(current.Status)})
 }

@@ -32,6 +32,10 @@ type Frame struct {
 	// against the subscription as it is when the frame goes out, so a frame
 	// queued before a deletion is not written after it (writeLoop).
 	device uuid.UUID
+	// reads is the numbers a token's reply was read under, nil on every
+	// other frame. Never on the wire: the writer refuses the reply in its
+	// place unless the token still reads each one (token.go).
+	reads *readTag
 }
 
 // Client-to-server frame types.

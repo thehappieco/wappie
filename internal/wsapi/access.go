@@ -30,7 +30,12 @@ func (s *session) validAccess(ctx context.Context) bool {
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	valid := true
-	if !who.person {
+	if who.isToken() {
+		// What the token reaches now: a token no longer live, or one that
+		// narrowed (a new version), closes the socket; anything else
+		// replaces the sets every frame is written under.
+		valid = s.refreshToken(checkCtx, who)
+	} else if !who.person {
 		valid = s.srv.cfg.Keys != nil && s.srv.cfg.Keys.ConnectionKey(checkCtx, who.keyID, who.tenant, who.scope, who.userID, who.keyVersion) == nil
 	}
 	if valid && (who.person || who.service) {
@@ -59,12 +64,16 @@ func (s *session) validAccess(ctx context.Context) bool {
 func (s *session) accessLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	s.mu.Lock()
+	tokenWake := s.tokenWake
+	s.mu.Unlock()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		case <-s.accessWake:
+		case <-tokenWake:
 		}
 		if !s.validAccess(ctx) {
 			return
@@ -87,6 +96,9 @@ func (s *session) actionDevices(ctx context.Context, action store.DeviceAction) 
 	tenant, err := uuid.Parse(who.tenant)
 	if err != nil {
 		return nil, err
+	}
+	if who.isToken() {
+		return s.tokenDevices(ctx, tenant, who, action)
 	}
 	devices, err := s.srv.cfg.Devices.List(ctx, who.tenant)
 	if err != nil {
@@ -123,7 +135,7 @@ func (s *session) checker() *access.Checker {
 
 // accessActor is who as the access package names it.
 func (a actor) accessActor(tenant uuid.UUID) access.Actor {
-	return access.Actor{Tenant: tenant, User: a.userID, Key: a.keyID, Scope: a.scope, Role: a.role}
+	return access.Actor{Tenant: tenant, User: a.userID, Key: a.keyID, Scope: a.scope, Role: a.role, Token: a.token}
 }
 
 func (s *session) accountStore() *store.Users {
@@ -131,6 +143,27 @@ func (s *session) accountStore() *store.Users {
 		return s.srv.cfg.Sessions
 	}
 	return s.srv.cfg.Accounts
+}
+
+// tokenDevices is actionDevices for a token: what it reaches now, in one
+// query, never counted. A list built from its reads is read under each.
+func (s *session) tokenDevices(ctx context.Context, tenant uuid.UUID, who actor, action store.DeviceAction) (map[uuid.UUID]struct{}, error) {
+	live, err := s.checker().TokenSets(ctx, access.Actor{Tenant: tenant, Token: who.token})
+	if err != nil {
+		return nil, err
+	}
+	set := live.Reads
+	switch action {
+	case store.ActionSend:
+		set = live.Sends
+	case store.ActionManage, store.ActionPause:
+		set = live.Manages
+	default:
+		for d := range set {
+			readUnder(ctx, d)
+		}
+	}
+	return set, nil
 }
 
 func frameAction(kind string) store.DeviceAction {
@@ -156,6 +189,9 @@ func frameAction(kind string) store.DeviceAction {
 
 func (s *session) authorizeDevice(ctx context.Context, f Frame, device uuid.UUID, action store.DeviceAction) bool {
 	who := s.actor()
+	if who.isToken() {
+		return s.authorizeToken(ctx, f, device, store.TokenNeed{Action: action, Media: ruleOf(f.Type).media})
+	}
 	tenant, err := uuid.Parse(who.tenant)
 	if err != nil {
 		s.replyError(f.ReqID, ErrCodeInternal, "invalid workspace")

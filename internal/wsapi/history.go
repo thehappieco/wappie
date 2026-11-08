@@ -49,7 +49,7 @@ func (s *session) handleHistory(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeInternal, "could not read the history")
 		return
 	}
-	s.reply(TypeHistoryFrame, f.ReqID, historyFrame(h))
+	s.replyRead(ctx, TypeHistoryFrame, f.ReqID, historyFrame(h))
 }
 
 // locateMessage resolves a request to a device, a chat and a message id.
@@ -75,7 +75,11 @@ func (s *session) locateMessage(ctx context.Context, f Frame, req HistoryRequest
 		if err != nil {
 			// Row-level security answers a cross-tenant lookup with no rows,
 			// so this is both "unknown" and "not yours" and should stay
-			// indistinguishable.
+			// indistinguishable. For a token, also from a refusal (F8).
+			if s.actor().isToken() {
+				s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenNumberRefused)
+				return uuid.Nil, uuid.Nil, "", "", false
+			}
 			s.replyError(f.ReqID, ErrCodeNotFound, "no message with uid "+req.UID)
 			return uuid.Nil, uuid.Nil, "", "", false
 		}
@@ -118,14 +122,18 @@ func (s *session) handleMessageGet(ctx context.Context, f Frame) {
 	if err != nil {
 		// Row level security answers a cross-tenant lookup with no rows, so
 		// "unknown" and "not yours" are the same answer and should stay that
-		// way.
+		// way. For a token, also the same as a refusal (F8).
+		if s.actor().isToken() {
+			s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenNumberRefused)
+			return
+		}
 		s.replyError(f.ReqID, ErrCodeNotFound, "no message with uid "+req.UID)
 		return
 	}
 	if !s.authorizeDevice(ctx, f, row.DeviceID, store.ActionRead) {
 		return
 	}
-	s.reply(TypeMessageFrame, f.ReqID, sealedMessage(row))
+	s.replyRead(ctx, TypeMessageFrame, f.ReqID, sealedMessage(row))
 }
 
 func historyFrame(h store.MessageHistory) History {
@@ -269,7 +277,7 @@ func (s *session) handleMediaRetry(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, err.Error())
 		return
 	}
-	s.reply(TypeRetryQueued, f.ReqID, MediaRetryQueued{UID: req.UID})
+	s.replyRead(ctx, TypeRetryQueued, f.ReqID, MediaRetryQueued{UID: req.UID})
 }
 
 // handleExpiredMedia lists attachments whose url signature ran out.
@@ -300,7 +308,7 @@ func (s *session) handleExpiredMedia(ctx context.Context, f Frame) {
 	for _, id := range uids {
 		out = append(out, id.String())
 	}
-	s.reply(TypeExpiredList, f.ReqID, ExpiredMedia{UIDs: out})
+	s.replyRead(ctx, TypeExpiredList, f.ReqID, ExpiredMedia{UIDs: out})
 }
 
 // handleBackfill asks WhatsApp for messages older than the archive holds.
@@ -363,7 +371,17 @@ func (s *session) handleBackfill(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeInternal, err.Error())
 		return
 	}
-	s.reply(TypeBackfillSent, f.ReqID, BackfillSent{
-		Chat: t.chat.String(), AnchorID: oldest.WAID, Count: req.Count,
-	})
+	full := func(ctx context.Context) {
+		s.replyRead(ctx, TypeBackfillSent, f.ReqID, BackfillSent{
+			Chat: t.chat.String(), AnchorID: oldest.WAID, Count: req.Count,
+		})
+	}
+	if s.actor().isToken() {
+		// Without Read, the anchor (a message's id) and the count are not
+		// the token's to know: the chat it named is.
+		chat := t.chat.String()
+		s.replyTokenAct(ctx, TypeBackfillSent, f.ReqID, t.deviceID, TokenAct{Chat: &chat}, full)
+		return
+	}
+	full(ctx)
 }
