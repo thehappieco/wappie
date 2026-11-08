@@ -51,7 +51,7 @@ func (s *session) handleDevicesStats(ctx context.Context, f Frame) {
 		}
 		out = append(out, toStat(r))
 	}
-	s.reply(TypeDeviceStats, f.ReqID, DeviceStats{Stats: out})
+	s.replyRead(ctx, TypeDeviceStats, f.ReqID, DeviceStats{Stats: out})
 }
 
 func toStat(r store.DeviceStat) DeviceStat {
@@ -75,6 +75,18 @@ func (s *session) handleDeviceInfo(ctx context.Context, f Frame) {
 		return
 	}
 	tenant := s.tenantID()
+	if s.actor().isToken() {
+		// A full id, checked before any lookup, one answer (F8).
+		tenantUUID, err := uuid.Parse(tenant)
+		if err != nil {
+			s.replyError(f.ReqID, ErrCodeInternal, "bad tenant")
+			return
+		}
+		if _, device, ok := s.tokenResolve(ctx, f, tenantUUID, ref.DeviceID); ok {
+			s.deviceDetail(ctx, f, device)
+		}
+		return
+	}
 	dev, err := s.srv.cfg.Devices.Resolve(ctx, tenant, ref.DeviceID)
 	if err != nil {
 		// Row-level security answers a cross-tenant lookup with "not found",
@@ -625,12 +637,35 @@ func (s *session) tokenHolders(ctx context.Context, tenant, device uuid.UUID) ([
 	return out, nil
 }
 
+// deviceDetail is a token's device.info about a number it reads: the
+// number and its counters, never its readers or tokens, which are an
+// administrator's.
+func (s *session) deviceDetail(ctx context.Context, f Frame, device uuid.UUID) {
+	tenant := s.tenantID()
+	dev, err := s.srv.cfg.Devices.Get(ctx, tenant, device.String())
+	if err != nil {
+		s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenNumberRefused)
+		return
+	}
+	detail := DeviceDetail{Device: s.toDeviceInfo(ctx, dev), Epoch: dev.Epoch}
+	if stats, err := s.srv.cfg.Devices.Stats(ctx, tenant); err == nil {
+		for _, st := range stats {
+			if st.DeviceID == dev.ID {
+				detail.Stats = toStat(st)
+				break
+			}
+		}
+	}
+	detail.Stats.DeviceID = dev.ID
+	s.replyRead(ctx, TypeDeviceDetail, f.ReqID, detail)
+}
+
 // toDeviceInfo converts a row for the wire, filling in what only this process
 // knows: whether the device is actually running here.
 func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 	info := DeviceFromRow(d)
 	who := s.actor()
-	if tenant, err := uuid.Parse(d.TenantID); err == nil {
+	if tenant, err := uuid.Parse(d.TenantID); err == nil && !who.isToken() {
 		if device, err := uuid.Parse(d.ID); err == nil {
 			if who.person {
 				info.ReaderReceiptMode = string(wa.ModePassive)
@@ -657,6 +692,13 @@ func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 				info.CanSend = allowed
 			}
 		}
+	}
+	if device, err := uuid.Parse(d.ID); err == nil && who.isToken() {
+		// A token's flags, from its sets as last checked: never counted.
+		live := s.tokenSets()
+		_, info.CanSend = live.Sends[device]
+		_, info.CanManage = live.Manages[device]
+		info.CanPause = info.CanManage
 	}
 	// A terminal device keeps its registry reservation until explicit teardown.
 	// That reservation is not an active WhatsApp connection after phone unlink.

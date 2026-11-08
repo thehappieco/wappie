@@ -47,6 +47,13 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "malformed pair request: "+err.Error())
 		return
 	}
+	// No pairing of any kind for a platform token, the retry and a relink
+	// included (F1): its rules refuse the frame, and this says so again
+	// before any branch.
+	if s.actor().isToken() {
+		s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenFrameRefused)
+		return
+	}
 	if req.Relink {
 		s.handleRelink(ctx, f, req)
 		return
@@ -338,6 +345,10 @@ func (s *session) handleDevicesList(ctx context.Context, f Frame) {
 		out = append(out, s.toDeviceInfo(ctx, d))
 	}
 	reply := Devices{Devices: out}
+	if s.actor().isToken() {
+		s.replyRead(ctx, TypeDevices, f.ReqID, reply)
+		return
+	}
 	if who := s.actor(); who.person {
 		notices, err := s.srv.cfg.Devices.Notices(ctx, uuid.MustParse(tenant), who.userID)
 		if err != nil {
@@ -414,9 +425,14 @@ func (s *session) handleDeviceStop(ctx context.Context, f Frame) {
 	// stop is the workspace's own act, never gated.
 	who := s.actor()
 	by := store.PauseActor{User: who.userID}
-	if !who.person {
+	switch {
+	case who.isToken():
+		// Its record's creator's act (F3); membership freshness never
+		// gates a token (F14).
+		by = store.PauseActor{Token: who.token.ID}
+	case !who.person:
 		by = store.PauseActor{Key: who.keyID}
-	} else if !s.fresh(ctx, f.ReqID, TypeDeviceStop, person(who, membership.IfStale)) {
+	case !s.fresh(ctx, f.ReqID, TypeDeviceStop, person(who, membership.IfStale)):
 		return
 	}
 	paused, err := s.srv.cfg.Devices.Pause(ctx, uuid.MustParse(tenant), resolved, by)
@@ -431,7 +447,10 @@ func (s *session) handleDeviceStop(ctx context.Context, f Frame) {
 	}
 	if paused.Changed {
 		actorID := who.userID.String()
-		if !who.person {
+		switch {
+		case who.isToken():
+			actorID = who.token.ID.String()
+		case !who.person:
 			actorID = who.keyID.String()
 		}
 		s.log.Info("sync paused", "device", ref.DeviceID, "actor_kind", paused.ActorKind, "actor", actorID,
@@ -452,9 +471,19 @@ func (s *session) handleDeviceStop(ctx context.Context, f Frame) {
 		status, reason = wa.StatusOffline, "paused by request"
 	}
 	s.srv.BroadcastDeviceStatus(tenant, ref.DeviceID, string(status), reason)
-	s.reply(TypeDeviceStatus, f.ReqID, DeviceStatus{
-		DeviceID: ref.DeviceID, Status: string(status), Reason: reason,
-	})
+	full := func(ctx context.Context) {
+		s.replyRead(ctx, TypeDeviceStatus, f.ReqID, DeviceStatus{
+			DeviceID: ref.DeviceID, Status: string(status), Reason: reason,
+		})
+	}
+	if who.isToken() {
+		// Without Read, the status and its reason (logged out, banned) are
+		// not the token's to know.
+		paused := true
+		s.replyTokenAct(ctx, TypeDeviceStatus, f.ReqID, resolved, TokenAct{Paused: &paused}, full)
+	} else {
+		full(ctx)
+	}
 	s.srv.pushNotices(tenant, paused.Notices)
 }
 

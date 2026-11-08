@@ -130,6 +130,10 @@ type Config struct {
 	// transferHook, for tests, stands in for Devices.TransferPersonal: a
 	// move that fails, or one that commits and loses its answer.
 	transferHook func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
+	// tokenHook, for tests, runs after each check of a token session's
+	// sets ("checked"), and before a reply read under its numbers is
+	// queued ("reply").
+	tokenHook func(stage string)
 }
 
 // Server serves the websocket endpoint.
@@ -371,6 +375,11 @@ type actor struct {
 	// (docs/mcp-enclave.md §17.3). The only way a connection sends is the
 	// send route, behind its own checks.
 	assistant bool
+	// token is a platform token's, the zero value for anyone else. person,
+	// keyID, scope, service and assistant stay zero for a token, so every
+	// path that asks for one of them refuses it; tokenRules and its sets
+	// decide the rest (token.go).
+	token store.TokenAuth
 }
 
 // admin reports whether this actor may change the tenant's configuration.
@@ -384,7 +393,8 @@ func (a actor) admin() bool {
 // role, in requireAdmin. The two questions are kept apart because they have
 // different answers: "use an account" and "ask for a wider key".
 func (a actor) may(need store.KeyScope) bool {
-	if a.person {
+	// A token's scope is per number: tokenRules and its sets decide.
+	if a.person || a.isToken() {
 		return true
 	}
 	return a.scope.Covers(need)
@@ -410,6 +420,10 @@ type session struct {
 	who      actor
 	clientID string
 	closed   bool
+	// tokenLive is what a token session's token reaches, as last checked
+	// (refreshToken); tokenWake is its NOTIFY.
+	tokenLive store.TokenLive
+	tokenWake <-chan struct{}
 
 	callMu        sync.Mutex
 	callOwner     string
@@ -480,6 +494,10 @@ func (s *session) requireScope(reqID string, need store.KeyScope) bool {
 // act on, but a read-only key should still be refused.
 func (s *session) requireOperator(reqID string) (actor, bool) {
 	who := s.actor()
+	if who.isToken() {
+		s.replyError(reqID, ErrCodeNotAuthorized, tokenFrameRefused)
+		return actor{}, false
+	}
 	if !who.person {
 		if who.scope.Covers(store.ScopeFull) {
 			return who, true
@@ -527,6 +545,13 @@ func (s *session) run(ctx context.Context) {
 		return
 	}
 	s.initCallOwner()
+	if who := s.actor(); who.isToken() {
+		wake, cancel := s.srv.checker().Watch.Register(who.token.ID)
+		defer cancel()
+		s.mu.Lock()
+		s.tokenWake = wake
+		s.mu.Unlock()
+	}
 	s.srv.register(s)
 
 	go s.writeLoop(ctx)
@@ -561,15 +586,28 @@ func (s *session) handshake(ctx context.Context) (string, error) {
 	// Before the credentials are looked at, so a refused attempt costs this
 	// process nothing. The subject is the key's prefix — which is a selector,
 	// not a secret — so guesses against one key are bounded on their own.
+	// A platform token's hello spends the address alone: its selector's
+	// budget is the token failures' (access.TokenLimits), which never
+	// refuses a matching secret, and its text never becomes a bucket's key.
+	tokenHello := access.TokenText(hello.APIKey) || access.TokenText(hello.Session)
 	subject := ""
-	if hello.APIKey != "" {
+	if hello.APIKey != "" && !tokenHello {
 		subject, _, _ = strings.Cut(hello.APIKey, ".")
 	}
 	if ok, wait := s.srv.cfg.Limits.Allow(&http.Request{RemoteAddr: s.peer}, subject); !ok {
 		return ErrCodeRateLimited, fmt.Errorf("too many attempts from this address; try again in %s", wait)
 	}
 
-	who, err := s.credentials(ctx, hello)
+	var who actor
+	var err error
+	if tokenHello {
+		who, err = s.tokenCredentials(ctx, hello)
+	} else {
+		who, err = s.credentials(ctx, hello)
+	}
+	if err == nil && who.isToken() && !s.refreshToken(ctx, who) {
+		err = errTokenHello
+	}
 	if err != nil {
 		// A fixed delay on failure. Without it, response time distinguishes a
 		// malformed key from a well-formed but wrong one.
@@ -584,6 +622,11 @@ func (s *session) handshake(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	s.tenant, s.who, s.clientID = tenant, who, hello.ClientID
 	s.mu.Unlock()
+	feats := features
+	if who.isToken() {
+		feats = tokenFeatures()
+		s.log = s.log.With("token", who.token.Selector)
+	}
 	s.log = s.log.With("tenant", tenant, "client", hello.ClientID)
 	if who.person {
 		s.log = s.log.With("account", who.email)
@@ -592,7 +635,7 @@ func (s *session) handshake(ctx context.Context) (string, error) {
 	welcome, err := encode(TypeWelcome, f.ReqID, Welcome{
 		Version:  Version,
 		TenantID: tenant,
-		Features: features,
+		Features: feats,
 		Account:  who.email,
 		Role:     who.role,
 		Scope:    string(who.scope),
@@ -693,6 +736,15 @@ func (s *session) readLoop(ctx context.Context) {
 }
 
 func (s *session) dispatch(ctx context.Context, f Frame) {
+	if s.actor().isToken() {
+		// Before anything else, a token's frame meets its rule: refused
+		// outright, or an action its sets and the per-number check decide.
+		if ruleOf(f.Type).refused {
+			s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenFrameRefused)
+			return
+		}
+		ctx = withTokenReq(ctx)
+	}
 	if s.initCallOwner() == "" {
 		return
 	}
@@ -865,6 +917,13 @@ func (s *session) writeLoop(ctx context.Context) {
 		if !s.validAccess(ctx) {
 			return
 		}
+		who := s.actor()
+		var live store.TokenLive
+		if who.isToken() {
+			// validAccess just read them: the frames below go out under
+			// what the token reaches now.
+			live = s.tokenSets()
+		}
 		// Read once per batch too, and only when a status frame needs it.
 		var viewable map[uuid.UUID]struct{}
 		for _, f := range batch {
@@ -875,10 +934,22 @@ func (s *session) writeLoop(ctx context.Context) {
 			if f.device != uuid.Nil && !s.carries(f.device) {
 				continue
 			}
-			if f.Type == TypeDeviceStatus {
+			if who.isToken() {
+				var ok bool
+				if f, ok = s.tokenWritable(f, live); !ok {
+					continue
+				}
+			}
+			// A token's own act is answered under device.status too: its
+			// reply is checked as any of its replies is (tokenWritable),
+			// and only the pushes meet the filter below.
+			if f.Type == TypeDeviceStatus && (!who.isToken() || f.ReqID == "") {
 				var status DeviceStatus
 				if err := json.Unmarshal(f.Payload, &status); err != nil {
 					continue
+				}
+				if viewable == nil && who.isToken() {
+					viewable = live.Reads
 				}
 				if viewable == nil {
 					allowed, err := s.actionDevices(ctx, store.ActionView)
@@ -915,7 +986,12 @@ func (s *session) carries(device uuid.UUID) bool {
 	s.subMu.Lock()
 	sub := s.sub
 	s.subMu.Unlock()
-	return sub != nil && sub.Allows(device)
+	if sub == nil || !sub.Allows(device) {
+		return false
+	}
+	// A token's subscription stops carrying a number as soon as the token
+	// no longer reads it, whatever its filter says.
+	return !s.actor().isToken() || s.tokenReads(device)
 }
 
 // gather fills a batch with frames already queued, without waiting.

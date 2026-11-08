@@ -38,7 +38,7 @@ func (s *session) handleContactsList(ctx context.Context, f Frame) {
 	}
 	// The resolved id, not what was asked for: callers accept a unique prefix,
 	// and a client that echoed one back could not use it as a key.
-	s.reply(TypeContactList, f.ReqID, Contacts{DeviceID: device.String(), Contacts: out})
+	s.replyRead(ctx, TypeContactList, f.ReqID, Contacts{DeviceID: device.String(), Contacts: out})
 }
 
 // handleAvatar returns one sealed profile picture.
@@ -75,7 +75,7 @@ func (s *session) handleAvatar(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such contact")
 		return
 	}
-	s.reply(TypeAvatarFrame, f.ReqID, Avatar{
+	s.replyRead(ctx, TypeAvatarFrame, f.ReqID, Avatar{
 		DeviceID: device.String(), ContactKey: req.ContactKey,
 		UID: uid.String(), KeyID: keyID, Sealed: sealed,
 	})
@@ -130,7 +130,7 @@ func (s *session) handleContactsResolve(ctx context.Context, f Frame) {
 
 	keys := contactKeys(req.Keys)
 	if len(keys) == 0 {
-		s.reply(TypeContactList, f.ReqID, Contacts{DeviceID: device.String()})
+		s.replyRead(ctx, TypeContactList, f.ReqID, Contacts{DeviceID: device.String()})
 		return
 	}
 
@@ -162,7 +162,7 @@ func (s *session) handleContactsResolve(ctx context.Context, f Frame) {
 	for _, c := range rows {
 		out = append(out, contactSummary(c))
 	}
-	s.reply(TypeContactList, f.ReqID, Contacts{DeviceID: device.String(), Contacts: out})
+	s.replyRead(ctx, TypeContactList, f.ReqID, Contacts{DeviceID: device.String(), Contacts: out})
 }
 
 // contactKeys normalises what a client asked about.

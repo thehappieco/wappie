@@ -165,5 +165,5 @@ func (s *session) handleGroupInfo(ctx context.Context, f Frame) {
 		out.Since = since
 	}
 
-	s.reply(TypeGroupFrame, f.ReqID, out)
+	s.replyRead(ctx, TypeGroupFrame, f.ReqID, out)
 }
