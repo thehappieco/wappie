@@ -30,10 +30,11 @@ import (
 // made the lookup due, and every date only lowers, so a late write (a
 // leader that lost its lock, a record the feed brought meanwhile) changes
 // nothing it should not. Nothing of an answer is applied to a token: no
-// row, perm, pin or identity is made from it. A platform that never
-// answers leaves each row to its outer bound, as before the lookups: a
-// sticky row to its receipt + 365 days, a stop to its stopped_at + 365
-// days.
+// row, perm, pin or identity is made from it. A signed not_found, or a
+// platform that never answers, leaves each row to its outer bound, as
+// before the lookups: a sticky row to its receipt + 365 days, a stop to
+// its stopped_at + 365 days. A not_found never clears a revocation (the
+// design's 3.4; the kit's SPEC 11.18).
 
 // TokenLookup is one signed GET the leader owes: by id (Token) or by
 // selector (Selector, Token uuid.Nil).
@@ -142,83 +143,32 @@ func (t *Tokens) TokenLookupAnswered(ctx context.Context, l TokenLookup, rec kc.
 	})
 }
 
-// NotFound is what a signed not_found did (TokenLookupNotFound).
-type NotFound int
-
-// The outcomes of a not_found.
-const (
-	// NotFoundSettled: the lookup is not asked again, and what it asked of
-	// keeps its date (or it was no longer due).
-	NotFoundSettled NotFound = iota + 1
-	// NotFoundDropped: a bad record's revocation went.
-	NotFoundDropped
-	// NotFoundUnconfirmed: a not_found by id in the bad record's
-	// generation that the platform has not placed in it since: nothing is
-	// written, and the leader puts it off as a lookup with no answer.
-	NotFoundUnconfirmed
-)
-
-// TokenLookupNotFound takes the platform's signed not_found to l. gen is
-// the platform's generation as a signed answer after the not_found gave it
-// (the leader's page of the account feed), "" when none did.
+// TokenLookupNotFound takes the platform's signed not_found to l: what it
+// asked of keeps its date and is not asked again. Nothing goes.
 //
-// By id: the platform keeps a record that named Wappie, as it did this
-// one, until its token's created_at + 365 days and answers not_found after
-// (decision 0056), so the token is past its life, and its revocation goes
-// at once, in this transaction (its until lowered to the database's clock,
-// which the guard asks). Only in the generation the bad record came in,
-// which both Wappie's stored generation and gen must be: after a restore
-// of the platform's database, not_found also means a token the restored
-// platform has never named to Wappie, which it may name later unrevoked,
-// and Wappie's feeds may not have seen the new generation yet. In another
-// generation (Wappie's or gen) the row keeps its clock's date and is not
-// asked again; a valid record of the token from the feed still dates it.
-// In the record's generation with gen unknown, nothing is written
-// (NotFoundUnconfirmed).
+// By id: the platform answers not_found for a token past its created_at +
+// 365 days (decision 0056), but also, after a restore of its database, for
+// a token it has never named to Wappie, which it may name later unrevoked.
+// A not_found never clears a revocation (the design's 3.4; the kit's SPEC
+// 11.18), so the bad record's revocation keeps Wappie's clock's date, its
+// receipt + 365 days. A later valid record of the token from the feed
+// still lowers it, and a later bad record asks again.
 //
 // By selector: the platform knows no token of that selector for Wappie, so
 // its stops are the operator's own record, kept to their stopped_at + 365
-// days; they are not asked again. A valid record of the selector from the
-// feed still dates them. gen is not used: nothing goes.
-func (t *Tokens) TokenLookupNotFound(ctx context.Context, l TokenLookup, gen string) (NotFound, error) {
-	var platform *uuid.UUID
-	if g, err := uuid.Parse(gen); err == nil {
-		platform = &g
+// days. A later valid record of the selector from the feed still dates
+// them.
+func (t *Tokens) TokenLookupNotFound(ctx context.Context, l TokenLookup) error {
+	q, arg := `UPDATE contract_token_sticky SET lookup_after = 'infinity', lookup_bad = 0
+		WHERE token_id = $1 AND clock_until AND lookup_after IS DISTINCT FROM 'infinity'`, any(l.Token)
+	if !l.ByID() {
+		q, arg = `UPDATE contract_token_stops SET lookup_after = 'infinity', lookup_bad = 0
+			WHERE selector = $1 AND record_until IS NULL AND lookup_after IS DISTINCT FROM 'infinity'`, l.Selector
 	}
-	out := NotFoundSettled
-	err := retryDeadlock(ctx, func() error {
-		out = NotFoundSettled
-		return pg.InTx(ctx, t.pool, func(tx pgx.Tx) error {
-			if !l.ByID() {
-				_, err := tx.Exec(ctx, `UPDATE contract_token_stops SET lookup_after = 'infinity', lookup_bad = 0
-					WHERE selector = $1 AND record_until IS NULL AND lookup_after IS DISTINCT FROM 'infinity'`, l.Selector)
-				return err
-			}
-			tag, err := tx.Exec(ctx, `UPDATE contract_token_sticky SET until = least(until, clock_timestamp())
-				WHERE token_id = $1 AND clock_until AND clock_gen = $2 AND clock_gen = (SELECT generation FROM contract_state)`,
-				l.Token, platform)
-			if err != nil {
-				return err
-			}
-			if tag.RowsAffected() == 1 {
-				out = NotFoundDropped
-				_, err := tx.Exec(ctx, `DELETE FROM contract_token_sticky WHERE token_id = $1`, l.Token)
-				return err
-			}
-			tag, err = tx.Exec(ctx, `UPDATE contract_token_sticky SET lookup_after = 'infinity', lookup_bad = 0
-				WHERE token_id = $1 AND clock_until AND lookup_after IS DISTINCT FROM 'infinity'
-				  AND (clock_gen IS NULL OR clock_gen IS DISTINCT FROM (SELECT generation FROM contract_state)
-				       OR ($2::uuid IS NOT NULL AND clock_gen <> $2::uuid))`, l.Token, platform)
-			if err != nil {
-				return err
-			}
-			if tag.RowsAffected() == 0 && platform == nil {
-				out = NotFoundUnconfirmed
-			}
-			return nil
-		})
+	return retryDeadlock(ctx, func() error {
+		_, err := t.pool.Exec(ctx, q, arg)
+		return err
 	})
-	return out, err
 }
 
 // TokenLookupFailed puts l off after a call that got nothing Wappie can

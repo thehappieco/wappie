@@ -454,25 +454,21 @@ func (w *tokenWorld) stopSettled(selector string) bool {
 // a dated selector, a lapsed stop, a revocation a valid record dated, a
 // held token's). A good answer dates the token's revocation and its
 // selector's stops and date; a record that cannot date them writes
-// nothing; a not_found drops the revocation in the generation its record
-// came in, once the platform places itself in it after the not_found,
-// writes nothing while it has not, settles it in another (Wappie's or the
-// platform's), and settles a stop undated; a call with no answer puts it
-// off, a bad answer doubling each time. A held selector's stop is never
-// shortened by an answer.
+// nothing; a not_found settles the revocation and lets nothing go, so it
+// keeps Wappie's clock's date until a later valid record lowers it, and
+// settles a stop undated; a call with no answer puts it off, a bad answer
+// doubling each time. A held selector's stop is never shortened by an
+// answer.
 func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	w := newTokenWorld(t)
 	elsewhere := func(r *kc.TokenRecord) { r.WorkspaceID = uuid.NewString() }
 	invalid := func(r *kc.TokenRecord) { r.Hash = "not a hash" }
 	revoked := revokedBy(kc.RevokedInConsole, w.now.Add(-time.Hour))
-	bad, gone, other, datedTok, heldTok := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	platformGone := uuid.New()
+	bad, notFound, datedTok, heldTok := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	w.page(false, w.record(heldTok, 1, revoked))
 	w.page(false,
 		w.record(bad, 1, invalid, revoked),
-		w.record(gone, 1, invalid, revoked),
-		w.record(other, 1, invalid, revoked),
-		w.record(platformGone, 1, invalid, revoked),
+		w.record(notFound, 1, invalid, revoked),
 		w.record(datedTok, 1, invalid, revoked))
 	w.page(false, w.record(datedTok, 2, elsewhere, revoked))
 	stop := func(sel string, at time.Time) {
@@ -492,7 +488,7 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	stop(selectorOf(later), w.now)
 	w.page(false, w.record(later, 1, elsewhere), w.record(seenBefore, 1, elsewhere))
 	stop(selectorOf(seenBefore), w.now)
-	want := map[string]bool{"id " + bad.String(): true, "id " + gone.String(): true, "id " + other.String(): true, "id " + platformGone.String(): true,
+	want := map[string]bool{"id " + bad.String(): true, "id " + notFound.String(): true,
 		"selector " + undated: true, "selector " + replayed: true, "selector " + selectorOf(bad): true}
 	if got := w.due(w.now); !mapsEqual(got, want) {
 		t.Fatalf("due: %v, want %v", got, want)
@@ -552,49 +548,41 @@ func TestTheLookupsDateStopsAndBadRevocations(t *testing.T) {
 	}
 	// A signed not_found by selector: settled, undated, standing to its
 	// stopped_at + 365 days.
-	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Selector: replayed}, ""); err != nil || got != store.NotFoundSettled {
-		t.Fatalf("a not_found by selector: %v %v", got, err)
+	if err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Selector: replayed}); err != nil {
+		t.Fatal(err)
 	}
 	if _, _, ru := w.stopOf(replayed); ru != nil || !w.stopSettled(replayed) {
 		t.Errorf("a stop the platform does not know: record_until %v, settled %v", ru, w.stopSettled(replayed))
 	}
-	// A signed not_found by id in the record's generation, Wappie's: with
-	// no later answer that says the platform's generation, nothing is
-	// written and it stays due; with one of another generation (a restored
-	// platform Wappie's feeds have not seen yet), the revocation stays,
-	// dated by Wappie's clock, and is settled; with one of the record's,
-	// it goes at once.
-	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: gone}, ""); err != nil || got != store.NotFoundUnconfirmed {
-		t.Fatalf("a not_found by id, the platform's generation unknown: %v %v", got, err)
+	// A signed not_found by id, in the generation the bad record came in,
+	// which is Wappie's: settled, and the revocation stays, dated by
+	// Wappie's clock. A not_found never clears a revocation.
+	kept := w.stickyUntil(notFound)
+	if kept == nil || !kept.Equal(w.now.Add(kc.MaxTokenLifetime)) {
+		t.Fatalf("a bad record's revocation is kept to %v, want %v", kept, w.now.Add(kc.MaxTokenLifetime))
 	}
-	if clock, _, settled := w.stickyClock(gone); !clock || settled || !w.due(w.now)["id "+gone.String()] {
-		t.Errorf("a not_found the platform did not place: clock-dated %v, settled %v; want it due as it was", clock, settled)
+	if err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: notFound}); err != nil {
+		t.Fatal(err)
 	}
-	restored := uuid.NewString()
-	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: platformGone}, restored); err != nil || got != store.NotFoundSettled {
-		t.Fatalf("a not_found by id, the platform in another generation: %v %v", got, err)
+	if exists, _, _ := w.sticky(notFound); !exists {
+		t.Fatal("a not_found by id let the revocation go")
 	}
-	if clock, _, settled := w.stickyClock(platformGone); !clock || !settled {
-		t.Errorf("a not_found the platform answered in another generation: clock-dated %v, settled %v; want both", clock, settled)
+	if clock, _, settled := w.stickyClock(notFound); !clock || !settled {
+		t.Errorf("a not_found by id: clock-dated %v, settled %v; want both", clock, settled)
 	}
-	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: gone}, w.gen.String()); err != nil || got != store.NotFoundDropped {
-		t.Fatalf("a not_found by id: %v %v", got, err)
-	}
-	if exists, _, _ := w.sticky(gone); exists {
-		t.Error("a not_found in the record's generation left its revocation")
-	}
-	// Wappie in another generation: settled, whatever the platform says,
-	// and the revocation stays, dated by Wappie's clock.
-	w.exec(`UPDATE contract_state SET generation = $1`, uuid.New())
-	if got, err := w.tokens.TokenLookupNotFound(w.ctx(), store.TokenLookup{Token: other}, w.gen.String()); err != nil || got != store.NotFoundSettled {
-		t.Fatalf("a not_found by id in another generation: %v %v", got, err)
-	}
-	w.exec(`UPDATE contract_state SET generation = $1`, w.gen)
-	if clock, _, settled := w.stickyClock(other); !clock || !settled {
-		t.Errorf("a not_found in another generation: clock-dated %v, settled %v; want both", clock, settled)
+	if u := w.stickyUntil(notFound); u == nil || !u.Equal(*kept) {
+		t.Errorf("a not_found by id: the revocation is kept to %v, want %v as before", u, *kept)
 	}
 	if got := w.due(w.now); len(got) != 0 {
 		t.Fatalf("after the answers, due: %v", got)
+	}
+	// A later valid record of the token still lowers it to its own date.
+	w.page(false, w.record(notFound, 2, elsewhere, createdAt(created, 200*tokenDay), revoked))
+	if clock, _, _ := w.stickyClock(notFound); clock {
+		t.Error("a valid record after a not_found left the revocation dated by Wappie's clock")
+	}
+	if u := w.stickyUntil(notFound); u == nil || !u.Equal(date) {
+		t.Errorf("a valid record after a not_found: the revocation is kept to %v, want %v", u, date)
 	}
 
 	// No answer: asked again 15 minutes on. Bad answers: 15 minutes, then

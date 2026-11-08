@@ -558,9 +558,10 @@ func TestTokensSuspendCommand(t *testing.T) {
 }
 
 // The stop record keeps a line 365 days, as retention keeps a stop of a
-// selector Wappie never held: each append drops the older lines, keeping
-// the others in their order, a line that is no record as it is, and the
-// file's mode, the file replaced whole; two appends at once lose no line.
+// selector Wappie never held: each append drops the older lines, and a
+// line that is no record with the line before it, keeping the others in
+// their order, a line that is no record as it is, and the file's mode,
+// the file replaced whole; two appends at once lose no line.
 // A replay leaves a line over 365 days old, whose stop retention let go,
 // and applies the others with no note, made by wappie.
 func TestTokenStopRecordKeepsAYear(t *testing.T) {
@@ -579,6 +580,7 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 		line(a, now.Add(-400*24*time.Hour), false),
 		"not a record",
 		line(b, now.Add(-364*24*time.Hour), false),
+		"torn",
 		line(a, now.Add(-366*24*time.Hour), true),
 		line(b, now.Add(-time.Hour), true),
 	}
@@ -600,7 +602,7 @@ func TestTokenStopRecordKeepsAYear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := strings.Join([]string{lines[1], lines[2], lines[4], string(js)}, "\n") + "\n"; string(got) != want {
+	if want := strings.Join([]string{lines[2], lines[3], lines[5], string(js)}, "\n") + "\n"; string(got) != want {
 		t.Fatalf("the record after an append:\n%s\nwant:\n%s", got, want)
 	}
 	if fi, err := os.Stat(record); err != nil || fi.Mode().Perm() != 0o640 {
@@ -851,7 +853,7 @@ func stopLine(t *testing.T, sel string, at time.Time, lift bool) string {
 
 // The hourly trim drops the lines 365 days old, by the comparison a replay
 // uses to leave one (store.TokenStopLapsed), and with them the lines that
-// are no stop's record before them (TestUnreadableStopLinesGoWithTheirNeighbours),
+// are no stop's record after them (TestUnreadableStopLinesGoWithTheLineBefore),
 // and nothing else: a line younger by a microsecond stays, whatever became
 // of its stop. It keeps the rest in their order, each record written again
 // with nothing a line must not hold. It keeps the file's mode and owner,
@@ -901,8 +903,8 @@ func TestTokenStopRecordTrim(t *testing.T) {
 		return [2]uint32{st.Uid, st.Gid}
 	}
 	was := owner()
-	// The line that is no record and the blank one go with the 365-day
-	// line after them.
+	// The line that is no record and the blank one go with the 366-day
+	// line before them.
 	if did, err := trimTokenStops(ctx, record, now); err != nil || did.dropped != 3 || did.unreadableDropped != 1 || did.unreadable != 0 {
 		t.Fatalf("the trim: %+v, %v; want 3 lines dropped, 1 of them unread, and none kept unread", did, err)
 	}
@@ -945,14 +947,14 @@ func TestTokenStopRecordTrim(t *testing.T) {
 	}
 }
 
-// F4: a line of the stop record that is no stop's record (a hand edit, a
-// damaged disk, a torn last line), blank or not, goes with the stop's line
-// next to it: the first after it, at that line's 365 days; with none after
-// it, the last before it; in a record of no stop's line, the file's last
-// change. Lines are only added at the end, so the line after it was
-// written after it, and a replay never needs it: -replay refuses the
-// record while it holds one.
-func TestUnreadableStopLinesGoWithTheirNeighbours(t *testing.T) {
+// F4, as the platform ruled on 2026-11-08: a line of the stop record that
+// is no stop's record (a hand edit, a damaged disk, a torn last line),
+// blank or not, goes with the nearest stop's line before it, at that
+// line's 365 days. Lines are only added at the end, so that line's time is
+// no later than its writing, and it goes at most 365 days after it was
+// written. With no stop's line before it, it goes at once: -replay
+// refuses the record while it holds one, so it can serve no restore.
+func TestUnreadableStopLinesGoWithTheLineBefore(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	const day = 24 * time.Hour
@@ -962,7 +964,7 @@ func TestUnreadableStopLinesGoWithTheirNeighbours(t *testing.T) {
 	lines := []string{
 		"damaged",
 		"",
-		stopLine(t, a, now.Add(-366*day), false),
+		stopLine(t, a, now.Add(-300*day), false),
 		`{"selector":"` + b + `"}`,
 		stopLine(t, b, now.Add(-10*day), false),
 		"",
@@ -971,41 +973,55 @@ func TestUnreadableStopLinesGoWithTheirNeighbours(t *testing.T) {
 	if err := os.WriteFile(record, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The first lines, with no stop's line before them, go at once, though
+	// the line after them is under 365 days old.
 	did, err := trimTokenStops(ctx, record, now)
-	if err != nil || did.dropped != 2 || did.unreadableDropped != 1 || did.unreadable != 2 {
-		t.Fatalf("the trim: %+v, %v; want 2 dropped, 1 of them unread, and 2 kept unread", did, err)
+	if err != nil || did.dropped != 1 || did.unreadableDropped != 1 || did.unreadable != 2 {
+		t.Fatalf("the trim: %+v, %v; want 1 dropped, unread, and 2 kept unread", did, err)
 	}
 	got, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := strings.Join(lines[3:], "\n") + "\n"; string(got) != want {
+	if want := strings.Join(lines[2:], "\n") + "\n"; string(got) != want {
 		t.Fatalf("the record after the trim:\n%s\nwant:\n%s", got, want)
 	}
-	// The last lines, dated by the line before them, go with it.
-	if did, err := trimTokenStops(ctx, record, now.Add(356*day)); err != nil || did.dropped != 3 || did.unreadableDropped != 2 || did.unreadable != 0 {
+	// A line between two stops' lines goes with the one before it, 65 days
+	// on, not with the one after it, 355 days on.
+	if did, err := trimTokenStops(ctx, record, now.Add(65*day)); err != nil || did.dropped != 2 || did.unreadableDropped != 1 || did.unreadable != 1 {
+		t.Fatalf("the trim 365 days after the line before it: %+v, %v; want 2 dropped, 1 of them unread, and 1 kept unread", did, err)
+	}
+	if got, err := os.ReadFile(record); err != nil || string(got) != strings.Join(lines[4:], "\n")+"\n" {
+		t.Fatalf("the record after the line before went: %q, %v", got, err)
+	}
+	// The last lines go with the line before them.
+	if did, err := trimTokenStops(ctx, record, now.Add(355*day)); err != nil || did.dropped != 2 || did.unreadableDropped != 1 || did.unreadable != 0 {
 		t.Fatalf("the trim 365 days after the line before them: %+v, %v", did, err)
 	}
 	if got, err := os.ReadFile(record); err != nil || len(got) != 0 {
 		t.Fatalf("the record after its last lines went: %q, %v", got, err)
 	}
 
-	// A record of no stop's line: dated by its last change.
+	// A record of no stop's line, however recent its last change: it all
+	// goes at once.
 	if err := os.WriteFile(record, []byte("damaged\n\ntorn\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if did, err := trimTokenStops(ctx, record, now.Add(-time.Minute).Add(kc.MaxTokenLifetime)); err != nil || did.dropped != 0 || did.unreadable != 2 {
-		t.Fatalf("a record of no stop's line, under 365 days after its last change: %+v, %v", did, err)
-	}
-	changed := now.Add(-366 * day)
-	if err := os.Chtimes(record, changed, changed); err != nil {
-		t.Fatal(err)
-	}
-	if did, err := trimTokenStops(ctx, record, now); err != nil || did.dropped != 2 || did.unreadableDropped != 2 {
-		t.Fatalf("a record of no stop's line, 366 days after its last change: %+v, %v", did, err)
+	if did, err := trimTokenStops(ctx, record, now); err != nil || did.dropped != 2 || did.unreadableDropped != 2 || did.unreadable != 0 {
+		t.Fatalf("a record of no stop's line: %+v, %v; want 2 dropped, both unread", did, err)
 	}
 	if got, err := os.ReadFile(record); err != nil || len(got) != 0 {
 		t.Fatalf("the record after its unread lines went: %q, %v", got, err)
+	}
+	// An append to a record whose first line is damaged drops it too.
+	if err := os.WriteFile(record, []byte("damaged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendTokenStop(ctx, record, tokenStopRecord{Selector: a, At: now}, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(record); err != nil || string(got) != stopLine(t, a, now, false)+"\n" {
+		t.Fatalf("the record after an append: %q, %v", got, err)
 	}
 }
 

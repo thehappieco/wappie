@@ -634,14 +634,15 @@ command and the server at once lose no line.
   error, and changes nothing; the next pass trims again. A trim never
   creates the file.
 - **A line that is no stop's record** (a hand edit, a damaged disk, a
-  torn last line), blank or not, goes with the stop's line next to it:
-  the first after it, at that line's 365 days; with none after it, the
-  last before it; in a file of no stop's line, 365 days after the file
-  last changed. The trim's INFO counts those it dropped (`unreadable`).
-  Until then it is kept as it is, and every pass logs ERROR "token stop
-  record has unreadable lines" with the path and how many, never what
-  they say: `tokens suspend -replay` refuses a record that holds one, so
-  mend or remove it before a restore needs the file.
+  torn last line), blank or not, goes with the nearest stop's line before
+  it, at that line's 365 days. Lines are only added at the end, so it
+  goes at most 365 days after it was written. One with no stop's line
+  before it goes at the next trim. The trim's INFO counts those it
+  dropped (`unreadable`). Until then it is kept as it is, and every pass
+  logs ERROR "token stop record has unreadable lines" with the path and
+  how many, never what they say: `tokens suspend -replay` refuses a
+  record that holds one, so mend or remove it before a restore needs the
+  file.
 - **At start.** In prod, serve checks the file right after the deletion
   ledger: it logs INFO "token stop record writable" with the path,
   creating the file when it is missing (and a temporary file beside it,
