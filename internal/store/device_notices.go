@@ -138,11 +138,14 @@ func (d *Devices) SeeNotices(ctx context.Context, tenant, user uuid.UUID, seen [
 	return out, err
 }
 
-// PauseActor is who turns a number's sync off: a person (User), or an API
-// key (Key), whose act is its creator's (decision 0040).
+// PauseActor is who turns a number's sync off: a person (User), an API
+// key (Key), whose act is its creator's (decision 0040), or a platform
+// token (Token), whose act is its record's creator's: a sub, and the local
+// account linked to it when there is one.
 type PauseActor struct {
-	User uuid.UUID
-	Key  uuid.UUID
+	User  uuid.UUID
+	Key   uuid.UUID
+	Token uuid.UUID
 }
 
 // RaisedNotice is a notice a pause raised, with the person it is for.
@@ -180,6 +183,11 @@ type Paused struct {
 // and records nothing. Only a key with no creator has nobody behind it: then
 // every reader is told and the row has no actor.
 //
+// A platform token's act is its creator's too: the event's actor kind is a
+// key's, its sub the record's created_by, and its account the local one
+// linked to that sub, left out of the notices; with none linked, every
+// reader is told.
+//
 // The pauses Wappie makes on its own (a transfer, a failed resume, the
 // pairing resume, a deletion, the storage stop) never come here.
 func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseActor) (Paused, error) {
@@ -211,7 +219,24 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 		out.Changed = true
 
 		out.ActorKind = actorPerson
+		var tokenSub *uuid.UUID
 		switch {
+		case by.Token != uuid.Nil:
+			// A key's kind on the wire (an existing actor kind): its sub is
+			// the record's created_by, written as it is, and its local
+			// account the one linked to that sub, or none.
+			out.ActorKind = actorKey
+			var sub uuid.UUID
+			var user *uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT t.created_by, (SELECT pi.user_id FROM platform_identities pi WHERE pi.sub = t.created_by)
+				FROM contract_tokens t WHERE t.id = $1 AND t.tenant_id = $2`, by.Token, tenant).Scan(&sub, &user)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errors.New("store: a token's pause needs the token's row")
+			}
+			if err != nil {
+				return err
+			}
+			tokenSub, out.ActorUser = &sub, user
 		case by.Key != uuid.Nil:
 			out.ActorKind = actorKey
 			var creator *uuid.UUID
@@ -276,8 +301,8 @@ func (d *Devices) Pause(ctx context.Context, tenant, device uuid.UUID, by PauseA
 			return err
 		}
 
-		var sub *uuid.UUID
-		if out.ActorUser != nil {
+		sub := tokenSub
+		if sub == nil && out.ActorUser != nil {
 			if sub, err = actorSubTx(ctx, tx, *out.ActorUser); err != nil {
 				return err
 			}

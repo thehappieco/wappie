@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,31 +16,6 @@ import (
 // seals its key to a token's hidden identity, from Wappie's own grant-token
 // page, once the token holds an applied Read there and a signed GET of its
 // record is under a minute old.
-
-// tokenLiveSQL is the one predicate of a live token (the plan's 3.1), over
-// contract_tokens t in the statement's workspace (app.tenant_id), now being
-// Wappie's clock as the parameter named: not revoked, unlisted or expired,
-// and nothing sticky; tokens on, caught up, and the contract not off, read in
-// the statement and never from a cache; no stop of Wappie's own
-// (tokenSuspendedSQL: the operator's, apply_failed, creator_disabled_here,
-// local_rule); the belt (the creator's stored account document drops the
-// workspace, or a disable or a recovery came after the token); and an active
-// workspace. Token auth, the socket's check, the grant write and the
-// snapshot share it.
-func tokenLiveSQL(now string) string {
-	return strings.NewReplacer("{now}", now).Replace(`(t.revoked_at IS NULL AND t.unlisted_at IS NULL AND t.expires_at > {now}::timestamptz
-	AND NOT EXISTS (SELECT 1 FROM contract_token_sticky s WHERE s.token_id = t.id
-	                 AND (s.ended IS NOT NULL OR s.revoked_at IS NOT NULL OR s.earliest_expires_at <= {now}::timestamptz))
-	AND EXISTS (SELECT 1 FROM contract_token_state ts CROSS JOIN contract_state cs
-	             WHERE ts.mode = 'on' AND ts.caught_up_at IS NOT NULL AND cs.mode <> 'off')
-	AND NOT EXISTS (SELECT 1 FROM (` + tokenSuspendedSQL + `) x WHERE x.token_id = t.id)
-	AND NOT EXISTS (SELECT 1 FROM contract_accounts a WHERE a.sub = t.created_by AND a.doc IS NOT NULL
-	                 AND (a.disabled_at > t.created_at OR a.credentials_revoked_at > t.created_at
-	                      OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(a.doc->'workspaces') = 'array'
-	                                                                        THEN a.doc->'workspaces' ELSE '[]' END) w
-	                                     WHERE w->>'id' = t.tenant_id::text)))
-	AND EXISTS (SELECT 1 FROM tenants w WHERE w.id = t.tenant_id AND w.status = 'active'))`)
-}
 
 // TokenGrantFresh is how old the last signed GET of a token's record may be
 // for a grant to it (design 3.4): older, the page fetches it again first.
