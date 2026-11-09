@@ -1773,11 +1773,15 @@ never moves the seq a snapshot in flight records its outcome by. A
 document takes its seq first, in its own REPEATABLE READ measuring
 transaction (an act holding the record makes it run again, and it then
 sees the act); an act takes its seq first, under its record. So a section
-at or above a result's seq shows it. The snapshot is measured, then
-numbered, which leaves a rename's residual for one send, bounded by 0051's
-label trigger; and a section's `snapshot_seq` is the last one numbered,
-which may be a snapshot whose send failed: the console's "shown" check
-reads the platform's own kept seq, so that is harmless. A person's
+at or above a result's seq shows it. The sender's snapshot does the same
+(`SnapshotNumbered`, since the platform's check of fcffb55, finding 3):
+12a measured it, then numbered it, so a rename that committed in between
+left one snapshot above the result with the old label (the residual the
+plan bounded by 0051's label trigger), and the console showed the rename
+done beside the old name until the next one. And a section's
+`snapshot_seq` is the last one numbered, which may be a snapshot whose
+send failed: the console's "shown" check reads the platform's own kept
+seq, so that is harmless. A person's
 document does the same on `contract_persons.seq`, with `sent_seq` for its
 outcome's compare-and-set.
 

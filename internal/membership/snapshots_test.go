@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1112,6 +1113,74 @@ func TestSnapshotSeqRises(t *testing.T) {
 	if ahead := time.UnixMilli(last.SnapshotSeq); time.Until(ahead) < 50*time.Minute {
 		t.Fatalf("after the clock stepped back the seq is %v, not past the one an hour ahead", ahead)
 	}
+}
+
+// TestSnapshotShowsTheRenameBelowItsSeq (the plan's 3.5; the platform's
+// check of fcffb55, finding 3): a rename holds the workspace's record
+// while the sender measures its snapshot. The snapshot the platform keeps
+// afterwards is numbered above the rename's seq, and shows its label:
+// never one measured before the rename committed and numbered after it,
+// which would let the console show the rename done beside the old name.
+func TestSnapshotShowsTheRenameBelowItsSeq(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	s := &snapshotSender{l: w.leader(w.members, &membershiptest.Logs{}, lockKey(t)), notices: newNotices(),
+		logged: map[uuid.UUID]time.Time{}}
+
+	// The rename, as an act runs it: its seq first, under the record's
+	// lock, then the label.
+	act, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = act.Rollback(ctx) }()
+	var actSeq int64
+	if err := act.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
+		UPDATE contract_workspaces w SET sections_seq = greatest(floor(extract(epoch FROM now.t) * 1000)::bigint,
+			w.sections_seq + 1, w.snapshot_seq + 1)
+		FROM now WHERE w.workspace_id = $1 RETURNING w.sections_seq`, w.team).Scan(&actSeq); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := act.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, w.team.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := act.Exec(ctx, `UPDATE devices SET label = 'Vendas SP' WHERE id = $1`, w.device); err != nil {
+		t.Fatal(err)
+	}
+
+	sent := make(chan bool, 1)
+	go func() {
+		sent <- s.send(ctx, store.ContractSnapshotDue{Workspace: w.team, DueAt: time.Now(), Due: true})
+	}()
+	pid := int32(act.Conn().PgConn().PID())
+	eventually(t, soon, "the snapshot to wait on the rename", func() bool {
+		var waits bool
+		if err := w.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid)))`,
+			pid).Scan(&waits); err != nil {
+			t.Fatal(err)
+		}
+		return waits
+	})
+	if err := act.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !<-sent {
+		t.Fatal("the snapshot's outcome was not stored")
+	}
+	kept, ok := w.fake.Snapshot("wappie", w.team.String())
+	if !ok || len(kept.Items) != 1 {
+		t.Fatalf("the platform keeps %+v %v", kept, ok)
+	}
+	if got := kept.Items[0].Label; kept.SnapshotSeq <= actSeq || got == nil || *got != "Vendas SP" {
+		t.Fatalf("the snapshot at %d, after the rename at %d, shows %v", kept.SnapshotSeq, actSeq, stringOr(got))
+	}
+}
+
+func stringOr(s *string) string {
+	if s == nil {
+		return "null"
+	}
+	return strconv.Quote(*s)
 }
 
 // TB29: a workspace the platform answers not_found for is retried with the

@@ -618,8 +618,12 @@ missing snapshot as unknown protection.
   workspace's snapshot is not sent: Wappie would not send it"), recorded
   `local_invalid:<rule>`, and retried with the backoff.
 - **`snapshot_seq`** is the greater of the measurement's milliseconds and
-  the last one sent plus one, stored before the send, so it rises across
-  leaders.
+  the last one sent plus one (or the workspace's last section's plus
+  one), stored before the send, so it rises across leaders. It is taken
+  first in the snapshot's own measuring transaction, under the
+  workspace's record, as a section's is (DS3): a rename that holds the
+  record makes the snapshot wait and measure again, so a snapshot at or
+  above a rename's seq always shows its label.
 
 **When.** At the leader's start, every recorded workspace (and every park
 released for one try); 2 seconds after the first of a run of changes the

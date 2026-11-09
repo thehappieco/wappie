@@ -174,6 +174,110 @@ func TestNumbersReadSerializesWithAct(t *testing.T) {
 	}
 }
 
+// TestSnapshotReadSerializesWithAct: the snapshot as the sender reads it
+// is numbered in its measuring transaction, as the numbers read is. A
+// rename holding the record makes it wait; once the rename commits the
+// read runs again and shows the new label at a higher seq. A read holding
+// the record makes the act wait, and the act's seq comes above the read's.
+// A parked workspace's snapshot is not read.
+func TestSnapshotReadSerializesWithAct(t *testing.T) {
+	ctx := context.Background()
+	w := newSettingsWorld(t)
+	label := func(s ContractSnapshot) string {
+		if len(s.Items) != 1 || s.Items[0].Label == nil {
+			return ""
+		}
+		return *s.Items[0].Label
+	}
+
+	act, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = act.Rollback(ctx) }()
+	actSeq, err := actSeqTx(ctx, act, w.ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := act.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.ws.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := act.Exec(ctx, `UPDATE devices SET label = 'Vendas SP' WHERE id = $1`, w.device); err != nil {
+		t.Fatal(err)
+	}
+	type read struct {
+		s   ContractSnapshot
+		ok  bool
+		err error
+	}
+	done := make(chan read, 1)
+	go func() {
+		s, ok, err := w.c.SnapshotNumbered(ctx, w.ws)
+		done <- read{s, ok, err}
+	}()
+	until(t, "the snapshot to wait on the act", func() bool { return blocking(t, w.pool, act.Conn().PgConn().PID()) })
+	if err := act.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || !r.ok || r.s.Seq <= actSeq || label(r.s) != "Vendas SP" {
+		t.Fatalf("the snapshot after the act at %d: %+v %v %v", actSeq, r.s, r.ok, r.err)
+	}
+	var stored int64
+	if err := w.pool.QueryRow(ctx, `SELECT snapshot_seq FROM contract_workspaces WHERE workspace_id = $1`, w.ws).Scan(&stored); err != nil ||
+		stored != r.s.Seq {
+		t.Fatalf("the stored snapshot_seq %d, the snapshot's %d: %v", stored, r.s.Seq, err)
+	}
+
+	// The read holds the record; the act waits and takes a higher seq.
+	taken, release := make(chan struct{}), make(chan struct{})
+	snapshotSeqTaken = func() {
+		close(taken)
+		<-release
+	}
+	defer func() { snapshotSeqTaken = nil }()
+	go func() {
+		s, ok, err := w.c.SnapshotNumbered(ctx, w.ws)
+		done <- read{s, ok, err}
+	}()
+	<-taken
+	snapshotSeqTaken = nil
+	conn, err := w.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	pid := conn.Conn().PgConn().PID()
+	acted := make(chan error, 1)
+	var secondSeq int64
+	go func() {
+		acted <- pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			var err error
+			if secondSeq, err = actSeqTx(ctx, tx, w.ws); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.ws.String()); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `UPDATE devices SET label = 'Vendas RJ' WHERE id = $1`, w.device)
+			return err
+		})
+	}()
+	until(t, "the act to wait on the snapshot", func() bool { return blocked(t, w.pool, pid) })
+	close(release)
+	r = <-done
+	if err := <-acted; err != nil || r.err != nil || !r.ok || secondSeq <= r.s.Seq || label(r.s) != "Vendas SP" {
+		t.Fatalf("an act after a snapshot at %d (%q): %d %v %v", r.s.Seq, label(r.s), secondSeq, err, r.err)
+	}
+
+	if _, err := w.pool.Exec(ctx, `UPDATE contract_workspaces SET parked_at = clock_timestamp() WHERE workspace_id = $1`, w.ws); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok, err := w.c.SnapshotNumbered(ctx, w.ws); err != nil || ok || s.Seq != 0 {
+		t.Fatalf("a parked workspace's snapshot: %+v %v %v", s, ok, err)
+	}
+}
+
 // TestSettingsLockOrder: Restart at the same time as an act, a take, a
 // numbers read, a new sub's document store, a person read, a refusal, a
 // failed run, a results post clearing results_error, a trim and a mode
