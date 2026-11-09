@@ -241,7 +241,7 @@ policy and is not charged Wappie storage. See [storage](storage.md).
 Retain a matching previous private artifact and database/object backups before
 rollout. Database migrations are forward-only, except for the documented
 down-steps, such as the [remote MCP one](#remote-mcp-connector),
-[0050's](#rolling-back-below-0050) and [0051's](#rolling-back-below-0051); verify old binary compatibility
+[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051) and [0052's](#rolling-back-below-0052); verify old binary compatibility
 before reverting an executable. Do not restore an older archive over newer
 messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
@@ -652,10 +652,45 @@ rotation happened after the platform's backup, Wappie holds a secret the
 platform no longer has: `contract check` exits `3`, and the owner
 reinstalls it (`contract-secret reset`, then the install).
 
+### Rolling back below 0052
+
+A binary older than 0052 (the contract's settings part) refuses a database
+at version 52, so its down-step comes first. In this order:
+
+1. Tell the platform: from the first read of the command feed it watches
+   Wappie's feed for good, and alerts once it goes silent. Then
+   `whatserverd contract settings off --platform-told`, as the server's
+   user from its working directory.
+2. Stop the server.
+3. The down-step in the header of `0052_contract_settings.sql`, after
+   checking the file's sha256 against the release's (`migration52_sha256`
+   in a hosted `RELEASE.json`), as the owner of the tables, in its one
+   transaction. Its guards run first: it refuses while settings are not off
+   (`settings are on: run whatserverd contract settings off first`) and
+   while a migration after 0052 is applied (`a migration after 0052 is
+   applied; run its down-step first`), and a refusal changes nothing. It
+   says what it drops (`dropping N ledger rows (N without a result, N
+   results not delivered), N sections, N persons (N signed out everywhere),
+   N invalid-command security events`). It comes before 0051's down-step,
+   whose guard refuses while 52 is applied.
+4. Switch back to the older binary and start it.
+
+What it loses: the command ledger (its results not delivered are not
+sent; the platform's console shows the section's last state with its
+age), the sections' and persons' send state, the times people signed out
+everywhere through the console, and the invalid-command security events.
+What it keeps: the item events' labels 0052 cleared stay cleared (51 needs
+none), and the contract's membership state. A release with 0052 deployed
+again reads the command feed from 0, as after a restore of its own (the
+platform delivers its tightening commands again), and sends every section
+anew.
+
 ### Rolling back below 0051
 
 A binary older than 0051 refuses a database at version 51, so its
-down-step comes first. In this order:
+down-step comes first, after 0052's
+([Rolling back below 0052](#rolling-back-below-0052)) where 52 is applied.
+In this order:
 
 1. `whatserverd contract mode off`, as the server's user from its working
    directory. Tell the platform, which may unmap Wappie.

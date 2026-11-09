@@ -211,7 +211,8 @@ func sameGeneration(a, b *uuid.UUID) bool {
 // its status, and a snapshot and event queue due now, with no accepted
 // snapshot (the platform may hold none of this generation), nothing
 // parked and no not_found run, and every workspace's events parked
-// not_found are sent again (the plan's 4.7 and 4.11). It reports whether
+// not_found are sent again (the plan's 4.7 and 4.11). The command feed
+// resets in the same transaction (restartCommandsTx). It reports whether
 // it restarted: false when the state moved since it was read.
 func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenCursor int64, gen *uuid.UUID, confirmed bool) (bool, error) {
 	done := false
@@ -266,6 +267,9 @@ func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenC
 			// Rows are parked not_found only in a not_found run, which this
 			// ends: in id order, after the records (DB23).
 			if err := releaseWorkspacesTx(ctx, tx, refused); err != nil {
+				return err
+			}
+			if err := restartCommandsTx(ctx, tx, gen); err != nil {
 				return err
 			}
 			done = true
@@ -338,6 +342,8 @@ type ContractModeChange struct {
 	// pauses, strandings and moves written while off, never sent (the
 	// plan's DB10, 4.4).
 	ToSend, HeldBack int64
+	// SettingsOff: a switch to off turned the settings part off with it.
+	SettingsOff bool
 }
 
 // ErrContractMode is a mode Wappie does not know.
@@ -376,6 +382,9 @@ func (c *Contract) SetMode(ctx context.Context, mode string) (ContractModeChange
 			_, err = tx.Exec(ctx, `UPDATE contract_state SET mode = $1, mode_changed_at = clock_timestamp(),
 				events_paused_at = CASE WHEN events_from IS NULL THEN NULL ELSE clock_timestamp() END,
 				updated_at = clock_timestamp()`, mode)
+			if err == nil {
+				out.SettingsOff, err = settingsOffTx(ctx, tx)
+			}
 		}
 		if err != nil {
 			return err

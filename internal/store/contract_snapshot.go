@@ -382,12 +382,14 @@ func (c *Contract) SnapshotsDirty(ctx context.Context, ids []uuid.UUID, all bool
 
 // SnapshotSeq gives the snapshot of workspace measured at measured its
 // snapshot_seq, stored before it is sent: the measurement's milliseconds,
-// or one more than the last, whichever is higher, so it rises strictly
-// for the workspace across leaders and a clock that steps back (README 8).
-// False when the workspace is parked meanwhile, and nothing is to be sent.
+// or one more than the last snapshot's or section's, whichever is higher,
+// so it rises strictly for the workspace across leaders and a clock that
+// steps back, on one clock with the sections (README 8; 0052's
+// sections_seq, DS3). False when the workspace is parked meanwhile, and
+// nothing is to be sent.
 func (c *Contract) SnapshotSeq(ctx context.Context, workspace uuid.UUID, measured time.Time) (int64, bool, error) {
 	var seq int64
-	err := c.pool.QueryRow(ctx, `UPDATE contract_workspaces SET snapshot_seq = greatest($2::bigint, snapshot_seq + 1)
+	err := c.pool.QueryRow(ctx, `UPDATE contract_workspaces SET snapshot_seq = greatest($2::bigint, snapshot_seq + 1, sections_seq + 1)
 		WHERE workspace_id = $1 AND parked_at IS NULL RETURNING snapshot_seq`, workspace, measured.UnixMilli()).Scan(&seq)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil

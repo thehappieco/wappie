@@ -1736,3 +1736,135 @@ between is never lifted under Manage. A sync now lifts no pause, and one
 that fails puts none back (a resume that fails still restores the pause
 it lifted, with its cause), so a member with Manage never leaves a number
 paused. `history.backfill` keeps Manage.
+
+## The contract's settings part (2026-11-08)
+
+Step 12a puts Wappie's `numbers` section in the platform's console through
+the contract's settings part (kit v0.10.1; the platform's spec, section 14).
+It ships in two releases: "read" sends the sections with `accepts: []`,
+follows the command feed and answers every command `kind_not_accepted`;
+"commands" runs the kinds. One migration, 0052, holds the schema of both.
+Seventeen decisions shaped it (DS1 to DS17, numbered apart from the
+membership part's DB so the two never collide); this section holds the
+ones the schema and the store make, and the releases that need the others
+add them here.
+
+**DS1. 12a takes migration 0052, all of its schema.** The ledger, the
+feed's state, the sections' and persons' seqs and due times, the logout
+cause, the pause times and actors, the settings triggers and the label
+cutover, for both releases, so the second migrates nothing. Step 7's own
+0052 becomes 0053. Its down-step refuses while settings are not off or a
+later migration is applied, counts what it drops, and leaves exactly 51's
+schema ([Rolling back below 0052](deployment.md#rolling-back-below-0052)).
+
+**DS2. The settings mode is in the database.** `contract_settings_state.mode`
+is `off`, `read` or `on`, apart from `contract_state`, so a take never waits
+behind the account side. `read` and `on` need the contract on, and
+`contract mode off` turns settings off in its own transaction. A binary
+that does not know a mode reads it as `read`, never as `off` or `on`. A
+change makes every section and person document due now (their `accepts`
+change).
+
+**DS3. One clock per workspace, two columns.** The snapshot keeps
+`snapshot_seq`; the sections and the acts take `sections_seq`. Each takes
+the greatest of the clock in milliseconds and both columns plus one, under
+the record's lock, so the two documents rise on one clock and a section
+never moves the seq a snapshot in flight records its outcome by. A
+document takes its seq first, in its own REPEATABLE READ measuring
+transaction (an act holding the record makes it run again, and it then
+sees the act); an act takes its seq first, under its record. So a section
+at or above a result's seq shows it. The snapshot is measured, then
+numbered, which leaves a rename's residual for one send, bounded by 0051's
+label trigger; and a section's `snapshot_seq` is the last one numbered,
+which may be a snapshot whose send failed: the console's "shown" check
+reads the platform's own kept seq, so that is harmless. A person's
+document does the same on `contract_persons.seq`, with `sent_seq` for its
+outcome's compare-and-set.
+
+**DS4. The ledger keeps exactly 30 days.** A row holds the command as
+received (bytes: its MAC is the app's proof) and the sha256 of its
+canonical form without `generation`, `cseq`, `secret` and `mac`, kept
+exactly 30 days from its take (decision 0056): every read ignores an older
+row, a delivery of its id is a new row, and the trim deletes it. A command
+refused before `ValidateIn` passed keeps no decoded column, and a body
+that is not one object, holds a NUL or is not UTF-8 never fails a page;
+an id that is no UUID gets no row. The security log's
+`contract_command_invalid` names no person (`user_id` and `sub` NULL),
+only the command's id, its cseq and why, since that log is never trimmed.
+
+**DS5. The order of decisions.** At take: another app's body, a MAC that
+holds under no secret, a command of another generation than its page,
+`ValidateIn`, the 30 days, `expires_at`, then a `wseq` the memory has
+passed with another id; each answered in the take's transaction. A replay
+posts its result again and moves to the current generation; only a copy
+whose MAC holds may finish an open row with another body
+(`invalid_command`), a forged one only logs. Only the page's generation
+resets. The executor runs in take order (`take_seq`, not `cseq`, which a
+restored platform starts again below), one open row at a time per
+workspace and producer; a row whose run fails with a store error backs off
+5 s doubled up to a minute, holds back only its own workspace and
+producer, and is answered `rate_limited` (60 s) after 5 tries. A result
+is written in its act's transaction by compare-and-set on its having none;
+one of a command whose row is of another generation is dropped, and the
+poster drops any it finds before each batch.
+
+**DS6. The logout cause is a typed column, decided once.** A `BEFORE`
+trigger fills `devices.logout_cause` when a number moves into
+`logged_out`: a deletion's two reasons (`no session at deletion`,
+`unlinked when deleted`) are `deletion`, any other (the phone's unlink, a
+missing session) `phone`, whose remedy is the same relink. A number already
+logged out keeps its cause whatever reason follows, so a phone's logout
+followed by a deletion (whatsmeow deleted the session at the logout, so
+the deletion finds none) stays `phone`. Rows logged out before 0052 are
+classed by their reason alone, so a phone's logout then deleted reads
+`deletion`. No writer's Go file changes, and a store test fails if the
+trigger stops naming the deletion's two reasons.
+
+**DS7. Who paused, from three columns.** `paused_at`, `paused_by_kind` and
+`paused_by_user` on `devices`: a trigger sets the time at each new pause
+or change of cause, and `app` for a move's or a deletion's; an
+`AFTER INSERT` trigger on `item_events` (`sync_paused`, `recovered`) names
+a person or a legacy key's creator; the console's stop writes its own. A
+second stop with the same cause keeps the first pause's time and actor. A
+resume clears them and stamps `unpaused_at`. 0052 fills paused rows from
+what it finds: a deletion's from `deleted_at`, a move's from its
+transfer, a person's from its newest event unless one of its notices was
+marked resumed after it. Still unknown, and sent as null, by design until
+the frames share one pause transaction: a frame's stop that tells nobody
+(every personal workspace), a frame's stop on a moved number, a pause put
+back after a failed resume, and paused rows 0052 found no trace of.
+`paused_by_user` references `users` `ON DELETE SET NULL`, as `deleted_by`
+does: a removed account leaves no id behind, and the kind stays.
+
+What 0052's fill can get wrong, accepted: schema 51 keeps no trace of a
+resume once nobody is left to mark (`MarkResumed` marks only unseen
+notices). A pause that told nobody, after a resume of an older pause
+whose event it would take, is credited to that older event's actor and
+time: a stop whose notices were all seen before the resume, or a
+recovery (its event tells no reader), each followed by a resume and then
+a silent stop. It is a display only, of pauses made before 0052 whose
+events are under 30 days old; a pause put back after a failed resume, the
+likelier case, is the same pause and is credited rightly. The migrating
+release's verification lists the person pauses 0052 filled, so the
+operator can check them.
+
+**DS14. One lock order for every 12a writer**, `Restart`'s:
+`contract_state`, `contract_accounts`, the records in id order,
+`contract_settings_state`, the ledger rows in id order, the `wseq` memory,
+`tenants`, `devices`, `device_notices` and `sessions`,
+`contract_sections`, `contract_persons`. A reset clears the command feed in
+`Restart`'s own transaction. A take holds `contract_state` `FOR SHARE`, so
+a take and a reset never interleave. An act takes its record first and
+reads `contract_state` and `contract_accounts` with no lock (a stale
+generation only leaves a result the poster drops), and records an ERROR
+only after its transaction ends. The results poster clears
+`results_error` before it settles the ledger rows. Every statement that
+locks several ledger rows or persons takes them in key order (a `FOR
+UPDATE` subquery), the trim's and a take's deletions included, and a row
+past its 30 days is the trim's alone: neither a reset nor the poster drops
+it.
+
+**DS16. The platform is told first.** `contract settings read` (or `on`)
+the first time, and `off` once the feed was read, need `--platform-told`:
+from the first read the platform watches the command feed for good, and
+alerts when it goes silent.
