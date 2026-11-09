@@ -727,7 +727,7 @@ Each recorded platform workspace's `numbers` section
 | `items[].capture` | `paused` when the number is paused or deleted, else `on` |
 | `items[].paused_by` | `{kind, sub, at}` from `devices.paused_at`, `paused_by_kind` and the sub of `paused_by_user`; `null` whenever the time or the actor is not known (DS7) |
 | `items[].can_resume` | paused, not deleted, its identity known, not logged out or banned |
-| `items[].read_only` | logged out, banned or deleted |
+| `items[].read_only` | logged out, banned or deleted, or its identity not known (it connected for a pairing that never linked: no session Wappie could start, so its sync now is `not_linked`, and a pause of it could not be lifted from the console; DS12) |
 | `items[].key_epoch` | the number's epoch, `null` for 0 |
 | `items[].recovery_open` | deleted, its purge ahead and not started |
 | `items[].move_out`, `items[].bytes` | `null` |

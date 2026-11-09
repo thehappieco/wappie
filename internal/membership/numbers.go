@@ -61,12 +61,21 @@ func pendingOf(p store.ContractPending, looks NumberLooks) kc.PendingRegistratio
 	return row
 }
 
-// numberRow is one number's row.
+// numberRow is one number's row. read_only is the spec's (logged out or
+// banned), a deleted number's (the platform's commitment), and a number
+// whose identity Wappie never learned (it connected for a pairing that
+// never linked): Wappie holds no session it could start for it, which the
+// spec's read_only code names ("no session to the number"). Its sync now
+// is not_linked, and a pause of it could not be lifted from the console
+// (can_resume false, the resume state_changed), so the console holds both
+// back, as on a logged-out number. In Wappie its start, its pairing retry
+// (it connected) and its relink (no identity to compare) all refuse it:
+// an owner deletes it and links the phone as a new number.
 func numberRow(n store.ContractNumber) kc.NumberRow {
 	loggedOut := n.Status == "logged_out"
 	banned := n.Status == "banned"
 	row := kc.NumberRow{ID: n.ID.String(), Connection: connectionOf(n), Capture: "on", RecoveryOpen: n.RecoveryOpen,
-		ReadOnly: loggedOut || banned || n.Deleted}
+		ReadOnly: loggedOut || banned || n.Deleted || !n.Known}
 	if n.LastConnectedAt != nil {
 		at := kc.T(*n.LastConnectedAt)
 		row.LastConnectedAt = &at

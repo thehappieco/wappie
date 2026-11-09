@@ -1950,6 +1950,19 @@ spec's 14.2 says, where the plan had the whole section `local_invalid`; a
 section that still fails is. A parked snapshot does not hold back its
 workspace's section, which has its own park. A numbers row carries no
 label (the snapshot's is the number's). 0052 nulled the labels of the item events not yet sent, once.
+A row is `read_only` when its number is logged out or banned (the spec's
+14.3), deleted (the platform's commitment), or its identity was never
+learned (a pairing that connected and never linked; the platform's check
+of fcffb55, finding 5): Wappie holds no session it could start for it,
+the "no session to the number" of the spec's 14.9 `read_only`. Its sync
+now is `not_linked`, and a stop would leave a pause the console cannot
+lift (`can_resume` false, a resume `state_changed`), so the console holds
+both back, as on a logged-out number, and sends the person to Wappie
+("Abrir no Wappie", `not_linked`'s way out too). There its start, its
+pairing retry (it connected) and its relink (no identity stored to
+compare the scan with, the spec's 14.13) all refuse it: an owner deletes
+it and links the phone as a new number. Once its identity is known the
+row changes (0052's trigger watches `lid` and `pn`).
 The person's notices (the commands release) are the unseen ones of
 platform workspaces where Wappie lets the person in (membership, account
 and workspace active, the membership not expired: a disabled member sees
