@@ -316,6 +316,7 @@ func TestLocalRolesFailClosed(t *testing.T) {
 		{kc.OpItemSyncNow, person{local: "member", doc: "member", read: true}, "runs"},
 		{kc.OpItemSyncNow, person{local: "member", doc: "owner", read: true}, "runs"},
 		{kc.OpItemSyncNow, person{local: "admin", doc: "admin"}, no},
+		{kc.OpItemSyncNow, person{local: "member", doc: "member", flag: true}, no},
 		{kc.OpItemSyncNow, person{local: "member", doc: "", read: true}, no},
 	} {
 		if got := run(c.kind, c.p); got != c.want {

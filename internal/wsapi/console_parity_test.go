@@ -527,6 +527,9 @@ func TestConsoleParityNotFound(t *testing.T) {
 		}{
 			{wsapi.TypeDeviceStop, wsapi.TypeDeviceStatus, func() (store.ContractAct, error) { return p.runnerStop(t, admin, adminSub, d) }},
 			{wsapi.TypeDeviceStart, wsapi.TypeDeviceStatus, func() (store.ContractAct, error) { return p.runnerResume(t, admin, adminSub, d) }},
+			{wsapi.TypeDeviceStart, wsapi.TypeDeviceStatus, func() (store.ContractAct, error) {
+				return p.runner.SyncNow(ctx, p.command(t, kc.OpItemSyncNow, admin, adminSub), d) //nolint:contextcheck // the world's helpers run on a context of their own
+			}},
 			{wsapi.TypeDeviceRename, wsapi.TypeDeviceDetail, func() (store.ContractAct, error) {
 				return p.runner.Rename(ctx, p.command(t, kc.OpItemRename, admin, adminSub), d, &label, "X") //nolint:contextcheck // the world's helpers run on a context of their own
 			}},
