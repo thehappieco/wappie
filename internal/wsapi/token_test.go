@@ -783,6 +783,25 @@ func TestATokensMediaRetryStaysOnItsNumber(t *testing.T) {
 	}
 }
 
+// TestATokensSyncNowNeedsManage: device.start on a number that is not
+// paused ("sync now") is a person's with Read (DS13, step 12a), but a
+// token's with its manage permission, as resuming a paused one is (its
+// rules, before the person's branch): a Read token and a Read and Send one
+// are refused with the token's one answer, a Manage one gets past it.
+func TestATokensSyncNowNeedsManage(t *testing.T) {
+	ts := newTokenSocket(t)
+	w := ts.w
+	linked := w.Number("Vendas")
+	w.ExecIn(`UPDATE devices SET pn = '5511777777777@s.whatsapp.net', lid = '1234567@lid' WHERE id = $1`, linked)
+	ref := wsapi.DeviceRef{DeviceID: linked.String()}
+	reader := ts.open(t, w.Token(tokentest.Read(linked)))
+	refusedWith(t, "a Read token's sync now", on(t, reader, wsapi.TypeDeviceStart, ref), tokenNumberRefused)
+	sender := ts.open(t, w.Token(tokentest.Read(linked), tokentest.Send(linked)))
+	refusedWith(t, "a Read and Send token's sync now", on(t, sender, wsapi.TypeDeviceStart, ref), tokenNumberRefused)
+	manager := ts.open(t, w.Token(tokentest.Read(linked), tokentest.Manage(linked)))
+	passed(t, "a Manage token's sync now", on(t, manager, wsapi.TypeDeviceStart, ref))
+}
+
 // TestDeviceStartTellsAManageOnlyTokenNothingOfTheNumber: device.stop hides
 // a number's status from a token that cannot read it, and so does
 // device.start: a linked number and one never linked fail with one answer.

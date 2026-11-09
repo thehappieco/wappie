@@ -676,8 +676,10 @@ func (s *session) resolveDevice(ctx context.Context, f Frame, deviceID string) (
 	// it connects the number. A person needs Read, as the console's
 	// item.sync_now (the owner's "readers", the platform's answer 4: DS13);
 	// a key, and a service account through one, keeps Manage, with full
-	// scope. On a paused one it resumes it, by role (frameAction);
-	// handleDeviceStart checks that again on the row it lifts the pause on.
+	// scope; a platform token was judged above by its rules (tokenResolve),
+	// its manage permission whether the number is paused or not. On a
+	// paused one it resumes it, by role (frameAction); handleDeviceStart
+	// checks that again on the row it lifts the pause on.
 	if f.Type == TypeDeviceStart && !dev.Paused {
 		action = store.ActionManage
 		if s.actor().person {

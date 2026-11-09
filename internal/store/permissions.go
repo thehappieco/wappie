@@ -25,7 +25,8 @@ const (
 	// (internal/access). Every other act of managing a number stays
 	// ActionManage. device.start on a number that is not paused ("sync
 	// now", which connects it) is a person's ActionRead (the platform's
-	// answer 4, DS13) and a key's ActionManage.
+	// answer 4, DS13) and a key's ActionManage. A platform token's is its
+	// manage permission either way, paused or not (wsapi's token rules).
 	ActionPause DeviceAction = "pause"
 )
 

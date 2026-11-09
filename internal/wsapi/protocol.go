@@ -302,10 +302,13 @@ type DeviceInfo struct {
 	// CanPause is whether this caller may pause and resume the number's
 	// capture (device.stop, and device.start on a paused number): a person
 	// by role only, an owner or an admin, never through Manage; a key as
-	// for managing. device.start on a number that is not paused ("sync
-	// now") follows neither flag: a person needs Read and the number's key
-	// at its current epoch (an owner or admin who does not read it may
-	// not), a key Manage with full scope.
+	// for managing; a platform token by its manage permission. device.start
+	// on a number that is not paused ("sync now") follows neither flag for
+	// a person or a key: a person needs Read and the number's key at its
+	// current epoch (an owner or admin who does not read it may not), a key
+	// Manage with full scope. A platform token needs its manage permission
+	// either way (its rules, token.go), which can_manage and can_pause both
+	// show it.
 	CanPause   bool   `json:"can_pause"`
 	CanSend    bool   `json:"can_send"`
 	ProfileKey string `json:"profile_key,omitempty"`
