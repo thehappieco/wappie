@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/migrate"
@@ -278,12 +280,66 @@ func TestSnapshotReadSerializesWithAct(t *testing.T) {
 	}
 }
 
+// TestRetrySerializationPaces: a read that keeps failing on the record is
+// tried eight times in all, with a pause before each try again of at least
+// 2 ms times the failures so far (the writers queued on the record go
+// first); one that gets through on its last try is through; a deadlock is
+// tried again the same way and any other error is not; and a context done
+// ends the waits, with the failure and the context's error.
+func TestRetrySerializationPaces(t *testing.T) {
+	ctx := obs.WithLogger(context.Background(), slog.New(slog.DiscardHandler))
+	for _, code := range []string{"40001", "40P01"} {
+		failed := &pgconn.PgError{Code: code}
+		var at []time.Time
+		err := retrySerialization(ctx, func() error {
+			at = append(at, time.Now())
+			return failed
+		})
+		if !errors.Is(err, failed) || len(at) != 8 {
+			t.Fatalf("%s: %d tries, %v", code, len(at), err)
+		}
+		for n := 1; n < len(at); n++ {
+			if gap := at[n].Sub(at[n-1]); gap < time.Duration(2*n)*time.Millisecond {
+				t.Fatalf("%s: the try after %d failures came %v after the one before", code, n, gap)
+			}
+		}
+	}
+	tries := 0
+	if err := retrySerialization(ctx, func() error {
+		if tries++; tries < 8 {
+			return &pgconn.PgError{Code: "40001"}
+		}
+		return nil
+	}); err != nil || tries != 8 {
+		t.Fatalf("through on the last try: %d tries, %v", tries, err)
+	}
+	tries = 0
+	other := errors.New("another error")
+	if err := retrySerialization(ctx, func() error { tries++; return other }); !errors.Is(err, other) || tries != 1 {
+		t.Fatalf("another error: %d tries, %v", tries, err)
+	}
+	tries = 0
+	done, cancel := context.WithCancel(ctx)
+	failed := &pgconn.PgError{Code: "40001"}
+	err := retrySerialization(done, func() error {
+		tries++
+		cancel()
+		return failed
+	})
+	if tries != 1 || !errors.Is(err, failed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("a context done: %d tries, %v", tries, err)
+	}
+}
+
 // TestSettingsLockOrder: Restart at the same time as an act, a take, a
-// numbers read, a new sub's document store, a person read, a refusal, a
-// failed run, a results post clearing results_error, a trim and a mode
-// switch, round after round. Nothing deadlocks, each commits (or, for a
-// take, finds the state moved), and an act's result of the generation
-// before is dropped.
+// numbers read, the sender's snapshot read and its outcome, the event
+// sender's batch and its failure, a new sub's document store, a person
+// read, a refusal, a failed run, a results post clearing results_error, a
+// trim and a mode switch, round after round. Nothing deadlocks, each
+// commits (or, for a take, finds the state moved: the numbers and the
+// snapshot reads, which hold the record as they measure, retry one
+// another and the act as retrySerialization paces them, and never run out
+// of tries), and an act's result of the generation before is dropped.
 func TestSettingsLockOrder(t *testing.T) {
 	ctx := context.Background()
 	w := newSettingsWorld(t)
@@ -378,6 +434,23 @@ func TestSettingsLockOrder(t *testing.T) {
 			},
 			"a numbers read": func() error {
 				_, _, err := w.c.NumbersOf(lctx, w.ws)
+				return err
+			},
+			"a snapshot read": func() error {
+				s, ok, err := w.c.SnapshotNumbered(lctx, w.ws)
+				if err != nil || !ok {
+					return err
+				}
+				_, err = w.c.SnapshotSent(lctx, w.ws, s.Seq, s.MeasuredAt, SnapshotAccepted, "",
+					ContractSnapshotTimes{Every: time.Hour, BackoffMin: time.Second, BackoffMax: time.Minute})
+				return err
+			},
+			"an event batch": func() error {
+				b, err := w.c.EventBatch(lctx, w.ws, 100)
+				if err != nil {
+					return err
+				}
+				_, err = w.c.EventsFailed(lctx, w.ws, b.ReadAt, "transport", ContractEventTimes{BackoffMin: time.Second, BackoffMax: time.Minute})
 				return err
 			},
 			"a new sub's document": func() error {
