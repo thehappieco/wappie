@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/label"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -165,8 +166,9 @@ func ranAct(t *testing.T, what string, act store.ContractAct, err error) {
 // then the contract's cleaning (label_changed with the cleaned text); a
 // rename stores the label, writes ran at the act's seq, which the
 // workspace's clock passed, and makes the numbers section and the
-// snapshot due now. A label Wappie sets aside, as the contract cleans it
-// (a placeholder, an id, the number's own digits), is not_authorized and
+// snapshot due now. A label Wappie sets aside, as typed or as the
+// contract cleans it (a placeholder, an id, the number's own digits), is
+// not_authorized and
 // stores nothing, before a label_changed that would offer it: the snapshot
 // would publish null, which label_changed cannot say (DS10).
 func TestRunRename(t *testing.T) {
@@ -225,13 +227,24 @@ func TestRunRename(t *testing.T) {
 	// A label Wappie sets aside is refused, nothing stored: a placeholder
 	// (one the contract cleans too, refused before a label_changed would
 	// offer it), an opaque id, the start of the number's own id, and a
-	// name holding the last seven digits of its phone number.
+	// name holding the last seven digits of its phone number. Set aside as
+	// typed, before the cleaning (the spec's 8.1): the number itself, as
+	// people write it or bare, alone or in a name, and a UUID of digits,
+	// which the cleaning would turn into "…" and the last four digits, a
+	// label_changed offering a name the frame's copy publishes as null.
 	vendasSP := "Vendas SP"
 	pn := w.pn(ctx, t, device)
-	user7 := strings.TrimSuffix(pn, "@s.whatsapp.net")
-	user7 = user7[len(user7)-7:]
-	for _, aside := range []string{"Número sem nome", "WhatsApp  number", "deadbeefdeadbeefdeadbeef", device.String()[:8],
-		"Loja" + user7[:3] + "Rua" + user7[3:]} {
+	phone := strings.TrimSuffix(pn, "@s.whatsapp.net")
+	user7 := phone[len(phone)-7:]
+	written := "+" + phone[:2] + " " + phone[2:4] + " " + phone[4:len(phone)-4] + "-" + phone[len(phone)-4:]
+	typed := []string{written, phone, "Vendas " + written, "12345678-1234-1234-1234-123456789012"}
+	for _, aside := range typed {
+		if label.Contract(label.Clean(aside), pn, device.String()) == nil {
+			t.Fatalf("%q is set aside as cleaned too", aside)
+		}
+	}
+	for _, aside := range append([]string{"Número sem nome", "WhatsApp  number", "deadbeefdeadbeefdeadbeef", device.String()[:8],
+		"Loja" + user7[:3] + "Rua" + user7[3:]}, typed...) {
 		cmd := w.command(t, kc.OpItemRename, user, sub)
 		act, err = w.c.RunRename(ctx, cmd, device, &vendasSP, aside)
 		refusedWith(t, "a rename to "+aside, act, err, kc.CodeNotAuthorized)

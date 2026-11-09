@@ -1903,8 +1903,8 @@ security, so a fault in either still finds nothing of another workspace.
 
 **DS10. A rename to a label Wappie sets aside is refused.** A
 placeholder, an opaque or legacy id, or a name holding the number's own
-digits, as the contract cleans it, is `not_authorized`, and nothing is
-stored. 12a ran it and stored it, as the frame does, and the snapshot
+digits, as typed or as the contract cleans it, is `not_authorized`, and
+nothing is stored. 12a ran it and stored it, as the frame does, and the snapshot
 published `null`: the console showed the rename done and the number
 unnamed (the platform's check of fcffb55, finding 4). `label_changed`
 would say it best ("Wappie keeps the name another way"), but its
@@ -1919,7 +1919,12 @@ is final, as a retry would meet the same rule, and nothing changed, so
 the number keeps the name the console drew. `state_changed` (a race),
 `app_only` (Wappie's own screen would store it and the console would
 still show it unnamed) and `invalid_value` (not one of `item.rename`'s
-codes) are not. The check runs on the cleaned label before
+codes) are not. The check runs on the label as typed, as the spec's 8.1
+sets aside before the cleaning: the number itself ("+55 11 90000-0001",
+or its bare digits) and a UUID of digits clean to "…" and the last four
+digits, which a check of the cleaned label alone offered back as a
+`label_changed` (the review of the follow-ups), where the frame's copy of
+the same text publishes `null`. It runs on the cleaned label too, before
 `label_changed`, so a confirmation never offers a name that would then
 be refused. The frame still stores such a label, as Wappie's own screens
 take it: the one divergence of the rename's parity test.
