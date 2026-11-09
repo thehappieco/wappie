@@ -688,9 +688,9 @@ whatserverd contract settings status [--check]
   platform first.
 - `read` lists no kind in any `accepts`, and answers every command
   `kind_not_accepted`; `on` lists the kinds this binary runs (`item.rename`,
-  `item.sync_stop`, `item.sync_resume` and `item.registration_delete` in
-  `numbers`; `person.notices_dismiss` and `person.sign_out_everywhere` in
-  the person's document) and runs them. A switch makes every section and
+  `item.sync_stop`, `item.sync_resume`, `item.sync_now` and
+  `item.registration_delete` in `numbers`; `person.notices_dismiss` and
+  `person.sign_out_everywhere` in the person's document) and runs them. A switch makes every section and
   person document due at once, with the new `accepts`: in its own
   transaction, and again once the leader's watcher holds the new mode, so
   a document measured in between, and sent with the old `accepts`, goes
@@ -714,7 +714,7 @@ Each recorded platform workspace's `numbers` section
 |---|---|
 | `state_seq`, `snapshot_seq` | `contract_workspaces.sections_seq` (the greatest of the clock in milliseconds and both columns plus one), and the last snapshot numbered; a workspace with no snapshot numbered yet sends no section |
 | `truncated` | a list over its bound (`pending` over 50, `items` over 1000) goes empty with `truncated`, never cut |
-| `accepts` | `[]` in `read`; in `on` the four `numbers` kinds of [the kinds](#the-kinds) |
+| `accepts` | `[]` in `read`; in `on` the five `numbers` kinds of [the kinds](#the-kinds) |
 | `can_link` | the workspace active, below its capacity as `check_device_capacity` counts it (a deleted number takes no place), and not stopped by its storage |
 | `places_free` | `null` until entitlements reach Wappie |
 | `storage_paused` | the snapshot's quota verdict |
@@ -862,7 +862,7 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 | `item.sync_stop` | owner or admin by role | owner or admin | none: a paused number counts as done | `device.stop`: readers told, the event written, the pairing cancelled, the number stopped, its status broadcast, the notices pushed; `paused_by` names the actor |
 | `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails, or runs past the start bound, keeps the pause lifted, and the supervisor starts the number (DS9) |
 | `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
-| `item.sync_now` (not listed) | Read, for a person | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` (a start past the start bound too) | `device.start` on a number not paused; listed only with the release whose socket frame asks Read too (DS13) |
+| `item.sync_now` | Read, for a person, as the socket's own sync now asks it (a key keeps Manage) | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` (a start past the start bound too) | `device.start` on a number not paused (DS13): an owner or admin who does not read the number may not |
 | `person.sign_out_everywhere` | the actor | the actor | none | every session family of the actor begun before `issued_at` ends, its workspace sessions with it (the sockets close within a second), never a later one, an API key, an MCP or AI connection; `sessions_ended` counts the live sessions ended (DS11) |
 | `person.notices_dismiss` | the actor's own notices | the actor | `state_changed` (a pause notice whose version rose stays; every other one is dismissed) | Wappie's own "seen", at the version shown |
 

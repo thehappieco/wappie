@@ -286,18 +286,19 @@ func TestKeysPauseAndResumeUnderTheirScope(t *testing.T) {
 }
 
 // device.start on a number that is not paused is Wappie's "sync now": it
-// connects the number now, and keeps Manage (the platform's design of
-// 2026-10-26 gives it to readers with the contract's item.sync_now). A
-// member with Manage reconnects an offline number nobody paused, lifts no
-// pause doing it and leaves none behind when it fails; on a paused number
-// the start is a resume, and refused.
-func TestSyncNowKeepsManage(t *testing.T) {
+// connects the number now, and for a person it is Read's, as the
+// console's item.sync_now (the owner's "readers", the platform's answer 4:
+// DS13). A member who reads reconnects an offline number nobody paused,
+// lifts no pause doing it and leaves none behind when it fails; on a
+// paused number the start is a resume, and refused.
+func TestSyncNowIsTheReaders(t *testing.T) {
 	c := newDeletionConsoleWith(t, deletionOptions{registry: true})
 	ctx := context.Background()
 	device := c.linkedDevice(t, "Vendas")
 	ref := wsapi.DeviceRef{DeviceID: device.String()}
 	owner := wsapi.Hello{Session: c.token}
 	manager, managerToken := c.person(t, "ana", "member")
+	c.reads(t, manager, device)
 	if err := c.users.SetDevicePermission(ctx, c.tenant, c.owner, store.DevicePermission{DeviceID: device, UserID: manager, Read: true, Manage: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -319,10 +320,10 @@ func TestSyncNowKeepsManage(t *testing.T) {
 	if c.paused(t, c.tenant, device) {
 		t.Fatal("the member's sync now paused the number")
 	}
-	// A member without Manage may not: the refusal is Manage's.
-	e := wantError(t, ask(t, c.console, wsapi.Hello{Session: readerToken}, wsapi.TypeDeviceStart, ref), wsapi.ErrCodeNotAuthorized)
-	if !strings.Contains(e.Message, "manage permission") {
-		t.Errorf("a reader's sync now: %q", e.Message)
+	// A member who reads, without Manage, may too.
+	offline()
+	if f := ask(t, c.console, wsapi.Hello{Session: readerToken}, wsapi.TypeDeviceStart, ref); f.Type != wsapi.TypeDeviceStatus {
+		t.Fatalf("a reader's sync now: %s %s", f.Type, f.Payload)
 	}
 
 	// Paused, the start is a resume: the member is told the role rule, and
@@ -330,7 +331,7 @@ func TestSyncNowKeepsManage(t *testing.T) {
 	if f := ask(t, c.console, owner, wsapi.TypeDeviceStop, ref); f.Type != wsapi.TypeDeviceStatus {
 		t.Fatalf("the owner's stop: %s %s", f.Type, f.Payload)
 	}
-	e = wantError(t, ask(t, c.console, member, wsapi.TypeDeviceStart, ref), wsapi.ErrCodeNotAuthorized)
+	e := wantError(t, ask(t, c.console, member, wsapi.TypeDeviceStart, ref), wsapi.ErrCodeNotAuthorized)
 	if !strings.Contains(e.Message, "owner or an admin") || !c.paused(t, c.tenant, device) {
 		t.Fatalf("the member's start on a paused number: %q, paused %v", e.Message, c.paused(t, c.tenant, device))
 	}

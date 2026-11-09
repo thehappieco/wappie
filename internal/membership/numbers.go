@@ -27,13 +27,13 @@ type NumberLooks interface {
 	Holds(id string) bool
 }
 
-// runs are the kinds this binary runs per section in the mode on (the
-// commands release): the numbers kinds but item.sync_now, which a person's
-// Read runs only once the socket's frame asks Read too (the platform's
-// answer 4, DS13), and the person's two. Never item.relink or a kind of kit
-// v0.11.0 (the whole document would be refused).
+// runs are the kinds this binary runs per section in the mode on: the
+// numbers kinds, item.sync_now among them since the socket's frame asks a
+// person's Read too, as its runner does (the platform's answer 4, DS13),
+// and the person's two. Never item.relink or a kind of kit v0.11.0 (the
+// whole document would be refused).
 var runs = map[string][]string{
-	kc.SectionNumbers: {kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemRegistrationDelete},
+	kc.SectionNumbers: {kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemSyncNow, kc.OpItemRegistrationDelete},
 	kc.SectionPerson:  {kc.OpPersonNoticesDismiss, kc.OpPersonSignOutEverywhere},
 }
 

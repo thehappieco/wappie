@@ -122,7 +122,7 @@ const renameParams = `{"before":{"label":"Vendas"},"after":{"label":"Vendas SP"}
 
 // TestRunChecksOrder: R0 to R5 in their order, each answered with its code
 // and the seq it was judged on (none for a person's not_held): a kind the
-// mode does not run (read: all; on: item.sync_now), an actor Wappie does
+// mode does not run (read: all; on: item.flags_raise), an actor Wappie does
 // not hold, a document not yet applied (memberships_behind, retry_after
 // 5), a workspace not recorded, a closed team, a deleted number and
 // another workspace's (not_found, before any role); then a rename runs.
@@ -145,9 +145,9 @@ func TestRunChecksOrder(t *testing.T) {
 	rename := row{kind: kc.OpItemRename, ws: &w.team, actor: w.sub, target: item(w.device), params: renameParams, docs: docs}
 
 	check("read", read, rename, kc.CodeKindNotAccepted, true)
-	syncNow := rename
-	syncNow.kind, syncNow.params = kc.OpItemSyncNow, "{}"
-	check("sync now in on", on, syncNow, kc.CodeKindNotAccepted, true)
+	raise := rename
+	raise.kind, raise.params = kc.OpItemFlagsRaise, `{"before":{"can":["read"]},"after":{"can":["read","send"]}}`
+	check("a kind this binary does not run, in on", on, raise, kc.CodeKindNotAccepted, true)
 
 	stranger := uuid.New()
 	unheld := rename
@@ -236,7 +236,7 @@ func TestExecutorRowStuck(t *testing.T) {
 	for _, ws := range []uuid.UUID{w.team, w.home} {
 		eventually(t, soon, "the sections listing the kinds", func() bool {
 			doc, ok := w.fake.Settings("wappie", ws.String(), kc.SectionNumbers)
-			return ok && len(doc.Accepts) == 4
+			return ok && len(doc.Accepts) == 5
 		})
 	}
 	issue := func(ws, device uuid.UUID, before, after string) string {
@@ -295,7 +295,7 @@ func TestExecutorResumesAtStart(t *testing.T) {
 	stop := run(t, w.settingsLeader(w.members, logs, settingsTimes()))
 	eventually(t, soon, "the section listing the kinds", func() bool {
 		doc, ok := w.fake.Settings("wappie", w.team.String(), kc.SectionNumbers)
-		return ok && len(doc.Accepts) == 4
+		return ok && len(doc.Accepts) == 5
 	})
 	id := w.rename(t, w.team, w.device, w.sub)
 	eventually(t, soon, "a failed run", func() bool {
@@ -534,7 +534,7 @@ func TestTakeRefusalsNeverRun(t *testing.T) {
 // issues runs, its result kept by the platform, and what the console waits
 // for holds: the numbers section (and for a rename the snapshot, with the
 // new label) at or above the result's seq, a person's document at or above
-// theirs; item.sync_now is not offered.
+// theirs; item.sync_now is offered and judged.
 func TestSettingsOnEndToEnd(t *testing.T) {
 	w := newSnapshotWorld(t)
 	ctx := context.Background()
@@ -543,7 +543,7 @@ func TestSettingsOnEndToEnd(t *testing.T) {
 	run(t, w.settingsLeader(w.members, logs, settingsTimes()))
 	eventually(t, soon, "the section listing the kinds", func() bool {
 		doc, ok := w.fake.Settings("wappie", w.team.String(), kc.SectionNumbers)
-		return ok && len(doc.Accepts) == 4
+		return ok && len(doc.Accepts) == 5
 	})
 	eventually(t, soon, "the person's document listing the kinds", func() bool {
 		doc, ok := w.fake.PersonSettings("wappie", w.sub.String())
@@ -633,8 +633,27 @@ func TestSettingsOnEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(doc.Data, &data); err != nil || data.SignedOutEverywhereAt == nil {
 		t.Fatalf("signed_out_everywhere_at: %s %v", doc.Data, err)
 	}
-	if _, err := w.fake.IssueCommand("wappie", contracttest.CommandSpec{Kind: kc.OpItemSyncNow, Workspace: w.team.String(), Actor: w.sub.String(),
-		Target: target}); !errors.Is(err, contracttest.ErrNotOffered) {
-		t.Fatalf("sync now: %v", err)
+	// Sync now is offered (DS13): the owner who reads the number syncs it
+	// now; with no WhatsApp connection in this process it is
+	// connect_failed, at a seq.
+	if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE devices SET current_epoch = 1 WHERE id = $1`, w.device); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO device_permissions (tenant_id, device_id, user_id, can_read) VALUES ($1, $2, $3, true)
+			ON CONFLICT (tenant_id, device_id, user_id) DO UPDATE SET can_read = true`, w.team, w.device, w.owner)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := issue(contracttest.CommandSpec{Kind: kc.OpItemSyncNow, Workspace: w.team.String(), Target: target})
+	var got kc.CommandResult
+	eventually(t, soon, "the sync now's result kept", func() bool {
+		var ok bool
+		got, ok = w.fake.CommandResult("wappie", id)
+		return ok
+	})
+	if got.Outcome != kc.OutcomeRefused || got.Code == nil || *got.Code != kc.CodeConnectFailed || got.StateSeq == nil {
+		t.Fatalf("the sync now: %+v", got)
 	}
 }

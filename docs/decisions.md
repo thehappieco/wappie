@@ -1940,11 +1940,13 @@ document due in its transaction and again once the leader's watcher holds
 the new mode, since the sender renders `accepts` from it.
 
 **DS13. Sync now for a person is Read's.** The platform's answer 4 (the
-owner's "readers"): a person's `item.sync_now` asks `ActionRead`, as the
-runner does; keys, service accounts and tokens keep Manage. The runner
-ships built and tested, but `item.sync_now` enters `accepts` only in the
-release whose socket frame asks Read too, so the console never offers what
-Wappie's own screen refuses.
+owner's "readers"): a person's sync now asks `ActionRead`, in the
+console's `item.sync_now` and on the socket's `device.start` of a number
+not paused alike; keys, and service accounts through them, keep Manage
+with full scope. Followed literally, an owner or an admin who does not
+read the number may not. The runner shipped first, built and tested;
+`item.sync_now` entered `accepts` with the release that widened the frame,
+so the console never offered what Wappie's own screen refused.
 
 **DS14. One lock order for every 12a writer**, `Restart`'s:
 `contract_state`, `contract_accounts`, the records in id order,
