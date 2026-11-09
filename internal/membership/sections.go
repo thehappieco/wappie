@@ -32,6 +32,9 @@ type sectionSender struct {
 	pending map[uuid.UUID]pendingSent
 	// warned spaces the WARNs of failed sends.
 	warned time.Time
+	// dropped is, per workspace, the rows its last section left out because
+	// the wire refuses them: their ERROR is logged once per run.
+	dropped map[uuid.UUID]string
 }
 
 // run sends sections until ctx ends.
@@ -158,11 +161,7 @@ func (s *sectionSender) send(ctx context.Context, next store.ContractSectionDue)
 		// both): nothing goes.
 		return true
 	}
-	doc, err := numbersDoc(read, sw.mode(), sw.cfg.Numbers)
-	why, rule := "encode", err
-	if err == nil {
-		why, rule = sectionRule(doc)
-	}
+	doc, dropped, why, rule := numbersSection(read, sw.mode(), sw.cfg.Numbers)
 	if why != "" {
 		class := "local_invalid:" + why
 		rec, stored := s.record(ctx, ws, read.Seq, read.MeasuredAt, store.SnapshotFailed, class)
@@ -180,6 +179,7 @@ func (s *sectionSender) send(ctx context.Context, next store.ContractSectionDue)
 		}
 		return stored
 	}
+	s.droppedRows(ctx, ws, dropped)
 	err = m.Client.PutSettings(ctx, doc)
 	if ctx.Err() != nil {
 		// The leader is stopping: the next sends again at its start.
@@ -208,6 +208,30 @@ func (s *sectionSender) send(ctx context.Context, next store.ContractSectionDue)
 		}
 	}
 	return stored
+}
+
+// droppedRows logs at ERROR, once per run for the same rows, and records
+// for --check, the rows a section of ws leaves out because the wire refuses
+// them: a bug of Wappie's, never a row of the database (numbersSection).
+func (s *sectionSender) droppedRows(ctx context.Context, ws uuid.UUID, dropped []uuid.UUID) {
+	if len(dropped) == 0 {
+		delete(s.dropped, ws)
+		return
+	}
+	key := fmt.Sprint(dropped)
+	if s.dropped[ws] == key {
+		return
+	}
+	if s.dropped == nil {
+		s.dropped = map[uuid.UUID]string{}
+	}
+	s.dropped[ws] = key
+	l := s.sw.l
+	l.log().Error("contract: a workspace's numbers section leaves out rows the wire refuses: it goes truncated",
+		"workspace", ws, "rows", len(dropped), "first", dropped[0])
+	if err := l.Members.Contract.RecordError(ctx, store.ContractErrorSectionInvalid); err != nil && ctx.Err() == nil {
+		l.log().Warn("contract: could not record an ERROR", "error", err)
+	}
 }
 
 // remember keeps what a section sent of its pending rows, with each one's

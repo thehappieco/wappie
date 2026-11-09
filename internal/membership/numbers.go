@@ -138,6 +138,69 @@ func numbersDoc(read store.ContractNumbers, mode string, looks NumberLooks) (kc.
 		Truncated: read.Over(), Accepts: accepts(mode, kc.SectionNumbers), Data: raw}, nil
 }
 
+// numbersSection is read's numbers section as Wappie sends it, checked as
+// the platform reads it (sectionRule). A row the wire refuses is left out,
+// and the section goes truncated (the spec's 14.2, "A row the wire
+// refuses": every row sent is whole and true); dropped names those rows.
+// No database row makes one: only a bug of Wappie's does, which the sender
+// logs at ERROR. why and rule say why a section is still not sent: one
+// that fails with no row at all, or for a rule no row breaks alone (an
+// item twice), or over the call's limit.
+func numbersSection(read store.ContractNumbers, mode string, looks NumberLooks) (doc kc.SettingsDoc, dropped []uuid.UUID,
+	why string, rule error) {
+	doc, err := numbersDoc(read, mode, looks)
+	why, rule = "encode", err
+	if err == nil {
+		if why, rule = sectionRule(doc); why == "" || why == "too_large" {
+			return doc, nil, why, rule
+		}
+	}
+	// Each row in a section with no other row: one the section refuses with
+	// no row at all puts no row to blame.
+	alone := read
+	alone.Pending, alone.Items, alone.PendingOver, alone.ItemsOver = nil, nil, false, false
+	passes := func(one store.ContractNumbers) bool {
+		d, err := numbersDoc(one, mode, looks)
+		return err == nil && d.Validate() == nil
+	}
+	if !passes(alone) {
+		return doc, nil, why, rule
+	}
+	kept := read
+	kept.Pending, kept.Items = []store.ContractPending{}, []store.ContractNumber{}
+	if !read.PendingOver {
+		for _, p := range read.Pending {
+			one := alone
+			one.Pending = []store.ContractPending{p}
+			if passes(one) {
+				kept.Pending = append(kept.Pending, p)
+			} else {
+				dropped = append(dropped, p.ID)
+			}
+		}
+	}
+	if !read.ItemsOver {
+		for _, n := range read.Items {
+			one := alone
+			one.Items = []store.ContractNumber{n}
+			if passes(one) {
+				kept.Items = append(kept.Items, n)
+			} else {
+				dropped = append(dropped, n.ID)
+			}
+		}
+	}
+	if len(dropped) == 0 {
+		return doc, nil, why, rule
+	}
+	if doc, err = numbersDoc(kept, mode, looks); err != nil {
+		return kc.SettingsDoc{}, dropped, "encode", err
+	}
+	doc.Truncated = true
+	why, rule = sectionRule(doc)
+	return doc, dropped, why, rule
+}
+
 // encodeData is a document's data as the kit sends a body (its
 // marshalPlain): no HTML escaping, so an & or a < in a name is one byte, not
 // six, and no newline after it. A nil list is the caller's to make [].

@@ -480,8 +480,8 @@ func TestSectionRefusedLocally(t *testing.T) {
 
 // TestCommandPageMoves: a command feed page of the generation held is one
 // the spec describes only when its next_after is not behind the cursor,
-// and a page with more ends at its last item, past the cursor; an empty
-// final page is one.
+// its commands come after the cursor and none past next_after, and a page
+// with more ends at its last item; an empty final page is one.
 func TestCommandPageMoves(t *testing.T) {
 	item := func(cseq int64) kc.CommandFeedItem {
 		return kc.CommandFeedItem{CSeq: cseq, Command: json.RawMessage(`{}`)}
@@ -498,9 +498,65 @@ func TestCommandPageMoves(t *testing.T) {
 		{"more with no item", kc.CommandFeed{NextAfter: 5, More: true, Items: []kc.CommandFeedItem{}}, 5, false},
 		{"more past its last item", kc.CommandFeed{NextAfter: 9, More: true, Items: []kc.CommandFeedItem{item(6)}}, 5, false},
 		{"more at its last item", kc.CommandFeed{NextAfter: 6, More: true, Items: []kc.CommandFeedItem{item(6)}}, 5, true},
+		{"a final page past its last item", kc.CommandFeed{NextAfter: 9, Items: []kc.CommandFeedItem{item(6)}}, 5, true},
+		// A broken platform's page, served whatever the cursor: taken, it
+		// would be asked again at once and taken again, without end.
+		{"an item at the cursor, next_after there", kc.CommandFeed{NextAfter: 1, Items: []kc.CommandFeedItem{item(1)}}, 1, false},
+		{"items at or before the cursor", kc.CommandFeed{NextAfter: 6, Items: []kc.CommandFeedItem{item(5), item(6)}}, 5, false},
+		{"next_after before its last item", kc.CommandFeed{NextAfter: 6, Items: []kc.CommandFeedItem{item(6), item(7)}}, 5, false},
 	} {
 		if got := commandPageMoves(c.page, c.cursor); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// TestSectionLeavesOutRefusedRows: a row the wire refuses is left out and
+// the section goes truncated, the rest sent whole (the spec's 14.2, "A
+// row the wire refuses"); a section that fails with no row at all, or for
+// a rule no row breaks alone (an item twice), is not sent, nothing left
+// out. No database row makes one: here a paused_by kind and a pending
+// registration's time no database row holds.
+func TestSectionLeavesOutRefusedRows(t *testing.T) {
+	read, ids := numbersRead(t)
+	doc, dropped, why, rule := numbersSection(read, store.SettingsRead, nil)
+	if why != "" || rule != nil || len(dropped) != 0 || doc.Truncated {
+		t.Fatalf("a valid section: %q %v %v %v", why, rule, dropped, doc.Truncated)
+	}
+	bad := read
+	bad.Items = append([]store.ContractNumber{}, read.Items...)
+	at := time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
+	robot, zero := uuid.New(), uuid.New()
+	bad.Items = append(bad.Items, store.ContractNumber{ID: robot, Status: "online", Known: true, Paused: true, PauseCause: "person",
+		PausedAt: &at, PausedByKind: "robot", Epoch: 1})
+	bad.Pending = append(append([]store.ContractPending{}, read.Pending...), store.ContractPending{ID: zero, Epoch: 1})
+	if whole, err := numbersDoc(bad, store.SettingsRead, nil); err != nil || whole.Validate() == nil {
+		t.Fatalf("the section with both rows is one the kit refuses: %v", err)
+	}
+	doc, dropped, why, rule = numbersSection(bad, store.SettingsRead, nil)
+	if why != "" || rule != nil || !doc.Truncated || len(dropped) != 2 || doc.Validate() != nil {
+		t.Fatalf("rows the wire refuses: %q %v %v truncated=%v", why, rule, dropped, doc.Truncated)
+	}
+	if got := map[uuid.UUID]bool{dropped[0]: true, dropped[1]: true}; !got[robot] || !got[zero] {
+		t.Fatalf("left out %v, want %s and %s", dropped, robot, zero)
+	}
+	rows := rowsOf(t, doc)
+	if len(rows.Items) != len(read.Items) || len(rows.Pending) != len(read.Pending) {
+		t.Fatalf("sent %d items and %d pending, want %d and %d", len(rows.Items), len(rows.Pending), len(read.Items), len(read.Pending))
+	}
+	if rows.Items[0].ID != ids["online"].String() {
+		t.Fatalf("the rows kept: %+v", rows.Items[0])
+	}
+
+	// No row to blame: the envelope fails, or an item comes twice.
+	noSeq := bad
+	noSeq.Seq = 0
+	if _, dropped, why, _ := numbersSection(noSeq, store.SettingsRead, nil); why != "invalid" || len(dropped) != 0 {
+		t.Fatalf("a state_seq of 0: %q %v", why, dropped)
+	}
+	twice := read
+	twice.Items = append(append([]store.ContractNumber{}, read.Items...), read.Items[0])
+	if _, dropped, why, _ := numbersSection(twice, store.SettingsRead, nil); why != "invalid" || len(dropped) != 0 {
+		t.Fatalf("an item twice: %q %v", why, dropped)
 	}
 }

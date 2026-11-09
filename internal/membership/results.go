@@ -32,9 +32,33 @@ func (sw *settingsWork) post(ctx context.Context) {
 	l, m := sw.l, sw.l.Members
 	c := m.Contract
 	minBack, maxBack := or(sw.cfg.ResultsBackoffMin, resultsBackoffMin), or(sw.cfg.ResultsBackoffMax, resultsBackoffMax)
-	backoff := minBack
+	backoff, storeBack := minBack, minBack
 	idle := or(sw.cfg.Idle, settingsIdle)
-	var warned time.Time
+	warned := map[string]time.Time{}
+	// warn logs msg at most once every warnEvery.
+	warn := func(msg string, attrs ...any) {
+		if time.Since(warned[msg]) >= warnEvery {
+			warned[msg] = time.Now()
+			l.log().Warn(msg, attrs...)
+		}
+	}
+	// stored waits after a write of the ledger that failed, doubling to the
+	// results' backoff, before the rows are read again: a park or answers
+	// that cannot be stored never loop on the database, or on the platform
+	// with the same batch.
+	stored := func(err error, msg string) bool {
+		if err == nil {
+			storeBack = minBack
+			return true
+		}
+		if ctx.Err() == nil {
+			warn(msg, "error", err)
+			if pause(ctx, storeBack, nil) {
+				storeBack = min(storeBack*2, maxBack)
+			}
+		}
+		return false
+	}
 	failing := false
 	for ctx.Err() == nil {
 		rows, err := c.UndeliveredResults(ctx, resultsBatch)
@@ -42,10 +66,7 @@ func (sw *settingsWork) post(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			if time.Since(warned) >= warnEvery {
-				warned = time.Now()
-				l.log().Warn("contract: could not read the results to post", "error", err)
-			}
+			warn("contract: could not read the results to post", "error", err)
 			if !pause(ctx, minBack, sw.results) {
 				return
 			}
@@ -58,8 +79,8 @@ func (sw *settingsWork) post(ctx context.Context) {
 			continue
 		}
 		batch, ids, parked := sw.checkResults(ctx, rows)
-		if len(parked) > 0 {
-			sw.park(ctx, parked)
+		if len(parked) > 0 && !stored(sw.park(ctx, parked), "contract: could not park results") {
+			continue
 		}
 		if len(batch) == 0 {
 			continue
@@ -75,19 +96,16 @@ func (sw *settingsWork) post(ctx context.Context) {
 			failing = true
 			class := feedClass(err)
 			if rerr := c.ResultsFailed(ctx, class); rerr != nil && ctx.Err() == nil {
-				l.log().Warn("contract: could not record the results' failure", "error", rerr)
+				warn("contract: could not record the results' failure", "error", rerr)
 			}
 			outcomes := make([]store.ContractResultOutcome, len(ids))
 			for i, id := range ids {
 				outcomes[i] = store.ContractResultOutcome{ID: id, Failed: class}
 			}
 			if rerr := c.ResultsPosted(ctx, outcomes); rerr != nil && ctx.Err() == nil {
-				l.log().Warn("contract: could not record the results' failure", "error", rerr)
+				warn("contract: could not record the results' failure", "error", rerr)
 			}
-			if time.Since(warned) >= warnEvery {
-				warned = time.Now()
-				l.log().Warn("contract: the results got no answer", append([]any{"results", len(batch)}, callAttrs(err)...)...)
-			}
+			warn("contract: the results got no answer", append([]any{"results", len(batch)}, callAttrs(err)...)...)
 			if !pause(ctx, backoff, nil) {
 				return
 			}
@@ -98,7 +116,7 @@ func (sw *settingsWork) post(ctx context.Context) {
 			failing, backoff = false, minBack
 			l.log().Info("contract: the results are answered again")
 		}
-		sw.settle(ctx, ids, answers)
+		stored(sw.settle(ctx, ids, answers), "contract: could not record the results' answers")
 	}
 }
 
@@ -167,8 +185,9 @@ func resultOf(row store.ContractResult) (kc.CommandResult, string) {
 }
 
 // park parks the results Wappie would not post, with one ERROR per call
-// and one recorded for --check.
-func (sw *settingsWork) park(ctx context.Context, parked map[uuid.UUID]string) {
+// and one recorded for --check; it returns the error of a park that could
+// not be stored.
+func (sw *settingsWork) park(ctx context.Context, parked map[uuid.UUID]string) error {
 	l, c := sw.l, sw.l.Members.Contract
 	byWhy := map[string][]uuid.UUID{}
 	for id, why := range parked {
@@ -176,20 +195,19 @@ func (sw *settingsWork) park(ctx context.Context, parked map[uuid.UUID]string) {
 	}
 	for why, ids := range byWhy {
 		if err := c.ResultsParked(ctx, ids, "local_invalid:"+why); err != nil {
-			if ctx.Err() == nil {
-				l.log().Warn("contract: could not park results", "error", err)
-			}
-			return
+			return err
 		}
 		l.log().Error("contract: results are parked: Wappie would not post them", "count", len(ids), "reason", why, "first", ids[0])
 	}
 	if err := c.RecordError(ctx, store.ContractErrorResultParked); err != nil && ctx.Err() == nil {
 		l.log().Warn("contract: could not record an ERROR", "error", err)
 	}
+	return nil
 }
 
-// settle records the platform's answers to the results ids, by position.
-func (sw *settingsWork) settle(ctx context.Context, ids []uuid.UUID, answers []kc.CommandResultAnswer) {
+// settle records the platform's answers to the results ids, by position;
+// it returns the error of answers that could not be stored.
+func (sw *settingsWork) settle(ctx context.Context, ids []uuid.UUID, answers []kc.CommandResultAnswer) error {
 	l, c := sw.l, sw.l.Members.Contract
 	outcomes := make([]store.ContractResultOutcome, len(ids))
 	parked := 0
@@ -213,10 +231,7 @@ func (sw *settingsWork) settle(ctx context.Context, ids []uuid.UUID, answers []k
 		outcomes[i] = o
 	}
 	if err := c.ResultsPosted(ctx, outcomes); err != nil {
-		if ctx.Err() == nil {
-			l.log().Warn("contract: could not record the results' answers", "error", err)
-		}
-		return
+		return err
 	}
 	if parked > 0 {
 		l.log().Error("contract: results are parked: the platform refused them", "count", parked)
@@ -225,4 +240,5 @@ func (sw *settingsWork) settle(ctx context.Context, ids []uuid.UUID, answers []k
 		}
 	}
 	l.log().Debug("contract: results posted", "results", len(ids))
+	return nil
 }

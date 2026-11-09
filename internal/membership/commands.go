@@ -29,6 +29,7 @@ func (sw *settingsWork) follow(ctx context.Context) {
 	backoff := minBack
 	var warned, lastReset time.Time
 	failing := false
+	resetFloor := or(sw.cfg.ResetFloor, resetFloor)
 	fail := func(class string, attrs ...any) {
 		if ctx.Err() != nil {
 			return
@@ -45,9 +46,16 @@ func (sw *settingsWork) follow(ctx context.Context) {
 		backoff = min(backoff*2, maxBack)
 	}
 	reset := func(seen uuid.UUID, gen *uuid.UUID, why string) {
-		if wait := or(sw.cfg.ResetFloor, resetFloor) - time.Since(lastReset); !lastReset.IsZero() && wait > 0 {
+		if wait := resetFloor - time.Since(lastReset); !lastReset.IsZero() && wait > 0 {
 			// No notice cuts this wait: a fault must not reset in a loop.
-			l.log().Warn("contract: a second reset from the command feed within a minute waits", "why", why, "wait", wait.Round(time.Second))
+			// Two resets within the floor are one: the platform's feeds
+			// disagree, or a gone lasts, and every sub, snapshot and section
+			// goes again each time, so --check is told.
+			l.log().Error("contract: a second reset from the command feed within a minute waits", "why", why,
+				"wait", wait.Round(time.Second))
+			if err := m.Contract.RecordError(ctx, store.ContractErrorCommandResetLoop); err != nil && ctx.Err() == nil {
+				l.log().Warn("contract: could not record an ERROR", "error", err)
+			}
 			t := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
@@ -61,11 +69,12 @@ func (sw *settingsWork) follow(ctx context.Context) {
 			fail("store", "error", err)
 			return
 		}
-		lastReset = time.Now()
 		if !done {
-			// The generation moved meanwhile: another reset came first.
+			// The generation moved meanwhile: another reset came first,
+			// and this one starts no floor.
 			return
 		}
+		lastReset = time.Now()
 		attrs := []any{"why", why, "old", seen}
 		if gen != nil {
 			attrs = append(attrs, "generation", *gen)
@@ -75,6 +84,11 @@ func (sw *settingsWork) follow(ctx context.Context) {
 		kick(sw.accounts.round)
 	}
 	for ctx.Err() == nil {
+		// An interrupt from here to the request's start (the account side
+		// reset) would cut nothing: it is counted, and the state read again.
+		sw.mu.Lock()
+		cuts := sw.cuts
+		sw.mu.Unlock()
 		st, err := m.Contract.State(ctx)
 		if err != nil {
 			fail("database", "error", err)
@@ -90,11 +104,19 @@ func (sw *settingsWork) follow(ctx context.Context) {
 			sw.pause(ctx, noGeneration)
 			continue
 		}
+		if sw.cfg.stateRead != nil {
+			sw.cfg.stateRead(sw.interrupt)
+		}
 		seen, after := *st.Generation, sst.FeedCursor
 		poll, cut := context.WithCancel(ctx)
 		sw.mu.Lock()
 		sw.cut = cut
+		missed := sw.cuts != cuts
 		sw.mu.Unlock()
+		if missed {
+			cut()
+			continue
+		}
 		asked := time.Now()
 		page, err := m.Client.Commands(poll, after, sw.cfg.commandWait())
 		interrupted := poll.Err() != nil && ctx.Err() == nil
@@ -128,6 +150,7 @@ func (sw *settingsWork) follow(ctx context.Context) {
 		if failing {
 			failing, backoff = false, minBack
 			l.log().Info("contract: the command feed answers again")
+			sw.recovered(ctx)
 		}
 		if gen != seen {
 			reset(seen, &gen, "commands_generation")
@@ -140,6 +163,23 @@ func (sw *settingsWork) follow(ctx context.Context) {
 		if commandPageEarly(page.Feed, time.Since(asked), sw.cfg.commandWait()) {
 			sw.pause(ctx, minBack)
 		}
+	}
+}
+
+// recovered makes every section that backs off due now, its tries
+// forgotten, once the platform answers again after a failure (the
+// Recovered of the snapshots and the event queues), and wakes the sender:
+// after an outage no section waits out a backoff of up to an hour.
+func (sw *settingsWork) recovered(ctx context.Context) {
+	n, err := sw.l.Members.Contract.SectionsRecovered(ctx)
+	switch {
+	case err != nil:
+		if ctx.Err() == nil {
+			sw.l.log().Warn("contract: could not make the failing sections due", "error", err)
+		}
+	case n > 0:
+		sw.l.log().Info("contract: failing sections due again", "sections", n)
+		kick(sw.sections.wake)
 	}
 }
 
@@ -223,15 +263,20 @@ func (sw *settingsWork) take(ctx context.Context, seen uuid.UUID, after int64, p
 }
 
 // commandPageMoves reports whether a command feed page asked from cursor
-// is one the spec's 14.8 describes, which the kit does not check, as
-// pageMoves for the account feed: its next_after never behind the cursor,
-// and a page with more ending at its last item's cseq, past the cursor.
+// is one the spec's 14.8 describes (its 6.3), which the kit does not check:
+// its next_after never behind the cursor; its commands after the cursor
+// and none past next_after, so a page with commands moves the cursor past
+// them all (one that did not would be asked again at once, and taken again
+// each time); and a page with more ending at its last item's cseq.
 func commandPageMoves(page kc.CommandFeed, cursor int64) bool {
+	n := len(page.Items)
 	switch {
 	case page.NextAfter < cursor:
 		return false
+	case n > 0 && (page.Items[0].CSeq <= cursor || page.NextAfter < page.Items[n-1].CSeq):
+		return false
 	case page.More:
-		return len(page.Items) > 0 && page.NextAfter == page.Items[len(page.Items)-1].CSeq && page.NextAfter > cursor
+		return n > 0 && page.NextAfter == page.Items[n-1].CSeq
 	}
 	return true
 }
@@ -260,9 +305,11 @@ const (
 // verify checking each command's MAC under the page's secrets for app: a
 // pure function of the app, in the spec's order (14.6; the plan's 3.1),
 // steps 1 to 6:
-// a body of another app, then a MAC that holds under none of the page's
-// secrets (both forged: the security log); a command of another generation
-// than its page; one ValidateIn refuses for its workspace's kind (Validate
+// a body that is not one well-formed object the kit can canonicalize, of
+// another app, or whose MAC holds under none of the page's secrets (each
+// forged: the security log); a command of another generation than its
+// page; one whose MAC holds but that does not decode as a command, or that
+// ValidateIn refuses for its workspace's kind (Validate
 // alone for a workspace Wappie has not recorded, ValidateIn("") for a
 // person's), or whose cseq is not its item's; one issued more than 30 days
 // before the page was signed, unless delivered again, or carried by a page
@@ -275,14 +322,15 @@ func decideCommand(app string, verify func(json.RawMessage) (kc.Command, error),
 	it kc.CommandFeedItem, kindOf func(uuid.UUID) (string, error)) (store.ContractCommandTake, *store.ContractUnreadable, error) {
 	raw := []byte(it.Command)
 	take := store.ContractCommandTake{Cseq: it.CSeq, Body: raw, BodyKey: bodyKey(raw), Again: it.Again}
-	var head struct {
-		ID  string `json:"id"`
-		App string `json:"app"`
-	}
-	_ = json.Unmarshal(raw, &head) //nolint:errcheck // a body that does not decode has neither
+	// A generic decode, its members named exactly, as the kit reads the
+	// command it verifies: never encoding/json's match of a name in any
+	// case, under which an "ID" would stand for the id.
+	var members map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &members) //nolint:errcheck // a body that does not decode has neither
+	headID, headApp := stringMember(members, "id"), stringMember(members, "app")
 	// Only an id that is a UUID as the platform writes one names a row.
-	id, idErr := uuid.Parse(head.ID)
-	named := idErr == nil && id.String() == head.ID
+	id, idErr := uuid.Parse(headID)
+	named := idErr == nil && id.String() == headID
 	refuse := func(why string, forged bool) (store.ContractCommandTake, *store.ContractUnreadable, error) {
 		if !named {
 			return store.ContractCommandTake{}, &store.ContractUnreadable{Cseq: it.CSeq, Why: why, Forged: forged}, nil
@@ -294,10 +342,21 @@ func decideCommand(app string, verify func(json.RawMessage) (kc.Command, error),
 	switch {
 	case errors.Is(err, kc.ErrCommandMAC):
 		return refuse(whyMAC, true)
-	case err != nil && head.App != app:
-		return refuse(whyAnotherApp, true)
-	case err != nil:
+	case err == nil:
+	case !macCovers(raw):
 		return refuse(whyMalformed, true)
+	case headApp != app:
+		return refuse(whyAnotherApp, true)
+	default:
+		// The kit canonicalized it, its app is this one and its MAC held:
+		// what failed is its typed decode. The platform signed it, so it is
+		// step 4's invalid_command, not a forgery: a copy of a taken id
+		// finishes an open row.
+		return refuse(whyInvalid, false)
+	}
+	switch {
+	case c.ID != headID:
+		return refuse(whyInvalid, false)
 	case kc.ValidUUID(c.Generation) && c.Generation != pageGen:
 		return refuse(whyGeneration, false)
 	}
@@ -334,6 +393,16 @@ func decideCommand(app string, verify func(json.RawMessage) (kc.Command, error),
 		take.Verdict, take.Why = store.CommandExpired, whyExpiry
 	}
 	return take, nil, nil
+}
+
+// stringMember is the string member name of an object decoded generically,
+// "" when it has none or it is not a string.
+func stringMember(members map[string]json.RawMessage, name string) string {
+	var s string
+	if json.Unmarshal(members[name], &s) != nil {
+		return ""
+	}
+	return s
 }
 
 // commandFields are the ledger's columns of a command that passed

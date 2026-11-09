@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -876,5 +877,244 @@ func TestExecutorBacksOff(t *testing.T) {
 	eventually(t, soon, "the stuck command's result kept", func() bool {
 		res, ok := w.fake.CommandResult("wappie", stuck)
 		return ok && res.Code != nil && *res.Code == kc.CodeRateLimited && res.RetryAfter != nil && *res.RetryAfter == 60
+	})
+}
+
+// TestSettingsResetFloorAfterNoReset: a reset from the command feed that
+// finds the generation moved under it (another reset came first) resets
+// nothing and starts no floor: the next reset, a real one, goes at once,
+// not a minute later with no command feed request meanwhile.
+func TestSettingsResetFloorAfterNoReset(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	w.settingsOn(t, store.SettingsRead)
+	logs := &membershiptest.Logs{}
+	cfg := settingsTimes()
+	cfg.ResetFloor = time.Minute
+	var armed atomic.Bool
+	var moved atomic.Pointer[uuid.UUID]
+	cfg.stateRead = func(func()) {
+		if !armed.CompareAndSwap(true, false) {
+			return
+		}
+		// Between the follower's read of the state and its request, a reset
+		// elsewhere commits (here the store's own, so nothing cuts the
+		// request), and the platform answers gone.
+		st, err := w.contract.State(ctx)
+		if err != nil || st.Generation == nil {
+			t.Errorf("the state: %+v %v", st, err)
+			return
+		}
+		gen := uuid.New()
+		if done, err := w.contract.Restart(ctx, st.Generation, st.FeedCursor, &gen, false); err != nil || !done {
+			t.Errorf("the reset elsewhere: %v %v", done, err)
+			return
+		}
+		w.fake.RefuseAlways(contracttest.CallCommands, kc.CodeGone)
+		moved.Store(&gen)
+	}
+	run(t, w.settingsLeader(w.members, logs, cfg))
+	eventually(t, soon, "the command feed followed", func() bool { return w.fake.Count(contracttest.CallCommands) > 1 })
+	// The account follower resets nothing meanwhile: its feed is refused,
+	// and its long-poll in flight has come back.
+	w.fake.RefuseAlways(contracttest.CallFeed, kc.CodeRateLimited)
+	time.Sleep(1500 * time.Millisecond)
+	armed.Store(true)
+	eventually(t, soon, "the reset elsewhere", func() bool { return moved.Load() != nil })
+	gen := moved.Load()
+	eventually(t, 5*time.Second, "the command feed's reset at once", func() bool {
+		return len(logs.Lines("why=commands_gone", "old="+gen.String())) > 0
+	})
+	if lines := logs.Lines("a second reset from the command feed"); len(lines) > 0 {
+		t.Fatalf("a reset that did not happen started the floor: %v", lines)
+	}
+}
+
+// TestCommandFeedCutBeforeAsk: a reset of the account side between the
+// command follower's read of the state and its request (its interrupt
+// finds no long-poll to cut) is not lost: the follower reads the state
+// again before it asks, never asking with the cursor of the generation
+// gone.
+func TestCommandFeedCutBeforeAsk(t *testing.T) {
+	w := newSnapshotWorld(t)
+	w.settingsOn(t, store.SettingsRead)
+	logs := &membershiptest.Logs{}
+	cfg := settingsTimes()
+	var mu sync.Mutex
+	var asked []int
+	var armed atomic.Bool
+	cfg.stateRead = func(interrupt func()) {
+		mu.Lock()
+		defer mu.Unlock()
+		if armed.Load() {
+			asked = append(asked, w.fake.Count(contracttest.CallCommands))
+			if len(asked) == 1 {
+				interrupt()
+			}
+		}
+	}
+	run(t, w.settingsLeader(w.members, logs, cfg))
+	eventually(t, soon, "the command feed followed", func() bool { return w.fake.Count(contracttest.CallCommands) > 1 })
+	armed.Store(true)
+	eventually(t, soon, "the state read twice", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(asked) >= 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if asked[1] != asked[0] {
+		t.Fatalf("a command feed request went after an interrupt that came before it: %v", asked)
+	}
+}
+
+// TestSettingsResetLoopRecorded: a second reset from the command feed
+// within the floor is a fault of the platform's that resets everything
+// once a minute while it lasts: an ERROR, recorded for --check.
+func TestSettingsResetLoopRecorded(t *testing.T) {
+	w := newSnapshotWorld(t)
+	w.settingsOn(t, store.SettingsRead)
+	logs := &membershiptest.Logs{}
+	cfg := settingsTimes()
+	cfg.ResetFloor = 10 * time.Second
+	run(t, w.settingsLeader(w.members, logs, cfg))
+	eventually(t, soon, "the command feed followed", func() bool { return w.fake.Count(contracttest.CallCommands) > 1 })
+	w.fake.RefuseAlways(contracttest.CallCommands, kc.CodeGone)
+	eventually(t, soon, "the loop's ERROR", func() bool {
+		return len(logs.Lines("level=ERROR", "a second reset from the command feed within a minute waits")) > 0
+	})
+	eventually(t, soon, "the loop's ERROR recorded", func() bool { return w.state(t).ErrorClass == store.ContractErrorCommandResetLoop })
+	w.fake.RefuseAlways(contracttest.CallCommands, "")
+}
+
+// TestSectionsRecoverWithPlatform: after an outage the numbers sections
+// come back with the platform, as the snapshots do: the command feed's
+// first page after its failure makes every section that backs off due now,
+// tries forgotten, and a change after that is sent within the debounce,
+// not at the end of a backoff of up to an hour.
+func TestSectionsRecoverWithPlatform(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	w.settingsOn(t, store.SettingsRead)
+	logs := &membershiptest.Logs{}
+	cfg := settingsTimes()
+	cfg.SectionBackoffMax = time.Hour
+	run(t, w.settingsLeader(w.members, logs, cfg))
+	eventually(t, soon, "the first section", func() bool { return len(w.sectionsAccepted(w.team)) > 0 })
+	w.settleSection(t, w.team)
+
+	w.fake.SetDown(true)
+	w.exec(ctx, t, `UPDATE contract_sections SET due_at = clock_timestamp() WHERE workspace_id = $1`, w.team)
+	eventually(t, 10*time.Second, "a section and a command feed call failed", func() bool {
+		var tries int
+		if err := w.pool.QueryRow(ctx, `SELECT tries FROM contract_sections WHERE workspace_id = $1`, w.team).Scan(&tries); err != nil {
+			t.Fatal(err)
+		}
+		sst, err := w.contract.SettingsState(ctx)
+		return err == nil && tries > 0 && sst.FeedError != ""
+	})
+	// The backoff at its cap, as after an outage of an hour, once no send
+	// in flight records its own over it.
+	eventually(t, 10*time.Second, "the backoff at its cap", func() bool {
+		w.exec(ctx, t, `UPDATE contract_sections SET due_at = clock_timestamp() + interval '1 hour', tries = 12 WHERE workspace_id = $1`, w.team)
+		time.Sleep(300 * time.Millisecond)
+		var capped bool
+		if err := w.pool.QueryRow(ctx, `SELECT due_at > clock_timestamp() + interval '30 minutes' AND tries = 12 FROM contract_sections
+			WHERE workspace_id = $1`, w.team).Scan(&capped); err != nil {
+			t.Fatal(err)
+		}
+		return capped
+	})
+	n := len(w.sectionsAccepted(w.team))
+	w.fake.SetDown(false)
+	eventually(t, 10*time.Second, "the section back with the platform", func() bool { return len(w.sectionsAccepted(w.team)) > n })
+	if err := store.NewDevices(w.pool).SetStatus(ctx, w.team.String(), w.device.String(), wa.StatusLoggedOut,
+		"unlinked (logged out from the phone)"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 5*time.Second, "the logout sent within the debounce", func() bool {
+		for _, s := range w.sectionsAccepted(w.team) {
+			if strings.Contains(string(s.Body), `"connection":"logged_out_phone"`) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestResultsPauseAfterStoreFailure: a park, or the platform's answers,
+// that the ledger cannot store makes the results poster wait, doubling to
+// its backoff, before it reads the rows again: never a loop on the
+// database, or on the platform with the same batch; and its WARNs are
+// spaced.
+func TestResultsPauseAfterStoreFailure(t *testing.T) {
+	refuse := func(t *testing.T, w *snapshotWorld, when string) {
+		t.Helper()
+		ctx := context.Background()
+		w.exec(ctx, t, `CREATE SEQUENCE test_refusals`)
+		w.exec(ctx, t, `CREATE FUNCTION test_refuse() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN
+				IF `+when+` THEN
+					PERFORM nextval('test_refusals');
+					RAISE EXCEPTION 'the test refuses it' USING ERRCODE = '23514';
+				END IF;
+				RETURN NEW;
+			END $$`)
+		w.exec(ctx, t, `CREATE TRIGGER test_refuse BEFORE UPDATE ON contract_commands FOR EACH ROW EXECUTE FUNCTION test_refuse()`)
+	}
+	refusals := func(t *testing.T, w *snapshotWorld) int {
+		t.Helper()
+		var n int
+		if err := w.pool.QueryRow(context.Background(), `SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM test_refusals`).
+			Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	cfg := settingsTimes()
+	cfg.ResultsBackoffMin, cfg.ResultsBackoffMax = 400*time.Millisecond, 800*time.Millisecond
+
+	t.Run("park", func(t *testing.T) {
+		w := newSnapshotWorld(t)
+		ctx := context.Background()
+		w.settingsOn(t, store.SettingsRead)
+		refuse(t, w, `NEW.reject_code = 'local_invalid'`)
+		logs := &membershiptest.Logs{}
+		run(t, w.settingsLeader(w.members, logs, cfg))
+		eventually(t, soon, "the first section", func() bool { return len(w.sectionsAccepted(w.team)) > 0 })
+		// invalid_command with a state_seq: the kit's Validate refuses it.
+		w.exec(ctx, t, `INSERT INTO contract_commands (id, generation, cseq, body, body_key, signed_at, outcome, code, state_seq, result_at)
+			VALUES (gen_random_uuid(), (SELECT generation FROM contract_state), 1, '{}', decode(repeat('ab', 32), 'hex'),
+			clock_timestamp(), 'refused', 'invalid_command', 5, clock_timestamp())`)
+		eventually(t, soon, "a park refused", func() bool { return refusals(t, w) > 0 })
+		before := refusals(t, w)
+		time.Sleep(2 * time.Second)
+		if n := refusals(t, w) - before; n > 6 {
+			t.Fatalf("%d parks tried in 2 s", n)
+		}
+		if lines := logs.Lines("contract: could not park results"); len(lines) != 1 {
+			t.Fatalf("%d WARNs of a park refused", len(lines))
+		}
+	})
+
+	t.Run("answers", func(t *testing.T) {
+		w := newSnapshotWorld(t)
+		w.settingsOn(t, store.SettingsRead)
+		refuse(t, w, `NEW.delivery IN ('accepted', 'duplicate')`)
+		logs := &membershiptest.Logs{}
+		run(t, w.settingsLeader(w.members, logs, cfg))
+		eventually(t, soon, "the first section", func() bool { return len(w.sectionsAccepted(w.team)) > 0 })
+		w.settleSection(t, w.team)
+		w.offer(t, w.team, kc.OpItemRename)
+		w.rename(t, w.team, w.device, w.sub)
+		eventually(t, soon, "the answers refused", func() bool { return refusals(t, w) > 0 })
+		before := w.fake.Count(contracttest.CallResults)
+		time.Sleep(2 * time.Second)
+		if n := w.fake.Count(contracttest.CallResults) - before; n > 6 {
+			t.Fatalf("%d posts of one result in 2 s", n)
+		}
+		if lines := logs.Lines("contract: could not record the results' answers"); len(lines) != 1 {
+			t.Fatalf("%d WARNs of answers refused", len(lines))
+		}
 	})
 }

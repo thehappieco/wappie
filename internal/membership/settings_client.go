@@ -31,12 +31,14 @@ func (c *Client) PutPersonSettings(ctx context.Context, doc kc.PersonSettingsDoc
 
 // CommandPage is one signed command feed answer, and what checks its
 // commands: the time the platform signed it (expiry is judged on it), and
-// the secrets of the client that fetched it, so a reload between the fetch
-// and the verification changes nothing.
+// the client that fetched it, whose secrets check them, so a reload
+// between the fetch and the verification changes nothing. The client is
+// held by pointer, never its secrets by value: a page printed shows an
+// address (Client's own rule).
 type CommandPage struct {
 	Feed     kc.CommandFeed
 	SignedAt time.Time
-	accept   []string
+	kit      *kc.Client
 }
 
 // Commands returns the commands after the cursor after, waiting up to wait
@@ -45,7 +47,7 @@ type CommandPage struct {
 func (c *Client) Commands(ctx context.Context, after int64, wait int) (CommandPage, error) {
 	var p CommandPage
 	err := c.call(func(k *kc.Client) (err error) {
-		p = CommandPage{accept: k.Accept}
+		p = CommandPage{kit: k}
 		p.Feed, p.SignedAt, err = k.Commands(ctx, after, wait)
 		return err
 	})
@@ -67,7 +69,10 @@ func (c *Client) PostResults(ctx context.Context, results []kc.CommandResult) ([
 // of the client that fetched it (the current and, during a rotation, the
 // other: the spec's 14.6), for Wappie's app only, and decodes it.
 func (c *Client) VerifyCommand(page CommandPage, raw json.RawMessage) (kc.Command, error) {
-	return kc.VerifyCommand(raw, App, page.accept)
+	if page.kit == nil {
+		return kc.Command{}, kc.ErrCommandMAC
+	}
+	return kc.VerifyCommand(raw, App, page.kit.Accept)
 }
 
 // bodyKey is what tells two bodies of one command apart (the spec's 14.6):
@@ -76,20 +81,52 @@ func (c *Client) VerifyCommand(page CommandPage, raw json.RawMessage) (kc.Comman
 // platform sets each time it serves it; of the raw bytes when the body is
 // not one well-formed object JCS writes.
 func bodyKey(raw []byte) []byte {
-	if kc.DecodeStrict(raw, new(json.RawMessage)) == nil {
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		var v map[string]any
-		if dec.Decode(&v) == nil && v != nil {
-			for _, member := range []string{"generation", "cseq", "secret", "mac"} {
-				delete(v, member)
-			}
-			if canonical, err := jcs.Marshal(v); err == nil {
-				sum := sha256.Sum256(canonical)
-				return sum[:]
-			}
+	if v, ok := genericObject(raw); ok {
+		for _, member := range []string{"generation", "cseq", "secret", "mac"} {
+			delete(v, member)
+		}
+		if canonical, err := jcs.Marshal(v); err == nil {
+			sum := sha256.Sum256(canonical)
+			return sum[:]
 		}
 	}
 	sum := sha256.Sum256(raw)
 	return sum[:]
+}
+
+// genericObject is raw decoded into generic JSON values, its numbers as
+// written, when it is one well-formed object (valid UTF-8, no escape of
+// half a surrogate pair, no member twice anywhere).
+func genericObject(raw []byte) (map[string]any, bool) {
+	if kc.DecodeStrict(raw, new(json.RawMessage)) != nil {
+		return nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v map[string]any
+	if dec.Decode(&v) != nil || v == nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// macCovers reports whether raw is a command the kit's MAC can cover: one
+// well-formed object, its mac a string where it has one, and the rest a
+// text JCS writes (no fraction, no integer past 2^53-1), as the kit's
+// canonicalCommand asks before it checks the app and the MAC. A command
+// the kit refuses as ErrInvalid that passes this, and names the app that
+// verifies it, had its MAC hold: only its typed decode failed.
+func macCovers(raw []byte) bool {
+	v, ok := genericObject(raw)
+	if !ok {
+		return false
+	}
+	if mac, has := v["mac"]; has {
+		if _, isString := mac.(string); !isString {
+			return false
+		}
+		delete(v, "mac")
+	}
+	_, err := jcs.Marshal(v)
+	return err == nil
 }

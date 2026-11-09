@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -544,5 +545,129 @@ func TestVerifyCommandRotation(t *testing.T) {
 	}
 	if _, err := alone.VerifyCommand(page, page.Feed.Items[0].Command); !errors.Is(err, kc.ErrCommandMAC) {
 		t.Fatalf("a command signed with a secret the client does not hold: %v", err)
+	}
+}
+
+// TestDecideReadsTheSignedCommand: the ledger's id is the id the MAC
+// covers, read with the member's exact name as the kit reads it, never
+// encoding/json's match in any case; and a command whose MAC holds but
+// that does not decode as a command (the platform signed it) is
+// invalid_command, not a forgery, while one the kit cannot canonicalize
+// for its MAC (a mac that is no string, a fraction) is a forgery.
+func TestDecideReadsTheSignedCommand(t *testing.T) {
+	gen := "0199b1e0-0000-7000-8000-000000000001"
+	signed := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	verify := func(raw json.RawMessage) (kc.Command, error) {
+		return kc.VerifyCommand(raw, App, []string{vectorSecretA})
+	}
+	decide := func(raw []byte) (store.ContractCommandTake, *store.ContractUnreadable) {
+		t.Helper()
+		take, unreadable, err := decideCommand(App, verify, gen, signed, kc.CommandFeedItem{CSeq: 9, Command: raw},
+			func(uuid.UUID) (string, error) { return kc.KindTeam, nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return take, unreadable
+	}
+	// members is the command signOutEverywhere signs, without its mac,
+	// numbers as written.
+	members := func() map[string]any {
+		t.Helper()
+		dec := json.NewDecoder(bytes.NewReader(signOutEverywhere(t, gen, signed)))
+		dec.UseNumber()
+		var v map[string]any
+		if err := dec.Decode(&v); err != nil {
+			t.Fatal(err)
+		}
+		delete(v, "mac")
+		return v
+	}
+	sign := func(v map[string]any) []byte {
+		t.Helper()
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signed, err := kc.SignCommand(raw, App, vectorSecretA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signed
+	}
+	const real, other = "0199f3c4-0000-7000-8000-000000000077", "0199f3c4-0000-7000-8000-0000000000aa"
+
+	// An "ID" member beside "id", served after it (any order verifies).
+	v := members()
+	v["ID"] = other
+	body := sign(v)
+	moved := bytes.Replace(body, []byte(`"ID":"`+other+`",`), nil, 1)
+	moved = append(moved[:len(moved)-1], []byte(`,"ID":"`+other+`"}`)...)
+	if c, err := verify(moved); err != nil || c.ID != real {
+		t.Fatalf("the body with ID last: %v %q", err, c.ID)
+	}
+	if take, unreadable := decide(moved); unreadable != nil || take.ID.String() != real || take.Verdict != "" || take.Decoded == nil {
+		t.Errorf("an ID member after id: the row %s, verdict %q, %+v", take.ID, take.Verdict, unreadable)
+	}
+	// An "Id" and no "id": no id the MAC covers names a row.
+	v = members()
+	delete(v, "id")
+	v["Id"] = other
+	if take, unreadable := decide(sign(v)); unreadable == nil || unreadable.Forged || take.ID != uuid.Nil {
+		t.Errorf("a command with only an Id: %+v %+v", take, unreadable)
+	}
+	// Signed, but no command: a string where a number goes.
+	for _, member := range []string{"wseq", "cseq"} {
+		v = members()
+		v[member] = "9"
+		take, unreadable := decide(sign(v))
+		if unreadable != nil || take.ID.String() != real || take.Verdict != store.CommandInvalid || take.Why != whyInvalid || take.Forged ||
+			take.Decoded != nil {
+			t.Errorf("a signed command with %s a string: %+v %+v", member, take, unreadable)
+		}
+	}
+	// What the kit cannot canonicalize for a MAC: forged.
+	for name, raw := range map[string]string{
+		"a mac that is no string": `{"id":"` + real + `","app":"wappie","mac":5}`,
+		"a fraction":              `{"id":"` + real + `","app":"wappie","x":1.5,"mac":"v1=00"}`,
+		"a member twice":          `{"id":"` + real + `","app":"wappie","x":1,"x":2}`,
+	} {
+		if take, _ := decide([]byte(raw)); take.Why != whyMalformed || !take.Forged || take.ID.String() != real {
+			t.Errorf("%s: %+v", name, take)
+		}
+	}
+	// Another app's body, its app named exactly; one named "App" is not.
+	if take, _ := decide([]byte(`{"id":"` + real + `","app":"mailie"}`)); take.Why != whyAnotherApp || !take.Forged {
+		t.Errorf("another app's body: %+v", take)
+	}
+	if take, _ := decide([]byte(`{"id":"` + real + `","App":"wappie","app":"mailie"}`)); take.Why != whyAnotherApp || !take.Forged {
+		t.Errorf("another app's body with an App member: %+v", take)
+	}
+}
+
+// TestCommandPageHidesSecrets: a command page holds the client that
+// fetched it by pointer, so printing one, or logging it, shows no secret.
+func TestCommandPageHidesSecrets(t *testing.T) {
+	raw := signOutEverywhere(t, "0199b1e0-0000-7000-8000-000000000001", time.Now())
+	c := commandFeedClient(t, vectorSecretA, "", raw)
+	page, err := c.Commands(context.Background(), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, verb := range []string{"%v", "%+v", "%#v"} {
+		if s := fmt.Sprintf(verb, page); strings.Contains(s, vectorSecretA) {
+			t.Errorf("%s of a command page prints the contract secret", verb)
+		}
+	}
+	var b bytes.Buffer
+	slog.New(slog.NewTextHandler(&b, nil)).Info("page", "page", page)
+	slog.New(slog.NewJSONHandler(&b, nil)).Info("page", "page", page)
+	if strings.Contains(b.String(), vectorSecretA) {
+		t.Error("a log line of a command page prints the contract secret")
+	}
+	if _, err := c.VerifyCommand(page, page.Feed.Items[0].Command); err != nil {
+		t.Fatalf("the page's command, checked with the fetching client: %v", err)
+	}
+	if _, err := c.VerifyCommand(CommandPage{}, page.Feed.Items[0].Command); !errors.Is(err, kc.ErrCommandMAC) {
+		t.Fatalf("a page no client fetched: %v", err)
 	}
 }

@@ -90,6 +90,10 @@ type SettingsConfig struct {
 	// Numbers is the leader's process's registry: the pending rows'
 	// pairing and retry. Nil: none pairs, none may be retried.
 	Numbers NumberLooks
+
+	// stateRead, set by tests only, runs each time the command follower has
+	// read the state, before it asks for a page, with its interrupt.
+	stateRead func(interrupt func())
 }
 
 func (s SettingsConfig) commandWait() int {
@@ -123,8 +127,11 @@ type settingsWork struct {
 	current atomic.Pointer[string]
 
 	mu sync.Mutex
-	// cut ends the command long-poll in flight, or the pause after it.
-	cut context.CancelFunc
+	// cut ends the command long-poll in flight, or the pause after it;
+	// cuts counts the interrupts, so one that came while no long-poll was
+	// in flight is not lost.
+	cut  context.CancelFunc
+	cuts uint64
 	// stop ends the running loops; nil while they do not run.
 	stop context.CancelFunc
 	wg   sync.WaitGroup
@@ -189,6 +196,7 @@ func (sw *settingsWork) halt() { sw.set(context.Background(), store.SettingsOff)
 func (sw *settingsWork) interrupt() {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+	sw.cuts++
 	if sw.cut != nil {
 		sw.cut()
 	}
