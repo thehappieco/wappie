@@ -33,8 +33,7 @@ import (
 // registry, on the other, by the same person; each pair must leave the
 // same rows, notices, events, pushes and broadcasts, and refuse the same
 // people. The known differences are pinned: a resume whose start fails
-// (DS9), sync now's role (DS13, until the frame asks Read too), and the
-// actor of a stop that tells nobody (DS7).
+// (DS9), and the actor of a stop that tells nobody (DS7).
 
 // The socket server is the runners' sockets.
 var _ numberacts.Sockets = (*wsapi.Server)(nil)
@@ -452,11 +451,15 @@ func TestConsoleParitySyncNow(t *testing.T) {
 			t.Fatalf("%s does not run after a sync now", d)
 		}
 	}
-	// Known difference (DS13): a reader without Manage syncs now through
-	// the console (Read), not yet through the frame (Manage), until the
-	// release that widens the frame lists the kind.
-	if fo, co := start(readerToken, frame), syncNow(reader, readerSub); fo != kc.CodeNotAuthorized || co != "ok" {
+	// A person's sync now is Read's in both (DS13): a reader without
+	// Manage may, an admin who does not read may not.
+	if fo, co := start(readerToken, frame), syncNow(reader, readerSub); fo != "ok" || co != "ok" {
 		t.Fatalf("a reader without Manage: the frame %s, the runner %s", fo, co)
+	}
+	outsider, outsiderToken := p.person(t, "dora", "admin")
+	outsiderSub := p.link(t, outsider, "admin")
+	if fo, co := start(outsiderToken, frame), syncNow(outsider, outsiderSub); fo != kc.CodeNotAuthorized || co != kc.CodeNotAuthorized {
+		t.Fatalf("an admin who does not read: the frame %s, the runner %s", fo, co)
 	}
 	// Both refuse a paused number's sync now: the frame by role as a
 	// resume, the runner as paused.
@@ -524,6 +527,9 @@ func TestConsoleParityNotFound(t *testing.T) {
 		}{
 			{wsapi.TypeDeviceStop, wsapi.TypeDeviceStatus, func() (store.ContractAct, error) { return p.runnerStop(t, admin, adminSub, d) }},
 			{wsapi.TypeDeviceStart, wsapi.TypeDeviceStatus, func() (store.ContractAct, error) { return p.runnerResume(t, admin, adminSub, d) }},
+			{wsapi.TypeDeviceStart, wsapi.TypeDeviceStatus, func() (store.ContractAct, error) {
+				return p.runner.SyncNow(ctx, p.command(t, kc.OpItemSyncNow, admin, adminSub), d) //nolint:contextcheck // the world's helpers run on a context of their own
+			}},
 			{wsapi.TypeDeviceRename, wsapi.TypeDeviceDetail, func() (store.ContractAct, error) {
 				return p.runner.Rename(ctx, p.command(t, kc.OpItemRename, admin, adminSub), d, &label, "X") //nolint:contextcheck // the world's helpers run on a context of their own
 			}},

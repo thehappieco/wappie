@@ -778,6 +778,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"resume repair":      spoken(store.ResumeRepairAfter),
 			"check person":       spoken(checkPerson),
 			"start bound":        spoken(numberacts.StartBound),
+			"failed start wait":  spoken(numberacts.FailedStartWait),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.

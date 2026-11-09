@@ -19,6 +19,7 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,6 +75,14 @@ type Runner struct {
 	Log      *slog.Logger
 	// StartBound bounds a start (StartBound when zero).
 	StartBound time.Duration
+	// FailedStartWait is how long a sync now waits after this runner's
+	// failed start of its number (FailedStartWait when zero).
+	FailedStartWait time.Duration
+
+	mu sync.Mutex
+	// failed is when each number's last sync now start failed, kept
+	// until its wait ends.
+	failed map[string]time.Time
 }
 
 // StartBound is how long a resume or a sync now waits for its number to
@@ -85,6 +94,17 @@ type Runner struct {
 // ran was committed with its lift, is left to the supervisor, which starts
 // a number that is not paused within its tick.
 const StartBound = 15 * time.Second
+
+// FailedStartWait is how long a sync now of a number waits after this
+// runner's last failed start of it. A sync now is a reader's, and its
+// connect_failed offers a button to try again (the spec's 14.9): without
+// it, readers clicking it on a number WhatsApp does not let connect would
+// each hold every workspace's commands for up to StartBound. Within it the
+// sync now is answered rate_limited, retry_after the seconds left, without
+// a start: the platform issues it again then, so the click is not lost,
+// and a number's sync now starts at most once a FailedStartWait while it
+// fails.
+const FailedStartWait = time.Minute
 
 // startCtx bounds a start of the number under ctx.
 func (r *Runner) startCtx(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -1735,7 +1735,9 @@ again on its own read before it lifts a pause, so a stop that lands in
 between is never lifted under Manage. A sync now lifts no pause, and one
 that fails puts none back (a resume that fails still restores the pause
 it lifted, with its cause), so a member with Manage never leaves a number
-paused. `history.backfill` keeps Manage.
+paused. `history.backfill` keeps Manage. Since the settings part's DS13,
+a person's sync now asks Read and the number's key, in the frame and in the
+console alike; a key keeps Manage.
 
 ## The contract's settings part (2026-11-08)
 
@@ -1940,11 +1942,18 @@ document due in its transaction and again once the leader's watcher holds
 the new mode, since the sender renders `accepts` from it.
 
 **DS13. Sync now for a person is Read's.** The platform's answer 4 (the
-owner's "readers"): a person's `item.sync_now` asks `ActionRead`, as the
-runner does; keys, service accounts and tokens keep Manage. The runner
-ships built and tested, but `item.sync_now` enters `accepts` only in the
-release whose socket frame asks Read too, so the console never offers what
-Wappie's own screen refuses.
+owner's "readers"): a person's sync now asks `ActionRead`, in the
+console's `item.sync_now` and on the socket's `device.start` of a number
+not paused alike; keys, and service accounts through them, keep Manage
+with full scope. Followed literally, an owner or an admin who does not
+read the number may not. The runner shipped first, built and tested;
+`item.sync_now` entered `accepts` with the release that widened the frame,
+so the console never offered what Wappie's own screen refused. Since any
+reader may click it, and the executor runs every workspace's commands one
+at a time, a sync now's start that fails makes the number's next sync
+nows wait a minute: `rate_limited`, with the seconds left, and no start,
+so repeated clicks on a number that cannot connect hold the other
+commands for at most one start bound a minute per number.
 
 **DS14. One lock order for every 12a writer**, `Restart`'s:
 `contract_state`, `contract_accounts`, the records in id order,

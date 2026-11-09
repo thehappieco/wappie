@@ -164,8 +164,12 @@ export interface DeviceInfo {
    * only, an owner or an admin (in a personal workspace, its person), never
    * through Manage; a key with full scope that reaches the number, as for
    * managing. Anyone else gets not_authorized, whose message names the
-   * rule. device.start on a number that is not paused (sync now) stays
-   * can_manage's. Absent from an older core, where Manage paused.
+   * rule. device.start on a number that is not paused (sync now) follows
+   * neither flag: a person needs Read and the number's key (an owner or
+   * admin who does not read it may not), a key Manage with full scope: a
+   * person's client offers sync now where it reads the number (its grant
+   * at the current epoch opens). Absent from an older core, where Manage
+   * paused.
    */
   can_pause?: boolean
   can_send?: boolean

@@ -25,7 +25,7 @@ var timingsElsewhere = []string{
 	"event expiry", "call timeout", "feed grace", "check feed", "check snapshot", "check published", "check errors",
 	"check round", "check parked", "check events", "hot path", "hot path bound",
 	"section not found", "run backoff", "ledger", "check commands", "check results", "check taken", "check section",
-	"person not found", "resume repair", "check person", "start bound",
+	"person not found", "resume repair", "check person", "start bound", "failed start wait",
 }
 
 // docs/contract.md's timings and limits that this package sets (the rest

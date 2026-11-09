@@ -124,8 +124,8 @@ func frameAction(kind string) store.DeviceAction {
 		return store.ActionSend
 	case TypeDeviceStop, TypeDeviceStart:
 		// A number's capture, paused and resumed by role (store.ActionPause).
-		// device.start on a number that is not paused is "sync now", which
-		// keeps Manage (resolveDevice).
+		// device.start on a number that is not paused is "sync now": a
+		// person's Read, a key's Manage (resolveDevice).
 		return store.ActionPause
 	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceRename, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke,
 		TypeDeviceDeleteCheck, TypeDevicesDeleted, TypeDeviceRecoverCheck, TypeDeviceRecover:
