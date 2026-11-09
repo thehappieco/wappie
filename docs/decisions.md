@@ -1833,6 +1833,20 @@ marked resumed after it. Still unknown, and sent as null, by design until
 the frames share one pause transaction: a frame's stop that tells nobody
 (every personal workspace), a frame's stop on a moved number, a pause put
 back after a failed resume, and paused rows 0052 found no trace of.
+`paused_by_user` references `users` `ON DELETE SET NULL`, as `deleted_by`
+does: a removed account leaves no id behind, and the kind stays.
+
+What 0052's fill can get wrong, accepted: schema 51 keeps no trace of a
+resume once nobody is left to mark (`MarkResumed` marks only unseen
+notices). A pause that told nobody, after a resume of an older pause
+whose event it would take, is credited to that older event's actor and
+time: a stop whose notices were all seen before the resume, or a
+recovery (its event tells no reader), each followed by a resume and then
+a silent stop. It is a display only, of pauses made before 0052 whose
+events are under 30 days old; a pause put back after a failed resume, the
+likelier case, is the same pause and is credited rightly. The migrating
+release's verification lists the person pauses 0052 filled, so the
+operator can check them.
 
 **DS14. One lock order for every 12a writer**, `Restart`'s:
 `contract_state`, `contract_accounts`, the records in id order,
@@ -1843,7 +1857,12 @@ back after a failed resume, and paused rows 0052 found no trace of.
 a take and a reset never interleave. An act takes its record first and
 reads `contract_state` and `contract_accounts` with no lock (a stale
 generation only leaves a result the poster drops), and records an ERROR
-only after its transaction ends.
+only after its transaction ends. The results poster clears
+`results_error` before it settles the ledger rows. Every statement that
+locks several ledger rows or persons takes them in key order (a `FOR
+UPDATE` subquery), the trim's and a take's deletions included, and a row
+past its 30 days is the trim's alone: neither a reset nor the poster drops
+it.
 
 **DS16. The platform is told first.** `contract settings read` (or `on`)
 the first time, and `off` once the feed was read, need `--platform-told`:
