@@ -108,7 +108,7 @@ func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 	go a.secrets.Watch(ctx, hup)
 	go a.secrets.Run(ctx)
 	if a.members != nil {
-		a.leader = &membership.Leader{Members: a.members, Pool: a.pools.API, Log: a.log}
+		a.leader = &membership.Leader{Members: a.members, Pool: a.pools.API, Log: a.log, Settings: a.settingsConfig()}
 		go a.leader.Run(ctx)
 	}
 }
@@ -151,6 +151,8 @@ func contractCommand(args []string, stdout io.Writer) error {
 		return contractDiffCommand(args[1:], stdout)
 	case "mode":
 		return contractModeCommand(args[1:], stdout)
+	case "settings":
+		return contractSettingsCommand(args[1:], stdout)
 	}
 	return usageError{arg: "contract " + strings.Join(args, " ")}
 }

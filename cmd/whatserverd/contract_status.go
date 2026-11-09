@@ -95,6 +95,10 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 	if err != nil {
 		return err
 	}
+	sst, err := c.SettingsStatus(ctx)
+	if err != nil {
+		return err
+	}
 	w := &lines{w: out}
 	s := st.State
 	w.f("mode: %s (since %s)", s.Mode, stamp(s.ModeChangedAt))
@@ -188,6 +192,7 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		return w.err
 	}
 	found := statusFindings(st, cfg, loaded, published, lerr, files)
+	found = append(found, settingsFindings(sst)...)
 	for _, f := range found {
 		w.f("finding: %s", f)
 	}
@@ -482,6 +487,14 @@ func contractMode(ctx context.Context, c *store.Contract, mode string, ready fun
 	if change.To == store.ContractObserve {
 		w.f("events to send now: %d (undelivered from before the pause, and deletions, recoveries and purges while off)", change.ToSend)
 		w.f("events held back for good: %d (pauses, strandings and moves while off)", change.HeldBack)
+	}
+	if change.SettingsOff {
+		w.f("settings: off with it")
+	}
+	if change.To == store.ContractOff {
+		if sst, err := c.SettingsState(ctx); err == nil && sst.FirstReadAt != nil {
+			w.f("the platform watches the command feed since %s: tell it", stamp(*sst.FirstReadAt))
+		}
 	}
 	return w.err
 }
