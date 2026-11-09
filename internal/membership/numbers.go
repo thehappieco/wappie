@@ -63,8 +63,9 @@ func pendingOf(p store.ContractPending, looks NumberLooks) kc.PendingRegistratio
 
 // numberRow is one number's row. read_only is the spec's (logged out or
 // banned), a deleted number's (the platform's commitment), and a number
-// whose identity Wappie never learned (it connected for a pairing that
-// never linked): Wappie holds no session it could start for it, which the
+// with no identity stored (it connected for a pairing that never linked,
+// or, rarely, Wappie failed to save the identity of one that did): Wappie
+// holds no session it could start for it from what it stored, which the
 // spec's read_only code names ("no session to the number"). Its sync now
 // is not_linked, and a pause of it could not be lifted from the console
 // (can_resume false, the resume state_changed), so the console holds both

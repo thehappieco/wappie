@@ -1778,10 +1778,18 @@ at or above a result's seq shows it. The sender's snapshot does the same
 12a measured it, then numbered it, so a rename that committed in between
 left one snapshot above the result with the old label (the residual the
 plan bounded by 0051's label trigger), and the console showed the rename
-done beside the old name until the next one. And a section's
-`snapshot_seq` is the last one numbered, which may be a snapshot whose
-send failed: the console's "shown" check reads the platform's own kept
-seq, so that is harmless. A person's
+done beside the old name until the next one. Past its seq the snapshot
+measures read-only, so its seq is its one write. Because the numbers and
+the snapshot reads hold the record while they measure, they fail on each
+other, on an act and on the event sender's record: a read that fails so
+tries again after a random pause of n times 2 to 7 ms after its n-th
+failure, eight tries in all (12a's five, at once, ran out within a burst
+of acts). Every act updates the record, never only locks it: a read that
+waits on a lock alone keeps the view it took before the wait. No code
+numbers a document after measuring it (`TestWorkspaceClockWriters`). And
+a section's `snapshot_seq` is the last one numbered, which may be a
+snapshot whose send failed: the console's "shown" check reads the
+platform's own kept seq, so that is harmless. A person's
 document does the same on `contract_persons.seq`, with `sent_seq` for its
 outcome's compare-and-set.
 
@@ -1956,10 +1964,15 @@ section that still fails is. A parked snapshot does not hold back its
 workspace's section, which has its own park. A numbers row carries no
 label (the snapshot's is the number's). 0052 nulled the labels of the item events not yet sent, once.
 A row is `read_only` when its number is logged out or banned (the spec's
-14.3), deleted (the platform's commitment), or its identity was never
-learned (a pairing that connected and never linked; the platform's check
+14.3), deleted (the platform's commitment), or no identity of it is
+stored (a pairing that connected and never linked; the platform's check
 of fcffb55, finding 5): Wappie holds no session it could start for it,
-the "no session to the number" of the spec's 14.9 `read_only`. Its sync
+the "no session to the number" of the spec's 14.9 `read_only`. The rule
+reads what is stored, so it also takes a number that did link but whose
+identity Wappie failed to save at the pairing and at every connection
+since (the device holds it in memory only, with an ERROR each time): very
+rare, and while it captures the console holds back Pausar on it, which
+Wappie's own screen still offers. Its sync
 now is `not_linked`, and a stop would leave a pause the console cannot
 lift (`can_resume` false, a resume `state_changed`), so the console holds
 both back, as on a logged-out number, and sends the person to Wappie

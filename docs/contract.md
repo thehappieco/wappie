@@ -574,8 +574,10 @@ transaction):
 
 For every recorded platform workspace, personal ones included, the leader
 sends `PUT /contract/v1/workspaces/{id}/access` (spec 8), an absolute
-snapshot of what Wappie's own tables say, measured in one read-only
-snapshot of the database with its clock. A workspace Wappie has no
+snapshot of what Wappie's own tables say, measured in one REPEATABLE READ
+transaction with the database's clock, which first takes its
+`snapshot_seq` under the workspace's record and then reads, read-only
+(DS3). A workspace Wappie has no
 workspace for gets an empty one (`"items": []`): the console counts a
 missing snapshot as unknown protection.
 
@@ -618,12 +620,14 @@ missing snapshot as unknown protection.
   workspace's snapshot is not sent: Wappie would not send it"), recorded
   `local_invalid:<rule>`, and retried with the backoff.
 - **`snapshot_seq`** is the greater of the measurement's milliseconds and
-  the last one sent plus one (or the workspace's last section's plus
-  one), stored before the send, so it rises across leaders. It is taken
-  first in the snapshot's own measuring transaction, under the
-  workspace's record, as a section's is (DS3): a rename that holds the
-  record makes the snapshot wait and measure again, so a snapshot at or
-  above a rename's seq always shows its label.
+  the last one numbered plus one (which may be one whose send failed), or
+  the workspace's last section's plus one, stored before the send, so it
+  rises across leaders. It is taken first in the snapshot's own measuring
+  transaction, under the workspace's record, as a section's is (DS3): an
+  act that holds the record (a rename, a stop, a resume) makes the
+  snapshot wait and measure again, so a snapshot at or above an act's seq
+  always shows it. A read that meets the record busy tries again after a
+  short random pause, up to eight times, before it counts as a failure.
 
 **When.** At the leader's start, every recorded workspace (and every park
 released for one try); 2 seconds after the first of a run of changes the
@@ -727,7 +731,7 @@ Each recorded platform workspace's `numbers` section
 | `items[].capture` | `paused` when the number is paused or deleted, else `on` |
 | `items[].paused_by` | `{kind, sub, at}` from `devices.paused_at`, `paused_by_kind` and the sub of `paused_by_user`; `null` whenever the time or the actor is not known (DS7) |
 | `items[].can_resume` | paused, not deleted, its identity known, not logged out or banned |
-| `items[].read_only` | logged out, banned or deleted, or its identity not known (it connected for a pairing that never linked: no session Wappie could start, so its sync now is `not_linked`, and a pause of it could not be lifted from the console; DS12) |
+| `items[].read_only` | logged out, banned or deleted, or no identity stored (it connected for a pairing that never linked, or, rarely, Wappie failed to save the identity of one that did: no session Wappie could start from what it stored, so its sync now is `not_linked`, and a pause of it could not be lifted from the console; DS12) |
 | `items[].key_epoch` | the number's epoch, `null` for 0 |
 | `items[].recovery_open` | deleted, its purge ahead and not started |
 | `items[].move_out`, `items[].bytes` | `null` |
