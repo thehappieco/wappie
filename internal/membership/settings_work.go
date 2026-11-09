@@ -153,17 +153,27 @@ func (sw *settingsWork) mode() string {
 
 // set starts the loops under ctx for mode read or on when they do not run,
 // or stops them and waits for them for off. A switch between read and on
-// keeps them running: every document was made due by the switch, and the
-// sender reads the mode at each send. Only the leader's watcher calls it,
-// and the leader's end (halt).
+// keeps them running, and makes every document due again once the new mode
+// is the one the sender reads: the switch's own transaction made them due,
+// but a send measured before this watcher saw it may still go out with the
+// old mode's accepts, and once accepted it would wait out the section
+// cadence (55 minutes); one due again after that send's measurement goes
+// again. Only the leader's watcher calls it, and the leader's end (halt).
 func (sw *settingsWork) set(ctx context.Context, mode string) {
 	sw.mu.Lock()
 	running := sw.stop != nil
+	was := sw.mode()
 	if mode != store.SettingsOff {
 		sw.current.Store(&mode)
 	}
 	switch {
-	case mode == store.SettingsOff && !running, mode != store.SettingsOff && running:
+	case mode != store.SettingsOff && running:
+		sw.mu.Unlock()
+		if was != mode {
+			sw.dueAgain(ctx, mode)
+		}
+		return
+	case mode == store.SettingsOff && !running:
 		sw.mu.Unlock()
 		return
 	case mode == store.SettingsOff:
@@ -186,6 +196,23 @@ func (sw *settingsWork) set(ctx context.Context, mode string) {
 	sw.wg.Go(func() { sw.execute(run) })
 	sw.wg.Go(func() { sw.post(run) })
 	sw.wg.Go(func() { (&sectionSender{sw: sw, pending: map[uuid.UUID]pendingSent{}}).run(run) })
+}
+
+// dueAgain makes every section and person document due now, after a switch
+// to mode the sender now reads (set).
+func (sw *settingsWork) dueAgain(ctx context.Context, mode string) {
+	c := sw.l.Members.Contract
+	err := c.SectionsDue(ctx)
+	if err == nil {
+		err = c.PersonsDue(ctx)
+	}
+	if err != nil && ctx.Err() == nil {
+		// The switch's own transaction made them due; only a send
+		// measured before this watcher saw it may wait for the cadence.
+		sw.l.log().Warn("contract: could not make the documents due again after a settings switch", "mode", mode, "error", err)
+		return
+	}
+	sw.l.log().Info("contract: settings switched", "mode", mode)
 }
 
 // halt stops the loops, if they run, and waits for them.
