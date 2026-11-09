@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1116,64 +1117,155 @@ func TestSnapshotSeqRises(t *testing.T) {
 }
 
 // TestSnapshotShowsTheRenameBelowItsSeq (the plan's 3.5; the platform's
-// check of fcffb55, finding 3): a rename holds the workspace's record
-// while the sender measures its snapshot. The snapshot the platform keeps
-// afterwards is numbered above the rename's seq, and shows its label:
-// never one measured before the rename committed and numbered after it,
-// which would let the console show the rename done beside the old name.
+// check of fcffb55, finding 3): the executor runs a rename, which holds the
+// workspace's record (its seq taken, the number's row awaited) while the
+// sender measures its snapshot. The snapshot the platform keeps afterwards
+// is numbered above the rename's seq, and shows its label: never one
+// measured before the rename committed and numbered after it, which would
+// let the console show the rename done beside the old name.
 func TestSnapshotShowsTheRenameBelowItsSeq(t *testing.T) {
 	w := newSnapshotWorld(t)
 	ctx := context.Background()
-	s := &snapshotSender{l: w.leader(w.members, &membershiptest.Logs{}, lockKey(t)), notices: newNotices(),
-		logged: map[uuid.UUID]time.Time{}}
+	s := w.snapshotSender(t)
+	on := w.executorOf(t, store.SettingsOn, &membershiptest.Logs{})
+	id := w.take(t, row{kind: kc.OpItemRename, ws: &w.team, actor: w.sub, target: item(w.device), params: renameParams,
+		docs: map[uuid.UUID]int64{w.sub: w.version(t, w.sub)}})
+	cmd, ok, err := w.contract.NextCommand(ctx)
+	if err != nil || !ok || cmd.ID != id {
+		t.Fatalf("the rename to run: %+v %v %v", cmd, ok, err)
+	}
 
-	// The rename, as an act runs it: its seq first, under the record's
-	// lock, then the label.
-	act, err := w.pool.Begin(ctx)
+	// The number's row held, so the rename stops inside its act, its seq
+	// taken under the record's lock.
+	hold, err := w.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = act.Rollback(ctx) }()
-	var actSeq int64
-	if err := act.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
-		UPDATE contract_workspaces w SET sections_seq = greatest(floor(extract(epoch FROM now.t) * 1000)::bigint,
-			w.sections_seq + 1, w.snapshot_seq + 1)
-		FROM now WHERE w.workspace_id = $1 RETURNING w.sections_seq`, w.team).Scan(&actSeq); err != nil {
+	defer func() { _ = hold.Rollback(ctx) }()
+	if _, err := hold.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, w.team.String()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := act.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, w.team.String()); err != nil {
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM devices WHERE id = $1 FOR UPDATE`, w.device); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := act.Exec(ctx, `UPDATE devices SET label = 'Vendas SP' WHERE id = $1`, w.device); err != nil {
-		t.Fatal(err)
-	}
+	ran := make(chan bool, 1)
+	go func() { ran <- on.runCommand(ctx, cmd) }()
+	act := w.waiter(t, int32(hold.Conn().PgConn().PID()), "the rename to wait on the number's row")
 
 	sent := make(chan bool, 1)
 	go func() {
 		sent <- s.send(ctx, store.ContractSnapshotDue{Workspace: w.team, DueAt: time.Now(), Due: true})
 	}()
-	pid := int32(act.Conn().PgConn().PID())
-	eventually(t, soon, "the snapshot to wait on the rename", func() bool {
-		var waits bool
-		if err := w.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid)))`,
-			pid).Scan(&waits); err != nil {
-			t.Fatal(err)
-		}
-		return waits
-	})
-	if err := act.Commit(ctx); err != nil {
+	w.waiter(t, act, "the snapshot to wait on the rename")
+	if err := hold.Commit(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if !<-ran {
+		t.Fatal("the rename recorded nothing")
 	}
 	if !<-sent {
 		t.Fatal("the snapshot's outcome was not stored")
+	}
+	renamed, _ := w.ledgerRow(t, id.String())
+	if renamed.outcome != store.CommandRan || renamed.stateSeq == nil {
+		t.Fatalf("the rename: %+v", renamed)
 	}
 	kept, ok := w.fake.Snapshot("wappie", w.team.String())
 	if !ok || len(kept.Items) != 1 {
 		t.Fatalf("the platform keeps %+v %v", kept, ok)
 	}
-	if got := kept.Items[0].Label; kept.SnapshotSeq <= actSeq || got == nil || *got != "Vendas SP" {
-		t.Fatalf("the snapshot at %d, after the rename at %d, shows %v", kept.SnapshotSeq, actSeq, stringOr(got))
+	if got := kept.Items[0].Label; kept.SnapshotSeq <= *renamed.stateSeq || got == nil || *got != "Vendas SP" {
+		t.Fatalf("the snapshot at %d, after the rename at %d, shows %v", kept.SnapshotSeq, *renamed.stateSeq, stringOr(got))
 	}
+}
+
+// TestSnapshotBeforeTheRenameIsSentAgain: the other order. The sender
+// numbers and measures its snapshot, and while it is on its way to the
+// platform the executor runs a rename, at a higher seq. The platform keeps
+// that snapshot below the rename's seq, so the console does not count the
+// rename shown by it; its outcome finds the snapshot due again (the
+// rename's), and the next one, above the rename's seq, shows the label.
+func TestSnapshotBeforeTheRenameIsSentAgain(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	s := w.snapshotSender(t)
+	on := w.executorOf(t, store.SettingsOn, &membershiptest.Logs{})
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	w.fake.Before(contracttest.CallAccess, func(ws string) {
+		if ws == w.team.String() {
+			once.Do(func() {
+				close(held)
+				<-release
+			})
+		}
+	})
+	defer w.fake.Before(contracttest.CallAccess, nil)
+	sent := make(chan bool, 1)
+	go func() {
+		sent <- s.send(ctx, store.ContractSnapshotDue{Workspace: w.team, DueAt: time.Now(), Due: true})
+	}()
+	select {
+	case <-held:
+	case <-time.After(soon):
+		t.Fatal("the snapshot never went")
+	}
+
+	id := w.take(t, row{kind: kc.OpItemRename, ws: &w.team, actor: w.sub, target: item(w.device), params: renameParams,
+		docs: map[uuid.UUID]int64{w.sub: w.version(t, w.sub)}})
+	w.runNext(t, on)
+	renamed, _ := w.ledgerRow(t, id.String())
+	if renamed.outcome != store.CommandRan || renamed.stateSeq == nil {
+		t.Fatalf("the rename: %+v", renamed)
+	}
+	close(release)
+	if !<-sent {
+		t.Fatal("the snapshot's outcome was not stored")
+	}
+	first, ok := w.fake.Snapshot("wappie", w.team.String())
+	if !ok || len(first.Items) != 1 || first.SnapshotSeq >= *renamed.stateSeq || stringOr(first.Items[0].Label) != `"Vendas"` {
+		t.Fatalf("the snapshot measured before the rename at %d: %d, %+v", *renamed.stateSeq, first.SnapshotSeq, first.Items)
+	}
+	next := store.ContractSnapshotDue{Workspace: w.team, Due: true}
+	var due bool
+	if err := w.pool.QueryRow(ctx, `SELECT snapshot_due_at <= clock_timestamp(), snapshot_due_at, snapshot_seq FROM contract_workspaces
+		WHERE workspace_id = $1`, w.team).Scan(&due, &next.DueAt, &next.Seq); err != nil || !due {
+		t.Fatalf("the snapshot is not due again: %+v %v", next, err)
+	}
+	if !s.send(ctx, next) {
+		t.Fatal("the next snapshot's outcome was not stored")
+	}
+	kept, _ := w.fake.Snapshot("wappie", w.team.String())
+	if got := kept.Items[0].Label; kept.SnapshotSeq <= *renamed.stateSeq || got == nil || *got != "Vendas SP" {
+		t.Fatalf("the next snapshot at %d, after the rename at %d, shows %v", kept.SnapshotSeq, *renamed.stateSeq, stringOr(got))
+	}
+}
+
+// snapshotSender is w's snapshot sender, with no loop running: each send
+// is the test's.
+func (w *snapshotWorld) snapshotSender(t *testing.T) *snapshotSender {
+	t.Helper()
+	return &snapshotSender{l: w.leader(w.members, &membershiptest.Logs{}, lockKey(t)), notices: newNotices(),
+		logged: map[uuid.UUID]time.Time{}}
+}
+
+// waiter waits for a backend to wait on the lock pid holds, and returns
+// its pid.
+func (w *snapshotWorld) waiter(t *testing.T, pid int32, what string) int32 {
+	t.Helper()
+	var waiting int32
+	eventually(t, soon, what, func() bool {
+		err := w.pool.QueryRow(context.Background(), `SELECT pid FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid)) LIMIT 1`,
+			pid).Scan(&waiting)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	return waiting
 }
 
 func stringOr(s *string) string {
