@@ -358,9 +358,11 @@ ALTER TABLE devices
     ADD COLUMN logout_cause   text CHECK (logout_cause IN ('phone', 'deletion')),
     ADD COLUMN paused_at      timestamptz,
     -- Who paused: the app (a move's or a deletion's pause), or a person or
-    -- a legacy API key (its creator, paused_by_user). NULL: not known.
+    -- a legacy API key (its creator, paused_by_user). NULL: not known. A
+    -- removed account leaves no id behind, as on deleted_by: set NULL,
+    -- which fires no pause trigger and keeps the kind.
     ADD COLUMN paused_by_kind text CHECK (paused_by_kind IN ('person', 'key', 'app')),
-    ADD COLUMN paused_by_user uuid,
+    ADD COLUMN paused_by_user uuid REFERENCES users(id) ON DELETE SET NULL,
     ADD COLUMN unpaused_at    timestamptz;
 
 -- Every workspace's numbers, with the tables the backfills read, as 0051
@@ -385,6 +387,8 @@ UPDATE devices d SET paused_at = t.completed_at, paused_by_kind = 'app'
  WHERE d.paused AND d.pause_cause = 'move' AND t.device_id = d.id AND t.target_workspace_id = d.tenant_id;
 -- A person's pause: the newest pause or recovery event of the number in its
 -- workspace, unless one of its pause notices was marked resumed after it.
+-- A resume that found no unseen notice to mark leaves no trace, so a pause
+-- that told nobody after it takes the older event's actor and time (DS7).
 UPDATE devices d SET paused_at = e.occurred_at, paused_by_kind = e.actor_kind,
        paused_by_user = CASE WHEN e.actor_kind IN ('person', 'key') THEN e.actor_user_id END
   FROM (SELECT DISTINCT ON (item_id, tenant_id) item_id, tenant_id, occurred_at, actor_kind, actor_user_id

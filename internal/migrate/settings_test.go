@@ -389,10 +389,13 @@ func TestMigration0052Checks(t *testing.T) {
 	lifted("a cause on a live number", `UPDATE devices SET logout_cause = 'phone' WHERE id = $1`)
 	lifted("a pause time on a live number", `UPDATE devices SET paused_at = clock_timestamp() WHERE id = $1`)
 	lifted("an actor on a live number", `UPDATE devices SET paused_by_kind = 'app' WHERE id = $1`)
-	lifted("a user on a live number", `UPDATE devices SET paused_by_user = gen_random_uuid() WHERE id = $1`)
+	// A real account, so only the CHECK can refuse (paused_by_user's
+	// foreign key checks after it).
+	user := "'" + w.owner.String() + "'::uuid"
+	lifted("a user on a live number", `UPDATE devices SET paused_by_user = `+user+` WHERE id = $1`)
 	lifted("the app naming a user", `UPDATE devices SET paused = true, paused_at = clock_timestamp(), paused_by_kind = 'app',
-		paused_by_user = gen_random_uuid() WHERE id = $1`)
-	lifted("a user with no kind", `UPDATE devices SET paused = true, paused_at = clock_timestamp(), paused_by_user = gen_random_uuid() WHERE id = $1`)
+		paused_by_user = `+user+` WHERE id = $1`)
+	lifted("a user with no kind", `UPDATE devices SET paused = true, paused_at = clock_timestamp(), paused_by_user = `+user+` WHERE id = $1`)
 	lifted("an actor with no time", `UPDATE devices SET paused = true, paused_by_kind = 'person' WHERE id = $1`)
 	lifted("an actor of no kind", `UPDATE devices SET paused = true, paused_at = clock_timestamp(), paused_by_kind = 'robot' WHERE id = $1`)
 
@@ -682,6 +685,28 @@ func TestMigration0052PausedByEvent(t *testing.T) {
 	}
 }
 
+// A removed account leaves no id behind on the numbers it paused, as on
+// every other actor column of these tables (devices.deleted_by,
+// item_events.actor_user_id): the user goes, the kind stays.
+func TestMigration0052PausedByUserGoesWithTheAccount(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.Fresh(t, Run)
+	w := newContractWorld(t, pool)
+	gone := person(t, pool, w.tenant, "gone@example.test", "admin")
+	w.set(t, w.device, `paused = true, pause_cause = 'person', pause_seq = pause_seq + 1`)
+	w.itemEvent(t, w.tenant, w.device, "sync_paused", "person", &gone, "clock_timestamp()")
+	if p := w.pause(t, w.device); p.user == nil || *p.user != gone {
+		t.Fatalf("the stop's actor: %+v", p)
+	}
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, gone)
+		return err
+	})
+	if p := w.pause(t, w.device); p.user != nil || deref(p.kind) != "person" || p.at == nil {
+		t.Fatalf("the pause after its actor's account went: %+v", p)
+	}
+}
+
 // 0052 fills the pauses it finds: a deletion's from deleted_at, a move's
 // from its transfer, a person's from its newest event unless a pause notice
 // was marked resumed after it; anything else stays unknown.
@@ -884,7 +909,7 @@ func TestMigration0052SettingsTrigger(t *testing.T) {
 		{"the phone number", `UPDATE devices SET pn = '5511900000000@s.whatsapp.net' WHERE id = $1`, []string{ws}},
 		{"the epoch", `UPDATE devices SET current_epoch = 2 WHERE id = $1`, []string{ws}},
 		{"a pause", `UPDATE devices SET paused = true, pause_cause = 'person', pause_seq = pause_seq + 1 WHERE id = $1`, []string{ws}},
-		{"who paused", `UPDATE devices SET paused_by_kind = 'person', paused_by_user = gen_random_uuid() WHERE id = $1`, []string{ws}},
+		{"who paused", `UPDATE devices SET paused_by_kind = 'person', paused_by_user = '` + w.owner.String() + `'::uuid WHERE id = $1`, []string{ws}},
 		{"a cause", `UPDATE devices SET pause_cause = 'move' WHERE id = $1`, []string{ws}},
 		{"a second stop", `UPDATE devices SET pause_seq = pause_seq + 1 WHERE id = $1`, nil},
 		{"a resume", `UPDATE devices SET paused = false WHERE id = $1`, []string{ws}},
