@@ -608,7 +608,10 @@ func TestMigration0053Checks(t *testing.T) {
 	}
 
 	// The notices: a token's id for its rows, all for the switches and the
-	// modes.
+	// modes. Every test schema shares one database, whose NOTIFY reaches
+	// every session listening: another package's test that switches a mode
+	// or writes an account document sends all too. The writes therefore go
+	// on one connection of the test's, and only its notices count.
 	listen, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -616,6 +619,25 @@ func TestMigration0053Checks(t *testing.T) {
 	defer listen.Release()
 	if _, err := listen.Exec(ctx, `LISTEN wappie_contract_tokens`); err != nil {
 		t.Fatal(err)
+	}
+	writer, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Release()
+	pid := writer.Conn().PgConn().PID()
+	ours := func(within time.Duration) (string, bool) {
+		wait, cancel := context.WithTimeout(ctx, within)
+		defer cancel()
+		for {
+			n, err := listen.Conn().WaitForNotification(wait)
+			if err != nil {
+				return "", false
+			}
+			if n.PID == pid {
+				return n.Payload, true
+			}
+		}
 	}
 	// An account document, for the belt's notice.
 	if _, err := pool.Exec(ctx, `INSERT INTO contract_accounts (sub, generation, version, status, doc)
@@ -636,20 +658,21 @@ func TestMigration0053Checks(t *testing.T) {
 		{`UPDATE tenants SET mcp_media = false WHERE id = '` + w.tenant.String() + `'`, "all"},
 		// caught_up_at's notice: set and cleared, below.
 	} {
-		if err := w.try(c.sql); err != nil {
+		err := pgx.BeginFunc(ctx, writer, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.tenant.String()); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, c.sql)
+			return err
+		})
+		if err != nil {
 			t.Fatalf("%s: %v", c.sql, err)
 		}
-		wait, cancel := context.WithTimeout(ctx, 5*time.Second)
-		n, err := listen.Conn().WaitForNotification(wait)
-		cancel()
-		if err != nil || n.Payload != c.want {
-			t.Fatalf("%s: notice %+v, %v; want %s", c.sql, n, err, c.want)
+		if payload, got := ours(5 * time.Second); !got || payload != c.want {
+			t.Fatalf("%s: notice %q (%t); want %s", c.sql, payload, got, c.want)
 		}
 		for {
-			drain, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-			_, err := listen.Conn().WaitForNotification(drain)
-			cancel()
-			if err != nil {
+			if _, got := ours(50 * time.Millisecond); !got {
 				break
 			}
 		}
@@ -657,27 +680,8 @@ func TestMigration0053Checks(t *testing.T) {
 
 	// caught_up_at notifies only when it is set or cleared: a page with more
 	// false moves it on at every long-poll, and token auth reads only
-	// whether it is set. The writes go on one connection of the test's, so
-	// another test's notices on the shared database are told apart.
-	writer, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer writer.Release()
-	pid := writer.Conn().PgConn().PID()
-	ours := func(within time.Duration) (string, bool) {
-		wait, cancel := context.WithTimeout(ctx, within)
-		defer cancel()
-		for {
-			n, err := listen.Conn().WaitForNotification(wait)
-			if err != nil {
-				return "", false
-			}
-			if n.PID == pid {
-				return n.Payload, true
-			}
-		}
-	}
+	// whether it is set. The writes go on the test's one connection, as
+	// above.
 	for _, c := range []struct {
 		name, sql string
 		notifies  bool
