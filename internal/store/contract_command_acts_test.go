@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,8 +165,10 @@ func ranAct(t *testing.T, what string, act store.ContractAct, err error) {
 // then the contract's cleaning (label_changed with the cleaned text); a
 // rename stores the label, writes ran at the act's seq, which the
 // workspace's clock passed, and makes the numbers section and the
-// snapshot due now. A label Wappie sets aside runs and publishes null
-// (DS10).
+// snapshot due now. A label Wappie sets aside, as the contract cleans it
+// (a placeholder, an id, the number's own digits), is not_authorized and
+// stores nothing, before a label_changed that would offer it: the snapshot
+// would publish null, which label_changed cannot say (DS10).
 func TestRunRename(t *testing.T) {
 	ctx := context.Background()
 	w := newActWorld(t)
@@ -219,13 +222,33 @@ func TestRunRename(t *testing.T) {
 		t.Fatalf("a second run of an answered command: %v", err)
 	}
 
-	// A label set aside (a placeholder) is stored, and published as null.
+	// A label Wappie sets aside is refused, nothing stored: a placeholder
+	// (one the contract cleans too, refused before a label_changed would
+	// offer it), an opaque id, the start of the number's own id, and a
+	// name holding the last seven digits of its phone number.
 	vendasSP := "Vendas SP"
-	act, err = w.c.RunRename(ctx, w.command(t, kc.OpItemRename, user, sub), device, &vendasSP, "Número sem nome")
-	ranAct(t, "a rename to a placeholder", act, err)
-	if got := w.device(t, device).Label; got != "Número sem nome" {
-		t.Fatalf("the label set aside is %q", got)
+	pn := w.pn(ctx, t, device)
+	user7 := strings.TrimSuffix(pn, "@s.whatsapp.net")
+	user7 = user7[len(user7)-7:]
+	for _, aside := range []string{"Número sem nome", "WhatsApp  number", "deadbeefdeadbeefdeadbeef", device.String()[:8],
+		"Loja" + user7[:3] + "Rua" + user7[3:]} {
+		cmd := w.command(t, kc.OpItemRename, user, sub)
+		act, err = w.c.RunRename(ctx, cmd, device, &vendasSP, aside)
+		refusedWith(t, "a rename to "+aside, act, err, kc.CodeNotAuthorized)
+		if l := w.ledger(t, cmd.ID); l.detail != "" {
+			t.Fatalf("a rename to %s: the detail %s", aside, l.detail)
+		}
+		if got := w.device(t, device).Label; got != vendasSP {
+			t.Fatalf("a rename to %s stored %q", aside, got)
+		}
 	}
+	// A label set aside that the frame stored is published as null: the
+	// console's before is null, and a rename from it runs.
+	if err := w.devices.Rename(ctx, w.tenant.String(), device.String(), "Número sem nome"); err != nil {
+		t.Fatal(err)
+	}
+	act, err = w.c.RunRename(ctx, w.command(t, kc.OpItemRename, user, sub), device, &vendasSP, "Loja")
+	refusedWith(t, "a before the snapshot no longer publishes", act, err, kc.CodeStateChanged)
 	act, err = w.c.RunRename(ctx, w.command(t, kc.OpItemRename, user, sub), device, nil, "Loja")
 	ranAct(t, "a rename from the null it publishes", act, err)
 }

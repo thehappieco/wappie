@@ -1901,9 +1901,28 @@ sync now is `connect_failed` and a resume is the supervisor's. Each act
 reads its number by the command's workspace beside the row-level
 security, so a fault in either still finds nothing of another workspace.
 
-**DS10. A rename to a label Wappie sets aside runs.** A placeholder, an id
-or the number itself is stored, as the frame stores it, and the snapshot
-publishes `null` for it: `label_changed` cannot carry `null`.
+**DS10. A rename to a label Wappie sets aside is refused.** A
+placeholder, an opaque or legacy id, or a name holding the number's own
+digits, as the contract cleans it, is `not_authorized`, and nothing is
+stored. 12a ran it and stored it, as the frame does, and the snapshot
+published `null`: the console showed the rename done and the number
+unnamed (the platform's check of fcffb55, finding 4). `label_changed`
+would say it best ("Wappie keeps the name another way"), but its
+`detail.cleaned` must be a label the kit's `ValidLabel` takes, never
+empty or `null`, and `item.rename`'s `after` is always a label (the
+spec's 14.7), so no answer says "published as unnamed". Of the codes
+`item.rename` may answer, `not_authorized` is the one that is true: the
+spec's 14.9 reads "the actor's role or the app's rule does not allow it",
+and Wappie's rule (the spec's 8.1: the app sets aside placeholders, ids
+and the number itself) does not allow that name as a number's label; it
+is final, as a retry would meet the same rule, and nothing changed, so
+the number keeps the name the console drew. `state_changed` (a race),
+`app_only` (Wappie's own screen would store it and the console would
+still show it unnamed) and `invalid_value` (not one of `item.rename`'s
+codes) are not. The check runs on the cleaned label before
+`label_changed`, so a confirmation never offers a name that would then
+be refused. The frame still stores such a label, as Wappie's own screens
+take it: the one divergence of the rename's parity test.
 
 **DS11. Sign-out everywhere ends what began before it.**
 `person.sign_out_everywhere` ends the actor's session families whose first
