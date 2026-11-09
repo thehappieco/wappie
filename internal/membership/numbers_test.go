@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -279,7 +280,13 @@ func TestSettingsEncoding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if doc.Accepts == nil || len(doc.Accepts) != 0 {
+		// read lists no kind; on the commands release's four (never
+		// item.sync_now: DS13).
+		want := []string{}
+		if mode == store.SettingsOn {
+			want = []string{kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemRegistrationDelete}
+		}
+		if doc.Accepts == nil || !slices.Equal(doc.Accepts, want) {
 			t.Errorf("%s: accepts %#v", mode, doc.Accepts)
 		}
 		for _, want := range []string{`"pending":[]`, `"items":[]`} {
@@ -291,7 +298,7 @@ func TestSettingsEncoding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), `"accepts":[]`) || strings.Contains(string(body), "null,\"data\"") {
+		if mode == store.SettingsRead && !strings.Contains(string(body), `"accepts":[]`) || strings.Contains(string(body), "null,\"data\"") {
 			t.Errorf("%s: the body %s", mode, body)
 		}
 	}

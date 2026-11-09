@@ -78,7 +78,7 @@ const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions ...
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
-                   diff [--tenant T] | mode off|observe | settings off|read|status
+                   diff [--tenant T] | mode off|observe | settings off|read|on|status
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 

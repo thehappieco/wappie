@@ -13,8 +13,9 @@ import (
 )
 
 // The sections' sender (the spec's 14.2, "Cadence"; the plan's 5.2): the
-// leader's one sender of every recorded workspace's numbers section, as
-// the snapshots' (snapshots.go): at the leader's start, within
+// leader's one sender of every recorded workspace's numbers section, and
+// of every followed person's document (person.go), as the snapshots'
+// (snapshots.go): at the leader's start, within
 // sectionDebounce of a change it shows (a dirty notice of the snapshot's,
 // members included, or 0052's own), within connectionDebounce of a
 // connection that only flipped between online and offline, at once after
@@ -24,12 +25,16 @@ import (
 // takes its state_seq first, in its own measuring transaction, so a
 // section at or above an act's seq shows it (DS3).
 
-// sectionSender is one leader's sender of the settings sections.
+// sectionSender is one leader's sender of the settings sections, and of
+// the persons' documents (person.go), as one sender.
 type sectionSender struct {
 	sw *settingsWork
 	// pending is what each workspace's last section sent said of its
 	// registrations: the pairing look compares the process's view with it.
 	pending map[uuid.UUID]pendingSent
+	// leftOut is how many notices each person's last document left out,
+	// for its ERROR once.
+	leftOut map[uuid.UUID]int
 	// warned spaces the WARNs of failed sends.
 	warned time.Time
 	// dropped is, per workspace, the rows its last section left out because
@@ -46,6 +51,9 @@ func (s *sectionSender) run(ctx context.Context) {
 	wake := sw.sections.wake
 	for {
 		err := c.SectionsDue(ctx)
+		if err == nil {
+			err = c.PersonsDue(ctx)
+		}
 		if err == nil {
 			break
 		}
@@ -70,6 +78,14 @@ func (s *sectionSender) run(ctx context.Context) {
 			continue
 		}
 		next, ok, err := c.NextSection(ctx)
+		var person store.ContractPersonDue
+		var pok bool
+		if err == nil {
+			person, pok, err = c.NextPerson(ctx)
+		}
+		// The one due first goes first, a section before a person's
+		// document due at the same time.
+		personFirst := pok && person.Due && (!ok || !next.Due || person.DueAt.Before(next.DueAt))
 		switch {
 		case err != nil:
 			if ctx.Err() != nil {
@@ -77,6 +93,13 @@ func (s *sectionSender) run(ctx context.Context) {
 			}
 			l.log().Warn("contract: could not read the sections due", "error", err)
 			if !pause(ctx, minBack, wake) {
+				return
+			}
+		case personFirst:
+			if err := l.Members.paced(ctx); err != nil {
+				return
+			}
+			if !s.sendPerson(ctx, person) && !pause(ctx, minBack, wake) {
 				return
 			}
 		case ok && next.Due:
@@ -91,6 +114,9 @@ func (s *sectionSender) run(ctx context.Context) {
 			if ok {
 				wait = min(wait, next.Wait)
 			}
+			if pok {
+				wait = min(wait, person.Wait)
+			}
 			if !pause(ctx, wait, wake) {
 				return
 			}
@@ -99,8 +125,58 @@ func (s *sectionSender) run(ctx context.Context) {
 }
 
 // applyNotices makes the workspaces the notices named due within their
-// debounce; false when that could not be written (the notices are kept).
+// debounce, and the persons' documents they may change; false when that
+// could not be written (the notices are kept).
 func (s *sectionSender) applyNotices(ctx context.Context) bool {
+	return s.applySectionNotices(ctx) && s.applyPersonNotices(ctx)
+}
+
+// applyPersonNotices makes due within the section debounce the documents
+// of the users whose notices changed (a "u:" payload: a notice raised,
+// changed, seen or deleted), of those with an unseen notice in a workspace
+// a change touched (a reader who lost Read, or a number deleted, hides a
+// pause notice; a membership disabled hides them all), and of everyone on
+// an "all" (an account's status shows or hides the pause notices it
+// raised for others).
+func (s *sectionSender) applyPersonNotices(ctx context.Context) bool {
+	sw := s.sw
+	c := sw.l.Members.Contract
+	users, workspaces, all := sw.sections.takePersons()
+	if len(users) == 0 && len(workspaces) == 0 && !all {
+		return true
+	}
+	debounce := or(sw.cfg.SectionDebounce, sectionDebounce)
+	var subs []uuid.UUID
+	var err error
+	if all {
+		err = c.PersonsDirtyAll(ctx, debounce)
+	}
+	for _, ws := range workspaces {
+		if err != nil {
+			break
+		}
+		var of []uuid.UUID
+		if of, err = c.PersonsOfWorkspace(ctx, ws); err != nil {
+			break
+		}
+		subs = append(subs, of...)
+	}
+	if err == nil {
+		err = c.PersonsDirty(ctx, subs, users, debounce)
+	}
+	if err != nil {
+		sw.sections.givePersons(users, workspaces, all)
+		if ctx.Err() == nil {
+			sw.l.log().Warn("contract: could not make the changed persons' documents due", "error", err)
+		}
+		return false
+	}
+	return true
+}
+
+// applySectionNotices makes the workspaces the notices named due within
+// their debounce.
+func (s *sectionSender) applySectionNotices(ctx context.Context) bool {
 	sw := s.sw
 	c := sw.l.Members.Contract
 	ids, flips, all := sw.sections.take()

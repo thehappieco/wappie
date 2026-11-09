@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/numberacts"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/store"
 )
@@ -91,6 +92,11 @@ type SettingsConfig struct {
 	// pairing and retry. Nil: none pairs, none may be retried.
 	Numbers NumberLooks
 
+	// Acts runs the numbers kinds (internal/numberacts), with the
+	// process's registry and socket server. Nil: the leader's own, over its
+	// database, with neither, which skips what they do.
+	Acts *numberacts.Runner
+
 	// stateRead, set by tests only, runs each time the command follower has
 	// read the state, before it asks for a page, with its interrupt.
 	stateRead func(interrupt func())
@@ -138,7 +144,14 @@ type settingsWork struct {
 }
 
 func newSettingsWork(l *Leader, accounts *follower) *settingsWork {
-	return &settingsWork{l: l, cfg: l.Settings, accounts: accounts, sections: newSectionNotices(),
+	cfg := l.Settings
+	if cfg.Acts == nil {
+		cfg.Acts = &numberacts.Runner{Store: l.Members.Contract, Log: l.log()}
+		if l.Pool != nil {
+			cfg.Acts.Devices = store.NewDevices(l.Pool)
+		}
+	}
+	return &settingsWork{l: l, cfg: cfg, accounts: accounts, sections: newSectionNotices(),
 		executor: make(chan struct{}, 1), results: make(chan struct{}, 1)}
 }
 
@@ -153,17 +166,27 @@ func (sw *settingsWork) mode() string {
 
 // set starts the loops under ctx for mode read or on when they do not run,
 // or stops them and waits for them for off. A switch between read and on
-// keeps them running: every document was made due by the switch, and the
-// sender reads the mode at each send. Only the leader's watcher calls it,
-// and the leader's end (halt).
+// keeps them running, and makes every document due again once the new mode
+// is the one the sender reads: the switch's own transaction made them due,
+// but a send measured before this watcher saw it may still go out with the
+// old mode's accepts, and once accepted it would wait out the section
+// cadence (55 minutes); one due again after that send's measurement goes
+// again. Only the leader's watcher calls it, and the leader's end (halt).
 func (sw *settingsWork) set(ctx context.Context, mode string) {
 	sw.mu.Lock()
 	running := sw.stop != nil
+	was := sw.mode()
 	if mode != store.SettingsOff {
 		sw.current.Store(&mode)
 	}
 	switch {
-	case mode == store.SettingsOff && !running, mode != store.SettingsOff && running:
+	case mode != store.SettingsOff && running:
+		sw.mu.Unlock()
+		if was != mode {
+			sw.dueAgain(ctx, mode)
+		}
+		return
+	case mode == store.SettingsOff && !running:
 		sw.mu.Unlock()
 		return
 	case mode == store.SettingsOff:
@@ -188,6 +211,23 @@ func (sw *settingsWork) set(ctx context.Context, mode string) {
 	sw.wg.Go(func() { (&sectionSender{sw: sw, pending: map[uuid.UUID]pendingSent{}}).run(run) })
 }
 
+// dueAgain makes every section and person document due now, after a switch
+// to mode the sender now reads (set).
+func (sw *settingsWork) dueAgain(ctx context.Context, mode string) {
+	c := sw.l.Members.Contract
+	err := c.SectionsDue(ctx)
+	if err == nil {
+		err = c.PersonsDue(ctx)
+	}
+	if err != nil && ctx.Err() == nil {
+		// The switch's own transaction made them due; only a send
+		// measured before this watcher saw it may wait for the cadence.
+		sw.l.log().Warn("contract: could not make the documents due again after a settings switch", "mode", mode, "error", err)
+		return
+	}
+	sw.l.log().Info("contract: settings switched", "mode", mode)
+}
+
 // halt stops the loops, if they run, and waits for them.
 func (sw *settingsWork) halt() { sw.set(context.Background(), store.SettingsOff) }
 
@@ -204,8 +244,8 @@ func (sw *settingsWork) interrupt() {
 
 // notice takes a settings channel notice: a workspace whose numbers
 // section changed, "c:" and one whose connection only flipped between
-// online and offline, "u:" and a person's notices (the commands release's
-// person documents), or "due".
+// online and offline, "u:" and a user whose notices changed (their person
+// document), or "due".
 func (sw *settingsWork) notice(payload string) { sw.sections.notice(payload) }
 
 // dirty takes a dirty channel notice (0051's: what a snapshot shows, the
@@ -217,16 +257,22 @@ func (sw *settingsWork) dirty(payload string) { sw.sections.dirty(payload) }
 // sectionNotices is what the leader's watcher hands the section sender,
 // never waiting on it: the workspaces a change touched, those whose
 // connections only flipped, or all of them, and a wake when a section was
-// made due sooner.
+// made due sooner; and for the persons' documents, the users whose notices
+// changed and the workspaces a change touched (a reader who lost Read no
+// longer sees a pause notice there), or all of them (an account's status:
+// "all").
 type sectionNotices struct {
-	mu         sync.Mutex
-	ids, flips map[uuid.UUID]bool
-	all        bool
-	wake       chan struct{}
+	mu               sync.Mutex
+	ids, flips       map[uuid.UUID]bool
+	all              bool
+	users, personsOf map[uuid.UUID]bool
+	allPersons       bool
+	wake             chan struct{}
 }
 
 func newSectionNotices() *sectionNotices {
-	return &sectionNotices{ids: map[uuid.UUID]bool{}, flips: map[uuid.UUID]bool{}, wake: make(chan struct{}, 1)}
+	return &sectionNotices{ids: map[uuid.UUID]bool{}, flips: map[uuid.UUID]bool{}, users: map[uuid.UUID]bool{},
+		personsOf: map[uuid.UUID]bool{}, wake: make(chan struct{}, 1)}
 }
 
 // notice takes a settings channel payload.
@@ -242,7 +288,12 @@ func (n *sectionNotices) notice(payload string) {
 			kick(n.wake)
 		}
 	case len(payload) > 2 && payload[:2] == "u:":
-		// A person's notices: their document is the commands release's.
+		if id, err := uuid.Parse(payload[2:]); err == nil {
+			n.mu.Lock()
+			n.users[id] = true
+			n.mu.Unlock()
+			kick(n.wake)
+		}
 	default:
 		n.dirty(payload)
 	}
@@ -252,9 +303,10 @@ func (n *sectionNotices) notice(payload string) {
 func (n *sectionNotices) dirty(payload string) {
 	n.mu.Lock()
 	if payload == "all" {
-		n.all = true
+		n.all, n.allPersons = true, true
 	} else if id, err := uuid.Parse(payload); err == nil {
 		n.ids[id] = true
+		n.personsOf[id] = true
 	} else {
 		n.mu.Unlock()
 		return
@@ -278,6 +330,36 @@ func (n *sectionNotices) take() (ids, flips []uuid.UUID, all bool) {
 	all = n.all
 	n.ids, n.flips, n.all = map[uuid.UUID]bool{}, map[uuid.UUID]bool{}, false
 	return ids, flips, all
+}
+
+// takePersons returns and forgets the users whose notices changed and the
+// workspaces whose persons' documents a change may have changed, or all.
+func (n *sectionNotices) takePersons() (users, workspaces []uuid.UUID, all bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for id := range n.users {
+		users = append(users, id)
+	}
+	for id := range n.personsOf {
+		workspaces = append(workspaces, id)
+	}
+	all = n.allPersons
+	n.users, n.personsOf, n.allPersons = map[uuid.UUID]bool{}, map[uuid.UUID]bool{}, false
+	return users, workspaces, all
+}
+
+// givePersons puts back what takePersons returned, when it could not be
+// written.
+func (n *sectionNotices) givePersons(users, workspaces []uuid.UUID, all bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.allPersons = n.allPersons || all
+	for _, id := range users {
+		n.users[id] = true
+	}
+	for _, id := range workspaces {
+		n.personsOf[id] = true
+	}
 }
 
 // give puts back what take returned, when it could not be written.

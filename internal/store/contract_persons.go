@@ -81,9 +81,11 @@ type ContractPerson struct {
 // an act of the person that commits after its snapshot makes it run again.
 // False when Wappie sends none for sub (no document, or a closed account)
 // or its row is parked. The notices are those Devices.Notices lists, per
-// platform workspace the person is a member of (with the quarantine scope
-// open, so a deleted number's notice finds its number), never a local-only
-// workspace's.
+// platform workspace the person is an active member of (with the
+// quarantine scope open, so a deleted number's notice finds its number),
+// never a local-only workspace's, nor one where their membership is
+// disabled or expired, or the account or the workspace is not active:
+// Wappie's own page shows none of those, since no session reaches it.
 func (c *Contract) PersonOf(ctx context.Context, sub uuid.UUID) (ContractPerson, bool, error) {
 	var out ContractPerson
 	var ok bool
@@ -131,6 +133,9 @@ func (c *Contract) PersonOf(ctx context.Context, sub uuid.UUID) (ContractPerson,
 				if err := scope(ctx, tx, ws, uuid.Nil); err != nil {
 					return err
 				}
+				if active, err := activeMemberTx(ctx, tx, ws, *out.User); err != nil || !active {
+					return err
+				}
 				if err := withQuarantine(ctx, tx, func() error {
 					return personNoticesTx(ctx, tx, ws, *out.User, &out.Notices)
 				}); err != nil {
@@ -147,6 +152,18 @@ func (c *Contract) PersonOf(ctx context.Context, sub uuid.UUID) (ContractPerson,
 		})
 	})
 	return out, ok, err
+}
+
+// activeMemberTx reports whether user is a member of workspace that
+// Wappie's own screens let in: the membership, the account and the
+// workspace active, the membership not expired. tx is scoped to workspace.
+func activeMemberTx(ctx context.Context, tx pgx.Tx, workspace, user uuid.UUID) (bool, error) {
+	var active bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_memberships m
+		JOIN users u ON u.id = m.user_id JOIN tenants t ON t.id = m.tenant_id
+		WHERE m.tenant_id = $1 AND m.user_id = $2 AND m.status = 'active' AND u.status = 'active' AND t.status = 'active'
+		  AND (m.expires_at IS NULL OR m.expires_at > now()))`, workspace, user).Scan(&active)
+	return active, err
 }
 
 // personNoticesTx appends user's unseen notices in workspace, read in tx
@@ -254,14 +271,15 @@ func (c *Contract) PersonsDirty(ctx context.Context, subs, users []uuid.UUID, de
 	})
 }
 
-// PersonsOfWorkspace lists the subs with an unseen sync_paused notice in
-// workspace: whose document a change of the workspace (a reader losing
-// Read hides a pause notice) may change.
+// PersonsOfWorkspace lists the subs with an unseen notice in workspace:
+// whose document a change of the workspace may change (a reader losing
+// Read hides a pause notice; a membership disabled, expired or enabled
+// again hides or shows every notice of the workspace).
 func (c *Contract) PersonsOfWorkspace(ctx context.Context, workspace uuid.UUID) ([]uuid.UUID, error) {
 	var out []uuid.UUID
 	err := pg.InTenantTx(ctx, c.pool, workspace.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT DISTINCT pi.sub FROM device_notices n JOIN platform_identities pi ON pi.user_id = n.user_id
-			WHERE n.tenant_id = $1 AND n.kind = 'sync_paused' AND n.seen_at IS NULL ORDER BY pi.sub`, workspace)
+			WHERE n.tenant_id = $1 AND n.seen_at IS NULL ORDER BY pi.sub`, workspace)
 		if err != nil {
 			return err
 		}

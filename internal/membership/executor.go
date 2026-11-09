@@ -13,9 +13,10 @@ import (
 // The executor (the spec's 14.6; the plan's 3.2): one ledger row at a
 // time, in take order, not cseq (a restored platform starts cseq again
 // below the ones taken), one open row at a time per workspace and producer
-// (store.NextCommand). In the read release every row is answered at R0,
-// kind_not_accepted, with the seq it was judged on: no kind is in a read
-// section's accepts, and none is a wappie-cloud kind's this binary runs.
+// (store.NextCommand). A kind the settings mode does not let this binary
+// run is answered at R0, kind_not_accepted, with the seq it was judged on:
+// in read every one, and a wappie-cloud kind always; the others are judged
+// and run by commands_run.go.
 // A store error that is not a verdict backs the row off
 // (store.CommandRunFailed), holding back only the later rows of its own
 // workspace and producer; after store.CommandRunTries it is answered
@@ -69,16 +70,12 @@ func (sw *settingsWork) execute(ctx context.Context) {
 	}
 }
 
-// runRow judges one row and writes its result. In the read release that
-// is R0: kind_not_accepted, the seq judged on filled by the store. It
-// reports false when neither a result nor a failed run could be recorded.
+// runRow judges one row and writes its result (commands_run.go): R0 to R4
+// here, the target and the roles in its act's transaction, the result
+// with them. It reports false when neither a result nor a failed run could
+// be recorded.
 func (sw *settingsWork) runRow(ctx context.Context, cmd store.ContractCommand) bool {
-	r := store.CommandResult{Outcome: store.CommandRefused, Code: store.CommandKindNotAccepted}
-	err := sw.l.Members.Contract.RefuseCommand(ctx, cmd.ID, r)
-	if err == nil || ctx.Err() != nil {
-		return true
-	}
-	return sw.runFailed(ctx, cmd, err)
+	return sw.runCommand(ctx, cmd)
 }
 
 // runFailed records a run that failed with a store error that is not a
