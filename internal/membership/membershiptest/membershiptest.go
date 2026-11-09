@@ -244,6 +244,8 @@ type Fake struct {
 	inFlight, most map[string]int
 	reads, taken   []time.Time
 	accesses       map[string][]Access
+	// sections are the settings sections each workspace was sent.
+	sections map[string][]Section
 	// batches are the events requests, in the order the fake answered them.
 	batches []Batch
 }
@@ -269,6 +271,18 @@ type Access struct {
 	Status int
 }
 
+// Section is one settings section a workspace was sent: when the fake
+// received it, on its clock, its section, state_seq and snapshot_seq (0
+// when the body held none), its body as it came, and the status the fake
+// answered.
+type Section struct {
+	At                    time.Time
+	Section               string
+	StateSeq, SnapshotSeq int64
+	Body                  []byte
+	Status                int
+}
+
 // StartFake serves a fake platform for wappie, with secret as its current
 // one, until the test ends. Its rate is far above the platform's, so a
 // test's burst of calls is never refused for it.
@@ -290,7 +304,7 @@ func StartFakeAt(tb testing.TB, secret string, now func() time.Time) *Fake {
 		tb.Fatal(err)
 	}
 	f := &Fake{Platform: p, now: now, refuse: map[string]string{}, before: map[string]func(string){}, counts: map[string]int{},
-		inFlight: map[string]int{}, most: map[string]int{}, accesses: map[string][]Access{}}
+		inFlight: map[string]int{}, most: map[string]int{}, accesses: map[string][]Access{}, sections: map[string][]Section{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	tb.Cleanup(srv.Close)
 	f.URL = srv.URL
@@ -298,7 +312,7 @@ func StartFakeAt(tb testing.TB, secret string, now func() time.Time) *Fake {
 }
 
 // callOf names a request's call as contracttest does, with its argument
-// (a sub or a workspace).
+// (a sub or a workspace; the command feed's after).
 func callOf(r *http.Request) (string, string) {
 	rest := strings.TrimPrefix(r.URL.Path, "/contract/v1/")
 	switch {
@@ -306,6 +320,16 @@ func callOf(r *http.Request) (string, string) {
 		return contracttest.CallFeed, ""
 	case rest == "events":
 		return contracttest.CallEvents, ""
+	case rest == "commands":
+		// Its argument is the cursor it asks after: the acknowledgement.
+		return contracttest.CallCommands, r.URL.Query().Get("after")
+	case rest == "commands/results":
+		return contracttest.CallResults, ""
+	case strings.HasPrefix(rest, "accounts/") && strings.HasSuffix(rest, "/settings"):
+		return contracttest.CallPersonSettings, strings.TrimSuffix(strings.TrimPrefix(rest, "accounts/"), "/settings")
+	case strings.HasPrefix(rest, "workspaces/") && strings.Contains(rest, "/settings/"):
+		ws, _, _ := strings.Cut(strings.TrimPrefix(rest, "workspaces/"), "/")
+		return contracttest.CallSettings, ws
 	case strings.HasPrefix(rest, "accounts/"):
 		sub := strings.TrimPrefix(rest, "accounts/")
 		switch r.Method {
@@ -401,6 +425,24 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 		seq = head.Seq
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
+	var section Section
+	if call == contracttest.CallSettings && r.Body != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			panic(http.ErrAbortHandler)
+		}
+		var head struct {
+			Section     string `json:"section"`
+			StateSeq    int64  `json:"state_seq"`
+			SnapshotSeq *int64 `json:"snapshot_seq"`
+		}
+		_ = json.Unmarshal(body, &head) //nolint:errcheck // a body that is no section has no seqs
+		section = Section{Section: head.Section, StateSeq: head.StateSeq, Body: body}
+		if head.SnapshotSeq != nil {
+			section.SnapshotSeq = *head.SnapshotSeq
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
 	sw := &status{ResponseWriter: w, code: http.StatusOK}
 	f.ServeHTTP(sw, r)
 	switch {
@@ -415,6 +457,11 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	case call == contracttest.CallAccess:
 		f.mu.Lock()
 		f.accesses[arg] = append(f.accesses[arg], Access{At: f.recordNow(), Seq: seq, Status: sw.code})
+		f.mu.Unlock()
+	case call == contracttest.CallSettings:
+		f.mu.Lock()
+		section.At, section.Status = f.recordNow(), sw.code
+		f.sections[arg] = append(f.sections[arg], section)
 		f.mu.Unlock()
 	case call == contracttest.CallEvents:
 		batch.Status = sw.code
@@ -466,6 +513,21 @@ func (f *Fake) Accepted(ws string) []time.Time {
 		}
 	}
 	return out
+}
+
+// Sections are the settings sections workspace ws was sent, in the order
+// the fake answered them.
+func (f *Fake) Sections(ws string) []Section {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Section(nil), f.sections[ws]...)
+}
+
+// InFlight is how many requests to call the fake is serving now.
+func (f *Fake) InFlight(call string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inFlight[call]
 }
 
 // Most is the most requests to call the fake served at once.

@@ -330,6 +330,25 @@ func (c *Contract) SectionsDirty(ctx context.Context, ids []uuid.UUID, all bool,
 	})
 }
 
+// SectionsRecovered makes every section that is backing off, and not
+// parked, due now with its tries forgotten, and returns how many: the
+// platform answers again after an outage (the command feed's first page),
+// as Recovered does for the snapshots and the event queues, so no section
+// waits out a backoff of up to an hour. A not_found run and the last
+// failure's class stay, so a section refused locally logs no new ERROR.
+// It locks only the sections, in key order, as SectionsDirty.
+func (c *Contract) SectionsRecovered(ctx context.Context) (int64, error) {
+	var n int64
+	err := retryDeadlock(ctx, func() error {
+		tag, err := c.pool.Exec(ctx, `UPDATE contract_sections s SET due_at = clock_timestamp(), tries = 0
+			FROM (`+lockSectionsSQL(`tries > 0 AND parked_at IS NULL`)+`) l
+			WHERE s.workspace_id = l.workspace_id AND s.section = l.section`)
+		n = tag.RowsAffected()
+		return err
+	})
+	return n, err
+}
+
 // SectionSent records the outcome of workspace's section sent as seq and
 // measured at measured, by compare-and-set on its state_seq, with
 // SnapshotSent's semantics (accepted: due again Every later; not_found:

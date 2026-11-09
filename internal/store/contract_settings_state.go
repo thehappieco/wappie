@@ -64,6 +64,11 @@ const (
 	// ContractErrorPersonInvalid: a person's document Wappie would not
 	// send whole.
 	ContractErrorPersonInvalid = "person_invalid"
+	// ContractErrorCommandResetLoop: a second reset from the command feed
+	// within a minute, which waits the minute out: a platform fault (the
+	// two feeds on two generations, or a gone that lasts) resets everything
+	// once a minute until it ends.
+	ContractErrorCommandResetLoop = "command_reset_loop"
 )
 
 // ContractSettingsState is contract_settings_state's one row.

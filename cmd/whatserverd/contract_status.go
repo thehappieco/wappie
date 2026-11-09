@@ -95,9 +95,15 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 	if err != nil {
 		return err
 	}
+	// The settings part's state is a finding when it cannot be read, never
+	// the end of the daily job's look at the rest.
+	sst, serr := c.SettingsStatus(ctx)
 	w := &lines{w: out}
 	s := st.State
 	w.f("mode: %s (since %s)", s.Mode, stamp(s.ModeChangedAt))
+	if serr != nil {
+		w.f("settings: unreadable: %v", serr)
+	}
 	w.f("transport: %s", cfg.Transport())
 	loaded, published, lerr := readLoaded(cfg.LoadedFile)
 	switch {
@@ -188,6 +194,11 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		return w.err
 	}
 	found := statusFindings(st, cfg, loaded, published, lerr, files)
+	if serr != nil {
+		found = append(found, fmt.Sprintf("the settings part's state could not be read: %v", serr))
+	} else {
+		found = append(found, settingsFindings(sst)...)
+	}
 	for _, f := range found {
 		w.f("finding: %s", f)
 	}
@@ -482,6 +493,14 @@ func contractMode(ctx context.Context, c *store.Contract, mode string, ready fun
 	if change.To == store.ContractObserve {
 		w.f("events to send now: %d (undelivered from before the pause, and deletions, recoveries and purges while off)", change.ToSend)
 		w.f("events held back for good: %d (pauses, strandings and moves while off)", change.HeldBack)
+	}
+	if change.SettingsOff {
+		// Settings already off left the platform told when they went off
+		// (--platform-told); this switch did not.
+		w.f("settings: off with it")
+		if sst, err := c.SettingsState(ctx); err == nil && sst.FirstReadAt != nil {
+			w.f("the platform watches the command feed since %s: tell it", stamp(*sst.FirstReadAt))
+		}
 	}
 	return w.err
 }

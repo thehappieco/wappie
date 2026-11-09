@@ -113,6 +113,13 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	} else if sessions+invites > 0 {
 		a.log.Info("housekeeping", "sessions", sessions, "invites", invites)
 	}
+	// The command ledger keeps a row exactly 30 days (decision 0056): the
+	// leader trims it every few minutes, and this pass in every process.
+	if rows, err := store.NewContract(a.pools.API).TrimCommands(ctx); err != nil {
+		a.log.Warn("command ledger trim failed", "error", err)
+	} else if rows > 0 {
+		a.log.Info("command ledger trimmed", "rows", rows)
+	}
 
 	// Keys issued with a deadline stop working the moment it passes; this
 	// records the fact so the key list agrees. A hosted assistant connection

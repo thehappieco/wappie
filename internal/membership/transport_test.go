@@ -191,7 +191,7 @@ func TestSocketPeerChecks(t *testing.T) {
 func TestTransportShape(t *testing.T) {
 	c := HTTP((&net.Dialer{}).DialContext)
 	tr, ok := c.Transport.(*http.Transport)
-	if !ok || tr.Proxy != nil || tr.MaxIdleConnsPerHost != 4 || tr.IdleConnTimeout != time.Minute || c.Timeout != 0 {
+	if !ok || tr.Proxy != nil || tr.MaxIdleConnsPerHost != 8 || tr.IdleConnTimeout != time.Minute || c.Timeout != 0 {
 		t.Fatalf("%+v", c)
 	}
 	if err := c.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {

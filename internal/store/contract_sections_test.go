@@ -444,3 +444,53 @@ func TestSectionsDirty(t *testing.T) {
 		}
 	}
 }
+
+// SectionsRecovered makes every section that backs off due now with its
+// tries forgotten (the platform answers again after an outage), keeping
+// its not_found run and its last failure's class; a section that is not
+// failing keeps its due time, and a parked one its park.
+func TestSectionsRecovered(t *testing.T) {
+	ctx := context.Background()
+	w := newDelWorld(t)
+	c := store.NewContract(w.pool)
+	w.recordLocal(t, c)
+	ws := []uuid.UUID{w.tenant, recordWorkspace(t, w.pool, "team"), recordWorkspace(t, w.pool, "team"), recordWorkspace(t, w.pool, "team")}
+	for i, sql := range []string{
+		`UPDATE contract_sections SET due_at = clock_timestamp() + interval '1 hour', tries = 12, error = 'transport' WHERE workspace_id = $1`,
+		`UPDATE contract_sections SET due_at = clock_timestamp() + interval '1 hour', tries = 3, error = 'not_found',
+			not_found_since = clock_timestamp() - interval '1 hour' WHERE workspace_id = $1`,
+		`UPDATE contract_sections SET due_at = clock_timestamp() + interval '1 hour' WHERE workspace_id = $1`,
+		`UPDATE contract_sections SET due_at = clock_timestamp() + interval '1 hour', tries = 2, parked_at = clock_timestamp() WHERE workspace_id = $1`,
+	} {
+		if _, err := w.pool.Exec(ctx, sql, ws[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := c.SectionsRecovered(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("recovered %d %v", n, err)
+	}
+	for i, want := range []struct {
+		due   bool
+		tries int
+		error string
+	}{{true, 0, "transport"}, {true, 0, "not_found"}, {false, 0, ""}, {false, 2, ""}} {
+		var due bool
+		var tries int
+		var class string
+		var notFound, parked *time.Time
+		if err := w.pool.QueryRow(ctx, `SELECT due_at <= clock_timestamp(), tries, coalesce(error, ''), not_found_since, parked_at
+			FROM contract_sections WHERE workspace_id = $1`, ws[i]).Scan(&due, &tries, &class, &notFound, &parked); err != nil {
+			t.Fatal(err)
+		}
+		if due != want.due || tries != want.tries || class != want.error {
+			t.Errorf("section %d: due %v tries %d error %q, want %+v", i, due, tries, class, want)
+		}
+		if i == 1 && notFound == nil {
+			t.Error("the not_found run is forgotten")
+		}
+		if i == 3 && parked == nil {
+			t.Error("the park is released")
+		}
+	}
+}

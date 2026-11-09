@@ -23,6 +23,9 @@ type follower struct {
 	l *Leader
 	// round kicks the leader's round (a restart forgot every version).
 	round chan struct{}
+	// commands cuts the command long-poll (settings_work.go): a restart
+	// here reset the command feed too.
+	commands func()
 
 	mu sync.Mutex
 	// cut ends the long-poll in flight, when a notice says another
@@ -218,6 +221,9 @@ func (f *follower) restart(ctx context.Context, state store.ContractState, gen *
 	}
 	l.log().Warn("contract: the platform's generation changed: every sub is subscribed again and the feed read from 0", attrs...)
 	kick(f.round)
+	if f.commands != nil {
+		f.commands()
+	}
 	return nil
 }
 

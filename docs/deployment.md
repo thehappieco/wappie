@@ -560,12 +560,14 @@ whatserverd contract check [--other|--only-current|--only-other]
 whatserverd contract status [--check]
 whatserverd contract diff [--tenant T]
 whatserverd contract mode off|observe
+whatserverd contract settings off|read [--platform-told]
+whatserverd contract settings status [--check]
 ```
 
 Run them as the server's user, with the socket's group and its
 configuration, and from the server's own working directory, as the
-deletion commands above: `status`, `diff` and `mode` read the `.env` of
-their working directory (a root-only one stops them before they do
+deletion commands above: `status`, `diff`, `mode` and `settings` read the
+`.env` of their working directory (a root-only one stops them before they do
 anything) and the database, which they never migrate, refusing a schema
 that is not exactly this binary's. `check` reads neither a `.env` nor the
 database, only its environment and the secret's files. For example:
@@ -591,6 +593,15 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   "contract mode observe: not ready: …", nothing changed) until the
   running server has a transport and a loaded secret; `contract mode off`
   stops it at once ([the mode](contract.md#the-mode)).
+- `contract settings read` makes the leader send the numbers sections and
+  follow the command feed, answering every command `kind_not_accepted`;
+  `off` stops both. Each needs the contract on (exit `3`), and the first
+  read, and `off` once the feed was read, need `--platform-told` (exit `4`,
+  nothing changed): from its first read the platform watches the command
+  feed and alerts after 10 minutes without one. `contract settings status`
+  prints the mode, the feed, the ledger and each section; its `--check`
+  findings are `contract status --check`'s too
+  ([the settings mode](contract.md#the-settings-mode)).
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database

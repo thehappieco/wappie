@@ -1746,8 +1746,8 @@ follows the command feed and answers every command `kind_not_accepted`;
 "commands" runs the kinds. One migration, 0052, holds the schema of both.
 Seventeen decisions shaped it (DS1 to DS17, numbered apart from the
 membership part's DB so the two never collide); this section holds the
-ones the schema and the store make, and the releases that need the others
-add them here.
+ones the schema, the store and the read release make, and the commands
+release adds the others here.
 
 **DS1. 12a takes migration 0052, all of its schema.** The ledger, the
 feed's state, the sections' and persons' seqs and due times, the logout
@@ -1784,7 +1784,9 @@ outcome's compare-and-set.
 **DS4. The ledger keeps exactly 30 days.** A row holds the command as
 received (bytes: its MAC is the app's proof) and the sha256 of its
 canonical form without `generation`, `cseq`, `secret` and `mac`, kept
-exactly 30 days from its take (decision 0056): every read ignores an older
+exactly 30 days from its take (decision 0056), counted as 720 hours, never
+as calendar days that follow the session's time zone across a change of
+daylight saving time: every read ignores an older
 row, a delivery of its id is a new row, and the trim deletes it. A command
 refused before `ValidateIn` passed keeps no decoded column, and a body
 that is not one object, holds a NUL or is not UTF-8 never fails a page;
@@ -1798,8 +1800,15 @@ holds under no secret, a command of another generation than its page,
 passed with another id; each answered in the take's transaction. A replay
 posts its result again and moves to the current generation; only a copy
 whose MAC holds may finish an open row with another body
-(`invalid_command`), a forged one only logs. Only the page's generation
-resets. The executor runs in take order (`take_seq`, not `cseq`, which a
+(`invalid_command`), a forged one only logs. A body the kit cannot
+canonicalize for its MAC is forged; one whose MAC holds but that does not
+decode as a command is the platform's, `invalid_command` and not forged.
+The ledger's id is the `id` member named exactly, as the kit reads the
+command it verifies. Only the page's generation resets, at most once a
+minute from the command feed; a second within the minute waits it out with
+an ERROR (`command_reset_loop`), which the plan had as a WARN: a fault that
+resets everything once a minute must reach `--check`. A reset that finds
+the generation moved under it starts no wait. The executor runs in take order (`take_seq`, not `cseq`, which a
 restored platform starts again below), one open row at a time per
 workspace and producer; a row whose run fails with a store error backs off
 5 s doubled up to a minute, holds back only its own workspace and
@@ -1847,6 +1856,39 @@ events are under 30 days old; a pause put back after a failed resume, the
 likelier case, is the same pause and is credited rightly. The migrating
 release's verification lists the person pauses 0052 filled, so the
 operator can check them.
+
+**DS8. A registration's pairing is the leader's registry's.**
+`pending[].pairing` says whether the leader's process pairs the
+registration now (`wa.Registry.PairingSince`), and `can_retry` whether the
+retry would start one by the socket frame's own rules: the process neither
+pairs nor holds it (`Holds`), and it has a key (an epoch above 0). A
+pairing starts and ends with no row change, so the section sender compares
+the registry's view with the pending rows it last sent every 10 seconds and
+sends the section again where they differ. Only the leader's process is
+seen: the pilot serves from one, and a pairing in another process shows
+`pairing: false` until it links (its row changes then).
+
+**DS12. The numbers section's cadence, and the labels.** As the spec's
+14.2 asks: 2 seconds after a change the section shows (0052's triggers, on
+their own channel, and every payload of the snapshot's dirty channel,
+members included, so a document that changes the workspace's members
+sends it too), at once after an act or a reset, at the leader's start, and
+55 minutes after its last accepted one. A connection that only flips
+between online and offline (whatsmeow writes offline at every disconnect)
+waits 30 seconds, so a flapping number sends one section per workspace per
+30 seconds; a later connection time alone sends nothing, the row showing it
+as of `measured_at`. After an outage the command feed's first page makes
+every section that backs off due at once, as the account feed's does for
+the snapshots. A row the wire refuses is left out with `truncated`, as the
+spec's 14.2 says, where the plan had the whole section `local_invalid`; a
+section that still fails is. A parked snapshot does not hold back its
+workspace's section, which has its own park. A numbers row carries no
+label (the snapshot's is the number's). 0052 nulled the labels of the item events not yet sent, once.
+The person's notices (the commands release) are the unseen ones of
+platform workspaces, the newest 300, each versioned as `SeenNotice`
+acknowledges it, their label cut over at render (one stored before 0052 is
+kept only when today's rule gives the same), and a notice deleted sends the
+person's document again.
 
 **DS14. One lock order for every 12a writer**, `Restart`'s:
 `contract_state`, `contract_accounts`, the records in id order,
