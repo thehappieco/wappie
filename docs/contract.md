@@ -656,10 +656,12 @@ The platform's console draws Wappie's settings pages from documents Wappie
 sends, and passes on the changes a person makes there as commands (the
 spec's section 14; platform decision 0054; kit v0.10.1's `SettingsDoc`,
 `Command`, `CommandFeed` and `CommandResults`). Step 12a ships it in two
-releases. This one, **read**, sends every recorded platform workspace's
+releases. The first, **read**, sends every recorded platform workspace's
 `numbers` section with `accepts: []`, so the console offers no button,
 follows the command feed, keeps every command it takes in a ledger, and
-answers each one `kind_not_accepted`. The commands release runs the kinds.
+answers each one `kind_not_accepted`. The second, **commands**, adds every
+followed person's own document and, in the mode `on`, runs the `numbers`
+kinds and the person's two ([the kinds](#the-kinds)).
 The decisions are DS1 to DS17 in [decisions](decisions.md#the-contracts-settings-part-2026-11-08);
 migration 0052 holds the schema of both releases.
 
@@ -669,7 +671,7 @@ migration 0052 holds the schema of both releases.
 contract's own mode (DS2):
 
 ```
-whatserverd contract settings off|read [--platform-told]
+whatserverd contract settings off|read|on [--platform-told]
 whatserverd contract settings status [--check]
 ```
 
@@ -684,8 +686,14 @@ whatserverd contract settings status [--check]
   the first switch that follows the feed, and `off` once it was read, need
   `--platform-told` (exit `4` without it, nothing changed; DS16). Tell the
   platform first.
-- In this release `on` runs no kind either: every section's `accepts` is
-  `[]` in every mode.
+- `read` lists no kind in any `accepts`, and answers every command
+  `kind_not_accepted`; `on` lists the kinds this binary runs (`item.rename`,
+  `item.sync_stop`, `item.sync_resume` and `item.registration_delete` in
+  `numbers`; `person.notices_dismiss` and `person.sign_out_everywhere` in
+  the person's document) and runs them. A switch makes every section and
+  person document due at once, with the new `accepts`. The way back from
+  `on` is `read` (no button is left that Wappie refuses), before any older
+  binary.
 - The leader's watcher reads the mode at its start, every 5 seconds and at
   each mode notice, and starts or stops the settings part's four loops: the
   section sender, the command follower, the executor and the results
@@ -703,7 +711,7 @@ Each recorded platform workspace's `numbers` section
 |---|---|
 | `state_seq`, `snapshot_seq` | `contract_workspaces.sections_seq` (the greatest of the clock in milliseconds and both columns plus one), and the last snapshot numbered; a workspace with no snapshot numbered yet sends no section |
 | `truncated` | a list over its bound (`pending` over 50, `items` over 1000) goes empty with `truncated`, never cut |
-| `accepts` | `[]` |
+| `accepts` | `[]` in `read`; in `on` the four `numbers` kinds of [the kinds](#the-kinds) |
 | `can_link` | the workspace active, below its capacity as `check_device_capacity` counts it (a deleted number takes no place), and not stopped by its storage |
 | `places_free` | `null` until entitlements reach Wappie |
 | `storage_paused` | the snapshot's quota verdict |
@@ -818,15 +826,80 @@ reset everything once a minute). A reset that finds the generation moved
 under it (another came first) resets nothing and starts no wait. A reset
 of the account side cuts the command long-poll the same way.
 
+### The kinds
+
+In the mode `on` the executor judges each row in this order, the first
+check that fails answering it with the seq it was judged on (DS5, DS15):
+
+1. its kind is one this binary runs for its section in this mode, and
+   Wappie's producer's (`kind_not_accepted`);
+2. its actor is followed with a document, and linked to a local account
+   (`not_held`; a person's kind with no seq);
+3. every document it was drawn from is applied: `based_on.docs` at most the
+   stored version of the current generation (`memberships_behind`,
+   `retry_after` 5, the behind retry);
+4. for a workspace's kind, the workspace is recorded, Wappie's, and open
+   (`not_found`, `team_closed`);
+5. the freshness `item.sync_stop` and `item.sync_resume` ask in a team, as
+   the socket's stop asks it (only logged at observe;
+   `memberships_unconfirmed` with enforce);
+6. then the kind, in one transaction: its target first (a deleted number,
+   another workspace's, or an id that is none of Wappie's: `not_found`, as
+   on Wappie's own screens), then the actor's local role and the stored
+   document's role, both (`not_authorized` where they differ), then
+   `params.before` against the value Wappie publishes, then the act, its
+   result at the act's seq, and the documents it shows in due at once.
+
+| Kind | Local rule (Wappie's screens) | Document's role | Refusals of its own | Runs as |
+|---|---|---|---|---|
+| `item.rename` | Manage (owner, admin, or the Manage flag) | owner or admin; member only with the Manage flag | `state_changed` (`before` is not the label the snapshot publishes), `label_changed` (with the cleaned label) | `device.rename`; a label Wappie sets aside is stored and published `null` (DS10); the snapshot is due too |
+| `item.sync_stop` | owner or admin by role | owner or admin | none: a paused number counts as done | `device.stop`: readers told, the event written, the pairing cancelled, the number stopped, its status broadcast, the notices pushed; `paused_by` names the actor |
+| `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails keeps the pause lifted (DS9) |
+| `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
+| `item.sync_now` (not listed) | Read, for a person | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` | `device.start` on a number not paused; listed only with the release whose socket frame asks Read too (DS13) |
+| `person.sign_out_everywhere` | the actor | the actor | none | every session family of the actor begun before `issued_at` ends, its workspace sessions with it (the sockets close within a second), never a later one, an API key, an MCP or AI connection; `sessions_ended` counts the live sessions ended (DS11) |
+| `person.notices_dismiss` | the actor's own notices | the actor | `state_changed` (a pause notice whose version rose stays; every other one is dismissed) | Wappie's own "seen", at the version shown |
+
+The runners live in `internal/numberacts`, beside the relink, and reach
+the socket server through `internal/wsapi/console_hooks.go`; parity tests
+hold each to its frame. A store error that is no verdict backs the row
+off (the run backoff), holding back only its workspace's and producer's
+later rows; after 5 tries it is answered `rate_limited`. The results go
+as in the read release.
+
+**The person's document** (`PUT /contract/v1/accounts/{sub}/settings`,
+the kit's `WappiePersonSettings`), for each sub Wappie follows with a
+document that is not closed, sent by the section sender on the person's
+own clock (`contract_persons.seq`), as a section is sent (DS12):
+
+| Member | From |
+|---|---|
+| `accepts` | `[]` in `read`; in `on` the person's two kinds |
+| `signed_out_everywhere_at` | the latest `issued_at` of a `person.sign_out_everywhere` that ran |
+| `notices` | the person's unseen notices of platform workspaces, never a local-only workspace's, the newest 300, as Wappie's own page lists them |
+| `notices[].id`, `version` | the row's id in decimal; the pauses folded in for `sync_paused`, else 1 |
+| `notices[].label` | the label stored with it; one stored before the label cutover only when today's rule gives the same text of the number now, else `null` |
+| `notices[].params` | `actor` the sub of who raised it, `null` for someone with none, never a name |
+
+A notice the wire refuses is left out and the document marked
+`truncated`, with an ERROR once. It is sent 2 seconds after one of the
+person's notices changes (raised, seen, resumed or deleted), or a change in
+one of their workspaces, at once after one of their acts, at the leader's
+start, and 55 minutes after its last accepted one; `not_found` parks it
+after the person not found time. Before each, and in every process's
+hourly maintenance, a pause notice whose number has been unpaused for the
+resume repair time is marked resumed when its frame's mark was lost
+(DS17).
+
 ### contract settings status
 
 Prints the mode, the command feed's cursor, first and last read and a
 failing run's class, the results' failing run (while a result is not
 delivered: only an answered post clears it), the last `invalid_command`,
 the label cutover, the ledger's results over 30 days by outcome and code,
-its open, retrying, undelivered and parked rows, and each section: its
+its open, retrying, undelivered and parked rows, each section: its
 workspace's status, seq, last accepted, due time, failing run, `not_found`
-run and park. `--check` adds the settings findings below, which
+run and park, and how many person documents are accepted and parked. `--check` adds the settings findings below, which
 `contract status --check` reports too.
 
 ## Person invitations into platform teams
@@ -907,7 +980,7 @@ clean until its bounds pass:
   `snapshot_invalid`, `event_parked`, `events_refused`,
   `event_actor_unknown`, and the settings part's `command_invalid`,
   `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
-  `result_parked`;
+  `result_parked`, `person_invalid`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
@@ -947,6 +1020,9 @@ clean until its bounds pass:
   - `N commands are retrying after store errors, the oldest taken at …
     (<class>)`, and `a command was answered rate_limited after 5 failed
     runs at …`, within the day;
+  - while settings are `read` or `on`: `N person documents not accepted
+    for over 60 minutes, the oldest since … (<class>)`, and `N person
+    documents parked, the last at …: they are not sent`;
   - `the settings part's state could not be read: …`: the rest of the
     report goes on;
 - `contract never observed but a secret is installed`: `events_from` is
@@ -993,8 +1069,12 @@ Wappie would not post them", "contract: results are parked: the platform
 refused them", "contract: a workspace's numbers section is not sent: Wappie
 would not send it", "contract: a workspace's numbers section leaves out
 rows the wire refuses: it goes truncated", "contract: a workspace's numbers
-section is parked" and "contract: a second reset from the command feed
-within a minute waits".
+section is parked", "contract: a second reset from the command feed
+within a minute waits", "contract: a command taken could not be read;
+refused invalid_command", "contract: a person's document is not sent:
+Wappie would not send it", "contract: a person's notices are left out: the
+wire refuses them" and "contract: a person's document is parked" (the last
+with no class: its `--check` line says it).
 Three more have no class of their own: "contract: could not publish the
 loaded secrets; the installer will not see this load" (`--check`'s
 fingerprint findings show it), "contract: a feed document cannot be read;
@@ -1089,3 +1169,7 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check results | 5 minutes | `--check`: the oldest result not delivered |
 | check taken | 10 minutes | `--check`: the oldest command with no result |
 | check section | 1 hour | `--check`: a workspace's last accepted numbers section |
+| behind retry | 5 seconds | `memberships_behind`'s `retry_after` |
+| person not found | 24 hours | a person's document refused `not_found`, before it parks |
+| resume repair | 1 minute | a number unpaused this long, before a pause notice its frame left open is marked resumed |
+| check person | 1 hour | `--check`: a person's last accepted document |

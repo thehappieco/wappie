@@ -188,6 +188,10 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: results are parked: the platform refused them",
 				"contract: a workspace's numbers section is not sent: Wappie would not send it",
 				"contract: a workspace's numbers section is parked",
+				"contract: a command taken could not be read; refused invalid_command",
+				"contract: a person's document is not sent: Wappie would not send it",
+				"contract: a person's notices are left out: the wire refuses them",
+				"contract: a person's document is parked",
 				"contract: settings started",
 				"contract: settings stopped",
 				"settings: off with it",
@@ -255,8 +259,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract status [--check]", "status [--check]"},
 			{"whatserverd contract diff [--tenant T]", "diff [--tenant T]"},
 			{"whatserverd contract mode off|observe", "mode off|observe"},
-			{"whatserverd contract settings off|read [--platform-told]", "settings off|read|status"},
-			{"whatserverd contract settings status [--check]", "settings off|read|status"},
+			{"whatserverd contract settings off|read|on [--platform-told]", "settings off|read|on|status"},
+			{"whatserverd contract settings status [--check]", "settings off|read|on|status"},
 		} {
 			says("contract.md", c.doc)
 			if !strings.Contains(c.doc, "settings") {
@@ -769,6 +773,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"check results":      spoken(checkResults),
 			"check taken":        spoken(checkTaken),
 			"check section":      spoken(checkSection),
+			"person not found":   spoken(store.PersonNotFoundFor),
+			"resume repair":      spoken(store.ResumeRepairAfter),
+			"check person":       spoken(checkPerson),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.
@@ -776,7 +783,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"feed backoff", "feed silent", "warn", "round failing", "debounce", "snapshot", "snapshot backoff", "labels",
 			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound",
 			"command long-poll", "command backoff", "reset floor", "section debounce", "connection debounce", "section",
-			"section backoff", "pairing look", "results backoff", "settings idle", "ledger trim"}
+			"section backoff", "pairing look", "results backoff", "settings idle", "ledger trim", "behind retry"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)

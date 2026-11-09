@@ -25,6 +25,7 @@ var timingsElsewhere = []string{
 	"event expiry", "call timeout", "feed grace", "check feed", "check snapshot", "check published", "check errors",
 	"check round", "check parked", "check events", "hot path", "hot path bound",
 	"section not found", "run backoff", "ledger", "check commands", "check results", "check taken", "check section",
+	"person not found", "resume repair", "check person",
 }
 
 // docs/contract.md's timings and limits that this package sets (the rest
@@ -71,6 +72,8 @@ func TestContractTimingsMatchTheDocs(t *testing.T) {
 		"results backoff":     span(resultsBackoffMin, resultsBackoffMax),
 		"settings idle":       spoken(settingsIdle),
 		"ledger trim":         spoken(trimEvery),
+		// The commands release's (commands_run.go).
+		"behind retry": spoken(behindRetry),
 	}
 	for name, want := range ours {
 		if got := rows[name]; got != want {

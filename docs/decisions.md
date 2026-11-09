@@ -1745,9 +1745,7 @@ It ships in two releases: "read" sends the sections with `accepts: []`,
 follows the command feed and answers every command `kind_not_accepted`;
 "commands" runs the kinds. One migration, 0052, holds the schema of both.
 Seventeen decisions shaped it (DS1 to DS17, numbered apart from the
-membership part's DB so the two never collide); this section holds the
-ones the schema, the store and the read release make, and the commands
-release adds the others here.
+membership part's DB so the two never collide).
 
 **DS1. 12a takes migration 0052, all of its schema.** The ledger, the
 feed's state, the sections' and persons' seqs and due times, the logout
@@ -1868,6 +1866,34 @@ sends the section again where they differ. Only the leader's process is
 seen: the pilot serves from one, and a pairing in another process shows
 `pairing: false` until it links (its row changes then).
 
+**DS9. The runners beside the frames.** The console's acts on a number
+live in `internal/numberacts`, beside the relink, so the socket's frames
+can move onto them later: each act's checks and writes are one store
+transaction, and around it the runner does what the frame does with the
+process (the registry's stop and start, and through
+`internal/wsapi/console_hooks.go` the pairing cancelled, the status
+broadcast and the notices pushed). Until the frames move, the rules live
+in two places, and a parity test per kind holds them together. The target
+is checked before the role, as the frames resolve the number first. A
+resume lifts a move's pause by role, as the frame does. One divergence: a
+console resume whose start fails keeps the pause lifted, where the frame
+puts it back, since its `ran` was committed with the lift and the number's
+connection shows in its row; the supervisor starts it within its tick.
+
+**DS10. A rename to a label Wappie sets aside runs.** A placeholder, an id
+or the number itself is stored, as the frame stores it, and the snapshot
+publishes `null` for it: `label_changed` cannot carry `null`.
+
+**DS11. Sign-out everywhere ends what began before it.**
+`person.sign_out_everywhere` ends the actor's session families whose first
+row is older than its `issued_at`, their workspace sessions with them, and
+counts their live rows (`sessions_ended`); a later family, an API key, a
+key acting for the person, an MCP or AI connection all stay. It locks as a
+logout does, the passkey registration lock first, which every session's
+start takes too. `signed_out_everywhere_at` keeps the latest `issued_at`
+that ran, since the ledger keeps 30 days only; a rerun delivered again
+after Wappie's own restore ends only what began before the command.
+
 **DS12. The numbers section's cadence, and the labels.** As the spec's
 14.2 asks: 2 seconds after a change the section shows (0052's triggers, on
 their own channel, and every payload of the snapshot's dirty channel,
@@ -1890,6 +1916,13 @@ acknowledges it, their label cut over at render (one stored before 0052 is
 kept only when today's rule gives the same), and a notice deleted sends the
 person's document again.
 
+**DS13. Sync now for a person is Read's.** The platform's answer 4 (the
+owner's "readers"): a person's `item.sync_now` asks `ActionRead`, as the
+runner does; keys, service accounts and tokens keep Manage. The runner
+ships built and tested, but `item.sync_now` enters `accepts` only in the
+release whose socket frame asks Read too, so the console never offers what
+Wappie's own screen refuses.
+
 **DS14. One lock order for every 12a writer**, `Restart`'s:
 `contract_state`, `contract_accounts`, the records in id order,
 `contract_settings_state`, the ledger rows in id order, the `wseq` memory,
@@ -1906,7 +1939,24 @@ UPDATE` subquery), the trim's and a take's deletions included, and a row
 past its 30 days is the trim's alone: neither a reset nor the poster drops
 it.
 
+**DS15. Both roles must allow.** Wappie observes the platform's
+memberships, so a command runs only where Wappie's own local role (its own
+screens' rule) and the role the stored account document gives the
+workspace both allow it; where they differ it is `not_authorized`, both
+ways. A document that is not active, of another generation, or that does
+not name the workspace counts as none. Rename is Manage's: the document's
+member is enough only where the local Manage is the stored flag's.
+
 **DS16. The platform is told first.** `contract settings read` (or `on`)
 the first time, and `off` once the feed was read, need `--platform-told`:
 from the first read the platform watches the command feed for good, and
 alerts when it goes silent.
+
+**DS17. A resume's mark is never lost.** The console's resume marks its
+number's pause notices resumed in the transaction that lifts the pause,
+as the relink's attach does. The frames mark in a transaction of their
+own, which may fail: a repair, hourly in every process and before each
+person's document, marks a notice whose number has been unpaused for a
+minute (the frames' window between lifting and marking), at the unpause's
+time (`devices.unpaused_at`, or 0052's migrate time for a resume before
+0052 stamped one). A number paused again is left: its notice is open.
