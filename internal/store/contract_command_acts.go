@@ -185,8 +185,11 @@ func lockWSeqTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) error {
 // order: the record (the act's seq), the ledger row, the wseq memory, the
 // workspace's tenants row (not_found when Wappie has no workspace of that
 // id), then body, then the result at the act's seq, and the numbers
-// section, and for a write the snapshot shows the snapshot, due now. A body
-// that leaves the act open rolls back: a judgement writes nothing.
+// section, and for a write the snapshot shows the snapshot, due now. A team
+// the record holds closed is team_closed before body: the executor's R3
+// read it open outside this transaction, and a document stored since (R4's
+// freshness keeps the actor's) may have closed it. A body that leaves the
+// act open rolls back: a judgement writes nothing.
 func (c *Contract) numbersAct(ctx context.Context, run ContractRun, body func(tx pgx.Tx) (actWrite, error)) (ContractAct, error) {
 	var out ContractAct
 	err := retryDeadlock(ctx, func() error {
@@ -202,6 +205,13 @@ func (c *Contract) numbersAct(ctx context.Context, run ContractRun, body func(tx
 			if err := lockWSeqTx(ctx, tx, run.Workspace); err != nil {
 				return err
 			}
+			// The record is this transaction's (actSeqTx): its status
+			// cannot change before the commit.
+			var status string
+			if err := tx.QueryRow(ctx, `SELECT coalesce(status, '') FROM contract_workspaces WHERE workspace_id = $1`,
+				run.Workspace).Scan(&status); err != nil {
+				return err
+			}
 			if err := scope(ctx, tx, run.Workspace, uuid.Nil); err != nil {
 				return err
 			}
@@ -210,7 +220,11 @@ func (c *Contract) numbersAct(ctx context.Context, run ContractRun, body func(tx
 				return err
 			}
 			w := refusedWith(kc.CodeNotFound)
-			if tag.RowsAffected() == 1 {
+			switch {
+			case tag.RowsAffected() == 0:
+			case status == "closed":
+				w = refusedWith(kc.CodeTeamClosed)
+			default:
 				if w, err = body(tx); err != nil {
 					return err
 				}
@@ -225,7 +239,7 @@ func (c *Contract) numbersAct(ctx context.Context, run ContractRun, body func(tx
 			if err := finishCommandTx(ctx, tx, run.ID, w.result); err != nil {
 				return err
 			}
-			if err := sectionsDueNowTx(ctx, tx, run.Workspace); err != nil {
+			if err := actSectionDueTx(ctx, tx, run.Workspace); err != nil {
 				return err
 			}
 			if w.snapshot {
@@ -241,6 +255,18 @@ func (c *Contract) numbersAct(ctx context.Context, run ContractRun, body func(tx
 	return out, err
 }
 
+// actSectionDueTx makes the workspace's numbers section due now after an
+// act, a parked one's included, for one try (its not_found run stays), as
+// a leader's start does (SectionsDue): the console shows an act's result
+// once a section at or above its seq is accepted, and a parked one is
+// never sent (the spec's 14.2: at once for a change a command made). The
+// trigger wakes the leader's sender, whichever process acted.
+func actSectionDueTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) error {
+	_, err := tx.Exec(ctx, `INSERT INTO contract_sections (workspace_id, section) VALUES ($1, $2)
+		ON CONFLICT (workspace_id, section) DO UPDATE SET due_at = clock_timestamp(), parked_at = NULL`, workspace, SectionNumbers)
+	return err
+}
+
 // RunRename is item.rename (the plan's 6.3; the frame is device.rename):
 // the number live, the actor's RuleManage, params.before against the label
 // Wappie publishes (label.Contract, never the one stored: state_changed),
@@ -252,8 +278,8 @@ func (c *Contract) numbersAct(ctx context.Context, run ContractRun, body func(tx
 func (c *Contract) RunRename(ctx context.Context, run ContractRun, item uuid.UUID, before *string, after string) (ContractAct, error) {
 	return c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
 		var stored, pn string
-		err := tx.QueryRow(ctx, `SELECT label, coalesce(pn, '') FROM devices WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, item).
-			Scan(&stored, &pn)
+		err := tx.QueryRow(ctx, `SELECT label, coalesce(pn, '') FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+			item, run.Workspace).Scan(&stored, &pn)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return refusedWith(kc.CodeNotFound), nil
 		}
@@ -308,8 +334,8 @@ func (c *Contract) RunSyncStop(ctx context.Context, run ContractRun, item uuid.U
 		out = Paused{}
 		var paused bool
 		var cause string
-		err := tx.QueryRow(ctx, `SELECT paused, coalesce(pause_cause, '') FROM devices WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
-			item).Scan(&paused, &cause)
+		err := tx.QueryRow(ctx, `SELECT paused, coalesce(pause_cause, '') FROM devices
+			WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`, item, run.Workspace).Scan(&paused, &cause)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return refusedWith(kc.CodeNotFound), nil
 		}
@@ -441,7 +467,7 @@ func (c *Contract) RunSyncResume(ctx context.Context, run ContractRun, item uuid
 	var dev Device
 	act, err := c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
 		dev = Device{}
-		err := scanDevice(tx.QueryRow(ctx, selectDevices+` AND id = $1 FOR UPDATE`, item), &dev)
+		err := scanDevice(tx.QueryRow(ctx, selectDevices+` AND id = $1 AND tenant_id = $2 FOR UPDATE`, item, run.Workspace), &dev)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return refusedWith(kc.CodeNotFound), nil
 		}
@@ -485,7 +511,7 @@ func (c *Contract) JudgeSyncNow(ctx context.Context, run ContractRun, item uuid.
 	var dev Device
 	act, err := c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
 		dev = Device{}
-		err := scanDevice(tx.QueryRow(ctx, selectDevices+` AND id = $1`, item), &dev)
+		err := scanDevice(tx.QueryRow(ctx, selectDevices+` AND id = $1 AND tenant_id = $2`, item, run.Workspace), &dev)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return refusedWith(kc.CodeNotFound), nil
 		}
@@ -549,19 +575,21 @@ func (c *Contract) FinishSyncNow(ctx context.Context, run ContractRun, r Command
 			if err := finishCommandTx(ctx, tx, run.ID, r); err != nil {
 				return err
 			}
-			return sectionsDueNowTx(ctx, tx, run.Workspace)
+			return actSectionDueTx(ctx, tx, run.Workspace)
 		})
 	})
 	return out, err
 }
 
 // registrationTx reads a registration of run's workspace and the actor's
-// RuleAdmin: not_found for no row (or a deleted number's), not_authorized,
-// and state_changed for one that linked (an identity or a connection).
+// RuleAdmin: not_found for no row (or a deleted number's, or another
+// workspace's: every act reads its number by its workspace too, beside the
+// scope's row-level security), not_authorized, and state_changed for one
+// that linked (an identity or a connection).
 func registrationTx(ctx context.Context, tx pgx.Tx, run ContractRun, row uuid.UUID, lock string) (actWrite, bool, error) {
 	var linked bool
 	err := tx.QueryRow(ctx, `SELECT lid IS NOT NULL OR pn IS NOT NULL OR last_connected_at IS NOT NULL FROM devices
-		WHERE id = $1 AND deleted_at IS NULL`+lock, row).Scan(&linked)
+		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`+lock, row, run.Workspace).Scan(&linked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return refusedWith(kc.CodeNotFound), false, nil
 	}
@@ -604,7 +632,8 @@ func (c *Contract) RunRegistrationDelete(ctx context.Context, run ContractRun, r
 		if !ok || err != nil {
 			return w, err
 		}
-		tag, err := tx.Exec(ctx, `DELETE FROM devices WHERE id = $1 AND lid IS NULL AND pn IS NULL AND last_connected_at IS NULL`, row)
+		tag, err := tx.Exec(ctx, `DELETE FROM devices WHERE id = $1 AND tenant_id = $2 AND lid IS NULL AND pn IS NULL
+			AND last_connected_at IS NULL`, row, run.Workspace)
 		if err != nil {
 			return actWrite{}, err
 		}
@@ -613,6 +642,15 @@ func (c *Contract) RunRegistrationDelete(ctx context.Context, run ContractRun, r
 		}
 		return ran(), nil
 	})
+}
+
+// CommandInvalidAnswered stamps the last invalid_command answered, which
+// --check reports for a day (the platform alerts contract_command_invalid
+// as long): the executor's, for a row whose fields it cannot read, as the
+// take stamps its own. A transaction of its own, after the answer's.
+func (c *Contract) CommandInvalidAnswered(ctx context.Context) error {
+	_, err := c.pool.Exec(ctx, `UPDATE contract_settings_state SET invalid_at = clock_timestamp(), updated_at = clock_timestamp()`)
+	return err
 }
 
 // ContractCommandFacts is what the executor reads of a row before its act

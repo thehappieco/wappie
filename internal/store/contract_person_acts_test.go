@@ -52,10 +52,12 @@ func (w *actWorld) unpausedAgo(t *testing.T, device uuid.UUID, d time.Duration) 
 
 // TestResumeLostMarks (a gate; the platform's correction 3, DS17): a
 // frame's resume whose mark was lost is marked resumed by the repair once
-// its number has been unpaused a minute, at the unpause's time; one
-// paused again within the minute is not; a resume from before 0052, which
-// stamped no unpause, is marked at 0052's migrate time; and the console's
-// resume marks in its own transaction.
+// its number has been unpaused ResumeRepairAfter, at the unpause's time,
+// never while the frame may still be starting it (two minutes on, its
+// connect may still be retrying, and a failed start puts the pause back);
+// one paused again within the window is not; a resume from before 0052,
+// which stamped no unpause, is marked at 0052's migrate time; and the
+// console's resume marks in its own transaction.
 func TestResumeLostMarks(t *testing.T) {
 	ctx := context.Background()
 	w := newActWorld(t)
@@ -70,16 +72,22 @@ func TestResumeLostMarks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n, err := w.c.ResumeLostMarks(ctx); err != nil || n != 0 || w.resumedAt(t, notice) != nil {
-		t.Fatalf("within the minute: %d %v", n, err)
+		t.Fatalf("at once: %d %v", n, err)
 	}
+	// Two minutes on, the frame's start may still be connecting.
 	w.raisedAgo(t, notice, 3*time.Minute)
 	w.unpausedAgo(t, device, 2*time.Minute)
+	if n, err := w.c.ResumeLostMarks(ctx); err != nil || n != 0 || w.resumedAt(t, notice) != nil {
+		t.Fatalf("while the frame may still be starting it: %d %v", n, err)
+	}
+	w.raisedAgo(t, notice, store.ResumeRepairAfter)
+	w.unpausedAgo(t, device, store.ResumeRepairAfter)
 	var unpaused time.Time
 	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT unpaused_at FROM devices WHERE id = $1`, device).Scan(&unpaused)
 	})
 	if n, err := w.c.ResumeLostMarks(ctx); err != nil || n != 1 {
-		t.Fatalf("after the minute: %d %v", n, err)
+		t.Fatalf("after the window: %d %v", n, err)
 	}
 	if at := w.resumedAt(t, notice); at == nil || !at.Equal(unpaused) {
 		t.Fatalf("resumed_at %v, the unpause at %v", at, unpaused)
@@ -97,12 +105,12 @@ func TestResumeLostMarks(t *testing.T) {
 	if err := w.devices.SetPaused(ctx, w.tenant.String(), device.String(), false); err != nil {
 		t.Fatal(err)
 	}
-	w.raisedAgo(t, notice, 3*time.Minute)
-	w.unpausedAgo(t, device, 2*time.Minute)
+	w.raisedAgo(t, notice, store.ResumeRepairAfter+time.Minute)
+	w.unpausedAgo(t, device, store.ResumeRepairAfter)
 	w.pause(t, device, store.PauseActor{User: w.owner})
 	// The fold raised it now: back before the unpause, so only the pause
 	// keeps it open.
-	w.raisedAgo(t, notice, 3*time.Minute)
+	w.raisedAgo(t, notice, store.ResumeRepairAfter+time.Minute)
 	if n, err := w.c.ResumeLostMarks(ctx, linkSub(t, w.pool, reader)); err != nil || n != 0 || w.resumedAt(t, notice) != nil {
 		t.Fatalf("a number paused again: %d %v", n, err)
 	}

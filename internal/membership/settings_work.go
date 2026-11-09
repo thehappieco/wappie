@@ -259,12 +259,14 @@ func (sw *settingsWork) dirty(payload string) { sw.sections.dirty(payload) }
 // connections only flipped, or all of them, and a wake when a section was
 // made due sooner; and for the persons' documents, the users whose notices
 // changed and the workspaces a change touched (a reader who lost Read no
-// longer sees a pause notice there).
+// longer sees a pause notice there), or all of them (an account's status:
+// "all").
 type sectionNotices struct {
 	mu               sync.Mutex
 	ids, flips       map[uuid.UUID]bool
 	all              bool
 	users, personsOf map[uuid.UUID]bool
+	allPersons       bool
 	wake             chan struct{}
 }
 
@@ -301,7 +303,7 @@ func (n *sectionNotices) notice(payload string) {
 func (n *sectionNotices) dirty(payload string) {
 	n.mu.Lock()
 	if payload == "all" {
-		n.all = true
+		n.all, n.allPersons = true, true
 	} else if id, err := uuid.Parse(payload); err == nil {
 		n.ids[id] = true
 		n.personsOf[id] = true
@@ -331,8 +333,8 @@ func (n *sectionNotices) take() (ids, flips []uuid.UUID, all bool) {
 }
 
 // takePersons returns and forgets the users whose notices changed and the
-// workspaces whose persons' documents a change may have changed.
-func (n *sectionNotices) takePersons() (users, workspaces []uuid.UUID) {
+// workspaces whose persons' documents a change may have changed, or all.
+func (n *sectionNotices) takePersons() (users, workspaces []uuid.UUID, all bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for id := range n.users {
@@ -341,15 +343,17 @@ func (n *sectionNotices) takePersons() (users, workspaces []uuid.UUID) {
 	for id := range n.personsOf {
 		workspaces = append(workspaces, id)
 	}
-	n.users, n.personsOf = map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
-	return users, workspaces
+	all = n.allPersons
+	n.users, n.personsOf, n.allPersons = map[uuid.UUID]bool{}, map[uuid.UUID]bool{}, false
+	return users, workspaces, all
 }
 
 // givePersons puts back what takePersons returned, when it could not be
 // written.
-func (n *sectionNotices) givePersons(users, workspaces []uuid.UUID) {
+func (n *sectionNotices) givePersons(users, workspaces []uuid.UUID, all bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.allPersons = n.allPersons || all
 	for _, id := range users {
 		n.users[id] = true
 	}

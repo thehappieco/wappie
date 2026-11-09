@@ -1813,7 +1813,16 @@ workspace and producer; a row whose run fails with a store error backs off
 producer, and is answered `rate_limited` (60 s) after 5 tries. A result
 is written in its act's transaction by compare-and-set on its having none;
 one of a command whose row is of another generation is dropped, and the
-poster drops any it finds before each batch.
+poster drops any it finds before each batch. A tightening delivered
+`again`, of a kind this binary runs, is never answered with a retry (a
+check that holds it back, or `rate_limited` after a store error): the
+platform compares it with the result it kept and takes any other outcome
+or code as a conflict, never issued again, so the restore would keep what
+the tightening took away. It waits the run backoff instead, its class
+`again_` and the code, and is judged again until it runs; at the fifth try
+one ERROR (`command_stuck`). The team's status is judged again in the
+act's transaction, which holds the workspace's record, since a document
+stored after R3 (R4's freshness keeps the actor's) may close it.
 
 **DS6. The logout cause is a typed column, decided once.** A `BEFORE`
 trigger fills `devices.logout_cause` when a number moves into
@@ -1878,7 +1887,13 @@ is checked before the role, as the frames resolve the number first. A
 resume lifts a move's pause by role, as the frame does. One divergence: a
 console resume whose start fails keeps the pause lifted, where the frame
 puts it back, since its `ran` was committed with the lift and the number's
-connection shows in its row; the supervisor starts it within its tick.
+connection shows in its row; the supervisor starts it within its tick. A
+runner's start is bounded (15 seconds) where the frame's is not: the
+executor runs every workspace's commands one at a time, and a connect
+that keeps failing retries for a minute and a half; past the bound a
+sync now is `connect_failed` and a resume is the supervisor's. Each act
+reads its number by the command's workspace beside the row-level
+security, so a fault in either still finds nothing of another workspace.
 
 **DS10. A rename to a label Wappie sets aside runs.** A placeholder, an id
 or the number itself is stored, as the frame stores it, and the snapshot
@@ -1911,10 +1926,18 @@ section that still fails is. A parked snapshot does not hold back its
 workspace's section, which has its own park. A numbers row carries no
 label (the snapshot's is the number's). 0052 nulled the labels of the item events not yet sent, once.
 The person's notices (the commands release) are the unseen ones of
-platform workspaces, the newest 300, each versioned as `SeenNotice`
-acknowledges it, their label cut over at render (one stored before 0052 is
-kept only when today's rule gives the same), and a notice deleted sends the
-person's document again.
+platform workspaces where Wappie lets the person in (membership, account
+and workspace active, the membership not expired: a disabled member sees
+no notice of the team in the console, as on Wappie's own page), the newest
+300, each versioned as `SeenNotice` acknowledges it, their label cut over
+at render (one stored before 0052 is kept only when today's rule gives the
+same), and a notice deleted sends the person's document again, as does a
+change in a workspace where they hold one, and an account's status
+(everyone's). An act makes the documents it shows in due at once, a parked
+one too, for one try: a park would otherwise keep the console from ever
+seeing the act shown. A switch between `read` and `on` makes every
+document due in its transaction and again once the leader's watcher holds
+the new mode, since the sender renders `accepts` from it.
 
 **DS13. Sync now for a person is Read's.** The platform's answer 4 (the
 owner's "readers"): a person's `item.sync_now` asks `ActionRead`, as the
@@ -1956,7 +1979,11 @@ alerts when it goes silent.
 number's pause notices resumed in the transaction that lifts the pause,
 as the relink's attach does. The frames mark in a transaction of their
 own, which may fail: a repair, hourly in every process and before each
-person's document, marks a notice whose number has been unpaused for a
-minute (the frames' window between lifting and marking), at the unpause's
-time (`devices.unpaused_at`, or 0052's migrate time for a resume before
-0052 stamped one). A number paused again is left: its notice is open.
+person's document, marks a notice whose number has been unpaused for 10
+minutes, at the unpause's time (`devices.unpaused_at`, or 0052's migrate
+time for a resume before 0052 stamped one). The plan had a minute, but
+`device.start` lifts the pause before it starts the number, whose connect
+may retry for a minute and a half, and puts the pause back when it fails:
+a mark inside that window would say resumed of a number paused again. A
+number paused again is left: its notice is open. A workspace with no
+notice to mark takes no lock for the repair.

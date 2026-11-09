@@ -46,7 +46,8 @@ func (w *world) generation(t *testing.T) uuid.UUID {
 }
 
 // row is a ledger row to take as decoded: kind in ws (nil for a person's)
-// by actor, its target and params, drawn from docs.
+// by actor, its target and params, drawn from docs; again for one
+// delivered again.
 type row struct {
 	kind           string
 	ws             *uuid.UUID
@@ -55,6 +56,7 @@ type row struct {
 	docs           map[uuid.UUID]int64
 	gen            uuid.UUID
 	issued         time.Time
+	again          bool
 }
 
 var rowSeq int64
@@ -93,9 +95,10 @@ func (w *world) take(t *testing.T, r row) uuid.UUID {
 		r.params = "{}"
 	}
 	if _, err := w.pool.Exec(context.Background(), `INSERT INTO contract_commands (id, generation, cseq, workspace_id, wseq, kind, section, actor,
-		target, params, based_on_seq, based_on_docs, issued_at, body, body_key, signed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, '{}', $13, clock_timestamp())`,
-		id, r.gen, rowSeq, r.ws, wseq, r.kind, section, r.actor, r.target, []byte(r.params), rawDocs, r.issued, make([]byte, 32)); err != nil {
+		target, params, based_on_seq, based_on_docs, issued_at, body, body_key, signed_at, again)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, '{}', $13, clock_timestamp(), $14)`,
+		id, r.gen, rowSeq, r.ws, wseq, r.kind, section, r.actor, r.target, []byte(r.params), rawDocs, r.issued, make([]byte, 32),
+		r.again); err != nil {
 		t.Fatal(err)
 	}
 	return id

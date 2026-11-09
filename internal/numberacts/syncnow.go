@@ -19,8 +19,9 @@ import (
 // item_busy while this process pairs it), then started, then answered at a
 // new seq: an act that writes nothing completes its row right after (the
 // spec's 14.6). A number that connects, or runs already, ran; one whose
-// session is gone is marked logged out and read_only; any other failure
-// connect_failed; one a stop paused meanwhile is stopped again, paused.
+// session is gone is marked logged out and read_only; any other failure,
+// a start past StartBound included, connect_failed; one a stop paused
+// meanwhile is stopped again, paused.
 //
 // It is not in the commands release's accepts: a person's sync now asks
 // Read (the platform's answer 4), the frame's still Manage, until the
@@ -45,8 +46,10 @@ func (r *Runner) connect(ctx context.Context, tenant string, dev store.Device) (
 	if r.Registry == nil {
 		return refused(kc.CodeConnectFailed), nil
 	}
-	_, err := r.Registry.StartExisting(ctx, tenant, dev.ID, wa.ReceiptPolicy{Mode: dev.ReceiptMode, Recorder: r.Recorder},
+	startCtx, cancel := r.startCtx(ctx)
+	_, err := r.Registry.StartExisting(startCtx, tenant, dev.ID, wa.ReceiptPolicy{Mode: dev.ReceiptMode, Recorder: r.Recorder},
 		dev.Identity.PN, dev.Identity.LID)
+	cancel()
 	switch {
 	case err == nil, errors.Is(err, wa.ErrAlreadyRunning):
 	case errors.Is(err, wa.ErrNoSession):

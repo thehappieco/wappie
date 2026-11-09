@@ -691,7 +691,10 @@ whatserverd contract settings status [--check]
   `item.sync_stop`, `item.sync_resume` and `item.registration_delete` in
   `numbers`; `person.notices_dismiss` and `person.sign_out_everywhere` in
   the person's document) and runs them. A switch makes every section and
-  person document due at once, with the new `accepts`. The way back from
+  person document due at once, with the new `accepts`: in its own
+  transaction, and again once the leader's watcher holds the new mode, so
+  a document measured in between, and sent with the old `accepts`, goes
+  again (INFO "contract: settings switched"). The way back from
   `on` is `read` (no button is left that Wappie refuses), before any older
   binary.
 - The leader's watcher reads the mode at its start, every 5 seconds and at
@@ -797,11 +800,12 @@ copy whose MAC holds, refuses an open row `invalid_command`; a forged copy
 only reaches the security log.
 
 **The executor** runs one row at a time, in take order, one open row per
-workspace and producer. In this release it answers every row
-`kind_not_accepted` (R0) with the seq it was judged on. A run that fails
-with a store error waits from 5 seconds doubling to a minute, holding back
-only its own workspace and producer, and after 5 tries is answered
-`rate_limited` (`retry_after` 60) with an ERROR.
+workspace and producer. In `read` it answers every row `kind_not_accepted`
+(R0) with the seq it was judged on; in `on` it judges and runs the kinds
+below ([the kinds](#the-kinds)). A run that fails with a store error waits
+from 5 seconds doubling to a minute, holding back only its own workspace
+and producer, and after 5 tries is answered `rate_limited` (`retry_after`
+60) with an ERROR.
 
 **The results poster** posts the results not delivered
 (`POST /contract/v1/commands/results`), at most 100 a call under 256 KiB,
@@ -839,7 +843,9 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
    stored version of the current generation (`memberships_behind`,
    `retry_after` 5, the behind retry);
 4. for a workspace's kind, the workspace is recorded, Wappie's, and open
-   (`not_found`, `team_closed`);
+   (`not_found`, `team_closed`; judged again in the act's transaction,
+   which holds the record, so a closing stored in between, by the
+   freshness below for one, is `team_closed` too);
 5. the freshness `item.sync_stop` and `item.sync_resume` ask in a team, as
    the socket's stop asks it (only logged at observe;
    `memberships_unconfirmed` with enforce);
@@ -854,18 +860,37 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 |---|---|---|---|---|
 | `item.rename` | Manage (owner, admin, or the Manage flag) | owner or admin; member only with the Manage flag | `state_changed` (`before` is not the label the snapshot publishes), `label_changed` (with the cleaned label) | `device.rename`; a label Wappie sets aside is stored and published `null` (DS10); the snapshot is due too |
 | `item.sync_stop` | owner or admin by role | owner or admin | none: a paused number counts as done | `device.stop`: readers told, the event written, the pairing cancelled, the number stopped, its status broadcast, the notices pushed; `paused_by` names the actor |
-| `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails keeps the pause lifted (DS9) |
+| `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails, or runs past the start bound, keeps the pause lifted, and the supervisor starts the number (DS9) |
 | `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
-| `item.sync_now` (not listed) | Read, for a person | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` | `device.start` on a number not paused; listed only with the release whose socket frame asks Read too (DS13) |
+| `item.sync_now` (not listed) | Read, for a person | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` (a start past the start bound too) | `device.start` on a number not paused; listed only with the release whose socket frame asks Read too (DS13) |
 | `person.sign_out_everywhere` | the actor | the actor | none | every session family of the actor begun before `issued_at` ends, its workspace sessions with it (the sockets close within a second), never a later one, an API key, an MCP or AI connection; `sessions_ended` counts the live sessions ended (DS11) |
 | `person.notices_dismiss` | the actor's own notices | the actor | `state_changed` (a pause notice whose version rose stays; every other one is dismissed) | Wappie's own "seen", at the version shown |
 
 The runners live in `internal/numberacts`, beside the relink, and reach
 the socket server through `internal/wsapi/console_hooks.go`; parity tests
-hold each to its frame. A store error that is no verdict backs the row
-off (the run backoff), holding back only its workspace's and producer's
-later rows; after 5 tries it is answered `rate_limited`. The results go
-as in the read release.
+hold each to its frame. Every kind reads its number by the command's
+workspace as well as under the workspace's row-level security. A start
+(a resume's, a sync now's) waits at most the start bound for its number
+to connect: the executor runs one row at a time for every workspace, and
+a connect that keeps failing would hold the others for a minute and a
+half. A store error that is no verdict backs the row off (the run
+backoff), holding back only its workspace's and producer's later rows;
+after 5 tries it is answered `rate_limited`. The results go as in the
+read release.
+
+**Delivered again.** A tightening delivered `again` (after Wappie's own
+restore: `person.sign_out_everywhere` among the kinds this binary runs)
+is never answered with a retry. The platform keeps its first result,
+takes the same outcome and code as a duplicate and any other as a
+conflict, and never issues it again, so a retry would leave undone what
+the tightening took away. Where a check would answer it with one (a mode
+that does not run it yet, a document not yet applied, a team closed) or a
+store error keeps failing, it waits the run backoff instead, its class
+`again_` and the code (or the store error's), and is judged again until it
+runs: `--check` shows it among the commands retrying, and at the fifth try
+WARN gives way to one ERROR ("contract: a command delivered again keeps
+waiting", recorded `command_stuck`). A kind this binary never runs is
+answered as any other.
 
 **The person's document** (`PUT /contract/v1/accounts/{sub}/settings`,
 the kit's `WappiePersonSettings`), for each sub Wappie follows with a
@@ -876,20 +901,26 @@ own clock (`contract_persons.seq`), as a section is sent (DS12):
 |---|---|
 | `accepts` | `[]` in `read`; in `on` the person's two kinds |
 | `signed_out_everywhere_at` | the latest `issued_at` of a `person.sign_out_everywhere` that ran |
-| `notices` | the person's unseen notices of platform workspaces, never a local-only workspace's, the newest 300, as Wappie's own page lists them |
+| `notices` | the person's unseen notices of the platform workspaces where Wappie lets them in (the membership, the account and the workspace active, the membership not expired), never a local-only workspace's, the newest 300, as Wappie's own page lists them |
 | `notices[].id`, `version` | the row's id in decimal; the pauses folded in for `sync_paused`, else 1 |
 | `notices[].label` | the label stored with it; one stored before the label cutover only when today's rule gives the same text of the number now, else `null` |
 | `notices[].params` | `actor` the sub of who raised it, `null` for someone with none, never a name |
 
 A notice the wire refuses is left out and the document marked
 `truncated`, with an ERROR once. It is sent 2 seconds after one of the
-person's notices changes (raised, seen, resumed or deleted), or a change in
-one of their workspaces, at once after one of their acts, at the leader's
-start, and 55 minutes after its last accepted one; `not_found` parks it
-after the person not found time. Before each, and in every process's
-hourly maintenance, a pause notice whose number has been unpaused for the
-resume repair time is marked resumed when its frame's mark was lost
-(DS17).
+person's notices changes (raised, seen, resumed or deleted), a change in a
+workspace where they hold an unseen notice (a membership disabled hides
+them all), or a change of an account's status (everyone's), at once after
+one of their acts, at the leader's start and at a switch between `read`
+and `on`, and 55 minutes after its last accepted one; `not_found` parks it
+after the person not found time. An act makes the documents it shows in
+due at once, a parked one too, for one try, or the console would never see
+it shown. Before each, and in every process's hourly maintenance, a pause
+notice whose number has been unpaused for the resume repair time is marked
+resumed when its frame's mark was lost (DS17); a workspace with none to
+mark takes no lock for it. The time is beyond the frame's own resume,
+which may retry its connect for a minute and a half and then put the pause
+back.
 
 ### contract settings status
 
@@ -1011,7 +1042,7 @@ clean until its bounds pass:
   - `settings are off, but the platform has watched the command feed since
     …: it alerts contract_commands_silent`;
   - `an invalid_command was answered at … (the platform alerts for 24
-    hours)`, within the day;
+    hours)`, within the day, at the take or by the executor;
   - `N results are parked (rejected invalid_request or local_invalid), the
     last at …: they are not delivered`;
   - `N results are not delivered, the oldest for over 5 minutes, since …
@@ -1071,7 +1102,8 @@ would not send it", "contract: a workspace's numbers section leaves out
 rows the wire refuses: it goes truncated", "contract: a workspace's numbers
 section is parked", "contract: a second reset from the command feed
 within a minute waits", "contract: a command taken could not be read;
-refused invalid_command", "contract: a person's document is not sent:
+refused invalid_command", "contract: a command delivered again keeps
+waiting", "contract: a person's document is not sent:
 Wappie would not send it", "contract: a person's notices are left out: the
 wire refuses them" and "contract: a person's document is parked" (the last
 with no class: its `--check` line says it).
@@ -1171,5 +1203,6 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check section | 1 hour | `--check`: a workspace's last accepted numbers section |
 | behind retry | 5 seconds | `memberships_behind`'s `retry_after` |
 | person not found | 24 hours | a person's document refused `not_found`, before it parks |
-| resume repair | 1 minute | a number unpaused this long, before a pause notice its frame left open is marked resumed |
+| resume repair | 10 minutes | a number unpaused this long, before a pause notice its frame left open is marked resumed |
+| start bound | 15 seconds | a console resume's or sync now's start, before it is cut |
 | check person | 1 hour | `--check`: a person's last accepted document |

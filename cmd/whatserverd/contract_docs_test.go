@@ -19,6 +19,7 @@ import (
 	"whatserver2/internal/config"
 	"whatserver2/internal/membership"
 	"whatserver2/internal/membership/membershiptest"
+	"whatserver2/internal/numberacts"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -776,6 +777,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"person not found":   spoken(store.PersonNotFoundFor),
 			"resume repair":      spoken(store.ResumeRepairAfter),
 			"check person":       spoken(checkPerson),
+			"start bound":        spoken(numberacts.StartBound),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.

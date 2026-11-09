@@ -133,19 +133,28 @@ func (s *sectionSender) applyNotices(ctx context.Context) bool {
 
 // applyPersonNotices makes due within the section debounce the documents
 // of the users whose notices changed (a "u:" payload: a notice raised,
-// changed, seen or deleted), and of those with an unseen pause notice in a
-// workspace a change touched (a reader who lost Read, or a number deleted,
-// hides one).
+// changed, seen or deleted), of those with an unseen notice in a workspace
+// a change touched (a reader who lost Read, or a number deleted, hides a
+// pause notice; a membership disabled hides them all), and of everyone on
+// an "all" (an account's status shows or hides the pause notices it
+// raised for others).
 func (s *sectionSender) applyPersonNotices(ctx context.Context) bool {
 	sw := s.sw
 	c := sw.l.Members.Contract
-	users, workspaces := sw.sections.takePersons()
-	if len(users) == 0 && len(workspaces) == 0 {
+	users, workspaces, all := sw.sections.takePersons()
+	if len(users) == 0 && len(workspaces) == 0 && !all {
 		return true
 	}
+	debounce := or(sw.cfg.SectionDebounce, sectionDebounce)
 	var subs []uuid.UUID
 	var err error
+	if all {
+		err = c.PersonsDirtyAll(ctx, debounce)
+	}
 	for _, ws := range workspaces {
+		if err != nil {
+			break
+		}
 		var of []uuid.UUID
 		if of, err = c.PersonsOfWorkspace(ctx, ws); err != nil {
 			break
@@ -153,10 +162,10 @@ func (s *sectionSender) applyPersonNotices(ctx context.Context) bool {
 		subs = append(subs, of...)
 	}
 	if err == nil {
-		err = c.PersonsDirty(ctx, subs, users, or(sw.cfg.SectionDebounce, sectionDebounce))
+		err = c.PersonsDirty(ctx, subs, users, debounce)
 	}
 	if err != nil {
-		sw.sections.givePersons(users, workspaces)
+		sw.sections.givePersons(users, workspaces, all)
 		if ctx.Err() == nil {
 			sw.l.log().Warn("contract: could not make the changed persons' documents due", "error", err)
 		}

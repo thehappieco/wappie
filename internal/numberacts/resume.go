@@ -16,8 +16,9 @@ import (
 // (DS9): the frame puts the pause back when the start fails; the console's
 // resume does not, since its result, ran, was committed with the lift, and
 // the number's connection shows in its row (connection, last connected).
-// The supervisor starts it within its tick; a session that went is marked
-// logged out ("session missing"), as the frame marks it.
+// The supervisor starts it within its tick, also when the start runs past
+// StartBound; a session that went is marked logged out ("session
+// missing"), as the frame marks it.
 func (r *Runner) SyncResume(ctx context.Context, run Run, item uuid.UUID) (store.ContractAct, error) {
 	act, dev, err := r.Store.RunSyncResume(ctx, run.contract(), item)
 	if err != nil || !ran(act) {
@@ -33,8 +34,10 @@ func (r *Runner) startResumed(ctx context.Context, tenant string, dev store.Devi
 	if r.Registry == nil {
 		return
 	}
-	_, err := r.Registry.StartExisting(ctx, tenant, dev.ID, wa.ReceiptPolicy{Mode: dev.ReceiptMode, Recorder: r.Recorder},
+	startCtx, cancel := r.startCtx(ctx)
+	_, err := r.Registry.StartExisting(startCtx, tenant, dev.ID, wa.ReceiptPolicy{Mode: dev.ReceiptMode, Recorder: r.Recorder},
 		dev.Identity.PN, dev.Identity.LID)
+	cancel()
 	switch {
 	case err == nil, errors.Is(err, wa.ErrAlreadyRunning):
 	case errors.Is(err, wa.ErrNoSession):

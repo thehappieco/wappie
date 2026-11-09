@@ -16,6 +16,7 @@
 package numberacts
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"time"
@@ -71,6 +72,23 @@ type Runner struct {
 	// starts, as the frames' does.
 	Recorder func(kind, decision string)
 	Log      *slog.Logger
+	// StartBound bounds a start (StartBound when zero).
+	StartBound time.Duration
+}
+
+// StartBound is how long a resume or a sync now waits for its number to
+// connect. The executor runs one command at a time, every workspace's, and
+// a connect that keeps failing tries 8 times with up to 30 seconds between
+// tries: unbounded, one number's outage would hold every other command for
+// a minute and a half. Past it the start is cancelled (the registry stops
+// what it began): a sync now answers connect_failed, and a resume, whose
+// ran was committed with its lift, is left to the supervisor, which starts
+// a number that is not paused within its tick.
+const StartBound = 15 * time.Second
+
+// startCtx bounds a start of the number under ctx.
+func (r *Runner) startCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, cmp.Or(r.StartBound, StartBound))
 }
 
 func (r *Runner) log() *slog.Logger {

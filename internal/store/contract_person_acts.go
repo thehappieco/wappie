@@ -32,7 +32,8 @@ type NoticeRef struct {
 // personAct runs one act of run's person in one transaction: the ledger
 // row (still without a result), body, then contract_persons (the act's
 // seq, signed_out_everywhere_at raised to signedOut when it is set, and
-// the document due now), and the result at that seq.
+// the document due now, a parked one's included, for one try, or the
+// console would never see the act shown), and the result at that seq.
 func (c *Contract) personAct(ctx context.Context, run ContractRun, signedOut *time.Time,
 	body func(tx pgx.Tx) (CommandResult, error)) (ContractAct, error) {
 	var out ContractAct
@@ -53,7 +54,7 @@ func (c *Contract) personAct(ctx context.Context, run ContractRun, signedOut *ti
 			if err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
 				INSERT INTO contract_persons AS p (sub, seq, signed_out_everywhere_at, due_at)
 				SELECT $1, `+clockMillisSQL+`, $2, now.t FROM now
-				ON CONFLICT (sub) DO UPDATE SET seq = greatest(excluded.seq, p.seq + 1), due_at = excluded.due_at,
+				ON CONFLICT (sub) DO UPDATE SET seq = greatest(excluded.seq, p.seq + 1), due_at = excluded.due_at, parked_at = NULL,
 				  signed_out_everywhere_at = CASE WHEN $2::timestamptz IS NULL THEN p.signed_out_everywhere_at
 				    ELSE greatest(coalesce(p.signed_out_everywhere_at, '-infinity'), $2) END
 				RETURNING p.seq`, run.Sub, signedOut).Scan(&seq); err != nil {
@@ -89,7 +90,8 @@ func (c *Contract) RunSignOutEverywhere(ctx context.Context, run ContractRun, is
 }
 
 // RunNoticesDismiss is person.notices_dismiss (the spec's 14.7): in each
-// platform workspace of the actor's account, each of refs that is theirs
+// platform workspace where the actor's account is an active member (the
+// workspaces their document lists notices of), each of refs that is theirs
 // and unseen is marked seen, as SeeNotices marks it: a sync_paused notice
 // only at the version they saw. Not all or nothing: one already seen, gone
 // or not theirs counts as done; one whose version rose since stays, and the
@@ -124,6 +126,11 @@ func (c *Contract) RunNoticesDismiss(ctx context.Context, run ContractRun, refs 
 			if err := scope(ctx, tx, ws, uuid.Nil); err != nil {
 				return r, err
 			}
+			if active, err := activeMemberTx(ctx, tx, ws, run.User); err != nil {
+				return r, err
+			} else if !active {
+				continue
+			}
 			if _, err := tx.Exec(ctx, `UPDATE device_notices n SET seen_at = clock_timestamp()
 				FROM (SELECT id FROM device_notices WHERE tenant_id = $1 AND user_id = $2 AND id = ANY ($3) AND seen_at IS NULL
 				      ORDER BY id FOR UPDATE) l, unnest($3::bigint[], $4::bigint[]) AS s(id, version)
@@ -145,9 +152,13 @@ func (c *Contract) RunNoticesDismiss(ctx context.Context, run ContractRun, refs 
 }
 
 // ResumeRepairAfter is how long a number must have been unpaused before
-// the repair marks its pause notices resumed: the frame's window between
-// lifting a pause and marking it (device.start, the pairing retry).
-const ResumeRepairAfter = time.Minute
+// the repair marks its pause notices resumed: beyond the frame's window
+// between lifting a pause and marking it. device.start lifts it, then
+// starts the number, which may try to connect 8 times with up to 30
+// seconds between tries (a minute and a half, and the dials), and puts the
+// pause back if the start fails; a mark made inside that window would say
+// resumed of a number paused again.
+const ResumeRepairAfter = 10 * time.Minute
 
 // ResumeLostMarks marks resumed every unseen, unresumed sync_paused notice
 // whose number is live and has been unpaused for ResumeRepairAfter since
@@ -157,8 +168,10 @@ const ResumeRepairAfter = time.Minute
 // (devices.unpaused_at), or 0052's migrate time for a number unpaused
 // before 0052 stamped any. A number paused again is skipped. With subs,
 // only the workspaces of their accounts (before each person's read); with
-// none, every workspace (the hourly maintenance). Each workspace takes its
-// tenants row first, as MarkResumed does. It returns the notices marked.
+// none, every workspace (the hourly maintenance). A workspace with a
+// notice to mark takes its tenants row first, as MarkResumed does; one
+// with none takes no lock (most, before most documents). It returns the
+// notices marked.
 func (c *Contract) ResumeLostMarks(ctx context.Context, subs ...uuid.UUID) (int64, error) {
 	var tenants []uuid.UUID
 	if len(subs) == 0 {
@@ -178,15 +191,16 @@ func (c *Contract) ResumeLostMarks(ctx context.Context, subs ...uuid.UUID) (int6
 	var marked int64
 	for _, t := range tenants {
 		err := pg.InTenantTx(ctx, c.pool, t.String(), func(tx pgx.Tx) error {
+			var lost bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM device_notices n, devices d, contract_settings_state s WHERE `+lostMarkSQL+`)`,
+				t, ResumeRepairAfter).Scan(&lost); err != nil || !lost {
+				return err
+			}
 			if _, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, t); err != nil {
 				return err
 			}
 			tag, err := tx.Exec(ctx, `UPDATE device_notices n SET resumed_at = coalesce(d.unpaused_at, s.label_cutover_at)
-				FROM devices d, contract_settings_state s
-				WHERE n.tenant_id = $1 AND n.kind = 'sync_paused' AND n.seen_at IS NULL AND n.resumed_at IS NULL
-				  AND d.id = n.device_id AND d.tenant_id = n.tenant_id AND d.deleted_at IS NULL AND NOT d.paused
-				  AND coalesce(d.unpaused_at, s.label_cutover_at) >= coalesce(n.last_raised_at, n.raised_at)
-				  AND coalesce(d.unpaused_at, s.label_cutover_at) <= clock_timestamp() - $2::interval`, t, ResumeRepairAfter)
+				FROM devices d, contract_settings_state s WHERE `+lostMarkSQL, t, ResumeRepairAfter)
 			marked += tag.RowsAffected()
 			return err
 		})
@@ -195,6 +209,26 @@ func (c *Contract) ResumeLostMarks(ctx context.Context, subs ...uuid.UUID) (int6
 		}
 	}
 	return marked, nil
+}
+
+// lostMarkSQL is a notice n of workspace $1 whose resume lost its mark, on
+// its number d, unpaused for $2: the repair's, checked with no lock first.
+const lostMarkSQL = `n.tenant_id = $1 AND n.kind = 'sync_paused' AND n.seen_at IS NULL AND n.resumed_at IS NULL
+	AND d.id = n.device_id AND d.tenant_id = n.tenant_id AND d.deleted_at IS NULL AND NOT d.paused
+	AND coalesce(d.unpaused_at, s.label_cutover_at) >= coalesce(n.last_raised_at, n.raised_at)
+	AND coalesce(d.unpaused_at, s.label_cutover_at) <= clock_timestamp() - $2::interval`
+
+// PersonsDirtyAll makes every person's document due within debounce, as
+// PersonsDirty does for some: a change the dirty channel names "all" (an
+// account's status) may hide or show the pause notices of anyone.
+func (c *Contract) PersonsDirtyAll(ctx context.Context, debounce time.Duration) error {
+	return retryDeadlock(ctx, func() error {
+		_, err := c.pool.Exec(ctx, `UPDATE contract_persons p SET due_at = clock_timestamp() + $1::interval
+			FROM (SELECT sub FROM contract_persons WHERE parked_at IS NULL AND tries = 0 AND due_at > clock_timestamp() + $1::interval
+			      ORDER BY sub FOR UPDATE) l
+			WHERE p.sub = l.sub`, debounce)
+		return err
+	})
 }
 
 // workspacesOfSubs is the workspaces of the accounts linked to subs, in id
