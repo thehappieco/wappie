@@ -786,8 +786,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// list-deleted), which has no owner to check.
 		"Devices.ListAllDeleted": true,
 		// The contract's access snapshot, which lists a deleted number
-		// until its purge (README 8).
-		"Contract.Snapshot": true,
+		// until its purge (README 8): its read, Contract.Snapshot, and the
+		// sender's, Contract.SnapshotNumbered.
+		"snapshotTx": true,
 		// The contract's events: a replayed row, which keeps no label,
 		// takes its deleted number's until the purge (the plan's 4.11).
 		"replayedLabelsTx": true,

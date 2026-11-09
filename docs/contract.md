@@ -574,8 +574,10 @@ transaction):
 
 For every recorded platform workspace, personal ones included, the leader
 sends `PUT /contract/v1/workspaces/{id}/access` (spec 8), an absolute
-snapshot of what Wappie's own tables say, measured in one read-only
-snapshot of the database with its clock. A workspace Wappie has no
+snapshot of what Wappie's own tables say, measured in one REPEATABLE READ
+transaction with the database's clock, which first takes its
+`snapshot_seq` under the workspace's record and then reads, read-only
+(DS3). A workspace Wappie has no
 workspace for gets an empty one (`"items": []`): the console counts a
 missing snapshot as unknown protection.
 
@@ -618,8 +620,14 @@ missing snapshot as unknown protection.
   workspace's snapshot is not sent: Wappie would not send it"), recorded
   `local_invalid:<rule>`, and retried with the backoff.
 - **`snapshot_seq`** is the greater of the measurement's milliseconds and
-  the last one sent plus one, stored before the send, so it rises across
-  leaders.
+  the last one numbered plus one (which may be one whose send failed), or
+  the workspace's last section's plus one, stored before the send, so it
+  rises across leaders. It is taken first in the snapshot's own measuring
+  transaction, under the workspace's record, as a section's is (DS3): an
+  act that holds the record (a rename, a stop, a resume) makes the
+  snapshot wait and measure again, so a snapshot at or above an act's seq
+  always shows it. A read that meets the record busy tries again after a
+  short random pause, up to eight times, before it counts as a failure.
 
 **When.** At the leader's start, every recorded workspace (and every park
 released for one try); 2 seconds after the first of a run of changes the
@@ -723,7 +731,7 @@ Each recorded platform workspace's `numbers` section
 | `items[].capture` | `paused` when the number is paused or deleted, else `on` |
 | `items[].paused_by` | `{kind, sub, at}` from `devices.paused_at`, `paused_by_kind` and the sub of `paused_by_user`; `null` whenever the time or the actor is not known (DS7) |
 | `items[].can_resume` | paused, not deleted, its identity known, not logged out or banned |
-| `items[].read_only` | logged out, banned or deleted |
+| `items[].read_only` | logged out, banned or deleted, or no identity stored (it connected for a pairing that never linked, or, rarely, Wappie failed to save the identity of one that did: no session Wappie could start from what it stored, so its sync now is `not_linked`, and a pause of it could not be lifted from the console; DS12) |
 | `items[].key_epoch` | the number's epoch, `null` for 0 |
 | `items[].recovery_open` | deleted, its purge ahead and not started |
 | `items[].move_out`, `items[].bytes` | `null` |
@@ -858,7 +866,7 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 
 | Kind | Local rule (Wappie's screens) | Document's role | Refusals of its own | Runs as |
 |---|---|---|---|---|
-| `item.rename` | Manage (owner, admin, or the Manage flag) | owner or admin; member only with the Manage flag | `state_changed` (`before` is not the label the snapshot publishes), `label_changed` (with the cleaned label) | `device.rename`; a label Wappie sets aside is stored and published `null` (DS10); the snapshot is due too |
+| `item.rename` | Manage (owner, admin, or the Manage flag) | owner or admin; member only with the Manage flag | `state_changed` (`before` is not the label the snapshot publishes), `not_authorized` (a label Wappie sets aside, as typed or as cleaned: a placeholder, an id, the number's own digits; nothing stored, DS10), `label_changed` (with the cleaned label) | `device.rename`, which stores a label set aside where the console's rename refuses it (DS10); the snapshot is due too |
 | `item.sync_stop` | owner or admin by role | owner or admin | none: a paused number counts as done | `device.stop`: readers told, the event written, the pairing cancelled, the number stopped, its status broadcast, the notices pushed; `paused_by` names the actor |
 | `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails, or runs past the start bound, keeps the pause lifted, and the supervisor starts the number (DS9) |
 | `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
@@ -904,7 +912,7 @@ own clock (`contract_persons.seq`), as a section is sent (DS12):
 |---|---|
 | `accepts` | `[]` in `read`; in `on` the person's two kinds |
 | `signed_out_everywhere_at` | the latest `issued_at` of a `person.sign_out_everywhere` that ran |
-| `notices` | the person's unseen notices of the platform workspaces where Wappie lets them in (the membership, the account and the workspace active, the membership not expired), never a local-only workspace's, the newest 300, as Wappie's own page lists them |
+| `notices` | the person's unseen notices of the platform workspaces where Wappie lets them in (the membership, the account and the workspace active, the membership not expired), never a local-only workspace's, the newest 300, as Wappie's own page lists them; with more, the document is `truncated` (a list cut to fit, the spec's 14.2), with no ERROR |
 | `notices[].id`, `version` | the row's id in decimal; the pauses folded in for `sync_paused`, else 1 |
 | `notices[].label` | the label stored with it; one stored before the label cutover only when today's rule gives the same text of the number now, else `null` |
 | `notices[].params` | `actor` the sub of who raised it, `null` for someone with none, never a name |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
@@ -224,6 +225,14 @@ func numbersItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, out *Co
 // actSeqTx is the first statement of every workspace act (the plan's 3.5):
 // the record locked, and the act's seq, the workspace's next on its one
 // clock. ErrNotFound for a workspace that is not recorded.
+//
+// It updates the record, never only locks it: a numbers or a snapshot read
+// that waits on the act fails with a serialization error once the act
+// commits, and measures again with a view that sees it, only because the
+// row it waited on was updated. One that waits on a lock alone (SELECT
+// ... FOR UPDATE, as the event queue's lockQueueTx and RefuseCommand take
+// it, writing nothing either read shows) goes on with the view it took
+// before the wait, and would miss the act.
 func actSeqTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) (int64, error) {
 	var seq int64
 	err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
@@ -445,13 +454,28 @@ func (s sentRow) decide(measured time.Time, outcome ContractSnapshotOutcome, cla
 	return rec, w, nil
 }
 
+// serializationTries is how many times retrySerialization runs a
+// transaction in all.
+const serializationTries = 8
+
 // retrySerialization runs fn, one whole transaction, again when the server
 // aborted it as a serialization failure (40001: a REPEATABLE READ document
 // read met an act that committed after its snapshot) or a deadlock
-// (40P01), at most five times in all.
+// (40P01), at most serializationTries times in all, pausing before each
+// try again (serializationPause). The numbers and the snapshot reads each
+// update the workspace's record first and hold it while they measure, so
+// they fail on each other, on an act and on the event sender's record: a
+// try again at once meets the next writer queued on the record (an act
+// that follows another, the read it just failed on) and fails the same
+// way, and five of them ran out within one burst of acts.
 func retrySerialization(ctx context.Context, fn func() error) error {
 	var err error
-	for range 5 {
+	for try := range serializationTries {
+		if try > 0 {
+			if werr := sleepCtx(ctx, serializationPause(try)); werr != nil {
+				return errors.Join(err, werr)
+			}
+		}
 		if err = fn(); !isSerialization(err) && !isDeadlock(err) {
 			return err
 		}
@@ -460,6 +484,28 @@ func retrySerialization(ctx context.Context, fn func() error) error {
 		}
 	}
 	return err
+}
+
+// serializationPause is the wait before the try after the n-th failure
+// (n from 1): n times 2 to 7 ms, drawn at random, so that the writers
+// queued on the record commit first and two reads that failed on one act
+// do not meet again in step. Eight tries wait 56 to 196 ms in all.
+//
+//nolint:gosec // G404: scheduling jitter, not a security decision
+func serializationPause(n int) time.Duration {
+	return time.Duration(n) * time.Duration(2+rand.IntN(6)) * time.Millisecond
+}
+
+// sleepCtx waits d, or until ctx is done.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func isSerialization(err error) bool {

@@ -270,11 +270,11 @@ func actSectionDueTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) error 
 // RunRename is item.rename (the plan's 6.3; the frame is device.rename):
 // the number live, the actor's RuleManage, params.before against the label
 // Wappie publishes (label.Contract, never the one stored: state_changed),
-// the new label as the contract cleans it (label_changed with the cleaned
-// text otherwise), then the label stored as the frame stores it. A label
-// Wappie sets aside (a placeholder, an id, the number itself) is stored
-// all the same, and the snapshot publishes null (DS10). The snapshot and
-// the numbers section are due now.
+// a label Wappie would set aside, as typed or as cleaned (a placeholder,
+// an id, the number itself: not_authorized, nothing stored, DS10), the new
+// label as the contract cleans it (label_changed with the cleaned text
+// otherwise), then the label stored as the frame stores it. The snapshot
+// and the numbers section are due now.
 func (c *Contract) RunRename(ctx context.Context, run ContractRun, item uuid.UUID, before *string, after string) (ContractAct, error) {
 	return c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
 		var stored, pn string
@@ -301,6 +301,19 @@ func (c *Contract) RunRename(ctx context.Context, run ContractRun, item uuid.UUI
 			// A label the contract leaves nothing of: the console offers
 			// none (the kit's ValidLabel), so its state was not Wappie's.
 			return refusedWith(kc.CodeStateChanged), nil
+		case label.Contract(after, pn, item.String()) == nil, label.Contract(cleaned, pn, item.String()) == nil:
+			// A name Wappie sets aside, as typed or as cleaned: the
+			// snapshot would publish null for it, the console would show
+			// the rename done and the number unnamed. As typed first, as
+			// the spec's 8.1 sets aside before the cleaning: the number
+			// itself ("+55 11 90000-0001") and an id of digits clean to
+			// "…" and four digits ("…0001"), which a label_changed would
+			// offer where the frame's copy of the same text publishes
+			// null. label_changed cannot say null (its detail.cleaned is
+			// a label the kit's ValidLabel takes), so it is Wappie's rule
+			// that refuses it (the spec's 8.1 and 14.9, DS10), before a
+			// label_changed that would offer it.
+			return refusedWith(kc.CodeNotAuthorized), nil
 		case cleaned != after:
 			w := refusedWith(kc.CodeLabelChanged)
 			w.result.Detail, err = json.Marshal(map[string]string{"cleaned": cleaned})

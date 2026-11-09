@@ -1773,11 +1773,23 @@ never moves the seq a snapshot in flight records its outcome by. A
 document takes its seq first, in its own REPEATABLE READ measuring
 transaction (an act holding the record makes it run again, and it then
 sees the act); an act takes its seq first, under its record. So a section
-at or above a result's seq shows it. The snapshot is measured, then
-numbered, which leaves a rename's residual for one send, bounded by 0051's
-label trigger; and a section's `snapshot_seq` is the last one numbered,
-which may be a snapshot whose send failed: the console's "shown" check
-reads the platform's own kept seq, so that is harmless. A person's
+at or above a result's seq shows it. The sender's snapshot does the same
+(`SnapshotNumbered`, since the platform's check of fcffb55, finding 3):
+12a measured it, then numbered it, so a rename that committed in between
+left one snapshot above the result with the old label (the residual the
+plan bounded by 0051's label trigger), and the console showed the rename
+done beside the old name until the next one. Past its seq the snapshot
+measures read-only, so its seq is its one write. Because the numbers and
+the snapshot reads hold the record while they measure, they fail on each
+other, on an act and on the event sender's record: a read that fails so
+tries again after a random pause of n times 2 to 7 ms after its n-th
+failure, eight tries in all (12a's five, at once, ran out within a burst
+of acts). Every act updates the record, never only locks it: a read that
+waits on a lock alone keeps the view it took before the wait. No code
+numbers a document after measuring it (`TestWorkspaceClockWriters`). And
+a section's `snapshot_seq` is the last one numbered, which may be a
+snapshot whose send failed: the console's "shown" check reads the
+platform's own kept seq, so that is harmless. A person's
 document does the same on `contract_persons.seq`, with `sent_seq` for its
 outcome's compare-and-set.
 
@@ -1897,9 +1909,33 @@ sync now is `connect_failed` and a resume is the supervisor's. Each act
 reads its number by the command's workspace beside the row-level
 security, so a fault in either still finds nothing of another workspace.
 
-**DS10. A rename to a label Wappie sets aside runs.** A placeholder, an id
-or the number itself is stored, as the frame stores it, and the snapshot
-publishes `null` for it: `label_changed` cannot carry `null`.
+**DS10. A rename to a label Wappie sets aside is refused.** A
+placeholder, an opaque or legacy id, or a name holding the number's own
+digits, as typed or as the contract cleans it, is `not_authorized`, and
+nothing is stored. 12a ran it and stored it, as the frame does, and the snapshot
+published `null`: the console showed the rename done and the number
+unnamed (the platform's check of fcffb55, finding 4). `label_changed`
+would say it best ("Wappie keeps the name another way"), but its
+`detail.cleaned` must be a label the kit's `ValidLabel` takes, never
+empty or `null`, and `item.rename`'s `after` is always a label (the
+spec's 14.7), so no answer says "published as unnamed". Of the codes
+`item.rename` may answer, `not_authorized` is the one that is true: the
+spec's 14.9 reads "the actor's role or the app's rule does not allow it",
+and Wappie's rule (the spec's 8.1: the app sets aside placeholders, ids
+and the number itself) does not allow that name as a number's label; it
+is final, as a retry would meet the same rule, and nothing changed, so
+the number keeps the name the console drew. `state_changed` (a race),
+`app_only` (Wappie's own screen would store it and the console would
+still show it unnamed) and `invalid_value` (not one of `item.rename`'s
+codes) are not. The check runs on the label as typed, as the spec's 8.1
+sets aside before the cleaning: the number itself ("+55 11 90000-0001",
+or its bare digits) and a UUID of digits clean to "…" and the last four
+digits, which a check of the cleaned label alone offered back as a
+`label_changed` (the review of the follow-ups), where the frame's copy of
+the same text publishes `null`. It runs on the cleaned label too, before
+`label_changed`, so a confirmation never offers a name that would then
+be refused. The frame still stores such a label, as Wappie's own screens
+take it: the one divergence of the rename's parity test.
 
 **DS11. Sign-out everywhere ends what began before it.**
 `person.sign_out_everywhere` ends the actor's session families whose first
@@ -1927,13 +1963,32 @@ spec's 14.2 says, where the plan had the whole section `local_invalid`; a
 section that still fails is. A parked snapshot does not hold back its
 workspace's section, which has its own park. A numbers row carries no
 label (the snapshot's is the number's). 0052 nulled the labels of the item events not yet sent, once.
+A row is `read_only` when its number is logged out or banned (the spec's
+14.3), deleted (the platform's commitment), or no identity of it is
+stored (a pairing that connected and never linked; the platform's check
+of fcffb55, finding 5): Wappie holds no session it could start for it,
+the "no session to the number" of the spec's 14.9 `read_only`. The rule
+reads what is stored, so it also takes a number that did link but whose
+identity Wappie failed to save at the pairing and at every connection
+since (the device holds it in memory only, with an ERROR each time): very
+rare, and while it captures the console holds back Pausar on it, which
+Wappie's own screen still offers. Its sync
+now is `not_linked`, and a stop would leave a pause the console cannot
+lift (`can_resume` false, a resume `state_changed`), so the console holds
+both back, as on a logged-out number, and sends the person to Wappie
+("Abrir no Wappie", `not_linked`'s way out too). There its start, its
+pairing retry (it connected) and its relink (no identity stored to
+compare the scan with, the spec's 14.13) all refuse it: an owner deletes
+it and links the phone as a new number. Once its identity is known the
+row changes (0052's trigger watches `lid` and `pn`).
 The person's notices (the commands release) are the unseen ones of
 platform workspaces where Wappie lets the person in (membership, account
 and workspace active, the membership not expired: a disabled member sees
 no notice of the team in the console, as on Wappie's own page), the newest
-300, each versioned as `SeenNotice` acknowledges it, their label cut over
-at render (one stored before 0052 is kept only when today's rule gives the
-same), and a notice deleted sends the person's document again, as does a
+300 (more sends the document `truncated`, as a list cut to fit; no
+ERROR, the bound is the spec's), each versioned as `SeenNotice`
+acknowledges it, their label cut over at render (one stored before 0052
+is kept only when today's rule gives the same), and a notice deleted sends the person's document again, as does a
 change in a workspace where they hold one, and an account's status
 (everyone's). An act makes the documents it shows in due at once, a parked
 one too, for one try: a park would otherwise keep the console from ever

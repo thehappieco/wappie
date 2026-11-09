@@ -76,11 +76,11 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 
 	// The seq: the measurement's milliseconds, or one more than the last.
 	measured := dbClock(t, pool, "0")
-	seq, ok, err := c.SnapshotSeq(ctx, ws, measured)
+	seq, ok, err := c.SnapshotSeqForTest(ctx, ws, measured)
 	if err != nil || !ok || seq != measured.UnixMilli() {
 		t.Fatalf("seq %d %v %v, want %d", seq, ok, err, measured.UnixMilli())
 	}
-	if again, _, _ := c.SnapshotSeq(ctx, ws, measured.Add(-time.Hour)); again != seq+1 {
+	if again, _, _ := c.SnapshotSeqForTest(ctx, ws, measured.Add(-time.Hour)); again != seq+1 {
 		t.Fatalf("a clock stepped back gives %d, want %d", again, seq+1)
 	}
 	seq++
@@ -164,7 +164,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	if _, ok, err := c.NextSnapshot(ctx); err != nil || ok {
 		t.Fatalf("a parked workspace is never due: %v %v", ok, err)
 	}
-	if _, ok, err := c.SnapshotSeq(ctx, ws, dbClock(t, pool, "0")); err != nil || ok {
+	if _, ok, err := c.SnapshotSeqForTest(ctx, ws, dbClock(t, pool, "0")); err != nil || ok {
 		t.Fatalf("a parked workspace gets no seq: %v %v", ok, err)
 	}
 
@@ -175,7 +175,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	if r := readSnapshotRow(t, pool, ws); r.ParkedAt != nil || r.NotFoundSince == nil || r.DueIn > 0 {
 		t.Fatalf("after a leader's start: %+v", r)
 	}
-	if seq, ok, err = c.SnapshotSeq(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
+	if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if rec := sent(store.SnapshotNotFound, "refused:not_found"); !rec.Parked {
@@ -186,7 +186,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	if err := c.SnapshotsDue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if seq, ok, err = c.SnapshotSeq(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
+	if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if rec := sent(store.SnapshotRefused, "refused:invalid_request"); !rec.Parked || rec.NotFoundSince != nil {
@@ -199,7 +199,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	if err := c.SnapshotsDue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if seq, ok, err = c.SnapshotSeq(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
+	if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	sent(store.SnapshotAccepted, "")
@@ -211,7 +211,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	// the members, a restart, a name given again) stands, whatever the
 	// outcome, and a failure then counts no try.
 	for _, outcome := range []store.ContractSnapshotOutcome{store.SnapshotAccepted, store.SnapshotFailed, store.SnapshotNotFound} {
-		if seq, ok, err = c.SnapshotSeq(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
+		if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
 			t.Fatal(ok, err)
 		}
 		measured := dbClock(t, pool, "0")
@@ -360,7 +360,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	measured := dbClock(t, pool, "0")
-	seq, ok, err := c.SnapshotSeq(ctx, team, measured)
+	seq, ok, err := c.SnapshotSeqForTest(ctx, team, measured)
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
@@ -378,7 +378,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 	// then L1's accepted comes back.
 	ws := recordWorkspace(t, pool, "team")
 	measured = dbClock(t, pool, "0")
-	if seq, ok, err = c.SnapshotSeq(ctx, ws, measured); err != nil || !ok {
+	if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, measured); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if err := c.SnapshotsDue(ctx); err != nil {
@@ -399,7 +399,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 			t.Fatal(err)
 		}
 		measured = dbClock(t, pool, "0")
-		if seq, ok, err = c.SnapshotSeq(ctx, ws, measured); err != nil || !ok {
+		if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, measured); err != nil || !ok {
 			t.Fatal(ok, err)
 		}
 		if err := c.SnapshotsDirty(ctx, []uuid.UUID{ws}, false, 2*time.Second); err != nil {
@@ -419,7 +419,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	measured = dbClock(t, pool, "0")
-	if seq, ok, err = c.SnapshotSeq(ctx, ws, measured); err != nil || !ok {
+	if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, measured); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if err := c.SnapshotsDirty(ctx, []uuid.UUID{ws}, false, 30*time.Second); err != nil {
