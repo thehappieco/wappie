@@ -139,7 +139,9 @@ func contractSettingsStatus(ctx context.Context, c *store.Contract, check bool, 
 	if s.FeedError != "" {
 		w.f("command feed: failing since %s (%s)", ago(now, s.FeedErrorAt), s.FeedError)
 	}
-	if s.ResultsError != "" {
+	if s.ResultsError != "" && st.Undelivered > 0 {
+		// Only an answered post clears it: a reset that dropped the results
+		// leaves it set with nothing failing.
 		w.f("results: posts failing since %s (%s)", ago(now, s.ResultsErrorAt), s.ResultsError)
 	}
 	w.f("invalid_command: last answered %s", ago(now, s.InvalidAt))

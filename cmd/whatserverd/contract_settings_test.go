@@ -251,3 +251,50 @@ func TestContractSettingsCommand(t *testing.T) {
 		}
 	}
 }
+
+// TestContractSettingsStaleLines: what the operator reads matches the
+// state. "results: posts failing" shows only while a result is not
+// delivered (a reset drops them and leaves results_error set until a post
+// is answered); contract mode off tells the operator to tell the platform
+// only when it turned settings off itself, not when they were off
+// already (the platform was told then); and contract status --check
+// reports a settings part it cannot read as a finding, never failing whole.
+func TestContractSettingsStaleLines(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetSettingsMode(ctx, store.SettingsRead, true); err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, pool, `UPDATE contract_settings_state SET first_read_at = clock_timestamp(), read_at = clock_timestamp(),
+		results_error = 'transport', results_error_at = clock_timestamp() - interval '1 hour'`)
+	if out, _, _ := settingsRun(t, c); strings.Contains(out, "results: posts failing") {
+		t.Fatalf("posts failing with no result undelivered:\n%s", out)
+	}
+	ledgerRowSQL(t, pool, "outcome", "'refused'", "code", "'invalid_command'", "result_at", "clock_timestamp()")
+	if out, _, _ := settingsRun(t, c); !strings.Contains(out, "results: posts failing since ") || !strings.Contains(out, "(transport)") {
+		t.Fatalf("posts failing with a result undelivered:\n%s", out)
+	}
+
+	if _, err := c.SetSettingsMode(ctx, store.SettingsOff, true); err != nil {
+		t.Fatal(err)
+	}
+	var modeOut bytes.Buffer
+	if err := contractMode(ctx, c, store.ContractOff, nil, &modeOut); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(modeOut.String(), "settings: off with it") || strings.Contains(modeOut.String(), "tell it") ||
+		!strings.Contains(modeOut.String(), "contract mode: observe -> off") {
+		t.Fatalf("contract mode off with settings off already: %q", modeOut.String())
+	}
+
+	execSQL(t, pool, `ALTER TABLE contract_sections RENAME TO contract_sections_away`)
+	out, findings, code := statusRun(t, c, config.Contract{})
+	if code != 1 || !has(findings, "the settings part's state could not be read: ") || !strings.Contains(out, "settings: unreadable: ") ||
+		!strings.Contains(out, "mode: off (since ") {
+		t.Fatalf("contract status --check with the settings part unreadable: %d %v\n%s", code, findings, out)
+	}
+}
