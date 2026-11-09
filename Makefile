@@ -41,7 +41,7 @@ cover: ## Report coverage
 # single new input while the others wait for the budget to free up, which put
 # FuzzContractNeverGivesThePushName anywhere from 5 to 24 seconds in local
 # runs. A failing input is still minimized within this budget, then written.
-FUZZTIME         ?= 300000x
+FUZZTIME         ?= 400000x
 FUZZMINIMIZETIME ?= 5000x
 
 fuzz: ## Short fuzz pass over every fuzz target
