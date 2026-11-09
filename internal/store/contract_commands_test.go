@@ -635,3 +635,254 @@ func TestCommandsThirtyDays(t *testing.T) {
 		t.Fatalf("a person no longer followed: %d %v", left, err)
 	}
 }
+
+// A rejection whose code the contract does not name, or that has none (the
+// kit checks only each answer's id and outcome), parks its result
+// invalid_request with the platform's code kept in post_error, and never
+// holds back the batch's other answers: every result is posted or parked.
+func TestResultsPostedUnknownRejection(t *testing.T) {
+	ctx := context.Background()
+	l := newLedgerWorld(t)
+	var ids []uuid.UUID
+	for i := range 4 {
+		c := l.command(l.ws, int64(i+1))
+		l.take(t, c)
+		l.finish(t, c.ID, store.CommandResult{Code: store.CommandKindNotAccepted})
+		ids = append(ids, c.ID)
+	}
+	if err := l.c.ResultsPosted(ctx, []store.ContractResultOutcome{
+		{ID: ids[0], Answer: store.DeliveryAccepted},
+		{ID: ids[1], Answer: store.DeliveryRejected, Code: "rate_limited"},
+		{ID: ids[2], Answer: store.DeliveryRejected},
+		{ID: ids[3], Answer: store.DeliveryRejected, Code: "Not A\x00Code " + strings.Repeat("x", 200)},
+	}); err != nil {
+		t.Fatalf("a batch with rejections of no known code: %v", err)
+	}
+	for i, want := range []struct{ delivery, code, postError string }{
+		{store.DeliveryAccepted, "", ""},
+		{store.DeliveryRejected, "invalid_request", "unknown_reject_code:rate_limited"},
+		{store.DeliveryRejected, "invalid_request", "unknown_reject_code:none"},
+		{store.DeliveryRejected, "invalid_request", "unknown_reject_code:malformed"},
+	} {
+		r := l.row(t, ids[i])
+		var postError string
+		if err := l.pool.QueryRow(ctx, `SELECT coalesce(post_error, '') FROM contract_commands WHERE id = $1`, ids[i]).Scan(&postError); err != nil {
+			t.Fatal(err)
+		}
+		if r.Delivery != want.delivery || r.RejectCode != want.code || postError != want.postError {
+			t.Errorf("result %d: %+v %q, want %+v", i, r, postError, want)
+		}
+	}
+	if results, err := l.c.UndeliveredResults(ctx, 10); err != nil || len(results) != 0 {
+		t.Fatalf("left to post: %+v %v", results, err)
+	}
+	if status, err := l.c.SettingsStatus(ctx); err != nil || status.Parked != 3 {
+		t.Fatalf("parked: %+v %v", status, err)
+	}
+}
+
+// A JSON null is no value: a result's detail (json.Marshal of a nil
+// pointer) and a decoded command's target and docs given as null are
+// stored as NULL, never as a jsonb null, which the CHECKs refuse.
+func TestCommandJSONNull(t *testing.T) {
+	ctx := context.Background()
+	l := newLedgerWorld(t)
+	c := l.command(l.ws, 1)
+	c.Decoded.Target, c.Decoded.BasedOnDocs = json.RawMessage(`null`), json.RawMessage(" null\n")
+	l.take(t, c)
+	detail, err := json.Marshal((*struct{})(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.c.RefuseCommand(ctx, c.ID, store.CommandResult{Code: store.CommandKindNotAccepted, Detail: detail}); err != nil {
+		t.Fatalf("a refusal with a null detail: %v", err)
+	}
+	var target, docs, none bool
+	if err := l.pool.QueryRow(ctx, `SELECT target IS NULL, based_on_docs IS NULL, detail IS NULL FROM contract_commands WHERE id = $1`,
+		c.ID).Scan(&target, &docs, &none); err != nil || !target || !docs || !none {
+		t.Fatalf("stored: target %v, docs %v, detail %v: %v", target, docs, none, err)
+	}
+}
+
+// A row whose act has begun (in_progress, PR F's) is answered as a finished
+// one when a copy whose MAC holds comes with another body: logged, its
+// result posted again, and the page commits.
+func TestTakeInProgressOtherBody(t *testing.T) {
+	ctx := context.Background()
+	l := newLedgerWorld(t)
+	c := l.command(l.ws, 1)
+	l.take(t, c)
+	if _, err := l.pool.Exec(ctx, `UPDATE contract_commands SET outcome = 'in_progress', result_at = clock_timestamp(),
+		delivery = 'accepted', delivered_at = clock_timestamp() WHERE id = $1`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	copied := c
+	copied.Body, copied.BodyKey = []byte(`{"other":true}`), bodyKey(`{"other":true}`)
+	if res := l.take(t, copied); res.OtherBody != 1 || res.Invalid != 0 || res.Security != 1 {
+		t.Fatalf("a copy of a row in progress: %+v", res)
+	}
+	if r := l.row(t, c.ID); r.Outcome != store.CommandInProgress || r.Code != "" || r.Delivery != "" {
+		t.Fatalf("the row in progress after the copy: %+v", r)
+	}
+}
+
+// A result past its 30 days is gone for a reset and for the poster too:
+// neither drops it (nor locks it), and only the trim deletes it.
+func TestExpiredResultsLeftToTheTrim(t *testing.T) {
+	ctx := context.Background()
+	l := newLedgerWorld(t)
+	c := l.command(l.ws, 1)
+	l.take(t, c)
+	l.finish(t, c.ID, store.CommandResult{Code: store.CommandKindNotAccepted})
+	if _, err := l.pool.Exec(ctx, `UPDATE contract_commands SET taken_at = clock_timestamp() - interval '31 days' WHERE id = $1`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	next := uuid.New()
+	if ok, err := l.c.RestartFromCommands(ctx, l.gen, &next); err != nil || !ok {
+		t.Fatalf("the reset: %v %v", ok, err)
+	}
+	if r := l.row(t, c.ID); r.Delivery != "" {
+		t.Fatalf("the reset touched a row past its days: %+v", r)
+	}
+	if results, err := l.c.UndeliveredResults(ctx, 10); err != nil || len(results) != 0 {
+		t.Fatalf("the poster found %+v %v", results, err)
+	}
+	if r := l.row(t, c.ID); r.Delivery != "" {
+		t.Fatalf("the poster touched a row past its days: %+v", r)
+	}
+	if n, err := l.c.TrimCommands(ctx); err != nil || n != 1 {
+		t.Fatalf("the trim: %d %v", n, err)
+	}
+}
+
+// heldBy runs hold's lock, then fn in the background, and once fn waits on
+// hold, reports whether the row of probe can still be locked at once (fn
+// holds none of the rows it would take after the one it waits on).
+func heldBy(t *testing.T, pool *pgxpool.Pool, hold string, held any, probe string, probed any, fn func() error) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, hold, held); err != nil {
+		t.Fatal(err)
+	}
+	pid := tx.Conn().PgConn().PID()
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var waiting bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid)))`,
+			int32(pid)).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("waited 20 s for the call to wait on the held row")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	free := true
+	probeTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probeTx.Exec(ctx, `SET LOCAL lock_timeout = '50ms'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probeTx.Exec(ctx, probe, probed); err != nil {
+		if sqlState(err) != "55P03" {
+			t.Fatalf("the probe: %v", err)
+		}
+		free = false
+	}
+	_ = probeTx.Rollback(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the call after the held row: %v", err)
+	}
+	return free
+}
+
+// The trim takes the ledger rows and the persons it deletes in key order,
+// as every other writer of them does (the plan's 3.4): waiting on the
+// first, it holds no later one, so it never crosses a reset or a take.
+func TestTrimLocksInKeyOrder(t *testing.T) {
+	ctx := context.Background()
+	l := newLedgerWorld(t)
+	low := uuid.MustParse("00000000-0000-7000-8000-000000000001")
+	high := uuid.MustParse("ffffffff-ffff-7fff-bfff-ffffffffffff")
+	// high first, and the older: first in the heap and in taken_at order.
+	for i, id := range []uuid.UUID{high, low} {
+		if _, err := l.pool.Exec(ctx, `INSERT INTO contract_commands (id, generation, cseq, body, body_key, signed_at, outcome, code,
+				result_at, taken_at)
+			VALUES ($1, $2, $3::bigint, '{}', $4, clock_timestamp(), 'refused', 'invalid_command', clock_timestamp(),
+				clock_timestamp() - interval '32 days' + $3::bigint * interval '1 hour')`, id, l.gen, i+1, make([]byte, 32)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trim := func() error {
+		_, err := l.c.TrimCommands(ctx)
+		return err
+	}
+	if !heldBy(t, l.pool, `SELECT 1 FROM contract_commands WHERE id = $1 FOR UPDATE`, low,
+		`SELECT 1 FROM contract_commands WHERE id = $1 FOR UPDATE`, high, trim) {
+		t.Error("the trim held a later ledger row while it waited on the first")
+	}
+	for _, sub := range []uuid.UUID{high, low} {
+		if _, err := l.pool.Exec(ctx, `INSERT INTO contract_persons (sub) VALUES ($1)`, sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !heldBy(t, l.pool, `SELECT 1 FROM contract_persons WHERE sub = $1 FOR UPDATE`, low,
+		`SELECT 1 FROM contract_persons WHERE sub = $1 FOR UPDATE`, high, trim) {
+		t.Error("the trim held a later person while it waited on the first")
+	}
+	var left int
+	if err := l.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM contract_commands) + (SELECT count(*) FROM contract_persons)`).
+		Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d rows left after the trims: %v", left, err)
+	}
+}
+
+// A take meets the rows of its page's ids in id order, the ones past their
+// 30 days included, which it deletes: waiting on the first, it holds no
+// later one.
+func TestTakeLocksInIDOrder(t *testing.T) {
+	ctx := context.Background()
+	l := newLedgerWorld(t)
+	lowCmd, highCmd := l.command(l.ws, 1), l.command(l.ws, 2)
+	lowCmd.ID = uuid.MustParse("00000000-0000-7000-8000-000000000001")
+	highCmd.ID = uuid.MustParse("ffffffff-ffff-7fff-bfff-ffffffffffff")
+	for i, id := range []uuid.UUID{highCmd.ID, lowCmd.ID} {
+		if _, err := l.pool.Exec(ctx, `INSERT INTO contract_commands (id, generation, cseq, body, body_key, signed_at, outcome, code,
+				result_at, taken_at)
+			VALUES ($1, $2, $3::bigint, '{}', $4, clock_timestamp(), 'refused', 'invalid_command', clock_timestamp(),
+				clock_timestamp() - interval '32 days' + $3::bigint * interval '1 hour')`, id, l.gen, i+1, make([]byte, 32)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := l.c.SettingsState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	take := func() error {
+		res, err := l.c.TakeCommands(ctx, store.ContractCommandPage{SeenGeneration: l.gen, After: st.FeedCursor, NextAfter: st.FeedCursor + 2,
+			SignedAt: time.Now(), Items: []store.ContractCommandTake{highCmd, lowCmd}})
+		if err == nil && (!res.Committed || res.New != 2) {
+			err = fmt.Errorf("the take: %+v", res)
+		}
+		return err
+	}
+	if !heldBy(t, l.pool, `SELECT 1 FROM contract_commands WHERE id = $1 FOR UPDATE`, lowCmd.ID,
+		`SELECT 1 FROM contract_commands WHERE id = $1 FOR UPDATE`, highCmd.ID, take) {
+		t.Error("the take held a later row while it waited on the first")
+	}
+}

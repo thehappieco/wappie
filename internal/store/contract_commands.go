@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 )
 
@@ -177,20 +179,24 @@ type ContractTakeResult struct {
 // ErrPageBehind is a page whose next_after is behind its after: no page.
 var ErrPageBehind = errors.New("store: a command page's next_after is behind its after")
 
-// takenRow is a ledger row a take met.
+// takenRow is a ledger row a take met. answered: it has a result, final
+// or in_progress (an act begun, PR F's): only a row with none is finished
+// by a copy with another body.
 type takenRow struct {
 	key      []byte
-	finished bool
+	answered bool
 }
 
 // TakeCommands stores a command page in one transaction, in 3.4's order:
 // contract_state FOR SHARE (a reset waits for it), the settings row, the
-// ledger rows of the page's ids (id order), then the wseq memory. It
-// commits only while contract_state.generation and the cursor are the ones
-// the page was asked from. Per item (the plan's 3.1): a row already taken
-// with the same body is a replay (a result is posted again; the row moves
-// to this generation); another body from a copy whose MAC holds finishes
-// an open row invalid_command, and a forged one only logs; with no row, a
+// ledger rows of the page's ids (id order; a row past its 30 days is
+// deleted), then the wseq memory. It commits only while
+// contract_state.generation and the cursor are the ones the page was asked
+// from. Per item (the plan's 3.1): a row already taken with the same body
+// is a replay (a result is posted again; the row moves to this
+// generation); another body from a copy whose MAC holds finishes a row
+// with no result invalid_command (one with a result, in_progress included,
+// keeps it, posted again), and a forged one only logs; with no row, a
 // verdict is stored with its result, a command whose wseq the memory has
 // overtaken (not delivered again) is refused invalid_command, and the rest
 // is stored to run. Then the cursor moves to NextAfter, the feed's read
@@ -222,27 +228,36 @@ func (c *Contract) TakeCommands(ctx context.Context, p ContractCommandPage) (Con
 			for _, it := range p.Items {
 				ids = append(ids, it.ID)
 			}
-			// A row past its 30 days is gone for every read: deleted here,
-			// so a delivery of its id starts a new row.
-			if _, err := tx.Exec(ctx, `DELETE FROM contract_commands WHERE id = ANY ($1) AND NOT (`+commandLive+`)`, ids); err != nil {
-				return err
-			}
-			rows, err := tx.Query(ctx, `SELECT id, body_key, outcome IS NOT NULL AND outcome <> 'in_progress' FROM contract_commands
+			// Every row of the page's ids, in id order (3.4), those past
+			// their 30 days included: such a row is gone for every read, so
+			// it is deleted here, and a delivery of its id starts a new row.
+			rows, err := tx.Query(ctx, `SELECT id, body_key, outcome IS NOT NULL, `+commandLive+` FROM contract_commands
 				WHERE id = ANY ($1) ORDER BY id FOR UPDATE`, ids)
 			if err != nil {
 				return err
 			}
 			taken := map[uuid.UUID]takenRow{}
+			var expired []uuid.UUID
 			if err := forEachRow(rows, func(row pgx.Rows) error {
 				var id uuid.UUID
 				var r takenRow
-				if err := row.Scan(&id, &r.key, &r.finished); err != nil {
+				var live bool
+				if err := row.Scan(&id, &r.key, &r.answered, &live); err != nil {
 					return err
+				}
+				if !live {
+					expired = append(expired, id)
+					return nil
 				}
 				taken[id] = r
 				return nil
 			}); err != nil {
 				return err
+			}
+			if len(expired) > 0 {
+				if _, err := tx.Exec(ctx, `DELETE FROM contract_commands WHERE id = ANY ($1)`, expired); err != nil {
+					return err
+				}
 			}
 			for _, it := range p.Items {
 				if err := takeOneTx(ctx, tx, p, it, taken, &out); err != nil {
@@ -302,11 +317,13 @@ func takeOneTx(ctx context.Context, tx pgx.Tx, p ContractCommandPage, it Contrac
 		case it.Forged:
 			// Only the platform's own signed body may cancel a command.
 			return nil
-		case !r.finished:
+		case !r.answered:
 			out.Invalid++
-			taken[it.ID] = takenRow{key: r.key, finished: true}
+			taken[it.ID] = takenRow{key: r.key, answered: true}
 			return finishCommandTx(ctx, tx, it.ID, CommandResult{Outcome: CommandRefused, Code: CommandInvalid})
 		default:
+			// A final result, or in_progress: the act has begun, so the
+			// row keeps it, and it is posted again.
 			_, err := tx.Exec(ctx, `UPDATE contract_commands SET delivery = NULL, delivered_at = NULL, reject_code = NULL
 				WHERE id = $1`, it.ID)
 			return err
@@ -343,7 +360,7 @@ func takeOneTx(ctx context.Context, tx pgx.Tx, p ContractCommandPage, it Contrac
 	if err := insertCommandTx(ctx, tx, p, it, verdict); err != nil {
 		return err
 	}
-	taken[it.ID] = takenRow{key: it.BodyKey, finished: verdict != ""}
+	taken[it.ID] = takenRow{key: it.BodyKey, answered: verdict != ""}
 	if verdict == "" {
 		out.New++
 		return nil
@@ -407,9 +424,12 @@ func insertCommandTx(ctx context.Context, tx pgx.Tx, p ContractCommandPage, it C
 	return err
 }
 
-// jsonOrNil passes raw to a jsonb column, or NULL for none.
+// jsonOrNil passes raw to a jsonb column, or NULL for none: empty, or a
+// JSON null (json.Marshal of a nil pointer), which as a jsonb 'null' the
+// columns' object CHECKs refuse.
 func jsonOrNil(raw json.RawMessage) any {
-	if len(raw) == 0 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil
 	}
 	return string(raw)
@@ -632,8 +652,9 @@ func (c *Contract) CommandRunFailed(ctx context.Context, id uuid.UUID, class str
 // 3.3), in Restart's transaction after the account state, in 3.4's order:
 // the settings row (the feed from 0), the ledger rows to drop (id order:
 // every result not delivered of another generation than gen, which the
-// platform no longer expects), the wseq memory (forgotten), then every
-// section and person document due now, afresh, as the snapshots are.
+// platform no longer expects; a row past its 30 days is the trim's), the
+// wseq memory (forgotten), then every section and person document due now,
+// afresh, as the snapshots are.
 func restartCommandsTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID) error {
 	if _, err := lockSettingsTx(ctx, tx); err != nil {
 		return err
@@ -643,6 +664,7 @@ func restartCommandsTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID) error {
 	}
 	if _, err := tx.Exec(ctx, `UPDATE contract_commands c SET delivery = 'dropped', delivered_at = clock_timestamp()
 		FROM (SELECT id FROM contract_commands WHERE outcome IS NOT NULL AND delivery IS NULL AND generation IS DISTINCT FROM $1::uuid
+		        AND `+commandLive+`
 		      ORDER BY id FOR UPDATE) l WHERE c.id = l.id`, gen); err != nil {
 		return err
 	}
@@ -693,12 +715,13 @@ type ContractResult struct {
 
 // UndeliveredResults drops every result not delivered of a command whose
 // row is of another generation than the current one (an act that read the
-// old generation and committed after a reset leaves one), then reads up to
-// limit results to post, oldest first.
+// old generation and committed after a reset leaves one; a row past its 30
+// days is the trim's), then reads up to limit results to post, oldest
+// first.
 func (c *Contract) UndeliveredResults(ctx context.Context, limit int) ([]ContractResult, error) {
 	if _, err := c.pool.Exec(ctx, `UPDATE contract_commands c SET delivery = 'dropped', delivered_at = clock_timestamp()
 		FROM (SELECT id FROM contract_commands WHERE outcome IS NOT NULL AND delivery IS NULL
-		        AND generation IS DISTINCT FROM (SELECT generation FROM contract_state)
+		        AND generation IS DISTINCT FROM (SELECT generation FROM contract_state) AND `+commandLive+`
 		      ORDER BY id FOR UPDATE) l WHERE c.id = l.id`); err != nil {
 		return nil, err
 	}
@@ -728,20 +751,68 @@ type ContractResultOutcome struct {
 	Failed string
 }
 
+// The rejection codes the contract answers a result with (S 14.9).
+var rejectCodes = []string{"invalid_request", "not_found", "conflict"}
+
+// rejectCodeShape is a code worth naming in post_error and the log.
+var rejectCodeShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
 // ResultsPosted records the answers to results posted, each by
 // compare-and-set on its being undelivered: accepted and duplicate settle
 // it, a rejection parks it with its code (only invalid_request is
 // Wappie's to look at; conflict and not_found are the platform's), and a
-// failed post counts a try and keeps its class. An answered post clears
-// results_error.
+// failed post counts a try and keeps its class. A rejection with a code
+// the contract does not name, or none (the kit checks only each answer's
+// id and outcome), parks as invalid_request with the platform's code in
+// post_error, logged at ERROR: one bad answer never holds back the batch.
+// An answered post clears results_error, first, in 3.4's order: the
+// settings row before the ledger rows (id order).
 func (c *Contract) ResultsPosted(ctx context.Context, outcomes []ContractResultOutcome) error {
 	if len(outcomes) == 0 {
 		return nil
 	}
+	// note is post_error kept with an answer: the code of a rejection the
+	// contract does not name.
+	type answer struct {
+		ContractResultOutcome
+		note *string
+	}
+	sorted := make([]answer, 0, len(outcomes))
 	answered := false
+	for _, o := range outcomes {
+		a := answer{ContractResultOutcome: o}
+		if o.Failed == "" {
+			switch o.Answer {
+			case DeliveryAccepted, DeliveryDuplicate:
+			case DeliveryRejected:
+				if !slices.Contains(rejectCodes, o.Code) {
+					code := o.Code
+					switch {
+					case code == "":
+						code = "none"
+					case !rejectCodeShape.MatchString(code):
+						code = "malformed"
+					}
+					obs.LoggerFrom(ctx).Error("store: a result rejected with a code the contract does not name; parked invalid_request",
+						"id", o.ID, "code", code)
+					note := "unknown_reject_code:" + code
+					a.Code, a.note = "invalid_request", &note
+				}
+			default:
+				return fmt.Errorf("store: unknown answer %q to a result", o.Answer)
+			}
+			answered = true
+		}
+		sorted = append(sorted, a)
+	}
+	slices.SortFunc(sorted, func(a, b answer) int { return compareIDs(a.ID, b.ID) })
 	return pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
-		sorted := slices.Clone(outcomes)
-		slices.SortFunc(sorted, func(a, b ContractResultOutcome) int { return compareIDs(a.ID, b.ID) })
+		if answered {
+			if _, err := tx.Exec(ctx, `UPDATE contract_settings_state SET results_error = NULL, results_error_at = NULL
+				WHERE results_error IS NOT NULL`); err != nil {
+				return err
+			}
+		}
 		for _, o := range sorted {
 			if o.Failed != "" {
 				if _, err := tx.Exec(ctx, `UPDATE contract_commands SET post_tries = post_tries + 1, post_error = $2
@@ -751,27 +822,15 @@ func (c *Contract) ResultsPosted(ctx context.Context, outcomes []ContractResultO
 				continue
 			}
 			var code *string
-			switch o.Answer {
-			case DeliveryAccepted, DeliveryDuplicate:
-			case DeliveryRejected:
-				if o.Code == "" {
-					return fmt.Errorf("store: a rejection of %s with no code", o.ID)
-				}
+			if o.Answer == DeliveryRejected {
 				code = &o.Code
-			default:
-				return fmt.Errorf("store: unknown answer %q to a result", o.Answer)
 			}
-			answered = true
 			if _, err := tx.Exec(ctx, `UPDATE contract_commands SET delivery = $2, reject_code = $3, delivered_at = clock_timestamp(),
-				post_error = NULL WHERE id = $1 AND outcome IS NOT NULL AND delivery IS NULL`, o.ID, o.Answer, code); err != nil {
+				post_error = $4 WHERE id = $1 AND outcome IS NOT NULL AND delivery IS NULL`, o.ID, o.Answer, code, o.note); err != nil {
 				return err
 			}
 		}
-		if !answered {
-			return nil
-		}
-		_, err := tx.Exec(ctx, `UPDATE contract_settings_state SET results_error = NULL, results_error_at = NULL WHERE results_error IS NOT NULL`)
-		return err
+		return nil
 	})
 }
 
@@ -788,14 +847,17 @@ func (c *Contract) ResultsParked(ctx context.Context, ids []uuid.UUID, why strin
 
 // TrimCommands deletes the ledger rows past their 30 days, and the persons
 // whose sub is no longer followed (no contract_accounts row), each in a
-// statement of its own. It returns how many ledger rows went.
+// statement of its own that locks its rows in key order, as every other
+// writer of them does (3.4). It returns how many ledger rows went.
 func (c *Contract) TrimCommands(ctx context.Context) (int64, error) {
-	tag, err := c.pool.Exec(ctx, `DELETE FROM contract_commands WHERE NOT (`+commandLive+`)`)
+	tag, err := c.pool.Exec(ctx, `DELETE FROM contract_commands c
+		USING (SELECT id FROM contract_commands WHERE NOT (`+commandLive+`) ORDER BY id FOR UPDATE) l WHERE c.id = l.id`)
 	if err != nil {
 		return 0, err
 	}
 	if _, err := c.pool.Exec(ctx, `DELETE FROM contract_persons p
-		WHERE NOT EXISTS (SELECT 1 FROM contract_accounts a WHERE a.sub = p.sub)`); err != nil {
+		USING (SELECT sub FROM contract_persons q WHERE NOT EXISTS (SELECT 1 FROM contract_accounts a WHERE a.sub = q.sub)
+		       ORDER BY sub FOR UPDATE) l WHERE p.sub = l.sub`); err != nil {
 		return tag.RowsAffected(), err
 	}
 	return tag.RowsAffected(), nil

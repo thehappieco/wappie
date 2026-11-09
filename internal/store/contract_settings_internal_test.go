@@ -175,9 +175,11 @@ func TestNumbersReadSerializesWithAct(t *testing.T) {
 }
 
 // TestSettingsLockOrder: Restart at the same time as an act, a take, a
-// numbers read, a new sub's document store and a person read, round after
-// round. Nothing deadlocks, each commits (or, for a take, finds the state
-// moved), and an act's result of the generation before is dropped.
+// numbers read, a new sub's document store, a person read, a refusal, a
+// failed run, a results post clearing results_error, a trim and a mode
+// switch, round after round. Nothing deadlocks, each commits (or, for a
+// take, finds the state moved), and an act's result of the generation
+// before is dropped.
 func TestSettingsLockOrder(t *testing.T) {
 	ctx := context.Background()
 	w := newSettingsWorld(t)
@@ -213,11 +215,20 @@ func TestSettingsLockOrder(t *testing.T) {
 		if err := w.pool.QueryRow(ctx, `SELECT generation FROM contract_state`).Scan(&cur); err != nil {
 			t.Fatal(err)
 		}
-		id := uuid.New()
-		if _, err := w.pool.Exec(ctx, `INSERT INTO contract_commands (id, generation, cseq, workspace_id, wseq, kind, section, actor, issued_at,
-				body, body_key, signed_at) VALUES ($1, $2, $3, $4, $3, 'item.rename', 'numbers', $5, clock_timestamp(), '{}', $6, clock_timestamp())`,
-			id, cur, round+1, w.ws, person, make([]byte, 32)); err != nil {
+		id, refused, failing := uuid.New(), uuid.New(), uuid.New()
+		for i, row := range []uuid.UUID{id, refused, failing} {
+			if _, err := w.pool.Exec(ctx, `INSERT INTO contract_commands (id, generation, cseq, workspace_id, wseq, kind, section, actor, issued_at,
+					body, body_key, signed_at) VALUES ($1, $2, $3, $4, $3, 'item.rename', 'numbers', $5, clock_timestamp(), '{}', $6, clock_timestamp())`,
+				row, cur, 3*round+i+1, w.ws, person, make([]byte, 32)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := w.c.ResultsFailed(ctx, "transport"); err != nil {
 			t.Fatal(err)
+		}
+		mode := SettingsRead
+		if round%2 == 1 {
+			mode = SettingsOn
 		}
 		next := uuid.New()
 		calls := map[string]func() error{
@@ -277,6 +288,32 @@ func TestSettingsLockOrder(t *testing.T) {
 				_, _, err := w.c.PersonOf(lctx, person)
 				return err
 			},
+			"a refusal": func() error {
+				return w.c.RefuseCommand(lctx, refused, CommandResult{Code: CommandKindNotAccepted})
+			},
+			"a failed run": func() error {
+				_, err := w.c.CommandRunFailed(lctx, failing, "store")
+				return err
+			},
+			"a results post": func() error {
+				results, err := w.c.UndeliveredResults(lctx, 100)
+				if err != nil {
+					return err
+				}
+				answers := []ContractResultOutcome{{ID: refused, Answer: DeliveryAccepted}}
+				for _, r := range results {
+					answers = append(answers, ContractResultOutcome{ID: r.ID, Answer: DeliveryAccepted})
+				}
+				return w.c.ResultsPosted(lctx, answers)
+			},
+			"a trim": func() error {
+				_, err := w.c.TrimCommands(lctx)
+				return err
+			},
+			"a mode switch": func() error {
+				_, err := w.c.SetSettingsMode(lctx, mode, true)
+				return err
+			},
 		}
 		var wg sync.WaitGroup
 		errs := make(chan error, len(calls))
@@ -301,9 +338,11 @@ func TestSettingsLockOrder(t *testing.T) {
 		if _, err := w.c.UndeliveredResults(ctx, 100); err != nil {
 			t.Fatal(err)
 		}
+		// Left to post: a result of an old generation is dropped, unless a
+		// post settled it before the reset.
 		var stale int
 		if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM contract_commands c WHERE c.outcome IS NOT NULL
-			AND c.generation IS DISTINCT FROM (SELECT generation FROM contract_state) AND c.delivery IS DISTINCT FROM 'dropped'`).Scan(&stale); err != nil {
+			AND c.generation IS DISTINCT FROM (SELECT generation FROM contract_state) AND c.delivery IS NULL`).Scan(&stale); err != nil {
 			t.Fatal(err)
 		}
 		if stale != 0 {
@@ -326,4 +365,75 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.Write(p)
+}
+
+// TestResultsPostedLockOrder: the results poster clearing results_error
+// takes the settings row before the ledger rows, as a reset and a take do
+// (the plan's 3.4). A third transaction holds the settings row so that the
+// reset (or the take) is queued on it first; the poster then records an
+// answer for a result that the reset drops (or that the take meets again).
+// Nothing deadlocks.
+func TestResultsPostedLockOrder(t *testing.T) {
+	for _, against := range []string{"a reset", "a take"} {
+		t.Run(against, func(t *testing.T) {
+			ctx := context.Background()
+			w := newSettingsWorld(t)
+			if _, err := w.c.SetMode(ctx, ContractObserve); err != nil {
+				t.Fatal(err)
+			}
+			gen := uuid.New()
+			if _, err := w.pool.Exec(ctx, `UPDATE contract_state SET generation = $1`, gen); err != nil {
+				t.Fatal(err)
+			}
+			x, key := uuid.New(), make([]byte, 32)
+			if _, err := w.pool.Exec(ctx, `INSERT INTO contract_commands (id, generation, cseq, body, body_key, signed_at, outcome, code, result_at)
+				VALUES ($1, $2, 1, '{}', $3, clock_timestamp(), 'refused', 'invalid_command', clock_timestamp())`, x, gen, key); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.c.ResultsFailed(ctx, "transport"); err != nil {
+				t.Fatal(err)
+			}
+			hold, err := w.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = hold.Rollback(ctx) }()
+			if _, err := hold.Exec(ctx, `SELECT 1 FROM contract_settings_state FOR UPDATE`); err != nil {
+				t.Fatal(err)
+			}
+			holder := hold.Conn().PgConn().PID()
+			var logs bytes.Buffer
+			var mu sync.Mutex
+			lctx := obs.WithLogger(ctx, slog.New(slog.NewTextHandler(&lockedWriter{&logs, &mu}, nil)))
+			first := make(chan error, 1)
+			go func() {
+				if against == "a reset" {
+					next := uuid.New()
+					_, err := w.c.RestartFromCommands(lctx, gen, &next)
+					first <- err
+					return
+				}
+				_, err := w.c.TakeCommands(lctx, ContractCommandPage{SeenGeneration: gen, After: 0, NextAfter: 1, SignedAt: time.Now(),
+					Items: []ContractCommandTake{{ID: x, Cseq: 1, Body: []byte("{}"), BodyKey: key, Verdict: CommandInvalid, Why: "test"}}})
+				first <- err
+			}()
+			until(t, against+" to wait on the settings row", func() bool { return blocking(t, w.pool, holder) })
+			posted := make(chan error, 1)
+			go func() {
+				posted <- w.c.ResultsPosted(lctx, []ContractResultOutcome{{ID: x, Answer: DeliveryAccepted}})
+			}()
+			// The poster is on its way to the settings row or the ledger row.
+			time.Sleep(300 * time.Millisecond)
+			if err := hold.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			firstErr, postErr := <-first, <-posted
+			mu.Lock()
+			log := logs.String()
+			mu.Unlock()
+			if firstErr != nil || postErr != nil || strings.Contains(log, "deadlocked") {
+				t.Fatalf("%s: %v; the post: %v; log:\n%s", against, firstErr, postErr, log)
+			}
+		})
+	}
 }
