@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -264,6 +265,155 @@ func TestActsLockOrder(t *testing.T) {
 			t.Fatalf("round %d: the rename left %q: %+v", round, got, l)
 		}
 		label = got
+	}
+	if strings.Contains(logs.String(), "deadlocked") {
+		t.Fatalf("a deadlock, retried:\n%s", logs.String())
+	}
+}
+
+// TestFlagsActsLockOrder (the plan's 3.2 and 5.1): the three flags acts at
+// the same time as Wappie's own writers of the same rows (a permission
+// change, a key shared and one revoked, a member disabled and enabled
+// again, a member removed), the account follower's apply, a reset, a
+// numbers read and a numbered snapshot, many rounds: nothing deadlocks
+// (no 40P01, not even one retried), and every call ends without an error
+// but the refusals a race may answer.
+func TestFlagsActsLockOrder(t *testing.T) {
+	ctx := context.Background()
+	w := newActWorld(t)
+	admin, adminSub := w.actor(t, "admin", "admin")
+	target, targetSub := w.actor(t, "member", "member")
+	raised, _ := w.actor(t, "member", "member")
+	device := w.number(t, "Vendas")
+	w.reads(t, w.owner, device)
+	w.reads(t, admin, device)
+	w.reads(t, raised, device)
+	logs := &syncBuffer{}
+	lctx := obs.WithLogger(ctx, slog.New(slog.NewTextHandler(logs, nil)))
+	for round := range 20 {
+		var cur uuid.UUID
+		if err := w.pool.QueryRow(ctx, `SELECT generation FROM contract_state`).Scan(&cur); err != nil {
+			t.Fatal(err)
+		}
+		w.gen = cur
+		w.docRole(t, adminSub, "admin", "active")
+		w.docRole(t, targetSub, "member", "active")
+		// The raise's person has read and send again, the drop's reads again
+		// (the disable races it), and a fresh person reads, for the remove
+		// and the removal to race on.
+		if err := w.users.SetDevicePermission(ctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: raised, Read: true,
+			Send: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.users.UpdateMember(ctx, w.tenant, w.owner, target, "member", "active"); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: target, Epoch: 1, SealedDSK: []byte("grant")}, &w.owner); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.users.SetDevicePermission(ctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: target, Read: true, Send: true}); err != nil {
+			t.Fatal(err)
+		}
+		other, _ := w.actor(t, "member", "member")
+		w.reads(t, other, device)
+		raise := w.command(t, kc.OpItemFlagsRaise, admin, adminSub)
+		drop := w.command(t, kc.OpItemFlagsDrop, admin, adminSub)
+		remove := w.command(t, kc.OpItemAccessRemove, admin, adminSub)
+		next := uuid.New()
+		calls := map[string]func() error{
+			"a raise": func() error {
+				_, _, err := w.c.RunFlagsRaise(lctx, raise, device, raised, []string{kc.CanRead, kc.CanSend},
+					[]string{kc.CanRead, kc.CanSend, kc.CanManage})
+				return err
+			},
+			"a drop": func() error {
+				_, _, err := w.c.RunFlagsDrop(lctx, drop, device, target, []string{kc.CanRead, kc.CanSend}, []string{kc.CanSend})
+				return err
+			},
+			"a remove": func() error {
+				_, _, err := w.c.RunAccessRemove(lctx, remove, device, other)
+				return err
+			},
+			"a permission change": func() error {
+				return w.users.SetDevicePermission(lctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: raised, Read: true,
+					Send: true})
+			},
+			"the drop's person's permission change": func() error {
+				err := w.users.SetDevicePermission(lctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: target, Read: true,
+					Send: true})
+				if errors.Is(err, store.ErrNotFound) {
+					// The member's disable came first.
+					return nil
+				}
+				return err
+			},
+			"a key shared": func() error {
+				err := w.keys.PutGrant(lctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: target, Epoch: 1, SealedDSK: []byte("grant")},
+					&w.owner)
+				if errors.Is(err, store.ErrNotFound) {
+					return nil
+				}
+				return err
+			},
+			"a key revoked": func() error {
+				return w.keys.RevokeGrant(lctx, w.tenant, device, other)
+			},
+			"a member disabled": func() error {
+				return w.users.UpdateMember(lctx, w.tenant, w.owner, target, "member", "disabled")
+			},
+			"a member removed": func() error {
+				return w.users.RemoveMember(lctx, w.tenant, w.owner, other)
+			},
+			"the follower's apply": func() error {
+				doc := store.ContractDoc{Sub: targetSub, Generation: cur, Version: int64(round) + 2, Status: "active",
+					Workspaces: []store.ContractDocWorkspace{{ID: w.tenant, Kind: "team", Role: "member", Status: "open", WVersion: 1}}}
+				doc.Raw, _ = json.Marshal(map[string]any{"v": 1, "sub": targetSub})
+				_, err := w.c.StoreDocuments(lctx, store.ContractAnswer, doc)
+				return err
+			},
+			"a reset": func() error {
+				_, err := w.c.RestartFromCommands(lctx, cur, &next)
+				return err
+			},
+			"a numbers read": func() error {
+				_, _, err := w.c.NumbersOf(lctx, w.tenant)
+				return err
+			},
+			"a snapshot": func() error {
+				_, _, err := w.c.SnapshotNumbered(lctx, w.tenant)
+				return err
+			},
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, len(calls))
+		start := make(chan struct{})
+		for name, call := range calls {
+			wg.Go(func() {
+				<-start
+				err := call()
+				if (name == "a numbers read" || name == "a snapshot") && sqlState(err) == "40001" {
+					err = nil
+				}
+				if err != nil {
+					errs <- fmt.Errorf("round %d, %s: %w", round, name, err)
+				}
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+		if t.Failed() {
+			return
+		}
+		// Each act wrote a result, whatever came first.
+		for name, id := range map[string]uuid.UUID{"raise": raise.ID, "drop": drop.ID, "remove": remove.ID} {
+			if l := w.ledger(t, id); l.outcome == "" {
+				t.Fatalf("round %d: the %s has no result", round, name)
+			}
+		}
 	}
 	if strings.Contains(logs.String(), "deadlocked") {
 		t.Fatalf("a deadlock, retried:\n%s", logs.String())
