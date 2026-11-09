@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -470,7 +471,8 @@ func TestRegistrationDelete(t *testing.T) {
 	if act, err := w.c.JudgeRegistrationDelete(ctx, cmd, uuid.MustParse(other.ID)); err != nil || !act.Open {
 		t.Fatalf("the judgement: %+v %v", act, err)
 	}
-	w.execOne(t, `UPDATE devices SET pn = '5511900000999@s.whatsapp.net' WHERE id = $1`, other.ID)
+	w.pns++
+	w.execOne(t, `UPDATE devices SET pn = $2 WHERE id = $1`, other.ID, fmt.Sprintf("55119%04d5678@s.whatsapp.net", w.pns))
 	act, err = w.c.RunRegistrationDelete(ctx, cmd, uuid.MustParse(other.ID))
 	refusedWith(t, "a registration that linked meanwhile", act, err, kc.CodeStateChanged)
 	if _, err := w.devices.Get(ctx, w.tenant.String(), other.ID); err != nil {
