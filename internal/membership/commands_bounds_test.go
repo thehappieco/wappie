@@ -89,8 +89,8 @@ func TestStartsAreBounded(t *testing.T) {
 		t.Fatalf("the resume whose start was cut: %+v", r)
 	}
 
-	// A sync now, run by the runner with the leader stopped (item.sync_now
-	// is not listed in this release): connect_failed once the bound passes.
+	// A sync now, run by the runner itself with the leader stopped:
+	// connect_failed once the bound passes.
 	stopLeader()
 	if err := w.users.SetDevicePermission(ctx, w.team, w.owner, store.DevicePermission{DeviceID: w.device, UserID: w.owner, Read: true}); err != nil {
 		t.Fatal(err)
