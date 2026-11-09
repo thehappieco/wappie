@@ -1931,9 +1931,10 @@ The person's notices (the commands release) are the unseen ones of
 platform workspaces where Wappie lets the person in (membership, account
 and workspace active, the membership not expired: a disabled member sees
 no notice of the team in the console, as on Wappie's own page), the newest
-300, each versioned as `SeenNotice` acknowledges it, their label cut over
-at render (one stored before 0052 is kept only when today's rule gives the
-same), and a notice deleted sends the person's document again, as does a
+300 (more sends the document `truncated`, as a list cut to fit; no
+ERROR, the bound is the spec's), each versioned as `SeenNotice`
+acknowledges it, their label cut over at render (one stored before 0052
+is kept only when today's rule gives the same), and a notice deleted sends the person's document again, as does a
 change in a workspace where they hold one, and an account's status
 (everyone's). An act makes the documents it shows in due at once, a parked
 one too, for one try: a park would otherwise keep the console from ever

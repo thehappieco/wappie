@@ -31,18 +31,24 @@ import (
 // A row the wire refuses (a label or a hint the kit refuses, a
 // number_deleted with no purge date) is left out and the document marked
 // truncated, with an ERROR once (the spec's 14.2): every row sent is whole.
+// A person with more notices than kc.MaxNotices gets the newest, and the
+// document is marked truncated too (14.2: "a list cut to fit"), with no
+// ERROR: the cut is the spec's own bound, no fault of Wappie's.
 
 // personDoc is read's document as the settings mode lets it be sent, and
-// how many notices the wire would refuse and were left out.
+// how many notices the wire would refuse and were left out. A notice past
+// the newest kc.MaxNotices it sends is cut, and the document truncated,
+// but it is not counted among those.
 func personDoc(read store.ContractPerson, mode string) (kc.PersonSettingsDoc, int, error) {
 	data := kc.WappiePersonSettings{Notices: []kc.Notice{}}
 	if at := read.SignedOutEverywhereAt; at != nil {
 		t := kc.T(*at)
 		data.SignedOutEverywhereAt = &t
 	}
-	left := 0
+	left, cut := 0, false
 	for _, n := range read.Notices {
 		if len(data.Notices) == kc.MaxNotices {
+			cut = true
 			break
 		}
 		row, err := noticeRow(n, read.LabelCutoverAt)
@@ -57,7 +63,7 @@ func personDoc(read store.ContractPerson, mode string) (kc.PersonSettingsDoc, in
 		return kc.PersonSettingsDoc{}, left, err
 	}
 	return kc.PersonSettingsDoc{V: kc.SettingsV, Type: kc.PersonSettingsType, App: App, Producer: kc.ProducerWappie,
-		Sub: read.Sub.String(), StateSeq: read.Seq, MeasuredAt: kc.T(read.MeasuredAt), Truncated: left > 0,
+		Sub: read.Sub.String(), StateSeq: read.Seq, MeasuredAt: kc.T(read.MeasuredAt), Truncated: left > 0 || cut,
 		Accepts: accepts(mode, kc.SectionPerson), Data: raw}, left, nil
 }
 

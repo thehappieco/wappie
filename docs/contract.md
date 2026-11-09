@@ -904,7 +904,7 @@ own clock (`contract_persons.seq`), as a section is sent (DS12):
 |---|---|
 | `accepts` | `[]` in `read`; in `on` the person's two kinds |
 | `signed_out_everywhere_at` | the latest `issued_at` of a `person.sign_out_everywhere` that ran |
-| `notices` | the person's unseen notices of the platform workspaces where Wappie lets them in (the membership, the account and the workspace active, the membership not expired), never a local-only workspace's, the newest 300, as Wappie's own page lists them |
+| `notices` | the person's unseen notices of the platform workspaces where Wappie lets them in (the membership, the account and the workspace active, the membership not expired), never a local-only workspace's, the newest 300, as Wappie's own page lists them; with more, the document is `truncated` (a list cut to fit, the spec's 14.2), with no ERROR |
 | `notices[].id`, `version` | the row's id in decimal; the pauses folded in for `sync_paused`, else 1 |
 | `notices[].label` | the label stored with it; one stored before the label cutover only when today's rule gives the same text of the number now, else `null` |
 | `notices[].params` | `actor` the sub of who raised it, `null` for someone with none, never a name |

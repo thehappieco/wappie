@@ -206,6 +206,42 @@ func TestPersonNoticeLeftOut(t *testing.T) {
 	}
 }
 
+// TestPersonNoticesCutToFit (the spec's 14.2 and 14.5): a person with more
+// notices than kc.MaxNotices gets the newest kc.MaxNotices, and the
+// document is truncated, a list cut to fit; none is counted as left out
+// (no ERROR: the bound is the spec's). Exactly kc.MaxNotices go whole.
+func TestPersonNoticesCutToFit(t *testing.T) {
+	sub, ws := uuid.New(), uuid.New()
+	now := time.Now()
+	read := func(n int) store.ContractPerson {
+		p := store.ContractPerson{Sub: sub, Seq: 1, MeasuredAt: now}
+		// Newest first, as PersonOf reads them.
+		for i := range n {
+			p.Notices = append(p.Notices, store.ContractNotice{ID: int64(n - i), Workspace: ws, Device: uuid.New(),
+				Kind: store.NoticeNumberMovedOut, RaisedAt: now.Add(-time.Duration(i) * time.Second), ActorKind: "person"})
+		}
+		return p
+	}
+	doc, left, err := personDoc(read(kc.MaxNotices), store.SettingsOn)
+	if err != nil || left != 0 || doc.Truncated {
+		t.Fatalf("%d notices: left %d, truncated %v: %v", kc.MaxNotices, left, doc.Truncated, err)
+	}
+	doc, left, err = personDoc(read(kc.MaxNotices+1), store.SettingsOn)
+	if err != nil || left != 0 || !doc.Truncated {
+		t.Fatalf("%d notices: left %d, truncated %v: %v", kc.MaxNotices+1, left, doc.Truncated, err)
+	}
+	if err := doc.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	var data kc.WappiePersonSettings
+	if err := json.Unmarshal(doc.Data, &data); err != nil || len(data.Notices) != kc.MaxNotices {
+		t.Fatalf("%d notices sent: %v", len(data.Notices), err)
+	}
+	if first, last := data.Notices[0].ID, data.Notices[kc.MaxNotices-1].ID; first != strconv.Itoa(kc.MaxNotices+1) || last != "2" {
+		t.Fatalf("the notices sent run from %s to %s, not the newest", first, last)
+	}
+}
+
 // bodies records the person documents' bodies a client sends.
 type bodies struct {
 	mu   sync.Mutex
