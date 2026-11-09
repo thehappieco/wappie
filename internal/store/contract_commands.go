@@ -75,8 +75,14 @@ const (
 	CommandStuckRetryAfter = 60
 )
 
+// commandRetentionSQL is CommandRetention as an interval of hours: an
+// interval of days follows the calendar of the session's time zone, so
+// across a change of daylight saving time '30 days' is an hour more or less
+// than 720 hours, and decision 0056 says never less and never more.
+const commandRetentionSQL = `interval '720 hours'`
+
 // commandLive is a ledger row within its CommandRetention.
-const commandLive = `taken_at > clock_timestamp() - interval '30 days'`
+const commandLive = `taken_at > clock_timestamp() - ` + commandRetentionSQL
 
 // ErrCommandFinished is a row that has its result already (another leader
 // answered it, or a copy with another body finished it): the act that

@@ -437,3 +437,31 @@ func TestResultsPostedLockOrder(t *testing.T) {
 		})
 	}
 }
+
+// TestCommandRetentionInHours: a ledger row is kept 720 hours whatever the
+// session's time zone (decision 0056: never less and never more). An
+// interval of days would follow the calendar: in New York, where daylight
+// saving time starts on 2026-03-08, '30 days' before 2026-03-20 12:00 UTC
+// is 719 hours.
+func TestCommandRetentionInHours(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.Fresh(t, migrate.Run)
+	at := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	for _, zone := range []string{"UTC", "America/New_York", "Europe/Berlin", "Australia/Sydney"} {
+		var from time.Time
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SELECT set_config('TimeZone', $1, true)`, zone); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT $1::timestamptz - `+commandRetentionSQL, at).Scan(&from)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := at.Sub(from); got != CommandRetention {
+			t.Errorf("%s: the ledger keeps a row %v, want %v", zone, got, CommandRetention)
+		}
+	}
+	if !strings.Contains(commandLive, commandRetentionSQL) {
+		t.Error("commandLive does not use commandRetentionSQL")
+	}
+}
