@@ -98,6 +98,8 @@ type Leader struct {
 	// at the due ones.
 	EventBackoffMin, EventBackoffMax time.Duration
 	EventsScanEvery, EventsIdle      time.Duration
+	// Settings is the settings part's (settings_work.go).
+	Settings SettingsConfig
 
 	// ours, set by tests only, tells the dirty and due notices this
 	// installation's sessions sent from any other's: every test schema
@@ -138,7 +140,7 @@ func (l *Leader) Run(ctx context.Context) {
 		pause, woken := retry, (<-chan string)(wake)
 		if l.ready(ctx) {
 			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel,
-				store.ContractDueChannel, store.ContractEventsChannel)
+				store.ContractDueChannel, store.ContractEventsChannel, store.ContractSettingsChannel)
 			switch {
 			case err != nil:
 				l.log().Warn("contract: could not try the leader's lock", "error", err)
@@ -236,6 +238,8 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	defer stop()
 	l.log().Info("contract: leading")
 	f := &follower{l: l, round: make(chan struct{}, 1)}
+	settings := newSettingsWork(l, f)
+	f.commands = settings.interrupt
 	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
 	events := newEventSender(l)
 	var wg sync.WaitGroup
@@ -243,8 +247,9 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	wg.Go(func() { l.rounds(ctx, f.round) })
 	wg.Go(func() { snaps.run(ctx) })
 	wg.Go(func() { events.run(ctx) })
-	wg.Go(func() { l.watchMode(ctx, stop, f, snaps.notices, events, held, wake) })
+	wg.Go(func() { l.watchMode(ctx, stop, f, settings, snaps.notices, events, held, wake) })
 	wg.Wait()
+	settings.halt()
 	lost = errors.Is(context.Cause(held.Context()), pg.ErrLockLost)
 	if lost {
 		l.log().Warn("contract: the leader's lock is lost; stopping", "error", context.Cause(held.Context()))
@@ -254,15 +259,17 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	return lost
 }
 
-// watchMode stops the leader when the mode is off, read every ModeCheck
-// and at each mode notice, and passes the other notices on, never waiting
-// on their loops: a round to run now, a generation to look for at once
-// (the long-poll in flight is cut), to the snapshot sender the workspaces
-// a change touched and the due times made sooner, and to the event sender
-// the queues with new rows or due again. It is the held connection's one
-// reader.
-func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, snaps *notices, events *eventSender,
-	held *pg.Held, wake <-chan string) {
+// watchMode stops the leader when the mode is off, and starts or stops the
+// settings part with the settings mode, both read at its start, every
+// ModeCheck and at each mode notice, and passes the other notices on,
+// never waiting on their loops: a round to run now, a generation to look
+// for at once (both long-polls in flight are cut), to the snapshot sender
+// and the section sender the workspaces a change touched and the due times
+// made sooner, to the section sender the settings channel's notices, and
+// to the event sender the queues with new rows or due again. It is the
+// held connection's one reader.
+func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, settings *settingsWork, snaps *notices,
+	events *eventSender, held *pg.Held, wake <-chan string) {
 	tick := time.NewTicker(or(l.ModeCheck, modeCheck))
 	defer tick.Stop()
 	check := func() {
@@ -272,7 +279,16 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 		}
 		if !state.On() {
 			stop()
+			return
 		}
+		sst, err := l.Members.Contract.SettingsState(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				l.log().Warn("contract: could not read the settings mode", "error", err)
+			}
+			return
+		}
+		settings.set(ctx, sst.Effective())
 	}
 	notice := func(payload string) {
 		switch payload {
@@ -280,10 +296,13 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			kick(f.round)
 		case "generation":
 			f.interrupt()
+			settings.interrupt()
 		default:
+			// "settings" among them: a switch of the settings mode.
 			check()
 		}
 	}
+	check()
 	for {
 		select {
 		case <-ctx.Done():
@@ -302,6 +321,9 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			case l.ours != nil && !l.ours(n.PID):
 			case n.Channel == store.ContractDirtyChannel:
 				snaps.dirty(n.Payload)
+				settings.dirty(n.Payload)
+			case n.Channel == store.ContractSettingsChannel:
+				settings.notice(n.Payload)
 			case n.Channel == store.ContractDueChannel:
 				snaps.due()
 			case n.Channel == store.ContractEventsChannel:
