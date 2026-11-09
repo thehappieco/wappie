@@ -120,6 +120,14 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	} else if rows > 0 {
 		a.log.Info("command ledger trimmed", "rows", rows)
 	}
+	// A pause notice whose resume lost its mark is marked once its number
+	// has been unpaused a minute (DS17), so the person's document and
+	// Wappie's own page say it resumed.
+	if marked, err := store.NewContract(a.pools.API).ResumeLostMarks(ctx); err != nil {
+		a.log.Warn("pause notice repair failed", "error", err)
+	} else if marked > 0 {
+		a.log.Info("pause notices marked resumed", "notices", marked)
+	}
 
 	// Keys issued with a deadline stop working the moment it passes; this
 	// records the fact so the key list agrees. A hosted assistant connection

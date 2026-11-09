@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"whatserver2/internal/membership"
+	"whatserver2/internal/numberacts"
 	"whatserver2/internal/store"
 )
 
@@ -35,20 +36,23 @@ const (
 	// checkSection: a workspace's last accepted numbers section, while
 	// settings are read or on.
 	checkSection = time.Hour
+	// checkPerson: a person's last accepted document, while settings are
+	// read or on.
+	checkPerson = time.Hour
 )
 
 // exitTellPlatform is contract settings' refusal for want of
 // --platform-told: nothing changed.
 const exitTellPlatform = 4
 
-// contractSettingsCommand is contract settings off|read [--platform-told]
-// and status [--check].
+// contractSettingsCommand is contract settings off|read|on
+// [--platform-told] and status [--check].
 func contractSettingsCommand(args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return usageError{arg: "contract settings"}
 	}
 	switch args[0] {
-	case store.SettingsOff, store.SettingsRead:
+	case store.SettingsOff, store.SettingsRead, store.SettingsOn:
 		fs := flag.NewFlagSet("contract settings "+args[0], flag.ContinueOnError)
 		told := fs.Bool("platform-told", false, "the platform was told: it watches the command feed from its first read on")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -112,6 +116,14 @@ func contractSettingsMode(ctx context.Context, c *store.Contract, mode string, t
 		return w.err
 	}
 	w.f("contract settings: %s -> %s", change.From, change.To)
+	switch change.To {
+	case store.SettingsOn:
+		w.f("the console offers the kinds this binary runs within seconds: every section and person document is due now")
+	case store.SettingsRead:
+		if change.From == store.SettingsOn {
+			w.f("the console offers no kind within seconds: every section and person document goes with accepts []")
+		}
+	}
 	switch {
 	case change.To != store.SettingsOff && change.FirstReadAt == nil:
 		w.f("the leader follows the command feed within seconds: the platform watches it from then on")
@@ -179,7 +191,16 @@ func contractSettingsStatus(ctx context.Context, c *store.Contract, check bool, 
 		w.f("  %s %s %s seq %d, accepted %s, due %s%s", sec.Workspace, sec.Section, state, sec.StateSeq, ago(now, sec.OKAt),
 			ago(now, &sec.DueAt), extra)
 	}
-	w.f("person documents: %d", len(st.Persons))
+	accepted, parked := 0, 0
+	for _, p := range st.Persons {
+		if p.OKAt != nil {
+			accepted++
+		}
+		if p.ParkedAt != nil {
+			parked++
+		}
+	}
+	w.f("person documents: %d (%d accepted, %d parked)", len(st.Persons), accepted, parked)
 	if w.err != nil || !check {
 		return w.err
 	}
@@ -273,15 +294,62 @@ func settingsFindings(st store.ContractSettingsStatus) []string {
 				sec.Workspace, sec.Section, int(checkSection/time.Minute), why))
 		}
 	}
+	return append(out, personFindings(st, since)...)
+}
+
+// personFindings are --check's lines of the persons' documents, while
+// settings are followed: those not accepted for checkPerson (counted from
+// the switch, as the sections'), and those parked, with the oldest's time
+// and class; never a sub.
+func personFindings(st store.ContractSettingsStatus, since func(*time.Time) *time.Time) []string {
+	var out []string
+	var stale, parked int
+	var oldest, lastParked *time.Time
+	class := ""
+	for _, p := range st.Persons {
+		switch {
+		case p.ParkedAt != nil:
+			parked++
+			if lastParked == nil || p.ParkedAt.After(*lastParked) {
+				lastParked = p.ParkedAt
+			}
+		case st.Now.Sub(*since(p.OKAt)) > checkPerson:
+			stale++
+			if at := since(p.OKAt); oldest == nil || at.Before(*oldest) {
+				oldest, class = at, p.Error
+			}
+		}
+	}
+	if stale > 0 {
+		why := ""
+		if class != "" {
+			why = " (" + class + ")"
+		}
+		out = append(out, fmt.Sprintf("%d person documents not accepted for over %d minutes, the oldest since %s%s",
+			stale, int(checkPerson/time.Minute), stamp(*oldest), why))
+	}
+	if parked > 0 {
+		out = append(out, fmt.Sprintf("%d person documents parked, the last at %s: they are not sent", parked, stamp(*lastParked)))
+	}
 	return out
 }
 
 // settingsConfig is the leader's settings part as this process wires it:
-// the registry tells the pending rows' pairing and retry.
+// the registry tells the pending rows' pairing and retry, and the numbers
+// kinds run with it and with the socket server (internal/numberacts).
 func (a *app) settingsConfig() membership.SettingsConfig {
 	var cfg membership.SettingsConfig
+	if a.members == nil {
+		return cfg
+	}
+	acts := &numberacts.Runner{Store: a.members.Contract, Devices: a.devices, Recorder: a.recordReceipt, Log: a.log}
 	if a.registry != nil {
 		cfg.Numbers = a.registry
+		acts.Registry = a.registry
 	}
+	if a.ws != nil {
+		acts.Sockets = a.ws
+	}
+	cfg.Acts = acts
 	return cfg
 }
