@@ -1857,7 +1857,12 @@ the frames share one pause transaction: a frame's stop that tells nobody
 (every personal workspace), a frame's stop on a moved number, a pause put
 back after a failed resume, and paused rows 0052 found no trace of.
 `paused_by_user` references `users` `ON DELETE SET NULL`, as `deleted_by`
-does: a removed account leaves no id behind, and the kind stays.
+does: a removed account leaves no id behind, and the kind stays. A
+platform token's stop (step 7) is its creator's, as in its event: kind
+`key`, and `paused_by_user` the local account linked to the record's
+`created_by`. When the creator has none here, the section's `paused_by`
+names no sub, though the token's event does (`devices` keeps no sub), until
+the shared `pauseTx` after step 7's PR 11, which needs a column for it.
 
 What 0052's fill can get wrong, accepted: schema 51 keeps no trace of a
 resume once nobody is left to mark (`MarkResumed` marks only unseen

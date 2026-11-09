@@ -453,12 +453,14 @@ A binary older than 0050 refuses a database at version 50, so its
 down-step comes first. No number may be left deleted through it: an older
 binary would show and sync it as live. And an older binary lets
 administrators delete a number at once, with no recovery. On a database at
-version 51 (the [contract's](#the-contract)), run `whatserverd contract mode
-off` before step 2, and 0051's down-step
-([Rolling back below 0051](#rolling-back-below-0051), its step 3) between
-steps 3 and 4: 0050's guard refuses while 51 is applied, and this release's
-commands refuse a database at 50, so the ledger's export comes first. In
-this order:
+version 51 or later (the [contract's](#the-contract)), run `whatserverd
+contract mode off` before step 2 (it turns the settings and token parts off
+with it), and the down-steps of 0053, 0052 and 0051, those applied, in that
+order ([Rolling back below 0053](#rolling-back-below-0053), its step 3, and
+so on down to [0051's](#rolling-back-below-0051)) between steps 3 and 4:
+0050's guard refuses while 51 is applied, and this release's commands
+refuse a database at any other version than theirs, so the ledger's export
+comes first. In this order:
 
 1. `whatserverd devices list-deleted`. An owner recovers each deleted
    number in the console, or, with the owner's agreement,
@@ -684,8 +686,8 @@ whatserverd tokens list
 
 Run them as the server's user, with the socket's group and its
 configuration, and from the server's own working directory, as the
-deletion commands above: `status`, `diff`, `mode` and `settings` read the
-`.env` of their working directory (a root-only one stops them before they do
+deletion commands above: `status`, `diff`, `mode`, `settings` and `tokens`
+read the `.env` of their working directory (a root-only one stops them before they do
 anything) and the database, which they never migrate, refusing a schema
 that is not exactly this binary's. `check` reads neither a `.env` nor the
 database, only its environment and the secret's files. For example:
@@ -841,7 +843,16 @@ A binary older than 0053 (the contract's token part) refuses a database
 at version 53, so its down-step comes first, before 0052's. In this order:
 
 1. `whatserverd contract tokens off`, as the server's user from its
-   working directory (`contract mode off` turns tokens off too).
+   working directory (`contract mode off` turns tokens off too). For a
+   release older than 0052, run now as well step 1 of each older rollback,
+   whose down-step refuses while its part is on: below 0052, tell the
+   platform and run `contract settings off --platform-told`
+   ([Rolling back below 0052](#rolling-back-below-0052), step 1); below
+   0051, `contract mode off`, which turns tokens and settings off with it
+   ([Rolling back below 0051](#rolling-back-below-0051), step 1).
+   `contract tokens`, `contract settings` and `contract mode` refuse a
+   database that is not at their binary's version, so after 0053's
+   down-step none of them runs.
 2. Stop the server, and every other process that runs this release's store
    code against the database (the hosted billing service is one).
 3. The down-step in the header of `0053_contract_tokens.sql`, after
@@ -853,7 +864,8 @@ at version 53, so its down-step comes first, before 0052's. In this order:
    local stops and the retirement's record. The keys the retirement
    revoked stay revoked.
 4. 0052's down-step, if the release being restored is older than 0052
-   ([Rolling back below 0052](#rolling-back-below-0052)), and so on down.
+   ([Rolling back below 0052](#rolling-back-below-0052), from its step 2:
+   its step 1 ran in step 1 here), and so on down, each from its step 2.
 5. Switch back to the older binary and start it, and the billing service on
    its release.
 
@@ -868,7 +880,11 @@ stop of a selector Wappie does not hold.
 ### Rolling back below 0052
 
 A binary older than 0052 (the contract's settings part) refuses a database
-at version 52, so its down-step comes first. In this order:
+at version 52, so its down-step comes first, after 0053's
+([Rolling back below 0053](#rolling-back-below-0053)) where 53 is applied.
+Step 1 then runs before 0053's down-step, while this release's binary
+still matches the database: after it, `contract settings` refuses. In this
+order:
 
 1. Tell the platform: from the first read of the command feed it watches
    Wappie's feed for good, and alerts once it goes silent. Then
@@ -901,9 +917,12 @@ anew.
 ### Rolling back below 0051
 
 A binary older than 0051 refuses a database at version 51, so its
-down-step comes first, after 0052's
-([Rolling back below 0052](#rolling-back-below-0052)) where 52 is applied.
-In this order:
+down-step comes first, after 0053's and 0052's
+([Rolling back below 0053](#rolling-back-below-0053),
+[Rolling back below 0052](#rolling-back-below-0052)) where they are
+applied. Step 1 then runs before the first of those down-steps, while
+this release's binary still matches the database: after it, `contract
+mode` refuses. In this order:
 
 1. `whatserverd contract mode off`, as the server's user from its working
    directory. Tell the platform, which may unmap Wappie.
