@@ -650,6 +650,158 @@ workspace, in `seq` order, delivered only on a signed `accepted` or
 `duplicate`. The shapes, which rows are sent, the coalescing of pauses, the
 outcomes, parks and the 29-day expiry are in [contract events](contract-events.md).
 
+## Settings and commands
+
+The platform's console draws Wappie's settings pages from documents Wappie
+sends, and passes on the changes a person makes there as commands (the
+spec's section 14; platform decision 0054; kit v0.10.1's `SettingsDoc`,
+`Command`, `CommandFeed` and `CommandResults`). Step 12a ships it in two
+releases. This one, **read**, sends every recorded platform workspace's
+`numbers` section with `accepts: []`, so the console offers no button,
+follows the command feed, keeps every command it takes in a ledger, and
+answers each one `kind_not_accepted`. The commands release runs the kinds.
+The decisions are DS1 to DS17 in [decisions](decisions.md#the-contracts-settings-part-2026-11-08);
+migration 0052 holds the schema of both releases.
+
+### The settings mode
+
+`contract_settings_state.mode` is `off`, `read` or `on`, apart from the
+contract's own mode (DS2):
+
+```
+whatserverd contract settings off|read [--platform-told]
+whatserverd contract settings status [--check]
+```
+
+- `read` and `on` need the contract on (`contract settings: the contract is
+  off; settings follow it`, exit `3`). `contract mode off` turns settings
+  off in its own transaction, and says so (`settings: off with it`).
+- From the first read of the command feed the platform watches it for good
+  and alerts after 10 minutes without one (`contract_commands_silent`). So
+  the first switch that follows the feed, and `off` once it was read, need
+  `--platform-told` (exit `4` without it, nothing changed; DS16). Tell the
+  platform first.
+- In this release `on` runs no kind either: every section's `accepts` is
+  `[]` in every mode.
+- The leader's watcher reads the mode at its start, every 5 seconds and at
+  each mode notice, and starts or stops the settings part's four loops: the
+  section sender, the command follower, the executor and the results
+  poster (INFO "contract: settings started", "contract: settings
+  stopped"). A mode this binary does not know reads as `read`.
+
+### The numbers section
+
+Each recorded platform workspace's `numbers` section
+(`PUT /contract/v1/workspaces/{id}/settings/numbers`, the kit's
+`NumbersSettings`), measured in its own transaction after it takes its
+`state_seq` on the workspace's one clock, shared with the snapshot (DS3):
+
+| Member | From |
+|---|---|
+| `state_seq`, `snapshot_seq` | `contract_workspaces.sections_seq` (the greatest of the clock in milliseconds and both columns plus one), and the last snapshot numbered; a workspace with no snapshot numbered yet sends no section |
+| `truncated` | a list over its bound (`pending` over 50, `items` over 1000) goes empty with `truncated`, never cut |
+| `accepts` | `[]` |
+| `can_link` | the workspace active, below its capacity as `check_device_capacity` counts it (a deleted number takes no place), and not stopped by its storage |
+| `places_free` | `null` until entitlements reach Wappie |
+| `storage_paused` | the snapshot's quota verdict |
+| `pending[]` | registrations with no identity, never connected, not deleted, newest first; `pairing` is the leader's registry's pairing, `can_retry` true when the registry neither pairs nor holds it and it has a key (DS8) |
+| `items[].connection` | `pairing`, `online`, `offline`; `logged_out_phone` or `logged_out_deletion` by `devices.logout_cause` (DS6); `banned`; a deleted number `logged_out_deletion`, or `banned` |
+| `items[].capture` | `paused` when the number is paused or deleted, else `on` |
+| `items[].paused_by` | `{kind, sub, at}` from `devices.paused_at`, `paused_by_kind` and the sub of `paused_by_user`; `null` whenever the time or the actor is not known (DS7) |
+| `items[].can_resume` | paused, not deleted, its identity known, not logged out or banned |
+| `items[].read_only` | logged out, banned or deleted |
+| `items[].key_epoch` | the number's epoch, `null` for 0 |
+| `items[].recovery_open` | deleted, its purge ahead and not started |
+| `items[].move_out`, `items[].bytes` | `null` |
+
+A row carries no label: a number's label lives in the access snapshot. The
+rows are the snapshot's numbers (a known identity or a past connection),
+deleted ones until their purge, joined to its items by id. The data is
+encoded with no HTML escaping, and every document passes the kit's
+`Validate` before it goes: one Wappie would not send is recorded
+`local_invalid:<why>` and logged at ERROR once per run, never sent.
+
+**Cadence** (the spec's 14.2; DS12): within 2 seconds of a change a
+section shows (0052's triggers on its own channel, `wappie_contract_settings`,
+and every payload of the snapshot's dirty channel, members included),
+within 30 seconds of a connection that only flipped between online and
+offline, at once after a reset, at the leader's start, when the pairing
+look (every 10 seconds) finds a pending row's pairing changed, and 55
+minutes after its last accepted one. A workspace recorded after the leader
+started gets its row at once, and its first section within the pairing
+look of its first snapshot. Outcomes are the snapshot's: `not_found` is
+retried and parks after 24 hours, `invalid_request` parks, anything else
+backs off from 5 seconds doubling to an hour; a park is released at the
+leader's start.
+
+### The command feed and the ledger
+
+The leader long-polls `GET /contract/v1/commands` with one request at a
+time (a wait of 25 seconds), from `contract_settings_state.feed_cursor`
+under the one generation the account feed adopted; the next request's
+`after` is the acknowledgement, sent only once the page is committed. A
+page that is not one the spec describes, or no answer, backs off from 2
+seconds doubling to 20.
+
+Each command of a page is decided in the spec's order (DS5): a body that
+names another app, then a MAC that holds under neither the current nor the
+other secret (both written to the security log as
+`contract_command_invalid`, naming no person: the command's id, its cseq
+and why); a command of another generation than its page
+(`invalid_command`, an ERROR, never a reset); one the kit's `ValidateIn`
+refuses for its workspace's kind (a workspace no document named with
+`Validate` alone), or whose cseq is not its item's (`invalid_command`); one
+issued over 30 days before the page was signed, unless delivered again, or
+carried after its `expires_at` (`expired`); one whose `wseq` the memory has
+passed with another id (`invalid_command`). Each is answered in the page's
+transaction. A command refused before `ValidateIn` passed keeps no decoded
+field, and an item whose id is no UUID gets no row: a malformed command
+never blocks the feed.
+
+The ledger (`contract_commands`) keeps each command as received, its MAC
+its proof, exactly 30 days from its take (decision 0056): every read
+ignores an older row, the leader trims every 5 minutes and every process's
+maintenance hourly (DS4). A command delivered again with the same body
+(its canonical form without `generation`, `cseq`, `secret` and `mac`) is a
+replay: its result is posted again. Another body under the same id, from a
+copy whose MAC holds, refuses an open row `invalid_command`; a forged copy
+only reaches the security log.
+
+**The executor** runs one row at a time, in take order, one open row per
+workspace and producer. In this release it answers every row
+`kind_not_accepted` (R0) with the seq it was judged on. A run that fails
+with a store error waits from 5 seconds doubling to a minute, holding back
+only its own workspace and producer, and after 5 tries is answered
+`rate_limited` (`retry_after` 60) with an ERROR.
+
+**The results poster** posts the results not delivered
+(`POST /contract/v1/commands/results`), at most 100 a call under 256 KiB,
+at the round's pace, after dropping those of an old generation's commands.
+Each is checked as the platform reads it first (the kit's `ValidateFor`
+with its command's kind, `Validate` alone for a row with none); one that
+fails is parked `local_invalid`, never sent, with an ERROR. `accepted` and
+`duplicate` deliver it; a rejection parks it (`invalid_request` with an
+ERROR; `not_found` and `conflict` are logged). No answer backs off from 2
+seconds doubling to a minute.
+
+**A reset.** A signed `gone` on the command feed, or a page of another
+generation, resets the account and command state in one transaction: the
+feed from 0, the `wseq` memory forgotten, the results not delivered of the
+old generation's commands dropped, every section due afresh; then the
+account long-poll is cut and the round kicked. At most one reset a minute
+starts from the command feed. A reset of the account side cuts the command
+long-poll the same way.
+
+### contract settings status
+
+Prints the mode, the command feed's cursor, first and last read and a
+failing run's class, the results' failing run, the last `invalid_command`,
+the label cutover, the ledger's results over 30 days by outcome and code,
+its open, retrying, undelivered and parked rows, and each section: its
+workspace's status, seq, last accepted, due time, failing run, `not_found`
+run and park. `--check` adds the settings findings below, which
+`contract status --check` reports too.
+
 ## Person invitations into platform teams
 
 In a team a platform document names (a `contract_workspaces` row of kind
@@ -726,7 +878,8 @@ clean until its bounds pass:
   journal). Its classes: `feed_silent`, `published_through_ahead`,
   `document_invalid`, `kind_changed`, `round_incomplete`, `snapshot_parked`,
   `snapshot_invalid`, `event_parked`, `events_refused`,
-  `event_actor_unknown`;
+  `event_actor_unknown`, and the settings part's `command_invalid`,
+  `command_stuck`, `section_invalid`, `section_parked`, `result_parked`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
@@ -746,6 +899,26 @@ clean until its bounds pass:
   current=… other=…, the files are current=… other=…`, `a secret is
   installed but the server has published no load`, and `the server's
   published secrets cannot be read`;
+- the settings part's ([settings and commands](#settings-and-commands)):
+  - while settings are `read` or `on`: `settings are <mode> but the command
+    feed was last read … (the console shows Wappie down after 2 minutes;
+    the platform alerts after 10)`, past 2 minutes; `workspace X has no
+    numbers section accepted for over 60 minutes (the console marks it
+    stale after 90)`; and `workspace X's numbers section is parked since …:
+    it is not sent (<class>)`, at once for a park since the switch, after 2
+    minutes for one from before it;
+  - `settings are off, but the platform has watched the command feed since
+    …: it alerts contract_commands_silent`;
+  - `an invalid_command was answered at … (the platform alerts for 24
+    hours)`, within the day;
+  - `N results are parked (rejected invalid_request or local_invalid), the
+    last at …: they are not delivered`;
+  - `N results are not delivered, the oldest for over 5 minutes, since …
+    (<class>)`;
+  - `N commands have no result, the oldest taken over 10 minutes ago, at …`;
+  - `N commands are retrying after store errors, the oldest taken at …
+    (<class>)`, and `a command was answered rate_limited after 5 failed
+    runs at …`, within the day;
 - `contract never observed but a secret is installed`: `events_from` is
   unset while the current secret file exists. A restore of Wappie's
   database from a backup taken before the first observe brings back `off`
@@ -781,6 +954,15 @@ changed", "contract: held subs still have no document of this generation;
 their PUTs fail", "contract: a workspace's snapshot is parked", "contract: a
 workspace's snapshot is not sent: Wappie would not send it", and the
 events' ([contract events](contract-events.md#outcomes-parks-and-releases)).
+The settings part's: "contract: commands refused invalid_command" (one per
+page, with counts by why: `mac`, `another_app`, `malformed`, `generation`,
+`invalid`, `cseq`), "contract: a command of another generation than its
+page; refused invalid_command", "contract: a command was answered
+rate_limited after its runs kept failing", "contract: results are parked:
+Wappie would not post them", "contract: results are parked: the platform
+refused them", "contract: a workspace's numbers section is not sent: Wappie
+would not send it" and "contract: a workspace's numbers section is
+parked".
 Three more have no class of their own: "contract: could not publish the
 loaded secrets; the installer will not see this load" (`--check`'s
 fingerprint findings show it), "contract: a feed document cannot be read;
@@ -857,3 +1039,21 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check round | 15 minutes | `--check`: the round's PUTs failing |
 | check parked | 2 minutes | `--check`: a park from before the switch |
 | check events | 1 hour | `--check`: a queue with no verdict, or events pending |
+| command long-poll | 25 seconds | the command feed's wait |
+| command backoff | 2 seconds to 20 seconds | after a command feed call that got no page |
+| reset floor | 1 minute | between two resets the command feed starts |
+| section debounce | 2 seconds | a numbers section after the first change of a run |
+| connection debounce | 30 seconds | a numbers section after a connection that only flipped between online and offline |
+| section | 55 minutes | the next numbers section after one accepted |
+| section backoff | 5 seconds to 1 hour | after a numbers section that was not accepted |
+| section not found | 24 hours | a numbers section refused `not_found`, before it parks |
+| pairing look | 10 seconds | how often the pending rows' pairing is compared with the last section sent |
+| results backoff | 2 seconds to 1 minute | after a results post that got no answer |
+| settings idle | 30 seconds | the longest the executor and the results poster wait without looking |
+| run backoff | 5 seconds to 1 minute | after a command's run that failed with a store error; after 5 tries it is answered `rate_limited`, `retry_after` 60 |
+| ledger | 30 days | a command's ledger row, from its take, never less and never more |
+| ledger trim | 5 minutes | how often the leader trims the ledger (and every process's hourly maintenance) |
+| check commands | 2 minutes | `--check`: the command feed's last page, while settings are read or on |
+| check results | 5 minutes | `--check`: the oldest result not delivered |
+| check taken | 10 minutes | `--check`: the oldest command with no result |
+| check section | 1 hour | `--check`: a workspace's last accepted numbers section |

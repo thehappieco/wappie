@@ -181,6 +181,16 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: a workspace's snapshot is not sent: Wappie would not send it",
 				"contract: a workspace's snapshot is parked",
 				"contract: snapshot labels",
+				"contract: commands refused invalid_command",
+				"contract: a command of another generation than its page; refused invalid_command",
+				"contract: a command was answered rate_limited after its runs kept failing",
+				"contract: results are parked: Wappie would not post them",
+				"contract: results are parked: the platform refused them",
+				"contract: a workspace's numbers section is not sent: Wappie would not send it",
+				"contract: a workspace's numbers section is parked",
+				"contract: settings started",
+				"contract: settings stopped",
+				"settings: off with it",
 				"invite: this team's people join through The Happie Co; person invitations are paused here " +
 					"until Wappie applies the platform's members (a service invitation still works: -role service)",
 			},
@@ -245,9 +255,13 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract status [--check]", "status [--check]"},
 			{"whatserverd contract diff [--tenant T]", "diff [--tenant T]"},
 			{"whatserverd contract mode off|observe", "mode off|observe"},
+			{"whatserverd contract settings off|read [--platform-told]", "settings off|read|status"},
+			{"whatserverd contract settings status [--check]", "settings off|read|status"},
 		} {
 			says("contract.md", c.doc)
-			says("deployment.md", c.doc)
+			if !strings.Contains(c.doc, "settings") {
+				says("deployment.md", c.doc)
+			}
 			if !strings.Contains(usage, c.usage) {
 				t.Errorf("whatserverd's usage does not show %q", c.usage)
 			}
@@ -272,6 +286,16 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		if err := contractModeCommand([]string{"sideways"}, &bytes.Buffer{}); !errors.As(err, new(usageError)) {
 			t.Errorf("contract mode sideways: %v", err)
 		}
+		if store.SettingsOff != "off" || store.SettingsRead != "read" || store.SettingsOn != "on" {
+			t.Errorf("the settings modes are %q, %q and %q", store.SettingsOff, store.SettingsRead, store.SettingsOn)
+		}
+		if err := contractSettingsCommand([]string{"sideways"}, &bytes.Buffer{}); !errors.As(err, new(usageError)) {
+			t.Errorf("contract settings sideways: %v", err)
+		}
+		says("contract.md", fmt.Sprintf("`contract settings: the contract is off; settings follow it`, exit `%d`", exitNotReady))
+		codeSays("contract settings: the contract is off; settings follow it")
+		says("contract.md", fmt.Sprintf("`--platform-told` (exit `%d` without it, nothing changed; DS16)", exitTellPlatform))
+		says("deployment.md", "whatserverd contract settings off --platform-told")
 		if !strings.Contains(usage, "contract-secret seal | promote | unpromote | drop | reset | capabilities") {
 			t.Error("whatserverd's usage does not list contract-secret's subcommands")
 		}
@@ -449,22 +473,49 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"the server's published secrets cannot be read",
 			"contract never observed but a secret is installed",
 			"finding: ",
+			"but the command feed was last read ",
+			"(the console shows Wappie down after 2 minutes; the platform alerts after 10)",
+			"settings are off, but the platform has watched the command feed since ",
+			": it alerts contract_commands_silent",
+			"an invalid_command was answered at ",
+			"(the platform alerts for 24 hours)",
+			"results are parked (rejected invalid_request or local_invalid), the last at ",
+			": they are not delivered",
+			"results are not delivered, the oldest for over %d minutes, since ",
+			"commands have no result, the oldest taken over %d minutes ago, at ",
+			"commands are retrying after store errors, the oldest taken at ",
+			"a command was answered rate_limited after %d failed runs at ",
+			"section accepted for over %d minutes (the console marks it stale after 90)",
+			"section is parked since ",
+			": it is not sent (",
 		} {
 			codeSays(f)
 			if strings.Contains(f, "%d") {
 				// The bound, as --check prints it: from its constant.
 				bound := checkEvents
-				if strings.Contains(f, "snapshot") {
+				switch {
+				case strings.Contains(f, "snapshot"):
 					bound = checkSnapshot
+				case strings.Contains(f, "results are not delivered"):
+					bound = checkResults
+				case strings.Contains(f, "commands have no result"):
+					bound = checkTaken
+				case strings.Contains(f, "section accepted"):
+					bound = checkSection
 				}
 				f = fmt.Sprintf(f, int(bound/time.Minute))
+				if strings.Contains(f, "failed runs") {
+					f = strings.Replace(f, fmt.Sprint(int(bound/time.Minute)), fmt.Sprint(store.CommandRunTries), 1)
+				}
 			}
 			says("contract.md", strings.TrimSpace(f))
 		}
 		says("deployment.md", "contract never observed but a secret is installed")
 		for _, class := range []string{store.ContractErrorFeedSilent, store.ContractErrorPublishedAhead, store.ContractErrorDocumentInvalid,
 			store.ContractErrorKindChanged, store.ContractErrorRoundIncomplete, store.ContractErrorSnapshotParked,
-			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor} {
+			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
+			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
+			store.ContractErrorSectionParked, store.ContractErrorResultParked} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
@@ -646,6 +697,31 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		says("deployment.md", "It comes before 0050's down-step, whose guard refuses while 51 is applied")
 	})
 
+	t.Run("the 0052 down-step", func(t *testing.T) {
+		sql := docText(t, "../../internal/migrate/sql/0052_contract_settings.sql")
+		for _, msg := range []string{
+			"settings are on: run whatserverd contract settings off first",
+			"a migration after 0052 is applied; run its down-step first",
+		} {
+			if !strings.Contains(sql, msg) {
+				t.Errorf("0052's down-step no longer says %q", msg)
+			}
+			says("deployment.md", msg)
+		}
+		notice := "dropping % ledger rows (% without a result, % results not delivered), % sections, % persons " +
+			"(% signed out everywhere), % invalid-command security events"
+		if !strings.Contains(sql, notice) {
+			t.Errorf("0052's down-step no longer says %q", notice)
+		}
+		says("deployment.md", strings.ReplaceAll(notice, "%", "N"))
+		says("deployment.md", "`migration52_sha256`")
+		says("deployment.md", "`0052_contract_settings.sql`")
+		if !strings.Contains(sql, "It runs first: 0052 down, then 0051 down") {
+			t.Error("0052's header no longer says it comes down before 0051")
+		}
+		says("deployment.md", "It comes before 0051's down-step, whose guard refuses while 52 is applied")
+	})
+
 	t.Run("the event example", func(t *testing.T) {
 		golden, err := os.ReadFile("../../internal/membership/testdata/events/deleted.json")
 		if err != nil {
@@ -686,12 +762,21 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"check round":        spoken(checkRound),
 			"check parked":       spoken(checkParked),
 			"check events":       spoken(checkEvents),
+			"section not found":  spoken(store.SectionNotFoundFor),
+			"run backoff":        spoken(store.CommandRunBackoffMin) + " to " + spoken(store.CommandRunBackoffMax),
+			"ledger":             spoken(store.CommandRetention),
+			"check commands":     spoken(checkCommands),
+			"check results":      spoken(checkResults),
+			"check taken":        spoken(checkTaken),
+			"check section":      spoken(checkSection),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.
 		elsewhere := []string{"call bound", "mode cache", "pace", "sweep", "round", "leader retry", "peer checks",
 			"feed backoff", "feed silent", "warn", "round failing", "debounce", "snapshot", "snapshot backoff", "labels",
-			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound"}
+			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound",
+			"command long-poll", "command backoff", "reset floor", "section debounce", "connection debounce", "section",
+			"section backoff", "pairing look", "results backoff", "settings idle", "ledger trim"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)

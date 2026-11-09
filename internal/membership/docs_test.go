@@ -24,6 +24,7 @@ var timingsElsewhere = []string{
 	"fresh", "backup fresh", "clock skew", "orphan", "heartbeat", "long-poll", "snapshot not found", "event not found",
 	"event expiry", "call timeout", "feed grace", "check feed", "check snapshot", "check published", "check errors",
 	"check round", "check parked", "check events", "hot path", "hot path bound",
+	"section not found", "run backoff", "ledger", "check commands", "check results", "check taken", "check section",
 }
 
 // docs/contract.md's timings and limits that this package sets (the rest
@@ -58,6 +59,18 @@ func TestContractTimingsMatchTheDocs(t *testing.T) {
 		"load retry":       spoken(loadRetry),
 		"load retry for":   spoken(loadRetryFor),
 		"load retry late":  spoken(loadRetryLate),
+		// The settings part's (settings_work.go).
+		"command long-poll":   spoken(time.Duration(SettingsConfig{}.commandWait()) * time.Second),
+		"command backoff":     span(commandBackoffMin, commandBackoffMax),
+		"reset floor":         spoken(resetFloor),
+		"section debounce":    spoken(sectionDebounce),
+		"connection debounce": spoken(connectionDebounce),
+		"section":             spoken(sectionEvery),
+		"section backoff":     span(sectionBackoffMin, sectionBackoffMax),
+		"pairing look":        spoken(pairingLook),
+		"results backoff":     span(resultsBackoffMin, resultsBackoffMax),
+		"settings idle":       spoken(settingsIdle),
+		"ledger trim":         spoken(trimEvery),
 	}
 	for name, want := range ours {
 		if got := rows[name]; got != want {
