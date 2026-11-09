@@ -295,7 +295,7 @@ func downStepSQL(t *testing.T, version int) string {
 	return strings.Join(out, "\n")
 }
 
-// 0050's down-step refuses while 0051 or 0052 is applied, a number is excluded or an
+// 0050's down-step refuses while 0051, 0052 or 0053 is applied, a number is excluded or an
 // event row is not in the ledger, and changes nothing then, the forced
 // policy on devices included; once none holds, it leaves exactly 49's
 // schema, so a binary that knows 49 but not 50 starts on it, and 0050

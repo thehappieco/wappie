@@ -87,13 +87,84 @@ func tokenRows(t *testing.T, w contractWorld) uuid.UUID {
 	return token
 }
 
+// seed12a writes step 12a's rows into w, at schema 52 or later, as 0052's
+// down-step test does: the settings mode on, the workspace recorded (its
+// numbers section) and an account followed (its person, signed out
+// everywhere), an invalid-command security event, a ledger row without a
+// result and one with a result not delivered, and w's number paused by a
+// person.
+func seed12a(t *testing.T, w contractWorld) {
+	t.Helper()
+	ctx := context.Background()
+	sub := uuid.New()
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO contract_workspaces(workspace_id,kind,wversion,status) VALUES ($1,'team',2,'open')`, []any{w.tenant}},
+		{`INSERT INTO contract_accounts(sub,generation,version,status,doc,fresh_at) VALUES ($1,uuidv7(),3,'active','{"v":1}',clock_timestamp())`, []any{sub}},
+		{`UPDATE contract_persons SET signed_out_everywhere_at = clock_timestamp() WHERE sub = $1`, []any{sub}},
+		{`INSERT INTO security_events(kind,detail) VALUES ('contract_command_invalid','{"why":"mac"}')`, nil},
+		{`UPDATE contract_settings_state SET mode = 'on'`, nil},
+	} {
+		if _, err := w.pool.Exec(ctx, step.sql, step.args...); err != nil {
+			t.Fatalf("%s: %v", step.sql, err)
+		}
+	}
+	for _, c := range []command{decoded(command{"workspace_id": w.tenant}),
+		decoded(command{"workspace_id": w.tenant, "wseq": 2, "outcome": "ran", "state_seq": 9, "result_at": time.Now()})} {
+		if err := c.insert(ctx, w.pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET paused = true, pause_cause = 'person' WHERE id = $1`, w.device)
+		return err
+	})
+}
+
+// rows12a is step 12a's rows, as JSON by table, read in w's workspace with
+// its excluded numbers visible: the settings state, the sections, the
+// persons, the ledger and its wseq memory, the invalid-command security
+// events and the numbers' 12a columns but paused_by_user.
+func rows12a(t *testing.T, w contractWorld) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	out := map[string]string{}
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		for name, q := range map[string]string{
+			"contract_settings_state": `SELECT coalesce(json_agg(s)::text, '') FROM contract_settings_state s`,
+			"contract_sections":       `SELECT coalesce(json_agg(s ORDER BY s.workspace_id, s.section)::text, '') FROM contract_sections s`,
+			"contract_persons":        `SELECT coalesce(json_agg(s ORDER BY s.sub)::text, '') FROM contract_persons s`,
+			"contract_commands":       `SELECT coalesce(json_agg(s ORDER BY s.id)::text, '') FROM contract_commands s`,
+			"contract_command_wseq":   `SELECT coalesce(json_agg(s ORDER BY s.workspace_id)::text, '') FROM contract_command_wseq s`,
+			"security_events": `SELECT coalesce(json_agg(e ORDER BY e.id)::text, '') FROM security_events e
+				WHERE e.kind = 'contract_command_invalid'`,
+			"devices": `SELECT coalesce(json_agg(json_build_object('id', d.id, 'logout_cause', d.logout_cause, 'paused', d.paused,
+				'pause_cause', d.pause_cause, 'paused_at', d.paused_at, 'paused_by_kind', d.paused_by_kind,
+				'unpaused_at', d.unpaused_at, 'label', d.label) ORDER BY d.id)::text, '') FROM devices d`,
+		} {
+			var s string
+			if err := tx.QueryRow(ctx, q).Scan(&s); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			out[name] = s
+		}
+		return nil
+	})
+	return out
+}
+
 // TestMigration0053DownStep is 10.2's down-step test: 0053's header text,
 // run as the NOSUPERUSER owner role the server uses, refuses while a later
 // migration is applied or tokens are on, changing nothing then; otherwise it
 // drops every token table with its counts noticed, keeps a key the
 // retirement revoked revoked, leaves exactly 52's schema (so a binary that
 // knows 52 starts on it, and 0053 applies again), and 0052's own guard
-// refuses while 53 is applied.
+// refuses while 53 is applied. Step 12a's rows stay as they were, the
+// settings mode on among them, but a number's pause that named a token's
+// identity, which names nobody then, its kind kept. And the chain, 0053's
+// down-step then 0052's, leaves exactly 51's schema.
 func TestMigration0053DownStep(t *testing.T) {
 	ctx := context.Background()
 	lg := quietLogger(t)
@@ -110,7 +181,16 @@ func TestMigration0053DownStep(t *testing.T) {
 		t.Fatalf("the test's role must be the server's, a NOSUPERUSER owner with no BYPASSRLS: super %v, bypass %v, %v", super, bypass, err)
 	}
 	w := newContractWorld(t, pool)
-	tokenRows(t, w)
+	token := tokenRows(t, w)
+	seed12a(t, w)
+	// The token's identity as the number's pauser: its delete meets 12a's
+	// devices.paused_by_user foreign key, under the forced policies.
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET paused_by_kind = 'person',
+			paused_by_user = (SELECT identity_user_id FROM contract_tokens WHERE id = $2) WHERE id = $1`, w.device, token)
+		return err
+	})
+	before12a := rows12a(t, w)
 	var key uuid.UUID
 	if err := pool.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, revoked_at, origin, revoke_reason)
 		VALUES ($1, 'abcd1234', 'h', 'old', clock_timestamp(), 'rest', 'platform_tokens') RETURNING id`, w.tenant).Scan(&key); err != nil {
@@ -189,6 +269,19 @@ func TestMigration0053DownStep(t *testing.T) {
 			t.Fatalf("after the down-step: %q where 52 has %q", got[i], want52[i])
 		}
 	}
+	after12a := rows12a(t, w)
+	for table, rows := range before12a {
+		if after12a[table] != rows {
+			t.Errorf("after the down-step, 12a's %s:\n%s\nwas\n%s", table, after12a[table], rows)
+		}
+	}
+	var pausedBy *uuid.UUID
+	w.exec(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT paused_by_user FROM devices WHERE id = $1`, w.device).Scan(&pausedBy)
+	})
+	if pausedBy != nil {
+		t.Errorf("after the down-step the number's pause names %s, the identity's id", pausedBy)
+	}
 	// No identity and none of its grants is left, the policies forced again.
 	var identities, logins int
 	w.exec(ctx, t, func(tx pgx.Tx) error {
@@ -211,12 +304,19 @@ func TestMigration0053DownStep(t *testing.T) {
 	if err := Run(ctx, pool, lg); err != nil {
 		t.Fatalf("0053 again: %v", err)
 	}
-	// And the chain: 0053 down, then 0052 down.
+	// And the chain: 0053 down, then 0052 down, with settings off for
+	// 0052's guard, to exactly 51's schema.
 	if _, err := pool.Exec(ctx, downStepSQL(t, 53)); err != nil {
 		t.Fatalf("0053's down-step again: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE contract_settings_state SET mode = 'off'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err != nil {
 		t.Fatalf("0052's down-step after 0053's: %v", err)
+	}
+	if want51, got := schemaShape(t, at51(t)), schemaShape(t, pool); !slices.Equal(got, want51) {
+		t.Fatalf("after 0053's down-step and 0052's: %d schema facts, 51 has %d", len(got), len(want51))
 	}
 }
 
