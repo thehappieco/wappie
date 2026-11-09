@@ -105,8 +105,10 @@ const snapshotQuotaSQL = `coalesce(t.storage_paused_at IS NOT NULL OR (t.storage
 // how many backups without a sub it counts. A deleted number is reported
 // as a live one is until its purge: its readers, holders and protected
 // are as they were (its permissions and grants stay), and its state and
-// purge date say it is deleted. It numbers nothing (Seq 0): the sender's
-// is SnapshotNumbered.
+// purge date say it is deleted. It numbers nothing (Seq 0), and nothing
+// may number it after the measurement (TestWorkspaceClockWriters): the
+// sender's is SnapshotNumbered. Tests read with it the snapshot of a
+// workspace no document recorded, which SnapshotNumbered does not read.
 func (c *Contract) Snapshot(ctx context.Context, workspace uuid.UUID) (ContractSnapshot, error) {
 	var out ContractSnapshot
 	err := pgx.BeginTxFunc(ctx, c.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -442,25 +444,6 @@ func (c *Contract) SnapshotsDirty(ctx context.Context, ids []uuid.UUID, all bool
 			WHERE w.workspace_id = l.workspace_id`, all, ids, debounce)
 		return err
 	})
-}
-
-// SnapshotSeq gives a snapshot of workspace measured at measured its
-// snapshot_seq, stored before it is sent: the measurement's milliseconds,
-// or one more than the last snapshot's or section's, whichever is higher,
-// so it rises strictly for the workspace across leaders and a clock that
-// steps back, on one clock with the sections (README 8; 0052's
-// sections_seq, DS3). False when the workspace is parked meanwhile, and
-// nothing is to be sent. The sender numbers its snapshot in the measuring
-// transaction instead (SnapshotNumbered): one numbered here after it was
-// measured could miss an act that committed in between.
-func (c *Contract) SnapshotSeq(ctx context.Context, workspace uuid.UUID, measured time.Time) (int64, bool, error) {
-	var seq int64
-	err := c.pool.QueryRow(ctx, `UPDATE contract_workspaces SET snapshot_seq = greatest($2::bigint, snapshot_seq + 1, sections_seq + 1)
-		WHERE workspace_id = $1 AND parked_at IS NULL RETURNING snapshot_seq`, workspace, measured.UnixMilli()).Scan(&seq)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
-	}
-	return seq, err == nil, err
 }
 
 // ContractSnapshotOutcome is what became of a snapshot sent.

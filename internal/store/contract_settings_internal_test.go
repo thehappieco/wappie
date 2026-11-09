@@ -52,8 +52,8 @@ func newSettingsWorld(t *testing.T) settingsWorld {
 	if _, err := pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, w.ws); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := w.c.SnapshotSeq(ctx, w.ws, time.Now()); err != nil {
-		t.Fatal(err)
+	if _, ok, err := w.c.SnapshotNumbered(ctx, w.ws); err != nil || !ok {
+		t.Fatalf("the snapshot: %v %v", ok, err)
 	}
 	return w
 }

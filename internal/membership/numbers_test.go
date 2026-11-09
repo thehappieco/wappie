@@ -89,7 +89,7 @@ func numbersRead(t *testing.T) (store.ContractNumbers, map[string]uuid.UUID) {
 func (w *world) numbersOf(t *testing.T, ws uuid.UUID) store.ContractNumbers {
 	t.Helper()
 	ctx := context.Background()
-	if _, ok, err := w.contract.SnapshotSeq(ctx, ws, time.Now()); err != nil || !ok {
+	if _, ok, err := w.contract.SnapshotNumbered(ctx, ws); err != nil || !ok {
 		t.Fatalf("a snapshot's seq: %v %v", ok, err)
 	}
 	read, ok, err := w.contract.NumbersOf(ctx, ws)
