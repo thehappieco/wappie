@@ -2155,3 +2155,21 @@ lists. The first answer that adopts a generation (the account feed's page,
 or a sign-in's) starts that pass in its transaction, so a token the
 restored platform no longer has is still refused once the pass is done. At
 the first observe the same pass runs over no token at all.
+
+**One reset floor for the token and command feeds.** Every reset runs
+`restartTx`, which resets the command state with the account and token
+state (12a's `restartCommandsTx`: the command feed from 0, every section
+and person document due again, the old generation's results not
+delivered dropped), whichever feed saw it first. So the token feed's
+resets keep the command feed's minute (DS5, `command_reset_loop`):
+the two sides share one floor per leader (`resetGate`), a reset within a
+minute of the last either made waits the rest out with an ERROR
+(`token_reset_loop` from the token side), and the gate is held through
+the reset, so two sides that wake together make one reset and the other
+waits again. The token side's backoff between resets with no page
+between still applies under it. The account follower's own resets are
+not spaced, as before: its next page adopts the generation it reset to,
+and a loop with either other feed is spaced by that feed's wait. A reset
+from the command feed also wakes the token follower, which no notice
+reaches from there: its long-poll in flight would otherwise ask from the
+old cursor for up to its 25 seconds.

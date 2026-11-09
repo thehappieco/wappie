@@ -394,6 +394,88 @@ func TestUnlistedTokensAreRefusedOnlyAfterTheRoundAndAFullPass(t *testing.T) {
 	}
 }
 
+// TestEveryResetResetsTheCommandAndTokenFeeds: restartTx resets the
+// command state and the token state together, whichever feed saw the
+// reset first: a reset from the command feed (RestartFromCommands) sets
+// the token feed from 0 with the new generation's pass, and one from the
+// token feed (RestartFromTokens) sets the command feed from 0, forgets the
+// wseq memory, drops the old generation's results not delivered, and
+// makes every section and person document due afresh, as a reset from the
+// command feed does (TestCommandReset).
+func TestEveryResetResetsTheCommandAndTokenFeeds(t *testing.T) {
+	ctx := context.Background()
+	l := newLedgerWorld(t)
+	sub := uuid.New()
+	if _, err := l.pool.Exec(ctx, `INSERT INTO contract_accounts (sub) VALUES ($1)`, sub); err != nil {
+		t.Fatal(err)
+	}
+	tokenFeed := func() (cursor int64, pass *uuid.UUID) {
+		t.Helper()
+		if err := l.pool.QueryRow(ctx, `SELECT feed_cursor, pass_generation FROM contract_token_state`).Scan(&cursor, &pass); err != nil {
+			t.Fatal(err)
+		}
+		return cursor, pass
+	}
+	commandFeed := func() (cursor int64, memory, sections, persons int) {
+		t.Helper()
+		st, err := l.c.SettingsState(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := l.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM contract_command_wseq),
+			(SELECT count(*) FROM contract_sections WHERE due_at <= clock_timestamp() AND tries = 0 AND parked_at IS NULL),
+			(SELECT count(*) FROM contract_persons WHERE due_at <= clock_timestamp() AND tries = 0)`).Scan(&memory, &sections, &persons); err != nil {
+			t.Fatal(err)
+		}
+		return st.FeedCursor, memory, sections, persons
+	}
+	settle := func() {
+		t.Helper()
+		if _, err := l.pool.Exec(ctx, `UPDATE contract_sections SET due_at = clock_timestamp() + interval '1 hour', tries = 3, parked_at = clock_timestamp();
+			UPDATE contract_persons SET due_at = clock_timestamp() + interval '1 hour', tries = 2;
+			UPDATE contract_token_state SET feed_cursor = 7, pass_generation = NULL`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// From the command feed: the token feed too.
+	l.take(t, l.command(l.ws, 1))
+	settle()
+	next := uuid.New()
+	if ok, err := l.c.RestartFromCommands(ctx, l.gen, &next); err != nil || !ok {
+		t.Fatalf("RestartFromCommands: %v %v", ok, err)
+	}
+	if c, pass := tokenFeed(); c != 0 || pass == nil || *pass != next {
+		t.Fatalf("the token feed after the command feed's reset: cursor %d, pass %v (want 0, %s)", c, pass, next)
+	}
+	l.gen = next
+
+	// From the token feed: the command feed too.
+	undelivered, open := l.command(l.ws, 1), l.command(l.ws, 2)
+	l.take(t, undelivered, open)
+	l.finish(t, undelivered.ID, store.CommandResult{Code: store.CommandKindNotAccepted})
+	settle()
+	if c, memory, _, _ := commandFeed(); c == 0 || memory == 0 {
+		t.Fatalf("before the token feed's reset: command cursor %d, %d memory rows", c, memory)
+	}
+	if ok, err := l.c.RestartFromTokens(ctx, l.gen, nil, false); err != nil || !ok {
+		t.Fatalf("RestartFromTokens: %v %v", ok, err)
+	}
+	if c, memory, sections, persons := commandFeed(); c != 0 || memory != 0 || sections != 1 || persons != 1 {
+		t.Fatalf("after the token feed's reset: command cursor %d, %d memory rows, %d sections and %d persons due afresh",
+			c, memory, sections, persons)
+	}
+	if r := l.row(t, undelivered.ID); r.Delivery != store.DeliveryDropped {
+		t.Fatalf("an undelivered result of the old generation after the token feed's reset: %+v", r)
+	}
+	if r := l.row(t, open.ID); r.Outcome != "" || r.Delivery != "" {
+		t.Fatalf("an open row after the token feed's reset: %+v", r)
+	}
+	if c, _ := tokenFeed(); c != 0 {
+		t.Fatalf("the token feed after its own reset: cursor %d", c)
+	}
+}
+
 // TestOneGenerationResetsBothFeeds: a reset seen first on the account feed
 // (Restart) resets the token feed in the same transaction, and one seen
 // first on the token feed (RestartFromTokens) resets the account side;

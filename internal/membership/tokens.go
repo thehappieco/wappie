@@ -15,7 +15,7 @@ import (
 // The token part in the leader (step 7's plan, 4.3 to 4.5; the design's
 // 3.3, 3.5 and 3.8): the token follower, the leader's second long-poll, of
 // GET /contract/v1/tokens, from a cursor of its own under the one
-// generation both feeds share; the judge of the grants its records bring;
+// generation every feed shares; the judge of the grants its records bring;
 // the acknowledgement (POST /contract/v1/tokens/applied); and the usage
 // report (POST /contract/v1/tokens/usage). They run only while the token
 // mode is on: the leader's watcher starts them when it reads on (at its
@@ -24,10 +24,13 @@ import (
 //
 // A reset is the account side's too: a signed gone, a page or a record of
 // another generation, or a feed rewound (its head or next_after behind the
-// cursor in the same generation) restarts both feeds in one transaction
-// (RestartFromTokens), which never widens what Wappie held, and the round
-// subscribes everyone again. While the account side holds no generation
-// the token follower asks the platform nothing.
+// cursor in the same generation) restarts every feed, the account, token
+// and command feeds, in one transaction (RestartFromTokens), which never
+// widens what Wappie held, and the round subscribes everyone again. It
+// waits a minute after the last reset from this side or the command
+// feed's, each of which resets the command state (resetGate). While the
+// account side holds no generation the token follower asks the platform
+// nothing.
 
 // The token part's defaults.
 const (
@@ -70,6 +73,8 @@ type tokenWork struct {
 	l *Leader
 	// round kicks the leader's round: a reset forgot every version.
 	round chan struct{}
+	// gate spaces this side's resets and the command feed's (resetGate).
+	gate *resetGate
 	// judge wakes the judge (a page brought grants, a document came);
 	// ackNow sends the acknowledgement at once (a narrowing, a reset's
 	// pass); ackSoon within ackSpacing of the last (the cursor moved).
@@ -83,8 +88,9 @@ type tokenWork struct {
 	wg   sync.WaitGroup
 }
 
-func newTokenWork(l *Leader, round chan struct{}) *tokenWork {
-	return &tokenWork{l: l, round: round, judge: make(chan struct{}, 1), ackNow: make(chan struct{}, 1), ackSoon: make(chan struct{}, 1)}
+func newTokenWork(l *Leader, round chan struct{}, gate *resetGate) *tokenWork {
+	return &tokenWork{l: l, round: round, gate: gate, judge: make(chan struct{}, 1), ackNow: make(chan struct{}, 1),
+		ackSoon: make(chan struct{}, 1)}
 }
 
 // set starts the loops under ctx when on and they do not run, or stops them
@@ -176,7 +182,8 @@ func (tw *tokenWork) follow(ctx context.Context) {
 	// doubled to its most, and no notice cuts that wait (the account side's
 	// adoption follows every reset at once): a platform that keeps sending a
 	// record of another generation than its page's would otherwise restart
-	// the whole contract in a loop, every sub PUT again each time.
+	// the whole contract in a loop, every sub PUT again each time. The
+	// reset itself then waits out the floor since the last one (reset).
 	resetRun, resetBack := false, minBack
 	reset := func(seen uuid.UUID, gen *uuid.UUID, confirmed bool, why string) {
 		if resetRun {
@@ -308,24 +315,36 @@ func (tw *tokenWork) follow(ctx context.Context) {
 	}
 }
 
-// reset restarts both feeds (RestartFromTokens), by compare-and-set on the
+// reset restarts every feed (RestartFromTokens), by compare-and-set on the
 // generation the follower read, then kicks the round, and reports whether
-// it restarted them. A failure is returned, for the follower's backoff.
+// it restarted them. It first waits out the floor since the last reset
+// this side or the command feed made (resetGate): each resets the command
+// state too, every section and person document due again and the results
+// not delivered dropped, so a platform that keeps answering gone, or two
+// feeds on two generations, resets everything at most once a minute, an
+// ERROR each time, recorded for --check. A failure is returned, for the
+// follower's backoff.
 func (tw *tokenWork) reset(ctx context.Context, seen uuid.UUID, gen *uuid.UUID, confirmed bool, why string) (bool, error) {
 	l := tw.l
-	done, err := l.Members.Contract.RestartFromTokens(ctx, seen, gen, confirmed)
+	done, err := tw.gate.run(ctx, func(wait time.Duration) {
+		l.log().Error("contract: a second reset from the token feed within a minute waits", "why", why, "wait", wait.Round(time.Second))
+		if err := l.Members.Contract.RecordError(ctx, store.ContractErrorTokenResetLoop); err != nil && ctx.Err() == nil {
+			l.log().Warn("contract: could not record an ERROR", "error", err)
+		}
+	}, func() (bool, error) { return l.Members.Contract.RestartFromTokens(ctx, seen, gen, confirmed) })
 	switch {
 	case err != nil:
 		return false, err
 	case !done:
-		// The state moved meanwhile: read it again.
+		// The leader stops, or the state moved meanwhile: read it again.
+		// No floor starts.
 		return false, nil
 	}
 	attrs := []any{"why", why, "old", seen}
 	if gen != nil {
 		attrs = append(attrs, "generation", *gen, "confirmed", confirmed)
 	}
-	l.log().Warn("contract: the token feed says the platform's generation changed: every sub is subscribed again and both feeds read from 0", attrs...)
+	l.log().Warn("contract: the token feed says the platform's generation changed: every sub is subscribed again and every feed read from 0", attrs...)
 	kick(tw.round)
 	return true, nil
 }
@@ -385,7 +404,7 @@ func (tw *tokenWork) judging(ctx context.Context) {
 // and at once again while what is due did not fit. Each takes a turn of the
 // leader's pace. One not accepted backs off from AckBackoffMin doubled to
 // AckBackoffMax; a signed gone (another generation, or a through past the
-// platform's head) resets both feeds.
+// platform's head) resets every feed (reset).
 func (tw *tokenWork) acknowledging(ctx context.Context) {
 	l, m := tw.l, tw.l.Members
 	spacing, every := or(l.AckSpacing, ackSpacing), or(l.AckEvery, ackEvery)

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,9 +56,12 @@ func newTokenWorldAt(t *testing.T, clock func() time.Time) *tokenWorld {
 	return w
 }
 
-// tokenLeader is w.leader with the token part's timings shortened.
+// tokenLeader is w.leader with the token part's timings shortened, the
+// floor between two resets among them (as settingsTimes'): the floor's own
+// tests lengthen it.
 func (w *tokenWorld) tokenLeader(m *Members, logs *membershiptest.Logs, key string) *Leader {
 	l := w.leader(m, logs, key)
+	l.Settings.ResetFloor = 200 * time.Millisecond
 	l.TokenBackoffMin, l.TokenBackoffMax = 20*time.Millisecond, 200*time.Millisecond
 	l.AckSpacing, l.AckEvery = 50*time.Millisecond, time.Second
 	l.AckBackoffMin, l.AckBackoffMax = 20*time.Millisecond, 200*time.Millisecond
@@ -925,6 +929,238 @@ func TestARecordOfAnotherGenerationNeverResetsInALoop(t *testing.T) {
 	}
 	if f := w.feed(t); f.cursor != 0 {
 		t.Fatalf("a record of another generation moved the cursor to %d", f.cursor)
+	}
+}
+
+// resetTimes are the times of the reset lines among logs that hold every
+// part, in the log's order.
+func resetTimes(t *testing.T, logs *membershiptest.Logs, parts ...string) []time.Time {
+	t.Helper()
+	var at []time.Time
+	for _, line := range logs.Lines(parts...) {
+		field, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "time="), " ")
+		ts, err := time.Parse(time.RFC3339Nano, field)
+		if err != nil {
+			t.Fatalf("a log line's time: %v", err)
+		}
+		at = append(at, ts)
+	}
+	return at
+}
+
+// The resets a leader makes from the token feed or the command feed, in
+// order: each resets the command state too.
+func gatedResets(t *testing.T, logs *membershiptest.Logs) []time.Time {
+	t.Helper()
+	at := append(resetTimes(t, logs, "contract: the token feed says the platform's generation changed"),
+		resetTimes(t, logs, "contract: the platform's generation changed", "why=commands_gone")...)
+	slices.SortFunc(at, func(a, b time.Time) int { return a.Compare(b) })
+	return at
+}
+
+// spacedBy fails unless every two resets in at are floor apart at least.
+func spacedBy(t *testing.T, at []time.Time, floor time.Duration, logs *membershiptest.Logs) {
+	t.Helper()
+	for i := 1; i < len(at); i++ {
+		// The floor starts as a reset commits, a little before its line,
+		// and the log's times are to the millisecond: a slack well under a
+		// token backoff.
+		if gap := at[i].Sub(at[i-1]); gap < floor-50*time.Millisecond {
+			t.Fatalf("reset %d came %v after the one before, under the floor's %v:\n%s", i+1, gap, floor, logs.String())
+		}
+	}
+}
+
+// A reset the token feed starts resets the command state too (restartTx:
+// the command feed from 0, every section and person document due again,
+// the results not delivered dropped), so it keeps the command feed's
+// floor: a platform that keeps sending a record of another generation
+// resets everything at most once a floor, each second one an ERROR
+// recorded for --check (token_reset_loop), never once a token backoff. And
+// the floor is one for both sides: beside a command feed that keeps
+// answering gone, no reset comes within the floor of another, whichever
+// side made either.
+func TestTokenAndCommandResetsKeepOneFloor(t *testing.T) {
+	w := newTokenWorld(t)
+	w.settingsOn(t, store.SettingsRead)
+	gen := w.generation(t)
+	platform, err := url.Parse(w.fake.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// bad: every token page carries a record of another generation than
+	// its own; otherwise the fake answers.
+	var bad atomic.Bool
+	other := uuid.NewString()
+	client := clientOn(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/contract/v1/tokens" && bad.Load() {
+			after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			rec := w.tokenRecord(other, uuid.Must(uuid.NewV7()), 1)
+			body, err := json.Marshal(kc.TokenFeed{Generation: gen, Head: after + 1, PublishedThrough: kc.T(time.Now()),
+				Items: []kc.TokenFeedItem{tokenItem(t, after+1, rec)}, NextAfter: after + 1})
+			if err != nil {
+				return nil, err
+			}
+			return signedAnswer(r, w.secret, http.StatusOK, body, time.Now()), nil
+		}
+		out := r.Clone(r.Context())
+		out.URL.Scheme, out.URL.Host, out.Host = platform.Scheme, platform.Host, platform.Host
+		return http.DefaultTransport.RoundTrip(out)
+	}, nil)
+	if err := client.Use(w.secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	logs := &membershiptest.Logs{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(logs.String())
+		}
+	})
+	l := w.tokenLeader(w.membersOn(client, logs), logs, lockKey(t))
+	// Over the command feed's 2 seconds' wait for a generation after a
+	// reset (noGeneration), so its own resets meet the floor too.
+	const floor = 3 * time.Second
+	l.Settings = settingsTimes()
+	l.Settings.ResetFloor = floor
+	run(t, l)
+	eventually(t, 10*time.Second, "the command feed followed", func() bool { return w.fake.Count(contracttest.CallCommands) > 1 })
+
+	// The token feed alone: once a floor, never once a token backoff (200
+	// ms here).
+	bad.Store(true)
+	eventuallySteps(t, 2*floor, "three token resets", 3, func() int { return len(gatedResets(t, logs)) })
+	spacedBy(t, gatedResets(t, logs), floor, logs)
+	if len(logs.Lines("level=ERROR", "contract: a second reset from the token feed within a minute waits")) == 0 {
+		t.Fatal("no ERROR for the token feed's second reset")
+	}
+	eventually(t, 5*time.Second, "the token feed's reset loop recorded", func() bool {
+		return w.state(t).ErrorClass == store.ContractErrorTokenResetLoop
+	})
+
+	// Both sides: the command feed's resets first, each after the floor of
+	// the one before (its 2 seconds' wait for a generation is shorter),
+	// then the token feed's: its first waits out the floor of the command
+	// feed's last.
+	bad.Store(false)
+	tokenResets := func() int {
+		return len(resetTimes(t, logs, "contract: the token feed says the platform's generation changed"))
+	}
+	commandResets := func() int {
+		return len(resetTimes(t, logs, "contract: the platform's generation changed", "why=commands_gone"))
+	}
+	w.fake.RefuseAlways(contracttest.CallCommands, kc.CodeGone)
+	eventuallySteps(t, 2*floor, "two resets from the command feed", 2, commandResets)
+	if len(logs.Lines("level=ERROR", "contract: a second reset from the command feed within a minute waits")) == 0 {
+		t.Fatal("no ERROR for the command feed's reset within the floor")
+	}
+	n := tokenResets()
+	w.fake.RefuseAlways(contracttest.CallCommands, "")
+	bad.Store(true)
+	eventuallySteps(t, 3*floor, "a reset from the token feed after the command feed's", n+1, tokenResets)
+	bad.Store(false)
+	spacedBy(t, gatedResets(t, logs), floor, logs)
+}
+
+// A reset the command feed starts (a page of another generation) restarts
+// the token feed too, in its transaction, and sends no notice: the token
+// long-poll in flight is cut at once, and the token feed asked again from 0
+// in the new generation, not once that long-poll's wait has run out.
+func TestACommandFeedResetCutsTheTokenLongPoll(t *testing.T) {
+	w := newTokenWorld(t)
+	w.settingsOn(t, store.SettingsRead)
+	id, _ := w.token(t, kc.CanRead)
+	platform, err := url.Parse(w.fake.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// hold keeps the next token feed request until it is cut, or for 20
+	// seconds; afters are every token request's after.
+	var hold atomic.Bool
+	var mu sync.Mutex
+	var afters []int64
+	heldAt := -1
+	held, cut := make(chan int64, 1), make(chan time.Time, 1)
+	client := clientOn(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/contract/v1/tokens" {
+			after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			mu.Lock()
+			afters = append(afters, after)
+			hit := hold.CompareAndSwap(true, false)
+			if hit {
+				heldAt = len(afters) - 1
+			}
+			mu.Unlock()
+			if hit {
+				held <- after
+				select {
+				case <-r.Context().Done():
+					cut <- time.Now()
+					return nil, r.Context().Err()
+				case <-time.After(20 * time.Second):
+				}
+			}
+		}
+		out := r.Clone(r.Context())
+		out.URL.Scheme, out.URL.Host, out.Host = platform.Scheme, platform.Host, platform.Host
+		return http.DefaultTransport.RoundTrip(out)
+	}, nil)
+	if err := client.Use(w.secret, ""); err != nil {
+		t.Fatal(err)
+	}
+	logs := &membershiptest.Logs{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(logs.String())
+		}
+	})
+	l := w.tokenLeader(w.membersOn(client, logs), logs, lockKey(t))
+	l.Settings = settingsTimes()
+	run(t, l)
+	w.latestSeq(t, id)
+	eventually(t, 10*time.Second, "the command feed followed", func() bool { return w.fake.Count(contracttest.CallCommands) > 1 })
+	// Neither the account follower nor the token acknowledgement resets
+	// anything meanwhile, nor adopts anything: both are refused, and the
+	// account long-poll in flight has come back.
+	w.fake.RefuseAlways(contracttest.CallFeed, kc.CodeRateLimited)
+	w.fake.RefuseAlways(contracttest.CallTokensApplied, kc.CodeRateLimited)
+	time.Sleep(1500 * time.Millisecond)
+
+	hold.Store(true)
+	var from int64
+	select {
+	case from = <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no token feed request held")
+	}
+	if from == 0 {
+		t.Fatal("the held token request asks from 0 already")
+	}
+	gen := w.fake.NewGeneration()
+	eventually(t, 10*time.Second, "the command feed's reset", func() bool {
+		return len(logs.Lines("why=commands_generation", "generation="+gen)) > 0
+	})
+	reset := time.Now()
+	select {
+	case at := <-cut:
+		if took := at.Sub(reset); took > 2*time.Second {
+			t.Fatalf("the token long-poll was cut %v after the reset", took)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the token long-poll in flight was not cut by the command feed's reset:\n%s", logs.String())
+	}
+	eventually(t, 5*time.Second, "the token feed asked from 0", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(afters[heldAt+1:], 0)
+	})
+	if f := w.feed(t); f.generation == nil || f.generation.String() != gen {
+		t.Fatalf("after the reset Wappie holds generation %v, want %s", f.generation, gen)
 	}
 }
 

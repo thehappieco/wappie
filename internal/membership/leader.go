@@ -254,9 +254,10 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	defer stop()
 	l.log().Info("contract: leading")
 	f := &follower{l: l, round: make(chan struct{}, 1)}
-	settings := newSettingsWork(l, f)
+	gate := newResetGate(l)
+	settings := newSettingsWork(l, f, gate)
 	f.commands = settings.interrupt
-	tokens := newTokenWork(l, f.round)
+	tokens := newTokenWork(l, f.round, gate)
 	f.tokens = tokens.interrupt
 	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
 	events := newEventSender(l)
@@ -381,6 +382,63 @@ func kick(c chan struct{}) {
 	select {
 	case c <- struct{}{}:
 	default:
+	}
+}
+
+// resetGate spaces the resets the command feed and the token feed start,
+// one leader's term long: each resets the command state as well
+// (Contract.Restart's restartTx: the command feed from 0, every section and
+// person document due again, the old generation's results not delivered
+// dropped), so a fault on either side, or the two on two generations, must
+// not repeat one in a loop. Two within the floor are one: the second waits
+// the rest of it out, whichever side made the first. The account
+// follower's own reset is not spaced: its next page adopts the generation
+// it reset to, and a loop with either side is spaced by that side's wait.
+type resetGate struct {
+	floor time.Duration
+
+	// mu is held through a reset, so the other side's waits for it and
+	// then for the floor it starts.
+	mu sync.Mutex
+	// last is when the last reset either side made committed; zero before
+	// the first.
+	last time.Time
+}
+
+func newResetGate(l *Leader) *resetGate {
+	return &resetGate{floor: or(l.Settings.ResetFloor, resetFloor)}
+}
+
+// run runs reset once the floor since the last reset has passed, telling
+// waiting how long before each wait (a reset the other side made meanwhile
+// starts the floor again), and returns what reset did: a reset that found
+// the generation moved under it (another came first) made none, and starts
+// no floor. It returns false, and runs nothing, when ctx ends first. No
+// notice cuts the wait.
+func (g *resetGate) run(ctx context.Context, waiting func(time.Duration), reset func() (bool, error)) (bool, error) {
+	for {
+		g.mu.Lock()
+		var left time.Duration
+		if !g.last.IsZero() {
+			left = g.floor - time.Since(g.last)
+		}
+		if left <= 0 {
+			done, err := reset()
+			if err == nil && done {
+				g.last = time.Now()
+			}
+			g.mu.Unlock()
+			return done, err
+		}
+		g.mu.Unlock()
+		waiting(left)
+		t := time.NewTimer(left)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return false, nil
+		case <-t.C:
+		}
 	}
 }
 

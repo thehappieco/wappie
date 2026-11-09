@@ -11,7 +11,7 @@ import (
 )
 
 // A reset of the token feed (the plan's 4.2, "Restart extended", and the
-// design's 3.3): one generation resets both feeds, in Restart's transaction,
+// design's 3.3): one generation resets every feed, in Restart's transaction,
 // and the new generation's records never widen what Wappie held. The pass
 // from 0 lists every token the platform still has; once it is done (a page
 // with more false after the round ran in the new generation), a token it did

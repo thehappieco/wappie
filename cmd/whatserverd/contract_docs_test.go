@@ -176,7 +176,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: following the token feed",
 				"contract: no longer following the token feed",
 				"contract: no token feed page for a long time",
-				"contract: the token feed says the platform's generation changed: every sub is subscribed again and both feeds read from 0",
+				"contract: the token feed says the platform's generation changed: every sub is subscribed again and every feed read from 0",
+				"contract: a second reset from the token feed within a minute waits",
 				"contract: the token feed was last read over an hour before this leader; token auth holds until it has caught up",
 				"contract: a token page took over a second to commit",
 				"contract: a token lookup got no answer",
@@ -641,7 +642,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.ContractErrorKindChanged, store.ContractErrorRoundIncomplete, store.ContractErrorSnapshotParked,
 			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
 			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
-			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorTokenFeedSilent, store.ContractErrorTokenLookupInvalid} {
+			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorTokenFeedSilent, store.ContractErrorTokenLookupInvalid,
+			store.ContractErrorTokenResetLoop} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")

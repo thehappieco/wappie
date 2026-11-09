@@ -515,13 +515,19 @@ behind it.
   backoff's first second.
 - **A reset**: a signed `gone`, a page or a record of another generation,
   or a feed rewound (its `head` or `next_after` behind the cursor in the
-  same generation) restarts both feeds in one transaction, which never
-  widens what Wappie held, and the round subscribes every sub again (WARN
-  "contract: the token feed says the platform's generation changed: every
-  sub is subscribed again and both feeds read from 0"). A reset that
-  follows another with no token page committed between waits the backoff
-  first, so a platform that keeps sending a record of another generation
-  never restarts the contract in a loop. While Wappie holds no generation
+  same generation) restarts every feed, the account, token and command
+  feeds, in one transaction, which never widens what Wappie held, and the
+  round subscribes every sub again (WARN "contract: the token feed says the
+  platform's generation changed: every sub is subscribed again and every
+  feed read from 0"). A reset that follows another with no token page
+  committed between waits the backoff first, so a platform that keeps
+  sending a record of another generation never restarts the contract in a
+  loop. And since each also resets the command state (every section and
+  person document due again, the results not delivered dropped), it keeps
+  the command feed's floor: one within a minute of the last reset either
+  feed started waits the minute out, logged at ERROR ("contract: a second
+  reset from the token feed within a minute waits") and recorded
+  `token_reset_loop` for `--check`. While Wappie holds no generation
   (after a `gone`) the token follower asks nothing, until the account
   feed's first answer adopts one.
 - **A stale start**: a leader whose first token page follows a stored read
@@ -548,7 +554,7 @@ something and after a reset's pass, otherwise at most once a second and at
 least once a minute, each on a turn of the leader's pace; what does not fit
 one body (1000 entries across its four lists) follows at once, at the same
 `through`. One not accepted backs off from 1 second doubled to 30 seconds.
-A signed `gone` resets both feeds.
+A signed `gone` resets every feed, as the token feed's own reset does.
 
 **The usage report** (`POST /contract/v1/tokens/usage`) goes at most once
 a minute, with each token's days of use and its refusals' absolute counts;
@@ -1162,16 +1168,20 @@ seconds doubling to a minute, and so does a park or answers the ledger
 cannot store, before the rows are read again.
 
 **A reset.** A signed `gone` on the command feed, or a page of another
-generation, resets the account and command state in one transaction: the
-feed from 0, the `wseq` memory forgotten, the results not delivered of the
-old generation's commands dropped, every section due afresh; then the
-account long-poll is cut and the round kicked. At most one reset a minute
-starts from the command feed: a second within the minute waits it out,
-logged at ERROR and recorded `command_reset_loop` for `--check` (the
-platform's two feeds on two generations, or a `gone` that lasts, would
-reset everything once a minute). A reset that finds the generation moved
-under it (another came first) resets nothing and starts no wait. A reset
-of the account side cuts the command long-poll the same way.
+generation, resets the account, token and command state in one
+transaction: the feed from 0, the `wseq` memory forgotten, the results not
+delivered of the old generation's commands dropped, every section due
+afresh, and the token feed from 0 with a new pass, as the token feed's own
+reset; then the account and token long-polls are cut and the round
+kicked. At most one reset a minute starts from the command feed and the
+token feed together, since each resets the command state: one within a
+minute of the last either started waits it out, logged at ERROR and
+recorded `command_reset_loop` for `--check` (the platform's feeds on two
+generations, or a `gone` that lasts, would reset everything once a
+minute; the token feed's own records `token_reset_loop`). A reset that
+finds the generation moved under it (another came first) resets nothing
+and starts no wait. A reset of the account side cuts the command long-poll
+the same way.
 
 ### The kinds
 
@@ -1363,8 +1373,8 @@ clean until its bounds pass:
   journal). Its classes: `feed_silent`, `published_through_ahead`,
   `document_invalid`, `kind_changed`, `round_incomplete`, `snapshot_parked`,
   `snapshot_invalid`, `event_parked`, `events_refused`,
-  `event_actor_unknown`, the token part's `token_feed_silent` and
-  `token_lookup_invalid`, and the settings part's `command_invalid`,
+  `event_actor_unknown`, the token part's `token_feed_silent`,
+  `token_lookup_invalid` and `token_reset_loop`, and the settings part's `command_invalid`,
   `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
   `result_parked`, `person_invalid`;
 - while the contract is on:
@@ -1498,7 +1508,8 @@ is kept", and "contract: a good token record's hash does not decode", which
 Validate rules out (the record is passed over). Each names a token by its
 id, selector and version, never by its record's JSON. The token follower's
 own: "contract: no token feed page for a long time" (class
-`token_feed_silent`). The lookups' (above): "contract: the platform
+`token_feed_silent`) and "contract: a second reset from the token feed
+within a minute waits" (class `token_reset_loop`). The lookups' (above): "contract: the platform
 answered a token lookup with a record Wappie cannot use; it is asked again
 later" (class `token_lookup_invalid`), once for each lookup, with its kind
 (`id` or `selector`), never its token or selector; and WARN "contract: a
@@ -1602,7 +1613,7 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check events | 1 hour | `--check`: a queue with no verdict, or events pending |
 | command long-poll | 25 seconds | the command feed's wait |
 | command backoff | 2 seconds to 20 seconds | after a command feed call that got no page |
-| reset floor | 1 minute | between two resets the command feed starts |
+| reset floor | 1 minute | between two resets the command feed or the token feed starts |
 | section debounce | 2 seconds | a numbers section after the first change of a run |
 | connection debounce | 30 seconds | a numbers section after a connection that only flipped between online and offline |
 | section | 55 minutes | the next numbers section after one accepted |

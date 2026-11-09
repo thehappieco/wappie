@@ -28,6 +28,15 @@ const ContractErrorTokenFeedSilent = "token_feed_silent"
 //nolint:gosec // G101: a class, not a credential
 const ContractErrorTokenLookupInvalid = "token_lookup_invalid"
 
+// ContractErrorTokenResetLoop is the class of the token follower's ERROR
+// when a reset it starts comes within a minute of the last one it or the
+// command follower made, and waits the minute out: each resets the
+// command state too, so a platform fault (a gone that lasts, two feeds on
+// two generations) resets everything once a minute until it ends.
+//
+//nolint:gosec // G101: a class, not a credential
+const ContractErrorTokenResetLoop = "token_reset_loop"
+
 // ErrTokensNeedTheContract refuses tokens on while the contract is off:
 // token auth refuses every token then, whatever the token mode says.
 var ErrTokensNeedTheContract = errors.New("store: the contract is off; tokens follow it")
@@ -37,7 +46,7 @@ var ErrTokensMode = errors.New("store: the token mode is off or on")
 
 // TokenFeedState is what the token follower reads before each call: the
 // token mode and cursor, its last page committed (Wappie's clock), and
-// contract_state's generation, which both feeds share.
+// contract_state's generation, which every feed shares.
 type TokenFeedState struct {
 	Mode       string
 	Cursor     int64

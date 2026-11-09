@@ -24,9 +24,11 @@ import (
 // sections go with accepts [], so the console offers nothing.
 //
 // A reset is the account side's too: a signed gone on the command feed, or
-// a page of another generation than the stored one, resets the account and
-// command state in one transaction (Contract.RestartFromCommands), at most
-// once a minute from this side; the account follower's own reset cuts the
+// a page of another generation than the stored one, resets the account,
+// token and command state in one transaction (Contract.RestartFromCommands),
+// and cuts the account and token long-polls. It waits a minute after the
+// last reset from this side or the token feed's, each of which resets the
+// command state (resetGate); the account follower's own reset cuts the
 // command long-poll (the follower's commands hook).
 
 // The settings part's defaults.
@@ -36,9 +38,9 @@ const (
 	// the console shows Wappie down.
 	commandBackoffMin = 2 * time.Second
 	commandBackoffMax = 20 * time.Second
-	// resetFloor is the least time between two resets the command feed
-	// starts: each makes every document due and drops results, so a fault
-	// must not repeat one in a loop.
+	// resetFloor is the least time between two resets the command feed or
+	// the token feed starts: each makes every document due and drops
+	// results, so a fault must not repeat one in a loop (resetGate).
 	resetFloor = time.Minute
 	// noGeneration is the wait while the account side holds no generation
 	// yet: it adopts the platform's from its first page.
@@ -123,8 +125,10 @@ type settingsWork struct {
 	l   *Leader
 	cfg SettingsConfig
 	// accounts is the account follower: a reset here cuts its long-poll and
-	// kicks its round.
+	// the token follower's, and kicks its round.
 	accounts *follower
+	// gate spaces this side's resets and the token feed's (resetGate).
+	gate *resetGate
 	// sections are the notices the section sender takes; executor and
 	// results wake their loops.
 	sections          *sectionNotices
@@ -143,7 +147,7 @@ type settingsWork struct {
 	wg   sync.WaitGroup
 }
 
-func newSettingsWork(l *Leader, accounts *follower) *settingsWork {
+func newSettingsWork(l *Leader, accounts *follower, gate *resetGate) *settingsWork {
 	cfg := l.Settings
 	if cfg.Acts == nil {
 		cfg.Acts = &numberacts.Runner{Store: l.Members.Contract, Log: l.log()}
@@ -151,7 +155,7 @@ func newSettingsWork(l *Leader, accounts *follower) *settingsWork {
 			cfg.Acts.Devices = store.NewDevices(l.Pool)
 		}
 	}
-	return &settingsWork{l: l, cfg: cfg, accounts: accounts, sections: newSectionNotices(),
+	return &settingsWork{l: l, cfg: cfg, accounts: accounts, gate: gate, sections: newSectionNotices(),
 		executor: make(chan struct{}, 1), results: make(chan struct{}, 1)}
 }
 

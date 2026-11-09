@@ -240,8 +240,10 @@ func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenC
 // first (a signed gone, a page or record of another generation, a rewound
 // feed): by compare-and-set on the generation alone, since it does not know
 // the account feed's cursor, with the same locks in the same order (DB25).
-// It wakes every contract loop with "generation", so the account feed's
-// long-poll is cut and the round runs. One generation resets both feeds.
+// It wakes every contract loop with "generation", so the account and
+// command feeds' long-polls are cut and the round runs. One generation
+// resets every feed: restartTx resets the account, token and command
+// feeds alike, whichever saw the reset first.
 func (c *Contract) RestartFromTokens(ctx context.Context, seenGeneration uuid.UUID, gen *uuid.UUID, confirmed bool) (bool, error) {
 	done := false
 	err := retryDeadlock(ctx, func() error {

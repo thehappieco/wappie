@@ -30,7 +30,7 @@ import (
 func (w *snapshotWorld) executorOf(t *testing.T, mode string, logs *membershiptest.Logs) *settingsWork {
 	t.Helper()
 	l := w.settingsLeader(w.members, logs, settingsTimes())
-	sw := newSettingsWork(l, &follower{l: l, round: make(chan struct{}, 1)})
+	sw := newSettingsWork(l, &follower{l: l, round: make(chan struct{}, 1)}, newResetGate(l))
 	sw.current.Store(&mode)
 	return sw
 }
