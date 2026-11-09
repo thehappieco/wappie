@@ -27,12 +27,19 @@ type NumberLooks interface {
 	Holds(id string) bool
 }
 
-// runs are the kinds this binary runs per section in the mode on: none in
-// the read release, so a section's accepts is [] in every mode.
-var runs = map[string][]string{}
+// runs are the kinds this binary runs per section in the mode on (the
+// commands release): the numbers kinds but item.sync_now, which a person's
+// Read runs only once the socket's frame asks Read too (the platform's
+// answer 4, DS13), and the person's two. Never item.relink or a kind of kit
+// v0.11.0 (the whole document would be refused).
+var runs = map[string][]string{
+	kc.SectionNumbers: {kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemRegistrationDelete},
+	kc.SectionPerson:  {kc.OpPersonNoticesDismiss, kc.OpPersonSignOutEverywhere},
+}
 
 // accepts are the kinds the settings mode lets this binary run for
-// section: none while it only reads, never null.
+// section (kc.SectionPerson for a person's document): none while it only
+// reads, never null.
 func accepts(mode, section string) []string {
 	if mode != store.SettingsOn {
 		return []string{}

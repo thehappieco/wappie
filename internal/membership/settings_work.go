@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/numberacts"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/store"
 )
@@ -91,6 +92,11 @@ type SettingsConfig struct {
 	// pairing and retry. Nil: none pairs, none may be retried.
 	Numbers NumberLooks
 
+	// Acts runs the numbers kinds (internal/numberacts), with the
+	// process's registry and socket server. Nil: the leader's own, over its
+	// database, with neither, which skips what they do.
+	Acts *numberacts.Runner
+
 	// stateRead, set by tests only, runs each time the command follower has
 	// read the state, before it asks for a page, with its interrupt.
 	stateRead func(interrupt func())
@@ -138,7 +144,14 @@ type settingsWork struct {
 }
 
 func newSettingsWork(l *Leader, accounts *follower) *settingsWork {
-	return &settingsWork{l: l, cfg: l.Settings, accounts: accounts, sections: newSectionNotices(),
+	cfg := l.Settings
+	if cfg.Acts == nil {
+		cfg.Acts = &numberacts.Runner{Store: l.Members.Contract, Log: l.log()}
+		if l.Pool != nil {
+			cfg.Acts.Devices = store.NewDevices(l.Pool)
+		}
+	}
+	return &settingsWork{l: l, cfg: cfg, accounts: accounts, sections: newSectionNotices(),
 		executor: make(chan struct{}, 1), results: make(chan struct{}, 1)}
 }
 
@@ -231,8 +244,8 @@ func (sw *settingsWork) interrupt() {
 
 // notice takes a settings channel notice: a workspace whose numbers
 // section changed, "c:" and one whose connection only flipped between
-// online and offline, "u:" and a person's notices (the commands release's
-// person documents), or "due".
+// online and offline, "u:" and a user whose notices changed (their person
+// document), or "due".
 func (sw *settingsWork) notice(payload string) { sw.sections.notice(payload) }
 
 // dirty takes a dirty channel notice (0051's: what a snapshot shows, the
@@ -244,16 +257,20 @@ func (sw *settingsWork) dirty(payload string) { sw.sections.dirty(payload) }
 // sectionNotices is what the leader's watcher hands the section sender,
 // never waiting on it: the workspaces a change touched, those whose
 // connections only flipped, or all of them, and a wake when a section was
-// made due sooner.
+// made due sooner; and for the persons' documents, the users whose notices
+// changed and the workspaces a change touched (a reader who lost Read no
+// longer sees a pause notice there).
 type sectionNotices struct {
-	mu         sync.Mutex
-	ids, flips map[uuid.UUID]bool
-	all        bool
-	wake       chan struct{}
+	mu               sync.Mutex
+	ids, flips       map[uuid.UUID]bool
+	all              bool
+	users, personsOf map[uuid.UUID]bool
+	wake             chan struct{}
 }
 
 func newSectionNotices() *sectionNotices {
-	return &sectionNotices{ids: map[uuid.UUID]bool{}, flips: map[uuid.UUID]bool{}, wake: make(chan struct{}, 1)}
+	return &sectionNotices{ids: map[uuid.UUID]bool{}, flips: map[uuid.UUID]bool{}, users: map[uuid.UUID]bool{},
+		personsOf: map[uuid.UUID]bool{}, wake: make(chan struct{}, 1)}
 }
 
 // notice takes a settings channel payload.
@@ -269,7 +286,12 @@ func (n *sectionNotices) notice(payload string) {
 			kick(n.wake)
 		}
 	case len(payload) > 2 && payload[:2] == "u:":
-		// A person's notices: their document is the commands release's.
+		if id, err := uuid.Parse(payload[2:]); err == nil {
+			n.mu.Lock()
+			n.users[id] = true
+			n.mu.Unlock()
+			kick(n.wake)
+		}
 	default:
 		n.dirty(payload)
 	}
@@ -282,6 +304,7 @@ func (n *sectionNotices) dirty(payload string) {
 		n.all = true
 	} else if id, err := uuid.Parse(payload); err == nil {
 		n.ids[id] = true
+		n.personsOf[id] = true
 	} else {
 		n.mu.Unlock()
 		return
@@ -305,6 +328,34 @@ func (n *sectionNotices) take() (ids, flips []uuid.UUID, all bool) {
 	all = n.all
 	n.ids, n.flips, n.all = map[uuid.UUID]bool{}, map[uuid.UUID]bool{}, false
 	return ids, flips, all
+}
+
+// takePersons returns and forgets the users whose notices changed and the
+// workspaces whose persons' documents a change may have changed.
+func (n *sectionNotices) takePersons() (users, workspaces []uuid.UUID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for id := range n.users {
+		users = append(users, id)
+	}
+	for id := range n.personsOf {
+		workspaces = append(workspaces, id)
+	}
+	n.users, n.personsOf = map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
+	return users, workspaces
+}
+
+// givePersons puts back what takePersons returned, when it could not be
+// written.
+func (n *sectionNotices) givePersons(users, workspaces []uuid.UUID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, id := range users {
+		n.users[id] = true
+	}
+	for _, id := range workspaces {
+		n.personsOf[id] = true
+	}
 }
 
 // give puts back what take returned, when it could not be written.
