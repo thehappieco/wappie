@@ -54,9 +54,9 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 		return
 	}
 	// Lifting a pause is resuming, by role (store.ActionPause). resolveDevice
-	// let a number that was not paused through under Manage, as "sync now";
-	// a stop may have landed since, so this read, the one the pause is
-	// lifted on, decides.
+	// let a number that was not paused through as "sync now", under a
+	// person's Read or a key's Manage; a stop may have landed since, so this
+	// read, the one the pause is lifted on, decides.
 	if dev.Paused && !s.authorizeDevice(ctx, f, resolved, store.ActionPause) {
 		return
 	}
@@ -87,7 +87,7 @@ func (s *session) handleDeviceStart(ctx context.Context, f Frame) {
 		defer cancel()
 		// The pause it took away comes back with its cause: a move's
 		// stays a move's, never a person's. A sync now took none, and
-		// leaves the number unpaused: a member with Manage never pauses.
+		// leaves the number unpaused: a reader never pauses.
 		if dev.Paused {
 			if pauseErr := s.srv.cfg.Devices.RestorePause(restoreCtx, tenant, dev.ID, dev.PauseCause); pauseErr != nil {
 				s.log.Error("could not preserve pause after failed resume", "device", dev.ID, "error", pauseErr)

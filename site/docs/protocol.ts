@@ -144,7 +144,8 @@ export interface DeviceInfo {
    * (device.stop, and device.start on a paused number): an owner or an
    * admin (in a personal workspace, its person), never through Manage; a
    * key with full scope that reaches the number. device.start on a number
-   * that is not paused (sync now) stays can_manage's.
+   * that is not paused (sync now) follows neither flag: a person needs Read
+   * and the number's key, a key Manage with full scope.
    */
   can_pause?: boolean
   can_send?: boolean

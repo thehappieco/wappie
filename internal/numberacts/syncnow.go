@@ -23,9 +23,8 @@ import (
 // a start past StartBound included, connect_failed; one a stop paused
 // meanwhile is stopped again, paused.
 //
-// It is not in the commands release's accepts: a person's sync now asks
-// Read (the platform's answer 4), the frame's still Manage, until the
-// release that widens both lists it.
+// A person's sync now asks Read (the platform's answer 4, DS13), as the
+// socket's own device.start on a number that is not paused asks it.
 func (r *Runner) SyncNow(ctx context.Context, run Run, item uuid.UUID) (store.ContractAct, error) {
 	act, dev, err := r.Store.JudgeSyncNow(ctx, run.contract(), item, r.busy)
 	if err != nil || !act.Open {

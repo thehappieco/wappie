@@ -85,7 +85,9 @@ globalThis.WappieDocumentationLocales = {
     "doc81": "Pausar e retomar a sincronização",
     "doc82": "(número pausado)",
     "doc83": "Papel de proprietário ou administrador (no espaço pessoal, sua pessoa), nunca a permissão Gerenciamento; ou um token full que alcança o número",
-    "doc84": "(número não pausado: conecta agora)"
+    "doc84": "(número não pausado: conecta agora)",
+    "doc85": "Sincronizar agora",
+    "doc86": "Leitura e chave concedida (uma pessoa, mesmo proprietária ou administradora); ou um token full que alcança o número"
   },
   "en": {
     "doc0": "Documentation / v1",
@@ -172,7 +174,9 @@ globalThis.WappieDocumentationLocales = {
     "doc81": "Pause and resume sync",
     "doc82": "(paused number)",
     "doc83": "Owner or administrator role (in a personal workspace, its person), never the Management permission; or a full token that reaches the number",
-    "doc84": "(number not paused: connects it now)"
+    "doc84": "(number not paused: connects it now)",
+    "doc85": "Sync now",
+    "doc86": "Read and a granted key (a person, an owner or administrator too); or a full token that reaches the number"
   },
   "es": {
     "doc0": "Documentación / v1",
@@ -259,7 +263,9 @@ globalThis.WappieDocumentationLocales = {
     "doc81": "Pausar y reanudar la sincronización",
     "doc82": "(número en pausa)",
     "doc83": "Rol de propietario o administrador (en un espacio personal, su persona), nunca el permiso Gestión; o un token full que alcance el número",
-    "doc84": "(número sin pausa: lo conecta ahora)"
+    "doc84": "(número sin pausa: lo conecta ahora)",
+    "doc85": "Sincronizar ahora",
+    "doc86": "Lectura y clave concedida (una persona, también propietaria o administradora); o un token full que alcance el número"
   },
   "fr": {
     "doc0": "Documentation / v1",
@@ -346,7 +352,9 @@ globalThis.WappieDocumentationLocales = {
     "doc81": "Mettre en pause et reprendre la synchronisation",
     "doc82": "(numéro en pause)",
     "doc83": "Rôle de propriétaire ou d’administrateur (dans un espace personnel, sa personne), jamais l’autorisation Gestion ; ou un jeton full qui atteint le numéro",
-    "doc84": "(numéro non en pause : le connecte maintenant)"
+    "doc84": "(numéro non en pause : le connecte maintenant)",
+    "doc85": "Synchroniser maintenant",
+    "doc86": "Lecture et clé accordée (une personne, propriétaire ou administratrice comprise) ; ou un jeton full qui atteint le numéro"
   },
   "de": {
     "doc0": "Dokumentation / v1",
@@ -433,6 +441,8 @@ globalThis.WappieDocumentationLocales = {
     "doc81": "Synchronisierung pausieren und fortsetzen",
     "doc82": "(pausierte Nummer)",
     "doc83": "Rolle Inhaber oder Administrator (in einem persönlichen Arbeitsbereich dessen Person), nie die Berechtigung Verwaltung; oder ein full-Token, das die Nummer erreicht",
-    "doc84": "(nicht pausierte Nummer: verbindet sie sofort)"
+    "doc84": "(nicht pausierte Nummer: verbindet sie sofort)",
+    "doc85": "Jetzt synchronisieren",
+    "doc86": "Lesen und erteilter Schlüssel (eine Person, auch Eigentümer oder Administrator); oder ein full-Token, das die Nummer erreicht"
   }
 };
