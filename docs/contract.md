@@ -862,7 +862,7 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 | `item.sync_stop` | owner or admin by role | owner or admin | none: a paused number counts as done | `device.stop`: readers told, the event written, the pairing cancelled, the number stopped, its status broadcast, the notices pushed; `paused_by` names the actor |
 | `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails, or runs past the start bound, keeps the pause lifted, and the supervisor starts the number (DS9) |
 | `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
-| `item.sync_now` | Read, for a person, as the socket's own sync now asks it (a key keeps Manage) | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` (a start past the start bound too) | `device.start` on a number not paused (DS13): an owner or admin who does not read the number may not |
+| `item.sync_now` | Read, for a person, as the socket's own sync now asks it (a key keeps Manage) | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` (a start past the start bound too), `rate_limited` within the failed start wait (no start) | `device.start` on a number not paused (DS13): an owner or admin who does not read the number may not |
 | `person.sign_out_everywhere` | the actor | the actor | none | every session family of the actor begun before `issued_at` ends, its workspace sessions with it (the sockets close within a second), never a later one, an API key, an MCP or AI connection; `sessions_ended` counts the live sessions ended (DS11) |
 | `person.notices_dismiss` | the actor's own notices | the actor | `state_changed` (a pause notice whose version rose stays; every other one is dismissed) | Wappie's own "seen", at the version shown |
 
@@ -873,7 +873,10 @@ workspace as well as under the workspace's row-level security. A start
 (a resume's, a sync now's) waits at most the start bound for its number
 to connect: the executor runs one row at a time for every workspace, and
 a connect that keeps failing would hold the others for a minute and a
-half. A store error that is no verdict backs the row off (the run
+half. A sync now is any reader's, so after its start of a number fails,
+a sync now of that number within the failed start wait starts nothing:
+it is answered `rate_limited`, `retry_after` the seconds left, and the
+platform issues it again then. A store error that is no verdict backs the row off (the run
 backoff), holding back only its workspace's and producer's later rows;
 after 5 tries it is answered `rate_limited`. The results go as in the
 read release.
@@ -1205,4 +1208,5 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | person not found | 24 hours | a person's document refused `not_found`, before it parks |
 | resume repair | 10 minutes | a number unpaused this long, before a pause notice its frame left open is marked resumed |
 | start bound | 15 seconds | a console resume's or sync now's start, before it is cut |
+| failed start wait | 1 minute | after a console sync now's start of a number failed, before this process starts that number for a sync now again |
 | check person | 1 hour | `--check`: a person's last accepted document |

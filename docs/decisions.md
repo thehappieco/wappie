@@ -1948,7 +1948,12 @@ not paused alike; keys, and service accounts through them, keep Manage
 with full scope. Followed literally, an owner or an admin who does not
 read the number may not. The runner shipped first, built and tested;
 `item.sync_now` entered `accepts` with the release that widened the frame,
-so the console never offered what Wappie's own screen refused.
+so the console never offered what Wappie's own screen refused. Since any
+reader may click it, and the executor runs every workspace's commands one
+at a time, a sync now's start that fails makes the number's next sync
+nows wait a minute: `rate_limited`, with the seconds left, and no start,
+so repeated clicks on a number that cannot connect hold the other
+commands for at most one start bound a minute per number.
 
 **DS14. One lock order for every 12a writer**, `Restart`'s:
 `contract_state`, `contract_accounts`, the records in id order,

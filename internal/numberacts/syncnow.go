@@ -1,6 +1,7 @@
 package numberacts
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"math"
@@ -21,7 +22,9 @@ import (
 // spec's 14.6). A number that connects, or runs already, ran; one whose
 // session is gone is marked logged out and read_only; any other failure,
 // a start past StartBound included, connect_failed; one a stop paused
-// meanwhile is stopped again, paused.
+// meanwhile is stopped again, paused. Within FailedStartWait of this
+// runner's failed start of the number it starts nothing, and answers
+// rate_limited with the seconds left.
 //
 // A person's sync now asks Read (the platform's answer 4, DS13), as the
 // socket's own device.start on a number that is not paused asks it.
@@ -29,6 +32,10 @@ func (r *Runner) SyncNow(ctx context.Context, run Run, item uuid.UUID) (store.Co
 	act, dev, err := r.Store.JudgeSyncNow(ctx, run.contract(), item, r.busy)
 	if err != nil || !act.Open {
 		return act, err
+	}
+	if wait, ok := r.failedWait(dev.ID); ok {
+		return r.Store.FinishSyncNow(ctx, run.contract(),
+			store.CommandResult{Outcome: store.CommandRefused, Code: store.CommandRateLimited, RetryAfter: wait})
 	}
 	res, err := r.connect(ctx, run.Workspace.String(), dev)
 	if err != nil {
@@ -55,6 +62,10 @@ func (r *Runner) connect(ctx context.Context, tenant string, dev store.Device) (
 		r.sessionMissing(ctx, tenant, dev.ID)
 		return refused(kc.CodeReadOnly), nil
 	default:
+		// A start the leader's stop cut is not the number's failure.
+		if ctx.Err() == nil {
+			r.startFailed(dev.ID)
+		}
 		r.log().Warn("a number the console synced now did not start", "device", dev.ID, "error", err)
 		return refused(kc.CodeConnectFailed), nil
 	}
@@ -76,6 +87,43 @@ func (r *Runner) connect(ctx context.Context, tenant string, dev store.Device) (
 	}
 	return store.CommandResult{Outcome: store.CommandRan}, nil
 }
+
+// startFailed keeps the time of a sync now's failed start of device, and
+// forgets the failures whose FailedStartWait ended. No start happens
+// within one, so none needs forgetting at a start that works.
+func (r *Runner) startFailed(device string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	for d, at := range r.failed {
+		if !now.Before(at.Add(r.failedStartWait())) {
+			delete(r.failed, d)
+		}
+	}
+	if r.failed == nil {
+		r.failed = map[string]time.Time{}
+	}
+	r.failed[device] = now
+}
+
+// failedWait is what is left of device's FailedStartWait after this
+// runner's last failed start of it, in whole seconds, at least one.
+func (r *Runner) failedWait(device string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at, ok := r.failed[device]
+	if !ok {
+		return 0, false
+	}
+	left := time.Until(at.Add(r.failedStartWait()))
+	if left <= 0 {
+		delete(r.failed, device)
+		return 0, false
+	}
+	return min(max(1, int(math.Ceil(left.Seconds()))), kc.MaxRetryAfter), true
+}
+
+func (r *Runner) failedStartWait() time.Duration { return cmp.Or(r.FailedStartWait, FailedStartWait) }
 
 // busy is item_busy's wait for a number this process pairs now: a
 // linked number's pairing is a relink, so what is left of its window, in

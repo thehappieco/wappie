@@ -3,6 +3,7 @@ package membership
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -18,10 +19,12 @@ import (
 	"whatserver2/internal/wa"
 )
 
-// startRegistry starts every number at once, and counts the starts.
+// startRegistry starts every number at once, or fails each start with
+// fail, and counts the starts.
 type startRegistry struct {
 	mu      sync.Mutex
 	started map[string]int
+	fail    error
 }
 
 func (r *startRegistry) Stop(context.Context, string) {}
@@ -29,7 +32,7 @@ func (r *startRegistry) StartExisting(_ context.Context, _, device string, _ wa.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.started[device]++
-	return nil, nil
+	return nil, r.fail
 }
 func (r *startRegistry) PairingSince(string) (time.Time, bool) { return time.Time{}, false }
 
@@ -118,5 +121,66 @@ func TestSyncNowFromTheConsole(t *testing.T) {
 	}
 	if n := reg.starts(w.device); n != 1 {
 		t.Fatalf("the number was started %d times", n)
+	}
+}
+
+// TestSyncNowWaitsAfterAFailedStart: the executor runs every workspace's
+// commands one at a time, and a sync now is any reader's. Once a sync
+// now's start fails, a sync now of the number within the runner's
+// FailedStartWait starts nothing: rate_limited, at a seq, retry_after the
+// seconds left, so readers clicking "try again" on a number that cannot
+// connect never hold the other commands for a start each. Past the wait it
+// starts the number again.
+func TestSyncNowWaitsAfterAFailedStart(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	w.settingsOn(t, store.SettingsOn)
+	if err := w.users.SetDevicePermission(ctx, w.team, w.owner, store.DevicePermission{DeviceID: w.device, UserID: w.owner, Read: true}); err != nil {
+		t.Fatal(err)
+	}
+	reg := &startRegistry{started: map[string]int{}, fail: errors.New("wa: connect failed after 8 attempts")}
+	syncNow := func(runner *numberacts.Runner) store.CommandResult {
+		t.Helper()
+		id := w.take(t, row{kind: kc.OpItemSyncNow, ws: &w.team, actor: w.sub, target: item(w.device), docs: nil}) //nolint:contextcheck // the world's helpers run on a context of their own
+		act, err := runner.SyncNow(ctx, numberacts.Run{Command: id, Workspace: w.team, Actor: w.sub, User: w.owner}, w.device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return act.Result
+	}
+	runner := &numberacts.Runner{Store: w.contract, Devices: store.NewDevices(w.pool), Registry: reg}
+	if res := syncNow(runner); res.Code != kc.CodeConnectFailed || res.RetryAfter != 0 {
+		t.Fatalf("the first sync now: %+v", res)
+	}
+	for range 3 {
+		res := syncNow(runner)
+		if res.Outcome != store.CommandRefused || res.Code != kc.CodeRateLimited || res.StateSeq == nil ||
+			res.RetryAfter < 1 || res.RetryAfter > int(numberacts.FailedStartWait/time.Second) {
+			t.Fatalf("a sync now within the wait: %+v", res)
+		}
+	}
+	if n := reg.starts(w.device); n != 1 {
+		t.Fatalf("the number was started %d times, want once", n)
+	}
+
+	// Past the wait, the number is started again; once it starts, it ran.
+	wait := 50 * time.Millisecond
+	short := &numberacts.Runner{Store: w.contract, Devices: store.NewDevices(w.pool), Registry: reg, FailedStartWait: wait}
+	if res := syncNow(short); res.Code != kc.CodeConnectFailed {
+		t.Fatalf("a sync now on another runner: %+v", res)
+	}
+	time.Sleep(2 * wait)
+	if res := syncNow(short); res.Code != kc.CodeConnectFailed {
+		t.Fatalf("a sync now past the wait: %+v", res)
+	}
+	reg.mu.Lock()
+	reg.fail = nil
+	reg.mu.Unlock()
+	time.Sleep(2 * wait)
+	if res := syncNow(short); res.Outcome != store.CommandRan {
+		t.Fatalf("a sync now that starts: %+v", res)
+	}
+	if n := reg.starts(w.device); n != 4 {
+		t.Fatalf("the number was started %d times, want 4", n)
 	}
 }
