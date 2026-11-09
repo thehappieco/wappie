@@ -119,22 +119,24 @@ func (c *Contract) Snapshot(ctx context.Context, workspace uuid.UUID) (ContractS
 	return out, err
 }
 
-// snapshotSeqTaken, nil but in a test, runs while SnapshotNumbered holds
-// the record with its seq taken.
-var snapshotSeqTaken func()
+// snapshotSeqTaken, nil but in a test, runs in SnapshotNumbered's
+// transaction while it holds the record with its seq taken, before it
+// measures.
+var snapshotSeqTaken func(tx pgx.Tx)
 
 // SnapshotNumbered is Snapshot as the sender sends it: one REPEATABLE READ
 // transaction whose first statement gives it its snapshot_seq under the
 // record's lock (the plan's 3.5, as NumbersOf takes a section's seq). An
-// act holding the record (a rename, the one kind the snapshot shows) makes
-// it wait, and it then fails with a serialization error and runs again,
-// with a view that sees the act, at a higher seq; an act that comes after
-// it waits for it, and takes a higher seq. So a snapshot at or above a
+// act holding the record (a rename, a stop or a resume: each console act
+// updates the record first, actSeqTx) makes it wait, and it then fails
+// with a serialization error and runs again (retrySerialization), with a
+// view that sees the act, at a higher seq; an act that comes after it
+// waits for it, and takes a higher seq. So a snapshot at or above a
 // result's seq shows the act: a snapshot measured before a rename's commit
-// is never numbered after it. The seq is SnapshotSeq's: the measurement's
-// milliseconds, or one more than the last snapshot's or section's,
-// whichever is higher. False when the workspace is parked, and nothing is
-// to be sent.
+// is never numbered after it. The seq is the measurement's milliseconds,
+// or one more than the last snapshot's or section's, whichever is higher;
+// then the transaction is read-only, as Snapshot's is. False when the
+// workspace is parked, and nothing is to be sent.
 func (c *Contract) SnapshotNumbered(ctx context.Context, workspace uuid.UUID) (ContractSnapshot, bool, error) {
 	var out ContractSnapshot
 	var ok bool
@@ -151,8 +153,14 @@ func (c *Contract) SnapshotNumbered(ctx context.Context, workspace uuid.UUID) (C
 			if err != nil {
 				return err
 			}
+			// The seq is its one write: it measures read-only, as the
+			// unnumbered read does, so nothing in the quarantine scope
+			// can write.
+			if _, err := tx.Exec(ctx, `SET TRANSACTION READ ONLY`); err != nil {
+				return err
+			}
 			if snapshotSeqTaken != nil {
-				snapshotSeqTaken()
+				snapshotSeqTaken(tx)
 			}
 			ok = true
 			return snapshotTx(ctx, tx, &out)

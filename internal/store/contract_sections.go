@@ -225,6 +225,14 @@ func numbersItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, out *Co
 // actSeqTx is the first statement of every workspace act (the plan's 3.5):
 // the record locked, and the act's seq, the workspace's next on its one
 // clock. ErrNotFound for a workspace that is not recorded.
+//
+// It updates the record, never only locks it: a numbers or a snapshot read
+// that waits on the act fails with a serialization error once the act
+// commits, and measures again with a view that sees it, only because the
+// row it waited on was updated. One that waits on a lock alone (SELECT
+// ... FOR UPDATE, as the event queue's lockQueueTx and RefuseCommand take
+// it, writing nothing either read shows) goes on with the view it took
+// before the wait, and would miss the act.
 func actSeqTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) (int64, error) {
 	var seq int64
 	err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)

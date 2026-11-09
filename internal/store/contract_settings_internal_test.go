@@ -233,7 +233,7 @@ func TestSnapshotReadSerializesWithAct(t *testing.T) {
 
 	// The read holds the record; the act waits and takes a higher seq.
 	taken, release := make(chan struct{}), make(chan struct{})
-	snapshotSeqTaken = func() {
+	snapshotSeqTaken = func(pgx.Tx) {
 		close(taken)
 		<-release
 	}
@@ -277,6 +277,44 @@ func TestSnapshotReadSerializesWithAct(t *testing.T) {
 	}
 	if s, ok, err := w.c.SnapshotNumbered(ctx, w.ws); err != nil || ok || s.Seq != 0 {
 		t.Fatalf("a parked workspace's snapshot: %+v %v %v", s, ok, err)
+	}
+}
+
+// TestSnapshotMeasuresReadOnly: past its seq, the snapshot's transaction
+// is read-only, as the unnumbered read's is: a write in its quarantine
+// scope fails (25006) rather than commit with the seq, and it measures as
+// before.
+func TestSnapshotMeasuresReadOnly(t *testing.T) {
+	ctx := context.Background()
+	w := newSettingsWorld(t)
+	var mode string
+	var write error
+	snapshotSeqTaken = func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_read_only')`).Scan(&mode); err != nil {
+			t.Error(err)
+		}
+		write = pgx.BeginFunc(ctx, tx, func(sp pgx.Tx) error {
+			if _, err := sp.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.ws.String()); err != nil {
+				return err
+			}
+			_, err := sp.Exec(ctx, `UPDATE devices SET label = 'Stray' WHERE id = $1`, w.device)
+			return err
+		})
+	}
+	defer func() { snapshotSeqTaken = nil }()
+	s, ok, err := w.c.SnapshotNumbered(ctx, w.ws)
+	snapshotSeqTaken = nil
+	var pgErr *pgconn.PgError
+	if mode != "on" || !errors.As(write, &pgErr) || pgErr.Code != "25006" {
+		t.Fatalf("past its seq the snapshot's transaction is read-only %q, a write in it: %v", mode, write)
+	}
+	if err != nil || !ok || len(s.Items) != 1 || s.Items[0].Label == nil || *s.Items[0].Label != "Vendas" {
+		t.Fatalf("the snapshot: %+v %v %v", s, ok, err)
+	}
+	var stored int64
+	if err := w.pool.QueryRow(ctx, `SELECT snapshot_seq FROM contract_workspaces WHERE workspace_id = $1`, w.ws).Scan(&stored); err != nil ||
+		stored != s.Seq {
+		t.Fatalf("the stored snapshot_seq %d, the snapshot's %d: %v", stored, s.Seq, err)
 	}
 }
 
