@@ -256,6 +256,70 @@ func (t *Tokens) TokenGrantContext(ctx context.Context, workspace, token uuid.UU
 	return out, err
 }
 
+// TokenWaiting is one token that waits for a number's key (token.waiting,
+// the plan's 5.4): its Read there is applied, and its identity holds no
+// grant at the number's current epoch.
+type TokenWaiting struct {
+	Device uuid.UUID
+	Token  uuid.UUID
+	Name   string
+}
+
+// WaitingTokens lists, for each number of devices (every live number of the
+// workspace when devices is empty), the tokens that wait for its key, at
+// now: live (tokenLiveSQL), with an identity whose key is still the pin,
+// an applied Read, and no grant at the number's current epoch. A number with
+// no archive key has nothing to seal, so none waits there. It writes
+// nothing, and sees only the workspace's tokens.
+func (t *Tokens) WaitingTokens(ctx context.Context, workspace uuid.UUID, devices []uuid.UUID, now time.Time) ([]TokenWaiting, error) {
+	out := []TokenWaiting{}
+	if len(devices) == 0 {
+		devices = nil
+	}
+	err := pg.InTenantTx(ctx, t.pool, workspace.String(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT d.id, t.id, t.name
+			FROM contract_token_perms p
+			JOIN contract_tokens t ON t.id = p.token_id
+			JOIN devices d ON d.id = p.device_id AND d.deleted_at IS NULL
+			JOIN device_archive_keys k ON k.device_id = d.id AND k.epoch = d.current_epoch AND k.retired_at IS NULL
+			WHERE p.perm = 'read' AND p.state = 'applied' AND ($1::uuid[] IS NULL OR d.id = ANY ($1))
+			  AND t.identity_user_id IS NOT NULL AND t.identity_dropped_at IS NULL AND t.key_changed_at IS NULL
+			  AND `+tokenLiveSQL("$2")+`
+			  AND NOT EXISTS (SELECT 1 FROM device_key_grants g WHERE g.user_id = t.identity_user_id AND g.device_id = d.id AND g.epoch = d.current_epoch)
+			ORDER BY d.id, t.name, t.id`, devices, now)
+		if err != nil {
+			return err
+		}
+		return forEachRow(rows, func(row pgx.Rows) error {
+			var w TokenWaiting
+			if err := row.Scan(&w.Device, &w.Token, &w.Name); err != nil {
+				return err
+			}
+			out = append(out, w)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list waiting tokens: %w", err)
+	}
+	return out, nil
+}
+
+// Identity is the hidden identity of tok, the user its grants are sealed
+// to (GrantsFor), for grants.list and GET /v1/grants; ErrNotFound when it
+// has none, or it was dropped.
+func (t *Tokens) Identity(ctx context.Context, tok TokenAuth) (uuid.UUID, error) {
+	var identity uuid.UUID
+	err := pg.InTenantTx(ctx, t.pool, tok.Tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT identity_user_id FROM contract_tokens
+			WHERE id = $1 AND identity_user_id IS NOT NULL AND identity_dropped_at IS NULL`, tok.ID).Scan(&identity)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return identity, err
+}
+
 // TokenKeyHolder is a token whose identity holds a number's key: never a
 // reader, a holder or a backup (L2), listed apart.
 type TokenKeyHolder struct {
