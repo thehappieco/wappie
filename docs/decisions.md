@@ -2773,3 +2773,102 @@ and `mcpContent` tests check each `grant.add` names the key's
 fingerprint, and `deviceGrants` that a stale grant is refused.
 `packages/client`'s check the same, the Go vectors, and
 `packages/cli`'s that it is passed on.
+
+**DS51. A message that fills a placeholder is sealed to the
+placeholder's uid** (from the contact-names review, X1).
+
+The finding. Ingest picks a fresh uid for each message and seals its
+values to it. The kit binds each value to its row: the AAD is label,
+kind, tenant, row and header (`seal.AAD`), and the row is that uid. A
+reader opens each value with the row's uid (`packages/client`'s opener
+passes `message.uid`, for the body, raw, payload, media key, thumbnail
+and file name alike). A message can fill an empty placeholder instead
+of making a row (`fillStub`: an unsupported row with no body, no payload
+and no attachment, under the same number, chat key and id). The row
+then keeps the placeholder's uid. So its body, raw protobuf and payload
+failed authentication, and readers showed them as tampered. The fill
+also wrote no media row: an attachment's key, thumbnail and file name
+were dropped, and nothing queued its download.
+
+The fix, in the server only.
+
+- `fillStub` fills only a message sealed to the placeholder's uid. A
+  message sealed to another uid gets `store.PlaceholderError`, which
+  names the placeholder's uid, and nothing is written. The check and the
+  update share one WHERE clause (`emptyPlaceholder`).
+- `Pipeline.Ingest` then seals the message again to that uid and inserts
+  it again, once. Live messages, history and outbound all go through it.
+- The fill writes the attachment's row under the placeholder's uid, as
+  `Insert` does, and the pipeline nudges its download. It also sets the
+  chat's `last_type` when the placeholder was the chat's newest message
+  by timestamp, as `Reproject` does.
+- `InsertResult.Filled` and `Result.Filled` report a fill. A fill is a
+  duplicate too: no new sequence and no event. A reader sees the message
+  when it next reads the chat.
+
+Why the store decides. It decides in the insert's transaction, so a
+placeholder written between a lookup and the insert is never missed. A
+lookup before every seal would add a query on the hot path, since
+history redelivers in bulk, and would still need the check. The cost is
+a second seal, and only for a message that fills a placeholder.
+
+Why not give the row the sealed uid. The uid is the primary key, and
+other rows name it: `media.message_uid` (a foreign key with no ON
+UPDATE), `ai_derived.message_uid`, `events.message_uid`, the
+`target_uid` of reactions, edits and deletions, and `mcp_outbound`'s
+`message_uid` and `reply_to_uid`. Clients also hold it from the
+placeholder's own event. Keeping the placeholder's uid changes none of
+them.
+
+The other paths that write sealed message values:
+
+- `Insert` of a new row seals to the row's own uid. Correct.
+- `Messages.Reproject` (`reproject.apply` and `whatserverd reproject`)
+  seals to the row's own uid. Correct.
+- `MarkProtocol` writes no sealed value.
+- An edit, a deletion or a reaction is a row of its own; `fillStub` fills
+  only kind `message`.
+- A copy under the conversation's other key (LID or phone number) is a
+  duplicate and fills nothing, as before.
+- A `placeholder` row (the phone masked the message) is not
+  `unsupported`, so nothing fills it.
+- `Router.ingest`'s second try after `ErrArchiveKeyChanged` goes through
+  the same loop.
+
+Rows filled before this change. Their values are sealed to a uid that
+was never stored, and their attachment rows are missing. The server
+cannot find them: it cannot open anything. A holder of the number's
+archive key can. A value that does not open under its row's uid, under
+a content key that opens, is one of them.
+
+- Repair with the key. The lost uid can be computed from any value's GCM
+  tag, given the content key: GHASH is linear in the AAD, and the uid is
+  16 bytes of it. A prototype found it in 80 of 80 tries, with 1 to 4
+  candidates, all of which decrypt to the same text. Every value of a
+  row was sealed to the same uid, and it is a UUIDv7 made at the fill, so
+  the values check each other. Every message keeps its raw protobuf, so
+  a row has at least two values. The values are then sealed again to the
+  row's uid, and the attachment's row is rebuilt from the raw protobuf
+  through `normalize.FromRaw`, as `reproject` does. This needs a command
+  run with the archive private key, like `reproject`. It is not built
+  here.
+- Fetch again from WhatsApp. A redelivery finds a filled row, not a
+  placeholder, so it is a duplicate and changes nothing. The row would
+  first have to become a placeholder again. And `history.backfill`
+  anchors on the chat's oldest stored message, so it cannot reach one in
+  the middle. Only a full history sync after a relink would bring it,
+  and only while the phone still has it.
+
+Not here: no migration, and no client change. A fill publishes no
+event, as before.
+
+Tests: `TestARealMessageFillsItsPlaceholder` (ingest: a placeholder,
+then the real message through the pipeline; each value opens under the
+row's uid, the media row exists and its download is queued, the chat's
+type follows, no event, a redelivery changes nothing) and
+`TestTwoCopiesFillAPlaceholderOnce` (two copies at once: one fills, one
+is a duplicate, neither fails). `TestAFillSealedToAnotherUIDWritesNothing`,
+`TestAFillKeepsItsAttachment` and
+`TestARealMessageReplacesTheStubThatStoleItsPlace` (store).
+`TestSealedWritesNameTheirKey`'s placeholder case now fills under the
+placeholder's uid.
