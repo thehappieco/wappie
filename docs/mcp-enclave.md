@@ -1049,7 +1049,7 @@ a `DELETE` of grants removes zero rows under FORCE RLS, silently):
 | `Status` finding access gone (below) | `access_lost` |
 | a number's deletion (`device.delete`, [devices.md](devices.md#deletion-and-recovery)), or a restore's replay excluding it again: every live connection whose key names the number, any kind | `access_lost` |
 | a move to Personal ([device-personal-transfer.md](device-personal-transfer.md)): the mover's own live connections to the number, any kind | `access_lost` |
-| a person's Read on a number taken, or no flag left them on it (Wappie's permissions screen, the console's `item.flags_drop` of read and `item.access_remove`; DS47, the platform's 0061): every live connection they consented to and every AI integration they created that holds the number, any kind, whole, one holding other numbers too | `access_lost` |
+| a person's Read on a number taken, or no flag left them on it (Wappie's permissions screen, the console's `item.flags_drop` of read or of the last flag left, and `item.access_remove`; DS47, the platform's 0061): every live connection they consented to and every AI integration they created that holds the number, any kind, whole, one holding other numbers too | `access_lost` |
 
 `ExpireServiceAccounts(ctx, pool)`, run beside `ExpireMCPConnections`, applies
 `removeServiceAccountTx` per tenant to every membership past `expires_at` that
@@ -1338,15 +1338,17 @@ the lifecycle with connection ids, reasons and counts.
 - Closed for a person's own connections by DS47 (the owner's Q8 and the
   platform's decision 0061, [contract](contract.md)): when a person's
   Read on a number goes, or no flag is left them on it, on Wappie's
-  permissions screen or through the console's `item.flags_drop` of read
-  or `item.access_remove`, the same transaction (`setDevicePermissionTx`)
-  ends every live connection they consented to (metadata or content) and
-  every AI integration they created in the workspace that holds the
-  number, whole, `access_lost`, one that also holds other numbers too:
-  its key revoked, its drafts still waiting revoked, and its service
-  account removed with its permissions and grants on every number, as a
-  revoke ends it. Its reader is told after the commit, as a revoke tells
-  it; the 30-second re-tell is the backstop. Narrowed to the numbers
+  permissions screen or through the console's `item.flags_drop` (of read,
+  or of the last flag left, send or manage, which deletes no key) or
+  `item.access_remove`, the same transaction (`setDevicePermissionTx`,
+  deciding from the flags it writes) ends every live connection they
+  consented to (metadata or content) and every AI integration they
+  created in the workspace that holds the number, whole, `access_lost`,
+  one that also holds other numbers too: its key revoked, its drafts
+  still waiting revoked, and its service account removed with its
+  permissions and grants on every number, as a revoke ends it. Its
+  reader is told after the commit, as a revoke tells it; the 30-second
+  re-tell is the backstop. Narrowed to the numbers
   left, it could never renew (a renewal must name exactly the key's
   numbers, while the reader's record and an AI integration's
   `ai_config`, whose `cfg_tags` cover every number it was sealed over,
@@ -1362,6 +1364,16 @@ the lifecycle with connection ids, reasons and counts.
   epoch; consent, renewal and the drop all hold the workspace's tenants
   row, so a consent prepared before the drop and recorded after it is
   refused.
+- Not swept (asked of the platform): a connection already live whose
+  person has no Read on a number its key names, a metadata one given
+  before 0061 (it asked no Read then) or a content one or AI integration
+  left by a lost Read before F3. With no Read to take, a drop of read
+  never reaches it; it ends when the person's access to that number is
+  removed (a remove, the screen's PUT with no flag, a drop of their last
+  flag), on the number's deletion or move, on a revoke, or at its expiry
+  (a content or AI one cannot renew without Read). Whether R3 ends them
+  once at its first start (`access_lost`, readers told) is the
+  platform's to say; until then they are kept (DS47).
 - Still open (0061's third rule; a small follow-up after R3): a
   `grant.revoke` alone that leaves the person no grant at the number's
   current epoch counts as Read taken away, even with the Read flag kept,

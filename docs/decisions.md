@@ -2145,13 +2145,13 @@ number** (the owner's answer to Q8, relayed by the platform, final, and
 the platform's decision 0061, which amends 0060 on what ends and what a
 consent needs; F3). When a person's Read on a number goes, or their
 access to it is removed, on Wappie's permissions screen or through the
-console's `item.flags_drop` of read or `item.access_remove`, the one
-write both use (`setDevicePermissionTx`) also ends, in the same
-transaction, every live MCP connection the person consented to (metadata
-or content, any client) and every AI integration they created in that
-workspace that holds the number (its key names it, or its service
-account has a permission or a grant on it): whole, `access_lost`, also
-when it holds other numbers. Each ends as a revoke ends it
+console's `item.flags_drop` (of read, or of the last flag left) or
+`item.access_remove`, the one write both use (`setDevicePermissionTx`)
+also ends, in the same transaction, every live MCP connection the person
+consented to (metadata or content, any client) and every AI integration
+they created in that workspace that holds the number (its key names it,
+or its service account has a permission or a grant on it): whole,
+`access_lost`, also when it holds other numbers. Each ends as a revoke ends it
 (`endMCPConnectionTx`): its key revoked, its drafts still waiting for a
 person revoked, on every number, and for content and AI its service
 account removed with its permissions and grants on every number. Its
@@ -2174,15 +2174,37 @@ move out already end such connections the same way. F3's first build
 (`212e8ed`) took the number off and ended only a connection left with no
 number or with attachments; 0061 replaced that before any release.
 
-The write decides when it applies, so the screen and the acts agree by
-construction: when Read goes (the stored row had it), or when no flag is
-left (an access removal: `item.access_remove`, the screen's PUT with
-every flag false). A change that keeps send or manage while Read was
-already gone (a raise, a drop of the other flag) ends nothing, and nor
-does a raise, a drop of send or manage with Read kept, or a refusal
-(`last_reader`, an admin on an owner). The screen's PUT without Read
-still deletes a dormant grant, as before ([contract](contract.md), the
-flags kinds).
+The write decides when it applies, from the flags it writes, so the
+screen and the acts agree by construction: when Read goes (the stored
+row had it), or when no flag is left (an access removal:
+`item.access_remove`, the screen's PUT with every flag false, or the
+console's `item.flags_drop` of the last flag left, send or manage, with
+Read gone already). That last drop deletes no key (DS19; its freshness
+asks nothing, DS23), yet ends the connections as the screen's PUT with
+no flag does; F3's first build ended them only on a write that dropped
+keys, so the console's drop of the last flag ended none (found in
+review, fixed before any release). A change that keeps send or manage
+while Read was already gone (a raise, a drop of the other flag, a drop
+of read) ends nothing, and nor does a raise, a drop of send or manage
+with Read kept, one that finds the flag gone already (it writes
+nothing), or a refusal (`last_reader`, an admin on an owner). The
+screen's PUT without Read still deletes a dormant grant, as before
+([contract](contract.md), the flags kinds).
+
+Connections already live with no Read behind them are not swept. Before
+0061 a metadata consent asked no Read (an admin could give one on any
+number of the workspace), and before F3 a lost Read left a content
+connection or an AI integration as it was. Such a connection, whose
+person has no Read on a number its key names, has no Read for a drop of
+read to take: it ends when the person's access to that number is
+removed (a remove, the screen's PUT with no flag, a drop of their last
+flag), when the number is deleted or moved out, on a revoke, or at its
+expiry. A content one or an AI integration cannot renew without Read,
+so it lasts at most its consented lifetime (90 days at most); a metadata
+one never renews and lasts up to its own (a year at most, for a tested
+web client). Whether R3 ends them once, at its first start
+(`access_lost`, readers told), is asked of the platform; until it
+answers, they are kept.
 
 Every consent, metadata included, and every renewal is refused
 (`ErrMCPKeyUnsuitable`, HTTP 422 `key_unsuitable`) unless the person
