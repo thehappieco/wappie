@@ -2285,6 +2285,12 @@ installation ships with them off.
    applier, the judge, the reset.
 6. The token identities' `users` and `device_key_grants` rows.
 
+The token grant write reads the number's archive key under the
+workspace's row (step 3), and compares the key the grant names with it.
+Every write to `device_archive_keys` takes that row too (0036's
+`archive_owner_lock`), so the key cannot change before the grant commits,
+and no lock is added.
+
 Within one transaction, steps 4 to 6 are taken workspace by workspace, in
 workspace id order. Nobody takes a lower step after a higher one, and no
 trigger writes a row of a lower step: the perms' and the identities'
