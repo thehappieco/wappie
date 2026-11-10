@@ -185,6 +185,10 @@ func newHarness(t *testing.T) *harness {
 		tenant: tenant, device: uuid.MustParse(dev.ID),
 	}
 	h.owner = h.person(t, "owner")
+	// The owner consents in most tests, so reads the number: every
+	// consent needs Read on its numbers (DS47).
+	h.archiveKey(t)
+	h.consenterReads(t, h.owner.ID)
 	(&mcpauth.Handler{
 		Connections: h.conns, APIKeys: h.keys, Users: h.users,
 		Reader:       mcpauth.NewRelay(reader.srv.URL, relaySecret),
@@ -522,6 +526,41 @@ func TestMemberCannotConsent(t *testing.T) {
 	expect(t, h.call(t, http.MethodGet, "/v1/mcp/connections", nil, nil), http.StatusUnauthorized, "unauthorized")
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/connections", body, bearer("not-a-session")), http.StatusUnauthorized, "unauthorized")
 	expect(t, h.call(t, http.MethodDelete, "/v1/mcp/connections/"+id, nil, nil), http.StatusUnauthorized, "unauthorized")
+}
+
+// A metadata consent, as a content one, names only numbers its person reads
+// (DS47, the platform's 0061): an admin who does not read the number is
+// refused key_unsuitable (422), and nothing reaches the reader or the
+// ledger; with Read and the number's key, the same consent is recorded.
+func TestMetadataConsentNeedsRead(t *testing.T) {
+	h := newHarness(t)
+	admin := h.person(t, "admin")
+	token := h.session(t, admin)
+	consentAs := func() (reply, string) {
+		t.Helper()
+		requestID, _ := h.reader.pending(t, "Claude", "claude.ai")
+		in := time.Now().Add(20 * time.Minute)
+		key, err := h.keys.IssueActingAsForDevices(context.Background(), h.tenant.String(), "consent", store.ScopeRead, &admin.ID, nil,
+			[]uuid.UUID{h.device}, &in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix, _, _ := strings.Cut(key, ".")
+		body := consent(requestID, prefix)
+		body["sealed"] = sealed(t)
+		return h.call(t, http.MethodPost, "/v1/mcp/connections", body, bearer(token)), requestID
+	}
+	r, requestID := consentAs()
+	expect(t, r, http.StatusUnprocessableEntity, "key_unsuitable")
+	if h.reader.bundle(requestID) != nil {
+		t.Fatal("a refused consent reached the reader")
+	}
+	if listed, err := h.conns.List(context.Background(), h.tenant); err != nil || len(listed) != 0 {
+		t.Fatalf("a refused consent left a row: %+v %v", listed, err)
+	}
+	h.consenterReads(t, admin.ID)
+	r, _ = consentAs()
+	expect(t, r, http.StatusCreated, "")
 }
 
 // Every field of a consent has one shape.

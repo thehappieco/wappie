@@ -258,7 +258,7 @@ func TestRunFlagsDrop(t *testing.T) {
 	w.later(t)
 	drop := func(device, user uuid.UUID, before, after []string) (store.ContractRun, store.ContractAct, bool, error) {
 		cmd := w.command(t, kc.OpItemFlagsDrop, admin, adminSub) //nolint:contextcheck // the world's helpers run on a context of their own
-		act, wrote, err := w.c.RunFlagsDrop(ctx, cmd, device, user, before, after)
+		act, wrote, _, err := w.c.RunFlagsDrop(ctx, cmd, device, user, before, after)
 		return cmd, act, wrote, err
 	}
 
@@ -307,7 +307,7 @@ func TestRunFlagsDrop(t *testing.T) {
 	w.quarantine(t, soloGone)
 	owner, ownerSub := w.actor(t, "owner", "owner")
 	for what, d := range map[string]uuid.UUID{"live": solo, "deleted": soloGone} {
-		act, wrote, err := w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, owner, ownerSub), d, w.owner, canR, []string{})
+		act, wrote, _, err := w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, owner, ownerSub), d, w.owner, canR, []string{})
 		refusedWith(t, "the last reader of a "+what+" number", act, err, kc.CodeLastReader)
 		if wrote || w.grantsOf(t, d, w.owner) != 1 || !sameStored(w.stored(t, d, w.owner), true, false, false) {
 			t.Fatalf("the last reader of a %s number lost something", what)
@@ -363,10 +363,10 @@ func TestRunFlagsDrop(t *testing.T) {
 
 	// The role comes before a ran: a member's drop of nobody is refused.
 	member, memberSub := w.actor(t, "member", "member")
-	act, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, member, memberSub), device, removed, canR, []string{})
+	act, _, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, member, memberSub), device, removed, canR, []string{})
 	refusedWith(t, "a member's drop", act, err, kc.CodeNotAuthorized)
 	localOnly, localOnlySub := w.actor(t, "admin", "member")
-	act, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, localOnly, localOnlySub), device, target, []string{kc.CanManage}, []string{})
+	act, _, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, localOnly, localOnlySub), device, target, []string{kc.CanManage}, []string{})
 	refusedWith(t, "an admin whose document says member", act, err, kc.CodeNotAuthorized)
 
 	for what, change := range map[string][2][]string{
@@ -396,7 +396,7 @@ func TestRunAccessRemove(t *testing.T) {
 	w.later(t)
 	remove := func(device, user uuid.UUID) (store.ContractRun, store.ContractAct, bool, error) {
 		cmd := w.command(t, kc.OpItemAccessRemove, admin, adminSub) //nolint:contextcheck // the world's helpers run on a context of their own
-		act, wrote, err := w.c.RunAccessRemove(ctx, cmd, device, user)
+		act, wrote, _, err := w.c.RunAccessRemove(ctx, cmd, device, user)
 		return cmd, act, wrote, err
 	}
 
@@ -425,7 +425,7 @@ func TestRunAccessRemove(t *testing.T) {
 	solo := w.number(t, "Solo")
 	w.reads(t, w.owner, solo)
 	owner, ownerSub := w.actor(t, "owner", "owner")
-	act, wrote, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, owner, ownerSub), solo, w.owner)
+	act, wrote, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, owner, ownerSub), solo, w.owner)
 	refusedWith(t, "the last reader", act, err, kc.CodeLastReader)
 	if wrote || w.grantsOf(t, solo, w.owner) != 1 || !sameStored(w.stored(t, solo, w.owner), true, false, false) {
 		t.Fatal("the last reader lost something")
@@ -451,7 +451,7 @@ func TestRunAccessRemove(t *testing.T) {
 		t.Fatal("a remove of a person with no membership wrote")
 	}
 	member, memberSub := w.actor(t, "member", "member")
-	act, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, member, memberSub), device, nobody)
+	act, _, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, member, memberSub), device, nobody)
 	refusedWith(t, "a member's remove", act, err, kc.CodeNotAuthorized)
 }
 
@@ -483,11 +483,11 @@ func TestFlagsActsSnapshot(t *testing.T) {
 	ranAct(t, "a raise", act, err)
 	line(store.ContractSnapshotPerson{Read: true, Send: true, Reads: true, HoldsKey: true}, false)
 
-	act, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), device, target, canRS, []string{kc.CanSend})
+	act, _, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), device, target, canRS, []string{kc.CanSend})
 	ranAct(t, "a drop of read", act, err)
 	line(store.ContractSnapshotPerson{Send: true}, true)
 
-	act, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, admin, adminSub), device, target)
+	act, _, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, admin, adminSub), device, target)
 	ranAct(t, "a remove", act, err)
 	line(store.ContractSnapshotPerson{}, true)
 
@@ -565,12 +565,12 @@ func TestFlagsOwnerTarget(t *testing.T) {
 			if wrote {
 				t.Fatalf("%s: the raise wrote", what)
 			}
-			act, wrote, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, by[0], by[1]), device, target, canR, []string{})
+			act, wrote, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, by[0], by[1]), device, target, canR, []string{})
 			refusedWith(t, what+": a drop", act, err, kc.CodeNotAuthorized)
 			if wrote {
 				t.Fatalf("%s: the drop wrote", what)
 			}
-			act, wrote, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, by[0], by[1]), device, target)
+			act, wrote, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, by[0], by[1]), device, target)
 			refusedWith(t, what+": a remove", act, err, kc.CodeNotAuthorized)
 			if wrote {
 				t.Fatalf("%s: the remove wrote", what)
@@ -586,9 +586,9 @@ func TestFlagsOwnerTarget(t *testing.T) {
 		// An owner runs all three.
 		act, _, err := w.c.RunFlagsRaise(ctx, w.command(t, kc.OpItemFlagsRaise, owner, ownerSub), device, target, canR, canRS)
 		ranAct(t, "an owner's raise on "+name, act, err)
-		act, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, owner, ownerSub), device, target, canRS, canR)
+		act, _, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, owner, ownerSub), device, target, canRS, canR)
 		ranAct(t, "an owner's drop on "+name, act, err)
-		act, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, owner, ownerSub), device, target)
+		act, _, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, owner, ownerSub), device, target)
 		ranAct(t, "an owner's remove on "+name, act, err)
 		if p := w.stored(t, device, target); !sameStored(p, false, false, false) || w.grantsOf(t, device, target) != 0 {
 			t.Fatalf("after an owner's remove on %s: %+v", name, p)
@@ -600,7 +600,7 @@ func TestFlagsOwnerTarget(t *testing.T) {
 	// An admin still changes an admin's and a member's.
 	member, _ := w.actor(t, "member", "member")
 	w.reads(t, member, device)
-	act, _, err := w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), device, member, canRS, canR)
+	act, _, _, err := w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), device, member, canRS, canR)
 	ranAct(t, "an admin's drop on a member", act, err)
 	other, _ := w.actor(t, "admin", "admin")
 	act, _, err = w.c.RunFlagsRaise(ctx, w.command(t, kc.OpItemFlagsRaise, admin, adminSub), device, other, []string{}, []string{kc.CanSend})

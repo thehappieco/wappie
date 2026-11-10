@@ -35,10 +35,19 @@ func (h *Handler) permissions(w http.ResponseWriter, r *http.Request) {
 	if !h.freshPermission(r.Context(), w, user, p) {
 		return
 	}
-	if err := h.Users.SetDevicePermission(r.Context(), user.TenantID, user.ID, p); err != nil {
+	ended, err := h.Users.SetDevicePermissionEnded(r.Context(), user.TenantID, user.ID, p)
+	if err != nil {
 		h.memberError(w, err)
 		return
 	}
 	h.accessChanged()
+	// Read going, or no flag left, ends the person's own connections that
+	// held the number; they are told now, as a revoke is (DS47).
+	for _, e := range ended {
+		if h.Readers != nil {
+			h.Readers.TellRevoked(r.Context(), e.Reader, e.ID)
+		}
+		h.log().Info("mcp connection revoked", "connection", e.ID, "reason", store.ReasonAccessLost)
+	}
 	w.WriteHeader(204)
 }

@@ -81,9 +81,15 @@ func (w *transferWorld) grant(t *testing.T, user uuid.UUID, epoch uint16) {
 	}
 }
 
-// stripSelf takes away a person's own access, leaving what they created.
+// stripSelf takes away a person's own access, leaving what they created,
+// as Wappie's screen did before DS47: since then it ends their own
+// connections that held the number (TestOwnConnectionsLeaveWithRead), so
+// these rows are what a connection made before it keeps.
 func (w *transferWorld) stripSelf(t *testing.T, user uuid.UUID) {
-	w.permit(t, user, store.DevicePermission{})
+	t.Helper()
+	w.inTenantSQL(t, `INSERT INTO device_permissions (tenant_id, device_id, user_id) VALUES ($1, $2, $3)
+		ON CONFLICT (tenant_id, device_id, user_id) DO UPDATE SET can_read = false, can_send = false, can_manage = false`, w.tenant, w.device, user)
+	w.inTenantSQL(t, `DELETE FROM device_key_grants WHERE device_id=$1 AND user_id=$2`, w.device, user)
 }
 
 // onlyItsKey leaves a connection's service account with no row for the

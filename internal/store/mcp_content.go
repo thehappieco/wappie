@@ -747,6 +747,9 @@ func (m *MCPConnections) renew(ctx context.Context, tenant, actor uuid.UUID, id 
 		if err := checkContentServiceTx(ctx, tx, tenant, in.ServiceUserID, keyID, in.ReaderPublicKey); err != nil {
 			return err
 		}
+		if err := consenterReadsTx(ctx, tx, tenant, actor, keyID); err != nil {
+			return err
+		}
 		switch {
 		case conn.Kind != KindAI && in.AIConfig != nil:
 			return aiConfigError("a content connection has no ai_config")

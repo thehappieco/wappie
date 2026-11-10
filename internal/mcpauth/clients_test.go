@@ -501,6 +501,8 @@ func TestActivationNotice(t *testing.T) {
 	h.verify(t, admin)
 	h.verify(t, member)
 	adminToken := h.session(t, admin)
+	// The admin consents, so reads the number (DS47).
+	h.consenterReads(t, admin.ID)
 
 	requestID, prefix := h.prepareV2For(t, nil, admin.ID)
 	id := created(t, h.call(t, http.MethodPost, "/v1/mcp/connections", v2Body(t, requestID, prefix, nil), bearer(adminToken)))

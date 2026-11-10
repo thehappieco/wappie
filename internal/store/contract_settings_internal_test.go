@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pgtest"
@@ -404,6 +405,9 @@ func TestSettingsLockOrder(t *testing.T) {
 		person, gen); err != nil {
 		t.Fatal(err)
 	}
+	// The act also takes Read off a consenter whose connection reaches the
+	// number alone, which ends it (DS47), each round.
+	consenter, connect := w.consenter(t)
 
 	var logs bytes.Buffer
 	var logMu sync.Mutex
@@ -428,6 +432,7 @@ func TestSettingsLockOrder(t *testing.T) {
 		if round%2 == 1 {
 			mode = SettingsOn
 		}
+		connect()
 		next := uuid.New()
 		calls := map[string]func() error{
 			"a reset": func() error {
@@ -450,6 +455,9 @@ func TestSettingsLockOrder(t *testing.T) {
 						return err
 					}
 					if _, err := tx.Exec(lctx, `UPDATE devices SET label = $2 WHERE id = $1`, w.device, fmt.Sprintf("Vendas %d", round)); err != nil {
+						return err
+					}
+					if _, err := setDevicePermissionTx(lctx, tx, w.ws, DevicePermission{DeviceID: w.device, UserID: consenter}, true); err != nil {
 						return err
 					}
 					if err := finishCommandTx(lctx, tx, id, CommandResult{Outcome: CommandRan, StateSeq: &seq}); err != nil {
@@ -563,11 +571,70 @@ func TestSettingsLockOrder(t *testing.T) {
 		if stale != 0 {
 			t.Fatalf("round %d: %d results of an old generation not dropped", round, stale)
 		}
+		var live int
+		if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM mcp_connections WHERE created_by = $1 AND status IN ('pending', 'active', 'reseal')`,
+			consenter).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if live != 0 {
+			t.Fatalf("round %d: the act left %d of the consenter's connections live", round, live)
+		}
 	}
 	logMu.Lock()
 	defer logMu.Unlock()
 	if strings.Contains(logs.String(), "deadlocked") {
 		t.Fatalf("a deadlock, retried:\n%s", logs.String())
+	}
+}
+
+// consenter is an admin of the world's workspace, and connect gives them
+// Read on its number again and a live connection that reaches it alone. An
+// owner reads it too, so their Read can always go.
+func (w settingsWorld) consenter(t *testing.T) (uuid.UUID, func()) {
+	t.Helper()
+	ctx := context.Background()
+	users, keys, apiKeys, conns := NewUsers(w.pool), NewKeys(w.pool), NewAPIKeys(w.pool), NewMCPConnections(w.pool)
+	person := func(role string) uuid.UUID {
+		u, err := users.Create(ctx, NewUser{TenantID: w.ws, Email: role + "-" + uuid.NewString()[:8] + "@acme.test", Role: role, AuthKey: "test",
+			KDFSalt: make([]byte, 16), KDFParams: DefaultKDFParams(), PublicKey: make([]byte, 32), WrappedUSK: []byte("wrapped")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	owner, consenter := person("owner"), person("admin")
+	pub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keys.CreateArchiveKey(ctx, w.ws, w.device, 1, pub); err != nil {
+		t.Fatal(err)
+	}
+	reads := func(user uuid.UUID) {
+		if err := keys.PutGrant(ctx, Grant{TenantID: w.ws, DeviceID: w.device, UserID: user, Epoch: 1, SealedDSK: []byte("grant")}, &owner); err != nil {
+			t.Fatal(err)
+		}
+		if err := users.SetDevicePermission(ctx, w.ws, owner, DevicePermission{DeviceID: w.device, UserID: user, Read: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads(owner)
+	return consenter, func() {
+		reads(consenter)
+		in := time.Now().Add(20 * time.Minute)
+		key, err := apiKeys.IssueActingAsForDevices(ctx, w.ws.String(), "assistant", ScopeRead, &consenter, nil, []uuid.UUID{w.device}, &in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix, _, _ := strings.Cut(key, ".")
+		conn, err := conns.Create(ctx, w.ws, consenter, CreateMCPConnection{RequestID: uuid.NewString(), KeyPrefix: prefix, ClientName: "Claude",
+			RedirectHost: "claude.ai", DeviceCount: 1, ReaderKID: "0123456789abcdef", ExpiresAt: time.Now().Add(90 * 24 * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conns.Activate(ctx, HostedReader, conn.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

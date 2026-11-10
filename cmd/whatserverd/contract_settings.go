@@ -342,7 +342,7 @@ func (a *app) settingsConfig() membership.SettingsConfig {
 	if a.members == nil {
 		return cfg
 	}
-	acts := &numberacts.Runner{Store: a.members.Contract, Devices: a.devices, Recorder: a.recordReceipt, Log: a.log}
+	acts := &numberacts.Runner{Store: a.members.Contract, Devices: a.devices, Recorder: a.recordReceipt, Log: a.log, Readers: &a.readers}
 	if a.registry != nil {
 		cfg.Numbers = a.registry
 		acts.Registry = a.registry
