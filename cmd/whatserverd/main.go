@@ -590,6 +590,9 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// Every act README 7.1 gates asks the contract's freshness first;
 		// release B only logs the verdicts.
 		Membership: a.members,
+		// The grant page asks the platform for a token's record by a
+		// signed GET when its last one is over a minute old.
+		TokenRecords: a.members,
 		// "Link again" on a logged-out number (decision 0057).
 		Relink: &relink.Service{
 			Devices: a.devices, Pairer: relink.FromRegistry(registry), LIDs: wa.NewLIDMap(container),

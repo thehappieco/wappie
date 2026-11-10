@@ -86,6 +86,9 @@ type Members struct {
 	read  time.Time
 	// calls is the freshness hook's budget of GETs (budget.go).
 	calls *callBudget
+	// tokenMisses are the tokens a GET answered not_found for, by when
+	// (token_fetch.go).
+	tokenMisses map[uuid.UUID]time.Time
 	// pacing gives the leader's calls their turns (Pace).
 	pacing pacer
 }

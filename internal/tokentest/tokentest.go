@@ -204,15 +204,31 @@ func (w *World) Token(perms ...Perm) *Token {
 // vectors name theirs).
 func (w *World) TokenWith(text, selector, hash string, perms ...Perm) *Token {
 	w.T.Helper()
-	tok := &Token{ID: uuid.New(), Text: text, Selector: selector, Hash: hash, Key: readingKey(w.T), Perms: perms}
-	w.Commit(tok)
-	if _, err := w.Tokens.JudgeTokenGrants(context.Background(), time.Now()); err != nil {
-		w.T.Fatal(err)
-	}
+	tok := w.unsealed(text, selector, hash, perms)
 	for _, p := range perms {
 		if p.Perm == kc.CanRead {
 			w.Seal(tok, p.Device, w.Epoch(p.Device))
 		}
+	}
+	return tok
+}
+
+// TokenUnsealed is Token with no grant sealed: its Read waits for a key
+// on every number it reads, as the grant page finds it.
+func (w *World) TokenUnsealed(perms ...Perm) *Token {
+	w.T.Helper()
+	text, selector, hash := Mint()
+	return w.unsealed(text, selector, hash, perms)
+}
+
+// unsealed makes a token live with perms, its record committed and judged,
+// and no grant sealed.
+func (w *World) unsealed(text, selector, hash string, perms []Perm) *Token {
+	w.T.Helper()
+	tok := &Token{ID: uuid.New(), Text: text, Selector: selector, Hash: hash, Key: readingKey(w.T), Perms: perms}
+	w.Commit(tok)
+	if _, err := w.Tokens.JudgeTokenGrants(context.Background(), time.Now()); err != nil {
+		w.T.Fatal(err)
 	}
 	return tok
 }
@@ -307,13 +323,39 @@ func (w *World) Seal(tok *Token, device uuid.UUID, epoch uint16) {
 // TrySeal is Seal, returning its error.
 func (w *World) TrySeal(tok *Token, device uuid.UUID, epoch uint16) error {
 	w.T.Helper()
+	return w.TrySealFor(tok, device, epoch, w.ArchiveKey(device, epoch))
+}
+
+// TrySealFor is TrySeal for the archive key whose fingerprint is
+// fingerprint, which may be another than the number's key at epoch.
+func (w *World) TrySealFor(tok *Token, device uuid.UUID, epoch uint16, fingerprint string) error {
+	w.T.Helper()
 	now := time.Now()
 	w.Scoped(func(tx pgx.Tx) error {
 		_, err := tx.Exec(context.Background(), `UPDATE contract_tokens SET fetched_at = $2 WHERE id = $1`, tok.ID, now.Add(-time.Second))
 		return err
 	})
 	return w.Tokens.PutTokenGrant(context.Background(), store.TokenGrant{Workspace: w.Tenant, Token: tok.ID, Device: device, Epoch: epoch,
-		SealedDSK: []byte("sealed to the token"), Sealer: w.Owner, Now: now})
+		ArchiveKeyFingerprint: fingerprint, SealedDSK: []byte("sealed to the token"), Sealer: w.Owner, Now: now})
+}
+
+// ArchiveKey is the fingerprint of device's archive key at epoch
+// (store.ArchiveKeyFingerprint), or "" with none.
+func (w *World) ArchiveKey(device uuid.UUID, epoch uint16) string {
+	w.T.Helper()
+	var pub []byte
+	w.Scoped(func(tx pgx.Tx) error {
+		err := tx.QueryRow(context.Background(), `SELECT public_key FROM device_archive_keys WHERE device_id = $1 AND epoch = $2`,
+			device, int32(epoch)).Scan(&pub)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	if pub == nil {
+		return ""
+	}
+	return store.ArchiveKeyFingerprint(pub)
 }
 
 // SetPerms commits tok's record again at the next version with perms in
@@ -353,6 +395,17 @@ func (w *World) Rotate(device uuid.UUID, epoch uint16) {
 	}
 	// The owner reads the new epoch, so it can seal it to a token again.
 	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: w.Owner, Epoch: epoch, SealedDSK: []byte("grant")}, &w.Owner); err != nil {
+		w.T.Fatal(err)
+	}
+}
+
+// ResetArchive empties the workspace's archive and keeps its numbers, as
+// reset-archive -keep-devices does: every key and grant goes, and each
+// number has no key until device-key gives it one at epoch 1 again
+// (Rotate(device, 1)).
+func (w *World) ResetArchive() {
+	w.T.Helper()
+	if _, err := store.ResetArchive(context.Background(), w.Pool, w.Tenant, true); err != nil {
 		w.T.Fatal(err)
 	}
 }
@@ -419,6 +472,13 @@ func (w *World) Refusals(tok *Token) map[string]int64 {
 }
 
 func marshal(r kc.TokenRecord) (json.RawMessage, error) { return json.Marshal(r) }
+
+// ReadingKey is a fresh X25519 reading key with its fingerprint, as a
+// token's client registers one.
+func ReadingKey(t testing.TB) *kc.ReadingKey {
+	t.Helper()
+	return readingKey(t)
+}
 
 // readingKey is a fresh X25519 reading key with its fingerprint.
 func readingKey(t testing.TB) *kc.ReadingKey {

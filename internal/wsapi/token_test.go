@@ -189,8 +189,8 @@ func TestATokensHelloAndWelcome(t *testing.T) {
 // manage-only one renames, sets the mode, pauses and resumes with replies
 // that carry only what it changed, and sends nothing; and every frame a
 // token never sends is refused to all three: every kind of pairing (F1),
-// calls, accounts, deletion, recovery, moving, reprojection, keys and
-// grants.
+// calls, accounts, deletion, recovery, moving, reprojection, keys, grants
+// given or taken, and the grant page's frames.
 func TestTokenFlagsAreIndependentPerNumber(t *testing.T) {
 	ts := newTokenSocket(t)
 	w := ts.w
@@ -252,8 +252,9 @@ func TestTokenFlagsAreIndependentPerNumber(t *testing.T) {
 			wsapi.TypeCallStart:    ref(a),
 			wsapi.TypeDeviceDelete: ref(a), wsapi.TypeDeviceRecover: ref(a), wsapi.TypeDeviceTransfer: ref(a),
 			wsapi.TypeReprojectGet: ref(a), wsapi.TypeReprojectPut: ref(a),
-			wsapi.TypeGrantAdd: ref(a), wsapi.TypeGrantsList: nil, wsapi.TypeKeyCreate: map[string]string{"name": "x", "scope": "read"},
+			wsapi.TypeGrantAdd: ref(a), wsapi.TypeGrantRevoke: ref(a), wsapi.TypeKeyCreate: map[string]string{"name": "x", "scope": "read"},
 			wsapi.TypeKeysList: nil, wsapi.TypeReaderMode: ref(a), wsapi.TypeDeviceNoticeSeen: nil,
+			wsapi.TypeTokenWaiting: nil, wsapi.TypeTokenGrantContext: nil, wsapi.TypeTokenGrant: ref(a),
 		} {
 			frame := strings.Fields(kind)[0]
 			refusedWith(t, kind, on(t, conn, frame, p), tokenFrameRefused)

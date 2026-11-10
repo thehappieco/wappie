@@ -94,6 +94,11 @@ const (
 	TypeGrantsList         = "grants.list"
 	TypeGrants             = "grants"
 	TypePing               = "ping"
+	// The grant page's frames (step 7's plan, 5.4): a person's who owns or
+	// administers the workspace, never a token's.
+	TypeTokenGrantContext = "token.grant_context"
+	TypeTokenWaiting      = "token.waiting"
+	TypeTokenGrant        = "token.grant"
 )
 
 // Server-to-client frame types.
@@ -149,6 +154,10 @@ const (
 	TypeReaders           = "device.readers"
 	TypeError             = "error"
 	TypePong              = "pong"
+	// Replies to token.grant_context and token.waiting; token.grant
+	// answers device.readers, as grant.add does.
+	TypeTokenGrantContextResult = "token.grant_context.result"
+	TypeTokenWaitingList        = "token.waiting.list"
 )
 
 // Hello authenticates the connection. It must be the first frame.
@@ -709,6 +718,95 @@ type GrantRequest struct {
 type GrantRevoke struct {
 	DeviceID string `json:"device_id"`
 	UserID   string `json:"user_id"`
+}
+
+// TokenGrantContextRequest asks what the grant page draws from: one token
+// of the workspace, and the numbers the page shows, each by its full id
+// (at most 100).
+type TokenGrantContextRequest struct {
+	TokenID   string   `json:"token_id"`
+	DeviceIDs []string `json:"device_ids"`
+}
+
+// TokenGrantContext is the reply to token.grant_context. The reading key is
+// the one Wappie pinned for the token, in the kit's text (unpadded
+// base64url of 32 bytes), with the reading key's fingerprint as the kit
+// computes it (reading_key_fingerprint; an archive key's fingerprint is
+// another thing, named archive_key_fingerprint): the page shows it and
+// seals to this key only, never to one from its URL. IdentityID is the
+// user the grant is sealed for: GrantRow(archive tenant, device, identity,
+// epoch). Live says whether the token is live here now; KeyChanged that a
+// record brought another key, so no grant is taken. Fresh says whether a
+// signed GET of its record is under a minute old (fetched_at), which a
+// grant needs: for a live token Wappie asks for one first when it is older.
+// With fresh false, the page may still send the grant, which asks the
+// platform once more.
+type TokenGrantContext struct {
+	TokenID               string             `json:"token_id"`
+	Name                  string             `json:"name"`
+	ReadingKey            string             `json:"reading_key"`
+	ReadingKeyFingerprint string             `json:"reading_key_fingerprint"`
+	IdentityID            string             `json:"identity_id"`
+	Live                  bool               `json:"live"`
+	KeyChanged            bool               `json:"key_changed"`
+	Fresh                 bool               `json:"fresh"`
+	FetchedAt             *time.Time         `json:"fetched_at,omitempty"`
+	Numbers               []TokenGrantNumber `json:"numbers"`
+}
+
+// TokenGrantNumber is one number of the grant page, left out when it is not
+// live in the workspace: its archive namespace, its current epoch, the
+// fingerprint of its archive key at that epoch (absent with none), the
+// token's Read there (applied, waiting, refused or none) and whether the
+// token's identity holds a grant at that epoch. A grant names the epoch and
+// the fingerprint of the key it sealed. The page computes that fingerprint
+// from the key it opened and refuses to seal when it is not this one; it
+// never sends this one back as its own.
+type TokenGrantNumber struct {
+	DeviceID              string `json:"device_id"`
+	ArchiveTenantID       string `json:"archive_tenant_id"`
+	Epoch                 int    `json:"epoch"`
+	ArchiveKeyFingerprint string `json:"archive_key_fingerprint,omitempty"`
+	Read                  string `json:"read"`
+	Granted               bool   `json:"granted"`
+}
+
+// TokenWaitingRequest asks which tokens wait for the key of the numbers
+// named, each by its full id (at most 100), or of every number of the
+// workspace when none is named.
+type TokenWaitingRequest struct {
+	DeviceIDs []string `json:"device_ids,omitempty"`
+}
+
+// TokenWaiting is one token that waits for a number's key: its Read there
+// is applied and it holds no grant at the number's current epoch.
+type TokenWaiting struct {
+	DeviceID string `json:"device_id"`
+	TokenID  string `json:"token_id"`
+	Name     string `json:"name"`
+}
+
+// TokenWaitingList is the reply to token.waiting.
+type TokenWaitingList struct {
+	Tokens []TokenWaiting `json:"tokens"`
+}
+
+// TokenGrantRequest hands a token's identity the key of one number: the
+// number's private archive key at its current epoch, sealed to the token's
+// reading key by the client, and the fingerprint of the archive key whose
+// private half it sealed (store.ArchiveKeyFingerprint, DS49). The client
+// MUST compute that fingerprint itself, from the X25519 public half of the
+// private key it seals, compare it with TokenGrantNumber's, and seal
+// nothing on a mismatch. An echo of the context's value would let a key an
+// archive reset deleted through, at the epoch the new key reuses. A grant
+// for another key, or for a number with no key, is refused conflict, as
+// grant.add answers it.
+type TokenGrantRequest struct {
+	TokenID               string `json:"token_id"`
+	DeviceID              string `json:"device_id"`
+	Epoch                 int    `json:"epoch"`
+	ArchiveKeyFingerprint string `json:"archive_key_fingerprint"`
+	SealedDSK             []byte `json:"sealed_dsk"`
 }
 
 // Readers is the access control list after a change.
@@ -1897,6 +1995,17 @@ const (
 	ErrCodeNoReader      = "no_reader"
 	ErrCodeItemBusy      = "item_busy"
 	ErrCodeStateChanged  = "state_changed"
+
+	// The refusals of token.grant: the token is not live here (revoked,
+	// expired, stopped, or tokens are off); a record brought another
+	// reading key than the one pinned; Wappie could not confirm the token's
+	// record with the platform within the last minute; and the token holds
+	// no applied Read on the number. A grant sealed for another archive key
+	// of the number is conflict, as grant.add answers it (DS49).
+	ErrCodeTokenNotLive      = "token_not_live"
+	ErrCodeReadingKeyChanged = "reading_key_changed"
+	ErrCodeTokenUnconfirmed  = "token_unconfirmed"
+	ErrCodeTokenNoRead       = "token_no_read"
 )
 
 // Error is the failure payload. Readers comes with device_has_readers, and

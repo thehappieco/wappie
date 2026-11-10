@@ -532,12 +532,17 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 }
 
 // handleGrantsList returns the grants of the account this connection acts
-// as: a person's, or a service account's through the key that acts as it.
+// as: a person's, a service account's through the key that acts as it, or
+// a platform token's identity's (tokenGrants).
 //
 // Ciphertext, freely given: each entry opens only to the account's private
 // key, and the server has never held one.
 func (s *session) handleGrantsList(ctx context.Context, f Frame) {
 	who := s.actor()
+	if who.isToken() {
+		s.tokenGrants(ctx, f)
+		return
+	}
 	if !who.person && !who.service {
 		s.replyError(f.ReqID, ErrCodeNotAuthorized,
 			"this key acts as no account, so it holds no grants; issue one that acts as a service account")

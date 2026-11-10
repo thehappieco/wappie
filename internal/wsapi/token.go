@@ -52,9 +52,11 @@ var tokenRules = func() map[string]tokenRule {
 			rules[k] = r
 		}
 	}
+	// grants.list is a token's own grants, on the numbers it reads now
+	// (token_grant.go).
 	set(tokenRule{action: store.ActionRead},
 		TypeDevicesList, TypeSubscribe, TypeChatsList, TypeChatPage, TypeHistory, TypeMessageGet, TypeKeysGet,
-		TypeContacts, TypeResolve, TypeAvatar, TypeGroupGet, TypePresenceWatch)
+		TypeContacts, TypeResolve, TypeAvatar, TypeGroupGet, TypePresenceWatch, TypeGrantsList)
 	// View is Read for a token: nothing without Read, not even metadata
 	// (decision 0053).
 	set(tokenRule{action: store.ActionView}, TypeDevicesStats, TypeDeviceInfo)
@@ -71,14 +73,14 @@ var tokenRules = func() map[string]tokenRule {
 	// included (F1: linking an account into a number is a signed-in owner's
 	// or admin's act, after a step-up); calls; the accounts; a reader's
 	// own mode; reprojection, which reseals a protobuf the caller supplies
-	// (H4); moving, deleting and recovering numbers; notices; keys and
-	// grants (PR 7 opens grants.list).
+	// (H4); moving, deleting and recovering numbers; notices; keys; grants
+	// given or taken; and the grant page's frames, a person's.
 	set(tokenRule{refused: true},
 		TypePair, TypePairCancel, TypeUsersList, TypeCallsList, TypeCallStart, TypeCallInvite, TypeCallAnswer,
 		TypeCallReject, TypeCallHangup, TypeCallMedia, TypeReaderMode, TypeReprojectGet, TypeReprojectPut,
 		TypeDeviceTransferPreview, TypeDeviceTransfer, TypeDeviceDelete, TypeDeviceDeleteCheck, TypeDevicesDeleted,
 		TypeDeviceRecoverCheck, TypeDeviceRecover, TypeDeviceNoticeSeen, TypeKeysList, TypeKeyCreate, TypeKeyRevoke,
-		TypeGrantAdd, TypeGrantRevoke, TypeGrantsList)
+		TypeGrantAdd, TypeGrantRevoke, TypeTokenGrantContext, TypeTokenWaiting, TypeTokenGrant)
 	return rules
 }()
 

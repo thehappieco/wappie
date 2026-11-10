@@ -813,6 +813,96 @@ plus 365 days, and the stops, never before the database's clock either):
   of a token Wappie keeps nothing of, 30 days after it was queued; a
   forgotten token's, as its record (above).
 
+## The grant page
+
+An owner or admin gives a platform token the key of a number on Wappie's
+own grant page. Three socket frames serve it. Each needs a person's
+session with the owner or admin role, and a token's socket is refused
+them.
+
+- **`token.waiting {device_ids}`** lists, per number, the tokens that wait
+  for its key: live, with a reading key Wappie pinned and never saw
+  change, an applied Read there, and no grant at the number's current
+  epoch. With no `device_ids` it lists every number of the workspace. A
+  number with no archive key has nothing to seal, so no token waits
+  there. The Numbers screen's "Tokens aguardando a chave" draws from it.
+- **`token.grant_context {token_id, device_ids}`** answers what the page
+  draws: the token's name, its pinned `reading_key` and that key's
+  `reading_key_fingerprint` (the kit's), its identity (the user the grant
+  is sealed for), whether it is live, and per number its archive
+  namespace, its current epoch, the `archive_key_fingerprint` of its
+  archive key at that epoch, the token's Read (`applied`, `waiting`,
+  `refused` or `none`) and whether it holds a grant there. A token with
+  no reading key yet has no identity, and answers `not_found`, as an
+  unknown token and another workspace's token do.
+- **`token.grant {token_id, device_id, epoch, archive_key_fingerprint,
+  sealed_dsk}`** writes the grant, after the person's step-up and their
+  freshness (`RequireWidening`, as `grant.add`). It answers
+  `device.readers`, with the token among `tokens`, never among the
+  readers.
+
+**A signed GET under a minute old.** A grant needs the token's record
+fetched by a signed GET (`GET /contract/v1/tokens/{id}`) less than a
+minute before Wappie writes the grant, on Wappie's clock at the write. So
+the time the step-up and the freshness check take counts. A stamp more
+than 5 s after Wappie's clock (a clock that stepped back) counts as
+stale until the clock catches up, since a later GET never lowers it. The
+GET takes its place in the freshness hook's budget, as a document's GET
+does. It applies what the record narrows, and stamps the time it was
+sent. A signed `not_found` stamps nothing, and the token is not asked
+again for a minute.
+
+- `token.grant_context` asks the platform first for a live token whose
+  last GET is older. With no answer, it says `fresh: false`. The page may
+  still send the grant.
+- `token.grant` asks once when the write finds the record stale. The write
+  checks that after the token is live and its reading key holds, so a
+  refusal for those asks nothing. With no answer, the grant is refused
+  `token_unconfirmed`.
+- Neither asks for a token that is not live here. A token suspended here
+  for a record Wappie could not apply (`apply_failed`) waits for the feed,
+  which lifts it once a later version applies.
+
+**The archive key's fingerprint** (DS49, which `grant.add` shares). After
+`reset-archive -keep-devices` and `device-key`, a number's new archive key
+takes epoch 1 again. So a grant also names the archive key it was sealed
+for, by its fingerprint: the lowercase hex of the SHA-256 of the key's 32
+raw X25519 public bytes (`store.ArchiveKeyFingerprint`).
+
+- The page MUST compute the fingerprint itself, from the public half of
+  the private key it opened and seals. It compares that with the
+  context's `archive_key_fingerprint`, seals nothing on a mismatch, and
+  sends the one it computed. It never sends the context's value back as
+  its own: the context names the number's key now, so an echo would let
+  through a key the reset deleted, cached before it.
+- The grant write compares the fingerprint with the stored key under the
+  workspace's row, in its own transaction. A grant for another key, or
+  for a number with no key, is refused `conflict`, as `grant.add` is, and
+  writes nothing. The reset deleted every grant, so the token reads
+  nothing (`no_grant`) until someone seals the new key.
+
+`token.grant` is also refused `not_found` (no such token in this
+workspace, a token with no reading key yet, or the number left the
+workspace), `token_not_live`, `reading_key_changed` (a record brought
+another reading key than the pin), `token_no_read` (no applied Read on the
+number), `conflict` (another epoch), `not_authorized` (the sealer does
+not read the number now), `step_up_required`, and the freshness check's
+`memberships_unconfirmed`.
+
+**With tokens off,** the three frames are still listed in `welcome`'s
+features: they are this build's. `token.waiting` answers an empty list,
+`token.grant_context` answers `live: false` and asks the platform
+nothing, and `token.grant` is refused `token_not_live`. A page draws its
+waiting tokens from `token.waiting`'s answer, not from the features.
+
+**A token's own grants.** A token's `grants.list` and `GET /v1/grants`
+answer its identity's grants at each number's current epoch, on the
+numbers it reads now, with `user_id` its identity. Its client opens each
+with `GrantRow(archive tenant, device, identity, epoch)`. A token with no
+reading key yet has no identity, and holds none: `user_id` is empty. On
+the socket each reply is tagged with its numbers, so one built just
+before the token lost Read on one of them is refused in its place.
+
 ## Observe's comparison
 
 Each document newly stored (from the feed, the round, a sign-in or a GET)
@@ -877,6 +967,7 @@ transaction):
 | a person's sends and group administration (every frame that needs Send but `calls.list`, and `group.create`, `group.participants.update`, `group.leave`, `group.join`) | `RequireFresh` | the person, `Stored`, in the background |
 | `mcp.send` | `RequireFresh` | the consenting person, `Stored`, in the background |
 | `grant.add` | `RequireWidening` | the actor `IfStale`, a person recipient `Always` |
+| `token.grant` | `RequireWidening` | the actor, `IfStale` |
 | `apikeys.create` | `RequireWidening` | the actor, `IfStale` |
 | `permission.raise` | `RequireWidening` | the actor and the recipient, `IfStale`, when a flag goes from false to true |
 | `service.invite`, `service.signup` | `RequireWidening` | the inviting person, `IfStale` |

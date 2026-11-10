@@ -187,7 +187,7 @@ func frameAction(kind string) store.DeviceAction {
 		// is its manage permission for both, from its rules (token.go).
 		return store.ActionPause
 	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceRename, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke,
-		TypeDeviceDeleteCheck, TypeDevicesDeleted, TypeDeviceRecoverCheck, TypeDeviceRecover:
+		TypeDeviceDeleteCheck, TypeDevicesDeleted, TypeDeviceRecoverCheck, TypeDeviceRecover, TypeTokenGrant:
 		return store.ActionManage
 	case TypeDeviceInfo:
 		return store.ActionView

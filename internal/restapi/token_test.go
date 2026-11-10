@@ -155,8 +155,11 @@ func TestATokenLearnsNoNumberIdsOrExistenceOnREST(t *testing.T) {
 	if code, body := r.do(t, "/v1/devices/"+gone.String()+"/chats", bearer(goneTok.Text)...); code != http.StatusForbidden || body != device403 {
 		t.Fatalf("a deleted number it read: %d %s", code, body)
 	}
-	if code, _ := r.do(t, "/v1/grants", bearer(tok.Text)...); code != http.StatusForbidden {
-		t.Fatalf("grants: %d", code)
+	// Its grants: only the number it reads, and nothing counted.
+	code, body := r.do(t, "/v1/grants", bearer(tok.Text)...)
+	var grants restapi.Grants
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &grants) != nil || len(grants.Grants.Grants) != 1 || grants.Grants.Grants[0].DeviceID != readable.String() {
+		t.Fatalf("grants: %d %s", code, body)
 	}
 	if err := r.use.Flush(context.Background()); err != nil {
 		t.Fatal(err)

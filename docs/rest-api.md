@@ -75,7 +75,7 @@ parameters are rejected. Query strings are limited to 8192 bytes. Only GET
 | `/v1/messages/{uid}` | `{tenant_id, ...SealedMessage}`. An individual stored row, including control rows. |
 | `/v1/messages/{uid}/history` | `{tenant_id, requested_uid, device_id, chat_key, wa_id, versions, deletion?, reactions?, readers?}`. Complete existing history projection for one message thread. |
 | `/v1/devices/{device}/keys?ids=1,2` | `{tenant_id, device_id, archive_tenant_id, keys: [{id, sealed}]}`. Between 1 and 500 IDs, each 1–2147483647. Missing IDs are omitted; duplicates are folded. |
-| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. |
+| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. For a platform token, its hidden identity's grants on the numbers it reads now, `user_id` being that identity; a token with no reading key yet has no identity, so `user_id` is empty and `grants` too. |
 | `/v1/openapi.json` | Public OpenAPI document; no credential required. |
 
 Response fields use the existing WebSocket DTOs, documented in
