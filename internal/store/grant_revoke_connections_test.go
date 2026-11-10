@@ -1,0 +1,130 @@
+package store_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"whatserver2/internal/store"
+)
+
+// A grant revoked alone counts as Read taken away (the platform's 0061,
+// QF3, DS48): the socket's grant.revoke that leaves the person no grant at
+// the number's current epoch ends their own connections and integrations
+// that held it, whole, access_lost, as a drop of read does, though their
+// Read flag stays. A rotation of the number's key, a revoke that leaves a
+// grant at the current epoch and a grant replaced in the same transaction
+// take nothing.
+
+// TestGrantRevokeEndsOwnConnections: a lone grant.revoke leaves the rows a
+// drop of read leaves (F3's left): every connection and integration of the
+// person that held the number ended whole, those holding the shared number
+// too, their drafts revoked; another person's connection, a workspace key
+// and a legacy token keep the number. The Read flag stays, and is not Read
+// without the grant: no consent on the number.
+func TestGrantRevokeEndsOwnConnections(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	s := w.own(t, person, "Revoke")
+	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.left(t, "a lone grant.revoke", s, ended)
+	if p := w.stored(t, s.number, person); !p.Read {
+		t.Fatalf("the revoke took the Read flag: %+v", p)
+	}
+	// Again: no grant left to take, nothing more ended.
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person); err != nil || len(ended) != 0 {
+		t.Fatalf("the revoke again: %v %v", ended, err)
+	}
+	for _, kind := range []string{store.KindContent, store.KindAI, store.KindMetadata} {
+		if _, err := w.conns.Create(ctx, w.tenant, person, w.prepare(t, person, kind, s.number)); !errors.Is(err, store.ErrMCPKeyUnsuitable) {
+			t.Fatalf("a %s consent on the number with the flag and no grant: %v", kind, err)
+		}
+	}
+}
+
+// TestGrantRevokeTakesNothing: a revoke that is refused (the number's last
+// key), one of a person who holds no grant, an act that deletes an old
+// epoch's grant and leaves the current one, and one that deletes the
+// person's grants and puts the current one back in the same transaction
+// end nothing and leave every connection as it was.
+func TestGrantRevokeTakesNothing(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	s := w.own(t, person, "Kept")
+
+	// The person holds the number's last key once the owner's and the
+	// legacy token's account's are gone.
+	for _, holder := range []uuid.UUID{w.owner, s.standing} {
+		w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, holder)
+	}
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person); !errors.Is(err, store.ErrLastDeviceReader) || len(ended) != 0 {
+		t.Fatalf("a revoke of the last key: %v %v", ended, err)
+	}
+	w.untouched(t, "a revoke of the last key", s)
+	w.reads(t, w.owner, s.number)
+
+	nobody := w.person(t, "nobody", "member")
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, nobody); err != nil || len(ended) != 0 {
+		t.Fatalf("a revoke of nobody's grant: %v %v", ended, err)
+	}
+	w.untouched(t, "a revoke of nobody's grant", s)
+
+	// The number at epoch 2, the person holding both epochs' keys: an
+	// act that deletes the old one leaves them Read.
+	w.epochKey(t, s.number, 2)
+	w.grantAt(t, s.number, person, 2)
+	ended, err := store.GrantTakenForTest(ctx, w.pool, w.tenant, person, s.number, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2 AND epoch = 1`, s.number, person)
+		return err
+	})
+	if err != nil || len(ended) != 0 {
+		t.Fatalf("an old epoch's grant deleted: %v %v", ended, err)
+	}
+	w.untouched(t, "an old epoch's grant deleted", s)
+
+	// Every grant of the person deleted and the current one put back, in
+	// one transaction: replaced, not taken.
+	ended, err = store.GrantTakenForTest(ctx, w.pool, w.tenant, person, s.number, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, person); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk) VALUES ($1, $2, $3, 2, 'again')`,
+			w.tenant, s.number, person)
+		return err
+	})
+	if err != nil || len(ended) != 0 {
+		t.Fatalf("a grant replaced in the same transaction: %v %v", ended, err)
+	}
+	w.untouched(t, "a grant replaced in the same transaction", s)
+	if g := w.grantsOf(t, s.number, person); g != 1 {
+		t.Fatalf("the person holds %d grants after the replacement", g)
+	}
+}
+
+// TestGrantRevokeRotation: a rotation of the number's key deletes no grant
+// and ends nothing, though the person holds only the old epoch's key
+// until it is sealed to them again; every connection needs a renewal
+// anyway. A grant.revoke in the middle of it takes the key they would be
+// sealed again from: their Read is gone, and their connections end as a
+// lone revoke's do.
+func TestGrantRevokeRotation(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	s := w.own(t, person, "Rotated")
+	w.epochKey(t, s.number, 2)
+	w.untouched(t, "a rotation", s)
+	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.left(t, "a revoke during a rotation", s, ended)
+}

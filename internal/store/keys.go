@@ -348,17 +348,40 @@ func (k *Keys) HasGrant(ctx context.Context, tenant, device, user uuid.UUID) (bo
 
 // RevokeGrant removes one user's access to one device.
 func (k *Keys) RevokeGrant(ctx context.Context, tenant, device, user uuid.UUID) error {
-	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+	_, err := k.RevokeGrantEnded(ctx, tenant, device, user)
+	return err
+}
+
+// RevokeGrantEnded is RevokeGrant (the socket's grant.revoke), and the
+// person's own connections it ended, for their readers to be told after
+// the commit. It deletes user's grants on device at every epoch, so a
+// revoke that deleted one leaves none at the number's current epoch: it
+// takes their Read, even with the Read flag kept, and ends their own
+// connections and integrations that held the number, whole, access_lost,
+// in the same transaction (grantTakenTx, the platform's 0061, DS48). A
+// revoke that finds no grant takes nothing and ends nothing; a refusal
+// (ErrLastDeviceReader) changes nothing.
+func (k *Keys) RevokeGrantEnded(ctx context.Context, tenant, device, user uuid.UUID) ([]EndedConnection, error) {
+	var ended []EndedConnection
+	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
 			return err
 		}
 		if err := requireRemainingReader(ctx, tx, tenant, user, &device); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx,
+		tag, err := tx.Exec(ctx,
 			`DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, device, user)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		ended, err = grantTakenTx(ctx, tx, tenant, user, device)
 		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return ended, nil
 }
 
 // KeyHolder is one account that can open a device's archive.
