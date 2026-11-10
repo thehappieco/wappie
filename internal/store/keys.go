@@ -346,7 +346,11 @@ func (k *Keys) HasGrant(ctx context.Context, tenant, device, user uuid.UUID) (bo
 	return has, nil
 }
 
-// RevokeGrant removes one user's access to one device.
+// RevokeGrant removes one user's access to one device. It is
+// RevokeGrantEnded without the list: it may end the person's own
+// connections, and nobody tells their readers but the 30-second re-tell.
+// Code that serves a person's act calls RevokeGrantEnded and tells them,
+// as the socket's grant.revoke does.
 func (k *Keys) RevokeGrant(ctx context.Context, tenant, device, user uuid.UUID) error {
 	_, err := k.RevokeGrantEnded(ctx, tenant, device, user)
 	return err
@@ -355,11 +359,12 @@ func (k *Keys) RevokeGrant(ctx context.Context, tenant, device, user uuid.UUID) 
 // RevokeGrantEnded is RevokeGrant (the socket's grant.revoke), and the
 // person's own connections it ended, for their readers to be told after
 // the commit. It deletes user's grants on device at every epoch, so a
-// revoke that deleted one leaves none at the number's current epoch: it
-// takes their Read, even with the Read flag kept, and ends their own
-// connections and integrations that held the number, whole, access_lost,
-// in the same transaction (grantTakenTx, the platform's 0061, DS48). A
-// revoke that finds no grant takes nothing and ends nothing; a refusal
+// revoke that deleted one leaves none at the number's current epoch. When
+// the person has the Read flag, it takes their Read though the flag stays,
+// and ends their own connections and integrations that held the number,
+// whole, access_lost, in the same transaction (grantTakenTx, the
+// platform's 0061, DS48). A revoke that finds no grant, or deletes a
+// dormant one (no Read flag), ends nothing; a refusal
 // (ErrLastDeviceReader) changes nothing.
 func (k *Keys) RevokeGrantEnded(ctx context.Context, tenant, device, user uuid.UUID) ([]EndedConnection, error) {
 	var ended []EndedConnection

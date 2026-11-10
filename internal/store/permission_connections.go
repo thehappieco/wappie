@@ -13,9 +13,9 @@ import (
 // Wappie's permissions screen and the console's item.flags_drop (of read,
 // or of the last flag left) and item.access_remove reach it the same way,
 // through setDevicePermissionTx, which decides from the flags it writes.
-// The socket's grant.revoke reaches it when it leaves the person no grant
-// at the number's current epoch, the Read flag kept or not (grantTakenTx,
-// the platform's 0061, DS48).
+// The socket's grant.revoke reaches it when the person has the Read flag
+// and the revoke leaves them no grant at the number's current epoch
+// (grantTakenTx, the platform's 0061, DS48).
 
 // consenterReadsTx refuses a consent of any kind, metadata included, and a
 // renewal, with ErrMCPKeyUnsuitable unless actor reads every number of the
@@ -41,21 +41,29 @@ func consenterReadsTx(ctx context.Context, tx pgx.Tx, tenant, actor, keyID uuid.
 }
 
 // grantTakenTx is the platform's 0061 third rule (QF3, DS48), for an act
-// that deleted some of user's grants on device. When it left them no grant
-// at the number's current epoch (its archive key not retired), it took
-// their Read, even with the Read flag kept: their own connections and
-// integrations that held the number end whole, access_lost, as a drop of
-// read ends them (leaveOwnConnectionsTx). One that left such a grant, or
-// put one back in the same transaction, took nothing and ends nothing. A
-// rotation deletes no grant and never comes here. The caller holds the
-// tenant transaction and the tenants row lock, and has deleted the grants.
+// that deleted some of user's grants on device and kept their flags. It
+// took their Read when they have the Read flag and it left them no grant
+// at the number's current epoch, its archive key not retired. Then their
+// own connections and integrations that held the number end whole,
+// access_lost, as a drop of read ends them (leaveOwnConnectionsTx).
+//
+// Without the Read flag there was no Read to take. Deleting a dormant
+// grant ends nothing, as Wappie's screen without Read ends nothing then
+// (DS47). An act that left a grant at the current epoch, or put one back
+// in the same transaction, took nothing either. grant.revoke deletes every
+// epoch, so for it only the flag decides; the other two cases are tested
+// through GrantTakenForTest. A rotation deletes no grant and never comes
+// here. The caller holds the tenant transaction and the tenants row lock,
+// and has deleted the grants.
 func grantTakenTx(ctx context.Context, tx pgx.Tx, tenant, user, device uuid.UUID) ([]EndedConnection, error) {
-	var kept bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM device_key_grants g
-		JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch
-		JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch AND k.retired_at IS NULL
-		WHERE g.tenant_id = $1 AND g.device_id = $2 AND g.user_id = $3)`, tenant, device, user).Scan(&kept)
-	if err != nil || kept {
+	var taken bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM device_permissions
+			WHERE tenant_id = $1 AND device_id = $2 AND user_id = $3 AND can_read)
+		AND NOT EXISTS (SELECT 1 FROM device_key_grants g
+			JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch
+			JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch AND k.retired_at IS NULL
+			WHERE g.tenant_id = $1 AND g.device_id = $2 AND g.user_id = $3)`, tenant, device, user).Scan(&taken)
+	if err != nil || !taken {
 		return nil, err
 	}
 	return leaveOwnConnectionsTx(ctx, tx, tenant, user, device)

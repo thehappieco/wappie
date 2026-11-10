@@ -34,7 +34,8 @@ import (
 // connection and a workspace key keep the number. With Read already gone,
 // a raise of send ends nothing on either side, and a change that leaves no
 // flag ends them as a remove does: the screen's PUT with no flag and the
-// console's drop of send, the last flag, alike.
+// console's drop of send, the last flag, alike. A dormant grant's deletion
+// ends nothing, on the screen and through grant.revoke alike.
 
 // tells records the connections a route or a runner told readers about.
 type tells struct {
@@ -333,6 +334,31 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 		}
 		if got := c.left(t, s); fmt.Sprint(got) != fmt.Sprint(gone[name].want) {
 			t.Fatalf("%s: left %+v, want %+v", name, got, gone[name].want)
+		}
+		c.endAll(t)
+	}
+
+	// A dormant grant (the Read flag off, the grant left, before DS47):
+	// the screen without Read and a lone grant.revoke have no Read to
+	// take. Both delete the grant and end nothing (DS48).
+	dormant := map[string]func(s connSet) string{
+		"the screen's raise of send on a dormant grant": func(s connSet) string {
+			return c.put(t, adminToken, s.number, s.person, false, true, false)
+		},
+		"a grant.revoke of a dormant grant": paths["a lone grant.revoke"],
+	}
+	for _, name := range []string{"the screen's raise of send on a dormant grant", "a grant.revoke of a dormant grant"} {
+		person, _ := c.person(t, strings.ReplaceAll(name, " ", "-"), "admin")
+		s := c.set(t, person, shared, name)
+		c.scoped(ctx, t, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, s.number, person)
+			return err
+		})
+		if out := dormant[name](s); out != "ok" {
+			t.Fatalf("%s: %s", name, out)
+		}
+		if got := c.left(t, s); fmt.Sprint(got) != fmt.Sprint(keptGone) {
+			t.Fatalf("%s: left %+v, want %+v", name, got, keptGone)
 		}
 		c.endAll(t)
 	}

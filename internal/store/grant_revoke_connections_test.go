@@ -16,8 +16,8 @@ import (
 // the number's current epoch ends their own connections and integrations
 // that held it, whole, access_lost, as a drop of read does, though their
 // Read flag stays. A rotation of the number's key, a revoke that leaves a
-// grant at the current epoch and a grant replaced in the same transaction
-// take nothing.
+// grant at the current epoch, a grant replaced in the same transaction and
+// a revoke of a dormant grant (no Read flag, so no Read) take nothing.
 
 // TestGrantRevokeEndsOwnConnections: a lone grant.revoke leaves the rows a
 // drop of read leaves (F3's left): every connection and integration of the
@@ -49,16 +49,51 @@ func TestGrantRevokeEndsOwnConnections(t *testing.T) {
 	}
 }
 
-// TestGrantRevokeTakesNothing: a revoke that is refused (the number's last
-// key), one of a person who holds no grant, an act that deletes an old
-// epoch's grant and leaves the current one, and one that deletes the
-// person's grants and puts the current one back in the same transaction
-// end nothing and leave every connection as it was.
+// TestGrantRevokeTakesNothing: a revoke of a person with the Read flag and
+// no grant left, a revoke of a dormant grant (no Read flag), a revoke that
+// is refused (the number's last key), one of a person who holds no grant,
+// an act that deletes an old epoch's grant and leaves the current one,
+// and one that deletes the person's grants and puts the current one back
+// in the same transaction end nothing and leave every connection as it
+// was.
 func TestGrantRevokeTakesNothing(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
 	person, _ := w.actor(t, "admin", "admin")
 	s := w.own(t, person, "Kept")
+
+	// The Read flag and no grant left (a grant.revoke before F4), with a
+	// connection on the number: no grant to take, so nothing ends. Such a
+	// connection is the upgrade's sweep's.
+	stale, _ := w.actor(t, "admin", "admin")
+	w.reads(t, stale, s.number)
+	staleMeta, _ := w.connect(t, stale, store.KindMetadata, s.number)
+	w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, stale)
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, stale); err != nil || len(ended) != 0 {
+		t.Fatalf("a revoke that finds no grant: %v %v", ended, err)
+	}
+	if r := w.row(t, staleMeta); r.status != "active" || !r.keyLive {
+		t.Fatalf("a revoke that finds no grant ended %s: %+v", staleMeta, r)
+	}
+	w.untouched(t, "a revoke that finds no grant", s)
+
+	// A dormant grant: the Read flag gone, the grant left (before DS47).
+	// There was no Read to take: the revoke deletes the grant and ends
+	// nothing, as Wappie's screen without Read does from the same state.
+	dormant, _ := w.actor(t, "admin", "admin")
+	w.reads(t, dormant, s.number)
+	dormantMeta, _ := w.connect(t, dormant, store.KindMetadata, s.number)
+	w.execOne(t, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, s.number, dormant)
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, dormant); err != nil || len(ended) != 0 {
+		t.Fatalf("a revoke of a dormant grant: %v %v", ended, err)
+	}
+	if g := w.grantsOf(t, s.number, dormant); g != 0 {
+		t.Fatalf("the dormant grant is still there: %d", g)
+	}
+	if r := w.row(t, dormantMeta); r.status != "active" || !r.keyLive {
+		t.Fatalf("a revoke of a dormant grant ended %s: %+v", dormantMeta, r)
+	}
+	w.untouched(t, "a revoke of a dormant grant", s)
 
 	// The person holds the number's last key once the owner's and the
 	// legacy token's account's are gone.
@@ -111,10 +146,10 @@ func TestGrantRevokeTakesNothing(t *testing.T) {
 
 // TestGrantRevokeRotation: a rotation of the number's key deletes no grant
 // and ends nothing, though the person holds only the old epoch's key
-// until it is sealed to them again; every connection needs a renewal
-// anyway. A grant.revoke in the middle of it takes the key they would be
-// sealed again from: their Read is gone, and their connections end as a
-// lone revoke's do.
+// until it is sealed to them again (0061 does not count it). A
+// grant.revoke in the middle of it takes the key they would be sealed
+// again from: their Read is gone, and their connections end as a lone
+// revoke's do.
 func TestGrantRevokeRotation(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
