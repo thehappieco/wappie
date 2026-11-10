@@ -62,12 +62,32 @@ func (w *tokenWorld) fetched(token uuid.UUID, at time.Time) {
 	})
 }
 
-// seal is a token grant of device at epoch by sealer, its GET fresh.
+// seal is a token grant of device at epoch by sealer, its GET fresh,
+// sealed for the number's archive key at that epoch.
 func (w *tokenWorld) seal(token, device, sealer uuid.UUID, epoch uint16) error {
 	w.t.Helper()
 	w.fetched(token, w.now.Add(-5*time.Second))
 	return w.tokens.PutTokenGrant(w.ctx(), store.TokenGrant{Workspace: w.tenant, Token: token, Device: device, Epoch: epoch,
-		SealedDSK: []byte("sealed to the token"), Sealer: sealer, Now: w.now})
+		ArchiveKeyFingerprint: w.archiveKey(device, epoch), SealedDSK: []byte("sealed to the token"), Sealer: sealer, Now: w.now})
+}
+
+// archiveKey is the fingerprint of device's archive key at epoch, or ""
+// with none.
+func (w *tokenWorld) archiveKey(device uuid.UUID, epoch uint16) string {
+	w.t.Helper()
+	var pub []byte
+	w.scoped(func(tx pgx.Tx) error {
+		err := tx.QueryRow(context.Background(), `SELECT public_key FROM device_archive_keys WHERE device_id = $1 AND epoch = $2`,
+			device, int32(epoch)).Scan(&pub)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	if pub == nil {
+		return ""
+	}
+	return store.ArchiveKeyFingerprint(pub)
 }
 
 func (w *tokenWorld) grantsOf(user uuid.UUID) int {
@@ -550,7 +570,7 @@ func TestATokenGrantNeedsItsConditions(t *testing.T) {
 	token := w.readingToken(device, readingKey(t))
 	put := func(token, device, sealer uuid.UUID, epoch uint16) error {
 		return w.tokens.PutTokenGrant(w.ctx(), store.TokenGrant{Workspace: w.tenant, Token: token, Device: device, Epoch: epoch,
-			SealedDSK: []byte("s"), Sealer: sealer, Now: w.now})
+			ArchiveKeyFingerprint: w.archiveKey(device, epoch), SealedDSK: []byte("s"), Sealer: sealer, Now: w.now})
 	}
 	w.fetched(token, w.now)
 	if err := put(token, device, w.owner, 1); !errors.Is(err, store.ErrTokenNotLive) {
@@ -562,7 +582,8 @@ func TestATokenGrantNeedsItsConditions(t *testing.T) {
 	}
 	// Another workspace's token answers as an unknown one.
 	if err := w.tokens.PutTokenGrant(w.ctx(), store.TokenGrant{Workspace: uuid.MustParse(newTenant(t, w.pool, "other")), Token: token,
-		Device: device, Epoch: 1, SealedDSK: []byte("s"), Sealer: w.owner, Now: w.now}); !errors.Is(err, store.ErrNotFound) {
+		Device: device, Epoch: 1, ArchiveKeyFingerprint: w.archiveKey(device, 1), SealedDSK: []byte("s"), Sealer: w.owner,
+		Now: w.now}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("another workspace's token: %v", err)
 	}
 	// The signed GET: none recent, over a minute, then just now by
@@ -650,10 +671,11 @@ func TestATokenGrantNeedsALiveToken(t *testing.T) {
 	device := w.number(uuid.Nil)
 	token := w.readingToken(device, readingKey(t))
 	w.tokensOn()
+	archive := w.archiveKey(device, 1)
 	put := func() error {
 		w.fetched(token, w.now)
 		return w.tokens.PutTokenGrant(w.ctx(), store.TokenGrant{Workspace: w.tenant, Token: token, Device: device, Epoch: 1,
-			SealedDSK: []byte("s"), Sealer: w.owner, Now: w.now})
+			ArchiveKeyFingerprint: archive, SealedDSK: []byte("s"), Sealer: w.owner, Now: w.now})
 	}
 	if err := put(); err != nil {
 		t.Fatalf("the live token's grant: %v", err)
@@ -708,7 +730,7 @@ func TestATokenGrantNeedsALiveToken(t *testing.T) {
 	// A fresh token, never fetched by a signed GET: stale.
 	other := w.readingToken(device, readingKey(t))
 	if err := w.tokens.PutTokenGrant(w.ctx(), store.TokenGrant{Workspace: w.tenant, Token: other, Device: device, Epoch: 1,
-		SealedDSK: []byte("s"), Sealer: w.owner, Now: w.now}); !errors.Is(err, store.ErrTokenStale) {
+		ArchiveKeyFingerprint: archive, SealedDSK: []byte("s"), Sealer: w.owner, Now: w.now}); !errors.Is(err, store.ErrTokenStale) {
 		t.Fatalf("no signed GET: %v", err)
 	}
 	// A number that is no longer live while its perm stands (no deletion
@@ -719,7 +741,7 @@ func TestATokenGrantNeedsALiveToken(t *testing.T) {
 	})
 	w.fetched(other, w.now)
 	if err := w.tokens.PutTokenGrant(w.ctx(), store.TokenGrant{Workspace: w.tenant, Token: other, Device: device, Epoch: 1,
-		SealedDSK: []byte("s"), Sealer: w.owner, Now: w.now}); !errors.Is(err, store.ErrNumberGone) {
+		ArchiveKeyFingerprint: archive, SealedDSK: []byte("s"), Sealer: w.owner, Now: w.now}); !errors.Is(err, store.ErrNumberGone) {
 		t.Fatalf("a number no longer live: %v", err)
 	}
 }
@@ -844,6 +866,7 @@ func TestATokenGrantRacingAReadDropIsDeleted(t *testing.T) {
 			w.tokensOn()
 			identity, _ := w.identityOf(token)
 			w.fetched(token, w.now)
+			archive := w.archiveKey(device, 1)
 			holder, err := w.pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -855,7 +878,7 @@ func TestATokenGrantRacingAReadDropIsDeleted(t *testing.T) {
 			granted, dropped := make(chan error, 1), make(chan error, 1)
 			grant := func() {
 				granted <- w.tokens.PutTokenGrant(w.ctx(), store.TokenGrant{Workspace: w.tenant, Token: token, Device: device, Epoch: 1,
-					SealedDSK: []byte("sealed to the token"), Sealer: w.owner, Now: w.now})
+					ArchiveKeyFingerprint: archive, SealedDSK: []byte("sealed to the token"), Sealer: w.owner, Now: w.now})
 			}
 			drop := func() {
 				_, err := w.tryPage(false, w.record(token, 2, grants(device, w.ownerSub, w.now, kc.CanSend), func(r *kc.TokenRecord) { r.ReadingKey = key }))

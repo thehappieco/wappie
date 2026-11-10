@@ -307,13 +307,39 @@ func (w *World) Seal(tok *Token, device uuid.UUID, epoch uint16) {
 // TrySeal is Seal, returning its error.
 func (w *World) TrySeal(tok *Token, device uuid.UUID, epoch uint16) error {
 	w.T.Helper()
+	return w.TrySealFor(tok, device, epoch, w.ArchiveKey(device, epoch))
+}
+
+// TrySealFor is TrySeal for the archive key whose fingerprint is
+// fingerprint, which may be another than the number's key at epoch.
+func (w *World) TrySealFor(tok *Token, device uuid.UUID, epoch uint16, fingerprint string) error {
+	w.T.Helper()
 	now := time.Now()
 	w.Scoped(func(tx pgx.Tx) error {
 		_, err := tx.Exec(context.Background(), `UPDATE contract_tokens SET fetched_at = $2 WHERE id = $1`, tok.ID, now.Add(-time.Second))
 		return err
 	})
 	return w.Tokens.PutTokenGrant(context.Background(), store.TokenGrant{Workspace: w.Tenant, Token: tok.ID, Device: device, Epoch: epoch,
-		SealedDSK: []byte("sealed to the token"), Sealer: w.Owner, Now: now})
+		ArchiveKeyFingerprint: fingerprint, SealedDSK: []byte("sealed to the token"), Sealer: w.Owner, Now: now})
+}
+
+// ArchiveKey is the fingerprint of device's archive key at epoch
+// (store.ArchiveKeyFingerprint), or "" with none.
+func (w *World) ArchiveKey(device uuid.UUID, epoch uint16) string {
+	w.T.Helper()
+	var pub []byte
+	w.Scoped(func(tx pgx.Tx) error {
+		err := tx.QueryRow(context.Background(), `SELECT public_key FROM device_archive_keys WHERE device_id = $1 AND epoch = $2`,
+			device, int32(epoch)).Scan(&pub)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	if pub == nil {
+		return ""
+	}
+	return store.ArchiveKeyFingerprint(pub)
 }
 
 // SetPerms commits tok's record again at the next version with perms in

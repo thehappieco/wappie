@@ -594,6 +594,7 @@ func TestATokenCommitBesideTheWorkspacesRealWriters(t *testing.T) {
 		*tokenWorld
 		device, token, member, personal uuid.UUID
 		key                             *kc.ReadingKey
+		archive                         string
 	}
 	type writer struct {
 		name string
@@ -613,7 +614,7 @@ func TestATokenCommitBesideTheWorkspacesRealWriters(t *testing.T) {
 		}},
 		"a token grant": {"a token grant", `SELECT 1 FROM contract_tokens WHERE id = $2 FOR UPDATE`, func(w world) error {
 			return w.tokens.PutTokenGrant(context.Background(), store.TokenGrant{Workspace: w.tenant, Token: w.token, Device: w.device, Epoch: 1,
-				SealedDSK: []byte("sealed to the token"), Sealer: w.owner, Now: w.now})
+				ArchiveKeyFingerprint: w.archive, SealedDSK: []byte("sealed to the token"), Sealer: w.owner, Now: w.now})
 		}},
 		"grant.add": {"grant.add", `SELECT 1 FROM workspace_memberships WHERE user_id = $3 FOR UPDATE`, func(w world) error {
 			return w.keys.PutGrant(context.Background(), store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: w.member, Epoch: 1,
@@ -645,6 +646,7 @@ func TestATokenCommitBesideTheWorkspacesRealWriters(t *testing.T) {
 				w := world{tokenWorld: newTokenWorldIn(t, uuid.MustParse("00000000-0000-4000-8000-"+strings.ReplaceAll(uuid.NewString(), "-", "")[:12]), uuid.Nil)}
 				ctx := context.Background()
 				w.device, w.token, w.key = w.number(uuid.Nil), uuid.New(), readingKey(t)
+				w.archive = w.archiveKey(w.device, 1)
 				w.member = w.linked("member", "member", uuid.New(), true)
 				if err := w.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE personal_owner_id = $1`, w.owner).Scan(&w.personal); err != nil {
 					t.Fatal(err)
