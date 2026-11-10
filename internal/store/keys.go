@@ -99,6 +99,10 @@ func toColumnID(id uint32) (int32, error) {
 //
 // Only the public half is accepted, by construction: there is no parameter for
 // a private key, so no code path exists that could store one by mistake.
+//
+// It tells every process at its commit (ArchiveKeyChannel): after a reset
+// the new key may take the old one's epoch, and a running server would
+// otherwise keep sealing to the old key (DS49).
 func (k *Keys) CreateArchiveKey(ctx context.Context, tenant, device uuid.UUID,
 	epoch uint16, pub seal.PublicKey) error {
 	if !pub.Valid() {
@@ -119,7 +123,7 @@ func (k *Keys) CreateArchiveKey(ctx context.Context, tenant, device uuid.UUID,
 			device, int32(epoch), tenant); err != nil {
 			return fmt.Errorf("store: set current epoch: %w", err)
 		}
-		return nil
+		return notifyArchiveKeyTx(ctx, tx, tenant, &device)
 	})
 }
 

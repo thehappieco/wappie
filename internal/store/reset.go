@@ -51,9 +51,12 @@ type ResetCounts struct {
 // check would find those connections. The workspace's lock comes first,
 // as for every act on access (reader_safety.go), so a consent recorded at
 // the same time comes before the reset or is refused after it. It holds
-// that lock, which ingest needs for every message, to the end: the
-// operator stops wappie-api first. wappie-api's watch tells the readers
-// once it runs (WatchRevocations).
+// that lock, which ingest needs for every message, to the end.
+// wappie-api's watch tells the readers once it runs (WatchRevocations).
+//
+// It tells every process at its commit (ArchiveKeyChannel, for the whole
+// workspace), so a running server drops what ingest built from the keys
+// it deleted and needs no restart (DS49).
 func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 	keepDevices bool) (ResetCounts, error) {
 	var out ResetCounts
@@ -121,7 +124,7 @@ func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 			`UPDATE tenants SET last_seq = 0 WHERE id = $1`, tenant); err != nil {
 			return fmt.Errorf("store: reset sequence: %w", err)
 		}
-		return nil
+		return notifyArchiveKeyTx(ctx, tx, tenant, nil)
 	})
 	if err != nil {
 		return ResetCounts{}, err

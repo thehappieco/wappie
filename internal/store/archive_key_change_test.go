@@ -165,3 +165,55 @@ func TestCreateContentKeyForRacingReset(t *testing.T) {
 		t.Fatalf("%d content keys filed for the new key, sealed to the old one", n)
 	}
 }
+
+// TestArchiveKeyNotices: a reset and a new archive key each tell every
+// process at their commit (ArchiveKeyChannel, DS49), the reset for the
+// whole workspace and the key for its number, so a running server drops
+// what ingest built from the old key.
+func TestArchiveKeyNotices(t *testing.T) {
+	w := newKeyWorld(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	listener, err := w.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Release()
+	if _, err := listener.Exec(ctx, `LISTEN `+store.ArchiveKeyChannel); err != nil {
+		t.Fatal(err)
+	}
+	heard := func(what, payload string) {
+		t.Helper()
+		if err := w.backends.Notice(ctx, listener.Conn(), store.ArchiveKeyChannel, payload); err != nil {
+			t.Fatalf("%s sent no notice %q: %v", what, payload, err)
+		}
+		tenant, device, err := store.ParseArchiveKeyNotice(payload)
+		if err != nil || tenant != w.tenant || (device != uuid.Nil && device != w.device) {
+			t.Fatalf("%s's notice %q reads as %s, %s, %v", what, payload, tenant, device, err)
+		}
+	}
+	if _, err := store.ResetArchive(ctx, w.pool, w.tenant, true); err != nil {
+		t.Fatal(err)
+	}
+	heard("the reset", w.tenant.String())
+	w.newKey(t)
+	heard("device-key", w.tenant.String()+":"+w.device.String())
+}
+
+// TestParseArchiveKeyNotice reads a workspace's and a number's notice and
+// refuses anything else.
+func TestParseArchiveKeyNotice(t *testing.T) {
+	tenant, device := uuid.New(), uuid.New()
+	if gotT, gotD, err := store.ParseArchiveKeyNotice(tenant.String()); err != nil || gotT != tenant || gotD != uuid.Nil {
+		t.Fatalf("a workspace's notice: %s %s %v", gotT, gotD, err)
+	}
+	if gotT, gotD, err := store.ParseArchiveKeyNotice(tenant.String() + ":" + device.String()); err != nil || gotT != tenant || gotD != device {
+		t.Fatalf("a number's notice: %s %s %v", gotT, gotD, err)
+	}
+	for _, bad := range []string{"", "x", uuid.Nil.String(), tenant.String() + ":", tenant.String() + ":" + uuid.Nil.String(),
+		tenant.String() + ":x", "urn:uuid:" + tenant.String(), "{" + tenant.String() + "}"} {
+		if _, _, err := store.ParseArchiveKeyNotice(bad); err == nil {
+			t.Fatalf("%q read as a notice", bad)
+		}
+	}
+}
