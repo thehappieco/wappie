@@ -2286,10 +2286,18 @@ installation ships with them off.
 6. The token identities' `users` and `device_key_grants` rows.
 
 The token grant write reads the number's archive key under the
-workspace's row (step 3), and compares the key the grant names with it.
-Every write to `device_archive_keys` takes that row too (0036's
-`archive_owner_lock`), so the key cannot change before the grant commits,
-and no lock is added.
+workspace's row (step 3), and compares the key the grant names with it
+(`archiveKeyIsTx`, DS49's check, which `grant.add` shares). No lock is
+added: every write to `device_archive_keys` takes that row as well, so
+the key cannot change before the grant commits. What makes it the same
+row: 0036's `archive_owner_lock` locks the `tenants` row named by the
+writer's `app.tenant_id`. That is the number's workspace because
+row-level security's WITH CHECK and `archive_device_owner` tie each
+insert and update to the device's workspace, deletes see only the
+workspace's rows, and `TransferPersonal` locks both workspaces before it
+moves a number. `ResetArchive` and `CreateArchiveKey` run in the
+workspace's `InTenantTx`. A future writer of `device_archive_keys`
+outside these rules must lock the number's workspace row first.
 
 Within one transaction, steps 4 to 6 are taken workspace by workspace, in
 workspace id order. Nobody takes a lower step after a higher one, and no
