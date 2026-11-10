@@ -961,7 +961,11 @@ rotation of the number's key, a grant replaced in the same transaction
 and a dormant grant's revoke (no Read flag) do not count (DS48). A
 `grant.revoke` of a connection's own account ends that connection
 whole, and `grant.add` gives that account only a number its key names
-and its person reads (`not_authorized` otherwise). The operator's
+and its person reads (`not_authorized` otherwise). Wappie's own PUT on
+that account does the same: taking its Read or a grant ends the
+connection, and anything past the consent is 403 `not_authorized`. The
+check at every start also ends a connection whose own account no longer
+reads a number its key names (DS48). The operator's
 `reset-archive` counts as Read taken away from everyone: it ends every
 live connection of the workspace first (DS48). After a `ran` that
 wrote, this process's sockets check their access at once; the others

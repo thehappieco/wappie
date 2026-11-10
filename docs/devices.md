@@ -228,7 +228,11 @@ See [moving a number from Team to Personal](device-personal-transfer.md): a numb
 
 ## Resetting the archive
 
-`whatserverd reset-archive -tenant <id> -yes-destroy-everything` removes everything sealed for a workspace: messages, chats, contacts, attachments, archive keys and grants. There is no undo. It refuses while a deleted number waits for its purge ([the purge](#the-purge)). Before its deletes it ends every live assistant connection and AI integration of the workspace, `access_lost` ([DS48](decisions.md)); people connect them again afterwards. Without `-keep-devices` it removes the numbers too, and each is paired again, which makes its new key.
+`whatserverd reset-archive -tenant <id> -yes-destroy-everything` removes everything sealed for a workspace: messages, chats, contacts, attachments, archive keys and grants. There is no undo. It refuses while a deleted number waits for its purge ([the purge](#the-purge)). Before its deletes it ends every live assistant connection and AI integration of the workspace, `access_lost` ([DS48](decisions.md)); people connect them again afterwards, and `wappie-api` tells their readers once it runs.
+
+Stop `wappie-api` before any reset, and start it after. The reset holds the workspace's lock to its end, and ingest needs that lock for every message. A running server also keeps what it loaded for each number until it restarts.
+
+Without `-keep-devices` the reset removes the numbers too. Start `wappie-api` again, then pair each number again, which makes its new key.
 
 With `-keep-devices` the numbers stay paired, with no archive key. A running server keeps the key it loaded for each number, and nothing tells it the key changed. After the reset, and after `device-key`, it keeps sealing to the old key until it restarts. So a restart is required. Run, in this order:
 
@@ -237,4 +241,4 @@ With `-keep-devices` the numbers stay paired, with no archive key. A running ser
 3. `whatserverd device-key -device <id> -grant <email>` for each number.
 4. Start `wappie-api`.
 
-The reset prints these steps, and `device-key` the restart.
+`device-key` refuses an assistant connection's own account, before it makes the key. The reset prints these steps, and `device-key` the restart.

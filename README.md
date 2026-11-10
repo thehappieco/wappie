@@ -479,9 +479,9 @@ Their direct conversation, everything they sent in groups, every receipt they
 produced, their contact row and their group memberships go; what other people
 said in those groups stays. `reset-archive` removes the workspace's attachment
 objects from storage as well, and refuses while a deleted number of the
-workspace waits for its purge. With `-keep-devices`, stop `wappie-api` before
-the reset and start it after `device-key`: a running server keeps sealing to
-the old key until it restarts
+workspace waits for its purge. Stop `wappie-api` before the reset and start it
+after; with `-keep-devices`, after `device-key`, since a running server keeps
+sealing to the old key until it restarts
 ([resetting the archive](docs/devices.md#resetting-the-archive)). Deleting a
 number keeps it 30 days, readable by nobody and recoverable by an owner; the
 purge then removes its archive and its attachment objects

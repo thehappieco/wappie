@@ -2298,9 +2298,10 @@ the same way. `RevokeGrant`, the error-only form, takes the actor too.
 Wappie's own screen revokes the key with `grant.revoke` before its PUT
 (the web app's `changeDevicePermission`). An admin who unticked an
 owner's Read would have lost the owner's key before the PUT was refused.
-The screen now disables Read on an owner's row for a viewer who is not
-an owner, as it disables Manage on an owner's or an admin's row; the
-server refuses the revoke in any case.
+The server now refuses that revoke. The web app, in wappie-cloud and its
+own pull request, disables an owner's whole row for a viewer who is not
+an owner, and a row whose role is not loaded yet: the PUT refuses an
+admin any change there (`ErrOwnerTarget`).
 
 **A connection's own account** (the platform's F2, built in F4). A lone
 `grant.revoke` on an account a connection names (`service_user_id`)
@@ -2320,18 +2321,36 @@ grant of the account as a number the connection holds, so such a grant
 would end the connection at the next start. `grant.add` and a pairing's
 grants answer `not_authorized`, the code `grant.add` gives an actor who
 may not share (its `conflict` means a wrong epoch or a number with no
-key). `device-key`'s grants are refused the same way. A workspace API
-key's `acts_as` account stays as 0053 leaves it.
+key). `device-key` asks the same of every account it is given
+(`Keys.CheckGrant`) before it makes the number's key, and refuses a
+connection's account: a refusal after the key would leave a key nobody
+holds. A workspace API key's `acts_as` account stays as 0053 leaves it.
+
+Wappie's screen's PUT (`PUT /devices/{id}/permissions`) reaches a
+connection's own account too, through the REST API; the screen itself
+calls `grant.revoke` or `grant.add` first. It follows the same two
+rules (`setDevicePermissionTx`). A PUT that takes the account's Read
+flag or deletes one of its grants ends that connection whole,
+`access_lost`, in the same transaction, the connection locked before
+the account's rows; its reader is told after the commit. Any other PUT
+on the account, a raise or a row with no flag, takes only a number its
+key names and its person reads, else `ErrConnectionAccountGrant`, 403
+`not_authorized`, and nothing changes: the check counts every
+permission row of the account, whatever its flags. A consent's
+provisional account, which no connection names yet, takes any, as the
+console's consent needs. The console's flags acts find their target by
+its platform identity, which a connection's account has not.
 
 **The archive reset** (the platform's F5). `ResetArchive`, the
 operator's `reset-archive`, counts as Read taken away from everyone
 (0061's third rule): it deletes every grant and leaves none at a
 number's current epoch, which is neither a rotation nor a replacement.
-It used to end nothing. It runs on the command line while the server
-keeps running, so no start follows it. After `device-key` gave a kept
-number a new key, sealed to the accounts named, a live metadata
-connection of a person not named again read the new metadata for up to
-a year (`AllowsDevice` asks nothing of the grant). Without
+It used to end nothing, and it may run while the server keeps running,
+so it does not leave the connections to the next start's check. After
+`device-key` gave a kept number a new key, sealed to the accounts
+named, a live metadata connection of a person not named again read the
+new metadata for up to a year (`AllowsDevice` asks nothing of the
+grant). Without
 `-keep-devices` the cascade emptied `api_key_devices`, so no check could
 find those connections. Now the reset:
 
@@ -2343,8 +2362,20 @@ find those connections. Now the reset:
    active or reseal, revoked and `access_lost`, through
    `endMCPConnectionTx`, before its deletes: a plain select by
    workspace, not the check's join;
-3. returns the count, which the command prints. A running server's
-   `WatchRevocations` tells the readers.
+3. returns the count, which the command prints. wappie-api's
+   `WatchRevocations` tells the readers once it runs.
+
+The operator stops `wappie-api` before any reset and starts it after.
+The reset holds the workspace's tenants row to its end, and ingest needs
+that row for every message, so a running server's ingest for the
+workspace waits on it, holding connections of the shared pool. A
+running server also caches each number's key (ingest's `pipelineFor`)
+and nothing tells it the key changed: after `reset-archive
+-keep-devices` and `device-key` it keeps sealing to the old key until it
+restarts. So with `-keep-devices` the runbook is: stop `wappie-api`,
+reset, `device-key -device <id> -grant <email>` for each number, start
+`wappie-api` (docs/devices.md). The reset prints these steps, and
+`device-key` ends with the restart.
 
 The tests found two more things, fixed with it. With `-keep-devices` the
 reset left the journal (`events`) and the receipts, which the
@@ -2364,9 +2395,11 @@ or is not the lone revoke:
   above. On a connection's own account it ends that connection.
 - `setDevicePermissionTx` with its keys dropped (the screen's PUT
   without Read, `item.flags_drop` of read, `item.access_remove`): the
-  Read flag goes with the grants. F3 already ends the connections when
-  Read goes or no flag is left (DS47). With Read gone before, there was
-  no Read to take.
+  Read flag goes with the grants. F3 already ends the person's
+  connections when Read goes or no flag is left (DS47). With Read gone
+  before, there was no Read to take. On a connection's own account,
+  which only the screen's PUT reaches, it ends that connection when it
+  takes the account's Read or a grant, as above.
 - `UpdateMember` to disabled and `removeMember`: every grant and
   permission of the person in the workspace goes after
   `endConnectionsOfMemberTx` ended all their connections
@@ -2404,7 +2437,11 @@ AI; pending, active and reseal. A connection holds a number as
 `leaveOwnConnectionsTx` counts it: its key's row, or its service
 account's permission or grant on it. Its person reads the number as
 `consenterReadsTx` asks of a consent: the Read flag, a grant at the
-number's current epoch, its key not retired, the number not deleted.
+number's current epoch, its key not retired, the number not deleted. It
+also ends a content connection or an AI integration whose own account
+no longer reads, by the same rule, a number its key names while its
+person still does: a narrowed one, which a `grant.revoke` or a PUT on
+that account served by a binary before F4 left.
 
 It locks nothing in the steady state. The tenants row is also ingest's
 sequence lock (`nextSeq`), and the check runs while the start's history
@@ -2415,17 +2452,21 @@ lock (`lock_timeout`), the candidates read again and ended in id order,
 each through `endMCPConnectionTx` as a revoke ends it. A busy workspace
 is left as it was for the next start; the others go on.
 
-It logs each end at Warn, ids only: the workspace, the connection, and,
-for a number nobody reads, its kind and remedy. It logs each busy
-workspace at Warn too. The readers are told within one 5-second bound
+It logs each end at Warn, ids only: the workspace, the connection, and
+its numbers by kind with their remedy (keyless and orphan below;
+narrowed, whose remedy is a new consent). It logs each busy workspace
+at Warn too, and a failure or a panic at Error; neither stops the
+process. Each reader is told within a 5-second bound of its own
 (`TellRevoked`); `WatchRevocations` is the backstop.
 
 It is an invariant check. The first pass after F4 ends what the rules
 before left: a metadata consent that asked no Read before 0061, a
 content connection or AI integration whose person lost Read before F3,
 and a connection whose person lost their grant to a `grant.revoke`
-before F4. After that first pass, an end means an older binary served a
-reset or a lone revoke, or a path missed one. Why every start rather
+before F4, and a content connection or AI integration narrowed by a
+`grant.revoke` or a PUT on its own account before F4. After that first
+pass, an end means an older binary served a reset, a lone revoke or
+such a narrowing, or a path missed one. Why every start rather
 than once: F4 does not wait for R4, a rollback needs no down-step, and
 the check also heals a busy workspace, a lone revoke served by an older
 binary and anything a path missed. Several servers need nothing more:
@@ -2443,10 +2484,13 @@ kinds, and the start's log line names each with its remedy:
   `CreateWithID` and `CreateArchiveKey`, or a row older than 0009.
   Remedy: `whatserverd device-key -device <id> -grant <email>`, then a
   new consent.
-- Orphan, a key and no grant to anyone (`wsctl pair -orphan`, or
-  `device-key` with no account). Remedy: a grant sealed with the
-  printed key, or delete the number and pair it again with `-grant`
-  (`device-key` refuses a number that has a key).
+- Orphan, a key and no grant to anyone but connections' and consents'
+  accounts (`wsctl pair -orphan`, or `device-key` with no account).
+  Those accounts' copies are sealed to keys that live only in a reader,
+  so they do not count, as the contract's key holders leave them out.
+  Remedy: a grant sealed with the printed key, or delete the number and
+  pair it again with `-grant` (`device-key` refuses a number that has a
+  key).
 
 A rotation does not count. The check keeps a connection whose person
 waits for a rotated number's new key: they keep the Read flag and hold
@@ -2460,13 +2504,18 @@ Tests: `TestGrantRevokeEndsOwnConnections`,
 `TestGrantRevokeTakesNothing` (a revoke that finds no grant, a dormant
 grant, the last key, an old epoch deleted, a grant replaced),
 `TestGrantRevokeRotation`, `TestGrantRevokeOwnerOnly`,
-`TestGrantRevokeConnectionAccount` and `TestGrantAddConnectionAccount`
-(store). `TestConsoleParityOwnConnections` runs the socket's lone
+`TestGrantRevokeConnectionAccount`, `TestGrantAddConnectionAccount`
+(with `CheckGrant`) and `TestSetPermissionConnectionAccount` (the PUT
+on a connection's account: a raise or a row with no flag past the
+consent refused, a raise on its own number taken, Read taken ending the
+connection whole) (store). `TestConsoleParityOwnConnections` runs the socket's lone
 `grant.revoke` as a fourth path, with the same rows left, the same
 readers told and the Read flag kept, and a dormant grant's revoke beside
 the screen's PUT from the same state; `TestConsoleParityFlags` refuses
 an admin's `grant.revoke` of an owner as the screen and the acts refuse
-their drop and remove; `TestGrantFramesConnectionAccount` (wsapi).
+their drop and remove; `TestGrantFramesConnectionAccount`, its frames
+and the PUT, 403 `not_authorized` past the consent and an end with its
+reader told (wsapi).
 `TestResetArchiveEndsConnections` (a consent and a renewal after the
 reset refused; after `-keep-devices` and a new key granted to another
 account, the old metadata key refused; without `-keep-devices`, ended
@@ -2475,12 +2524,18 @@ too) (store). `TestConnectionsWithoutReadSweep`,
 `TestConnectionsWithoutReadSweepBusyWorkspace`,
 `TestConnectionsWithoutReadSweepLocksNothing` and
 `TestConnectionsWithoutReadSweepNobodyReads` (an epoch-0 number, an
-orphan number, a workspace an older binary reset, one this binary
-reset) (store). `TestReadFlagClearedOnlyBySetDevicePermission` (store).
+orphan number, one whose only grant left is a connection's account's,
+a workspace an older binary reset, one this binary reset) and
+`TestConnectionsWithoutReadSweepNarrowed` (store). `TestReadFlagClearedOnlyBySetDevicePermission` (store).
 `TestOwnConnectionsLockOrder` races a lone revoke and the check, with
 leftovers of its own to end every round, against F3's paths;
 `TestResetArchiveLockOrder` races the reset against ingest, consents, a
 renewal, a lone revoke, the check and the rest (store).
-`TestCheckReadAtStart` and `TestServeRunsReadCheck` check the start's
-lines, whom it tells and where it runs; `TestServeWiresReaders` checks
-the socket server tells serve's readers (cmd/whatserverd).
+`TestCheckReadAtStart`, `TestReportReadCheck`,
+`TestCheckReadAtStartSurvivesAPanic` and `TestServeRunsReadCheck` check
+the start's lines, the busy one included, whom it tells and on which
+bound, a panic, and where it runs; `TestServeWiresReaders` checks the
+socket server tells serve's readers; `TestResetAndDeviceKeyTexts` pins
+the reset's and `device-key`'s steps, the order in `device-key` of its
+checks and its key, and the runbook in docs/devices.md
+(cmd/whatserverd).
