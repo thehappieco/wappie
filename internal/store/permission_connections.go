@@ -23,19 +23,21 @@ import (
 // key: Read, and a grant at the number's current epoch, not retired (0053's
 // Read, the platform's 0061). The caller holds the tenants row, as a drop
 // of Read does, so a consent prepared before the drop and recorded after it
-// is refused (DS47).
+// is refused (DS47). A key that names no number any more is refused too:
+// its numbers left the workspace, or a reset without -keep-devices deleted
+// them, after the console minted it (DS48).
 func consenterReadsTx(ctx context.Context, tx pgx.Tx, tenant, actor, keyID uuid.UUID) error {
-	var missing int
-	err := tx.QueryRow(ctx, `SELECT count(*) FROM api_key_devices x
-		WHERE x.api_key_id = $3 AND NOT EXISTS (SELECT 1 FROM device_permissions p
+	var named, missing int
+	err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM device_permissions p
 			JOIN devices d ON d.id = p.device_id AND d.tenant_id = p.tenant_id AND d.deleted_at IS NULL
 			JOIN device_key_grants g ON g.tenant_id = p.tenant_id AND g.device_id = p.device_id AND g.user_id = p.user_id AND g.epoch = d.current_epoch
 			JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch AND k.retired_at IS NULL
-			WHERE p.tenant_id = $1 AND p.user_id = $2 AND p.device_id = x.device_id AND p.can_read)`, tenant, actor, keyID).Scan(&missing)
+			WHERE p.tenant_id = $1 AND p.user_id = $2 AND p.device_id = x.device_id AND p.can_read))
+		FROM api_key_devices x WHERE x.api_key_id = $3`, tenant, actor, keyID).Scan(&named, &missing)
 	if err != nil {
 		return err
 	}
-	if missing > 0 {
+	if named == 0 || missing > 0 {
 		return ErrMCPKeyUnsuitable
 	}
 	return nil

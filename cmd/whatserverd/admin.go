@@ -137,12 +137,13 @@ func resetArchive(args []string) error {
 
 	fmt.Printf(`Archive removed for tenant %s.
 
-messages  %d
-chats     %d
-contacts  %d
-media     %d
-devices   %d
-objects   %d removed from storage, %d failed
+messages     %d
+chats        %d
+contacts     %d
+media        %d
+devices      %d
+objects      %d removed from storage, %d failed
+connections  %d ended, access_lost (a running server tells their readers)
 
 An object that failed to delete is ciphertext whose keys no longer exist:
 useless to anyone, but still occupying space. Run again to retry, or empty the
@@ -152,7 +153,7 @@ Next: create an account with "whatserverd invite", sign up in the browser, then
 pair a device. Pairing generates that device's archive key and seals it to the
 accounts that may read it, so there is nothing to write down.
 `, tenant, counts.Messages, counts.Chats, counts.Contacts, counts.Media, counts.Devices,
-		removed, failed)
+		removed, failed, counts.Connections)
 	return nil
 }
 

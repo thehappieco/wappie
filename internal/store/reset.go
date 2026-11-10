@@ -18,6 +18,9 @@ type ResetCounts struct {
 	Contacts int64
 	Media    int64
 	Devices  int64
+	// Connections are the live MCP connections and AI integrations the
+	// reset ended, revoked and access_lost.
+	Connections int64
 }
 
 // ResetArchive removes everything sealed for one tenant.
@@ -36,10 +39,26 @@ type ResetCounts struct {
 // hidden from the statements on devices below, so the reset would empty its
 // archive and leave the row behind, and its owner was promised 30 days to
 // recover it.
+//
+// It counts as Read taken away from everyone (the platform's 0061, DS48):
+// it deletes every grant and leaves none at a number's current epoch. So
+// before anything is deleted it ends every live MCP connection and AI
+// integration of the workspace, of any kind and status, revoked and
+// access_lost, as a revoke ends one (endMCPConnectionTx). Nothing else
+// would: it runs from the command line while the server keeps running, so
+// no start follows it, a metadata key asks nothing of a grant, and without
+// keepDevices the cascade empties api_key_devices, so no later check finds
+// those connections. The workspace's lock comes first, as for every act on
+// access (reader_safety.go), so a consent recorded at the same time comes
+// before the reset or is refused after it. The running server's watch
+// tells the readers (WatchRevocations).
 func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 	keepDevices bool) (ResetCounts, error) {
 	var out ResetCounts
 	err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
+			return fmt.Errorf("store: reset: lock the workspace: %w", err)
+		}
 		excluded, err := anyExcludedTx(ctx, tx)
 		if err != nil {
 			return fmt.Errorf("store: reset: look for deleted numbers: %w", err)
@@ -47,8 +66,14 @@ func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 		if excluded {
 			return ErrExcludedNumbers
 		}
+		if out.Connections, err = endEveryConnectionTx(ctx, tx, tenant); err != nil {
+			return fmt.Errorf("store: reset: end the connections: %w", err)
+		}
 		// Order matters only for readability: every one of these cascades from
-		// devices, and the counts would be zero if devices went first.
+		// devices, and the counts would be zero if devices went first. The
+		// journal and the receipts go too: the tenant sequence numbered
+		// them, and with the numbers kept the next message would be given
+		// a sequence an old event still holds.
 		for _, step := range []struct {
 			table string
 			into  *int64
@@ -57,6 +82,8 @@ func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 			{"messages", &out.Messages},
 			{"chats", &out.Chats},
 			{"contacts", &out.Contacts},
+			{"events", nil},
+			{"receipts", nil},
 			{"content_keys", nil},
 			{"device_key_grants", nil},
 			{"device_archive_keys", nil},
@@ -98,4 +125,30 @@ func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 		return ResetCounts{}, err
 	}
 	return out, nil
+}
+
+// endEveryConnectionTx ends every live connection of tenant, any kind,
+// pending, active or reseal, in id order, revoked and access_lost, and
+// counts those it ended. The caller holds the tenants row lock.
+func endEveryConnectionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) (int64, error) {
+	rows, err := tx.Query(ctx, `SELECT id::text FROM mcp_connections
+		WHERE tenant_id = $1 AND status IN ('pending', 'active', 'reseal') ORDER BY id FOR UPDATE`, tenant)
+	if err != nil {
+		return 0, err
+	}
+	live, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, id := range live {
+		ended, err := endMCPConnectionTx(ctx, tx, tenant, id, statusRevoked, ReasonAccessLost)
+		if err != nil {
+			return 0, err
+		}
+		if ended {
+			n++
+		}
+	}
+	return n, nil
 }
