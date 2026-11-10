@@ -181,11 +181,11 @@ func TestGrantRevokeOwnerOnly(t *testing.T) {
 	s := w.own(t, owner, "Owner's")
 	refused := func(what string, actor, target, device uuid.UUID, want error) {
 		t.Helper()
-		before := w.grantsOf(t, device, target)
+		before := w.grantsOf(t, device, target) //nolint:contextcheck // the world's helpers run on a context of their own
 		if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, actor, device, target); !errors.Is(err, want) || len(ended) != 0 {
 			t.Fatalf("%s: %v %v, want %v", what, ended, err, want)
 		}
-		if g := w.grantsOf(t, device, target); g != before {
+		if g := w.grantsOf(t, device, target); g != before { //nolint:contextcheck // the world's helpers run on a context of their own
 			t.Fatalf("%s: the target holds %d grants, had %d", what, g, before)
 		}
 	}
