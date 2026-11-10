@@ -2414,3 +2414,12 @@ and a loop with either other feed is spaced by that feed's wait. A reset
 from the command feed also wakes the token follower, which no notice
 reaches from there: its long-poll in flight would otherwise ask from the
 old cursor for up to its 25 seconds.
+
+**A person's lost Read never reaches a token** (DS47, the platform's
+0061). A platform token is its own holder kind (0053): its Read and its
+grants follow its record alone. Its identity is no member, so Wappie's
+permissions screen and the console's flags acts never find it
+(`not_found`), and a person's lost Read ends only that person's own
+connections and integrations (`leaveOwnConnectionsTx`), never a token's
+grant. Nor does a token's grant count for a person: a consent or a
+renewal asks the person's own Read and grant (`consenterReadsTx`).

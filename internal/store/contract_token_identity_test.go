@@ -298,6 +298,37 @@ func TestDroppingReadDeletesTheTokensGrantsInTheSameWrite(t *testing.T) {
 	}
 }
 
+// TestAGiversLostReadLeavesTheToken (DS47, the platform's 0061): a
+// platform token is its own holder kind. Its giver's Read and every flag
+// taken on Wappie's screen end the giver's own connections, and the grant
+// the giver sealed to the token stays, its Read applied, its identity
+// live. The judge decided that Read once.
+func TestAGiversLostReadLeavesTheToken(t *testing.T) {
+	w := newTokenWorld(t)
+	ctx := context.Background()
+	device := w.number(uuid.Nil)
+	token := w.readingToken(device, readingKey(t))
+	w.tokensOn()
+	if err := w.seal(token, device, w.owner, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Another reader, so the owner's Read may go.
+	w.reads(w.linked("member", "member", uuid.New(), true), device)
+	if _, err := w.users.SetDevicePermissionEnded(ctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: w.owner}); err != nil {
+		t.Fatal(err)
+	}
+	if n := w.count(`SELECT count(*) FROM device_key_grants WHERE user_id = $1 AND device_id = $2`, w.owner, device); n != 0 {
+		t.Fatalf("the giver kept %d grants", n)
+	}
+	identity, dropped := w.identityOf(token)
+	if identity == nil || dropped || w.grantsOf(*identity) != 1 {
+		t.Fatal("the giver's lost Read took the token's identity or grant")
+	}
+	if n := w.count(`SELECT count(*) FROM contract_token_perms WHERE token_id = $1 AND perm = 'read' AND state = 'applied'`, token); n != 1 {
+		t.Fatalf("the token's Read: %d applied", n)
+	}
+}
+
 // TestAReadGivenAgainTakesItsGrants (design 3.5, the plan's 5.2): a record
 // whose Read on a number is another grant instance than the one Wappie holds
 // (the feed carries only a token's latest version, so a Read ungranted and

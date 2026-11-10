@@ -1289,7 +1289,9 @@ account removed with its permissions and grants on every number. Its
 reader is told after the commit as a revoke tells it (best effort; the
 reader's 30-second re-tell is the backstop), and the person consents
 again for the numbers they still read. Another person's connections,
-workspace API keys and legacy MCP tokens keep the number. A change that
+workspace API keys and legacy MCP tokens keep the number, and so do
+platform tokens, whose Read is their record's ([the token
+feed](#the-token-feed)). A change that
 keeps send or manage while Read was already gone (a raise, a drop of the
 other) ends nothing, on the screen as in the acts, and nor does a
 refusal (`last_reader`, an admin on an owner). A connection already live
