@@ -174,8 +174,9 @@ func tokenOn(it store.ContractSnapshotItem, tok *tokentest.Token) (store.Contrac
 // (after a key rotation); a perm pending, waiting for its judge or refused
 // lists nothing; a token revoked (on its row, in the sticky set, or by the
 // belt), expired or unlisted is left out, and one Wappie stops on its own
-// is listed; a deleted number lists none. The earliest expiry of a token
-// listed is the snapshot's TokensExpire.
+// is listed; a deleted number lists none; a token is never one of the
+// people, the protected or the backups. The earliest expiry of a token
+// listed, by its row or its sticky row, is the snapshot's TokensExpire.
 func TestSnapshotTokens(t *testing.T) {
 	w := newAuthWorld(t)
 	ctx := context.Background()
@@ -251,6 +252,12 @@ func TestSnapshotTokens(t *testing.T) {
 		if listed != c.listed || (listed && got != c.want) {
 			t.Errorf("%s: listed %v %+v, want %v %+v", c.name, listed, got, c.listed, c.want)
 		}
+	}
+	// A token is never a person: its identity, which holds the key of a,
+	// is never among the people, the protected or the backups.
+	if it := items[a]; len(it.People) != 1 || it.People[0].Sub != w.OwnerSub || it.OtherBackups != 0 ||
+		len(it.Protected) != 1 || it.Protected[0] != w.OwnerSub {
+		t.Fatalf("a token in the people of a: %+v", it)
 	}
 	for _, it := range snap.Items {
 		for i, tok := range it.Tokens {
