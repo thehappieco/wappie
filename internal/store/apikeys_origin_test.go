@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 	"time"
@@ -51,9 +54,10 @@ func (w *delWorld) originOf(t *testing.T, key string) (origin, class string) {
 }
 
 // Every key gets its origin at issue: cli with no creator, mcp_setup in an
-// MCP setup's shape (read, numbers, a deadline within 31 minutes of its
-// issue, "MCP · …", acting as a provisional service or none), rest for
-// everything else. A setup's key is what 0053's api_key_class calls one.
+// MCP setup's shape (read, numbers, a deadline within 30 minutes of its
+// issue, which a consent binds, "MCP · …", acting as a fresh provisional
+// service or none), rest for everything else. A setup's key is what 0053's
+// api_key_class calls one; the class gives a minute more.
 func TestAKeysOriginIsSetAtIssue(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()
@@ -81,6 +85,7 @@ func TestAKeysOriginIsSetAtIssue(t *testing.T) {
 		{"a setup's", "MCP · Claude", store.ScopeRead, nil, devices, in(20 * time.Minute), store.OriginMCPSetup},
 		{"a content setup's", "MCP · Claude", store.ScopeRead, &provisional, devices, in(20 * time.Minute), store.OriginMCPSetup},
 		{"a setup's near its bound", "MCP · Claude", store.ScopeRead, nil, devices, in(28 * time.Minute), store.OriginMCPSetup},
+		{"past what a consent binds", "MCP · Claude", store.ScopeRead, nil, devices, in(30*time.Minute + 30*time.Second), store.OriginREST},
 		{"past the bound", "MCP · Claude", store.ScopeRead, nil, devices, in(35 * time.Minute), store.OriginREST},
 		{"no deadline", "MCP · Claude", store.ScopeRead, nil, devices, nil, store.OriginREST},
 		{"another name", "assistant", store.ScopeRead, nil, devices, in(20 * time.Minute), store.OriginREST},
@@ -100,7 +105,8 @@ func TestAKeysOriginIsSetAtIssue(t *testing.T) {
 		// The class does not look at what a key acts as, and calls a new
 		// key in the old local token's shape legacy_mcp; at issue it is
 		// rest (the plan's 2.1).
-		if want := map[string]string{"no deadline": "legacy_mcp", "a standing service": "mcp_setup"}[c.name]; want != "" {
+		if want := map[string]string{"no deadline": "legacy_mcp", "a standing service": "mcp_setup",
+			"past what a consent binds": "mcp_setup"}[c.name]; want != "" {
 			if class != want {
 				t.Errorf("%s: api_key_class says %q, want %q", c.name, class, want)
 			}
@@ -247,5 +253,108 @@ func TestASetupKeyWorksOnlyThroughItsConnection(t *testing.T) {
 	w.bind(t, unbound)
 	if _, err := w.apiKeys.VerifyClient(ctx, unbound); err != nil {
 		t.Errorf("bound later: %v", err)
+	}
+}
+
+// TestAConnectionsAccountIsNoNewKeysToActAs (the plan's 7.3, L8): a
+// connection's service account lives as long as its consent, so a key
+// issued acting as it is no setup's: its origin is rest, and while keys are
+// narrowed it is refused. A setup's key issued for a fresh account before
+// a connection took that account works unbound, as a renewal's does, only
+// until then: once a connection names the account and not the key,
+// VerifyClient refuses it. One issued acting as the account with keys not
+// narrowed yet is revoked by the retirement, which no consent issued.
+func TestAConnectionsAccountIsNoNewKeysToActAs(t *testing.T) {
+	w := newRetireWorld(t)
+	ctx := context.Background()
+	devices := []uuid.UUID{w.shared}
+	in20 := time.Now().Add(20 * time.Minute)
+	in := w.prepare(t, w.owner, store.KindContent, w.shared)
+	account := in.ServiceUserID
+	asAccount := func() (string, error) {
+		return w.apiKeys.IssueAsked(ctx, w.tenant.String(), "MCP · Claude", store.ScopeRead, &w.owner, &account, devices, &in20)
+	}
+	// A second key for the fresh account, before the consent.
+	second, err := asAccount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin, _ := w.originOf(t, second); origin != store.OriginMCPSetup {
+		t.Fatalf("a key for a fresh account: origin %q", origin)
+	}
+	w.tokensOn(t)
+	if _, err := w.apiKeys.VerifyClient(ctx, second); err != nil {
+		t.Fatalf("unbound, its account fresh: %v", err)
+	}
+	if _, err := w.conns.Create(ctx, w.tenant, w.owner, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.apiKeys.VerifyClient(ctx, second); !errors.Is(err, store.ErrInvalidKey) {
+		t.Fatalf("its account a connection's: %v", err)
+	}
+	if _, err := w.apiKeys.VerifyScoped(ctx, second); err != nil {
+		t.Fatalf("the MCP side: %v", err)
+	}
+	if _, err := asAccount(); !errors.Is(err, store.ErrTokensAreThePlatforms) {
+		t.Fatalf("a new key acting as a connection's account, keys narrowed: %v", err)
+	}
+	w.exec(t, `UPDATE contract_token_state SET mode = 'off'`)
+	late, err := asAccount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Its deadline as short as a fresh account's, it is still the
+	// connection's.
+	w.inScope(t, `UPDATE workspace_memberships SET expires_at = clock_timestamp() + interval '10 minutes' WHERE user_id = $1`, account)
+	soon, err := asAccount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]string{"its consent's deadline": late, "a deadline 10 minutes out": soon} {
+		if origin, class := w.originOf(t, key); origin != store.OriginREST || class != store.KeyClassMCPSetup {
+			t.Fatalf("a new key acting as a connection's account, %s: origin %q, class %q", name, origin, class)
+		}
+	}
+	w.tokensOn(t)
+	w.apply(t)
+	for _, key := range []string{late, soon} {
+		if s := w.keyState(t, key); s.revokedAt == nil || s.reason != store.RevokeReasonPlatformTokens {
+			t.Fatalf("the retirement left it: %+v", s)
+		}
+	}
+	if s := w.keyState(t, second); s.revokedAt != nil {
+		t.Fatalf("the retirement revoked a setup's key: %+v", s)
+	}
+}
+
+// TestEveryAskedKeyIsNarrowed (the plan's 7.3): a key a person or the
+// operator asks for goes through IssueAsked, which narrows it. The
+// issuers that do not narrow (Issue, IssueFor, IssueScoped, IssueActingAs,
+// IssueActingAsForDevices) are named outside tests only by apikeys.go,
+// which builds them on one another, and tokentest, which makes the tests'
+// keys.
+func TestEveryAskedKeyIsNarrowed(t *testing.T) {
+	unnarrowed := map[string]bool{"Issue": true, "IssueFor": true, "IssueScoped": true, "IssueActingAs": true, "IssueActingAsForDevices": true}
+	allowed := map[string]bool{"../../internal/store/apikeys.go": true, "../../internal/tokentest/tokentest.go": true}
+	for _, root := range []string{"../../cmd", "../../internal"} {
+		files, err := goFiles(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range files {
+			if strings.HasSuffix(path, "_test.go") || allowed[path] {
+				continue
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok && unnarrowed[sel.Sel.Name] {
+					t.Errorf("%s names %s: a key asked for goes through IssueAsked", path, sel.Sel.Name)
+				}
+				return true
+			})
+		}
 	}
 }

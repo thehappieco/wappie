@@ -130,15 +130,17 @@ const (
 const SetupKeyName = "MCP · "
 
 // setupKeyLifetime is how far past its issue an MCP setup's key may
-// expire: the setups ask 20 minutes and a consent binds at most 30
-// (maxProvisionalKeyLifetime); a minute more for the clocks, as 0053's
-// api_key_class has it (interval '31 minutes').
-const setupKeyLifetime = maxProvisionalKeyLifetime + time.Minute
+// expire: the setups ask 20 minutes, and a consent binds a key that
+// expires at most 30 minutes out (maxProvisionalKeyLifetime). A longer key
+// could never be bound, so it is no setup's. 0053's api_key_class gives a
+// minute more (interval '31 minutes'), for keys it classifies after the
+// fact.
+const setupKeyLifetime = maxProvisionalKeyLifetime
 
 // setupShaped is an MCP setup's key (the plan's 7.3): read, a list of
 // numbers, a deadline at most setupKeyLifetime after created (the key's
 // created_at), and a name that starts with SetupKeyName. What it acts as
-// (a provisional service, or none) the caller checks.
+// (a fresh provisional service, or none) the caller checks.
 func setupShaped(name string, scope KeyScope, restricted bool, expiresAt *time.Time, created time.Time) bool {
 	return strings.HasPrefix(name, SetupKeyName) && scope == ScopeRead && restricted &&
 		expiresAt != nil && !expiresAt.After(created.Add(setupKeyLifetime))
@@ -211,9 +213,14 @@ const (
 	saltLen      = 16
 )
 
-// Issue creates a new API key with no record of who asked for it.
-//
-// Kept for the command line, where the answer is "whoever has the database
+// Issue, IssueFor, IssueScoped, IssueActingAs and IssueActingAsForDevices
+// ask nothing of the narrowing (KeysNarrowed): they are for the tests'
+// fixtures and tokentest. A key a person or the operator asks for goes
+// through IssueAsked; TestEveryAskedKeyIsNarrowed keeps every other caller
+// out.
+
+// Issue creates a new API key with no record of who asked for it, as the
+// command line's keys are: there the answer is "whoever has the database
 // password" and recording a user id would be a fiction.
 func (a *APIKeys) Issue(ctx context.Context, tenantID, name string) (string, error) {
 	return a.IssueScoped(ctx, tenantID, name, ScopeFull, nil)
@@ -257,7 +264,8 @@ func (a *APIKeys) IssueActingAs(ctx context.Context, tenantID, name string, scop
 // it had never been valid, by the same query that refuses a revoked one.
 //
 // The key's origin is set here (0053's api_keys.origin): cli for a key with
-// no creator, mcp_setup for an MCP setup's shape (setupShaped), else rest.
+// no creator, mcp_setup for an MCP setup's shape (setupShaped) acting as no
+// account or as a fresh provisional one, else rest.
 func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name string, scope KeyScope,
 	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID, expiresAt *time.Time) (string, error) {
 	return a.issue(ctx, tenantID, name, scope, createdBy, actsAs, deviceIDs, expiresAt, false)
@@ -334,12 +342,18 @@ func (a *APIKeys) issue(ctx context.Context, tenantID, name string, scope KeySco
 				return ErrMembershipForbidden
 			}
 		}
-		// A provisional service (a content consent's) has a deadline; a
-		// standing one has none.
-		provisional := true
+		// A setup's key acts as no account, or as a fresh provisional one:
+		// a consent's, with its 30-minute deadline (ProvisionalServiceTTL),
+		// that no connection names yet, as checkContentServiceTx asks. A
+		// standing account has no deadline; a connection's has its
+		// consent's, and the connection names it.
+		fresh := true
 		if actsAs != nil {
-			if err := tx.QueryRow(ctx, `SELECT m.expires_at IS NOT NULL FROM workspace_memberships m JOIN users u ON u.id=m.user_id
-				WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND m.role='service' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, tenantID, actsAs).Scan(&provisional); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT m.expires_at IS NOT NULL AND m.expires_at <= now() + $3::int * interval '1 second'
+					AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = m.user_id)
+				FROM workspace_memberships m JOIN users u ON u.id=m.user_id
+				WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND m.role='service' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`,
+				tenantID, actsAs, int(maxProvisionalKeyLifetime.Seconds())).Scan(&fresh); err != nil {
 				return ErrMembershipForbidden
 			}
 		}
@@ -347,7 +361,7 @@ func (a *APIKeys) issue(ctx context.Context, tenantID, name string, scope KeySco
 		switch {
 		case createdBy == nil:
 			origin = OriginCLI
-		case setupShaped(name, scope, deviceIDs != nil, expiresAt, created) && provisional:
+		case setupShaped(name, scope, deviceIDs != nil, expiresAt, created) && fresh:
 			origin = OriginMCPSetup
 		}
 		if asked && origin != OriginMCPSetup {
@@ -438,24 +452,28 @@ func (a *APIKeys) VerifyScoped(ctx context.Context, presented string) (Verified,
 	return a.verify(ctx, presented, "")
 }
 
-// setupHeldSQL is a setup's key that acts as no account and that no
-// connection names, while keys are narrowed (keysNarrowedSQL): not a REST
-// key (the plan's 7.3, L8). A consent records its connection, naming the
-// key, before the reader first uses it. A key that acts as a provisional
-// service account is let through: a content or AI renewal's new key, which
-// the enclave's reader uses to prove its grants (GET /v1/grants) before
-// the renewal is recorded and the ledger names the key (mcpauth's renew
-// relays the bundle first). decisions.md says what that leaves open.
-const setupHeldSQL = ` AND NOT (api_keys.origin IS NOT DISTINCT FROM 'mcp_setup' AND api_keys.acts_as IS NULL
+// setupHeldSQL is a setup's key that no connection names, while keys are
+// narrowed (keysNarrowedSQL): not a REST key (the plan's 7.3, L8). A
+// consent records its connection, naming the key, before the reader first
+// uses it. One exception: a key that acts as a provisional account that
+// no connection names yet. That is a content or AI renewal's new key: the
+// enclave's reader proves its grants with it (GET /v1/grants) before the
+// renewal is recorded and the ledger names the key (mcpauth's renew relays
+// the bundle first). A key that acts as an account a connection names is
+// held: a connection's account is never a new key's to act as.
+// mcp_connections has no row policy, so this holds outside a workspace's
+// transaction. decisions.md says what the exception leaves open.
+const setupHeldSQL = ` AND NOT (api_keys.origin IS NOT DISTINCT FROM 'mcp_setup'
 	AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.api_key_id = api_keys.id)
+	AND (api_keys.acts_as IS NULL OR EXISTS (SELECT 1 FROM mcp_connections s WHERE s.service_user_id = api_keys.acts_as))
 	AND (EXISTS (SELECT 1 FROM contract_token_state WHERE mode = 'on') OR EXISTS (SELECT 1 FROM key_retirements)))`
 
 // VerifyClient is VerifyScoped for REST, media, upload and the socket's
 // hello: while keys are narrowed (KeysNarrowed), it also refuses a live
-// setup's key (origin mcp_setup) that acts as no account and that no MCP
-// connection names, with ErrInvalidKey and the same work as an unknown
-// key (setupHeldSQL). Otherwise any admin could mint a renewable 30-minute
-// read key. The MCP side keeps VerifyScoped, and checks a key against its
+// setup's key (origin mcp_setup) that no MCP connection names, but a
+// renewal's (setupHeldSQL), with ErrInvalidKey and the same work as an
+// unknown key. Otherwise any admin could mint a renewable 30-minute read
+// key. The MCP side keeps VerifyScoped, and checks a key against its
 // connection.
 func (a *APIKeys) VerifyClient(ctx context.Context, presented string) (Verified, error) {
 	return a.verify(ctx, presented, setupHeldSQL)
