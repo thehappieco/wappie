@@ -659,9 +659,10 @@ export interface ContactSummary {
   is_group?: boolean
   /**
    * The content key of the names written last. The names are written one at
-   * a time, so they need not share it: each name's own key is in its
-   * `*_name_key_id`, and a reader opens each name with that one. A server
-   * that predates those sends only this (DS50).
+   * a time, so they need not share it. A name under another key has it in
+   * its `*_name_key_id`; a name without one is under this key, or the server
+   * predates those fields. Each envelope also names its own key, and
+   * Opener.contactNames reads it there first (DS50).
    */
   content_key_id?: number
   push_name_sealed?: string

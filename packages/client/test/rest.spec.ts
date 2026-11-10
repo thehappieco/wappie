@@ -5,6 +5,7 @@ import { Opener } from '../src/api/opener.js'
 import { fromBase64, parseUUID } from '../src/crypto/bytes.js'
 import { importArchiveKey } from '../src/crypto/hpke.js'
 import { Kind } from '../src/crypto/seal.js'
+import type * as P from '../src/api/protocol.js'
 
 const tenant = '018f3a2b-2222-7000-8000-00000000bbbb'
 const device = '018f3a2b-2222-7000-8000-00000000dddd'
@@ -99,6 +100,15 @@ it('reads bounded encrypted contact pages without starting contact discovery', a
  await expect(client(vi.fn(async()=>json({device_id:device,contacts:[{uid,contact_key:'x',content_key_id:-1}],has_more:false}))).listContacts(device)).rejects.toMatchObject({code:'invalid_response'})
  for (const key of ['push_name_key_id','full_name_key_id','business_name_key_id']) await expect(client(vi.fn(async()=>json({device_id:device,contacts:[{uid,contact_key:'x',[key]:0}],has_more:false}))).listContacts(device)).rejects.toMatchObject({code:'invalid_response'})
  await expect(client(vi.fn(async()=>json({device_id:device,contacts,has_more:true,next_key:'099@lid'}))).listContacts(device,{afterKey:'099@lid'})).rejects.toMatchObject({code:'invalid_response'})
+})
+it('names the contact key ids as the server does', () => {
+ // The server's OpenAPI document is generated from its wire structs
+ // (TestOpenAPIWireSchemas), so a name the opener reads and the server does
+ // not send fails here rather than leaving every name on the row's key.
+ const spec = JSON.parse(readFileSync(new URL('../../../internal/restapi/openapi.json', import.meta.url), 'utf8'))
+ const served = Object.keys(spec.components.schemas.ContactSummary.properties)
+ const read = ['content_key_id', 'push_name_key_id', 'full_name_key_id', 'business_name_key_id', 'push_name_sealed', 'full_name_sealed', 'business_name_sealed'] as const satisfies readonly (keyof P.ContactSummary)[]
+ for (const key of read) expect(served).toContain(key)
 })
 const scanFrom='2026-09-17T00:00:00.000000001Z',scanUntil='2026-09-18T00:00:00Z'
 const scanMessage={uid,device_id:device,sender_key:'123@lid',chat_key:'one',wa_id:'wa-one',seq:1,is_from_me:false,kind:'message',type:'text',source:'live',order_ts:scanFrom}

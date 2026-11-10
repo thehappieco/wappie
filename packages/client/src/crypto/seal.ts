@@ -28,6 +28,12 @@ const wappie = bind(wappieSeal)
 export const parseHeader = wappie.parseHeader
 
 /**
+ * contentKeyID reads which content key a batch envelope needs, without
+ * opening it: the id after the header, in the clear. Only that key opens it.
+ */
+export const contentKeyID = wappie.contentKeyID
+
+/**
  * sealDirect seals a value straight to a public key.
  *
  * The only thing this client seals is a key grant: one device's private archive
