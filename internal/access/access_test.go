@@ -178,7 +178,12 @@ func TestTokenUseCountsOncePerDayAndKeepsAFailedFlush(t *testing.T) {
 	f := &fakeUse{}
 	u := &access.TokenUse{Store: f, Log: slog.New(slog.DiscardHandler)}
 	tok, device := uuid.New(), uuid.New()
-	day := time.Date(2026, 11, 8, 23, 59, 0, 0, time.UTC)
+	// Yesterday's last minute, by the real clock: Flush forgets the days
+	// before yesterday by time.Now, so a fixed date would count again once
+	// it is two days old.
+	y, m, d := time.Now().UTC().Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	day := today.Add(-time.Minute)
 	for range 3 {
 		u.Used(tok, day)
 		u.Refused(tok, day, device, kc.CanSend, kc.UseStaleFeed)
@@ -217,7 +222,7 @@ func TestTokenUseCountsOncePerDayAndKeepsAFailedFlush(t *testing.T) {
 			}
 		}
 	}
-	if second := f.batches[1]; len(second.Used) != 1 || !second.Used[0].Day.Equal(time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)) {
+	if second := f.batches[1]; len(second.Used) != 1 || !second.Used[0].Day.Equal(today) {
 		t.Fatalf("the second batch counts the same day again, or not the next: %+v", second)
 	}
 }
