@@ -195,10 +195,11 @@ func (s *session) handleTokenWaiting(ctx context.Context, f Frame) {
 
 // handleTokenGrant records a number's key sealed to a token's identity,
 // after the person's step-up and their own freshness, as grant.add does.
-// When the token's last signed GET is over a minute old, it asks the
-// platform for the record and tries once more. It answers the number's
-// readers, its tokens apart, as they now stand.
+// When the token's last signed GET is over a minute old at the request's
+// start, it asks the platform for the record and tries once more. It
+// answers the number's readers, its tokens apart, as they now stand.
 func (s *session) handleTokenGrant(ctx context.Context, f Frame) {
+	now := time.Now()
 	who, tenant, tokens, ok := s.grantFrame(f.ReqID)
 	if !ok {
 		return
@@ -233,7 +234,7 @@ func (s *session) handleTokenGrant(ctx context.Context, f Frame) {
 		return
 	}
 	g := store.TokenGrant{Workspace: tenant, Token: token, Device: device, Epoch: uint16(req.Epoch), //nolint:gosec // G115: checked above
-		ArchiveKeyFingerprint: req.ArchiveKeyFingerprint, SealedDSK: req.SealedDSK, Sealer: who.userID, Now: time.Now()}
+		ArchiveKeyFingerprint: req.ArchiveKeyFingerprint, SealedDSK: req.SealedDSK, Sealer: who.userID, Now: now}
 	err := tokens.PutTokenGrant(ctx, g)
 	if errors.Is(err, store.ErrTokenStale) && s.fetchToken(ctx, tenant, token) {
 		err = tokens.PutTokenGrant(ctx, g)
