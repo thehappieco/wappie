@@ -44,14 +44,16 @@ type ResetCounts struct {
 // it deletes every grant and leaves none at a number's current epoch. So
 // before anything is deleted it ends every live MCP connection and AI
 // integration of the workspace, of any kind and status, revoked and
-// access_lost, as a revoke ends one (endMCPConnectionTx). Nothing else
-// would: it runs from the command line while the server keeps running, so
-// no start follows it, a metadata key asks nothing of a grant, and without
-// keepDevices the cascade empties api_key_devices, so no later check finds
-// those connections. The workspace's lock comes first, as for every act on
-// access (reader_safety.go), so a consent recorded at the same time comes
-// before the reset or is refused after it. The running server's watch
-// tells the readers (WatchRevocations).
+// access_lost, as a revoke ends one (endMCPConnectionTx). It does not
+// leave them to the check at the next start: the reset may run while the
+// server keeps running, a metadata key asks nothing of a grant, and
+// without keepDevices the cascade empties api_key_devices, so no later
+// check would find those connections. The workspace's lock comes first,
+// as for every act on access (reader_safety.go), so a consent recorded at
+// the same time comes before the reset or is refused after it. It holds
+// that lock, which ingest needs for every message, to the end: the
+// operator stops wappie-api first. wappie-api's watch tells the readers
+// once it runs (WatchRevocations).
 func ResetArchive(ctx context.Context, pool *pgxpool.Pool, tenant uuid.UUID,
 	keepDevices bool) (ResetCounts, error) {
 	var out ResetCounts

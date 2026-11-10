@@ -308,7 +308,8 @@ func TestGrantRevokeConnectionAccount(t *testing.T) {
 // (ErrConnectionAccountGrant, DS48), since the check at every start
 // counts each grant of the account as a number the connection holds. A
 // grant again on its own number is taken; a provisional account no
-// connection names yet, and a standing one, take any.
+// connection names yet, and a standing one, take any. CheckGrant answers
+// as PutGrant does, and writes nothing.
 func TestGrantAddConnectionAccount(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
@@ -324,6 +325,17 @@ func TestGrantAddConnectionAccount(t *testing.T) {
 	}
 	if g := w.grantsOf(t, w.shared, account); g != 0 {
 		t.Fatalf("the account holds %d grants on the shared number", g)
+	}
+	// CheckGrant, which device-key asks of every account before it makes
+	// a key, answers as PutGrant does.
+	if err := w.keys.CheckGrant(ctx, w.tenant, w.shared, account); !errors.Is(err, store.ErrConnectionAccountGrant) {
+		t.Fatalf("CheckGrant of a number its key does not name: %v", err)
+	}
+	if err := w.keys.CheckGrant(ctx, w.tenant, w.shared, person); err != nil {
+		t.Fatalf("CheckGrant of a person: %v", err)
+	}
+	if err := w.keys.CheckGrant(ctx, w.tenant, w.shared, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("CheckGrant of nobody: %v", err)
 	}
 	// Its own number, sealed again: taken.
 	if err := grant(s.number, account); err != nil {

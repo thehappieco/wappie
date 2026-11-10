@@ -262,15 +262,7 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 		if err := lockWorkspaceAccess(ctx, tx, g.TenantID); err != nil {
 			return err
 		}
-		var member uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
-			WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, g.TenantID, g.UserID).Scan(&member); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrNotFound
-			}
-			return err
-		}
-		if err := connectionAccountTakesTx(ctx, tx, g.TenantID, g.UserID, g.DeviceID); err != nil {
+		if err := grantableTx(ctx, tx, g.TenantID, g.DeviceID, g.UserID); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -282,6 +274,31 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 			g.TenantID, g.DeviceID, g.UserID, int32(g.Epoch), g.SealedDSK, grantedBy)
 		return numberGone(err)
 	})
+}
+
+// CheckGrant runs PutGrant's checks of user on device and writes nothing:
+// ErrNotFound for an account that is not an active, unexpired member, and
+// ErrConnectionAccountGrant for a live connection's own account on a
+// number its consent does not cover. device-key asks it of every account
+// before it makes the number's key, so a refusal leaves no key that
+// nobody holds. PutGrant asks again under the workspace's lock.
+func (k *Keys) CheckGrant(ctx context.Context, tenant, device, user uuid.UUID) error {
+	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+		return grantableTx(ctx, tx, tenant, device, user)
+	})
+}
+
+// grantableTx is PutGrant's checks of user on device.
+func grantableTx(ctx context.Context, tx pgx.Tx, tenant, device, user uuid.UUID) error {
+	var member uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
+		WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, tenant, user).Scan(&member); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return connectionAccountTakesTx(ctx, tx, tenant, user, device)
 }
 
 // ErrNumberGone is a write for a number that left the workspace while it
