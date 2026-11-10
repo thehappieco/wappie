@@ -264,6 +264,8 @@ func TestASetupKeyWorksOnlyThroughItsConnection(t *testing.T) {
 // until then: once a connection names the account and not the key,
 // VerifyClient refuses it. One issued acting as the account with keys not
 // narrowed yet is revoked by the retirement, which no consent issued.
+// Another admin's key for the fresh account is no setup's either: the
+// account's invitation is not theirs.
 func TestAConnectionsAccountIsNoNewKeysToActAs(t *testing.T) {
 	w := newRetireWorld(t)
 	ctx := context.Background()
@@ -282,7 +284,20 @@ func TestAConnectionsAccountIsNoNewKeysToActAs(t *testing.T) {
 	if origin, _ := w.originOf(t, second); origin != store.OriginMCPSetup {
 		t.Fatalf("a key for a fresh account: origin %q", origin)
 	}
+	// Another admin's key for the owner's fresh account is no setup's:
+	// that consent is not theirs.
+	admin := w.person(t, "admin", "admin")
+	byAdmin, err := w.apiKeys.IssueActingAsForDevices(ctx, w.tenant.String(), "MCP · Claude", store.ScopeRead, &admin, &account, devices, &in20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin, _ := w.originOf(t, byAdmin); origin != store.OriginREST {
+		t.Fatalf("another admin's key for the owner's fresh account: origin %q", origin)
+	}
 	w.tokensOn(t)
+	if _, err := w.apiKeys.IssueAsked(ctx, w.tenant.String(), "MCP · Claude", store.ScopeRead, &admin, &account, devices, &in20); !errors.Is(err, store.ErrTokensAreThePlatforms) {
+		t.Fatalf("another admin's key for the owner's fresh account, keys narrowed: %v", err)
+	}
 	if _, err := w.apiKeys.VerifyClient(ctx, second); err != nil {
 		t.Fatalf("unbound, its account fresh: %v", err)
 	}

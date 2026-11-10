@@ -2426,8 +2426,9 @@ general key:
 
 - Socket `apikeys.create` issues only an MCP setup's key: read, numbers,
   at most 30 minutes out (what a consent binds), named "MCP · …", acting as
-  no account or as a fresh provisional one (a 30-minute deadline, and no
-  connection names it). Every other shape gets `tokens_are_the_platforms`.
+  no account or as a fresh provisional one (a 30-minute deadline, no
+  connection names it, and the person's own provisional invitation made
+  it). Every other shape gets `tokens_are_the_platforms`.
 - The command line's `key` and `bootstrap` refuse. `-self-hosted` only
   says the installation is off the platform (the contract off, tokens off,
   no retirement), so it never lets through what the narrowing refuses.
@@ -2446,11 +2447,12 @@ while keys are narrowed no such key is issued.
 
 That is the limit of the plan's L8 guard. An admin can still mint a
 30-minute read key acting as a provisional account of their own, and use
-it on REST. It reads only the numbers they gave that account Read on, and
-opens only the keys they sealed to it. Each one needs a provisional
-invitation from the setups' budget, and it dies with the account's 30
-minutes. A self-hosted installation never turns tokens on, so nothing
-changes there.
+it on REST. The key reads only the numbers they gave that account Read
+on, and opens only the keys they sealed to it. Each one needs a
+provisional invitation from the setups' budget, and it dies with the
+account's 30 minutes. Another person's fresh account, a consent in
+flight, is not theirs to act as. A self-hosted installation never turns
+tokens on, so nothing changes there.
 
 The retirement revokes the live keys of class `rest` and `cli` (0053's
 `api_key_class`). It also revokes a key in an MCP setup's or an old local

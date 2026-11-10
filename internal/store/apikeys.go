@@ -265,7 +265,7 @@ func (a *APIKeys) IssueActingAs(ctx context.Context, tenantID, name string, scop
 //
 // The key's origin is set here (0053's api_keys.origin): cli for a key with
 // no creator, mcp_setup for an MCP setup's shape (setupShaped) acting as no
-// account or as a fresh provisional one, else rest.
+// account or as a fresh provisional one the creator invited, else rest.
 func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name string, scope KeyScope,
 	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID, expiresAt *time.Time) (string, error) {
 	return a.issue(ctx, tenantID, name, scope, createdBy, actsAs, deviceIDs, expiresAt, false)
@@ -346,14 +346,19 @@ func (a *APIKeys) issue(ctx context.Context, tenantID, name string, scope KeySco
 		// a consent's, with its 30-minute deadline (ProvisionalServiceTTL),
 		// that no connection names yet, as checkContentServiceTx asks. A
 		// standing account has no deadline; a connection's has its
-		// consent's, and the connection names it.
+		// consent's, and the connection names it. The fresh account must
+		// come from the key's creator's own provisional invitation, as in
+		// the console's setup. Another person's consent in flight is not
+		// an admin's to act as.
 		fresh := true
 		if actsAs != nil {
 			if err := tx.QueryRow(ctx, `SELECT m.expires_at IS NOT NULL AND m.expires_at <= now() + $3::int * interval '1 second'
 					AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = m.user_id)
+					AND EXISTS (SELECT 1 FROM invites i WHERE i.tenant_id = m.tenant_id AND i.claimed_by = m.user_id
+						AND i.provisional AND i.created_by = $4)
 				FROM workspace_memberships m JOIN users u ON u.id=m.user_id
 				WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND m.role='service' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`,
-				tenantID, actsAs, int(maxProvisionalKeyLifetime.Seconds())).Scan(&fresh); err != nil {
+				tenantID, actsAs, int(maxProvisionalKeyLifetime.Seconds()), createdBy).Scan(&fresh); err != nil {
 				return ErrMembershipForbidden
 			}
 		}
