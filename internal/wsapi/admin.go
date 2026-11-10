@@ -513,8 +513,9 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 	s.log.Info("device key grant revoked",
 		"device", dev.ID, "from", req.UserID, "by", who.email)
 	s.srv.RevalidateAccess()
-	// The person holds no grant at the number's epoch now: their Read is
-	// gone, and so are their own connections that held the number (DS48).
+	// When the revoke took the person's Read (the flag kept, no grant at
+	// the number's epoch left), it ended their own connections that held
+	// the number (DS48): their readers are told now, after the commit.
 	s.tellEnded(ctx, ended)
 	s.replyReaders(ctx, f.ReqID, tenantUUID, deviceUUID, dev.ID)
 }

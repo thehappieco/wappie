@@ -139,6 +139,10 @@ type MCPReaders interface {
 	TellRevoked(ctx context.Context, reader, id string)
 }
 
+// MCPReaders is who grant.revoke tells (Config.MCPReaders): what serve
+// wired, for its tests.
+func (s *Server) MCPReaders() MCPReaders { return s.cfg.MCPReaders }
+
 // Server serves the websocket endpoint.
 type Server struct {
 	cfg Config
