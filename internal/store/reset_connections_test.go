@@ -115,8 +115,8 @@ func TestResetArchiveEndsConnections(t *testing.T) {
 			t.Fatalf("%s: the refused renewal changed the connection: %+v", what, r)
 		}
 		// Nothing left for the check at the next start.
-		if ended, err := store.EndConnectionsWithoutRead(ctx, w.pool); err != nil || len(ended) != 0 {
-			t.Fatalf("%s: the check after the reset: %+v %v", what, ended, err)
+		if res, err := store.EndConnectionsWithoutRead(ctx, w.pool); err != nil || len(res.Ended) != 0 || len(res.Busy) != 0 {
+			t.Fatalf("%s: the check after the reset: %+v %v", what, res, err)
 		}
 		if !keep {
 			continue

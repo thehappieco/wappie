@@ -447,7 +447,7 @@ func TestFlagsActsLockOrder(t *testing.T) {
 // platform's 0061): a drop of read and a remove whose people have
 // connections and integrations of every kind on the number and another (a
 // media one among them), which end whole, Wappie's own screen without
-// Read, a lone grant.revoke, and the upgrade's sweep with leftovers of its
+// Read, a lone grant.revoke, and the start's check with leftovers of its
 // own to end, at the same time as every writer of those connections' rows (a
 // revoke, an integration paused and one revoked, a reader's question, a
 // notice raised, the person disabled, another removed, the number deleted,
@@ -502,10 +502,10 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 		}
 		theirs, _ := w.connect(t, w.owner, store.KindContent, device)
 		media := w.connectMedia(t, removed, device, w.shared)
-		// What the upgrade's sweep ends (DS48): a person whose grant on the
+		// What the start's check ends (DS48): a person whose grant on the
 		// shared number went before F4, with an AI integration on it alone,
-		// which only the sweep ends, and one on it and the round's number,
-		// which the sweep and the number's deletion race to end. AI
+		// which only the check ends, and one on it and the round's number,
+		// which the check and the number's deletion race to end. AI
 		// integrations, which the workspace's cap does not count.
 		stale, _ := w.actor(t, "admin", "admin")
 		w.reads(t, stale, device)
@@ -544,13 +544,13 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 				_, err := w.users.SetDevicePermissionEnded(lctx, w.tenant, admin, store.DevicePermission{DeviceID: device, UserID: screened})
 				return raced(err)
 			},
-			// A lone grant.revoke on the same person, and the upgrade's
-			// sweep, take the same locks in the same order (DS48).
+			// A lone grant.revoke on the same person, and the start's
+			// check, take the same locks in the same order (DS48).
 			"a grant revoked": func() error {
 				_, err := w.keys.RevokeGrantEnded(lctx, w.tenant, admin, device, screened)
 				return raced(err)
 			},
-			"the upgrade's sweep": func() error {
+			"the start's check": func() error {
 				_, err := store.EndConnectionsWithoutRead(lctx, w.pool)
 				return err
 			},
@@ -670,10 +670,10 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 			before); n != 0 {
 			t.Fatalf("round %d: %d of the people's connections made before it are live", round, n)
 		}
-		// The sweep ended something in every round, under the same locks
+		// The check ended something in every round, under the same locks
 		// as everyone else.
 		if r := w.row(t, staleShared); r.status != "revoked" || r.reason != store.ReasonAccessLost {
-			t.Fatalf("round %d: the sweep's leftover %+v", round, r)
+			t.Fatalf("round %d: the check's leftover %+v", round, r)
 		}
 		w.endAll(t)
 	}

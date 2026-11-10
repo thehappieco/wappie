@@ -64,7 +64,7 @@ func TestGrantRevokeTakesNothing(t *testing.T) {
 
 	// The Read flag and no grant left (a grant.revoke before F4), with a
 	// connection on the number: no grant to take, so nothing ends. Such a
-	// connection is the upgrade's sweep's.
+	// connection is the start's check's.
 	stale, _ := w.actor(t, "admin", "admin")
 	w.reads(t, stale, s.number)
 	staleMeta, _ := w.connect(t, stale, store.KindMetadata, s.number)
