@@ -13,7 +13,7 @@ import { t } from '../messages.js'
 import type { Bytes } from '../crypto/bytes.js'
 import { fromBase64, parseUUID } from '../crypto/bytes.js'
 import type { PrivateKey } from '../crypto/hpke.js'
-import { ContentKey, contentKeyID, Kind, SealError } from '../crypto/seal.js'
+import { ContentKey, Kind, SealError } from '../crypto/seal.js'
 import * as P from './protocol.js'
 
 /**
@@ -42,55 +42,6 @@ export type Opened<T> =
   | { state: 'tampered' }
 
 export const absent = { state: 'absent' } as const
-
-/** The three names of a contact, with the fields that carry each. */
-const contactNameFields = {
-  full: { sealed: 'full_name_sealed', keyID: 'full_name_key_id' },
-  business: { sealed: 'business_name_sealed', keyID: 'business_name_key_id' },
-  push: { sealed: 'push_name_sealed', keyID: 'push_name_key_id' },
-} as const satisfies Record<string, { sealed: keyof P.ContactSummary; keyID: keyof P.ContactSummary }>
-
-type ContactNameField = keyof typeof contactNameFields
-
-/**
- * contactNameKeyID is the content key one contact name is sealed under.
- *
- * The names are written one at a time, so they need not share the row's
- * content_key_id, which is the key of the names written last (DS50). Each
- * envelope names its own key in the clear, after the header, and only that
- * key opens it: the kit checks the id before it decrypts. So the envelope is
- * read first. That works against a server that sends no per-name id, too.
- * A name whose envelope cannot be read takes the server's id for it, then
- * the row's. An id outside what the server stores is not used: a keys
- * request that names one is refused whole.
- */
-function contactNameKeyID(contact: P.ContactSummary, which: ContactNameField): number | undefined {
-  const fields = contactNameFields[which]
-  const sealed = contact[fields.sealed]
-  if (!sealed) return undefined
-  try {
-    const { id } = contentKeyID(fromBase64(sealed))
-    if (id > 0 && id <= 2147483647) return id
-  } catch {
-    // Not a batch envelope: opening it fails anyway, with the id below.
-  }
-  return contact[fields.keyID] || contact.content_key_id
-}
-
-/**
- * contactKeyIDs lists every content key a contact's names need, for
- * Opener.prefetch: the row's and each name's own (DS50). Prefetching only
- * content_key_id leaves each name under another key to its own round trip.
- */
-export function contactKeyIDs(contact: P.ContactSummary): number[] {
-  const ids = new Set<number>()
-  if (contact.content_key_id) ids.add(contact.content_key_id)
-  for (const which of Object.keys(contactNameFields) as ContactNameField[]) {
-    const id = contactNameKeyID(contact, which)
-    if (id) ids.add(id)
-  }
-  return [...ids]
-}
 
 export class Opener {
   private readonly cache = new Map<number, ContentKey>()
@@ -307,10 +258,6 @@ export class Opener {
    * someone calls themselves, what this account saved them as, and what
    * WhatsApp verified about a business — and which to show is the client's
    * decision, not the server's.
-   *
-   * Each opens with its own content key (contactNameKeyID): the names are
-   * written one at a time, so they need not share the row's (DS50).
-   * contactKeyIDs lists the keys to prefetch.
    */
   async contactNames(contact: P.ContactSummary): Promise<{
     full: Opened<string>
@@ -318,24 +265,14 @@ export class Opener {
     push: Opened<string>
   }> {
     const [full, business, push] = await Promise.all([
+      this.text(contact.content_key_id, contact.uid, Kind.FullName, contact.full_name_sealed),
       this.text(
-        contactNameKeyID(contact, 'full'),
-        contact.uid,
-        Kind.FullName,
-        contact.full_name_sealed,
-      ),
-      this.text(
-        contactNameKeyID(contact, 'business'),
+        contact.content_key_id,
         contact.uid,
         Kind.BusinessName,
         contact.business_name_sealed,
       ),
-      this.text(
-        contactNameKeyID(contact, 'push'),
-        contact.uid,
-        Kind.PushName,
-        contact.push_name_sealed,
-      ),
+      this.text(contact.content_key_id, contact.uid, Kind.PushName, contact.push_name_sealed),
     ])
     return { full, business, push }
   }

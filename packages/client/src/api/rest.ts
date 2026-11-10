@@ -104,7 +104,7 @@ function contactShape(value: unknown): asserts value is P.ContactSummary {
   valid(record(value) && isID(value.uid) && routingKey(value.contact_key))
   for (const key of ['contact_lid', 'contact_pn']) valid(value[key] === undefined || routingKey(value[key]))
   for (const key of ['push_name_sealed', 'full_name_sealed', 'business_name_sealed', 'avatar_id']) valid(value[key] === undefined || typeof value[key] === 'string')
-  for (const key of ['content_key_id', 'push_name_key_id', 'full_name_key_id', 'business_name_key_id', 'avatar_key_id']) valid(value[key] === undefined || (nonnegative(value[key]) && value[key] > 0 && value[key] <= 2147483647))
+  for (const key of ['content_key_id', 'avatar_key_id']) valid(value[key] === undefined || (nonnegative(value[key]) && value[key] > 0 && value[key] <= 2147483647))
   for (const key of ['is_group', 'has_avatar']) valid(value[key] === undefined || typeof value[key] === 'boolean')
 }
 function messageShape(value: unknown): asserts value is P.SealedMessage {

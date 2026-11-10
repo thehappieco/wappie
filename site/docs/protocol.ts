@@ -662,8 +662,9 @@ export interface ContactSummary {
    * The content key of the names written last. The names are written one at
    * a time, so they need not share it. A name under another key has it in
    * its `*_name_key_id`; a name without one is under this key, or the server
-   * predates those fields. Each envelope also names its own key, and
-   * Opener.contactNames reads it there first (DS50).
+   * predates those fields. Each envelope also names its own key in the
+   * clear, after its 8-byte header (u32 big-endian), and only that key opens
+   * it: a reader reads it there first (wappie DS50).
    */
   content_key_id?: number
   push_name_sealed?: string

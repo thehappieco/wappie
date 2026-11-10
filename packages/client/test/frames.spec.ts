@@ -3,10 +3,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 
 import type { KeySource } from '../src/api/opener'
-import { contactKeyIDs, Opener } from '../src/api/opener'
+import { Opener } from '../src/api/opener'
 import type * as P from '../src/api/protocol'
 import * as Proto from '../src/api/protocol'
-import { fromBase64, parseUUID, toBase64 } from '../src/crypto/bytes'
+import { parseUUID } from '../src/crypto/bytes'
 import { importArchiveKey } from '../src/crypto/hpke'
 
 // seal.spec.ts proves the TypeScript can open what Go sealed. It cannot prove
@@ -128,86 +128,6 @@ describe('a chat and a contact', () => {
     expect(names.business.state === 'ok' && names.business.value).toBe(
       frames.contact_names.business,
     )
-  })
-
-  it('opens each contact name with the key its envelope names', async () => {
-    // The names are written one at a time, so the row's content_key_id can
-    // name a later key than a name was sealed under (DS50). Here it names a
-    // key nobody has, as a server that predates the per-name ids sends it,
-    // and every name still opens with the key its envelope names.
-    const names = await opener.contactNames({
-      ...frames.contact,
-      content_key_id: frames.content_key.id + 1000,
-    })
-    expect(names.push.state === 'ok' && names.push.value).toBe(frames.contact_names.push)
-    expect(names.full.state === 'ok' && names.full.value).toBe(frames.contact_names.full)
-    expect(names.business.state === 'ok' && names.business.value).toBe(
-      frames.contact_names.business,
-    )
-  })
-
-  it('opens a contact name with its envelope key, whatever ids the server sends', async () => {
-    // Only the envelope's key opens it: the kit checks the id first.
-    const wrong = frames.content_key.id + 2000
-    const names = await opener.contactNames({
-      ...frames.contact,
-      content_key_id: wrong,
-      push_name_key_id: wrong,
-      full_name_key_id: wrong,
-      business_name_key_id: wrong,
-    })
-    expect(names.push.state === 'ok' && names.push.value).toBe(frames.contact_names.push)
-    expect(names.full.state === 'ok' && names.full.value).toBe(frames.contact_names.full)
-    expect(names.business.state === 'ok' && names.business.value).toBe(
-      frames.contact_names.business,
-    )
-  })
-
-  it("lists the keys a contact's names need, the row's first", () => {
-    const id = frames.content_key.id
-    expect(contactKeyIDs(frames.contact)).toEqual([id])
-    expect(contactKeyIDs({ ...frames.contact, content_key_id: id + 1000 })).toEqual([id + 1000, id])
-    expect(contactKeyIDs({ uid: frames.contact.uid, contact_key: 'x' })).toEqual([])
-
-    // An envelope that names no key it could have: the server's id for that
-    // name, then the row's. An id above what the server stores would make it
-    // refuse the whole keys request.
-    const huge = fromBase64(frames.contact.full_name_sealed!)
-    huge.fill(0xff, 8, 12)
-    const contact = {
-      uid: frames.contact.uid,
-      contact_key: 'x',
-      content_key_id: 5,
-      full_name_sealed: toBase64(huge),
-      push_name_sealed: 'c2VhbGVk',
-      business_name_sealed: 'c2VhbGVk',
-      business_name_key_id: 7,
-    }
-    expect(contactKeyIDs(contact)).toEqual([5, 7])
-  })
-
-  it("prefetches every key a contact's names need in one request", async () => {
-    // A row whose names are under another key than its own: the request
-    // the prefetch makes is the only one (DS50).
-    const requests: number[][] = []
-    const counting: KeySource = {
-      request<T>(type: string, payload: unknown, want: string): Promise<T> {
-        requests.push((payload as P.KeysRequest).ids)
-        return keys.request<T>(type, payload, want)
-      },
-    }
-    const fresh = new Opener(
-      counting,
-      parseUUID(frames.tenant),
-      parseUUID(frames.device),
-      frames.device,
-      priv,
-    )
-    const contact = { ...frames.contact, content_key_id: frames.content_key.id + 1000 }
-    await fresh.prefetch(contactKeyIDs(contact))
-    const names = await fresh.contactNames(contact)
-    expect(names.full.state === 'ok' && names.full.value).toBe(frames.contact_names.full)
-    expect(requests).toEqual([[frames.content_key.id + 1000, frames.content_key.id]])
   })
 
   it('opens a profile picture against the contact uid', async () => {
