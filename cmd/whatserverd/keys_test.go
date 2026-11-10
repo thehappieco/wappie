@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"whatserver2/internal/migrate"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
 )
@@ -53,5 +54,20 @@ func TestTheCLIKeysRefuseWhileKeysAreNarrowed(t *testing.T) {
 	}
 	if _, err := keys.IssueAsked(ctx, tenant, "cli", store.ScopeFull, nil, nil, nil, nil); !errors.Is(err, store.ErrTokensAreThePlatforms) {
 		t.Fatalf("the command line's key after a retirement: %v", err)
+	}
+
+	// Keys narrowed between bootstrap's gate and its key (tokens turned on
+	// in between): the key is refused, and the tenant it made goes.
+	a := &app{apiKeys: keys, pools: &pg.Pools{Live: pool, History: pool, API: pool}}
+	if _, _, err := bootstrapTenant(ctx, a, "late", "bootstrap"); !errors.Is(err, errCLIKeysNarrowed) {
+		t.Fatalf("a bootstrap narrowed after its gate: %v", err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenants WHERE name = 'late'`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d tenants left behind: %v", left, err)
+	}
+	execSQL(t, pool, `DELETE FROM key_retirements`)
+	if id, key, err := bootstrapTenant(ctx, a, "early", "bootstrap"); err != nil || id == "" || key == "" {
+		t.Fatalf("a bootstrap off the narrowing: %q %v", id, err)
 	}
 }
