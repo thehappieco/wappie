@@ -2335,6 +2335,7 @@ pass at every start that relies on the rotation skip, which is not once.
 Tests: `TestGrantRevokeEndsOwnConnections`,
 `TestGrantRevokeTakesNothing` and `TestGrantRevokeRotation` (store);
 `TestConsoleParityOwnConnections` runs the socket's lone `grant.revoke`
-as a fourth path, with the same rows left and the same readers told,
-and the Read flag kept (wsapi); `TestConnectionsWithoutReadSweep`
-(store).
+as a fourth path, with the same rows left and the same readers told, and
+the Read flag kept (wsapi); `TestConnectionsWithoutReadSweep` (store);
+`TestOwnConnectionsLockOrder` races a lone revoke and a pass of the
+sweep with F3's paths (store).

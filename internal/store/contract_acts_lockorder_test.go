@@ -531,6 +531,16 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 				_, err := w.users.SetDevicePermissionEnded(lctx, w.tenant, admin, store.DevicePermission{DeviceID: device, UserID: screened})
 				return raced(err)
 			},
+			// A lone grant.revoke on the same person, and the upgrade's
+			// sweep, take the same locks in the same order (DS48).
+			"a grant revoked": func() error {
+				_, err := w.keys.RevokeGrantEnded(lctx, w.tenant, device, screened)
+				return raced(err)
+			},
+			"the upgrade's sweep": func() error {
+				_, err := store.EndConnectionsWithoutRead(lctx, w.pool)
+				return err
+			},
 			"a connection revoked": func() error {
 				_, err := w.conns.Revoke(lctx, w.tenant, w.owner, mine[dropped].both)
 				return err
