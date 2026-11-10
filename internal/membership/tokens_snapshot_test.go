@@ -201,7 +201,7 @@ func TestSnapshotTokensOverTheLimits(t *testing.T) {
 	for n := 1; n <= kc.MaxItems+1; n++ {
 		many.Items = append(many.Items, item(n, 1))
 	}
-	if _, why, _, left := sendable(SnapshotOf(many, 1)); why != "items" || left != "" {
+	if _, why, left, _ := sendable(SnapshotOf(many, 1)); why != "items" || left != "" {
 		t.Fatalf("1001 numbers with their tokens: %q, left %q", why, left)
 	}
 }
@@ -210,7 +210,7 @@ func TestSnapshotTokensOverTheLimits(t *testing.T) {
 // any item's tokens, its ordinals kept.
 func bareOf(t *testing.T, snap kc.Snapshot, why string) {
 	t.Helper()
-	out, w, rule, left := sendable(snap)
+	out, w, left, rule := sendable(snap)
 	if w != "" || rule != nil || left != why || checkSnapshot(out) != "" || len(out.Items) != len(snap.Items) {
 		t.Fatalf("over %s by its tokens: %q %v, left %q", why, w, rule, left)
 	}

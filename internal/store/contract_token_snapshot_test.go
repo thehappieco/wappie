@@ -389,7 +389,7 @@ func TestSnapshotDueAtATokensExpiry(t *testing.T) {
 			WHERE workspace_id = $1`, ws); err != nil {
 			t.Fatal(err)
 		}
-		measured := dbClock(t, pool, "0")
+		measured := dbClock(t, pool, "0") //nolint:contextcheck // the database's clock, read for the test
 		seq, ok, err := c.SnapshotSeqForTest(ctx, ws, measured)
 		if err != nil || !ok {
 			t.Fatalf("%s: %v %v", name, ok, err)
@@ -405,7 +405,7 @@ func TestSnapshotDueAtATokensExpiry(t *testing.T) {
 		if err != nil || !rec.Recorded || rec.Again != (set != "") {
 			t.Fatalf("%s: %+v %v", name, rec, err)
 		}
-		return at, readSnapshotRow(t, pool, ws)
+		return at, readSnapshotRow(t, pool, ws) //nolint:contextcheck // the row as the test reads it
 	}
 	at, r := sent("an expiry in a minute", store.SnapshotAccepted, time.Minute, "")
 	if !r.DueAt.Equal(at.Add(2 * time.Second)) {

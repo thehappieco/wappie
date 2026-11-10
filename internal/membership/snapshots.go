@@ -152,19 +152,19 @@ func snapshotRule(snap kc.Snapshot) (string, error) {
 // limit: the platform allows more tokens than one snapshot can carry, and
 // the people, their protection and the numbers' states must not wait for
 // them (step 7's plan, 6.2).
-func sendable(snap kc.Snapshot) (out kc.Snapshot, why string, rule error, left string) {
+func sendable(snap kc.Snapshot) (out kc.Snapshot, why, left string, rule error) {
 	why, rule = snapshotRule(snap)
 	if why != "too_large" && why != "tokens" {
-		return snap, why, rule, ""
+		return snap, why, "", rule
 	}
 	bare, listed := withoutTokens(snap)
 	if !listed {
-		return snap, why, rule, ""
+		return snap, why, "", rule
 	}
 	if w, r := snapshotRule(bare); w != "" {
-		return snap, w, r, ""
+		return snap, w, "", r
 	}
-	return bare, "", nil, why
+	return bare, "", why, nil
 }
 
 // withoutTokens is snap with no item's tokens, and whether any item had a
@@ -366,7 +366,7 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		return true
 	}
 	seq := read.Seq
-	snap, why, rule, left := sendable(SnapshotOf(read, seq))
+	snap, why, left, rule := sendable(SnapshotOf(read, seq))
 	if why != "" {
 		class := "local_invalid:" + why
 		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, nil, store.SnapshotFailed, class)
