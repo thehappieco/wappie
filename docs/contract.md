@@ -826,6 +826,32 @@ them.
   epoch. With no `device_ids` it lists every number of the workspace. A
   number with no archive key has nothing to seal, so no token waits
   there. The Numbers screen's "Tokens aguardando a chave" draws from it.
+
+  The snapshot marks more tokens `waiting` than this lists. The snapshot
+  follows the spec: `waiting` is an applied Read without a grant at the
+  number's current epoch, whatever keeps the grant away. `token.waiting`
+  lists only what a person can seal now. So the snapshot also marks
+  `waiting` a token that `token.waiting` leaves out:
+  - a token Wappie stops on its own (an operator's stop, `apply_failed`,
+    `local_rule`, `creator_disabled_here`), or any token while the
+    workspace is not active. It is not live, and `token.grant` refuses it
+    `token_not_live`.
+  - a token with no reading key yet, or whose record brought another
+    reading key than the pin. There is no identity to seal for, or the
+    pin no longer holds.
+  - a token on a number with no archive key (after
+    `reset-archive -keep-devices`, before `device-key`). There is nothing
+    to seal.
+
+  So the console may show a token as waiting that Wappie's Numbers screen
+  does not list. The console shows what the token lacks. The Numbers
+  screen shows what a person can seal here.
+  `TestEveryWaitingTokenWaitsInTheSnapshot` holds the rule: every token
+  `token.waiting` lists is `waiting: true` in the snapshot. A number not
+  linked yet (a pending registration, with no `lid`, `pn` or past
+  connection) is outside the rule. It is no item of the snapshot, so the
+  platform never learns of it, but `token.waiting` would list a token
+  that waits on it. The test pins this too.
 - **`token.grant_context {token_id, device_ids}`** answers what the page
   draws: the token's name, its pinned `reading_key` and that key's
   `reading_key_fingerprint` (the kit's), its identity (the user the grant
@@ -1068,7 +1094,8 @@ missing snapshot as unknown protection.
   id order, the platform tokens with a permission Wappie applied on the
   number: `can` the applied ones (never a pending, waiting or refused
   one), `reads` an applied Read with a grant to the token's identity at
-  the number's current epoch, `waiting` an applied Read without it. A
+  the number's current epoch, `waiting` an applied Read without it
+  (more than `token.waiting` lists: see "The grant page"). A
   token revoked (the belt included, as its usage counts it), expired at
   the measurement or unlisted by a reset's pass is left out; one Wappie
   stops on its own (an operator's stop, `apply_failed`, `local_rule`,
