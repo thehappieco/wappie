@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -164,5 +165,82 @@ func TestServeRunsReadCheck(t *testing.T) {
 	}
 	if n := strings.Count(src, "checkReadAtStart("); n != 2 {
 		t.Fatalf("checkReadAtStart appears %d times, want its definition and serve's call", n)
+	}
+}
+
+// slowReaders takes its whole bound on the first notice and records, for
+// each, whether its context was already done when it came.
+type slowReaders struct {
+	told []string
+	done []bool
+}
+
+func (r *slowReaders) TellRevoked(ctx context.Context, reader, id string) {
+	r.done = append(r.done, ctx.Err() != nil)
+	if len(r.told) == 0 {
+		<-ctx.Done()
+	}
+	r.told = append(r.told, reader+"/"+id)
+}
+
+// TestReportReadCheck: what the start does with a pass's result, with no
+// database. Each reader is told on a bound of its own, so one that takes
+// its whole bound leaves the next its own. A narrowed connection's line
+// names its numbers and their remedy, a new consent. A busy workspace is
+// one Warn line with its id, and a failure one Error line.
+func TestReportReadCheck(t *testing.T) {
+	was := tellTimeout
+	tellTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { tellTimeout = was })
+	var logs bytes.Buffer
+	a := &app{log: slog.New(slog.NewTextHandler(&logs, nil))}
+	tenant, busy, number := uuid.New(), uuid.New(), uuid.New()
+	res := store.ReadCheck{Ended: []store.SweptConnection{
+		{EndedConnection: store.EndedConnection{ID: "slow", Reader: "enclave"}, Tenant: tenant},
+		{EndedConnection: store.EndedConnection{ID: "narrowed", Reader: "enclave"}, Tenant: tenant, Narrowed: []uuid.UUID{number}},
+	}, Busy: []uuid.UUID{busy}}
+	told := &slowReaders{}
+	a.reportReadCheck(context.Background(), told, res, errors.New("workspace x: boom"))
+	if !slices.Equal(told.told, []string{"enclave/slow", "enclave/narrowed"}) || !slices.Equal(told.done, []bool{false, false}) {
+		t.Fatalf("told %v, their bounds done on arrival %v", told.told, told.done)
+	}
+	var narrowed, skipped, failed string
+	for line := range strings.Lines(logs.String()) {
+		switch {
+		case strings.Contains(line, "connection=narrowed"):
+			narrowed = line
+		case strings.Contains(line, "skipped a busy workspace"):
+			skipped = line
+		case strings.Contains(line, "the read check failed"):
+			failed = line
+		}
+	}
+	for _, part := range []string{"level=WARN", "workspace=" + tenant.String(), "reason=access_lost", "narrowed=[" + number.String() + "]",
+		`narrowed_remedy="a new consent"`} {
+		if !strings.Contains(narrowed, part) {
+			t.Errorf("the narrowed line does not say %s:\n%s", part, logs.String())
+		}
+	}
+	if strings.Contains(narrowed, "keyless") || strings.Contains(narrowed, "orphan") {
+		t.Errorf("the narrowed line names another kind: %s", narrowed)
+	}
+	if !strings.Contains(skipped, "level=WARN") || !strings.Contains(skipped, "workspace="+busy.String()) {
+		t.Errorf("the busy line: %q\n%s", skipped, logs.String())
+	}
+	if !strings.Contains(failed, "level=ERROR") {
+		t.Errorf("the failure line: %q\n%s", failed, logs.String())
+	}
+}
+
+// TestCheckReadAtStartSurvivesAPanic: the check runs in its own goroutine
+// and never fails the start, so a panic in it is logged and goes no
+// further. A pool that is not there panics in the first query.
+func TestCheckReadAtStartSurvivesAPanic(t *testing.T) {
+	var logs bytes.Buffer
+	a := &app{log: slog.New(slog.NewTextHandler(&logs, nil)), pools: &pg.Pools{}}
+	told := &toldReaders{}
+	a.checkReadAtStart(context.Background(), told)
+	if len(told.told) != 0 || !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "panic=") {
+		t.Fatalf("after a panic: told %v, logged:\n%s", told.told, logs.String())
 	}
 }
