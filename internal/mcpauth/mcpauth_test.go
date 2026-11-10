@@ -225,12 +225,13 @@ func (h *harness) session(t *testing.T, user store.User) string {
 	return token
 }
 
-// provisionalKey issues what the console mints before a consent: read-only,
-// restricted to the number, dead in twenty minutes unless a consent extends it.
+// provisionalKey issues what the console mints before a consent, as its
+// apikeys.create does: read-only, restricted to the number, named "MCP · …",
+// dead in twenty minutes unless a consent extends it.
 func (h *harness) provisionalKey(t *testing.T, name string) (key, prefix string) {
 	t.Helper()
 	in := time.Now().Add(20 * time.Minute)
-	key, err := h.keys.IssueActingAsForDevices(context.Background(), h.tenant.String(), name, store.ScopeRead, &h.owner.ID, nil, []uuid.UUID{h.device}, &in)
+	key, err := h.keys.IssueAsked(context.Background(), h.tenant.String(), store.SetupKeyName+name, store.ScopeRead, &h.owner.ID, nil, []uuid.UUID{h.device}, &in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +541,7 @@ func TestMetadataConsentNeedsRead(t *testing.T) {
 		t.Helper()
 		requestID, _ := h.reader.pending(t, "Claude", "claude.ai")
 		in := time.Now().Add(20 * time.Minute)
-		key, err := h.keys.IssueActingAsForDevices(context.Background(), h.tenant.String(), "consent", store.ScopeRead, &admin.ID, nil,
+		key, err := h.keys.IssueAsked(context.Background(), h.tenant.String(), store.SetupKeyName+"consent", store.ScopeRead, &admin.ID, nil,
 			[]uuid.UUID{h.device}, &in)
 		if err != nil {
 			t.Fatal(err)

@@ -110,7 +110,33 @@ func FreshWith(t *testing.T, apply Migrator, configure func(*pgxpool.Config)) *p
 	if err := apply(context.Background(), pool, quiet); err != nil {
 		t.Fatalf("pgtest: migrate: %v", err)
 	}
+	if os.Getenv(KeysNarrowedEnv) == "1" {
+		narrowKeys(t, pool)
+	}
 	return pool
+}
+
+// KeysNarrowedEnv is the switch that, set to 1, starts every Fresh schema
+// with Wappie's own keys retired, as after whatserverd tokens retire-keys
+// (a key_retirements row; step 7's plan, 7.3). The narrowed apikeys.create and the setup
+// key's gate (store.APIKeys.VerifyClient) then hold in every test, with
+// the token mode as each test leaves it. make test-narrowed runs the MCP
+// and AI consent packages so, as CI does: a consent that used its key
+// before its connection names it would fail there.
+const KeysNarrowedEnv = "WS_TEST_KEYS_NARROWED"
+
+// narrowKeys records a retirement, where the schema has the table (0053).
+func narrowKeys(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `DO $$ BEGIN
+		IF to_regclass('key_retirements') IS NOT NULL THEN
+			INSERT INTO key_retirements (revoked, services_removed, services_kept, report, by) VALUES (0, 0, 0, '{}', 'pgtest');
+		END IF;
+	END $$`); err != nil {
+		t.Fatalf("pgtest: %s: %v", KeysNarrowedEnv, err)
+	}
 }
 
 // safeSchemaName keeps generated identifiers to characters that need no

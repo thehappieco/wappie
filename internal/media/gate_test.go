@@ -67,7 +67,7 @@ func (f *fixture) serviceKey(t *testing.T, owner store.User) (service uuid.UUID,
 		t.Fatal(err)
 	}
 	in := time.Now().Add(20 * time.Minute)
-	key, err = f.apiKeys.IssueActingAsForDevices(ctx, f.tenant.String(), "assistant", store.ScopeRead, &owner.ID, &account.ID, []uuid.UUID{f.device}, &in)
+	key, err = f.apiKeys.IssueAsked(ctx, f.tenant.String(), store.SetupKeyName+"assistant", store.ScopeRead, &owner.ID, &account.ID, []uuid.UUID{f.device}, &in)
 	if err != nil {
 		t.Fatal(err)
 	}

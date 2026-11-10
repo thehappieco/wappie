@@ -1,4 +1,4 @@
-.PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
+.PHONY: help run test test-race test-narrowed lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
 	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check mcp-check mcp-http-check public-source \
 	enclave-check enclave-image enclave-jail media-worker-check media-jail-check reader-verify
 
@@ -20,6 +20,16 @@ test: ## Run tests
 
 test-race: ## Run tests with the race detector
 	$(GO) test -race -timeout=30m $(PKGS)
+
+# The MCP and AI consent tests again with Wappie's own keys retired, as on a
+# platform installation after tokens retire-keys (pgtest's
+# WS_TEST_KEYS_NARROWED): apikeys.create issues only a setup's key, and a
+# setup's key works only through its connection. A consent that used its
+# key first would fail here.
+NARROWED_PKGS := ./internal/mcpauth ./internal/aiapi ./internal/media
+
+test-narrowed: ## Run the MCP and AI consent tests with Wappie's own keys retired
+	WS_TEST_KEYS_NARROWED=1 $(GO) test -count=1 -timeout=30m $(NARROWED_PKGS)
 
 cover: ## Report coverage
 	$(GO) test -race -timeout=30m -coverprofile=coverage.out $(PKGS)
@@ -89,7 +99,7 @@ IDENTIFIERS_REVS ?=
 identifiers-check: ## Reject AWS account ids outside the documentation placeholders
 	scripts/identifiers-check.sh $(IDENTIFIERS_REVS)
 
-check: fmt vet lint-layout fixtures-check identifiers-check test-race ## Everything CI runs (Go only; see client-check)
+check: fmt vet lint-layout fixtures-check identifiers-check test-race test-narrowed ## Everything CI runs (Go only; see client-check)
 
 # Public SDK and interoperability checks build independently of Go.
 NPM ?= npm
